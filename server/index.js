@@ -6,6 +6,8 @@
 import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 
 import { requestLogger } from './middleware/requestLogger.js';
 import { errorHandler }  from './middleware/errorHandler.js';
@@ -17,8 +19,22 @@ import recordsRouter     from './routes/records.js';
 import metaRouter        from './routes/meta.js';
 import validationRouter  from './routes/validation.js';
 import importExportRouter from './routes/importExport.js';
+import profileRouter     from './routes/profile.js';
+import contactRouter     from './routes/contact.js';
 
 const app = express();
+
+// ── Security headers ───────────────────────────────────────────────────────────
+app.use(helmet({ contentSecurityPolicy: false }));
+
+// ── Rate limiter for auth routes (20 req / 15 min per IP) ─────────────────────
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 // ── Core middleware ────────────────────────────────────────────────────────────
 app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
@@ -32,9 +48,11 @@ app.get('/api/health', (_req, res) => {
 });
 
 // ── Auth routes (public: register/login; protected: logout/me) ────────────────
-app.use('/api/auth', authRouter);
+app.use('/api/auth', authLimiter, authRouter);
 
 // ── Protected route mounting ───────────────────────────────────────────────────
+app.use('/api/profile',              profileRouter);
+app.use('/api/contact',              contactRouter);
 app.use('/api/projects',             projectsRouter);
 app.use('/api/projects/:id/studies', studiesRouter);
 app.use('/api/projects/:id/records', recordsRouter);

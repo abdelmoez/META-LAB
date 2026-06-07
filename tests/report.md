@@ -143,7 +143,98 @@ records management endpoints, api-studies/api-meta/api-validation/api-import aut
 
 ---
 
-## 6. How to Run
+## 6. Phase B Tests (2026-06-07)
+
+### New test files added
+
+| File | Tests | What it covers |
+|------|-------|----------------|
+| `tests/unit/serverStorage.test.js` | 12 | Unit tests for the `window.storage` bridge |
+| `tests/integration/api-phase-b.test.js` | 13 | Integration tests for Phase B backend endpoints |
+| `tests/integration/api-route-protection.test.js` | 6 | 401 guard tests for Phase B protected routes |
+| **Total new** | **31** | |
+
+### Unit tests — serverStorage (12 tests, all pass)
+
+`window.storage.get`:
+- Returns `{ value: "[]" }` when the server project list is empty
+- Fetches full project data (with studies) for each entry in the list
+- Returns `null` for any key that is not `"meta:projects"`
+- Returns `null` when `fetch` throws a network error
+- Returns `null` when the server responds with a non-OK status
+
+`window.storage.set`:
+- Calls `PUT /api/projects/:id/autosave` for every project in the array
+- Calls `DELETE /api/projects/:id` for projects removed from the local array
+- Emits `'failed'` status when the JSON value is syntactically invalid
+- Emits `'failed'` status when the parsed JSON value is not an array
+- Emits `'saving'` then `'saved'` on a successful save
+- Does nothing (no fetch) when the key is not `"meta:projects"`
+
+`subscribeToSaveStatus`:
+- Unsubscribe function stops further callbacks from being delivered
+
+### Integration tests — api-phase-b (13 tests, skip when server is down)
+
+`PUT /api/projects/:id/autosave` (3):
+- Saves a full project payload including studies array
+- Creates a new project when the id does not yet exist (upsert)
+- Returns 400 when name is missing from the payload
+
+`GET /api/projects?full=true` (2):
+- Returns projects with studies and records included
+- Strips studies and records when the `full` param is absent
+
+`POST /api/projects/:id/duplicate` (2):
+- Returns a new project with `(copy)` appended to the name
+- Returns 404 when duplicating a non-existent project
+
+`GET /api/profile` (2): Returns user without password; 401 without cookie
+
+`PUT /api/profile` (2): Updates display name; 400 for non-string name
+
+`PUT /api/profile/password` (3):
+- Changes password so old password no longer works
+- Returns 401 when currentPassword is wrong
+- Returns 400 when newPassword is shorter than 8 characters
+
+User isolation (1): Project autosaved by user A returns 404 for user B
+
+### Integration tests — api-route-protection (6 tests, skip when server is down)
+
+- `PUT /api/projects/:id/autosave` — 401 without cookie
+- `POST /api/projects/:id/duplicate` — 401 without cookie
+- `GET /api/profile` — 401 without cookie
+- `PUT /api/profile/password` — 401 without cookie
+- `PUT /api/profile` — 401 without cookie
+- `GET /api/health` — still public (200)
+
+### Updated totals
+
+| Category | Files | Tests | Pass | Fail | Skip |
+|----------|-------|-------|------|------|------|
+| Unit | 8 | 349 | 349 | 0 | 0 |
+| Integration | 9 | 61 | 0 | 0 | 61 |
+| **Total** | **17** | **410** | **349** | **0** | **61** |
+
+(Integration skip-count assumes server is not running during CI.)
+
+### How to run integration tests
+
+```sh
+# Start the API server first (in a separate terminal)
+npm run server          # or: npm run dev:server
+
+# Then run integration tests
+npm run test:integration
+
+# Run only Phase B tests
+npx vitest run tests/integration/api-phase-b.test.js tests/integration/api-route-protection.test.js
+```
+
+---
+
+## 7. How to Run
 
 Unit tests only:
   npm run test:unit
@@ -157,7 +248,7 @@ Integration tests (requires running server with database access):
 All tests:
   npm test
 
-Last recorded unit-test result (2026-06-06):
-  Test Files  7 passed (7)
-  Tests       337 passed (337)
-  Duration    ~1.2s
+Last recorded unit-test result (2026-06-07 — Phase B):
+  Test Files  8 passed (8)
+  Tests       349 passed (349)
+  Duration    ~1.3s

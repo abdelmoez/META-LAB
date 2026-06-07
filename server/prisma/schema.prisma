@@ -12,21 +12,33 @@ datasource db {
 }
 
 model User {
-  id        String    @id @default(uuid())
-  email     String    @unique
-  name      String?
-  password  String    // bcrypt hash — never stored or returned as plain text
-  createdAt DateTime  @default(now())
-  updatedAt DateTime  @updatedAt
-  projects  Project[]
+  id          String    @id @default(uuid())
+  email       String    @unique
+  name        String?
+  password    String    // bcrypt hash — never stored or returned as plain text
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  lastActive  DateTime?
+  projects    Project[]
 }
 
 model Project {
+  id          String    @id @default(uuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name        String
+  data        String    @default("{}")  // JSON-serialised project payload (studies, records, pico, search, etc.)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+  lastSavedAt DateTime?
+}
+
+model ContactMessage {
   id        String   @id @default(uuid())
-  userId    String
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  name      String
-  data      String   @default("{}")  // JSON-serialised project payload (studies, records, pico, search, etc.)
+  email     String
+  name      String?
+  subject   String?
+  message   String
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
 }

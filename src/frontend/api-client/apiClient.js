@@ -96,6 +96,14 @@ export const api = {
      */
     delete: (id) =>
       req(`${BASE}/projects/${id}`, { method: "DELETE" }),
+
+    /**
+     * POST /api/projects/:id/duplicate — clone a project.
+     * @param {string} id
+     * @returns {Promise<{ id, name, createdAt, updatedAt }>}
+     */
+    duplicate: (id) =>
+      req(`${BASE}/projects/${id}/duplicate`, { method: "POST" }),
   },
 
   /* ── Studies ─────────────────────────────────────────────────────── */
@@ -278,6 +286,42 @@ export const api = {
    * @param {string} id
    */
   exportProject: (id) => req(`${BASE}/export/project/${id}`),
+
+  /* ── Profile ────────────────────────────────────────────────────── */
+
+  profile: {
+    /**
+     * GET /api/profile — current user profile.
+     * @returns {Promise<{ user: object }>}
+     */
+    get: () => req(`${BASE}/profile`),
+
+    /**
+     * PUT /api/profile — update profile fields.
+     * @param {{ name?: string }} patch
+     * @returns {Promise<{ user: object }>}
+     */
+    update: (patch) =>
+      req(`${BASE}/profile`, { method: "PUT", ...json(patch) }),
+
+    /**
+     * PUT /api/profile/password — change password.
+     * @param {{ currentPassword: string, newPassword: string }} body
+     * @returns {Promise<any>}
+     */
+    changePassword: (body) =>
+      req(`${BASE}/profile/password`, { method: "PUT", ...json(body) }),
+  },
+
+  /* ── Contact ─────────────────────────────────────────────────────── */
+
+  /**
+   * POST /api/contact — send a contact form message.
+   * @param {{ name: string, email: string, message: string }} body
+   * @returns {Promise<any>}
+   */
+  contact: (body) =>
+    req(`${BASE}/contact`, { method: "POST", ...json(body) }),
 
   /* ── Auth ────────────────────────────────────────────────────────── */
 

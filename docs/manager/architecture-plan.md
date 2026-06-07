@@ -1,8 +1,8 @@
-# META·LAB — Multi-User Architecture Plan
+# META·LAB — Architecture Plan
 
 **Date:** 2026-06-07
-**Phase:** Auth + Database migration
-**Status:** In Progress
+**Phase:** Phase B — Routing, Autosave, Profile, Security
+**Status:** Complete
 
 ---
 
@@ -16,12 +16,23 @@ Convert META·LAB from a single-user, JSON-file-backed app into a real multi-use
 
 | Layer | Technology | Port |
 |-------|-----------|------|
-| Frontend | React 18 + Vite | 3000 |
-| Backend API | Express 4 + Node 20 | 3001 |
-| Database | PostgreSQL 16 (Docker) | 5432 |
-| ORM | Prisma | — |
+| Frontend | React 18 + Vite + react-router-dom v7 | 3000 |
+| Backend API | Express 4 + Node 20 + helmet + rate-limit | 3001 |
+| Database | SQLite via Prisma | — |
+| ORM | Prisma 5.22 | — |
 | Auth | JWT in httpOnly cookie | — |
 | Passwords | bcryptjs (12 rounds) | — |
+
+## Routes
+
+| Path | Auth | Component |
+|------|------|-----------|
+| `/` | Public | `Landing.jsx` |
+| `/login` | Public (redirect /app if authed) | `Login.jsx` via route adapter |
+| `/register` | Public (redirect /app if authed) | `Register.jsx` via route adapter |
+| `/app` | Protected | `AppWorkspace.jsx` → `MetaLab` |
+| `/profile` | Protected | `Profile.jsx` |
+| `/*` | — | Redirect to `/` |
 
 ---
 
@@ -131,13 +142,24 @@ npm run dev   # starts both Express (3001) and Vite (3000)
 
 ---
 
+## Autosave Architecture
+
+The META·LAB monolith uses `window.storage.get/set` for all project persistence. `src/frontend/storage/serverStorage.js` (imported first in `main.jsx`) sets this global to bridge to the REST API:
+
+- **`get("meta:projects")`** — `GET /api/projects` list + `GET /api/projects/:id` for each project
+- **`set("meta:projects", json)`** — `PUT /api/projects/:id/autosave` upsert for each; `DELETE` for removed ones
+
+Autosave status (Saving…/Saved/Failed) is communicated via pub-sub and shown by `AppWorkspace.jsx`.
+
+---
+
 ## What Is NOT Changing
 
 - The research engine (`/src/research-engine/`) — complete, untouched
 - All 14-step workflow UI in `meta-lab-3-patched.jsx`
 - The visual design (indigo dark theme, IBM Plex Sans)
-- The 337 passing unit tests
-- The API contract shape for projects/studies/records/meta/validation/import/export
+- The 349 passing unit tests
+- The core API contract for projects/studies/records/meta/validation/import/export
 
 ---
 

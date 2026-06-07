@@ -45,11 +45,16 @@ export default function Dashboard({ onOpenProject }) {
   const [projects, setProjects]     = useState([]);
   const [loading, setLoading]       = useState(true);
   const [error, setError]           = useState(null);
-  const [showCreate, setShowCreate] = useState(false);
-  const [newName, setNewName]       = useState("");
-  const [creating, setCreating]     = useState(false);
-  const [confirmDel, setConfirmDel] = useState(null); // project id to delete
-  const [deleting, setDeleting]     = useState(false);
+  const [showCreate, setShowCreate]   = useState(false);
+  const [newName, setNewName]         = useState("");
+  const [creating, setCreating]       = useState(false);
+  const [confirmDel, setConfirmDel]   = useState(null); // project id to delete
+  const [deleting, setDeleting]       = useState(false);
+  const [renamingId, setRenamingId]   = useState(null); // project id being renamed
+  const [renameVal, setRenameVal]     = useState("");   // current rename input value
+  const [renameSaving, setRenameSaving] = useState(false);
+  const [renameErr, setRenameErr]     = useState("");
+  const [duplicating, setDuplicating] = useState({}); // { [id]: true } while duplicating
 
   /* ── Load projects on mount ──────────────────────────────────────── */
   const loadProjects = useCallback(async () => {
@@ -103,6 +108,53 @@ export default function Dashboard({ onOpenProject }) {
       setDeleting(false);
     }
   }, [confirmDel, deleting]);
+
+  /* ── Rename project ──────────────────────────────────────────────── */
+  const startRename = useCallback((project) => {
+    setRenamingId(project.id);
+    setRenameVal(project.name);
+    setRenameErr("");
+  }, []);
+
+  const cancelRename = useCallback(() => {
+    setRenamingId(null);
+    setRenameVal("");
+    setRenameErr("");
+  }, []);
+
+  const handleRename = useCallback(async (id) => {
+    if (!renameVal.trim() || renameSaving) return;
+    setRenameSaving(true);
+    setRenameErr("");
+    try {
+      const updated = await api.projects.update(id, { name: renameVal.trim() });
+      setProjects((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, name: updated.name ?? renameVal.trim(), updatedAt: updated.updatedAt ?? p.updatedAt } : p))
+      );
+      setRenamingId(null);
+      setRenameVal("");
+    } catch (err) {
+      setRenameErr(err.message || "Could not rename project.");
+    } finally {
+      setRenameSaving(false);
+    }
+  }, [renameVal, renameSaving]);
+
+  /* ── Duplicate project ───────────────────────────────────────────── */
+  const handleDuplicate = useCallback(async (id) => {
+    if (duplicating[id]) return;
+    setDuplicating((prev) => ({ ...prev, [id]: true }));
+    try {
+      const copy = await api.projects.duplicate(id);
+      setProjects((prev) =>
+        [copy, ...prev].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+      );
+    } catch (err) {
+      alert(`Could not duplicate project: ${err.message}`);
+    } finally {
+      setDuplicating((prev) => { const n = { ...prev }; delete n[id]; return n; });
+    }
+  }, [duplicating]);
 
   /* ── Render ─────────────────────────────────────────────────────── */
 
@@ -348,40 +400,104 @@ export default function Dashboard({ onOpenProject }) {
 
                 {/* Name + meta */}
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontSize: 14,
-                      fontWeight: 600,
-                      color: C.txt,
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                      marginBottom: 2,
-                    }}
-                  >
-                    {p.name}
-                  </div>
-                  <div style={{ fontSize: 11, color: C.dim }}>
-                    Updated {fmtDate(p.updatedAt)} · Created {fmtDate(p.createdAt)}
-                  </div>
+                  {renamingId === p.id ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <input
+                          autoFocus
+                          value={renameVal}
+                          onChange={(e) => { setRenameVal(e.target.value); setRenameErr(""); }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") handleRename(p.id);
+                            if (e.key === "Escape") cancelRename();
+                          }}
+                          style={{
+                            background: C.surf,
+                            border: `1px solid ${C.brd2}`,
+                            borderRadius: 6,
+                            padding: "5px 9px",
+                            color: C.txt,
+                            fontFamily: "'IBM Plex Sans', sans-serif",
+                            fontSize: 13,
+                            outline: "none",
+                            flex: 1,
+                            minWidth: 0,
+                          }}
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleRename(p.id); }}
+                          disabled={!renameVal.trim() || renameSaving}
+                          style={{ ...btnS("primary"), fontSize: 11, padding: "5px 12px", opacity: renameVal.trim() && !renameSaving ? 1 : 0.5 }}
+                        >
+                          {renameSaving ? "…" : "Save"}
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); cancelRename(); }}
+                          style={{ ...btnS("ghost"), fontSize: 11, padding: "5px 10px" }}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                      {renameErr && (
+                        <div style={{ fontSize: 11, color: "#f87171" }}>{renameErr}</div>
+                      )}
+                    </div>
+                  ) : (
+                    <>
+                      <div
+                        style={{
+                          fontSize: 14,
+                          fontWeight: 600,
+                          color: C.txt,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                          marginBottom: 2,
+                        }}
+                      >
+                        {p.name}
+                      </div>
+                      <div style={{ fontSize: 11, color: C.dim }}>
+                        Updated {fmtDate(p.updatedAt)} · Created {fmtDate(p.createdAt)}
+                      </div>
+                    </>
+                  )}
                 </div>
 
                 {/* Action buttons */}
-                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                  <button
-                    onClick={() => onOpenProject?.(p.id)}
-                    style={{ ...btnS("primary"), fontSize: 11, padding: "6px 14px" }}
-                  >
-                    Open →
-                  </button>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setConfirmDel(p.id); }}
-                    style={{ ...btnS("danger"), fontSize: 11, padding: "6px 10px" }}
-                    title="Delete project"
-                  >
-                    ×
-                  </button>
-                </div>
+                {renamingId !== p.id && (
+                  <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                    <button
+                      onClick={() => onOpenProject?.(p.id)}
+                      style={{ ...btnS("primary"), fontSize: 11, padding: "6px 14px" }}
+                    >
+                      Open →
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); startRename(p); }}
+                      style={{ ...btnS("ghost"), fontSize: 11, padding: "6px 10px" }}
+                      title="Rename project"
+                    >
+                      ✎
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleDuplicate(p.id); }}
+                      disabled={!!duplicating[p.id]}
+                      style={{ ...btnS("ghost"), fontSize: 11, padding: "6px 10px", opacity: duplicating[p.id] ? 0.5 : 1 }}
+                      title="Duplicate project"
+                    >
+                      {duplicating[p.id] ? "…" : "⧉"}
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setConfirmDel(p.id); }}
+                      style={{ ...btnS("danger"), fontSize: 11, padding: "6px 10px" }}
+                      title="Delete project"
+                    >
+                      ×
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
           </div>

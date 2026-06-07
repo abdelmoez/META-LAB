@@ -9,14 +9,16 @@
 ## Table of Contents
 
 1. [Health](#health)
-2. [Projects](#projects)
-3. [Studies](#studies)
-4. [Records](#records)
-5. [Meta-Analysis](#meta-analysis)
-6. [Validation](#validation)
-7. [Import / Export](#import--export)
-8. [Error Shape](#error-shape)
-9. [Common Data Types](#common-data-types)
+2. [Authentication](#authentication)
+3. [Profile](#profile)
+4. [Projects](#projects)
+5. [Studies](#studies)
+6. [Records](#records)
+7. [Meta-Analysis](#meta-analysis)
+8. [Validation](#validation)
+9. [Import / Export](#import--export)
+10. [Error Shape](#error-shape)
+11. [Common Data Types](#common-data-types)
 
 ---
 
@@ -37,11 +39,95 @@ Returns server status.
 
 ---
 
+## Authentication
+
+### `POST /api/auth/register`
+### `POST /api/auth/login`
+### `POST /api/auth/logout`
+### `GET /api/auth/me`
+
+Auth routes are rate-limited: 20 requests per 15 minutes per IP.
+
+---
+
+## Profile
+
+All profile endpoints require authentication (httpOnly session cookie).
+
+### `GET /api/profile`
+
+Returns the authenticated user's profile. Password hash is never returned.
+
+**Response 200**
+```json
+{
+  "user": {
+    "id": "uuid",
+    "email": "user@example.com",
+    "name": "Alice",
+    "createdAt": "2025-01-15T10:00:00.000Z",
+    "lastActive": "2025-06-07T14:00:00.000Z"
+  }
+}
+```
+
+---
+
+### `PUT /api/profile`
+
+Update display name. Also records `lastActive` timestamp.
+
+**Request Body**
+```json
+{ "name": "Alice Smith" }
+```
+
+**Response 200** — Updated user profile (same shape as GET /api/profile).
+
+**Error 400** — `name` is not a string.
+
+---
+
+### `PUT /api/profile/password`
+
+Change the authenticated user's password.
+
+**Request Body**
+```json
+{
+  "currentPassword": "OldP@ssw0rd",
+  "newPassword": "NewP@ssw0rd!"
+}
+```
+
+| Field           | Type   | Required | Description |
+|-----------------|--------|----------|-------------|
+| currentPassword | string | yes      | Must match the current stored bcrypt hash |
+| newPassword     | string | yes      | Minimum 8 characters; will be bcrypt-hashed before storage |
+
+**Response 200**
+```json
+{ "ok": true }
+```
+
+**Error 400** — missing or too-short `newPassword`.  
+**Error 401** — `currentPassword` does not match.
+
+---
+
 ## Projects
 
 ### `GET /api/projects`
 
-Returns all projects as a lightweight list (studies and records arrays are omitted for performance).
+Returns all projects. By default returns a lightweight list (studies and records arrays are omitted for performance).
+
+**Query parameters**
+
+| Param | Values          | Description |
+|-------|-----------------|-------------|
+| full  | `true` \| `1`  | When present, returns full project objects including studies and records |
+
+**Example:** `GET /api/projects?full=true`
 
 **Response 200**
 ```json
@@ -126,6 +212,36 @@ Permanently removes the project and all its studies and records.
 ```
 
 **Error 404** — project not found.
+
+---
+
+### `PUT /api/projects/:id/autosave`
+
+Upserts the full project payload sent by the client-side `window.storage` bridge. Accepts the complete project object including `studies[]`, `records[]`, and all nested fields. Client-side IDs (short base-36 strings such as `"a3b2c1d4"`) are accepted and preserved as the project ID.
+
+**Request Body** — Full project object:
+```json
+{
+  "name": "My Systematic Review",
+  "studies": [ { "id": "s1a2b3c4", "author": "Smith et al.", "es": 1.45 } ],
+  "records": [ { "id": "r1a2b3c4", "title": "Effect of X on Y", "decision": "include" } ],
+  "pico": { "population": "Adults with T2DM", "intervention": "SGLT2i" }
+}
+```
+
+**Response 200** — Saved project object.
+
+**Error 400** — `name` is missing or not a string.
+
+---
+
+### `POST /api/projects/:id/duplicate`
+
+Creates a copy of the specified project with a new server-generated ID. The copy's name gets a ` (copy)` suffix.
+
+**Response 201** — The duplicate project object with a new `id`.
+
+**Error 404** — original project not found.
 
 ---
 
