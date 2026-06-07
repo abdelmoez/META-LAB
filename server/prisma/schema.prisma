@@ -1,5 +1,5 @@
 // META·LAB Prisma schema
-// Provider: PostgreSQL
+// Provider: SQLite (via Prisma ORM)
 // Auth: users own projects — userId enforced on every query
 
 generator client {
@@ -16,10 +16,13 @@ model User {
   email       String    @unique
   name        String?
   password    String    // bcrypt hash — never stored or returned as plain text
+  role        String    @default("user")   // "user" | "admin"
+  suspended   Boolean   @default(false)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   lastActive  DateTime?
   projects    Project[]
+  auditLogs   AdminAuditLog[]
 }
 
 model Project {
@@ -40,5 +43,38 @@ model ContactMessage {
   name      String?
   subject   String?
   message   String
+  read      Boolean  @default(false)
+  archived  Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model SiteSetting {
+  key       String   @id
+  value     String   // JSON-serialised value
+  updatedAt DateTime @updatedAt
+  updatedBy String?  // admin userId who last changed this
+}
+
+model AdminAuditLog {
+  id         String   @id @default(uuid())
+  adminId    String
+  admin      User     @relation(fields: [adminId], references: [id])
+  action     String   // e.g. "UPDATE_SETTING", "SUSPEND_USER", "DELETE_MESSAGE"
+  entityType String?  // "User", "Project", "SiteSetting", "ContactMessage", etc.
+  entityId   String?
+  details    String?  // JSON-serialised context (what changed, before/after summary)
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+}
+
+model SecurityEvent {
+  id        String   @id @default(uuid())
+  type      String   // "FAILED_LOGIN", "ADMIN_ACCESS_DENIED", "RATE_LIMITED"
+  userId    String?
+  email     String?
+  ip        String?
+  userAgent String?
+  details   String?  // JSON-serialised extra info
   createdAt DateTime @default(now())
 }

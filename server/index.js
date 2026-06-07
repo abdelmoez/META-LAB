@@ -11,6 +11,7 @@ import rateLimit from 'express-rate-limit';
 
 import { requestLogger } from './middleware/requestLogger.js';
 import { errorHandler }  from './middleware/errorHandler.js';
+import { requireAuth }   from './middleware/auth.js';
 
 import authRouter        from './routes/auth.js';
 import projectsRouter    from './routes/projects.js';
@@ -21,16 +22,20 @@ import validationRouter  from './routes/validation.js';
 import importExportRouter from './routes/importExport.js';
 import profileRouter     from './routes/profile.js';
 import contactRouter     from './routes/contact.js';
+import settingsRouter    from './routes/settings.js';
+import adminRouter       from './routes/admin.js';
+
+import { initDefaultSettings } from './controllers/settingsController.js';
 
 const app = express();
 
 // ── Security headers ───────────────────────────────────────────────────────────
 app.use(helmet({ contentSecurityPolicy: false }));
 
-// ── Rate limiter for auth routes (20 req / 15 min per IP) ─────────────────────
+// ── Rate limiter for auth routes (20 req / 15 min in production; relaxed in dev/test) ──
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: process.env.NODE_ENV === 'production' ? 20 : 1000,
   message: { error: 'Too many requests, please try again later' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -50,6 +55,9 @@ app.get('/api/health', (_req, res) => {
 // ── Auth routes (public: register/login; protected: logout/me) ────────────────
 app.use('/api/auth', authLimiter, authRouter);
 
+// ── Public settings ────────────────────────────────────────────────────────────
+app.use('/api/settings', settingsRouter);
+
 // ── Protected route mounting ───────────────────────────────────────────────────
 app.use('/api/profile',              profileRouter);
 app.use('/api/contact',              contactRouter);
@@ -59,6 +67,9 @@ app.use('/api/projects/:id/records', recordsRouter);
 app.use('/api/meta',                 metaRouter);
 app.use('/api/validation',           validationRouter);
 app.use('/api',                      importExportRouter);  // /api/import/... and /api/export/...
+
+// ── Admin routes (requireAuth + requireAdmin applied inside admin router) ──────
+app.use('/api/admin', requireAuth, adminRouter);
 
 // ── 404 fallback ───────────────────────────────────────────────────────────────
 app.use((_req, res) => {
@@ -70,8 +81,10 @@ app.use(errorHandler);
 
 // ── Start ──────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`META·LAB API on :${PORT}`);
+  // Initialize default settings (non-blocking)
+  initDefaultSettings().catch(console.error);
 });
 
 export default app;

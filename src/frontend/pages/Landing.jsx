@@ -1,15 +1,21 @@
 /**
- * Landing.jsx — public home page at /
+ * Landing.jsx — public home page for META·LAB.
  *
- * Full professional academic landing page for META·LAB.
- * Design: dark indigo palette, IBM Plex Sans/Mono, no flashy animations.
+ * Design direction: editorial, academic, premium.
+ * APP NAME is the first visual element in the hero.
+ * Dynamic content fetched from /api/settings/public (non-blocking).
+ *
+ * Sections:
+ *   Announcement banner (if set) → Sticky navbar → Hero → Features →
+ *   Workflow → Why it's different → About → Contact → Footer
  */
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { api } from '../api-client/apiClient.js';
 
+/* ─── Design tokens ──────────────────────────────────────────────────── */
 const C = {
   bg:    '#0b0d13',
   surf:  '#0f1220',
@@ -23,39 +29,12 @@ const C = {
   muted: '#536080',
   grn:   '#34d399',
   red:   '#f87171',
+  ylw:   '#fbbf24',
 };
-
 const FONT = "'IBM Plex Sans', system-ui, sans-serif";
 const MONO = "'IBM Plex Mono', monospace";
 
-const btn = {
-  primary: {
-    padding:      '11px 26px',
-    background:   `linear-gradient(135deg, ${C.acc}, ${C.acc2})`,
-    border:       'none',
-    borderRadius: 8,
-    color:        '#fff',
-    fontSize:     14,
-    fontWeight:   600,
-    cursor:       'pointer',
-    fontFamily:   FONT,
-    letterSpacing: '0.01em',
-    transition:   'filter 0.15s ease, transform 0.13s ease',
-  },
-  ghost: {
-    padding:      '11px 26px',
-    background:   'transparent',
-    border:       `1px solid ${C.brd2}`,
-    borderRadius: 8,
-    color:        C.txt2,
-    fontSize:     14,
-    cursor:       'pointer',
-    fontFamily:   FONT,
-    letterSpacing: '0.01em',
-    transition:   'border-color 0.15s ease, color 0.15s ease',
-  },
-};
-
+/* ─── Static content ─────────────────────────────────────────────────── */
 const STEPS = [
   { n: '01', label: 'PICO Framework',      desc: 'Define Population, Intervention, Comparator, and Outcome fields.' },
   { n: '02', label: 'PROSPERO Protocol',   desc: 'Draft and export a structured registration protocol aligned with PROSPERO.' },
@@ -74,45 +53,113 @@ const STEPS = [
 ];
 
 const VALUE_PROPS = [
-  {
-    icon: '◈',
-    label: 'Protocol-first',
-    desc: 'Start with PICO and PROSPERO registration before touching a single record.',
-  },
-  {
-    icon: '⊞',
-    label: 'Reproducible',
-    desc: 'Every search string, screening decision, and diagram is logged and exportable.',
-  },
-  {
-    icon: '◉',
-    label: 'Analysis-ready',
-    desc: 'Built-in forest plots, heterogeneity stats, Egger\'s test, and GRADE ratings.',
-  },
-  {
-    icon: '⬡',
-    label: 'Single workspace',
-    desc: 'From research question to manuscript draft — all in one structured tool.',
-  },
+  { icon: '◈', label: 'Protocol-first',   desc: 'Start with PICO and PROSPERO registration before touching a single record.' },
+  { icon: '⊞', label: 'Reproducible',     desc: 'Every search string, screening decision, and diagram is logged and exportable.' },
+  { icon: '◉', label: 'Analysis-ready',   desc: 'Built-in forest plots, heterogeneity stats, Egger\'s test, and GRADE ratings.' },
+  { icon: '⬡', label: 'Single workspace', desc: 'From research question to manuscript draft — all in one structured tool.' },
 ];
 
-const ABOUT_BULLETS = [
-  'PRISMA 2020 compliance with auto-generated flow diagrams',
-  'Cochrane Risk of Bias 2.0 (RoB 2) and ROBINS-I instruments',
-  'GRADE certainty-of-evidence framework for outcome reporting',
-  'Full audit trail: every decision is timestamped and exportable',
+const STANDARDS = [
+  'PRISMA 2020 — flow diagram generation',
+  'Cochrane RoB 2.0 & ROBINS-I',
+  'GRADE certainty-of-evidence framework',
+  'Full audit trail — every decision timestamped',
 ];
 
+/* ─── Default settings (shown immediately, replaced when server responds) */
+const DEFAULTS = {
+  heroHeadline:       'A serious workspace for\nsystematic reviews.',
+  heroSubtitle:       'Organize evidence, extract data, run pooled analyses, and export research-ready reports — from one secure platform.',
+  ctaText:            'Start Your Review →',
+  footerText:         '',
+  announcementBanner: '',
+  maintenanceBanner:  '',
+};
+
+/* ─── Hook: fetch public settings (non-blocking) ─────────────────────── */
+function useLandingSettings() {
+  const [settings, setSettings] = useState(DEFAULTS);
+
+  useEffect(() => {
+    fetch('/api/settings/public', { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(data => {
+        if (data) {
+          setSettings(prev => ({
+            ...prev,
+            ...(data.landingContent || data),
+          }));
+        }
+      })
+      .catch(() => { /* use defaults silently */ });
+  }, []);
+
+  return settings;
+}
+
+/* ─── Button styles ──────────────────────────────────────────────────── */
+const btnPrimary = {
+  padding:      '12px 28px',
+  background:   `linear-gradient(135deg, ${C.acc}, ${C.acc2})`,
+  border:       'none',
+  borderRadius: 8,
+  color:        '#fff',
+  fontSize:     14,
+  fontWeight:   600,
+  cursor:       'pointer',
+  fontFamily:   FONT,
+  letterSpacing: '0.01em',
+};
+const btnGhost = {
+  padding:      '12px 28px',
+  background:   'transparent',
+  border:       `1px solid ${C.brd2}`,
+  borderRadius: 8,
+  color:        C.txt2,
+  fontSize:     14,
+  cursor:       'pointer',
+  fontFamily:   FONT,
+  letterSpacing: '0.01em',
+};
+
+/* ─── Tiny label above section headings ─────────────────────────────── */
+function SectionLabel({ text }) {
+  return (
+    <div style={{
+      fontSize:      10,
+      fontFamily:    MONO,
+      color:         C.muted,
+      letterSpacing: '0.18em',
+      textTransform: 'uppercase',
+      marginBottom:  14,
+    }}>
+      {text}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   MAIN COMPONENT
+   ════════════════════════════════════════════════════════════════════════ */
 export default function Landing() {
   const navigate = useNavigate();
   const { user }  = useAuth();
+  const settings  = useLandingSettings();
 
-  const [navOpen, setNavOpen] = useState(false);
+  const [navOpen,       setNavOpen]       = useState(false);
+  const [bannerDismissed, setBannerDismissed] = useState(() => {
+    try { return !!localStorage.getItem('ml_banner_dismissed'); } catch { return false; }
+  });
 
-  // Contact form state
-  const [contact, setContact] = useState({ name: '', email: '', message: '' });
-  const [contactStatus, setContactStatus] = useState(null); // null | 'sending' | 'ok' | 'err'
-  const [contactErr, setContactErr]       = useState('');
+  // Contact form
+  const [contact,       setContact]       = useState({ name: '', email: '', message: '' });
+  const [contactStatus, setContactStatus] = useState(null);
+  const [contactErr,    setContactErr]    = useState('');
+
+  function dismissBanner() {
+    try { localStorage.setItem('ml_banner_dismissed', '1'); } catch {}
+    setBannerDismissed(true);
+  }
 
   async function handleContact(e) {
     e.preventDefault();
@@ -125,12 +172,11 @@ export default function Landing() {
       setContact({ name: '', email: '', message: '' });
     } catch (err) {
       if (err.status === 404) {
-        // Endpoint not yet deployed — treat gracefully
         setContactStatus('ok');
         setContact({ name: '', email: '', message: '' });
       } else {
         setContactStatus('err');
-        setContactErr(err.message || 'Failed to send message. Please try again.');
+        setContactErr(err.message || 'Failed to send. Please try again.');
       }
     }
   }
@@ -146,40 +192,90 @@ export default function Landing() {
     fontSize:     13,
     outline:      'none',
     boxSizing:    'border-box',
-    transition:   'border-color 0.15s',
   };
+
+  const showBanner    = !!settings.announcementBanner && !bannerDismissed;
+  const showMaintenance = !!settings.maintenanceBanner;
 
   return (
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: FONT, color: C.txt }}>
       <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&family=IBM+Plex+Sans:wght@300;400;500;600;700;800&display=swap');
+
+        * { box-sizing: border-box; }
+
         @media (max-width: 768px) {
-          .nav-links { display: none !important; }
-          .nav-mobile-open { display: flex !important; }
-          .hero-h1 { font-size: 36px !important; }
-          .hero-sub { font-size: 15px !important; }
+          .nav-links  { display: none !important; }
+          .nav-ctas   { display: none !important; }
+          .ham-btn    { display: flex !important; }
+          .mob-menu   { display: flex !important; }
+          .hero-name  { font-size: 52px !important; letter-spacing: -3px !important; }
+          .hero-tagline { font-size: 16px !important; }
+          .hero-desc  { font-size: 13px !important; }
           .value-grid { grid-template-columns: 1fr 1fr !important; }
           .steps-grid { grid-template-columns: repeat(2, 1fr) !important; }
-          .about-grid { grid-template-columns: 1fr !important; }
-          .footer-inner { flex-direction: column !important; align-items: flex-start !important; gap: 10px !important; }
-          .nav-ctas { display: none !important; }
-          .ham-btn { display: flex !important; }
+          .diff-grid  { grid-template-columns: 1fr !important; }
+          .footer-inner { flex-direction: column !important; align-items: flex-start !important; gap: 12px !important; }
         }
         @media (max-width: 480px) {
+          .hero-name  { font-size: 38px !important; }
           .value-grid { grid-template-columns: 1fr !important; }
           .steps-grid { grid-template-columns: 1fr !important; }
-          .hero-h1 { font-size: 28px !important; }
         }
         @media (min-width: 769px) {
-          .ham-btn { display: none !important; }
-          .nav-mobile-open { display: none !important; }
+          .ham-btn  { display: none !important; }
+          .mob-menu { display: none !important; }
         }
-        .land-btn-primary:hover { filter: brightness(1.1); }
-        .land-btn-ghost:hover { border-color: ${C.acc} !important; color: ${C.acc} !important; }
-        .step-card:hover { border-color: ${C.brd2} !important; }
+
+        .land-primary:hover { filter: brightness(1.1); transform: translateY(-1px); }
+        .land-ghost:hover   { border-color: ${C.acc} !important; color: ${C.acc} !important; }
+        .step-card:hover    { border-color: ${C.brd2} !important; background: ${C.surf} !important; }
+        .val-card:hover     { border-color: ${C.brd2} !important; }
         .contact-input:focus { border-color: ${C.acc} !important; box-shadow: 0 0 0 3px ${C.acc}18; }
+        .nav-link:hover     { color: ${C.txt} !important; }
+        .footer-link:hover  { color: ${C.txt2} !important; }
       `}</style>
 
-      {/* ── Sticky Navbar ──────────────────────────────────────────── */}
+      {/* ── Announcement banner ──────────────────────────────────────── */}
+      {showBanner && (
+        <div style={{
+          background:     C.brd,
+          borderBottom:   `1px solid ${C.brd2}`,
+          padding:        '8px 24px',
+          display:        'flex',
+          alignItems:     'center',
+          justifyContent: 'center',
+          gap:            10,
+          position:       'relative',
+        }}>
+          <span style={{ fontSize: 12, color: C.acc }}>⚑</span>
+          <span style={{ fontSize: 12, color: C.txt2 }}>{settings.announcementBanner}</span>
+          <button
+            onClick={dismissBanner}
+            style={{ position: 'absolute', right: 16, background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 14, lineHeight: 1 }}
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* ── Maintenance banner ───────────────────────────────────────── */}
+      {showMaintenance && (
+        <div style={{
+          background:   `${C.ylw}18`,
+          border:       `1px solid ${C.ylw}40`,
+          borderRadius: 0,
+          padding:      '12px 32px',
+          textAlign:    'center',
+          fontSize:     13,
+          color:        C.ylw,
+          fontWeight:   500,
+        }}>
+          ⚠ {settings.maintenanceBanner}
+        </div>
+      )}
+
+      {/* ── Sticky navbar ─────────────────────────────────────────────── */}
       <nav style={{
         display:        'flex',
         alignItems:     'center',
@@ -189,54 +285,61 @@ export default function Landing() {
         borderBottom:   `1px solid ${C.brd}`,
         position:       'sticky',
         top:            0,
-        background:     `${C.bg}f2`,
-        backdropFilter: 'blur(12px)',
+        background:     `${C.bg}f0`,
+        backdropFilter: 'blur(14px)',
         zIndex:         200,
       }}>
         {/* Logo */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 9, cursor: 'default' }}>
-          <span style={{ fontSize: 20, color: C.acc }}>⬡</span>
-          <span style={{ fontSize: 15, fontWeight: 700, letterSpacing: '0.07em', color: C.txt }}>META·LAB</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'default', userSelect: 'none' }}>
+          <span style={{ fontSize: 18, color: C.acc }}>⬡</span>
+          <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: '0.06em', color: C.txt }}>META·LAB</span>
         </div>
 
-        {/* Nav links — hidden on mobile */}
-        <div className="nav-links" style={{ display: 'flex', alignItems: 'center', gap: 32 }}>
-          {['Features', 'Workflow', 'About'].map(l => (
+        {/* Center nav links */}
+        <div className="nav-links" style={{ display: 'flex', alignItems: 'center', gap: 36 }}>
+          {[['Features', '#features'], ['Workflow', '#workflow'], ['About', '#about']].map(([label, href]) => (
             <a
-              key={l}
-              href={`#${l.toLowerCase()}`}
+              key={label}
+              href={href}
+              className="nav-link"
               style={{ fontSize: 13, color: C.txt2, textDecoration: 'none', transition: 'color 0.15s' }}
-              onMouseEnter={e => e.target.style.color = C.txt}
-              onMouseLeave={e => e.target.style.color = C.txt2}
             >
-              {l}
+              {label}
             </a>
           ))}
         </div>
 
-        {/* CTA buttons — hidden on mobile */}
+        {/* Auth buttons */}
         <div className="nav-ctas" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {user ? (
             <button
-              className="land-btn-primary"
+              className="land-primary"
               onClick={() => navigate('/app')}
-              style={btn.primary}
+              style={{ ...btnPrimary, padding: '8px 18px', fontSize: 13, transition: 'filter 0.15s, transform 0.12s' }}
             >
               Open Workspace
             </button>
           ) : (
             <>
-              <button className="land-btn-ghost" onClick={() => navigate('/login')} style={{ ...btn.ghost, padding: '8px 18px', fontSize: 13 }}>
+              <button
+                className="land-ghost"
+                onClick={() => navigate('/login')}
+                style={{ ...btnGhost, padding: '8px 18px', fontSize: 13, transition: 'border-color 0.15s, color 0.15s' }}
+              >
                 Sign in
               </button>
-              <button className="land-btn-primary" onClick={() => navigate('/register')} style={{ ...btn.primary, padding: '8px 18px', fontSize: 13 }}>
+              <button
+                className="land-primary"
+                onClick={() => navigate('/register')}
+                style={{ ...btnPrimary, padding: '8px 18px', fontSize: 13, transition: 'filter 0.15s, transform 0.12s' }}
+              >
                 Get started
               </button>
             </>
           )}
         </div>
 
-        {/* Hamburger — shown on mobile */}
+        {/* Hamburger */}
         <button
           className="ham-btn"
           onClick={() => setNavOpen(o => !o)}
@@ -246,150 +349,191 @@ export default function Landing() {
         </button>
       </nav>
 
-      {/* Mobile nav dropdown */}
-      <div
-        className="nav-mobile-open"
-        style={{
-          display:        'none',
-          flexDirection:  'column',
-          background:     C.surf,
-          borderBottom:   `1px solid ${C.brd}`,
-          padding:        '16px 24px',
-          gap:            12,
-        }}
-      >
-        {['Features', 'Workflow', 'About'].map(l => (
-          <a key={l} href={`#${l.toLowerCase()}`} onClick={() => setNavOpen(false)}
-            style={{ fontSize: 14, color: C.txt2, textDecoration: 'none', padding: '6px 0' }}>
-            {l}
-          </a>
-        ))}
-        <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 12, display: 'flex', gap: 8 }}>
-          {user ? (
-            <button className="land-btn-primary" onClick={() => navigate('/app')} style={{ ...btn.primary, width: '100%' }}>Open Workspace</button>
-          ) : (
-            <>
-              <button onClick={() => navigate('/login')} style={{ ...btn.ghost, flex: 1, textAlign: 'center' }}>Sign in</button>
-              <button className="land-btn-primary" onClick={() => navigate('/register')} style={{ ...btn.primary, flex: 1, textAlign: 'center' }}>Get started</button>
-            </>
-          )}
+      {/* Mobile menu */}
+      {navOpen && (
+        <div
+          className="mob-menu"
+          style={{
+            display:       'flex',
+            flexDirection: 'column',
+            background:    C.surf,
+            borderBottom:  `1px solid ${C.brd}`,
+            padding:       '16px 24px',
+            gap:           10,
+          }}
+        >
+          {[['Features', '#features'], ['Workflow', '#workflow'], ['About', '#about']].map(([label, href]) => (
+            <a key={label} href={href} onClick={() => setNavOpen(false)}
+              style={{ fontSize: 14, color: C.txt2, textDecoration: 'none', padding: '6px 0' }}>
+              {label}
+            </a>
+          ))}
+          <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 12, display: 'flex', gap: 8 }}>
+            {user ? (
+              <button className="land-primary" onClick={() => navigate('/app')} style={{ ...btnPrimary, width: '100%' }}>Open Workspace</button>
+            ) : (
+              <>
+                <button className="land-ghost" onClick={() => navigate('/login')} style={{ ...btnGhost, flex: 1 }}>Sign in</button>
+                <button className="land-primary" onClick={() => navigate('/register')} style={{ ...btnPrimary, flex: 1 }}>Register</button>
+              </>
+            )}
+          </div>
         </div>
-      </div>
+      )}
 
-      {/* ── Hero ───────────────────────────────────────────────────── */}
-      <section style={{ textAlign: 'center', padding: '100px 40px 80px', maxWidth: 820, margin: '0 auto' }}>
-        {/* Badge */}
+      {/* ── Hero ───────────────────────────────────────────────────────── */}
+      <section style={{
+        textAlign:    'center',
+        padding:      '96px 40px 88px',
+        maxWidth:     860,
+        margin:       '0 auto',
+        position:     'relative',
+      }}>
+        {/* Subtle radial background glow */}
         <div style={{
-          display:      'inline-flex',
-          alignItems:   'center',
-          gap:          6,
-          padding:      '4px 14px',
-          background:   `${C.acc}12`,
-          border:       `1px solid ${C.acc}28`,
-          borderRadius: 20,
-          fontSize:     11,
-          color:        C.acc,
-          letterSpacing: '0.08em',
-          textTransform: 'uppercase',
-          fontWeight:   600,
-          marginBottom: 28,
-          fontFamily:   MONO,
-        }}>
-          <span style={{ fontSize: 9 }}>●</span>
-          14-step guided workflow
-        </div>
+          position:   'absolute',
+          top:        '50%',
+          left:       '50%',
+          transform:  'translate(-50%, -60%)',
+          width:      700,
+          height:     500,
+          background: `radial-gradient(ellipse at center, ${C.acc}09 0%, transparent 70%)`,
+          pointerEvents: 'none',
+          zIndex:     0,
+        }} />
 
-        <h1 className="hero-h1" style={{
-          fontSize:     54,
-          fontWeight:   800,
-          lineHeight:   1.13,
-          letterSpacing: '-1.5px',
-          marginBottom: 22,
-          color:        C.txt,
-        }}>
-          Evidence synthesis,<br />end to end.
-        </h1>
+        <div style={{ position: 'relative', zIndex: 1 }}>
+          {/* Logo mark */}
+          <div style={{
+            fontSize:     28,
+            color:        C.brd2,
+            marginBottom: 24,
+            lineHeight:   1,
+          }}>
+            ⬡
+          </div>
 
-        <p className="hero-sub" style={{
-          fontSize:   17,
-          color:      C.txt2,
-          lineHeight: 1.75,
-          maxWidth:   540,
-          margin:     '0 auto 40px',
-        }}>
-          META·LAB is a structured workspace for systematic reviews and meta-analyses.
-          Every step — from PICO to GRADE — is guided, documented, and reproducible.
-        </p>
-
-        <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
-          <button
-            className="land-btn-primary"
-            onClick={() => navigate('/register')}
-            style={{ ...btn.primary, padding: '13px 32px', fontSize: 15 }}
+          {/* APP NAME — first and largest visual element */}
+          <h1
+            className="hero-name"
+            style={{
+              fontSize:      72,
+              fontWeight:    800,
+              letterSpacing: '-4px',
+              color:         C.txt,
+              lineHeight:    1,
+              margin:        '0 0 28px',
+              fontFamily:    FONT,
+            }}
           >
-            Start your review →
-          </button>
-          <button
-            className="land-btn-ghost"
-            onClick={() => navigate('/login')}
-            style={{ ...btn.ghost, padding: '13px 32px', fontSize: 15 }}
+            META·LAB
+          </h1>
+
+          {/* Tagline */}
+          <p
+            className="hero-tagline"
+            style={{
+              fontSize:   19,
+              color:      C.txt2,
+              fontWeight: 400,
+              lineHeight: 1.5,
+              margin:     '0 0 18px',
+              maxWidth:   560,
+              marginLeft: 'auto',
+              marginRight: 'auto',
+            }}
           >
-            Sign in
-          </button>
+            {settings.heroHeadline || DEFAULTS.heroHeadline}
+          </p>
+
+          {/* Description */}
+          <p
+            className="hero-desc"
+            style={{
+              fontSize:   15,
+              color:      C.muted,
+              lineHeight: 1.75,
+              maxWidth:   540,
+              margin:     '0 auto 44px',
+            }}
+          >
+            {settings.heroSubtitle || DEFAULTS.heroSubtitle}
+          </p>
+
+          {/* CTAs */}
+          <div style={{ display: 'flex', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
+            <button
+              className="land-primary"
+              onClick={() => navigate('/register')}
+              style={{ ...btnPrimary, padding: '13px 32px', fontSize: 15, transition: 'filter 0.15s, transform 0.12s' }}
+            >
+              {settings.ctaText || DEFAULTS.ctaText}
+            </button>
+            <button
+              className="land-ghost"
+              onClick={() => navigate('/login')}
+              style={{ ...btnGhost, padding: '13px 32px', fontSize: 15, transition: 'border-color 0.15s, color 0.15s' }}
+            >
+              Sign in
+            </button>
+          </div>
         </div>
       </section>
 
-      {/* ── Value proposition strip ─────────────────────────────────── */}
+      {/* ── Features / Value proposition ─────────────────────────────── */}
       <section id="features" style={{
         background:   C.surf,
         borderTop:    `1px solid ${C.brd}`,
         borderBottom: `1px solid ${C.brd}`,
-        padding:      '56px 48px',
+        padding:      '60px 48px',
       }}>
         <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+          <div style={{ textAlign: 'center', marginBottom: 36 }}>
+            <SectionLabel text="Features" />
+            <h2 style={{ fontSize: 24, fontWeight: 700, color: C.txt, letterSpacing: '-0.5px', margin: 0 }}>
+              Everything a rigorous review needs
+            </h2>
+          </div>
           <div
             className="value-grid"
             style={{
               display:             'grid',
               gridTemplateColumns: 'repeat(4, 1fr)',
-              gap:                 20,
+              gap:                 16,
             }}
           >
             {VALUE_PROPS.map(v => (
-              <div key={v.label} style={{
-                background:   C.card,
-                border:       `1px solid ${C.brd}`,
-                borderRadius: 10,
-                padding:      '22px 20px',
-              }}>
-                <div style={{ fontSize: 22, color: C.acc, marginBottom: 10 }}>{v.icon}</div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 7 }}>{v.label}</div>
-                <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6 }}>{v.desc}</div>
+              <div
+                key={v.label}
+                className="val-card"
+                style={{
+                  background:   C.card,
+                  border:       `1px solid ${C.brd}`,
+                  borderRadius: 10,
+                  padding:      '24px 22px',
+                  transition:   'border-color 0.15s',
+                }}
+              >
+                <div style={{ fontSize: 20, color: C.acc, marginBottom: 12 }}>{v.icon}</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: C.txt, marginBottom: 8 }}>{v.label}</div>
+                <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.7 }}>{v.desc}</div>
               </div>
             ))}
           </div>
         </div>
       </section>
 
-      {/* ── Workflow section ────────────────────────────────────────── */}
-      <section id="workflow" style={{ padding: '72px 48px', background: C.bg }}>
+      {/* ── Workflow ──────────────────────────────────────────────────── */}
+      <section id="workflow" style={{ padding: '80px 48px', background: C.bg }}>
         <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-          <div style={{ marginBottom: 44, textAlign: 'center' }}>
-            <div style={{
-              fontSize:      11,
-              fontFamily:    MONO,
-              color:         C.muted,
-              letterSpacing: '0.14em',
-              textTransform: 'uppercase',
-              marginBottom:  10,
-            }}>
-              The workflow
-            </div>
-            <h2 style={{ fontSize: 28, fontWeight: 700, color: C.txt, letterSpacing: '-0.5px' }}>
+          <div style={{ textAlign: 'center', marginBottom: 48 }}>
+            <SectionLabel text="Workflow" />
+            <h2 style={{ fontSize: 26, fontWeight: 700, color: C.txt, letterSpacing: '-0.5px', margin: '0 0 12px' }}>
               14 steps from question to manuscript
             </h2>
-            <p style={{ fontSize: 13, color: C.txt2, marginTop: 10, maxWidth: 480, margin: '10px auto 0' }}>
-              Every systematic review follows the same evidence-based process. META·LAB walks you through each stage.
+            <p style={{ fontSize: 13, color: C.txt2, maxWidth: 480, margin: '0 auto', lineHeight: 1.7 }}>
+              Every systematic review follows the same evidence-based process.
+              META·LAB walks you through each stage without letting you skip ahead.
             </p>
           </div>
 
@@ -397,8 +541,8 @@ export default function Landing() {
             className="steps-grid"
             style={{
               display:             'grid',
-              gridTemplateColumns: 'repeat(4, minmax(200px, 1fr))',
-              gap:                 12,
+              gridTemplateColumns: 'repeat(4, minmax(180px, 1fr))',
+              gap:                 10,
             }}
           >
             {STEPS.map(s => (
@@ -410,7 +554,7 @@ export default function Landing() {
                   border:       `1px solid ${C.brd}`,
                   borderRadius: 9,
                   padding:      '16px 18px',
-                  transition:   'border-color 0.15s',
+                  transition:   'border-color 0.15s, background 0.15s',
                 }}
               >
                 <div style={{
@@ -418,15 +562,15 @@ export default function Landing() {
                   fontSize:      10,
                   fontWeight:    700,
                   color:         C.acc,
-                  letterSpacing: '0.12em',
-                  marginBottom:  7,
+                  letterSpacing: '0.1em',
+                  marginBottom:  8,
                 }}>
                   {s.n}
                 </div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: C.txt, marginBottom: 5 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: C.txt, marginBottom: 5 }}>
                   {s.label}
                 </div>
-                <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
+                <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.65 }}>
                   {s.desc}
                 </div>
               </div>
@@ -435,16 +579,22 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ── About / research-grade section ─────────────────────────── */}
-      <section id="about" style={{
+      {/* ── Why it's different ───────────────────────────────────────── */}
+      <section style={{
         background:   C.surf,
         borderTop:    `1px solid ${C.brd}`,
         borderBottom: `1px solid ${C.brd}`,
-        padding:      '72px 48px',
+        padding:      '80px 48px',
       }}>
         <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+          <div style={{ textAlign: 'center', marginBottom: 56 }}>
+            <SectionLabel text="Research-grade" />
+            <h2 style={{ fontSize: 26, fontWeight: 700, color: C.txt, letterSpacing: '-0.5px', margin: 0 }}>
+              For researchers who care about rigor
+            </h2>
+          </div>
           <div
-            className="about-grid"
+            className="diff-grid"
             style={{
               display:             'grid',
               gridTemplateColumns: '1fr 1fr',
@@ -453,81 +603,39 @@ export default function Landing() {
             }}
           >
             {/* Left */}
-            <div>
-              <div style={{
-                fontSize:      11,
-                fontFamily:    MONO,
-                color:         C.muted,
-                letterSpacing: '0.14em',
-                textTransform: 'uppercase',
-                marginBottom:  14,
-              }}>
-                Research-grade
-              </div>
-              <h2 style={{
-                fontSize:      26,
-                fontWeight:    700,
-                color:         C.txt,
-                lineHeight:    1.3,
-                letterSpacing: '-0.5px',
-                marginBottom:  18,
-              }}>
-                Built for rigorous,<br />peer-reviewed synthesis
-              </h2>
-              <p style={{ fontSize: 13, color: C.txt2, lineHeight: 1.8, marginBottom: 14 }}>
-                Systematic reviews demand a level of methodological transparency that general
-                research tools cannot provide. META·LAB enforces a structured workflow aligned
-                with Cochrane Handbook principles and international reporting standards.
+            <div style={{ paddingRight: 32, borderRight: `1px solid ${C.brd}` }}>
+              <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.8, marginBottom: 20 }}>
+                Systematic reviews demand a level of methodological transparency
+                that general research tools cannot provide.
               </p>
-              <p style={{ fontSize: 13, color: C.txt2, lineHeight: 1.8 }}>
-                Every decision — from inclusion criteria to subgroup definitions — is documented
-                in a tamper-evident audit trail, so peer reviewers and editors can retrace
-                your entire process.
+              <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.8, marginBottom: 20 }}>
+                META·LAB enforces a structured workflow aligned with Cochrane
+                Handbook principles and international reporting standards.
+              </p>
+              <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.8 }}>
+                Every decision — from inclusion criteria to subgroup definitions —
+                is documented in a tamper-evident audit trail, so peer reviewers
+                and editors can retrace your entire process.
               </p>
             </div>
 
             {/* Right */}
             <div>
               <div style={{
-                fontSize:      11,
+                fontSize:      10,
                 fontFamily:    MONO,
                 color:         C.muted,
-                letterSpacing: '0.14em',
+                letterSpacing: '0.12em',
                 textTransform: 'uppercase',
                 marginBottom:  20,
               }}>
-                What META·LAB provides
+                Standards built in
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                {ABOUT_BULLETS.map((b, i) => (
-                  <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-                    <div style={{
-                      width:        6,
-                      height:       6,
-                      borderRadius: '50%',
-                      background:   C.acc,
-                      marginTop:    6,
-                      flexShrink:   0,
-                    }} />
-                    <span style={{ fontSize: 13, color: C.txt2, lineHeight: 1.65 }}>{b}</span>
-                  </div>
-                ))}
-              </div>
-
-              <div style={{
-                marginTop:    32,
-                padding:      '18px 20px',
-                background:   C.card,
-                border:       `1px solid ${C.brd}`,
-                borderRadius: 9,
-              }}>
-                <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, letterSpacing: '0.08em', marginBottom: 10, textTransform: 'uppercase' }}>
-                  Standards supported
-                </div>
-                {['PRISMA 2020', 'Cochrane RoB 2.0', 'GRADE framework', 'PROSPERO registration'].map(s => (
-                  <div key={s} style={{ display: 'flex', justifyContent: 'space-between', padding: '7px 0', borderBottom: `1px solid ${C.brd}`, fontSize: 12, color: C.txt2 }}>
-                    <span>{s}</span>
-                    <span style={{ color: '#34d399', fontFamily: MONO, fontSize: 11 }}>✓</span>
+                {STANDARDS.map((s, i) => (
+                  <div key={i} style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+                    <span style={{ fontFamily: MONO, fontSize: 11, color: C.grn, marginTop: 2, flexShrink: 0 }}>✓</span>
+                    <span style={{ fontSize: 14, color: C.txt2, lineHeight: 1.65 }}>{s}</span>
                   </div>
                 ))}
               </div>
@@ -536,42 +644,59 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* ── Contact section ─────────────────────────────────────────── */}
-      <section id="contact" style={{ padding: '72px 48px', background: C.bg }}>
-        <div style={{ maxWidth: 560, margin: '0 auto' }}>
+      {/* ── About ─────────────────────────────────────────────────────── */}
+      <section id="about" style={{ padding: '80px 48px', background: C.bg }}>
+        <div style={{ maxWidth: 680, margin: '0 auto', textAlign: 'center' }}>
+          <SectionLabel text="About" />
+          <h2 style={{ fontSize: 26, fontWeight: 700, color: C.txt, letterSpacing: '-0.5px', margin: '0 0 24px' }}>
+            What is META·LAB?
+          </h2>
+          <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.8, marginBottom: 16 }}>
+            META·LAB is a structured, multi-user platform for conducting systematic
+            reviews and meta-analyses. It covers the complete research cycle — from
+            PICO definition and search strategy through screening, data extraction,
+            statistical analysis, and manuscript preparation.
+          </p>
+          <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.8 }}>
+            Built for academic researchers, clinical teams, and evidence synthesis
+            groups who need a single, auditable workspace rather than a collection
+            of disconnected tools.
+          </p>
+        </div>
+      </section>
+
+      {/* ── Contact ───────────────────────────────────────────────────── */}
+      <section id="contact" style={{
+        background:   C.surf,
+        borderTop:    `1px solid ${C.brd}`,
+        borderBottom: `1px solid ${C.brd}`,
+        padding:      '80px 48px',
+      }}>
+        <div style={{ maxWidth: 540, margin: '0 auto' }}>
           <div style={{ textAlign: 'center', marginBottom: 40 }}>
-            <div style={{
-              fontSize:      11,
-              fontFamily:    MONO,
-              color:         C.muted,
-              letterSpacing: '0.14em',
-              textTransform: 'uppercase',
-              marginBottom:  12,
-            }}>
-              Contact
-            </div>
-            <h2 style={{ fontSize: 26, fontWeight: 700, color: C.txt, letterSpacing: '-0.5px', marginBottom: 10 }}>
+            <SectionLabel text="Contact" />
+            <h2 style={{ fontSize: 26, fontWeight: 700, color: C.txt, letterSpacing: '-0.5px', margin: '0 0 12px' }}>
               Get in touch
             </h2>
             <p style={{ fontSize: 13, color: C.txt2, lineHeight: 1.7 }}>
-              Questions about META·LAB, research collaborations, or institutional access — send us a message.
+              Questions about META·LAB, research collaborations, or institutional access.
             </p>
           </div>
 
           {contactStatus === 'ok' ? (
             <div style={{
-              padding:      '24px 28px',
+              padding:      '28px 32px',
               background:   '#052e16',
-              border:       `1px solid #34d39944`,
+              border:       `1px solid #34d39940`,
               borderRadius: 10,
               textAlign:    'center',
             }}>
-              <div style={{ fontSize: 22, marginBottom: 10 }}>✓</div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: '#34d399', marginBottom: 6 }}>Message sent</div>
-              <div style={{ fontSize: 12, color: C.txt2 }}>We'll get back to you soon.</div>
+              <div style={{ fontSize: 20, color: C.grn, marginBottom: 10 }}>✓</div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: C.grn, marginBottom: 6 }}>Message sent</div>
+              <div style={{ fontSize: 12, color: C.txt2, marginBottom: 18 }}>We'll get back to you soon.</div>
               <button
                 onClick={() => setContactStatus(null)}
-                style={{ ...btn.ghost, marginTop: 18, fontSize: 12, padding: '7px 16px' }}
+                style={{ ...btnGhost, fontSize: 12, padding: '7px 16px' }}
               >
                 Send another
               </button>
@@ -579,7 +704,7 @@ export default function Landing() {
           ) : (
             <form onSubmit={handleContact} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               <div>
-                <label style={{ display: 'block', fontSize: 11, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>
+                <label style={{ display: 'block', fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 7 }}>
                   Name
                 </label>
                 <input
@@ -593,7 +718,7 @@ export default function Landing() {
                 />
               </div>
               <div>
-                <label style={{ display: 'block', fontSize: 11, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>
+                <label style={{ display: 'block', fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 7 }}>
                   Email
                 </label>
                 <input
@@ -607,7 +732,7 @@ export default function Landing() {
                 />
               </div>
               <div>
-                <label style={{ display: 'block', fontSize: 11, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>
+                <label style={{ display: 'block', fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 7 }}>
                   Message
                 </label>
                 <textarea
@@ -621,47 +746,51 @@ export default function Landing() {
                 />
               </div>
               {contactStatus === 'err' && (
-                <div style={{ fontSize: 12, color: C.red, padding: '8px 12px', background: '#3b0d1220', border: `1px solid ${C.red}30`, borderRadius: 6 }}>
+                <div style={{ fontSize: 12, color: C.red, padding: '9px 13px', background: `${C.red}12`, border: `1px solid ${C.red}30`, borderRadius: 6 }}>
                   {contactErr}
                 </div>
               )}
-              <button
-                className="land-btn-primary"
-                type="submit"
-                disabled={contactStatus === 'sending'}
-                style={{ ...btn.primary, alignSelf: 'flex-end', opacity: contactStatus === 'sending' ? 0.6 : 1 }}
-              >
-                {contactStatus === 'sending' ? 'Sending…' : 'Send message'}
-              </button>
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <button
+                  className="land-primary"
+                  type="submit"
+                  disabled={contactStatus === 'sending'}
+                  style={{ ...btnPrimary, opacity: contactStatus === 'sending' ? 0.6 : 1, transition: 'filter 0.15s, transform 0.12s' }}
+                >
+                  {contactStatus === 'sending' ? 'Sending…' : 'Send message'}
+                </button>
+              </div>
             </form>
           )}
         </div>
       </section>
 
-      {/* ── Footer ─────────────────────────────────────────────────── */}
+      {/* ── Footer ────────────────────────────────────────────────────── */}
       <footer style={{
         borderTop:  `1px solid ${C.brd}`,
         padding:    '28px 48px',
         background: C.surf,
       }}>
-        <div className="footer-inner" style={{ maxWidth: 1100, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 16, color: C.acc }}>⬡</span>
-            <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.07em', color: C.muted }}>META·LAB</span>
+        <div
+          className="footer-inner"
+          style={{ maxWidth: 1100, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, userSelect: 'none' }}>
+            <span style={{ fontSize: 15, color: C.acc }}>⬡</span>
+            <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.06em', color: C.muted }}>META·LAB</span>
           </div>
 
-          <div style={{ fontSize: 12, color: C.muted }}>
-            © {new Date().getFullYear()} META·LAB · Systematic review platform
+          <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>
+            {settings.footerText || `© ${new Date().getFullYear()} META·LAB · Systematic review platform`}
           </div>
 
           <div style={{ display: 'flex', gap: 20 }}>
-            {[['Login', '/login'], ['Register', '/register']].map(([label, path]) => (
+            {[['Register', '/register'], ['Sign In', '/login']].map(([label, path]) => (
               <button
                 key={label}
+                className="footer-link"
                 onClick={() => navigate(path)}
                 style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 12, fontFamily: FONT, padding: 0, transition: 'color 0.15s' }}
-                onMouseEnter={e => e.target.style.color = C.txt2}
-                onMouseLeave={e => e.target.style.color = C.muted}
               >
                 {label}
               </button>

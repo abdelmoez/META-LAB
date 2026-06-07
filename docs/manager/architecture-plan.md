@@ -1,7 +1,7 @@
 # META·LAB — Architecture Plan
 
 **Date:** 2026-06-07
-**Phase:** Phase B — Routing, Autosave, Profile, Security
+**Phase:** Phase C — Admin Console, Settings, Audit Logging
 **Status:** Complete
 
 ---
@@ -32,6 +32,7 @@ Convert META·LAB from a single-user, JSON-file-backed app into a real multi-use
 | `/register` | Public (redirect /app if authed) | `Register.jsx` via route adapter |
 | `/app` | Protected | `AppWorkspace.jsx` → `MetaLab` |
 | `/profile` | Protected | `Profile.jsx` |
+| `/ops` | Admin only (shows generic 404 to others) | `AdminConsole.jsx` |
 | `/*` | — | Redirect to `/` |
 
 ---
@@ -53,7 +54,7 @@ Convert META·LAB from a single-user, JSON-file-backed app into a real multi-use
    └─ Clears cookie
 ```
 
-JWT payload: `{ id: user.id, email: user.email }` — signed with `JWT_SECRET`, expires 7 days.
+JWT payload: `{ id: user.id, email: user.email, role: user.role }` — signed with `JWT_SECRET`, expires 7 days.
 
 ---
 

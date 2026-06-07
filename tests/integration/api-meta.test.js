@@ -9,17 +9,36 @@ const API = 'http://localhost:3001/api';
 
 async function serverUp() {
   try {
-    await fetch(`${API}/health`);
-    return true;
+    const r = await fetch(`${API}/health`);
+    return r.ok;
   } catch {
     return false;
   }
 }
 
+async function registerAndLogin(email, password) {
+  const loginRes = await fetch(`${API}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (loginRes.ok) return loginRes.headers.get('set-cookie');
+  const regRes = await fetch(`${API}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, name: 'Meta Test User' }),
+  });
+  return regRes.headers.get('set-cookie');
+}
+
 let up = false;
+let cookie = null;
 
 beforeAll(async () => {
   up = await serverUp();
+  if (up) {
+    cookie = await registerAndLogin(`meta-test-${Date.now()}@example.com`, 'MetaTest123!');
+  }
 });
 
 // Realistic study set for meta-analysis
@@ -35,7 +54,7 @@ describe('POST /api/meta/run', () => {
     if (!up) return;
     const res = await fetch(`${API}/meta/run`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ studies: validStudies, method: 'random' }),
     });
     expect(res.status).toBe(200);
@@ -49,7 +68,7 @@ describe('POST /api/meta/run', () => {
     if (!up) return;
     const res = await fetch(`${API}/meta/run`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ studies: validStudies, method: 'fixed' }),
     });
     expect(res.status).toBe(200);
@@ -62,7 +81,7 @@ describe('POST /api/meta/run', () => {
     if (!up) return;
     const res = await fetch(`${API}/meta/run`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ studies: [validStudies[0]], method: 'random' }),
     });
     // Depending on implementation, could be 400 or 200 with null body
@@ -73,7 +92,7 @@ describe('POST /api/meta/run', () => {
     if (!up) return;
     const res = await fetch(`${API}/meta/run`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ studies: validStudies, method: 'random' }),
     });
     const data = await res.json();
@@ -90,13 +109,15 @@ describe('POST /api/meta/sensitivity', () => {
     if (!up) return;
     const res = await fetch(`${API}/meta/sensitivity`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ studies: validStudies, method: 'random' }),
     });
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(Array.isArray(data)).toBe(true);
-    expect(data.length).toBe(4);
+    // Response: { leaveOneOut: [...], influence: [...] }
+    expect(data).toHaveProperty('leaveOneOut');
+    expect(Array.isArray(data.leaveOneOut)).toBe(true);
+    expect(data.leaveOneOut.length).toBe(4);
   });
 });
 
@@ -105,7 +126,7 @@ describe('POST /api/meta/egger', () => {
     if (!up) return;
     const res = await fetch(`${API}/meta/egger`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ studies: validStudies }),
     });
     expect(res.status).toBe(200);
@@ -120,7 +141,7 @@ describe('POST /api/meta/trimfill', () => {
     if (!up) return;
     const res = await fetch(`${API}/meta/trimfill`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ studies: validStudies, method: 'random' }),
     });
     expect(res.status).toBe(200);
@@ -143,7 +164,7 @@ describe('POST /api/meta/subgroup', () => {
     if (!up) return;
     const res = await fetch(`${API}/meta/subgroup`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ studies: groupedStudies, groupKey: 'region', method: 'random' }),
     });
     expect(res.status).toBe(200);

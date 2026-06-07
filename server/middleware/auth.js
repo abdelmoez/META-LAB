@@ -15,7 +15,7 @@ export function requireAuth(req, res, next) {
   }
   try {
     const payload = verifyToken(token);
-    req.user = { id: payload.id, email: payload.email };
+    req.user = { id: payload.id, email: payload.email, role: payload.role || 'user' };
     next();
   } catch {
     return res.status(401).json({ error: 'Invalid or expired session' });

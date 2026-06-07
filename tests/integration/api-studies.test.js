@@ -9,24 +9,41 @@ const API = 'http://localhost:3001/api';
 
 async function serverUp() {
   try {
-    await fetch(`${API}/health`);
-    return true;
+    const r = await fetch(`${API}/health`);
+    return r.ok;
   } catch {
     return false;
   }
 }
 
+async function registerAndLogin(email, password) {
+  const loginRes = await fetch(`${API}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (loginRes.ok) return loginRes.headers.get('set-cookie');
+  const regRes = await fetch(`${API}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, name: 'Studies Test User' }),
+  });
+  return regRes.headers.get('set-cookie');
+}
+
 let up = false;
+let cookie = null;
 let projectId = null;
 let studyId = null;
 
 beforeAll(async () => {
   up = await serverUp();
   if (up) {
+    cookie = await registerAndLogin(`studies-test-${Date.now()}@example.com`, 'StudiesTest123!');
     // Create a test project to house the studies
     const res = await fetch(`${API}/projects`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ name: 'QA Studies Test Project' }),
     });
     const data = await res.json();
@@ -36,7 +53,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (up && projectId) {
-    await fetch(`${API}/projects/${projectId}`, { method: 'DELETE' });
+    await fetch(`${API}/projects/${projectId}`, { method: 'DELETE', headers: { Cookie: cookie } });
   }
 });
 
@@ -45,7 +62,7 @@ describe('POST /api/projects/:id/studies', () => {
     if (!up || !projectId) return;
     const res = await fetch(`${API}/projects/${projectId}/studies`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({
         author: 'Smith',
         year: '2023',
@@ -66,7 +83,9 @@ describe('POST /api/projects/:id/studies', () => {
 describe('GET /api/projects/:id/studies', () => {
   it('returns the studies array for a project', async () => {
     if (!up || !projectId) return;
-    const res = await fetch(`${API}/projects/${projectId}/studies`);
+    const res = await fetch(`${API}/projects/${projectId}/studies`, {
+      headers: { Cookie: cookie },
+    });
     expect(res.status).toBe(200);
     const data = await res.json();
     expect(Array.isArray(data)).toBe(true);
@@ -74,7 +93,9 @@ describe('GET /api/projects/:id/studies', () => {
 
   it('list includes the study that was created', async () => {
     if (!up || !projectId || !studyId) return;
-    const res = await fetch(`${API}/projects/${projectId}/studies`);
+    const res = await fetch(`${API}/projects/${projectId}/studies`, {
+      headers: { Cookie: cookie },
+    });
     const data = await res.json();
     const found = data.find(s => s.id === studyId);
     expect(found).toBeDefined();
@@ -83,7 +104,9 @@ describe('GET /api/projects/:id/studies', () => {
 
   it('returns 404 for a non-existent project', async () => {
     if (!up) return;
-    const res = await fetch(`${API}/projects/nonexistentid000/studies`);
+    const res = await fetch(`${API}/projects/nonexistentid000/studies`, {
+      headers: { Cookie: cookie },
+    });
     expect(res.status).toBe(404);
   });
 });
@@ -93,7 +116,7 @@ describe('PUT /api/projects/:id/studies/:studyId', () => {
     if (!up || !projectId || !studyId) return;
     const res = await fetch(`${API}/projects/${projectId}/studies/${studyId}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ author: 'Smith Updated', year: '2023' }),
     });
     expect(res.status).toBe(200);
@@ -106,7 +129,7 @@ describe('PUT /api/projects/:id/studies/:studyId', () => {
     if (!up || !projectId) return;
     const res = await fetch(`${API}/projects/${projectId}/studies/nonexistentstudy`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ author: 'Ghost' }),
     });
     expect(res.status).toBe(404);
@@ -119,12 +142,13 @@ describe('DELETE /api/projects/:id/studies/:studyId', () => {
     // Create a disposable study
     const createRes = await fetch(`${API}/projects/${projectId}/studies`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ author: 'Disposable', year: '2020' }),
     });
     const created = await createRes.json();
     const deleteRes = await fetch(`${API}/projects/${projectId}/studies/${created.id}`, {
       method: 'DELETE',
+      headers: { Cookie: cookie },
     });
     expect(deleteRes.status).toBe(200);
   });
@@ -133,6 +157,7 @@ describe('DELETE /api/projects/:id/studies/:studyId', () => {
     if (!up || !projectId) return;
     const res = await fetch(`${API}/projects/${projectId}/studies/nonexistentstudy`, {
       method: 'DELETE',
+      headers: { Cookie: cookie },
     });
     expect(res.status).toBe(404);
   });

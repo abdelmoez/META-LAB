@@ -10,7 +10,7 @@ function getSecret() {
 
 /**
  * Sign a JWT for the given payload.
- * @param {{ id: string, email: string }} payload
+ * @param {{ id: string, email: string, role: string }} payload
  * @returns {string} signed token
  */
 export function signToken(payload) {
@@ -21,7 +21,7 @@ export function signToken(payload) {
  * Verify a JWT and return its decoded payload.
  * Throws if the token is invalid or expired.
  * @param {string} token
- * @returns {{ id: string, email: string }}
+ * @returns {{ id: string, email: string, role: string }}
  */
 export function verifyToken(token) {
   return jwt.verify(token, getSecret());

@@ -41,14 +41,15 @@ export async function register(req, res) {
         email: normalizedEmail,
         name: name?.trim() || null,
         password: hashed,
+        role: 'user',
       },
     });
 
-    const token = signToken({ id: user.id, email: user.email });
+    const token = signToken({ id: user.id, email: user.email, role: user.role });
     res.cookie(COOKIE_NAME, token, cookieOptions());
 
     return res.status(201).json({
-      user: { id: user.id, email: user.email, name: user.name, createdAt: user.createdAt },
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, createdAt: user.createdAt },
     });
   } catch (err) {
     console.error('[auth] register error:', err.message);
@@ -78,14 +79,30 @@ export async function login(req, res) {
     const passwordMatches = user ? await verifyPassword(password, user.password) : false;
 
     if (!user || !passwordMatches) {
+      // Log failed login attempt as a SecurityEvent
+      await prisma.securityEvent.create({
+        data: {
+          type: 'FAILED_LOGIN',
+          email: normalizedEmail,
+          ip: req.ip || null,
+          userAgent: req.get('user-agent') || null,
+          details: JSON.stringify({ reason: 'invalid_credentials' }),
+        },
+      }).catch(() => {});
+
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    const token = signToken({ id: user.id, email: user.email });
+    // Check if user is suspended
+    if (user.suspended) {
+      return res.status(401).json({ error: 'Your account has been suspended. Please contact support.' });
+    }
+
+    const token = signToken({ id: user.id, email: user.email, role: user.role });
     res.cookie(COOKIE_NAME, token, cookieOptions());
 
     return res.json({
-      user: { id: user.id, email: user.email, name: user.name },
+      user: { id: user.id, email: user.email, name: user.name, role: user.role },
     });
   } catch (err) {
     console.error('[auth] login error:', err.message);
@@ -110,7 +127,7 @@ export async function getMe(req, res) {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
-      select: { id: true, email: true, name: true, createdAt: true },
+      select: { id: true, email: true, name: true, role: true, suspended: true, createdAt: true },
     });
     if (!user) {
       return res.status(401).json({ error: 'User not found' });

@@ -9,17 +9,36 @@ const API = 'http://localhost:3001/api';
 
 async function serverUp() {
   try {
-    await fetch(`${API}/health`);
-    return true;
+    const r = await fetch(`${API}/health`);
+    return r.ok;
   } catch {
     return false;
   }
 }
 
+async function registerAndLogin(email, password) {
+  const loginRes = await fetch(`${API}/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (loginRes.ok) return loginRes.headers.get('set-cookie');
+  const regRes = await fetch(`${API}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password, name: 'Validation Test User' }),
+  });
+  return regRes.headers.get('set-cookie');
+}
+
 let up = false;
+let cookie = null;
 
 beforeAll(async () => {
   up = await serverUp();
+  if (up) {
+    cookie = await registerAndLogin(`validation-test-${Date.now()}@example.com`, 'ValidTest123!');
+  }
 });
 
 const validStudy = {
@@ -52,13 +71,13 @@ describe('POST /api/validation/check', () => {
     if (!up) return;
     const res = await fetch(`${API}/validation/check`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ studies: [validStudy] }),
     });
     expect(res.status).toBe(200);
     const data = await res.json();
     // Expect no error-severity issues for a clean study
-    const issues = data.studyIssues?.[validStudy.id] || [];
+    const issues = data.studyIssues?.find(s => s.studyId === validStudy.id)?.issues || [];
     const errors = issues.filter(i => i.sev === 'error');
     expect(errors).toHaveLength(0);
   });
@@ -67,12 +86,12 @@ describe('POST /api/validation/check', () => {
     if (!up) return;
     const res = await fetch(`${API}/validation/check`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ studies: [studyWithLoGtHi] }),
     });
     expect(res.status).toBe(200);
     const data = await res.json();
-    const issues = data.studyIssues?.[studyWithLoGtHi.id] || [];
+    const issues = data.studyIssues?.find(s => s.studyId === studyWithLoGtHi.id)?.issues || [];
     expect(issues.some(i => i.sev === 'error')).toBe(true);
   });
 
@@ -84,7 +103,7 @@ describe('POST /api/validation/check', () => {
     ];
     const res = await fetch(`${API}/validation/check`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({ studies }),
     });
     expect(res.status).toBe(200);
@@ -97,7 +116,7 @@ describe('POST /api/validation/check', () => {
     if (!up) return;
     const res = await fetch(`${API}/validation/check`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', Cookie: cookie },
       body: JSON.stringify({}),
     });
     expect([400, 422, 200]).toContain(res.status);
