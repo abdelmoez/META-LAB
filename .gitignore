@@ -1,0 +1,30 @@
+# dependencies
+node_modules/
+server/node_modules/
+
+# build output
+dist/
+
+# environment — NEVER commit real secrets
+.env
+server/.env
+*.env.local
+
+# database migrations state (keep schema, not lock)
+server/prisma/migrations/
+
+# runtime data (JSON file store — superseded by Postgres)
+server/data/*.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+*.suo
+*.user
+
+# test artifacts
+coverage/
+.nyc_output/

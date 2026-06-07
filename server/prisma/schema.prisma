@@ -1,0 +1,32 @@
+// META·LAB Prisma schema
+// Provider: PostgreSQL
+// Auth: users own projects — userId enforced on every query
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String    @id @default(uuid())
+  email     String    @unique
+  name      String?
+  password  String    // bcrypt hash — never stored or returned as plain text
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  projects  Project[]
+}
+
+model Project {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
+  data      String   @default("{}")  // JSON-serialised project payload (studies, records, pico, search, etc.)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

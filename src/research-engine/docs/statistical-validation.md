@@ -1,0 +1,347 @@
+# Statistical Tests and Validation Rules
+
+This document describes every statistical test and validation rule implemented
+in the META·LAB Research Engine.
+
+---
+
+## 1. Meta-analysis Models (`statistics/meta-analysis.js`)
+
+### 1.1 Fixed-Effects (Common-Effect) Model
+
+Uses inverse-variance weighting.
+
+```
+w_i = 1 / SE_i²         (weight for study i)
+SE_i = (hi - lo) / (2 × Z_0.975)
+
+pooled ES = Σ(w_i × ES_i) / Σ(w_i)
+pooled SE = √(1 / Σw_i)
+95% CI: pooled ES ± 1.959963985 × pooled SE
+```
+
+**Z_0.975 = 1.959963984540054** (exact value of qnorm(0.975)).
+
+The fixed-effects model assumes all studies estimate the same true effect.
+Use it only when this assumption is scientifically justified.
+
+---
+
+### 1.2 Random-Effects Model (DerSimonian–Laird)
+
+Adds between-study heterogeneity (τ²) to the within-study variance.
+
+**τ² (DerSimonian–Laird estimator):**
+```
+τ² = max(0, (Q - (k-1)) / (W - W²/W))
+  where W  = Σw_i
+        W² = Σw_i²
+        Q  = Σ w_i (ES_i - ES_fixed)²
+```
+
+**Random-effects weights:**
+```
+w*_i = 1 / (SE_i² + τ²)
+
+pooled ES* = Σ(w*_i × ES_i) / Σw*_i
+pooled SE* = √(1 / Σw*_i)
+```
+
+Both τ² and the fixed-effects estimate are always computed; the `method`
+parameter controls which model's CI and p-value are promoted to the headline.
+Both sets of weights are attached to every study in the output (`_wFixedPct`,
+`_wRandomPct`).
+
+---
+
+### 1.3 Heterogeneity Statistics
+
+**Q statistic (Cochran):**
+```
+Q = Σ w_i (ES_i - ES_fixed)²   ~  χ²(k-1) under H₀: τ²=0
+```
+P-value for Q is computed via `chiSquareCDF(Q, k-1)`.
+
+**I² (Higgins & Thompson):**
+```
+I² = max(0, (Q - (k-1)) / Q) × 100%
+```
+Descriptive bands: < 25% low · 25–49% moderate · 50–74% substantial · ≥ 75% considerable.
+
+**τ (between-study SD):**
+```
+τ = √τ²
+```
+
+---
+
+### 1.4 Hartung–Knapp–Sidik–Jonkman (HKSJ) Adjustment
+
+An alternative variance estimator for the random-effects model that uses a
+t-distribution reference instead of normal. Recommended when k is small (< 10).
+
+```
+q_HK = [Σ w*_i (ES_i - ES*)²] / (k-1)
+SE_HK = √(max(q_HK, 1e-12)) × √(1/Σw*_i)
+
+CI: ES* ± t(k-1, 0.975) × SE_HK
+t-statistic: ES* / SE_HK  ~  t(k-1) under H₀
+```
+
+**When to use:** Preferred over the normal approximation when k < 10. The
+HKSJ interval is always reported alongside the standard random-effects interval.
+
+---
+
+### 1.5 Prediction Interval
+
+Estimates where a *future* study's true effect would plausibly fall.
+Requires k ≥ 3 (needs at least 2 df for t-distribution).
+
+```
+PI = ES* ± t(k-2, 0.975) × √(τ² + SE_μ²)
+  where SE_μ = pooled SE of the random-effects estimate
+```
+
+A wide prediction interval spanning the null indicates that the treatment
+may be ineffective (or harmful) in some populations even if the pooled
+estimate is significant.
+
+---
+
+### 1.6 Overall p-value
+
+Two-sided test of the null hypothesis that the pooled effect = 0:
+```
+z = ES_pooled / SE_pooled
+p = 2 × (1 - Φ(|z|))
+```
+
+---
+
+## 2. Publication-Bias Tests (`statistics/meta-analysis.js`)
+
+### 2.1 Egger's Weighted Regression Test
+
+Tests for funnel-plot asymmetry, which is a proxy for small-study effects
+and publication bias.
+
+Regresses standardised effect (y = ES / SE) on precision (x = 1/SE) using
+inverse-variance weights (w = 1/SE²):
+```
+y = intercept + slope × x
+
+Weighted OLS:
+  slope     = [Σw(x-x̄)(y-ȳ)] / [Σw(x-x̄)²]  (weighted covariance / variance)
+  intercept = ȳ - slope × x̄
+
+SE(intercept) = √{ s² × [Σwx² / Σw] / [Σwx² - (Σwx)²/Σw] }
+  where s² = Σw(y - ŷ)² / (k-2)
+
+t = intercept / SE(intercept)  ~  t(k-2) under H₀: intercept = 0
+```
+
+**Interpretation:** A significant intercept (p < 0.1) suggests funnel
+asymmetry. Requires k ≥ 3.
+
+---
+
+### 2.2 Trim-and-Fill (Duval & Tweedie L0 Estimator)
+
+Estimates the number of missing studies (k₀) needed to restore funnel
+symmetry, imputes their mirror-image effects, and re-pools.
+
+**Algorithm:**
+1. Compute pooled mean μ (inverse-variance weighted).
+2. Center observations, rank by absolute deviation, compute signed-rank
+   sum T_n (positive-side ranks only) and S_r (signed ranks).
+3. L0 = (4T_n - n(n+1)) / (2n-1); k₀ = max(0, round(L0)).
+4. Trim k₀ most extreme observations, recompute μ, repeat until convergence
+   (≤ 30 iterations).
+5. Determine which side is over-represented from S_r sign.
+6. Impute k₀ mirror-image studies: ES_imputed = 2μ - ES_extreme.
+7. Pool augmented dataset.
+
+**Output:** `{ k0, adjusted (pooled with imputed), imputed[], side, base }`.
+
+**Limitation:** Trim-and-fill assumes asymmetry is purely due to publication
+bias. Other causes of asymmetry (clinical heterogeneity, chance in small
+meta-analyses) produce false-positive k₀ estimates.
+
+---
+
+## 3. Sensitivity Analyses (`statistics/meta-analysis.js`)
+
+### 3.1 Leave-One-Out (LOO)
+
+Removes each study in turn, re-pools the remaining k-1 studies, and reports:
+- Pooled ES without the omitted study
+- 95% CI and p-value
+- I²
+
+Requires k ≥ 3 (need at least 2 studies after removal).
+
+Useful for identifying studies that drive the pooled estimate or inflate I².
+
+---
+
+### 3.2 Influence Diagnostics
+
+Combines LOO results with a standardised influence score (DFFITS-style):
+```
+DFFIT_i = (ES_full - ES_without_i) / SE_full
+```
+
+A study is flagged as **influential** if:
+- |DFFIT| > 1, OR
+- The I² changes by more than 25 percentage points when it is omitted.
+
+Also reports τ²-drop (how much between-study heterogeneity the study adds).
+
+---
+
+## 4. Subgroup Analysis (`statistics/meta-analysis.js`)
+
+Runs `runMeta` within each level of a chosen grouping variable.
+
+**Between-group Q test:**
+```
+Q_between = Q_overall - Σ Q_within_groups  (approximate)
+p ≈ 1 - χ²CDF(Q_between, df = n_groups - 1)
+```
+
+**Limitation:** This test assumes no within-group heterogeneity and has low
+power with few studies per subgroup. Pre-specification is required to avoid
+inflated false-positive rates.
+
+---
+
+## 5. Math Library (`statistics/math-helpers.js`)
+
+### 5.1 normalCDF(z)
+Abramowitz & Stegun rational approximation (max error ≈ 1.5 × 10⁻⁷).
+
+### 5.2 invNorm(p)
+Acklam's rational approximation of the inverse normal CDF.
+Three-region algorithm: lower tail (p < 0.02425), central (p ≤ 0.97575), upper tail.
+
+### 5.3 chiSquareCDF(x, df)
+`chiSquareCDF(x, df) = gammp(df/2, x/2)`
+where `gammp` is the regularised lower incomplete gamma P(a, x) computed via
+Numerical Recipes series (x < a+1) or continued fraction (otherwise).
+
+### 5.4 tCDF(t, df)
+`tCDF(t, df) = 1 - 0.5 × I_x(df/2, 0.5)` for t > 0, where x = df/(df+t²).
+`ibeta` uses Lentz continued fraction.
+
+### 5.5 tCrit(conf, df)
+Bisection search on tCDF over [0, 200] to find t* such that P(-t* < T < t*) = conf.
+Falls back to `invNormAbs` when df is infinite.
+
+---
+
+## 6. Per-Study Validation Rules (`validation/study-validator.js`)
+
+`validateStudy(s)` checks each study and returns a list of
+`{ sev: "error"|"warn", field, msg }` objects.
+
+### Error conditions (will block analysis if not resolved):
+| Rule | Trigger |
+|---|---|
+| Group sizes mismatch | `nExp + nCtrl` differs from `n` by more than 0.5 |
+| Negative SD | `sdExp` or `sdCtrl` < 0 |
+| Negative count | Any of n, a, b, c, d, events, total, tp, fp, fn, tn < 0 |
+| Zero 2×2 group | `a+b = 0` or `c+d = 0` |
+| Events exceed total | `events > total` for single-arm proportion |
+| CI inverted | `lo > hi` |
+| ES outside CI | `es < lo` or `es > hi` (tolerance 1e-6) |
+
+### Warning conditions (informational, do not block):
+| Rule | Trigger |
+|---|---|
+| No author | `author` is empty |
+| No year | `year` is empty |
+| No outcome | `outcome` is empty |
+| Partial 2×2 | Some but not all of a, b, c, d are filled |
+| Partial diagnostic 2×2 | Some but not all of tp, fp, fn, tn are filled |
+| ES without CI | `es` present but `lo` and `hi` absent |
+| CI without ES | `lo` or `hi` present but `es` absent |
+| No effect-measure type | `esType` not set when `es` is present |
+| Probable raw ratio | OR/RR/HR with `es > 1.6` and `lo > 0.3` (likely not log-transformed) |
+| Means without SDs | Continuous means entered but no SDs and no direct ES |
+| "do not pool" flag | `noconfirm` in flags |
+| High-risk flag | `highrisk` in flags |
+| Converted without source | `converted=true` or `conv` flag but `source` is empty |
+| Figure flag mismatch | `figure` flag but `source !== "figure"` |
+| Converted without record | `converted=true` but `conversions` array is empty |
+
+---
+
+## 7. Analysis-Type Warnings (`validation/study-validator.js`)
+
+`analysisTypeWarnings(studies)` flags cross-study mismatches between raw data
+and the chosen effect measure.
+
+| Condition | Severity |
+|---|---|
+| Two-arm 2×2 data (a/b/c/d) present but esType = PROP | error |
+| esType = OR or RR but only single-arm events/total (no 2×2) | warn |
+| Continuous means/SDs present but esType = OR, RR, or PROP | warn |
+| Complete 2×2 present but esType = SMD or MD (no continuous data) | warn |
+| Diagnostic cells (tp/fp/fn/tn) present but esType ≠ DIAG | warn |
+
+---
+
+## 8. Poolability Gate (`validation/study-validator.js`)
+
+`checkPoolability(studies)` evaluates whether studies should be pooled at all.
+Returns `{ ok, blockers[], warnings[], valid[], composition }`.
+
+**Hard blockers (ok = false):**
+- Fewer than 2 studies with a usable ES + CI.
+- Mixed effect measures (e.g. OR alongside SMD).
+- Any study flagged `noconfirm`.
+
+**Warnings (ok can still be true):**
+- Some studies have no `esType` set.
+- Mixed study designs (RCTs with observational studies).
+- Multiple time points present.
+- Mix of unadjusted and adjusted estimates.
+- Studies label different outcomes.
+- Mixed data roles (primary vs. secondary/subgroup/post-hoc).
+- ≥ 50% of pooled values are non-primary.
+- Converted values mixed with non-converted, with unlabelled conversions.
+
+---
+
+## 9. Effect-Size Calculators (`effect-sizes/calculators.js`)
+
+All calculators use the standard normal z = 1.96 for 95% CI construction
+(except SMD, which propagates the formula-based SE symmetrically).
+
+| Type | Formula |
+|---|---|
+| SMD | Cohen's d = (m1-m2)/SD_pooled; SE via Hedges' formula |
+| MD  | m1-m2; SE = √(SD1²/n1 + SD2²/n2) |
+| OR  | ln(ad/bc); SE = √(1/a+1/b+1/c+1/d) |
+| RR  | ln[(a/(a+b)) / (c/(c+d))]; SE = √(1/a - 1/(a+b) + 1/c - 1/(c+d)) |
+| HR  | ln(HR); SE = (ln(hi)-ln(lo))/(2×1.96) |
+| COR | Fisher z = 0.5×ln((1+r)/(1-r)); SE = 1/√(n-3) |
+| PROP | logit(p) with 0.5 correction at extremes; SE = 1/√(n×p×(1-p)) |
+| DIAG | ln(TP×TN / FP×FN); SE = √(1/TP+1/FP+1/FN+1/TN); Haldane correction |
+
+---
+
+## 10. Data Conversions (`conversions/catalogue.js`)
+
+| ID | Formula | Reference |
+|---|---|---|
+| median_iqr | mean ≈ (Q1+med+Q3)/3; SD ≈ (Q3-Q1)/[2Φ⁻¹((0.75n-0.125)/(n+0.25))] | Wan et al. 2014 |
+| median_range | mean ≈ (min+2med+max)/4; SD ≈ (max-min)/[2Φ⁻¹((n-0.375)/(n+0.25))] | Wan 2014 / Hozo 2005 |
+| se_sd | SD = SE × √n | — |
+| ci_sd | SD = √n × (hi-lo) / (2×1.96) | — |
+| pval_se | z = Φ⁻¹(1-p/2); SE = |effect|/z | — |
+| pct_events | events = round(% / 100 × n) | — |
+| events_pct | % = events / n × 100 | — |
+| ratio_log | lnES = ln(est); SE = (ln(hi)-ln(lo))/(2×1.96) | — |
+| unit_scale | converted = value × factor | — |
