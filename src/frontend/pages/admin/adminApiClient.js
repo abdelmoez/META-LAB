@@ -32,6 +32,7 @@ export const adminApi = {
   users: {
     list:         (p)        => req(`${BASE}/users?${new URLSearchParams(p || {})}`),
     get:          (id)       => req(`${BASE}/users/${id}`),
+    getProjects:  (id, p)    => req(`${BASE}/users/${id}/projects?${new URLSearchParams(p || {})}`),
     updateStatus: (id, s)    => req(`${BASE}/users/${id}/status`, { method: 'PATCH', ...json(s) }),
   },
 

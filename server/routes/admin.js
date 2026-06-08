@@ -5,6 +5,7 @@ import {
   getMetrics,
   getUsers,
   getUserById,
+  getUserProjects,
   updateUserStatus,
   getProjects,
   archiveProject,
@@ -47,6 +48,7 @@ router.get('/metrics', getMetrics);
 // Users
 router.get('/users', getUsers);
 router.get('/users/:id', getUserById);
+router.get('/users/:id/projects', getUserProjects);
 router.patch('/users/:id/status', updateUserStatus);
 
 // Projects

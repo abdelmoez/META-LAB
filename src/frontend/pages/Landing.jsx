@@ -68,12 +68,32 @@ const STANDARDS = [
 
 /* ─── Default settings (shown immediately, replaced when server responds) */
 const DEFAULTS = {
+  logoText:           'META·LAB',
+  navLinks:           [{ label: 'Features', href: '#features' }, { label: 'Workflow', href: '#workflow' }, { label: 'About', href: '#about' }],
   heroHeadline:       'A serious workspace for\nsystematic reviews.',
   heroSubtitle:       'Organize evidence, extract data, run pooled analyses, and export research-ready reports — from one secure platform.',
   ctaText:            'Start Your Review →',
+  ctaSecondaryText:   'Sign in',
+  featureTitle:       'Everything a rigorous review needs',
+  featureCards:       VALUE_PROPS,
+  workflowTitle:      '14 steps from question to manuscript',
+  workflowSubtitle:   'Every systematic review follows the same evidence-based process. META·LAB walks you through each stage without letting you skip ahead.',
+  whyTitle:           'For researchers who care about rigor',
+  whyBody1:           'Systematic reviews demand a level of methodological transparency that general research tools cannot provide.',
+  whyBody2:           'META·LAB enforces a structured workflow aligned with Cochrane Handbook principles and international reporting standards.',
+  whyBody3:           'Every decision — from inclusion criteria to subgroup definitions — is documented in a tamper-evident audit trail, so peer reviewers and editors can retrace your entire process.',
+  whyStandards:       STANDARDS,
+  aboutHeadline:      'What is META·LAB?',
+  aboutText1:         'META·LAB is a structured, multi-user platform for conducting systematic reviews and meta-analyses. It covers the complete research cycle — from PICO definition and search strategy through screening, data extraction, statistical analysis, and manuscript preparation.',
+  aboutText2:         'Built for academic researchers, clinical teams, and evidence synthesis groups who need a single, auditable workspace rather than a collection of disconnected tools.',
+  contactTitle:       'Get in touch',
+  contactSubtitle:    'Questions about META·LAB, research collaborations, or institutional access.',
   footerText:         '',
+  footerLinks:        [{ label: 'Register', path: '/register' }, { label: 'Sign In', path: '/login' }],
   announcementBanner: '',
   maintenanceBanner:  '',
+  seoTitle:           '',
+  seoDescription:     '',
 };
 
 /* ─── Hook: fetch public settings (non-blocking) ─────────────────────── */
@@ -85,9 +105,15 @@ function useLandingSettings() {
       .then(r => r.ok ? r.json() : null)
       .then(data => {
         if (data) {
+          const content = data.landingContent || data;
           setSettings(prev => ({
             ...prev,
-            ...(data.landingContent || data),
+            ...content,
+            // keep array defaults if server returns empty/null arrays
+            navLinks:     (content.navLinks?.length     > 0 ? content.navLinks     : prev.navLinks),
+            featureCards: (content.featureCards?.length > 0 ? content.featureCards : prev.featureCards),
+            whyStandards: (content.whyStandards?.length > 0 ? content.whyStandards : prev.whyStandards),
+            footerLinks:  (content.footerLinks?.length  > 0 ? content.footerLinks  : prev.footerLinks),
           }));
         }
       })
@@ -145,6 +171,13 @@ export default function Landing() {
   const navigate = useNavigate();
   const { user }  = useAuth();
   const settings  = useLandingSettings();
+
+  // Update <title> and meta description when settings arrive
+  useEffect(() => {
+    if (settings.seoTitle) document.title = settings.seoTitle;
+    const meta = document.querySelector('meta[name="description"]');
+    if (meta && settings.seoDescription) meta.setAttribute('content', settings.seoDescription);
+  }, [settings.seoTitle, settings.seoDescription]);
 
   const [navOpen,       setNavOpen]       = useState(false);
   const [bannerDismissed, setBannerDismissed] = useState(() => {
@@ -292,19 +325,19 @@ export default function Landing() {
         {/* Logo */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'default', userSelect: 'none' }}>
           <span style={{ fontSize: 18, color: C.acc }}>⬡</span>
-          <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: '0.06em', color: C.txt }}>META·LAB</span>
+          <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: '0.06em', color: C.txt }}>{settings.logoText || 'META·LAB'}</span>
         </div>
 
         {/* Center nav links */}
         <div className="nav-links" style={{ display: 'flex', alignItems: 'center', gap: 36 }}>
-          {[['Features', '#features'], ['Workflow', '#workflow'], ['About', '#about']].map(([label, href]) => (
+          {(settings.navLinks || []).map(link => (
             <a
-              key={label}
-              href={href}
+              key={link.label}
+              href={link.href}
               className="nav-link"
               style={{ fontSize: 13, color: C.txt2, textDecoration: 'none', transition: 'color 0.15s' }}
             >
-              {label}
+              {link.label}
             </a>
           ))}
         </div>
@@ -326,7 +359,7 @@ export default function Landing() {
                 onClick={() => navigate('/login')}
                 style={{ ...btnGhost, padding: '8px 18px', fontSize: 13, transition: 'border-color 0.15s, color 0.15s' }}
               >
-                Sign in
+                {settings.ctaSecondaryText || 'Sign in'}
               </button>
               <button
                 className="land-primary"
@@ -362,10 +395,10 @@ export default function Landing() {
             gap:           10,
           }}
         >
-          {[['Features', '#features'], ['Workflow', '#workflow'], ['About', '#about']].map(([label, href]) => (
-            <a key={label} href={href} onClick={() => setNavOpen(false)}
+          {(settings.navLinks || []).map(link => (
+            <a key={link.label} href={link.href} onClick={() => setNavOpen(false)}
               style={{ fontSize: 14, color: C.txt2, textDecoration: 'none', padding: '6px 0' }}>
-              {label}
+              {link.label}
             </a>
           ))}
           <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 12, display: 'flex', gap: 8 }}>
@@ -474,7 +507,7 @@ export default function Landing() {
               onClick={() => navigate('/login')}
               style={{ ...btnGhost, padding: '13px 32px', fontSize: 15, transition: 'border-color 0.15s, color 0.15s' }}
             >
-              Sign in
+              {settings.ctaSecondaryText || 'Sign in'}
             </button>
           </div>
         </div>
@@ -491,7 +524,7 @@ export default function Landing() {
           <div style={{ textAlign: 'center', marginBottom: 36 }}>
             <SectionLabel text="Features" />
             <h2 style={{ fontSize: 24, fontWeight: 700, color: C.txt, letterSpacing: '-0.5px', margin: 0 }}>
-              Everything a rigorous review needs
+              {settings.featureTitle || 'Everything a rigorous review needs'}
             </h2>
           </div>
           <div
@@ -502,9 +535,9 @@ export default function Landing() {
               gap:                 16,
             }}
           >
-            {VALUE_PROPS.map(v => (
+            {(settings.featureCards || VALUE_PROPS).map((v, i) => (
               <div
-                key={v.label}
+                key={v.label || i}
                 className="val-card"
                 style={{
                   background:   C.card,
@@ -529,11 +562,10 @@ export default function Landing() {
           <div style={{ textAlign: 'center', marginBottom: 48 }}>
             <SectionLabel text="Workflow" />
             <h2 style={{ fontSize: 26, fontWeight: 700, color: C.txt, letterSpacing: '-0.5px', margin: '0 0 12px' }}>
-              14 steps from question to manuscript
+              {settings.workflowTitle || '14 steps from question to manuscript'}
             </h2>
             <p style={{ fontSize: 13, color: C.txt2, maxWidth: 480, margin: '0 auto', lineHeight: 1.7 }}>
-              Every systematic review follows the same evidence-based process.
-              META·LAB walks you through each stage without letting you skip ahead.
+              {settings.workflowSubtitle || 'Every systematic review follows the same evidence-based process. META·LAB walks you through each stage without letting you skip ahead.'}
             </p>
           </div>
 
@@ -590,7 +622,7 @@ export default function Landing() {
           <div style={{ textAlign: 'center', marginBottom: 56 }}>
             <SectionLabel text="Research-grade" />
             <h2 style={{ fontSize: 26, fontWeight: 700, color: C.txt, letterSpacing: '-0.5px', margin: 0 }}>
-              For researchers who care about rigor
+              {settings.whyTitle || 'For researchers who care about rigor'}
             </h2>
           </div>
           <div
@@ -604,19 +636,19 @@ export default function Landing() {
           >
             {/* Left */}
             <div style={{ paddingRight: 32, borderRight: `1px solid ${C.brd}` }}>
-              <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.8, marginBottom: 20 }}>
-                Systematic reviews demand a level of methodological transparency
-                that general research tools cannot provide.
-              </p>
-              <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.8, marginBottom: 20 }}>
-                META·LAB enforces a structured workflow aligned with Cochrane
-                Handbook principles and international reporting standards.
-              </p>
-              <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.8 }}>
-                Every decision — from inclusion criteria to subgroup definitions —
-                is documented in a tamper-evident audit trail, so peer reviewers
-                and editors can retrace your entire process.
-              </p>
+              {(settings.whyBody1 || settings.whyBody2 || settings.whyBody3) ? (
+                <>
+                  {settings.whyBody1 && <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.8, marginBottom: 20 }}>{settings.whyBody1}</p>}
+                  {settings.whyBody2 && <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.8, marginBottom: 20 }}>{settings.whyBody2}</p>}
+                  {settings.whyBody3 && <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.8 }}>{settings.whyBody3}</p>}
+                </>
+              ) : (
+                <>
+                  <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.8, marginBottom: 20 }}>Systematic reviews demand a level of methodological transparency that general research tools cannot provide.</p>
+                  <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.8, marginBottom: 20 }}>META·LAB enforces a structured workflow aligned with Cochrane Handbook principles and international reporting standards.</p>
+                  <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.8 }}>Every decision — from inclusion criteria to subgroup definitions — is documented in a tamper-evident audit trail, so peer reviewers and editors can retrace your entire process.</p>
+                </>
+              )}
             </div>
 
             {/* Right */}
@@ -632,7 +664,7 @@ export default function Landing() {
                 Standards built in
               </div>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                {STANDARDS.map((s, i) => (
+                {(settings.whyStandards || STANDARDS).map((s, i) => (
                   <div key={i} style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
                     <span style={{ fontFamily: MONO, fontSize: 11, color: C.grn, marginTop: 2, flexShrink: 0 }}>✓</span>
                     <span style={{ fontSize: 14, color: C.txt2, lineHeight: 1.65 }}>{s}</span>
@@ -649,18 +681,13 @@ export default function Landing() {
         <div style={{ maxWidth: 680, margin: '0 auto', textAlign: 'center' }}>
           <SectionLabel text="About" />
           <h2 style={{ fontSize: 26, fontWeight: 700, color: C.txt, letterSpacing: '-0.5px', margin: '0 0 24px' }}>
-            What is META·LAB?
+            {settings.aboutHeadline || 'What is META·LAB?'}
           </h2>
           <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.8, marginBottom: 16 }}>
-            META·LAB is a structured, multi-user platform for conducting systematic
-            reviews and meta-analyses. It covers the complete research cycle — from
-            PICO definition and search strategy through screening, data extraction,
-            statistical analysis, and manuscript preparation.
+            {settings.aboutText1 || 'META·LAB is a structured, multi-user platform for conducting systematic reviews and meta-analyses. It covers the complete research cycle — from PICO definition and search strategy through screening, data extraction, statistical analysis, and manuscript preparation.'}
           </p>
           <p style={{ fontSize: 15, color: C.txt2, lineHeight: 1.8 }}>
-            Built for academic researchers, clinical teams, and evidence synthesis
-            groups who need a single, auditable workspace rather than a collection
-            of disconnected tools.
+            {settings.aboutText2 || 'Built for academic researchers, clinical teams, and evidence synthesis groups who need a single, auditable workspace rather than a collection of disconnected tools.'}
           </p>
         </div>
       </section>
@@ -676,10 +703,10 @@ export default function Landing() {
           <div style={{ textAlign: 'center', marginBottom: 40 }}>
             <SectionLabel text="Contact" />
             <h2 style={{ fontSize: 26, fontWeight: 700, color: C.txt, letterSpacing: '-0.5px', margin: '0 0 12px' }}>
-              Get in touch
+              {settings.contactTitle || 'Get in touch'}
             </h2>
             <p style={{ fontSize: 13, color: C.txt2, lineHeight: 1.7 }}>
-              Questions about META·LAB, research collaborations, or institutional access.
+              {settings.contactSubtitle || 'Questions about META·LAB, research collaborations, or institutional access.'}
             </p>
           </div>
 
@@ -777,7 +804,7 @@ export default function Landing() {
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, userSelect: 'none' }}>
             <span style={{ fontSize: 15, color: C.acc }}>⬡</span>
-            <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.06em', color: C.muted }}>META·LAB</span>
+            <span style={{ fontSize: 12, fontWeight: 700, letterSpacing: '0.06em', color: C.muted }}>{settings.logoText || 'META·LAB'}</span>
           </div>
 
           <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>
@@ -785,14 +812,14 @@ export default function Landing() {
           </div>
 
           <div style={{ display: 'flex', gap: 20 }}>
-            {[['Register', '/register'], ['Sign In', '/login']].map(([label, path]) => (
+            {(settings.footerLinks || [{ label: 'Register', path: '/register' }, { label: 'Sign In', path: '/login' }]).map(link => (
               <button
-                key={label}
+                key={link.label}
                 className="footer-link"
-                onClick={() => navigate(path)}
+                onClick={() => navigate(link.path)}
                 style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 12, fontFamily: FONT, padding: 0, transition: 'color 0.15s' }}
               >
-                {label}
+                {link.label}
               </button>
             ))}
           </div>

@@ -229,14 +229,72 @@ export async function updateUserStatus(req, res) {
   }
 }
 
+// ── GET /api/admin/users/:id/projects ────────────────────────────────────────
+
+export async function getUserProjects(req, res) {
+  try {
+    const { page, limit, skip } = parsePage(req.query);
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, email: true, name: true },
+    });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const [total, projects] = await Promise.all([
+      prisma.project.count({ where: { userId: req.params.id } }),
+      prisma.project.findMany({
+        where: { userId: req.params.id },
+        select: {
+          id: true,
+          name: true,
+          data: true,
+          createdAt: true,
+          updatedAt: true,
+          deletedAt: true,
+          lastSavedAt: true,
+        },
+        orderBy: { updatedAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+    ]);
+
+    const formatted = projects.map(p => {
+      const data = safeParseData(p.data);
+      return {
+        id: p.id,
+        name: p.name,
+        createdAt: p.createdAt,
+        updatedAt: p.updatedAt,
+        deletedAt: p.deletedAt,
+        lastSavedAt: p.lastSavedAt,
+        studyCount: Array.isArray(data.studies) ? data.studies.length : 0,
+        recordCount: Array.isArray(data.records) ? data.records.length : 0,
+        metaRuns: Array.isArray(data.metaResults) ? data.metaResults.length : 0,
+        status: p.deletedAt ? 'archived' : 'active',
+      };
+    });
+
+    return res.json({ projects: formatted, total, user: { id: user.id, email: user.email, name: user.name } });
+  } catch (err) {
+    console.error('[admin] getUserProjects error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 // ── GET /api/admin/projects ───────────────────────────────────────────────────
 
 export async function getProjects(req, res) {
   try {
     const { page, limit, skip } = parsePage(req.query);
-    const { userId } = req.query;
+    const { userId, search, status } = req.query;
 
-    const where = userId ? { userId } : {};
+    const where = {};
+    if (userId) where.userId = userId;
+    if (search) where.name = { contains: search };
+    if (status === 'active') where.deletedAt = null;
+    else if (status === 'archived') where.deletedAt = { not: null };
 
     const [total, projects] = await Promise.all([
       prisma.project.count({ where }),
@@ -476,17 +534,27 @@ export async function getSecurityEvents(req, res) {
 export async function getContactMessages(req, res) {
   try {
     const { page, limit, skip } = parsePage(req.query);
-    const { read, archived } = req.query;
+    const { read, archived, search, sort } = req.query;
 
     const where = {};
     if (read !== undefined) where.read = read === 'true';
     if (archived !== undefined) where.archived = archived === 'true';
+    if (search) {
+      where.OR = [
+        { name: { contains: search } },
+        { email: { contains: search } },
+        { subject: { contains: search } },
+        { message: { contains: search } },
+      ];
+    }
+
+    const orderBy = sort === 'oldest' ? { createdAt: 'asc' } : { createdAt: 'desc' };
 
     const [total, messages] = await Promise.all([
       prisma.contactMessage.count({ where }),
       prisma.contactMessage.findMany({
         where,
-        orderBy: { createdAt: 'desc' },
+        orderBy,
         skip,
         take: limit,
       }),
