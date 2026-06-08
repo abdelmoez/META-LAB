@@ -6311,7 +6311,30 @@ function RayyanTab({project,updNested}){
   const pending=allRecords.length-included-excluded-maybe;
 
   return(<div>
-    <SectionHeader icon="🔗" title="Rayyan & Screening" desc="Rayyan is a free AI-powered systematic review tool for collaborative title/abstract screening. Import your search results here, screen independently with your co-reviewer, then record your PRISMA numbers in the Screening & PRISMA tab."/>
+    <SectionHeader icon="🔗" title="Rayyan & Screening" desc="Manage title/abstract screening for your systematic review. Use META·SIFT Beta for built-in screening or Rayyan for collaborative external screening. Record your PRISMA numbers in the Screening & PRISMA tab."/>
+
+    {/* META·SIFT Beta launch card */}
+    <div style={{background:"#0a1a1a",border:"1px solid #2dd4bf40",borderLeft:"3px solid #2dd4bf",borderRadius:8,padding:18,marginBottom:18}}>
+      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:16,flexWrap:"wrap"}}>
+        <div style={{flex:1,minWidth:200}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+            <span style={{fontSize:13,fontWeight:700,color:"#2dd4bf",letterSpacing:"-0.01em"}}>META·SIFT</span>
+            <span style={{fontSize:8,fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",background:"#2dd4bf18",border:"1px solid #2dd4bf50",color:"#2dd4bf",borderRadius:4,padding:"1px 6px"}}>BETA</span>
+          </div>
+          <div style={{fontSize:12,color:"#7ab8b0",lineHeight:1.6,marginBottom:0}}>
+            A built-in screening workspace for title/abstract review, duplicate detection, conflict resolution, and inclusion decisions. Data is saved to your META·LAB account.
+          </div>
+        </div>
+        <button
+          onClick={()=>window.location.href="/sift-beta"}
+          style={{background:"#2dd4bf",border:"none",color:"#050f0f",fontSize:12,fontWeight:700,fontFamily:"'IBM Plex Sans',sans-serif",padding:"9px 20px",borderRadius:7,cursor:"pointer",whiteSpace:"nowrap",flexShrink:0,letterSpacing:"-0.01em"}}
+          onMouseEnter={e=>e.currentTarget.style.background="#22c5b0"}
+          onMouseLeave={e=>e.currentTarget.style.background="#2dd4bf"}
+        >
+          Open META·SIFT Beta →
+        </button>
+      </div>
+    </div>
 
     {/* Rayyan import status */}
     <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:16}}>

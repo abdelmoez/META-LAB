@@ -23,6 +23,7 @@ model User {
   lastActive  DateTime?
   projects    Project[]
   auditLogs   AdminAuditLog[]
+  screenProjects ScreenProject[] @relation("UserScreenProjects")
 }
 
 model Project {
@@ -77,4 +78,126 @@ model SecurityEvent {
   userAgent String?
   details   String?  // JSON-serialised extra info
   createdAt DateTime @default(now())
+}
+
+// ─── META·SIFT Beta ──────────────────────────────────────────────────
+
+model ScreenProject {
+  id                     String                 @id @default(uuid())
+  ownerId                String
+  owner                  User                   @relation("UserScreenProjects", fields: [ownerId], references: [id], onDelete: Cascade)
+  linkedMetaLabProjectId String?
+  title                  String
+  description            String                 @default("")
+  reviewQuestion         String                 @default("")
+  stage                  String                 @default("title_abstract")
+  blindMode              Boolean                @default(false)
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
+
+  records                ScreenRecord[]
+  labels                 ScreenLabel[]
+  exclusionReasons       ScreenExclusionReason[]
+  duplicateGroups        ScreenDuplicateGroup[]
+  conflicts              ScreenConflict[]
+  importBatches          ScreenImportBatch[]
+}
+
+model ScreenRecord {
+  id               String                @id @default(uuid())
+  projectId        String
+  project          ScreenProject         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  importBatchId    String?
+  importBatch      ScreenImportBatch?    @relation(fields: [importBatchId], references: [id])
+  duplicateGroupId String?
+  duplicateGroup   ScreenDuplicateGroup? @relation(fields: [duplicateGroupId], references: [id])
+  isPrimary        Boolean               @default(false)
+  isDuplicate      Boolean               @default(false)
+  title            String                @default("")
+  authors          String                @default("")
+  year             String                @default("")
+  journal          String                @default("")
+  doi              String                @default("")
+  pmid             String                @default("")
+  abstract         String                @default("")
+  keywords         String                @default("")
+  sourceDb         String                @default("")
+  rawData          String                @default("{}")
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+
+  decisions        ScreenDecision[]
+  conflicts        ScreenConflict[]
+}
+
+model ScreenDecision {
+  id              String       @id @default(uuid())
+  recordId        String
+  record          ScreenRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  projectId       String
+  reviewerId      String
+  decision        String       @default("undecided")
+  exclusionReason String       @default("")
+  notes           String       @default("")
+  rating          Int?
+  labels          String       @default("[]")
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@unique([recordId, reviewerId])
+}
+
+model ScreenLabel {
+  id        String        @id @default(uuid())
+  projectId String
+  project   ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  name      String
+  color     String        @default("#5b9cf6")
+  createdAt DateTime      @default(now())
+}
+
+model ScreenExclusionReason {
+  id        String        @id @default(uuid())
+  projectId String
+  project   ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  text      String
+  createdAt DateTime      @default(now())
+}
+
+model ScreenDuplicateGroup {
+  id          String        @id @default(uuid())
+  projectId   String
+  project     ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  resolvedAt  DateTime?
+  primaryId   String        @default("")
+  createdAt   DateTime      @default(now())
+
+  records     ScreenRecord[]
+}
+
+model ScreenConflict {
+  id                String        @id @default(uuid())
+  projectId         String
+  project           ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  recordId          String
+  record            ScreenRecord  @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  reviewerDecisions String        @default("{}")
+  finalDecision     String        @default("")
+  resolvedBy        String        @default("")
+  resolvedAt        DateTime?
+  notes             String        @default("")
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+}
+
+model ScreenImportBatch {
+  id          String        @id @default(uuid())
+  projectId   String
+  project     ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  filename    String        @default("")
+  format      String        @default("")
+  recordCount Int           @default(0)
+  createdAt   DateTime      @default(now())
+
+  records     ScreenRecord[]
 }

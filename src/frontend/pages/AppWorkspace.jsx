@@ -155,6 +155,7 @@ export default function AppWorkspace() {
               label="Account & Profile"
               onClick={() => { setMenuOpen(false); navigate('/profile'); }}
             />
+            <SiftMenuItem onClick={() => { setMenuOpen(false); navigate('/sift-beta'); }} />
             {user?.role === 'admin' && (
               <a
                 href="/ops"
@@ -183,6 +184,48 @@ export default function AppWorkspace() {
         )}
       </div>
     </>
+  );
+}
+
+function SiftMenuItem({ onClick }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        width:       '100%',
+        padding:     '7px 14px',
+        background:  hover ? '#0e1e2c' : 'transparent',
+        border:      'none',
+        textAlign:   'left',
+        color:       hover ? '#2dd4bf' : '#7ab8b0',
+        fontSize:    12,
+        cursor:      'pointer',
+        fontFamily:  "'IBM Plex Sans', system-ui, sans-serif",
+        display:     'flex',
+        alignItems:  'center',
+        gap:         8,
+        transition:  'background 0.1s, color 0.1s',
+      }}
+    >
+      <span style={{ fontSize: 13, width: 16, textAlign: 'center', flexShrink: 0 }}>⬡</span>
+      META·SIFT
+      <span style={{
+        fontSize: 8,
+        fontFamily: "'IBM Plex Mono', monospace",
+        fontWeight: 700,
+        letterSpacing: '0.12em',
+        textTransform: 'uppercase',
+        background: '#2dd4bf18',
+        border: '1px solid #2dd4bf50',
+        color: '#2dd4bf',
+        borderRadius: 4,
+        padding: '1px 5px',
+        marginLeft: 2,
+      }}>BETA</span>
+    </button>
   );
 }
 

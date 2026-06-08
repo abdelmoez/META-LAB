@@ -23,6 +23,7 @@ const C = {
   grn:   '#34d399',
   red:   '#f87171',
   ylw:   '#fbbf24',
+  teal:  '#2dd4bf',
 };
 const FONT = "'IBM Plex Sans', system-ui, sans-serif";
 const MONO = "'IBM Plex Mono', monospace";
@@ -1565,6 +1566,198 @@ function HealthSection() {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+   META·SIFT ADMIN SECTION
+   ════════════════════════════════════════════════════════════════════════ */
+
+const SIFT_DEFAULTS = {
+  enabled: true,
+  badgeText: 'BETA',
+  allowNewProjects: true,
+  allowImport: true,
+  allowExport: true,
+  allowDuplicateDetection: true,
+  allowConflictResolution: true,
+  maxRecordsPerProject: 10000,
+  maintenanceMessage: 'META·SIFT Beta is currently undergoing maintenance. Please try again later.',
+};
+
+function SiftAdminSection() {
+  const [settings,  setSettings]  = useState(SIFT_DEFAULTS);
+  const [metrics,   setMetrics]   = useState(null);
+  const [projects,  setProjects]  = useState([]);
+  const [projTotal, setProjTotal] = useState(0);
+  const [projPage,  setProjPage]  = useState(1);
+  const [loading,   setLoading]   = useState(true);
+  const [saveStatus, setSaveStatus] = useState('idle');
+  const [error,     setError]     = useState(null);
+
+  const load = useCallback(async (page = 1) => {
+    setLoading(true); setError(null);
+    try {
+      const [s, m, p] = await Promise.all([
+        adminApi.screening.getSettings(),
+        adminApi.screening.getMetrics(),
+        adminApi.screening.listProjects({ page, limit: 25 }),
+      ]);
+      setSettings({ ...SIFT_DEFAULTS, ...s });
+      setMetrics(m);
+      setProjects(p.projects || []);
+      setProjTotal(p.total || 0);
+      setProjPage(page);
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(1); }, [load]);
+
+  async function saveSettings() {
+    setSaveStatus('saving');
+    try {
+      await adminApi.screening.saveSettings(settings);
+      setSaveStatus('saved');
+    } catch {
+      setSaveStatus('error');
+    } finally {
+      setTimeout(() => setSaveStatus('idle'), 2000);
+    }
+  }
+
+  async function changeProjectStatus(id, stage) {
+    try {
+      await adminApi.screening.setStatus(id, stage);
+      load(projPage);
+    } catch (e) {
+      alert('Failed to update status: ' + e.message);
+    }
+  }
+
+  const projCols = [
+    { key: 'title',         label: 'Title',    width: '28%' },
+    { key: 'owner',         label: 'Owner',    width: '18%', render: v => v?.email || '—' },
+    { key: 'recordCount',   label: 'Records',  width: '8%' },
+    { key: 'decisionCount', label: 'Decisions',width: '9%' },
+    { key: 'stage',         label: 'Stage',    width: '9%', render: v => <Badge text={v || 'active'} color={v === 'archived' ? C.muted : v === 'disabled' ? C.red : C.grn} /> },
+    { key: 'createdAt',     label: 'Created',  width: '12%', render: v => fmtDate(v) },
+    { key: '_actions',      label: 'Actions',  width: '16%', render: (_, row) => (
+      <div style={{ display: 'flex', gap: 4 }}>
+        {row.stage !== 'active'   && <button onClick={() => changeProjectStatus(row.id, 'active')}   style={miniBtn(C.grn)}>Activate</button>}
+        {row.stage !== 'archived' && <button onClick={() => changeProjectStatus(row.id, 'archived')} style={miniBtn(C.muted)}>Archive</button>}
+        {row.stage !== 'disabled' && <button onClick={() => changeProjectStatus(row.id, 'disabled')} style={miniBtn(C.red)}>Disable</button>}
+      </div>
+    )},
+  ];
+
+  const miniBtn = (color) => ({
+    padding: '3px 8px', background: `${color}18`, border: `1px solid ${color}40`,
+    borderRadius: 5, color, fontSize: 10, fontFamily: MONO, cursor: 'pointer',
+    letterSpacing: '0.05em', fontWeight: 600,
+  });
+
+  if (loading) return <div style={{ padding: '60px 0', textAlign: 'center' }}><Spinner size={24} /></div>;
+
+  return (
+    <div>
+      <div style={{ marginBottom: 24 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 700, color: C.txt, margin: 0, letterSpacing: '-0.02em' }}>
+          META·SIFT Beta
+          <span style={{ fontSize: 9, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', background: '#2dd4bf18', border: '1px solid #2dd4bf50', color: '#2dd4bf', borderRadius: 4, padding: '2px 7px', marginLeft: 10 }}>BETA</span>
+        </h2>
+        <p style={{ fontSize: 13, color: C.txt2, marginTop: 6, marginBottom: 0 }}>
+          Manage the screening module, control feature access, and monitor usage.
+        </p>
+      </div>
+
+      {error && <ErrorBox msg={error} />}
+
+      {/* Metrics */}
+      {metrics && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 12, marginBottom: 24 }}>
+          {[
+            { label: 'Projects',       value: metrics.totalProjects,      color: C.acc },
+            { label: 'Records',        value: metrics.totalRecords,       color: C.txt2 },
+            { label: 'Included',       value: metrics.included,           color: '#4ade80' },
+            { label: 'Excluded',       value: metrics.excluded,           color: C.red },
+            { label: 'Maybe',          value: metrics.maybe,              color: C.ylw },
+            { label: 'Conflicts',      value: metrics.totalConflicts,     color: '#dba96a' },
+            { label: 'Dup Groups',     value: metrics.totalDuplicateGroups, color: C.muted },
+            { label: 'This Week',      value: metrics.projectsThisWeek,   color: C.teal || '#2dd4bf' },
+          ].map(m => (
+            <div key={m.label} style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 9, padding: '14px 16px' }}>
+              <div style={{ fontSize: 22, fontWeight: 700, fontFamily: MONO, color: m.color }}>{m.value ?? 0}</div>
+              <div style={{ fontSize: 10, color: C.muted, marginTop: 3, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: MONO }}>{m.label}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Settings */}
+      <SectionCard title="Module Settings" action={<SaveButton onClick={saveSettings} status={saveStatus} />}>
+        <div style={{ padding: '16px 18px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px' }}>
+          {[
+            { key: 'enabled',                label: 'META·SIFT Enabled',         note: 'Disabling shows maintenance page and blocks /sift-beta' },
+            { key: 'allowNewProjects',        label: 'New Project Creation',      note: 'Allow users to create new screening projects' },
+            { key: 'allowImport',             label: 'Import (RIS/BibTeX/NBIB)',  note: 'Allow reference imports' },
+            { key: 'allowExport',             label: 'Export (CSV/JSON)',         note: 'Allow record exports' },
+            { key: 'allowDuplicateDetection', label: 'Duplicate Detection',       note: 'Run dedup algorithms' },
+            { key: 'allowConflictResolution', label: 'Conflict Resolution',       note: 'Show and resolve reviewer conflicts' },
+          ].map(({ key, label, note }) => (
+            <div key={key} style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '8px 0', borderBottom: `1px solid ${C.brd}` }}>
+              <div>
+                <div style={{ fontSize: 12, color: C.txt, fontWeight: 500 }}>{label}</div>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{note}</div>
+              </div>
+              <Toggle
+                checked={!!settings[key]}
+                onChange={v => setSettings(s => ({ ...s, [key]: v }))}
+              />
+            </div>
+          ))}
+          <div style={{ gridColumn: '1 / -1', paddingTop: 4 }}>
+            <Field label="Badge Text" note="Shown next to META·SIFT in the nav (e.g. BETA, PREVIEW, GA)">
+              <input
+                value={settings.badgeText || ''}
+                onChange={e => setSettings(s => ({ ...s, badgeText: e.target.value }))}
+                style={{ ...inputStyle, width: 160 }}
+              />
+            </Field>
+            <Field label="Max Records Per Project">
+              <input
+                type="number" min="100" max="100000"
+                value={settings.maxRecordsPerProject || 10000}
+                onChange={e => setSettings(s => ({ ...s, maxRecordsPerProject: parseInt(e.target.value) || 10000 }))}
+                style={{ ...inputStyle, width: 160 }}
+              />
+            </Field>
+            <Field label="Maintenance Message" note="Shown to users when META·SIFT is disabled">
+              <textarea
+                value={settings.maintenanceMessage || ''}
+                onChange={e => setSettings(s => ({ ...s, maintenanceMessage: e.target.value }))}
+                rows={2}
+                style={{ ...inputStyle, resize: 'vertical', width: '100%' }}
+              />
+            </Field>
+          </div>
+        </div>
+      </SectionCard>
+
+      {/* Screening projects table */}
+      <SectionCard title={`Screening Projects (${projTotal})`}>
+        <DataTable
+          columns={projCols}
+          rows={projects}
+          loading={false}
+          emptyMessage="No screening projects yet."
+        />
+        <Pagination page={projPage} total={projTotal} perPage={25} onPage={p => load(p)} />
+      </SectionCard>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
    ROOT COMPONENT
    ════════════════════════════════════════════════════════════════════════ */
 
@@ -1572,6 +1765,7 @@ const NAV_SECTIONS = [
   { id: 'overview', icon: '⊞', label: 'Overview'  },
   { id: 'users',    icon: '◈', label: 'Users'     },
   { id: 'projects', icon: '⬡', label: 'Projects'  },
+  { id: 'sift',     icon: '◧', label: 'META·SIFT' },
   { id: 'content',  icon: '✦', label: 'Content'   },
   { id: 'settings', icon: '⚙', label: 'Settings'  },
   { id: 'flags',    icon: '◉', label: 'Flags'     },
@@ -1594,6 +1788,7 @@ export default function AdminConsole() {
     overview: <OverviewSection onNavigate={setActive} />,
     users:    <UsersSection />,
     projects: <ProjectsSection />,
+    sift:     <SiftAdminSection />,
     content:  <ContentSection />,
     settings: <SettingsSection />,
     flags:    <FlagsSection />,

@@ -24,6 +24,15 @@ import {
   getHealth,
 } from '../controllers/adminController.js';
 
+import {
+  getScreeningSettings,
+  updateScreeningSettings,
+  getScreeningMetrics,
+  listScreeningProjects,
+  getScreeningProject,
+  updateScreeningProjectStatus,
+} from '../controllers/screeningAdminController.js';
+
 const router = Router();
 
 // Admin-specific rate limiter: 60 req / 15 min per IP
@@ -81,5 +90,13 @@ router.delete('/contact-messages/:id', deleteContactMessage);
 
 // Health
 router.get('/health', getHealth);
+
+// META·SIFT Beta admin controls
+router.get('/screening/settings',              getScreeningSettings);
+router.put('/screening/settings',              updateScreeningSettings);
+router.get('/screening/metrics',               getScreeningMetrics);
+router.get('/screening/projects',              listScreeningProjects);
+router.get('/screening/projects/:id',          getScreeningProject);
+router.patch('/screening/projects/:id/status', updateScreeningProjectStatus);
 
 export default router;

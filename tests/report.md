@@ -612,3 +612,121 @@ vite build → ✓ built in 3.31s (no new errors; pre-existing meta-lab-3-patche
 | 11 | Responsive at ≤ 768px | Mobile menu shown; single-column grids |
 | 12 | Admin `/ops` still accessible | Admin console unchanged |
 | 13 | App workspace `/app` still works | Protected route, auth unchanged |
+
+---
+
+## 10. META·SIFT Beta (2026-06-08) — Screening Module
+
+### What was built
+
+META·SIFT Beta is a separate title/abstract screening workspace for systematic reviews, accessible from the main META·LAB app.
+
+### Files created / modified
+
+| File | Role |
+|------|------|
+| `server/prisma/schema.prisma` | +7 new models: ScreenProject, ScreenRecord, ScreenDecision, ScreenLabel, ScreenExclusionReason, ScreenDuplicateGroup, ScreenConflict, ScreenImportBatch |
+| `server/prisma/migrations/…_add_metasift_screening/` | Applied migration |
+| `server/routes/screening.js` | 22 routes under `/api/screening` |
+| `server/controllers/screeningController.js` | 22 handler functions (projects, records, import, export, decisions, conflicts, duplicates, labels, reasons, stats) |
+| `server/services/screeningDuplicateService.js` | 3-pass duplicate detection (DOI > PMID > Levenshtein title similarity ≥ 0.92) |
+| `server/services/screeningConflictService.js` | Conflict sync triggered on every decision save |
+| `server/index.js` | +2 lines: import + mount `/api/screening` router |
+| `server/docs/screening-api-contract.md` | Full API contract documentation |
+| `src/frontend/screening/api-client/screeningApi.js` | Thin async fetch wrapper for all 20+ endpoints |
+| `src/frontend/screening/pages/SiftDashboard.jsx` | Project list: cards, progress, new project modal, delete confirm |
+| `src/frontend/screening/pages/SiftWorkbench.jsx` | Main two-panel screening interface with keyboard shortcuts |
+| `src/frontend/screening/pages/SiftImport.jsx` | RIS/BibTeX/NBIB import with preview |
+| `src/frontend/screening/pages/SiftDuplicates.jsx` | Duplicate group management |
+| `src/frontend/screening/pages/SiftConflicts.jsx` | Conflict resolution interface |
+| `src/frontend/screening/pages/SiftExport.jsx` | CSV/JSON export with filter options |
+| `src/frontend/screening/README.md` | Module documentation |
+| `src/App.jsx` | +6 ProtectedRoute-wrapped `/sift-beta` routes |
+| `src/frontend/pages/AppWorkspace.jsx` | +SiftMenuItem in user dropdown → `/sift-beta` |
+| `src/research-engine/screening/deduplication.js` | Pure dedup functions: normalizeTitle, levenshtein, titleSimilarity, findDuplicateGroups |
+| `src/research-engine/screening/conflicts.js` | Pure conflict functions: detectConflict, findAllConflicts |
+| `src/research-engine/screening/stats.js` | Pure stats functions: computeStats, computePrismaNumbers |
+| `src/research-engine/screening/README.md` | Engine module docs |
+| `docs/manager/rayyan-inspired-screening-analysis.md` | Systematic review screening methodology analysis |
+| `docs/manager/agent-decisions.md` | Architectural decision record (12 decisions) |
+| `tests/screening/unit/deduplication.test.js` | 33 unit tests |
+| `tests/screening/unit/conflicts.test.js` | 17 unit tests |
+| `tests/screening/unit/stats.test.js` | 16 unit tests |
+| `tests/screening/integration/screening-api.test.js` | 13 integration tests (skip when server is down) |
+
+### Test counts
+
+| Category | Files | Tests | Pass | Notes |
+|----------|-------|-------|------|-------|
+| Unit (screening) | 3 | 66 | 66 | Confirmed passing by research agent |
+| Integration (screening) | 1 | 13 | skip | Requires running server |
+
+### Routes added
+
+```
+/sift-beta                              → SiftDashboard (project list)
+/sift-beta/projects/:pid                → SiftWorkbench (screening interface)
+/sift-beta/projects/:pid/import         → SiftImport
+/sift-beta/projects/:pid/duplicates     → SiftDuplicates
+/sift-beta/projects/:pid/conflicts      → SiftConflicts
+/sift-beta/projects/:pid/export         → SiftExport
+```
+
+### How to access from META·LAB
+
+1. Log in → go to `/app`
+2. Click the user avatar (top-right)
+3. Select **META·SIFT Beta** (teal, BETA badge) → navigates to `/sift-beta`
+
+### How import works
+
+- POST `/api/screening/projects/:pid/import` with `{ format, content, filename }`
+- Uses existing `detectAndParse` from `src/research-engine/import-export/parsers.js`
+- Supports RIS, BibTeX, NBIB; fallback basic RIS parser if needed
+- Max 5,000 records per batch; inserted in chunks of 100
+
+### How decisions work
+
+- `saveDecision` uses Prisma `upsert` on `(recordId, reviewerId)` unique constraint
+- Decisions: `include` / `exclude` / `maybe` / `undecided`
+- Triggers `syncConflicts()` non-blocking after every save
+- Blind mode: when on, reviewers cannot see others' decisions (enforced in workbench UI)
+
+### How duplicate detection works
+
+3-pass algorithm (pure JS in research engine + Prisma persistence in service):
+1. Exact DOI match (case-insensitive)
+2. Exact PMID match
+3. Normalized title Levenshtein similarity ≥ 0.92 (same year required)
+
+Records get `isDuplicate=true`; one per group gets `isPrimary=true`. Owner resolves by choosing the keeper.
+
+### Security
+
+- All `/api/screening/*` routes behind `requireAuth`
+- Every query uses `getOwnedProject(pid, req.user.id)` → 404 for wrong owner (no ID leakage)
+- Import content length limit: checked before parsing
+- Max 5,000 records per import batch
+
+### Build verification
+
+```
+vite build → ✓ built in 3.64s  (62 modules, 0 new errors)
+```
+
+### Manual QA checklist
+
+| # | Test | Expected |
+|---|------|----------|
+| 1 | Log in, click user menu | META·SIFT Beta item visible with BETA badge |
+| 2 | Click META·SIFT Beta | Navigates to `/sift-beta` |
+| 3 | Create new screening project | 201, project appears in list |
+| 4 | Open project → Import tab | RIS paste + import works |
+| 5 | Imported records appear in workbench | Record list populated |
+| 6 | Press I/E/M on selected record | Decision saved, badge updates |
+| 7 | Detect duplicates | Groups shown, resolve works |
+| 8 | Export → CSV download | File downloaded with decisions |
+| 9 | Stats bar shows correct counts | Progress % updates |
+| 10 | User B cannot open User A's project | 404 |
+| 11 | Existing `/app` workspace unchanged | No regressions |
+| 12 | Existing admin `/ops` unchanged | No regressions |

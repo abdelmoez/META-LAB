@@ -24,6 +24,7 @@ import profileRouter     from './routes/profile.js';
 import contactRouter     from './routes/contact.js';
 import settingsRouter    from './routes/settings.js';
 import adminRouter       from './routes/admin.js';
+import screeningRouter    from './routes/screening.js';
 
 import { initDefaultSettings } from './controllers/settingsController.js';
 
@@ -70,6 +71,9 @@ app.use('/api',                      importExportRouter);  // /api/import/... an
 
 // ── Admin routes (requireAuth + requireAdmin applied inside admin router) ──────
 app.use('/api/admin', requireAuth, adminRouter);
+
+// ── META·SIFT Beta screening routes (requireAuth applied inside router) ────────
+app.use('/api/screening', screeningRouter);
 
 // ── 404 fallback ───────────────────────────────────────────────────────────────
 app.use((_req, res) => {

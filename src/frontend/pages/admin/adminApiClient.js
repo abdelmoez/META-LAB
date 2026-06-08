@@ -57,6 +57,15 @@ export const adminApi = {
     save:         (body)     => req(`${BASE}/feature-flags`, { method: 'PUT', ...json(body) }),
   },
 
+  screening: {
+    getSettings:  ()         => req(`${BASE}/screening/settings`),
+    saveSettings: (body)     => req(`${BASE}/screening/settings`, { method: 'PUT', ...json(body) }),
+    getMetrics:   ()         => req(`${BASE}/screening/metrics`),
+    listProjects: (p)        => req(`${BASE}/screening/projects?${new URLSearchParams(p || {})}`),
+    getProject:   (id)       => req(`${BASE}/screening/projects/${id}`),
+    setStatus:    (id, stage) => req(`${BASE}/screening/projects/${id}/status`, { method: 'PATCH', ...json({ stage }) }),
+  },
+
   auditLog:       (p)        => req(`${BASE}/audit-log?${new URLSearchParams(p || {})}`),
   securityEvents: (p)        => req(`${BASE}/security-events?${new URLSearchParams(p || {})}`),
 
