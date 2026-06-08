@@ -7,6 +7,8 @@ import {
   getUserById,
   updateUserStatus,
   getProjects,
+  archiveProject,
+  restoreProject,
   getAdminSettings,
   updateAdminSettings,
   getLandingContent,
@@ -49,6 +51,8 @@ router.patch('/users/:id/status', updateUserStatus);
 
 // Projects
 router.get('/projects', getProjects);
+router.patch('/projects/:id/archive', archiveProject);
+router.patch('/projects/:id/restore', restoreProject);
 
 // Settings
 router.get('/settings', getAdminSettings);

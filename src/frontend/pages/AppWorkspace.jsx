@@ -152,6 +152,24 @@ export default function AppWorkspace() {
               label="Account & Profile"
               onClick={() => { setMenuOpen(false); navigate('/profile'); }}
             />
+            {user?.role === 'admin' && (
+              <a
+                href="/ops"
+                style={{
+                  display: 'block',
+                  padding: '6px 12px',
+                  fontSize: 11,
+                  color: '#818cf8',
+                  textDecoration: 'none',
+                  fontFamily: "'IBM Plex Mono', monospace",
+                  letterSpacing: '0.05em',
+                  borderTop: '1px solid #1f2640',
+                  marginTop: 4,
+                }}
+              >
+                ⬡ Ops Console
+              </a>
+            )}
             <MenuItem
               icon="⎋"
               label="Sign out"

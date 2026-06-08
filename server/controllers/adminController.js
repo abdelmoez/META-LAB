@@ -548,6 +548,40 @@ export async function deleteContactMessage(req, res) {
   }
 }
 
+// ── PATCH /api/admin/projects/:id/archive ────────────────────────────────────
+
+export async function archiveProject(req, res) {
+  try {
+    const { id } = req.params;
+    const project = await prisma.project.findUnique({ where: { id }, select: { id: true, name: true, deletedAt: true } });
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    if (project.deletedAt) return res.status(400).json({ error: 'Project already archived' });
+    await prisma.project.update({ where: { id }, data: { deletedAt: new Date() } });
+    await logAdminAction(req, 'ARCHIVE_PROJECT', 'Project', id, { name: project.name });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[admin] archiveProject error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── PATCH /api/admin/projects/:id/restore ────────────────────────────────────
+
+export async function restoreProject(req, res) {
+  try {
+    const { id } = req.params;
+    const project = await prisma.project.findUnique({ where: { id }, select: { id: true, name: true, deletedAt: true } });
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    if (!project.deletedAt) return res.status(400).json({ error: 'Project is not archived' });
+    await prisma.project.update({ where: { id }, data: { deletedAt: null } });
+    await logAdminAction(req, 'RESTORE_PROJECT', 'Project', id, { name: project.name });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[admin] restoreProject error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 // ── GET /api/admin/health ─────────────────────────────────────────────────────
 
 export async function getHealth(req, res) {

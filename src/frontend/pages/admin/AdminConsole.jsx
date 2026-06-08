@@ -407,18 +407,18 @@ function OverviewSection() {
   const m = metrics || {};
 
   const cards = [
-    { label: 'Total Users',         value: m.totalUsers },
-    { label: 'New Today',           value: m.newUsersToday },
-    { label: 'New This Week',       value: m.newUsersWeek },
-    { label: 'Total Projects',      value: m.totalProjects },
-    { label: 'Created Today',       value: m.projectsToday },
-    { label: 'Created This Week',   value: m.projectsWeek },
-    { label: 'Total Studies',       value: m.totalStudies },
-    { label: 'Total Records',       value: m.totalRecords },
-    { label: 'Unread Messages',     value: m.unreadMessages },
-    { label: 'Total Messages',      value: m.totalMessages },
-    { label: 'Failed Logins (7d)',  value: m.failedLogins7d },
-    { label: 'Suspended Users',     value: m.suspendedUsers },
+    { label: 'Total Users',         value: m.users?.total },
+    { label: 'New Today',           value: m.users?.today },
+    { label: 'New This Week',       value: m.users?.thisWeek },
+    { label: 'Total Projects',      value: m.projects?.total },
+    { label: 'Created Today',       value: m.projects?.today },
+    { label: 'Created This Week',   value: m.projects?.thisWeek },
+    { label: 'Total Studies',       value: m.studies },
+    { label: 'Total Records',       value: m.records },
+    { label: 'Unread Messages',     value: m.contactMessages?.unread },
+    { label: 'Total Messages',      value: m.contactMessages?.total },
+    { label: 'Failed Logins (7d)',  value: m.securityEvents?.failedLogins7d },
+    { label: 'Suspended Users',     value: m.users?.suspended },
   ];
 
   return (
@@ -458,6 +458,7 @@ function UsersSection() {
   const [rows,    setRows]    = useState([]);
   const [total,   setTotal]   = useState(0);
   const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
   const [search,  setSearch]  = useState('');
   const [filter,  setFilter]  = useState('all');
   const [page,    setPage]    = useState(1);
@@ -467,14 +468,22 @@ function UsersSection() {
 
   const load = useCallback(async (s, f, p) => {
     setLoading(true);
+    setError('');
     try {
       const params = { page: p, limit: PER_PAGE };
       if (s) params.search = s;
-      if (f !== 'all') params.filter = f;
+      if (f === 'suspended') params.suspended = true;
+      if (f === 'admins') params.role = 'admin';
+      if (f === 'active') params.suspended = false;
       const data = await adminApi.users.list(params);
-      setRows(data.users || data || []);
-      setTotal(data.total || (data.users || data || []).length);
-    } catch { setRows([]); }
+      const users = (data.users || []).map(u => ({
+        ...u,
+        status: u.suspended ? 'suspended' : 'active',
+        lastLogin: u.lastActive,
+      }));
+      setRows(users);
+      setTotal(data.total || users.length);
+    } catch (e) { setRows([]); setError(e.message); }
     finally { setLoading(false); }
   }, []);
 
@@ -488,9 +497,10 @@ function UsersSection() {
 
   async function doStatusUpdate() {
     if (!confirm) return;
-    const newStatus = confirm.action === 'suspend' ? 'suspended' : 'active';
     try {
-      await adminApi.users.updateStatus(confirm.user.id, { status: newStatus });
+      await adminApi.users.updateStatus(confirm.user.id, {
+        suspended: confirm.action === 'suspend',
+      });
       load(search, filter, page);
     } catch { /* silent */ }
     setConfirm(null);
@@ -533,6 +543,12 @@ function UsersSection() {
   return (
     <div>
       <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 20px' }}>User Management</h2>
+
+      {error && (
+        <div style={{ padding: '10px 14px', background: '#f8717120', border: '1px solid #f8717140', borderRadius: 7, color: '#f87171', fontSize: 12, marginBottom: 16 }}>
+          Failed to load: {error}
+        </div>
+      )}
 
       {/* Filters */}
       <div style={{ display: 'flex', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
@@ -594,6 +610,7 @@ function ProjectsSection() {
   const [rows,    setRows]    = useState([]);
   const [total,   setTotal]   = useState(0);
   const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
   const [filter,  setFilter]  = useState('all');
   const [page,    setPage]    = useState(1);
   const [confirm, setConfirm] = useState(null);
@@ -601,13 +618,19 @@ function ProjectsSection() {
 
   const load = useCallback(async (f, p) => {
     setLoading(true);
+    setError('');
     try {
       const params = { page: p, limit: PER_PAGE };
       if (f !== 'all') params.status = f;
       const data = await adminApi.projects.list(params);
-      setRows(data.projects || data || []);
-      setTotal(data.total || (data.projects || data || []).length);
-    } catch { setRows([]); }
+      const projects = (data.projects || []).map(p => ({
+        ...p,
+        ownerEmail: p.userEmail || p.ownerEmail,
+        status: p.deletedAt ? 'archived' : 'active',
+      }));
+      setRows(projects);
+      setTotal(data.total || projects.length);
+    } catch (e) { setRows([]); setError(e.message); }
     finally { setLoading(false); }
   }, []);
 
@@ -656,6 +679,11 @@ function ProjectsSection() {
   return (
     <div>
       <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 20px' }}>Projects</h2>
+      {error && (
+        <div style={{ padding: '10px 14px', background: '#f8717120', border: '1px solid #f8717140', borderRadius: 7, color: '#f87171', fontSize: 12, marginBottom: 16 }}>
+          Failed to load: {error}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         {['all', 'active', 'archived'].map(f => (
           <button
@@ -976,6 +1004,7 @@ function MessagesSection() {
   const [rows,    setRows]    = useState([]);
   const [total,   setTotal]   = useState(0);
   const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
   const [filter,  setFilter]  = useState('all');
   const [page,    setPage]    = useState(1);
   const [expanded, setExpanded] = useState(null);
@@ -984,13 +1013,20 @@ function MessagesSection() {
 
   const load = useCallback(async (f, p) => {
     setLoading(true);
+    setError('');
     try {
       const params = { page: p, limit: PER_PAGE };
-      if (f !== 'all') params.status = f;
+      if (f === 'unread')   params.read = false;
+      if (f === 'archived') params.archived = true;
       const data = await adminApi.messages.list(params);
-      setRows(data.messages || data || []);
-      setTotal(data.total || (data.messages || data || []).length);
-    } catch { setRows([]); }
+      // Normalise: derive a display status from the boolean fields
+      const messages = (data.messages || []).map(m => ({
+        ...m,
+        status: m.archived ? 'archived' : m.read ? 'read' : 'unread',
+      }));
+      setRows(messages);
+      setTotal(data.total || messages.length);
+    } catch (e) { setRows([]); setError(e.message); }
     finally { setLoading(false); }
   }, []);
 
@@ -998,14 +1034,14 @@ function MessagesSection() {
 
   async function markRead(id, isRead) {
     try {
-      await adminApi.messages.update(id, { status: isRead ? 'read' : 'unread' });
+      await adminApi.messages.update(id, { read: isRead });
       load(filter, page);
     } catch { /* silent */ }
   }
 
   async function archive(id) {
     try {
-      await adminApi.messages.update(id, { status: 'archived' });
+      await adminApi.messages.update(id, { archived: true });
       load(filter, page);
     } catch { /* silent */ }
   }
@@ -1073,6 +1109,11 @@ function MessagesSection() {
   return (
     <div>
       <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 20px' }}>Contact Messages</h2>
+      {error && (
+        <div style={{ padding: '10px 14px', background: '#f8717120', border: '1px solid #f8717140', borderRadius: 7, color: '#f87171', fontSize: 12, marginBottom: 16 }}>
+          Failed to load: {error}
+        </div>
+      )}
       <div style={{ display: 'flex', gap: 8, marginBottom: 16 }}>
         {['all', 'unread', 'archived'].map(f => (
           <button
