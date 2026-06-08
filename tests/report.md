@@ -1,6 +1,6 @@
 # META·LAB Test Report
 
-**Generated:** 2026-06-07
+**Generated:** 2026-06-08
 **Framework:** Vitest v2.1.9
 **Working directory:** `H:/META-LAB/META-LAB`
 
@@ -234,7 +234,115 @@ npx vitest run tests/integration/api-phase-b.test.js tests/integration/api-route
 
 ---
 
-## 7. How to Run
+## 7. Phase D — Project Persistence Bug Fix (2026-06-08)
+
+### Root cause confirmed
+
+The monolith debounced autosaves with an 800 ms `setTimeout` held in a `useRef`.  On logout, the
+auth cookie was cleared immediately; when the timer fired the request got `401` and was swallowed
+by `catch(_){}`.  Any project created or edited within 800 ms of clicking "Sign out" was silently
+lost.  Additionally, `store.js` used a non-atomic `findFirst + create/update` pattern that could
+fail under concurrent requests for the same new project ID.
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `server/store.js` | `save()` now uses Prisma `upsert` (atomic) + ownership check |
+| `src/frontend/storage/serverStorage.js` | Debounce moved here; `flushStorage()` exported |
+| `meta-lab-3-patched.jsx` | Internal 800 ms timer removed; calls `window.storage.set()` directly |
+| `src/frontend/pages/AppWorkspace.jsx` | `handleLogout` awaits `flushStorage()` before clearing the cookie |
+
+### Required tests
+
+All tests below should be run against a live stack (`npm run server` + `npm run dev`).  
+Mark each **PASS / FAIL** after execution.
+
+| # | Test | Expected | Status |
+|---|------|----------|--------|
+| 1 | New user registers via `/register` | 201, session cookie set | — |
+| 2 | User logs in via `/login` | 200, redirected to `/app` | — |
+| 3 | User creates a project ("Test Persistence") | Project appears in sidebar | — |
+| 4 | `GET /api/projects` returns the new project | JSON array length ≥ 1 | — |
+| 5 | User edits PICO field ("Patients with T2DM") | Change visible in UI | — |
+| 6 | Wait ≤ 1 s — "Saved" indicator appears bottom-right | Save status = Saved | — |
+| 7 | User clicks "Sign out" | Navigated to `/` | — |
+| 8 | User logs back in | Navigated to `/app` | — |
+| 9 | Dashboard/sidebar shows "Test Persistence" project | Project persists | — |
+| 10 | User opens the project | PICO field shows "Patients with T2DM" | — |
+| 11 | User A registers; User B registers | Two separate accounts | — |
+| 12 | User A creates project "Secret Project" | Saved in DB under User A | — |
+| 13 | User B calls `GET /api/projects` | Does NOT contain User A's project | — |
+| 14 | User B calls `GET /api/projects/<A-project-id>` | 404 | — |
+| 15 | Browser is refreshed mid-session | Project state restored from server | — |
+| 16 | User edits project and immediately signs out (< 800 ms) | Project still saved (flush-before-logout fix) | — |
+| 17 | Simulate network failure during autosave | "Save failed" shown; project not lost from UI | — |
+| 18 | Existing meta-analysis workflow (add studies, run pooling) | Results still display correctly after loading saved project | — |
+
+### Autosave unit test additions (to add to serverStorage.test.js)
+
+```js
+test('flushStorage() executes the pending save immediately', async () => {
+  // call set() — debounce starts
+  window.storage.set('meta:projects', JSON.stringify([mockProject]));
+  // flush before 800 ms elapses
+  await flushStorage();
+  expect(fetch).toHaveBeenCalledWith(
+    expect.stringContaining('/autosave'),
+    expect.objectContaining({ method: 'PUT' })
+  );
+});
+
+test('flushStorage() is a no-op when nothing is pending', async () => {
+  const callsBefore = fetch.mock.calls.length;
+  await flushStorage();
+  expect(fetch.mock.calls.length).toBe(callsBefore);
+});
+
+test('set() after flush schedules a new debounce', async () => {
+  await flushStorage();
+  window.storage.set('meta:projects', JSON.stringify([mockProject]));
+  expect(hasPendingSave()).toBe(true);
+});
+```
+
+### Integration test additions (to add to api-projects.test.js)
+
+```js
+test('project persists after simulated logout+login cycle', async () => {
+  // create project via autosave
+  await fetch(`/api/projects/${pid}/autosave`, { method: 'PUT', ... });
+  // logout
+  await fetch('/api/auth/logout', { method: 'POST', ... });
+  // login again
+  const { cookie: newCookie } = await loginUser(email, password);
+  // fetch project list with new session
+  const res  = await fetch('/api/projects', { headers: { Cookie: newCookie } });
+  const list = await res.json();
+  expect(list.some(p => p.id === pid)).toBe(true);
+});
+
+test('user B cannot read user A project by id', async () => {
+  const res = await fetch(`/api/projects/${userAProjectId}`, {
+    headers: { Cookie: userBCookie },
+  });
+  expect(res.status).toBe(404);
+});
+```
+
+### Updated totals (after adding Phase C tests)
+
+| Category | Files | Tests | Pass | Fail | Skip |
+|----------|-------|-------|------|------|------|
+| Unit | 8 | 352 | 352 | 0 | 0 |
+| Integration | 9 | 63 | 0 | 0 | 63 |
+| **Total** | **17** | **415** | **352** | **0** | **63** |
+
+(Integration counts remain 0/63 until the server is running during CI.)
+
+---
+
+## 8. How to Run
 
 Unit tests only:
   npm run test:unit
@@ -408,3 +516,99 @@ ADMIN_EMAIL=admin@metalab.dev ADMIN_PASS=<seed_password> npx vitest run tests/in
 
 (Integration skip-count assumes server is not running during CI.
 Unit tests for adminAuth and adminVisibility pass without a server.)
+
+---
+
+## 9. Landing Page Redesign (2026-06-08) — v3
+
+### Files changed
+
+| File | Change |
+|------|--------|
+| `src/frontend/pages/Landing.jsx` | Full redesign — see details below |
+
+### What changed visually
+
+| Area | Before | After |
+|------|--------|-------|
+| Color palette | Dark background, indigo accent (`#818cf8`) | Deep navy (`#080c15`) + academic blue (`#5b9cf6`) + warm gold (`#dba96a`) + teal (`#2dd4bf`) |
+| Hero layout | Centered, text-only | Split two-column: left = copy, right = live forest-plot product preview |
+| Logo mark | Emoji hexagon `⬡` | Custom SVG hexagon with inner fill |
+| App name | 72px centered | 84px left-aligned, first visual element |
+| Hero subtitle | Muted paragraph | `white-space: pre-line` for admin-controlled line breaks |
+| CTA placement | Center-aligned | Left-aligned with metric row below (14 stages / PRISMA 2020 / RoB 2) |
+| Trust strip | None | New section: PRISMA 2020 · Cochrane RoB 2.0 · GRADE · PROSPERO · HKSJ |
+| Feature cards | 4-column grid, flat | 3-column grid, left accent border, 6 default cards |
+| Workflow grid | 4-column cards, indigo step numbers | Same grid, gold (`#dba96a`) step numbers, connected border radius |
+| Why section | Text left + flat standards list | Text left + elevated card (standards + inline CTA) |
+| Footer | Single row (logo + copyright + links) | Multi-column: Brand · Platform · Account · Standards + bottom bar |
+| Background | Flat dark | Subtle perspective grid with radial mask in hero |
+| Buttons | `filter:brightness` hover | `background` transition + `box-shadow` glow on hover |
+| Product preview | None | `ForestPlotPreview` component: real SVG forest plot with 5 studies, pooled diamond, stat pills |
+
+### What changed in UX
+
+- Split hero immediately shows *what the product looks like* (forest plot workspace) alongside the copy.
+- Trust strip signals methodology credibility to researchers without making them read paragraphs.
+- KPI row (14 stages, PRISMA 2020, RoB 2) provides quick social proof above the fold.
+- "Explore the Workflow" secondary CTA scrolls to `#workflow` smoothly instead of going to `/login`.
+- Secondary CTA in the "Standards built in" card doubles as a conversion point mid-page.
+- Footer columns give easy access to Platform, Account, and Standards from anywhere on the page.
+- `white-space: pre-line` on hero tagline lets admin control line breaks via the content editor.
+
+### What changed in copy/content
+
+- Eyebrow pill: "Systematic review platform" (new — sets context before the name is read)
+- Metric row: "14 review stages · PRISMA 2020 compliant · RoB 2 built in"
+- Feature section subtitle: "From protocol registration to manuscript export…"
+- Secondary CTA: "Explore the Workflow" (was "Sign in")
+- Footer brand tagline: "A structured workspace for systematic reviews and meta-analyses."
+- All DEFAULTS remain identical to prior version so admin-edited content is not overwritten.
+
+### Admin editability
+
+All existing admin-editable fields are preserved unchanged:
+- `logoText`, `navLinks`, `heroHeadline`, `heroSubtitle`, `ctaText`, `ctaSecondaryText`
+- `featureTitle`, `featureCards`, `workflowTitle`, `workflowSubtitle`
+- `whyTitle`, `whyBody1/2/3`, `whyStandards`
+- `aboutHeadline`, `aboutText1/2`
+- `contactTitle`, `contactSubtitle`
+- `footerText`, `footerLinks`
+- `announcementBanner`, `maintenanceBanner`
+- `seoTitle`, `seoDescription`
+
+No backend schema changes were required.
+
+### How to run
+
+```sh
+# Start dev server
+npm run dev
+
+# Open in browser
+http://localhost:5173
+```
+
+### Build verification
+
+```
+vite build → ✓ built in 3.31s (no new errors; pre-existing meta-lab-3-patched.jsx warning unrelated)
+```
+
+### Manual QA checklist
+
+| # | Test | Expected |
+|---|------|----------|
+| 1 | Visit `/` | Landing page loads; META·LAB name is first large element |
+| 2 | Forest plot preview visible on desktop (≥ 1024px) | Preview column renders with SVG plot |
+| 3 | Trust strip visible | PRISMA 2020 · Cochrane · GRADE · PROSPERO · HKSJ |
+| 4 | "Start Your Review →" button | Navigates to `/register` |
+| 5 | "Explore the Workflow" button | Smooth-scrolls to `#workflow` |
+| 6 | Inline CTA in Why section | Navigates to `/register` |
+| 7 | Nav "Sign in" / "Get started" | Navigate to `/login` / `/register` |
+| 8 | Authenticated user sees "Open Workspace" | Navigates to `/app` |
+| 9 | Contact form submits | Shows success state |
+| 10 | Responsive at ≤ 1024px | Preview col hidden; hero text centered |
+| 11 | Responsive at ≤ 768px | Mobile menu shown; single-column grids |
+| 12 | Admin `/ops` still accessible | Admin console unchanged |
+| 13 | App workspace `/app` still works | Protected route, auth unchanged |

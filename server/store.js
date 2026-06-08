@@ -66,7 +66,7 @@ export async function getById(id, userId) {
 }
 
 /**
- * Create or update a project for a user.
+ * Create or update a project for a user (atomic upsert).
  * If a row with project.id already exists for this user, it is updated.
  * Otherwise a new row is created.
  * @param {object} project  — must have at least { id, name }
@@ -78,21 +78,20 @@ export async function save(project, userId) {
 
   const { id, name } = project;
   const data = projectToData(project);
-
-  const existing = await prisma.project.findFirst({ where: { id, userId } });
-
   const dataStr = JSON.stringify(data);
-  let row;
-  if (existing) {
-    row = await prisma.project.update({
-      where: { id },
-      data: { name, data: dataStr },
-    });
-  } else {
-    row = await prisma.project.create({
-      data: { id, userId, name, data: dataStr },
-    });
+
+  // Verify ownership before updating: if the id exists but belongs to a
+  // different user, reject rather than silently overwriting.
+  const existing = await prisma.project.findFirst({ where: { id } });
+  if (existing && existing.userId !== userId) {
+    throw new Error('Project belongs to a different user');
   }
+
+  const row = await prisma.project.upsert({
+    where: { id },
+    update: { name, data: dataStr },
+    create: { id, userId, name, data: dataStr },
+  });
 
   return rowToProject(row);
 }

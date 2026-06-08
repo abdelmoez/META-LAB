@@ -452,7 +452,7 @@ function MessageDetail({ msg, onMarkRead, onArchive, onDelete }) {
   );
 }
 
-function MessagesSection() {
+function MessagesSection({ onUnreadChange }) {
   const [messages, setMessages] = useState([]);
   const [total,    setTotal]    = useState(0);
   const [loading,  setLoading]  = useState(true);
@@ -500,6 +500,8 @@ function MessagesSection() {
         await adminApi.messages.update(msg.id, { read: true });
         setMessages(ms => ms.map(m => m.id === msg.id ? { ...m, read: true, status: 'read' } : m));
         setSelected(m => m ? { ...m, read: true, status: 'read' } : m);
+        setUnread(c => Math.max(0, c - 1));
+        onUnreadChange?.(prev => Math.max(0, prev - 1));
       } catch { /* silent */ }
     }
   }
@@ -510,12 +512,19 @@ function MessagesSection() {
       const next = ms => ms.map(m => m.id === id ? { ...m, read: isRead, status: m.archived ? 'archived' : isRead ? 'read' : 'unread' } : m);
       setMessages(next);
       setSelected(m => m && m.id === id ? { ...m, read: isRead, status: m.archived ? 'archived' : isRead ? 'read' : 'unread' } : m);
+      if (isRead === true) {
+        onUnreadChange?.(prev => Math.max(0, prev - 1));
+      } else if (isRead === false) {
+        onUnreadChange?.(prev => prev + 1);
+      }
     } catch { /* silent */ }
   }
 
   async function archiveMsg(id) {
     try {
       await adminApi.messages.update(id, { archived: true });
+      const wasUnread = messages.find(m => m.id === id && !m.read && !m.archived);
+      if (wasUnread) onUnreadChange?.(prev => Math.max(0, prev - 1));
       load(filter, search, sort, page);
       setSelected(m => m && m.id === id ? null : m);
     } catch { /* silent */ }
@@ -525,6 +534,8 @@ function MessagesSection() {
     if (!confirm) return;
     try {
       await adminApi.messages.delete(confirm.id);
+      const wasUnread = messages.find(m => m.id === confirm?.id && !m.read && !m.archived);
+      if (wasUnread) onUnreadChange?.(prev => Math.max(0, prev - 1));
       load(filter, search, sort, page);
       setSelected(m => m && m.id === confirm.id ? null : m);
     } catch { /* silent */ }
@@ -1586,7 +1597,7 @@ export default function AdminConsole() {
     content:  <ContentSection />,
     settings: <SettingsSection />,
     flags:    <FlagsSection />,
-    messages: <MessagesSection />,
+    messages: <MessagesSection onUnreadChange={setUnread} />,
     security: <SecuritySection />,
     health:   <HealthSection />,
   };

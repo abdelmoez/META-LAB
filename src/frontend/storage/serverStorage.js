@@ -14,10 +14,14 @@
  * Autosave status events are published via subscribeToSaveStatus() so React
  * components can show Saving… / Saved / Failed indicators without needing
  * to import React state here.
+ *
+ * Debouncing lives HERE (not in the monolith) so that flushStorage() can
+ * immediately execute a pending save before logout or page unload.
  */
 
 const PROJECTS_KEY = 'meta:projects';
 const BASE = '/api';
+const DEBOUNCE_MS = 800;
 
 /* ── Simple pub-sub for save status ──────────────────────────────────── */
 
@@ -55,6 +59,59 @@ async function apiFetch(url, opts = {}) {
 // projects that the monolith deleted locally and must be removed on the server.
 let knownServerIds = new Set();
 
+/* ── Debounce state (owned here so flushStorage() can drain it) ──────── */
+
+let debounceTimer = null;
+let pendingValue  = null;   // latest JSON string waiting to be persisted
+
+/**
+ * Execute the actual save against the server.  Called either from the
+ * debounce timer or directly by flushStorage().
+ */
+async function doSave(value) {
+  emitStatus('saving');
+  try {
+    const projects = JSON.parse(value);
+    if (!Array.isArray(projects)) {
+      emitStatus('failed');
+      return;
+    }
+
+    const currentIds = new Set(projects.map(p => p.id));
+
+    // Upsert all current projects via the autosave endpoint
+    await Promise.all(
+      projects.map(p =>
+        apiFetch(`${BASE}/projects/${p.id}/autosave`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(p),
+        })
+      )
+    );
+
+    // Delete any projects the user removed in the monolith
+    const toDelete = [...knownServerIds].filter(id => !currentIds.has(id));
+    if (toDelete.length > 0) {
+      await Promise.all(
+        toDelete.map(id =>
+          fetch(`${BASE}/projects/${id}`, {
+            method: 'DELETE',
+            credentials: 'include',
+          })
+        )
+      );
+    }
+
+    knownServerIds = currentIds;
+    emitStatus('saved');
+    setTimeout(() => emitStatus('idle'), 2000);
+  } catch (err) {
+    console.error('[serverStorage] autosave failed:', err.message);
+    emitStatus('failed');
+  }
+}
+
 /* ── window.storage implementation ──────────────────────────────────── */
 
 window.storage = {
@@ -77,57 +134,57 @@ window.storage = {
       );
       knownServerIds = new Set(full.map(p => p.id));
       return { value: JSON.stringify(full) };
-    } catch {
+    } catch (err) {
+      console.error('[serverStorage] load failed:', err.message);
       return null;
     }
   },
 
   /**
-   * Persist the full projects array to the server.
-   * Upserts each project and deletes any that were removed locally.
-   * Emits saving → saved | failed status events.
+   * Persist the full projects array to the server (debounced).
+   * Cancels any previously pending debounce and starts a fresh one.
+   * Call flushStorage() to persist immediately (e.g. before logout).
    */
   async set(key, value) {
     if (key !== PROJECTS_KEY) return;
-    emitStatus('saving');
-    try {
-      const projects = JSON.parse(value);
-      if (!Array.isArray(projects)) {
-        emitStatus('failed');
-        return;
-      }
 
-      const currentIds = new Set(projects.map(p => p.id));
+    // Always record the latest value so flushStorage() can use it.
+    pendingValue = value;
 
-      // Upsert all current projects via the autosave endpoint
-      await Promise.all(
-        projects.map(p =>
-          apiFetch(`${BASE}/projects/${p.id}/autosave`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(p),
-          })
-        )
-      );
-
-      // Delete any projects the user removed in the monolith
-      const toDelete = [...knownServerIds].filter(id => !currentIds.has(id));
-      if (toDelete.length > 0) {
-        await Promise.all(
-          toDelete.map(id =>
-            fetch(`${BASE}/projects/${id}`, {
-              method: 'DELETE',
-              credentials: 'include',
-            })
-          )
-        );
-      }
-
-      knownServerIds = currentIds;
-      emitStatus('saved');
-      setTimeout(() => emitStatus('idle'), 2000);
-    } catch {
-      emitStatus('failed');
-    }
+    // Debounce: cancel the previous timer and start a new one.
+    if (debounceTimer !== null) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(async () => {
+      debounceTimer = null;
+      const toSave  = pendingValue;
+      pendingValue  = null;
+      await doSave(toSave);
+    }, DEBOUNCE_MS);
   },
 };
+
+/* ── Flush helper (called before logout / page unload) ───────────────── */
+
+/**
+ * If there is a debounced save pending, cancel the timer and execute the
+ * save immediately.  Returns a Promise that resolves when the save is done
+ * (or rejects if there was nothing to flush).
+ */
+export async function flushStorage() {
+  if (debounceTimer !== null) {
+    clearTimeout(debounceTimer);
+    debounceTimer = null;
+  }
+  if (pendingValue !== null) {
+    const toSave = pendingValue;
+    pendingValue = null;
+    await doSave(toSave);
+  }
+}
+
+/**
+ * True when there is a debounced save that has not yet been flushed to the
+ * server.  Useful for showing a "unsaved changes" warning.
+ */
+export function hasPendingSave() {
+  return pendingValue !== null || debounceTimer !== null;
+}

@@ -6615,10 +6615,11 @@ export default function MetaLab(){
     setLoading(false);
   })();},[]);
 
-  const saveTimer=useRef(null);
+  // Debouncing is handled inside window.storage.set (serverStorage.js).
+  // Calling set() directly here lets flushStorage() drain any pending save
+  // before logout without needing access to an internal React timer.
   const save=useCallback(pjs=>{
-    if(saveTimer.current)clearTimeout(saveTimer.current);
-    saveTimer.current=setTimeout(async()=>{try{await window.storage.set("meta:projects",JSON.stringify(pjs));}catch(_){}},800);
+    window.storage.set("meta:projects",JSON.stringify(pjs)).catch(()=>{});
   },[]);
 
   const updateProject=useCallback((id,updater)=>{

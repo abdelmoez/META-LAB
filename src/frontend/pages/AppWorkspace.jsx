@@ -11,7 +11,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
-import { subscribeToSaveStatus } from '../storage/serverStorage.js';
+import { subscribeToSaveStatus, flushStorage } from '../storage/serverStorage.js';
 import MetaLab from '../../../meta-lab-3-patched.jsx';
 
 const C = {
@@ -40,6 +40,9 @@ export default function AppWorkspace() {
 
   async function handleLogout() {
     setMenuOpen(false);
+    // Flush any debounced autosave before clearing the auth cookie, so the
+    // user's last edits reach the server while the session is still valid.
+    try { await flushStorage(); } catch { /* best-effort */ }
     await logout();
     navigate('/');
   }
