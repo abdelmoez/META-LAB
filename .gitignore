@@ -28,3 +28,12 @@ Thumbs.db
 # test artifacts
 coverage/
 .nyc_output/
+
+# META·SIFT uploaded PDFs (local file storage — see docs/manager/project-data-isolation.md)
+server/storage/
+
+# local server run logs
+server-test.log
+server-test.err.log
+server-stdout.log
+*.test.log

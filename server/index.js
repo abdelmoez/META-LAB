@@ -3,6 +3,7 @@
  * META·LAB API server — Express entry point, port 3001.
  */
 
+import './load-env.js';   // MUST be first: populate process.env before Prisma/JWT load
 import express from 'express';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
@@ -27,6 +28,7 @@ import adminRouter       from './routes/admin.js';
 import screeningRouter    from './routes/screening.js';
 
 import { initDefaultSettings } from './controllers/settingsController.js';
+import { seedAdmins } from './auth/seedAdmins.js';
 
 const app = express();
 
@@ -87,8 +89,9 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 3001;
 const server = app.listen(PORT, () => {
   console.log(`META·LAB API on :${PORT}`);
-  // Initialize default settings (non-blocking)
+  // Initialize default settings + ensure admin accounts exist (non-blocking)
   initDefaultSettings().catch(console.error);
+  seedAdmins().catch(err => console.error('[seed] admin seed failed:', err.message));
 });
 
 export default app;

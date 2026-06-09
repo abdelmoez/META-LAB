@@ -2460,6 +2460,68 @@ function ScreeningModule({project,updateProject,activeId,updNested}){
   </div>);
 }
 
+/* META·SIFT link — auto-fills the PRISMA flow from the linked screening project (Part 12).
+   The manual ScreeningModule above is preserved in source but no longer rendered:
+   title/abstract screening is now owned by META·SIFT. project.records is never deleted. */
+function MetaSiftPrismaSync({project,updateProject,activeId}){
+  const[st,setSt]=useState({loading:true});
+  const apply=(summary)=>{
+    const p=summary.prisma;
+    updateProject(activeId,proj=>{
+      const cur=proj.prisma||{};
+      const next={...cur,
+        dbs:String(p.identified), reg:"0", other:"0",
+        dedupe:String(p.duplicatesRemoved),
+        excTA:String(p.excludedTitleAbstract),
+        excFull:String(p.fullTextExcluded),
+        included:String(p.included),
+      };
+      const same=["dbs","reg","other","dedupe","excTA","excFull","included"].every(k=>String(cur[k]||"")===String(next[k]||""));
+      return same?proj:{...proj,prisma:next};
+    });
+  };
+  const load=useCallback(async(doApply)=>{
+    setSt(s=>({...s,loading:true,error:null}));
+    try{
+      const r=await fetch(`/api/screening/metalab/${project.id}/summary`,{credentials:"include"});
+      if(!r.ok){ setSt({loading:false,error:r.status===503?"META·SIFT is currently disabled by the administrator.":"Couldn't reach META·SIFT."}); return; }
+      const data=await r.json();
+      setSt({loading:false,...data});
+      if(doApply&&data.linked) apply(data);
+    }catch(e){ setSt({loading:false,error:"Couldn't reach META·SIFT."}); }
+  },[project.id]);
+  useEffect(()=>{ load(true); },[load]);
+
+  const wrap={background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:20};
+  if(st.loading) return <div style={wrap}><div style={{fontSize:12,color:C.muted}}>Checking META·SIFT…</div></div>;
+  if(st.error) return <div style={{...wrap,borderColor:C.yel+"55"}}>
+    <div style={{fontSize:12,fontWeight:800,color:C.yel,letterSpacing:0.5,marginBottom:6}}>⬡ META·SIFT</div>
+    <div style={{fontSize:12,color:C.muted,marginBottom:10}}>{st.error} You can still enter PRISMA numbers manually below.</div>
+    <button onClick={()=>load(true)} style={{...btnS("ghost"),fontSize:11}}>↻ Retry</button>
+  </div>;
+  if(!st.linked) return <div style={{...wrap,borderColor:C.acc+"40",background:C.bg}}>
+    <div style={{fontSize:12,fontWeight:800,color:C.acc,letterSpacing:0.5,marginBottom:6}}>⬡ Title / abstract screening is now in META·SIFT</div>
+    <div style={{fontSize:12,color:C.muted,lineHeight:1.6,marginBottom:12}}>
+      Screen your references with two reviewers in META·SIFT. Link a META·SIFT project to this review and its PRISMA numbers — records identified, duplicates removed, screened, excluded, and included — will auto-fill the flow diagram below.
+    </div>
+    <button onClick={()=>{window.location.href="/sift-beta";}} style={btnS("primary")}>Open META·SIFT →</button>
+  </div>;
+  const p=st.prisma;
+  return <div style={{...wrap,borderColor:C.grn+"55"}}>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10,marginBottom:8}}>
+      <div style={{fontSize:12,fontWeight:800,color:C.grn,letterSpacing:0.5}}>⬡ Linked to META·SIFT — PRISMA auto-filled</div>
+      <div style={{display:"flex",gap:8}}>
+        <button onClick={()=>load(true)} style={{...btnS("ghost"),fontSize:11}}>↻ Sync now</button>
+        <button onClick={()=>{window.location.href=`/sift-beta/projects/${st.screeningProjectId}`;}} style={{...btnS("primary"),fontSize:11}}>Open “{st.title}” →</button>
+      </div>
+    </div>
+    <div style={{fontSize:11,color:C.muted,lineHeight:1.7}}>
+      <strong style={{color:C.txt}}>{p.identified}</strong> identified · <strong style={{color:C.txt}}>{p.duplicatesRemoved}</strong> duplicates removed · <strong style={{color:C.txt}}>{p.screened}</strong> screened · <strong style={{color:C.red}}>{p.excludedTitleAbstract}</strong> excluded (title/abstract) · <strong style={{color:C.txt}}>{p.fullTextAssessed}</strong> full-text assessed · <strong style={{color:C.red}}>{p.fullTextExcluded}</strong> full-text excluded · <strong style={{color:C.grn}}>{p.included}</strong> included → Data Extraction.
+    </div>
+    <div style={{fontSize:10,color:C.dim,marginTop:8}}>These numbers update automatically from META·SIFT screening. You can still fine-tune the fields below; “Sync now” re-pulls from META·SIFT.</div>
+  </div>;
+}
+
 function PRISMATab({project,updNested,updateProject,activeId}){
   const{prisma}=project;
   const ch=(k,v)=>updNested("prisma",k,v);
@@ -2475,8 +2537,8 @@ function PRISMATab({project,updNested,updateProject,activeId}){
     </div>);
   const Arrow=()=><div style={{textAlign:"center",color:C.dim,fontSize:16,margin:"4px 0"}}>↓</div>;
   return(<div>
-    <SectionHeader icon="🔀" title="Screening & PRISMA Flow" desc="Import your search results, screen them with two reviewers, then track the numbers through each stage. The PRISMA 2020 flow diagram updates live."/>
-    {updateProject&&<ScreeningModule project={project} updateProject={updateProject} activeId={activeId} updNested={updNested}/>}
+    <SectionHeader icon="🔀" title="Screening & PRISMA Flow" desc="Title/abstract screening is handled in META·SIFT (two-reviewer, with duplicates & conflicts). Link a META·SIFT project and the PRISMA 2020 flow diagram below fills in automatically."/>
+    {updateProject&&<MetaSiftPrismaSync project={project} updateProject={updateProject} activeId={activeId}/>}
     <div style={{display:"grid",gridTemplateColumns:"320px 1fr",gap:20}}>
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         {[{title:"IDENTIFICATION",fields:[["dbs","Records from databases"],["reg","Records from registers"],["other","Records from other sources"],["dedupe","Duplicates removed"]]},
@@ -2883,6 +2945,7 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
         {s.outcome&&<span style={{fontSize:11,color:C.muted,marginLeft:8}}>· {s.outcome}</span>}
         {s.timepoint&&<span style={{fontSize:11,color:C.dim,marginLeft:6}}>@ {s.timepoint}</span>}
       </div>
+      {s.siftOrigin&&<span style={tagS("blue")} title="Imported from META·SIFT second review">⬡ META·SIFT</span>}
       {dup&&<span style={tagS("red")} title="Possible duplicate (same author+year or identical ES+n)">⚠ Dup?</span>}
       {s.converted&&<span style={tagS("purple")} title="Contains converted values">⇄ Converted</span>}
       {nonPrimary&&!s.converted&&<span style={tagS("yellow")} title="Not directly-reported primary data">◆ Non-primary</span>}

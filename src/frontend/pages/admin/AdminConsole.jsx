@@ -1635,17 +1635,18 @@ function SiftAdminSection() {
   }
 
   const projCols = [
-    { key: 'title',         label: 'Title',    width: '28%' },
-    { key: 'owner',         label: 'Owner',    width: '18%', render: v => v?.email || '—' },
+    { key: 'title',         label: 'Title',    width: '24%' },
+    { key: 'owner',         label: 'Owner',    width: '16%', render: v => v?.email || '—' },
     { key: 'recordCount',   label: 'Records',  width: '8%' },
-    { key: 'decisionCount', label: 'Decisions',width: '9%' },
-    { key: 'stage',         label: 'Stage',    width: '9%', render: v => <Badge text={v || 'active'} color={v === 'archived' ? C.muted : v === 'disabled' ? C.red : C.grn} /> },
-    { key: 'createdAt',     label: 'Created',  width: '12%', render: v => fmtDate(v) },
+    { key: 'memberCount',   label: 'Members',  width: '8%', render: v => v ?? 1 },
+    { key: 'decisionCount', label: 'Decisions',width: '8%' },
+    { key: 'stage',         label: 'Status',   width: '10%', render: (v, row) => <Badge text={row.disabled ? 'disabled' : row.archived ? 'archived' : 'active'} color={row.disabled ? C.red : row.archived ? C.muted : C.grn} /> },
+    { key: 'createdAt',     label: 'Created',  width: '10%', render: v => fmtDate(v) },
     { key: '_actions',      label: 'Actions',  width: '16%', render: (_, row) => (
       <div style={{ display: 'flex', gap: 4 }}>
-        {row.stage !== 'active'   && <button onClick={() => changeProjectStatus(row.id, 'active')}   style={miniBtn(C.grn)}>Activate</button>}
-        {row.stage !== 'archived' && <button onClick={() => changeProjectStatus(row.id, 'archived')} style={miniBtn(C.muted)}>Archive</button>}
-        {row.stage !== 'disabled' && <button onClick={() => changeProjectStatus(row.id, 'disabled')} style={miniBtn(C.red)}>Disable</button>}
+        {(row.archived || row.disabled) && <button onClick={() => changeProjectStatus(row.id, 'active')}   style={miniBtn(C.grn)}>Activate</button>}
+        {!row.archived && <button onClick={() => changeProjectStatus(row.id, 'archived')} style={miniBtn(C.muted)}>Archive</button>}
+        {!row.disabled && <button onClick={() => changeProjectStatus(row.id, 'disabled')} style={miniBtn(C.red)}>Disable</button>}
       </div>
     )},
   ];
@@ -1677,12 +1678,16 @@ function SiftAdminSection() {
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 12, marginBottom: 24 }}>
           {[
             { label: 'Projects',       value: metrics.totalProjects,      color: C.acc },
+            { label: 'Members',        value: metrics.totalMembers,       color: C.acc },
             { label: 'Records',        value: metrics.totalRecords,       color: C.txt2 },
             { label: 'Included',       value: metrics.included,           color: '#4ade80' },
             { label: 'Excluded',       value: metrics.excluded,           color: C.red },
             { label: 'Maybe',          value: metrics.maybe,              color: C.ylw },
+            { label: '2nd Review',     value: metrics.eligibleSecondReview, color: '#2dd4bf' },
+            { label: 'To Extraction',  value: metrics.acceptedToExtraction, color: '#4ade80' },
             { label: 'Conflicts',      value: metrics.totalConflicts,     color: '#dba96a' },
             { label: 'Dup Groups',     value: metrics.totalDuplicateGroups, color: C.muted },
+            { label: 'Chat Msgs',      value: metrics.totalChatMessages,  color: C.muted },
             { label: 'This Week',      value: metrics.projectsThisWeek,   color: C.teal || '#2dd4bf' },
           ].map(m => (
             <div key={m.label} style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 9, padding: '14px 16px' }}>

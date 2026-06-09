@@ -24,6 +24,7 @@ model User {
   projects    Project[]
   auditLogs   AdminAuditLog[]
   screenProjects ScreenProject[] @relation("UserScreenProjects")
+  screenMemberships ScreenProjectMember[] @relation("UserScreenMemberships")
 }
 
 model Project {
@@ -92,6 +93,15 @@ model ScreenProject {
   reviewQuestion         String                 @default("")
   stage                  String                 @default("title_abstract")
   blindMode              Boolean                @default(false)
+  // ── upgrade additions ──────────────────────────────────────────────
+  progressStatus         String                 @default("not_started")  // not_started | in_progress | done (leader-editable)
+  archived               Boolean                @default(false)          // admin lifecycle
+  disabled               Boolean                @default(false)          // admin per-project disable
+  inclusionKeywords      String                 @default("[]")           // JSON string[] — green highlight terms
+  exclusionKeywords      String                 @default("[]")           // JSON string[] — red highlight terms
+  studyTypeFilter        String                 @default("[]")           // JSON string[]
+  picoSnapshot           String                 @default("{}")           // cached PICO/criteria (from linked META·LAB project or standalone)
+  chatRestricted         Boolean                @default(false)          // when true, only members with canChat may post
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
 
@@ -101,6 +111,9 @@ model ScreenProject {
   duplicateGroups        ScreenDuplicateGroup[]
   conflicts              ScreenConflict[]
   importBatches          ScreenImportBatch[]
+  members                ScreenProjectMember[]
+  chatMessages           ScreenChatMessage[]
+  auditLogs              ScreenAuditLog[]
 }
 
 model ScreenRecord {
@@ -123,11 +136,19 @@ model ScreenRecord {
   keywords         String                @default("")
   sourceDb         String                @default("")
   rawData          String                @default("{}")
+  // ── upgrade additions: two-stage workflow ──────────────────────────
+  currentStage     String                @default("title_abstract")  // title_abstract | full_text
+  finalStatus      String                @default("")                // "" | accepted | rejected
+  promotedAt       DateTime?                                          // when it reached quorum and moved to full_text
+  acceptedAt       DateTime?                                          // when accepted in second review (sent to extraction)
+  rejectedReason   String                @default("")
   createdAt        DateTime              @default(now())
   updatedAt        DateTime              @updatedAt
 
   decisions        ScreenDecision[]
   conflicts        ScreenConflict[]
+  pdfAttachments   ScreenPdfAttachment[]
+  openStates       ScreenRecordOpenState[]
 }
 
 model ScreenDecision {
@@ -136,6 +157,8 @@ model ScreenDecision {
   record          ScreenRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
   projectId       String
   reviewerId      String
+  reviewerName    String       @default("")   // denormalised for blind-mode-safe display joins
+  stage           String       @default("title_abstract")  // which review stage this decision belongs to
   decision        String       @default("undecided")
   exclusionReason String       @default("")
   notes           String       @default("")
@@ -144,7 +167,7 @@ model ScreenDecision {
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
 
-  @@unique([recordId, reviewerId])
+  @@unique([recordId, reviewerId, stage])
 }
 
 model ScreenLabel {
@@ -200,4 +223,75 @@ model ScreenImportBatch {
   createdAt   DateTime      @default(now())
 
   records     ScreenRecord[]
+}
+
+// ─── META·SIFT Beta — collaboration upgrade ──────────────────────────
+
+model ScreenProjectMember {
+  id                  String        @id @default(uuid())
+  projectId           String
+  project             ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  userId              String?       // null for pending invites (user not yet registered)
+  user                User?         @relation("UserScreenMemberships", fields: [userId], references: [id], onDelete: Cascade)
+  name                String        @default("")
+  email               String        @default("")
+  role                String        @default("reviewer")  // leader | reviewer | viewer
+  status              String        @default("active")     // active | inactive | pending
+  canScreen           Boolean       @default(true)
+  canChat             Boolean       @default(true)
+  canResolveConflicts Boolean       @default(false)
+  joinedAt            DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  @@unique([projectId, email])
+}
+
+model ScreenChatMessage {
+  id         String        @id @default(uuid())
+  projectId  String
+  project    ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  senderId   String
+  senderName String        @default("")
+  message    String
+  status     String        @default("sent")   // sent | failed
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+  deletedAt  DateTime?
+}
+
+model ScreenPdfAttachment {
+  id         String       @id @default(uuid())
+  projectId  String       // plain scope key (no relation — mirrors ScreenDecision.projectId)
+  recordId   String
+  record     ScreenRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  fileName   String                              // original upload name
+  storedName String                              // on-disk uuid filename
+  fileSize   Int          @default(0)
+  mimeType   String       @default("application/pdf")
+  uploadedBy String
+  createdAt  DateTime     @default(now())
+}
+
+model ScreenRecordOpenState {
+  id        String       @id @default(uuid())
+  projectId String       // plain scope key
+  recordId  String
+  record    ScreenRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  userId    String
+  openedAt  DateTime     @default(now())
+
+  @@unique([recordId, userId])
+}
+
+model ScreenAuditLog {
+  id         String        @id @default(uuid())
+  projectId  String
+  project    ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  actorId    String
+  actorName  String        @default("")
+  action     String        // BLIND_MODE_ON | MEMBER_ADDED | RECORD_ACCEPTED | ...
+  entityType String?
+  entityId   String?
+  details    String        @default("{}")  // JSON context
+  createdAt  DateTime      @default(now())
 }

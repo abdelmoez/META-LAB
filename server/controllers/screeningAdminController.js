@@ -70,6 +70,12 @@ export async function getScreeningMetrics(req, res) {
       maybeCount,
       totalConflicts,
       totalDuplicateGroups,
+      resolvedDuplicateGroups,
+      totalMembers,
+      eligibleSecondReview,
+      acceptedToExtraction,
+      rejectedSecond,
+      totalChatMessages,
       projectsThisWeek,
       projectsThisMonth,
     ] = await Promise.all([
@@ -81,6 +87,12 @@ export async function getScreeningMetrics(req, res) {
       prisma.screenDecision.count({ where: { decision: 'maybe' } }),
       prisma.screenConflict.count({ where: { resolvedAt: null } }),
       prisma.screenDuplicateGroup.count(),
+      prisma.screenDuplicateGroup.count({ where: { resolvedAt: { not: null } } }),
+      prisma.screenProjectMember.count(),
+      prisma.screenRecord.count({ where: { currentStage: 'full_text' } }),
+      prisma.screenRecord.count({ where: { finalStatus: 'accepted' } }),
+      prisma.screenRecord.count({ where: { finalStatus: 'rejected' } }),
+      prisma.screenChatMessage.count({ where: { deletedAt: null } }),
       prisma.screenProject.count({
         where: { createdAt: { gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } },
       }),
@@ -100,6 +112,12 @@ export async function getScreeningMetrics(req, res) {
       undecided: Math.max(0, totalRecords - includedCount - excludedCount - maybeCount),
       totalConflicts,
       totalDuplicateGroups,
+      resolvedDuplicateGroups,
+      totalMembers,
+      eligibleSecondReview,
+      acceptedToExtraction,
+      rejectedSecond,
+      totalChatMessages,
       projectsThisWeek,
       projectsThisMonth,
     });
@@ -122,7 +140,7 @@ export async function listScreeningProjects(req, res) {
         take: limit,
         include: {
           owner: { select: { id: true, name: true, email: true } },
-          _count: { select: { records: true, decisions: true } },
+          _count: { select: { records: true, decisions: true, members: true } },
         },
       }),
       prisma.screenProject.count(),
@@ -133,10 +151,14 @@ export async function listScreeningProjects(req, res) {
         id:          p.id,
         title:       p.title,
         stage:       p.stage,
+        archived:    p.archived,
+        disabled:    p.disabled,
+        progressStatus: p.progressStatus,
         blindMode:   p.blindMode,
         owner:       p.owner,
         recordCount: p._count.records,
         decisionCount: p._count.decisions,
+        memberCount: p._count.members,
         createdAt:   p.createdAt,
         updatedAt:   p.updatedAt,
       })),
@@ -178,9 +200,12 @@ export async function updateScreeningProjectStatus(req, res) {
     }
     const project = await prisma.screenProject.findUnique({ where: { id: req.params.id } });
     if (!project) return res.status(404).json({ error: 'Project not found' });
+    // Keep the legacy `stage` value for backward-compat, and also set the
+    // dedicated archived/disabled flags (the screening pipeline no longer
+    // overloads `stage` for lifecycle state).
     const updated = await prisma.screenProject.update({
       where: { id: req.params.id },
-      data: { stage },
+      data: { stage, archived: stage === 'archived', disabled: stage === 'disabled' },
     });
     res.json(updated);
   } catch (err) {

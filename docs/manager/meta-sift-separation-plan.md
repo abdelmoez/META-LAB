@@ -110,3 +110,17 @@ In `src/App.jsx`, remove or comment the 6 `<Route path="/sift-beta*">` entries. 
 - The `checkEnabled` middleware wraps its DB read in try/catch and calls `next()` on failure (fail-open).
 - Frontend Sift pages are separate React components — if they throw, React's error boundary in the parent doesn't affect the rest of the app.
 - The `SiftMenuItem` in `AppWorkspace` is just a navigation button; if the Sift server is down, clicking it leads to an error page in Sift, not in the main workspace.
+
+---
+
+## v2 additions (collaboration upgrade) — still fully removable
+
+The upgrade added files but kept the module self-contained. To remove META·SIFT, also delete (in addition to the list above):
+
+**Backend** — `server/screening/` (access.js, settings.js), `server/controllers/screeningMemberController.js`, `screeningReviewController.js`, `screeningChatController.js`, `screeningOverviewController.js`, `screeningPdfController.js`, `server/storage/screening-pdfs/`. The new routes live inside `server/routes/screening.js` (already removed with the module). `server/load-env.js` + `server/auth/seedAdmins.js` are generic (keep them).
+
+**Frontend** — `src/frontend/screening/ui/`, `src/frontend/screening/tabs/`, `src/frontend/screening/components/`, `src/frontend/screening/pages/SiftProject.jsx`. Revert the two new `Screen*`-prefixed model blocks + added columns in `schema.prisma` (a drop migration is optional; SQLite tables are inert).
+
+**Monolith** — remove the `MetaSiftPrismaSync` block in `meta-lab-3-patched.jsx` and restore the `ScreeningModule` render in `PRISMATab` (the component was preserved, not deleted), and drop the `s.siftOrigin` badge line.
+
+Main META·LAB continues to work after removal. The single cross-module touch point is the handoff write into a linked META·LAB project's `studies[]`, which simply stops happening.
