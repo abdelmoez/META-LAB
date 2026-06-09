@@ -1,12 +1,16 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { requireAdmin } from '../middleware/requireAdmin.js';
+import { requireAdminOrMod } from '../middleware/requireRole.js';
 import {
   getMetrics,
   getUsers,
   getUserById,
   getUserProjects,
+  updateUser,
   updateUserStatus,
+  updateUserRole,
+  resetUserPassword,
   getProjects,
   archiveProject,
   restoreProject,
@@ -21,6 +25,9 @@ import {
   getContactMessages,
   updateContactMessage,
   deleteContactMessage,
+  replyToMessage,
+  getMessageReplies,
+  getConsole,
   getHealth,
 } from '../controllers/adminController.js';
 
@@ -50,59 +57,66 @@ const adminLimiter = rateLimit({
 // Apply rate limiter to all admin routes
 router.use(adminLimiter);
 
-// Apply requireAdmin to all routes in this router
-// (requireAuth is applied at the mount point in index.js)
-router.use(requireAdmin);
+// NOTE: requireAuth is applied at the mount point in index.js.
+// Authorization is enforced PER ROUTE below:
+//   - requireAdminOrMod  → admin OR mod (DB-verified, not suspended)
+//   - requireAdmin       → admin only
+// Server-side middleware is the source of truth; the console UI hides sections
+// only for UX (see GET /console).
 
-// Metrics
-router.get('/metrics', getMetrics);
+// ── Console capability descriptor (admin + mod) ───────────────────────────────
+router.get('/console', requireAdminOrMod, getConsole);
 
-// Users
-router.get('/users', getUsers);
-router.get('/users/:id', getUserById);
-router.get('/users/:id/projects', getUserProjects);
-router.patch('/users/:id/status', updateUserStatus);
+// ── Users ─────────────────────────────────────────────────────────────────────
+// Read + edit + status + reset-password are mod-allowed.
+router.get('/users', requireAdminOrMod, getUsers);
+router.get('/users/:id', requireAdminOrMod, getUserById);
+router.get('/users/:id/projects', requireAdminOrMod, getUserProjects);
+router.patch('/users/:id', requireAdminOrMod, updateUser);
+router.patch('/users/:id/status', requireAdminOrMod, updateUserStatus);
+router.post('/users/:id/reset-password', requireAdminOrMod, resetUserPassword);
+// Role assignment + delete are ADMIN ONLY.
+router.patch('/users/:id/role', requireAdmin, updateUserRole);
 
-// Projects
-router.get('/projects', getProjects);
-router.patch('/projects/:id/archive', archiveProject);
-router.patch('/projects/:id/restore', restoreProject);
+// ── Contact messages (admin + mod) ─────────────────────────────────────────────
+router.get('/contact-messages', requireAdminOrMod, getContactMessages);
+router.patch('/contact-messages/:id', requireAdminOrMod, updateContactMessage);
+router.get('/contact-messages/:id/replies', requireAdminOrMod, getMessageReplies);
+router.post('/contact-messages/:id/reply', requireAdminOrMod, replyToMessage);
+// Deleting a message is ADMIN ONLY.
+router.delete('/contact-messages/:id', requireAdmin, deleteContactMessage);
 
-// Settings
-router.get('/settings', getAdminSettings);
-router.put('/settings', updateAdminSettings);
+// ── Admin-only: metrics, projects lifecycle, settings, flags, content, security ─
+router.get('/metrics', requireAdmin, getMetrics);
 
-// Landing content
-router.get('/landing-content', getLandingContent);
-router.put('/landing-content', updateLandingContent);
+router.get('/projects', requireAdmin, getProjects);
+router.patch('/projects/:id/archive', requireAdmin, archiveProject);
+router.patch('/projects/:id/restore', requireAdmin, restoreProject);
 
-// Feature flags
-router.get('/feature-flags', getFeatureFlags);
-router.put('/feature-flags', updateFeatureFlags);
+router.get('/settings', requireAdmin, getAdminSettings);
+router.put('/settings', requireAdmin, updateAdminSettings);
 
-// Audit log
-router.get('/audit-log', getAuditLog);
+router.get('/landing-content', requireAdmin, getLandingContent);
+router.put('/landing-content', requireAdmin, updateLandingContent);
 
-// Security events
-router.get('/security-events', getSecurityEvents);
+router.get('/feature-flags', requireAdmin, getFeatureFlags);
+router.put('/feature-flags', requireAdmin, updateFeatureFlags);
 
-// Contact messages
-router.get('/contact-messages', getContactMessages);
-router.patch('/contact-messages/:id', updateContactMessage);
-router.delete('/contact-messages/:id', deleteContactMessage);
+router.get('/audit-log', requireAdmin, getAuditLog);
+router.get('/security-events', requireAdmin, getSecurityEvents);
 
-// Health
-router.get('/health', getHealth);
+// Health (admin only — exposes runtime details)
+router.get('/health', requireAdmin, getHealth);
 
-// META·SIFT Beta admin controls
-router.get('/screening/settings',              getScreeningSettings);
-router.put('/screening/settings',              updateScreeningSettings);
-router.get('/screening/metrics',               getScreeningMetrics);
-router.get('/screening/handoffs',              getHandoffLogs);
-router.get('/screening/audit',                 getScreeningAuditLog);
-router.get('/screening/projects',              listScreeningProjects);
-router.get('/screening/projects/:id',          getScreeningProject);
-router.get('/screening/projects/:id/members',  getScreeningProjectMembers);
-router.patch('/screening/projects/:id/status', updateScreeningProjectStatus);
+// META·SIFT Beta admin controls (admin only)
+router.get('/screening/settings',              requireAdmin, getScreeningSettings);
+router.put('/screening/settings',              requireAdmin, updateScreeningSettings);
+router.get('/screening/metrics',               requireAdmin, getScreeningMetrics);
+router.get('/screening/handoffs',              requireAdmin, getHandoffLogs);
+router.get('/screening/audit',                 requireAdmin, getScreeningAuditLog);
+router.get('/screening/projects',              requireAdmin, listScreeningProjects);
+router.get('/screening/projects/:id',          requireAdmin, getScreeningProject);
+router.get('/screening/projects/:id/members',  requireAdmin, getScreeningProjectMembers);
+router.patch('/screening/projects/:id/status', requireAdmin, updateScreeningProjectStatus);
 
 export default router;

@@ -38,6 +38,8 @@ export default function ChatLauncher({ pid, access = {} }) {
   const [draft, setDraft]     = useState('');
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState(null);
+  const [typing, setTyping]   = useState([]); // names of other members currently typing
+  const lastTypingSent = useRef(0);
 
   const sinceRef   = useRef(null);
   const idsRef     = useRef(new Set());
@@ -82,6 +84,7 @@ export default function ChatLauncher({ pid, access = {} }) {
       merge(data?.messages || [], data?.serverTime, false);
       setCanChat(data?.canChat ?? access.canChat ?? false);
       setChatRestricted(!!data?.chatRestricted);
+      setTyping(data?.typing || []);
     } catch (e) {
       setLoadError(e?.message || 'Failed to load the project chat.');
     } finally { setLoading(false); }
@@ -101,6 +104,7 @@ export default function ChatLauncher({ pid, access = {} }) {
         merge(data?.messages || [], data?.serverTime);
         if (data?.canChat != null) setCanChat(data.canChat);
         if (data?.chatRestricted != null) setChatRestricted(!!data.chatRestricted);
+        setTyping(data?.typing || []);
       } catch { /* keep cursor, retry */ }
     };
     const timer = setInterval(poll, POLL_MS);
@@ -150,6 +154,19 @@ export default function ChatLauncher({ pid, access = {} }) {
   const onKeyDown = useCallback(e => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   }, [send]);
+
+  // Throttled "I'm typing" ping (server keeps a 6s in-memory window).
+  const notifyTyping = useCallback(() => {
+    const now = Date.now();
+    if (now - lastTypingSent.current < 2500) return;
+    lastTypingSent.current = now;
+    screeningApi.chatTyping(pid).catch(() => {});
+  }, [pid]);
+
+  const typingLabel = typing.length === 0 ? ''
+    : typing.length === 1 ? `${typing[0]} is typing…`
+    : typing.length === 2 ? `${typing[0]} and ${typing[1]} are typing…`
+    : 'Several members are typing…';
 
   return (
     <>
@@ -211,6 +228,9 @@ export default function ChatLauncher({ pid, access = {} }) {
 
             {/* Composer */}
             <div style={{ padding: '12px 14px', borderTop: `1px solid ${C.brd}`, flexShrink: 0 }}>
+              <div style={{ height: 14, marginBottom: 4, fontSize: 11, color: C.acc, fontStyle: 'italic', opacity: typingLabel ? 1 : 0, transition: 'opacity 0.2s' }}>
+                {typingLabel || ' '}
+              </div>
               {blocked ? (
                 <div style={{ fontSize: 12, color: C.muted, background: C.card, border: `1px dashed ${C.brd2}`, borderRadius: 8, padding: '10px 12px', lineHeight: 1.5 }}>
                   The project leader has restricted chat — you have read-only access.
@@ -223,7 +243,7 @@ export default function ChatLauncher({ pid, access = {} }) {
                       ref={inputRef}
                       type="text"
                       value={draft}
-                      onChange={e => setDraft(e.target.value)}
+                      onChange={e => { setDraft(e.target.value); notifyTyping(); }}
                       onKeyDown={onKeyDown}
                       placeholder="Write a message…"
                       style={{ flex: 1, minWidth: 0, background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 8, padding: '9px 12px', color: C.txt, fontSize: 13, fontFamily: FONT, outline: 'none' }}

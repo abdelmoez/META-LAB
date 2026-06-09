@@ -1,8 +1,28 @@
 # META·SIFT — QA Report (collaboration upgrade)
 
-> **Update 2026-06-09 (prompt3 bug fixes):** ✅ **203/203 screening tests pass**.
-> prompt3 targeted-bug-fix section is immediately below; prompt2 and the original
-> prompt1 report follow unchanged.
+> **Update 2026-06-09 (prompt4 server-ready upgrade):** ✅ **207/207 screening tests pass**.
+> prompt4 section below; prompt3/prompt2/prompt1 sections follow unchanged.
+
+---
+
+## prompt4 — Server-ready upgrade (2026-06-09)
+
+**Result:** ✅ **207/207 screening tests pass** (+4 `integration/prompt4.test.js`). `vite build` clean. Email-reply fallback verified live (200 + draft when SMTP unconfigured).
+
+| Task | Delivered | Verified |
+|------|-----------|----------|
+| T1 User dropdown in META·SIFT | Shared `components/UserMenu.jsx` (used by META·LAB + META·SIFT; profile, cross-app link, Ops/Mod console for admin+mod, version, sign-out) | build |
+| T2 Admin user editing | adminController: updateUser (name/email), status, reset-password (temp pw once), updateUserRole (last-admin guard) | `prompt4 T2/T3` live |
+| T3 Mod role | `requireRole`/`requireAdminOrMod`; routes split mod-allowed vs admin-only; `/api/admin/console` role descriptor; server-enforced | `prompt4 T2/T3` (mod sees users, blocked from metrics; user 403) |
+| T4 Email replies | `emailService.js` (nodemailer dynamic import, env SMTP); `/contact-messages/:id/reply` + `/replies`; META·LAB template; draft fallback when unconfigured | live curl (200, draft) |
+| T5 Deployment readiness | env-driven CORS, `.env.example` (root+server), `docs/manager/deployment-readiness.md`, `server/docs/email-setup.md` | — |
+| T6 Versioning | `server/version.js` + public `GET /api/version` `{name,version,commit,buildDate}`; shown in UserMenu + console | `prompt4 T6` live |
+| T7 Chat typing + notifications | in-memory project-scoped typing (TTL 6s) via chat poll `typing[]` + `/chat/typing`; ChatLauncher "X is typing…"; per-user unread badge (prompt3) | `prompt4 T7` |
+| T8 creator→owner + model | `ScreenProjectMember.role 'owner'`; access.js full perms for owner/leader; leader cannot edit/demote owner; self-healing migration of legacy owner rows | `prompt4 T8/T9` + collab |
+| T9 Review Workspace | module-permission flags on member (META·LAB/META·SIFT/global) + shared `permissionPresets.js` + preset add UI; create+link META·SIFT from META·LAB (monolith); accepted-study pull-merge (prompt3) | `prompt4 T8/T9` |
+
+Schema: additive migration `..._workspace_perms_and_contact_replies` (member permission flags + ContactReply + ContactMessage.replied).
+**Limitations:** META·LAB-side read-only *enforcement* is surfaced via permissions but the single-owner `Project` model isn't deeply membership-gated yet (documented); no headless browser click-through; typing is per-instance in-memory (multi-instance needs Redis/WS — documented in deployment-readiness.md).
 
 ---
 

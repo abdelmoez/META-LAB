@@ -6,7 +6,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { adminApi } from './adminApiClient.js';
+import { adminApi, fetchVersion } from './adminApiClient.js';
 
 /* ─── Design tokens ──────────────────────────────────────────────────── */
 const C = {
@@ -197,6 +197,45 @@ function ErrorBox({ msg }) {
   return (
     <div style={{ padding: '10px 14px', background: `${C.red}12`, border: `1px solid ${C.red}30`, borderRadius: 7, color: C.red, fontSize: 12, marginBottom: 16 }}>
       {msg}
+    </div>
+  );
+}
+
+function NoticeBox({ msg, color = C.ylw }) {
+  return (
+    <div style={{ padding: '10px 14px', background: `${color}12`, border: `1px solid ${color}40`, borderRadius: 7, color, fontSize: 12, marginBottom: 16, lineHeight: 1.5 }}>
+      {msg}
+    </div>
+  );
+}
+
+function AccessDenied({ section }) {
+  return (
+    <div style={{ padding: '60px 20px', textAlign: 'center' }}>
+      <div style={{ fontSize: 32, color: C.red, marginBottom: 14 }}>⊘</div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 8 }}>Access denied</div>
+      <div style={{ fontSize: 13, color: C.txt2, maxWidth: 380, margin: '0 auto', lineHeight: 1.6 }}>
+        Your role does not have access to{section ? ` the ${section} section` : ' this section'}. Server-side authorization enforces this regardless of UI.
+      </div>
+    </div>
+  );
+}
+
+function CopyableBox({ value, label }) {
+  const [copied, setCopied] = useState(false);
+  async function copy() {
+    try { await navigator.clipboard.writeText(value); setCopied(true); setTimeout(() => setCopied(false), 1800); }
+    catch { /* clipboard unavailable */ }
+  }
+  return (
+    <div style={{ marginTop: 4 }}>
+      {label && <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>{label}</div>}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+        <code style={{ flex: 1, fontFamily: MONO, fontSize: 13, color: C.txt, background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 7, padding: '9px 12px', wordBreak: 'break-all' }}>{value}</code>
+        <button onClick={copy} style={{ padding: '9px 14px', background: copied ? '#166534' : C.acc2, border: 'none', borderRadius: 7, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: FONT, flexShrink: 0 }}>
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
     </div>
   );
 }
@@ -408,8 +447,118 @@ function InboxItem({ msg, selected, onClick }) {
   );
 }
 
-function MessageDetail({ msg, onMarkRead, onArchive, onDelete }) {
+function ReplyComposer({ msg, emailConfigured, onSent }) {
+  const [open,    setOpen]    = useState(false);
+  const [subject, setSubject] = useState(`Re: ${msg.subject || '(no subject)'}`);
+  const [body,    setBody]    = useState('');
+  const [preview, setPreview] = useState(false);
+  const [status,  setStatus]  = useState('idle');
+  const [error,   setError]   = useState('');
+
+  useEffect(() => { setSubject(`Re: ${msg.subject || '(no subject)'}`); setBody(''); setOpen(false); setPreview(false); setError(''); setStatus('idle'); }, [msg.id]);
+
+  async function send() {
+    if (!body.trim()) { setError('Reply body is required.'); return; }
+    setStatus('saving'); setError('');
+    try {
+      const res = await adminApi.messages.reply(msg.id, { subject, body });
+      setStatus('saved'); setBody('');
+      onSent?.(res);
+      setTimeout(() => { setStatus('idle'); setOpen(false); }, 1400);
+    } catch (e) { setStatus('error'); setError(e.message); }
+  }
+
+  if (!open) {
+    return (
+      <button onClick={() => setOpen(true)} style={{ padding: '7px 14px', background: `${C.acc}15`, border: `1px solid ${C.acc}40`, borderRadius: 6, color: C.acc, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
+        ✎ Reply
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ width: '100%', marginTop: 14, padding: 16, background: C.surf, borderRadius: 8, border: `1px solid ${C.brd2}` }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: C.txt }}>Reply to {msg.email}</span>
+        <button onClick={() => setOpen(false)} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 14 }}>✕</button>
+      </div>
+
+      {!emailConfigured && (
+        <NoticeBox msg="Email is not configured — reply will be saved as a draft. See server/docs/email-setup.md." />
+      )}
+      {error && <ErrorBox msg={error} />}
+
+      <label style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Subject</label>
+      <input type="text" value={subject} onChange={e => setSubject(e.target.value)} style={{ ...inputStyle, fontSize: 12, margin: '4px 0 10px' }} />
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
+        <label style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Message</label>
+        <button onClick={() => setPreview(p => !p)} style={{ background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 5, color: C.txt2, fontSize: 11, padding: '2px 9px', cursor: 'pointer', fontFamily: FONT }}>
+          {preview ? 'Edit' : 'Preview'}
+        </button>
+      </div>
+
+      {preview ? (
+        <div style={{ background: '#ffffff', borderRadius: 7, border: `1px solid ${C.brd2}`, padding: 16, marginBottom: 12, color: '#1f2937' }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#111827', letterSpacing: '0.04em', borderBottom: '1px solid #e5e7eb', paddingBottom: 12, marginBottom: 14 }}>META·LAB</div>
+          {msg.subject && <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 12 }}>In reply to: {msg.subject}</div>}
+          <div style={{ fontSize: 13, marginBottom: 12 }}>{msg.name ? `Hi ${msg.name},` : 'Hello,'}</div>
+          <div style={{ fontSize: 13, lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{body || <span style={{ color: '#9ca3af' }}>(empty)</span>}</div>
+          <div style={{ fontSize: 11, color: '#9ca3af', borderTop: '1px solid #e5e7eb', marginTop: 16, paddingTop: 12 }}>Sent by the META·LAB team</div>
+        </div>
+      ) : (
+        <textarea value={body} onChange={e => setBody(e.target.value)} placeholder="Type your reply…" style={{ ...inputStyle, fontSize: 13, minHeight: 130, resize: 'vertical', lineHeight: 1.6, marginBottom: 12 }} />
+      )}
+
+      <div style={{ display: 'flex', gap: 8 }}>
+        <SaveButton onClick={send} status={status} label={emailConfigured ? 'Send Reply' : 'Save Draft'} />
+      </div>
+    </div>
+  );
+}
+
+function ReplyThread({ replies }) {
+  if (!replies || replies.length === 0) return null;
+  const statusColor = s => ({ sent: C.grn, draft: C.ylw, failed: C.red }[s] || C.muted);
+  return (
+    <div style={{ marginTop: 22 }}>
+      <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 10 }}>
+        Replies ({replies.length})
+      </div>
+      {replies.map(r => (
+        <div key={r.id} style={{ padding: '12px 16px', background: C.surf, borderRadius: 8, border: `1px solid ${C.brd}`, marginBottom: 10 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: C.txt }}>{r.subject}</span>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <Badge text={r.status} color={statusColor(r.status)} />
+              <span style={{ fontSize: 10, color: C.muted, fontFamily: MONO }}>{fmtAgo(r.createdAt)}</span>
+            </div>
+          </div>
+          <div style={{ fontSize: 12, color: C.txt2, lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>{r.body}</div>
+          <div style={{ fontSize: 10, color: C.muted, fontFamily: MONO, marginTop: 8 }}>
+            to {r.toEmail} · by {r.repliedByName || '—'}{r.error ? ` · error: ${r.error}` : ''}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function MessageDetail({ msg, emailConfigured, onMarkRead, onArchive, onDelete, onReplied }) {
   const isUnread = !msg.read && !msg.archived;
+  const [replies, setReplies] = useState([]);
+
+  const loadReplies = useCallback(() => {
+    adminApi.messages.replies(msg.id).then(d => setReplies(d.replies || [])).catch(() => setReplies([]));
+  }, [msg.id]);
+
+  useEffect(() => { loadReplies(); }, [loadReplies]);
+
+  function handleSent(res) {
+    loadReplies();
+    onReplied?.(msg.id);
+  }
+
   return (
     <div style={{ padding: 28 }}>
       <div style={{ marginBottom: 22 }}>
@@ -422,6 +571,7 @@ function MessageDetail({ msg, onMarkRead, onArchive, onDelete }) {
                 : isUnread
                   ? <Badge text="unread" color={C.ylw} />
                   : <Badge text="read" color={C.grn} />}
+              {msg.replied && <Badge text="replied" color={C.teal} />}
             </div>
           </div>
           <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, textAlign: 'right', flexShrink: 0, marginLeft: 16 }}>
@@ -434,11 +584,12 @@ function MessageDetail({ msg, onMarkRead, onArchive, onDelete }) {
         </div>
       </div>
 
-      <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.85, whiteSpace: 'pre-wrap', padding: 18, background: C.surf, borderRadius: 8, border: `1px solid ${C.brd}`, marginBottom: 22, minHeight: 100 }}>
+      <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.85, whiteSpace: 'pre-wrap', padding: 18, background: C.surf, borderRadius: 8, border: `1px solid ${C.brd}`, marginBottom: 18, minHeight: 100 }}>
         {msg.message}
       </div>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <ReplyComposer msg={msg} emailConfigured={emailConfigured} onSent={handleSent} />
         {isUnread ? (
           <button onClick={() => onMarkRead(msg.id, true)} style={{ padding: '7px 14px', background: `${C.grn}15`, border: `1px solid ${C.grn}30`, borderRadius: 6, color: C.grn, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>Mark as Read</button>
         ) : !msg.archived ? (
@@ -449,6 +600,8 @@ function MessageDetail({ msg, onMarkRead, onArchive, onDelete }) {
         )}
         <button onClick={() => onDelete(msg)} style={{ padding: '7px 14px', background: `${C.red}12`, border: `1px solid ${C.red}30`, borderRadius: 6, color: C.red, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>Delete</button>
       </div>
+
+      <ReplyThread replies={replies} />
     </div>
   );
 }
@@ -464,8 +617,18 @@ function MessagesSection({ onUnreadChange }) {
   const [page,     setPage]     = useState(1);
   const [selected, setSelected] = useState(null);
   const [confirm,  setConfirm]  = useState(null);
+  const [emailConfigured, setEmailConfigured] = useState(false);
   const searchTimer = useRef(null);
   const PER_PAGE = 30;
+
+  useEffect(() => {
+    adminApi.console().then(d => setEmailConfigured(!!d.emailConfigured)).catch(() => {});
+  }, []);
+
+  function markRepliedLocal(id) {
+    setMessages(ms => ms.map(m => m.id === id ? { ...m, replied: true, read: true, status: m.archived ? 'archived' : 'read' } : m));
+    setSelected(m => m && m.id === id ? { ...m, replied: true, read: true } : m);
+  }
 
   const load = useCallback(async (f, s, so, p) => {
     setLoading(true); setError('');
@@ -604,7 +767,7 @@ function MessagesSection({ onUnreadChange }) {
         {/* Right panel — detail */}
         <div style={{ flex: 1, overflowY: 'auto' }}>
           {selected ? (
-            <MessageDetail msg={selected} onMarkRead={markRead} onArchive={archiveMsg} onDelete={setConfirm} />
+            <MessageDetail msg={selected} emailConfigured={emailConfigured} onMarkRead={markRead} onArchive={archiveMsg} onDelete={setConfirm} onReplied={markRepliedLocal} />
           ) : (
             <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
               <span style={{ fontSize: 28, color: C.brd2 }}>✉</span>
@@ -642,10 +805,38 @@ function UserProjectItem({ project }) {
   );
 }
 
-function UserDetailPanel({ user, onClose, onStatusChange }) {
+const ROLE_COLORS = { admin: C.acc, mod: C.teal, user: C.muted };
+function RoleBadge({ role }) {
+  return <Badge text={role || 'user'} color={ROLE_COLORS[role] || C.muted} />;
+}
+
+function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate }) {
+  const [current,     setCurrent]     = useState(user);
   const [projects,    setProjects]    = useState([]);
   const [projLoading, setProjLoading] = useState(true);
   const [confirm,     setConfirm]     = useState(null);
+
+  // Edit name/email
+  const [editing,     setEditing]     = useState(false);
+  const [editName,    setEditName]    = useState(user.name || '');
+  const [editEmail,   setEditEmail]   = useState(user.email || '');
+  const [editStatus,  setEditStatus]  = useState('idle');
+  const [editError,   setEditError]   = useState('');
+
+  // Role change
+  const [roleConfirm, setRoleConfirm] = useState(null); // pending new role
+  const [roleError,   setRoleError]   = useState('');
+
+  // Reset password
+  const [tempPw,      setTempPw]      = useState('');
+  const [pwStatus,    setPwStatus]    = useState('idle');
+  const [pwError,     setPwError]     = useState('');
+
+  useEffect(() => {
+    setCurrent(user);
+    setEditing(false); setEditName(user.name || ''); setEditEmail(user.email || '');
+    setEditError(''); setRoleError(''); setTempPw(''); setPwError('');
+  }, [user]);
 
   useEffect(() => {
     setProjLoading(true);
@@ -658,12 +849,44 @@ function UserDetailPanel({ user, onClose, onStatusChange }) {
   async function doStatus() {
     if (!confirm) return;
     try {
-      await adminApi.users.updateStatus(user.id, { suspended: confirm === 'suspend' });
+      await adminApi.users.updateStatus(current.id, { suspended: confirm === 'suspend' });
       onStatusChange();
       onClose();
     } catch { /* silent */ }
     setConfirm(null);
   }
+
+  async function saveEdit() {
+    setEditStatus('saving'); setEditError('');
+    try {
+      const { user: updated } = await adminApi.users.update(current.id, { name: editName, email: editEmail });
+      setCurrent(c => ({ ...c, name: updated.name, email: updated.email }));
+      setEditStatus('saved'); setEditing(false);
+      onUserUpdate?.();
+      setTimeout(() => setEditStatus('idle'), 2000);
+    } catch (e) { setEditStatus('error'); setEditError(e.message); }
+  }
+
+  async function doRoleChange() {
+    if (!roleConfirm) return;
+    setRoleError('');
+    try {
+      const { user: updated } = await adminApi.users.updateRole(current.id, roleConfirm);
+      setCurrent(c => ({ ...c, role: updated.role }));
+      onUserUpdate?.();
+    } catch (e) { setRoleError(e.message); }
+    setRoleConfirm(null);
+  }
+
+  async function doResetPassword() {
+    setPwStatus('saving'); setPwError(''); setTempPw('');
+    try {
+      const { tempPassword } = await adminApi.users.resetPassword(current.id);
+      setTempPw(tempPassword); setPwStatus('idle');
+    } catch (e) { setPwStatus('error'); setPwError(e.message); }
+  }
+
+  const u = current;
 
   return (
     <div style={{ width: 300, flexShrink: 0, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, overflow: 'hidden', alignSelf: 'flex-start', position: 'sticky', top: TOPBAR_H + 28, maxHeight: `calc(100vh - ${TOPBAR_H + 60}px)`, overflowY: 'auto' }}>
@@ -675,16 +898,35 @@ function UserDetailPanel({ user, onClose, onStatusChange }) {
 
       {/* Profile */}
       <div style={{ padding: '16px 16px 12px' }}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: C.txt, marginBottom: 2 }}>{user.name || '—'}</div>
-        <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, marginBottom: 10 }}>{user.email}</div>
+        {editing ? (
+          <div style={{ marginBottom: 12 }}>
+            {editError && <div style={{ fontSize: 11, color: C.red, marginBottom: 8 }}>{editError}</div>}
+            <label style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Name</label>
+            <input type="text" value={editName} onChange={e => setEditName(e.target.value)} style={{ ...inputStyle, fontSize: 12, margin: '4px 0 10px' }} placeholder="Name" />
+            <label style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Email</label>
+            <input type="email" value={editEmail} onChange={e => setEditEmail(e.target.value)} style={{ ...inputStyle, fontSize: 12, margin: '4px 0 12px' }} placeholder="email@example.com" />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <SaveButton onClick={saveEdit} status={editStatus} label="Save" />
+              <button onClick={() => { setEditing(false); setEditName(u.name || ''); setEditEmail(u.email || ''); setEditError(''); }} style={{ padding: '8px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 13, cursor: 'pointer', fontFamily: FONT }}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 2 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: C.txt }}>{u.name || '—'}</div>
+              <button onClick={() => setEditing(true)} style={{ background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 11, padding: '3px 9px', cursor: 'pointer', fontFamily: FONT, flexShrink: 0 }}>Edit</button>
+            </div>
+            <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, marginBottom: 10 }}>{u.email}</div>
+          </>
+        )}
         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 12 }}>
-          {user.role === 'admin' ? <Badge text="admin" color={C.acc} /> : <Badge text="user" color={C.muted} />}
-          {user.suspended ? <Badge text="suspended" color={C.red} /> : <Badge text="active" color={C.grn} />}
+          <RoleBadge role={u.role} />
+          {u.suspended ? <Badge text="suspended" color={C.red} /> : <Badge text="active" color={C.grn} />}
         </div>
         {[
-          { label: 'Joined',      value: fmtDate(user.createdAt) },
-          { label: 'Last Active', value: user.lastActive ? fmtAgo(user.lastActive) : 'Never' },
-          { label: 'Projects',    value: user.projectCount ?? 0 },
+          { label: 'Joined',      value: fmtDate(u.createdAt) },
+          { label: 'Last Active', value: u.lastActive ? fmtAgo(u.lastActive) : 'Never' },
+          { label: 'Projects',    value: u.projectCount ?? 0 },
         ].map(r => (
           <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: `1px solid ${C.brd}` }}>
             <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{r.label}</span>
@@ -692,6 +934,20 @@ function UserDetailPanel({ user, onClose, onStatusChange }) {
           </div>
         ))}
       </div>
+
+      {/* Role (admin only) */}
+      {isAdmin && (
+        <div style={{ padding: '10px 16px 14px', borderTop: `1px solid ${C.brd}` }}>
+          <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 7 }}>Role</div>
+          {roleError && <div style={{ fontSize: 11, color: C.red, marginBottom: 8 }}>{roleError}</div>}
+          <select value={u.role || 'user'} onChange={e => { if (e.target.value !== u.role) setRoleConfirm(e.target.value); }}
+            style={{ ...inputStyle, fontSize: 12, padding: '8px 10px' }}>
+            <option value="user">user</option>
+            <option value="mod">mod</option>
+            <option value="admin">admin</option>
+          </select>
+        </div>
+      )}
 
       {/* Projects */}
       <div style={{ borderTop: `1px solid ${C.brd}` }}>
@@ -709,10 +965,27 @@ function UserDetailPanel({ user, onClose, onStatusChange }) {
         )}
       </div>
 
-      {/* Actions */}
-      {user.role !== 'admin' && (
+      {/* Password reset */}
+      <div style={{ padding: '12px 16px', borderTop: `1px solid ${C.brd}` }}>
+        {pwError && <div style={{ fontSize: 11, color: C.red, marginBottom: 8 }}>{pwError}</div>}
+        {tempPw ? (
+          <div>
+            <CopyableBox value={tempPw} label="Temporary password (shown once)" />
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+              Share this securely with the user. It is not stored and cannot be retrieved again.
+            </div>
+          </div>
+        ) : (
+          <button onClick={doResetPassword} disabled={pwStatus === 'saving'} style={{ width: '100%', padding: '8px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 12, cursor: pwStatus === 'saving' ? 'not-allowed' : 'pointer', fontFamily: FONT }}>
+            {pwStatus === 'saving' ? 'Generating…' : 'Reset Password'}
+          </button>
+        )}
+      </div>
+
+      {/* Status actions */}
+      {u.role !== 'admin' && (
         <div style={{ padding: '12px 16px', borderTop: `1px solid ${C.brd}` }}>
-          {user.suspended ? (
+          {u.suspended ? (
             <button onClick={() => setConfirm('reactivate')} style={{ width: '100%', padding: '8px', background: `${C.grn}15`, border: `1px solid ${C.grn}30`, borderRadius: 6, color: C.grn, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
               Reactivate Account
             </button>
@@ -726,14 +999,20 @@ function UserDetailPanel({ user, onClose, onStatusChange }) {
 
       <ConfirmModal open={!!confirm}
         title={confirm === 'suspend' ? 'Suspend User' : 'Reactivate User'}
-        message={confirm === 'suspend' ? `Suspend ${user.email}? They will not be able to log in.` : `Reactivate ${user.email}? They will regain full access.`}
+        message={confirm === 'suspend' ? `Suspend ${u.email}? They will not be able to log in.` : `Reactivate ${u.email}? They will regain full access.`}
         confirmLabel={confirm === 'suspend' ? 'Suspend' : 'Reactivate'}
         danger={confirm === 'suspend'} onConfirm={doStatus} onCancel={() => setConfirm(null)} />
+
+      <ConfirmModal open={!!roleConfirm}
+        title="Change User Role"
+        message={`Change ${u.email}'s role from "${u.role}" to "${roleConfirm}"? This affects their access immediately.`}
+        confirmLabel="Change Role"
+        danger={roleConfirm === 'admin'} onConfirm={doRoleChange} onCancel={() => setRoleConfirm(null)} />
     </div>
   );
 }
 
-function UsersSection() {
+function UsersSection({ isAdmin = false }) {
   const [rows,    setRows]    = useState([]);
   const [total,   setTotal]   = useState(0);
   const [loading, setLoading] = useState(true);
@@ -753,6 +1032,7 @@ function UsersSection() {
       if (f === 'suspended') params.suspended = true;
       if (f === 'active')    params.suspended = false;
       if (f === 'admins')    params.role = 'admin';
+      if (f === 'mods')      params.role = 'mod';
       const data = await adminApi.users.list(params);
       setRows((data.users || []).map(u => ({ ...u, status: u.suspended ? 'suspended' : 'active' })));
       setTotal(data.total || 0);
@@ -771,7 +1051,7 @@ function UsersSection() {
   const columns = [
     { key: 'name',         label: 'Name',         render: (v, row) => <span style={{ color: C.txt, fontWeight: 600 }}>{v || <span style={{ color: C.muted }}>—</span>}</span> },
     { key: 'email',        label: 'Email',         render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{v}</span> },
-    { key: 'role',         label: 'Role',          render: v => v === 'admin' ? <Badge text="admin" color={C.acc} /> : <Badge text="user" color={C.muted} /> },
+    { key: 'role',         label: 'Role',          render: v => <RoleBadge role={v} /> },
     { key: 'status',       label: 'Status',        render: v => v === 'active' ? <Badge text="active" color={C.grn} /> : <Badge text="suspended" color={C.red} /> },
     { key: 'projectCount', label: 'Projects',      render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
     { key: 'createdAt',    label: 'Joined',        render: v => fmtDate(v) },
@@ -782,6 +1062,7 @@ function UsersSection() {
     { id: 'all',       label: 'All' },
     { id: 'active',    label: 'Active' },
     { id: 'suspended', label: 'Suspended' },
+    { id: 'mods',      label: 'Mods' },
     { id: 'admins',    label: 'Admins' },
   ];
 
@@ -816,8 +1097,10 @@ function UsersSection() {
         {selectedUser && (
           <UserDetailPanel
             user={selectedUser}
+            isAdmin={isAdmin}
             onClose={() => setSelectedUser(null)}
             onStatusChange={() => load(search, filter, page)}
+            onUserUpdate={() => load(search, filter, page)}
           />
         )}
       </div>
@@ -2068,14 +2351,36 @@ export default function AdminConsole() {
   const navigate   = useNavigate();
   const [active,   setActive]      = useState('overview');
   const [unread,   setUnread]      = useState(0);
+  const [role,     setRole]        = useState(null);     // DB-verified role from /console
+  const [allowed,  setAllowed]     = useState(null);     // Set of allowed section ids, or null while loading
+  const [version,  setVersion]     = useState(null);
 
+  const isAdmin = role === 'admin';
+
+  // Fetch the console capability descriptor (role + allowed sections) — server truth.
   useEffect(() => {
+    adminApi.console()
+      .then(d => {
+        setRole(d.role);
+        const set = new Set(d.sections || []);
+        setAllowed(set);
+        setActive(prev => set.has(prev) ? prev : (d.sections?.[0] || 'overview'));
+      })
+      .catch(() => { setRole(user?.role || 'admin'); setAllowed(null); });
+  }, [user]);
+
+  // Mods cannot read metrics; only fetch the unread badge when allowed.
+  useEffect(() => {
+    if (allowed && !allowed.has('overview')) return;
     adminApi.metrics().then(m => setUnread(m?.contactMessages?.unread || 0)).catch(() => {});
-  }, []);
+  }, [allowed]);
+
+  // App version line (optional — renders nothing on 404).
+  useEffect(() => { fetchVersion().then(setVersion); }, []);
 
   const sections = {
     overview: <OverviewSection onNavigate={setActive} />,
-    users:    <UsersSection />,
+    users:    <UsersSection isAdmin={isAdmin} />,
     projects: <ProjectsSection />,
     sift:     <SiftAdminSection />,
     content:  <ContentSection />,
@@ -2085,6 +2390,17 @@ export default function AdminConsole() {
     security: <SecuritySection />,
     health:   <HealthSection />,
   };
+
+  // Section labels for the access-denied message.
+  const sectionLabel = id => (NAV_SECTIONS.find(s => s.id === id)?.label || id);
+
+  // Render the active section, gated by the allowed set (UX layer; server enforces too).
+  const renderActive = () => {
+    if (allowed && !allowed.has(active)) return <AccessDenied section={sectionLabel(active)} />;
+    return sections[active];
+  };
+
+  const visibleNav = allowed ? NAV_SECTIONS.filter(s => allowed.has(s.id)) : NAV_SECTIONS;
 
   return (
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: FONT, color: C.txt }}>
@@ -2116,13 +2432,13 @@ export default function AdminConsole() {
             <span>Open App</span>
           </button>
           <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>{user?.email}</span>
-          <Badge text="admin" color={C.acc} />
+          <RoleBadge role={role || user?.role || 'admin'} />
         </div>
       </div>
 
       {/* ── Sidebar ──────────────────────────────────────────────────── */}
       <div style={{ position: 'fixed', top: TOPBAR_H, left: 0, width: SIDEBAR_W, bottom: 0, background: C.surf, borderRight: `1px solid ${C.brd}`, overflowY: 'auto', zIndex: 200, paddingTop: 12 }}>
-        {NAV_SECTIONS.map(sec => {
+        {visibleNav.map(sec => {
           const isActive = active === sec.id;
           const badge = sec.id === 'messages' && unread > 0 ? unread : null;
           return (
@@ -2139,7 +2455,7 @@ export default function AdminConsole() {
           );
         })}
 
-        {/* Sidebar footer — back to dashboard link */}
+        {/* Sidebar footer — back to dashboard link + version line */}
         <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '12px 16px', borderTop: `1px solid ${C.brd}`, background: C.surf }}>
           <button onClick={() => navigate('/app')} style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '7px 10px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT, transition: 'all 0.15s' }}
             onMouseEnter={e => { e.currentTarget.style.borderColor = C.acc; e.currentTarget.style.color = C.acc; }}
@@ -2148,13 +2464,18 @@ export default function AdminConsole() {
             <span style={{ fontSize: 12 }}>←</span>
             <span>Back to Dashboard</span>
           </button>
+          {version && (
+            <div style={{ fontSize: 9, color: C.muted, fontFamily: MONO, textAlign: 'center', marginTop: 8, letterSpacing: '0.04em' }}>
+              v{version.version}{version.commit ? ` · build ${String(version.commit).slice(0, 7)}` : ''}{version.buildDate ? ` · ${fmtDate(version.buildDate)}` : ''}
+            </div>
+          )}
         </div>
       </div>
 
       {/* ── Main content ─────────────────────────────────────────────── */}
       <div style={{ marginLeft: SIDEBAR_W, paddingTop: TOPBAR_H, minHeight: '100vh' }}>
         <div style={{ padding: '28px 32px', maxWidth: 1200 }}>
-          {sections[active]}
+          {renderActive()}
         </div>
       </div>
     </div>

@@ -29,6 +29,7 @@ import screeningRouter    from './routes/screening.js';
 
 import { initDefaultSettings } from './controllers/settingsController.js';
 import { seedAdmins } from './auth/seedAdmins.js';
+import { getVersion } from './version.js';
 
 const app = express();
 
@@ -45,7 +46,11 @@ const authLimiter = rateLimit({
 });
 
 // ── Core middleware ────────────────────────────────────────────────────────────
-app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
+// CORS origin is env-driven for deployment (CORS_ORIGIN, then APP_BASE_URL),
+// falling back to the local Vite dev server. credentials:true is required so the
+// httpOnly session cookie is sent on cross-origin requests.
+const ORIGIN = process.env.CORS_ORIGIN || process.env.APP_BASE_URL || 'http://localhost:3000';
+app.use(cors({ origin: ORIGIN, credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
 app.use(requestLogger);
@@ -54,6 +59,9 @@ app.use(requestLogger);
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '2.0.0' });
 });
+
+// ── Version metadata (public, no auth) ─────────────────────────────────────────
+app.get('/api/version', (_req, res) => res.json(getVersion()));
 
 // ── Auth routes (public: register/login; protected: logout/me) ────────────────
 app.use('/api/auth', authLimiter, authRouter);
@@ -88,7 +96,8 @@ app.use(errorHandler);
 // ── Start ──────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 const server = app.listen(PORT, () => {
-  console.log(`META·LAB API on :${PORT}`);
+  const { version, commit } = getVersion();
+  console.log(`META·LAB API on :${PORT} (v${version} · ${commit})`);
   // Initialize default settings + ensure admin accounts exist (non-blocking)
   initDefaultSettings().catch(console.error);
   seedAdmins().catch(err => console.error('[seed] admin seed failed:', err.message));
