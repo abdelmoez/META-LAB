@@ -13,6 +13,33 @@ import { getMetaSiftSettings } from '../screening/settings.js';
 
 const MAX_LEN = 4000;
 
+// ── Typing indicators (prompt4 Task 7) ──────────────────────────────────────
+// In-memory, project-scoped, never persisted. Entries expire after TYPING_TTL.
+// NOTE: this lives in process memory, so it is per-instance — fine for a single
+// server; a multi-instance deployment would need a shared channel (Redis pub/sub
+// or websockets). Documented in docs/manager/deployment-readiness.md.
+const TYPING_TTL = 6000;
+const typingByProject = new Map(); // projectId -> Map(userId -> { name, ts })
+
+function setTyping(projectId, userId, name) {
+  let m = typingByProject.get(projectId);
+  if (!m) { m = new Map(); typingByProject.set(projectId, m); }
+  m.set(userId, { name: name || 'Member', ts: Date.now() });
+}
+
+/** Names of members (excluding `exceptUserId`) typing within the TTL window. */
+function activeTypers(projectId, exceptUserId) {
+  const m = typingByProject.get(projectId);
+  if (!m) return [];
+  const now = Date.now();
+  const names = [];
+  for (const [uid, v] of m) {
+    if (now - v.ts > TYPING_TTL) { m.delete(uid); continue; }
+    if (uid !== exceptUserId) names.push(v.name);
+  }
+  return names;
+}
+
 /** Strip HTML tags + control chars; trim; cap length. */
 function sanitize(text) {
   return String(text || '')
@@ -46,6 +73,7 @@ export async function listMessages(req, res) {
       })),
       canChat: access.canChat,
       chatRestricted: access.project.chatRestricted,
+      typing: activeTypers(access.project.id, req.user.id),
       serverTime: new Date().toISOString(),
     });
   } catch (err) {
@@ -128,6 +156,21 @@ export async function markRead(req, res) {
     res.json({ unread: 0 });
   } catch (err) {
     console.error('[screening] markRead:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/** POST /projects/:pid/chat/typing — mark the current member as typing (Task 7). */
+export async function setTypingStatus(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    if (!access.active) return res.status(403).json({ error: 'Inactive members cannot post' });
+    const name = access.member?.name || req.user.email || 'Member';
+    setTyping(access.project.id, req.user.id, name);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[screening] setTypingStatus:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }

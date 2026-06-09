@@ -28,12 +28,17 @@ const json = body => ({
 export const adminApi = {
   metrics:        ()         => req(`${BASE}/metrics`),
   health:         ()         => req(`${BASE}/health`),
+  // Console capability descriptor — { role, sections, emailConfigured }. (admin + mod)
+  console:        ()         => req(`${BASE}/console`),
 
   users: {
     list:         (p)        => req(`${BASE}/users?${new URLSearchParams(p || {})}`),
     get:          (id)       => req(`${BASE}/users/${id}`),
     getProjects:  (id, p)    => req(`${BASE}/users/${id}/projects?${new URLSearchParams(p || {})}`),
+    update:       (id, b)    => req(`${BASE}/users/${id}`, { method: 'PATCH', ...json(b) }),
     updateStatus: (id, s)    => req(`${BASE}/users/${id}/status`, { method: 'PATCH', ...json(s) }),
+    updateRole:   (id, role) => req(`${BASE}/users/${id}/role`, { method: 'PATCH', ...json({ role }) }),
+    resetPassword:(id)       => req(`${BASE}/users/${id}/reset-password`, { method: 'POST' }),
   },
 
   projects: {
@@ -78,7 +83,22 @@ export const adminApi = {
     list:         (p)        => req(`${BASE}/contact-messages?${new URLSearchParams(p || {})}`),
     update:       (id, b)    => req(`${BASE}/contact-messages/${id}`, { method: 'PATCH', ...json(b) }),
     delete:       (id)       => req(`${BASE}/contact-messages/${id}`, { method: 'DELETE' }),
+    // Reply by email. Returns { reply, emailConfigured, sent }. Saved as draft if not configured.
+    reply:        (id, b)    => req(`${BASE}/contact-messages/${id}/reply`, { method: 'POST', ...json(b) }),
+    replies:      (id)       => req(`${BASE}/contact-messages/${id}/replies`),
   },
+};
+
+// App version — { name, version, commit, buildDate }. Returns null on 404 (may be
+// wired by another dev concurrently). Never throws.
+export const fetchVersion = async () => {
+  try {
+    const res = await fetch('/api/version', { credentials: 'include' });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
 };
 
 // Public settings — no auth required (used by Landing page)

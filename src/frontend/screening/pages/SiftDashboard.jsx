@@ -7,6 +7,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
+import UserMenu from '../../components/UserMenu.jsx';
 
 const C = {
   bg:    '#080c15', surf:  '#0c1322', card:  '#101929',
@@ -191,8 +192,7 @@ export default function SiftDashboard() {
             <BetaBadge />
           </div>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 12, color: C.muted }}>{user?.name || user?.email}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <button
             onClick={() => { setShowNewModal(true); setCreateError(null); setNewForm(EMPTY_FORM); }}
             style={{
@@ -205,6 +205,7 @@ export default function SiftDashboard() {
           >
             + New Screening Project
           </button>
+          <UserMenu context="metasift" />
         </div>
       </div>
 

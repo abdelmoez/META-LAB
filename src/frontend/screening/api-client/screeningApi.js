@@ -100,6 +100,7 @@ export const screeningApi = {
   deleteChat: (pid, cmid) => req('DELETE', `/projects/${pid}/chat/${cmid}`),
   chatUnreadCount: (pid) => req('GET',  `/projects/${pid}/chat/unread-count`),
   markChatRead:    (pid) => req('POST', `/projects/${pid}/chat/mark-read`),
+  chatTyping:      (pid) => req('POST', `/projects/${pid}/chat/typing`),
 
   // PDF attachments (Part 7)
   listPdf:        (pid, rid) => req('GET', `/projects/${pid}/records/${rid}/pdf`),

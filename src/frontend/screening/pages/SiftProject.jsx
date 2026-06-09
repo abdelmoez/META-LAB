@@ -5,11 +5,11 @@
  */
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { useAuth } from '../../context/AuthContext.jsx';
 import { C, FONT, MONO } from '../ui/theme.js';
 import { GlobalStyle, BetaBadge, Badge, Loading, ErrorBanner, Modal, Button } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 import ChatLauncher from '../components/ChatLauncher.jsx';
+import UserMenu from '../../components/UserMenu.jsx';
 
 import OverviewTab     from '../tabs/OverviewTab.jsx';
 import ScreeningTab    from '../tabs/ScreeningTab.jsx';
@@ -38,8 +38,6 @@ const PROGRESS_BADGE = {
 export default function SiftProject() {
   const { pid } = useParams();
   const navigate = useNavigate();
-  const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
   const [params, setParams] = useSearchParams();
   const tab = params.get('tab') || 'overview';
 
@@ -110,12 +108,7 @@ export default function SiftProject() {
             style={{ background: C.card, border: `1px solid ${C.brd2}`, color: C.txt, fontSize: 12, fontWeight: 600, fontFamily: FONT, padding: '6px 14px', borderRadius: 7, cursor: 'pointer' }}>
             ↑ Import
           </button>
-          {isAdmin && (
-            <button onClick={() => navigate('/ops')} title="Open the META·SIFT control panel"
-              style={{ background: C.acc2 + '1c', border: `1px solid ${C.acc2}55`, color: C.acc, fontSize: 12, fontWeight: 600, fontFamily: FONT, padding: '6px 12px', borderRadius: 7, cursor: 'pointer' }}>
-              ⚙ Control Panel
-            </button>
-          )}
+          <UserMenu context="metasift" />
         </div>
       </div>
 

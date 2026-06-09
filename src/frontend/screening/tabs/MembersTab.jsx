@@ -346,9 +346,20 @@ function MemberRow({ member, canManage, busy, rowErr, onPatch, onRemove }) {
 
 // ── AddMemberModal ──────────────────────────────────────────────────────────
 
+// Permission presets shown when adding a member (Task 9).
+const ADD_PRESETS = [
+  { value: 'reviewer',          label: 'Reviewer — screen + second review + chat' },
+  { value: 'data_extractor',    label: 'Data Extractor — META·LAB extraction + analysis' },
+  { value: 'leader',            label: 'Leader — full control (except owner)' },
+  { value: 'readonly_metasift', label: 'Read-only META·SIFT' },
+  { value: 'readonly_metalab',  label: 'Read-only META·LAB' },
+  { value: 'readonly_both',     label: 'Read-only (both modules)' },
+  { value: 'viewer',            label: 'Viewer — read-only both, can chat' },
+];
+
 function AddMemberModal({ pid, onClose, onAdded }) {
   const [email, setEmail] = useState('');
-  const [role, setRole] = useState('reviewer');
+  const [preset, setPreset] = useState('reviewer');
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState('');
   const [pendingNote, setPendingNote] = useState(false);
@@ -361,7 +372,7 @@ function AddMemberModal({ pid, onClose, onAdded }) {
     setErr('');
     setPendingNote(false);
     try {
-      const res = await screeningApi.addMember(pid, { email: trimmed, role });
+      const res = await screeningApi.addMember(pid, { email: trimmed, preset });
       await onAdded();
       if (res?.pending) {
         // User not yet registered — show note, keep modal open briefly so the
@@ -399,16 +410,18 @@ function AddMemberModal({ pid, onClose, onAdded }) {
         </Field>
 
         <div>
-          <label style={fieldLabel}>Role</label>
+          <label style={fieldLabel}>Permission preset</label>
           <select
-            value={role}
-            onChange={e => setRole(e.target.value)}
+            value={preset}
+            onChange={e => setPreset(e.target.value)}
             disabled={submitting}
             style={{ ...fieldInput, cursor: 'pointer' }}
           >
-            <option value="reviewer">Reviewer — can screen records</option>
-            <option value="viewer">Viewer — read-only access</option>
+            {ADD_PRESETS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
           </select>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 1.5 }}>
+            Presets set META·LAB + META·SIFT permissions across the linked workspace. Fine-tune per-member toggles after adding.
+          </div>
         </div>
 
         {pendingNote && (

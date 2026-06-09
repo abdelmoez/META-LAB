@@ -1,7 +1,33 @@
 import { prisma } from '../db/client.js';
 import { logAdminAction } from '../utils/audit.js';
+import { hashPassword } from '../auth/password.js';
+import { isEmailConfigured, sendEmail, renderReplyEmail } from '../services/emailService.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/**
+ * Generate a strong, human-typeable temporary password.
+ * Mixed case + digits + symbols, ~16 chars. Returned ONCE to the admin/mod; never stored.
+ */
+function generateTempPassword() {
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghijkmnpqrstuvwxyz';
+  const digits = '23456789';
+  const symbols = '!@#$%^&*-_=+';
+  const all = upper + lower + digits + symbols;
+  const pick = set => set[Math.floor(Math.random() * set.length)];
+  // Guarantee at least one of each class, then fill to length 16.
+  const chars = [pick(upper), pick(lower), pick(digits), pick(symbols)];
+  while (chars.length < 16) chars.push(pick(all));
+  // Fisher–Yates shuffle so the guaranteed chars are not always at the front.
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join('');
+}
 
 function startOf(unit) {
   const now = new Date();
@@ -194,13 +220,80 @@ export async function getUserById(req, res) {
   }
 }
 
+// ── PATCH /api/admin/users/:id ────────────────────────────────────────────────
+// Edit a user's name and/or email. (admin + mod)
+
+export async function updateUser(req, res) {
+  try {
+    const body = req.body || {};
+    const data = {};
+
+    if (body.name !== undefined) {
+      if (body.name !== null && typeof body.name !== 'string') {
+        return res.status(400).json({ error: '`name` must be a string or null' });
+      }
+      const trimmed = typeof body.name === 'string' ? body.name.trim() : '';
+      data.name = trimmed || null;
+    }
+
+    if (body.email !== undefined) {
+      if (typeof body.email !== 'string' || !EMAIL_RE.test(body.email.trim())) {
+        return res.status(400).json({ error: 'A valid `email` is required' });
+      }
+      data.email = body.email.trim().toLowerCase();
+    }
+
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ error: 'Provide `name` and/or `email` to update' });
+    }
+
+    const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+    if (!target) return res.status(404).json({ error: 'User not found' });
+
+    // Enforce unique email (case-insensitive via the lowercased value above)
+    if (data.email && data.email !== target.email) {
+      const clash = await prisma.user.findUnique({ where: { email: data.email } });
+      if (clash && clash.id !== target.id) {
+        return res.status(409).json({ error: 'That email is already in use' });
+      }
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: req.params.id },
+      data,
+      select: { id: true, email: true, name: true, role: true, suspended: true, createdAt: true, lastActive: true },
+    });
+
+    await logAdminAction(req, 'EDIT_USER', 'User', target.id, {
+      before: { name: target.name, email: target.email },
+      after: { name: updated.name, email: updated.email },
+    });
+
+    return res.json({ user: updated });
+  } catch (err) {
+    console.error('[admin] updateUser error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 // ── PATCH /api/admin/users/:id/status ────────────────────────────────────────
+// Body accepts { suspended: boolean } OR { status: 'active'|'suspended'|'disabled' }.
+// 'disabled' maps to suspended=true. Cannot suspend an admin. (admin + mod)
 
 export async function updateUserStatus(req, res) {
   try {
-    const { suspended } = req.body || {};
-    if (typeof suspended !== 'boolean') {
-      return res.status(400).json({ error: '`suspended` (boolean) is required' });
+    const body = req.body || {};
+    let suspended;
+
+    if (typeof body.suspended === 'boolean') {
+      suspended = body.suspended;
+    } else if (typeof body.status === 'string') {
+      const s = body.status.trim().toLowerCase();
+      if (s === 'active') suspended = false;
+      else if (s === 'suspended' || s === 'disabled') suspended = true;
+      else return res.status(400).json({ error: "`status` must be 'active', 'suspended', or 'disabled'" });
+    } else {
+      return res.status(400).json({ error: 'Provide `suspended` (boolean) or `status` (string)' });
     }
 
     const target = await prisma.user.findUnique({ where: { id: req.params.id } });
@@ -225,6 +318,86 @@ export async function updateUserStatus(req, res) {
     return res.json({ user: updated });
   } catch (err) {
     console.error('[admin] updateUserStatus error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── PATCH /api/admin/users/:id/role ───────────────────────────────────────────
+// ADMIN ONLY. Body { role: 'user'|'mod'|'admin' }. Cannot demote the last admin.
+
+const VALID_ROLES = ['user', 'mod', 'admin'];
+
+export async function updateUserRole(req, res) {
+  try {
+    const { role } = req.body || {};
+    if (typeof role !== 'string' || !VALID_ROLES.includes(role)) {
+      return res.status(400).json({ error: "`role` must be one of 'user', 'mod', 'admin'" });
+    }
+
+    const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+    if (!target) return res.status(404).json({ error: 'User not found' });
+
+    // Last-admin protection: block demoting the only remaining admin.
+    if (target.role === 'admin' && role !== 'admin') {
+      const adminCount = await prisma.user.count({ where: { role: 'admin' } });
+      if (adminCount <= 1) {
+        return res.status(400).json({ error: 'Cannot remove the last admin' });
+      }
+    }
+
+    if (target.role === role) {
+      return res.json({
+        user: {
+          id: target.id, email: target.email, name: target.name,
+          role: target.role, suspended: target.suspended,
+          createdAt: target.createdAt, lastActive: target.lastActive,
+        },
+      });
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: req.params.id },
+      data: { role },
+      select: { id: true, email: true, name: true, role: true, suspended: true, createdAt: true, lastActive: true },
+    });
+
+    await logAdminAction(req, 'ASSIGN_ROLE', 'User', target.id, {
+      email: target.email,
+      before: target.role,
+      after: role,
+    });
+
+    return res.json({ user: updated });
+  } catch (err) {
+    console.error('[admin] updateUserRole error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── POST /api/admin/users/:id/reset-password ──────────────────────────────────
+// Generates a strong temp password, hashes it, returns the plaintext ONCE.
+// (admin + mod). Production-preferred flow is a token-based email reset — see
+// server/docs/email-setup.md.
+
+export async function resetUserPassword(req, res) {
+  try {
+    const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+    if (!target) return res.status(404).json({ error: 'User not found' });
+
+    const tempPassword = generateTempPassword();
+    const hashed = await hashPassword(tempPassword);
+
+    await prisma.user.update({
+      where: { id: req.params.id },
+      data: { password: hashed },
+    });
+
+    await logAdminAction(req, 'RESET_PASSWORD', 'User', target.id, { email: target.email });
+
+    // Return the plaintext temp password exactly once. NEVER store or return hashes.
+    return res.json({ tempPassword });
+  } catch (err) {
+    console.error('[admin] resetUserPassword error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }
@@ -616,6 +789,89 @@ export async function deleteContactMessage(req, res) {
   }
 }
 
+// ── POST /api/admin/contact-messages/:id/reply ────────────────────────────────
+// Render the reply template, attempt to email it, persist a ContactReply, and
+// mark the message replied. (admin + mod)
+// If email is not configured the reply is saved as a draft and a 200 is returned
+// with emailConfigured:false — never a 500.
+
+export async function replyToMessage(req, res) {
+  try {
+    const { subject, body } = req.body || {};
+    if (typeof body !== 'string' || !body.trim()) {
+      return res.status(400).json({ error: '`body` is required' });
+    }
+
+    const msg = await prisma.contactMessage.findUnique({ where: { id: req.params.id } });
+    if (!msg) return res.status(404).json({ error: 'Message not found' });
+
+    const finalSubject = (typeof subject === 'string' && subject.trim())
+      ? subject.trim()
+      : `Re: ${msg.subject || '(no subject)'}`;
+
+    const { html, text } = renderReplyEmail({
+      appName: 'META·LAB',
+      toName: msg.name || '',
+      bodyText: body,
+      originalSubject: msg.subject || '',
+    });
+
+    // sendEmail never throws — { sent:false, reason } when not configured / on failure.
+    const result = await sendEmail({ to: msg.email, subject: finalSubject, html, text });
+    const sent = result.sent === true;
+
+    const reply = await prisma.contactReply.create({
+      data: {
+        messageId: msg.id,
+        repliedById: req.user.id,
+        repliedByName: req.user.email || '',
+        toEmail: msg.email,
+        subject: finalSubject,
+        body,
+        status: sent ? 'sent' : 'draft',
+        error: result.error || '',
+      },
+    });
+
+    await prisma.contactMessage.update({
+      where: { id: msg.id },
+      data: { replied: true, repliedAt: new Date(), read: true },
+    });
+
+    await logAdminAction(req, 'REPLY_MESSAGE', 'ContactMessage', msg.id, {
+      to: msg.email,
+      subject: finalSubject,
+      sent,
+      reason: result.reason || null,
+    });
+
+    return res.json({ reply, emailConfigured: isEmailConfigured(), sent });
+  } catch (err) {
+    console.error('[admin] replyToMessage error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── GET /api/admin/contact-messages/:id/replies ───────────────────────────────
+// List replies for a message, newest first. (admin + mod)
+
+export async function getMessageReplies(req, res) {
+  try {
+    const msg = await prisma.contactMessage.findUnique({ where: { id: req.params.id } });
+    if (!msg) return res.status(404).json({ error: 'Message not found' });
+
+    const replies = await prisma.contactReply.findMany({
+      where: { messageId: req.params.id },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return res.json({ replies, emailConfigured: isEmailConfigured() });
+  } catch (err) {
+    console.error('[admin] getMessageReplies error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 // ── PATCH /api/admin/projects/:id/archive ────────────────────────────────────
 
 export async function archiveProject(req, res) {
@@ -648,6 +904,26 @@ export async function restoreProject(req, res) {
     console.error('[admin] restoreProject error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
+}
+
+// ── GET /api/admin/console ────────────────────────────────────────────────────
+// Tells the frontend which sections to render for the caller's role.
+// Server enforcement (per-route middleware) is the source of truth — this is UX only.
+// req.user.role is the DB-verified role set by requireAdminOrMod.
+
+export async function getConsole(req, res) {
+  const role = req.user?.role || 'user';
+  const sections = role === 'admin'
+    ? ['overview', 'users', 'projects', 'sift', 'content', 'settings', 'flags', 'messages', 'security', 'health']
+    : role === 'mod'
+      ? ['users', 'messages']
+      : [];
+
+  return res.json({
+    role,
+    sections,
+    emailConfigured: isEmailConfigured(),
+  });
 }
 
 // ── GET /api/admin/health ─────────────────────────────────────────────────────

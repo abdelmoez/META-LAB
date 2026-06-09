@@ -2465,6 +2465,7 @@ function ScreeningModule({project,updateProject,activeId,updNested}){
    title/abstract screening is now owned by META·SIFT. project.records is never deleted. */
 function MetaSiftPrismaSync({project,updateProject,activeId}){
   const[st,setSt]=useState({loading:true});
+  const[creating,setCreating]=useState(false);
   const apply=(summary)=>{
     const p=summary.prisma;
     const accepted=Array.isArray(summary.acceptedStudies)?summary.acceptedStudies:[];
@@ -2516,12 +2517,24 @@ function MetaSiftPrismaSync({project,updateProject,activeId}){
     <div style={{fontSize:12,color:C.muted,marginBottom:10}}>{st.error} You can still enter PRISMA numbers manually below.</div>
     <button onClick={()=>load(true)} style={{...btnS("ghost"),fontSize:11}}>↻ Retry</button>
   </div>;
+  const createLinked=async()=>{
+    setCreating(true);
+    try{
+      const r=await fetch("/api/screening/projects",{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({title:project.name||"Screening project",linkedMetaLabProjectId:project.id})});
+      if(r.ok){ const sp=await r.json(); window.location.href=`/sift-beta/projects/${sp.id}`; }
+      else { setCreating(false); load(true); }
+    }catch{ setCreating(false); }
+  };
   if(!st.linked) return <div style={{...wrap,borderColor:C.acc+"40",background:C.bg}}>
     <div style={{fontSize:12,fontWeight:800,color:C.acc,letterSpacing:0.5,marginBottom:6}}>⬡ Title / abstract screening is now in META·SIFT</div>
     <div style={{fontSize:12,color:C.muted,lineHeight:1.6,marginBottom:12}}>
-      Screen your references with two reviewers in META·SIFT. Link a META·SIFT project to this review and its PRISMA numbers — records identified, duplicates removed, screened, excluded, and included — will auto-fill the flow diagram below.
+      Screen your references with two reviewers in META·SIFT. Create a linked META·SIFT screening project for this review — they share one Review Workspace (same owner, members, and permissions), accepted second-review studies flow back to Data Extraction, and the PRISMA numbers below auto-fill.
     </div>
-    <button onClick={()=>{window.location.href="/sift-beta";}} style={btnS("primary")}>Open META·SIFT →</button>
+    <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+      <button onClick={createLinked} disabled={creating} style={btnS("primary")}>{creating?"Creating…":"+ Create & link META·SIFT project"}</button>
+      <button onClick={()=>{window.location.href="/sift-beta";}} style={btnS("ghost")}>Open META·SIFT →</button>
+    </div>
   </div>;
   const p=st.prisma;
   return <div style={{...wrap,borderColor:C.grn+"55"}}>

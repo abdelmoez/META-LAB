@@ -67,6 +67,7 @@ r.get('/projects/:pid/audit',             OV.getAuditLog);
 r.get('/projects/:pid/chat',              CH.listMessages);
 r.get('/projects/:pid/chat/unread-count', CH.getUnreadCount);
 r.post('/projects/:pid/chat/mark-read',   CH.markRead);
+r.post('/projects/:pid/chat/typing',      CH.setTypingStatus);
 r.post('/projects/:pid/chat',             CH.postMessage);
 r.delete('/projects/:pid/chat/:cmid',     CH.deleteMessage);
 

@@ -6,7 +6,17 @@
 
 ---
 
-## 0. prompt3 targeted bug fixes (2026-06-09)
+## 0. prompt4 server-ready upgrade (2026-06-09)
+
+**META·SIFT screening suite: ✅ 207/207 pass** (+4 `integration/prompt4.test.js`). `vite build` clean.
+Delivered: shared UserMenu in META·SIFT, admin user editing + **Mod role** (server-enforced limited console),
+email reply service (templated, env-driven SMTP, draft fallback), `/api/version` + version display,
+chat **typing indicators** + per-user unread, **creator→owner** role model (leader can't touch owner),
+and the **Review Workspace** permission layer (module presets, create+link META·SIFT from META·LAB).
+Additive migration `workspace_perms_and_contact_replies`. Env/deploy docs: `docs/manager/deployment-readiness.md`,
+`server/docs/email-setup.md`, `.env.example` (root+server). Full table in `tests/screening/report.md`.
+
+## 0a. prompt3 targeted bug fixes (2026-06-09)
 
 **META·SIFT screening suite: ✅ 203/203 pass** (`npx vitest run tests/screening/ --no-file-parallelism`, server up).
 Adds **+6** integration tests (`integration/prompt3.test.js`) over the prompt2 total of 197,

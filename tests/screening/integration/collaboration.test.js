@@ -64,7 +64,9 @@ describe('META·SIFT collaboration (integration)', () => {
 
     const members = await api(`/screening/projects/${pid}/members`, { cookie: a.cookie });
     expect(members.data.isLeader).toBe(true);
-    expect(members.data.members.find(m => m.role === 'leader')).toBeTruthy();
+    // The creator is now the 'owner' role (prompt4 Task 8: creator→owner).
+    expect(members.data.members.find(m => m.role === 'owner')).toBeTruthy();
+    expect(members.data.isOwner).toBe(true);
 
     // add existing user (active) + unknown (pending)
     const addB = await api(`/screening/projects/${pid}/members`, { method: 'POST', cookie: a.cookie, body: { email: `itB_${r}@t.local`, role: 'reviewer' } });

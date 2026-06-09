@@ -47,7 +47,25 @@ model ContactMessage {
   message   String
   read      Boolean  @default(false)
   archived  Boolean  @default(false)
+  replied   Boolean  @default(false)   // prompt4 Task 4
+  repliedAt DateTime?
   createdAt DateTime @default(now())
+  replies   ContactReply[]
+}
+
+// Email replies sent from the console to a contact message (prompt4 Task 4).
+model ContactReply {
+  id            String         @id @default(uuid())
+  messageId     String
+  message       ContactMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  repliedById   String
+  repliedByName String         @default("")
+  toEmail       String
+  subject       String         @default("")
+  body          String
+  status        String         @default("sent")  // sent | failed | draft
+  error         String         @default("")
+  createdAt     DateTime       @default(now())
 }
 
 model SiteSetting {
@@ -241,11 +259,31 @@ model ScreenProjectMember {
   user                User?         @relation("UserScreenMemberships", fields: [userId], references: [id], onDelete: Cascade)
   name                String        @default("")
   email               String        @default("")
-  role                String        @default("reviewer")  // leader | reviewer | viewer
+  role                String        @default("reviewer")  // owner | leader | reviewer | viewer
   status              String        @default("active")     // active | inactive | pending
+  // ── META·SIFT permissions (existing) ───────────────────────────────
   canScreen           Boolean       @default(true)
   canChat             Boolean       @default(true)
   canResolveConflicts Boolean       @default(false)
+  // ── Shared Review Workspace permissions (prompt4 Task 9; additive) ──
+  permissionPreset    String        @default("reviewer")   // owner|leader|reviewer|data_extractor|viewer|readonly_*
+  // META·SIFT module
+  canViewMetaSift     Boolean       @default(true)
+  canSecondReview     Boolean       @default(true)
+  canManageDuplicates Boolean       @default(false)
+  canImportRecords    Boolean       @default(false)
+  canExportRecords    Boolean       @default(false)
+  readOnlyMetaSift    Boolean       @default(false)
+  // META·LAB module
+  canViewMetaLab      Boolean       @default(true)
+  canEditMetaLab      Boolean       @default(false)
+  canManageExtraction Boolean       @default(false)
+  canRunAnalysis      Boolean       @default(false)
+  canExport           Boolean       @default(false)
+  readOnlyMetaLab     Boolean       @default(false)
+  // Global
+  canManageMembers    Boolean       @default(false)
+  canManageSettings   Boolean       @default(false)
   joinedAt            DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
 

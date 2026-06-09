@@ -8,8 +8,18 @@
  *   active MEMBER of it. The owner is always treated as a leader.
  */
 import { prisma } from '../db/client.js';
+import { PERMISSION_KEYS, fullPermissions } from '../../src/research-engine/screening/permissionPresets.js';
 
 export const QUORUM = 2; // distinct reviewers required to promote a record
+
+/** Resolve the effective module permissions for an access context. */
+function resolvePerms({ isOwner, member }) {
+  // Owner and leader always get full module access (prompt4 Task 8/9/12).
+  if (isOwner || member?.role === 'leader' || member?.role === 'owner') return fullPermissions();
+  const perms = {};
+  for (const k of PERMISSION_KEYS) perms[k] = !!member?.[k];
+  return perms;
+}
 
 /**
  * Resolve the caller's access to a screening project.
@@ -34,9 +44,10 @@ export async function getProjectAccess(pid, user) {
   // A removed/blocked member has no userId link; a 'pending' invite cannot act yet.
   if (!isOwner && member && member.status === 'pending') return null;
 
-  const isLeader = isOwner || member?.role === 'leader';
+  const isLeader = isOwner || member?.role === 'leader' || member?.role === 'owner';
   const active   = isOwner || member?.status === 'active';
-  const role     = isOwner ? 'leader' : (member?.role || 'reviewer');
+  const role     = isOwner ? 'owner' : (member?.role || 'reviewer');
+  const perms    = resolvePerms({ isOwner, member });
 
   return {
     project,
@@ -45,6 +56,7 @@ export async function getProjectAccess(pid, user) {
     isLeader,
     role,
     active,
+    perms,
     // Viewers and inactive members cannot record decisions.
     canScreen: isOwner
       ? true
@@ -53,6 +65,8 @@ export async function getProjectAccess(pid, user) {
     canResolveConflicts: isOwner
       ? true
       : !!(member && (member.canResolveConflicts || member.role === 'leader')),
+    canManageMembers: isLeader || !!member?.canManageMembers,
+    canManageSettings: isLeader || !!member?.canManageSettings,
   };
 }
 
@@ -65,11 +79,14 @@ export async function ensureLeaderMember(project) {
   const existing = await prisma.screenProjectMember.findFirst({
     where: { projectId: project.id, userId: project.ownerId },
   });
+  const full = fullPermissions();
   if (existing) {
-    if (existing.role !== 'leader' || existing.status !== 'active') {
+    // Self-heal: the owner row must be role 'owner', active, with full permissions
+    // (migrates legacy 'leader' owner rows created before the owner role existed).
+    if (existing.role !== 'owner' || existing.status !== 'active') {
       return prisma.screenProjectMember.update({
         where: { id: existing.id },
-        data: { role: 'leader', status: 'active', canScreen: true, canChat: true, canResolveConflicts: true },
+        data: { role: 'owner', status: 'active', permissionPreset: 'owner', canScreen: true, canChat: true, canResolveConflicts: true, ...full },
       });
     }
     return existing;
@@ -82,11 +99,13 @@ export async function ensureLeaderMember(project) {
       userId: owner.id,
       name: owner.name || '',
       email: owner.email || '',
-      role: 'leader',
+      role: 'owner',
       status: 'active',
+      permissionPreset: 'owner',
       canScreen: true,
       canChat: true,
       canResolveConflicts: true,
+      ...full,
     },
   });
 }
