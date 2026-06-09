@@ -38,6 +38,7 @@ export const screeningApi = {
     const qs = new URLSearchParams(params).toString();
     return req('GET', `/projects/${pid}/records${qs ? '?' + qs : ''}`);
   },
+  getKeywordStats: (pid) => req('GET', `/projects/${pid}/keyword-stats`),
   deleteRecord: (pid, rid) => req('DELETE', `/projects/${pid}/records/${rid}`),
 
   // Import / Export
@@ -84,14 +85,21 @@ export const screeningApi = {
   // Per-member open-state (Part 11)
   markOpened: (pid, rid) => req('POST', `/projects/${pid}/records/${rid}/open`),
 
+  // META·LAB association (Task 4)
+  getLinkable:  (pid)                  => req('GET',  `/projects/${pid}/linkable`),
+  linkMetaLab:  (pid, metaLabProjectId) => req('POST', `/projects/${pid}/link`, { metaLabProjectId }),
+
   // Second Review (Part 3)
   listSecondReview: (pid)            => req('GET',  `/projects/${pid}/second-review`),
   finalizeRecord:   (pid, rid, body) => req('POST', `/projects/${pid}/records/${rid}/finalize`, body),
+  retryHandoff:     (pid, rid)       => req('POST', `/projects/${pid}/records/${rid}/handoff/retry`),
 
   // Chat (Part 6) — polling via ?since
   listChat: (pid, since) => req('GET', `/projects/${pid}/chat${since ? '?since=' + encodeURIComponent(since) : ''}`),
   postChat: (pid, body)  => req('POST', `/projects/${pid}/chat`, body),
   deleteChat: (pid, cmid) => req('DELETE', `/projects/${pid}/chat/${cmid}`),
+  chatUnreadCount: (pid) => req('GET',  `/projects/${pid}/chat/unread-count`),
+  markChatRead:    (pid) => req('POST', `/projects/${pid}/chat/mark-read`),
 
   // PDF attachments (Part 7)
   listPdf:        (pid, rid) => req('GET', `/projects/${pid}/records/${rid}/pdf`),

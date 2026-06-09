@@ -64,6 +64,11 @@ export const adminApi = {
     listProjects: (p)        => req(`${BASE}/screening/projects?${new URLSearchParams(p || {})}`),
     getProject:   (id)       => req(`${BASE}/screening/projects/${id}`),
     setStatus:    (id, stage) => req(`${BASE}/screening/projects/${id}/status`, { method: 'PATCH', ...json({ stage }) }),
+    // Independent lifecycle flag toggle (PATCH { disabled?, archived? }).
+    setFlags:     (id, flags) => req(`${BASE}/screening/projects/${id}/status`, { method: 'PATCH', ...json(flags) }),
+    getMembers:   (id)       => req(`${BASE}/screening/projects/${id}/members`),
+    getHandoffs:  ()         => req(`${BASE}/screening/handoffs`),
+    getAudit:     (p)        => req(`${BASE}/screening/audit?${new URLSearchParams(p || {})}`),
   },
 
   auditLog:       (p)        => req(`${BASE}/audit-log?${new URLSearchParams(p || {})}`),

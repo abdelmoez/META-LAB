@@ -1575,93 +1575,448 @@ const SIFT_DEFAULTS = {
   allowNewProjects: true,
   allowImport: true,
   allowExport: true,
+  allowPdfUpload: true,
   allowDuplicateDetection: true,
   allowConflictResolution: true,
+  allowChat: true,
+  allowSecondReview: true,
+  requireTwoReviewers: true,
+  minIncludeQuorum: 2,
+  defaultBlindMode: false,
+  maxPdfSizeMb: 25,
   maxRecordsPerProject: 10000,
   maintenanceMessage: 'META·SIFT Beta is currently undergoing maintenance. Please try again later.',
 };
 
-function SiftAdminSection() {
-  const [settings,  setSettings]  = useState(SIFT_DEFAULTS);
-  const [metrics,   setMetrics]   = useState(null);
-  const [projects,  setProjects]  = useState([]);
-  const [projTotal, setProjTotal] = useState(0);
-  const [projPage,  setProjPage]  = useState(1);
-  const [loading,   setLoading]   = useState(true);
-  const [saveStatus, setSaveStatus] = useState('idle');
-  const [error,     setError]     = useState(null);
+const SIFT_TABS = [
+  { id: 'overview', label: 'Overview' },
+  { id: 'projects', label: 'Projects' },
+  { id: 'members',  label: 'Members'  },
+  { id: 'settings', label: 'Settings' },
+  { id: 'handoff',  label: 'Handoff'  },
+  { id: 'audit',    label: 'Audit'    },
+];
 
-  const load = useCallback(async (page = 1) => {
-    setLoading(true); setError(null);
-    try {
-      const [s, m, p] = await Promise.all([
-        adminApi.screening.getSettings(),
-        adminApi.screening.getMetrics(),
-        adminApi.screening.listProjects({ page, limit: 25 }),
-      ]);
-      setSettings({ ...SIFT_DEFAULTS, ...s });
-      setMetrics(m);
-      setProjects(p.projects || []);
-      setProjTotal(p.total || 0);
-      setProjPage(page);
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
+const siftMiniBtn = (color) => ({
+  padding: '3px 8px', background: `${color}18`, border: `1px solid ${color}40`,
+  borderRadius: 5, color, fontSize: 10, fontFamily: MONO, cursor: 'pointer',
+  letterSpacing: '0.05em', fontWeight: 600,
+});
+
+function siftHandoffColor(status) {
+  return ({ sent: C.grn, failed: C.red, already_exists: C.teal, pending: C.ylw }[status] || C.muted);
+}
+
+/* ── (A) Overview panel ── */
+function SiftOverview() {
+  const [metrics, setMetrics] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try { setMetrics(await adminApi.screening.getMetrics()); }
+    catch (e) { setError(e.message); }
+    finally { setLoading(false); }
   }, []);
+  useEffect(() => { load(); }, [load]);
 
+  const m = metrics || {};
+  const primary = [
+    { label: 'Total Projects',  value: m.totalProjects,    color: C.acc },
+    { label: 'Active',          value: m.activeProjects,   color: C.grn },
+    { label: 'Archived',        value: m.archivedProjects, color: C.muted },
+    { label: 'Disabled',        value: m.disabledProjects, color: C.red },
+  ];
+  const cards = [
+    { label: 'In Progress',     value: m.inProgressProjects, color: C.teal },
+    { label: 'Done',            value: m.doneProjects,       color: C.grn },
+    { label: 'Records',         value: m.totalRecords,       color: C.txt2 },
+    { label: 'Screened',        value: m.screened,           color: C.acc },
+    { label: 'Included',        value: m.included,           color: C.grn },
+    { label: 'Excluded',        value: m.excluded,           color: C.red },
+    { label: 'Maybe',           value: m.maybe,              color: C.ylw },
+    { label: 'Undecided',       value: m.undecided,          color: C.muted },
+    { label: '2nd Review',      value: m.eligibleSecondReview, color: C.teal },
+    { label: 'To Extraction',   value: m.sentToExtraction,   color: C.grn },
+    { label: 'Handoffs Sent',   value: m.handoffSent,        color: C.grn },
+    { label: 'Disputes',        value: m.totalDisputes,      color: '#dba96a' },
+    { label: 'Resolved Conf.',  value: m.resolvedConflicts,  color: C.muted },
+    { label: 'Dup Groups',      value: m.totalDuplicateGroups, color: C.muted },
+    { label: 'Active Members',  value: m.activeMembers,      color: C.acc },
+    { label: 'PDFs',            value: m.totalPdfs,          color: C.muted },
+    { label: 'Chat Msgs',      value: m.totalChatMessages,  color: C.muted },
+    { label: 'New This Week',   value: m.projectsThisWeek,   color: C.teal },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: C.txt }}>Module Overview</span>
+        <button onClick={load} style={{ padding: '6px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>↻ Refresh</button>
+      </div>
+      {error && <ErrorBox msg={error} />}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
+        {primary.map(p => (
+          <div key={p.label} style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: '18px 20px' }}>
+            {loading ? <div style={{ height: 32, display: 'flex', alignItems: 'center' }}><Spinner /></div>
+              : <div style={{ fontSize: 28, fontWeight: 800, fontFamily: MONO, color: p.color, letterSpacing: '-1px', lineHeight: 1 }}>{p.value ?? 0}</div>}
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 8, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: MONO }}>{p.label}</div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 8 }}>
+        {cards.map(c => (
+          <div key={c.label} style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '12px 14px' }}>
+            {loading ? <Spinner size={12} /> : <div style={{ fontSize: 18, fontWeight: 700, fontFamily: MONO, color: c.color }}>{c.value ?? 0}</div>}
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 4, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: MONO }}>{c.label}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── (B) Projects panel ── */
+function SiftProjects() {
+  const [projects, setProjects] = useState([]);
+  const [total,    setTotal]    = useState(0);
+  const [page,     setPage]     = useState(1);
+  const [loading,  setLoading]  = useState(true);
+  const [error,    setError]    = useState('');
+  const PER_PAGE = 25;
+
+  const load = useCallback(async (p = 1) => {
+    setLoading(true); setError('');
+    try {
+      const d = await adminApi.screening.listProjects({ page: p, limit: PER_PAGE });
+      setProjects(d.projects || []); setTotal(d.total || 0); setPage(p);
+    } catch (e) { setError(e.message); setProjects([]); }
+    finally { setLoading(false); }
+  }, []);
   useEffect(() => { load(1); }, [load]);
 
-  async function saveSettings() {
-    setSaveStatus('saving');
-    try {
-      await adminApi.screening.saveSettings(settings);
-      setSaveStatus('saved');
-    } catch {
-      setSaveStatus('error');
-    } finally {
-      setTimeout(() => setSaveStatus('idle'), 2000);
-    }
+  async function act(id, flags) {
+    try { await adminApi.screening.setFlags(id, flags); load(page); }
+    catch (e) { setError('Failed to update: ' + e.message); }
   }
 
-  async function changeProjectStatus(id, stage) {
-    try {
-      await adminApi.screening.setStatus(id, stage);
-      load(projPage);
-    } catch (e) {
-      alert('Failed to update status: ' + e.message);
-    }
-  }
-
-  const projCols = [
-    { key: 'title',         label: 'Title',    width: '24%' },
-    { key: 'owner',         label: 'Owner',    width: '16%', render: v => v?.email || '—' },
-    { key: 'recordCount',   label: 'Records',  width: '8%' },
-    { key: 'memberCount',   label: 'Members',  width: '8%', render: v => v ?? 1 },
-    { key: 'decisionCount', label: 'Decisions',width: '8%' },
-    { key: 'stage',         label: 'Status',   width: '10%', render: (v, row) => <Badge text={row.disabled ? 'disabled' : row.archived ? 'archived' : 'active'} color={row.disabled ? C.red : row.archived ? C.muted : C.grn} /> },
-    { key: 'createdAt',     label: 'Created',  width: '10%', render: v => fmtDate(v) },
-    { key: '_actions',      label: 'Actions',  width: '16%', render: (_, row) => (
-      <div style={{ display: 'flex', gap: 4 }}>
-        {(row.archived || row.disabled) && <button onClick={() => changeProjectStatus(row.id, 'active')}   style={miniBtn(C.grn)}>Activate</button>}
-        {!row.archived && <button onClick={() => changeProjectStatus(row.id, 'archived')} style={miniBtn(C.muted)}>Archive</button>}
-        {!row.disabled && <button onClick={() => changeProjectStatus(row.id, 'disabled')} style={miniBtn(C.red)}>Disable</button>}
+  const cols = [
+    { key: 'title',  label: 'Title', width: '18%', render: v => <span style={{ color: C.txt, fontWeight: 600 }}>{v || '—'}</span> },
+    { key: 'linkedMetaLabProjectTitle', label: 'Linked META·LAB', width: '15%',
+      render: (v, row) => v
+        ? <span style={{ fontSize: 11 }}>{v}</span>
+        : <span style={{ fontSize: 11, color: C.muted }}>{row.linkedMetaLabProjectId ? '(linked, untitled)' : '— not linked'}</span> },
+    { key: 'owner',  label: 'Owner', width: '13%', render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{v?.email || '—'}</span> },
+    { key: 'recordCount', label: 'Articles', width: '7%', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
+    { key: 'memberCount', label: 'Members', width: '7%', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
+    { key: 'secondReviewCount', label: '2nd Rev', width: '6%', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
+    { key: 'handoffSentCount',  label: 'Handoff', width: '6%', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
+    { key: '_status', label: 'Status', width: '11%', render: (_, row) => (
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        <Badge text={row.disabled ? 'disabled' : 'active'} color={row.disabled ? C.red : C.grn} />
+        {row.archived && <Badge text="archived" color={C.muted} />}
+        {row.progressStatus && row.progressStatus !== 'not_started' &&
+          <Badge text={row.progressStatus.replace('_', ' ')} color={row.progressStatus === 'done' ? C.grn : C.teal} />}
+      </div>
+    )},
+    { key: 'updatedAt', label: 'Updated', width: '8%', render: v => <span style={{ fontSize: 11 }}>{fmtAgo(v)}</span> },
+    { key: '_actions', label: 'Actions', width: '15%', render: (_, row) => (
+      <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+        {row.disabled
+          ? <button onClick={() => act(row.id, { disabled: false })} style={siftMiniBtn(C.grn)}>Enable</button>
+          : <button onClick={() => act(row.id, { disabled: true })}  style={siftMiniBtn(C.red)}>Disable</button>}
+        {row.archived
+          ? <button onClick={() => act(row.id, { archived: false })} style={siftMiniBtn(C.grn)}>Unarchive</button>
+          : <button onClick={() => act(row.id, { archived: true })}  style={siftMiniBtn(C.muted)}>Archive</button>}
       </div>
     )},
   ];
 
-  const miniBtn = (color) => ({
-    padding: '3px 8px', background: `${color}18`, border: `1px solid ${color}40`,
-    borderRadius: 5, color, fontSize: 10, fontFamily: MONO, cursor: 'pointer',
-    letterSpacing: '0.05em', fontWeight: 600,
-  });
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: C.txt }}>Screening Projects ({total})</span>
+        <button onClick={() => load(page)} style={{ padding: '6px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>↻ Refresh</button>
+      </div>
+      {error && <ErrorBox msg={error} />}
+      <SectionCard>
+        <DataTable columns={cols} rows={projects} loading={loading} emptyMessage="No screening projects yet." />
+        <div style={{ padding: '0 14px' }}>
+          <Pagination page={page} total={total} perPage={PER_PAGE} onPage={load} />
+        </div>
+      </SectionCard>
+    </div>
+  );
+}
 
-  if (loading) return <div style={{ padding: '60px 0', textAlign: 'center' }}><Spinner size={24} /></div>;
+/* ── (C) Members panel ── */
+function SiftMembers() {
+  const [projects, setProjects] = useState([]);
+  const [selected, setSelected] = useState('');
+  const [members,  setMembers]  = useState([]);
+  const [loadingP, setLoadingP] = useState(true);
+  const [loadingM, setLoadingM] = useState(false);
+  const [error,    setError]    = useState('');
+
+  useEffect(() => {
+    setLoadingP(true);
+    adminApi.screening.listProjects({ page: 1, limit: 100 })
+      .then(d => setProjects(d.projects || []))
+      .catch(e => setError(e.message))
+      .finally(() => setLoadingP(false));
+  }, []);
+
+  function pick(id) {
+    setSelected(id);
+    if (!id) { setMembers([]); return; }
+    setLoadingM(true); setError('');
+    adminApi.screening.getMembers(id)
+      .then(d => setMembers(d.members || []))
+      .catch(e => { setError(e.message); setMembers([]); })
+      .finally(() => setLoadingM(false));
+  }
+
+  const cols = [
+    { key: 'name',  label: 'Name',  render: v => <span style={{ color: C.txt, fontWeight: 600 }}>{v || '—'}</span> },
+    { key: 'email', label: 'Email', render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{v || '—'}</span> },
+    { key: 'role',  label: 'Role',  render: v => <Badge text={v || 'reviewer'} color={v === 'leader' ? C.acc : v === 'viewer' ? C.muted : C.teal} /> },
+    { key: 'status', label: 'Status', render: v => <Badge text={v || 'active'} color={v === 'active' ? C.grn : v === 'pending' ? C.ylw : C.muted} /> },
+    { key: 'canScreen', label: 'Screen', render: v => v ? <span style={{ color: C.grn }}>✓</span> : <span style={{ color: C.muted }}>—</span> },
+    { key: 'canChat', label: 'Chat', render: v => v ? <span style={{ color: C.grn }}>✓</span> : <span style={{ color: C.muted }}>—</span> },
+    { key: 'canResolveConflicts', label: 'Resolve', render: v => v ? <span style={{ color: C.grn }}>✓</span> : <span style={{ color: C.muted }}>—</span> },
+    { key: 'screenedCount', label: 'Screened', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
+  ];
 
   return (
     <div>
-      <div style={{ marginBottom: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: C.txt }}>Project Members</span>
+        <select value={selected} onChange={e => pick(e.target.value)} disabled={loadingP}
+          style={{ ...inputStyle, width: 'auto', minWidth: 280, padding: '7px 10px', fontSize: 12 }}>
+          <option value="">{loadingP ? 'Loading projects…' : '— Select a project —'}</option>
+          {projects.map(p => <option key={p.id} value={p.id}>{p.title} ({p.memberCount ?? 0} members)</option>)}
+        </select>
+      </div>
+      {error && <ErrorBox msg={error} />}
+      {!selected ? (
+        <div style={{ padding: '48px 0', textAlign: 'center', color: C.muted, fontSize: 13 }}>
+          Select a project to view its members.
+        </div>
+      ) : (
+        <SectionCard>
+          <DataTable columns={cols} rows={members} loading={loadingM} emptyMessage="No members in this project." />
+        </SectionCard>
+      )}
+    </div>
+  );
+}
+
+/* ── (D) Settings panel ── */
+function SiftSettings() {
+  const [settings, setSettings] = useState(SIFT_DEFAULTS);
+  const [loading,  setLoading]  = useState(true);
+  const [status,   setStatus]   = useState('idle');
+  const [error,    setError]    = useState('');
+
+  useEffect(() => {
+    adminApi.screening.getSettings()
+      .then(s => setSettings({ ...SIFT_DEFAULTS, ...s }))
+      .catch(e => setError(e.message))
+      .finally(() => setLoading(false));
+  }, []);
+
+  async function save() {
+    setStatus('saving'); setError('');
+    try { const s = await adminApi.screening.saveSettings(settings); setSettings({ ...SIFT_DEFAULTS, ...s }); setStatus('saved'); }
+    catch (e) { setStatus('error'); setError(e.message); }
+    finally { setTimeout(() => setStatus('idle'), 2500); }
+  }
+
+  const upd = (k, v) => setSettings(s => ({ ...s, [k]: v }));
+
+  if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={20} /></div>;
+
+  const toggles = [
+    { key: 'enabled',                 label: 'META·SIFT Enabled',        note: 'Disabling shows maintenance page and blocks /sift-beta' },
+    { key: 'allowNewProjects',        label: 'New Project Creation',     note: 'Allow users to create new screening projects' },
+    { key: 'allowImport',             label: 'Import (RIS/BibTeX/NBIB)', note: 'Allow reference imports' },
+    { key: 'allowExport',             label: 'Export (CSV/JSON)',        note: 'Allow record exports' },
+    { key: 'allowPdfUpload',          label: 'PDF Upload',               note: 'Allow full-text PDF attachments' },
+    { key: 'allowChat',               label: 'Team Chat',                note: 'Allow in-project chat between members' },
+    { key: 'allowDuplicateDetection', label: 'Duplicate Detection',      note: 'Run dedup algorithms' },
+    { key: 'allowConflictResolution', label: 'Conflict Resolution',      note: 'Show and resolve reviewer conflicts' },
+    { key: 'allowSecondReview',       label: 'Second (Full-Text) Review',note: 'Enable the two-stage full-text review' },
+    { key: 'requireTwoReviewers',     label: 'Require Two Reviewers',    note: 'A single include never promotes on its own' },
+    { key: 'defaultBlindMode',        label: 'Default Blind Mode',       note: 'Applied to newly created projects' },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: C.txt }}>Module Settings</span>
+        <SaveButton onClick={save} status={status} />
+      </div>
+      {error && status === 'error' && <ErrorBox msg={error} />}
+
+      <SectionCard title="Feature Toggles">
+        <div style={{ padding: '8px 18px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+          {toggles.map(({ key, label, note }) => (
+            <div key={key} style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '11px 0', borderBottom: `1px solid ${C.brd}` }}>
+              <div>
+                <div style={{ fontSize: 12, color: C.txt, fontWeight: 500 }}>{label}</div>
+                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{note}</div>
+              </div>
+              <Toggle checked={!!settings[key]} onChange={v => upd(key, v)} />
+            </div>
+          ))}
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Policy & Limits">
+        <div style={{ padding: '16px 18px', display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0 24px' }}>
+          <Field label="Min Include Quorum" note="Distinct includes required to reach 2nd review">
+            <input type="number" min="1" value={settings.minIncludeQuorum ?? 2}
+              onChange={e => upd('minIncludeQuorum', Math.max(1, parseInt(e.target.value) || 1))}
+              style={{ ...inputStyle, width: 140 }} />
+          </Field>
+          <Field label="Max PDF Size (MB)" note="1–200 MB per attachment">
+            <input type="number" min="1" max="200" value={settings.maxPdfSizeMb ?? 25}
+              onChange={e => upd('maxPdfSizeMb', Math.min(200, Math.max(1, parseInt(e.target.value) || 1)))}
+              style={{ ...inputStyle, width: 140 }} />
+          </Field>
+          <Field label="Max Records / Project">
+            <input type="number" min="1" value={settings.maxRecordsPerProject ?? 10000}
+              onChange={e => upd('maxRecordsPerProject', Math.max(1, parseInt(e.target.value) || 1))}
+              style={{ ...inputStyle, width: 140 }} />
+          </Field>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <Field label="Badge Text" note="Shown next to META·SIFT in the nav (e.g. BETA, PREVIEW, GA)">
+              <input value={settings.badgeText || ''} onChange={e => upd('badgeText', e.target.value)}
+                style={{ ...inputStyle, width: 200 }} />
+            </Field>
+            <Field label="Maintenance Message" note="Shown to users when META·SIFT is disabled">
+              <textarea value={settings.maintenanceMessage || ''} onChange={e => upd('maintenanceMessage', e.target.value)}
+                rows={2} style={{ ...inputStyle, resize: 'vertical', width: '100%' }} />
+            </Field>
+          </div>
+        </div>
+      </SectionCard>
+    </div>
+  );
+}
+
+/* ── (E) Handoff panel ── */
+function SiftHandoff() {
+  const [data,    setData]    = useState({ handoffs: [], counts: {} });
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try { setData(await adminApi.screening.getHandoffs()); }
+    catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const counts = data.counts || {};
+  const summary = [
+    { label: 'Sent',           value: counts.sent,           color: C.grn },
+    { label: 'Failed',         value: counts.failed,         color: C.red },
+    { label: 'Already Exists', value: counts.already_exists, color: C.teal },
+    { label: 'Pending',        value: counts.pending,        color: C.ylw },
+  ];
+
+  const cols = [
+    { key: 'recordTitle',  label: 'Record', width: '28%', render: v => <span style={{ color: C.txt }}>{v || '(untitled)'}</span> },
+    { key: 'projectTitle', label: 'Project', width: '18%', render: v => <span style={{ fontSize: 11 }}>{v || '—'}</span> },
+    { key: 'handoffStatus', label: 'Status', width: '12%', render: v => <Badge text={v || '—'} color={siftHandoffColor(v)} /> },
+    { key: 'handoffAt',    label: 'Handoff At', width: '14%', render: (v, row) => <span style={{ fontSize: 11 }}>{fmtAgo(v || row.acceptedAt)}</span> },
+    { key: 'handoffError', label: 'Error', width: '18%', render: v => v ? <span style={{ fontSize: 11, color: C.red }} title={v}>{v.slice(0, 40)}</span> : <span style={{ color: C.muted }}>—</span> },
+    { key: 'finalStatus',  label: 'Final', width: '10%', render: v => v ? <Badge text={v} color={v === 'accepted' ? C.grn : C.red} /> : <span style={{ color: C.muted }}>—</span> },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: C.txt }}>Extraction Handoff Log</span>
+        <button onClick={load} style={{ padding: '6px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>↻ Refresh</button>
+      </div>
+      {error && <ErrorBox msg={error} />}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
+        {summary.map(s => (
+          <div key={s.label} style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '12px 14px' }}>
+            {loading ? <Spinner size={12} /> : <div style={{ fontSize: 20, fontWeight: 700, fontFamily: MONO, color: s.color }}>{s.value ?? 0}</div>}
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 4, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: MONO }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+      <SectionCard>
+        <DataTable columns={cols} rows={data.handoffs || []} loading={loading} emptyMessage="No handoff events yet." />
+      </SectionCard>
+    </div>
+  );
+}
+
+/* ── (F) Audit panel ── */
+function SiftAudit() {
+  const [entries, setEntries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try { const d = await adminApi.screening.getAudit(); setEntries(d.entries || []); }
+    catch (e) { setError(e.message); setEntries([]); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const actionColor = a => {
+    if (/ACCEPTED|ADDED|ON|RESOLVED|UPLOADED/.test(a || '')) return C.grn;
+    if (/REJECTED|REMOVED|OFF/.test(a || '')) return C.red;
+    return C.acc;
+  };
+
+  const cols = [
+    { key: 'createdAt',    label: 'Time',    width: '15%', render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{fmtDateTime(v)}</span> },
+    { key: 'projectTitle', label: 'Project', width: '15%', render: v => <span style={{ fontSize: 11 }}>{v || '—'}</span> },
+    { key: 'actorName',    label: 'Actor',   width: '15%', render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{v || '—'}</span> },
+    { key: 'action',       label: 'Action',  width: '15%', render: v => <Badge text={v} color={actionColor(v)} /> },
+    { key: 'entityType',   label: 'Entity',  width: '10%', render: v => v || '—' },
+    { key: 'details',      label: 'Details', width: '30%', render: v => <span style={{ fontFamily: MONO, fontSize: 10, color: C.muted, display: 'block', maxWidth: 320, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={typeof v === 'string' ? v : JSON.stringify(v)}>{typeof v === 'string' ? v : JSON.stringify(v || {})}</span> },
+  ];
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: C.txt }}>Audit Log ({entries.length})</span>
+        <button onClick={load} style={{ padding: '6px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>↻ Refresh</button>
+      </div>
+      {error && <ErrorBox msg={error} />}
+      <SectionCard>
+        <DataTable columns={cols} rows={entries} loading={loading} emptyMessage="No audit entries yet." />
+      </SectionCard>
+    </div>
+  );
+}
+
+function SiftAdminSection() {
+  const [tab, setTab] = useState('overview');
+
+  const panels = {
+    overview: <SiftOverview />,
+    projects: <SiftProjects />,
+    members:  <SiftMembers />,
+    settings: <SiftSettings />,
+    handoff:  <SiftHandoff />,
+    audit:    <SiftAudit />,
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 18 }}>
         <h2 style={{ fontSize: 18, fontWeight: 700, color: C.txt, margin: 0, letterSpacing: '-0.02em' }}>
           META·SIFT Beta
           <span style={{ fontSize: 9, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', background: '#2dd4bf18', border: '1px solid #2dd4bf50', color: '#2dd4bf', borderRadius: 4, padding: '2px 7px', marginLeft: 10 }}>BETA</span>
@@ -1671,93 +2026,22 @@ function SiftAdminSection() {
         </p>
       </div>
 
-      {error && <ErrorBox msg={error} />}
+      {/* Sub-navigation */}
+      <div style={{ display: 'flex', gap: 2, marginBottom: 20, borderBottom: `1px solid ${C.brd}` }}>
+        {SIFT_TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)} style={{
+            padding: '8px 16px', background: 'transparent', border: 'none',
+            borderBottom: tab === t.id ? `2px solid ${C.acc}` : '2px solid transparent',
+            color: tab === t.id ? C.acc : C.txt2, fontSize: 12,
+            fontWeight: tab === t.id ? 700 : 400, cursor: 'pointer',
+            fontFamily: FONT, marginBottom: -1,
+          }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
 
-      {/* Metrics */}
-      {metrics && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 12, marginBottom: 24 }}>
-          {[
-            { label: 'Projects',       value: metrics.totalProjects,      color: C.acc },
-            { label: 'Members',        value: metrics.totalMembers,       color: C.acc },
-            { label: 'Records',        value: metrics.totalRecords,       color: C.txt2 },
-            { label: 'Included',       value: metrics.included,           color: '#4ade80' },
-            { label: 'Excluded',       value: metrics.excluded,           color: C.red },
-            { label: 'Maybe',          value: metrics.maybe,              color: C.ylw },
-            { label: '2nd Review',     value: metrics.eligibleSecondReview, color: '#2dd4bf' },
-            { label: 'To Extraction',  value: metrics.acceptedToExtraction, color: '#4ade80' },
-            { label: 'Conflicts',      value: metrics.totalConflicts,     color: '#dba96a' },
-            { label: 'Dup Groups',     value: metrics.totalDuplicateGroups, color: C.muted },
-            { label: 'Chat Msgs',      value: metrics.totalChatMessages,  color: C.muted },
-            { label: 'This Week',      value: metrics.projectsThisWeek,   color: C.teal || '#2dd4bf' },
-          ].map(m => (
-            <div key={m.label} style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 9, padding: '14px 16px' }}>
-              <div style={{ fontSize: 22, fontWeight: 700, fontFamily: MONO, color: m.color }}>{m.value ?? 0}</div>
-              <div style={{ fontSize: 10, color: C.muted, marginTop: 3, letterSpacing: '0.08em', textTransform: 'uppercase', fontFamily: MONO }}>{m.label}</div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Settings */}
-      <SectionCard title="Module Settings" action={<SaveButton onClick={saveSettings} status={saveStatus} />}>
-        <div style={{ padding: '16px 18px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px 24px' }}>
-          {[
-            { key: 'enabled',                label: 'META·SIFT Enabled',         note: 'Disabling shows maintenance page and blocks /sift-beta' },
-            { key: 'allowNewProjects',        label: 'New Project Creation',      note: 'Allow users to create new screening projects' },
-            { key: 'allowImport',             label: 'Import (RIS/BibTeX/NBIB)',  note: 'Allow reference imports' },
-            { key: 'allowExport',             label: 'Export (CSV/JSON)',         note: 'Allow record exports' },
-            { key: 'allowDuplicateDetection', label: 'Duplicate Detection',       note: 'Run dedup algorithms' },
-            { key: 'allowConflictResolution', label: 'Conflict Resolution',       note: 'Show and resolve reviewer conflicts' },
-          ].map(({ key, label, note }) => (
-            <div key={key} style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '8px 0', borderBottom: `1px solid ${C.brd}` }}>
-              <div>
-                <div style={{ fontSize: 12, color: C.txt, fontWeight: 500 }}>{label}</div>
-                <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{note}</div>
-              </div>
-              <Toggle
-                checked={!!settings[key]}
-                onChange={v => setSettings(s => ({ ...s, [key]: v }))}
-              />
-            </div>
-          ))}
-          <div style={{ gridColumn: '1 / -1', paddingTop: 4 }}>
-            <Field label="Badge Text" note="Shown next to META·SIFT in the nav (e.g. BETA, PREVIEW, GA)">
-              <input
-                value={settings.badgeText || ''}
-                onChange={e => setSettings(s => ({ ...s, badgeText: e.target.value }))}
-                style={{ ...inputStyle, width: 160 }}
-              />
-            </Field>
-            <Field label="Max Records Per Project">
-              <input
-                type="number" min="100" max="100000"
-                value={settings.maxRecordsPerProject || 10000}
-                onChange={e => setSettings(s => ({ ...s, maxRecordsPerProject: parseInt(e.target.value) || 10000 }))}
-                style={{ ...inputStyle, width: 160 }}
-              />
-            </Field>
-            <Field label="Maintenance Message" note="Shown to users when META·SIFT is disabled">
-              <textarea
-                value={settings.maintenanceMessage || ''}
-                onChange={e => setSettings(s => ({ ...s, maintenanceMessage: e.target.value }))}
-                rows={2}
-                style={{ ...inputStyle, resize: 'vertical', width: '100%' }}
-              />
-            </Field>
-          </div>
-        </div>
-      </SectionCard>
-
-      {/* Screening projects table */}
-      <SectionCard title={`Screening Projects (${projTotal})`}>
-        <DataTable
-          columns={projCols}
-          rows={projects}
-          loading={false}
-          emptyMessage="No screening projects yet."
-        />
-        <Pagination page={projPage} total={projTotal} perPage={25} onPage={p => load(p)} />
-      </SectionCard>
+      {panels[tab]}
     </div>
   );
 }

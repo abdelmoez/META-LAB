@@ -20,6 +20,7 @@ import {
   Loading, ErrorBanner, Button, Badge, DecisionChip, Card, EmptyState, Modal,
 } from '../ui/components.jsx';
 import { renderHighlighted } from '../ui/highlightRender.jsx';
+import PdfViewer from '../components/PdfViewer.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -120,19 +121,31 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
     try {
       const resp = await screeningApi.finalizeRecord(pid, rec.id, { decision: 'accept' });
       const h = resp?.handoff || {};
-      if (h.handed === true) {
-        setToast({ kind: 'ok', text: 'Sent to META·LAB Data Extraction.' });
-      } else if (h.reason === 'no_link' || h.reason === 'link_missing') {
-        setToast({ kind: 'info', text: 'Accepted. Link a META·LAB project (Settings) to export it.' });
-      } else if (h.reason === 'duplicate') {
-        setToast({ kind: 'info', text: 'Accepted — already present in Data Extraction.' });
-      } else {
-        setToast({ kind: 'ok', text: 'Record accepted.' });
-      }
+      const kind = h.handoffStatus === 'sent' ? 'ok' : h.handoffStatus === 'failed' ? 'err' : 'info';
+      setToast({ kind, text: h.message || (h.handed ? 'Sent to META·LAB Data Extraction.' : 'Record accepted.') });
       await load();
       if (refreshProject) await refreshProject();
     } catch (e) {
       setRowError(prev => ({ ...prev, [rec.id]: e?.message || 'Failed to accept record.' }));
+    } finally {
+      setFinalizing(prev => { const n = { ...prev }; delete n[rec.id]; return n; });
+    }
+  }, [pid, finalizing, load, refreshProject]);
+
+  // Retry the Data Extraction handoff for an accepted record (e.g. linked later).
+  const handleRetryHandoff = useCallback(async (rec) => {
+    if (finalizing[rec.id]) return;
+    setFinalizing(prev => ({ ...prev, [rec.id]: true }));
+    setRowError(prev => ({ ...prev, [rec.id]: '' }));
+    try {
+      const resp = await screeningApi.retryHandoff(pid, rec.id);
+      const h = resp?.handoff || {};
+      const kind = h.handoffStatus === 'sent' ? 'ok' : h.handoffStatus === 'failed' ? 'err' : 'info';
+      setToast({ kind, text: h.message || 'Handoff retried.' });
+      await load();
+      if (refreshProject) await refreshProject();
+    } catch (e) {
+      setRowError(prev => ({ ...prev, [rec.id]: e?.message || 'Failed to retry handoff.' }));
     } finally {
       setFinalizing(prev => { const n = { ...prev }; delete n[rec.id]; return n; });
     }
@@ -227,6 +240,7 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
           {records.map(rec => (
             <RecordCard
               key={rec.id}
+              pid={pid}
               rec={rec}
               access={access}
               blindMode={blindMode}
@@ -237,6 +251,7 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
               rowError={rowError[rec.id]}
               onDecision={handleDecision}
               onAccept={handleAccept}
+              onRetryHandoff={handleRetryHandoff}
               onRejectClick={() => { setRejectFor(rec); setRejectReason(rec.rejectedReason || ''); }}
             />
           ))}
@@ -297,9 +312,9 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
 
 // ── Record card ───────────────────────────────────────────────────────────────
 function RecordCard({
-  rec, access, blindMode, inclusion, exclusion,
+  pid, rec, access, blindMode, inclusion, exclusion,
   savingDecision, finalizing, rowError,
-  onDecision, onAccept, onRejectClick,
+  onDecision, onAccept, onRetryHandoff, onRejectClick,
 }) {
   const [expanded, setExpanded] = useState(false);
 
@@ -393,6 +408,33 @@ function RecordCard({
       ) : (
         <div style={{ fontSize: 12, color: C.muted, fontStyle: 'italic', marginBottom: 14 }}>
           No abstract available for this record.
+        </div>
+      )}
+
+      {/* Full-text PDF — upload + in-browser preview (Task 1) */}
+      <div style={{ marginBottom: 14 }}>
+        <PdfViewer pid={pid} recordId={rec.id} canManage={access.canScreen || access.isLeader} />
+      </div>
+
+      {/* Handoff status for accepted records (Task 5) */}
+      {rec.finalStatus === 'accepted' && rec.handoffStatus && rec.handoffStatus !== 'sent' && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          fontSize: 12, color: rec.handoffStatus === 'failed' ? C.red : C.gold,
+          background: rec.handoffStatus === 'failed' ? '#450a0a55' : '#3a2c0833',
+          border: `1px solid ${(rec.handoffStatus === 'failed' ? C.red : C.gold)}40`,
+          borderRadius: 7, padding: '8px 12px', marginBottom: 14,
+        }}>
+          <span style={{ fontWeight: 600 }}>
+            {rec.handoffStatus === 'pending' ? 'Accepted, not yet in Data Extraction — link a META·LAB project to send it.'
+              : rec.handoffStatus === 'already_exists' ? 'Already present in META·LAB Data Extraction.'
+              : `Handoff ${rec.handoffStatus}${rec.handoffError ? ' — ' + rec.handoffError : ''}.`}
+          </span>
+          {access.isLeader && (rec.handoffStatus === 'pending' || rec.handoffStatus === 'failed') && (
+            <Button variant="ghost" disabled={finalizing} onClick={() => onRetryHandoff(rec)} style={{ fontSize: 11, padding: '4px 12px' }}>
+              {finalizing ? 'Retrying…' : 'Retry handoff'}
+            </Button>
+          )}
         </div>
       )}
 

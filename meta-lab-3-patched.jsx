@@ -2467,6 +2467,7 @@ function MetaSiftPrismaSync({project,updateProject,activeId}){
   const[st,setSt]=useState({loading:true});
   const apply=(summary)=>{
     const p=summary.prisma;
+    const accepted=Array.isArray(summary.acceptedStudies)?summary.acceptedStudies:[];
     updateProject(activeId,proj=>{
       const cur=proj.prisma||{};
       const next={...cur,
@@ -2476,8 +2477,24 @@ function MetaSiftPrismaSync({project,updateProject,activeId}){
         excFull:String(p.fullTextExcluded),
         included:String(p.included),
       };
-      const same=["dbs","reg","other","dedupe","excTA","excFull","included"].every(k=>String(cur[k]||"")===String(next[k]||""));
-      return same?proj:{...proj,prisma:next};
+      const samePrisma=["dbs","reg","other","dedupe","excTA","excFull","included"].every(k=>String(cur[k]||"")===String(next[k]||""));
+      // Pull-merge accepted second-review studies into Data Extraction (BUG 5).
+      // Idempotent: match by screeningRecordId / DOI / PMID / normalized title so
+      // re-syncing never creates duplicates, and a stale-state autosave can't drop them.
+      const existing=Array.isArray(proj.studies)?proj.studies:[];
+      const norm=s=>String(s||"").toLowerCase().replace(/[^a-z0-9]/g,"");
+      const dup=(st)=>existing.some(e=>
+        (st.screeningRecordId&&e.screeningRecordId===st.screeningRecordId)||
+        (st.doi&&e.doi&&String(e.doi).toLowerCase().trim()===String(st.doi).toLowerCase().trim())||
+        (st.pmid&&e.pmid&&String(e.pmid).trim()===String(st.pmid).trim())||
+        (norm(st.title)&&norm(e.title)===norm(st.title))
+      );
+      const toAdd=accepted.filter(st=>!dup(st));
+      if(samePrisma&&toAdd.length===0) return proj;
+      return {...proj,
+        prisma:samePrisma?cur:next,
+        studies:toAdd.length?[...existing,...toAdd]:existing,
+      };
     });
   };
   const load=useCallback(async(doApply)=>{

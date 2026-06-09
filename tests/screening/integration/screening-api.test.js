@@ -9,7 +9,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 
-const API  = 'http://localhost:3001/api';
+const API  = 'http://127.0.0.1:3001/api'; // 127.0.0.1 avoids Node/undici ::1 hang on Windows
 const SIFT = `${API}/screening/projects`;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────

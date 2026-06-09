@@ -49,6 +49,10 @@ r.get('/projects/:pid',    S.getProject);
 r.put('/projects/:pid',    S.updateProject);
 r.delete('/projects/:pid', S.deleteProject);
 
+// META·LAB association (Task 4) — link/unlink + selectable targets + handoff rollup
+r.get('/projects/:pid/linkable',  S.getLinkable);
+r.post('/projects/:pid/link',     S.linkMetaLab);
+
 // Members (Part 4) — leader-gated mutations enforced in the controller
 r.get('/projects/:pid/members',           M.listMembers);
 r.post('/projects/:pid/members',          M.addMember);
@@ -61,11 +65,14 @@ r.get('/projects/:pid/audit',             OV.getAuditLog);
 
 // Project chat (Part 6) — members only, polling via ?since
 r.get('/projects/:pid/chat',              CH.listMessages);
+r.get('/projects/:pid/chat/unread-count', CH.getUnreadCount);
+r.post('/projects/:pid/chat/mark-read',   CH.markRead);
 r.post('/projects/:pid/chat',             CH.postMessage);
 r.delete('/projects/:pid/chat/:cmid',     CH.deleteMessage);
 
 // Records
 r.get('/projects/:pid/records',          S.listRecords);
+r.get('/projects/:pid/keyword-stats',    S.getKeywordStats);
 r.post('/projects/:pid/records',         S.createRecord);
 r.delete('/projects/:pid/records/:rid',  S.deleteRecord);
 r.post('/projects/:pid/records/:rid/open', S.markOpened);
@@ -87,6 +94,7 @@ r.get('/projects/:pid/decisions',              S.listDecisions);
 // Second Review (full-text stage) + META·LAB handoff (Parts 3/12)
 r.get('/projects/:pid/second-review',            RV.listSecondReview);
 r.post('/projects/:pid/records/:rid/finalize',   RV.finalizeRecord);
+r.post('/projects/:pid/records/:rid/handoff/retry', RV.retryHandoff);
 
 // Conflicts
 r.get('/projects/:pid/conflicts',                    S.listConflicts);

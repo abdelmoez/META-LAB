@@ -5,8 +5,21 @@ import { PrismaClient } from '@prisma/client';
 import { detectDuplicatesInProject } from '../services/screeningDuplicateService.js';
 import { syncConflicts } from '../services/screeningConflictService.js';
 import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../screening/access.js';
-import { getMetaSiftSettings } from '../screening/settings.js';
+import { getMetaSiftSettings, getEffectiveQuorum } from '../screening/settings.js';
 import { scorePair } from '../../src/research-engine/screening/deduplication.js';
+import { DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS } from '../../src/research-engine/screening/defaultKeywords.js';
+import { filterRecordsByKeywords, countArticlesByKeyword } from '../../src/research-engine/screening/keywordFilter.js';
+import { studyFromRecord } from './screeningReviewController.js';
+
+// Parse a comma-separated keyword param into a clean phrase list.
+function parseKeywordParam(v) {
+  if (!v) return [];
+  return String(v).split(',').map(s => s.trim()).filter(Boolean);
+}
+function parseJsonList(json) {
+  try { const v = JSON.parse(json || '[]'); return Array.isArray(v) ? v.filter(x => typeof x === 'string') : []; }
+  catch { return []; }
+}
 
 const prisma = new PrismaClient();
 
@@ -36,16 +49,28 @@ export async function listProjects(req, res) {
       },
     });
 
+    // Resolve linked META·LAB project titles in one batch (BUG 4 — project cards).
+    const linkedIds = [...new Set(projects.map(p => p.linkedMetaLabProjectId).filter(Boolean))];
+    const linkedProjects = linkedIds.length
+      ? await prisma.project.findMany({ where: { id: { in: linkedIds }, deletedAt: null }, select: { id: true, name: true } })
+      : [];
+    const linkedTitleById = Object.fromEntries(linkedProjects.map(lp => [lp.id, lp.name]));
+
     res.json({ projects: projects.map(p => {
       const isOwner = p.ownerId === req.user.id;
+      const myRole = isOwner ? 'leader' : (roleByProject[p.id] || 'reviewer');
       return {
         id: p.id, title: p.title, description: p.description,
         reviewQuestion: p.reviewQuestion, stage: p.stage, blindMode: p.blindMode,
         progressStatus: p.progressStatus, archived: p.archived,
         linkedMetaLabProjectId: p.linkedMetaLabProjectId,
+        linkedMetaLabProjectTitle: p.linkedMetaLabProjectId ? (linkedTitleById[p.linkedMetaLabProjectId] || null) : null,
         recordCount: p._count.records, memberCount: p._count.members,
         owner: p.owner, isOwner,
-        myRole: isOwner ? 'leader' : (roleByProject[p.id] || 'reviewer'),
+        leaderName: p.owner?.name || p.owner?.email || '',
+        leaderEmail: p.owner?.email || '',
+        myRole, currentUserRole: myRole,
+        totalArticles: p._count.records, status: p.progressStatus,
         createdAt: p.createdAt, updatedAt: p.updatedAt,
       };
     })});
@@ -59,16 +84,22 @@ export async function createProject(req, res) {
   try {
     const settings = await getMetaSiftSettings();
     if (!settings.allowNewProjects) return res.status(403).json({ error: 'New project creation is currently disabled by the administrator' });
-    const { title, description = '', reviewQuestion = '', blindMode = false, linkedMetaLabProjectId } = req.body || {};
+    const { title, description = '', reviewQuestion = '', blindMode, linkedMetaLabProjectId } = req.body || {};
     if (!title || !title.trim()) return res.status(400).json({ error: 'title is required' });
+    // Blind mode defaults to the admin-configured default unless the creator chose one.
+    const effectiveBlind = blindMode === undefined ? !!settings.defaultBlindMode : !!blindMode;
     const project = await prisma.screenProject.create({
       data: {
         ownerId: req.user.id,
         title: title.trim(),
         description,
         reviewQuestion,
-        blindMode: !!blindMode,
+        blindMode: effectiveBlind,
         linkedMetaLabProjectId: linkedMetaLabProjectId || null,
+        // Seed editable default keyword suggestions (prompt2 Task 8). Leaders can
+        // edit/replace these per project; the highlight/filter panel reads them.
+        inclusionKeywords: JSON.stringify(DEFAULT_INCLUDE_KEYWORDS),
+        exclusionKeywords: JSON.stringify(DEFAULT_EXCLUDE_KEYWORDS),
       },
     });
     // Seed default exclusion reasons
@@ -171,6 +202,100 @@ export async function deleteProject(req, res) {
   }
 }
 
+// ── META·LAB association (prompt2 Task 4) ────────────────────────────
+//
+// A META·SIFT project links to exactly one META·LAB project (the workspace
+// pair). Accepted second-review studies hand off to that project's Data
+// Extraction. The linkable list offers the workspace owner's META·LAB projects
+// so handoffs can never target someone else's project.
+
+/** GET /projects/:pid/linkable — current link + selectable META·LAB projects + handoff counts. */
+export async function getLinkable(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    const sp = access.project;
+
+    let linked = null;
+    if (sp.linkedMetaLabProjectId) {
+      const ml = await prisma.project.findFirst({
+        where: { id: sp.linkedMetaLabProjectId, deletedAt: null },
+        select: { id: true, name: true, userId: true },
+      });
+      linked = ml ? { id: ml.id, name: ml.name, missing: false } : { id: sp.linkedMetaLabProjectId, name: '(deleted project)', missing: true };
+    }
+
+    // Offer the workspace owner's META·LAB projects as link targets.
+    const available = await prisma.project.findMany({
+      where: { userId: sp.ownerId, deletedAt: null },
+      select: { id: true, name: true, updatedAt: true },
+      orderBy: { updatedAt: 'desc' },
+    });
+
+    // Handoff status rollup for this project.
+    const records = await prisma.screenRecord.findMany({
+      where: { projectId: sp.id },
+      select: { handoffStatus: true, finalStatus: true },
+    });
+    const handoff = { sent: 0, pending: 0, failed: 0, already_exists: 0, accepted: 0 };
+    for (const r of records) {
+      if (r.finalStatus === 'accepted') handoff.accepted++;
+      if (r.handoffStatus && handoff[r.handoffStatus] !== undefined) handoff[r.handoffStatus]++;
+    }
+
+    res.json({ linked, available, handoff, isLeader: access.isLeader });
+  } catch (err) {
+    console.error('[screening] getLinkable:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/** POST /projects/:pid/link — set or clear the linked META·LAB project (leader only). */
+export async function linkMetaLab(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    if (!access.isLeader) return res.status(403).json({ error: 'Only the project leader can link projects' });
+    const sp = access.project;
+    const { metaLabProjectId } = req.body || {};
+
+    // Unlink
+    if (!metaLabProjectId) {
+      const updated = await prisma.screenProject.update({
+        where: { id: sp.id }, data: { linkedMetaLabProjectId: null },
+      });
+      await writeAudit(sp.id, req.user, 'METALAB_UNLINKED', { entityType: 'project', entityId: sp.id });
+      return res.json({ linkedMetaLabProjectId: updated.linkedMetaLabProjectId, linked: null });
+    }
+
+    // Link — the target must be a META·LAB project owned by the workspace owner.
+    const ml = await prisma.project.findFirst({
+      where: { id: metaLabProjectId, userId: sp.ownerId, deletedAt: null },
+      select: { id: true, name: true, data: true },
+    });
+    if (!ml) return res.status(400).json({ error: 'That META·LAB project was not found in this workspace' });
+
+    // Snapshot the linked project's PICO/criteria for standalone-safe highlighting.
+    let picoSnapshot = sp.picoSnapshot;
+    try {
+      const mlData = JSON.parse(ml.data || '{}');
+      if (mlData.pico) picoSnapshot = JSON.stringify(mlData.pico);
+    } catch { /* keep existing snapshot */ }
+
+    const updated = await prisma.screenProject.update({
+      where: { id: sp.id },
+      data: { linkedMetaLabProjectId: ml.id, picoSnapshot },
+    });
+    await writeAudit(sp.id, req.user, 'METALAB_LINKED', {
+      entityType: 'project', entityId: sp.id, details: { metaLabProjectId: ml.id, name: ml.name },
+    });
+    res.json({ linkedMetaLabProjectId: updated.linkedMetaLabProjectId, linked: { id: ml.id, name: ml.name } });
+  } catch (err) {
+    console.error('[screening] linkMetaLab:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 // ── Records ──────────────────────────────────────────────────────────
 
 export async function listRecords(req, res) {
@@ -231,6 +356,7 @@ export async function listRecords(req, res) {
         doi: r.doi, pmid: r.pmid, abstract: r.abstract, keywords: r.keywords, sourceDb: r.sourceDb,
         isDuplicate: r.isDuplicate, isPrimary: r.isPrimary,
         currentStage: r.currentStage, finalStatus: r.finalStatus, promotedAt: r.promotedAt,
+        handoffStatus: r.handoffStatus,
         myDecision,
         myOpened: r.openStates.length > 0,
         reviewerDecisions,
@@ -260,6 +386,14 @@ export async function listRecords(req, res) {
     }
     if (hasAbstract === 'yes') filtered = filtered.filter(r => r.abstract && r.abstract.trim().length > 10);
     if (hasAbstract === 'no')  filtered = filtered.filter(r => !r.abstract || r.abstract.trim().length <= 10);
+
+    // Keyword filtering (Task 8) — OR by default: show articles containing ANY
+    // selected keyword. Phrase/token-boundary matching via the research engine.
+    const selectedKeywords = parseKeywordParam(req.query.keywords);
+    if (selectedKeywords.length) {
+      const mode = (req.query.keywordMode || 'or').toLowerCase() === 'and' ? 'AND' : 'OR';
+      filtered = filterRecordsByKeywords(filtered, selectedKeywords, { mode });
+    }
 
     const total = filtered.length;
     const start = (page - 1) * limit;
@@ -323,6 +457,35 @@ export async function markOpened(req, res) {
     res.json({ opened: true });
   } catch (err) {
     console.error('[screening] markOpened:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * GET /projects/:pid/keyword-stats — per-keyword article counts (Task 8).
+ * Counts ARTICLES (not occurrences) containing each inclusion/exclusion keyword
+ * across ALL project records, so the keyword panel can show "term (n)".
+ */
+export async function getKeywordStats(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    const records = await prisma.screenRecord.findMany({
+      where: { projectId: access.project.id },
+      select: { id: true, title: true, abstract: true, keywords: true },
+    });
+    // Fall back to the shared defaults for projects created before keyword seeding.
+    const storedIncl = parseJsonList(access.project.inclusionKeywords);
+    const storedExcl = parseJsonList(access.project.exclusionKeywords);
+    const inclusion = storedIncl.length ? storedIncl : DEFAULT_INCLUDE_KEYWORDS;
+    const exclusion = storedExcl.length ? storedExcl : DEFAULT_EXCLUDE_KEYWORDS;
+    res.json({
+      total: records.length,
+      include: countArticlesByKeyword(records, inclusion),
+      exclude: countArticlesByKeyword(records, exclusion),
+    });
+  } catch (err) {
+    console.error('[screening] getKeywordStats:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }
@@ -528,12 +691,16 @@ export async function saveDecision(req, res) {
       const includeCount = await prisma.screenDecision.count({
         where: { recordId: rec.id, stage: 'title_abstract', decision: 'include' },
       });
-      if (includeCount >= QUORUM) {
+      const quorum = await getEffectiveQuorum();
+      if (includeCount >= quorum) {
         await prisma.screenRecord.update({
           where: { id: rec.id },
-          data: { currentStage: 'full_text', promotedAt: new Date() },
+          data: { currentStage: 'full_text', promotedAt: new Date(), promotedVia: 'quorum' },
         });
         promoted = true;
+        await writeAudit(p.id, req.user, 'RECORD_PROMOTED', {
+          entityType: 'record', entityId: rec.id, details: { via: 'quorum', includeCount, quorum },
+        });
       }
     }
 
@@ -565,11 +732,16 @@ export async function listDecisions(req, res) {
 
 export async function listConflicts(req, res) {
   try {
-    const p = await getOwnedProject(req.params.pid, req.user.id);
-    if (!p) return res.status(404).json({ error: 'Project not found' });
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    // Conflicts/disagreements are a leader/resolver view. In blind mode, normal
+    // reviewers never see them (Part 5); only the leader/resolver does.
+    if (!access.canResolveConflicts) {
+      return res.status(403).json({ error: 'Only the project leader can view conflicts' });
+    }
     const conflicts = await prisma.screenConflict.findMany({
-      where: { projectId: p.id },
-      include: { record: { select: { id: true, title: true, authors: true, year: true, abstract: true } } },
+      where: { projectId: access.project.id },
+      include: { record: { select: { id: true, title: true, authors: true, year: true, abstract: true, currentStage: true } } },
       orderBy: { createdAt: 'desc' },
     });
     res.json({ conflicts });
@@ -581,19 +753,63 @@ export async function listConflicts(req, res) {
 
 export async function resolveConflict(req, res) {
   try {
-    const p = await getOwnedProject(req.params.pid, req.user.id);
-    if (!p) return res.status(404).json({ error: 'Project not found' });
+    // Leader OR a member granted canResolveConflicts may resolve (Part 4 security).
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    if (!access.canResolveConflicts) {
+      return res.status(403).json({ error: 'You do not have permission to resolve conflicts in this project' });
+    }
+    const p = access.project;
     const settings = await getMetaSiftSettings();
     if (!settings.allowConflictResolution) return res.status(403).json({ error: 'Conflict resolution is currently disabled by the administrator' });
+
     const conflict = await prisma.screenConflict.findFirst({ where: { id: req.params.cid, projectId: p.id } });
     if (!conflict) return res.status(404).json({ error: 'Conflict not found' });
+
     const { finalDecision, notes = '' } = req.body || {};
-    if (!finalDecision) return res.status(400).json({ error: 'finalDecision is required' });
+    const valid = ['include', 'exclude', 'maybe'];
+    if (!valid.includes(finalDecision)) {
+      return res.status(400).json({ error: "finalDecision must be 'include', 'exclude', or 'maybe'" });
+    }
+
+    // include / exclude are terminal resolutions; 'maybe' keeps the record in the
+    // disputed/pending area (prompt2 Task 2), so we don't stamp resolvedAt for it.
+    const terminal = finalDecision !== 'maybe';
     const updated = await prisma.screenConflict.update({
       where: { id: conflict.id },
-      data: { finalDecision, resolvedBy: req.user.id, resolvedAt: new Date(), notes },
+      data: {
+        finalDecision,
+        notes: String(notes).slice(0, 1000),
+        resolvedBy: req.user.id,
+        resolvedAt: terminal ? new Date() : null,
+      },
     });
-    res.json(updated);
+
+    // Resolved as INCLUDE → record becomes eligible for Second Review (full_text).
+    let promoted = false;
+    const rec = await prisma.screenRecord.findFirst({ where: { id: conflict.recordId, projectId: p.id } });
+    if (rec) {
+      if (finalDecision === 'include' && rec.currentStage !== 'full_text') {
+        await prisma.screenRecord.update({
+          where: { id: rec.id },
+          data: { currentStage: 'full_text', promotedAt: new Date(), promotedVia: 'conflict_resolution' },
+        });
+        promoted = true;
+      } else if (finalDecision === 'exclude') {
+        // Stays out of Second Review; persist the leader's reason on the record.
+        await prisma.screenRecord.update({
+          where: { id: rec.id },
+          data: { rejectedReason: String(notes).slice(0, 500) },
+        });
+      }
+    }
+
+    await writeAudit(p.id, req.user, 'CONFLICT_RESOLVED', {
+      entityType: 'record', entityId: conflict.recordId,
+      details: { finalDecision, promoted, notes: String(notes).slice(0, 200) },
+    });
+
+    res.json({ ...updated, promoted });
   } catch (err) {
     console.error('[screening] resolveConflict:', err.message);
     res.status(500).json({ error: 'Internal server error' });
@@ -803,7 +1019,6 @@ export async function getMetaLabSummary(req, res) {
 
     const records = await prisma.screenRecord.findMany({
       where: { projectId: sp.id },
-      select: { isDuplicate: true, currentStage: true, finalStatus: true },
     });
     const total              = records.length;
     const duplicatesRemoved  = records.filter(r => r.isDuplicate).length;
@@ -811,13 +1026,19 @@ export async function getMetaLabSummary(req, res) {
     const fullTextAssessed   = records.filter(r => r.currentStage === 'full_text').length;
     const excludedTitleAbstract = Math.max(0, screened - fullTextAssessed);
     const fullTextExcluded   = records.filter(r => r.finalStatus === 'rejected').length;
-    const includedFinal      = records.filter(r => r.finalStatus === 'accepted').length;
+    const acceptedRecords    = records.filter(r => r.finalStatus === 'accepted');
+    const includedFinal      = acceptedRecords.length;
+
+    // Accepted studies, ready for the META·LAB Data Extraction pull-merge (BUG 5).
+    // Idempotent on the client via screeningRecordId / doi / pmid / title.
+    const acceptedStudies = acceptedRecords.map(r => studyFromRecord(r, req.user));
 
     res.json({
       linked: true,
       screeningProjectId: sp.id,
       title: sp.title,
       prisma: { identified: total, duplicatesRemoved, screened, excludedTitleAbstract, fullTextAssessed, fullTextExcluded, included: includedFinal },
+      acceptedStudies,
     });
   } catch (err) {
     console.error('[screening] getMetaLabSummary:', err.message);

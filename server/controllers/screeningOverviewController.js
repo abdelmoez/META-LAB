@@ -58,6 +58,20 @@ export async function getOverview(req, res) {
       decisions.filter(d => d.stage === 'title_abstract' && d.decision !== 'undecided').map(d => d.recordId)
     ).size;
 
+    // ── Progress visibility (BUG 6) ──────────────────────────────────────────
+    // Regular members see ONLY their own progress; the leader sees every member's
+    // progress, team comparison, and whole-project progress. Enforced server-side
+    // so a non-leader can never receive other members' activity.
+    const myProgress = memberProgress.filter(m => m.userId === req.user.id);
+    const visibleMembers   = access.isLeader ? memberProgress : myProgress;
+    const wholeProjectProgress = access.isLeader ? {
+      totalArticles: total,
+      screened: screenedAtLeastOnce,
+      unscreened: Math.max(0, total - screenedAtLeastOnce),
+      eligibleSecondReview, acceptedToExtraction, conflicts: unresolvedConflicts,
+      completion: total > 0 ? Math.round((screenedAtLeastOnce / total) * 100) : 0,
+    } : null;
+
     res.json({
       project: {
         id: access.project.id, title: access.project.title,
@@ -73,14 +87,9 @@ export async function getOverview(req, res) {
         disputedDecisions, unresolvedConflicts,
         eligibleSecondReview, acceptedToExtraction, rejectedSecond,
       },
-      members: memberProgress,
-      projectProgress: {
-        totalArticles: total,
-        screened: screenedAtLeastOnce,
-        unscreened: Math.max(0, total - screenedAtLeastOnce),
-        eligibleSecondReview, acceptedToExtraction, conflicts: unresolvedConflicts,
-        completion: total > 0 ? Math.round((screenedAtLeastOnce / total) * 100) : 0,
-      },
+      members: visibleMembers,
+      // null for non-leaders (frontend shows only "My Progress")
+      projectProgress: wholeProjectProgress,
     });
   } catch (err) {
     console.error('[screening] getOverview:', err.message);
