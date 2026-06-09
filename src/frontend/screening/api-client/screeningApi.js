@@ -70,6 +70,39 @@ export const screeningApi = {
   createReason: (pid, body)  => req('POST',   `/projects/${pid}/reasons`, body),
   deleteReason: (pid, rid2)  => req('DELETE', `/projects/${pid}/reasons/${rid2}`),
 
-  // Stats
-  getStats: (pid) => req('GET', `/projects/${pid}/stats`),
+  // Stats + Overview
+  getStats:    (pid) => req('GET', `/projects/${pid}/stats`),
+  getOverview: (pid) => req('GET', `/projects/${pid}/overview`),
+  getAudit:    (pid) => req('GET', `/projects/${pid}/audit`),
+
+  // Members (Part 4)
+  listMembers:  (pid)            => req('GET',    `/projects/${pid}/members`),
+  addMember:    (pid, body)      => req('POST',   `/projects/${pid}/members`, body),
+  updateMember: (pid, mid, body) => req('PATCH',  `/projects/${pid}/members/${mid}`, body),
+  removeMember: (pid, mid)       => req('DELETE', `/projects/${pid}/members/${mid}`),
+
+  // Per-member open-state (Part 11)
+  markOpened: (pid, rid) => req('POST', `/projects/${pid}/records/${rid}/open`),
+
+  // Second Review (Part 3)
+  listSecondReview: (pid)            => req('GET',  `/projects/${pid}/second-review`),
+  finalizeRecord:   (pid, rid, body) => req('POST', `/projects/${pid}/records/${rid}/finalize`, body),
+
+  // Chat (Part 6) — polling via ?since
+  listChat: (pid, since) => req('GET', `/projects/${pid}/chat${since ? '?since=' + encodeURIComponent(since) : ''}`),
+  postChat: (pid, body)  => req('POST', `/projects/${pid}/chat`, body),
+  deleteChat: (pid, cmid) => req('DELETE', `/projects/${pid}/chat/${cmid}`),
+
+  // PDF attachments (Part 7)
+  listPdf:        (pid, rid) => req('GET', `/projects/${pid}/records/${rid}/pdf`),
+  pdfDownloadUrl: (pid, rid, aid) => `${BASE}/projects/${pid}/records/${rid}/pdf/${aid}/download`,
+  deletePdf:      (pid, rid, aid) => req('DELETE', `/projects/${pid}/records/${rid}/pdf/${aid}`),
+  uploadPdf: async (pid, rid, file) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    const r = await fetch(`${BASE}/projects/${pid}/records/${rid}/pdf`, { method: 'POST', credentials: 'include', body: fd });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw Object.assign(new Error(data.error || `Upload failed (${r.status})`), { status: r.status, data });
+    return data;
+  },
 };

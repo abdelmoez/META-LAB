@@ -8,15 +8,20 @@
 
 ## 1. Test Suite Summary
 
-| Category    | Files | Tests | Pass | Fail | Skip |
-|-------------|-------|-------|------|------|------|
-| Unit        | 7     | 337   | 337  | 0    | 0    |
-| Integration | 7     | 42    | 0    | 0    | 42   |
-| **Total**   | **14**| **379**| **337** | **0** | **42** |
+**Latest full run (2026-06-08, server up):** `npx vitest run --no-file-parallelism`
 
-All 337 unit tests pass. Integration tests are written but skipped because the server was not running during the test run.
+| Result | Files | Tests |
+|--------|-------|-------|
+| ✅ Passed | 27 | 632 |
+| ❌ Failed (pre-existing, see note) | 1 | 6 |
+| ⏭ Skipped | — | 7 |
+| **Total** | **28** | **645** |
 
-> **Note:** Integration tests require a running server with database access. Start the stack with `docker compose up -d && npx prisma migrate dev`, then run `npm run server` before executing integration tests.
+The **META·SIFT collaboration upgrade** added the `Screen*` data model, membership/quorum/second-review/handoff/chat/PDF/admin backend, the tabbed React UI, and tests: **+56 screening unit tests** and **+7 collaboration integration tests** (all passing). See **`tests/screening/report.md`** for the full screening breakdown (149/149).
+
+> **Pre-existing failure (NOT introduced by the META·SIFT upgrade):** `tests/unit/serverStorage.test.js` has 6 failing assertions in the autosave "saving/saved" status pub-sub (timing). `git status` shows `serverStorage.js` and its test are unmodified by this work, and the failures reproduce in isolation on the original code. META·SIFT does not import `serverStorage`. Disclosed per the project's "do not hide failures" policy.
+
+> **Note:** Integration tests require a running server (`npm run server`, which loads `server/.env`). They self-skip when the server is down.
 
 ---
 

@@ -9,6 +9,11 @@ import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
 import { PrismaClient } from '@prisma/client';
 import * as S from '../controllers/screeningController.js';
+import * as M from '../controllers/screeningMemberController.js';
+import * as RV from '../controllers/screeningReviewController.js';
+import * as CH from '../controllers/screeningChatController.js';
+import * as OV from '../controllers/screeningOverviewController.js';
+import * as PDF from '../controllers/screeningPdfController.js';
 
 const r = Router();
 const prisma = new PrismaClient();
@@ -44,10 +49,32 @@ r.get('/projects/:pid',    S.getProject);
 r.put('/projects/:pid',    S.updateProject);
 r.delete('/projects/:pid', S.deleteProject);
 
+// Members (Part 4) — leader-gated mutations enforced in the controller
+r.get('/projects/:pid/members',           M.listMembers);
+r.post('/projects/:pid/members',          M.addMember);
+r.patch('/projects/:pid/members/:mid',    M.updateMember);
+r.delete('/projects/:pid/members/:mid',   M.removeMember);
+
+// Overview dashboard + audit (Parts 10/5)
+r.get('/projects/:pid/overview',          OV.getOverview);
+r.get('/projects/:pid/audit',             OV.getAuditLog);
+
+// Project chat (Part 6) — members only, polling via ?since
+r.get('/projects/:pid/chat',              CH.listMessages);
+r.post('/projects/:pid/chat',             CH.postMessage);
+r.delete('/projects/:pid/chat/:cmid',     CH.deleteMessage);
+
 // Records
 r.get('/projects/:pid/records',          S.listRecords);
 r.post('/projects/:pid/records',         S.createRecord);
 r.delete('/projects/:pid/records/:rid',  S.deleteRecord);
+r.post('/projects/:pid/records/:rid/open', S.markOpened);
+
+// PDF attachments (Part 7)
+r.get('/projects/:pid/records/:rid/pdf',                 PDF.listPdf);
+r.post('/projects/:pid/records/:rid/pdf',                PDF.pdfUploadMiddleware, PDF.uploadPdf);
+r.get('/projects/:pid/records/:rid/pdf/:aid/download',   PDF.downloadPdf);
+r.delete('/projects/:pid/records/:rid/pdf/:aid',         PDF.deletePdf);
 
 // Import / Export
 r.post('/projects/:pid/import',          S.importRecords);
@@ -56,6 +83,10 @@ r.get('/projects/:pid/export',           S.exportRecords);
 // Decisions
 r.post('/projects/:pid/records/:rid/decision', S.saveDecision);
 r.get('/projects/:pid/decisions',              S.listDecisions);
+
+// Second Review (full-text stage) + META·LAB handoff (Parts 3/12)
+r.get('/projects/:pid/second-review',            RV.listSecondReview);
+r.post('/projects/:pid/records/:rid/finalize',   RV.finalizeRecord);
 
 // Conflicts
 r.get('/projects/:pid/conflicts',                    S.listConflicts);
@@ -78,5 +109,8 @@ r.delete('/projects/:pid/reasons/:rid2', S.deleteReason);
 
 // Stats
 r.get('/projects/:pid/stats',            S.getStats);
+
+// META·LAB integration — PRISMA summary for a linked META·LAB project (Part 12)
+r.get('/metalab/:mlpid/summary',         S.getMetaLabSummary);
 
 export default r;

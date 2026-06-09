@@ -10,6 +10,9 @@ import {
   titleSimilarity,
   levenshtein,
   findDuplicateGroups,
+  scorePair,
+  findDuplicateGroupsScored,
+  parseSurnames,
 } from '../../../src/research-engine/screening/deduplication.js';
 
 // ── normalizeTitle ─────────────────────────────────────────────────────────────
@@ -243,5 +246,192 @@ describe('findDuplicateGroups', () => {
     // After normalization these are identical — should still match at 1.0
     const groups = findDuplicateGroups(records, 1.0);
     expect(groups).toHaveLength(1);
+  });
+});
+
+// ── parseSurnames ────────────────────────────────────────────────────────────
+
+describe('parseSurnames', () => {
+  it('returns an empty set for empty / non-string input', () => {
+    expect(parseSurnames('').size).toBe(0);
+    expect(parseSurnames(undefined).size).toBe(0);
+    expect(parseSurnames(null).size).toBe(0);
+  });
+
+  it('extracts surnames from a "Smith J; Doe A" style string', () => {
+    const s = parseSurnames('Smith J; Doe A; Wong K');
+    expect(s.has('smith')).toBe(true);
+    expect(s.has('doe')).toBe(true);
+    expect(s.has('wong')).toBe(true);
+  });
+
+  it('handles "Surname, Given" comma form', () => {
+    const s = parseSurnames('Anderson, John; Brown, Mary');
+    expect(s.has('anderson')).toBe(true);
+    expect(s.has('brown')).toBe(true);
+  });
+
+  it('is case-insensitive', () => {
+    const s = parseSurnames('SMITH J');
+    expect(s.has('smith')).toBe(true);
+  });
+});
+
+// ── scorePair ────────────────────────────────────────────────────────────────
+
+describe('scorePair', () => {
+  it('returns 100 with DOI reason when DOIs match (case/space-insensitive)', () => {
+    const a = { title: 'Whatever A', doi: ' 10.1000/Test ', year: '2020' };
+    const b = { title: 'Totally different', doi: '10.1000/test', year: '2021' };
+    const res = scorePair(a, b);
+    expect(res.score).toBe(100);
+    expect(res.reason).toBe('Exact DOI match');
+    expect(res.signals.doiMatch).toBe(true);
+  });
+
+  it('returns 100 with PMID reason when PMIDs match and no DOI', () => {
+    const a = { title: 'Some title', pmid: '12345678', year: '2019' };
+    const b = { title: 'Another title', pmid: '12345678', year: '2019' };
+    const res = scorePair(a, b);
+    expect(res.score).toBe(100);
+    expect(res.reason).toBe('Exact PMID match');
+    expect(res.signals.pmidMatch).toBe(true);
+  });
+
+  it('prefers DOI over PMID when both match', () => {
+    const a = { title: 'x', doi: '10.1/a', pmid: '999' };
+    const b = { title: 'y', doi: '10.1/a', pmid: '999' };
+    expect(scorePair(a, b).reason).toBe('Exact DOI match');
+  });
+
+  it('produces a high (but < 100) score for near-identical titles, same year & authors', () => {
+    const a = {
+      title: 'Efficacy of metformin in type 2 diabetes a systematic review',
+      authors: 'Smith J; Doe A',
+      year: '2023',
+    };
+    const b = {
+      title: 'Efficacy of metformin in type 2 diabetes a systematic review',
+      authors: 'Smith J; Doe A',
+      year: '2023',
+    };
+    const res = scorePair(a, b);
+    expect(res.score).toBeGreaterThanOrEqual(95);
+    expect(res.score).toBeLessThanOrEqual(100);
+    expect(res.signals.titleSim).toBeCloseTo(1, 5);
+    expect(res.signals.yearMatch).toBe(true);
+    expect(res.signals.authorJaccard).toBeGreaterThan(0);
+    expect(res.reason).toContain('title similarity');
+  });
+
+  it('returns a score in the 0–100 integer range driven by title similarity', () => {
+    const a = { title: 'aspirin cardiovascular outcomes randomized trial' };
+    const b = { title: 'zebra migration patterns in southern africa' };
+    const res = scorePair(a, b);
+    expect(Number.isInteger(res.score)).toBe(true);
+    expect(res.score).toBeGreaterThanOrEqual(0);
+    expect(res.score).toBeLessThan(50); // dissimilar titles → low score
+  });
+
+  it('author overlap raises the score relative to no overlap', () => {
+    const title = 'Effect of exercise on blood pressure in adults a review';
+    const noAuthors = scorePair({ title }, { title });
+    const withAuthors = scorePair(
+      { title, authors: 'Smith J; Doe A' },
+      { title, authors: 'Smith J; Doe A' },
+    );
+    expect(withAuthors.score).toBeGreaterThan(noAuthors.score);
+  });
+
+  it('a differing year lowers the score versus a matching year', () => {
+    const title = 'Effect of exercise on blood pressure in adults a review';
+    const authors = 'Smith J; Doe A';
+    const sameYear = scorePair(
+      { title, authors, year: '2020' },
+      { title, authors, year: '2020' },
+    );
+    const diffYear = scorePair(
+      { title, authors, year: '2020' },
+      { title, authors, year: '2015' },
+    );
+    expect(diffYear.score).toBeLessThan(sameYear.score);
+    expect(diffYear.signals.yearMatch).toBe(false);
+    expect(diffYear.reason).toContain('different year');
+  });
+
+  it('always returns the expected signals object shape', () => {
+    const res = scorePair({ title: 'a b c d e f' }, { title: 'a b c d e g' });
+    expect(res.signals).toHaveProperty('titleSim');
+    expect(res.signals).toHaveProperty('authorJaccard');
+    expect(res.signals).toHaveProperty('yearMatch');
+    expect(res.signals).toHaveProperty('doiMatch');
+    expect(res.signals).toHaveProperty('pmidMatch');
+  });
+});
+
+// ── findDuplicateGroupsScored ────────────────────────────────────────────────
+
+describe('findDuplicateGroupsScored', () => {
+  it('returns an empty array for empty input', () => {
+    expect(findDuplicateGroupsScored([])).toEqual([]);
+  });
+
+  it('returns a scored group (score + reason + pairs) for a DOI duplicate', () => {
+    const records = [
+      { id: 'd1', title: 'Article One', doi: '10.1000/dup', year: '2023' },
+      { id: 'd2', title: 'Article One Variant', doi: '10.1000/dup', year: '2023' },
+    ];
+    const groups = findDuplicateGroupsScored(records);
+    expect(groups).toHaveLength(1);
+    const g = groups[0];
+    expect(g.ids).toEqual(expect.arrayContaining(['d1', 'd2']));
+    expect(g.score).toBe(100);
+    expect(g.reason).toBe('Exact DOI match');
+    expect(Array.isArray(g.pairs)).toBe(true);
+    expect(g.pairs[0]).toHaveProperty('a');
+    expect(g.pairs[0]).toHaveProperty('b');
+    expect(g.pairs[0]).toHaveProperty('score');
+    expect(g.pairs[0]).toHaveProperty('reason');
+  });
+
+  it('group score is the max pair score within the group', () => {
+    const records = [
+      {
+        id: 'g1',
+        title: 'Efficacy of metformin in type 2 diabetes a systematic review',
+        authors: 'Smith J; Doe A',
+        year: '2023',
+      },
+      {
+        id: 'g2',
+        title: 'Efficacy of metformin in type 2 diabetes a systematic review',
+        authors: 'Smith J; Doe A',
+        year: '2023',
+      },
+    ];
+    const groups = findDuplicateGroupsScored(records);
+    expect(groups).toHaveLength(1);
+    const maxPair = Math.max(...groups[0].pairs.map(p => p.score));
+    expect(groups[0].score).toBe(maxPair);
+    expect(groups[0].reason).toContain('title similarity');
+  });
+
+  it('uses default threshold of 0.85 (looser than findDuplicateGroups)', () => {
+    // Two titles differing by a few characters — similarity ~0.88.
+    const records = [
+      { id: 't1', title: 'The effect of sleep deprivation on cognitive performance', year: '2023' },
+      { id: 't2', title: 'The effects of sleep deprivation on cognitive performances', year: '2023' },
+    ];
+    const groups = findDuplicateGroupsScored(records);
+    expect(groups.length).toBeGreaterThanOrEqual(1);
+    expect(groups[0].score).toBeGreaterThan(0);
+  });
+
+  it('returns no groups when records do not overlap', () => {
+    const records = [
+      { id: 'n1', title: 'Alpha study on inflammation markers in sepsis', year: '2020' },
+      { id: 'n2', title: 'Beta analysis of zinc supplementation outcomes', year: '2021' },
+    ];
+    expect(findDuplicateGroupsScored(records)).toEqual([]);
   });
 });

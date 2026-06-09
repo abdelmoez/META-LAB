@@ -75,6 +75,7 @@ export default function SiftDashboard() {
   const [createError,    setCreateError]    = useState(null);
   const [deleteConfirm,  setDeleteConfirm]  = useState(null); // pid to delete
   const [deleting,       setDeleting]       = useState(false);
+  const [statusFilter,   setStatusFilter]   = useState('all'); // all | not_started | in_progress | done
 
   const loadProjects = useCallback(async () => {
     setLoading(true);
@@ -287,32 +288,60 @@ export default function SiftDashboard() {
         )}
 
         {/* Project cards */}
-        {!loading && !error && !disabled && projects.length > 0 && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            {projects.map(project => {
-              const s = stats[project.id] || {};
-              const total = s.total || 0;
-              const screened = (s.included || 0) + (s.excluded || 0) + (s.maybe || 0);
-              const pct = total > 0 ? Math.round((screened / total) * 100) : 0;
-              const progressColor = pct >= 100 ? C.grn : C.acc;
+        {!loading && !error && !disabled && projects.length > 0 && (() => {
+          const STATUS = [
+            { key: 'all',         label: 'All' },
+            { key: 'not_started', label: 'Not started' },
+            { key: 'in_progress', label: 'In progress' },
+            { key: 'done',        label: 'Done' },
+          ];
+          const countFor = k => k === 'all' ? projects.length : projects.filter(p => (p.progressStatus || 'not_started') === k).length;
+          const visible = statusFilter === 'all' ? projects : projects.filter(p => (p.progressStatus || 'not_started') === statusFilter);
+          return (
+            <>
+              {/* Status filter */}
+              <div style={{ display: 'flex', gap: 6, marginBottom: 16, flexWrap: 'wrap' }}>
+                {STATUS.map(st => {
+                  const on = statusFilter === st.key;
+                  return (
+                    <button key={st.key} onClick={() => setStatusFilter(st.key)}
+                      style={{ cursor: 'pointer', fontFamily: FONT, fontSize: 12, fontWeight: 600, padding: '5px 12px', borderRadius: 20,
+                        background: on ? C.acc2 : 'transparent', color: on ? '#fff' : C.txt2, border: `1px solid ${on ? C.acc2 : C.brd2}` }}>
+                      {st.label} <span style={{ fontFamily: MONO, opacity: 0.8 }}>{countFor(st.key)}</span>
+                    </button>
+                  );
+                })}
+              </div>
 
-              return (
-                <ProjectCard
-                  key={project.id}
-                  project={project}
-                  stats={s}
-                  total={total}
-                  screened={screened}
-                  pct={pct}
-                  progressColor={progressColor}
-                  formatDate={formatDate}
-                  onOpen={() => navigate(`/sift-beta/projects/${project.id}`)}
-                  onDelete={() => setDeleteConfirm(project.id)}
-                />
-              );
-            })}
-          </div>
-        )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                {visible.map(project => {
+                  const s = stats[project.id] || {};
+                  const total = s.total || 0;
+                  const screened = (s.included || 0) + (s.excluded || 0) + (s.maybe || 0);
+                  const pct = total > 0 ? Math.round((screened / total) * 100) : 0;
+                  const progressColor = pct >= 100 ? C.grn : C.acc;
+                  return (
+                    <ProjectCard
+                      key={project.id}
+                      project={project}
+                      stats={s}
+                      total={total}
+                      screened={screened}
+                      pct={pct}
+                      progressColor={progressColor}
+                      formatDate={formatDate}
+                      onOpen={() => navigate(`/sift-beta/projects/${project.id}`)}
+                      onDelete={() => setDeleteConfirm(project.id)}
+                    />
+                  );
+                })}
+                {visible.length === 0 && (
+                  <div style={{ fontSize: 13, color: C.muted, padding: '24px 0', textAlign: 'center' }}>No projects with this status.</div>
+                )}
+              </div>
+            </>
+          );
+        })()}
       </div>
 
       {/* New Project Modal */}
@@ -457,12 +486,24 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
                 borderRadius: 4, padding: '1px 6px',
               }}>BLIND</span>
             )}
-            {project.stage && project.stage !== 'active' && (
+            {(() => {
+              const ps = project.progressStatus || 'not_started';
+              if (ps === 'not_started') return null;
+              const col = ps === 'done' ? C.grn : C.acc;
+              return (
+                <span style={{
+                  fontSize: 9, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em',
+                  background: col + '18', border: `1px solid ${col}40`, color: col,
+                  borderRadius: 4, padding: '1px 6px', textTransform: 'uppercase',
+                }}>{ps === 'done' ? 'DONE' : 'IN PROGRESS'}</span>
+              );
+            })()}
+            {project.isOwner === false && (
               <span style={{
                 fontSize: 9, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em',
-                background: C.teal + '18', border: `1px solid ${C.teal}40`, color: C.teal,
+                background: C.gold + '18', border: `1px solid ${C.gold}40`, color: C.gold,
                 borderRadius: 4, padding: '1px 6px', textTransform: 'uppercase',
-              }}>{project.stage}</span>
+              }}>Shared · {project.myRole || 'reviewer'}</span>
             )}
           </div>
 
@@ -500,8 +541,9 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
           </div>
 
           <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>
-            Created {formatDate(project.createdAt)}
-            {screened > 0 && total > 0 && ` · ${screened} of ${total} screened`}
+            {project.isOwner === false && project.owner && <>by {project.owner.name || project.owner.email} · </>}
+            {(project.memberCount ?? 1)} member{(project.memberCount ?? 1) !== 1 ? 's' : ''} · Updated {formatDate(project.updatedAt || project.createdAt)}
+            {screened > 0 && total > 0 && ` · ${screened}/${total} screened`}
           </div>
         </div>
 
@@ -520,19 +562,21 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
           >
             Open →
           </button>
-          <button
-            onClick={onDelete}
-            style={{
-              background: 'transparent', border: `1px solid ${C.brd}`,
-              color: C.muted, fontSize: 12, fontFamily: FONT,
-              padding: '6px 18px', borderRadius: 6, cursor: 'pointer',
-              transition: 'color 0.15s, border-color 0.15s',
-            }}
-            onMouseEnter={e => { e.currentTarget.style.color = C.red; e.currentTarget.style.borderColor = C.red + '60'; }}
-            onMouseLeave={e => { e.currentTarget.style.color = C.muted; e.currentTarget.style.borderColor = C.brd; }}
-          >
-            Delete
-          </button>
+          {project.isOwner !== false && (
+            <button
+              onClick={onDelete}
+              style={{
+                background: 'transparent', border: `1px solid ${C.brd}`,
+                color: C.muted, fontSize: 12, fontFamily: FONT,
+                padding: '6px 18px', borderRadius: 6, cursor: 'pointer',
+                transition: 'color 0.15s, border-color 0.15s',
+              }}
+              onMouseEnter={e => { e.currentTarget.style.color = C.red; e.currentTarget.style.borderColor = C.red + '60'; }}
+              onMouseLeave={e => { e.currentTarget.style.color = C.muted; e.currentTarget.style.borderColor = C.brd; }}
+            >
+              Delete
+            </button>
+          )}
         </div>
       </div>
     </div>
