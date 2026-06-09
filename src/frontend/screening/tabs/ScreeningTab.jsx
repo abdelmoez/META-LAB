@@ -15,21 +15,23 @@ import { C, FONT, MONO, DECISION_COLORS, DECISION_GLYPH } from '../ui/theme.js';
 import { Loading, ErrorBanner, Button, Badge, DecisionChip, Card, SectionLabel, EmptyState, Toggle } from '../ui/components.jsx';
 import { renderHighlighted } from '../ui/highlightRender.jsx';
 import { extractKeywords } from '../../../research-engine/screening/keywords.js';
-import ChatPanel from '../components/ChatPanel.jsx';
+import { DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS } from '../../../research-engine/screening/defaultKeywords.js';
+import PdfViewer from '../components/PdfViewer.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 
 const LIMIT = 50;
 
 // Filter options for the left-column selector. `value` is sent as params.filter.
+// Per-member "new/viewed" wording (Task 7) so reviewers track their own progress.
 const FILTERS = [
   { value: 'all',         label: 'All records' },
-  { value: 'unopened_me', label: 'Unopened (me)' },
-  { value: 'opened_me',   label: 'Opened (me)' },
+  { value: 'unopened_me', label: 'New to me' },
+  { value: 'opened_me',   label: 'Viewed by me' },
   { value: 'undecided',   label: 'Undecided' },
-  { value: 'included',    label: 'Included' },
-  { value: 'excluded',    label: 'Excluded' },
-  { value: 'maybe',       label: 'Maybe' },
-  { value: 'quorum',      label: 'Quorum met' },
+  { value: 'included',    label: 'Included by me' },
+  { value: 'excluded',    label: 'Excluded by me' },
+  { value: 'maybe',       label: 'Maybe (me)' },
+  { value: 'quorum',      label: 'Quorum / 2nd review' },
   { value: 'disputed',    label: 'Disputed' },
 ];
 
@@ -59,12 +61,15 @@ function parseLabels(labels) {
 export default function ScreeningTab({ pid, project, access, refreshProject }) {
   const isLeader = !!access?.isLeader;
   const canScreen = !!access?.canScreen;
-  const canChat = !!access?.canChat;
   const blindMode = !!project?.blindMode;
 
-  // Parsed project config (keywords / study-type filter).
-  const inclusion = parseList(project?.inclusionKeywords);
-  const exclusion = parseList(project?.exclusionKeywords);
+  // Parsed project config (keywords / study-type filter). Projects created before
+  // default-keyword seeding fall back to the shared defaults so the panel is never
+  // empty (Task 8 — "default keyword sets to every project").
+  const storedIncl = parseList(project?.inclusionKeywords);
+  const storedExcl = parseList(project?.exclusionKeywords);
+  const inclusion = storedIncl.length ? storedIncl : DEFAULT_INCLUDE_KEYWORDS;
+  const exclusion = storedExcl.length ? storedExcl : DEFAULT_EXCLUDE_KEYWORDS;
   const studyTypes = parseList(project?.studyTypeFilter);
 
   // ── Records & selection ──────────────────────────────────────────────────
@@ -88,6 +93,21 @@ export default function ScreeningTab({ pid, project, access, refreshProject }) {
   const [showInclusion, setShowInclusion] = useState(true);
   const [showExclusion, setShowExclusion] = useState(true);
 
+  // Keyword filtering (Task 8): selected include/exclude phrases + article counts.
+  const [selectedIncl, setSelectedIncl] = useState([]);
+  const [selectedExcl, setSelectedExcl] = useState([]);
+  const [kwStats, setKwStats] = useState({ total: 0, include: {}, exclude: {} });
+  const selectedKeywords = [...selectedIncl, ...selectedExcl];
+  const keywordsParam = selectedKeywords.join(',');
+  const keywordsRef = useRef('');
+
+  // Highlight terms follow the selection when the reviewer has narrowed it down;
+  // otherwise the project's full keyword lists highlight out of the box.
+  const hlIncl = selectedIncl.length ? selectedIncl : inclusion;
+  const hlExcl = selectedExcl.length ? selectedExcl : exclusion;
+
+  const clearKeywordFilters = useCallback(() => { setSelectedIncl([]); setSelectedExcl([]); }, []);
+
   const selected = records.find(r => r.id === selectedId) || null;
 
   // Refs to keep the latest values inside debounced / keyboard callbacks.
@@ -109,6 +129,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject }) {
       const params = { page: pageNum, limit: LIMIT };
       if (searchVal) params.search = searchVal;
       if (filterVal && filterVal !== 'all') params.filter = filterVal;
+      if (keywordsRef.current) params.keywords = keywordsRef.current;
       const data = await screeningApi.listRecords(pid, params);
       const recs = data.records || [];
       setRecords(prev => (reset ? recs : [...prev, ...recs]));
@@ -133,6 +154,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject }) {
       const params = { page: 1, limit: 200 };
       if (searchRef.current) params.search = searchRef.current;
       if (filterRef.current && filterRef.current !== 'all') params.filter = filterRef.current;
+      if (keywordsRef.current) params.keywords = keywordsRef.current;
       const data = await screeningApi.listRecords(pid, params);
       const fresh = (data.records || []).find(r => r.id === rid);
       if (fresh) setRecords(prev => prev.map(r => (r.id === rid ? fresh : r)));
@@ -147,12 +169,31 @@ export default function ScreeningTab({ pid, project, access, refreshProject }) {
     setSearch('');
     setFilter('all');
     loadRecords({ reset: true, s: '', f: 'all' });
+    setSelectedIncl([]); setSelectedExcl([]); keywordsRef.current = '';
     Promise.all([
       screeningApi.listLabels(pid).then(d => d.labels || []).catch(() => []),
       screeningApi.listReasons(pid).then(d => d.reasons || []).catch(() => []),
     ]).then(([ls, rs]) => { setLabels(ls); setReasons(rs); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid]);
+
+  // Keyword article counts — refresh on project load and whenever the project's
+  // keyword lists change (a leader edited them).
+  const loadKwStats = useCallback(() => {
+    screeningApi.getKeywordStats(pid)
+      .then(s => setKwStats({ total: s.total || 0, include: s.include || {}, exclude: s.exclude || {} }))
+      .catch(() => {});
+  }, [pid]);
+  useEffect(() => { loadKwStats(); /* eslint-disable-next-line */ }, [pid, inclusion.join('|'), exclusion.join('|')]);
+
+  // Re-filter the list when the keyword selection changes (skip first mount).
+  const kwFirst = useRef(true);
+  useEffect(() => {
+    keywordsRef.current = keywordsParam;
+    if (kwFirst.current) { kwFirst.current = false; return; }
+    loadRecords({ reset: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keywordsParam]);
 
   // ── Debounced search ─────────────────────────────────────────────────────
   const searchTimer = useRef(null);
@@ -308,7 +349,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject }) {
       <MiddleColumn
         record={selected} loading={loading}
         blindMode={blindMode} canScreen={canScreen} isLeader={isLeader}
-        inclusion={inclusion} exclusion={exclusion}
+        inclusion={hlIncl} exclusion={hlExcl}
         showInclusion={showInclusion} showExclusion={showExclusion}
         pid={pid}
         decision={decision} excReason={excReason} setExcReason={setExcReason}
@@ -324,12 +365,17 @@ export default function ScreeningTab({ pid, project, access, refreshProject }) {
 
       <RightColumn
         pid={pid} project={project} access={access} refreshProject={refreshProject}
-        isLeader={isLeader} canChat={canChat}
+        isLeader={isLeader}
         inclusion={inclusion} exclusion={exclusion} studyTypes={studyTypes}
         showInclusion={showInclusion} setShowInclusion={setShowInclusion}
         showExclusion={showExclusion} setShowExclusion={setShowExclusion}
         labels={labels} setLabels={setLabels} reasons={reasons} setReasons={setReasons}
         blindMode={blindMode}
+        kwStats={kwStats} loadKwStats={loadKwStats}
+        selectedIncl={selectedIncl} setSelectedIncl={setSelectedIncl}
+        selectedExcl={selectedExcl} setSelectedExcl={setSelectedExcl}
+        clearKeywordFilters={clearKeywordFilters}
+        shownCount={total} projectTotal={kwStats.total}
       />
     </div>
   );
@@ -435,23 +481,27 @@ function RecordRow({ record, selected, onClick, blindMode }) {
         cursor: 'pointer', transition: 'background 0.1s',
       }}
     >
-      {/* Title + my decision glyph + opened dot */}
+      {/* Title + my decision glyph + per-member new/viewed marker */}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-        <span
-          title={record.myOpened ? 'Opened' : 'Unopened'}
-          style={{
-            width: 7, height: 7, borderRadius: '50%', marginTop: 4, flexShrink: 0,
-            background: record.myOpened ? C.acc : 'transparent',
-            border: `1.5px solid ${record.myOpened ? C.acc : C.muted}`,
-          }}
-        />
+        {record.myOpened ? (
+          <span title="Viewed by you" style={{
+            width: 7, height: 7, borderRadius: '50%', marginTop: 5, flexShrink: 0,
+            background: 'transparent', border: `1.5px solid ${C.muted}`,
+          }} />
+        ) : (
+          <span title="New to you — not yet opened" style={{
+            fontSize: 8, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.06em', marginTop: 2, flexShrink: 0,
+            color: C.acc, background: C.acc + '20', border: `1px solid ${C.acc}55`, borderRadius: 3, padding: '1px 4px',
+          }}>NEW</span>
+        )}
         <div style={{
-          flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: selected ? 600 : 500,
-          color: selected ? C.txt : C.txt2, lineHeight: 1.35,
+          flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: selected ? 600 : (record.myOpened ? 500 : 600),
+          color: selected ? C.txt : (record.myOpened ? C.txt2 : C.txt), lineHeight: 1.35,
           overflow: 'hidden', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
         }}>
           {record.title || <span style={{ fontStyle: 'italic', color: C.muted }}>Untitled record</span>}
         </div>
+        {record.disputed && <span title="Reviewers disagree — disputed" style={{ fontSize: 13, flexShrink: 0, marginTop: 0 }}>⚠️</span>}
         <span style={{ fontSize: 12, fontFamily: MONO, fontWeight: 700, color: myDc.txt, flexShrink: 0, marginTop: 1 }}>
           {DECISION_GLYPH[my] || '·'}
         </span>
@@ -489,7 +539,10 @@ function RecordRow({ record, selected, onClick, blindMode }) {
             })}
           </span>
         )}
-        {record.quorumMet && <Badge color={C.teal}>Quorum</Badge>}
+        {record.currentStage === 'full_text'
+          ? <Badge color={C.grn}>2nd review</Badge>
+          : record.quorumMet && <Badge color={C.teal}>Quorum</Badge>}
+        {record.handoffStatus === 'sent' && <Badge color={C.acc}>Sent</Badge>}
         {record.disputed && <Badge color={C.gold}>Disputed</Badge>}
         {record.isDuplicate && <Badge color={C.gold}>Dup</Badge>}
       </div>
@@ -573,18 +626,21 @@ function MiddleColumn({
           )}
         </Card>
 
-        {/* ── PDF attachments ────────────────────────────────────────────── */}
-        <PdfRow pid={pid} record={record} canManage={canScreen || isLeader} />
+        {/* ── PDF attachment + in-browser preview ────────────────────────── */}
+        <div style={{ margin: '4px 0 16px' }}>
+          <PdfViewer pid={pid} recordId={record.id} canManage={canScreen || isLeader} />
+        </div>
 
-        {/* ── Quorum status ──────────────────────────────────────────────── */}
+        {/* ── Quorum / workflow status ───────────────────────────────────── */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '16px 0', flexWrap: 'wrap' }}>
           <span style={{ fontSize: 12, color: C.txt2 }}>
             <span style={{ fontFamily: MONO, fontWeight: 700, color: record.includeCount >= 2 ? C.grn : C.txt }}>{record.includeCount || 0}</span>
             <span style={{ color: C.muted }}> / 2 reviewers included</span>
           </span>
           {record.quorumMet && <Badge color={C.teal}>Quorum met</Badge>}
-          {record.currentStage === 'full_text' && <Badge color={C.grn}>✓ Advanced to Second Review</Badge>}
-          {record.disputed && <Badge color={C.gold}>Disputed</Badge>}
+          {record.currentStage === 'full_text' && <Badge color={C.grn}>✓ In Second Review</Badge>}
+          {record.handoffStatus === 'sent' && <Badge color={C.acc}>↗ Sent to Data Extraction</Badge>}
+          {record.disputed && <Badge color={C.gold}>⚠ Disputed</Badge>}
         </div>
 
         {/* ── Decision bar ───────────────────────────────────────────────── */}
@@ -816,101 +872,21 @@ function StarRating({ value, onChange, disabled }) {
   );
 }
 
-// ── PDF attachments row ──────────────────────────────────────────────────────
-
-function PdfRow({ pid, record, canManage }) {
-  const [attachments, setAttachments] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [uploading, setUploading] = useState(false);
-  const [err, setErr] = useState('');
-  const fileRef = useRef(null);
-
-  const load = useCallback(async () => {
-    setLoading(true); setErr('');
-    try {
-      const data = await screeningApi.listPdf(pid, record.id);
-      setAttachments(data.attachments || []);
-    } catch (e) { setErr(e.message || 'Could not load attachments'); }
-    finally { setLoading(false); }
-  }, [pid, record.id]);
-
-  useEffect(() => { load(); }, [load]);
-
-  async function onUpload(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.type !== 'application/pdf') { setErr('Only PDF files are accepted.'); return; }
-    setUploading(true); setErr('');
-    try {
-      await screeningApi.uploadPdf(pid, record.id, file);
-      await load();
-    } catch (e2) { setErr(e2.message || 'Upload failed'); }
-    finally { setUploading(false); if (fileRef.current) fileRef.current.value = ''; }
-  }
-
-  async function onRemove(aid) {
-    setErr('');
-    try {
-      await screeningApi.deletePdf(pid, record.id, aid);
-      setAttachments(prev => prev.filter(a => a.id !== aid));
-    } catch (e) { setErr(e.message || 'Could not remove'); }
-  }
-
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', minHeight: 24 }}>
-      {loading ? (
-        <span style={{ fontSize: 11.5, color: C.muted, fontFamily: MONO }}>Checking PDF…</span>
-      ) : attachments.length > 0 ? (
-        attachments.map(a => (
-          <span key={a.id} style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
-            <a
-              href={screeningApi.pdfDownloadUrl(pid, record.id, a.id)}
-              target="_blank" rel="noopener noreferrer"
-              style={{ fontSize: 12.5, color: C.acc, textDecoration: 'none', fontWeight: 600 }}
-            >
-              📄 View PDF{a.filename ? ` · ${a.filename}` : ''}
-            </a>
-            {canManage && (
-              <button
-                onClick={() => onRemove(a.id)}
-                style={{ background: 'none', border: 'none', color: C.muted, fontSize: 11, cursor: 'pointer', textDecoration: 'underline' }}
-              >
-                Remove
-              </button>
-            )}
-          </span>
-        ))
-      ) : canManage ? (
-        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, cursor: uploading ? 'default' : 'pointer' }}>
-          <span style={{
-            fontSize: 12, color: C.txt2, border: `1px dashed ${C.brd2}`, borderRadius: 7,
-            padding: '6px 12px', background: C.card,
-          }}>
-            {uploading ? 'Uploading…' : '⬆ Upload PDF'}
-          </span>
-          <input ref={fileRef} type="file" accept="application/pdf" onChange={onUpload} disabled={uploading} style={{ display: 'none' }} />
-        </label>
-      ) : (
-        <span style={{ fontSize: 11.5, color: C.muted, fontStyle: 'italic' }}>No PDF attached.</span>
-      )}
-      {err && <span style={{ fontSize: 11, color: C.red }}>{err}</span>}
-    </div>
-  );
-}
-
 // ════════════════════════════════════════════════════════════════════════════
-// RIGHT COLUMN — PICO · keywords · toggles · study types · labels · reasons · chat
+// RIGHT COLUMN — PICO · keyword filters/highlights · study types · labels · reasons
 // ════════════════════════════════════════════════════════════════════════════
 
 function RightColumn({
-  pid, project, access, refreshProject, isLeader, canChat,
+  pid, project, access, refreshProject, isLeader,
   inclusion, exclusion, studyTypes,
   showInclusion, setShowInclusion, showExclusion, setShowExclusion,
   labels, setLabels, reasons, setReasons, blindMode,
+  kwStats, loadKwStats, selectedIncl, setSelectedIncl, selectedExcl, setSelectedExcl,
+  clearKeywordFilters, shownCount, projectTotal,
 }) {
   const [open, setOpen] = useState({
-    pico: true, keywords: true, highlights: true,
-    studyTypes: false, labels: false, reasons: false, chat: false,
+    pico: true, keywords: true,
+    studyTypes: false, labels: false, reasons: false,
   });
   const toggle = key => setOpen(o => ({ ...o, [key]: !o[key] }));
 
@@ -931,32 +907,19 @@ function RightColumn({
           : <p style={{ fontSize: 12.5, color: C.muted, fontStyle: 'italic', margin: 0 }}>No review question set.</p>}
       </Section>
 
-      {/* Keywords */}
-      <Section title="Highlight keywords" open={open.keywords} onToggle={() => toggle('keywords')}>
-        <KeywordEditor
-          pid={pid} project={project} refreshProject={refreshProject}
-          inclusion={inclusion} exclusion={exclusion} isLeader={isLeader}
+      {/* Keyword filters + highlighting (Task 8) */}
+      <Section title="Keyword filters & highlights" open={open.keywords} onToggle={() => toggle('keywords')}>
+        <KeywordPanel
+          pid={pid} project={project} refreshProject={refreshProject} isLeader={isLeader}
+          inclusion={inclusion} exclusion={exclusion}
+          kwStats={kwStats} loadKwStats={loadKwStats}
+          selectedIncl={selectedIncl} setSelectedIncl={setSelectedIncl}
+          selectedExcl={selectedExcl} setSelectedExcl={setSelectedExcl}
+          clearKeywordFilters={clearKeywordFilters}
+          shownCount={shownCount} projectTotal={projectTotal}
+          showInclusion={showInclusion} setShowInclusion={setShowInclusion}
+          showExclusion={showExclusion} setShowExclusion={setShowExclusion}
         />
-      </Section>
-
-      {/* Highlight toggles */}
-      <Section title="Highlights" open={open.highlights} onToggle={() => toggle('highlights')}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-          <Toggle checked={showInclusion} onChange={setShowInclusion} label="Inclusion (green)" />
-          <Toggle checked={showExclusion} onChange={setShowExclusion} label="Exclusion (red)" />
-          <button
-            onClick={() => { setShowInclusion(false); setShowExclusion(false); }}
-            disabled={!showInclusion && !showExclusion}
-            style={{
-              alignSelf: 'flex-start', background: 'none', border: `1px solid ${C.brd}`, color: C.txt2,
-              fontSize: 11.5, fontFamily: FONT, padding: '5px 12px', borderRadius: 6,
-              cursor: (!showInclusion && !showExclusion) ? 'default' : 'pointer',
-              opacity: (!showInclusion && !showExclusion) ? 0.45 : 1,
-            }}
-          >
-            All highlights off
-          </button>
-        </div>
       </Section>
 
       {/* Study type filter */}
@@ -994,20 +957,9 @@ function RightColumn({
         />
       </Section>
 
-      {/* Project chat */}
-      <Section title="Project chat" open={open.chat} onToggle={() => toggle('chat')} noPad>
-        {open.chat && (
-          canChat ? (
-            <div style={{ height: 420, display: 'flex', flexDirection: 'column' }}>
-              <ChatPanel pid={pid} access={access} />
-            </div>
-          ) : (
-            <div style={{ padding: '0 16px 16px', fontSize: 12, color: C.muted, fontStyle: 'italic' }}>
-              You do not have chat access in this project.
-            </div>
-          )
-        )}
-      </Section>
+      <div style={{ padding: '12px 16px', fontSize: 10.5, color: C.muted, lineHeight: 1.5 }}>
+        Use the <strong style={{ color: C.txt2 }}>💬 Chat</strong> button in the top bar to message the project team.
+      </div>
     </div>
   );
 }
@@ -1030,6 +982,144 @@ function Section({ title, open, onToggle, children, noPad }) {
         <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO, transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>›</span>
       </button>
       {open && <div style={{ padding: noPad ? 0 : '0 16px 16px' }}>{children}</div>}
+    </div>
+  );
+}
+
+// ── Keyword filter + highlight panel (Task 8) ────────────────────────────────
+//
+// Checkbox lists for the project's include/exclude keywords, each annotated with
+// the number of ARTICLES containing it. Selecting keywords filters the record
+// list (OR — any selected term) and drives green/red highlighting; highlights can
+// be toggled off without clearing the filter, and all filters cleared in one click.
+
+const KW_PREVIEW = 8; // collapsed list length
+
+function KeywordPanel({
+  pid, project, refreshProject, isLeader,
+  inclusion, exclusion, kwStats, loadKwStats,
+  selectedIncl, setSelectedIncl, selectedExcl, setSelectedExcl, clearKeywordFilters,
+  shownCount, projectTotal,
+  showInclusion, setShowInclusion, showExclusion, setShowExclusion,
+}) {
+  const [editing, setEditing] = useState(false);
+  const anySelected = selectedIncl.length + selectedExcl.length > 0;
+
+  return (
+    <div>
+      {/* Shown / total summary */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+        <span style={{ fontSize: 11.5, color: C.txt2, fontFamily: MONO }}>
+          Shown <span style={{ color: C.txt, fontWeight: 700 }}>{shownCount}</span> / {projectTotal || 0} articles
+        </span>
+        <button
+          onClick={clearKeywordFilters}
+          disabled={!anySelected}
+          style={{
+            background: 'none', border: `1px solid ${C.brd}`, color: anySelected ? C.acc : C.muted,
+            fontSize: 10.5, fontFamily: FONT, padding: '3px 9px', borderRadius: 6,
+            cursor: anySelected ? 'pointer' : 'default', opacity: anySelected ? 1 : 0.5,
+          }}>Clear filters</button>
+      </div>
+
+      <KeywordGroup
+        title="Include keywords" accent={C.grn}
+        terms={inclusion} counts={kwStats.include || {}}
+        selected={selectedIncl} setSelected={setSelectedIncl}
+      />
+      <div style={{ height: 14 }} />
+      <KeywordGroup
+        title="Exclude keywords" accent={C.red}
+        terms={exclusion} counts={kwStats.exclude || {}}
+        selected={selectedExcl} setSelected={setSelectedExcl}
+      />
+
+      {/* Highlight toggles (independent of filters) */}
+      <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.brd}`, display: 'flex', flexDirection: 'column', gap: 11 }}>
+        <span style={{ fontSize: 9.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.1em' }}>HIGHLIGHTING</span>
+        <Toggle checked={showInclusion} onChange={setShowInclusion} label="Inclusion (green)" />
+        <Toggle checked={showExclusion} onChange={setShowExclusion} label="Exclusion (red)" />
+        <button
+          onClick={() => { setShowInclusion(false); setShowExclusion(false); }}
+          disabled={!showInclusion && !showExclusion}
+          style={{
+            alignSelf: 'flex-start', background: 'none', border: `1px solid ${C.brd}`, color: C.txt2,
+            fontSize: 11, fontFamily: FONT, padding: '5px 12px', borderRadius: 6,
+            cursor: (!showInclusion && !showExclusion) ? 'default' : 'pointer',
+            opacity: (!showInclusion && !showExclusion) ? 0.45 : 1,
+          }}>All highlights off</button>
+      </div>
+
+      {/* Leader: edit the keyword lists */}
+      {isLeader && (
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.brd}` }}>
+          <button
+            onClick={() => setEditing(e => !e)}
+            style={{ background: 'none', border: 'none', color: C.acc, fontSize: 11.5, fontFamily: FONT, cursor: 'pointer', padding: 0 }}>
+            {editing ? '▾ Hide keyword editor' : '✎ Edit keyword lists'}
+          </button>
+          {editing && (
+            <div style={{ marginTop: 12 }}>
+              <KeywordEditor
+                pid={pid} project={project} isLeader={isLeader}
+                inclusion={inclusion} exclusion={exclusion}
+                refreshProject={() => { refreshProject?.(); loadKwStats?.(); }}
+              />
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KeywordGroup({ title, accent, terms, counts, selected, setSelected }) {
+  const [expanded, setExpanded] = useState(false);
+  const list = expanded ? terms : terms.slice(0, KW_PREVIEW);
+  const allSelected = terms.length > 0 && selected.length === terms.length;
+
+  const toggleTerm = t => setSelected(prev => prev.includes(t) ? prev.filter(x => x !== t) : [...prev, t]);
+  const toggleAll  = () => setSelected(allSelected ? [] : [...terms]);
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 7 }}>
+        <span style={{ fontSize: 9.5, fontFamily: MONO, color: accent, letterSpacing: '0.1em' }}>
+          {title.toUpperCase()}{selected.length ? ` · ${selected.length}` : ''}
+        </span>
+        {terms.length > 0 && (
+          <button onClick={toggleAll}
+            style={{ background: 'none', border: 'none', color: C.txt2, fontSize: 10.5, fontFamily: FONT, cursor: 'pointer', padding: 0 }}>
+            {allSelected ? 'Clear' : 'Select all'}
+          </button>
+        )}
+      </div>
+
+      {terms.length === 0 ? (
+        <span style={{ fontSize: 11.5, color: C.muted, fontStyle: 'italic' }}>None defined.</span>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+          {list.map(t => {
+            const on = selected.includes(t);
+            const n = counts[t] || 0;
+            return (
+              <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '2px 0' }}>
+                <input type="checkbox" checked={on} onChange={() => toggleTerm(t)}
+                  style={{ accentColor: accent, cursor: 'pointer', flexShrink: 0 }} />
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: on ? C.txt : C.txt2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t}</span>
+                <span style={{ fontSize: 10, fontFamily: MONO, color: n ? accent : C.muted, background: n ? accent + '14' : 'transparent', borderRadius: 4, padding: '1px 6px', flexShrink: 0, minWidth: 22, textAlign: 'center' }}>{n}</span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+
+      {terms.length > KW_PREVIEW && (
+        <button onClick={() => setExpanded(e => !e)}
+          style={{ marginTop: 6, background: 'none', border: 'none', color: C.acc, fontSize: 11, fontFamily: FONT, cursor: 'pointer', padding: 0 }}>
+          {expanded ? 'Show less' : `Show more (${terms.length - KW_PREVIEW})`}
+        </button>
+      )}
     </div>
   );
 }
@@ -1087,6 +1177,11 @@ function KeywordEditor({ pid, project, refreshProject, inclusion, exclusion, isL
     persist(k.inclusion, k.exclusion);
   }
 
+  function resetDefaults() {
+    setIncl(DEFAULT_INCLUDE_KEYWORDS); setExcl(DEFAULT_EXCLUDE_KEYWORDS);
+    persist(DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS);
+  }
+
   const chip = (term, kind) => {
     const tint = kind === 'incl'
       ? { bg: 'rgba(74,222,128,0.14)', bd: 'rgba(74,222,128,0.5)', tx: C.grn }
@@ -1134,6 +1229,9 @@ function KeywordEditor({ pid, project, refreshProject, inclusion, exclusion, isL
       {/* Auto-generate */}
       {isLeader && (
         <div style={{ marginTop: 14 }}>
+          <Button variant="subtle" onClick={resetDefaults} disabled={saving} full style={{ fontSize: 12, marginBottom: 8 }}>
+            ↺ Reset to default keywords
+          </Button>
           <Button variant="subtle" onClick={autoGenerate} disabled={saving} full style={{ fontSize: 12 }}>
             ✨ Auto-generate from PICO
           </Button>

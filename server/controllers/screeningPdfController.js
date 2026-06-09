@@ -16,6 +16,7 @@ import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import { prisma } from '../db/client.js';
 import { getProjectAccess, writeAudit } from '../screening/access.js';
+import { getMetaSiftSettings } from '../screening/settings.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STORAGE_ROOT = path.join(__dirname, '..', 'storage', 'screening-pdfs');
@@ -32,15 +33,20 @@ const upload = multer({
   },
 });
 
-/** Express middleware: run multer.single('file') and translate errors to clean 400s. */
+/** Express middleware: enforce the admin PDF toggle, run multer, clean up errors. */
 export function pdfUploadMiddleware(req, res, next) {
-  upload.single('file')(req, res, err => {
-    if (err) {
-      const msg = err.code === 'LIMIT_FILE_SIZE' ? 'PDF exceeds the 25MB limit' : (err.message || 'Upload failed');
-      return res.status(400).json({ error: msg });
+  getMetaSiftSettings().then(settings => {
+    if (settings.allowPdfUpload === false) {
+      return res.status(403).json({ error: 'PDF upload is currently disabled by the administrator' });
     }
-    next();
-  });
+    upload.single('file')(req, res, err => {
+      if (err) {
+        const msg = err.code === 'LIMIT_FILE_SIZE' ? 'PDF exceeds the 25MB limit' : (err.message || 'Upload failed');
+        return res.status(400).json({ error: msg });
+      }
+      next();
+    });
+  }).catch(() => next());
 }
 
 function shape(a) {

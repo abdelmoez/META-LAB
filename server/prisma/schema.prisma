@@ -140,8 +140,14 @@ model ScreenRecord {
   currentStage     String                @default("title_abstract")  // title_abstract | full_text
   finalStatus      String                @default("")                // "" | accepted | rejected
   promotedAt       DateTime?                                          // when it reached quorum and moved to full_text
+  promotedVia      String                @default("")                // "" | quorum | conflict_resolution (how it reached 2nd review)
   acceptedAt       DateTime?                                          // when accepted in second review (sent to extraction)
   rejectedReason   String                @default("")
+  // ── META·LAB Data Extraction handoff state (prompt2 Task 4/5) ───────
+  handoffStatus    String                @default("")                // "" | pending | sent | failed | already_exists
+  handoffAt        DateTime?
+  handoffStudyId   String                @default("")                // id of the created META·LAB study (for idempotent re-sync)
+  handoffError     String                @default("")
   createdAt        DateTime              @default(now())
   updatedAt        DateTime              @updatedAt
 

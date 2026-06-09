@@ -20,8 +20,11 @@ export default function ConflictsTab({ pid, project, access }) {
   const [showResolved, setShowResolved] = useState(false);
   const [forms, setForms]       = useState({});  // cid -> { finalDecision, notes }
   const [busy, setBusy]         = useState(null);
+  const [flash, setFlash]       = useState('');
 
   const canResolve = access.isLeader || access.canResolveConflicts;
+
+  useEffect(() => { if (!flash) return; const t = setTimeout(() => setFlash(''), 4200); return () => clearTimeout(t); }, [flash]);
 
   const load = useCallback(async () => {
     setError(null);
@@ -38,7 +41,10 @@ export default function ConflictsTab({ pid, project, access }) {
     if (!f.finalDecision) return;
     setBusy(cid);
     try {
-      await screeningApi.resolveConflict(pid, cid, { finalDecision: f.finalDecision, notes: f.notes || '' });
+      const resp = await screeningApi.resolveConflict(pid, cid, { finalDecision: f.finalDecision, notes: f.notes || '' });
+      setFlash(resp?.promoted
+        ? 'Resolved as include — moved to Second Review.'
+        : `Conflict resolved as ${f.finalDecision}.`);
       await load();
     } catch (e) { setError(e.message || 'Failed to resolve'); }
     finally { setBusy(null); }
@@ -56,6 +62,11 @@ export default function ConflictsTab({ pid, project, access }) {
         <span style={{ fontSize: 12, color: C.muted, fontFamily: MONO }}>{unresolved.length} unresolved · {resolved.length} resolved</span>
       </div>
       {error && <ErrorBanner onRetry={load}>{error}</ErrorBanner>}
+      {flash && (
+        <div style={{ background: '#14532d40', border: `1px solid ${C.grn}55`, borderLeft: `3px solid ${C.grn}`, borderRadius: 8, padding: '10px 14px', color: C.grn, fontSize: 12.5, marginBottom: 14 }}>
+          {flash}
+        </div>
+      )}
 
       <p style={{ fontSize: 13, color: C.txt2, marginBottom: 18, lineHeight: 1.6 }}>
         A conflict appears when two or more reviewers record different decisions on the same article.

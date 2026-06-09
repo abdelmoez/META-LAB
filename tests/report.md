@@ -1,14 +1,30 @@
 # META·LAB Test Report
 
-**Generated:** 2026-06-08
+**Generated:** 2026-06-09 (prompt2 integration upgrade; prompt1 sections below unchanged)
 **Framework:** Vitest v2.1.9
 **Working directory:** `H:/META-LAB/META-LAB`
 
 ---
 
-## 1. Test Suite Summary
+## 0. prompt2 integration upgrade (2026-06-09)
 
-**Latest full run (2026-06-08, server up):** `npx vitest run --no-file-parallelism`
+**META·SIFT screening suite: ✅ 197/197 pass** (`npx vitest run tests/screening/ --no-file-parallelism`, server up).
+This adds, over the prompt1 baseline of 149: **+42** keyword-filter unit tests
+(`unit/keywordFilter.test.js`) and **+6** integration tests (`integration/prompt2.test.js`)
+covering PDF inline preview + auth, resolved-Include conflict → Second Review,
+META·LAB link/unlink + handoff status (sent/pending/already_exists/retry), and
+admin toggle enforcement. `vite build` clean (73 modules). Full breakdown +
+the one known limitation (no headless browser click-through this session) in
+**`tests/screening/report.md`**.
+
+> Integration tests now target `http://127.0.0.1:3001` (was `localhost`) to avoid a
+> Node 18+ undici `::1` connect hang on Windows; curl/browser were unaffected.
+
+---
+
+## 1. Test Suite Summary (prompt1 baseline)
+
+**Full run (2026-06-08, server up):** `npx vitest run --no-file-parallelism`
 
 | Result | Files | Tests |
 |--------|-------|-------|
@@ -17,7 +33,7 @@
 | ⏭ Skipped | — | 7 |
 | **Total** | **28** | **645** |
 
-The **META·SIFT collaboration upgrade** added the `Screen*` data model, membership/quorum/second-review/handoff/chat/PDF/admin backend, the tabbed React UI, and tests: **+56 screening unit tests** and **+7 collaboration integration tests** (all passing). See **`tests/screening/report.md`** for the full screening breakdown (149/149).
+The **META·SIFT collaboration upgrade** added the `Screen*` data model, membership/quorum/second-review/handoff/chat/PDF/admin backend, the tabbed React UI, and tests: **+56 screening unit tests** and **+7 collaboration integration tests** (all passing). The **prompt2 integration upgrade** (section 0) added a further **+48 screening tests** (197/197). See **`tests/screening/report.md`** for the full screening breakdown.
 
 > **Pre-existing failure (NOT introduced by the META·SIFT upgrade):** `tests/unit/serverStorage.test.js` has 6 failing assertions in the autosave "saving/saved" status pub-sub (timing). `git status` shows `serverStorage.js` and its test are unmodified by this work, and the failures reproduce in isolation on the original code. META·SIFT does not import `serverStorage`. Disclosed per the project's "do not hide failures" policy.
 

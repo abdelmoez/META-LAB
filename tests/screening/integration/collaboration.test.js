@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 
-const BASE = 'http://localhost:3001/api';
+const BASE = 'http://127.0.0.1:3001/api'; // 127.0.0.1 avoids Node/undici ::1 hang on Windows
 const rnd = () => Math.random().toString(36).slice(2, 8);
 
 let up = false;

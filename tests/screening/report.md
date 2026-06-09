@@ -1,5 +1,57 @@
 # META·SIFT — QA Report (collaboration upgrade)
 
+> **Update 2026-06-09 (prompt2 follow-up):** ✅ **197/197 screening tests pass**
+> after the META·LAB ↔ META·SIFT integration upgrade. The prompt2 section is
+> immediately below; the original prompt1 report follows unchanged.
+
+---
+
+## prompt2 — Integration upgrade (2026-06-09)
+
+**Scope:** PDF preview, resolved-conflict → second review, admin control panel,
+META·LAB association ("Review Workspace"), Data-Extraction handoff status, chat
+drawer, new/viewed/dispute indicators, default keyword filtering/highlighting.
+
+**Result:** ✅ **197/197 screening tests pass** (122 unit + 42 keyword-filter unit + 33 integration).
+
+Run: `npm run server`, then `npx vitest run tests/screening/ --no-file-parallelism`.
+
+| Suite | File | Tests | Status |
+|-------|------|-------|--------|
+| Keyword filter / counts / safe highlight (new) | `unit/keywordFilter.test.js` | 42 | ✅ |
+| prompt2 integration (new) | `integration/prompt2.test.js` | 6 | ✅ |
+| Collaboration integration (prompt1) | `integration/collaboration.test.js` | 7 | ✅ |
+| Screening API baseline (prompt1) | `integration/screening-api.test.js` | 20 | ✅ |
+| Unit (dedup/keywords/highlight/stats/conflicts) | `unit/*.test.js` | 122 | ✅ |
+
+### prompt2 task → test coverage
+
+| prompt2 task | Verified by | Status |
+|---|---|---|
+| 1 · PDF preview (inline, members-only, no public URL) | `prompt2 › Task 1` (inline `application/pdf`, 401 unauth) + `collaboration › PDF upload` | ✅ |
+| 2 · Resolved-Include conflict → Second Review | `prompt2 › Task 2` (include promotes `promotedVia=conflict_resolution`; exclude/maybe do not; reviewer blocked from conflicts) | ✅ |
+| 3 · Admin control panel toggles | `prompt2 › Task 3` (allowPdfUpload/allowChat/allowSecondReview enforced) + live admin endpoint smoke | ✅ |
+| 4 · META·LAB association (link/unlink, rollup) | `prompt2 › Task 4/5` (linkable list, link, handoff rollup counts) | ✅ |
+| 5 · Second Review → Data Extraction handoff | `prompt2 › Task 4/5` (sent + study lands in `studies[]`) & `Task 5` (pending→link→retry→sent; retry→already_exists) | ✅ |
+| 8 · Default keywords + counts + filtering | `prompt2 › Task 8` (seeded defaults) + `keywordFilter` unit (counts ARTICLES, OR/AND filter, safe segments) | ✅ |
+
+### Frontend (Tasks 1, 6, 7, 8 UI)
+
+- `vite build` clean (73 modules). New components: `PdfViewer` (inline iframe
+  preview, used by Screening + Second Review), `ChatLauncher` (project-level
+  right-side drawer, unread badge, focus-retained composer, outside-click close),
+  keyword filter panel (checkboxes + per-keyword article counts + Select-all +
+  Show more/less + shown/total + green/red highlight toggles + clear filters),
+  left-column **NEW**/viewed marker + ⚠ dispute icon + 2nd-review/Sent badges.
+- **Limitation:** no automated browser click-through this session (no headless
+  browser tooling available). Flow logic is covered by the live-API integration
+  tests above; rendering is covered by a clean production build. Manual browser QA
+  of the new panels is the recommended next step.
+
+---
+
+## prompt1 — Collaboration upgrade (2026-06-08)
+
 **Date:** 2026-06-08
 **Scope:** META·SIFT collaborative screening upgrade (prompt1.md, Parts 1–16)
 **Result:** ✅ **149/149 screening tests pass** · backend verified end-to-end against the live API

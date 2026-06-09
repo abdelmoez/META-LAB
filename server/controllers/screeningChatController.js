@@ -9,6 +9,7 @@
  */
 import { prisma } from '../db/client.js';
 import { getProjectAccess } from '../screening/access.js';
+import { getMetaSiftSettings } from '../screening/settings.js';
 
 const MAX_LEN = 4000;
 
@@ -58,6 +59,8 @@ export async function postMessage(req, res) {
   try {
     const access = await getProjectAccess(req.params.pid, req.user);
     if (!access) return res.status(404).json({ error: 'Project not found' });
+    const settings = await getMetaSiftSettings();
+    if (settings.allowChat === false) return res.status(403).json({ error: 'Chat is currently disabled by the administrator' });
     if (!access.active) return res.status(403).json({ error: 'Inactive members cannot post' });
     if (access.project.chatRestricted && !access.canChat && !access.isLeader) {
       return res.status(403).json({ error: 'You do not have permission to send messages in this project' });

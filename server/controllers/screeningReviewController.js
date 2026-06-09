@@ -9,9 +9,35 @@
  */
 import { prisma } from '../db/client.js';
 import { getProjectAccess, writeAudit } from '../screening/access.js';
+import { getMetaSiftSettings } from '../screening/settings.js';
 import { mkStudy } from '../../src/research-engine/project-model/defaults.js';
 
 const normTitle = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+/**
+ * Translate a handoffToMetaLab() result into a persisted handoff status +
+ * user-facing message (prompt2 Task 4 — pending|sent|failed|already_exists).
+ */
+function mapHandoff(handoff) {
+  if (handoff.handed) {
+    return { handoffStatus: 'sent', handoffStudyId: handoff.studyId || '', handoffError: '',
+      message: 'Sent to META·LAB Data Extraction.' };
+  }
+  switch (handoff.reason) {
+    case 'duplicate':
+      return { handoffStatus: 'already_exists', handoffStudyId: '', handoffError: '',
+        message: 'Already present in META·LAB Data Extraction (no duplicate created).' };
+    case 'no_link':
+      return { handoffStatus: 'pending', handoffStudyId: '', handoffError: 'No linked META·LAB project',
+        message: 'Accepted, but no META·LAB project is linked — link one to send it to Data Extraction.' };
+    case 'link_missing':
+      return { handoffStatus: 'failed', handoffStudyId: '', handoffError: 'Linked META·LAB project not found',
+        message: 'Accepted, but the linked META·LAB project could not be found.' };
+    default:
+      return { handoffStatus: 'failed', handoffStudyId: '', handoffError: handoff.reason || 'unknown',
+        message: 'Accepted, but the handoff to META·LAB failed.' };
+  }
+}
 
 /** Build a META·LAB study object from a screening record (preserves metadata + provenance). */
 function studyFromRecord(record, actor) {
@@ -86,7 +112,8 @@ export async function listSecondReview(req, res) {
         id: r.id, title: r.title, authors: r.authors, year: r.year, journal: r.journal,
         doi: r.doi, pmid: r.pmid, abstract: r.abstract,
         finalStatus: r.finalStatus, rejectedReason: r.rejectedReason,
-        acceptedAt: r.acceptedAt, promotedAt: r.promotedAt,
+        acceptedAt: r.acceptedAt, promotedAt: r.promotedAt, promotedVia: r.promotedVia,
+        handoffStatus: r.handoffStatus, handoffError: r.handoffError,
         decisions: r.decisions.map((d, i) => ({
           reviewerId: blind ? undefined : d.reviewerId,
           reviewerName: blind ? `Reviewer ${i + 1}` : d.reviewerName,
@@ -107,6 +134,10 @@ export async function finalizeRecord(req, res) {
   try {
     const access = await getProjectAccess(req.params.pid, req.user);
     if (!access) return res.status(404).json({ error: 'Project not found' });
+    const settings = await getMetaSiftSettings();
+    if (!settings.allowSecondReview) {
+      return res.status(403).json({ error: 'Second review is currently disabled by the administrator' });
+    }
     if (!access.isLeader && !access.canResolveConflicts) {
       return res.status(403).json({ error: 'Only the project leader can finalize records' });
     }
@@ -134,18 +165,63 @@ export async function finalizeRecord(req, res) {
       return res.json({ record: updated, handoff: { handed: false, reason: 'rejected' } });
     }
 
-    // accept → handoff to META·LAB Data Extraction
+    // accept → handoff to META·LAB Data Extraction (record is accepted regardless;
+    // the handoff status reflects whether the study reached Data Extraction).
     const handoff = await handoffToMetaLab(access.project, rec, req.user);
+    const mapped = mapHandoff(handoff);
     const updated = await prisma.screenRecord.update({
       where: { id: rec.id },
-      data: { finalStatus: 'accepted', acceptedAt: new Date() },
+      data: {
+        finalStatus: 'accepted', acceptedAt: new Date(),
+        handoffStatus: mapped.handoffStatus, handoffAt: new Date(),
+        handoffStudyId: mapped.handoffStudyId, handoffError: mapped.handoffError,
+      },
     });
     await writeAudit(access.project.id, req.user, 'RECORD_ACCEPTED', {
-      entityType: 'record', entityId: rec.id, details: handoff,
+      entityType: 'record', entityId: rec.id,
+      details: { ...handoff, handoffStatus: mapped.handoffStatus },
     });
-    res.json({ record: updated, handoff });
+    res.json({ record: updated, handoff: { ...handoff, ...mapped } });
   } catch (err) {
     console.error('[screening] finalizeRecord:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /projects/:pid/records/:rid/handoff/retry — re-attempt the Data
+ * Extraction handoff for an already-accepted record whose handoff is
+ * pending/failed (e.g. a project was linked after acceptance). Idempotent.
+ */
+export async function retryHandoff(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    if (!access.isLeader && !access.canResolveConflicts) {
+      return res.status(403).json({ error: 'Only the project leader can retry handoffs' });
+    }
+    const rec = await prisma.screenRecord.findFirst({
+      where: { id: req.params.rid, projectId: access.project.id },
+    });
+    if (!rec) return res.status(404).json({ error: 'Record not found' });
+    if (rec.finalStatus !== 'accepted') {
+      return res.status(400).json({ error: 'Only accepted records can be handed off' });
+    }
+    const handoff = await handoffToMetaLab(access.project, rec, req.user);
+    const mapped = mapHandoff(handoff);
+    const updated = await prisma.screenRecord.update({
+      where: { id: rec.id },
+      data: {
+        handoffStatus: mapped.handoffStatus, handoffAt: new Date(),
+        handoffStudyId: mapped.handoffStudyId || rec.handoffStudyId, handoffError: mapped.handoffError,
+      },
+    });
+    await writeAudit(access.project.id, req.user, 'HANDOFF_RETRY', {
+      entityType: 'record', entityId: rec.id, details: { handoffStatus: mapped.handoffStatus },
+    });
+    res.json({ record: updated, handoff: { ...handoff, ...mapped } });
+  } catch (err) {
+    console.error('[screening] retryHandoff:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }

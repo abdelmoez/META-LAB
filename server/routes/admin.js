@@ -31,6 +31,9 @@ import {
   listScreeningProjects,
   getScreeningProject,
   updateScreeningProjectStatus,
+  getScreeningProjectMembers,
+  getHandoffLogs,
+  getScreeningAuditLog,
 } from '../controllers/screeningAdminController.js';
 
 const router = Router();
@@ -95,8 +98,11 @@ router.get('/health', getHealth);
 router.get('/screening/settings',              getScreeningSettings);
 router.put('/screening/settings',              updateScreeningSettings);
 router.get('/screening/metrics',               getScreeningMetrics);
+router.get('/screening/handoffs',              getHandoffLogs);
+router.get('/screening/audit',                 getScreeningAuditLog);
 router.get('/screening/projects',              listScreeningProjects);
 router.get('/screening/projects/:id',          getScreeningProject);
+router.get('/screening/projects/:id/members',  getScreeningProjectMembers);
 router.patch('/screening/projects/:id/status', updateScreeningProjectStatus);
 
 export default router;
