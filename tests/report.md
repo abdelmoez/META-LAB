@@ -6,19 +6,26 @@
 
 ---
 
-## 0. prompt2 integration upgrade (2026-06-09)
+## 0. prompt3 targeted bug fixes (2026-06-09)
 
-**META·SIFT screening suite: ✅ 197/197 pass** (`npx vitest run tests/screening/ --no-file-parallelism`, server up).
-This adds, over the prompt1 baseline of 149: **+42** keyword-filter unit tests
+**META·SIFT screening suite: ✅ 203/203 pass** (`npx vitest run tests/screening/ --no-file-parallelism`, server up).
+Adds **+6** integration tests (`integration/prompt3.test.js`) over the prompt2 total of 197,
+covering the 6 reported bugs: default include/exclude keywords + counts, per-user chat
+unread (`ScreenChatRead`), PDF Range/206 streaming, project-card linked-title/leader/role,
+accepted-studies pull-merge to Data Extraction, and member-progress visibility (leader-only
+whole-project). Additive migration `20260609164836_add_chat_read_state`. `vite build` clean.
+Full bug→fix→test table in **`tests/screening/report.md`**.
+
+## 0b. prompt2 integration upgrade (2026-06-09)
+
+Over the prompt1 baseline of 149: **+42** keyword-filter unit tests
 (`unit/keywordFilter.test.js`) and **+6** integration tests (`integration/prompt2.test.js`)
 covering PDF inline preview + auth, resolved-Include conflict → Second Review,
-META·LAB link/unlink + handoff status (sent/pending/already_exists/retry), and
-admin toggle enforcement. `vite build` clean (73 modules). Full breakdown +
-the one known limitation (no headless browser click-through this session) in
-**`tests/screening/report.md`**.
+META·LAB link/unlink + handoff status, and admin toggle enforcement.
 
-> Integration tests now target `http://127.0.0.1:3001` (was `localhost`) to avoid a
-> Node 18+ undici `::1` connect hang on Windows; curl/browser were unaffected.
+> Integration tests target `http://127.0.0.1:3001` (not `localhost`) to avoid a
+> Node 18+ undici `::1` connect hang on Windows; the same fix was applied to the
+> vite dev-server API proxy target (browser API calls were timing out otherwise).
 
 ---
 

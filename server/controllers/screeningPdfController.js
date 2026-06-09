@@ -115,7 +115,16 @@ export async function listPdf(req, res) {
   }
 }
 
-/** GET /projects/:pid/records/:rid/pdf/:aid/download — stream the file to members only. */
+/**
+ * GET /projects/:pid/records/:rid/pdf/:aid/download — stream the PDF inline to
+ * project members only.
+ *
+ * Range-aware (BUG 3): browser PDF viewers (Chrome especially) issue Range
+ * requests; a server that ignores them and returns a full chunked 200 triggers
+ * "ERR_CONNECTION_RESET" in the embedded viewer. We advertise Accept-Ranges,
+ * set Content-Length, and answer Range with 206 Partial Content + a bounded
+ * createReadStream (so large PDFs are never buffered fully into memory).
+ */
 export async function downloadPdf(req, res) {
   try {
     const access = await getProjectAccess(req.params.pid, req.user);
@@ -124,14 +133,46 @@ export async function downloadPdf(req, res) {
       where: { id: req.params.aid, projectId: access.project.id, recordId: req.params.rid },
     });
     if (!att) return res.status(404).json({ error: 'Attachment not found' });
+
     const filePath = path.join(STORAGE_ROOT, att.projectId, att.storedName);
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File missing on disk' });
+    let stat;
+    try { stat = fs.statSync(filePath); } catch { return res.status(404).json({ error: 'File missing on disk' }); }
+    const total = stat.size;
+    const safeName = String(att.fileName || 'document.pdf').replace(/["\\\r\n]/g, '');
+
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${att.fileName.replace(/"/g, '')}"`);
-    fs.createReadStream(filePath).pipe(res);
+    res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+
+    const onErr = () => { if (!res.headersSent) res.status(500); try { res.end(); } catch {} };
+
+    const range = req.headers.range;
+    if (range) {
+      const m = /^bytes=(\d*)-(\d*)$/.exec(range);
+      if (m) {
+        const start = m[1] === '' ? 0 : parseInt(m[1], 10);
+        const end   = m[2] === '' ? total - 1 : parseInt(m[2], 10);
+        if (Number.isNaN(start) || Number.isNaN(end) || start > end || start < 0 || end >= total) {
+          res.status(416).setHeader('Content-Range', `bytes */${total}`);
+          return res.end();
+        }
+        res.status(206);
+        res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
+        res.setHeader('Content-Length', end - start + 1);
+        const stream = fs.createReadStream(filePath, { start, end });
+        stream.on('error', onErr);
+        return stream.pipe(res);
+      }
+    }
+
+    res.setHeader('Content-Length', total);
+    const stream = fs.createReadStream(filePath);
+    stream.on('error', onErr);
+    stream.pipe(res);
   } catch (err) {
     console.error('[screening] downloadPdf:', err.message);
-    res.status(500).json({ error: 'Internal server error' });
+    if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
   }
 }
 

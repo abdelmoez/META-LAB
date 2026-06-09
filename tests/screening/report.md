@@ -1,8 +1,25 @@
 # META·SIFT — QA Report (collaboration upgrade)
 
-> **Update 2026-06-09 (prompt2 follow-up):** ✅ **197/197 screening tests pass**
-> after the META·LAB ↔ META·SIFT integration upgrade. The prompt2 section is
-> immediately below; the original prompt1 report follows unchanged.
+> **Update 2026-06-09 (prompt3 bug fixes):** ✅ **203/203 screening tests pass**.
+> prompt3 targeted-bug-fix section is immediately below; prompt2 and the original
+> prompt1 report follow unchanged.
+
+---
+
+## prompt3 — Targeted bug fixes (2026-06-09)
+
+**Result:** ✅ **203/203 screening tests pass** (122 unit + 42 keyword-filter unit + 39 integration). `vite build` clean.
+
+| Bug | Root cause | Fix | Verified by |
+|-----|-----------|-----|-------------|
+| 1 · Include keywords not showing | Legacy projects created before keyword-seeding had empty include lists (only exclude appeared, via fallback); browser tab was also stale | Backfilled all projects to 28 include / 52 exclude (`server/scripts/backfill-keywords.js`); leader "Reset to defaults" button; server + frontend fallback; **render-proven** the panel shows both lists | `prompt3 › BUG 1` (keyword-stats returns defaults + article counts) |
+| 2 · Chat badge always after login | Unread was derived from all loaded messages on mount (every history msg counted) | New `ScreenChatRead` (lastReadAt per user/project) + `unread-count` / `mark-read` endpoints; ChatLauncher fetches server count, marks read on open | `prompt3 › BUG 2` (per-user count, persists across re-login, re-arms on new msg) |
+| 3 · PDF "connection was reset" | `downloadPdf` streamed with no Content-Length and ignored Range; Chrome's PDF viewer Range request got a full chunked 200 → reset | Range-aware streaming: `Accept-Ranges`, `Content-Length`, `206 Partial Content` + bounded `createReadStream` | `prompt3 › BUG 3` (200 advertises ranges; `bytes=0-99` → 206 + Content-Range) |
+| 4 · Project cards lack context | List endpoint didn't return linked title / leader / role | `listProjects` adds `linkedMetaLabProjectTitle`, `leaderName/Email`, `currentUserRole`, `totalArticles`, `status`; card shows linked project, "You are leader", leader, members, status | `prompt3 › BUG 4` |
+| 5 · Accepted studies not in Data Extraction | Server push could be clobbered by a stale-state autosave / no reload | `metalab/:id/summary` now returns `acceptedStudies` (with `screeningRecordId` provenance); META·LAB `MetaSiftPrismaSync` pull-merges them into `project.studies` idempotently (DOI/PMID/title/recordId) | `prompt3 › BUG 5` + `prompt2 › Task 4/5` (study lands in `studies[]`) |
+| 6 · Member progress leakage | `getOverview` returned all members + whole-project progress to everyone | Server gates by role: non-leaders get only their own member row + `projectProgress: null`; OverviewTab shows "My Progress" only | `prompt3 › BUG 6` (member sees 1 row, null projectProgress; leader sees all) |
+
+New suites: `integration/prompt3.test.js` (6). Schema: additive migration `20260609164836_add_chat_read_state` (ScreenChatRead). **Limitation:** still no headless-browser click-through (no browser tooling) — verified via live-API integration + a `renderToStaticMarkup` proof that the keyword panel renders both lists; manual browser pass recommended.
 
 ---
 

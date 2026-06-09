@@ -40,7 +40,7 @@ function mapHandoff(handoff) {
 }
 
 /** Build a META·LAB study object from a screening record (preserves metadata + provenance). */
-function studyFromRecord(record, actor) {
+export function studyFromRecord(record, actor) {
   const s = mkStudy();
   s.title    = record.title || '';
   s.authors  = record.authors || '';
@@ -50,6 +50,7 @@ function studyFromRecord(record, actor) {
   s.doi      = record.doi || '';
   s.pmid     = record.pmid || '';
   s.abstract = record.abstract || '';
+  if (record.sourceDb) s.searchMethod = record.sourceDb;
   // NOTE: `source` in META·LAB means the extraction data-location (figure/table/…),
   // so provenance goes on a dedicated flag instead of overloading `source`.
   s.siftOrigin = true;
@@ -57,6 +58,9 @@ function studyFromRecord(record, actor) {
   s.extractedBy = actor?.email || 'META·SIFT';
   s.extractedAt = new Date().toISOString();
   s.notes    = 'Accepted in META·SIFT second review';
+  // Provenance for idempotent pull-merge / dedupe (BUG 5).
+  s.screeningRecordId  = record.id || '';
+  s.screeningProjectId = record.projectId || '';
   return s;
 }
 

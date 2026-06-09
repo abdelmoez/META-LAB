@@ -289,6 +289,18 @@ model ScreenRecordOpenState {
   @@unique([recordId, userId])
 }
 
+// Per-user/project chat read marker (BUG 2 — unread badge accuracy).
+// unread = chat messages from OTHER members created after lastReadAt.
+model ScreenChatRead {
+  id         String   @id @default(uuid())
+  projectId  String
+  userId     String
+  lastReadAt DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([projectId, userId])
+}
+
 model ScreenAuditLog {
   id         String        @id @default(uuid())
   projectId  String

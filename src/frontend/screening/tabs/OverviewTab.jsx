@@ -216,7 +216,8 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject 
         )}
       </section>
 
-      {/* ───────── C) Whole-Project Progress ───────── */}
+      {/* ───────── C) Whole-Project Progress (leader-only, BUG 6) ───────── */}
+      {data.isLeader && data.projectProgress && (
       <section style={{ marginBottom: 22 }}>
         <SectionLabel>Whole-Project Progress</SectionLabel>
         <Card>
@@ -248,22 +249,29 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject 
           </div>
         </Card>
       </section>
+      )}
 
-      {/* ───────── D) Review Members & Progress ───────── */}
+      {/* ───────── D) Member Progress ───────── */}
+      {/* Leaders see every member + team comparison; regular members see only
+          their own progress (the server sends only their row to non-leaders). */}
       <section>
-        <SectionLabel right={
+        <SectionLabel right={data.isLeader ? (
           <span style={{ fontSize: 10.5, color: C.muted, fontFamily: MONO }}>
             {members.length} member{members.length === 1 ? '' : 's'}
           </span>
-        }>
-          Review Members
+        ) : null}>
+          {data.isLeader ? 'Review Members' : 'My Progress'}
         </SectionLabel>
 
         {members.length === 0 ? (
           <Card style={{ textAlign: 'center', padding: '32px 24px', borderStyle: 'dashed' }}>
             <div style={{ fontSize: 26, marginBottom: 10 }} aria-hidden>👥</div>
-            <div style={{ fontSize: 13.5, fontWeight: 600, color: C.txt, marginBottom: 4 }}>No reviewers yet</div>
-            <div style={{ fontSize: 12, color: C.txt2 }}>Add reviewers in the Members tab to start screening.</div>
+            <div style={{ fontSize: 13.5, fontWeight: 600, color: C.txt, marginBottom: 4 }}>
+              {data.isLeader ? 'No reviewers yet' : 'No progress yet'}
+            </div>
+            <div style={{ fontSize: 12, color: C.txt2 }}>
+              {data.isLeader ? 'Add reviewers in the Members tab to start screening.' : 'Start screening records to see your progress here.'}
+            </div>
           </Card>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -273,9 +281,11 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject 
           </div>
         )}
 
-        <div style={{ fontSize: 11.5, color: C.muted, marginTop: 12 }}>
-          Manage members in the <span style={{ color: C.txt2 }}>Members</span> tab.
-        </div>
+        {data.isLeader && (
+          <div style={{ fontSize: 11.5, color: C.muted, marginTop: 12 }}>
+            Manage members in the <span style={{ color: C.txt2 }}>Members</span> tab.
+          </div>
+        )}
       </section>
     </div>
   );

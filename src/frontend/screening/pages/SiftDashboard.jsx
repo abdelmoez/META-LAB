@@ -476,9 +476,16 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: C.txt, letterSpacing: '-0.01em' }}>
+            <span style={{ fontSize: 15.5, fontWeight: 600, color: C.txt, letterSpacing: '-0.01em' }}>
               {project.title}
             </span>
+            {(project.isOwner || project.myRole === 'leader') && (
+              <span style={{
+                fontSize: 9, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em',
+                background: C.grn + '18', border: `1px solid ${C.grn}40`, color: C.grn,
+                borderRadius: 4, padding: '1px 6px', textTransform: 'uppercase',
+              }}>You are leader</span>
+            )}
             {project.blindMode && (
               <span style={{
                 fontSize: 9, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em',
@@ -540,9 +547,24 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
             </span>
           </div>
 
-          <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>
-            {project.isOwner === false && project.owner && <>by {project.owner.name || project.owner.email} · </>}
-            {(project.memberCount ?? 1)} member{(project.memberCount ?? 1) !== 1 ? 's' : ''} · Updated {formatDate(project.updatedAt || project.createdAt)}
+          {/* Linked META·LAB project (BUG 4) */}
+          <div style={{ fontSize: 11.5, marginTop: 8, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            {project.linkedMetaLabProjectId ? (
+              <span style={{ color: C.grn, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <span>🔗</span>
+                <span>Linked to META·LAB: <strong style={{ color: C.txt }}>{project.linkedMetaLabProjectTitle || 'project'}</strong></span>
+              </span>
+            ) : (
+              <span style={{ color: C.muted, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                <span style={{ opacity: 0.6 }}>⛓️‍💥</span> Not linked to META·LAB
+              </span>
+            )}
+          </div>
+
+          <div style={{ fontSize: 11.5, color: C.muted, marginTop: 5 }}>
+            Leader: <span style={{ color: C.txt2 }}>{project.leaderName || project.owner?.name || project.owner?.email || 'Unknown'}</span>
+            {' · '}{(project.memberCount ?? 1)} member{(project.memberCount ?? 1) !== 1 ? 's' : ''}
+            {' · '}Updated {formatDate(project.updatedAt || project.createdAt)}
             {screened > 0 && total > 0 && ` · ${screened}/${total} screened`}
           </div>
         </div>

@@ -47,7 +47,9 @@ export default function ChatLauncher({ pid, access = {} }) {
   const sendingRef = useRef(false);
   useEffect(() => { openRef.current = open; }, [open]);
 
-  const merge = useCallback((incoming, serverTime) => {
+  // countUnread=false for the initial history load (BUG 2: historical messages are
+  // NOT unread just because we loaded them — the server's read marker decides).
+  const merge = useCallback((incoming, serverTime, countUnread = true) => {
     if (serverTime) sinceRef.current = serverTime;
     if (!incoming || incoming.length === 0) return;
     const seen = idsRef.current;
@@ -57,20 +59,27 @@ export default function ChatLauncher({ pid, access = {} }) {
     }
     if (!fresh.length) return;
     setMessages(prev => [...prev, ...fresh]);
-    // Unread = messages from OTHER members arriving while the drawer is closed.
-    if (!openRef.current) {
+    // New messages from OTHER members arriving while the drawer is closed.
+    if (countUnread && !openRef.current) {
       const others = fresh.filter(m => !m.isMe).length;
       if (others) setUnread(u => u + others);
     }
   }, []);
 
-  // Initial load.
+  // Authoritative unread count from the server (per-user lastReadAt).
+  const fetchUnread = useCallback(() => {
+    screeningApi.chatUnreadCount(pid)
+      .then(d => { if (!openRef.current) setUnread(d?.unread || 0); })
+      .catch(() => {});
+  }, [pid]);
+
+  // Initial load — populate history WITHOUT counting it as unread.
   const load = useCallback(async () => {
     setLoading(true); setLoadError(null);
     try {
       const data = await screeningApi.listChat(pid);
       idsRef.current = new Set(); setMessages([]);
-      merge(data?.messages || [], data?.serverTime);
+      merge(data?.messages || [], data?.serverTime, false);
       setCanChat(data?.canChat ?? access.canChat ?? false);
       setChatRestricted(!!data?.chatRestricted);
     } catch (e) {
@@ -78,7 +87,7 @@ export default function ChatLauncher({ pid, access = {} }) {
     } finally { setLoading(false); }
   }, [pid, merge, access.canChat]);
 
-  useEffect(() => { setUnread(0); load(); }, [load]);
+  useEffect(() => { setUnread(0); load(); fetchUnread(); }, [load, fetchUnread]);
 
   // Background poll.
   useEffect(() => {
@@ -98,14 +107,16 @@ export default function ChatLauncher({ pid, access = {} }) {
     return () => { cancelled = true; clearInterval(timer); };
   }, [pid, loading, loadError, merge]);
 
-  // Open → clear unread + focus composer; auto-scroll on new messages while open.
+  // Open → mark read (persist server-side so the badge stays cleared across
+  // logins), clear the local badge, and focus the composer.
   useEffect(() => {
     if (open) {
       setUnread(0);
+      screeningApi.markChatRead(pid).catch(() => {});
       const t = setTimeout(() => inputRef.current?.focus(), 60);
       return () => clearTimeout(t);
     }
-  }, [open]);
+  }, [open, pid]);
   useEffect(() => {
     if (open && bottomRef.current) bottomRef.current.scrollIntoView({ behavior: 'smooth', block: 'end' });
   }, [messages.length, open]);

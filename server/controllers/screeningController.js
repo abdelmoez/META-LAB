@@ -9,6 +9,7 @@ import { getMetaSiftSettings, getEffectiveQuorum } from '../screening/settings.j
 import { scorePair } from '../../src/research-engine/screening/deduplication.js';
 import { DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS } from '../../src/research-engine/screening/defaultKeywords.js';
 import { filterRecordsByKeywords, countArticlesByKeyword } from '../../src/research-engine/screening/keywordFilter.js';
+import { studyFromRecord } from './screeningReviewController.js';
 
 // Parse a comma-separated keyword param into a clean phrase list.
 function parseKeywordParam(v) {
@@ -48,16 +49,28 @@ export async function listProjects(req, res) {
       },
     });
 
+    // Resolve linked META·LAB project titles in one batch (BUG 4 — project cards).
+    const linkedIds = [...new Set(projects.map(p => p.linkedMetaLabProjectId).filter(Boolean))];
+    const linkedProjects = linkedIds.length
+      ? await prisma.project.findMany({ where: { id: { in: linkedIds }, deletedAt: null }, select: { id: true, name: true } })
+      : [];
+    const linkedTitleById = Object.fromEntries(linkedProjects.map(lp => [lp.id, lp.name]));
+
     res.json({ projects: projects.map(p => {
       const isOwner = p.ownerId === req.user.id;
+      const myRole = isOwner ? 'leader' : (roleByProject[p.id] || 'reviewer');
       return {
         id: p.id, title: p.title, description: p.description,
         reviewQuestion: p.reviewQuestion, stage: p.stage, blindMode: p.blindMode,
         progressStatus: p.progressStatus, archived: p.archived,
         linkedMetaLabProjectId: p.linkedMetaLabProjectId,
+        linkedMetaLabProjectTitle: p.linkedMetaLabProjectId ? (linkedTitleById[p.linkedMetaLabProjectId] || null) : null,
         recordCount: p._count.records, memberCount: p._count.members,
         owner: p.owner, isOwner,
-        myRole: isOwner ? 'leader' : (roleByProject[p.id] || 'reviewer'),
+        leaderName: p.owner?.name || p.owner?.email || '',
+        leaderEmail: p.owner?.email || '',
+        myRole, currentUserRole: myRole,
+        totalArticles: p._count.records, status: p.progressStatus,
         createdAt: p.createdAt, updatedAt: p.updatedAt,
       };
     })});
@@ -1006,7 +1019,6 @@ export async function getMetaLabSummary(req, res) {
 
     const records = await prisma.screenRecord.findMany({
       where: { projectId: sp.id },
-      select: { isDuplicate: true, currentStage: true, finalStatus: true },
     });
     const total              = records.length;
     const duplicatesRemoved  = records.filter(r => r.isDuplicate).length;
@@ -1014,13 +1026,19 @@ export async function getMetaLabSummary(req, res) {
     const fullTextAssessed   = records.filter(r => r.currentStage === 'full_text').length;
     const excludedTitleAbstract = Math.max(0, screened - fullTextAssessed);
     const fullTextExcluded   = records.filter(r => r.finalStatus === 'rejected').length;
-    const includedFinal      = records.filter(r => r.finalStatus === 'accepted').length;
+    const acceptedRecords    = records.filter(r => r.finalStatus === 'accepted');
+    const includedFinal      = acceptedRecords.length;
+
+    // Accepted studies, ready for the META·LAB Data Extraction pull-merge (BUG 5).
+    // Idempotent on the client via screeningRecordId / doi / pmid / title.
+    const acceptedStudies = acceptedRecords.map(r => studyFromRecord(r, req.user));
 
     res.json({
       linked: true,
       screeningProjectId: sp.id,
       title: sp.title,
       prisma: { identified: total, duplicatesRemoved, screened, excludedTitleAbstract, fullTextAssessed, fullTextExcluded, included: includedFinal },
+      acceptedStudies,
     });
   } catch (err) {
     console.error('[screening] getMetaLabSummary:', err.message);
