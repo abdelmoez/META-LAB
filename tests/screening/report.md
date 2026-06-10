@@ -1,7 +1,63 @@
 # META·SIFT — QA Report (collaboration upgrade)
 
-> **Update 2026-06-09 (prompt5 roles / linked access / version / ops-read):** ✅ **216/216 screening tests pass**.
-> prompt5 section below; prompt4/prompt3/prompt2/prompt1 sections follow unchanged.
+> **Update 2026-06-10 (prompt6 workspace upgrade):** ✅ **239/239 screening tests pass**
+> (+23 `integration/prompt6.test.js`). prompt6 section below; prompt5/prompt4/prompt3/prompt2/prompt1 follow unchanged.
+
+---
+
+## prompt6 — Shared workspace: notifications, linked pair, read-only, SSE, fingerprint, ops (2026-06-10)
+
+**Result:** ✅ **239/239 screening tests pass** (`npx vitest run tests/screening/ --no-file-parallelism`, server up).
+Adds **+23** integration tests (`integration/prompt6.test.js`) over the prompt5 total of 216. `npm run build` exit 0
+(sole advisories: the pre-existing `meta-lab-3-patched.jsx` ~L4047 esbuild JSX warning and the >500 kB chunk note —
+both pre-date prompt6). Full repo suite: **866 pass / 6 pre-existing `serverStorage.test.js` fake-timer failures
+(quarantined, unchanged from baseline) / 7 skips**.
+
+**Flipped assertions: NONE.** Every prior suite was audited against the implementers' enumerated status-code flips
+(B2: import/export/duplicates/labels/listDecisions/createProject-validation; B3: META·LAB member PUT/export/import;
+B4: the new `'Provide stage, disabled/archived, or progressStatus'` 400 message). No existing test asserted the old
+behavior — the flipped paths were all previously-untested *member* paths (owner stays 200, outsider stays 404, incl.
+the 4 prompt5 `SEC*` adversarial tests, which pass unchanged). The entire pre-prompt6 suite is green without a single
+assertion edit. One cosmetic fix: `tests/unit/effect-sizes.test.js:20` section comment "SMD (Hedges' g / Cohen's d)"
+→ "SMD (Cohen's d — pooled-SD standardiser, no Hedges' g small-sample correction)" (truth-alignment with R1's
+Cohen's-d documentation fix; zero assertion changes).
+
+### prompt6.test.js inventory (23 tests)
+
+| Area | Tests | What is pinned |
+|---|---|---|
+| T1 Notifications | 3 | invite → `PROJECT_INVITE` row (app/relatedScreenProjectId/relatedWorkspaceId alias/relatedMetaLabProjectId/role/actor); cross-user mark-read → **404** + counts isolated; unread-count; read → not unread; dismiss (hidden unless `?all=1`); mark-all-read; **persistence acceptance: fresh login → read state survived**; linked-workspace invite carries both ids + `app:'workspace'`; pending invite (userId null, no notification) → claim-on-register activates membership + creates the invite notification |
+| T2 Linked creation | 4 | `POST /api/projects {createLinkedSift:true}` → `{project, linkedScreenProject}` same owner/title + `_linkedMetaSift`/`_permissions`; legacy POST stays bare (and creates no SIFT project); SIFT-side default creates no ML project, `alsoCreateMetaLab:true` does (verified live + linked); explicit-link create snapshots PICO (non-empty when ML has PICO); foreign/dead `linkedMetaLabProjectId` → **400** |
+| T3/T8 Linked display | 1 | member (not just owner) gets `linked:true` + `screeningProjectId` from `GET /metalab/:mlpid/summary`; `GET /screening/projects/:pid` carries `linkedMetaLabProjectTitle`; member's `/api/projects` list shows `_linkedMetaSift` with **no relink action** |
+| T5 Viewer read-only | 1 | viewer PUT → 403, export → 403, import references → 403, verify-by-read; **THE PINNED CONTRACT: viewer autosave → 200 + `skipped:true`, NEVER 4xx** (batch-save protection — do not "fix" read-only by 403-ing autosave); canEdit member PUT/export/import → 200; owner unaffected; outsider 404 everywhere |
+| T6 Roles/modules | 2 | `modules:'metalab'/'metasift'/'both'` → canView* mapping (`metasift` also clears `canEditMetaLab`); invalid modules → 400; visibility consequence on the SIFT list; leader cannot assign leader preset (403), owner can; leader cannot touch the owner row |
+| T7 SSE | 3 | no cookie → 401; 200 + `text/event-stream`; `:connected` immediately; member receives `notification.created`/`members.changed`/`chat.message` pokes with projectId; **scope-leak: outsider stream receives ZERO data frames**; thin-payload (no message/title/actor/email/decision keys on any frame); `:hb` heartbeat within ~30s (only test with a >25s budget); AbortController abort in `finally` always |
+| T17 Import 403-vs-404 | 1 | outsider → 404; nonexistent pid → 404; viewer / plain reviewer (no `canImportRecords`) → 403; leader/owner/member-with-flag → 200; **viewer upgraded to leader imports successfully IMMEDIATELY** (no server-side permission cache) |
+| T19 Import fingerprint | 1 | first import → `{imported, skippedDuplicates, total, batchId}` (total = parsed count); identical content → **409** `{error:'duplicate_import', batch:{filename, importedAt, importedByName, recordCount}}`; `force:true` → 200 with `imported:0` + `skippedDuplicates:2` (record-dedupe always on); same file in a different project → no 409 (per-project scope); CRLF vs LF → still 409 (normalization) |
+| T9/T12 Ops metrics | 3 | `logins:{day,week,month,quarter,year}` all numbers + monotonic; 3 logins by one user → day +**1** exactly (distinctness); lastActive within last minute after a user action (recency window, never equality); doneToday counts done→in_progress→done as **1** (distinct project); admin PATCH `progressStatus:'bogus'` → 400 `invalid progressStatus`; empty PATCH → 400 `'Provide stage, disabled/archived, or progressStatus'`; same-value PATCH writes no event |
+| T11 Ops linked + progress | 1 | `GET /api/admin/projects` rows carry `linkedMetaSift {id,title}` + `workspaceId` + `owner` + `status`; SIFT admin detail carries the 10-field `progress` block (total/screened/unscreened/included/excluded/maybe/conflicts/duplicates/secondReview/sentToExtraction) + `memberProgress` with real per-member counts |
+| T14 Mod RBAC | 1 | mod allowed: console (`sections:['users','messages']`), users list, contact messages + replies + unread-count; mod denied (403): metrics/settings/feature-flags/audit-log/security-events/projects + ALL `/admin/screening/*` + role PATCH + message DELETE; plain user → 403 on every probed `/api/admin/*` route (lean matrix, ~35 requests, limiter is 1000/15min in non-production) |
+| T18 Rename | 2 | ML rename → linked SIFT title follows when titles were equal (sync-if-in-sync); SIFT rename syncs back to ML; pre-diverged titles never sync (either direction); viewer rename → 403 on both sides |
+
+### Manual-only remainder (cannot be automated in this harness — browser QA required)
+
+- **Two-browser realtime**: A renames/edits PICO/screens/chats, B sees it without refresh; B's permissions revalidate
+  after A changes B's role; the dirty-edit conflict banner ("Updated by a collaborator") instead of a clobbering refetch.
+- **Bell UX on all 4 surfaces** (`/app`, SIFT dashboard, SIFT project, `/ops`): badge, 99+ cap, mark-read on click,
+  panel list, mark-all-read, unread persisting across logout/login in the UI.
+- **Deep link from a real click**: SIFT LinkBadge / bell → `/app?project=<id>` selects the exact project (never
+  `projects[0]`); bogus/forbidden id shows the explicit "no access / link broken" panel; param stripped after consume.
+- **Viewer UX polish**: controls hidden/disabled, "Read-only access" pill, autosave indicator never shows "failed"
+  from skipped read-only PUTs (mixed own+shared batch).
+- **Mod console navigation**: mod visits `/ops` (no 404), lands on Users, sees only Users+Messages nav, "Mod Console"
+  chip, AccessDenied on direct nav to admin sections, role-derived fallback when the console fetch fails.
+- **Methods & Equations tab rendering**: all entries render vs the engine whitelist, 4 amber "needs verification"
+  badges, Not-implemented closer, SMD shown as Cohen's d (structural contract is unit-tested; pixels are not).
+- **EventSource reconnect**: kill/restart the API server → stream reconnects (retry hint + capped backoff) without
+  a page refresh; polling fallback carries chat/bell meanwhile.
+- **Poll pause on hidden tab**: bell/chat polling pauses on `document.hidden` and resumes on focus.
+
+Run: `npm run server`, then `npx vitest run tests/screening/ --no-file-parallelism`.
 
 ---
 

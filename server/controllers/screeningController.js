@@ -2,12 +2,16 @@
  * screeningController.js — META·SIFT Beta API handlers.
  */
 import { PrismaClient } from '@prisma/client';
+import { createHash } from 'crypto';
 import { detectDuplicatesInProject } from '../services/screeningDuplicateService.js';
 import { syncConflicts } from '../services/screeningConflictService.js';
 import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../screening/access.js';
+import { emitToProjectMembers, emitToMetaLabProject } from '../realtime/bus.js';
 import { getMetaSiftSettings, getEffectiveQuorum } from '../screening/settings.js';
-import { scorePair } from '../../src/research-engine/screening/deduplication.js';
+import { snapshotPico } from '../screening/picoSnapshot.js';
+import { scorePair, normalizeTitle } from '../../src/research-engine/screening/deduplication.js';
 import { DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS } from '../../src/research-engine/screening/defaultKeywords.js';
+import { mkProject } from '../../src/research-engine/project-model/defaults.js';
 import { filterRecordsByKeywords, countArticlesByKeyword } from '../../src/research-engine/screening/keywordFilter.js';
 import { studyFromRecord } from './screeningReviewController.js';
 
@@ -110,18 +114,39 @@ export async function createProject(req, res) {
   try {
     const settings = await getMetaSiftSettings();
     if (!settings.allowNewProjects) return res.status(403).json({ error: 'New project creation is currently disabled by the administrator' });
-    const { title, description = '', reviewQuestion = '', blindMode, linkedMetaLabProjectId } = req.body || {};
+    const { title, description = '', reviewQuestion = '', blindMode, linkedMetaLabProjectId, alsoCreateMetaLab } = req.body || {};
     if (!title || !title.trim()) return res.status(400).json({ error: 'title is required' });
     // Blind mode defaults to the admin-configured default unless the creator chose one.
     const effectiveBlind = blindMode === undefined ? !!settings.defaultBlindMode : !!blindMode;
-    const project = await prisma.screenProject.create({
+
+    // SECURITY (Task 2): a provided link target must be one of the CALLER's own
+    // live META·LAB projects (mirrors linkMetaLab/updateProject). Snapshot its
+    // PICO at create time — the META·LAB-side "Create & link" path previously
+    // left picoSnapshot empty forever.
+    let linkedId = null;
+    let linkedTitle = null;
+    let picoSnapshot; // undefined → schema default '{}'
+    if (linkedMetaLabProjectId) {
+      const ml = await prisma.project.findFirst({
+        where: { id: linkedMetaLabProjectId, userId: req.user.id, deletedAt: null },
+        select: { id: true, name: true, data: true },
+      });
+      if (!ml) return res.status(400).json({ error: 'That META·LAB project was not found in your account' });
+      linkedId = ml.id;
+      linkedTitle = ml.name;
+      const snap = snapshotPico(ml.data);
+      if (snap !== '{}') picoSnapshot = snap;
+    }
+
+    let project = await prisma.screenProject.create({
       data: {
         ownerId: req.user.id,
         title: title.trim(),
         description,
         reviewQuestion,
         blindMode: effectiveBlind,
-        linkedMetaLabProjectId: linkedMetaLabProjectId || null,
+        linkedMetaLabProjectId: linkedId,
+        ...(picoSnapshot !== undefined ? { picoSnapshot } : {}),
         // Seed editable default keyword suggestions (prompt2 Task 8). Leaders can
         // edit/replace these per project; the highlight/filter panel reads them.
         inclusionKeywords: JSON.stringify(DEFAULT_INCLUDE_KEYWORDS),
@@ -138,7 +163,37 @@ export async function createProject(req, res) {
     });
     // The creator automatically becomes the project leader (Part 4).
     await ensureLeaderMember(project);
-    res.status(201).json(project);
+
+    // SIFT-side "Also create META·LAB project" (Task 2 — opt-in, default false,
+    // never forced; ignored when an explicit link target was provided).
+    // Best-effort: failure leaves the screening project unlinked with a warning
+    // in the response instead of failing the request.
+    let warning;
+    if (!linkedId && alsoCreateMetaLab === true) {
+      try {
+        // Persist the exact shape store.js writes: id/name as first-class
+        // columns, everything else from the mkProject skeleton in the `data` blob.
+        const skeleton = mkProject(title.trim());
+        const { id: mlId, name: mlName, ...mlBlob } = skeleton;
+        await prisma.project.create({
+          data: { id: mlId, userId: req.user.id, name: mlName, data: JSON.stringify(mlBlob) },
+        });
+        linkedTitle = mlName;
+        project = await prisma.screenProject.update({
+          where: { id: project.id },
+          data: { linkedMetaLabProjectId: mlId, picoSnapshot: snapshotPico(skeleton) },
+        });
+      } catch (mlErr) {
+        console.error('[screening] createProject alsoCreateMetaLab:', mlErr.message);
+        warning = 'The screening project was created, but the linked META·LAB project could not be created';
+      }
+    }
+
+    res.status(201).json({
+      ...project,
+      linkedMetaLabProjectTitle: project.linkedMetaLabProjectId ? linkedTitle : null,
+      ...(warning ? { warning } : {}),
+    });
   } catch (err) {
     console.error('[screening] createProject:', err.message);
     res.status(500).json({ error: 'Internal server error' });
@@ -156,8 +211,31 @@ export async function getProject(req, res) {
         _count: { select: { records: true, members: true, conflicts: { where: { resolvedAt: null } } } },
       },
     });
+
+    // Linked META·LAB title (Task 3) + lazy PICO snapshot refresh (Task 2).
+    // Best-effort: a META·LAB lookup failure must never break getProject, and
+    // the snapshot write is compare-before-write and never blocks the response.
+    let linkedMetaLabProjectTitle = null;
+    if (p.linkedMetaLabProjectId) {
+      try {
+        const ml = await prisma.project.findFirst({
+          where: { id: p.linkedMetaLabProjectId, deletedAt: null },
+          select: { name: true, data: true },
+        });
+        if (ml) {
+          linkedMetaLabProjectTitle = ml.name;
+          const snap = snapshotPico(ml.data);
+          if (snap !== '{}' && snap !== p.picoSnapshot) {
+            p.picoSnapshot = snap; // serve the fresh criteria immediately
+            prisma.screenProject.update({ where: { id: p.id }, data: { picoSnapshot: snap } }).catch(() => {});
+          }
+        }
+      } catch { /* best-effort — keep the cached snapshot */ }
+    }
+
     res.json({
       ...p,
+      linkedMetaLabProjectTitle,
       myRole: access.role,
       isLeader: access.isLeader,
       isOwner: access.isOwner,
@@ -227,6 +305,48 @@ export async function updateProject(req, res) {
     if (blindMode !== undefined && !!blindMode !== p.blindMode) {
       await writeAudit(p.id, req.user, blindMode ? 'BLIND_MODE_ON' : 'BLIND_MODE_OFF', { entityType: 'project', entityId: p.id });
     }
+
+    // Task 12: record REAL status transitions (old !== new) for the ops
+    // "done today" distinct-project metric. Best-effort — never fails the save.
+    if (data.progressStatus !== undefined && data.progressStatus !== p.progressStatus) {
+      try {
+        await prisma.screenProjectStatusEvent.create({
+          data: {
+            projectId: p.id,
+            status: data.progressStatus,
+            previousStatus: p.progressStatus || '',
+            changedById: req.user.id,
+            changedByName: access.member?.name || req.user.email || '',
+          },
+        });
+        await writeAudit(p.id, req.user, 'PROJECT_STATUS_CHANGED', {
+          entityType: 'project', entityId: p.id,
+          details: { from: p.progressStatus, to: data.progressStatus },
+        });
+      } catch { /* metric trail is best-effort */ }
+      emitToProjectMembers(p.id, { type: 'status.changed' }, { exclude: req.user.id });
+    }
+
+    // Task 18: sync-if-in-sync rename. If the linked META·LAB project's name
+    // EQUALED the old SIFT title, keep the pair renamed together; if the names
+    // had already diverged, leave the META·LAB side alone. Best-effort.
+    if (data.title !== undefined && data.title !== p.title && updated.linkedMetaLabProjectId) {
+      try {
+        const ml = await prisma.project.findFirst({
+          where: { id: updated.linkedMetaLabProjectId, userId: p.ownerId, deletedAt: null },
+          select: { id: true, name: true },
+        });
+        if (ml && ml.name === p.title) {
+          await prisma.project.update({ where: { id: ml.id }, data: { name: data.title } });
+          // The META·LAB side changed too — poke open monoliths (Task 7).
+          emitToMetaLabProject(ml.id, p.ownerId, { type: 'project.updated' }, { exclude: req.user.id });
+        }
+      } catch { /* name sync is best-effort */ }
+    }
+
+    // Realtime poke (Task 7) — thin, fire-and-forget, error-swallowed.
+    emitToProjectMembers(p.id, { type: 'project.updated' }, { exclude: req.user.id });
+
     res.json(updated);
   } catch (err) {
     console.error('[screening] updateProject:', err.message);
@@ -309,6 +429,7 @@ export async function linkMetaLab(req, res) {
         where: { id: sp.id }, data: { linkedMetaLabProjectId: null },
       });
       await writeAudit(sp.id, req.user, 'METALAB_UNLINKED', { entityType: 'project', entityId: sp.id });
+      emitToProjectMembers(sp.id, { type: 'project.updated' }, { exclude: req.user.id });
       return res.json({ linkedMetaLabProjectId: updated.linkedMetaLabProjectId, linked: null });
     }
 
@@ -319,12 +440,11 @@ export async function linkMetaLab(req, res) {
     });
     if (!ml) return res.status(400).json({ error: 'That META·LAB project was not found in this workspace' });
 
-    // Snapshot the linked project's PICO/criteria for standalone-safe highlighting.
+    // Snapshot the linked project's PICO/criteria for standalone-safe highlighting
+    // (shared helper — same JSON shape everywhere; '{}' means "nothing to snapshot").
     let picoSnapshot = sp.picoSnapshot;
-    try {
-      const mlData = JSON.parse(ml.data || '{}');
-      if (mlData.pico) picoSnapshot = JSON.stringify(mlData.pico);
-    } catch { /* keep existing snapshot */ }
+    const snap = snapshotPico(ml.data);
+    if (snap !== '{}') picoSnapshot = snap;
 
     const updated = await prisma.screenProject.update({
       where: { id: sp.id },
@@ -333,6 +453,7 @@ export async function linkMetaLab(req, res) {
     await writeAudit(sp.id, req.user, 'METALAB_LINKED', {
       entityType: 'project', entityId: sp.id, details: { metaLabProjectId: ml.id, name: ml.name },
     });
+    emitToProjectMembers(sp.id, { type: 'project.updated' }, { exclude: req.user.id });
     res.json({ linkedMetaLabProjectId: updated.linkedMetaLabProjectId, linked: { id: ml.id, name: ml.name } });
   } catch (err) {
     console.error('[screening] linkMetaLab:', err.message);
@@ -538,44 +659,121 @@ export async function getKeywordStats(req, res) {
 
 export async function importRecords(req, res) {
   try {
-    const p = await getOwnedProject(req.params.pid, req.user.id);
-    if (!p) return res.status(404).json({ error: 'Project not found' });
+    // Task 17: access-guard, not owner-only. True outsiders keep the
+    // existence-hiding 404; an authenticated active member without import
+    // permission gets a clear 403. The brief's `canImportStudiesToMetaSift`
+    // is the existing `canImportRecords` flag (owner/leader always pass).
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    const canImport = access.isOwner || (access.active && (access.isLeader || access.perms.canImportRecords));
+    if (!canImport) return res.status(403).json({ error: 'You do not have permission to import records in this project' });
+    const p = access.project;
 
     const settings = await getMetaSiftSettings();
     if (!settings.allowImport) return res.status(403).json({ error: 'Import is currently disabled by the administrator' });
 
-    const { format = 'ris', content = '', filename = 'import' } = req.body || {};
+    const { format = 'ris', content = '', filename = 'import', force } = req.body || {};
     if (!content.trim()) return res.status(400).json({ error: 'content is required' });
+
+    // Task 19: import fingerprint — sha256 of the CRLF-normalized raw content,
+    // computed SERVER-side (a client-supplied hash could trivially bypass the
+    // warning). Normalizing line endings makes the same file from Windows/Mac
+    // dedupe identically. Legacy batches have fileHash NULL — string equality
+    // below never matches them, so the pre-check is safe on old projects.
+    const fileHash = createHash('sha256').update(content.replace(/\r\n/g, '\n'), 'utf8').digest('hex');
+    const priorBatch = await prisma.screenImportBatch.findFirst({
+      where: { projectId: p.id, fileHash },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (priorBatch && force !== true) {
+      return res.status(409).json({
+        error: 'duplicate_import',
+        batch: {
+          filename: priorBatch.filename,
+          importedAt: priorBatch.createdAt,
+          importedByName: priorBatch.importedByName || '',
+          recordCount: priorBatch.recordCount,
+        },
+      });
+    }
 
     // Parse references using existing engine parsers
     let records = [];
+    let parser = '';
     try {
       const { detectAndParse } = await import('../../src/research-engine/import-export/parsers.js');
       const parsed = detectAndParse(content, format);
       records = parsed.records || parsed || [];
+      parser = parsed.format || 'engine';
     } catch (parseErr) {
       // Fallback: try basic RIS split
       records = fallbackParseRIS(content);
+      parser = 'fallback-ris';
     }
 
     if (!records.length) return res.status(400).json({ error: 'No records found in the provided content' });
     if (records.length > 5000) return res.status(400).json({ error: 'Import limit: 5000 records per batch' });
+
+    // Task 19: record-level dedupe is ALWAYS applied — even with force:true —
+    // by exact DOI, exact PMID, and normalized title against the project's
+    // existing records (and within the incoming batch itself).
+    const existing = await prisma.screenRecord.findMany({
+      where: { projectId: p.id },
+      select: { doi: true, pmid: true, title: true },
+    });
+    const seenDois = new Set(), seenPmids = new Set(), seenTitles = new Set();
+    const keysOf = r => ({
+      doi: String(r.doi || '').trim().toLowerCase(),
+      pmid: String(r.pmid || '').trim(),
+      nt: normalizeTitle(String(r.title || '')),
+    });
+    for (const r of existing) {
+      const { doi, pmid, nt } = keysOf(r);
+      if (doi) seenDois.add(doi);
+      if (pmid) seenPmids.add(pmid);
+      if (nt) seenTitles.add(nt);
+    }
+    const kept = [];
+    let skippedDuplicates = 0;
+    for (const r of records) {
+      const { doi, pmid, nt } = keysOf(r);
+      if ((doi && seenDois.has(doi)) || (pmid && seenPmids.has(pmid)) || (nt && seenTitles.has(nt))) {
+        skippedDuplicates++;
+        continue;
+      }
+      if (doi) seenDois.add(doi);
+      if (pmid) seenPmids.add(pmid);
+      if (nt) seenTitles.add(nt);
+      kept.push(r);
+    }
+
     const maxRecords = settings.maxRecordsPerProject || 10000;
-    const existingCount = await prisma.screenRecord.count({ where: { projectId: p.id } });
-    if (existingCount + records.length > maxRecords) {
+    const existingCount = existing.length;
+    if (existingCount + kept.length > maxRecords) {
       return res.status(400).json({ error: `Import would exceed the project limit of ${maxRecords} records (currently ${existingCount})` });
     }
 
-    // Create import batch
+    // Create import batch (carries the Task 19 fingerprint + provenance shown
+    // in the "already imported on DATE by USER" warning).
     const batch = await prisma.screenImportBatch.create({
-      data: { projectId: p.id, filename, format, recordCount: records.length },
+      data: {
+        projectId: p.id,
+        filename,
+        format,
+        recordCount: kept.length,
+        fileHash,
+        fileSize: Buffer.byteLength(content, 'utf8'),
+        importedById: req.user.id,
+        importedByName: access.member?.name || req.user.email || '',
+        parser,
+      },
     });
 
     // Create records in chunks to avoid SQLite limits
     const CHUNK = 100;
     let imported = 0;
-    for (let i = 0; i < records.length; i += CHUNK) {
-      const chunk = records.slice(i, i + CHUNK);
+    for (let i = 0; i < kept.length; i += CHUNK) {
+      const chunk = kept.slice(i, i + CHUNK);
       await prisma.screenRecord.createMany({
         data: chunk.map(r => ({
           projectId:    p.id,
@@ -598,7 +796,7 @@ export async function importRecords(req, res) {
     // Update batch count
     await prisma.screenImportBatch.update({ where: { id: batch.id }, data: { recordCount: imported } });
 
-    res.json({ imported, total: imported, batchId: batch.id });
+    res.json({ imported, skippedDuplicates, total: records.length, batchId: batch.id });
   } catch (err) {
     console.error('[screening] importRecords:', err.message);
     res.status(500).json({ error: 'Import failed: ' + err.message });
@@ -628,8 +826,13 @@ function fallbackParseRIS(content) {
 
 export async function exportRecords(req, res) {
   try {
-    const p = await getOwnedProject(req.params.pid, req.user.id);
-    if (!p) return res.status(404).json({ error: 'Project not found' });
+    // Access-guard (prompt6 403-vs-404 audit): outsider → 404; active member
+    // without canExportRecords (and not leader/owner) → 403.
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    const canExport = access.isOwner || (access.active && (access.isLeader || access.perms.canExportRecords));
+    if (!canExport) return res.status(403).json({ error: 'You do not have permission to export records from this project' });
+    const p = access.project;
 
     const settings = await getMetaSiftSettings();
     if (!settings.allowExport) return res.status(403).json({ error: 'Export is currently disabled by the administrator' });
@@ -751,6 +954,10 @@ export async function saveDecision(req, res) {
     // Sync conflicts for this record (non-blocking)
     syncConflicts(p.id, rec.id).catch(() => {});
 
+    // Realtime poke (Task 7) — deliberately carries NO actor identity
+    // (blind-mode safe by construction); recipients refetch what they may see.
+    emitToProjectMembers(p.id, { type: 'decision.saved' }, { exclude: req.user.id });
+
     res.json({ ...d, promoted });
   } catch (err) {
     console.error('[screening] saveDecision:', err.message);
@@ -760,8 +967,12 @@ export async function saveDecision(req, res) {
 
 export async function listDecisions(req, res) {
   try {
-    const p = await getOwnedProject(req.params.pid, req.user.id);
-    if (!p) return res.status(404).json({ error: 'Project not found' });
+    // Any active member may read (their OWN decisions — the query below is
+    // already scoped to reviewerId). Outsiders keep the 404.
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    if (!access.isOwner && !access.active) return res.status(403).json({ error: 'Your membership in this project is inactive' });
+    const p = access.project;
     const decisions = await prisma.screenDecision.findMany({
       where: { projectId: p.id, reviewerId: req.user.id },
     });
@@ -853,6 +1064,9 @@ export async function resolveConflict(req, res) {
       details: { finalDecision, promoted, notes: String(notes).slice(0, 200) },
     });
 
+    // Realtime poke (Task 7) — a resolution changes effective decisions (no actor in the event).
+    emitToProjectMembers(p.id, { type: 'decision.saved' }, { exclude: req.user.id });
+
     res.json({ ...updated, promoted });
   } catch (err) {
     console.error('[screening] resolveConflict:', err.message);
@@ -895,8 +1109,13 @@ export async function listDuplicates(req, res) {
 
 export async function detectDuplicates(req, res) {
   try {
-    const p = await getOwnedProject(req.params.pid, req.user.id);
-    if (!p) return res.status(404).json({ error: 'Project not found' });
+    // Outsider → 404; active member without canManageDuplicates (and not
+    // leader/owner) → 403.
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    const canManage = access.isOwner || (access.active && (access.isLeader || access.perms.canManageDuplicates));
+    if (!canManage) return res.status(403).json({ error: 'You do not have permission to manage duplicates in this project' });
+    const p = access.project;
     const settings = await getMetaSiftSettings();
     if (!settings.allowDuplicateDetection) return res.status(403).json({ error: 'Duplicate detection is currently disabled by the administrator' });
     const result = await detectDuplicatesInProject(p.id, prisma);
@@ -909,8 +1128,12 @@ export async function detectDuplicates(req, res) {
 
 export async function resolveDuplicateGroup(req, res) {
   try {
-    const p = await getOwnedProject(req.params.pid, req.user.id);
-    if (!p) return res.status(404).json({ error: 'Project not found' });
+    // Same guard as detectDuplicates: outsider 404, member without permission 403.
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    const canManage = access.isOwner || (access.active && (access.isLeader || access.perms.canManageDuplicates));
+    if (!canManage) return res.status(403).json({ error: 'You do not have permission to manage duplicates in this project' });
+    const p = access.project;
     const group = await prisma.screenDuplicateGroup.findFirst({ where: { id: req.params.gid, projectId: p.id } });
     if (!group) return res.status(404).json({ error: 'Duplicate group not found' });
     const { primaryId } = req.body || {};
@@ -945,8 +1168,13 @@ export async function listLabels(req, res) {
 
 export async function createLabel(req, res) {
   try {
-    const p = await getOwnedProject(req.params.pid, req.user.id);
-    if (!p) return res.status(404).json({ error: 'Project not found' });
+    // Label management is leader/owner-level. Outsiders keep the 404.
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    if (!(access.isOwner || (access.active && access.isLeader))) {
+      return res.status(403).json({ error: 'Only the project owner or a leader can manage labels' });
+    }
+    const p = access.project;
     const { name, color = '#5b9cf6' } = req.body || {};
     if (!name?.trim()) return res.status(400).json({ error: 'name is required' });
     const label = await prisma.screenLabel.create({ data: { projectId: p.id, name: name.trim(), color } });
@@ -959,8 +1187,12 @@ export async function createLabel(req, res) {
 
 export async function deleteLabel(req, res) {
   try {
-    const p = await getOwnedProject(req.params.pid, req.user.id);
-    if (!p) return res.status(404).json({ error: 'Project not found' });
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    if (!(access.isOwner || (access.active && access.isLeader))) {
+      return res.status(403).json({ error: 'Only the project owner or a leader can manage labels' });
+    }
+    const p = access.project;
     const label = await prisma.screenLabel.findFirst({ where: { id: req.params.lid, projectId: p.id } });
     if (!label) return res.status(404).json({ error: 'Label not found' });
     await prisma.screenLabel.delete({ where: { id: label.id } });
@@ -988,8 +1220,13 @@ export async function listReasons(req, res) {
 
 export async function createReason(req, res) {
   try {
-    const p = await getOwnedProject(req.params.pid, req.user.id);
-    if (!p) return res.status(404).json({ error: 'Project not found' });
+    // Exclusion-reason management is leader/owner-level. Outsiders keep the 404.
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    if (!(access.isOwner || (access.active && access.isLeader))) {
+      return res.status(403).json({ error: 'Only the project owner or a leader can manage exclusion reasons' });
+    }
+    const p = access.project;
     const { text } = req.body || {};
     if (!text?.trim()) return res.status(400).json({ error: 'text is required' });
     const reason = await prisma.screenExclusionReason.create({ data: { projectId: p.id, text: text.trim() } });
@@ -1002,8 +1239,12 @@ export async function createReason(req, res) {
 
 export async function deleteReason(req, res) {
   try {
-    const p = await getOwnedProject(req.params.pid, req.user.id);
-    if (!p) return res.status(404).json({ error: 'Project not found' });
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    if (!(access.isOwner || (access.active && access.isLeader))) {
+      return res.status(403).json({ error: 'Only the project owner or a leader can manage exclusion reasons' });
+    }
+    const p = access.project;
     const reason = await prisma.screenExclusionReason.findFirst({ where: { id: req.params.rid2, projectId: p.id } });
     if (!reason) return res.status(404).json({ error: 'Reason not found' });
     await prisma.screenExclusionReason.delete({ where: { id: reason.id } });
@@ -1052,13 +1293,29 @@ export async function getStats(req, res) {
 
 // ── META·LAB integration: PRISMA summary for a linked META·LAB project ──
 // GET /metalab/:mlpid/summary — returns screening-derived PRISMA flow numbers
-// for the META·SIFT project linked to the given META·LAB project (owned by the
-// caller). Used by the monolith to auto-update its PRISMA diagram (Part 12).
+// for the META·SIFT project linked to the given META·LAB project. Used by the
+// monolith to auto-update its PRISMA diagram (Part 12).
+//
+// Membership-aware (prompt6 Tasks 3/8): the link belongs to the workspace, not
+// the individual user — a user sees linked:true when they OWN the linked
+// screening project OR are an ACTIVE member of it. (Previously this filtered by
+// ownerId, so added members saw linked:false in META·LAB/PRISMA.)
 export async function getMetaLabSummary(req, res) {
   try {
-    const sp = await prisma.screenProject.findFirst({
-      where: { linkedMetaLabProjectId: req.params.mlpid, ownerId: req.user.id },
+    const candidates = await prisma.screenProject.findMany({
+      where: { linkedMetaLabProjectId: req.params.mlpid },
+      orderBy: { updatedAt: 'desc' },
     });
+    // Prefer the caller's own workspace (preserves the pre-prompt6 behavior
+    // when the same META·LAB project is linked from more than one workspace).
+    let sp = candidates.find(x => x.ownerId === req.user.id) || null;
+    if (!sp && candidates.length) {
+      const membership = await prisma.screenProjectMember.findFirst({
+        where: { projectId: { in: candidates.map(x => x.id) }, userId: req.user.id, status: 'active' },
+        select: { projectId: true },
+      });
+      if (membership) sp = candidates.find(x => x.id === membership.projectId) || null;
+    }
     if (!sp) return res.json({ linked: false });
 
     const records = await prisma.screenRecord.findMany({

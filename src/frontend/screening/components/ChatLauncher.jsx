@@ -16,8 +16,14 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { C, FONT, MONO } from '../ui/theme.js';
 import { Avatar, Spinner } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
+import { useRealtime } from '../../hooks/useRealtime.js';
 
 const POLL_MS = 4000;
+// While the SSE poke stream is healthy AND the drawer is closed, the 4s poll
+// stretches to ~30s (chat.message pokes trigger immediate fetches). With the
+// drawer OPEN the 4s cadence is kept so typing indicators stay live — they
+// only travel via polling. On SSE failure everything snaps back to 4s.
+const HEALTHY_POLL_MS = 30000;
 
 function fmtTime(iso) {
   const d = new Date(iso);
@@ -92,24 +98,42 @@ export default function ChatLauncher({ pid, access = {} }) {
 
   useEffect(() => { setUnread(0); load(); fetchUnread(); }, [load, fetchUnread]);
 
-  // Background poll.
+  // Fetch new messages since the cursor — used by the interval poll AND by the
+  // realtime chat.message poke (immediate fetch, content never rides the poke).
+  const lastPollRef = useRef(0);
+  const pollNow = useCallback(async () => {
+    if (sinceRef.current == null) return;
+    lastPollRef.current = Date.now();
+    try {
+      const data = await screeningApi.listChat(pid, sinceRef.current);
+      merge(data?.messages || [], data?.serverTime);
+      if (data?.canChat != null) setCanChat(data.canChat);
+      if (data?.chatRestricted != null) setChatRestricted(!!data.chatRestricted);
+      setTyping(data?.typing || []);
+    } catch { /* keep cursor, retry on next tick */ }
+  }, [pid, merge]);
+
+  // Realtime (prompt6 Task 7): a chat.message poke for THIS project triggers an
+  // immediate fetch through the authorized listChat endpoint.
+  const { healthy: rtHealthy } = useRealtime({
+    'chat.message': ev => { if (ev?.projectId === pid) pollNow(); },
+  });
+  const rtHealthyRef = useRef(rtHealthy);
+  rtHealthyRef.current = rtHealthy;
+
+  // Background poll — the 4s baseline IS the fallback; while SSE is healthy and
+  // the drawer is closed, ticks are skipped down to the stretched cadence.
   useEffect(() => {
     if (loading || loadError) return undefined;
-    let cancelled = false;
-    const poll = async () => {
-      if (document.hidden || sinceRef.current == null) return;
-      try {
-        const data = await screeningApi.listChat(pid, sinceRef.current);
-        if (cancelled) return;
-        merge(data?.messages || [], data?.serverTime);
-        if (data?.canChat != null) setCanChat(data.canChat);
-        if (data?.chatRestricted != null) setChatRestricted(!!data.chatRestricted);
-        setTyping(data?.typing || []);
-      } catch { /* keep cursor, retry */ }
+    const tick = () => {
+      if (document.hidden) return;
+      if (rtHealthyRef.current && !openRef.current &&
+          Date.now() - lastPollRef.current < HEALTHY_POLL_MS) return;
+      pollNow();
     };
-    const timer = setInterval(poll, POLL_MS);
-    return () => { cancelled = true; clearInterval(timer); };
-  }, [pid, loading, loadError, merge]);
+    const timer = setInterval(tick, POLL_MS);
+    return () => clearInterval(timer);
+  }, [loading, loadError, pollNow]);
 
   // Open → mark read (persist server-side so the badge stays cleared across
   // logins), clear the local badge, and focus the composer.

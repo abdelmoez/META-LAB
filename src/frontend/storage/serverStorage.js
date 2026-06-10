@@ -63,12 +63,14 @@ let knownServerIds = new Set();
 
 let debounceTimer = null;
 let pendingValue  = null;   // latest JSON string waiting to be persisted
+let saveInFlight  = false;  // true while doSave() is executing (realtime guard)
 
 /**
  * Execute the actual save against the server.  Called either from the
  * debounce timer or directly by flushStorage().
  */
 async function doSave(value) {
+  saveInFlight = true;
   emitStatus('saving');
   try {
     const projects = JSON.parse(value);
@@ -79,9 +81,20 @@ async function doSave(value) {
 
     const currentIds = new Set(projects.map(p => p.id));
 
-    // Upsert all current projects via the autosave endpoint
-    await Promise.all(
-      projects.map(p =>
+    // prompt6 Task 5 — skip the PUT for read-only shared projects entirely.
+    // The server already no-ops them (200 + {skipped}, the load-bearing batch
+    // contract), but a read-only viewer cannot have changed the blob, so
+    // uploading it is pure waste. NOTE: they stay in currentIds so the delete
+    // sweep below never tries to remove them server-side.
+    const writable = projects.filter(
+      p => !(p._readOnly || (p._permissions && p._permissions.readOnly))
+    );
+
+    // Upsert all writable projects via the autosave endpoint.
+    // allSettled (NOT all): one failed PUT must never corrupt the save
+    // indicator for the user's own projects — the other saves still land.
+    const results = await Promise.allSettled(
+      writable.map(p =>
         apiFetch(`${BASE}/projects/${p.id}/autosave`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
@@ -89,11 +102,15 @@ async function doSave(value) {
         })
       )
     );
+    const failures = results.filter(r => r.status === 'rejected');
+    failures.forEach(r =>
+      console.error('[serverStorage] autosave failed:', r.reason && r.reason.message)
+    );
 
-    // Delete any projects the user removed in the monolith
+    // Delete any projects the user removed in the monolith (best-effort).
     const toDelete = [...knownServerIds].filter(id => !currentIds.has(id));
     if (toDelete.length > 0) {
-      await Promise.all(
+      await Promise.allSettled(
         toDelete.map(id =>
           fetch(`${BASE}/projects/${id}`, {
             method: 'DELETE',
@@ -104,11 +121,17 @@ async function doSave(value) {
     }
 
     knownServerIds = currentIds;
+    if (failures.length > 0) {
+      emitStatus('failed');
+      return;
+    }
     emitStatus('saved');
     setTimeout(() => emitStatus('idle'), 2000);
   } catch (err) {
     console.error('[serverStorage] autosave failed:', err.message);
     emitStatus('failed');
+  } finally {
+    saveInFlight = false;
   }
 }
 
@@ -183,8 +206,11 @@ export async function flushStorage() {
 
 /**
  * True when there is a debounced save that has not yet been flushed to the
- * server.  Useful for showing a "unsaved changes" warning.
+ * server, OR a save currently in flight.  Useful for an "unsaved changes"
+ * warning, and load-bearing for realtime (prompt6 Task 7): a remote
+ * project.updated refetch must NEVER be applied while this is true, or it
+ * would clobber the user's local edits.
  */
 export function hasPendingSave() {
-  return pendingValue !== null || debounceTimer !== null;
+  return pendingValue !== null || debounceTimer !== null || saveInFlight;
 }

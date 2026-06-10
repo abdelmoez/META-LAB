@@ -88,8 +88,9 @@ export default function SiftImport() {
   const [previews,   setPreviews]   = useState([]);
   const [previewDone,setPreviewDone]= useState(false);
   const [importing,  setImporting]  = useState(false);
-  const [result,     setResult]     = useState(null);  // { imported, total }
+  const [result,     setResult]     = useState(null);  // { imported, skippedDuplicates, total, batchId }
   const [error,      setError]      = useState(null);
+  const [duplicate,  setDuplicate]  = useState(null);  // 409 duplicate_import → batch info (Task 19)
   const [dragOver,   setDragOver]   = useState(false);
 
   const estimated = countEntries(format, content);
@@ -99,6 +100,7 @@ export default function SiftImport() {
     setPreviewDone(false);
     setResult(null);
     setError(null);
+    setDuplicate(null);
     setPreviews([]);
   }
 
@@ -127,20 +129,29 @@ export default function SiftImport() {
     if (file) handleFileRead(file);
   }
 
-  async function handleImport() {
+  // force=true is the "Import anyway" override after a duplicate-file warning
+  // (Task 19). Record-level DOI/PMID/title dedupe still applies server-side.
+  async function handleImport(force = false) {
     if (!content.trim()) return;
     setImporting(true);
     setError(null);
     setResult(null);
+    setDuplicate(null);
     try {
       const data = await screeningApi.importRecords(pid, {
         format,
         content,
         filename: filename || undefined,
-      });
+      }, { force });
       setResult(data);
     } catch (e) {
-      setError(e.message || 'Import failed');
+      // 409 duplicate_import — same file fingerprint already imported into this
+      // project. Show the warning banner instead of a generic error.
+      if (e.status === 409 && e.data?.error === 'duplicate_import') {
+        setDuplicate(e.data.batch || {});
+      } else {
+        setError(e.message || 'Import failed');
+      }
     } finally {
       setImporting(false);
     }
@@ -268,7 +279,7 @@ export default function SiftImport() {
               </button>
             )}
             <button
-              onClick={handleImport}
+              onClick={() => handleImport()}
               disabled={importing || !content.trim()}
               style={{
                 background: importing || !content.trim() ? C.brd : C.acc2,
@@ -328,6 +339,50 @@ export default function SiftImport() {
           </div>
         )}
 
+        {/* Duplicate file warning (Task 19) — same fingerprint already imported */}
+        {duplicate && (
+          <div style={{
+            background: '#451a03', border: '1px solid #fbbf2450',
+            borderRadius: 8, padding: '14px 18px', marginBottom: 16,
+          }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: C.ylw, marginBottom: 6 }}>
+              ⚠ File already imported
+            </div>
+            <div style={{ fontSize: 12.5, color: '#fde68a', lineHeight: 1.6, marginBottom: 12 }}>
+              This file appears to have already been imported
+              {duplicate.importedAt && <> on <strong>{new Date(duplicate.importedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</strong></>}
+              {duplicate.importedByName && <> by <strong>{duplicate.importedByName}</strong></>}
+              {duplicate.recordCount != null && <> ({duplicate.recordCount} {duplicate.recordCount === 1 ? 'record' : 'records'})</>}
+              . Records were not imported to prevent duplication.
+            </div>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                onClick={() => handleImport(true)}
+                disabled={importing}
+                style={{
+                  background: C.ylw, border: 'none', color: '#000',
+                  fontSize: 12, fontWeight: 700, fontFamily: FONT,
+                  padding: '7px 16px', borderRadius: 6,
+                  cursor: importing ? 'not-allowed' : 'pointer', opacity: importing ? 0.6 : 1,
+                }}
+              >
+                {importing ? 'Importing…' : 'Import anyway'}
+              </button>
+              <button
+                onClick={() => setDuplicate(null)}
+                disabled={importing}
+                style={{
+                  background: 'transparent', border: '1px solid #fbbf2450',
+                  color: C.ylw, fontSize: 12, fontFamily: FONT,
+                  padding: '6px 14px', borderRadius: 6, cursor: 'pointer',
+                }}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Error */}
         {error && (
           <div style={{
@@ -349,7 +404,12 @@ export default function SiftImport() {
             </div>
             <div style={{ fontSize: 13, color: '#86efac', marginBottom: 14 }}>
               {result.imported} new records imported
-              {result.total > result.imported && ` (${result.total - result.imported} skipped as duplicates)`}.
+              {(() => {
+                // Server reports skippedDuplicates explicitly (Task 19); fall back
+                // to the old total−imported math for older payloads.
+                const skipped = result.skippedDuplicates ?? (result.total > result.imported ? result.total - result.imported : 0);
+                return skipped > 0 ? ` (${skipped} skipped as duplicates)` : '';
+              })()}.
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <button

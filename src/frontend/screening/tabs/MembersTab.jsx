@@ -2,8 +2,11 @@
  * MembersTab.jsx — META·SIFT project members & roles (Part 4).
  *
  * Roster of project members with leader-only management: add / remove members,
- * change role + status, and toggle per-member permissions (canScreen, canChat,
- * canResolveConflicts). Non-leaders see a read-only roster.
+ * apply role/permission presets, change status, and toggle per-member
+ * permissions (quick: canScreen/canChat/canResolveConflicts; the full module
+ * flag matrix lives behind "All permissions" — prompt6 Task 6). Adding a member
+ * also picks which apps they participate in (modules: metalab|metasift|both).
+ * Non-leaders see a read-only roster.
  *
  * Backend rules surfaced as inline errors (not pre-validated client-side):
  *   - 409 duplicate email on add
@@ -19,6 +22,7 @@ import {
   Field, fieldLabel, fieldInput, EmptyState,
 } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
+import { PERMISSION_PRESETS, ASSIGNABLE_PRESETS } from '../../../research-engine/screening/permissionPresets.js';
 
 // ── role / status presentation ──────────────────────────────────────────────
 
@@ -36,6 +40,33 @@ const PERMS = [
   { key: 'canScreen',          label: 'Screen',          hint: 'Make screening decisions' },
   { key: 'canChat',            label: 'Chat',            hint: 'Post in project discussion' },
   { key: 'canResolveConflicts',label: 'Resolve',         hint: 'Resolve reviewer conflicts' },
+];
+
+// Full per-flag matrix (prompt6 Task 6) — the quick PERMS row above stays as-is;
+// the rest of the module flags live in an expandable "All permissions" editor.
+// Global management flags are OWNER-only to grant/revoke (server-enforced; the
+// server silently ignores them from non-owners, so we hide them too).
+const PERM_GROUPS = [
+  { title: 'META·SIFT', keys: [
+    { key: 'canViewMetaSift',    label: 'View' },
+    { key: 'canSecondReview',    label: 'Second review' },
+    { key: 'canManageDuplicates',label: 'Duplicates' },
+    { key: 'canImportRecords',   label: 'Import' },
+    { key: 'canExportRecords',   label: 'Export' },
+    { key: 'readOnlyMetaSift',   label: 'Read-only' },
+  ]},
+  { title: 'META·LAB', keys: [
+    { key: 'canViewMetaLab',     label: 'View' },
+    { key: 'canEditMetaLab',     label: 'Edit' },
+    { key: 'canManageExtraction',label: 'Extraction' },
+    { key: 'canRunAnalysis',     label: 'Analysis' },
+    { key: 'canExport',          label: 'Export' },
+    { key: 'readOnlyMetaLab',    label: 'Read-only' },
+  ]},
+  { title: 'Global', ownerOnly: true, keys: [
+    { key: 'canManageMembers',   label: 'Manage members' },
+    { key: 'canManageSettings',  label: 'Manage settings' },
+  ]},
 ];
 
 function fmtDate(d) {
@@ -252,6 +283,7 @@ function LockNote({ children }) {
 
 function MemberRow({ member, canManage, amOwner, busy, rowErr, onPatch, onRemove }) {
   const m = member;
+  const [showAllPerms, setShowAllPerms] = useState(false);
   const display = m.name || m.email || 'Unknown';
   const isOwnerRow  = !!m.isOwner || m.role === 'owner';
   const isLeaderRow = !isOwnerRow && (m.isLeader || m.role === 'leader');
@@ -267,8 +299,13 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, onPatch, onRemove
     ? 'Owner permissions cannot be changed here.'
     : 'Only the owner can change leader permissions.';
   const editable = canManage && !locked;
-  // Only the owner may grant the Leader role (so non-owners can't promote to leader).
-  const roleOptions = amOwner ? ['leader', 'reviewer', 'viewer'] : ['reviewer', 'viewer'];
+  // Every preset the caller's authority allows (prompt6 Task 6) — owner: all
+  // assignable presets (a second owner is never assignable); leader/manager:
+  // all except Leader (minting leaders is owner-only, server-enforced).
+  const presetOptions = amOwner ? ASSIGNABLE_PRESETS : ASSIGNABLE_PRESETS.filter(p => p !== 'leader');
+  // Current value: the stored preset when it's still assignable here; otherwise
+  // a "Custom" placeholder (e.g. per-flag tweaks since the last preset).
+  const currentPreset = m.permissionPreset && presetOptions.includes(m.permissionPreset) ? m.permissionPreset : '';
 
   return (
     <Card style={{
@@ -299,13 +336,16 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, onPatch, onRemove
         {editable ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <select
-              value={roleOptions.includes(m.role) ? m.role : 'reviewer'}
+              value={currentPreset}
               disabled={busy}
-              onChange={e => onPatch({ role: e.target.value })}
+              onChange={e => { if (e.target.value) onPatch({ preset: e.target.value }); }}
               style={{ ...selectStyle, opacity: busy ? 0.6 : 1 }}
-              title="Change role"
+              title="Apply a role/permission preset (resets per-member toggles to the preset)"
             >
-              {roleOptions.map(r => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
+              {!currentPreset && <option value="">Custom · {ROLE_LABEL[m.role] || m.role}</option>}
+              {presetOptions.map(p => (
+                <option key={p} value={p}>{PERMISSION_PRESETS[p]?.label || p}</option>
+              ))}
             </select>
 
             <Toggle
@@ -353,10 +393,53 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, onPatch, onRemove
           : PERMS.map(p => <PermDot key={p.key} on={!!m[p.key]} label={p.label} />)
         }
 
+        {editable && (
+          <button
+            onClick={() => setShowAllPerms(s => !s)}
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer', padding: 0,
+              fontSize: 11, fontFamily: FONT, color: C.acc,
+            }}
+          >
+            {showAllPerms ? '▾ Fewer permissions' : '▸ All permissions'}
+          </button>
+        )}
+
         <span style={{ marginLeft: 'auto', fontSize: 11, fontFamily: MONO, color: C.muted }}>
           joined {fmtDate(m.joinedAt)}
         </span>
       </div>
+
+      {/* Full per-flag matrix (prompt6 Task 6) — module flags grouped by app;
+          global management flags shown to the owner only (server-enforced). */}
+      {editable && showAllPerms && (
+        <div style={{
+          marginTop: 12, background: C.surf, border: `1px solid ${C.brd}`,
+          borderRadius: 8, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 12,
+        }}>
+          {PERM_GROUPS.filter(g => !g.ownerOnly || amOwner).map(g => (
+            <div key={g.title}>
+              <div style={{
+                fontSize: 9.5, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em',
+                textTransform: 'uppercase', color: C.muted, marginBottom: 8,
+              }}>
+                {g.title}{g.ownerOnly ? ' · owner-only' : ''}
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap' }}>
+                {g.keys.map(p => (
+                  <Toggle
+                    key={p.key}
+                    checked={!!m[p.key]}
+                    disabled={busy}
+                    onChange={(next) => onPatch({ [p.key]: next })}
+                    label={p.label}
+                  />
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {rowErr && (
         <div style={{
@@ -383,11 +466,20 @@ const ADD_PRESETS = [
   { value: 'viewer',            label: 'Viewer — read-only both, can chat' },
 ];
 
+// Which apps the new member participates in (prompt6 Task 6) — sent as
+// modules:'metalab'|'metasift'|'both'; the server maps it onto the canView* flags.
+const MODULE_OPTIONS = [
+  { value: 'both',     label: 'Both META·LAB & META·SIFT' },
+  { value: 'metalab',  label: 'META·LAB only' },
+  { value: 'metasift', label: 'META·SIFT only' },
+];
+
 function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
   // Only the owner can add a Leader (Task 2) — hide that preset for non-owners.
   const presets = amOwner ? ADD_PRESETS : ADD_PRESETS.filter(p => p.value !== 'leader');
   const [email, setEmail] = useState('');
   const [preset, setPreset] = useState('reviewer');
+  const [modules, setModules] = useState('both');
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState('');
   const [pendingNote, setPendingNote] = useState(false);
@@ -400,7 +492,7 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
     setErr('');
     setPendingNote(false);
     try {
-      const res = await screeningApi.addMember(pid, { email: trimmed, preset });
+      const res = await screeningApi.addMember(pid, { email: trimmed, preset, modules });
       await onAdded();
       if (res?.pending) {
         // User not yet registered — show note, keep modal open briefly so the
@@ -449,6 +541,21 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
           </select>
           <div style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 1.5 }}>
             Presets set META·LAB + META·SIFT permissions across the linked workspace. Fine-tune per-member toggles after adding.
+          </div>
+        </div>
+
+        <div>
+          <label style={fieldLabel}>Participates in</label>
+          <select
+            value={modules}
+            onChange={e => setModules(e.target.value)}
+            disabled={submitting}
+            style={{ ...fieldInput, cursor: 'pointer' }}
+          >
+            {MODULE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 1.5 }}>
+            Limits which app(s) the member can open; combined with the preset&rsquo;s permissions.
           </div>
         </div>
 

@@ -17,7 +17,7 @@ function expectValidResult(res) {
   expect(res.lo).toBeLessThan(res.hi);
 }
 
-// ── SMD (Hedges' g / Cohen's d) ───────────────────────────────────────────────
+// ── SMD (Cohen's d — pooled-SD standardiser, no Hedges' g small-sample correction) ──
 describe('calcES SMD', () => {
   // Hand-worked: poolSD = sqrt(((9*4)+(9*9))/18) = sqrt((36+81)/18) = sqrt(6.5) ≈ 2.550
   // d = (10-8)/2.550 ≈ 0.7845

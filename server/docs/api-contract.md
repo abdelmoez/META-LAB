@@ -17,8 +17,10 @@
 7. [Meta-Analysis](#meta-analysis)
 8. [Validation](#validation)
 9. [Import / Export](#import--export)
-10. [Error Shape](#error-shape)
-11. [Common Data Types](#common-data-types)
+10. [Notifications](#notifications)
+11. [Realtime Events (SSE)](#realtime-events-sse)
+12. [Error Shape](#error-shape)
+13. [Common Data Types](#common-data-types)
 
 ---
 
@@ -33,9 +35,11 @@ Returns server status.
 {
   "status": "ok",
   "timestamp": "2025-01-15T10:30:00.000Z",
-  "version": "2.0.0"
+  "version": "2.5.0"
 }
 ```
+
+`version` tracks the root `package.json` (via `server/version.js`); see also the public `GET /api/version` for `{ name, version, commit, commitDate, buildDate, full }`.
 
 ---
 
@@ -117,9 +121,35 @@ Change the authenticated user's password.
 
 ## Projects
 
+Project endpoints return both **owned** projects and projects **shared** with the caller through a linked Review Workspace (the workspace is the META·SIFT `ScreenProject` row; membership and permissions live on `ScreenProjectMember`).
+
+### Workspace annotations (prompt6)
+
+`GET /api/projects`, `GET /api/projects/:id`, and the member path of `PUT /api/projects/:id` annotate every accessible project with transient keys. All `_`-prefixed keys are **stripped on persist** (`store.projectToData`) — clients may echo them back safely.
+
+```json
+{
+  "_linkedMetaSift": { "id": "screenproject-uuid", "title": "My Systematic Review" },
+  "_permissions": {
+    "role": "owner | leader | reviewer | viewer | ...",
+    "isOwner": true,
+    "canView": true,
+    "canEdit": true,
+    "readOnly": false,
+    "canExport": true
+  }
+}
+```
+
+- `_linkedMetaSift` is `null` when checked-and-not-linked. The reverse lookup enforces the link invariant (`ScreenProject.ownerId === Project.userId`); oldest workspace wins if linked twice.
+- Shared rows additionally keep the prompt5 keys (`_shared`, `_role`, `_canEdit`, `_readOnly`, `_screenProjectId`, `_owner`) unchanged.
+- Owner rows always carry `_permissions: { role: "owner", isOwner: true, canView: true, canEdit: true, readOnly: false, canExport: true }`.
+
+---
+
 ### `GET /api/projects`
 
-Returns all projects. By default returns a lightweight list (studies and records arrays are omitted for performance).
+Returns all projects accessible to the caller (owned + shared). By default returns a lightweight list (studies and records arrays are omitted for performance). Every row carries the workspace annotations above.
 
 **Query parameters**
 
@@ -136,7 +166,9 @@ Returns all projects. By default returns a lightweight list (studies and records
     "id": "a1b2c3d4",
     "name": "My Systematic Review",
     "createdAt": "2025-01-15T10:00:00.000Z",
-    "updatedAt": "2025-01-15T10:00:00.000Z"
+    "updatedAt": "2025-01-15T10:00:00.000Z",
+    "_linkedMetaSift": { "id": "screenproject-uuid", "title": "My Systematic Review" },
+    "_permissions": { "role": "owner", "isOwner": true, "canView": true, "canEdit": true, "readOnly": false, "canExport": true }
   }
 ]
 ```
@@ -145,20 +177,22 @@ Returns all projects. By default returns a lightweight list (studies and records
 
 ### `POST /api/projects`
 
-Create a new project.
+Create a new project, optionally with a linked META·SIFT screening project (prompt6 Task 2).
 
 **Request Body**
 ```json
 {
-  "name": "My Systematic Review"
+  "name": "My Systematic Review",
+  "createLinkedSift": true
 }
 ```
 
-| Field | Type   | Required | Description          |
-|-------|--------|----------|----------------------|
-| name  | string | yes      | Display name for the project |
+| Field            | Type    | Required | Description |
+|------------------|---------|----------|-------------|
+| name             | string  | yes      | Display name for the project |
+| createLinkedSift | boolean | no       | When `true`, also creates and links a META·SIFT `ScreenProject` server-side (same owner, same title, PICO snapshot, seeded exclusion reasons/keywords, owner member row). Default off — **legacy behavior and response shape are unchanged when omitted.** |
 
-**Response 201** — Full project object
+**Response 201 (default / `createLinkedSift` omitted)** — bare project object (legacy shape, unchanged):
 ```json
 {
   "id": "a1b2c3d4",
@@ -170,23 +204,41 @@ Create a new project.
 }
 ```
 
+**Response 201 (`createLinkedSift: true`)** — wrapper object:
+```json
+{
+  "project": { "...": "project fields + _linkedMetaSift + _permissions" },
+  "linkedScreenProject": { "id": "screenproject-uuid", "title": "My Systematic Review", "picoSnapshot": "{...}", "...": "raw ScreenProject row" }
+}
+```
+
+If the SIFT-side creation fails, the META·LAB project is **never rolled back** — the response is `201 { project, linkedScreenProject: null, warning: "Project created, but the linked META·SIFT screening project could not be created. ..." }`.
+
 **Error 400** — missing or empty `name`.
 
 ---
 
 ### `GET /api/projects/:id`
 
-Fetch the full project including its studies and records arrays.
+Fetch the full project including its studies and records arrays. Accessible to the owner and to workspace members with META·LAB view permission. Carries the workspace annotations.
 
-**Response 200** — Full project object (same shape as POST 201 above).
+**Response 200** — Full project object (same shape as POST 201 above, plus annotations).
 
-**Error 404** — project not found.
+**Error 404** — project not found **or caller has no access** (outsiders are never told the project exists).
 
 ---
 
 ### `PUT /api/projects/:id`
 
 Partial update of top-level project fields. The `id`, `studies`, and `records` fields are protected and cannot be overwritten through this endpoint (use the dedicated studies/records routes).
+
+**Access (prompt6 Tasks 5/18):**
+- **Owner** — 200, bare updated project (legacy shape).
+- **Workspace member with edit permission** (owner/leader role or `canEditMetaLab`, not read-only) — 200, annotated project (same shape as the member GET).
+- **Member without edit permission (viewer/read-only)** — **403** `{ "error": "Read-only access — you do not have permission to edit this project" }`.
+- **Outsider** — 404.
+
+**Rename sync (sync-if-in-sync):** when `name` changes and a linked `ScreenProject`'s title equals the *old* name, the linked title is updated too (and vice versa from the META·SIFT side). Titles that had already diverged are never touched. Sync is best-effort — a sync failure never fails the rename. This is the documented Task 18 behavior: one shared workspace title while the two stay equal; independent titles once they diverge.
 
 **Request Body** — any subset of project fields:
 ```json
@@ -198,7 +250,8 @@ Partial update of top-level project fields. The `id`, `studies`, and `records` f
 
 **Response 200** — Updated full project object.
 
-**Error 404** — project not found.
+**Error 403** — member without edit permission.
+**Error 404** — project not found / no access.
 
 ---
 
@@ -230,6 +283,8 @@ Upserts the full project payload sent by the client-side `window.storage` bridge
 ```
 
 **Response 200** — Saved project object.
+
+> **Pinned contract (do not change):** autosave **never returns 4xx for access reasons**. A workspace member, a read-only member, or a caller with no access gets `200 { "id": "...", "skipped": true, "readOnly": <bool>, "reason": "..." }` — the project is simply not written. Even a foreign-owner race in the owner path maps to `200 + skipped` (was a 500 before prompt6). Rationale: the client bridge PUTs **all** projects in one batch; a 4xx on a shared read-only project would lose the user's *own* edits. Read-only enforcement happens on `PUT /api/projects/:id`, export, and import instead.
 
 **Error 400** — `name` is missing or not a string.
 
@@ -718,8 +773,11 @@ Parse a citation text blob and import the records into a project. Auto-detects f
 | format     | Detected citation format string |
 | records    | Array of newly added record objects only |
 
+**Access (prompt6 Task 5):** owner — 200; workspace member with edit permission — 200 (persisted via the membership path, ownership never reassigned); member without edit permission — **403** `{ "error": "Read-only access — you do not have permission to import references" }`; outsider — 404.
+
 **Error 400** — missing `text` or `projectId`.  
-**Error 404** — project not found.
+**Error 403** — member without edit permission.  
+**Error 404** — project not found / no access.
 
 ---
 
@@ -727,12 +785,93 @@ Parse a citation text blob and import the records into a project. Auto-detects f
 
 Export the full project (including all studies and records) as a downloadable JSON file.
 
+**Access (prompt6 Task 5):** owner — 200; workspace member with the META·LAB `canExport` flag (implicit for owner/leader) — 200; member without it — **403** `{ "error": "You do not have permission to export this project" }`; outsider — 404. All read-only presets ship `canExport: false`.
+
 **Response 200**
 - `Content-Type: application/json`
 - `Content-Disposition: attachment; filename="My_Review_export.json"`
 - Body: full project object
 
-**Error 404** — project not found.
+**Error 403** — member without export permission.  
+**Error 404** — project not found / no access.
+
+---
+
+## Notifications
+
+Per-user persistent notifications (prompt6 Task 1). Own router at `/api/notifications` behind `requireAuth` only — deliberately **not** under the rate-limited `/api/auth` or `/api/admin` mounts (the bell polls `unread-count`). All reads/writes are scoped to the authenticated user; touching another user's notification returns 404.
+
+Notification types created today: `PROJECT_INVITE` (member added to a project; for pending invites the notification is created at registration via the claim-on-register hook) and `ROLE_CHANGED` (role/preset changed by someone else).
+
+### Notification object
+
+```json
+{
+  "id": "uuid",
+  "userId": "uuid",
+  "type": "PROJECT_INVITE",
+  "title": "You were added to \"My Review\"",
+  "message": "…",
+  "app": "metalab | metasift | workspace",
+  "relatedScreenProjectId": "uuid | null",
+  "relatedWorkspaceId": "uuid | null",
+  "relatedMetaSiftProjectId": "uuid | null",
+  "relatedMetaLabProjectId": "uuid | null",
+  "actorId": "uuid | null",
+  "actorName": "string",
+  "actorEmail": "string",
+  "role": "preset/role granted (e.g. data_extractor)",
+  "readAt": "ISO8601 | null",
+  "dismissedAt": "ISO8601 | null",
+  "createdAt": "ISO8601"
+}
+```
+
+> `relatedWorkspaceId` and `relatedMetaSiftProjectId` are response **aliases** of `relatedScreenProjectId` — the Review Workspace IS the ScreenProject row.
+
+### `GET /api/notifications`
+
+Query: `?unread=1` (unread only) · `?all=1` (include dismissed) · `?page=&limit=` (default page 1, limit 50, max 200). Newest first. Dismissed notifications are hidden unless `?all=1`.
+
+**Response 200** — `{ "notifications": [...], "total": 0, "unreadCount": 0 }` (`unreadCount` is always the caller's global unread count).
+
+### `GET /api/notifications/unread-count`
+
+**Response 200** — `{ "count": 0 }`. Unread = `readAt` null AND `dismissedAt` null. Cheap; polled by the bell every 30s (120s while SSE is healthy).
+
+### `POST /api/notifications/:id/read`
+
+Sets `readAt` (idempotent). **Response 200** — `{ "notification": {...} }`. **404** if the notification does not exist or belongs to another user.
+
+### `POST /api/notifications/:id/dismiss`
+
+Sets `dismissedAt` (idempotent). **Response 200** — `{ "notification": {...} }`. **404** as above.
+
+### `POST /api/notifications/mark-all-read`
+
+**Response 200** — `{ "updated": <count of rows marked read> }`.
+
+---
+
+## Realtime Events (SSE)
+
+### `GET /api/events`
+
+Server-Sent Events stream (prompt6 Task 7). Own router behind `requireAuth` only — never under rate-limited mounts (a reconnecting `EventSource` would burn those limiters). One stream per browser tab (the client hook enforces a shared singleton).
+
+**Response 200** — `Content-Type: text/event-stream`, `Cache-Control: no-cache`, `Connection: keep-alive`, `X-Accel-Buffering: no`. Opens with `retry: 5000` and a `:connected` comment; a `:hb` comment heartbeat is sent every 25 seconds.
+
+**Frames** are unnamed `data:` lines carrying one JSON **poke** — never content, never actor identity:
+
+```json
+{ "type": "project.updated", "projectId": "screenproject-uuid", "metaLabProjectId": "a1b2c3d4", "at": "ISO8601" }
+```
+
+Event types: `project.updated`, `members.changed`, `permissions.changed` (affected user only), `decision.saved`, `chat.message`, `status.changed`, `handoff.updated`, `notification.created`. Recipients are resolved at emit time from active workspace member rows + owner; clients react by refetching the relevant authorized endpoint (polling remains the fallback when the stream is down).
+
+**Error 401** — no/invalid session cookie.
+
+Full architecture, event catalog, and delivery semantics: `docs/manager/realtime-architecture.md`.
 
 ---
 
@@ -749,7 +888,9 @@ All error responses follow this shape:
 | Status | Meaning |
 |--------|---------|
 | 400    | Bad request — missing or invalid input |
-| 404    | Resource not found (project, study, or record ID does not exist) |
+| 401    | Not authenticated |
+| 403    | Authenticated workspace **member** lacking the specific permission (edit/export/import). Outsiders never get 403 — they get 404 (existence-hiding) |
+| 404    | Resource not found, or the caller has no access at all (project, study, record, or notification) |
 | 422    | Unprocessable — input is structurally valid but cannot be computed (e.g., too few studies) |
 | 500    | Internal server error |
 

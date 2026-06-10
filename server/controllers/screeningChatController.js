@@ -10,6 +10,7 @@
 import { prisma } from '../db/client.js';
 import { getProjectAccess } from '../screening/access.js';
 import { getMetaSiftSettings } from '../screening/settings.js';
+import { emitToProjectMembers } from '../realtime/bus.js';
 
 const MAX_LEN = 4000;
 
@@ -100,6 +101,9 @@ export async function postMessage(req, res) {
     const created = await prisma.screenChatMessage.create({
       data: { projectId: access.project.id, senderId: req.user.id, senderName, message, status: 'sent' },
     });
+    // Realtime poke (Task 7) — no message content travels on the stream;
+    // recipients fetch via the authorized listChat(?since) endpoint.
+    emitToProjectMembers(access.project.id, { type: 'chat.message' }, { exclude: req.user.id });
     res.status(201).json({
       message: {
         id: created.id, senderId: created.senderId, senderName: created.senderName,

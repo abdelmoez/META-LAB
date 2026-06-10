@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 import UserMenu from '../../components/UserMenu.jsx';
+import NotificationsBell from '../../components/NotificationsBell.jsx';
 
 const C = {
   bg:    '#080c15', surf:  '#0c1322', card:  '#101929',
@@ -58,7 +59,7 @@ function Spinner() {
   );
 }
 
-const EMPTY_FORM = { title: '', description: '', reviewQuestion: '', blindMode: false };
+const EMPTY_FORM = { title: '', description: '', reviewQuestion: '', blindMode: false, alsoCreateMetaLab: false };
 
 export default function SiftDashboard() {
   const { user } = useAuth();
@@ -120,6 +121,8 @@ export default function SiftDashboard() {
         description: newForm.description.trim() || undefined,
         reviewQuestion: newForm.reviewQuestion.trim() || undefined,
         blindMode: newForm.blindMode,
+        // Optional META·LAB pair (prompt6 Task 2) — opt-in only, never forced.
+        alsoCreateMetaLab: newForm.alsoCreateMetaLab || undefined,
       });
       setShowNewModal(false);
       setNewForm(EMPTY_FORM);
@@ -205,6 +208,7 @@ export default function SiftDashboard() {
           >
             + New Screening Project
           </button>
+          <NotificationsBell />
           <UserMenu context="metasift" />
         </div>
       </div>
@@ -332,6 +336,9 @@ export default function SiftDashboard() {
                       progressColor={progressColor}
                       formatDate={formatDate}
                       onOpen={() => navigate(`/sift-beta/projects/${project.id}`)}
+                      onOpenLinked={project.linkedMetaLabProjectId
+                        ? () => navigate(`/app?project=${project.linkedMetaLabProjectId}`)
+                        : undefined}
                       onDelete={() => setDeleteConfirm(project.id)}
                     />
                   );
@@ -390,6 +397,19 @@ export default function SiftDashboard() {
                 style={{ width: 14, height: 14, accentColor: C.acc }}
               />
               <span>Blind mode <span style={{ color: C.muted, fontWeight: 400 }}>(hide author/journal info during screening)</span></span>
+            </label>
+
+            {/* Optional META·LAB pair (prompt6 Task 2). Default OFF — SIFT-side
+                creation never forces a META·LAB project. */}
+            <label style={{ ...labelStyle, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginTop: 10 }}>
+              <input
+                type="checkbox"
+                checked={newForm.alsoCreateMetaLab}
+                onChange={e => setNewForm(f => ({ ...f, alsoCreateMetaLab: e.target.checked }))}
+                disabled={creating}
+                style={{ width: 14, height: 14, accentColor: C.acc }}
+              />
+              <span>Also create &amp; link a META·LAB project <span style={{ color: C.muted, fontWeight: 400 }}>(same title, linked workspace)</span></span>
             </label>
 
             {createError && (
@@ -480,7 +500,7 @@ function RoleChip({ role, shared }) {
   );
 }
 
-function ProjectCard({ project, stats, total, screened, pct, progressColor, formatDate, onOpen, onDelete }) {
+function ProjectCard({ project, stats, total, screened, pct, progressColor, formatDate, onOpen, onOpenLinked, onDelete }) {
   const [hover, setHover] = useState(false);
   const leaders = Array.isArray(project.leaders) ? project.leaders : [];
   const ownerName = project.ownerName || project.owner?.name || project.owner?.email || 'Unknown';
@@ -563,13 +583,24 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
             </span>
           </div>
 
-          {/* Linked META·LAB project (BUG 4) */}
+          {/* Linked META·LAB project (BUG 4) — clickable deep link to the EXACT
+              linked project (prompt6 Task 3: never the generic project list). */}
           <div style={{ fontSize: 11.5, marginTop: 8, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
             {project.linkedMetaLabProjectId ? (
-              <span style={{ color: C.grn, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <button
+                onClick={onOpenLinked}
+                title="Open the linked META·LAB project"
+                style={{
+                  background: 'none', border: 'none', padding: 0, cursor: 'pointer',
+                  color: C.grn, fontSize: 11.5, fontFamily: FONT,
+                  display: 'inline-flex', alignItems: 'center', gap: 5,
+                }}
+                onMouseEnter={e => e.currentTarget.style.textDecoration = 'underline'}
+                onMouseLeave={e => e.currentTarget.style.textDecoration = 'none'}
+              >
                 <span>🔗</span>
-                <span>Linked to META·LAB: <strong style={{ color: C.txt }}>{project.linkedMetaLabProjectTitle || 'project'}</strong></span>
-              </span>
+                <span>Linked to META·LAB: <strong style={{ color: C.txt }}>{project.linkedMetaLabProjectTitle || 'project'}</strong> →</span>
+              </button>
             ) : (
               <span style={{ color: C.muted, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
                 <span style={{ opacity: 0.6 }}>⛓️‍💥</span> Not linked to META·LAB

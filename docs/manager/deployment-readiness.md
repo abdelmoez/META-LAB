@@ -39,6 +39,8 @@ npx prisma migrate deploy
 
 `migrate deploy` applies any pending migrations in `server/prisma/migrations/` against `DATABASE_URL`. Migrations are **additive** — never hand-edit applied migrations; create new ones for schema changes.
 
+**prompt6 (v2.5.0)** adds one additive migration — `20260610034844_prompt6_notifications_logins_status_fingerprint`: new `Notification`, `LoginEvent`, and `ScreenProjectStatusEvent` tables, fingerprint columns on `ScreenImportBatch` (nullable/defaulted), and an index on `ScreenProject.linkedMetaLabProjectId`. No destructive changes; existing users/projects/records/links are preserved. `npx prisma migrate deploy` + `npx prisma generate` is all the DB work this release needs.
+
 ---
 
 ## 3. Environment variables
@@ -136,6 +138,21 @@ Ensure the proxy forwards the correct protocol headers and that the Node process
 
 ---
 
+## 5b. SSE in production (`GET /api/events`) — prompt6
+
+The realtime layer is a single Server-Sent Events stream per browser tab (`server/routes/events.js`; architecture: `docs/manager/realtime-architecture.md`). It is deployment-sensitive — a buffering proxy silently breaks it. Requirements:
+
+- **Disable response buffering for the stream route.** The route already sends `X-Accel-Buffering: no` (honored per-response by nginx); with nginx also set `proxy_buffering off;` for `/api/events`. Anything that buffers or compresses whole responses must exclude this route.
+- **Read timeout > heartbeat.** The server writes a `:hb` comment frame every **25 s**; set `proxy_read_timeout` ≥ 60 s so idle streams are never reaped between heartbeats.
+- **Keep-alive streaming.** HTTP/1.1 to the upstream with `proxy_set_header Connection '';` (nginx) so the long-lived response can stream.
+- **No compression middleware.** The Express app deliberately has none (verified); if one is ever added globally, `/api/events` must be excluded or frames will buffer until close.
+- **Degradation is safe by design.** If SSE is blocked by the platform, every feature still works via the pre-existing polling (chat 4 s, notifications bell 30 s, load-on-navigation) — realtime only makes them faster. No flag needed.
+- **Single-process limitation.** The event bus is in-process memory (`server/realtime/bus.js`). Running multiple Node processes (pm2 cluster, replicas) splits the registry — users connected to one process miss emits from another. Scale realtime horizontally only after adding a broker (Redis pub/sub); until then run a single API process (consistent with SQLite anyway). Polling keeps features correct even if this is violated.
+
+**Rate-limiter invariant (do not regress):** `/api/notifications` and `/api/events` are mounted on their **own routers** behind `requireAuth` only. They must **never** move under the rate-limited `/api/auth` (20 req/15 min) or `/api/admin` mounts — the bell polls `unread-count` and a reconnecting EventSource retries; either would burn those limiters and lock users out of login or the ops console.
+
+---
+
 ## 6. "Pushing to GitHub main deploys live" — checklist
 
 Pushing to `main` deploys to production. Before pushing:
@@ -149,6 +166,7 @@ Pushing to `main` deploys to production. Before pushing:
 - [ ] `GIT_COMMIT` / `BUILD_DATE` set in CI so `/api/version` reflects the build (§8).
 - [ ] No secrets committed; `.env` / `server/.env` are gitignored.
 - [ ] Smoke test after deploy: `GET /api/health` → `{ status: "ok" }` and `GET /api/version` returns the expected version + commit.
+- [ ] SSE smoke test (§5b): `curl -N https://<host>/api/events` with a valid session cookie → `retry:` + `:connected` arrive immediately, `:hb` within ~25s (proves the proxy isn't buffering).
 
 ---
 
@@ -171,15 +189,15 @@ A public, unauthenticated route exposes build metadata that **changes with each 
 
 ```
 GET /api/version
-→ { "name": "META·LAB", "version": "2.4.0", "commit": "1466d1d",
-    "commitDate": "2026-06-09T18:41:42-04:00", "buildDate": "2026-06-09T18:41:42-04:00",
-    "full": "v2.4.0 · 1466d1d · 2026-06-09" }
+→ { "name": "META·LAB", "version": "2.5.0", "commit": "dff653b",
+    "commitDate": "2026-06-10T...", "buildDate": "2026-06-10T...",
+    "full": "v2.5.0 · dff653b · 2026-06-10" }
 ```
 
-Implemented in `server/version.js` (`getVersion()`), wired in `server/index.js` next to `/api/health`. All values are resolved **once at module load** and cached, so the route does no fs/git work per request. `GET /api/health` and the ops `GET /api/admin/health` also report the real `version` (no longer hardcoded). Display: the shared `UserMenu` account dropdown (META·LAB, META·SIFT, ops) shows `full`, and the ops sidebar footer shows version + commit + date. The server logs the version on boot:
+Implemented in `server/version.js` (`getVersion()`), wired in `server/index.js` next to `/api/health`. All values are resolved **once at module load** and cached, so the route does no fs/git work per request. `GET /api/health` and the ops `GET /api/admin/health` also report the real `version` (no longer hardcoded). Display: the shared `UserMenu` account dropdown (META·LAB, META·SIFT, ops) shows `full`, the ops sidebar footer shows version + commit + date, and (since prompt6) the META·LAB monolith sidebar footer fetches `/api/version` too — the last hardcoded version surface ("v2.0 · PRISMA 2020") is gone. The server logs the version on boot:
 
 ```
-META·LAB API on :3001 (v2.4.0 · 1466d1d)
+META·LAB API on :3001 (v2.5.0 · dff653b)
 ```
 
 Derivation (most authoritative first — so the value changes per commit and degrades gracefully):
@@ -207,4 +225,4 @@ export BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
 When all of git, `version.json`, and env are unavailable, `commit` falls back to `"dev"`. To release a new version, bump
-`"version"` in the root `package.json` (currently `2.4.0`).
+`"version"` in the root `package.json` (currently `2.5.0`).

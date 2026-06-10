@@ -68,11 +68,24 @@ export async function getMetrics(req, res) {
     const monthStart = startOf('month');
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
+    // Unique-login windows (prompt6 Task 9): ROLLING windows (now − 24h/7d/30d/90d/365d)
+    // per the brief's "past X" wording — deliberately not calendar startOf() buckets.
+    const dayAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const weekAgo = sevenDaysAgo;
+    const monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const quarterAgo = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+    const yearAgo = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+    // One groupBy per window = one query each returning a row per DISTINCT userId
+    // (cheap at this scale; avoids raw-SQL coupling to SQLite date storage).
+    const uniqueLogins = since =>
+      prisma.loginEvent.groupBy({ by: ['userId'], where: { success: true, createdAt: { gte: since } } });
+
     const [
       totalUsers, todayUsers, weekUsers, monthUsers, suspendedUsers, adminUsers,
       totalProjects, todayProjects, weekProjects, monthProjects,
       totalMessages, activeMessages, myReadActive,
       failedLogins7d,
+      loginsDay, loginsWeek, loginsMonth, loginsQuarter, loginsYear,
       allProjects,
     ] = await Promise.all([
       prisma.user.count(),
@@ -91,6 +104,11 @@ export async function getMetrics(req, res) {
       // so one admin opening a message no longer drops another admin's unread count.
       prisma.contactMessageRead.count({ where: { userId: req.user.id, message: { archived: false } } }),
       prisma.securityEvent.count({ where: { type: 'FAILED_LOGIN', createdAt: { gte: sevenDaysAgo } } }),
+      uniqueLogins(dayAgo),
+      uniqueLogins(weekAgo),
+      uniqueLogins(monthAgo),
+      uniqueLogins(quarterAgo),
+      uniqueLogins(yearAgo),
       prisma.project.findMany({ select: { data: true } }),
     ]);
     const unreadMessages = Math.max(0, activeMessages - myReadActive);
@@ -130,6 +148,15 @@ export async function getMetrics(req, res) {
       records,
       contactMessages: { total: totalMessages, unread: unreadMessages },
       securityEvents: { failedLogins7d },
+      // Unique successful logins per rolling window (prompt6 Task 9) — each
+      // groupBy above returns one row per DISTINCT userId in the window.
+      logins: {
+        day: loginsDay.length,
+        week: loginsWeek.length,
+        month: loginsMonth.length,
+        quarter: loginsQuarter.length,
+        year: loginsYear.length,
+      },
       db: dbStatus,
     });
   } catch (err) {
@@ -486,7 +513,7 @@ export async function getProjects(req, res) {
           createdAt: true,
           updatedAt: true,
           deletedAt: true,
-          user: { select: { email: true } },
+          user: { select: { name: true, email: true } },
         },
         orderBy: { createdAt: 'desc' },
         skip,
@@ -494,16 +521,38 @@ export async function getProjects(req, res) {
       }),
     ]);
 
+    // Linked META·SIFT reverse lookup (prompt6 Task 11). The Review Workspace
+    // IS the ScreenProject row, so workspaceId aliases the ScreenProject id.
+    const projectIds = projects.map(p => p.id);
+    const linkedSifts = projectIds.length
+      ? await prisma.screenProject.findMany({
+          where: { linkedMetaLabProjectId: { in: projectIds } },
+          select: { id: true, title: true, linkedMetaLabProjectId: true },
+        })
+      : [];
+    const siftByMetaLabId = {};
+    for (const sp of linkedSifts) {
+      // First match wins — multiple ScreenProjects linking one META·LAB project
+      // is not a supported state; display the first deterministically.
+      if (!siftByMetaLabId[sp.linkedMetaLabProjectId]) siftByMetaLabId[sp.linkedMetaLabProjectId] = sp;
+    }
+
     const formatted = projects.map(p => {
       const data = safeParseData(p.data);
+      const sift = siftByMetaLabId[p.id] || null;
       return {
         id: p.id,
         userId: p.userId,
         userEmail: p.user?.email || null,
+        // owner object mirrors the SIFT admin rows' shape ({id,name,email}).
+        owner: { id: p.userId, name: p.user?.name || null, email: p.user?.email || null },
         name: p.name,
         createdAt: p.createdAt,
         updatedAt: p.updatedAt,
         deletedAt: p.deletedAt,
+        status: p.deletedAt ? 'archived' : 'active',
+        linkedMetaSift: sift ? { id: sift.id, title: sift.title } : null,
+        workspaceId: sift ? sift.id : null,
         studyCount: Array.isArray(data.studies) ? data.studies.length : 0,
         recordCount: Array.isArray(data.records) ? data.records.length : 0,
       };

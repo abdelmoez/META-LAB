@@ -9,6 +9,8 @@ import { getAll, getById, save, remove, getByIdUnscoped, getManyByIds, saveAsMem
 import { mkProject } from '../../src/research-engine/project-model/defaults.js';
 import { prisma } from '../db/client.js';
 import { getMetaLabMemberAccess, listSharedMetaLabAccess } from '../screening/metalabAccess.js';
+import { createLinkedScreenProject } from '../screening/createScreenProject.js';
+import { emitToMetaLabProject } from '../realtime/bus.js';
 
 const generateId = () => randomBytes(4).toString('hex');
 
@@ -22,7 +24,69 @@ function annotateShared(projectObj, acc, owner) {
     _readOnly: !!acc.readOnly,
     _screenProjectId: acc.screenProjectId,
     _owner: owner ? { id: owner.id, name: owner.name, email: owner.email } : null,
+    // prompt6 Tasks 3/8 — linked workspace + caller capability flags. All `_`
+    // keys are transient and stripped on persist (store.projectToData).
+    _linkedMetaSift: acc.screenProjectId ? { id: acc.screenProjectId, title: acc.screenProjectTitle || '' } : null,
+    _permissions: {
+      role: acc.role,
+      isOwner: false,
+      canView: !!acc.canView,
+      canEdit: !!acc.canEdit,
+      readOnly: !!acc.readOnly,
+      canExport: !!acc.canExport,
+    },
   };
+}
+
+/** Owner-side annotations (prompt6 Tasks 3/8): full permissions + linked workspace. */
+function annotateOwned(projectObj, linked) {
+  return {
+    ...projectObj,
+    _linkedMetaSift: linked ? { id: linked.id, title: linked.title } : null,
+    _permissions: { role: 'owner', isOwner: true, canView: true, canEdit: true, readOnly: false, canExport: true },
+  };
+}
+
+/**
+ * Batch reverse-lookup: META·LAB project ids → linked ScreenProject {id, title}.
+ * Enforces the link invariant (ScreenProject.ownerId === Project.userId) by
+ * filtering on the owner; oldest workspace wins when a project is linked twice.
+ * Uses the @@index on ScreenProject.linkedMetaLabProjectId.
+ */
+async function getLinkedSiftByProjectIds(projectIds, ownerUserId) {
+  const byProject = new Map();
+  if (!projectIds.length) return byProject;
+  const rows = await prisma.screenProject.findMany({
+    where: { linkedMetaLabProjectId: { in: projectIds }, ownerId: ownerUserId },
+    select: { id: true, title: true, linkedMetaLabProjectId: true },
+    orderBy: { createdAt: 'asc' },
+  });
+  for (const r of rows) {
+    if (!byProject.has(r.linkedMetaLabProjectId)) {
+      byProject.set(r.linkedMetaLabProjectId, { id: r.id, title: r.title });
+    }
+  }
+  return byProject;
+}
+
+/**
+ * prompt6 Task 18 — sync-if-in-sync rename propagation.
+ * When a META·LAB project is renamed and a linked ScreenProject's title was
+ * EQUAL to the old name (the pair was "in sync"), rename the workspace too.
+ * Best-effort: a sync failure must never fail (or slow) the rename itself.
+ * Returns true when at least one workspace title was updated.
+ */
+async function syncLinkedTitleIfInSync(projectId, ownerUserId, oldName, newName) {
+  if (!oldName || !newName || oldName === newName) return false;
+  try {
+    const r = await prisma.screenProject.updateMany({
+      where: { linkedMetaLabProjectId: projectId, ownerId: ownerUserId, title: oldName },
+      data: { title: newName },
+    });
+    return r.count > 0;
+  } catch {
+    return false; // best-effort — never propagate
+  }
 }
 
 /**
@@ -66,7 +130,13 @@ export async function listProjects(req, res) {
       shared = projObjs.map(p => annotateShared(p, accById[p.id], ownerById[liveById.get(p.id).userId] || null));
     }
 
-    const all = [...owned, ...shared];
+    // prompt6 Tasks 3/8 — annotate owned rows with their linked META·SIFT
+    // workspace + full owner permissions (shared rows get theirs in
+    // annotateShared above, from the membership access already resolved).
+    const ownedLinks = await getLinkedSiftByProjectIds(owned.map(p => p.id), req.user.id);
+    const annotatedOwned = owned.map(p => annotateOwned(p, ownedLinks.get(p.id) || null));
+
+    const all = [...annotatedOwned, ...shared];
     res.json(full ? all : all.map(({ studies, records, ...meta }) => meta));
   } catch (err) {
     console.error('[projects] listProjects error:', err.message);
@@ -76,19 +146,52 @@ export async function listProjects(req, res) {
 
 /**
  * POST /api/projects
- * Body: { name: string }
- * Creates a new project and returns the full object.
+ * Body: { name: string, createLinkedSift?: boolean }
+ *
+ * Creates a new project. Legacy shape (no opt-in): returns the bare project.
+ * With `createLinkedSift: true` (prompt6 Task 2 — the frontend checkbox sends
+ * it by default; the API default stays OFF so old clients/tests don't drift),
+ * also creates a linked META·SIFT ScreenProject server-side (same owner, same
+ * title, PICO snapshot, seeded reasons/keywords, owner member row) and returns
+ * `{ project, linkedScreenProject }`. If the SIFT side fails, the META·LAB
+ * project is NEVER rolled back — returns `{ project, linkedScreenProject:
+ * null, warning }` instead.
  */
 export async function createProject(req, res) {
   try {
-    const { name } = req.body || {};
+    const { name, createLinkedSift } = req.body || {};
     if (!name || typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ error: 'name is required' });
     }
     const project = mkProject(name.trim());
     const saved = await save(project, req.user.id);
-    res.status(201).json(saved);
+
+    // Legacy response shape when the caller does not opt in.
+    if (createLinkedSift !== true) return res.status(201).json(saved);
+
+    try {
+      const linkedScreenProject = await createLinkedScreenProject({
+        ownerId: req.user.id,
+        title: saved.name,
+        linkedMetaLabProjectId: saved.id,
+        mlData: saved,
+      });
+      return res.status(201).json({
+        project: annotateOwned(saved, { id: linkedScreenProject.id, title: linkedScreenProject.title }),
+        linkedScreenProject,
+      });
+    } catch (siftErr) {
+      console.error('[projects] linked META·SIFT creation failed:', siftErr.message);
+      return res.status(201).json({
+        project: annotateOwned(saved, null),
+        linkedScreenProject: null,
+        warning: 'Project created, but the linked META·SIFT screening project could not be created. You can create or link one later from META·SIFT.',
+      });
+    }
   } catch (err) {
+    if (err && err.code === 'FOREIGN_PROJECT') {
+      return res.status(403).json({ error: 'You do not have permission to modify this project' });
+    }
     console.error('[projects] createProject error:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -100,9 +203,13 @@ export async function createProject(req, res) {
  */
 export async function getProject(req, res) {
   try {
-    // Owner path.
+    // Owner path — annotated with the linked workspace + full permissions
+    // (prompt6 Tasks 3/8).
     const project = await getById(req.params.id, req.user.id);
-    if (project) return res.json(project);
+    if (project) {
+      const links = await getLinkedSiftByProjectIds([project.id], req.user.id);
+      return res.json(annotateOwned(project, links.get(project.id) || null));
+    }
 
     // Member path (prompt5 Task 4): access a linked-workspace project they don't own.
     const acc = await getMetaLabMemberAccess(req.params.id, req.user.id);
@@ -121,16 +228,52 @@ export async function getProject(req, res) {
  * PUT /api/projects/:id
  * Partial update — merges provided fields into the existing project.
  * Protects `id`, `studies`, and `records` from overwrite via this route.
+ *
+ * prompt6 Task 18: a linked-workspace member may also update — in particular
+ * rename — when the workspace grants META·LAB edit (owner/leader/canEditMetaLab
+ * and not read-only). Outsiders keep 404 (existence-hiding convention).
+ * A rename propagates to the linked ScreenProject title IFF the titles were
+ * equal before the change (sync-if-in-sync), best-effort, in both paths.
  */
 export async function updateProject(req, res) {
   try {
-    const project = await getById(req.params.id, req.user.id);
-    if (!project) return res.status(404).json({ error: 'Project not found' });
     const { id, studies, records, ...allowed } = req.body || {};
-    const updated = { ...project, ...allowed, id: project.id };
-    const saved = await save(updated, req.user.id);
-    res.json(saved);
+
+    // Owner path.
+    const project = await getById(req.params.id, req.user.id);
+    if (project) {
+      const updated = { ...project, ...allowed, id: project.id };
+      const saved = await save(updated, req.user.id);
+      await syncLinkedTitleIfInSync(project.id, req.user.id, project.name, saved.name);
+      // Realtime poke (Task 7) — recipients resolve via the linked workspace.
+      emitToMetaLabProject(project.id, req.user.id, { type: 'project.updated' }, { exclude: req.user.id });
+      return res.json(saved);
+    }
+
+    // Member path.
+    const acc = await getMetaLabMemberAccess(req.params.id, req.user.id);
+    if (!acc) return res.status(404).json({ error: 'Project not found' });
+    if (!acc.canEdit) {
+      return res.status(403).json({ error: 'Read-only access — you do not have permission to edit this project' });
+    }
+    const raw = await getByIdUnscoped(req.params.id);
+    if (!raw) return res.status(404).json({ error: 'Project not found' });
+    const updated = { ...raw, ...allowed, id: raw.id };
+    const saved = await saveAsMember(updated);
+    if (!saved) return res.status(404).json({ error: 'Project not found' });
+    const synced = await syncLinkedTitleIfInSync(raw.id, acc.ownerId, raw.name, saved.name);
+    // Realtime poke (Task 7) — workspace members + owner, minus the editor.
+    emitToMetaLabProject(raw.id, acc.ownerId, { type: 'project.updated' }, { exclude: req.user.id });
+    // Keep the response's workspace title fresh when the rename propagated.
+    const accOut = synced && acc.screenProjectTitle === raw.name
+      ? { ...acc, screenProjectTitle: saved.name }
+      : acc;
+    const owner = await prisma.user.findUnique({ where: { id: acc.ownerId }, select: { id: true, name: true, email: true } });
+    return res.json(annotateShared(saved, accOut, owner));
   } catch (err) {
+    if (err && err.code === 'FOREIGN_PROJECT') {
+      return res.status(403).json({ error: 'You do not have permission to modify this project' });
+    }
     console.error('[projects] updateProject error:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -169,6 +312,8 @@ export async function autosaveProject(req, res) {
     const existing = await prisma.project.findFirst({ where: { id }, select: { userId: true } });
     if (!existing || existing.userId === req.user.id) {
       const saved = await save(fullProject, req.user.id);
+      // Realtime poke (Task 7) — fan out to linked-workspace members (owner is excluded).
+      emitToMetaLabProject(id, req.user.id, { type: 'project.updated' }, { exclude: req.user.id });
       return res.json(saved);
     }
 
@@ -180,10 +325,17 @@ export async function autosaveProject(req, res) {
     const acc = await getMetaLabMemberAccess(id, req.user.id);
     if (acc && acc.canEdit) {
       const saved = await saveAsMember(fullProject);
+      if (saved) emitToMetaLabProject(id, acc.ownerId, { type: 'project.updated' }, { exclude: req.user.id });
       return res.json(saved || { id, skipped: true });
     }
     return res.json({ id, skipped: true, readOnly: !!acc, reason: acc ? 'read-only member' : 'no access' });
   } catch (err) {
+    // A foreign-owner race in the owner/create path must never 4xx here —
+    // the autosave bridge PUTs every project in one batch (see above), so a
+    // rejection would lose the user's OWN edits. Skip instead.
+    if (err && err.code === 'FOREIGN_PROJECT') {
+      return res.json({ id: req.params.id, skipped: true, reason: 'no access' });
+    }
     console.error('[projects] autosaveProject error:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -202,6 +354,9 @@ export async function duplicateProject(req, res) {
     const saved = await save(duplicate, req.user.id);
     res.status(201).json(saved);
   } catch (err) {
+    if (err && err.code === 'FOREIGN_PROJECT') {
+      return res.status(403).json({ error: 'You do not have permission to modify this project' });
+    }
     console.error('[projects] duplicateProject error:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }

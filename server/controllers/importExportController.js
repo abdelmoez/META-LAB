@@ -5,7 +5,8 @@
  */
 
 import { detectAndParse, dedupeRecords } from '../../src/research-engine/import-export/parsers.js';
-import { getById, save } from '../store.js';
+import { getById, save, getByIdUnscoped, saveAsMember } from '../store.js';
+import { getMetaLabMemberAccess } from '../screening/metalabAccess.js';
 
 /**
  * POST /api/import/references
@@ -27,15 +28,28 @@ export async function importReferences(req, res) {
       return res.status(400).json({ error: 'projectId is required' });
     }
 
-    const project = await getById(projectId, req.user.id);
-    if (!project) return res.status(404).json({ error: 'Project not found' });
+    // Owner path; otherwise membership-aware (prompt6 Task 5): a linked-
+    // workspace member with META·LAB edit may import; read-only members get
+    // 403; outsiders keep 404 (existence-hiding convention).
+    let project = await getById(projectId, req.user.id);
+    let memberAcc = null;
+    if (!project) {
+      memberAcc = await getMetaLabMemberAccess(projectId, req.user.id);
+      if (!memberAcc) return res.status(404).json({ error: 'Project not found' });
+      if (!memberAcc.canEdit) {
+        return res.status(403).json({ error: 'Read-only access — you do not have permission to import references' });
+      }
+      project = await getByIdUnscoped(projectId);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+    }
 
     const { records: incoming, format } = detectAndParse(text);
 
     const existing = project.records || [];
     const { merged, dupCount, added } = dedupeRecords(existing, incoming);
 
-    await save({ ...project, records: merged }, req.user.id);
+    if (memberAcc) await saveAsMember({ ...project, records: merged });
+    else await save({ ...project, records: merged }, req.user.id);
 
     res.json({
       imported: added,
@@ -52,12 +66,23 @@ export async function importReferences(req, res) {
 
 /**
  * GET /api/export/project/:id
- * Returns the full project as a downloadable JSON file (user-scoped).
+ * Returns the full project as a downloadable JSON file.
+ * Owner always may; a linked-workspace member needs the META·LAB export
+ * permission (`canExport`, full for owner/leader) — members whose permissions
+ * deny export get 403, outsiders keep 404 (prompt6 Task 5).
  */
 export async function exportProject(req, res) {
   try {
-    const project = await getById(req.params.id, req.user.id);
-    if (!project) return res.status(404).json({ error: 'Project not found' });
+    let project = await getById(req.params.id, req.user.id);
+    if (!project) {
+      const acc = await getMetaLabMemberAccess(req.params.id, req.user.id);
+      if (!acc) return res.status(404).json({ error: 'Project not found' });
+      if (!acc.canExport) {
+        return res.status(403).json({ error: 'You do not have permission to export this project' });
+      }
+      project = await getByIdUnscoped(req.params.id);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+    }
 
     const filename = `${project.name.replace(/[^a-z0-9]/gi, '_')}_export.json`;
     res.setHeader('Content-Type', 'application/json');

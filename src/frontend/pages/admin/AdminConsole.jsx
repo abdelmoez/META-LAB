@@ -8,6 +8,7 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { adminApi, fetchVersion } from './adminApiClient.js';
 import UserMenu from '../../components/UserMenu.jsx';
+import NotificationsBell from '../../components/NotificationsBell.jsx';
 
 /* ─── Design tokens ──────────────────────────────────────────────────── */
 const C = {
@@ -350,6 +351,21 @@ function OverviewSection({ onNavigate }) {
       {/* Secondary stats */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 20 }}>
         {secondary.map(s => <SmallMetric key={s.label} label={s.label} value={s.value} loading={loading} />)}
+      </div>
+
+      {/* Unique logins (prompt6 Task 9) — distinct users with a successful login
+          in each ROLLING window (past 24h/7d/30d/90d/365d), from metrics.logins. */}
+      <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+        Unique Logins
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8, marginBottom: 20 }}>
+        {[
+          { label: 'Past 24 Hours', value: m.logins?.day },
+          { label: 'Past Week',     value: m.logins?.week },
+          { label: 'Past Month',    value: m.logins?.month },
+          { label: 'Past Quarter',  value: m.logins?.quarter },
+          { label: 'Past Year',     value: m.logins?.year },
+        ].map(s => <SmallMetric key={s.label} label={s.label} value={s.value} loading={loading} />)}
       </div>
 
       {/* Needs Attention + Quick Actions */}
@@ -930,7 +946,7 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
         </div>
         {[
           { label: 'Joined',      value: fmtDate(u.createdAt) },
-          { label: 'Last Active', value: u.lastActive ? fmtAgo(u.lastActive) : 'Never' },
+          { label: 'Last Active', value: u.lastActive ? fmtAgo(u.lastActive) : '—' },
           { label: 'Projects',    value: u.projectCount ?? 0 },
         ].map(r => (
           <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: `1px solid ${C.brd}` }}>
@@ -1060,7 +1076,8 @@ function UsersSection({ isAdmin = false }) {
     { key: 'status',       label: 'Status',        render: v => v === 'active' ? <Badge text="active" color={C.grn} /> : <Badge text="suspended" color={C.red} /> },
     { key: 'projectCount', label: 'Projects',      render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
     { key: 'createdAt',    label: 'Joined',        render: v => fmtDate(v) },
-    { key: 'lastActive',   label: 'Last Active',   render: v => v ? fmtAgo(v) : <span style={{ color: C.muted }}>Never</span> },
+    // Readable relative time ("3h ago"); em-dash when null (prompt6 Task 10).
+    { key: 'lastActive',   label: 'Last Active',   render: v => v ? fmtAgo(v) : <span style={{ color: C.muted }}>—</span> },
   ];
 
   const filterDefs = [
@@ -1147,6 +1164,13 @@ function ProjectDetailPanel({ project, onClose, onAction }) {
         </div>
         {[
           { label: 'Owner',    value: <span style={{ fontFamily: MONO, fontSize: 11 }}>{project.ownerEmail || project.userEmail || '—'}</span> },
+          // Linked Review Workspace (prompt6 Task 11) — workspaceId == linked ScreenProject id.
+          { label: 'Linked SIFT', value: project.linkedMetaSift?.id
+              ? <span style={{ fontSize: 11 }}>{project.linkedMetaSift.title || '(untitled)'}</span>
+              : <span style={{ color: C.muted }}>not linked</span> },
+          { label: 'Workspace', value: project.linkedMetaSift?.id
+              ? <span style={{ fontFamily: MONO, fontSize: 10, wordBreak: 'break-all' }} title={project.linkedMetaSift.id}>{project.linkedMetaSift.id}</span>
+              : <span style={{ color: C.muted }}>—</span> },
           { label: 'Created',  value: fmtDate(project.createdAt) },
           { label: 'Updated',  value: fmtAgo(project.updatedAt) },
           { label: 'Studies',  value: project.studyCount ?? 0 },
@@ -1215,6 +1239,12 @@ function ProjectsSection() {
 
   const columns = [
     { key: 'name',       label: 'Name',    render: v => <span style={{ color: C.txt, fontWeight: 600 }}>{v}</span> },
+    // Linked META·SIFT screening project (prompt6 Task 11). linkedMetaSift = { id, title } | null;
+    // its id IS the shared Review Workspace id (shown in the detail panel).
+    { key: 'linkedMetaSift', label: 'Linked META·SIFT',
+      render: v => v?.id
+        ? <span style={{ fontSize: 11 }}>{v.title || '(linked, untitled)'}</span>
+        : <span style={{ fontSize: 11, color: C.muted }}>— not linked</span> },
     { key: 'ownerEmail', label: 'Owner',   render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{v || '—'}</span> },
     { key: 'createdAt',  label: 'Created', render: v => fmtDate(v) },
     { key: 'updatedAt',  label: 'Updated', render: v => fmtAgo(v) },
@@ -1919,6 +1949,11 @@ function SiftOverview() {
   const cards = [
     { label: 'In Progress',     value: m.inProgressProjects, color: C.teal },
     { label: 'Done',            value: m.doneProjects,       color: C.grn },
+    // prompt6 Task 12 — DISTINCT projects whose status changed to 'done' in the
+    // window (toggling done→in progress→done counts once).
+    { label: 'Done Today',      value: m.doneToday,          color: C.grn },
+    { label: 'Done This Week',  value: m.doneThisWeek,       color: C.grn },
+    { label: 'Done This Month', value: m.doneThisMonth,      color: C.grn },
     { label: 'Records',         value: m.totalRecords,       color: C.txt2 },
     { label: 'Screened',        value: m.screened,           color: C.acc },
     { label: 'Included',        value: m.included,           color: C.grn },
@@ -1966,12 +2001,162 @@ function SiftOverview() {
 }
 
 /* ── (B) Projects panel ── */
+
+// Normalize the expanded progress shape from GET /api/admin/screening/projects/:id
+// (prompt6 Task 11). Prefers the `progress` object from the prompt6 contract and
+// falls back to flat/legacy fields so the panel degrades gracefully (shows '—')
+// instead of crashing on an older response shape.
+function normalizeSiftProgress(d) {
+  if (!d) return {};
+  const p = d.progress || {};
+  const total    = p.total    ?? d.totalRecords ?? d._count?.records ?? null;
+  const screened = p.screened ?? d.screened ?? null;
+  return {
+    total,
+    screened,
+    unscreened:       p.unscreened ?? d.unscreened ?? (total != null && screened != null ? Math.max(0, total - screened) : null),
+    included:         p.included   ?? d.included   ?? null,
+    excluded:         p.excluded   ?? d.excluded   ?? null,
+    maybe:            p.maybe      ?? d.maybe      ?? null,
+    conflicts:        p.conflicts  ?? d.conflicts  ?? d._count?.conflicts ?? null,
+    duplicates:       p.duplicates ?? d.duplicates ?? null,
+    secondReview:     p.secondReview     ?? d.secondReview     ?? d.secondReviewCount ?? null,
+    sentToExtraction: p.sentToExtraction ?? d.sentToExtraction ?? d.handoffSentCount  ?? null,
+  };
+}
+
+// Side panel: per-project screening progress + per-member table (prompt6 Task 11).
+// Opened by clicking a row in SiftProjects. workspaceId == the ScreenProject id.
+function SiftProjectDetailPanel({ projectId, onClose }) {
+  const [detail,  setDetail]  = useState(null);
+  const [members, setMembers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error,   setError]   = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true); setError(''); setDetail(null); setMembers([]);
+    Promise.all([
+      adminApi.screening.getProject(projectId),
+      // The members endpoint guarantees the per-member table (name + screenedCount)
+      // even when the detail response doesn't embed memberProgress.
+      adminApi.screening.getMembers(projectId).catch(() => null),
+    ])
+      .then(([d, mem]) => {
+        if (!alive) return;
+        setDetail(d);
+        const embedded = d?.memberProgress || d?.progress?.members;
+        setMembers(Array.isArray(embedded) && embedded.length ? embedded : (mem?.members || []));
+      })
+      .catch(e => { if (alive) setError(e.message); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [projectId]);
+
+  const prog = normalizeSiftProgress(detail);
+  const cells = [
+    { label: 'Total Records', value: prog.total,        color: C.txt2 },
+    { label: 'Screened',      value: prog.screened,     color: C.acc },
+    { label: 'Unscreened',    value: prog.unscreened,   color: C.muted },
+    { label: 'Included',      value: prog.included,     color: C.grn },
+    { label: 'Excluded',      value: prog.excluded,     color: C.red },
+    { label: 'Maybe',         value: prog.maybe,        color: C.ylw },
+    { label: 'Conflicts',     value: prog.conflicts,    color: '#dba96a' },
+    { label: 'Duplicates',    value: prog.duplicates,   color: C.muted },
+    { label: '2nd Review',    value: prog.secondReview, color: C.teal },
+    { label: 'To Extraction', value: prog.sentToExtraction, color: C.grn },
+  ];
+
+  const infoRows = detail ? [
+    { label: 'Owner', value: <span style={{ fontFamily: MONO, fontSize: 11 }}>{detail.owner?.email || '—'}</span> },
+    { label: 'Linked LAB', value: detail.linkedMetaLabProjectId
+        ? <span style={{ fontSize: 11 }}>{detail.linkedMetaLabProjectTitle || '(linked, untitled)'}</span>
+        : <span style={{ color: C.muted }}>not linked</span> },
+    // The ScreenProject IS the shared Review Workspace — its id is the workspaceId.
+    { label: 'Workspace', value: <span style={{ fontFamily: MONO, fontSize: 10, wordBreak: 'break-all' }} title={detail.id}>{detail.id}</span> },
+    { label: 'Created', value: fmtDate(detail.createdAt) },
+    { label: 'Updated', value: fmtAgo(detail.updatedAt) },
+  ] : [];
+
+  return (
+    <div style={{ width: 320, flexShrink: 0, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, overflow: 'hidden', alignSelf: 'flex-start', position: 'sticky', top: TOPBAR_H + 28, maxHeight: `calc(100vh - ${TOPBAR_H + 60}px)`, overflowY: 'auto' }}>
+      <div style={{ padding: '12px 16px', borderBottom: `1px solid ${C.brd}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: C.txt }}>Project Progress</span>
+        <button onClick={onClose} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 16, lineHeight: 1 }}>✕</button>
+      </div>
+
+      {loading ? (
+        <div style={{ padding: 28, textAlign: 'center' }}><Spinner /></div>
+      ) : error ? (
+        <div style={{ padding: 16 }}><ErrorBox msg={error} /></div>
+      ) : detail && (
+        <>
+          <div style={{ padding: '16px 16px 12px' }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 6 }}>{detail.title || '(untitled)'}</div>
+            <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 12 }}>
+              <Badge text={detail.disabled ? 'disabled' : 'active'} color={detail.disabled ? C.red : C.grn} />
+              {detail.archived && <Badge text="archived" color={C.muted} />}
+              {detail.progressStatus && detail.progressStatus !== 'not_started' &&
+                <Badge text={detail.progressStatus.replace('_', ' ')} color={detail.progressStatus === 'done' ? C.grn : C.teal} />}
+            </div>
+            {infoRows.map(r => (
+              <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '5px 0', borderBottom: `1px solid ${C.brd}` }}>
+                <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.06em', flexShrink: 0 }}>{r.label}</span>
+                <span style={{ fontSize: 11, color: C.txt2, textAlign: 'right', minWidth: 0 }}>{r.value}</span>
+              </div>
+            ))}
+          </div>
+
+          {/* Progress grid */}
+          <div style={{ padding: '10px 16px 14px', borderTop: `1px solid ${C.brd}` }}>
+            <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>Screening Progress</div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+              {cells.map(c => (
+                <div key={c.label} style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 7, padding: '8px 10px' }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, fontFamily: MONO, color: c.color }}>{c.value ?? '—'}</div>
+                  <div style={{ fontSize: 9, color: C.muted, marginTop: 3, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: MONO }}>{c.label}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Per-member progress */}
+          <div style={{ padding: '10px 16px 16px', borderTop: `1px solid ${C.brd}` }}>
+            <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+              Member Progress ({members.length})
+            </div>
+            {members.length === 0 ? (
+              <div style={{ fontSize: 12, color: C.muted }}>No members.</div>
+            ) : members.map((mm, i) => {
+              const screened = mm.screenedCount ?? mm.screened ?? 0;
+              const pct = prog.total ? Math.min(100, Math.round((screened / prog.total) * 100)) : null;
+              return (
+                <div key={mm.id || mm.email || i} style={{ padding: '7px 0', borderBottom: i < members.length - 1 ? `1px solid ${C.brd}` : 'none' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: C.txt, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mm.name || mm.email || '—'}</span>
+                    <Badge text={mm.role || 'reviewer'} color={mm.role === 'owner' ? C.acc : mm.role === 'leader' ? C.acc : mm.role === 'viewer' ? C.muted : C.teal} />
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 10, color: C.muted, fontFamily: MONO }}>{screened} screened{pct != null ? ` · ${pct}%` : ''}</span>
+                    {mm.status && mm.status !== 'active' && <Badge text={mm.status} color={mm.status === 'pending' ? C.ylw : C.muted} />}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function SiftProjects() {
   const [projects, setProjects] = useState([]);
   const [total,    setTotal]    = useState(0);
   const [page,     setPage]     = useState(1);
   const [loading,  setLoading]  = useState(true);
   const [error,    setError]    = useState('');
+  const [selectedId, setSelectedId] = useState(null); // progress detail panel (prompt6 Task 11)
   const PER_PAGE = 25;
 
   const load = useCallback(async (p = 1) => {
@@ -2009,14 +2194,15 @@ function SiftProjects() {
       </div>
     )},
     { key: 'updatedAt', label: 'Updated', width: '8%', render: v => <span style={{ fontSize: 11 }}>{fmtAgo(v)}</span> },
+    // stopPropagation: rows are clickable (progress panel) — action buttons must not toggle it.
     { key: '_actions', label: 'Actions', width: '15%', render: (_, row) => (
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
         {row.disabled
-          ? <button onClick={() => act(row.id, { disabled: false })} style={siftMiniBtn(C.grn)}>Enable</button>
-          : <button onClick={() => act(row.id, { disabled: true })}  style={siftMiniBtn(C.red)}>Disable</button>}
+          ? <button onClick={e => { e.stopPropagation(); act(row.id, { disabled: false }); }} style={siftMiniBtn(C.grn)}>Enable</button>
+          : <button onClick={e => { e.stopPropagation(); act(row.id, { disabled: true }); }}  style={siftMiniBtn(C.red)}>Disable</button>}
         {row.archived
-          ? <button onClick={() => act(row.id, { archived: false })} style={siftMiniBtn(C.grn)}>Unarchive</button>
-          : <button onClick={() => act(row.id, { archived: true })}  style={siftMiniBtn(C.muted)}>Archive</button>}
+          ? <button onClick={e => { e.stopPropagation(); act(row.id, { archived: false }); }} style={siftMiniBtn(C.grn)}>Unarchive</button>
+          : <button onClick={e => { e.stopPropagation(); act(row.id, { archived: true }); }}  style={siftMiniBtn(C.muted)}>Archive</button>}
       </div>
     )},
   ];
@@ -2028,12 +2214,27 @@ function SiftProjects() {
         <button onClick={() => load(page)} style={{ padding: '6px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>↻ Refresh</button>
       </div>
       {error && <ErrorBox msg={error} />}
-      <SectionCard>
-        <DataTable columns={cols} rows={projects} loading={loading} emptyMessage="No screening projects yet." />
-        <div style={{ padding: '0 14px' }}>
-          <Pagination page={page} total={total} perPage={PER_PAGE} onPage={load} />
+      <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <SectionCard>
+            <DataTable columns={cols} rows={projects} loading={loading} emptyMessage="No screening projects yet."
+              onRowClick={p => setSelectedId(prev => prev === p.id ? null : p.id)}
+              selectedId={selectedId} />
+            <div style={{ padding: '0 14px' }}>
+              <Pagination page={page} total={total} perPage={PER_PAGE} onPage={load} />
+            </div>
+          </SectionCard>
+          {!selectedId && (
+            <div style={{ fontSize: 11, color: C.muted, textAlign: 'center', marginTop: -10, marginBottom: 8 }}>
+              Click a row to view screening progress and member activity
+            </div>
+          )}
         </div>
-      </SectionCard>
+
+        {selectedId && (
+          <SiftProjectDetailPanel projectId={selectedId} onClose={() => setSelectedId(null)} />
+        )}
+      </div>
     </div>
   );
 }
@@ -2351,16 +2552,29 @@ const NAV_SECTIONS = [
   { id: 'health',   icon: '▣', label: 'Health'    },
 ];
 
+// Role-derived section sets — mirror of server getConsole (the server descriptor
+// stays the source of truth; these are the bootstrap/failure fallback ONLY).
+// Mod: user support (messages + replies) and limited user management. Mods never
+// get metrics/settings/flags/security/health/database or screening admin tabs.
+const MOD_SECTIONS = ['users', 'messages'];
+const roleSections = r => (r === 'admin' ? NAV_SECTIONS.map(s => s.id) : MOD_SECTIONS);
+
 export default function AdminConsole() {
   const { user }   = useAuth();
   const navigate   = useNavigate();
-  const [active,   setActive]      = useState('overview');
+  // Session role from AuthContext as a UX bootstrap — anything not verifiably
+  // admin starts from the MINIMAL mod set; the /console fetch replaces it.
+  const sessionRole = user?.role === 'admin' ? 'admin' : 'mod';
+  const [active,   setActive]      = useState(() => (sessionRole === 'admin' ? 'overview' : 'users'));
   const [unread,   setUnread]      = useState(0);
   const [role,     setRole]        = useState(null);     // DB-verified role from /console
-  const [allowed,  setAllowed]     = useState(null);     // Set of allowed section ids, or null while loading
+  // Allowed section ids. Initialized role-derived so the nav NEVER shows all
+  // sections to a mod — not while loading and not on fetch error (prompt6 Task 14).
+  const [allowed,  setAllowed]     = useState(() => new Set(roleSections(sessionRole)));
   const [version,  setVersion]     = useState(null);
 
-  const isAdmin = role === 'admin';
+  const uiRole  = role || sessionRole;
+  const isAdmin = uiRole === 'admin';
 
   // Fetch the console capability descriptor (role + allowed sections) — server truth.
   useEffect(() => {
@@ -2369,15 +2583,23 @@ export default function AdminConsole() {
         setRole(d.role);
         const set = new Set(d.sections || []);
         setAllowed(set);
-        setActive(prev => set.has(prev) ? prev : (d.sections?.[0] || 'overview'));
+        setActive(prev => set.has(prev) ? prev : (d.sections?.[0] || 'users'));
       })
-      .catch(() => { setRole(user?.role || 'admin'); setAllowed(null); });
+      .catch(() => {
+        // Console-bootstrap failed — fall back to the role-derived MINIMAL set.
+        // Never null/show-all: server-side guards 403 anyway, but a mod must not
+        // see admin-only nav even as dead links.
+        const fallback = roleSections(sessionRole);
+        setRole(sessionRole);
+        setAllowed(new Set(fallback));
+        setActive(prev => fallback.includes(prev) ? prev : fallback[0]);
+      });
   }, [user]);
 
   // Per-staff unread badge (prompt5 Task 9) — works for admin AND mod, and clears
   // as soon as a message is opened (mark-read) regardless of who else has read it.
   useEffect(() => {
-    if (allowed && !allowed.has('messages')) return;
+    if (!allowed.has('messages')) return;
     adminApi.messages.unreadCount().then(d => setUnread(d.unread || 0)).catch(() => {});
   }, [allowed]);
 
@@ -2401,12 +2623,14 @@ export default function AdminConsole() {
   const sectionLabel = id => (NAV_SECTIONS.find(s => s.id === id)?.label || id);
 
   // Render the active section, gated by the allowed set (UX layer; server enforces too).
+  // A mod navigating directly to an admin-only section gets the AccessDenied panel — never a crash.
   const renderActive = () => {
-    if (allowed && !allowed.has(active)) return <AccessDenied section={sectionLabel(active)} />;
+    if (!allowed.has(active)) return <AccessDenied section={sectionLabel(active)} />;
     return sections[active];
   };
 
-  const visibleNav = allowed ? NAV_SECTIONS.filter(s => allowed.has(s.id)) : NAV_SECTIONS;
+  // `allowed` is always a Set (role-derived until /console answers) — no show-all path.
+  const visibleNav = NAV_SECTIONS.filter(s => allowed.has(s.id));
 
   return (
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: FONT, color: C.txt }}>
@@ -2424,7 +2648,13 @@ export default function AdminConsole() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 16, color: C.acc }}>⬡</span>
           <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.04em', color: C.txt }}>META·LAB</span>
-          <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, background: `${C.acc}14`, border: `1px solid ${C.acc}28`, borderRadius: 4, padding: '2px 7px', letterSpacing: '0.08em', textTransform: 'uppercase', marginLeft: 2 }}>OPS</span>
+          {/* Mods see the limited console labeled as such (prompt6 Task 14) —
+              matches the "Mod Console" wording of the UserMenu /ops link. */}
+          {isAdmin ? (
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, background: `${C.acc}14`, border: `1px solid ${C.acc}28`, borderRadius: 4, padding: '2px 7px', letterSpacing: '0.08em', textTransform: 'uppercase', marginLeft: 2 }}>OPS</span>
+          ) : (
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.teal, background: `${C.teal}14`, border: `1px solid ${C.teal}28`, borderRadius: 4, padding: '2px 7px', letterSpacing: '0.08em', textTransform: 'uppercase', marginLeft: 2 }}>Mod Console</span>
+          )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           {/* Return to app button */}
@@ -2437,8 +2667,11 @@ export default function AdminConsole() {
             <span>⬡</span>
             <span>Open App</span>
           </button>
+          {/* Shared notifications bell (prompt6 Task 1) — inline in the top bar,
+              before the user/logout area. Same component as META·LAB / META·SIFT. */}
+          <NotificationsBell />
           <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>{user?.email}</span>
-          <RoleBadge role={role || user?.role || 'admin'} />
+          <RoleBadge role={uiRole} />
           {/* Shared account dropdown — same component as META·LAB / META·SIFT (Task 8) */}
           <UserMenu context="metalab" />
         </div>

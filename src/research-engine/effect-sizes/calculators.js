@@ -17,7 +17,7 @@
  *
  * Supported types and required params:
  *
- *   SMD  — Hedges' g (pooled SD)
+ *   SMD  — Cohen's d (pooled-SD standardiser; NO Hedges' g small-sample correction)
  *          { n1, n2, sd1, sd2, m1, m2 }
  *
  *   MD   — Raw mean difference
@@ -57,7 +57,10 @@ export function calcES(type, p) {
         };
       }
 
-      // SMD (Cohen's d / Hedges' g)
+      // SMD — Cohen's d with the pooled-SD standardiser and the large-sample
+      // variance of d. The Hedges' g small-sample correction
+      // J = 1 − 3/(4(n1+n2−2) − 1) is NOT applied (recommended next step —
+      // adding it would change every SMD result pinned by the unit tests).
       const poolSD = Math.sqrt(((n1 - 1) * sd1 ** 2 + (n2 - 1) * sd2 ** 2) / (n1 + n2 - 2));
       const d  = (m1 - m2) / poolSD;
       const se = Math.sqrt((n1 + n2) / (n1 * n2) + d ** 2 / (2 * (n1 + n2)));

@@ -26,6 +26,8 @@ import contactRouter     from './routes/contact.js';
 import settingsRouter    from './routes/settings.js';
 import adminRouter       from './routes/admin.js';
 import screeningRouter    from './routes/screening.js';
+import notificationsRouter from './routes/notifications.js';
+import eventsRouter       from './routes/events.js';
 
 import { initDefaultSettings } from './controllers/settingsController.js';
 import { seedAdmins } from './auth/seedAdmins.js';
@@ -77,6 +79,9 @@ app.use('/api/projects/:id/studies', studiesRouter);
 app.use('/api/projects/:id/records', recordsRouter);
 app.use('/api/meta',                 metaRouter);
 app.use('/api/validation',           validationRouter);
+// Bell polling endpoint — own mount, NEVER under the rate-limited /api/auth
+// or /api/admin routers (requireAuth applied inside the router).
+app.use('/api/notifications',        notificationsRouter);
 app.use('/api',                      importExportRouter);  // /api/import/... and /api/export/...
 
 // ── Admin routes (requireAuth + requireAdmin applied inside admin router) ──────
@@ -84,6 +89,10 @@ app.use('/api/admin', requireAuth, adminRouter);
 
 // ── META·SIFT Beta screening routes (requireAuth applied inside router) ────────
 app.use('/api/screening', screeningRouter);
+
+// ── Realtime SSE stream (prompt6 Task 7) — own mount, NEVER under the
+// rate-limited /api/auth or /api/admin routers (requireAuth inside the router).
+app.use('/api/events', eventsRouter);
 
 // ── 404 fallback ───────────────────────────────────────────────────────────────
 app.use((_req, res) => {

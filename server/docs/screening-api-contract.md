@@ -4,6 +4,8 @@ Base path: `/api/screening`
 Auth: All endpoints require a valid `metalab_session` httpOnly JWT cookie (`requireAuth` middleware).  
 Content-Type: `application/json` for all request bodies unless noted.
 
+**403-vs-404 policy (prompt6):** non-members and pending invites always get **404** (existence-hiding). Authenticated **active members** who lack the specific permission for an action get **403** with a descriptive error. Permission changes take effect immediately — access is resolved per request from the DB (no cache). Owner-only endpoints (`DELETE` project, create/delete record) still 404 for everyone else.
+
 ---
 
 ## Projects
@@ -43,18 +45,22 @@ Content-Type: `application/json` for all request bodies unless noted.
   "description": "string (optional)",
   "reviewQuestion": "string (optional)",
   "blindMode": false,
-  "linkedMetaLabProjectId": "uuid | null (optional)"
+  "linkedMetaLabProjectId": "uuid | null (optional)",
+  "alsoCreateMetaLab": false
 }
 ```
 
-**Response 201** — Full `ScreenProject` object. Default exclusion reasons are seeded automatically.
+- `linkedMetaLabProjectId` is **validated** (prompt6): it must be a live META·LAB project owned by the caller, else **400** `{ "error": "That META·LAB project was not found in your account" }` (previously stored unvalidated). The META·LAB project's PICO is snapshotted into `picoSnapshot` at create time.
+- `alsoCreateMetaLab: true` (prompt6 Task 2, SIFT-side optional flow) creates **and links** a new META·LAB project with the same owner/title. Ignored when `linkedMetaLabProjectId` is provided (explicit link wins). META·LAB creation is never forced — default is SIFT-only.
+
+**Response 201** — Full `ScreenProject` object plus `linkedMetaLabProjectTitle` (string | null), plus optional `warning` when `alsoCreateMetaLab`'s META·LAB create failed (the SIFT project is still created, unlinked). Default exclusion reasons are seeded automatically.
 
 ---
 
 ### Get project
 `GET /api/screening/:pid`
 
-**Response 200** — Full `ScreenProject` with `_count` of records and open conflicts.  
+**Response 200** — Full `ScreenProject` with `_count` of records and open conflicts, plus `linkedMetaLabProjectTitle` (string | null — best-effort, null if the META·LAB project was deleted). `picoSnapshot` is lazily refreshed from the linked META·LAB project's current PICO (compare-before-write, fire-and-forget — the response always carries the fresh value).  
 **Response 404** `{ "error": "Project not found" }`
 
 ---
@@ -69,11 +75,17 @@ Content-Type: `application/json` for all request bodies unless noted.
   "description": "string",
   "reviewQuestion": "string",
   "stage": "string",
-  "blindMode": true
+  "blindMode": true,
+  "progressStatus": "not_started | in_progress | done"
 }
 ```
 
 **Response 200** — Updated `ScreenProject` object.
+
+Prompt6 behavior:
+- **Status events**: a *real* `progressStatus` transition (old ≠ new) writes a `ScreenProjectStatusEvent` row (`projectId`, `status`, `previousStatus`, `changedById`, `changedByName`) + audit entry, feeding the ops done-today/week/month distinct metrics. Same-value writes create no event.
+- **Rename sync (sync-if-in-sync)**: when `title` changes and the linked META·LAB project's name equals the *old* SIFT title (and the link invariant holds — same owner, live project), the META·LAB name is updated too. Diverged titles never sync. Best-effort; the mirror behavior exists on `PUT /api/projects/:id` (see `api-contract.md`).
+- Requires settings permission (`canManageSettings` — implicit for owner/leader); members without it get **403**.
 
 ---
 
@@ -169,27 +181,53 @@ Content-Type: `application/json` for all request bodies unless noted.
 ### Import records from file content
 `POST /api/screening/:pid/import`
 
+**Permission (prompt6 Task 17):** outsider/pending invite → **404**; active member without (`canImportRecords` OR leader OR owner) → **403** `{ "error": "You do not have permission to import records in this project" }`. A viewer upgraded to leader can import immediately (no permission cache).
+
 **Request body**
 ```json
 {
   "format": "ris | pubmed | csv | ...",
   "content": "string (full file content)",
-  "filename": "string (optional, for tracking)"
+  "filename": "string (optional, for tracking)",
+  "force": false
 }
 ```
+
+**Duplicate-file fingerprint (prompt6 Task 19):** the server computes SHA-256 over the CRLF→LF-normalized `content` (client hashes are never trusted). If a batch with the same hash already exists **in this project** and `force` is not strictly `true`:
+
+**Response 409**
+```json
+{
+  "error": "duplicate_import",
+  "batch": {
+    "filename": "pubmed_export.ris",
+    "importedAt": "ISO8601",
+    "importedByName": "Alice",
+    "recordCount": 150
+  }
+}
+```
+
+`force: true` (JSON boolean) overrides the file-level block — but **record-level dedupe always applies** (exact DOI, exact PMID, normalized title — against existing project records AND intra-batch), so a forced re-import of an identical file yields `imported: 0` with everything in `skippedDuplicates`. Same file in a *different* project never 409s (per-project scope). Legacy batches with `fileHash` null never match the pre-check.
 
 **Response 200**
 ```json
 {
-  "imported": 150,
+  "imported": 148,
+  "skippedDuplicates": 2,
   "total": 150,
   "batchId": "uuid"
 }
 ```
 
+> **`total` semantics changed in prompt6**: `total` = parsed record count (`imported + skippedDuplicates`), no longer equal to `imported`. Each batch row stores `fileHash`, `fileSize`, `importedById`, `importedByName`, `parser` for provenance.
+
 **Errors**  
 - `400` — `content` is empty or no parseable records found  
-- `400` — exceeds 5000-record batch limit
+- `400` — exceeds the records-per-project limit (checked against the post-dedupe kept count)  
+- `403` — member without import permission  
+- `404` — outsider / project not found  
+- `409` — duplicate file fingerprint (see above)
 
 ---
 
@@ -197,6 +235,8 @@ Content-Type: `application/json` for all request bodies unless noted.
 
 ### Export records
 `GET /api/screening/:pid/export`
+
+**Permission (prompt6):** member needs `canExportRecords` OR leader OR owner, else **403**; outsider → 404.
 
 **Query params**
 | Param | Type | Default | Description |
@@ -232,6 +272,8 @@ Conflict detection runs asynchronously after each save.
 
 ### List my decisions for project
 `GET /api/screening/:pid/decisions`
+
+**Permission (prompt6):** any **active** member (returns only the caller's own decisions) — 200; inactive member → 403; outsider → 404.
 
 **Response 200**
 ```json
@@ -326,6 +368,8 @@ Conflict detection runs asynchronously after each save.
 ### Detect duplicates
 `POST /api/screening/:pid/duplicates/detect`
 
+**Permission (prompt6):** member needs `canManageDuplicates` OR leader OR owner, else **403**; outsider → 404. (Same rule for `POST /duplicates/:gid/resolve`.)
+
 Runs duplicate detection (exact DOI, exact PMID, normalized title similarity ≥ 0.92). Creates `ScreenDuplicateGroup` records in the DB.
 
 **Response 200**
@@ -360,6 +404,8 @@ Runs duplicate detection (exact DOI, exact PMID, normalized title similarity ≥
 ---
 
 ## Labels
+
+**Permission (prompt6):** creating/deleting labels and exclusion reasons requires leader OR owner; other members get **403**; outsiders → 404. Listing is member-readable.
 
 ### List labels
 `GET /api/screening/:pid/labels`
@@ -445,6 +491,41 @@ Stats are scoped to the authenticated reviewer's own decisions. `progress` is a 
 
 ---
 
+## Members — prompt6 additions
+
+Member CRUD lives at `GET|POST /api/screening/projects/:pid/members` and `PATCH|DELETE /api/screening/projects/:pid/members/:mid` (owner/leader-gated mutations, owner-row protections — see prompt4/prompt5 reports). New in prompt6:
+
+### Add member — module participation
+`POST /api/screening/projects/:pid/members`
+
+**Request body** now additionally accepts `modules`:
+```json
+{
+  "email": "user@example.com",
+  "preset": "reviewer | data_extractor | viewer | ...",
+  "modules": "metalab | metasift | both"
+}
+```
+
+- `modules` (optional) maps onto the resolved preset's flags: `canViewMetaLab` / `canViewMetaSift`. `modules: "metasift"` also clears `canEditMetaLab` (a leftover edit flag would silently re-grant META·LAB visibility). Absent = no change to the preset's flags.
+- Invalid value → **400** `{ "error": "invalid modules (use 'metalab', 'metasift' or 'both')" }`.
+- Response shape unchanged: `201 { member, pending }`.
+
+### Notifications emitted
+- Adding a **registered** user creates a `PROJECT_INVITE` notification (see `api-contract.md` → Notifications).
+- Adding an **unregistered** email creates a pending member row (`userId` null); at registration the **claim-on-register hook** sets `userId`, flips `status pending→active`, and creates the deferred `PROJECT_INVITE` notification.
+- `PATCH .../members/:mid` creates a `ROLE_CHANGED` notification on a real role/preset change to someone other than the actor.
+
+---
+
+## META·LAB link summary — membership-aware (prompt6 Task 3/8)
+
+### `GET /api/screening/metalab/:mlpid/summary`
+
+Returns the link status of a META·LAB project. Since prompt6 this is **membership-aware**: it returns `linked: true` (with `screeningProjectId` + `title`) for the workspace **owner OR any active member** of the linked ScreenProject — previously owner-only, which made added members see "not linked". When multiple workspaces link the same META·LAB id, the caller's own workspace is preferred. The link belongs to the workspace, not the user — added members never need to re-link.
+
+---
+
 ## Error responses
 
 All endpoints return consistent error objects:
@@ -454,9 +535,11 @@ All endpoints return consistent error objects:
 
 | Status | Meaning |
 |--------|---------|
-| 400 | Validation error (missing/invalid field) |
+| 400 | Validation error (missing/invalid field, dead/foreign link target, invalid `modules`) |
 | 401 | Not authenticated |
-| 404 | Resource not found (or does not belong to user) |
+| 403 | Active member lacking the specific permission (import/export/duplicates/labels/settings); inactive member |
+| 404 | Resource not found — also returned to non-members and pending invites (existence-hiding) |
+| 409 | Duplicate import-file fingerprint (`duplicate_import`) |
 | 500 | Internal server error |
 
 ---
@@ -504,12 +587,19 @@ validated/clamped (`minIncludeQuorum` int ≥ 1, `maxPdfSizeMb` int 1–200,
   "totalMembers": 0, "activeMembers": 0, "totalPdfs": 0,
   "eligibleSecondReview": 0, "acceptedToExtraction": 0, "handoffSent": 0,
   "sentToExtraction": 0, "rejectedSecond": 0, "totalChatMessages": 0,
-  "projectsThisWeek": 0, "projectsThisMonth": 0
+  "projectsThisWeek": 0, "projectsThisMonth": 0,
+  "doneToday": 0, "doneThisWeek": 0, "doneThisMonth": 0
 }
 ```
 `screened` = records with ≥1 non-undecided decision. `sentToExtraction` = records
 where `handoffStatus='sent'` OR `finalStatus='accepted'`. `totalDisputes` =
 unresolved conflicts (alias of `totalConflicts`).
+
+`doneToday` / `doneThisWeek` / `doneThisMonth` (prompt6 Task 12) =
+`COUNT(DISTINCT projectId)` in `ScreenProjectStatusEvent` where `status='done'`
+and `createdAt >=` start of the calendar day/week (Sunday)/month. Distinct-by-project
+means done → in_progress → done on the same day counts **once**; setting
+`progressStatus` to its current value writes no event.
 
 ## Projects
 
@@ -524,6 +614,9 @@ unresolved conflicts (alias of `totalConflicts`).
     "owner": { "id": "uuid", "name": "string", "email": "string" },
     "linkedMetaLabProjectId": "uuid | null",
     "linkedMetaLabProjectTitle": "string | null",
+    "workspaceId": "uuid (= ScreenProject id)",
+    "status": "not_started | in_progress | done (alias of progressStatus)",
+    "linkedMetaLab": { "id": "uuid", "title": "string" },
     "recordCount": 0, "decisionCount": 0, "memberCount": 0,
     "secondReviewCount": 0, "acceptedCount": 0, "handoffSentCount": 0, "pdfCount": 0,
     "createdAt": "ISO8601", "updatedAt": "ISO8601"
@@ -531,18 +624,44 @@ unresolved conflicts (alias of `totalConflicts`).
   "total": 0, "page": 1, "pages": 1
 }
 ```
+`workspaceId` / `status` / `linkedMetaLab` (`{id,title} | null`) are prompt6 Task 11
+additions; `linkedMetaLabProjectId/Title` are kept for back-compat.
 
 ### Get project
 `GET /api/admin/screening/projects/:id` → `200` the full `ScreenProject` plus
 `linkedMetaLabProjectTitle`, `decisionCount`, `secondReviewCount`, `acceptedCount`,
 `handoffSentCount`, `pdfCount`. `404` if not found.
 
+Prompt6 Task 11 additions — `workspaceId`, `status`, `linkedMetaLab: {id,title} | null`, and:
+```json
+{
+  "progress": {
+    "total": 0, "screened": 0, "unscreened": 0,
+    "included": 0, "excluded": 0, "maybe": 0,
+    "conflicts": 0, "duplicates": 0, "secondReview": 0, "sentToExtraction": 0
+  },
+  "memberProgress": [
+    { "name": "string", "email": "string", "screened": 0, "included": 0, "excluded": 0, "maybe": 0 }
+  ]
+}
+```
+Semantics mirror the member-facing Overview: `screened` = distinct records with a
+non-undecided title/abstract decision; `conflicts` = unresolved; `duplicates` =
+records with `isDuplicate=true`; `secondReview` = `currentStage='full_text'`;
+`sentToExtraction` = `handoffStatus='sent'` OR `finalStatus='accepted'`.
+
 ### Update project status
 `PATCH /api/admin/screening/projects/:id/status`
-Backward-compatible. Either:
+Backward-compatible. Any of:
 - `{ "stage": "active" | "archived" | "disabled" }` (legacy), or
-- independent flags `{ "disabled"?: bool, "archived"?: bool }`.
-Returns the updated project. `400` if neither form is provided, `404` if not found.
+- independent flags `{ "disabled"?: bool, "archived"?: bool }`, or
+- `{ "progressStatus": "not_started" | "in_progress" | "done" }` (prompt6; may ride along with stage/flags).
+
+Returns the updated project. A **real** `progressStatus` transition writes a
+`ScreenProjectStatusEvent` (best-effort) feeding the done-today metrics.
+Errors: `400` `{ "error": "invalid progressStatus" }` for a bad value;
+`400` `{ "error": "Provide stage, disabled/archived, or progressStatus" }` when no
+recognized field is provided (message changed in prompt6); `404` if not found.
 
 ### Get project members
 `GET /api/admin/screening/projects/:id/members` → `200`

@@ -47,10 +47,18 @@ import {
 
 const router = Router();
 
-// Admin-specific rate limiter: 60 req / 15 min per IP
+// Admin-specific rate limiter (prompt6 Task 14): the two cheap, high-frequency
+// console polling GETs (capability descriptor + per-staff unread badge) are
+// exempt so a mod polling its own badge can never 429 itself out of the
+// console. Everything else shares one budget — 300/15min in production
+// (HealthSection polls every 30s = 30 req/window on its own), with extra
+// headroom outside production for the integration suites.
+const POLL_EXEMPT_GETS = new Set(['/console', '/contact-messages/unread-count']);
 const adminLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 60,
+  max: process.env.NODE_ENV === 'production' ? 300 : 1000,
+  // req.path here is relative to the /api/admin mount (router-level middleware).
+  skip: req => req.method === 'GET' && POLL_EXEMPT_GETS.has(req.path),
   message: { error: 'Too many requests, please try again later' },
   standardHeaders: true,
   legacyHeaders: false,

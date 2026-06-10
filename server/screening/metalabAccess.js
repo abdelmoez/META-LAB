@@ -16,19 +16,22 @@ import { prisma } from '../db/client.js';
 /**
  * Map a ScreenProjectMember row → META·LAB module access flags.
  * Owner/leader get full access; otherwise the stored module flags decide.
+ * `canExport` (prompt6 Task 5) is the META·LAB export flag from PERMISSION_KEYS
+ * (`canExport`) — owner/leader always may; read-only presets ship it false.
  */
 export function mlAccessFromMember(m) {
   const full = m.role === 'owner' || m.role === 'leader';
   const canView = full || !!m.canViewMetaLab || !!m.canEditMetaLab;
   const canEdit = (full || !!m.canEditMetaLab) && !m.readOnlyMetaLab;
   const readOnly = canView && !canEdit;
-  return { canView, canEdit, readOnly };
+  const canExport = full || !!m.canExport;
+  return { canView, canEdit, readOnly, canExport };
 }
 
 /**
  * Resolve a user's membership-based access to a META·LAB Project (by its id).
  * Returns null when the user has no membership-based view access.
- * Shape: { role, canView, canEdit, readOnly, screenProjectId, screenProjectTitle, ownerId }
+ * Shape: { role, canView, canEdit, readOnly, canExport, screenProjectId, screenProjectTitle, ownerId }
  */
 export async function getMetaLabMemberAccess(metaLabProjectId, userId) {
   if (!metaLabProjectId || !userId) return null;
@@ -65,7 +68,7 @@ export async function getMetaLabMemberAccess(metaLabProjectId, userId) {
 /**
  * List META·LAB projects the user can access AS A MEMBER (not owner) via linked
  * Review Workspaces. De-duplicated by META·LAB project id (most-permissive wins).
- * Returns [{ metaLabProjectId, role, canView, canEdit, readOnly, screenProjectId, screenProjectTitle, ownerId }].
+ * Returns [{ metaLabProjectId, role, canView, canEdit, readOnly, canExport, screenProjectId, screenProjectTitle, ownerId }].
  */
 export async function listSharedMetaLabAccess(userId) {
   if (!userId) return [];
@@ -73,7 +76,7 @@ export async function listSharedMetaLabAccess(userId) {
     where: { userId, status: 'active' },
     select: {
       projectId: true, role: true,
-      canViewMetaLab: true, canEditMetaLab: true, readOnlyMetaLab: true,
+      canViewMetaLab: true, canEditMetaLab: true, readOnlyMetaLab: true, canExport: true,
     },
   });
   if (!memberships.length) return [];

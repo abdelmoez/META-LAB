@@ -8,6 +8,7 @@
  */
 import { prisma } from '../db/client.js';
 import { META_SIFT_DEFAULTS, SETTINGS_KEY } from '../screening/settings.js';
+import { emitToProjectMembers } from '../realtime/bus.js';
 
 /* ─── settings helpers ─────────────────────────────────────────────────── */
 
@@ -85,11 +86,35 @@ export async function updateScreeningSettings(req, res) {
   }
 }
 
+/* ─── time helpers ─────────────────────────────────────────────────────── */
+
+// Calendar buckets matching adminController.startOf (day = local midnight,
+// week = Sunday midnight, month = 1st) so ops "today / this week" metrics read
+// consistently across the Overview and SIFT tabs.
+function startOf(unit) {
+  const now = new Date();
+  if (unit === 'day') return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (unit === 'week') {
+    const d = new Date(now);
+    d.setDate(d.getDate() - d.getDay()); // Sunday
+    d.setHours(0, 0, 0, 0);
+    return d;
+  }
+  if (unit === 'month') return new Date(now.getFullYear(), now.getMonth(), 1);
+  return now;
+}
+
 /* ─── metrics ──────────────────────────────────────────────────────────── */
 
 // GET /api/admin/screening/metrics
 export async function getScreeningMetrics(req, res) {
   try {
+    // Done-project events (prompt6 Task 12): one groupBy row per DISTINCT
+    // projectId whose progressStatus changed to 'done' in the window, so
+    // toggling done → in_progress → done in one day still counts once.
+    const doneSince = since =>
+      prisma.screenProjectStatusEvent.groupBy({ by: ['projectId'], where: { status: 'done', createdAt: { gte: since } } });
+
     const [
       totalProjects,
       activeProjects,
@@ -116,6 +141,9 @@ export async function getScreeningMetrics(req, res) {
       totalChatMessages,
       projectsThisWeek,
       projectsThisMonth,
+      doneTodayGroups,
+      doneWeekGroups,
+      doneMonthGroups,
     ] = await Promise.all([
       prisma.screenProject.count(),
       prisma.screenProject.count({ where: { archived: false, disabled: false } }),
@@ -146,6 +174,9 @@ export async function getScreeningMetrics(req, res) {
       prisma.screenProject.count({
         where: { createdAt: { gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } },
       }),
+      doneSince(startOf('day')),
+      doneSince(startOf('week')),
+      doneSince(startOf('month')),
     ]);
 
     // "screened" = records that have at least one non-undecided decision.
@@ -173,6 +204,10 @@ export async function getScreeningMetrics(req, res) {
       disabledProjects,
       doneProjects,
       inProgressProjects,
+      // distinct projects marked done in the calendar window (prompt6 Task 12)
+      doneToday: doneTodayGroups.length,
+      doneThisWeek: doneWeekGroups.length,
+      doneThisMonth: doneMonthGroups.length,
       // records + decisions
       totalRecords,
       totalDecisions,
@@ -258,13 +293,19 @@ export async function listScreeningProjects(req, res) {
       ]);
       return {
         id:             p.id,
+        // The Review Workspace IS the ScreenProject row (prompt6 Task 11).
+        workspaceId:    p.id,
         title:          p.title,
         stage:          p.stage,
         archived:       p.archived,
         disabled:       p.disabled,
         progressStatus: p.progressStatus,
+        status:         p.progressStatus,
         blindMode:      p.blindMode,
         owner:          p.owner,
+        linkedMetaLab:  p.linkedMetaLabProjectId
+          ? { id: p.linkedMetaLabProjectId, title: linkedTitles[p.linkedMetaLabProjectId] || null }
+          : null,
         linkedMetaLabProjectId:    p.linkedMetaLabProjectId || null,
         linkedMetaLabProjectTitle: p.linkedMetaLabProjectId ? (linkedTitles[p.linkedMetaLabProjectId] || null) : null,
         recordCount:    p._count.records,
@@ -320,14 +361,78 @@ export async function getScreeningProject(req, res) {
       prisma.screenPdfAttachment.count({ where: { projectId: project.id } }),
     ]);
 
+    // ── Expanded progress (prompt6 Task 11) ─────────────────────────────────
+    // Mirrors the member-facing Overview math (screeningOverviewController.
+    // getOverview: title/abstract-stage decisions, distinct records screened,
+    // confirmed-duplicate records, unresolved conflicts) so ops shows the same
+    // numbers users see in-app; sentToExtraction follows getScreeningMetrics
+    // (handoff sent OR accepted).
+    const [members, decisions, duplicateRecords, unresolvedConflicts, sentToExtraction] = await Promise.all([
+      prisma.screenProjectMember.findMany({
+        where: { projectId: project.id },
+        orderBy: [{ role: 'asc' }, { joinedAt: 'asc' }],
+      }),
+      prisma.screenDecision.findMany({
+        where: { projectId: project.id },
+        select: { recordId: true, reviewerId: true, stage: true, decision: true },
+      }),
+      prisma.screenRecord.count({ where: { projectId: project.id, isDuplicate: true } }),
+      prisma.screenConflict.count({ where: { projectId: project.id, resolvedAt: null } }),
+      prisma.screenRecord.count({
+        where: { projectId: project.id, OR: [{ handoffStatus: 'sent' }, { finalStatus: 'accepted' }] },
+      }),
+    ]);
+
+    const titleAbstract = decisions.filter(d => d.stage === 'title_abstract' && d.decision !== 'undecided');
+    const screenedRecords = new Set(titleAbstract.map(d => d.recordId)).size;
+    const decisionTotals = { include: 0, exclude: 0, maybe: 0 };
+    titleAbstract.forEach(d => { if (decisionTotals[d.decision] !== undefined) decisionTotals[d.decision]++; });
+
+    const total = project._count.records;
+    const progress = {
+      total,
+      screened: screenedRecords,
+      unscreened: Math.max(0, total - screenedRecords),
+      included: decisionTotals.include,
+      excluded: decisionTotals.exclude,
+      maybe: decisionTotals.maybe,
+      conflicts: unresolvedConflicts,
+      duplicates: duplicateRecords,
+      secondReview: secondReviewCount,
+      sentToExtraction,
+    };
+
+    // Per-member progress rows — same per-member math as getOverview.
+    const memberProgress = members.map(m => {
+      const mine = m.userId ? titleAbstract.filter(d => d.reviewerId === m.userId) : [];
+      const c = { include: 0, exclude: 0, maybe: 0 };
+      mine.forEach(d => { if (c[d.decision] !== undefined) c[d.decision]++; });
+      return {
+        name: m.name,
+        email: m.email,
+        screened: c.include + c.exclude + c.maybe,
+        included: c.include,
+        excluded: c.exclude,
+        maybe: c.maybe,
+      };
+    });
+
     res.json({
       ...project,
+      // The Review Workspace IS the ScreenProject row (prompt6 Task 11).
+      workspaceId: project.id,
+      status: project.progressStatus,
+      linkedMetaLab: project.linkedMetaLabProjectId
+        ? { id: project.linkedMetaLabProjectId, title: linkedMetaLabProjectTitle }
+        : null,
       linkedMetaLabProjectTitle,
       decisionCount,
       secondReviewCount,
       acceptedCount,
       handoffSentCount,
       pdfCount,
+      progress,
+      memberProgress,
     });
   } catch (err) {
     console.error('[admin/screening] getProject:', err.message);
@@ -337,7 +442,8 @@ export async function getScreeningProject(req, res) {
 
 // PATCH /api/admin/screening/projects/:id/status
 // Backward-compatible: accepts { stage: 'active'|'archived'|'disabled' } OR
-// independent { disabled?, archived? } booleans.
+// independent { disabled?, archived? } booleans. Also accepts { progressStatus }
+// (prompt6 Task 12) so admin status changes don't escape the done-today metric.
 export async function updateScreeningProjectStatus(req, res) {
   try {
     const body = req.body || {};
@@ -358,11 +464,37 @@ export async function updateScreeningProjectStatus(req, res) {
     } else if (hasFlag) {
       if ('disabled' in body) data.disabled = !!body.disabled;
       if ('archived' in body) data.archived = !!body.archived;
-    } else {
-      return res.status(400).json({ error: 'Provide stage or disabled/archived' });
+    } else if (!('progressStatus' in body)) {
+      return res.status(400).json({ error: 'Provide stage, disabled/archived, or progressStatus' });
+    }
+
+    // progressStatus may ride along with (or replace) stage/flags. Same allowed
+    // values as the member-facing updateProject (screeningController).
+    if ('progressStatus' in body) {
+      if (!['not_started', 'in_progress', 'done'].includes(body.progressStatus)) {
+        return res.status(400).json({ error: 'invalid progressStatus' });
+      }
+      data.progressStatus = body.progressStatus;
     }
 
     const updated = await prisma.screenProject.update({ where: { id: req.params.id }, data });
+
+    // Status-event history (prompt6 Task 12): written ONLY on a real transition,
+    // best-effort — must never fail or slow the admin request.
+    if (data.progressStatus !== undefined && data.progressStatus !== project.progressStatus) {
+      prisma.screenProjectStatusEvent.create({
+        data: {
+          projectId: project.id,
+          status: data.progressStatus,
+          previousStatus: project.progressStatus || '',
+          changedById: req.user?.id || '',
+          changedByName: req.user?.email || '',
+        },
+      }).catch(() => {});
+      // Realtime poke (Task 7) — members with the project open refresh the badge.
+      emitToProjectMembers(project.id, { type: 'status.changed' }, { exclude: req.user?.id });
+    }
+
     res.json(updated);
   } catch (err) {
     console.error('[admin/screening] updateStatus:', err.message);

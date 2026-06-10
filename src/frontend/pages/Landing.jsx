@@ -37,7 +37,7 @@ const STEPS = [
   { n: '01', label: 'PICO Framework',    desc: 'Define Population, Intervention, Comparator, and Outcome fields.' },
   { n: '02', label: 'PROSPERO Protocol', desc: 'Draft and export a structured registration protocol aligned with PROSPERO.' },
   { n: '03', label: 'Search Strategy',   desc: 'Build reproducible search strings with syntax-native query construction.' },
-  { n: '04', label: 'MeSH Terms',        desc: 'AI-assisted MeSH term expansion across PubMed, Embase, and Cochrane.' },
+  { n: '04', label: 'MeSH Terms',        desc: 'Comprehensive MeSH term expansion across PubMed, Embase, and Cochrane.' },
   { n: '05', label: 'PRISMA Flow',       desc: 'Track screening at each stage and generate the PRISMA 2020 flow diagram.' },
   { n: '06', label: 'Screening',         desc: 'Dual-reviewer citation triage with conflict resolution and audit trail.' },
   { n: '07', label: 'Data Extraction',   desc: 'Structured tables for study characteristics, outcomes, and effect sizes.' },

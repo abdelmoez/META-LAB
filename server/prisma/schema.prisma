@@ -116,6 +116,60 @@ model SecurityEvent {
 
 // ─── META·SIFT Beta ──────────────────────────────────────────────────
 
+// Per-user notification (prompt6 Task 1). The "Review Workspace" is the
+// ScreenProject row — relatedScreenProjectId doubles as the workspaceId.
+// No FK to User on purpose (matches SecurityEvent precedent; survives user deletion).
+model Notification {
+  id                      String    @id @default(uuid())
+  userId                  String
+  type                    String    // PROJECT_INVITE | ROLE_CHANGED | ...
+  title                   String
+  message                 String    @default("")
+  app                     String    @default("") // metalab | metasift | workspace
+  relatedScreenProjectId  String?   // = workspaceId (ScreenProject id)
+  relatedMetaLabProjectId String?
+  actorId                 String?
+  actorName               String    @default("")
+  actorEmail              String    @default("")
+  role                    String    @default("") // role/preset granted, for invite notifications
+  readAt                  DateTime?
+  dismissedAt             DateTime?
+  createdAt               DateTime  @default(now())
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+}
+
+// Successful/failed login events for ops unique-login metrics (prompt6 Task 9).
+// Kept separate from SecurityEvent so high-volume successes don't pollute forensics.
+model LoginEvent {
+  id        String   @id @default(uuid())
+  userId    String
+  email     String   @default("")
+  ip        String   @default("")
+  userAgent String   @default("")
+  success   Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([userId, createdAt])
+}
+
+// Project progressStatus change history (prompt6 Task 12).
+// "Done today" = COUNT(DISTINCT projectId) WHERE status='done' AND createdAt >= startOfDay.
+model ScreenProjectStatusEvent {
+  id             String   @id @default(uuid())
+  projectId      String
+  status         String
+  previousStatus String   @default("")
+  changedById    String   @default("")
+  changedByName  String   @default("")
+  createdAt      DateTime @default(now())
+
+  @@index([status, createdAt])
+  @@index([projectId, createdAt])
+}
+
 model ScreenProject {
   id                     String                 @id @default(uuid())
   ownerId                String
@@ -147,6 +201,8 @@ model ScreenProject {
   members                ScreenProjectMember[]
   chatMessages           ScreenChatMessage[]
   auditLogs              ScreenAuditLog[]
+
+  @@index([linkedMetaLabProjectId])
 }
 
 model ScreenRecord {
@@ -259,9 +315,17 @@ model ScreenImportBatch {
   filename    String        @default("")
   format      String        @default("")
   recordCount Int           @default(0)
+  // ── import fingerprinting (prompt6 Task 19; nullable so legacy rows migrate clean) ──
+  fileHash       String?    // sha256 of line-ending-normalized content
+  fileSize       Int?
+  importedById   String?
+  importedByName String     @default("")
+  parser         String     @default("")
   createdAt   DateTime      @default(now())
 
   records     ScreenRecord[]
+
+  @@index([projectId, fileHash])
 }
 
 // ─── META·SIFT Beta — collaboration upgrade ──────────────────────────

@@ -11,6 +11,7 @@ import { prisma } from '../db/client.js';
 import { getProjectAccess, writeAudit } from '../screening/access.js';
 import { getMetaSiftSettings } from '../screening/settings.js';
 import { mkStudy } from '../../src/research-engine/project-model/defaults.js';
+import { emitToProjectMembers, emitToMetaLabProject } from '../realtime/bus.js';
 
 const normTitle = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 
@@ -93,6 +94,9 @@ export async function handoffToMetaLab(screenProject, record, actor) {
     where: { id: ml.id },
     data: { data: JSON.stringify(data), lastSavedAt: new Date() },
   });
+  // Realtime poke (Task 7) — the META·LAB blob changed (study appended); open
+  // monoliths refresh-when-clean / banner-when-dirty.
+  emitToMetaLabProject(ml.id, screenProject.ownerId, { type: 'project.updated' }, { exclude: actor?.id });
   return { handed: true, studyId: study.id, metaLabProjectId: ml.id };
 }
 
@@ -166,6 +170,7 @@ export async function finalizeRecord(req, res) {
       await writeAudit(access.project.id, req.user, 'RECORD_REJECTED', {
         entityType: 'record', entityId: rec.id, details: { reason },
       });
+      emitToProjectMembers(access.project.id, { type: 'handoff.updated' }, { exclude: req.user.id });
       return res.json({ record: updated, handoff: { handed: false, reason: 'rejected' } });
     }
 
@@ -185,6 +190,7 @@ export async function finalizeRecord(req, res) {
       entityType: 'record', entityId: rec.id,
       details: { ...handoff, handoffStatus: mapped.handoffStatus },
     });
+    emitToProjectMembers(access.project.id, { type: 'handoff.updated' }, { exclude: req.user.id });
     res.json({ record: updated, handoff: { ...handoff, ...mapped } });
   } catch (err) {
     console.error('[screening] finalizeRecord:', err.message);
@@ -223,6 +229,7 @@ export async function retryHandoff(req, res) {
     await writeAudit(access.project.id, req.user, 'HANDOFF_RETRY', {
       entityType: 'record', entityId: rec.id, details: { handoffStatus: mapped.handoffStatus },
     });
+    emitToProjectMembers(access.project.id, { type: 'handoff.updated' }, { exclude: req.user.id });
     res.json({ record: updated, handoff: { ...handoff, ...mapped } });
   } catch (err) {
     console.error('[screening] retryHandoff:', err.message);

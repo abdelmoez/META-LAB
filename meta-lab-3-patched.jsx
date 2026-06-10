@@ -1,4 +1,9 @@
 import { useState, useEffect, useMemo, useCallback, useRef, memo } from "react";
+import { METHODS_CONTENT, NOT_IMPLEMENTED } from "./src/research-engine/docs/methods-content.js";
+import { screeningApi } from "./src/frontend/screening/api-client/screeningApi.js";
+import { PERMISSION_PRESETS, ASSIGNABLE_PRESETS } from "./src/research-engine/screening/permissionPresets.js";
+import { useRealtime } from "./src/frontend/hooks/useRealtime.js";
+import { flushStorage, hasPendingSave } from "./src/frontend/storage/serverStorage.js";
 
 /* ════════════ UTILS ════════════ */
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -1079,8 +1084,10 @@ function HelpTip({text}){
     }}>{text}</span>}
   </span>);
 }
-/* Small AI button used for refine actions */
+/* Small AI button used for refine actions.
+   Renders nothing while AI features are hidden (prompt6 Task 16). */
 function AIButton({onClick,loading,label,disabled}){
+  if(!AI_FEATURES_ENABLED) return null; // AI features hidden pending future implementation
   return(<button onClick={onClick} disabled={loading||disabled}
     style={{
       ...btnS("ghost"),fontSize:11,color:C.purp,borderColor:C.purp+"44",
@@ -1266,6 +1273,14 @@ function FunnelPlot({studies}){
     </svg>
   </div>);
 }
+
+/* ════════════ AI FEATURE VISIBILITY (prompt6 Task 16) ════════════ */
+// AI features hidden pending future implementation.
+// Single visibility flag — flip to true to restore every AI surface (AIButton,
+// the Search-string generator panel, the AI Study Extractor, the Claude citation
+// fallback in Add Study, the PROSPERO generator, the Manuscript drafter, and the
+// AI marketing copy). The callClaude infrastructure below stays fully intact.
+const AI_FEATURES_ENABLED = false;
 
 /* ════════════ AI CALL HELPER ════════════ */
 // Try models in order — most current first
@@ -1747,7 +1762,7 @@ function PICOTab({project,updNested,upd}){
     {/* Structured eligibility */}
     <div style={{display:"flex",alignItems:"center",marginBottom:8}}>
       <span style={{...lbl,marginBottom:0}}>③ Eligibility Criteria</span>
-      <HelpTip text="Explicit inclusion/exclusion criteria are a PRISMA requirement and prevent arbitrary screening decisions. Generate a first draft from your PICO, then edit."/>
+      <HelpTip text={"Explicit inclusion/exclusion criteria are a PRISMA requirement and prevent arbitrary screening decisions."+(AI_FEATURES_ENABLED?" Generate a first draft from your PICO, then edit.":"")}/>
       <div style={{marginLeft:"auto"}}>
         <AIButton onClick={suggestEligibility} loading={busy==="elig"} label="Suggest criteria from PICO" disabled={!hasCore}/>
       </div>
@@ -1769,7 +1784,7 @@ function PICOTab({project,updNested,upd}){
 
     {/* Keywords */}
     <div style={{marginBottom:14}}>
-      <label style={lbl}>Key Terms & Synonyms <HelpTip text="List the main concepts and their synonyms. The AI Search Builder will turn these into database-specific queries."/></label>
+      <label style={lbl}>Key Terms & Synonyms <HelpTip text={AI_FEATURES_ENABLED?"List the main concepts and their synonyms. The AI Search Builder will turn these into database-specific queries.":"List the main concepts and their synonyms — they become the building blocks of your database-specific queries."}/></label>
       <textarea value={pico.keywords||""} onChange={e=>ch("keywords",e.target.value)}
         placeholder='type 2 diabetes, T2DM, NIDDM | SGLT2 inhibitor, dapagliflozin, empagliflozin | cardiovascular, MACE'
         style={{...inp,height:56,resize:"vertical",fontFamily:"'IBM Plex Mono',monospace",fontSize:11}}/>
@@ -1779,7 +1794,7 @@ function PICOTab({project,updNested,upd}){
         placeholder="Pre-specified subgroups, sensitivity analyses planned, funding, anything else for your protocol…"
         style={{...inp,height:56,resize:"vertical"}}/></div>
 
-    <InfoBox>💡 <strong style={{color:C.txt}}>Next step:</strong> Once your PICO and eligibility are set, register your protocol on <a href="https://www.crd.york.ac.uk/prospero/" target="_blank" rel="noreferrer" style={{color:C.acc}}>PROSPERO</a> (use the Protocol tab to auto-draft all fields), then move to Search Strategy. Required fields are marked <span style={{color:C.red}}>*</span>.</InfoBox>
+    <InfoBox>💡 <strong style={{color:C.txt}}>Next step:</strong> Once your PICO and eligibility are set, register your protocol on <a href="https://www.crd.york.ac.uk/prospero/" target="_blank" rel="noreferrer" style={{color:C.acc}}>PROSPERO</a>{AI_FEATURES_ENABLED?" (use the Protocol tab to auto-draft all fields)":" (use the Protocol tab to organise every field)"}, then move to Search Strategy. Required fields are marked <span style={{color:C.red}}>*</span>.</InfoBox>
   </div>);
 }
 
@@ -1969,7 +1984,7 @@ D | [study-design filter clause]
   };
 
   return(<div>
-    <SectionHeader icon="🔍" title="Search Builder" desc="Document your search strategy and generate expert AI search strings for every major database — all in one place."/>
+    <SectionHeader icon="🔍" title="Search Builder" desc={AI_FEATURES_ENABLED?"Document your search strategy and generate expert AI search strings for every major database — all in one place.":"Document your search strategy — databases searched, search date, and the full query string — all in one place."}/>
 
     {/* ── Database selection + date ── */}
     <div style={{display:"grid",gridTemplateColumns:"248px 1fr",gap:16,marginBottom:16}}>
@@ -2012,7 +2027,8 @@ D | [study-design filter clause]
       placeholder={'Paste your full primary search here, e.g.:\n("type 2 diabetes"[MeSH Terms] OR "T2DM"[TIAB])\nAND ("sodium-glucose transporter 2 inhibitors"[MeSH Terms] OR "SGLT2"[TIAB])\nAND ("randomized controlled trial"[Publication Type])'}
       style={{...inp,height:130,resize:"vertical",fontFamily:"'IBM Plex Mono',monospace",fontSize:11,lineHeight:1.7,marginBottom:20}}/>
 
-    {/* ══ AI SEARCH GENERATOR ═══════════════════════════════════════════ */}
+    {/* ══ AI SEARCH GENERATOR ══ hidden while AI features are disabled (prompt6 Task 16) */}
+    {AI_FEATURES_ENABLED&&(
     <div style={{borderTop:`1px solid ${C.brd}`,paddingTop:20,marginTop:4}}>
       <div style={{fontSize:13,fontWeight:700,color:C.acc,marginBottom:4,letterSpacing:0.3}}>✦ AI Search String Generator</div>
       <div style={{fontSize:12,color:C.muted,marginBottom:16}}>Generate expert high-sensitivity strategies for any combination of databases from your PICO. Results are editable and can be saved directly to your strategy above.</div>
@@ -2211,6 +2227,7 @@ D | [study-design filter clause]
         </div>
       )}
     </div>
+    )}
   </div>);
 }
 
@@ -2698,7 +2715,7 @@ function ESCalcInline({s,ch}){
     <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6,flexWrap:"wrap"}}>
       <span style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:0.8}}>CALCULATE EFFECT SIZE FROM RAW DATA</span>
       <select value={type} onChange={e=>{setType(e.target.value);setRes(null);setErr("");}} style={{...inp,width:"auto",fontSize:11}}>
-        <option value="SMD">Continuous → SMD (Hedges' g)</option>
+        <option value="SMD">Continuous → SMD (Cohen's d)</option>
         <option value="MD">Continuous → Mean Difference</option>
         <option value="OR">Dichotomous → Odds Ratio</option>
         <option value="RR">Dichotomous → Risk Ratio</option>
@@ -2867,7 +2884,13 @@ function AddStudyModal({onClose,onAdd}){
         setStatus(mode==="doi"?"Trying CrossRef…":"Trying PubMed…");
         const cite = mode==="doi" ? await fetchByDOI(val) : await fetchByPMID(val);
         setPreview(cite);setStatus("");setLoading(false);return;
-      }catch(e){ /* direct fetch blocked in-sandbox → fall through to AI */ }
+      }catch(e){
+        // direct fetch blocked in-sandbox → fall through to AI (when enabled)
+        if(!AI_FEATURES_ENABLED){
+          setErr((e.message||"Lookup failed")+" — you can still add the study manually below.");
+          setStatus("");setLoading(false);return;
+        }
+      }
     }
     try{
       setStatus("Searching the web via Claude…");
@@ -2892,13 +2915,14 @@ function AddStudyModal({onClose,onAdd}){
     onAdd(base);onClose();
   };
 
-  const modes=[["pmid","PubMed ID"],["doi","DOI"],["title","Title"],["manual","Manual"]];
+  // Title lookup is resolved entirely by a Claude web search → hidden while AI is off.
+  const modes=[["pmid","PubMed ID"],["doi","DOI"],...(AI_FEATURES_ENABLED?[["title","Title"]]:[]),["manual","Manual"]];
   return(<div style={{position:"fixed",inset:0,background:"#00000099",zIndex:998,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
     <div style={{background:C.surf,border:`1px solid ${C.brd}`,borderRadius:10,padding:22,width:"100%",maxWidth:620,maxHeight:"90vh",overflowY:"auto"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14,gap:14}}>
         <div>
           <div style={{fontSize:16,fontWeight:800,marginBottom:4}}>＋ Add Study</div>
-          <div style={{fontSize:12,color:C.muted}}>Look up a citation by ID, DOI, or title (uses a Claude web search), or add it manually. Everything stays editable afterwards.</div>
+          <div style={{fontSize:12,color:C.muted}}>{AI_FEATURES_ENABLED?"Look up a citation by ID, DOI, or title (uses a Claude web search), or add it manually. Everything stays editable afterwards.":"Look up a citation by PubMed ID or DOI, or add it manually. Everything stays editable afterwards."}</div>
         </div>
         <button onClick={onClose} style={{background:"none",border:"none",color:C.muted,fontSize:22,cursor:"pointer",padding:0,lineHeight:1}}>×</button>
       </div>
@@ -2926,8 +2950,8 @@ function AddStudyModal({onClose,onAdd}){
             <button onClick={lookup} disabled={loading} style={{...btnS("primary"),whiteSpace:"nowrap",opacity:loading?0.5:1}}>{loading?"⟳ Looking up…":"🔎 Look up"}</button>
           </div>
           {loading&&status&&<div style={{fontSize:11,color:C.acc,marginBottom:10}}>⟳ {status}</div>}
-          {!loading&&mode==="pmid"&&<div style={{fontSize:11,color:C.dim,marginBottom:10}}>Tries PubMed directly, then falls back to a Claude web search if the browser can't reach it.</div>}
-          {!loading&&mode==="doi"&&<div style={{fontSize:11,color:C.dim,marginBottom:10}}>Tries CrossRef directly, then falls back to a Claude web search if the browser can't reach it.</div>}
+          {!loading&&mode==="pmid"&&<div style={{fontSize:11,color:C.dim,marginBottom:10}}>{AI_FEATURES_ENABLED?"Tries PubMed directly, then falls back to a Claude web search if the browser can't reach it.":"Fetched directly from PubMed."}</div>}
+          {!loading&&mode==="doi"&&<div style={{fontSize:11,color:C.dim,marginBottom:10}}>{AI_FEATURES_ENABLED?"Tries CrossRef directly, then falls back to a Claude web search if the browser can't reach it.":"Fetched directly from CrossRef."}</div>}
           {!loading&&mode==="title"&&<div style={{fontSize:11,color:C.dim,marginBottom:10}}>Resolved by a Claude web search. Confirm the match is the exact paper before adding.</div>}
 
           {err&&<div style={{fontSize:12,color:C.red,marginBottom:12,lineHeight:1.5}}>{err}</div>}
@@ -3156,6 +3180,9 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
 }
 function ExtractionTab({project,updateProject,activeId}){
   const{studies}=project;
+  // prompt6 Task 5 — read-only viewers: hide the affirmative edit controls.
+  // (updateProject already no-ops every write for read-only projects; this is polish.)
+  const readOnly=!!((project._permissions&&project._permissions.readOnly)||project._readOnly);
   const addStudy=()=>updateProject(activeId,p=>({...p,studies:[...p.studies,mkStudy()]}));
   const addStudyObj=(st)=>updateProject(activeId,p=>({...p,studies:[...p.studies,st]}));
   const updStudy=(id,k,v)=>updateProject(activeId,p=>({...p,studies:p.studies.map(s=>s.id===id?{...s,[k]:v}:s)}));
@@ -3318,7 +3345,7 @@ ${paperText.slice(0,15000)}`;
   return(<div>
     <SectionHeader icon="📊" title="Data Extraction" desc="Capture study-level data with the right template for your outcome type. Validation runs as you type; raw inputs are saved so every number is auditable." badge={`${studies.length} studies`}/>
 
-    {showAI && (
+    {AI_FEATURES_ENABLED && showAI && (
       <div style={{position:"fixed",inset:0,background:"#00000099",zIndex:998,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
         <div style={{background:C.surf,border:`1px solid ${C.brd}`,borderRadius:10,padding:24,width:"100%",maxWidth:720,maxHeight:"90vh",overflowY:"auto"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14,gap:14}}>
@@ -3421,8 +3448,8 @@ ${paperText.slice(0,15000)}`;
         </div>
         {studies.length>0&&<button onClick={()=>setShowQC(!showQC)} style={{...btnS(showQC?"primary":"ghost"),fontSize:12}}>🔍 Data Quality Check</button>}
         {studies.length>0&&<button onClick={exportCSV} style={{...btnS("ghost"),fontSize:12}}>⤓ Export CSV</button>}
-        <button onClick={()=>setShowAI(true)} style={{...btnS(),color:C.purp,borderColor:C.purp+"55",fontSize:12}}>✦ AI Extract</button>
-        <button onClick={()=>setShowAdd(true)} style={{...btnS("primary"),fontSize:12}}>+ Add Study</button>
+        {AI_FEATURES_ENABLED&&!readOnly&&<button onClick={()=>setShowAI(true)} style={{...btnS(),color:C.purp,borderColor:C.purp+"55",fontSize:12}}>✦ AI Extract</button>}
+        {!readOnly&&<button onClick={()=>setShowAdd(true)} style={{...btnS("primary"),fontSize:12}}>+ Add Study</button>}
       </div>
     </div>
 
@@ -3513,11 +3540,13 @@ ${paperText.slice(0,15000)}`;
     {studies.length===0?(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
       <div style={{fontSize:36,marginBottom:10}}>📑</div>
       <div style={{fontSize:14,marginBottom:6}}>No studies yet</div>
-      <div style={{fontSize:12,marginBottom:16}}>Add a study by PubMed ID, DOI, or manually — or paste text / upload a PDF and let AI pre-fill a study for you to verify.</div>
-      <div style={{display:"flex",gap:8,justifyContent:"center"}}>
-        <button onClick={()=>setShowAI(true)} style={{...btnS(),color:C.purp,borderColor:C.purp+"55"}}>✦ AI Extract</button>
-        <button onClick={()=>setShowAdd(true)} style={btnS("primary")}>+ Add First Study</button>
-      </div>
+      <div style={{fontSize:12,marginBottom:16}}>{AI_FEATURES_ENABLED?"Add a study by PubMed ID, DOI, or manually — or paste text / upload a PDF and let AI pre-fill a study for you to verify.":"Add a study by PubMed ID, DOI, or manually — every field stays editable and auditable."}</div>
+      {!readOnly&&(
+        <div style={{display:"flex",gap:8,justifyContent:"center"}}>
+          {AI_FEATURES_ENABLED&&<button onClick={()=>setShowAI(true)} style={{...btnS(),color:C.purp,borderColor:C.purp+"55"}}>✦ AI Extract</button>}
+          <button onClick={()=>setShowAdd(true)} style={btnS("primary")}>+ Add First Study</button>
+        </div>
+      )}
     </div>):filtered.length===0?(
       <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:30,textAlign:"center",color:C.muted}}>
         <div style={{fontSize:13}}>No studies match the current filters.</div>
@@ -5638,7 +5667,7 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
   const visibleFields=activeSection==="All"?PROSP_FIELDS:PROSP_FIELDS.filter(f=>f.sec===activeSection);
 
   return(<div>
-    <SectionHeader icon="📝" title="PROSPERO Protocol Generator" desc="AI-assisted completion of all PROSPERO registration fields — generated from your PICO. Edit any field before copying."/>
+    <SectionHeader icon="📝" title={AI_FEATURES_ENABLED?"PROSPERO Protocol Generator":"PROSPERO Protocol"} desc={AI_FEATURES_ENABLED?"AI-assisted completion of all PROSPERO registration fields — generated from your PICO. Edit any field before copying.":"Complete every PROSPERO registration field with live character limits, then copy each one into the registration form."}/>
 
     {/* Top bar */}
     <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:16}}>
@@ -5647,7 +5676,7 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
           <div style={{display:"flex",justifyContent:"space-between",marginBottom:6}}>
             <span style={{fontSize:12,fontWeight:600}}>{filled}/{PROSP_FIELDS.length} fields filled</span>
             <div style={{display:"flex",gap:10,alignItems:"center"}}>
-              <span style={{
+              {AI_FEATURES_ENABLED&&<span style={{
                 fontSize:11,fontFamily:"'IBM Plex Mono',monospace",
                 background:persistedP.generatedAt?`${C.grn}15`:C.card,
                 color:persistedP.generatedAt?C.grn:C.dim,
@@ -5657,7 +5686,7 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
                 🕐 {persistedP.generatedAt
                   ? `Last generated: ${fmtDate(persistedP.generatedAt)} ${new Date(persistedP.generatedAt).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}`
                   : "Not yet generated"}
-              </span>
+              </span>}
               {filled>0&&<span style={{fontSize:11,color:C.muted}}>{Math.round(filled/PROSP_FIELDS.length*100)}% complete</span>}
             </div>
           </div>
@@ -5665,13 +5694,13 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
         </div>
         <div style={{display:"flex",gap:8,flexShrink:0}}>
           {filled>0&&<button onClick={copyAll} style={{...btnS("ghost"),fontSize:11}}>{copied==="all"?"✓ Copied all!":"📋 Copy All"}</button>}
-          <button onClick={generateAll} disabled={generating||!hasPICO}
+          {AI_FEATURES_ENABLED&&<button onClick={generateAll} disabled={generating||!hasPICO}
             style={{...btnS("primary"),padding:"8px 20px",opacity:(generating||!hasPICO)?0.5:1}}>
             {generating?"⟳ Generating…":"✦ Generate All Fields"}
-          </button>
+          </button>}
         </div>
       </div>
-      {!hasPICO&&<div style={{marginTop:10,fontSize:12,color:C.yel}}>⚠ Fill in your PICO & Protocol tab first for best results</div>}
+      {AI_FEATURES_ENABLED&&!hasPICO&&<div style={{marginTop:10,fontSize:12,color:C.yel}}>⚠ Fill in your PICO & Protocol tab first for best results</div>}
       {generating&&(<div style={{marginTop:10}}>
         <div style={{fontSize:11,color:C.muted,marginBottom:4}}>Building all {PROSP_FIELDS.length} PROSPERO fields… (30–60s)</div>
         <div style={{background:C.brd,borderRadius:4,height:4,overflow:"hidden"}}>
@@ -5688,8 +5717,8 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
         <pre style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:10,lineHeight:1.6,color:C.muted,whiteSpace:"pre-wrap",wordBreak:"break-word",margin:0}}>{rawGenResp}</pre>
       </div>)}
 
-      {/* PICO changed banner */}
-      {picoChanged&&!generating&&filled>0&&(
+      {/* PICO changed banner — regeneration sync is an AI feature */}
+      {AI_FEATURES_ENABLED&&picoChanged&&!generating&&filled>0&&(
         <div style={{marginTop:12,background:"#2d1f08",border:`1px solid ${C.yel}55`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
           <span style={{fontSize:13}}>🔄</span>
           <div style={{flex:1}}>
@@ -5738,10 +5767,10 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
               {over&&<button onClick={()=>setFields(prev=>({...prev,[field.id]:val.slice(0,field.maxLen)}))}
                 style={{...btnS("danger"),fontSize:10,padding:"3px 10px"}}>✂ Trim</button>}
               {val&&!over&&<button onClick={()=>copy(val,field.id)} style={{...btnS("ghost"),fontSize:10,padding:"3px 10px"}}>{copied===field.id?"✓":"Copy"}</button>}
-              <button onClick={()=>generateField(field.id)} disabled={isGen||!hasPICO}
+              {AI_FEATURES_ENABLED&&<button onClick={()=>generateField(field.id)} disabled={isGen||!hasPICO}
                 style={{...btnS("ghost"),fontSize:10,padding:"3px 10px",color:C.acc,borderColor:C.acc+"55",opacity:!hasPICO?0.4:1}}>
                 {isGen?"⟳":val?"↻ Regen":"✦ Generate"}
-              </button>
+              </button>}
             </div>
           </div>
           <div style={{background:C.brd,borderRadius:2,height:3,marginBottom:8,overflow:"hidden"}}>
@@ -5749,7 +5778,7 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
               background:over?C.red:remaining<field.maxLen*0.1?C.yel:C.grn,transition:"width 0.2s,background 0.2s"}}/>
           </div>
           <textarea value={val} onChange={e=>setFields(prev=>({...prev,[field.id]:e.target.value}))}
-            placeholder={isGen?"Generating…":"Click ✦ Generate or type directly…"}
+            placeholder={isGen?"Generating…":AI_FEATURES_ENABLED?"Click ✦ Generate or type directly…":"Type this field directly…"}
             rows={field.rows} style={{...inp,resize:"vertical",lineHeight:1.6,fontSize:12,opacity:isGen?0.6:1,borderColor:over?C.red+"88":C.brd}}/>
           {over&&<div style={{fontSize:11,color:C.red,marginTop:5}}>⚠ {Math.abs(remaining)} characters over the PROSPERO limit of {field.maxLen}. Click ✂ Trim or edit manually.</div>}
         </div>);
@@ -6328,17 +6357,17 @@ Output ONLY the section text — no labels, no preamble, no markdown headers. Us
   const wordCount=(t)=>t?t.trim().split(/\s+/).length:0;
 
   return(<div>
-    <SectionHeader icon="✍️" title="AI Manuscript Drafter" desc="Generate publication-ready draft sections from your project data. Edit and refine before submitting."/>
+    <SectionHeader icon="✍️" title={AI_FEATURES_ENABLED?"AI Manuscript Drafter":"Manuscript Draft"} desc={AI_FEATURES_ENABLED?"Generate publication-ready draft sections from your project data. Edit and refine before submitting.":"Write your manuscript sections — Methods, Results, Discussion, Abstract — alongside your project data. Drafts save with the project."}/>
 
     <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
       {sections.map(s=>(
         <button key={s.id} onClick={()=>setSectionPersist(s.id)} style={btnS(section===s.id?"primary":"ghost")}>
-          {s.icon} {s.label}{drafts[s.id]?(sourceKeys[s.id]&&sourceKeys[s.id]!==currentDataKey?" ⚠":" ✓"):""}
+          {s.icon} {s.label}{drafts[s.id]?(AI_FEATURES_ENABLED&&sourceKeys[s.id]&&sourceKeys[s.id]!==currentDataKey?" ⚠":" ✓"):""}
         </button>
       ))}
     </div>
 
-    {(()=>{const sec=sections.find(s=>s.id===section); const stale = drafts[section] && sourceKeys[section] && sourceKeys[section] !== currentDataKey; return(
+    {(()=>{const sec=sections.find(s=>s.id===section); const stale = AI_FEATURES_ENABLED && drafts[section] && sourceKeys[section] && sourceKeys[section] !== currentDataKey; return(
       <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:18}}>
         {stale && (
           <div style={{background:"#2d1f08",border:`1px solid ${C.yel}55`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:14}}>
@@ -6356,16 +6385,16 @@ Output ONLY the section text — no labels, no preamble, no markdown headers. Us
           <div>
             <div style={{fontSize:14,fontWeight:700,marginBottom:3}}>{sec.icon} {sec.label}</div>
             <div style={{fontSize:11,color:C.muted}}>{sec.desc}</div>
-            {drafts[section] && <div style={{fontSize:10,color:C.dim,marginTop:4,fontFamily:"'IBM Plex Mono',monospace"}}>{wordCount(drafts[section])} words · {drafts[section].length} chars{stale?" · ⚠ stale":" · ✓ in sync"}</div>}
+            {drafts[section] && <div style={{fontSize:10,color:C.dim,marginTop:4,fontFamily:"'IBM Plex Mono',monospace"}}>{wordCount(drafts[section])} words · {drafts[section].length} chars{AI_FEATURES_ENABLED?(stale?" · ⚠ stale":" · ✓ in sync"):""}</div>}
           </div>
           <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6,flexShrink:0}}>
             <div style={{display:"flex",gap:8}}>
               {drafts[section] && <button onClick={()=>copy(drafts[section],section)} style={{...btnS("ghost"),fontSize:11}}>{copied===section?"✓ Copied":"📋 Copy"}</button>}
-              <button onClick={()=>generate(section)} disabled={loading===section} style={{...btnS("primary"),fontSize:12,padding:"7px 18px",opacity:loading===section?0.5:1}}>
+              {AI_FEATURES_ENABLED&&<button onClick={()=>generate(section)} disabled={loading===section} style={{...btnS("primary"),fontSize:12,padding:"7px 18px",opacity:loading===section?0.5:1}}>
                 {loading===section?"⟳ Drafting…":drafts[section]?"↻ Regenerate":"✦ Generate Draft"}
-              </button>
+              </button>}
             </div>
-            <span style={{
+            {AI_FEATURES_ENABLED&&<span style={{
               fontSize:11,fontFamily:"'IBM Plex Mono',monospace",
               background:persistedM.generatedAt?`${C.grn}15`:C.card,
               color:persistedM.generatedAt?C.grn:C.dim,
@@ -6375,18 +6404,18 @@ Output ONLY the section text — no labels, no preamble, no markdown headers. Us
               🕐 {persistedM.generatedAt
                 ? `Last generated: ${fmtDate(persistedM.generatedAt)} ${new Date(persistedM.generatedAt).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}`
                 : "Not yet generated"}
-            </span>
+            </span>}
           </div>
         </div>
         {error && <div style={{fontSize:12,color:C.red,marginBottom:10}}>{error}</div>}
         <textarea value={drafts[section]||""} onChange={e=>setDrafts(prev=>({...prev,[section]:e.target.value}))}
-          placeholder="Click ✦ Generate Draft to produce this section from your project data, or type directly here."
+          placeholder={AI_FEATURES_ENABLED?"Click ✦ Generate Draft to produce this section from your project data, or type directly here.":"Type this section here — it saves with your project."}
           rows={18}
           style={{...inp,fontSize:13,lineHeight:1.75,resize:"vertical",fontFamily:"'IBM Plex Sans',sans-serif"}}/>
       </div>
     );})()}
 
-    <InfoBox>💡 The drafter pulls from your PICO, search strategy, PRISMA numbers, study data, and analysis results. Always verify numbers, citations, and claims before submitting. Generate sections in order (Methods → Results → Discussion → Abstract) for best coherence.</InfoBox>
+    <InfoBox>💡 {AI_FEATURES_ENABLED?"The drafter pulls from your PICO, search strategy, PRISMA numbers, study data, and analysis results. Always verify numbers, citations, and claims before submitting. Generate sections in order (Methods → Results → Discussion → Abstract) for best coherence.":"Draft sections in order (Methods → Results → Discussion → Abstract) for best coherence, and verify every number, citation, and claim against your analysis before submitting."}</InfoBox>
   </div>);
 }
 
@@ -6419,12 +6448,17 @@ function RayyanTab({project,updNested}){
           </div>
         </div>
         <button
-          onClick={()=>window.location.href="/sift-beta"}
+          onClick={()=>{
+            // prompt6 Task 3 — open the EXACT linked screening project when one
+            // exists; only fall back to the dashboard when this review is unlinked.
+            const lid=(project._linkedMetaSift&&project._linkedMetaSift.id)||project._screenProjectId;
+            window.location.href=lid?`/sift-beta/projects/${lid}`:"/sift-beta";
+          }}
           style={{background:"#2dd4bf",border:"none",color:"#050f0f",fontSize:12,fontWeight:700,fontFamily:"'IBM Plex Sans',sans-serif",padding:"9px 20px",borderRadius:7,cursor:"pointer",whiteSpace:"nowrap",flexShrink:0,letterSpacing:"-0.01em"}}
           onMouseEnter={e=>e.currentTarget.style.background="#22c5b0"}
           onMouseLeave={e=>e.currentTarget.style.background="#2dd4bf"}
         >
-          Open META·SIFT Beta →
+          {(project._linkedMetaSift&&project._linkedMetaSift.id)||project._screenProjectId?"Open linked META·SIFT project →":"Open META·SIFT Beta →"}
         </button>
       </div>
     </div>
@@ -6504,8 +6538,69 @@ function RayyanTab({project,updNested}){
   </div>);
 }
 
+/* ════════════ METHODS & EQUATIONS TAB (prompt6 Task 13) ════════════ */
+/* Replaces the removed Templates downloads. Renders the engine-owned
+   METHODS_CONTENT catalogue (src/research-engine/docs/methods-content.js):
+   every statistical method actually implemented in the app — equation as
+   computed, plain-English meaning, UI surface, implementation pointer,
+   verified references and limitations. verified:false ⇒ amber badge. */
+const MATH_FONT="'STIX Two Math','Cambria Math','Times New Roman',Georgia,serif";
+/* Tiny stacked-fraction helper for equation display (no TeX dependency) */
+function Frac({num,den}){
+  return(<span style={{display:"inline-flex",flexDirection:"column",alignItems:"center",verticalAlign:"middle",margin:"0 3px",lineHeight:1.3}}>
+    <span style={{borderBottom:`1px solid ${C.txt2}`,padding:"0 5px"}}>{num}</span>
+    <span style={{padding:"0 5px"}}>{den}</span>
+  </span>);
+}
+function MethodsTab(){
+  return(<div>
+    <SectionHeader icon="📐" title="Methods & Equations"
+      desc="Every statistical method implemented in META·LAB and META·SIFT, documented as computed: the equation, what it means in plain English, where it runs in the app, and verified references. Methods not listed here are not implemented."/>
+    {METHODS_CONTENT.map(m=>(
+      <div key={m.id} style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"16px 18px",marginBottom:14}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:10}}>
+          <h3 style={{margin:0,fontSize:14.5,fontWeight:700,letterSpacing:-0.2,color:C.txt,lineHeight:1.3}}>{m.title}</h3>
+          {m.verified===false&&<span style={tagS("yellow")} title="In-house heuristic or citation not yet verified against a formula-specific source">⚠ needs verification</span>}
+        </div>
+        {/* Equations — plain Unicode math in a serif math font */}
+        <div style={{background:C.bg,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 14px",marginBottom:12}}>
+          {m.equations.map((eq,i)=>(
+            <div key={i} style={{display:"flex",alignItems:"baseline",gap:14,flexWrap:"wrap",padding:"5px 0",borderBottom:i<m.equations.length-1?`1px solid ${C.brd}`:"none"}}>
+              <span style={{fontSize:10,fontWeight:600,color:C.muted,letterSpacing:0.3,minWidth:220,flexShrink:0}}>{eq.label}</span>
+              <span style={{fontFamily:MATH_FONT,fontSize:14,color:C.txt,lineHeight:1.6}}>{eq.text}</span>
+            </div>
+          ))}
+        </div>
+        <p style={{margin:"0 0 12px",fontSize:12.5,color:C.txt2,lineHeight:1.7}}>{m.plainEnglish}</p>
+        <div style={{display:"grid",gridTemplateColumns:"110px 1fr",rowGap:6,columnGap:12,fontSize:11.5,lineHeight:1.6}}>
+          <span style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:0.7,textTransform:"uppercase",paddingTop:1}}>Used in</span>
+          <span style={{color:C.txt2}}>{m.usedIn}</span>
+          <span style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:0.7,textTransform:"uppercase",paddingTop:1}}>Implemented in</span>
+          <span style={{color:C.txt2,fontFamily:"'IBM Plex Mono',monospace",fontSize:10.5}}>{m.implementedIn}</span>
+          <span style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:0.7,textTransform:"uppercase",paddingTop:1}}>References</span>
+          <span>
+            {m.references.map((r,i)=>(
+              <span key={i} style={{display:"block",color:C.txt2}}>{r}</span>
+            ))}
+          </span>
+          <span style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:0.7,textTransform:"uppercase",paddingTop:1}}>Limitations</span>
+          <span style={{color:C.muted}}>{m.limitations}</span>
+        </div>
+      </div>
+    ))}
+    <InfoBox color={C.yel}>
+      <strong style={{color:C.txt}}>Not implemented:</strong> {NOT_IMPLEMENTED.join(" · ")}. This catalogue documents only methods that actually run in the app — if a method is not listed above, META·LAB does not compute it.
+    </InfoBox>
+  </div>);
+}
+
 /* ════════════ TABS CONFIG ════════════ */
 const TABS=[
+  // group:"project" ⇒ project meta-tabs (prompt6 Tasks 15/4) — rendered in their
+  // own "Project" sidebar group ABOVE Workflow; phase:null keeps them out of the
+  // workflow map, the progress denominator, and the "Next step" walker.
+  {id:"overview",   icon:"🏠", label:"Overview",             phase:null,  group:"project"},
+  {id:"control",    icon:"👥", label:"Project Control",      phase:null,  group:"project"},
   {id:"pico",       icon:"📋", label:"PICO & Question",      phase:"Plan",    num:1},
   {id:"prospero",   icon:"📝", label:"Protocol",             phase:"Plan",    num:2},
   {id:"search",     icon:"🔍", label:"Search Builder",       phase:"Search",  num:3},
@@ -6520,6 +6615,9 @@ const TABS=[
   {id:"grade",      icon:"🎖️", label:"GRADE Certainty",      phase:"Report",  num:12},
   {id:"report",     icon:"✅", label:"PRISMA Checklist",     phase:"Report",  num:13},
   {id:"manuscript", icon:"✍️", label:"Manuscript Draft",     phase:"Report",  num:14},
+  // phase:null ⇒ reference page, NOT a workflow step — excluded from the
+  // workflow map, progress denominator and "Next step" walker (all filter on t.phase).
+  {id:"methods",    icon:"📐", label:"Methods & Equations",  phase:null,  group:"reference"},
 ];
 const PHASES=["Plan","Search","Screen","Extract","Analyze","Report"];
 const PHASE_ICON={Plan:"🎯",Search:"🔍",Screen:"🔀",Extract:"📊",Analyze:"📈",Report:"📄"};
@@ -6692,42 +6790,697 @@ function AuditPanel({project,onClose,onJump}){
   </div>);
 }
 
-/* ════════════ MAIN APP ════════════ */
-/* ════════════ BUNDLED DOCUMENT DOWNLOADS ════════════ */
-const DOCS=[
-  {id:"validation",label:"Statistical Validation Report",desc:"Validates META·LAB pooled estimates against metafor / BCG reference dataset",icon:"🔬",filename:"META-LAB_Statistical_Validation_Report.docx",
-    b64:"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"},
-  {id:"methods",label:"Methods Draft (Systematic Review)",desc:"PRISMA 2020 methods section — publication-ready prose with bracketed placeholders",icon:"📝",filename:"META-LAB_Methods_Draft.docx",
-    b64:"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"},
-];
-function downloadDoc(doc){
-  try{
-    const bin=atob(doc.b64);
-    const bytes=new Uint8Array(bin.length);
-    for(let i=0;i<bin.length;i++) bytes[i]=bin.charCodeAt(i);
-    const blob=new Blob([bytes],{type:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement("a");
-    a.href=url; a.download=doc.filename;
-    document.body.appendChild(a); a.click();
-    document.body.removeChild(a); URL.revokeObjectURL(url);
-  }catch(e){console.error("download failed",e);}
+/* ════════════ PROJECT META HELPERS (prompt6 Tasks 4/15/18) ════════════ */
+/* Effective caller permissions for a project — prefers the server's _permissions
+   annotation; falls back to the prompt5 _shared/_role/_canEdit/_readOnly keys. */
+function projectPerms(project){
+  if(project&&project._permissions) return project._permissions;
+  if(project&&project._shared) return {
+    role:project._role||"member",isOwner:false,
+    canView:true,canEdit:!!project._canEdit,
+    readOnly:!!project._readOnly,canExport:true,
+  };
+  return {role:"owner",isOwner:true,canView:true,canEdit:true,readOnly:false,canExport:true};
 }
+/* Linked META·SIFT ScreenProject id for a project (workspace = source of truth). */
+function linkedSiftId(project){
+  return (project&&project._linkedMetaSift&&project._linkedMetaSift.id)||(project&&project._screenProjectId)||null;
+}
+
+/* Editable project title (prompt6 Task 18) — rename goes through the REAL
+   PUT /api/projects/:id (via onRename), never the autosave blob path, so the
+   server-side sync-if-in-sync rename of the linked META·SIFT title fires. */
+function ProjectTitle({project,canRename,onRename}){
+  const[editing,setEditing]=useState(false);
+  const[draft,setDraft]=useState(project.name);
+  const[busy,setBusy]=useState(false);
+  const[err,setErr]=useState("");
+  useEffect(()=>{if(!editing){setDraft(project.name);setErr("");}},[project.id,project.name,editing]);
+  const submit=async()=>{
+    if(busy)return;
+    const name=draft.trim();
+    if(!name||name===project.name){setEditing(false);setErr("");return;}
+    setBusy(true);
+    const r=await onRename(project.id,name);
+    setBusy(false);
+    if(r.ok){setEditing(false);setErr("");}
+    else if(r.error)setErr(r.error);
+  };
+  if(!editing) return(
+    <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0,marginBottom:5}}>
+      <h1 style={{fontSize:22,fontWeight:700,letterSpacing:-0.5,margin:0,color:C.txt,lineHeight:1.2,overflow:"hidden",textOverflow:"ellipsis"}}>{project.name}</h1>
+      {canRename&&(
+        <button onClick={()=>setEditing(true)} title="Rename project (also renames the linked META·SIFT project if the titles match)"
+          style={{background:"none",border:`1px solid ${C.brd2}`,color:C.muted,cursor:"pointer",fontSize:11,borderRadius:6,padding:"2px 8px",lineHeight:1.5,flexShrink:0}}>✎</button>
+      )}
+    </div>
+  );
+  return(
+    <div style={{minWidth:0,marginBottom:5}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+        <input autoFocus value={draft} disabled={busy} onChange={e=>setDraft(e.target.value)}
+          onKeyDown={e=>{if(e.key==="Enter")submit();if(e.key==="Escape"){setEditing(false);setErr("");}}}
+          style={{...inp,width:340,maxWidth:"70vw",fontSize:15,fontWeight:600,padding:"6px 10px"}}/>
+        <button onClick={submit} disabled={busy||!draft.trim()} style={{...btnS("primary"),fontSize:11,opacity:(busy||!draft.trim())?0.5:1}}>{busy?"Saving…":"Save"}</button>
+        <button onClick={()=>{setEditing(false);setErr("");}} disabled={busy} style={{...btnS("ghost"),fontSize:11}}>Cancel</button>
+      </div>
+      {err&&<div style={{fontSize:11,color:C.red,marginTop:5}}>{err}</div>}
+    </div>
+  );
+}
+
+/* ════════════ TAB: OVERVIEW (prompt6 Task 15) ════════════ */
+/* Project landing page — every project-enter path lands here: identity, team,
+   linked screening workspace, PICO, progress, readiness, and the next step. */
+function OverviewTab({project,setTab}){
+  const lid=linkedSiftId(project);
+  const linkedTitle=(project._linkedMetaSift&&project._linkedMetaSift.title)||"";
+  const perms=projectPerms(project);
+  // Members + leaders from the linked Review Workspace (graceful when unlinked).
+  const[mem,setMem]=useState({loading:!!lid,members:null,error:null});
+  useEffect(()=>{
+    let dead=false;
+    if(!lid){setMem({loading:false,members:null,error:null});return undefined;}
+    setMem({loading:true,members:null,error:null});
+    screeningApi.listMembers(lid)
+      .then(d=>{if(!dead)setMem({loading:false,members:d.members||[],error:null});})
+      .catch(e=>{if(!dead)setMem({loading:false,members:null,error:e.message||"Couldn't load members."});});
+    return()=>{dead=true;};
+  },[lid]);
+
+  const studies=project.studies||[];
+  const withES=studies.filter(s=>s.es!=="").length;
+  const status=stepStatus(project);
+  const wfTabs=TABS.filter(t=>t.phase); // workflow steps only
+  const doneCount=wfTabs.filter(t=>status[t.id]==="done").length;
+  const nextStep=wfTabs.find(t=>status[t.id]!=="done")||null;
+  const ready=readinessCheck(project);
+  const meta=runMeta(studies,"random");
+  const pico=project.pico||{},prisma=project.prisma||{};
+  const owner=project._owner?(project._owner.name||project._owner.email):"You";
+  const leaders=(mem.members||[]).filter(m=>m.role==="leader"||m.role==="owner");
+
+  const card={background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16};
+  const secLbl={fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:0.8,textTransform:"uppercase",marginBottom:9};
+  const kv=(k,v)=>(<div key={k} style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:12,padding:"4px 0"}}>
+    <span style={{color:C.muted,flexShrink:0}}>{k}</span>
+    <span style={{color:C.txt2,textAlign:"right",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v}</span>
+  </div>);
+
+  return(<div>
+    <SectionHeader icon="🏠" title="Overview" desc="Where this review stands right now — team, linked screening workspace, progress, and what to do next."/>
+
+    {/* Stat row */}
+    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:14}}>
+      {[
+        {n:studies.length,l:"Studies in extraction"},
+        {n:withES,l:"With effect size"},
+        {n:prisma.included||"0",l:"PRISMA included"},
+        {n:mem.members?mem.members.length:mem.loading?"…":"—",l:"Workspace members"},
+      ].map(s=>(
+        <div key={s.l} style={{...card,padding:"12px 14px",textAlign:"center"}}>
+          <div className="stat-num" style={{fontSize:22,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color:C.txt}}>{s.n}</div>
+          <div style={{fontSize:10,color:C.muted,marginTop:3}}>{s.l}</div>
+        </div>
+      ))}
+    </div>
+
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+      {/* Project identity */}
+      <div style={card}>
+        <div style={secLbl}>Project</div>
+        {kv("Title",project.name)}
+        {kv("Owner",owner)}
+        <div style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:12,padding:"4px 0",alignItems:"center"}}>
+          <span style={{color:C.muted}}>Your role</span>
+          <span style={tagS(perms.isOwner?"green":perms.readOnly?"yellow":"blue")}>
+            {perms.readOnly?`${perms.role} · read-only`:perms.role}
+          </span>
+        </div>
+        {kv("Created",fmtDate(project.created||project.createdAt))}
+        {kv("Last modified",fmtDate(project.modified||project.updatedAt))}
+      </div>
+
+      {/* Linked META·SIFT */}
+      <div style={{...card,borderColor:lid?"#2dd4bf40":C.brd}}>
+        <div style={{...secLbl,color:lid?"#2dd4bf":C.muted}}>Linked META·SIFT</div>
+        {lid?(<>
+          <div style={{fontSize:13,fontWeight:700,color:C.txt,marginBottom:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>🔗 {linkedTitle||"Screening project"}</div>
+          <div style={{fontSize:11,color:C.muted,lineHeight:1.6,marginBottom:10}}>Screening decisions, PRISMA numbers, and accepted studies flow from this shared workspace.</div>
+          <button onClick={()=>{window.location.href=`/sift-beta/projects/${lid}`;}}
+            style={{background:"#2dd4bf",border:"none",color:"#050f0f",fontSize:11.5,fontWeight:700,fontFamily:"'IBM Plex Sans',sans-serif",padding:"7px 16px",borderRadius:7,cursor:"pointer"}}>
+            Open in META·SIFT →
+          </button>
+        </>):(<>
+          <div style={{fontSize:12,color:C.muted,lineHeight:1.6,marginBottom:10}}>
+            Not linked. Create a linked META·SIFT screening project to screen with your team and auto-fill the PRISMA flow.
+          </div>
+          <button onClick={()=>setTab("control")} style={{...btnS("ghost"),fontSize:11}}>Set up in Project Control →</button>
+        </>)}
+      </div>
+    </div>
+
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+      {/* Team */}
+      <div style={card}>
+        <div style={secLbl}>Team</div>
+        {!lid?<div style={{fontSize:12,color:C.muted,lineHeight:1.6}}>Members are managed through the linked META·SIFT workspace — link one in Project Control to invite collaborators.</div>
+        :mem.loading?<div style={{fontSize:12,color:C.muted}}>Loading members…</div>
+        :mem.error?<div style={{fontSize:12,color:C.yel}}>⚠ {mem.error}</div>
+        :(<>
+          {kv("Members",String(mem.members.length))}
+          {kv("Leaders",leaders.length?leaders.map(m=>m.name||m.email).join(", "):"—")}
+          <div style={{marginTop:8}}>
+            <button onClick={()=>setTab("control")} style={{...btnS("ghost"),fontSize:11}}>Manage members →</button>
+          </div>
+        </>)}
+      </div>
+
+      {/* PICO summary */}
+      <div style={card}>
+        <div style={secLbl}>PICO</div>
+        {pico.question&&<div style={{fontSize:12,color:C.txt2,lineHeight:1.6,marginBottom:8,fontStyle:"italic"}}>“{pico.question}”</div>}
+        {(pico.P||pico.I||pico.C||pico.O)
+          ?[["P",pico.P],["I",pico.I],["C",pico.C],["O",pico.O]].map(([k,v])=>v?(
+            <div key={k} style={{display:"flex",gap:8,fontSize:11.5,padding:"2px 0"}}>
+              <span style={{fontWeight:800,color:C.acc,minWidth:14,flexShrink:0}}>{k}</span>
+              <span style={{color:C.muted,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v}</span>
+            </div>):null)
+          :(!pico.question&&<div style={{fontSize:12,color:C.muted}}>No PICO yet — start in the PICO &amp; Question tab.</div>)}
+      </div>
+    </div>
+
+    {/* Progress */}
+    <div style={{...card,marginBottom:14}}>
+      <div style={secLbl}>Progress</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:18}}>
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:5}}>Workflow steps complete</div>
+          <ProgressBar done={doneCount} total={wfTabs.length}/>
+        </div>
+        <div>
+          <div style={{fontSize:11,color:C.muted,marginBottom:5}}>Extraction — studies with an effect size</div>
+          <ProgressBar done={withES} total={studies.length}/>
+        </div>
+      </div>
+      <div style={{fontSize:11,color:C.muted,marginTop:12,lineHeight:1.7}}>
+        PRISMA: <strong style={{color:C.txt}}>{prisma.dbs||"0"}</strong> identified · <strong style={{color:C.txt}}>{prisma.dedupe||"0"}</strong> duplicates removed · <strong style={{color:C.red}}>{prisma.excTA||"0"}</strong> excluded (title/abstract) · <strong style={{color:C.red}}>{prisma.excFull||"0"}</strong> full-text excluded · <strong style={{color:C.grn}}>{prisma.included||"0"}</strong> included
+        {meta&&<> · pooled: <strong style={{color:C.grn}}>k={meta.k}, I²={meta.I2}%</strong></>}
+      </div>
+    </div>
+
+    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+      {/* Meta-analysis readiness */}
+      <div style={{...card,borderColor:(ready.ok?C.grn:C.yel)+"44"}}>
+        <div style={{...secLbl,color:ready.ok?C.grn:C.yel}}>Meta-analysis readiness</div>
+        {ready.ok
+          ?<div style={{fontSize:12.5,color:C.grn,lineHeight:1.6}}>✓ All prerequisites met — PICO, databases, and search strategy are in place.</div>
+          :(<div>
+            <div style={{fontSize:12,color:C.muted,marginBottom:6}}>{ready.missing.length} requirement{ready.missing.length===1?"":"s"} missing:</div>
+            {ready.missing.map((m,i)=>(
+              <div key={i} style={{display:"flex",gap:7,fontSize:11.5,color:C.txt2,padding:"2px 0",lineHeight:1.5}}>
+                <span style={{color:C.yel,flexShrink:0}}>⚠</span><span>{m}</span>
+              </div>))}
+          </div>)}
+      </div>
+
+      {/* Next suggested step */}
+      <div style={{...card,borderColor:C.acc+"40"}}>
+        <div style={{...secLbl,color:C.acc}}>Next suggested step</div>
+        {nextStep?(<>
+          <div style={{fontSize:13,fontWeight:700,color:C.txt,marginBottom:4}}>{nextStep.icon} {nextStep.label}</div>
+          <div style={{fontSize:11.5,color:C.muted,lineHeight:1.6,marginBottom:10}}>
+            {status[nextStep.id]==="partial"?"Started but not finished — pick up where you left off.":"The first incomplete step in the PRISMA workflow."}
+          </div>
+          <button onClick={()=>setTab(nextStep.id)} style={{...btnS("primary"),fontSize:12}}>Go to {nextStep.label} →</button>
+        </>):(
+          <div style={{fontSize:12.5,color:C.grn,lineHeight:1.6}}>🎉 Every workflow step is complete — run the audit, export your report, and submit.</div>
+        )}
+      </div>
+    </div>
+  </div>);
+}
+
+/* ════════════ TAB: PROJECT CONTROL (prompt6 Task 4) ════════════ */
+/* META·LAB-side port of META·SIFT's ProjectControlTab + MembersTab. ALL member
+   and status operations go through screeningApi against the LINKED ScreenProject
+   — the shared Review Workspace is the single source of truth. Permissions:
+   owner everything; leaders manage members except the owner and cannot assign
+   the Leader preset (server-enforced; mirrored here); members/viewers get a
+   read-only rendering. Unlinked → project info + "Create & link" card. */
+const CTRL_STATUS_OPTIONS=[
+  {value:"not_started",label:"Not started"},
+  {value:"in_progress",label:"In progress"},
+  {value:"done",label:"Done"},
+];
+const CTRL_ROLE_TAG={owner:"green",leader:"blue",reviewer:"blue",viewer:"yellow"};
+const CTRL_PERM_GROUPS=[
+  {title:"META·SIFT",keys:[
+    ["canViewMetaSift","View"],["canScreen","Screen"],["canSecondReview","Second review"],
+    ["canResolveConflicts","Resolve conflicts"],["canManageDuplicates","Duplicates"],
+    ["canImportRecords","Import"],["canExportRecords","Export"],["canChat","Chat"],
+    ["readOnlyMetaSift","Read-only"],
+  ]},
+  {title:"META·LAB",keys:[
+    ["canViewMetaLab","View"],["canEditMetaLab","Edit"],["canManageExtraction","Extraction"],
+    ["canRunAnalysis","Analysis"],["canExport","Export"],["readOnlyMetaLab","Read-only"],
+  ]},
+  {title:"Global — owner-only",ownerOnly:true,keys:[
+    ["canManageMembers","Manage members"],["canManageSettings","Manage settings"],
+  ]},
+];
+// Add-member preset list (mirrors the SIFT AddMemberModal; Leader is owner-only).
+const CTRL_ADD_PRESETS=[
+  ["reviewer","Reviewer — screen + second review + chat"],
+  ["data_extractor","Data Extractor — META·LAB extraction + analysis"],
+  ["leader","Leader — full control (except owner)"],
+  ["readonly_metasift","Read-only META·SIFT"],
+  ["readonly_metalab","Read-only META·LAB"],
+  ["readonly_both","Read-only (both modules)"],
+  ["viewer","Viewer — read-only both, can chat"],
+];
+const CTRL_MODULE_OPTIONS=[
+  ["both","Both META·LAB & META·SIFT"],
+  ["metalab","META·LAB only"],
+  ["metasift","META·SIFT only"],
+];
+
+function CtrlPermDot({on,label}){
+  return(<span title={`${label}: ${on?"enabled":"disabled"}`}
+    style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:10.5,color:on?C.txt2:C.muted}}>
+    <span style={{width:7,height:7,borderRadius:"50%",flexShrink:0,background:on?C.grn:C.brd2}}/>
+    {label}
+  </span>);
+}
+
+function CtrlMemberRow({m,canManage,amOwner,busy,rowErr,onPatch,onRemove}){
+  const[showAll,setShowAll]=useState(false);
+  const isOwnerRow=!!m.isOwner||m.role==="owner";
+  const isLeaderRow=!isOwnerRow&&(m.isLeader||m.role==="leader");
+  // Owner row locked for everyone; leader rows only the owner may edit (server-enforced).
+  const locked=isOwnerRow||(isLeaderRow&&!amOwner);
+  const editable=canManage&&!locked;
+  const presetOptions=amOwner?ASSIGNABLE_PRESETS:ASSIGNABLE_PRESETS.filter(p=>p!=="leader");
+  const currentPreset=m.permissionPreset&&presetOptions.includes(m.permissionPreset)?m.permissionPreset:"";
+  const quick=[["canScreen","Screen"],["canChat","Chat"],["canResolveConflicts","Resolve"]];
+  return(
+    <div style={{background:C.bg,border:`1px solid ${isOwnerRow?C.yel+"44":isLeaderRow?C.acc+"33":C.brd}`,borderRadius:8,padding:"12px 14px",opacity:m.status==="inactive"?0.72:1}}>
+      <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            <span style={{fontSize:13,fontWeight:600,color:C.txt,overflow:"hidden",textOverflow:"ellipsis"}}>{m.name||m.email||"Unknown"}</span>
+            <span style={tagS(CTRL_ROLE_TAG[m.role]||"")}>{isOwnerRow?"Owner":m.role}</span>
+            <span style={tagS(m.status==="active"?"green":m.status==="pending"?"yellow":"")}>{m.status==="pending"?"Pending invite":m.status}</span>
+          </div>
+          <div style={{fontSize:11,color:C.muted,marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.name?m.email:""}</div>
+        </div>
+        {editable?(
+          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+            <select value={currentPreset} disabled={busy}
+              onChange={e=>{if(e.target.value)onPatch({preset:e.target.value});}}
+              title="Apply a role/permission preset (resets per-member toggles to the preset)"
+              style={{...inp,width:"auto",fontSize:11,padding:"4px 8px",opacity:busy?0.6:1}}>
+              {!currentPreset&&<option value="">Custom · {m.role}</option>}
+              {presetOptions.map(p=><option key={p} value={p}>{(PERMISSION_PRESETS[p]&&PERMISSION_PRESETS[p].label)||p}</option>)}
+            </select>
+            <label style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11,color:C.txt2,cursor:m.status==="pending"?"default":"pointer",userSelect:"none"}}>
+              <input type="checkbox" checked={m.status==="active"} disabled={busy||m.status==="pending"}
+                onChange={e=>onPatch({status:e.target.checked?"active":"inactive"})}
+                style={{accentColor:C.grn,width:14,height:14}}/>
+              Active
+            </label>
+            <button onClick={onRemove} disabled={busy} style={{...btnS("ghost"),fontSize:11,padding:"4px 10px"}}>Remove</button>
+          </div>
+        ):canManage&&locked?(
+          <span style={{fontSize:10.5,color:C.muted,fontStyle:"italic"}}>🔒 {isOwnerRow?"Owner permissions cannot be changed.":"Only the owner can change leader rows."}</span>
+        ):(
+          <span style={{fontSize:10,fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>joined {fmtDate(m.joinedAt)}</span>
+        )}
+      </div>
+      {/* Quick permissions + full per-flag matrix */}
+      <div style={{marginTop:10,paddingTop:9,borderTop:`1px solid ${C.brd}`,display:"flex",alignItems:"center",gap:editable?16:14,flexWrap:"wrap"}}>
+        <span style={{fontSize:9,fontWeight:700,color:C.muted,letterSpacing:0.8,textTransform:"uppercase"}}>Permissions</span>
+        {editable
+          ?quick.map(([k,label])=>(
+            <label key={k} style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11,color:C.txt2,cursor:"pointer",userSelect:"none"}}>
+              <input type="checkbox" checked={!!m[k]} disabled={busy} onChange={e=>onPatch({[k]:e.target.checked})}
+                style={{accentColor:C.acc,width:14,height:14}}/>
+              {label}
+            </label>))
+          :quick.map(([k,label])=><CtrlPermDot key={k} on={!!m[k]} label={label}/>)}
+        {editable&&(
+          <button onClick={()=>setShowAll(s=>!s)}
+            style={{background:"none",border:"none",cursor:"pointer",padding:0,fontSize:11,fontFamily:"'IBM Plex Sans',sans-serif",color:C.acc}}>
+            {showAll?"▾ Fewer permissions":"▸ All permissions"}
+          </button>
+        )}
+      </div>
+      {editable&&showAll&&(
+        <div style={{marginTop:10,background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 12px",display:"flex",flexDirection:"column",gap:10}}>
+          {CTRL_PERM_GROUPS.filter(g=>!g.ownerOnly||amOwner).map(g=>(
+            <div key={g.title}>
+              <div style={{fontSize:9,fontWeight:700,color:C.muted,letterSpacing:0.8,textTransform:"uppercase",marginBottom:7}}>{g.title}</div>
+              <div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
+                {g.keys.map(([k,label])=>(
+                  <label key={k} style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11,color:C.txt2,cursor:"pointer",userSelect:"none"}}>
+                    <input type="checkbox" checked={!!m[k]} disabled={busy} onChange={e=>onPatch({[k]:e.target.checked})}
+                      style={{accentColor:C.acc,width:14,height:14}}/>
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {rowErr&&<div style={{marginTop:10,background:"#3b0d12",border:`1px solid ${C.red}44`,borderRadius:6,padding:"7px 11px",color:C.red,fontSize:11.5}}>{rowErr}</div>}
+    </div>
+  );
+}
+
+function CtrlAddMember({lid,amOwner,onAdded}){
+  const[email,setEmail]=useState("");
+  const[preset,setPreset]=useState("reviewer");
+  const[modules,setModules]=useState("both");
+  const[busy,setBusy]=useState(false);
+  const[err,setErr]=useState("");
+  const[note,setNote]=useState("");
+  const presets=amOwner?CTRL_ADD_PRESETS:CTRL_ADD_PRESETS.filter(([v])=>v!=="leader");
+  const submit=async()=>{
+    const v=email.trim();
+    if(!v){setErr("Email is required.");return;}
+    setBusy(true);setErr("");setNote("");
+    try{
+      const res=await screeningApi.addMember(lid,{email:v,preset,modules});
+      setEmail("");
+      setNote(res&&res.pending?"Invite created — they'll join automatically once they register with this email.":"Member added.");
+      await onAdded();
+    }catch(e){setErr(e.message||"Could not add member.");}
+    setBusy(false);
+  };
+  return(
+    <div style={{background:C.bg,border:`1px dashed ${C.brd2}`,borderRadius:8,padding:"12px 14px",marginTop:10}}>
+      <div style={{fontSize:11,fontWeight:700,color:C.txt2,marginBottom:9}}>+ Add member</div>
+      <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+        <input type="email" value={email} disabled={busy} placeholder="colleague@example.com"
+          onChange={e=>{setEmail(e.target.value);setErr("");}}
+          onKeyDown={e=>{if(e.key==="Enter")submit();}}
+          style={{...inp,width:220,fontSize:12}}/>
+        <select value={preset} disabled={busy} onChange={e=>setPreset(e.target.value)} style={{...inp,width:"auto",fontSize:11,padding:"6px 8px"}}>
+          {presets.map(([v,label])=><option key={v} value={v}>{label}</option>)}
+        </select>
+        <select value={modules} disabled={busy} onChange={e=>setModules(e.target.value)} title="Which app(s) the member participates in" style={{...inp,width:"auto",fontSize:11,padding:"6px 8px"}}>
+          {CTRL_MODULE_OPTIONS.map(([v,label])=><option key={v} value={v}>{label}</option>)}
+        </select>
+        <button onClick={submit} disabled={busy} style={{...btnS("primary"),fontSize:11,opacity:busy?0.6:1}}>{busy?"Adding…":"Add member"}</button>
+      </div>
+      <div style={{fontSize:10.5,color:C.muted,marginTop:7,lineHeight:1.5}}>
+        Presets set META·LAB + META·SIFT permissions across the linked workspace; “Participates in” narrows which app(s) they can open. Unregistered emails get a pending invite.
+      </div>
+      {note&&<div style={{marginTop:8,fontSize:11.5,color:C.grn}}>✓ {note}</div>}
+      {err&&<div style={{marginTop:8,fontSize:11.5,color:C.red}}>{err}</div>}
+    </div>
+  );
+}
+
+function ControlTab({project,onAnnotate}){
+  const lid=linkedSiftId(project);
+  const perms=projectPerms(project);
+  const amProjectOwner=!project._shared;
+  // Workspace membership payload — also resolves OUR authority in the workspace.
+  const[data,setData]=useState({loading:!!lid,members:[],isOwner:false,isLeader:false,canManageMembers:false,myRole:null,error:null});
+  const[sp,setSp]=useState(null);   // linked ScreenProject row (status, flags)
+  const[spErr,setSpErr]=useState("");
+  const[busyId,setBusyId]=useState(null);
+  const[rowErr,setRowErr]=useState({});
+  const[confirmRemove,setConfirmRemove]=useState(null);
+  const[statusBusy,setStatusBusy]=useState(false);
+  const[statusFlash,setStatusFlash]=useState(false);
+  const[linkBusy,setLinkBusy]=useState(false);
+  const[linkErr,setLinkErr]=useState("");
+
+  const loadMembers=useCallback(async()=>{
+    if(!lid){setData(d=>({...d,loading:false}));return;}
+    setData(d=>({...d,loading:true,error:null}));
+    try{
+      const d=await screeningApi.listMembers(lid);
+      setData({loading:false,members:d.members||[],isOwner:!!d.isOwner,isLeader:!!d.isLeader,
+        canManageMembers:!!d.canManageMembers,myRole:d.myRole||null,error:null});
+    }catch(e){
+      setData({loading:false,members:[],isOwner:false,isLeader:false,canManageMembers:false,myRole:null,
+        error:e.message||"Couldn't load the workspace members."});
+    }
+  },[lid]);
+  const loadSp=useCallback(async()=>{
+    if(!lid){setSp(null);return;}
+    try{setSp(await screeningApi.getProject(lid));setSpErr("");}
+    catch(e){setSpErr(e.message||"Couldn't load the linked workspace.");}
+  },[lid]);
+  useEffect(()=>{loadMembers();loadSp();},[loadMembers,loadSp]);
+
+  const amOwner=data.isOwner;
+  const canManage=data.canManageMembers||data.isLeader||data.isOwner;
+  const canManageStatus=!!(sp&&(sp.canManageSettings||sp.isLeader||sp.isOwner));
+  const leaders=data.members.filter(m=>m.role==="leader"&&!m.isOwner);
+  const ownerRow=data.members.find(m=>m.isOwner||m.role==="owner")||null;
+
+  // Optimistic member patch with revert (preset / status / per-flag toggles).
+  const patchMember=async(m,body)=>{
+    setBusyId(m.id);setRowErr(er=>({...er,[m.id]:""}));
+    const prev=data.members;
+    setData(d=>({...d,members:d.members.map(x=>x.id===m.id
+      ?{...x,...body,...(body.preset?{permissionPreset:body.preset}:{})}:x)}));
+    try{
+      await screeningApi.updateMember(lid,m.id,body);
+      await loadMembers(); // authoritative state (presets change many flags)
+    }catch(e){
+      setData(d=>({...d,members:prev})); // revert
+      setRowErr(er=>({...er,[m.id]:e.message||"Update failed."}));
+    }
+    setBusyId(null);
+  };
+  const removeMember=async(m)=>{
+    setBusyId(m.id);setRowErr(er=>({...er,[m.id]:""}));
+    try{
+      await screeningApi.removeMember(lid,m.id);
+      setConfirmRemove(null);
+      await loadMembers();
+    }catch(e){setRowErr(er=>({...er,[m.id]:e.message||"Remove failed."}));}
+    setBusyId(null);
+  };
+  // Project status lives on the ScreenProject (the workspace) — optimistic + revert.
+  const setStatus=async(v)=>{
+    if(!sp)return;
+    const prev=sp.progressStatus;
+    setStatusBusy(true);setSpErr("");
+    setSp(s=>({...s,progressStatus:v}));
+    try{
+      await screeningApi.updateProject(lid,{progressStatus:v});
+      setStatusFlash(true);setTimeout(()=>setStatusFlash(false),1400);
+    }catch(e){
+      setSp(s=>({...s,progressStatus:prev}));
+      setSpErr(e.message||"Could not change the project status.");
+    }
+    setStatusBusy(false);
+  };
+  // "Create & link META·SIFT" (owner only — the server validates ownership).
+  const createLink=async()=>{
+    setLinkBusy(true);setLinkErr("");
+    try{
+      const created=await screeningApi.createProject({title:project.name||"Screening project",linkedMetaLabProjectId:project.id});
+      // Refresh the local annotations so the whole app sees the link instantly.
+      onAnnotate(project.id,{_linkedMetaSift:{id:created.id,title:created.title}});
+    }catch(e){setLinkErr(e.message||"Could not create the screening project.");}
+    setLinkBusy(false);
+  };
+
+  const card={background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:14};
+  const secLbl={fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:0.8,textTransform:"uppercase",marginBottom:9};
+  const spStatus=(sp&&sp.progressStatus)||"not_started";
+  const statusMeta=CTRL_STATUS_OPTIONS.find(o=>o.value===spStatus);
+
+  return(<div>
+    <SectionHeader icon="👥" title="Project Control"
+      desc="Manage the shared Review Workspace — status, members, roles, permissions, and the META·SIFT link — all in one place."
+      badge={`Your role · ${perms.role}`}/>
+
+    {perms.readOnly&&(
+      <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 14px",marginBottom:14,fontSize:12,color:C.txt2,display:"flex",alignItems:"center",gap:8}}>
+        <span style={{fontSize:14}}>🔒</span>
+        Read-only access — you can view project information here, but only the owner or a leader can change settings.
+      </div>
+    )}
+
+    {/* Project info */}
+    <div style={card}>
+      <div style={secLbl}>Project info</div>
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",columnGap:24,rowGap:2}}>
+        {[["Name",project.name],
+          ["Owner",ownerRow?(ownerRow.name||ownerRow.email):(project._owner?(project._owner.name||project._owner.email):"You")],
+          ["Created",fmtDate(project.created||project.createdAt)],
+          ["Last modified",fmtDate(project.modified||project.updatedAt)],
+          ["Studies in extraction",String((project.studies||[]).length)],
+          ["Workspace",lid?((project._linkedMetaSift&&project._linkedMetaSift.title)||(sp&&sp.title)||"Linked"):"Not linked"],
+        ].map(([k,v])=>(
+          <div key={k} style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:12,padding:"4px 0"}}>
+            <span style={{color:C.muted,flexShrink:0}}>{k}</span>
+            <span style={{color:C.txt2,textAlign:"right",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+
+    {/* Status + linked workspace */}
+    {lid?(
+      <div style={card}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          <div style={secLbl}>Project status &amp; link{statusFlash&&<span style={{marginLeft:8,color:C.grn,textTransform:"none",letterSpacing:0,fontFamily:"'IBM Plex Mono',monospace"}}>✓ saved</span>}</div>
+        </div>
+        {spErr&&<div style={{fontSize:11.5,color:C.red,marginBottom:8}}>{spErr}</div>}
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:12}}>
+          <div>
+            <div style={{fontSize:12.5,color:C.txt,fontWeight:600}}>Status</div>
+            <div style={{fontSize:11,color:C.muted,marginTop:2}}>Where this review stands — stored on the shared workspace, visible in both apps.</div>
+          </div>
+          {canManageStatus?(
+            <select value={spStatus} disabled={statusBusy}
+              onChange={e=>setStatus(e.target.value)}
+              style={{...inp,width:"auto",fontSize:12,padding:"6px 10px",opacity:statusBusy?0.6:1}}>
+              {CTRL_STATUS_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          ):(
+            <span style={tagS(spStatus==="done"?"green":spStatus==="in_progress"?"blue":"")}>{statusMeta?statusMeta.label:spStatus}</span>
+          )}
+        </div>
+        <div style={{borderTop:`1px solid ${C.brd}`,paddingTop:12,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+          <span style={tagS("green")}>🔗 {(project._linkedMetaSift&&project._linkedMetaSift.title)||(sp&&sp.title)||"Linked META·SIFT project"}</span>
+          <button onClick={()=>{window.location.href=`/sift-beta/projects/${lid}`;}} style={{...btnS("ghost"),fontSize:11}}>Open in META·SIFT →</button>
+          <span style={{fontSize:10.5,color:C.muted}}>Accepted second-review studies hand off to Data Extraction; PRISMA numbers sync from screening.</span>
+        </div>
+      </div>
+    ):(
+      <div style={{...card,borderColor:"#2dd4bf40",background:C.bg}}>
+        <div style={{...secLbl,color:"#2dd4bf"}}>Create &amp; link META·SIFT</div>
+        <div style={{fontSize:12,color:C.muted,lineHeight:1.6,marginBottom:12}}>
+          This review has no linked screening project yet. Create one to screen titles/abstracts with your team in META·SIFT —
+          same owner and title, shared members and permissions, PRISMA numbers and accepted studies flow back here automatically.
+        </div>
+        {linkErr&&<div style={{fontSize:11.5,color:C.red,marginBottom:8}}>{linkErr}</div>}
+        {amProjectOwner?(
+          <button onClick={createLink} disabled={linkBusy} style={btnS("primary")}>
+            {linkBusy?"Creating…":"+ Create & link META·SIFT project"}
+          </button>
+        ):(
+          <div style={{fontSize:11.5,color:C.muted,fontStyle:"italic"}}>Only the project owner can create the linked screening project.</div>
+        )}
+      </div>
+    )}
+
+    {/* Members & permissions — the workspace is the source of truth */}
+    <div style={card}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:4}}>
+        <div style={secLbl}>Members &amp; permissions</div>
+        {lid&&!data.loading&&!data.error&&(
+          <span style={{fontSize:10.5,fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>
+            {data.members.length} member{data.members.length===1?"":"s"}{leaders.length>0?` · ${leaders.length} leader${leaders.length===1?"":"s"}`:""}
+          </span>
+        )}
+      </div>
+      {!lid?(
+        <div style={{fontSize:12,color:C.muted,lineHeight:1.6}}>
+          Members are managed through the linked META·SIFT workspace. Create the link above to invite collaborators —
+          everyone you add participates in both apps according to their permissions.
+        </div>
+      ):data.loading?(
+        <div style={{fontSize:12,color:C.muted}}>Loading members…</div>
+      ):data.error?(
+        <div style={{fontSize:12,color:C.yel}}>⚠ {data.error} <button onClick={loadMembers} style={{...btnS("ghost"),fontSize:10,padding:"2px 8px",marginLeft:6}}>↻ Retry</button></div>
+      ):(<>
+        {!canManage&&(
+          <div style={{fontSize:11.5,color:C.muted,marginBottom:10}}>🔒 Only the owner or a leader can manage members — shown read-only.</div>
+        )}
+        <div style={{display:"flex",flexDirection:"column",gap:8}}>
+          {data.members.map(m=>(
+            <CtrlMemberRow key={m.id} m={m} canManage={canManage} amOwner={amOwner}
+              busy={busyId===m.id} rowErr={rowErr[m.id]}
+              onPatch={(body)=>patchMember(m,body)}
+              onRemove={()=>setConfirmRemove(m)}/>
+          ))}
+        </div>
+        {canManage&&<CtrlAddMember lid={lid} amOwner={amOwner} onAdded={loadMembers}/>}
+      </>)}
+    </div>
+
+    {/* Remove confirm modal */}
+    {confirmRemove&&(
+      <div className="modal-bg" style={{position:"fixed",inset:0,background:"#00000099",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <div style={{background:C.surf,border:`1px solid ${C.red}44`,borderRadius:14,padding:26,width:400,boxShadow:"0 24px 80px #000000bb"}}>
+          <div style={{fontSize:15,fontWeight:800,marginBottom:6,color:C.txt}}>Remove member?</div>
+          <div style={{fontSize:12.5,color:C.muted,marginBottom:8,lineHeight:1.6}}>
+            Remove <strong style={{color:C.txt}}>{confirmRemove.name||confirmRemove.email}</strong> from this workspace?
+            They lose access to both META·LAB and META·SIFT for this project.
+          </div>
+          {rowErr[confirmRemove.id]&&<div style={{fontSize:11.5,color:C.red,marginBottom:8}}>{rowErr[confirmRemove.id]}</div>}
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:14}}>
+            <button onClick={()=>setConfirmRemove(null)} disabled={busyId===confirmRemove.id} style={btnS("ghost")}>Cancel</button>
+            <button onClick={()=>removeMember(confirmRemove)} disabled={busyId===confirmRemove.id} style={btnS("danger")}>
+              {busyId===confirmRemove.id?"Removing…":"Remove"}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+    <InfoBox>💡 The shared Review Workspace (the META·SIFT project) is the source of truth for owner, leaders, members, roles, and permissions — changes here apply to both apps immediately. Leaders can manage members but cannot edit the owner or assign the Leader preset.</InfoBox>
+  </div>);
+}
+
+/* ════════════ MAIN APP ════════════ */
+
+let _versionCache=null; // module-level so remounts don't refetch (same pattern as UserMenu.jsx)
 
 export default function MetaLab(){
   const[projects,setProjects]=useState([]);
   const[activeId,setActiveId]=useState(null);
-  const[tab,setTab]=useState("pico");
+  const[tab,setTab]=useState("overview"); // Overview is the landing tab (prompt6 Task 15)
   const[loading,setLoading]=useState(true);
   const[newName,setNewName]=useState("");
+  const[withSift,setWithSift]=useState(true);          // Task 2 — default ON
+  const[creatingProject,setCreatingProject]=useState(false);
+  const[createWarning,setCreateWarning]=useState("");   // Task 2 — non-fatal SIFT-create warning
+  const[deepLinkMiss,setDeepLinkMiss]=useState(null);   // Task 3 — ?project= id we couldn't open
   const[showModal,setShowModal]=useState(false);
   const[confirmDel,setConfirmDel]=useState(null);
   const[showAudit,setShowAudit]=useState(false);
+  const[appVersion,setAppVersion]=useState(_versionCache);
+
+  // Sidebar footer version from the shared GET /api/version (prompt6) —
+  // silent fallback: on any error the footer just shows the static label.
+  useEffect(()=>{
+    if(_versionCache)return;
+    fetch("/api/version",{credentials:"include"})
+      .then(r=>r.ok?r.json():null)
+      .then(v=>{if(v?.version){_versionCache=v.version;setAppVersion(v.version);}})
+      .catch(()=>{});
+  },[]);
 
   useEffect(()=>{(async()=>{
+    // Deep-link receiver (prompt6 Task 3) — the ?project= param is consumed in
+    // the SAME effect that loads the project list, so it can never race the fetch.
+    let want=null;
+    try{want=new URLSearchParams(window.location.search).get("project");}catch(_){}
+    let pjs=[];
     try{const res=await window.storage.get("meta:projects");
-      if(res?.value){const pjs=JSON.parse(res.value);setProjects(pjs);if(pjs.length)setActiveId(pjs[0].id);}
+      if(res?.value){pjs=JSON.parse(res.value);setProjects(pjs);}
     }catch(_){}
+    if(want){
+      if(pjs.some(p=>p.id===want)){setActiveId(want);setTab("overview");}
+      // NEVER silently fall back to the first project — show the explicit
+      // no-access panel instead (rendered in the main content area).
+      else setDeepLinkMiss(want);
+      // Drop the param once consumed so refresh / project switching doesn't snap back.
+      try{window.history.replaceState({},"",window.location.pathname);}catch(_){}
+    } else if(pjs.length){setActiveId(pjs[0].id);}
     setLoading(false);
   })();},[]);
 
@@ -6739,18 +7492,119 @@ export default function MetaLab(){
   },[]);
 
   const updateProject=useCallback((id,updater)=>{
-    setProjects(prev=>{const next=prev.map(p=>p.id===id?{...updater(p),modified:now()}:p);save(next);return next;});
+    setProjects(prev=>{
+      // prompt6 Task 5 — viewer read-only gate. This is the single client-side
+      // write choke point (upd / updNested / every tab handler funnel through
+      // here): silently no-op any mutation of a read-only shared project. The
+      // server independently no-ops their autosaves (defense-in-depth).
+      const target=prev.find(p=>p.id===id);
+      if(target&&((target._permissions&&target._permissions.readOnly)||target._readOnly)) return prev;
+      const next=prev.map(p=>p.id===id?{...updater(p),modified:now()}:p);save(next);return next;});
   },[save]);
+
+  // Merge transient (underscore) annotations into local state WITHOUT triggering
+  // an autosave — used after "Create & link META·SIFT" so the link shows instantly.
+  const patchAnnotations=useCallback((id,patch)=>{
+    setProjects(prev=>prev.map(p=>p.id===id?{...p,...patch}:p));
+  },[]);
+
+  // prompt6 Task 18 — rename goes through the REAL PUT /api/projects/:id (never
+  // the autosave blob path) so the server's sync-if-in-sync rename of the linked
+  // META·SIFT title fires. Owner → 200 bare project; member with canEdit → 200
+  // annotated; member without canEdit → 403 (surfaced inline, never thrown).
+  const renameProject=useCallback(async(id,newNameRaw)=>{
+    const name=String(newNameRaw||"").trim();
+    const proj=projects.find(p=>p.id===id);
+    if(!proj) return {ok:false,error:"Project not found."};
+    if(!name) return {ok:false,error:"Name cannot be empty."};
+    if(name===proj.name) return {ok:true};
+    try{
+      const r=await fetch(`/api/projects/${id}`,{method:"PUT",credentials:"include",
+        headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
+      if(!r.ok){
+        const d=await r.json().catch(()=>({}));
+        return {ok:false,error:d.error||(r.status===403
+          ?"Read-only access — you do not have permission to rename this project."
+          :`Rename failed (${r.status}).`)};
+      }
+      setProjects(prev=>prev.map(p=>{
+        if(p.id!==id) return p;
+        const next={...p,name,modified:now()};
+        // Mirror the server's sync-if-in-sync so the linked title stays fresh locally.
+        if(next._linkedMetaSift&&next._linkedMetaSift.title===proj.name)
+          next._linkedMetaSift={...next._linkedMetaSift,title:name};
+        return next;
+      }));
+      return {ok:true};
+    }catch(_){ return {ok:false,error:"Could not reach the server."}; }
+  },[projects]);
+
+  // ── Realtime collaboration pokes (prompt6 Task 7) ──────────────────────────
+  // META·LAB persistence is a whole-blob autosave (last-write-wins), so a remote
+  // refetch is NEVER applied while local edits are unsaved or in flight
+  // (hasPendingSave) — that would clobber them. Dirty → "updated by a
+  // collaborator" banner; clean → silent refetch. Events are thin pokes with no
+  // content; all data still loads through the normal authorized endpoints.
+  const projectsRef=useRef(projects);projectsRef.current=projects;
+  const activeIdRef=useRef(activeId);activeIdRef.current=activeId;
+  const[remoteUpdate,setRemoteUpdate]=useState(false);
+  const refetchProjects=useCallback(async()=>{
+    try{
+      const res=await window.storage.get("meta:projects");
+      if(!res?.value)return false;
+      if(hasPendingSave())return false; // edits began during the fetch — keep local state
+      setProjects(JSON.parse(res.value));
+      return true;
+    }catch(_){return false;}
+  },[]);
+  // Banner action: persist local edits FIRST (last-write-wins, by design), then pull.
+  const applyRemoteUpdate=useCallback(async()=>{
+    try{await flushStorage();}catch(_){/* best-effort */}
+    if(await refetchProjects())setRemoteUpdate(false);
+  },[refetchProjects]);
+  useRealtime({
+    "project.updated":(ev)=>{
+      const mlId=ev&&ev.metaLabProjectId;
+      if(!mlId||!projectsRef.current.some(p=>p.id===mlId))return;
+      if(hasPendingSave()){if(mlId===activeIdRef.current)setRemoteUpdate(true);return;}
+      refetchProjects().then(ok=>{if(ok&&mlId===activeIdRef.current)setRemoteUpdate(false);});
+    },
+    // List-level pokes — refresh _role/_readOnly/_linkedMetaSift annotations,
+    // but only when clean (annotations otherwise refresh on the next load).
+    "members.changed":()=>{if(!hasPendingSave())refetchProjects();},
+    "permissions.changed":()=>{if(!hasPendingSave())refetchProjects();},
+  });
 
   const project=useMemo(()=>projects.find(p=>p.id===activeId)||null,[projects,activeId]);
   const upd=useCallback((field,val)=>{if(activeId)updateProject(activeId,p=>({...p,[field]:val}));},[activeId,updateProject]);
   const updNested=useCallback((field,key,val)=>{if(activeId)updateProject(activeId,p=>({...p,[field]:{...p[field],[key]:val}}));},[activeId,updateProject]);
 
-  const confirmAdd=()=>{
-    const name=newName.trim();if(!name)return;
-    const p=mkProject(name),next=[p,...projects];
-    setProjects(next);setActiveId(p.id);setTab("pico");save(next);
-    setShowModal(false);setNewName("");
+  // prompt6 Task 2 — create on the server so the linked META·SIFT project can be
+  // created atomically server-side. Handles BOTH response shapes:
+  //   checked   → POST {name, createLinkedSift:true} → {project, linkedScreenProject, warning?}
+  //   unchecked → POST {name}                        → bare project (legacy shape)
+  // Network/server failure falls back to the legacy local create (autosave upserts it).
+  const confirmAdd=async()=>{
+    const name=newName.trim();if(!name||creatingProject)return;
+    setCreatingProject(true);
+    let proj=null,warning="";
+    try{
+      const r=await fetch("/api/projects",{method:"POST",credentials:"include",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify(withSift?{name,createLinkedSift:true}:{name})});
+      if(r.ok){
+        const data=await r.json();
+        proj=data&&data.project?data.project:data; // {project, linkedScreenProject} vs bare
+        if(data&&data.warning)warning=data.warning;
+      }
+    }catch(_){/* offline / proxy error → local fallback below */}
+    if(!proj||!proj.id){
+      proj=mkProject(name);
+      if(withSift)warning="Project created locally — the linked META·SIFT screening project could not be created. You can create or link one later from Project Control.";
+    }
+    const next=[proj,...projects];
+    setProjects(next);setActiveId(proj.id);setTab("overview");save(next);
+    setCreatingProject(false);setShowModal(false);setNewName("");setCreateWarning(warning);
   };
   const confirmDelete=()=>{
     const id=confirmDel,next=projects.filter(p=>p.id!==id);
@@ -7004,10 +7858,23 @@ export default function MetaLab(){
         <input autoFocus value={newName} onChange={e=>setNewName(e.target.value)}
           onKeyDown={e=>{if(e.key==="Enter")confirmAdd();if(e.key==="Escape")setShowModal(false);}}
           placeholder="e.g. Metformin in T2DM — systematic review 2025"
-          style={{...inp,marginBottom:18,fontSize:13}}/>
+          style={{...inp,marginBottom:14,fontSize:13}}/>
+        {/* prompt6 Task 2 — linked META·SIFT screening project, default ON */}
+        <label style={{display:"flex",alignItems:"flex-start",gap:9,cursor:"pointer",marginBottom:18,userSelect:"none"}}>
+          <input type="checkbox" checked={withSift} onChange={e=>setWithSift(e.target.checked)}
+            style={{accentColor:C.acc,width:15,height:15,marginTop:1,flexShrink:0}}/>
+          <span style={{fontSize:12,color:C.txt2,lineHeight:1.5}}>
+            Create linked <strong style={{color:"#2dd4bf"}}>META·SIFT</strong> screening project
+            <span style={{display:"block",fontSize:10.5,color:C.muted,marginTop:2}}>
+              Same owner and title — screening decisions, PRISMA numbers, and accepted studies sync into this review.
+            </span>
+          </span>
+        </label>
         <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
-          <button onClick={()=>setShowModal(false)} style={btnS("ghost")}>Cancel</button>
-          <button onClick={confirmAdd} disabled={!newName.trim()} style={{...btnS("primary"),opacity:newName.trim()?1:0.45}}>Create Project</button>
+          <button onClick={()=>setShowModal(false)} disabled={creatingProject} style={btnS("ghost")}>Cancel</button>
+          <button onClick={confirmAdd} disabled={!newName.trim()||creatingProject} style={{...btnS("primary"),opacity:(newName.trim()&&!creatingProject)?1:0.45}}>
+            {creatingProject?"Creating…":"Create Project"}
+          </button>
         </div>
       </div>
     </div>)}
@@ -7070,7 +7937,7 @@ export default function MetaLab(){
         <div style={{maxHeight:180,overflowY:"auto"}}>
           {projects.length===0&&<div style={{fontSize:11,color:C.dim,padding:"8px 6px",textAlign:"center"}}>No projects yet</div>}
           {projects.map(p=>(
-            <div key={p.id} onClick={()=>{setActiveId(p.id);setTab("pico");}}
+            <div key={p.id} onClick={()=>{setActiveId(p.id);setTab("overview");setDeepLinkMiss(null);}}
               className="nav-item"
               style={{
                 display:"flex",alignItems:"center",gap:8,padding:"7px 9px",borderRadius:8,
@@ -7100,6 +7967,16 @@ export default function MetaLab(){
                       {p._readOnly?"View":"Shared"}
                     </span>
                   )}
+                  {/* Linked META·SIFT badge (prompt6 Task 2) — opens the EXACT linked screening project */}
+                  {p._linkedMetaSift&&p._linkedMetaSift.id&&(
+                    <span title={`Linked META·SIFT: ${p._linkedMetaSift.title||"screening project"} — click to open`}
+                      onClick={e=>{e.stopPropagation();window.location.href=`/sift-beta/projects/${p._linkedMetaSift.id}`;}}
+                      style={{flexShrink:0,fontSize:8,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",
+                        padding:"1px 5px",borderRadius:4,cursor:"pointer",
+                        color:"#2dd4bf",background:"#2dd4bf1a",border:"1px solid #2dd4bf40"}}>
+                      ⬡ Sift
+                    </span>
+                  )}
                 </div>
                 <div style={{fontSize:9,color:C.muted,marginTop:2}}>
                   {p.createdAt?`Created ${fmtDate(p.createdAt)}`:fmtDate(p.modified)}
@@ -7120,17 +7997,35 @@ export default function MetaLab(){
         </div>
       </div>
 
+      {/* Project — meta tabs (Overview, Project Control); phase:null keeps them
+          out of the workflow map, progress math, and the "Next step" walker */}
+      {project&&(
+        <div style={{padding:"8px 8px 6px",borderBottom:`1px solid ${C.brd}`}}>
+          <div style={{fontSize:9,fontWeight:700,color:C.muted,letterSpacing:0.8,textTransform:"uppercase",marginBottom:6,padding:"0 10px"}}>Project</div>
+          {TABS.filter(t=>t.group==="project").map(t=>{
+            const on=tab===t.id;
+            return(<div key={t.id} onClick={()=>setTab(t.id)} className="nav-item"
+              style={{display:"flex",alignItems:"center",gap:9,padding:"6px 10px",borderRadius:7,cursor:"pointer",marginBottom:1,
+                background:on?`${C.acc}1a`:"transparent"}}>
+              <span style={{fontSize:13,flexShrink:0,opacity:0.85}}>{t.icon}</span>
+              <span style={{fontSize:12,color:on?C.acc:C.txt2,fontWeight:on?600:400,flex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{t.label}</span>
+            </div>);
+          })}
+        </div>
+      )}
+
       {/* Workflow steps */}
       {project&&(()=>{
         const status=stepStatus(project);
+        const wfTabs=TABS.filter(t=>t.phase); // workflow steps only — phase:null reference tabs stay out of progress math
         const doneCount=Object.values(status).filter(s=>s==="done").length;
         return(<div style={{padding:"8px 8px",flex:1,overflowY:"auto"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"2px 8px",marginBottom:8}}>
             <span style={{fontSize:9,fontWeight:700,color:C.muted,letterSpacing:0.8,textTransform:"uppercase"}}>Workflow</span>
             <span style={{
               fontSize:9,fontWeight:600,fontFamily:"'IBM Plex Mono',monospace",
-              color:doneCount===TABS.length?C.grn:C.muted,
-            }}>{doneCount}/{TABS.length}</span>
+              color:doneCount===wfTabs.length?C.grn:C.muted,
+            }}>{doneCount}/{wfTabs.length}</span>
           </div>
           {PHASES.map(phase=>{
             const steps=TABS.filter(t=>t.phase===phase);
@@ -7181,28 +8076,28 @@ export default function MetaLab(){
         </div>);
       })()}
 
-      {/* Downloads */}
-      <div style={{padding:"8px 10px 6px",borderTop:`1px solid ${C.brd}`}}>
-        <div style={{fontSize:9,fontWeight:700,color:C.muted,letterSpacing:0.8,textTransform:"uppercase",marginBottom:6,padding:"0 6px"}}>Templates</div>
-        {DOCS.map(doc=>(
-          <div key={doc.id} onClick={()=>downloadDoc(doc)}
-            className="nav-item"
-            style={{display:"flex",alignItems:"center",gap:9,padding:"6px 8px",borderRadius:7,cursor:"pointer",marginBottom:1}}>
-            <span style={{fontSize:14,flexShrink:0,opacity:0.8}}>{doc.icon}</span>
-            <div style={{flex:1,minWidth:0}}>
-              <div style={{fontSize:11,fontWeight:500,color:C.txt2,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{doc.label}</div>
-            </div>
-            <span style={{fontSize:10,color:C.muted,flexShrink:0}}>↓</span>
-          </div>
-        ))}
-      </div>
+      {/* Reference — phase:null tabs (Methods & Equations), outside the PRISMA workflow */}
+      {project&&(
+        <div style={{padding:"8px 8px 6px",borderTop:`1px solid ${C.brd}`}}>
+          <div style={{fontSize:9,fontWeight:700,color:C.muted,letterSpacing:0.8,textTransform:"uppercase",marginBottom:6,padding:"0 10px"}}>Reference</div>
+          {TABS.filter(t=>t.group==="reference").map(t=>{
+            const on=tab===t.id;
+            return(<div key={t.id} onClick={()=>setTab(t.id)} className="nav-item"
+              style={{display:"flex",alignItems:"center",gap:9,padding:"6px 10px",borderRadius:7,cursor:"pointer",marginBottom:1,
+                background:on?`${C.acc}1a`:"transparent"}}>
+              <span style={{fontSize:13,flexShrink:0,opacity:0.85}}>{t.icon}</span>
+              <span style={{fontSize:12,color:on?C.acc:C.txt2,fontWeight:on?600:400,flex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{t.label}</span>
+            </div>);
+          })}
+        </div>
+      )}
 
       {/* Footer */}
       <div style={{
         padding:"8px 14px",borderTop:`1px solid ${C.brd}`,
         display:"flex",alignItems:"center",justifyContent:"space-between",
       }}>
-        <div style={{fontSize:9,color:C.dim,fontFamily:"'IBM Plex Mono',monospace"}}>v2.0 · PRISMA 2020</div>
+        <div style={{fontSize:9,color:C.dim,fontFamily:"'IBM Plex Mono',monospace"}}>{appVersion?`v${appVersion} · `:""}PRISMA 2020</div>
         {project&&<button onClick={()=>exportProject(false)} title="Export project as JSON" style={{
           background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:10,
           padding:"2px 4px",borderRadius:4,transition:"color 0.15s",
@@ -7215,7 +8110,44 @@ export default function MetaLab(){
 
     {/* Main content */}
     <div style={{marginLeft:256,flex:1,padding:"28px 36px 56px",overflowY:"auto",minHeight:"100vh"}}>
-      {!project?(
+      {/* Non-fatal create warning (prompt6 Task 2) — e.g. linked SIFT creation failed */}
+      {createWarning&&(
+        <div style={{maxWidth:960,marginBottom:18,padding:"10px 14px",borderRadius:8,fontSize:12.5,display:"flex",alignItems:"flex-start",gap:9,
+          background:C.yel+"14",border:`1px solid ${C.yel}40`}}>
+          <span style={{fontSize:14,flexShrink:0}}>⚠</span>
+          <span style={{color:C.txt2,lineHeight:1.5,flex:1}}>{createWarning}</span>
+          <button onClick={()=>setCreateWarning("")} style={{background:"none",border:"none",color:C.muted,fontSize:16,cursor:"pointer",padding:0,lineHeight:1,flexShrink:0}}>×</button>
+        </div>
+      )}
+      {remoteUpdate&&(
+        /* Realtime conflict banner (prompt6 Task 7): a collaborator changed this
+           project while local edits were unsaved — never auto-apply over them. */
+        <div style={{maxWidth:960,marginBottom:18,padding:"10px 14px",borderRadius:8,fontSize:12.5,display:"flex",alignItems:"center",gap:9,
+          background:C.acc+"14",border:`1px solid ${C.acc}40`}}>
+          <span style={{fontSize:14,flexShrink:0}}>↻</span>
+          <span style={{color:C.txt2,lineHeight:1.5,flex:1}}>Updated by a collaborator — refresh to see changes.</span>
+          <button onClick={applyRemoteUpdate} style={{...btnS("primary"),fontSize:11,padding:"5px 12px",flexShrink:0}}>Refresh</button>
+          <button onClick={()=>setRemoteUpdate(false)} title="Dismiss" style={{background:"none",border:"none",color:C.muted,fontSize:16,cursor:"pointer",padding:0,lineHeight:1,flexShrink:0}}>×</button>
+        </div>
+      )}
+      {deepLinkMiss?(
+        /* Deep-link target not accessible (prompt6 Task 3) — explicit panel,
+           never a silent fallback to the first project. */
+        <div style={{maxWidth:560,margin:"96px auto",textAlign:"center"}}>
+          <div style={{width:56,height:56,borderRadius:16,margin:"0 auto 20px",
+            background:`${C.yel}14`,border:`1px solid ${C.yel}40`,
+            display:"flex",alignItems:"center",justifyContent:"center",fontSize:24}}>🔒</div>
+          <h1 style={{fontSize:20,fontWeight:800,marginBottom:10,color:C.txt,letterSpacing:-0.4}}>Project unavailable</h1>
+          <p style={{fontSize:13,color:C.txt2,lineHeight:1.7,marginBottom:8}}>
+            You do not have access to this project, or the link is broken.
+          </p>
+          <p style={{fontSize:12,color:C.muted,lineHeight:1.7,marginBottom:24}}>
+            Ask the project owner to add you to the linked workspace, then open the link again.
+          </p>
+          <button onClick={()=>{setDeepLinkMiss(null);if(projects.length){setActiveId(projects[0].id);setTab("overview");}}}
+            style={{...btnS("primary"),padding:"10px 24px",fontSize:13}}>← Back to my projects</button>
+        </div>
+      ):!project?(
         <div style={{maxWidth:680,margin:"64px auto",textAlign:"center"}}>
           {/* Logo mark */}
           <div style={{
@@ -7245,11 +8177,11 @@ export default function MetaLab(){
           <div className="stagger-grid" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,textAlign:"left"}}>
             {[
               {ph:"Plan",icon:"📋",steps:"PICO framework, PROSPERO registration, eligibility criteria"},
-              {ph:"Search",icon:"🔍",steps:"AI search builder for 8 databases, MeSH terms, syntax-native"},
+              {ph:"Search",icon:"🔍",steps:AI_FEATURES_ENABLED?"AI search builder for 8 databases, MeSH terms, syntax-native":"Search builder for 8 databases, MeSH terms, full strategy documentation"},
               {ph:"Screen",icon:"🔀",steps:"Import RIS/BibTeX, dual-reviewer triage, PRISMA 2020 flow"},
-              {ph:"Extract",icon:"📊",steps:"AI-assisted extraction, DOI/PMID lookup, effect-size calculator"},
+              {ph:"Extract",icon:"📊",steps:AI_FEATURES_ENABLED?"AI-assisted extraction, DOI/PMID lookup, effect-size calculator":"Structured extraction, DOI/PMID lookup, effect-size calculator"},
               {ph:"Analyze",icon:"📈",steps:"Meta-analysis with HKSJ, prediction intervals, forest plots"},
-              {ph:"Report",icon:"📄",steps:"PRISMA checklist, GRADE certainty, AI manuscript drafter"},
+              {ph:"Report",icon:"📄",steps:AI_FEATURES_ENABLED?"PRISMA checklist, GRADE certainty, AI manuscript drafter":"PRISMA checklist, GRADE certainty, manuscript workspace"},
             ].map(c=>(
               <div key={c.ph} className="hover-lift" style={{
                 background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,padding:18,cursor:"default",
@@ -7266,13 +8198,16 @@ export default function MetaLab(){
           {/* Project header */}
           <div style={{marginBottom:32,paddingBottom:22,borderBottom:`1px solid ${C.brd}`}}>
             <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:16,flexWrap:"wrap"}}>
-              <div>
-                <h1 style={{fontSize:22,fontWeight:700,letterSpacing:-0.5,marginBottom:5,color:C.txt,lineHeight:1.2}}>{project.name}</h1>
+              <div style={{minWidth:0}}>
+                {/* Rename (prompt6 Task 18) — owner or member with canEdit; real PUT, never autosave */}
+                <ProjectTitle project={project} canRename={projectPerms(project).canEdit} onRename={renameProject}/>
                 <div style={{fontSize:11.5,color:C.muted}}>
                   Created {fmtDate(project.created||project.createdAt)} · Modified {fmtDate(project.modified||project.updatedAt)} · {project.studies.length} stud{project.studies.length===1?"y":"ies"}
                 </div>
               </div>
               <div style={{display:"flex",gap:6,flexShrink:0,flexWrap:"wrap",justifyContent:"flex-end",alignItems:"center"}}>
+                {/* Persistent read-only pill (prompt6 Task 5) */}
+                {projectPerms(project).readOnly&&<span style={tagS("yellow")} title="You can view this shared project, but your changes will not be saved.">🔒 Read-only access</span>}
                 {project.pico?.prosperoId&&<span style={tagS("blue")}>PROSPERO: {project.pico.prosperoId}</span>}
                 {project.pico?.studyDesign&&<span style={tagS()}>{project.pico.studyDesign}</span>}
                 {(()=>{const r=runMeta(project.studies,"random");return r?<span style={tagS("green")}>k={r.k} · I²={r.I2}%</span>:null;})()}
@@ -7314,6 +8249,8 @@ export default function MetaLab(){
               </span>
             </div>
           )}
+          {tab==="overview"&&<OverviewTab project={project} setTab={setTab}/>}
+          {tab==="control"&&<ControlTab project={project} onAnnotate={patchAnnotations}/>}
           {tab==="pico"&&<PICOTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="prospero"&&<PROSPEROTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="search"&&<SearchTab project={project} updNested={updNested} upd={upd}/>}
@@ -7328,10 +8265,13 @@ export default function MetaLab(){
           {tab==="grade"&&<GRADETab project={project} upd={upd}/>}
           {tab==="manuscript"&&<ManuscriptTab project={project} upd={upd}/>}
           {tab==="report"&&<ReportTab project={project} upd={upd}/>}
-          {/* Next step button */}
+          {tab==="methods"&&<MethodsTab/>}
+          {/* Next step button — walks workflow tabs only (phase:null reference tabs excluded) */}
           {(()=>{
-            const idx=TABS.findIndex(t=>t.id===tab);
-            const next=TABS[idx+1];
+            const wfTabs=TABS.filter(t=>t.phase);
+            const idx=wfTabs.findIndex(t=>t.id===tab);
+            if(idx<0) return null; // current tab is a reference page, not a workflow step
+            const next=wfTabs[idx+1];
             if(!next) return null;
             return(
               <div style={{marginTop:32,paddingTop:20,borderTop:`1px solid ${C.brd}`,display:"flex",justifyContent:"flex-end"}}>

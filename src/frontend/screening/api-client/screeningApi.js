@@ -28,8 +28,12 @@ export const screeningApi = {
 
   // Projects
   listProjects:  ()                       => req('GET',    '/projects'),
+  // body may include alsoCreateMetaLab:true (prompt6 Task 2 — optional SIFT-side
+  // "also create & link a META·LAB project" flow; never forced, default off).
   createProject: (body)                   => req('POST',   '/projects', body),
   getProject:    (pid)                    => req('GET',    `/projects/${pid}`),
+  // body may include { title } — owner/leader rename (prompt6 Task 18). The server
+  // syncs the linked META·LAB project name iff the titles were equal before.
   updateProject: (pid, body)              => req('PUT',    `/projects/${pid}`, body),
   deleteProject: (pid)                    => req('DELETE', `/projects/${pid}`),
 
@@ -42,7 +46,14 @@ export const screeningApi = {
   deleteRecord: (pid, rid) => req('DELETE', `/projects/${pid}/records/${rid}`),
 
   // Import / Export
-  importRecords: (pid, body) => req('POST', `/projects/${pid}/import`, body),
+  // POST /projects/:pid/import — body { format, content, filename }. The server
+  // fingerprints the file (SHA-256) and answers 409 { error: 'duplicate_import',
+  // batch: { filename, importedAt, importedByName, recordCount } } when the same
+  // file was already imported into this project (prompt6 Task 19). Pass
+  // force=true to "Import anyway" (record-level DOI/PMID/title dedupe still
+  // applies). Thrown errors carry .status and .data (the parsed JSON body).
+  importRecords: (pid, body, { force = false } = {}) =>
+    req('POST', `/projects/${pid}/import`, force ? { ...body, force: true } : body),
   exportUrl: (pid, params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return `${BASE}/projects/${pid}/export${qs ? '?' + qs : ''}`;
@@ -78,7 +89,10 @@ export const screeningApi = {
 
   // Members (Part 4)
   listMembers:  (pid)            => req('GET',    `/projects/${pid}/members`),
+  // body: { email, preset, modules?: 'metalab'|'metasift'|'both' } — modules
+  // narrows which apps the member participates in (prompt6 Task 6; default both).
   addMember:    (pid, body)      => req('POST',   `/projects/${pid}/members`, body),
+  // body: { preset } | { role, status } | raw permission flags (canScreen, …).
   updateMember: (pid, mid, body) => req('PATCH',  `/projects/${pid}/members/${mid}`, body),
   removeMember: (pid, mid)       => req('DELETE', `/projects/${pid}/members/${mid}`),
 

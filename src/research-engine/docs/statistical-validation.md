@@ -316,12 +316,11 @@ Returns `{ ok, blockers[], warnings[], valid[], composition }`.
 
 ## 9. Effect-Size Calculators (`effect-sizes/calculators.js`)
 
-All calculators use the standard normal z = 1.96 for 95% CI construction
-(except SMD, which propagates the formula-based SE symmetrically).
+All calculators use the standard normal z = 1.96 for 95% CI construction.
 
 | Type | Formula |
 |---|---|
-| SMD | Cohen's d = (m1-m2)/SD_pooled; SE via Hedges' formula |
+| SMD | Cohen's d = (m1-m2)/SD_pooled; SE = √((n1+n2)/(n1·n2) + d²/(2(n1+n2))) (large-sample variance of d) |
 | MD  | m1-m2; SE = √(SD1²/n1 + SD2²/n2) |
 | OR  | ln(ad/bc); SE = √(1/a+1/b+1/c+1/d) |
 | RR  | ln[(a/(a+b)) / (c/(c+d))]; SE = √(1/a - 1/(a+b) + 1/c - 1/(c+d)) |
@@ -329,6 +328,14 @@ All calculators use the standard normal z = 1.96 for 95% CI construction
 | COR | Fisher z = 0.5×ln((1+r)/(1-r)); SE = 1/√(n-3) |
 | PROP | logit(p) with 0.5 correction at extremes; SE = 1/√(n×p×(1-p)) |
 | DIAG | ln(TP×TN / FP×FN); SE = √(1/TP+1/FP+1/FN+1/TN); Haldane correction |
+
+**Note on the SMD:** the implementation is **Cohen's d** (pooled-SD
+standardiser). The Hedges' g small-sample correction
+J = 1 − 3/(4(n1+n2−2) − 1) is **not** applied; d therefore slightly
+overestimates the population effect in small samples. Applying the J
+correction is a recommended next step — it would change every SMD result
+(and the pinned unit-test expectations), so it must be introduced
+deliberately, not silently.
 
 ---
 

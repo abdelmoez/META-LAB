@@ -9,6 +9,12 @@
 import { prisma } from '../db/client.js';
 import { getProjectAccess, ensureLeaderMember, findUserByEmail, writeAudit } from '../screening/access.js';
 import { PERMISSION_KEYS, GLOBAL_PERMISSION_KEYS, resolvePreset } from '../../src/research-engine/screening/permissionPresets.js';
+import { createNotification, notifyProjectInvite } from '../services/notificationService.js';
+import { emitToProjectMembers, emitToUsers } from '../realtime/bus.js';
+
+// Optional `modules` values for addMember (prompt6 Task 6): which app(s) the
+// new member participates in, mapped onto the canView* flags atop the preset.
+const MODULES = ['metalab', 'metasift', 'both'];
 
 // 'owner' is intentionally NOT assignable here — ownership is fixed to the
 // project creator (changed only via an explicit transfer-ownership action).
@@ -78,6 +84,19 @@ export async function addMember(req, res) {
 
     // Resolve the permission preset → role + module flags (prompt4 Task 9).
     const { role, perms } = resolvePreset(presetName);
+    // Optional module scoping (prompt6 Task 6): 'metalab' | 'metasift' | 'both'
+    // maps onto the canView* flags on top of the preset. Absent → preset as-is.
+    const { modules } = req.body || {};
+    if (modules !== undefined) {
+      if (!MODULES.includes(modules)) {
+        return res.status(400).json({ error: "invalid modules (use 'metalab', 'metasift' or 'both')" });
+      }
+      perms.canViewMetaLab  = modules === 'metalab'  || modules === 'both';
+      perms.canViewMetaSift = modules === 'metasift' || modules === 'both';
+      // canEditMetaLab implies META·LAB view access (metalabAccess.js) — clear
+      // it when META·LAB participation is excluded.
+      if (modules === 'metasift') perms.canEditMetaLab = false;
+    }
     // Only the OWNER may grant the Leader role (Task 2: leader is an ownership-level
     // decision — a leader cannot mint other leaders).
     if (role === 'leader' && !access.isOwner) {
@@ -105,6 +124,14 @@ export async function addMember(req, res) {
     await writeAudit(req.params.pid, req.user, 'MEMBER_ADDED', {
       entityType: 'member', entityId: member.id, details: { email: normEmail, role, preset: presetName, pending: !user },
     });
+    // Invite notification for already-registered users (prompt6 Task 1) — pending
+    // email-only invites are notified by the claim-on-register hook instead.
+    // Best-effort fire-and-forget: never fails or slows the add-member response.
+    if (member.userId) {
+      notifyProjectInvite({ member, project: access.project, actor: req.user, roleLabel: presetName }).catch(() => {});
+    }
+    // Realtime poke (Task 7) — emit-time resolution already includes the new member.
+    emitToProjectMembers(req.params.pid, { type: 'members.changed' }, { exclude: req.user.id });
     res.status(201).json({ member: shapeMember(member, access.project.ownerId), pending: !user });
   } catch (err) {
     console.error('[screening] addMember:', err.message);
@@ -202,6 +229,33 @@ export async function updateMember(req, res) {
       entityType: 'member', entityId: member.id,
       details: { email: member.email, before: { role: member.role, status: member.status }, changes: data },
     });
+    // ROLE_CHANGED notification on a REAL role/preset change (prompt6 Task 1) —
+    // best-effort fire-and-forget; skipped for unclaimed invites (no userId) and
+    // for actors changing their own row.
+    const roleChanged = updated.role !== member.role || updated.permissionPreset !== member.permissionPreset;
+    if (roleChanged && updated.userId && updated.userId !== req.user.id) {
+      const p = access.project;
+      const newLabel = updated.permissionPreset || updated.role;
+      createNotification({
+        userId: updated.userId,
+        type: 'ROLE_CHANGED',
+        title: `Role updated in "${p.title || 'Untitled project'}"`,
+        message: `${req.user.email || 'A project manager'} changed your role to ${newLabel}`,
+        app: p.linkedMetaLabProjectId ? 'workspace' : 'metasift',
+        relatedScreenProjectId: p.id,
+        relatedMetaLabProjectId: p.linkedMetaLabProjectId || null,
+        actorId: req.user.id,
+        actorEmail: req.user.email || '',
+        role: newLabel,
+      }).catch(() => {});
+    }
+    // Realtime pokes (Task 7): roster change for everyone; a user-TARGETED
+    // permissions.changed for the affected member so their open UI revalidates
+    // immediately (refetch 403s → "access changed" + navigate away).
+    emitToProjectMembers(req.params.pid, { type: 'members.changed' }, { exclude: req.user.id });
+    if (updated.userId && updated.userId !== req.user.id && Object.keys(data).length) {
+      emitToUsers([updated.userId], { type: 'permissions.changed', projectId: req.params.pid });
+    }
     res.json({ member: shapeMember(updated, access.project.ownerId) });
   } catch (err) {
     console.error('[screening] updateMember:', err.message);
@@ -230,6 +284,13 @@ export async function removeMember(req, res) {
     await writeAudit(req.params.pid, req.user, 'MEMBER_REMOVED', {
       entityType: 'member', entityId: member.id, details: { email: member.email },
     });
+    // Realtime pokes (Task 7): emit-time resolution already EXCLUDES the removed
+    // member from members.changed; target them directly so their open UI
+    // revalidates (the refetch will 404 → "access changed" + navigate away).
+    emitToProjectMembers(req.params.pid, { type: 'members.changed' }, { exclude: req.user.id });
+    if (member.userId && member.userId !== req.user.id) {
+      emitToUsers([member.userId], { type: 'permissions.changed', projectId: req.params.pid });
+    }
     res.status(204).send();
   } catch (err) {
     console.error('[screening] removeMember:', err.message);

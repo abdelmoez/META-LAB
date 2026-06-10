@@ -1,8 +1,62 @@
 import { prisma } from '../db/client.js';
 import { hashPassword, verifyPassword } from '../auth/password.js';
 import { signToken } from '../auth/jwt.js';
+import { notifyProjectInvite } from '../services/notificationService.js';
 
 const COOKIE_NAME = 'metalab_session';
+
+/**
+ * Record a LoginEvent for ops unique-login metrics (prompt6 Task 9).
+ * Fire-and-forget — never awaited in the response path, never throws.
+ * Only called when a user row exists (userId is required; unknown-email
+ * failures are already covered by the FAILED_LOGIN SecurityEvent).
+ */
+function recordLoginEvent(req, user, success) {
+  prisma.loginEvent.create({
+    data: {
+      userId: user.id,
+      email: user.email || '',
+      ip: req.ip || '',
+      userAgent: req.get('user-agent') || '',
+      success,
+    },
+  }).catch(() => {});
+}
+
+/**
+ * Claim pending META·SIFT invites at registration (prompt6 Task 1, plan §8
+ * risk 12). Pending ScreenProjectMember rows (userId null) matching the new
+ * user's normalized email are claimed (userId set, pending → active) and a
+ * deferred PROJECT_INVITE notification is created for each active membership.
+ * The inviter is unknown at claim time (member rows carry no inviter info),
+ * so the notification falls back to a generic actor.
+ * Best-effort — registration must never fail or slow because of this.
+ */
+async function claimPendingScreenInvites(user) {
+  try {
+    const pending = await prisma.screenProjectMember.findMany({
+      where: { email: user.email, userId: null },
+    });
+    for (const m of pending) {
+      try {
+        const member = await prisma.screenProjectMember.update({
+          where: { id: m.id },
+          data: {
+            userId: user.id,
+            name: m.name || user.name || '',
+            // Activate pending invites; leave any other status untouched.
+            status: m.status === 'pending' ? 'active' : m.status,
+          },
+        });
+        if (member.status !== 'active') continue;
+        const project = await prisma.screenProject.findUnique({ where: { id: m.projectId } });
+        if (project) {
+          await notifyProjectInvite({ member, project, roleLabel: member.permissionPreset || member.role });
+        }
+      } catch { /* per-row best-effort — keep claiming the rest */ }
+    }
+  } catch { /* best-effort side-effect — swallow */ }
+}
 
 function cookieOptions() {
   return {
@@ -44,6 +98,10 @@ export async function register(req, res) {
         role: 'user',
       },
     });
+
+    // Claim pending META·SIFT invites for this email + emit deferred invite
+    // notifications — fire-and-forget, never blocks registration.
+    claimPendingScreenInvites(user).catch(() => {});
 
     const token = signToken({ id: user.id, email: user.email, role: user.role });
     res.cookie(COOKIE_NAME, token, cookieOptions());
@@ -90,13 +148,24 @@ export async function login(req, res) {
         },
       }).catch(() => {});
 
+      // Known account, wrong password → failed LoginEvent for ops metrics
+      // (unknown email skipped: LoginEvent requires a userId; the SecurityEvent
+      // above already covers forensics). Fire-and-forget.
+      if (user) recordLoginEvent(req, user, false);
+
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
     // Check if user is suspended
     if (user.suspended) {
+      recordLoginEvent(req, user, false);
       return res.status(401).json({ error: 'Your account has been suspended. Please contact support.' });
     }
+
+    // Login metrics + lastActive (prompt6 Tasks 9/10) — fire-and-forget, never
+    // awaited: a metrics failure must never fail or slow the login response.
+    recordLoginEvent(req, user, true);
+    prisma.user.update({ where: { id: user.id }, data: { lastActive: new Date() } }).catch(() => {});
 
     const token = signToken({ id: user.id, email: user.email, role: user.role });
     res.cookie(COOKIE_NAME, token, cookieOptions());

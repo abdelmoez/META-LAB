@@ -2,8 +2,9 @@
  * ProjectControlTab.jsx — META·SIFT consolidated project control / settings (prompt5 Task 5).
  *
  * One place for project management instead of scattering it across screens:
+ *   • Project rename (prompt6 Task 18 — syncs the linked ML name if in sync)
  *   • Project status, blind mode, chat permissions  (leader / canManageSettings)
- *   • META·LAB link / unlink + linked project info + handoff rollup
+ *   • META·LAB link / unlink + direct deep link + handoff rollup (Task 3)
  *   • Members, roles, and per-member permissions     (embeds MembersTab)
  *
  * Visibility (Task 5):
@@ -13,6 +14,7 @@
  *   Viewer      → limited info.
  */
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { C, FONT, MONO } from '../ui/theme.js';
 import { Loading, ErrorBanner, Button, Badge, Toggle, Card, SectionLabel } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
@@ -115,6 +117,12 @@ function SettingsSection({ pid, project, canManage, refreshProject }) {
       <Card>
         {err && <div style={{ fontSize: 12, color: C.red, marginBottom: 10 }}>{err}</div>}
 
+        {/* Rename (prompt6 Task 18) — owner/leader only; the server renames the
+            linked META·LAB project too iff the titles matched before the edit. */}
+        <div style={{ borderBottom: `1px solid ${C.brd}`, marginBottom: 14, paddingBottom: 14 }}>
+          <TitleRow title={project?.title} canManage={canManage} busy={busy} save={save} />
+        </div>
+
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
           <div>
             <div style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>Status</div>
@@ -153,6 +161,65 @@ function SettingsSection({ pid, project, canManage, refreshProject }) {
   );
 }
 
+// ── Project rename (prompt6 Task 18) ────────────────────────────────────────
+
+function TitleRow({ title, canManage, busy, save }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(title || '');
+
+  // Keep the draft in sync with server refreshes while not editing.
+  useEffect(() => { if (!editing) setDraft(title || ''); }, [title, editing]);
+
+  const trimmed = draft.trim();
+  const canSave = !!trimmed && trimmed !== (title || '') && !busy;
+
+  async function submit() {
+    if (!canSave) return;
+    const ok = await save({ title: trimmed });
+    if (ok) setEditing(false);
+  }
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+      <div style={{ minWidth: 0, flex: 1 }}>
+        <div style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>Project name</div>
+        <div style={{ fontSize: 11.5, color: C.muted, marginTop: 2 }}>
+          If the linked META·LAB project shares this name, renaming updates both.
+        </div>
+        {editing ? (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
+            <input
+              value={draft}
+              autoFocus
+              disabled={busy}
+              onChange={e => setDraft(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') { e.preventDefault(); submit(); }
+                if (e.key === 'Escape') { setDraft(title || ''); setEditing(false); }
+              }}
+              style={{
+                flex: 1, minWidth: 220, background: C.card, border: `1px solid ${C.brd2}`,
+                borderRadius: 6, padding: '7px 10px', color: C.txt, fontSize: 13, fontFamily: FONT, outline: 'none',
+              }}
+            />
+            <Button onClick={submit} disabled={!canSave}>{busy ? 'Saving…' : 'Save'}</Button>
+            <Button variant="ghost" onClick={() => { setDraft(title || ''); setEditing(false); }} disabled={busy}>Cancel</Button>
+          </div>
+        ) : (
+          <div style={{ fontSize: 14, color: C.txt, marginTop: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {title || 'Untitled project'}
+          </div>
+        )}
+      </div>
+      {canManage && !editing && (
+        <Button variant="ghost" onClick={() => setEditing(true)} disabled={busy} style={{ padding: '6px 14px', fontSize: 12 }}>
+          ✎ Rename
+        </Button>
+      )}
+    </div>
+  );
+}
+
 function Row({ title, hint, children }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
@@ -168,6 +235,7 @@ function Row({ title, hint, children }) {
 // ── META·LAB link / unlink + linked info + handoff rollup ───────────────────
 
 function LinkSection({ pid, canManage }) {
+  const navigate = useNavigate();
   const [info, setInfo] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -203,11 +271,39 @@ function LinkSection({ pid, canManage }) {
               their permissions.
             </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: h ? 14 : 0, flexWrap: 'wrap' }}>
-              {linked
-                ? <Badge color={linked.missing ? C.red : C.grn}>{linked.missing ? '⚠ linked project missing' : `🔗 ${linked.name}`}</Badge>
-                : <Badge color={C.muted}>Not linked</Badge>}
-            </div>
+            {/* Linked state (prompt6 Task 3): healthy link → direct deep link to the
+                EXACT META·LAB project; missing target → explicit broken-link
+                warning instead of a dead button. */}
+            {linked && linked.missing ? (
+              <div style={{
+                background: '#451a03', border: `1px solid ${C.ylw}50`, borderRadius: 8,
+                padding: '10px 14px', marginBottom: 14, fontSize: 12.5, color: C.ylw, lineHeight: 1.5,
+              }}>
+                ⚠ Link broken — the linked META·LAB project is missing or was deleted.
+                {canManage ? ' Re-link to another project below, or unlink.' : ' Ask the owner or a leader to fix the link.'}
+              </div>
+            ) : (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: h ? 14 : 0, flexWrap: 'wrap' }}>
+                {linked
+                  ? (
+                    <>
+                      <Badge color={C.grn}>{`🔗 ${linked.name}`}</Badge>
+                      <button
+                        onClick={() => navigate(`/app?project=${linked.id}`)}
+                        title={`Open the linked META·LAB project: ${linked.name}`}
+                        style={{
+                          background: 'none', border: `1px solid ${C.brd2}`, color: C.acc,
+                          fontSize: 11.5, fontFamily: FONT, fontWeight: 600,
+                          padding: '4px 12px', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap',
+                        }}
+                      >
+                        Open META·LAB project →
+                      </button>
+                    </>
+                  )
+                  : <Badge color={C.muted}>Not linked</Badge>}
+              </div>
+            )}
 
             {h && (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>

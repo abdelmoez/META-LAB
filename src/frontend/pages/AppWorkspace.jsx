@@ -9,6 +9,7 @@
 import { useState, useEffect } from 'react';
 import { subscribeToSaveStatus, flushStorage } from '../storage/serverStorage.js';
 import UserMenu from '../components/UserMenu.jsx';
+import NotificationsBell from '../components/NotificationsBell.jsx';
 import MetaLab from '../../../meta-lab-3-patched.jsx';
 
 const SAVE_LABEL = { saving: 'Saving…', saved: 'Saved', failed: 'Save failed', idle: '' };
@@ -42,6 +43,9 @@ export default function AppWorkspace() {
       >
         {SAVE_LABEL[saveStatus]}
       </div>
+
+      {/* ── Notifications bell (top-right, left of the account avatar) ── */}
+      <NotificationsBell fixed right={56} />
 
       {/* ── Shared account menu (top-right) ─────────────────────────── */}
       <UserMenu

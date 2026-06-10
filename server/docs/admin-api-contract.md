@@ -2,9 +2,14 @@
 
 All admin endpoints are under `/api/admin`. They require:
 1. A valid `metalab_session` httpOnly cookie (JWT) — enforced by `requireAuth`.
-2. The authenticated user must have `role = 'admin'` and `suspended = false` in the database — enforced by `requireAdmin` (DB lookup on every request, never trusts JWT alone).
+2. A staff role verified **in the database on every request** (never trusting the JWT alone):
+   - Most endpoints require `role = 'admin'` and `suspended = false` (`requireAdmin`).
+   - A limited set is open to **mods** as well (`requireAdminOrMod`, per-route in `routes/admin.js`): `GET /console`, users read/edit/status/password-reset, and contact messages (+ replies, unread-count, mark-read). Metrics, settings, landing content, feature flags, audit log, security events, health, projects, role assignment, message delete, and **all** `/api/admin/screening/*` stay admin-only (mods get a 403 + SecurityEvent).
+   - `GET /api/admin/console` returns `{ role, sections, emailConfigured }` — the capability descriptor the ops console renders from (mods get `sections: ["users","messages"]`).
 
-Rate limit: 60 requests per 15 minutes per IP.
+Rate limit (reshaped in prompt6): **300 requests per 15 minutes per IP in production** (1000 otherwise). The two cheap console-polling GETs — `GET /console` and `GET /contact-messages/unread-count` — are **exempt**, so a mod polling its own badge can never rate-limit itself out of the console.
+
+> Screening admin endpoints (`/api/admin/screening/*`) are documented in `screening-api-contract.md` → "Admin Control Panel — META·SIFT" (incl. the prompt6 `doneToday/doneThisWeek/doneThisMonth` metrics, linked/workspace columns, the expanded per-project `progress` + `memberProgress` blocks, and the `progressStatus` PATCH).
 
 ---
 
@@ -33,9 +38,15 @@ Rate limit: 60 requests per 15 minutes per IP.
   "records": 820,
   "contactMessages": { "total": 15, "unread": 4 },
   "securityEvents": { "failedLogins7d": 7 },
+  "logins": { "day": 5, "week": 12, "month": 30, "quarter": 38, "year": 41 },
   "db": "ok"
 }
 ```
+
+`logins` (prompt6 Task 9): **distinct** userIds with a successful login per **rolling**
+window — past 24 hours / 7 days / 30 days / 90 days / 365 days — counted from the
+`LoginEvent` table. One user logging in three times today moves `day` by exactly 1.
+Monotonic: `day ≤ week ≤ month ≤ quarter ≤ year`.
 
 ---
 
@@ -138,7 +149,11 @@ Returns 404 if not found.
       "id": "uuid",
       "userId": "uuid",
       "userEmail": "user@example.com",
+      "owner": { "id": "uuid", "name": "Alice", "email": "user@example.com" },
       "name": "My Review",
+      "status": "active",
+      "linkedMetaSift": { "id": "screenproject-uuid", "title": "My Review" },
+      "workspaceId": "screenproject-uuid",
       "createdAt": "...",
       "updatedAt": "...",
       "deletedAt": null,
@@ -149,6 +164,11 @@ Returns 404 if not found.
   "total": 100
 }
 ```
+
+Prompt6 Task 11 additions: `owner` (`{id,name,email}` — `userId`/`userEmail` kept for
+back-compat), `status` (`"active" | "archived"`, derived from `deletedAt`),
+`linkedMetaSift` (`{id,title} | null` via the reverse `ScreenProject.linkedMetaLabProjectId`
+lookup), and `workspaceId` (= the linked ScreenProject id, `null` when unlinked).
 
 ---
 
@@ -332,7 +352,7 @@ Returns 404 if not found.
   "status": "ok",
   "db": "ok",
   "env": "development",
-  "version": "2.0.0",
+  "version": "2.5.0",
   "uptime": 12345.6,
   "timestamp": "2026-06-07T17:00:00.000Z"
 }

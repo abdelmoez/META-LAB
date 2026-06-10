@@ -88,10 +88,16 @@ export async function save(project, userId) {
   const dataStr = JSON.stringify(data);
 
   // Verify ownership before updating: if the id exists but belongs to a
-  // different user, reject rather than silently overwriting.
+  // different user, reject rather than silently overwriting. The error is
+  // typed (`code: 'FOREIGN_PROJECT'`) so controllers can answer a clean 403
+  // instead of a masked 500 (prompt6). NOTE: the member-autosave batch
+  // contract is unaffected — autosave maps this to 200 + skipped, never 4xx.
   const existing = await prisma.project.findFirst({ where: { id } });
   if (existing && existing.userId !== userId) {
-    throw new Error('Project belongs to a different user');
+    const err = new Error('Project belongs to a different user');
+    err.code = 'FOREIGN_PROJECT';
+    err.status = 403;
+    throw err;
   }
 
   const row = await prisma.project.upsert({

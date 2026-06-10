@@ -1,10 +1,46 @@
 # META·LAB Test Report
 
-**Generated:** 2026-06-09 (prompt5 roles/linked-access/version/ops; earlier sections below unchanged)
+**Generated:** 2026-06-10 (prompt6 workspace upgrade; earlier sections below unchanged)
 **Framework:** Vitest v2.1.9
 **Working directory:** `H:/META-LAB/META-LAB`
 
 ---
+
+## 0··. prompt6 — shared workspace upgrade (2026-06-10)
+
+**META·SIFT screening suite: ✅ 239/239 pass** (+23 `integration/prompt6.test.js`). **Full repo suite
+(`npx vitest run --no-file-parallelism`, server up): 866 pass / 6 pre-existing `serverStorage.test.js`
+fake-timer failures (quarantined — identical set and count as the baseline) / 7 skips (879 total, 35 files).**
+`npm run build` exit 0 (pre-existing `meta-lab-3-patched.jsx` ~L4047 esbuild JSX advisory + >500 kB chunk note only).
+
+Suites vs baseline:
+
+| Suite | Baseline (pre-prompt6) | Now | Δ |
+|---|---|---|---|
+| Screening (`tests/screening/`, server up) | 216/216 | **239/239** | +23 (`integration/prompt6.test.js`) |
+| Unit (`tests/unit/`) | 377 pass + 6 quarantined fails | **521 pass + 6 quarantined fails** | +144 `methods-content.test.js` (R1) + 1 cosmetic comment fix in `effect-sizes.test.js` (no assertion change; 55/55) |
+| Full repo (server up) | 632 pass / 6 fail / 7 skip | **866 pass / 6 fail / 7 skip** | no net loss; failures unchanged |
+
+Delivered (verified by `prompt6.test.js` — full inventory in `tests/screening/report.md`): **persistent per-user
+notifications** (invite/role-change rows, isolation, fresh-login persistence, pending-invite claim-on-register),
+**linked pair creation** (`createLinkedSift` opt-in `{project, linkedScreenProject}`, SIFT-side `alsoCreateMetaLab`,
+PICO snapshot, link-target validation 400), **membership-aware link display** (summary `linked:true` for members,
+`linkedMetaLabProjectTitle`, `_linkedMetaSift`/`_permissions` annotations), **viewer read-only enforcement**
+(PUT/export/import 403 + the **pinned** autosave 200+`skipped` batch contract), **module participation mapping**
+(`modules:'metalab'|'metasift'|'both'`), **SSE realtime** (`/api/events` handshake, thin pokes, scope-leak-free,
+heartbeat), **import 403-vs-404 split** (outsider 404 / member-without-perm 403 / instant permission upgrade),
+**import fingerprint** (sha-256 CRLF-normalized, 409 `duplicate_import` + provenance, `force` with record-dedupe,
+per-project scope), **ops metrics** (distinct rolling-window `logins`, `lastActive` recency, distinct `doneToday`,
+`progressStatus` validation incl. the new 400 message), **ops linked columns + 10-field progress block +
+memberProgress**, **mod RBAC matrix**, and **rename sync-if-in-sync** in both directions.
+
+> **Flipped assertions: NONE.** All prior suites were audited against the implementers' enumerated 404→403/400/409
+> flips and changed import `total` semantics; every flipped path was a previously-untested member path. Non-member
+> existence-hiding 404s (incl. the 4 prompt5 `SEC*` adversarial tests) pass unchanged. The single test-file edit
+> besides the new suite is the cosmetic `effect-sizes.test.js:20` section comment (Hedges' g → Cohen's d).
+> Manual-only remainder (browser QA): two-browser realtime, bell UX on 4 surfaces, deep-link from a real click,
+> viewer UX polish, mod console navigation, Methods tab rendering, EventSource reconnect, poll pause on hidden tab —
+> full list in `tests/screening/report.md`.
 
 ## 0·. prompt5 — roles / linked access / version / ops-read (2026-06-09)
 

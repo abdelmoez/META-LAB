@@ -1,7 +1,10 @@
 /**
  * adminApiClient.js — Admin API methods for META·LAB Ops console.
  *
- * All /api/admin/* endpoints require admin role; the server enforces this.
+ * /api/admin/* endpoints require a staff role enforced PER ROUTE on the server:
+ * most read/support endpoints allow admin OR mod (requireAdminOrMod); metrics,
+ * settings, flags, security, projects lifecycle, and all screening/* admin
+ * endpoints are admin-only (requireAdmin).
  * This client is ONLY imported by AdminConsole.jsx.
  */
 
@@ -26,6 +29,8 @@ const json = body => ({
 });
 
 export const adminApi = {
+  // Platform metrics (admin only). prompt6 Task 9 adds unique-login counts:
+  // logins: { day, week, month, quarter, year } — distinct userIds, rolling windows.
   metrics:        ()         => req(`${BASE}/metrics`),
   health:         ()         => req(`${BASE}/health`),
   // Console capability descriptor — { role, sections, emailConfigured }. (admin + mod)
@@ -42,6 +47,8 @@ export const adminApi = {
   },
 
   projects: {
+    // Rows include linkedMetaSift: { id, title } | null (prompt6 Task 11) —
+    // the linked ScreenProject IS the Review Workspace (workspaceId == linkedMetaSift.id).
     list:         (p)        => req(`${BASE}/projects?${new URLSearchParams(p || {})}`),
     archive:      (id)       => req(`${BASE}/projects/${id}/archive`, { method: 'PATCH' }),
     restore:      (id)       => req(`${BASE}/projects/${id}/restore`, { method: 'PATCH' }),
@@ -65,8 +72,13 @@ export const adminApi = {
   screening: {
     getSettings:  ()         => req(`${BASE}/screening/settings`),
     saveSettings: (body)     => req(`${BASE}/screening/settings`, { method: 'PUT', ...json(body) }),
+    // prompt6 Task 12 adds doneToday / doneThisWeek / doneThisMonth
+    // (DISTINCT projects whose status changed to 'done' in the window).
     getMetrics:   ()         => req(`${BASE}/screening/metrics`),
     listProjects: (p)        => req(`${BASE}/screening/projects?${new URLSearchParams(p || {})}`),
+    // prompt6 Task 11: expanded progress detail — total/screened/unscreened/
+    // included/excluded/maybe/conflicts/duplicates/secondReview/sentToExtraction
+    // plus per-member progress.
     getProject:   (id)       => req(`${BASE}/screening/projects/${id}`),
     setStatus:    (id, stage) => req(`${BASE}/screening/projects/${id}/status`, { method: 'PATCH', ...json({ stage }) }),
     // Independent lifecycle flag toggle (PATCH { disabled?, archived? }).

@@ -8,8 +8,10 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { C, FONT, MONO } from '../ui/theme.js';
 import { GlobalStyle, BetaBadge, Badge, Loading, ErrorBanner, Modal, Button } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
+import { useRealtime } from '../../hooks/useRealtime.js';
 import ChatLauncher from '../components/ChatLauncher.jsx';
 import UserMenu from '../../components/UserMenu.jsx';
+import NotificationsBell from '../../components/NotificationsBell.jsx';
 
 import OverviewTab       from '../tabs/OverviewTab.jsx';
 import ScreeningTab      from '../tabs/ScreeningTab.jsx';
@@ -68,6 +70,29 @@ export default function SiftProject() {
     try { setProject(await screeningApi.getProject(pid)); } catch { /* keep prior */ }
   }, [pid]);
 
+  // Realtime (prompt6 Task 7) — thin pokes for THIS project trigger a refetch
+  // through the authorized getProject endpoint (per-request re-auth; events
+  // carry no content). permissions.changed is user-targeted: revalidate, and
+  // if access is gone (403/404) say so and return to the dashboard.
+  const revalidateAccess = useCallback(async () => {
+    try { setProject(await screeningApi.getProject(pid)); }
+    catch (e) {
+      if (e?.status === 403 || e?.status === 404) {
+        setProject(null);
+        setError('Your access to this project changed. Returning to your projects…');
+        setTimeout(() => navigate('/sift-beta'), 1800);
+      }
+    }
+  }, [pid, navigate]);
+
+  useRealtime({
+    'project.updated':     ev => { if (ev?.projectId === pid) refreshProject(); },
+    'members.changed':     ev => { if (ev?.projectId === pid) refreshProject(); },
+    'status.changed':      ev => { if (ev?.projectId === pid) refreshProject(); },
+    'handoff.updated':     ev => { if (ev?.projectId === pid) refreshProject(); },
+    'permissions.changed': ev => { if (ev?.projectId === pid) revalidateAccess(); },
+  });
+
   const setTab = (key) => setParams(prev => { const n = new URLSearchParams(prev); n.set('tab', key); return n; }, { replace: true });
 
   const access = project ? {
@@ -112,6 +137,7 @@ export default function SiftProject() {
             style={{ background: C.card, border: `1px solid ${C.brd2}`, color: C.txt, fontSize: 12, fontWeight: 600, fontFamily: FONT, padding: '6px 14px', borderRadius: 7, cursor: 'pointer' }}>
             ↑ Import
           </button>
+          <NotificationsBell />
           <UserMenu context="metasift" />
         </div>
       </div>
