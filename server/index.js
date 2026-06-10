@@ -57,7 +57,7 @@ app.use(requestLogger);
 
 // ── Health check (public) ─────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '2.0.0' });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: getVersion().version });
 });
 
 // ── Version metadata (public, no auth) ─────────────────────────────────────────

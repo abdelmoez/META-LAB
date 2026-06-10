@@ -1,10 +1,31 @@
 # META·LAB Test Report
 
-**Generated:** 2026-06-09 (prompt2 integration upgrade; prompt1 sections below unchanged)
+**Generated:** 2026-06-09 (prompt5 roles/linked-access/version/ops; earlier sections below unchanged)
 **Framework:** Vitest v2.1.9
 **Working directory:** `H:/META-LAB/META-LAB`
 
 ---
+
+## 0·. prompt5 — roles / linked access / version / ops-read (2026-06-09)
+
+**META·SIFT screening suite: ✅ 216/216 pass** (+9 `integration/prompt5.test.js` — 5 feature + 4 `SEC*` security
+regressions from an adversarial review of the diff). `vite build` clean.
+Delivered: **Owner separated from Leader** everywhere (owner role is `owner`, not `leader`; API returns
+`owner`+`leaders[]` separately; owner/leader rows **locked** with server-enforced guards + audit);
+**linked META·LAB ↔ META·SIFT member access** (a member of a linked Review Workspace now sees/edits the META·LAB
+project per permission — `server/screening/metalabAccess.js`, membership-aware `/api/projects` get/list/autosave that
+is **batch-safe** so read-only members never break the bulk autosave); **created/updated dates** on cards;
+**Project Control** tab in META·SIFT; **member sync** across both modules; **version changes per commit**
+(`version.js` + `scripts/generate-version.js`, `commit`/`commitDate`/`buildDate`/`full`); shared **account dropdown**
+in the ops console; and the **ops message notification now clears** via **per-staff** read receipts
+(`ContactMessageRead`, `unread-count` + `mark-read` endpoints — fixes an undefined-`setUnread` bug that froze the badge).
+Additive migration `20260609230000_add_contact_message_read`. Repair script
+`server/scripts/repair-linked-access.js`. Full table: `tests/screening/report.md`;
+report: `docs/manager/meta-sift-roles-and-linked-access-report.md`.
+
+> Full `tests/integration` + `tests/unit` run: the only failures are the **6 pre-existing**
+> `tests/unit/serverStorage.test.js` fake-timer assertions (that frontend bridge file is **unmodified** by this work).
+> `api-health.test.js` updated: the health version is no longer hardcoded `2.0.0` (now tracks `package.json` → `2.4.0`).
 
 ## 0. prompt4 server-ready upgrade (2026-06-09)
 

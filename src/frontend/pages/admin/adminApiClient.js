@@ -86,6 +86,9 @@ export const adminApi = {
     // Reply by email. Returns { reply, emailConfigured, sent }. Saved as draft if not configured.
     reply:        (id, b)    => req(`${BASE}/contact-messages/${id}/reply`, { method: 'POST', ...json(b) }),
     replies:      (id)       => req(`${BASE}/contact-messages/${id}/replies`),
+    // Per-staff read state (prompt5 Task 9). unreadCount → { unread }; markRead → { ok, read, unread }.
+    unreadCount:  ()         => req(`${BASE}/contact-messages/unread-count`),
+    markRead:     (id, read = true) => req(`${BASE}/contact-messages/${id}/mark-read`, { method: 'POST', ...json({ read }) }),
   },
 };
 

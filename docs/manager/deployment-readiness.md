@@ -167,35 +167,44 @@ A file-based SQLite DB is unsuitable for production (no concurrency safety, lost
 
 ## 8. Versioning — `/api/version`
 
-A public, unauthenticated route exposes build metadata:
+A public, unauthenticated route exposes build metadata that **changes with each commit** (prompt5 Task 7):
 
 ```
 GET /api/version
-→ { "name": "META·LAB", "version": "2.0.0", "commit": "2bd5d9f", "buildDate": "2026-06-09T..." }
+→ { "name": "META·LAB", "version": "2.4.0", "commit": "1466d1d",
+    "commitDate": "2026-06-09T18:41:42-04:00", "buildDate": "2026-06-09T18:41:42-04:00",
+    "full": "v2.4.0 · 1466d1d · 2026-06-09" }
 ```
 
-Implemented in `server/version.js` (`getVersion()`), wired in `server/index.js` next to `/api/health`. All values are resolved **once at module load** and cached, so the route does no fs/git work per request. The server also logs the version on boot:
+Implemented in `server/version.js` (`getVersion()`), wired in `server/index.js` next to `/api/health`. All values are resolved **once at module load** and cached, so the route does no fs/git work per request. `GET /api/health` and the ops `GET /api/admin/health` also report the real `version` (no longer hardcoded). Display: the shared `UserMenu` account dropdown (META·LAB, META·SIFT, ops) shows `full`, and the ops sidebar footer shows version + commit + date. The server logs the version on boot:
 
 ```
-META·LAB API on :3001 (v2.0.0 · 2bd5d9f)
+META·LAB API on :3001 (v2.4.0 · 1466d1d)
 ```
 
-Derivation:
+Derivation (most authoritative first — so the value changes per commit and degrades gracefully):
 
 | Field | Source (in order) |
 |---|---|
 | `name` | Constant `"META·LAB"`. |
-| `version` | Root `package.json` `"version"` (path resolved relative to the module, read once). |
-| `commit` | `process.env.GIT_COMMIT` → else `git rev-parse --short HEAD` (try/catch, never throws) → else `"dev"`. |
-| `buildDate` | `process.env.BUILD_DATE` → else module-load ISO timestamp. |
+| `version` | Root `package.json` `"version"` (read once). |
+| `commit` | `env GIT_COMMIT` → generated `server/version.json` → `git rev-parse --short HEAD` → `"dev"`. |
+| `commitDate` | `env GIT_COMMIT_DATE` → generated `version.json` → `git log -1 --format=%cI` → `null`. |
+| `buildDate` | `env BUILD_DATE` → generated `version.json` → `commitDate` → module-load ISO time. |
+| `full` | `vX.Y.Z · <shortCommit> · <YYYY-MM-DD>`. |
 
-### Setting `GIT_COMMIT` / `BUILD_DATE` in CI
+### Build-time generation (preferred for production)
 
-The deployed container/host often has no `.git` directory, so set these explicitly in the build/deploy step:
+The deployed container often has no `.git` directory. `npm run build` runs `npm run version:gen`
+(`scripts/generate-version.js`), which writes `server/version.json` with the commit + commit date + build timestamp.
+`version.js` prefers that file when git is unavailable, so the deployed app still reports the real version. You can also
+inject env vars in CI instead:
 
 ```bash
 export GIT_COMMIT="$(git rev-parse --short HEAD)"
+export GIT_COMMIT_DATE="$(git log -1 --format=%cI)"
 export BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 ```
 
-(or the platform equivalent, e.g. injecting the CI-provided commit SHA). When unset, the server gracefully falls back to a live `git` lookup, and to `"dev"` if git is unavailable. To release a new version, bump `"version"` in the root `package.json`.
+When all of git, `version.json`, and env are unavailable, `commit` falls back to `"dev"`. To release a new version, bump
+`"version"` in the root `package.json` (currently `2.4.0`).

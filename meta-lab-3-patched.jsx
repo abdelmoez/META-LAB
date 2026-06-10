@@ -7084,20 +7084,37 @@ export default function MetaLab(){
                 transition:"background 0.2s",
               }}/>
               <div style={{flex:1,minWidth:0}}>
-                <div style={{
-                  fontSize:12,fontWeight:activeId===p.id?600:400,
-                  color:activeId===p.id?C.txt:C.txt2,
-                  whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",lineHeight:1.3,
-                }}>{p.name}</div>
-                <div style={{fontSize:9,color:C.muted,marginTop:2}}>{fmtDate(p.modified)}</div>
+                <div style={{display:"flex",alignItems:"center",gap:6,minWidth:0}}>
+                  <span style={{
+                    fontSize:12,fontWeight:activeId===p.id?600:400,
+                    color:activeId===p.id?C.txt:C.txt2,
+                    whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",lineHeight:1.3,
+                  }}>{p.name}</span>
+                  {/* Shared (linked-workspace) projects — owner/role/read-only badge (prompt5 Task 1/4) */}
+                  {p._shared&&(
+                    <span title={p._readOnly?`Shared read-only · owner ${p._owner?.name||p._owner?.email||""}`:`Shared · ${p._role||"member"} · owner ${p._owner?.name||p._owner?.email||""}`}
+                      style={{flexShrink:0,fontSize:8,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",
+                        padding:"1px 5px",borderRadius:4,
+                        color:p._readOnly?C.yel:C.acc,background:(p._readOnly?C.yel:C.acc)+"1a",
+                        border:`1px solid ${(p._readOnly?C.yel:C.acc)}40`}}>
+                      {p._readOnly?"View":"Shared"}
+                    </span>
+                  )}
+                </div>
+                <div style={{fontSize:9,color:C.muted,marginTop:2}}>
+                  {p.createdAt?`Created ${fmtDate(p.createdAt)}`:fmtDate(p.modified)}
+                </div>
               </div>
-              <button onClick={e=>{e.stopPropagation();setConfirmDel(p.id);}}
-                style={{background:"none",border:"none",color:C.muted,cursor:"pointer",
-                  fontSize:14,padding:"0 2px",lineHeight:1,flexShrink:0,opacity:0,
-                }}
-                onMouseEnter={e=>e.currentTarget.style.opacity="1"}
-                onMouseLeave={e=>e.currentTarget.style.opacity="0"}
-              >×</button>
+              {/* Members cannot delete a shared project they don't own. */}
+              {!p._shared&&(
+                <button onClick={e=>{e.stopPropagation();setConfirmDel(p.id);}}
+                  style={{background:"none",border:"none",color:C.muted,cursor:"pointer",
+                    fontSize:14,padding:"0 2px",lineHeight:1,flexShrink:0,opacity:0,
+                  }}
+                  onMouseEnter={e=>e.currentTarget.style.opacity="1"}
+                  onMouseLeave={e=>e.currentTarget.style.opacity="0"}
+                >×</button>
+              )}
             </div>
           ))}
         </div>
@@ -7252,7 +7269,7 @@ export default function MetaLab(){
               <div>
                 <h1 style={{fontSize:22,fontWeight:700,letterSpacing:-0.5,marginBottom:5,color:C.txt,lineHeight:1.2}}>{project.name}</h1>
                 <div style={{fontSize:11.5,color:C.muted}}>
-                  Created {fmtDate(project.created)} · Modified {fmtDate(project.modified)} · {project.studies.length} stud{project.studies.length===1?"y":"ies"}
+                  Created {fmtDate(project.created||project.createdAt)} · Modified {fmtDate(project.modified||project.updatedAt)} · {project.studies.length} stud{project.studies.length===1?"y":"ies"}
                 </div>
               </div>
               <div style={{display:"flex",gap:6,flexShrink:0,flexWrap:"wrap",justifyContent:"flex-end",alignItems:"center"}}>
@@ -7285,6 +7302,18 @@ export default function MetaLab(){
               </div>
             </div>
           </div>
+          {/* Shared (linked Review Workspace) project banner — owner + read-only state (prompt5 Task 1/4) */}
+          {project._shared&&(
+            <div style={{marginBottom:22,padding:"10px 14px",borderRadius:8,fontSize:12.5,display:"flex",alignItems:"center",gap:9,
+              background:(project._readOnly?C.yel:C.acc)+"14",border:`1px solid ${(project._readOnly?C.yel:C.acc)}40`}}>
+              <span style={{fontSize:14}}>{project._readOnly?"🔒":"🔗"}</span>
+              <span style={{color:C.txt2,lineHeight:1.5}}>
+                {project._readOnly
+                  ?<>This is a <b style={{color:C.txt}}>shared, read-only</b> project owned by {project._owner?.name||project._owner?.email||"another user"}. You can view it, but your changes won’t be saved.</>
+                  :<>You’re collaborating on a <b style={{color:C.txt}}>shared</b> project (your role: {project._role||"member"}) owned by {project._owner?.name||project._owner?.email||"another user"}.</>}
+              </span>
+            </div>
+          )}
           {tab==="pico"&&<PICOTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="prospero"&&<PROSPEROTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="search"&&<SearchTab project={project} updNested={updNested} upd={upd}/>}

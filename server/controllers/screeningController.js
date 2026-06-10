@@ -33,12 +33,17 @@ async function getOwnedProject(pid, userId) {
 export async function listProjects(req, res) {
   try {
     // Projects the user OWNS or is an active MEMBER of (collaboration).
+    // A member who only holds META·LAB permission (canViewMetaSift=false, e.g. the
+    // readonly_metalab preset) is NOT shown META·SIFT projects (Task 4 §8).
     const memberships = await prisma.screenProjectMember.findMany({
       where: { userId: req.user.id, status: 'active' },
-      select: { projectId: true, role: true },
+      select: { projectId: true, role: true, canViewMetaSift: true },
     });
-    const memberProjectIds = memberships.map(m => m.projectId);
-    const roleByProject = Object.fromEntries(memberships.map(m => [m.projectId, m.role]));
+    const visibleMemberships = memberships.filter(
+      m => m.role === 'owner' || m.role === 'leader' || m.canViewMetaSift,
+    );
+    const memberProjectIds = visibleMemberships.map(m => m.projectId);
+    const roleByProject = Object.fromEntries(visibleMemberships.map(m => [m.projectId, m.role]));
 
     const projects = await prisma.screenProject.findMany({
       where: { OR: [{ ownerId: req.user.id }, { id: { in: memberProjectIds } }] },
@@ -56,9 +61,26 @@ export async function listProjects(req, res) {
       : [];
     const linkedTitleById = Object.fromEntries(linkedProjects.map(lp => [lp.id, lp.name]));
 
+    // Leaders are SEPARATE from the owner (prompt5 Task 1). Batch the leader rows for
+    // all listed projects so each card can show owner + leaders distinctly.
+    const projectIds = projects.map(p => p.id);
+    const leaderRows = projectIds.length
+      ? await prisma.screenProjectMember.findMany({
+          where: { projectId: { in: projectIds }, role: 'leader', status: 'active' },
+          select: { projectId: true, name: true, email: true, userId: true },
+        })
+      : [];
+    const leadersByProject = {};
+    for (const lr of leaderRows) {
+      (leadersByProject[lr.projectId] ||= []).push({ name: lr.name || '', email: lr.email || '', userId: lr.userId });
+    }
+
     res.json({ projects: projects.map(p => {
       const isOwner = p.ownerId === req.user.id;
-      const myRole = isOwner ? 'leader' : (roleByProject[p.id] || 'reviewer');
+      // The owner's own role is 'owner' — never 'leader' (Task 1: keep them distinct).
+      const myRole = isOwner ? 'owner' : (roleByProject[p.id] || 'reviewer');
+      const leaders = leadersByProject[p.id] || [];
+      const ownerName = p.owner?.name || p.owner?.email || '';
       return {
         id: p.id, title: p.title, description: p.description,
         reviewQuestion: p.reviewQuestion, stage: p.stage, blindMode: p.blindMode,
@@ -66,9 +88,13 @@ export async function listProjects(req, res) {
         linkedMetaLabProjectId: p.linkedMetaLabProjectId,
         linkedMetaLabProjectTitle: p.linkedMetaLabProjectId ? (linkedTitleById[p.linkedMetaLabProjectId] || null) : null,
         recordCount: p._count.records, memberCount: p._count.members,
+        // ── Owner vs Leader, kept as separate fields (Task 1 §5) ──
         owner: p.owner, isOwner,
-        leaderName: p.owner?.name || p.owner?.email || '',
-        leaderEmail: p.owner?.email || '',
+        ownerName, ownerEmail: p.owner?.email || '',
+        leaders, leaderCount: leaders.length,
+        // Back-compat: older UIs read leaderName/leaderEmail — point them at the OWNER
+        // so existing "Leader: …" copy still resolves, while new UI uses owner/leaders.
+        leaderName: ownerName, leaderEmail: p.owner?.email || '',
         myRole, currentUserRole: myRole,
         totalArticles: p._count.records, status: p.progressStatus,
         createdAt: p.createdAt, updatedAt: p.updatedAt,
@@ -134,9 +160,13 @@ export async function getProject(req, res) {
       ...p,
       myRole: access.role,
       isLeader: access.isLeader,
+      isOwner: access.isOwner,
       canScreen: access.canScreen,
       canChat: access.canChat,
       canResolveConflicts: access.canResolveConflicts,
+      canManageMembers: access.canManageMembers,
+      canManageSettings: access.canManageSettings,
+      perms: access.perms,
     });
   } catch (err) {
     console.error('[screening] getProject:', err.message);
@@ -146,10 +176,10 @@ export async function getProject(req, res) {
 
 export async function updateProject(req, res) {
   try {
-    // Project settings are leader-only (Part 4/5).
+    // Project settings: owner, leader, or a member granted canManageSettings.
     const access = await getProjectAccess(req.params.pid, req.user);
     if (!access) return res.status(404).json({ error: 'Project not found' });
-    if (!access.isLeader) return res.status(403).json({ error: 'Only the project leader can change project settings' });
+    if (!access.canManageSettings) return res.status(403).json({ error: 'You do not have permission to change project settings' });
     const p = access.project;
 
     const {
@@ -164,7 +194,21 @@ export async function updateProject(req, res) {
     if (reviewQuestion !== undefined) data.reviewQuestion = reviewQuestion;
     if (stage !== undefined) data.stage = stage;
     if (blindMode !== undefined) data.blindMode = !!blindMode;
-    if (linkedMetaLabProjectId !== undefined) data.linkedMetaLabProjectId = linkedMetaLabProjectId || null;
+    // SECURITY: the link target must be one of the WORKSPACE OWNER's own META·LAB
+    // projects (mirrors linkMetaLab). Without this, a non-owner leader could repoint
+    // the link to a stranger's project and leak it to every member.
+    if (linkedMetaLabProjectId !== undefined) {
+      if (linkedMetaLabProjectId) {
+        const ml = await prisma.project.findFirst({
+          where: { id: linkedMetaLabProjectId, userId: p.ownerId, deletedAt: null },
+          select: { id: true },
+        });
+        if (!ml) return res.status(400).json({ error: 'That META·LAB project was not found in this workspace' });
+        data.linkedMetaLabProjectId = ml.id;
+      } else {
+        data.linkedMetaLabProjectId = null;
+      }
+    }
     if (progressStatus !== undefined) {
       if (!['not_started', 'in_progress', 'done'].includes(progressStatus)) {
         return res.status(400).json({ error: 'invalid progressStatus' });
@@ -255,7 +299,7 @@ export async function linkMetaLab(req, res) {
   try {
     const access = await getProjectAccess(req.params.pid, req.user);
     if (!access) return res.status(404).json({ error: 'Project not found' });
-    if (!access.isLeader) return res.status(403).json({ error: 'Only the project leader can link projects' });
+    if (!access.canManageSettings) return res.status(403).json({ error: 'You do not have permission to link projects' });
     const sp = access.project;
     const { metaLabProjectId } = req.body || {};
 

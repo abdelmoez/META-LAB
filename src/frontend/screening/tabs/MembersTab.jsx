@@ -22,8 +22,9 @@ import { screeningApi } from '../api-client/screeningApi.js';
 
 // ── role / status presentation ──────────────────────────────────────────────
 
-const ROLE_COLOR = { leader: C.gold, reviewer: C.acc, viewer: C.muted };
-const ROLE_LABEL = { leader: 'Leader', reviewer: 'Reviewer', viewer: 'Viewer' };
+// Owner is distinct from Leader everywhere (prompt5 Task 1).
+const ROLE_COLOR = { owner: C.gold, leader: C.teal, reviewer: C.acc, viewer: C.muted };
+const ROLE_LABEL = { owner: 'Owner', leader: 'Leader', reviewer: 'Reviewer', viewer: 'Viewer' };
 
 const STATUS_META = {
   active:   { color: C.grn,   label: 'Active' },
@@ -74,6 +75,8 @@ const selectStyle = {
 export default function MembersTab({ pid, project, access, refreshProject }) {
   const [members, setMembers] = useState([]);
   const [isLeader, setIsLeader] = useState(false);
+  const [isOwner, setIsOwner] = useState(false);
+  const [canManageMembers, setCanManageMembers] = useState(false);
   const [myRole, setMyRole] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -93,6 +96,8 @@ export default function MembersTab({ pid, project, access, refreshProject }) {
       const data = await screeningApi.listMembers(pid);
       setMembers(data.members || []);
       setIsLeader(!!data.isLeader);
+      setIsOwner(!!data.isOwner);
+      setCanManageMembers(!!data.canManageMembers);
       setMyRole(data.myRole || null);
     } catch (e) {
       setError(e.message || 'Failed to load members.');
@@ -103,8 +108,10 @@ export default function MembersTab({ pid, project, access, refreshProject }) {
 
   useEffect(() => { load(); }, [load]);
 
-  // Leader status: trust backend payload, fall back to access prop.
-  const canManage = isLeader || !!access?.isLeader;
+  // Who can manage members: owner, leader, or a member granted canManageMembers.
+  const canManage = canManageMembers || isLeader || !!access?.isLeader;
+  // Whether the current user is the OWNER (only the owner may touch leader rows).
+  const amOwner = isOwner || access?.myRole === 'owner';
 
   // Generic per-member patch helper.
   const patchMember = useCallback(async (mid, body) => {
@@ -187,6 +194,7 @@ export default function MembersTab({ pid, project, access, refreshProject }) {
               key={m.id}
               member={m}
               canManage={canManage}
+              amOwner={amOwner}
               busy={!!busy[m.id]}
               rowErr={rowErr[m.id]}
               onPatch={(body) => patchMember(m.id, body)}
@@ -200,6 +208,7 @@ export default function MembersTab({ pid, project, access, refreshProject }) {
       {showAdd && (
         <AddMemberModal
           pid={pid}
+          amOwner={amOwner}
           onClose={() => setShowAdd(false)}
           onAdded={async () => { await load(); refreshProject?.(); }}
         />
@@ -233,20 +242,41 @@ export default function MembersTab({ pid, project, access, refreshProject }) {
 
 // ── MemberRow ───────────────────────────────────────────────────────────────
 
-function MemberRow({ member, canManage, busy, rowErr, onPatch, onRemove }) {
+function LockNote({ children }) {
+  return (
+    <span title={children} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11, color: C.muted, fontStyle: 'italic' }}>
+      <span style={{ fontSize: 13 }}>🔒</span>{children}
+    </span>
+  );
+}
+
+function MemberRow({ member, canManage, amOwner, busy, rowErr, onPatch, onRemove }) {
   const m = member;
   const display = m.name || m.email || 'Unknown';
-  const isLeaderRow = m.role === 'leader';
+  const isOwnerRow  = !!m.isOwner || m.role === 'owner';
+  const isLeaderRow = !isOwnerRow && (m.isLeader || m.role === 'leader');
   const status = STATUS_META[m.status] || STATUS_META.inactive;
   const roleColor = ROLE_COLOR[m.role] || C.muted;
+
+  // Row lock rules (Task 2):
+  //   • Owner row is locked for everyone (use a transfer-ownership flow instead).
+  //   • Leader row is locked unless the CURRENT user is the owner.
+  //   • Members/viewers are editable by anyone who can manage members.
+  const locked = isOwnerRow || (isLeaderRow && !amOwner);
+  const lockMsg = isOwnerRow
+    ? 'Owner permissions cannot be changed here.'
+    : 'Only the owner can change leader permissions.';
+  const editable = canManage && !locked;
+  // Only the owner may grant the Leader role (so non-owners can't promote to leader).
+  const roleOptions = amOwner ? ['leader', 'reviewer', 'viewer'] : ['reviewer', 'viewer'];
 
   return (
     <Card style={{
       padding: '14px 16px',
-      borderColor: isLeaderRow ? C.gold + '40' : C.brd,
+      borderColor: isOwnerRow ? C.gold + '55' : isLeaderRow ? C.teal + '40' : C.brd,
       opacity: m.status === 'inactive' ? 0.72 : 1,
     }}>
-      {/* Top line: identity + badges + (leader) inline controls */}
+      {/* Top line: identity + badges + inline controls (when editable) */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
         <Avatar name={m.name || m.email} size={34} />
 
@@ -265,19 +295,17 @@ function MemberRow({ member, canManage, busy, rowErr, onPatch, onRemove }) {
           </div>
         </div>
 
-        {/* Leader controls: role select + status toggle + remove */}
-        {canManage ? (
+        {/* Management controls: role select + status toggle + remove (only when editable) */}
+        {editable ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
             <select
-              value={m.role}
+              value={roleOptions.includes(m.role) ? m.role : 'reviewer'}
               disabled={busy}
               onChange={e => onPatch({ role: e.target.value })}
               style={{ ...selectStyle, opacity: busy ? 0.6 : 1 }}
               title="Change role"
             >
-              <option value="leader">Leader</option>
-              <option value="reviewer">Reviewer</option>
-              <option value="viewer">Viewer</option>
+              {roleOptions.map(r => <option key={r} value={r}>{ROLE_LABEL[r]}</option>)}
             </select>
 
             <Toggle
@@ -287,12 +315,12 @@ function MemberRow({ member, canManage, busy, rowErr, onPatch, onRemove }) {
               label={m.status === 'pending' ? undefined : (m.status === 'active' ? 'Active' : 'Inactive')}
             />
 
-            {!isLeaderRow && (
-              <Button variant="ghost" onClick={onRemove} disabled={busy} style={{ padding: '6px 12px', fontSize: 12 }}>
-                Remove
-              </Button>
-            )}
+            <Button variant="ghost" onClick={onRemove} disabled={busy} style={{ padding: '6px 12px', fontSize: 12 }}>
+              Remove
+            </Button>
           </div>
+        ) : canManage && locked ? (
+          <LockNote>{lockMsg}</LockNote>
         ) : (
           <span style={{ fontSize: 11, fontFamily: MONO, color: C.muted }}>
             joined {fmtDate(m.joinedAt)}
@@ -300,10 +328,10 @@ function MemberRow({ member, canManage, busy, rowErr, onPatch, onRemove }) {
         )}
       </div>
 
-      {/* Permissions row */}
+      {/* Permissions row — toggles only when this row is editable; otherwise read-only dots */}
       <div style={{
         marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.brd}`,
-        display: 'flex', alignItems: 'center', gap: canManage ? 22 : 18, flexWrap: 'wrap',
+        display: 'flex', alignItems: 'center', gap: editable ? 22 : 18, flexWrap: 'wrap',
       }}>
         <span style={{
           fontSize: 10, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em',
@@ -312,7 +340,7 @@ function MemberRow({ member, canManage, busy, rowErr, onPatch, onRemove }) {
           Permissions
         </span>
 
-        {canManage
+        {editable
           ? PERMS.map(p => (
               <Toggle
                 key={p.key}
@@ -325,11 +353,9 @@ function MemberRow({ member, canManage, busy, rowErr, onPatch, onRemove }) {
           : PERMS.map(p => <PermDot key={p.key} on={!!m[p.key]} label={p.label} />)
         }
 
-        {canManage && (
-          <span style={{ marginLeft: 'auto', fontSize: 11, fontFamily: MONO, color: C.muted }}>
-            joined {fmtDate(m.joinedAt)}
-          </span>
-        )}
+        <span style={{ marginLeft: 'auto', fontSize: 11, fontFamily: MONO, color: C.muted }}>
+          joined {fmtDate(m.joinedAt)}
+        </span>
       </div>
 
       {rowErr && (
@@ -357,7 +383,9 @@ const ADD_PRESETS = [
   { value: 'viewer',            label: 'Viewer — read-only both, can chat' },
 ];
 
-function AddMemberModal({ pid, onClose, onAdded }) {
+function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
+  // Only the owner can add a Leader (Task 2) — hide that preset for non-owners.
+  const presets = amOwner ? ADD_PRESETS : ADD_PRESETS.filter(p => p.value !== 'leader');
   const [email, setEmail] = useState('');
   const [preset, setPreset] = useState('reviewer');
   const [submitting, setSubmitting] = useState(false);
@@ -417,7 +445,7 @@ function AddMemberModal({ pid, onClose, onAdded }) {
             disabled={submitting}
             style={{ ...fieldInput, cursor: 'pointer' }}
           >
-            {ADD_PRESETS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+            {presets.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
           </select>
           <div style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 1.5 }}>
             Presets set META·LAB + META·SIFT permissions across the linked workspace. Fine-tune per-member toggles after adding.

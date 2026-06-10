@@ -11,23 +11,26 @@ import { screeningApi } from '../api-client/screeningApi.js';
 import ChatLauncher from '../components/ChatLauncher.jsx';
 import UserMenu from '../../components/UserMenu.jsx';
 
-import OverviewTab     from '../tabs/OverviewTab.jsx';
-import ScreeningTab    from '../tabs/ScreeningTab.jsx';
-import SecondReviewTab from '../tabs/SecondReviewTab.jsx';
-import DuplicatesTab   from '../tabs/DuplicatesTab.jsx';
-import ConflictsTab    from '../tabs/ConflictsTab.jsx';
-import MembersTab      from '../tabs/MembersTab.jsx';
-import ExportTab       from '../tabs/ExportTab.jsx';
+import OverviewTab       from '../tabs/OverviewTab.jsx';
+import ScreeningTab      from '../tabs/ScreeningTab.jsx';
+import SecondReviewTab   from '../tabs/SecondReviewTab.jsx';
+import DuplicatesTab     from '../tabs/DuplicatesTab.jsx';
+import ConflictsTab      from '../tabs/ConflictsTab.jsx';
+import ProjectControlTab from '../tabs/ProjectControlTab.jsx';
+import ExportTab         from '../tabs/ExportTab.jsx';
 
 const TABS = [
-  { key: 'overview',      label: 'Overview',      Comp: OverviewTab },
-  { key: 'screening',     label: 'Screening',     Comp: ScreeningTab },
-  { key: 'second-review', label: 'Second Review', Comp: SecondReviewTab },
-  { key: 'duplicates',    label: 'Duplicates',    Comp: DuplicatesTab },
-  { key: 'conflicts',     label: 'Conflicts',     Comp: ConflictsTab },
-  { key: 'members',       label: 'Members',       Comp: MembersTab },
-  { key: 'export',        label: 'Export',        Comp: ExportTab },
+  { key: 'overview',      label: 'Overview',        Comp: OverviewTab },
+  { key: 'screening',     label: 'Screening',       Comp: ScreeningTab },
+  { key: 'second-review', label: 'Second Review',   Comp: SecondReviewTab },
+  { key: 'duplicates',    label: 'Duplicates',      Comp: DuplicatesTab },
+  { key: 'conflicts',     label: 'Conflicts',       Comp: ConflictsTab },
+  { key: 'control',       label: 'Project Control', Comp: ProjectControlTab },
+  { key: 'export',        label: 'Export',          Comp: ExportTab },
 ];
+
+// Legacy deep links used ?tab=members — the roster now lives inside Project Control.
+const TAB_ALIASES = { members: 'control' };
 
 const PROGRESS_BADGE = {
   not_started: { label: 'NOT STARTED', color: C.muted },
@@ -39,7 +42,8 @@ export default function SiftProject() {
   const { pid } = useParams();
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
-  const tab = params.get('tab') || 'overview';
+  const rawTab = params.get('tab') || 'overview';
+  const tab = TAB_ALIASES[rawTab] || rawTab;
 
   const [project, setProject] = useState(null);
   const [loading, setLoading] = useState(true);

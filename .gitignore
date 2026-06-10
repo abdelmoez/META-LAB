@@ -37,3 +37,6 @@ server-test.log
 server-test.err.log
 server-stdout.log
 *.test.log
+
+# Build-time generated version metadata (npm run version:gen) — derived, not committed
+server/version.json

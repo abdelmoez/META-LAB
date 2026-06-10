@@ -1,7 +1,42 @@
 # META·SIFT — QA Report (collaboration upgrade)
 
-> **Update 2026-06-09 (prompt4 server-ready upgrade):** ✅ **207/207 screening tests pass**.
-> prompt4 section below; prompt3/prompt2/prompt1 sections follow unchanged.
+> **Update 2026-06-09 (prompt5 roles / linked access / version / ops-read):** ✅ **216/216 screening tests pass**.
+> prompt5 section below; prompt4/prompt3/prompt2/prompt1 sections follow unchanged.
+
+---
+
+## prompt5 — Owner/Leader, linked project access, versioning, ops fixes (2026-06-09)
+
+**Result:** ✅ **216/216 screening tests pass** (+9 `integration/prompt5.test.js`: 5 feature + 4 `SEC*` security
+regressions). `vite build` clean. Full integration+unit suite: only the **6 pre-existing** `serverStorage.test.js`
+fake-timer failures remain (that frontend bridge file is **untouched** — `git status` clean). `api-health` updated
+(version no longer hardcoded). `prompt3 BUG4` updated (owner's role is now `owner`, not `leader`).
+
+**Adversarial review + fixes:** a multi-agent review of the diff confirmed 9 issues (then re-verified the fixes
+complete). Fixed before delivery, each with a regression test: privilege escalation via raw permission flags / missing
+self-guard / global-flag grants (`SEC1`), cross-owner link-repoint data leak (`SEC2`), admin-archived projects still
+reachable + `canManageSettings` UI/backend mismatch (`SEC3`), and per-staff isolation of the admin Overview unread
+metric (`SEC4`).
+
+| Task | Delivered | Verified |
+|------|-----------|----------|
+| T1 Separate Owner from Leader | owner role is `owner` (not `leader`) everywhere; API returns `owner`+`leaders[]` as separate fields; UI chips/colors distinct; `creator`→`owner` complete | `prompt5 T1/T2`, `T3` |
+| T2 Lock owner/leader rows + server guards | owner row locked for all; leader rows owner-only; only owner grants/promotes/removes leaders; member w/ `canManageMembers` manages reviewers/viewers only; audit on every change | `prompt5 T1/T2` (leader→owner 403, leader→leader 403, demote-owner 400, reviewer-manage 403) |
+| T3 Created/updated date | `listProjects` returns `createdAt`/`updatedAt`; cards + monolith header render Created/Modified | `prompt5 T3` |
+| T4 Linked member access | `metalabAccess.js`; `/api/projects` returns owned+shared; membership-aware get/autosave; read-only no-op (batch-safe); cross-module visibility gating; repair script | `prompt5 T4/T6` (extractor edits persist; read-only no-op ignored; readonly_metasift hidden from META·LAB; readonly_metalab hidden from META·SIFT) |
+| T5 Project Control tab | new `ProjectControlTab` (status/blind/chat + link/unlink + embedded Members); `?tab=members` alias | build |
+| T6 Member sync | shared `ScreenProjectMember` is the source of truth; add/remove/permission apply to both modules immediately | `prompt5 T4/T6` |
+| T7 Version per commit | `version.js` env→generated→git→fallback; `commit`+`commitDate`+`buildDate`+`full`; `scripts/generate-version.js`; `npm run version:gen`; health endpoints report real version | `prompt5 T7`, live `/api/version` |
+| T8 Account dropdown everywhere | shared `UserMenu` added to ops console top bar (already in META·LAB + META·SIFT) | build |
+| T9 Ops message read clears | per-staff `ContactMessageRead`; `unread-count` + `mark-read` endpoints; `box=` per-staff filter; badge uses per-staff count (works for mods); fixed undefined-`setUnread` bug | `prompt5 T9` + live curl (create→unread→mark-read→baseline; second staffer unaffected) |
+
+Schema: additive migration `20260609230000_add_contact_message_read` (`ContactMessageRead`). Repair:
+`node server/scripts/repair-linked-access.js` (healed 13 projects / 3 linked workspaces on the dev DB).
+Full report: `docs/manager/meta-sift-roles-and-linked-access-report.md`.
+
+**Limitations:** no ownership-transfer flow yet; META·LAB read-only enforcement is by backend no-op save + a read-only
+banner (no deep per-field editor gating inside the monolith — deferred to avoid breaking META·LAB); no headless-browser
+click-through (logic covered by live-API integration + clean build; manual browser pass recommended).
 
 ---
 

@@ -30,10 +30,17 @@ function rowToProject(row) {
 
 /**
  * Strip first-class columns from a project before storing in `data`.
+ * Also drops any `_`-prefixed transient annotation keys (e.g. `_shared`,
+ * `_role`, `_readOnly`) that the API attaches for collaboration UIs — these must
+ * NEVER be persisted into the project blob (prompt5 Task 4).
  * @param {object} project
  */
 function projectToData(project) {
-  const { id, name, createdAt, updatedAt, ...data } = project;
+  const { id, name, createdAt, updatedAt, ...rest } = project;
+  const data = {};
+  for (const k of Object.keys(rest)) {
+    if (!k.startsWith('_')) data[k] = rest[k];
+  }
   return data;
 }
 
@@ -93,6 +100,54 @@ export async function save(project, userId) {
     create: { id, userId, name, data: dataStr },
   });
 
+  return rowToProject(row);
+}
+
+/**
+ * Read a project by id WITHOUT user-scoping. The caller MUST authorize access
+ * first (e.g. via screening membership). Used for shared (linked-workspace)
+ * META·LAB projects whose owner is a different user (prompt5 Task 4).
+ * @param {string} id
+ * @returns {Promise<object|undefined>}
+ */
+export async function getByIdUnscoped(id) {
+  // Excludes admin-archived (soft-deleted) projects so they are inaccessible to
+  // shared members, consistent with the list query (prompt5 review fix).
+  const row = await prisma.project.findFirst({ where: { id, deletedAt: null } });
+  if (!row) return undefined;
+  return rowToProject(row);
+}
+
+/**
+ * Return multiple projects by id (unscoped, full objects, excludes soft-deleted).
+ * Caller authorizes.
+ * @param {string[]} ids
+ * @returns {Promise<object[]>}
+ */
+export async function getManyByIds(ids) {
+  if (!Array.isArray(ids) || ids.length === 0) return [];
+  const rows = await prisma.project.findMany({ where: { id: { in: ids }, deletedAt: null } });
+  return rows.map(rowToProject);
+}
+
+/**
+ * Update an EXISTING project's name + data WITHOUT changing ownership. Used when
+ * an authorized linked-workspace member with edit permission saves a META·LAB
+ * project they don't own (prompt5 Task 4). Never creates a row, never reassigns
+ * userId. Returns the saved project, or null if the row does not exist.
+ * @param {object} project — must have { id, name }
+ * @returns {Promise<object|null>}
+ */
+export async function saveAsMember(project) {
+  if (!project || !project.id) throw new Error('project must have an id');
+  // Never resurrect an admin-archived project via a member write.
+  const existing = await prisma.project.findFirst({ where: { id: project.id, deletedAt: null } });
+  if (!existing) return null;
+  const data = JSON.stringify(projectToData(project));
+  const row = await prisma.project.update({
+    where: { id: project.id },
+    data: { name: project.name, data },
+  });
   return rowToProject(row);
 }
 

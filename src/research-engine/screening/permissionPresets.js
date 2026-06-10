@@ -68,6 +68,11 @@ export const PERMISSION_PRESETS = {
 // Presets a leader/owner can assign in the UI (owner is implicit, not assignable).
 export const ASSIGNABLE_PRESETS = ['leader', 'reviewer', 'data_extractor', 'readonly_metasift', 'readonly_metalab', 'readonly_both', 'viewer'];
 
+// Leader-level GLOBAL management flags. Granting these confers leader-equivalent
+// authority, so they are OWNER-ONLY to grant/revoke (enforced in the member
+// controller). Kept here so the controller and access resolver stay in sync.
+export const GLOBAL_PERMISSION_KEYS = ['canManageMembers', 'canManageSettings'];
+
 /** Resolve a preset name → { role, perms }. Falls back to reviewer. */
 export function resolvePreset(name) {
   const p = PERMISSION_PRESETS[name] || PERMISSION_PRESETS.reviewer;

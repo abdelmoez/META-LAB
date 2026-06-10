@@ -136,7 +136,8 @@ describe('META·SIFT prompt3 bug fixes (integration)', () => {
     expect(row).toBeTruthy();
     expect(row.linkedMetaLabProjectTitle).toBe(`MLcard ${r}`);
     expect(row.leaderName).toBeTruthy();
-    expect(row.currentUserRole).toBe('leader');
+    // prompt5 Task 1: the owner's own role is now 'owner' (no longer conflated with 'leader').
+    expect(row.currentUserRole).toBe('owner');
     expect(row.totalArticles).toBe(0);
 
     await api(`/screening/projects/${pid}`, { method: 'DELETE', cookie: a.cookie });

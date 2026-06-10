@@ -45,12 +45,27 @@ model ContactMessage {
   name      String?
   subject   String?
   message   String
-  read      Boolean  @default(false)
+  read      Boolean  @default(false)   // legacy global read flag (kept for back-compat)
   archived  Boolean  @default(false)
   replied   Boolean  @default(false)   // prompt4 Task 4
   repliedAt DateTime?
   createdAt DateTime @default(now())
   replies   ContactReply[]
+  reads     ContactMessageRead[]       // prompt5 Task 9 — per-staff read receipts
+}
+
+// Per-staff read receipt for an ops-console contact message (prompt5 Task 9).
+// The unread badge is computed PER USER: a message is unread for a staff member
+// when no ContactMessageRead row exists for (messageId, userId). This persists
+// across logout/login and is independent per admin/mod.
+model ContactMessageRead {
+  id        String         @id @default(uuid())
+  messageId String
+  message   ContactMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  userId    String
+  readAt    DateTime       @default(now())
+
+  @@unique([messageId, userId])
 }
 
 // Email replies sent from the console to a contact message (prompt4 Task 4).

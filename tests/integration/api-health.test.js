@@ -39,11 +39,12 @@ describe('GET /api/health', () => {
     expect(new Date(data.timestamp).toString()).not.toBe('Invalid Date');
   });
 
-  it('returns version "2.0.0"', async () => {
+  it('returns a semver version (now sourced from package.json — prompt5 Task 7)', async () => {
     if (!up) return;
     const res = await fetch(`${API}/health`);
     const data = await res.json();
-    expect(data.version).toBe('2.0.0');
+    // version is no longer hardcoded; it tracks package.json and changes per release.
+    expect(data.version).toMatch(/^\d+\.\d+\.\d+/);
   });
 
   it('responds with JSON content-type', async () => {

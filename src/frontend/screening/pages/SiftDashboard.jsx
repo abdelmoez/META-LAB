@@ -271,10 +271,10 @@ export default function SiftDashboard() {
           }}>
             <div style={{ fontSize: 36, marginBottom: 16 }}>📋</div>
             <div style={{ fontSize: 15, fontWeight: 600, color: C.txt, marginBottom: 8 }}>
-              No screening projects yet
+              No projects you own or have been added to
             </div>
             <div style={{ fontSize: 13, color: C.txt2, marginBottom: 24, maxWidth: 360, margin: '0 auto 24px' }}>
-              Create your first project to begin screening titles and abstracts for your systematic review.
+              Create your first project to begin screening — or ask a project owner to add you to theirs.
             </div>
             <button
               onClick={() => { setShowNewModal(true); setCreateError(null); setNewForm(EMPTY_FORM); }}
@@ -458,8 +458,32 @@ export default function SiftDashboard() {
 
 // ── Sub-components ──────────────────────────────────────────────────────────
 
+// Owner / leader / member role presentation (prompt5 Task 1 — kept distinct).
+const ROLE_META = {
+  owner:    { label: 'Owner',    color: C.gold },
+  leader:   { label: 'Leader',   color: C.teal },
+  reviewer: { label: 'Reviewer', color: C.acc },
+  viewer:   { label: 'Viewer',   color: C.muted },
+};
+
+function RoleChip({ role, shared }) {
+  const meta = ROLE_META[role] || ROLE_META.reviewer;
+  const text = role === 'owner' ? 'You are owner'
+    : role === 'leader' ? 'You are leader'
+    : `${shared ? 'Shared · ' : ''}${meta.label}`;
+  return (
+    <span style={{
+      fontSize: 9, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em',
+      background: meta.color + '18', border: `1px solid ${meta.color}40`, color: meta.color,
+      borderRadius: 4, padding: '1px 6px', textTransform: 'uppercase',
+    }}>{text}</span>
+  );
+}
+
 function ProjectCard({ project, stats, total, screened, pct, progressColor, formatDate, onOpen, onDelete }) {
   const [hover, setHover] = useState(false);
+  const leaders = Array.isArray(project.leaders) ? project.leaders : [];
+  const ownerName = project.ownerName || project.owner?.name || project.owner?.email || 'Unknown';
 
   return (
     <div
@@ -480,13 +504,11 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
             <span style={{ fontSize: 15.5, fontWeight: 600, color: C.txt, letterSpacing: '-0.01em' }}>
               {project.title}
             </span>
-            {(project.isOwner || project.myRole === 'leader') && (
-              <span style={{
-                fontSize: 9, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em',
-                background: C.grn + '18', border: `1px solid ${C.grn}40`, color: C.grn,
-                borderRadius: 4, padding: '1px 6px', textTransform: 'uppercase',
-              }}>You are leader</span>
-            )}
+            {/* Owner vs Leader vs member role — distinct (Task 1) */}
+            <RoleChip
+              role={project.isOwner ? 'owner' : (project.myRole || 'reviewer')}
+              shared={project.isOwner === false}
+            />
             {project.blindMode && (
               <span style={{
                 fontSize: 9, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em',
@@ -506,13 +528,6 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
                 }}>{ps === 'done' ? 'DONE' : 'IN PROGRESS'}</span>
               );
             })()}
-            {project.isOwner === false && (
-              <span style={{
-                fontSize: 9, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em',
-                background: C.gold + '18', border: `1px solid ${C.gold}40`, color: C.gold,
-                borderRadius: 4, padding: '1px 6px', textTransform: 'uppercase',
-              }}>Shared · {project.myRole || 'reviewer'}</span>
-            )}
           </div>
 
           {project.description && (
@@ -563,10 +578,16 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
           </div>
 
           <div style={{ fontSize: 11.5, color: C.muted, marginTop: 5 }}>
-            Leader: <span style={{ color: C.txt2 }}>{project.leaderName || project.owner?.name || project.owner?.email || 'Unknown'}</span>
+            Owner: <span style={{ color: C.txt2 }}>{ownerName}</span>
+            {leaders.length > 0 && (
+              <> · Leader{leaders.length > 1 ? 's' : ''}: <span style={{ color: C.txt2 }}>{leaders.map(l => l.name || l.email).join(', ')}</span></>
+            )}
             {' · '}{(project.memberCount ?? 1)} member{(project.memberCount ?? 1) !== 1 ? 's' : ''}
-            {' · '}Updated {formatDate(project.updatedAt || project.createdAt)}
             {screened > 0 && total > 0 && ` · ${screened}/${total} screened`}
+          </div>
+          <div style={{ fontSize: 11, color: C.muted, marginTop: 3, fontFamily: MONO }}>
+            Created {formatDate(project.createdAt)}
+            {project.updatedAt && project.updatedAt !== project.createdAt && ` · Updated ${formatDate(project.updatedAt)}`}
           </div>
         </div>
 

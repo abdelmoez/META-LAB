@@ -2,6 +2,7 @@ import { prisma } from '../db/client.js';
 import { logAdminAction } from '../utils/audit.js';
 import { hashPassword } from '../auth/password.js';
 import { isEmailConfigured, sendEmail, renderReplyEmail } from '../services/emailService.js';
+import { getVersion } from '../version.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -70,7 +71,7 @@ export async function getMetrics(req, res) {
     const [
       totalUsers, todayUsers, weekUsers, monthUsers, suspendedUsers, adminUsers,
       totalProjects, todayProjects, weekProjects, monthProjects,
-      totalMessages, unreadMessages,
+      totalMessages, activeMessages, myReadActive,
       failedLogins7d,
       allProjects,
     ] = await Promise.all([
@@ -85,10 +86,14 @@ export async function getMetrics(req, res) {
       prisma.project.count({ where: { createdAt: { gte: weekStart } } }),
       prisma.project.count({ where: { createdAt: { gte: monthStart } } }),
       prisma.contactMessage.count(),
-      prisma.contactMessage.count({ where: { read: false } }),
+      prisma.contactMessage.count({ where: { archived: false } }),
+      // PER-STAFF unread (prompt5 review fix): the Overview metric is now per-caller,
+      // so one admin opening a message no longer drops another admin's unread count.
+      prisma.contactMessageRead.count({ where: { userId: req.user.id, message: { archived: false } } }),
       prisma.securityEvent.count({ where: { type: 'FAILED_LOGIN', createdAt: { gte: sevenDaysAgo } } }),
       prisma.project.findMany({ select: { data: true } }),
     ]);
+    const unreadMessages = Math.max(0, activeMessages - myReadActive);
 
     let studies = 0;
     let records = 0;
@@ -707,10 +712,11 @@ export async function getSecurityEvents(req, res) {
 export async function getContactMessages(req, res) {
   try {
     const { page, limit, skip } = parsePage(req.query);
-    const { read, archived, search, sort } = req.query;
+    const { read, archived, search, sort, box } = req.query;
+    const me = req.user.id;
 
     const where = {};
-    if (read !== undefined) where.read = read === 'true';
+    if (read !== undefined) where.read = read === 'true';          // legacy global filter (back-compat)
     if (archived !== undefined) where.archived = archived === 'true';
     if (search) {
       where.OR = [
@@ -719,6 +725,17 @@ export async function getContactMessages(req, res) {
         { subject: { contains: search } },
         { message: { contains: search } },
       ];
+    }
+
+    // Per-staff inbox boxes (prompt5 Task 9): unread/read are computed against THIS
+    // user's read receipts, not the legacy global `read` flag.
+    if (box === 'unread' || box === 'read') {
+      const myReads = await prisma.contactMessageRead.findMany({ where: { userId: me }, select: { messageId: true } });
+      const readIds = myReads.map(r => r.messageId);
+      where.archived = false;
+      where.id = box === 'unread' ? { notIn: readIds } : { in: readIds };
+    } else if (box === 'archived') {
+      where.archived = true;
     }
 
     const orderBy = sort === 'oldest' ? { createdAt: 'asc' } : { createdAt: 'desc' };
@@ -730,12 +747,70 @@ export async function getContactMessages(req, res) {
         orderBy,
         skip,
         take: limit,
+        include: { reads: { where: { userId: me }, select: { id: true } } },
       }),
     ]);
 
-    return res.json({ messages, total });
+    // Annotate each message with this user's read state (per-staff).
+    const shaped = messages.map(({ reads, ...m }) => ({ ...m, readByMe: (reads?.length || 0) > 0 }));
+
+    return res.json({ messages: shaped, total });
   } catch (err) {
     console.error('[admin] getContactMessages error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── GET /api/admin/contact-messages/unread-count ──────────────────────────────
+// Per-staff unread badge count (prompt5 Task 9). Unread = non-archived messages
+// with NO read receipt for the calling staff member. Persists across logout/login.
+
+export async function getUnreadMessageCount(req, res) {
+  try {
+    const me = req.user.id;
+    const [activeTotal, myReadActive] = await Promise.all([
+      prisma.contactMessage.count({ where: { archived: false } }),
+      prisma.contactMessageRead.count({ where: { userId: me, message: { archived: false } } }),
+    ]);
+    const unread = Math.max(0, activeTotal - myReadActive);
+    return res.json({ unread });
+  } catch (err) {
+    console.error('[admin] getUnreadMessageCount error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── POST /api/admin/contact-messages/:id/mark-read ────────────────────────────
+// Mark a message read for THIS staff member (idempotent upsert of a read receipt).
+// Body { read: false } removes the receipt (mark-as-unread for this user).
+
+export async function markMessageRead(req, res) {
+  try {
+    const me = req.user.id;
+    const wantRead = req.body?.read !== false; // default true
+    const msg = await prisma.contactMessage.findUnique({ where: { id: req.params.id } });
+    if (!msg) return res.status(404).json({ error: 'Message not found' });
+
+    if (wantRead) {
+      // Per-staff only — do NOT touch the global `read` flag (that would drop the
+      // unread count for other staff). Read state lives entirely in receipts.
+      await prisma.contactMessageRead.upsert({
+        where: { messageId_userId: { messageId: msg.id, userId: me } },
+        update: { readAt: new Date() },
+        create: { messageId: msg.id, userId: me },
+      });
+    } else {
+      await prisma.contactMessageRead.deleteMany({ where: { messageId: msg.id, userId: me } });
+    }
+
+    // Return the caller's fresh unread count so the badge can update immediately.
+    const [activeTotal, myReadActive] = await Promise.all([
+      prisma.contactMessage.count({ where: { archived: false } }),
+      prisma.contactMessageRead.count({ where: { userId: me, message: { archived: false } } }),
+    ]);
+    return res.json({ ok: true, read: wantRead, unread: Math.max(0, activeTotal - myReadActive) });
+  } catch (err) {
+    console.error('[admin] markMessageRead error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }
@@ -835,7 +910,14 @@ export async function replyToMessage(req, res) {
 
     await prisma.contactMessage.update({
       where: { id: msg.id },
-      data: { replied: true, repliedAt: new Date(), read: true },
+      data: { replied: true, repliedAt: new Date() },
+    });
+    // Replying implies the staff member has read it — record a per-staff receipt
+    // (the global `read` flag is intentionally left alone for per-staff isolation).
+    await prisma.contactMessageRead.upsert({
+      where: { messageId_userId: { messageId: msg.id, userId: req.user.id } },
+      update: { readAt: new Date() },
+      create: { messageId: msg.id, userId: req.user.id },
     });
 
     await logAdminAction(req, 'REPLY_MESSAGE', 'ContactMessage', msg.id, {
@@ -936,11 +1018,14 @@ export async function getHealth(req, res) {
     dbStatus = 'error';
   }
 
+  const v = getVersion();
   return res.json({
     status: 'ok',
     db: dbStatus,
     env: process.env.NODE_ENV || 'development',
-    version: '2.0.0',
+    version: v.version,
+    commit: v.commit,
+    buildDate: v.buildDate,
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
   });

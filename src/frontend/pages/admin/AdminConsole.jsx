@@ -7,6 +7,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { adminApi, fetchVersion } from './adminApiClient.js';
+import UserMenu from '../../components/UserMenu.jsx';
 
 /* ─── Design tokens ──────────────────────────────────────────────────── */
 const C = {
@@ -420,7 +421,7 @@ function OverviewSection({ onNavigate }) {
    ════════════════════════════════════════════════════════════════════════ */
 
 function InboxItem({ msg, selected, onClick }) {
-  const isUnread = !msg.read && !msg.archived;
+  const isUnread = !msg.readByMe && !msg.archived;
   return (
     <div onClick={onClick} style={{
       padding: '11px 14px', borderBottom: `1px solid ${C.brd}`,
@@ -545,7 +546,7 @@ function ReplyThread({ replies }) {
 }
 
 function MessageDetail({ msg, emailConfigured, onMarkRead, onArchive, onDelete, onReplied }) {
-  const isUnread = !msg.read && !msg.archived;
+  const isUnread = !msg.readByMe && !msg.archived;
   const [replies, setReplies] = useState([]);
 
   const loadReplies = useCallback(() => {
@@ -618,6 +619,7 @@ function MessagesSection({ onUnreadChange }) {
   const [selected, setSelected] = useState(null);
   const [confirm,  setConfirm]  = useState(null);
   const [emailConfigured, setEmailConfigured] = useState(false);
+  const [serverUnread, setServerUnread] = useState(0); // authoritative per-staff count (not page-scoped)
   const searchTimer = useRef(null);
   const PER_PAGE = 30;
 
@@ -625,23 +627,29 @@ function MessagesSection({ onUnreadChange }) {
     adminApi.console().then(d => setEmailConfigured(!!d.emailConfigured)).catch(() => {});
   }, []);
 
+  // Refresh the per-staff unread badge from the server (authoritative) — drives both
+  // the parent sidebar badge and this section's header/tab count.
+  const refreshUnread = useCallback(async () => {
+    try { const res = await adminApi.messages.unreadCount(); setServerUnread(res.unread); onUnreadChange?.(res.unread); } catch { /* silent */ }
+  }, [onUnreadChange]);
+
   function markRepliedLocal(id) {
-    setMessages(ms => ms.map(m => m.id === id ? { ...m, replied: true, read: true, status: m.archived ? 'archived' : 'read' } : m));
-    setSelected(m => m && m.id === id ? { ...m, replied: true, read: true } : m);
+    setMessages(ms => ms.map(m => m.id === id ? { ...m, replied: true, readByMe: true, status: m.archived ? 'archived' : 'read' } : m));
+    setSelected(m => m && m.id === id ? { ...m, replied: true, readByMe: true } : m);
+    refreshUnread();
   }
 
   const load = useCallback(async (f, s, so, p) => {
     setLoading(true); setError('');
     try {
       const params = { page: p, limit: PER_PAGE, sort: so };
-      if (f === 'unread')   params.read = false;
-      else if (f === 'read')     params.read = true;
-      else if (f === 'archived') params.archived = true;
+      // Per-staff inbox boxes (prompt5 Task 9): unread/read are computed per-user.
+      if (f === 'unread' || f === 'read' || f === 'archived') params.box = f;
       if (s) params.search = s;
       const data = await adminApi.messages.list(params);
       const msgs = (data.messages || []).map(m => ({
         ...m,
-        status: m.archived ? 'archived' : m.read ? 'read' : 'unread',
+        status: m.archived ? 'archived' : m.readByMe ? 'read' : 'unread',
       }));
       setMessages(msgs);
       setTotal(data.total || msgs.length);
@@ -649,7 +657,7 @@ function MessagesSection({ onUnreadChange }) {
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { load(filter, search, sort, 1); }, []);
+  useEffect(() => { load(filter, search, sort, 1); refreshUnread(); }, []);
 
   function handleSearch(val) {
     setSearch(val);
@@ -659,38 +667,35 @@ function MessagesSection({ onUnreadChange }) {
 
   async function selectMsg(msg) {
     setSelected(msg);
-    if (!msg.read && !msg.archived) {
+    if (!msg.readByMe && !msg.archived) {
       try {
-        await adminApi.messages.update(msg.id, { read: true });
-        setMessages(ms => ms.map(m => m.id === msg.id ? { ...m, read: true, status: 'read' } : m));
-        setSelected(m => m ? { ...m, read: true, status: 'read' } : m);
-        setUnread(c => Math.max(0, c - 1));
-        onUnreadChange?.(prev => Math.max(0, prev - 1));
+        // Mark read FOR THIS STAFF MEMBER and update the badge from the response.
+        const res = await adminApi.messages.markRead(msg.id, true);
+        setMessages(ms => ms.map(m => m.id === msg.id ? { ...m, readByMe: true, status: 'read' } : m));
+        setSelected(m => m ? { ...m, readByMe: true, status: 'read' } : m);
+        setServerUnread(res.unread);
+        onUnreadChange?.(res.unread);
       } catch { /* silent */ }
     }
   }
 
   async function markRead(id, isRead) {
     try {
-      await adminApi.messages.update(id, { read: isRead });
-      const next = ms => ms.map(m => m.id === id ? { ...m, read: isRead, status: m.archived ? 'archived' : isRead ? 'read' : 'unread' } : m);
+      const res = await adminApi.messages.markRead(id, isRead);
+      const next = ms => ms.map(m => m.id === id ? { ...m, readByMe: isRead, status: m.archived ? 'archived' : isRead ? 'read' : 'unread' } : m);
       setMessages(next);
-      setSelected(m => m && m.id === id ? { ...m, read: isRead, status: m.archived ? 'archived' : isRead ? 'read' : 'unread' } : m);
-      if (isRead === true) {
-        onUnreadChange?.(prev => Math.max(0, prev - 1));
-      } else if (isRead === false) {
-        onUnreadChange?.(prev => prev + 1);
-      }
+      setSelected(m => m && m.id === id ? { ...m, readByMe: isRead, status: m.archived ? 'archived' : isRead ? 'read' : 'unread' } : m);
+      setServerUnread(res.unread);
+      onUnreadChange?.(res.unread);
     } catch { /* silent */ }
   }
 
   async function archiveMsg(id) {
     try {
       await adminApi.messages.update(id, { archived: true });
-      const wasUnread = messages.find(m => m.id === id && !m.read && !m.archived);
-      if (wasUnread) onUnreadChange?.(prev => Math.max(0, prev - 1));
       load(filter, search, sort, page);
       setSelected(m => m && m.id === id ? null : m);
+      refreshUnread();
     } catch { /* silent */ }
   }
 
@@ -698,15 +703,15 @@ function MessagesSection({ onUnreadChange }) {
     if (!confirm) return;
     try {
       await adminApi.messages.delete(confirm.id);
-      const wasUnread = messages.find(m => m.id === confirm?.id && !m.read && !m.archived);
-      if (wasUnread) onUnreadChange?.(prev => Math.max(0, prev - 1));
       load(filter, search, sort, page);
       setSelected(m => m && m.id === confirm.id ? null : m);
+      refreshUnread();
     } catch { /* silent */ }
     setConfirm(null);
   }
 
-  const unreadCount = messages.filter(m => !m.read && !m.archived).length;
+  // Authoritative per-staff count from the server (not the loaded page slice).
+  const unreadCount = serverUnread;
 
   const filterDefs = [
     { id: 'all',      label: 'All' },
@@ -2369,10 +2374,11 @@ export default function AdminConsole() {
       .catch(() => { setRole(user?.role || 'admin'); setAllowed(null); });
   }, [user]);
 
-  // Mods cannot read metrics; only fetch the unread badge when allowed.
+  // Per-staff unread badge (prompt5 Task 9) — works for admin AND mod, and clears
+  // as soon as a message is opened (mark-read) regardless of who else has read it.
   useEffect(() => {
-    if (allowed && !allowed.has('overview')) return;
-    adminApi.metrics().then(m => setUnread(m?.contactMessages?.unread || 0)).catch(() => {});
+    if (allowed && !allowed.has('messages')) return;
+    adminApi.messages.unreadCount().then(d => setUnread(d.unread || 0)).catch(() => {});
   }, [allowed]);
 
   // App version line (optional — renders nothing on 404).
@@ -2433,6 +2439,8 @@ export default function AdminConsole() {
           </button>
           <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>{user?.email}</span>
           <RoleBadge role={role || user?.role || 'admin'} />
+          {/* Shared account dropdown — same component as META·LAB / META·SIFT (Task 8) */}
+          <UserMenu context="metalab" />
         </div>
       </div>
 

@@ -1,13 +1,14 @@
 {
   "name": "meta-lab",
-  "version": "2.0.0",
+  "version": "2.4.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "client": "vite",
     "server": "node server/index.js",
-    "build": "vite build",
+    "version:gen": "node scripts/generate-version.js",
+    "build": "npm run version:gen && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",

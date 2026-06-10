@@ -23,6 +23,8 @@ import {
   getAuditLog,
   getSecurityEvents,
   getContactMessages,
+  getUnreadMessageCount,
+  markMessageRead,
   updateContactMessage,
   deleteContactMessage,
   replyToMessage,
@@ -80,6 +82,9 @@ router.patch('/users/:id/role', requireAdmin, updateUserRole);
 
 // ── Contact messages (admin + mod) ─────────────────────────────────────────────
 router.get('/contact-messages', requireAdminOrMod, getContactMessages);
+// Per-staff unread badge + mark-read (prompt5 Task 9). Specific routes BEFORE :id.
+router.get('/contact-messages/unread-count', requireAdminOrMod, getUnreadMessageCount);
+router.post('/contact-messages/:id/mark-read', requireAdminOrMod, markMessageRead);
 router.patch('/contact-messages/:id', requireAdminOrMod, updateContactMessage);
 router.get('/contact-messages/:id/replies', requireAdminOrMod, getMessageReplies);
 router.post('/contact-messages/:id/reply', requireAdminOrMod, replyToMessage);
