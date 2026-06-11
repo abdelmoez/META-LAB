@@ -21,6 +21,7 @@ model User {
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   lastActive  DateTime?
+  themePreference String? // "night" | "day" — UI theme, synced from the account menu toggle
   projects    Project[]
   auditLogs   AdminAuditLog[]
   screenProjects ScreenProject[] @relation("UserScreenProjects")

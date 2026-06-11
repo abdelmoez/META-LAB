@@ -15,7 +15,7 @@
  */
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { C, FONT, MONO } from '../ui/theme.js';
+import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { Loading, ErrorBanner, Button, Badge, Toggle, Card, SectionLabel } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 import MembersTab from './MembersTab.jsx';
@@ -276,7 +276,7 @@ function LinkSection({ pid, canManage }) {
                 warning instead of a dead button. */}
             {linked && linked.missing ? (
               <div style={{
-                background: '#451a03', border: `1px solid ${C.ylw}50`, borderRadius: 8,
+                background: C.yelBg, border: `1px solid ${alpha(C.ylw, '50')}`, borderRadius: 8,
                 padding: '10px 14px', marginBottom: 14, fontSize: 12.5, color: C.ylw, lineHeight: 1.5,
               }}>
                 ⚠ Link broken — the linked META·LAB project is missing or was deleted.

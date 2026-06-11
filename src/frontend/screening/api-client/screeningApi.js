@@ -116,6 +116,18 @@ export const screeningApi = {
   markChatRead:    (pid) => req('POST', `/projects/${pid}/chat/mark-read`),
   chatTyping:      (pid) => req('POST', `/projects/${pid}/chat/typing`),
 
+  // Chat — META·LAB door (prompt7). SAME thread as /projects/:pid/chat,
+  // addressed by the linked META·LAB project id. Response shapes mirror the
+  // /projects/:pid/chat family. 404 ⇒ no linked META·SIFT project (or no
+  // access — existence-hiding contract). Note the door naming difference:
+  // metalab uses '/chat/read', sift uses '/chat/mark-read'.
+  metalabListChat:        (mlpid, since) => req('GET',    `/metalab/${mlpid}/chat${since ? '?since=' + encodeURIComponent(since) : ''}`),
+  metalabPostChat:        (mlpid, body)  => req('POST',   `/metalab/${mlpid}/chat`, body),
+  metalabChatUnreadCount: (mlpid)        => req('GET',    `/metalab/${mlpid}/chat/unread-count`),
+  metalabMarkChatRead:    (mlpid)        => req('POST',   `/metalab/${mlpid}/chat/read`),
+  metalabChatTyping:      (mlpid, typing = true) => req('POST', `/metalab/${mlpid}/chat/typing`, { typing }),
+  metalabDeleteChat:      (mlpid, cmid)  => req('DELETE', `/metalab/${mlpid}/chat/${cmid}`),
+
   // PDF attachments (Part 7)
   listPdf:        (pid, rid) => req('GET', `/projects/${pid}/records/${rid}/pdf`),
   pdfDownloadUrl: (pid, rid, aid) => `${BASE}/projects/${pid}/records/${rid}/pdf/${aid}/download`,

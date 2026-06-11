@@ -1,31 +1,19 @@
 import { useState } from "react";
 import { register } from "../auth/authClient.js";
-
-const C = {
-  bg:    "#0b0d13",
-  surf:  "#0f1220",
-  card:  "#141826",
-  card2: "#1a2033",
-  brd:   "#1f2640",
-  brd2:  "#283050",
-  acc:   "#818cf8",
-  acc2:  "#6366f1",
-  grn:   "#34d399",
-  red:   "#f87171",
-  txt:   "#eaecf6",
-  txt2:  "#9ba6c4",
-  muted: "#536080",
-};
+import { Icon } from "../components/icons.jsx";
+// Theme-aware tokens (prompt7) — C values are `var(--t-*)` strings; use
+// alpha(C.x, '40') instead of hex+alpha concatenation.
+import { C, FONT, MONO, alpha } from "../theme/tokens.js";
 
 const inputStyle = {
   width: "100%",
   padding: "10px 14px",
-  background: "#0b0d13",
+  background: C.surf,
   border: `1px solid ${C.brd2}`,
   borderRadius: 8,
   color: C.txt,
   fontSize: 14,
-  fontFamily: "'IBM Plex Sans', system-ui, sans-serif",
+  fontFamily: FONT,
   outline: "none",
   boxSizing: "border-box",
   transition: "border-color 0.15s, box-shadow 0.15s",
@@ -59,7 +47,7 @@ function Field({ id, label, type = "text", value, onChange, placeholder, autoCom
         style={{
           ...inputStyle,
           borderColor: focused ? C.acc : C.brd2,
-          boxShadow: focused ? `0 0 0 3px rgba(129,140,248,0.12)` : "none",
+          boxShadow: focused ? `0 0 0 3px ${alpha(C.acc, 0.12)}` : "none",
         }}
         placeholder={placeholder}
       />
@@ -114,7 +102,7 @@ export default function Register({ onSuccess, onBack }) {
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        fontFamily: "'IBM Plex Sans', system-ui, sans-serif",
+        fontFamily: FONT,
         padding: "24px 16px",
       }}
     >
@@ -126,31 +114,33 @@ export default function Register({ onSuccess, onBack }) {
           border: `1px solid ${C.brd}`,
           borderRadius: 16,
           padding: "40px 36px 36px",
-          boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
+          boxShadow: `0 24px 64px ${C.shadow}`,
         }}
       >
-        {/* Logo */}
+        {/* Wordmark — matches the Landing navbar logo (hex mark + MONO middot) */}
         <div style={{ textAlign: "center", marginBottom: 32 }}>
           <div
             style={{
-              fontSize: 36,
               color: C.acc,
               lineHeight: 1,
-              marginBottom: 10,
+              marginBottom: 12,
               userSelect: "none",
+              display: "flex",
+              justifyContent: "center",
             }}
           >
-            ⬡
+            <Icon name="hexagon" size={36} strokeWidth={1.4} />
           </div>
           <div
             style={{
               fontSize: 24,
               fontWeight: 700,
               color: C.txt,
-              letterSpacing: "0.04em",
+              letterSpacing: "0.08em",
+              whiteSpace: "nowrap",
             }}
           >
-            META·LAB
+            META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>LAB
           </div>
           <div style={{ fontSize: 13, color: C.muted, marginTop: 6 }}>
             Create your account
@@ -207,8 +197,8 @@ export default function Register({ onSuccess, onBack }) {
               style={{
                 marginBottom: 16,
                 padding: "10px 14px",
-                background: "rgba(248,113,113,0.08)",
-                border: `1px solid rgba(248,113,113,0.25)`,
+                background: C.redBg,
+                border: `1px solid ${alpha(C.red, 0.35)}`,
                 borderRadius: 8,
                 color: C.red,
                 fontSize: 13,
@@ -225,15 +215,13 @@ export default function Register({ onSuccess, onBack }) {
             style={{
               width: "100%",
               padding: "11px 0",
-              background: loading
-                ? C.brd2
-                : `linear-gradient(135deg, ${C.acc} 0%, ${C.acc2} 100%)`,
+              background: loading ? C.brd2 : C.acc,
               border: "none",
               borderRadius: 8,
-              color: loading ? C.muted : "#fff",
+              color: loading ? C.muted : C.accText,
               fontSize: 14,
               fontWeight: 600,
-              fontFamily: "'IBM Plex Sans', system-ui, sans-serif",
+              fontFamily: FONT,
               cursor: loading ? "not-allowed" : "pointer",
               transition: "opacity 0.15s, background 0.15s",
               letterSpacing: "0.02em",
@@ -263,7 +251,7 @@ export default function Register({ onSuccess, onBack }) {
               border: "none",
               color: C.acc,
               fontSize: 13,
-              fontFamily: "'IBM Plex Sans', system-ui, sans-serif",
+              fontFamily: FONT,
               cursor: "pointer",
               padding: 0,
               textDecoration: "underline",

@@ -71,6 +71,16 @@ r.post('/projects/:pid/chat/typing',      CH.setTypingStatus);
 r.post('/projects/:pid/chat',             CH.postMessage);
 r.delete('/projects/:pid/chat/:cmid',     CH.deleteMessage);
 
+// Shared workspace chat via the META·LAB project link (prompt7 Task 11) —
+// SAME thread as /projects/:pid/chat, resolved through linkedMetaLabProjectId
+// (prefer-own-then-membership; no access or no linked workspace → 404).
+r.get('/metalab/:mlpid/chat',               CH.listMetaLabMessages);
+r.get('/metalab/:mlpid/chat/unread-count',  CH.getMetaLabUnreadCount);
+r.post('/metalab/:mlpid/chat/read',         CH.markMetaLabRead);
+r.post('/metalab/:mlpid/chat/typing',       CH.setMetaLabTypingStatus);
+r.post('/metalab/:mlpid/chat',              CH.postMetaLabMessage);
+r.delete('/metalab/:mlpid/chat/:messageId', CH.deleteMetaLabMessage);
+
 // Records
 r.get('/projects/:pid/records',          S.listRecords);
 r.get('/projects/:pid/keyword-stats',    S.getKeywordStats);

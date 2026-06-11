@@ -1,5 +1,5 @@
 import React, { useEffect } from "react";
-import { C } from "../styles/theme.js";
+import { C, alpha } from "../theme/tokens.js";
 
 /**
  * Generic modal dialog with a blurred backdrop.
@@ -30,7 +30,7 @@ export default function Modal({ open, onClose, title, children, width = 440 }) {
       style={{
         position: "fixed",
         inset: 0,
-        background: "#00000099",
+        background: alpha(C.bg, 0.6),
         zIndex: 999,
         display: "flex",
         alignItems: "center",
@@ -45,7 +45,7 @@ export default function Modal({ open, onClose, title, children, width = 440 }) {
           padding: 28,
           width,
           maxWidth: "calc(100vw - 32px)",
-          boxShadow: "0 24px 80px #000000bb",
+          boxShadow: `0 24px 80px ${C.shadow}`,
         }}
       >
         {title && (

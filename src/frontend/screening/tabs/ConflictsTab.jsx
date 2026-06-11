@@ -2,7 +2,7 @@
  * ConflictsTab.jsx — resolve reviewer disagreements (records where reviewers chose differently).
  */
 import { useState, useEffect, useCallback } from 'react';
-import { C, FONT, MONO } from '../ui/theme.js';
+import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { Loading, ErrorBanner, Button, Badge, DecisionChip, Card, EmptyState } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 
@@ -63,7 +63,7 @@ export default function ConflictsTab({ pid, project, access }) {
       </div>
       {error && <ErrorBanner onRetry={load}>{error}</ErrorBanner>}
       {flash && (
-        <div style={{ background: '#14532d40', border: `1px solid ${C.grn}55`, borderLeft: `3px solid ${C.grn}`, borderRadius: 8, padding: '10px 14px', color: C.grn, fontSize: 12.5, marginBottom: 14 }}>
+        <div style={{ background: C.grnBg, border: `1px solid ${alpha(C.grn, '55')}`, borderLeft: `3px solid ${C.grn}`, borderRadius: 8, padding: '10px 14px', color: C.grn, fontSize: 12.5, marginBottom: 14 }}>
           {flash}
         </div>
       )}
@@ -102,7 +102,7 @@ export default function ConflictsTab({ pid, project, access }) {
                     {['include', 'exclude', 'maybe'].map(d => (
                       <button key={d} onClick={() => setForms(s => ({ ...s, [c.id]: { ...f, finalDecision: d } }))}
                         style={{ flex: 1, cursor: 'pointer', fontFamily: FONT, fontSize: 12, fontWeight: 600, padding: '7px 0', borderRadius: 6,
-                          textTransform: 'capitalize', background: f.finalDecision === d ? C.acc2 : C.card, color: f.finalDecision === d ? '#fff' : C.txt2,
+                          textTransform: 'capitalize', background: f.finalDecision === d ? C.acc2 : C.card, color: f.finalDecision === d ? C.accText : C.txt2,
                           border: `1px solid ${f.finalDecision === d ? C.acc2 : C.brd2}` }}>{d}</button>
                     ))}
                   </div>

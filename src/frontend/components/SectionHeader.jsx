@@ -1,5 +1,6 @@
 import React from "react";
-import { C, tagS } from "../styles/theme.js";
+import { C, alpha } from "../theme/tokens.js";
+import TagBadge from "./TagBadge.jsx";
 
 /**
  * Section header with an icon tile, title, optional badge, and description.
@@ -20,8 +21,8 @@ export default function SectionHeader({ icon, title, desc, badge }) {
             width: 36,
             height: 36,
             borderRadius: 9,
-            background: `linear-gradient(135deg,${C.acc}20,${C.acc}08)`,
-            border: `1px solid ${C.acc}30`,
+            background: `linear-gradient(135deg, ${alpha(C.acc, "20")}, ${alpha(C.acc, "08")})`,
+            border: `1px solid ${alpha(C.acc, "30")}`,
             display: "flex",
             alignItems: "center",
             justifyContent: "center",
@@ -35,7 +36,7 @@ export default function SectionHeader({ icon, title, desc, badge }) {
           {title}
         </h2>
         {badge && (
-          <span style={{ ...tagS("blue"), marginLeft: 2 }}>{badge}</span>
+          <TagBadge variant="blue" style={{ marginLeft: 2 }}>{badge}</TagBadge>
         )}
       </div>
       {desc && (

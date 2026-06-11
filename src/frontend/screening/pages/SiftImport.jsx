@@ -8,25 +8,15 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 
-const C = {
-  bg:    '#080c15', surf:  '#0c1322', card:  '#101929',
-  brd:   '#1a2b42', brd2:  '#213452',
-  acc:   '#5b9cf6', acc2:  '#3b7ef4',
-  teal:  '#2dd4bf',
-  txt:   '#ecf0fb', txt2:  '#8b9ec6',
-  muted: '#4a5e82',
-  grn:   '#4ade80', red:   '#f87171', ylw:   '#fbbf24',
-};
-const FONT = "'IBM Plex Sans', system-ui, sans-serif";
-const MONO = "'IBM Plex Mono', monospace";
+import { C, FONT, MONO, alpha } from '../ui/theme.js';
 
 function BetaBadge() {
   return (
     <span style={{
       fontSize: 9, fontFamily: MONO, fontWeight: 700,
       letterSpacing: '0.12em', textTransform: 'uppercase',
-      background: '#2dd4bf18', border: '1px solid #2dd4bf50',
-      color: '#2dd4bf', borderRadius: 4, padding: '2px 7px',
+      background: alpha(C.teal, '18'), border: `1px solid ${alpha(C.teal, '50')}`,
+      color: C.teal, borderRadius: 4, padding: '2px 7px',
     }}>BETA</span>
   );
 }
@@ -203,7 +193,7 @@ export default function SiftImport() {
                 key={opt.val}
                 onClick={() => { setFormat(opt.val); handleContentChange(content); }}
                 style={{
-                  background: format === opt.val ? C.acc2 + '30' : C.card,
+                  background: format === opt.val ? alpha(C.acc2, '30') : C.card,
                   border: `1px solid ${format === opt.val ? C.acc2 : C.brd}`,
                   color: format === opt.val ? C.acc : C.txt2,
                   fontSize: 12, fontFamily: FONT, padding: '8px 16px', borderRadius: 7,
@@ -225,7 +215,7 @@ export default function SiftImport() {
           style={{
             border: `2px dashed ${dragOver ? C.acc : C.brd}`,
             borderRadius: 8, padding: '16px 20px', marginBottom: 14,
-            background: dragOver ? C.acc + '08' : C.card,
+            background: dragOver ? alpha(C.acc, '08') : C.card,
             transition: 'all 0.15s', cursor: 'default',
           }}
         >
@@ -283,7 +273,7 @@ export default function SiftImport() {
               disabled={importing || !content.trim()}
               style={{
                 background: importing || !content.trim() ? C.brd : C.acc2,
-                border: 'none', color: importing || !content.trim() ? C.muted : '#fff',
+                border: 'none', color: importing || !content.trim() ? C.muted : C.accText,
                 fontSize: 13, fontWeight: 600, fontFamily: FONT,
                 padding: '8px 24px', borderRadius: 7, cursor: importing || !content.trim() ? 'not-allowed' : 'pointer',
                 transition: 'background 0.15s',
@@ -342,13 +332,13 @@ export default function SiftImport() {
         {/* Duplicate file warning (Task 19) — same fingerprint already imported */}
         {duplicate && (
           <div style={{
-            background: '#451a03', border: '1px solid #fbbf2450',
+            background: C.yelBg, border: `1px solid ${alpha(C.yel, '50')}`,
             borderRadius: 8, padding: '14px 18px', marginBottom: 16,
           }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: C.ylw, marginBottom: 6 }}>
               ⚠ File already imported
             </div>
-            <div style={{ fontSize: 12.5, color: '#fde68a', lineHeight: 1.6, marginBottom: 12 }}>
+            <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.6, marginBottom: 12 }}>
               This file appears to have already been imported
               {duplicate.importedAt && <> on <strong>{new Date(duplicate.importedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })}</strong></>}
               {duplicate.importedByName && <> by <strong>{duplicate.importedByName}</strong></>}
@@ -360,7 +350,7 @@ export default function SiftImport() {
                 onClick={() => handleImport(true)}
                 disabled={importing}
                 style={{
-                  background: C.ylw, border: 'none', color: '#000',
+                  background: C.ylw, border: 'none', color: C.bg,
                   fontSize: 12, fontWeight: 700, fontFamily: FONT,
                   padding: '7px 16px', borderRadius: 6,
                   cursor: importing ? 'not-allowed' : 'pointer', opacity: importing ? 0.6 : 1,
@@ -372,7 +362,7 @@ export default function SiftImport() {
                 onClick={() => setDuplicate(null)}
                 disabled={importing}
                 style={{
-                  background: 'transparent', border: '1px solid #fbbf2450',
+                  background: 'transparent', border: `1px solid ${alpha(C.yel, '50')}`,
                   color: C.ylw, fontSize: 12, fontFamily: FONT,
                   padding: '6px 14px', borderRadius: 6, cursor: 'pointer',
                 }}
@@ -386,7 +376,7 @@ export default function SiftImport() {
         {/* Error */}
         {error && (
           <div style={{
-            background: '#450a0a', border: '1px solid #f8717150',
+            background: C.redBg, border: `1px solid ${alpha(C.red, '50')}`,
             borderRadius: 8, padding: '12px 16px', color: C.red, fontSize: 13, marginBottom: 16,
           }}>
             {error}
@@ -396,13 +386,13 @@ export default function SiftImport() {
         {/* Success */}
         {result && (
           <div style={{
-            background: '#14532d', border: '1px solid #4ade8060',
+            background: C.grnBg, border: `1px solid ${alpha(C.grn, '60')}`,
             borderRadius: 8, padding: '16px 20px', marginBottom: 16,
           }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: C.grn, marginBottom: 6 }}>
               Import successful
             </div>
-            <div style={{ fontSize: 13, color: '#86efac', marginBottom: 14 }}>
+            <div style={{ fontSize: 13, color: C.txt2, marginBottom: 14 }}>
               {result.imported} new records imported
               {(() => {
                 // Server reports skippedDuplicates explicitly (Task 19); fall back
@@ -415,7 +405,7 @@ export default function SiftImport() {
               <button
                 onClick={() => navigate(`/sift-beta/projects/${pid}`)}
                 style={{
-                  background: C.grn, border: 'none', color: '#000',
+                  background: C.grn, border: 'none', color: C.bg,
                   fontSize: 12, fontWeight: 700, fontFamily: FONT,
                   padding: '7px 18px', borderRadius: 6, cursor: 'pointer',
                 }}
@@ -425,7 +415,7 @@ export default function SiftImport() {
               <button
                 onClick={() => { setContent(''); setResult(null); setPreviews([]); setPreviewDone(false); setFilename(''); }}
                 style={{
-                  background: 'transparent', border: '1px solid #4ade8050',
+                  background: 'transparent', border: `1px solid ${alpha(C.grn, '50')}`,
                   color: C.grn, fontSize: 12, fontFamily: FONT,
                   padding: '6px 16px', borderRadius: 6, cursor: 'pointer',
                 }}

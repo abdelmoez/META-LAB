@@ -13,7 +13,7 @@
  *   refreshProject — () => Promise, re-fetches the shell's project after a mutation
  */
 import { useState, useEffect, useCallback } from 'react';
-import { C, FONT, MONO } from '../ui/theme.js';
+import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { Loading, ErrorBanner, Button, Badge, Card, EmptyState } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 
@@ -235,7 +235,7 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
                 <span style={{ display: 'inline-block', transition: 'transform 0.2s', transform: showResolved ? 'rotate(90deg)' : 'none' }}>▶</span>
                 Resolved Groups
                 <span style={{
-                  background: C.grn + '20', border: `1px solid ${C.grn}40`, color: C.grn,
+                  background: alpha(C.grn, '20'), border: `1px solid ${alpha(C.grn, '40')}`, color: C.grn,
                   borderRadius: 10, padding: '0 7px', fontSize: 10, letterSpacing: 0,
                 }}>{resolved.length}</span>
               </button>
@@ -275,7 +275,7 @@ function SectionHeader({ label, count, countColor = C.muted }) {
         {label}
       </span>
       <span style={{
-        background: countColor + '20', border: `1px solid ${countColor}40`, color: countColor,
+        background: alpha(countColor, '20'), border: `1px solid ${alpha(countColor, '40')}`, color: countColor,
         borderRadius: 10, padding: '0 8px', fontSize: 10, fontFamily: MONO, fontWeight: 600,
       }}>
         {count}
@@ -306,7 +306,7 @@ function DuplicateGroup({ group, isLeader, selectedId, onSelect, onResolve, reso
             <span style={{
               display: 'inline-flex', alignItems: 'center', gap: 5,
               fontSize: 12, fontWeight: 700, fontFamily: MONO,
-              background: simColor + '1f', border: `1px solid ${simColor}55`, color: simColor,
+              background: alpha(simColor, '1f'), border: `1px solid ${alpha(simColor, '55')}`, color: simColor,
               borderRadius: 6, padding: '3px 10px', letterSpacing: '0.02em',
             }}>
               <span style={{ width: 6, height: 6, borderRadius: '50%', background: simColor, flexShrink: 0 }} />
@@ -377,8 +377,8 @@ function RecordRow({ record, groupId, isSelected, editable, onSelect }) {
       onClick={onSelect}
       style={{
         position: 'relative',
-        background: isSelected ? '#0e2a1a' : C.surf,
-        border: `1px solid ${isSelected ? C.grn + '66' : C.brd}`,
+        background: isSelected ? C.grnBg : C.surf,
+        border: `1px solid ${isSelected ? alpha(C.grn, '66') : C.brd}`,
         borderRadius: 8, padding: '12px 14px',
         cursor: editable ? 'pointer' : 'default',
         transition: 'background 0.15s, border-color 0.15s',

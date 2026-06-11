@@ -1,8 +1,43 @@
 # META·LAB Test Report
 
-**Generated:** 2026-06-10 (prompt6 workspace upgrade; earlier sections below unchanged)
+**Generated:** 2026-06-10 (prompt7 design/security/chat upgrade; earlier sections below unchanged)
 **Framework:** Vitest v2.1.9
 **Working directory:** `H:/META-LAB/META-LAB`
+
+---
+
+## 0···. prompt7 — design system, mod hardening, shared chat (2026-06-10)
+
+**META·SIFT screening suite: ✅ 249/249 pass** (+4 `integration/prompt7.test.js` mod target-role matrix,
++6 `integration/prompt7-chat.test.js` META·LAB chat door). **Full repo suite (`npx vitest run
+--no-file-parallelism`, server up): 876 pass / 6 pre-existing `serverStorage.test.js` fake-timer failures
+(quarantined — identical set and count as the baseline) / 7 skips (889 total, 37 files).**
+`npm run build` exit 0 (pre-existing monolith esbuild JSX advisory + >500 kB chunk note only).
+
+| Suite | Baseline (pre-prompt7) | Now | Δ |
+|---|---|---|---|
+| Screening (`tests/screening/`, server up) | 239/239 | **249/249** | +10 (prompt7 ×4, prompt7-chat ×6) |
+| Full repo (server up) | 866 pass / 6 fail / 7 skip | **876 pass / 6 fail / 7 skip** | no net loss; failures unchanged |
+
+Delivered & verified: **mod target-role enforcement** (server middleware `requireTargetEditable` + handler
+defense + `MOD_TARGET_DENIED` SecurityEvent — mod can no longer edit/suspend/reset-password admin or mod
+accounts; was a live privilege-escalation hole incl. plaintext admin password takeover), **shared workspace
+chat** (six mirrored `/api/screening/metalab/:mlpid/chat*` routes onto the SAME `ScreenChatMessage` thread;
+404 existence-hiding, chatRestricted/canChat gates, shared read-state, dual-key `chat.message` SSE poke),
+**theme system** (CSS-variable tokens, night default + day mode, `User.themePreference` additive migration
+`20260610185705_add_theme_preference`, localStorage + profile persistence), **monochrome icon system**
+(stroke-SVG `icons.jsx`, currentColor), **Rayyan tab removal** (no UI references remain), **Overview grid
+alignment fix** (`ov-grid2`/`ov-grid4` classes, min-width:0, ellipsized linked title, 1100px collapse),
+**landing redesign**, **CSP enabled (API strict + SPA meta)**, **contact-form rate limit**, **dev.db
+untracked from git**. Scripted flow diagnostics: **42/42 flows pass** (`.claude/tmp/prompt7/flow-results.txt`,
+reported in `docs/manager/full-diagnostics-report.md`). Visual QA: Playwright screenshots night+day at
+1366/1920/2560/3440 (`.claude/tmp/prompt7/shots/`).
+
+> The 6 `serverStorage.test.js` failures are the same pre-existing fake-timer issues disclosed since prompt1;
+> the file was not touched. All integration tests use `127.0.0.1` per the Windows/Node `::1` convention.
+
+Details: `tests/screening/report.md` (prompt7 section), `docs/manager/security-and-diagnostics-report.md`,
+`docs/manager/full-diagnostics-report.md`, `docs/manager/claude-opinion-and-upgrade-plan.md`.
 
 ---
 

@@ -11,7 +11,7 @@
  * shared design system (ui/theme.js + ui/components.jsx). Inline styles only.
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { C, FONT, MONO, DECISION_COLORS, DECISION_GLYPH } from '../ui/theme.js';
+import { C, FONT, MONO, alpha, DECISION_COLORS, DECISION_GLYPH } from '../ui/theme.js';
 import { Loading, ErrorBanner, Button, Badge, DecisionChip, Card, SectionLabel, EmptyState, Toggle } from '../ui/components.jsx';
 import { renderHighlighted } from '../ui/highlightRender.jsx';
 import { extractKeywords } from '../../../research-engine/screening/keywords.js';
@@ -332,7 +332,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject }) {
     <div style={{ display: 'flex', height: 'calc(100vh - 56px)', background: C.bg, fontFamily: FONT, color: C.txt, overflow: 'hidden' }}>
       <style>{`
         .sift-rl::-webkit-scrollbar, .sift-mid::-webkit-scrollbar, .sift-rt::-webkit-scrollbar { width: 8px; }
-        .sift-rl::-webkit-scrollbar-thumb, .sift-mid::-webkit-scrollbar-thumb, .sift-rt::-webkit-scrollbar-thumb { background: #213452; border-radius: 4px; }
+        .sift-rl::-webkit-scrollbar-thumb, .sift-mid::-webkit-scrollbar-thumb, .sift-rt::-webkit-scrollbar-thumb { background: ${C.brd2}; border-radius: 4px; }
         .sift-in:focus { border-color: ${C.acc} !important; }
       `}</style>
 
@@ -477,7 +477,7 @@ function RecordRow({ record, selected, onClick, blindMode }) {
         padding: '10px 13px 10px 12px',
         borderBottom: `1px solid ${C.brd}`,
         borderLeft: `3px solid ${selected ? C.acc : 'transparent'}`,
-        background: selected ? '#0e1e35' : hover ? '#0a1525' : 'transparent',
+        background: selected ? C.accBg : hover ? C.card2 : 'transparent',
         cursor: 'pointer', transition: 'background 0.1s',
       }}
     >
@@ -491,7 +491,7 @@ function RecordRow({ record, selected, onClick, blindMode }) {
         ) : (
           <span title="New to you — not yet opened" style={{
             fontSize: 8, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.06em', marginTop: 2, flexShrink: 0,
-            color: C.acc, background: C.acc + '20', border: `1px solid ${C.acc}55`, borderRadius: 3, padding: '1px 4px',
+            color: C.acc, background: alpha(C.acc, '20'), border: `1px solid ${alpha(C.acc, '55')}`, borderRadius: 3, padding: '1px 4px',
           }}>NEW</span>
         )}
         <div style={{
@@ -528,8 +528,8 @@ function RecordRow({ record, selected, onClick, blindMode }) {
                     fontSize: 9.5, fontFamily: MONO, fontWeight: 700, color: dc.txt,
                     width: 15, height: 15, borderRadius: '50%',
                     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                    background: dc.bg + 'aa',
-                    border: rv.isMe ? `1.5px solid ${dc.border}` : `1px solid ${dc.border}55`,
+                    background: alpha(dc.bg, 'aa'),
+                    border: rv.isMe ? `1.5px solid ${dc.border}` : `1px solid ${alpha(dc.border, '55')}`,
                     boxShadow: rv.isMe ? `0 0 0 1px ${C.surf}` : 'none',
                   }}
                 >
@@ -620,7 +620,7 @@ function MiddleColumn({
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.brd}` }}>
               <span style={{ fontSize: 9.5, color: C.muted, fontFamily: MONO, alignSelf: 'center', letterSpacing: '0.08em' }}>KEYWORDS</span>
               {record.keywords.split(/[;,]/).map((kw, i) => kw.trim() && (
-                <span key={i} style={{ fontSize: 10.5, background: C.brd + '70', border: `1px solid ${C.brd}`, color: C.txt2, borderRadius: 10, padding: '2px 9px' }}>{kw.trim()}</span>
+                <span key={i} style={{ fontSize: 10.5, background: alpha(C.brd, '70'), border: `1px solid ${C.brd}`, color: C.txt2, borderRadius: 10, padding: '2px 9px' }}>{kw.trim()}</span>
               ))}
             </div>
           )}
@@ -690,8 +690,8 @@ function MiddleColumn({
                     onClick={() => canScreen && toggleLabel(l.id)}
                     disabled={!canScreen}
                     style={{
-                      background: active ? col + '2e' : C.brd + '50',
-                      border: `1px solid ${active ? col + '90' : C.brd}`,
+                      background: active ? alpha(col, '2e') : alpha(C.brd, '50'),
+                      border: `1px solid ${active ? alpha(col, '90') : C.brd}`,
                       color: active ? col : C.txt2, fontSize: 11.5, fontFamily: FONT,
                       padding: '4px 11px', borderRadius: 12,
                       cursor: canScreen ? 'pointer' : 'default', transition: 'all 0.15s',
@@ -754,7 +754,7 @@ function MiddleColumn({
 function DecisionButton({ label, value, active, disabled, onClick }) {
   const [hover, setHover] = useState(false);
   const dc = DECISION_COLORS[value];
-  const bg     = active ? dc.bg     : hover && !disabled ? dc.bg + '55' : 'transparent';
+  const bg     = active ? dc.bg     : hover && !disabled ? alpha(dc.bg, '55') : 'transparent';
   const border = active ? dc.border : hover && !disabled ? dc.border    : C.brd;
   const color  = active ? dc.txt    : hover && !disabled ? dc.txt        : C.txt2;
   return (
@@ -929,7 +929,7 @@ function RightColumn({
         ) : (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {studyTypes.map((t, i) => (
-              <span key={i} style={{ fontSize: 11.5, background: C.brd + '60', border: `1px solid ${C.brd}`, color: C.txt2, borderRadius: 12, padding: '3px 10px' }}>{t}</span>
+              <span key={i} style={{ fontSize: 11.5, background: alpha(C.brd, '60'), border: `1px solid ${C.brd}`, color: C.txt2, borderRadius: 12, padding: '3px 10px' }}>{t}</span>
             ))}
           </div>
         )}
@@ -1107,7 +1107,7 @@ function KeywordGroup({ title, accent, terms, counts, selected, setSelected }) {
                 <input type="checkbox" checked={on} onChange={() => toggleTerm(t)}
                   style={{ accentColor: accent, cursor: 'pointer', flexShrink: 0 }} />
                 <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: on ? C.txt : C.txt2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t}</span>
-                <span style={{ fontSize: 10, fontFamily: MONO, color: n ? accent : C.muted, background: n ? accent + '14' : 'transparent', borderRadius: 4, padding: '1px 6px', flexShrink: 0, minWidth: 22, textAlign: 'center' }}>{n}</span>
+                <span style={{ fontSize: 10, fontFamily: MONO, color: n ? accent : C.muted, background: n ? alpha(accent, '14') : 'transparent', borderRadius: 4, padding: '1px 6px', flexShrink: 0, minWidth: 22, textAlign: 'center' }}>{n}</span>
               </label>
             );
           })}
@@ -1184,8 +1184,8 @@ function KeywordEditor({ pid, project, refreshProject, inclusion, exclusion, isL
 
   const chip = (term, kind) => {
     const tint = kind === 'incl'
-      ? { bg: 'rgba(74,222,128,0.14)', bd: 'rgba(74,222,128,0.5)', tx: C.grn }
-      : { bg: 'rgba(248,113,113,0.14)', bd: 'rgba(248,113,113,0.5)', tx: C.red };
+      ? { bg: alpha(C.grn, 0.14), bd: alpha(C.grn, 0.5), tx: C.grn }
+      : { bg: alpha(C.red, 0.14), bd: alpha(C.red, 0.5), tx: C.red };
     return (
       <span key={kind + term} style={{
         display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11,
@@ -1264,7 +1264,7 @@ function ChipAdder({ value, setValue, onAdd, placeholder, accent }) {
         onClick={onAdd}
         disabled={!value.trim()}
         style={{
-          background: accent + '22', border: `1px solid ${accent}55`, color: accent,
+          background: alpha(accent, '22'), border: `1px solid ${alpha(accent, '55')}`, color: accent,
           fontSize: 11.5, fontFamily: FONT, padding: '6px 12px', borderRadius: 6,
           cursor: value.trim() ? 'pointer' : 'default', opacity: value.trim() ? 1 : 0.4, whiteSpace: 'nowrap',
         }}

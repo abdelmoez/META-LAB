@@ -26,24 +26,21 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { notificationsApi } from '../api-client/notificationsApi.js';
 import { useRealtime } from '../hooks/useRealtime.js';
-
-const C = {
-  card: '#141826', brd: '#1f2640', brd2: '#283050', acc: '#818cf8',
-  txt: '#eaecf6', txt2: '#9ba6c4', muted: '#536080', red: '#f87171',
-};
-const FONT = "'IBM Plex Sans', system-ui, sans-serif";
-const MONO = "'IBM Plex Mono', monospace";
+import Icon from './icons.jsx';
+// Theme-aware tokens (prompt7): C values are `var(--t-*)` strings — hex+alpha
+// concatenation does not work on vars, use `alpha(C.x, '40')` instead.
+import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 
 const POLL_MS = 30000;
 // While the SSE poke stream is healthy the 30s poll stretches to a slow
 // safety net (pokes drive freshness); on SSE failure it snaps back to 30s.
 const HEALTHY_POLL_MS = 120000;
 
-// app field → chip presentation (META·LAB indigo / META·SIFT teal / Workspace gold).
+// app field → chip presentation (META·LAB accent / META·SIFT teal / Workspace gold).
 const APP_META = {
-  metalab:   { label: 'META·LAB',  color: '#818cf8' },
-  metasift:  { label: 'META·SIFT', color: '#2dd4bf' },
-  workspace: { label: 'Workspace', color: '#dba96a' },
+  metalab:   { label: 'META·LAB',  color: C.acc },
+  metasift:  { label: 'META·SIFT', color: C.teal },
+  workspace: { label: 'Workspace', color: C.gold },
 };
 
 function fmtAgo(iso) {
@@ -180,13 +177,13 @@ export default function NotificationsBell({ fixed = false, right = 16 }) {
         title="Notifications"
         style={{
           position: 'relative', width: 30, height: 30, borderRadius: '50%',
-          background: open ? `${C.acc}30` : `${C.acc}18`,
-          border: `1px solid ${open ? C.acc + '60' : C.acc + '30'}`,
+          background: open ? alpha(C.acc, '30') : alpha(C.acc, '18'),
+          border: `1px solid ${open ? alpha(C.acc, '60') : alpha(C.acc, '30')}`,
           color: C.acc, fontSize: 13, cursor: 'pointer',
           display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none',
         }}
       >
-        <span aria-hidden="true">🔔</span>
+        <span aria-hidden="true" style={{ display: 'inline-flex' }}><Icon name="bell" size={16} /></span>
         {count > 0 && (
           <span style={{
             position: 'absolute', top: -6, right: -6, minWidth: 16, height: 16, padding: '0 4px',
@@ -201,7 +198,7 @@ export default function NotificationsBell({ fixed = false, right = 16 }) {
         <div style={{
           position: 'absolute', top: 38, right: 0, background: C.card,
           border: `1px solid ${C.brd2}`, borderRadius: 10, padding: '4px 0',
-          width: 340, maxWidth: '92vw', boxShadow: '0 8px 32px rgba(0,0,0,0.5)', zIndex: 9999,
+          width: 340, maxWidth: '92vw', boxShadow: `0 8px 32px ${C.shadow}`, zIndex: 9999,
         }}>
           {/* Panel header */}
           <div style={{
@@ -233,7 +230,7 @@ export default function NotificationsBell({ fixed = false, right = 16 }) {
               </div>
             ) : items.length === 0 ? (
               <div style={{ padding: '26px 14px', textAlign: 'center' }}>
-                <div style={{ fontSize: 18, marginBottom: 6, opacity: 0.6 }}>🔔</div>
+                <div style={{ marginBottom: 6, opacity: 0.6, color: C.muted, display: 'flex', justifyContent: 'center' }}><Icon name="bell" size={16} /></div>
                 <div style={{ fontSize: 12, color: C.txt2 }}>No notifications yet</div>
                 <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>Project invites and updates will show up here.</div>
               </div>
@@ -262,7 +259,7 @@ function NotificationRow({ n, onOpen }) {
       style={{
         padding: '10px 14px 11px',
         borderBottom: `1px solid ${C.brd}`,
-        background: hover ? '#1b2236' : unread ? `${C.acc}0c` : 'transparent',
+        background: hover ? C.card2 : unread ? alpha(C.acc, '0c') : 'transparent',
         borderLeft: `2px solid ${unread ? C.acc : 'transparent'}`,
         cursor: hasTarget || unread ? 'pointer' : 'default',
       }}
@@ -286,8 +283,8 @@ function NotificationRow({ n, onOpen }) {
         {app && (
           <span style={{
             fontSize: 8.5, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.1em',
-            textTransform: 'uppercase', color: app.color, background: app.color + '18',
-            border: `1px solid ${app.color}40`, borderRadius: 4, padding: '1px 6px',
+            textTransform: 'uppercase', color: app.color, background: alpha(app.color, '18'),
+            border: `1px solid ${alpha(app.color, '40')}`, borderRadius: 4, padding: '1px 6px',
           }}>{app.label}</span>
         )}
         {actor && (

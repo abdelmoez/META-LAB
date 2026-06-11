@@ -62,7 +62,7 @@ export const mkProject = name => ({
       PsycINFO: false, LILACS: false, "Google Scholar": false,
       "ClinicalTrials.gov": false, "WHO ICTRP": false, OpenAlex: false,
     },
-    date: "", string: "", rayyan: false, notes: "",
+    date: "", string: "", notes: "",
   },
   prisma: {
     dbs: "", reg: "", other: "", dedupe: "", screened: "",

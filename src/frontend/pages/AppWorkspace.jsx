@@ -11,9 +11,10 @@ import { subscribeToSaveStatus, flushStorage } from '../storage/serverStorage.js
 import UserMenu from '../components/UserMenu.jsx';
 import NotificationsBell from '../components/NotificationsBell.jsx';
 import MetaLab from '../../../meta-lab-3-patched.jsx';
+import { C, MONO } from '../theme/tokens.js';
 
 const SAVE_LABEL = { saving: 'Saving…', saved: 'Saved', failed: 'Save failed', idle: '' };
-const SAVE_COLOR = { saving: '#536080', saved: '#34d399', failed: '#f87171', idle: 'transparent' };
+const SAVE_COLOR = { saving: C.muted, saved: C.grn, failed: C.red, idle: 'transparent' };
 
 export default function AppWorkspace() {
   const [saveStatus, setSaveStatus] = useState('idle');
@@ -34,7 +35,7 @@ export default function AppWorkspace() {
           zIndex:        9999,
           fontSize:      11,
           color:         SAVE_COLOR[saveStatus],
-          fontFamily:    "'IBM Plex Mono', monospace",
+          fontFamily:    MONO,
           letterSpacing: '0.04em',
           pointerEvents: 'none',
           transition:    'color 0.3s, opacity 0.3s',

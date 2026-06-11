@@ -1,7 +1,7 @@
-# Data Model Reference
+﻿# Data Model Reference
 
 This document describes all fields in the project and study data model
-used by META·LAB.
+used by METAÂ·LAB.
 
 ---
 
@@ -44,10 +44,9 @@ Top-level container for a systematic review.
 
 | Field | Description |
 |---|---|
-| `dbs` | Object map of database name → boolean (selected?) |
+| `dbs` | Object map of database name â†’ boolean (selected?) |
 | `date` | Date range of the search |
 | `string` | Raw search string |
-| `rayyan` | Boolean — Rayyan used for screening? |
 | `notes` | Free-text notes |
 
 ### prisma sub-object
@@ -108,11 +107,11 @@ Each study in `project.studies` has the following fields.
 | Field | Type | Description |
 |---|---|---|
 | `esType` | string | Effect measure: "SMD" \| "MD" \| "OR" \| "RR" \| "HR" \| "COR" \| "PROP" \| "" |
-| `timepoint` | string | Follow-up window (e.g. "12 weeks") — used to distinguish repeated measures |
+| `timepoint` | string | Follow-up window (e.g. "12 weeks") â€” used to distinguish repeated measures |
 | `followup` | string | Total follow-up duration |
 | `adjusted` | string | Adjustment status: "unadjusted" \| "adjusted" \| "multivariable" \| "propensity" \| "iptw" |
 | `dataNature` | string | Role of the estimate: "primary" \| "secondary" \| "subgroup" \| "posthoc" \| "sensitivity" |
-| `flags` | Array\<string\> | Reliability flags — see EXTRACT_FLAGS |
+| `flags` | Array\<string\> | Reliability flags â€” see EXTRACT_FLAGS |
 
 ### Raw continuous data
 
@@ -125,7 +124,7 @@ Each study in `project.studies` has the following fields.
 | `meanCtrl` | Control group mean |
 | `sdCtrl` | Control group SD |
 
-### Raw dichotomous data (2×2 table)
+### Raw dichotomous data (2Ã—2 table)
 
 | Field | Description |
 |---|---|
@@ -143,7 +142,7 @@ Convention: a+b = experimental group total; c+d = control group total.
 | `events` | Number of events |
 | `total` | Group total |
 
-### Raw diagnostic accuracy (2×2 diagnostic table)
+### Raw diagnostic accuracy (2Ã—2 diagnostic table)
 
 | Field | Description |
 |---|---|
@@ -154,7 +153,7 @@ Convention: a+b = experimental group total; c+d = control group total.
 
 ### Final effect size and CI
 
-Entered on the **analysis scale** — log scale for OR/RR/HR, Fisher z for COR,
+Entered on the **analysis scale** â€” log scale for OR/RR/HR, Fisher z for COR,
 logit for PROP, raw units for MD, standardised units for SMD.
 
 | Field | Description |
@@ -205,10 +204,10 @@ Used in `project.records` for the screening stage (before data extraction).
 ### SOURCE_OPTIONS
 | Value | Label |
 |---|---|
-| (empty) | — where from? — |
+| (empty) | â€” where from? â€” |
 | text | Reported in text |
 | table | From a table |
-| figure | Figure / Kaplan–Meier curve |
+| figure | Figure / Kaplanâ€“Meier curve |
 | supplement | Supplementary material |
 | calculated | Calculated from reported data |
 | converted | Converted from another format |
@@ -258,7 +257,7 @@ Used in `project.records` for the screening stage (before data extraction).
 | PROP | Single-arm proportion (logit) | proportion | No | null | logit |
 
 **PROP nullVal is null** because there is no universal "no effect" value for
-a single-arm proportion — it depends on the clinical context.
+a single-arm proportion â€” it depends on the clinical context.
 
 ---
 
@@ -273,7 +272,7 @@ a single-arm proportion — it depends on the clinical context.
 | D4 | Measurement of the outcome |
 | D5 | Selection of the reported result |
 
-### NOS (Newcastle–Ottawa Scale for observational studies)
+### NOS (Newcastleâ€“Ottawa Scale for observational studies)
 | Domain ID | Group | Label |
 |---|---|---|
 | SC1 | Selection | Representativeness of exposed cohort |
@@ -297,5 +296,5 @@ A study is classified as non-primary if **any** of the following is true:
 3. `source` is one of: "figure", "converted", "calculated", "author", "unclear"
 4. `converted === true`
 
-Non-primary status affects poolability warnings when ≥ 50% of included
+Non-primary status affects poolability warnings when â‰¥ 50% of included
 studies are non-primary.

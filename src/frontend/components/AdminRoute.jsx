@@ -1,4 +1,5 @@
 import { useAuth } from '../context/AuthContext.jsx';
+import { C, FONT } from '../theme/tokens.js';
 
 /** Roles allowed into the ops console. The console itself renders a limited
  *  view for 'mod' (see AdminConsole role-based sections). */
@@ -33,20 +34,20 @@ function GenericNotFound() {
     <div
       style={{
         minHeight:   '100vh',
-        background:  '#0b0d13',
+        background:  C.bg,
         display:     'flex',
         alignItems:  'center',
         justifyContent: 'center',
-        fontFamily:  "'IBM Plex Sans', system-ui, sans-serif",
-        color:       '#536080',
+        fontFamily:  FONT,
+        color:       C.muted,
         userSelect:  'none',
       }}
     >
       <div style={{ textAlign: 'center' }}>
-        <div style={{ fontSize: 72, fontWeight: 800, color: '#1a2033', letterSpacing: -2, lineHeight: 1 }}>
+        <div style={{ fontSize: 72, fontWeight: 800, color: C.dim, letterSpacing: -2, lineHeight: 1 }}>
           404
         </div>
-        <div style={{ marginTop: 16, fontSize: 14, color: '#536080' }}>Page not found</div>
+        <div style={{ marginTop: 16, fontSize: 14, color: C.muted }}>Page not found</div>
       </div>
     </div>
   );

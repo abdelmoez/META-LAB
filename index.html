@@ -3,6 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      SPA Content-Security-Policy (defense-in-depth, prompt7 Task 7).
+      'unsafe-inline' is required by the inline-style architecture and the Vite
+      dev preamble; external script/connect origins are still locked down.
+      connect-src allows CrossRef + PubMed E-utilities (citation lookup).
+      NOTE: frame-ancestors cannot be set via <meta> — set it at the reverse
+      proxy in production (see docs/manager/security-and-diagnostics-report.md).
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self' https://api.crossref.org https://eutils.ncbi.nlm.nih.gov ws: wss:; frame-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
+    />
     <title>META·LAB</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -10,10 +22,19 @@
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap"
       rel="stylesheet"
     />
+    <script>
+      // Theme bootstrap — set data-theme before first paint to avoid a flash.
+      // Night is the default; "day" only when the user explicitly chose it.
+      try {
+        var t = localStorage.getItem('metalab_theme');
+        document.documentElement.dataset.theme = t === 'day' ? 'day' : 'night';
+      } catch (e) { document.documentElement.dataset.theme = 'night'; }
+    </script>
     <style>
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
       html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-      body { background: #0b0d13; color: #eaecf6; font-family: 'IBM Plex Sans', system-ui, sans-serif; }
+      body { background: #070b14; color: #eef2fc; font-family: 'IBM Plex Sans', system-ui, sans-serif; }
+      html[data-theme="day"] body { background: #f2f0ea; color: #1a2233; }
     </style>
   </head>
   <body>

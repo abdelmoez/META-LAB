@@ -15,7 +15,7 @@
  *   refreshProject — () => Promise, re-fetches the shell's project after a mutation
  */
 import { useState, useEffect, useCallback } from 'react';
-import { C, FONT, MONO } from '../ui/theme.js';
+import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import {
   Loading, ErrorBanner, Button, Badge, DecisionChip, Card, EmptyState, Modal,
 } from '../ui/components.jsx';
@@ -377,8 +377,8 @@ function RecordCard({
       {/* Rejection reason (if rejected) */}
       {rec.finalStatus === 'rejected' && rec.rejectedReason && (
         <div style={{
-          fontSize: 12, color: C.red, background: '#450a0a55',
-          border: `1px solid ${C.red}30`, borderRadius: 7, padding: '8px 12px', marginBottom: 14,
+          fontSize: 12, color: C.red, background: C.redBg,
+          border: `1px solid ${alpha(C.red, '30')}`, borderRadius: 7, padding: '8px 12px', marginBottom: 14,
         }}>
           <span style={{ fontWeight: 600 }}>Reason: </span>{rec.rejectedReason}
         </div>
@@ -421,8 +421,8 @@ function RecordCard({
         <div style={{
           display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
           fontSize: 12, color: rec.handoffStatus === 'failed' ? C.red : C.gold,
-          background: rec.handoffStatus === 'failed' ? '#450a0a55' : '#3a2c0833',
-          border: `1px solid ${(rec.handoffStatus === 'failed' ? C.red : C.gold)}40`,
+          background: rec.handoffStatus === 'failed' ? C.redBg : C.goldBg,
+          border: `1px solid ${alpha(rec.handoffStatus === 'failed' ? C.red : C.gold, '40')}`,
           borderRadius: 7, padding: '8px 12px', marginBottom: 14,
         }}>
           <span style={{ fontWeight: 600 }}>
@@ -486,13 +486,13 @@ function RecordCard({
                         fontFamily: FONT, fontSize: 12.5, fontWeight: 600,
                         padding: '7px 16px', borderRadius: 7,
                         cursor: savingDecision ? 'wait' : 'pointer',
-                        background: active ? opt.color + '20' : 'transparent',
-                        border: `1px solid ${active ? opt.color + '80' : C.brd}`,
+                        background: active ? alpha(opt.color, '20') : 'transparent',
+                        border: `1px solid ${active ? alpha(opt.color, '80') : C.brd}`,
                         color: active ? opt.color : C.txt2,
                         transition: 'background 0.15s, color 0.15s, border-color 0.15s',
                         opacity: savingDecision && !busy ? 0.5 : 1,
                       }}
-                      onMouseEnter={e => { if (!active && !savingDecision) { e.currentTarget.style.borderColor = opt.color + '80'; e.currentTarget.style.color = opt.color; } }}
+                      onMouseEnter={e => { if (!active && !savingDecision) { e.currentTarget.style.borderColor = alpha(opt.color, '80'); e.currentTarget.style.color = opt.color; } }}
                       onMouseLeave={e => { if (!active && !savingDecision) { e.currentTarget.style.borderColor = C.brd; e.currentTarget.style.color = C.txt2; } }}
                     >
                       {busy ? 'Saving…' : opt.label}
@@ -516,7 +516,7 @@ function RecordCard({
                 <Button
                   variant="primary"
                   disabled={finalizing}
-                  style={{ background: C.grn, color: '#06210f' }}
+                  style={{ background: C.grn, color: C.bg }}
                   onClick={() => onAccept(rec)}
                   title="Accept and hand off to META·LAB Data Extraction"
                 >
@@ -547,18 +547,18 @@ function RecordCard({
 // ── Toast ─────────────────────────────────────────────────────────────────────
 function Toast({ toast, onClose }) {
   const tone = toast.kind === 'ok'
-    ? { color: C.grn, bg: '#14532d40', brd: C.grn }
+    ? { color: C.grn, bg: C.grnBg, brd: C.grn }
     : toast.kind === 'err'
-      ? { color: C.red, bg: '#450a0a55', brd: C.red }
-      : { color: C.teal, bg: '#0c233340', brd: C.teal };
+      ? { color: C.red, bg: C.redBg, brd: C.red }
+      : { color: C.teal, bg: C.tealBg, brd: C.teal };
   return (
     <div
       role="status"
       style={{
         position: 'sticky', top: 8, zIndex: 50, marginBottom: 16,
-        background: C.surf, border: `1px solid ${tone.brd}60`, borderLeft: `3px solid ${tone.brd}`,
+        background: C.surf, border: `1px solid ${alpha(tone.brd, '60')}`, borderLeft: `3px solid ${tone.brd}`,
         borderRadius: 9, padding: '11px 16px', display: 'flex', alignItems: 'center', gap: 10,
-        boxShadow: '0 8px 30px rgba(0,0,0,0.4)', animation: 'sift-fade 0.2s ease',
+        boxShadow: `0 8px 30px ${C.shadow}`, animation: 'sift-fade 0.2s ease',
       }}
     >
       <span style={{ fontSize: 15 }} aria-hidden>

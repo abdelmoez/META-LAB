@@ -36,13 +36,34 @@ import { getVersion } from './version.js';
 const app = express();
 
 // ── Security headers ───────────────────────────────────────────────────────────
-app.use(helmet({ contentSecurityPolicy: false }));
+// The API serves JSON only, so its CSP can be maximally strict (default-src 'none').
+// The SPA's own CSP lives in index.html (<meta http-equiv>) because the frontend
+// is served by Vite/nginx, not this process.
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'none'"],
+      frameAncestors: ["'none'"],
+      baseUri: ["'none'"],
+      formAction: ["'none'"],
+    },
+  },
+}));
 
 // ── Rate limiter for auth routes (20 req / 15 min in production; relaxed in dev/test) ──
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: process.env.NODE_ENV === 'production' ? 20 : 1000,
   message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ── Rate limiter for the public, unauthenticated contact form ──────────────────
+const contactLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 8 : 1000,
+  message: { error: 'Too many messages, please try again later' },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -73,7 +94,7 @@ app.use('/api/settings', settingsRouter);
 
 // ── Protected route mounting ───────────────────────────────────────────────────
 app.use('/api/profile',              profileRouter);
-app.use('/api/contact',              contactRouter);
+app.use('/api/contact',              contactLimiter, contactRouter);
 app.use('/api/projects',             projectsRouter);
 app.use('/api/projects/:id/studies', studiesRouter);
 app.use('/api/projects/:id/records', recordsRouter);

@@ -16,7 +16,7 @@ export async function getProfile(req, res) {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
-      select: { id: true, email: true, name: true, createdAt: true, lastActive: true },
+      select: { id: true, email: true, name: true, createdAt: true, lastActive: true, themePreference: true },
     });
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json({ user });
@@ -33,17 +33,21 @@ export async function getProfile(req, res) {
  */
 export async function updateProfile(req, res) {
   try {
-    const { name } = req.body || {};
+    const { name, themePreference } = req.body || {};
     if (name !== undefined && typeof name !== 'string') {
       return res.status(400).json({ error: 'name must be a string' });
+    }
+    if (themePreference !== undefined && !['night', 'day'].includes(themePreference)) {
+      return res.status(400).json({ error: 'themePreference must be "night" or "day"' });
     }
     const user = await prisma.user.update({
       where: { id: req.user.id },
       data: {
         ...(name !== undefined ? { name: name.trim() || null } : {}),
+        ...(themePreference !== undefined ? { themePreference } : {}),
         lastActive: new Date(),
       },
-      select: { id: true, email: true, name: true, createdAt: true, lastActive: true },
+      select: { id: true, email: true, name: true, createdAt: true, lastActive: true, themePreference: true },
     });
     res.json({ user });
   } catch (err) {

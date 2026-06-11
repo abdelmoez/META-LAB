@@ -1,8 +1,12 @@
 /**
  * components.jsx — shared META·SIFT UI primitives (one source for all tabs).
+ *
+ * Theme-aware (prompt7): all colors come from the token system via ui/theme.js;
+ * translucent tints use alpha() (CSS color-mix) instead of hex+alpha suffixes.
+ * Consistency: 1px C.brd borders, 8–10px radii, C.shadow for elevation.
  */
 import { useEffect } from 'react';
-import { C, FONT, MONO, DECISION_COLORS, DECISION_GLYPH, GLOBAL_CSS } from './theme.js';
+import { C, FONT, MONO, alpha, DECISION_COLORS, DECISION_GLYPH, GLOBAL_CSS } from './theme.js';
 
 /** Inject fonts + keyframes once at the shell root. */
 export function GlobalStyle() {
@@ -13,7 +17,7 @@ export function BetaBadge() {
   return (
     <span style={{
       fontSize: 9, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.12em',
-      textTransform: 'uppercase', background: '#2dd4bf18', border: '1px solid #2dd4bf50',
+      textTransform: 'uppercase', background: alpha(C.teal, '18'), border: `1px solid ${alpha(C.teal, '50')}`,
       color: C.teal, borderRadius: 4, padding: '2px 7px',
     }}>BETA</span>
   );
@@ -22,8 +26,9 @@ export function BetaBadge() {
 export function Badge({ children, color = C.teal, title }) {
   return (
     <span title={title} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4,
       fontSize: 9, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em',
-      textTransform: 'uppercase', background: color + '18', border: `1px solid ${color}40`,
+      textTransform: 'uppercase', background: alpha(color, '18'), border: `1px solid ${alpha(color, '40')}`,
       color, borderRadius: 4, padding: '1px 6px', whiteSpace: 'nowrap',
     }}>{children}</span>
   );
@@ -50,7 +55,7 @@ export function Loading({ label = 'Loading…' }) {
 export function ProgressBar({ pct, color = C.acc, height = 4 }) {
   const v = Math.min(100, Math.max(0, pct || 0));
   return (
-    <div style={{ height, background: '#1a2b42', borderRadius: height / 2, overflow: 'hidden' }}>
+    <div style={{ height, background: C.brd, borderRadius: height / 2, overflow: 'hidden' }}>
       <div style={{ width: `${v}%`, height: '100%', background: color, borderRadius: height / 2, transition: 'width 0.4s ease' }} />
     </div>
   );
@@ -69,7 +74,7 @@ export function StatPill({ label, value, color = C.txt2 }) {
 export function StatTile({ label, value, color = C.txt, sub, accent }) {
   return (
     <div style={{
-      background: C.card, border: `1px solid ${accent ? color + '40' : C.brd}`,
+      background: C.card, border: `1px solid ${accent ? alpha(color, '40') : C.brd}`,
       borderRadius: 10, padding: '14px 16px', minWidth: 0,
     }}>
       <div style={{ fontSize: 26, fontWeight: 700, fontFamily: MONO, color, lineHeight: 1 }}>{value}</div>
@@ -85,7 +90,7 @@ export function DecisionChip({ decision, size = 'sm' }) {
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: size === 'sm' ? 11 : 12,
-      fontWeight: 600, fontFamily: FONT, background: d.bg + (size === 'sm' ? '90' : ''),
+      fontWeight: 600, fontFamily: FONT, background: size === 'sm' ? alpha(d.bg, '90') : d.bg,
       border: `1px solid ${d.border}`, color: d.txt, borderRadius: 5, padding: pad,
     }}>
       <span style={{ fontFamily: MONO }}>{DECISION_GLYPH[decision] || '·'}</span>
@@ -96,14 +101,15 @@ export function DecisionChip({ decision, size = 'sm' }) {
 
 export function Button({ children, onClick, variant = 'primary', disabled, type = 'button', style, title, full }) {
   const base = {
-    fontSize: 13, fontWeight: 600, fontFamily: FONT, borderRadius: 7, cursor: disabled ? 'not-allowed' : 'pointer',
+    fontSize: 13, fontWeight: 600, fontFamily: FONT, borderRadius: 8, cursor: disabled ? 'not-allowed' : 'pointer',
     padding: '8px 18px', transition: 'background 0.15s, border-color 0.15s, color 0.15s', opacity: disabled ? 0.55 : 1,
     width: full ? '100%' : undefined, whiteSpace: 'nowrap',
+    display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
   };
   const variants = {
-    primary: { background: C.acc2, border: 'none', color: '#fff' },
+    primary: { background: C.acc2, border: '1px solid transparent', color: C.accText },
     ghost:   { background: 'transparent', border: `1px solid ${C.brd2}`, color: C.txt2 },
-    danger:  { background: '#c0392b', border: 'none', color: '#fff' },
+    danger:  { background: C.red, border: '1px solid transparent', color: C.accText },
     subtle:  { background: C.card, border: `1px solid ${C.brd}`, color: C.txt },
   };
   return (
@@ -122,12 +128,13 @@ export function Toggle({ checked, onChange, disabled, label, hint }) {
         onClick={() => !disabled && onChange(!checked)}
         style={{
           width: 36, height: 20, borderRadius: 10, flexShrink: 0, position: 'relative',
-          background: checked ? C.acc2 : C.brd2, transition: 'background 0.2s',
+          background: checked ? C.acc2 : C.dim, transition: 'background 0.2s',
+          border: `1px solid ${checked ? C.acc2 : C.brd2}`, boxSizing: 'border-box',
         }}
       >
         <span style={{
-          position: 'absolute', top: 2, left: checked ? 18 : 2, width: 16, height: 16, borderRadius: '50%',
-          background: '#fff', transition: 'left 0.2s',
+          position: 'absolute', top: 1, left: checked ? 17 : 1, width: 16, height: 16, borderRadius: '50%',
+          background: '#fff', boxShadow: `0 1px 3px ${C.shadow}`, transition: 'left 0.2s',
         }} />
       </span>
       {label && (
@@ -161,10 +168,18 @@ export function Card({ children, style, hover, onClick }) {
   );
 }
 
-export function EmptyState({ icon = '📋', title, children, action }) {
+/**
+ * EmptyState — icon slot accepts a ReactNode (preferred: <Icon name=.../> from
+ * components/icons.jsx) or a short text glyph; both render muted + monochrome.
+ */
+export function EmptyState({ icon = null, title, children, action }) {
   return (
-    <div style={{ textAlign: 'center', padding: '56px 24px', border: `1px dashed ${C.brd}`, borderRadius: 12, animation: 'sift-fade 0.3s ease' }}>
-      <div style={{ fontSize: 34, marginBottom: 14 }}>{icon}</div>
+    <div style={{ textAlign: 'center', padding: '56px 24px', border: `1px dashed ${C.brd}`, borderRadius: 10, animation: 'sift-fade 0.3s ease' }}>
+      {icon != null && (
+        <div style={{ fontSize: 30, lineHeight: 1, marginBottom: 14, color: C.muted, display: 'flex', justifyContent: 'center' }}>
+          {icon}
+        </div>
+      )}
       <div style={{ fontSize: 15, fontWeight: 600, color: C.txt, marginBottom: 8 }}>{title}</div>
       {children && <div style={{ fontSize: 13, color: C.txt2, maxWidth: 400, margin: '0 auto 20px' }}>{children}</div>}
       {action}
@@ -174,7 +189,7 @@ export function EmptyState({ icon = '📋', title, children, action }) {
 
 export function ErrorBanner({ children, onRetry }) {
   return (
-    <div style={{ background: '#450a0a', border: '1px solid #f8717150', borderRadius: 8, padding: '12px 16px', color: C.red, fontSize: 13, marginBottom: 16 }}>
+    <div style={{ background: C.redBg, border: `1px solid ${alpha(C.red, '50')}`, borderRadius: 8, padding: '12px 16px', color: C.red, fontSize: 13, marginBottom: 16 }}>
       {children}
       {onRetry && <button onClick={onRetry} style={{ marginLeft: 12, background: 'none', border: 'none', color: C.acc, cursor: 'pointer', fontSize: 12 }}>Retry</button>}
     </div>
@@ -201,9 +216,9 @@ export function Modal({ children, onClose, width = 480 }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
   return (
-    <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(4,8,18,0.82)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, animation: 'sift-fade 0.15s ease' }}
+    <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: alpha(C.bg, 0.82), display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, animation: 'sift-fade 0.15s ease' }}
       onClick={e => { if (e.target === e.currentTarget) onClose?.(); }}>
-      <div style={{ background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 12, padding: '24px 26px', width: '100%', maxWidth: width, boxShadow: '0 20px 60px rgba(0,0,0,0.6)', maxHeight: '88vh', overflowY: 'auto' }}>
+      <div style={{ background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 10, padding: '24px 26px', width: '100%', maxWidth: width, boxShadow: `0 20px 60px ${C.shadow}`, maxHeight: '88vh', overflowY: 'auto' }}>
         {children}
       </div>
     </div>

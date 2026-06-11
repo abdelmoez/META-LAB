@@ -13,7 +13,7 @@
  *   refreshProject — () => Promise, re-fetches the shell's project after a mutation
  */
 import { useState, useEffect, useCallback } from 'react';
-import { C, FONT, MONO } from '../ui/theme.js';
+import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import {
   Loading, ErrorBanner, ProgressBar, StatTile, Badge,
   Avatar, SectionLabel, Card,
@@ -318,8 +318,8 @@ function StatusControl({ status, editable, disabled, onChange }) {
               padding: '6px 13px', borderRadius: 6, border: '1px solid transparent',
               whiteSpace: 'nowrap',
               cursor: editable ? (disabled ? 'wait' : (active ? 'default' : 'pointer')) : 'default',
-              background: active ? opt.color + '1f' : 'transparent',
-              borderColor: active ? opt.color + '55' : 'transparent',
+              background: active ? alpha(opt.color, '1f') : 'transparent',
+              borderColor: active ? alpha(opt.color, '55') : 'transparent',
               color: active ? opt.color : C.txt2,
               transition: 'background 0.15s, color 0.15s, border-color 0.15s',
             }}

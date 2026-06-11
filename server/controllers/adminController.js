@@ -282,6 +282,12 @@ export async function updateUser(req, res) {
     const target = await prisma.user.findUnique({ where: { id: req.params.id } });
     if (!target) return res.status(404).json({ error: 'User not found' });
 
+    // Defense-in-depth (route also mounts requireTargetEditable): mods may
+    // only mutate ordinary users — never admin/mod accounts.
+    if (req.user.role === 'mod' && target.role !== 'user') {
+      return res.status(403).json({ error: 'Moderators cannot modify administrator or moderator accounts' });
+    }
+
     // Enforce unique email (case-insensitive via the lowercased value above)
     if (data.email && data.email !== target.email) {
       const clash = await prisma.user.findUnique({ where: { email: data.email } });
@@ -331,7 +337,13 @@ export async function updateUserStatus(req, res) {
     const target = await prisma.user.findUnique({ where: { id: req.params.id } });
     if (!target) return res.status(404).json({ error: 'User not found' });
 
-    // Cannot suspend admins
+    // Defense-in-depth (route also mounts requireTargetEditable): mods may
+    // only mutate ordinary users — never admin/mod accounts.
+    if (req.user.role === 'mod' && target.role !== 'user') {
+      return res.status(403).json({ error: 'Moderators cannot modify administrator or moderator accounts' });
+    }
+
+    // Cannot suspend admins (actor-agnostic — applies to admins too)
     if (target.role === 'admin' && suspended) {
       return res.status(400).json({ error: 'Cannot suspend admin users' });
     }
@@ -415,6 +427,13 @@ export async function resetUserPassword(req, res) {
   try {
     const target = await prisma.user.findUnique({ where: { id: req.params.id } });
     if (!target) return res.status(404).json({ error: 'User not found' });
+
+    // Defense-in-depth (route also mounts requireTargetEditable): mods may
+    // only mutate ordinary users — a mod resetting an admin/mod password and
+    // receiving the plaintext would be a full account takeover.
+    if (req.user.role === 'mod' && target.role !== 'user') {
+      return res.status(403).json({ error: 'Moderators cannot modify administrator or moderator accounts' });
+    }
 
     const tempPassword = generateTempPassword();
     const hashed = await hashPassword(tempPassword);

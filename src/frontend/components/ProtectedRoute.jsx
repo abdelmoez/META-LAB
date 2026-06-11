@@ -1,21 +1,22 @@
 import { Navigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
+import { C, FONT } from '../theme/tokens.js';
 
 function LoadingScreen() {
   return (
     <div style={{
       minHeight: '100vh',
-      background: '#0b0d13',
+      background: C.bg,
       display: 'flex',
       alignItems: 'center',
       justifyContent: 'center',
-      fontFamily: "'IBM Plex Sans', system-ui, sans-serif",
-      color: '#536080',
+      fontFamily: FONT,
+      color: C.muted,
       fontSize: 14,
       letterSpacing: '0.05em',
     }}>
       <div style={{ textAlign: 'center' }}>
-        <div style={{ fontSize: 32, color: '#818cf8', marginBottom: 16, userSelect: 'none' }}>⬡</div>
+        <div style={{ fontSize: 32, color: C.acc, marginBottom: 16, userSelect: 'none' }}>⬡</div>
         <div>Loading…</div>
       </div>
       <style>{`

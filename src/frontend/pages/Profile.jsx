@@ -9,24 +9,10 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { api } from '../api-client/apiClient.js';
-
-const C = {
-  bg:    '#0b0d13',
-  surf:  '#0f1220',
-  card:  '#141826',
-  brd:   '#1f2640',
-  brd2:  '#283050',
-  acc:   '#818cf8',
-  acc2:  '#6366f1',
-  txt:   '#eaecf6',
-  txt2:  '#9ba6c4',
-  muted: '#536080',
-  grn:   '#34d399',
-  red:   '#f87171',
-};
-
-const FONT = "'IBM Plex Sans', system-ui, sans-serif";
-const MONO = "'IBM Plex Mono', monospace";
+import Icon from '../components/icons.jsx';
+// Theme-aware tokens (prompt7) — C values are `var(--t-*)` strings; use
+// alpha(C.x, '40') instead of hex+alpha concatenation.
+import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 
 function fmtDate(iso) {
   if (!iso) return '—';
@@ -92,7 +78,7 @@ function PrimaryBtn({ onClick, disabled, children, style = {} }) {
         background:   `linear-gradient(135deg, ${C.acc}, ${C.acc2})`,
         border:       'none',
         borderRadius: 7,
-        color:        '#fff',
+        color:        C.accText,
         fontSize:     13,
         fontWeight:   600,
         cursor:       disabled ? 'not-allowed' : 'pointer',
@@ -201,7 +187,7 @@ export default function Profile() {
     navigate('/');
   }
 
-  const avatarBg = `${C.acc}20`;
+  const avatarBg = alpha(C.acc, '20');
 
   return (
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: FONT, color: C.txt }}>
@@ -214,7 +200,7 @@ export default function Profile() {
           .profile-content { padding: 24px 20px !important; }
         }
         .profile-nav-item:hover { background: ${C.card} !important; color: ${C.txt} !important; }
-        .profile-input:focus { border-color: ${C.acc} !important; box-shadow: 0 0 0 3px ${C.acc}18 !important; }
+        .profile-input:focus { border-color: ${C.acc} !important; box-shadow: 0 0 0 3px ${alpha(C.acc, '18')} !important; }
       `}</style>
 
       {/* ── Top bar ──────────────────────────────────────────────────── */}
@@ -225,7 +211,7 @@ export default function Profile() {
         padding:      '0 32px',
         height:       52,
         borderBottom: `1px solid ${C.brd}`,
-        background:   `${C.bg}f0`,
+        background:   alpha(C.bg, 'f0'),
         position:     'sticky',
         top:          0,
         zIndex:       50,
@@ -237,8 +223,10 @@ export default function Profile() {
           ← Back to workspace
         </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'default' }}>
-          <span style={{ fontSize: 16, color: C.acc }}>⬡</span>
-          <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.07em', color: C.txt }}>META·LAB</span>
+          <span style={{ display: 'inline-flex', color: C.acc }}><Icon name="hexagon" size={16} /></span>
+          <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.07em', color: C.txt }}>
+            META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>LAB
+          </span>
         </div>
       </div>
 
@@ -267,7 +255,7 @@ export default function Profile() {
               height:       60,
               borderRadius: '50%',
               background:   avatarBg,
-              border:       `2px solid ${C.acc}40`,
+              border:       `2px solid ${alpha(C.acc, '40')}`,
               display:      'flex',
               alignItems:   'center',
               justifyContent: 'center',
@@ -445,12 +433,12 @@ export default function Profile() {
                 ))}
 
                 {pwStatus === 'saved' && (
-                  <div style={{ fontSize: 12, color: C.grn, padding: '8px 12px', background: '#052e1630', border: `1px solid ${C.grn}30`, borderRadius: 6 }}>
+                  <div style={{ fontSize: 12, color: C.grn, padding: '8px 12px', background: C.grnBg, border: `1px solid ${alpha(C.grn, '30')}`, borderRadius: 6 }}>
                     Password changed successfully.
                   </div>
                 )}
                 {pwStatus === 'error' && (
-                  <div style={{ fontSize: 12, color: C.red, padding: '8px 12px', background: '#3b0d1220', border: `1px solid ${C.red}30`, borderRadius: 6 }}>
+                  <div style={{ fontSize: 12, color: C.red, padding: '8px 12px', background: C.redBg, border: `1px solid ${alpha(C.red, '30')}`, borderRadius: 6 }}>
                     {pwErr}
                   </div>
                 )}
@@ -468,18 +456,18 @@ export default function Profile() {
           <div id="section-danger">
             <div style={{
               background:   C.card,
-              border:       `1px solid ${C.red}30`,
+              border:       `1px solid ${alpha(C.red, '30')}`,
               borderRadius: 10,
               overflow:     'hidden',
               marginBottom: 20,
             }}>
               <div style={{
                 padding:       '12px 20px',
-                borderBottom:  `1px solid ${C.red}20`,
+                borderBottom:  `1px solid ${alpha(C.red, '20')}`,
                 fontSize:      11,
                 fontFamily:    MONO,
                 fontWeight:    700,
-                color:         `${C.red}88`,
+                color:         alpha(C.red, '88'),
                 letterSpacing: '0.1em',
                 textTransform: 'uppercase',
               }}>
@@ -496,7 +484,7 @@ export default function Profile() {
                     style={{
                       padding:      '8px 18px',
                       background:   'transparent',
-                      border:       `1px solid ${C.red}44`,
+                      border:       `1px solid ${alpha(C.red, '44')}`,
                       borderRadius: 7,
                       color:        C.red,
                       fontSize:     13,
@@ -506,8 +494,8 @@ export default function Profile() {
                       transition:   'background 0.15s, border-color 0.15s',
                       whiteSpace:   'nowrap',
                     }}
-                    onMouseEnter={e => { e.target.style.background = `${C.red}12`; e.target.style.borderColor = `${C.red}80`; }}
-                    onMouseLeave={e => { e.target.style.background = 'transparent'; e.target.style.borderColor = `${C.red}44`; }}
+                    onMouseEnter={e => { e.target.style.background = alpha(C.red, '12'); e.target.style.borderColor = alpha(C.red, '80'); }}
+                    onMouseLeave={e => { e.target.style.background = 'transparent'; e.target.style.borderColor = alpha(C.red, '44'); }}
                   >
                     Sign out
                   </button>

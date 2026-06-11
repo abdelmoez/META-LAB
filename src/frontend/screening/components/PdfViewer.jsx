@@ -12,7 +12,7 @@
  * Used by ScreeningTab (middle column) and SecondReviewTab.
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { C, FONT, MONO } from '../ui/theme.js';
+import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { screeningApi } from '../api-client/screeningApi.js';
 
 function fmtSize(bytes) {
@@ -106,7 +106,7 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
         ) : canManage ? (
           <>
             <label style={{ cursor: uploading ? 'default' : 'pointer' }}>
-              <span style={{ fontSize: 12, color: C.acc, border: `1px dashed ${C.acc}55`, borderRadius: 7, padding: '6px 12px', background: C.acc + '12' }}>
+              <span style={{ fontSize: 12, color: C.acc, border: `1px dashed ${alpha(C.acc, '55')}`, borderRadius: 7, padding: '6px 12px', background: alpha(C.acc, '12') }}>
                 {uploading ? 'Uploading…' : '⬆ Upload PDF'}
               </span>
               <input ref={fileRef} type="file" accept="application/pdf" onChange={onPick} disabled={uploading} style={{ display: 'none' }} />
@@ -122,7 +122,7 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
 
       {/* Inline preview */}
       {attachment && open && (
-        <div style={{ borderTop: `1px solid ${C.brd}`, background: '#0c1220' }}>
+        <div style={{ borderTop: `1px solid ${C.brd}`, background: C.surf }}>
           {frameErr ? (
             <div style={{ padding: '24px 16px', textAlign: 'center', fontSize: 12.5, color: C.txt2 }}>
               Preview unavailable in this browser.{' '}
@@ -133,7 +133,7 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
               title="PDF preview"
               src={previewUrl}
               onError={() => setFrameErr(true)}
-              style={{ width: '100%', height: 520, border: 'none', display: 'block', background: '#1a1f2e' }}
+              style={{ width: '100%', height: 520, border: 'none', display: 'block', background: C.card2 }}
             />
           )}
         </div>
@@ -145,7 +145,7 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
 function TbBtn({ children, onClick, danger }) {
   return (
     <button onClick={onClick} style={{
-      background: 'none', border: `1px solid ${danger ? '#f8717155' : C.brd2}`, color: danger ? C.red : C.txt2,
+      background: 'none', border: `1px solid ${danger ? alpha(C.red, '55') : C.brd2}`, color: danger ? C.red : C.txt2,
       fontSize: 11.5, fontFamily: FONT, padding: '5px 11px', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap',
     }}>{children}</button>
   );

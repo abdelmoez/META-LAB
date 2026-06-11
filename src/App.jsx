@@ -1,5 +1,6 @@
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './frontend/context/AuthContext.jsx';
+import { ThemeProvider } from './frontend/theme/ThemeContext.jsx';
 import ProtectedRoute from './frontend/components/ProtectedRoute.jsx';
 import PublicRoute    from './frontend/components/PublicRoute.jsx';
 import AdminRoute     from './frontend/components/AdminRoute.jsx';
@@ -47,6 +48,7 @@ function RegisterRoute() {
 
 export default function App() {
   return (
+    <ThemeProvider>
     <AuthProvider>
       <Routes>
         {/* Public landing page */}
@@ -74,5 +76,6 @@ export default function App() {
         <Route path="*"         element={<Navigate to="/" replace />} />
       </Routes>
     </AuthProvider>
+    </ThemeProvider>
   );
 }

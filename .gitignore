@@ -13,6 +13,14 @@ server/.env
 # database migrations state (keep schema, not lock)
 server/prisma/migrations/
 
+# local SQLite databases — NEVER commit (contain user emails, password hashes,
+# contact messages). Found tracked during the prompt7 security review.
+server/prisma/*.db
+server/prisma/*.db-journal
+server/prisma/*.db.bak*
+*.sqlite
+*.sqlite3
+
 # runtime data (JSON file store — superseded by Postgres)
 server/data/*.json
 
@@ -36,7 +44,9 @@ server/storage/
 server-test.log
 server-test.err.log
 server-stdout.log
+server-stderr.log
 *.test.log
+bash.exe.stackdump
 
 # Build-time generated version metadata (npm run version:gen) — derived, not committed
 server/version.json

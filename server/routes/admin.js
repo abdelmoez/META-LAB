@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { requireAdmin } from '../middleware/requireAdmin.js';
-import { requireAdminOrMod } from '../middleware/requireRole.js';
+import { requireAdminOrMod, requireTargetEditable } from '../middleware/requireRole.js';
 import {
   getMetrics,
   getUsers,
@@ -78,13 +78,15 @@ router.use(adminLimiter);
 router.get('/console', requireAdminOrMod, getConsole);
 
 // ── Users ─────────────────────────────────────────────────────────────────────
-// Read + edit + status + reset-password are mod-allowed.
+// Read is mod-allowed for ALL targets. Mutations (edit/status/reset-password)
+// are mod-allowed ONLY against ordinary users — requireTargetEditable 403s a
+// mod acting on an admin/mod target (admins are unrestricted).
 router.get('/users', requireAdminOrMod, getUsers);
 router.get('/users/:id', requireAdminOrMod, getUserById);
 router.get('/users/:id/projects', requireAdminOrMod, getUserProjects);
-router.patch('/users/:id', requireAdminOrMod, updateUser);
-router.patch('/users/:id/status', requireAdminOrMod, updateUserStatus);
-router.post('/users/:id/reset-password', requireAdminOrMod, resetUserPassword);
+router.patch('/users/:id', requireAdminOrMod, requireTargetEditable, updateUser);
+router.patch('/users/:id/status', requireAdminOrMod, requireTargetEditable, updateUserStatus);
+router.post('/users/:id/reset-password', requireAdminOrMod, requireTargetEditable, resetUserPassword);
 // Role assignment + delete are ADMIN ONLY.
 router.patch('/users/:id/role', requireAdmin, updateUserRole);
 

@@ -1,7 +1,46 @@
 # META·SIFT — QA Report (collaboration upgrade)
 
-> **Update 2026-06-10 (prompt6 workspace upgrade):** ✅ **239/239 screening tests pass**
-> (+23 `integration/prompt6.test.js`). prompt6 section below; prompt5/prompt4/prompt3/prompt2/prompt1 follow unchanged.
+> **Update 2026-06-10 (prompt7 design/security/chat upgrade):** ✅ **249/249 screening tests pass**
+> (+4 `integration/prompt7.test.js`, +6 `integration/prompt7-chat.test.js`). prompt7 section below; prompt6…prompt1 follow unchanged.
+
+---
+
+## prompt7 — Mod target-role enforcement, shared workspace chat, theme/icons/redesign (2026-06-10)
+
+**Result:** ✅ **249/249 screening tests pass** (`npx vitest run tests/screening/ --no-file-parallelism`, server up).
+Adds **+10** integration tests over the prompt6 total of 239: `integration/prompt7.test.js` (4, mod RBAC on user
+targets) and `integration/prompt7-chat.test.js` (6, META·LAB chat door). `npm run build` exit 0 (sole advisories:
+pre-existing monolith esbuild JSX warning + >500 kB chunk note). Full repo suite: **876 pass / 6 pre-existing
+`serverStorage.test.js` fake-timer failures (quarantined, unchanged from baseline) / 7 skips**.
+
+**Flipped assertions: NONE.** The whole pre-prompt7 suite is green unchanged — the new 403s (mod → admin/mod user
+mutations) were previously-untested paths; the prompt6 T14 mod matrix passes as-is.
+
+### prompt7.test.js inventory (4 tests — Task 1)
+
+| Test | What is pinned |
+|---|---|
+| mod PATCH /users/:id | **403 on admin and mod targets** (pinned body `Moderators cannot modify administrator or moderator accounts`), incl. self-via-admin-route and email-takeover attempts; 200 on ordinary user with verify-by-read; admin target unchanged |
+| mod reset-password | 403 on admin/mod targets with **no `tempPassword` leak** in the body; victim admin's original password still logs in; 200 + working temp password for an ordinary user |
+| mod status | 403 suspending another mod (victim's console still 200); 200 suspend+unsuspend ordinary user |
+| regression | mod role-assign stays 403; **admin PATCH mod profile stays 200** (admins manage mods); `MOD_TARGET_DENIED` SecurityEvent visible via `GET /admin/security-events` |
+
+### prompt7-chat.test.js inventory (6 tests — Task 11)
+
+| Test | What is pinned |
+|---|---|
+| shared thread | post via `/projects/:pid/chat` ↔ read via `/metalab/:mlpid/chat` in BOTH directions; same response shape; `?since` cursor on the metalab door |
+| unread/read | unread-count via metalab door; `POST /metalab/:mlpid/chat/read` clears; read state shared across both doors (one `ScreenChatRead`); own messages never count |
+| existence-hiding | non-member → **404** on all six metalab chat routes; standalone (unlinked) META·LAB project → 404 even for its owner; nonexistent id → 404 |
+| chatRestricted | `readonly_both` member (canChat:false) post via metalab door → 403 (read stays 200); owner posts 200 |
+| delete | DELETE own message via metalab door → 204; gone from BOTH doors (soft delete); non-sender member → 403 |
+| SSE | `chat.message` poke carries `projectId` AND `metaLabProjectId` for a linked workspace; payload stays poke-only |
+
+Schema: additive migration `20260610185705_add_theme_preference` (User.themePreference for the night/day toggle).
+
+**Limitations:** UI-level theme/icon/redesign changes are verified by build + Playwright screenshots (night/day,
+1366/1920/2560/3440) rather than DOM assertions; the `serverStorage.test.js` fake-timer failures remain quarantined
+as in every prior prompt.
 
 ---
 

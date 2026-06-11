@@ -61,7 +61,7 @@ export default function ExportTab({ pid }) {
         <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 12 }}>Filter</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {FILTERS.map(f => (
-            <label key={f.key} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 10px', borderRadius: 7, border: `1px solid ${filter === f.key ? C.acc2 : C.brd}`, background: filter === f.key ? '#0e1e35' : 'transparent' }}>
+            <label key={f.key} style={{ display: 'flex', alignItems: 'center', gap: 10, cursor: 'pointer', padding: '8px 10px', borderRadius: 7, border: `1px solid ${filter === f.key ? C.acc2 : C.brd}`, background: filter === f.key ? C.accBg : 'transparent' }}>
               <input type="radio" checked={filter === f.key} onChange={() => setFilter(f.key)} style={{ accentColor: C.acc }} />
               <span style={{ flex: 1 }}>
                 <span style={{ fontSize: 13, color: C.txt }}>{f.label}</span>
@@ -79,7 +79,7 @@ export default function ExportTab({ pid }) {
           {['csv', 'json'].map(fmt => (
             <button key={fmt} onClick={() => setFormat(fmt)}
               style={{ flex: 1, cursor: 'pointer', fontFamily: FONT, fontSize: 13, fontWeight: 600, padding: '10px 0', borderRadius: 7, textTransform: 'uppercase',
-                background: format === fmt ? C.acc2 : C.card, color: format === fmt ? '#fff' : C.txt2, border: `1px solid ${format === fmt ? C.acc2 : C.brd2}` }}>{fmt}</button>
+                background: format === fmt ? C.acc2 : C.card, color: format === fmt ? C.accText : C.txt2, border: `1px solid ${format === fmt ? C.acc2 : C.brd2}` }}>{fmt}</button>
           ))}
         </div>
       </Card>

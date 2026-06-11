@@ -5,8 +5,9 @@
  */
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { C, FONT, MONO } from '../ui/theme.js';
+import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { GlobalStyle, BetaBadge, Badge, Loading, ErrorBanner, Modal, Button } from '../ui/components.jsx';
+import { Icon } from '../../components/icons.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 import { useRealtime } from '../../hooks/useRealtime.js';
 import ChatLauncher from '../components/ChatLauncher.jsx';
@@ -22,13 +23,13 @@ import ProjectControlTab from '../tabs/ProjectControlTab.jsx';
 import ExportTab         from '../tabs/ExportTab.jsx';
 
 const TABS = [
-  { key: 'overview',      label: 'Overview',        Comp: OverviewTab },
-  { key: 'screening',     label: 'Screening',       Comp: ScreeningTab },
-  { key: 'second-review', label: 'Second Review',   Comp: SecondReviewTab },
-  { key: 'duplicates',    label: 'Duplicates',      Comp: DuplicatesTab },
-  { key: 'conflicts',     label: 'Conflicts',       Comp: ConflictsTab },
-  { key: 'control',       label: 'Project Control', Comp: ProjectControlTab },
-  { key: 'export',        label: 'Export',          Comp: ExportTab },
+  { key: 'overview',      label: 'Overview',        icon: 'grid',        Comp: OverviewTab },
+  { key: 'screening',     label: 'Screening',       icon: 'filter',      Comp: ScreeningTab },
+  { key: 'second-review', label: 'Second Review',   icon: 'checkSquare', Comp: SecondReviewTab },
+  { key: 'duplicates',    label: 'Duplicates',      icon: 'copy',        Comp: DuplicatesTab },
+  { key: 'conflicts',     label: 'Conflicts',       icon: 'alert',       Comp: ConflictsTab },
+  { key: 'control',       label: 'Project Control', icon: 'sliders',     Comp: ProjectControlTab },
+  { key: 'export',        label: 'Export',          icon: 'upload',      Comp: ExportTab },
 ];
 
 // Legacy deep links used ?tab=members — the roster now lives inside Project Control.
@@ -150,12 +151,14 @@ export default function SiftProject() {
             <button key={t.key} onClick={() => setTab(t.key)}
               style={{
                 background: 'none', border: 'none', cursor: 'pointer', fontFamily: FONT,
+                display: 'inline-flex', alignItems: 'center', gap: 6,
                 fontSize: 13, fontWeight: on ? 600 : 500, color: on ? C.txt : C.txt2,
                 padding: '11px 14px', borderBottom: `2px solid ${on ? C.acc : 'transparent'}`,
                 transition: 'color 0.15s', whiteSpace: 'nowrap',
               }}
               onMouseEnter={e => { if (!on) e.currentTarget.style.color = C.txt; }}
               onMouseLeave={e => { if (!on) e.currentTarget.style.color = C.txt2; }}>
+              <Icon name={t.icon} size={14} style={{ opacity: on ? 1 : 0.75 }} />
               {t.label}
             </button>
           );
@@ -167,7 +170,7 @@ export default function SiftProject() {
         {loading && <div style={{ padding: 32 }}><Loading label="Loading project…" /></div>}
 
         {!loading && disabled && (
-          <div style={{ padding: 32, maxWidth: 520, margin: '40px auto', textAlign: 'center', border: `1px solid ${C.gold}40`, borderRadius: 12, background: '#dba96a08' }}>
+          <div style={{ padding: 32, maxWidth: 520, margin: '40px auto', textAlign: 'center', border: `1px solid ${alpha(C.gold, '40')}`, borderRadius: 12, background: alpha(C.gold, '08') }}>
             <div style={{ fontSize: 32, marginBottom: 14 }}>🔧</div>
             <div style={{ fontSize: 15, fontWeight: 600, color: C.gold, marginBottom: 8 }}>META·SIFT is temporarily unavailable</div>
             <div style={{ fontSize: 13, color: C.txt2 }}>{disabled}</div>
@@ -225,8 +228,8 @@ function LinkBadge({ pid, isLeader, navigate, onChanged }) {
         title={linked ? `Linked to META·LAB project: ${linked.name}` : 'Not linked to a META·LAB project'}
         style={{
           display: 'inline-flex', alignItems: 'center', gap: 6,
-          background: linked && !linked.missing ? C.grn + '14' : C.card,
-          border: `1px solid ${linked && !linked.missing ? C.grn + '55' : C.brd2}`,
+          background: linked && !linked.missing ? alpha(C.grn, '14') : C.card,
+          border: `1px solid ${linked && !linked.missing ? alpha(C.grn, '55') : C.brd2}`,
           color: linked && !linked.missing ? C.grn : C.txt2,
           fontSize: 11.5, fontWeight: 600, fontFamily: FONT, padding: '5px 11px', borderRadius: 7, cursor: 'pointer', maxWidth: 240,
         }}>

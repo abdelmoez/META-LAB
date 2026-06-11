@@ -9,26 +9,13 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { adminApi, fetchVersion } from './adminApiClient.js';
 import UserMenu from '../../components/UserMenu.jsx';
 import NotificationsBell from '../../components/NotificationsBell.jsx';
+import Icon from '../../components/icons.jsx';
 
 /* ─── Design tokens ──────────────────────────────────────────────────── */
-const C = {
-  bg:    '#0b0d13',
-  surf:  '#0f1220',
-  card:  '#141826',
-  brd:   '#1f2640',
-  brd2:  '#283050',
-  acc:   '#818cf8',
-  acc2:  '#6366f1',
-  txt:   '#eaecf6',
-  txt2:  '#9ba6c4',
-  muted: '#536080',
-  grn:   '#34d399',
-  red:   '#f87171',
-  ylw:   '#fbbf24',
-  teal:  '#2dd4bf',
-};
-const FONT = "'IBM Plex Sans', system-ui, sans-serif";
-const MONO = "'IBM Plex Mono', monospace";
+// Theme-aware tokens (prompt7): C values are `var(--t-*)` strings switched by
+// data-theme on <html>. Hex+alpha concatenation does not work on vars — use
+// `alpha(C.x, '40')` instead.
+import { C, FONT, MONO, alpha } from '../../theme/tokens.js';
 const SIDEBAR_W = 220;
 const TOPBAR_H  = 52;
 
@@ -56,7 +43,7 @@ function Spinner({ size = 14, color = C.acc }) {
   return (
     <span style={{
       display: 'inline-block', width: size, height: size,
-      border: `2px solid ${color}30`, borderTop: `2px solid ${color}`,
+      border: `2px solid ${alpha(color, '30')}`, borderTop: `2px solid ${color}`,
       borderRadius: '50%', animation: 'spin 0.7s linear infinite',
     }} />
   );
@@ -64,17 +51,17 @@ function Spinner({ size = 14, color = C.acc }) {
 
 function SaveButton({ onClick, status, label = 'Save Changes', disabled = false }) {
   const map = {
-    idle:   { bg: C.acc2,    text: label,     icon: null },
-    saving: { bg: C.muted,   text: 'Saving…', icon: <Spinner size={12} color="#fff" /> },
-    saved:  { bg: '#166534', text: 'Saved',   icon: '✓' },
-    error:  { bg: '#7f1d1d', text: 'Error',   icon: '✕' },
+    idle:   { bg: C.acc2,  text: label,     icon: null },
+    saving: { bg: C.muted, text: 'Saving…', icon: <Spinner size={12} color={C.accText} /> },
+    saved:  { bg: C.grn2,  text: 'Saved',   icon: <Icon name="check" size={12} /> },
+    error:  { bg: C.red,   text: 'Error',   icon: <Icon name="x" size={12} /> },
   };
   const s = map[status] || map.idle;
   return (
     <button onClick={onClick} disabled={disabled || status === 'saving'} style={{
       display: 'inline-flex', alignItems: 'center', gap: 6,
       padding: '8px 18px', background: s.bg, border: 'none',
-      borderRadius: 7, color: '#fff', fontSize: 13, fontWeight: 600,
+      borderRadius: 7, color: C.accText, fontSize: 13, fontWeight: 600,
       cursor: disabled || status === 'saving' ? 'not-allowed' : 'pointer',
       fontFamily: FONT, opacity: disabled ? 0.6 : 1, transition: 'background 0.2s',
     }}>
@@ -87,13 +74,13 @@ function SaveButton({ onClick, status, label = 'Save Changes', disabled = false 
 function ConfirmModal({ open, title, message, confirmLabel = 'Confirm', danger = false, onConfirm, onCancel }) {
   if (!open) return null;
   return (
-    <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div style={{ background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 12, padding: '28px 32px', maxWidth: 420, width: '90%', boxShadow: '0 24px 64px rgba(0,0,0,0.5)' }}>
+    <div style={{ position: 'fixed', inset: 0, background: alpha(C.bg, 0.65), zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <div style={{ background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 12, padding: '28px 32px', maxWidth: 420, width: '90%', boxShadow: `0 24px 64px ${C.shadow}` }}>
         <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 12 }}>{title}</div>
         <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.65, marginBottom: 24 }}>{message}</div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
           <button onClick={onCancel} style={{ padding: '8px 16px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 13, cursor: 'pointer', fontFamily: FONT }}>Cancel</button>
-          <button onClick={onConfirm} style={{ padding: '8px 16px', background: danger ? C.red : C.acc2, border: 'none', borderRadius: 7, color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: FONT }}>{confirmLabel}</button>
+          <button onClick={onConfirm} style={{ padding: '8px 16px', background: danger ? C.red : C.acc2, border: 'none', borderRadius: 7, color: C.accText, fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: FONT }}>{confirmLabel}</button>
         </div>
       </div>
     </div>
@@ -101,8 +88,10 @@ function ConfirmModal({ open, title, message, confirmLabel = 'Confirm', danger =
 }
 
 function DataTable({ columns, rows, loading, emptyMessage = 'No data.', onRowClick, selectedId }) {
-  const thStyle = { padding: '9px 14px', textAlign: 'left', fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.1em', textTransform: 'uppercase', borderBottom: `1px solid ${C.brd}`, fontWeight: 600, whiteSpace: 'nowrap' };
-  const tdStyle = { padding: '10px 14px', fontSize: 12, color: C.txt2, borderBottom: `1px solid ${C.brd}`, verticalAlign: 'middle' };
+  // Readability (prompt7): consistent 10px/12px cell padding, spaced uppercase
+  // headers, row hover = C.card2 (works in both night and day themes).
+  const thStyle = { padding: '10px 12px', textAlign: 'left', fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.1em', textTransform: 'uppercase', borderBottom: `1px solid ${C.brd}`, fontWeight: 600, whiteSpace: 'nowrap' };
+  const tdStyle = { padding: '10px 12px', fontSize: 12, color: C.txt2, borderBottom: `1px solid ${C.brd}`, verticalAlign: 'middle' };
 
   if (loading) return (
     <div style={{ padding: '40px 0', textAlign: 'center' }}>
@@ -119,14 +108,14 @@ function DataTable({ columns, rows, loading, emptyMessage = 'No data.', onRowCli
         </thead>
         <tbody>
           {rows.length === 0 ? (
-            <tr><td colSpan={columns.length} style={{ ...tdStyle, textAlign: 'center', color: C.muted, padding: '32px 14px' }}>{emptyMessage}</td></tr>
+            <tr><td colSpan={columns.length} style={{ ...tdStyle, textAlign: 'center', color: C.muted, padding: '32px 12px' }}>{emptyMessage}</td></tr>
           ) : rows.map((row, i) => (
             <tr
               key={i}
               onClick={() => onRowClick && onRowClick(row)}
-              style={{ transition: 'background 0.1s', cursor: onRowClick ? 'pointer' : 'default', background: selectedId && row.id === selectedId ? `${C.acc}0e` : 'transparent', borderLeft: selectedId && row.id === selectedId ? `3px solid ${C.acc}` : '3px solid transparent' }}
-              onMouseEnter={e => { if (!selectedId || row.id !== selectedId) e.currentTarget.style.background = C.surf; }}
-              onMouseLeave={e => { e.currentTarget.style.background = selectedId && row.id === selectedId ? `${C.acc}0e` : 'transparent'; }}
+              style={{ transition: 'background 0.1s', cursor: onRowClick ? 'pointer' : 'default', background: selectedId && row.id === selectedId ? alpha(C.acc, '0e') : 'transparent', borderLeft: selectedId && row.id === selectedId ? `3px solid ${C.acc}` : '3px solid transparent' }}
+              onMouseEnter={e => { if (!selectedId || row.id !== selectedId) e.currentTarget.style.background = C.card2; }}
+              onMouseLeave={e => { e.currentTarget.style.background = selectedId && row.id === selectedId ? alpha(C.acc, '0e') : 'transparent'; }}
             >
               {columns.map(c => <td key={c.key} style={tdStyle}>{c.render ? c.render(row[c.key], row) : (row[c.key] ?? '—')}</td>)}
             </tr>
@@ -140,14 +129,14 @@ function DataTable({ columns, rows, loading, emptyMessage = 'No data.', onRowCli
 function Toggle({ checked, onChange, disabled = false }) {
   return (
     <div onClick={() => !disabled && onChange(!checked)} style={{ width: 40, height: 22, borderRadius: 11, background: checked ? C.acc2 : C.brd2, position: 'relative', cursor: disabled ? 'not-allowed' : 'pointer', transition: 'background 0.2s', flexShrink: 0, opacity: disabled ? 0.5 : 1 }}>
-      <div style={{ position: 'absolute', top: 3, left: checked ? 21 : 3, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: '0 1px 4px rgba(0,0,0,0.3)' }} />
+      <div style={{ position: 'absolute', top: 3, left: checked ? 21 : 3, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: `0 1px 4px ${C.shadow}` }} />
     </div>
   );
 }
 
 function Badge({ text, color = C.acc, bg }) {
   return (
-    <span style={{ display: 'inline-block', padding: '2px 9px', borderRadius: 12, fontSize: 10, fontWeight: 700, fontFamily: MONO, letterSpacing: '0.06em', textTransform: 'uppercase', color, background: bg || `${color}20`, border: `1px solid ${color}40` }}>
+    <span style={{ display: 'inline-block', padding: '2px 9px', borderRadius: 12, fontSize: 10, fontWeight: 700, fontFamily: MONO, letterSpacing: '0.06em', textTransform: 'uppercase', color, background: bg || alpha(color, '20'), border: `1px solid ${alpha(color, '40')}` }}>
       {text}
     </span>
   );
@@ -197,7 +186,7 @@ const inputStyle = {
 
 function ErrorBox({ msg }) {
   return (
-    <div style={{ padding: '10px 14px', background: `${C.red}12`, border: `1px solid ${C.red}30`, borderRadius: 7, color: C.red, fontSize: 12, marginBottom: 16 }}>
+    <div style={{ padding: '10px 14px', background: alpha(C.red, '12'), border: `1px solid ${alpha(C.red, '30')}`, borderRadius: 7, color: C.red, fontSize: 12, marginBottom: 16 }}>
       {msg}
     </div>
   );
@@ -205,7 +194,7 @@ function ErrorBox({ msg }) {
 
 function NoticeBox({ msg, color = C.ylw }) {
   return (
-    <div style={{ padding: '10px 14px', background: `${color}12`, border: `1px solid ${color}40`, borderRadius: 7, color, fontSize: 12, marginBottom: 16, lineHeight: 1.5 }}>
+    <div style={{ padding: '10px 14px', background: alpha(color, '12'), border: `1px solid ${alpha(color, '40')}`, borderRadius: 7, color, fontSize: 12, marginBottom: 16, lineHeight: 1.5 }}>
       {msg}
     </div>
   );
@@ -234,7 +223,7 @@ function CopyableBox({ value, label }) {
       {label && <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>{label}</div>}
       <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
         <code style={{ flex: 1, fontFamily: MONO, fontSize: 13, color: C.txt, background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 7, padding: '9px 12px', wordBreak: 'break-all' }}>{value}</code>
-        <button onClick={copy} style={{ padding: '9px 14px', background: copied ? '#166534' : C.acc2, border: 'none', borderRadius: 7, color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: FONT, flexShrink: 0 }}>
+        <button onClick={copy} style={{ padding: '9px 14px', background: copied ? C.grn2 : C.acc2, border: 'none', borderRadius: 7, color: C.accText, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: FONT, flexShrink: 0 }}>
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
@@ -249,12 +238,12 @@ function FilterBar({ filters, active, onSelect }) {
         <button key={f.id} onClick={() => onSelect(f.id)} style={{
           padding: '6px 13px', background: active === f.id ? C.acc2 : 'transparent',
           border: `1px solid ${active === f.id ? C.acc2 : C.brd2}`, borderRadius: 6,
-          color: active === f.id ? '#fff' : C.txt2, fontSize: 12, cursor: 'pointer',
+          color: active === f.id ? C.accText : C.txt2, fontSize: 12, cursor: 'pointer',
           fontFamily: FONT, textTransform: 'capitalize',
         }}>
           {f.label}
           {f.count != null && f.count > 0 && (
-            <span style={{ marginLeft: 5, background: active === f.id ? 'rgba(255,255,255,0.2)' : `${C.acc}22`, borderRadius: 8, padding: '1px 6px', fontSize: 10, fontFamily: MONO, color: active === f.id ? '#fff' : C.acc }}>{f.count}</span>
+            <span style={{ marginLeft: 5, background: active === f.id ? alpha(C.accText, 0.2) : alpha(C.acc, '22'), borderRadius: 8, padding: '1px 6px', fontSize: 10, fontFamily: MONO, color: active === f.id ? C.accText : C.acc }}>{f.count}</span>
           )}
         </button>
       ))}
@@ -314,10 +303,10 @@ function OverviewSection({ onNavigate }) {
   const dbOk = health?.db === 'ok' || health?.database === 'ok';
 
   const attention = [
-    unread > 0    && { icon: '✉', color: C.ylw, msg: `${unread} unread message${unread !== 1 ? 's' : ''}`,               go: 'messages' },
-    suspended > 0 && { icon: '◈', color: C.red,  msg: `${suspended} suspended user${suspended !== 1 ? 's' : ''}`,         go: 'users' },
-    failed7 > 10  && { icon: '◬', color: C.red,  msg: `${failed7} failed login attempts in the last 7 days`,              go: 'security' },
-    health && !dbOk && { icon: '▣', color: C.red,  msg: 'Database health check failed',                                    go: 'health' },
+    unread > 0    && { icon: 'mail',     color: C.ylw, msg: `${unread} unread message${unread !== 1 ? 's' : ''}`,          go: 'messages' },
+    suspended > 0 && { icon: 'users',    color: C.red, msg: `${suspended} suspended user${suspended !== 1 ? 's' : ''}`,    go: 'users' },
+    failed7 > 10  && { icon: 'shield',   color: C.red, msg: `${failed7} failed login attempts in the last 7 days`,         go: 'security' },
+    health && !dbOk && { icon: 'activity', color: C.red, msg: 'Database health check failed',                              go: 'health' },
   ].filter(Boolean);
 
   const secondary = [
@@ -374,12 +363,12 @@ function OverviewSection({ onNavigate }) {
           <div style={{ padding: '8px 0' }}>
             {attention.length === 0 ? (
               <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ color: C.grn, fontSize: 14 }}>✓</span>
+                <span style={{ color: C.grn, display: 'inline-flex' }}><Icon name="check" size={14} /></span>
                 <span style={{ fontSize: 12, color: C.txt2 }}>Everything looks good.</span>
               </div>
             ) : attention.map((a, i) => (
               <button key={i} onClick={() => onNavigate(a.go)} style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '12px 20px', background: 'transparent', border: 'none', borderBottom: i < attention.length - 1 ? `1px solid ${C.brd}` : 'none', cursor: 'pointer', textAlign: 'left', fontFamily: FONT }}>
-                <span style={{ color: a.color, fontSize: 14, flexShrink: 0 }}>{a.icon}</span>
+                <span style={{ color: a.color, display: 'inline-flex', flexShrink: 0 }}><Icon name={a.icon} size={14} /></span>
                 <span style={{ fontSize: 12, color: C.txt2, flex: 1 }}>{a.msg}</span>
                 <span style={{ fontSize: 10, color: C.muted }}>→</span>
               </button>
@@ -390,16 +379,16 @@ function OverviewSection({ onNavigate }) {
         <SectionCard title="Quick Actions">
           <div style={{ padding: '8px 0' }}>
             {[
-              { icon: '◈', label: 'Manage Users',     sub: `${m.users?.total ?? '—'} total`,       go: 'users' },
-              { icon: '⬡', label: 'Manage Projects',  sub: `${m.projects?.total ?? '—'} total`,    go: 'projects' },
-              { icon: '✉', label: 'View Messages',    sub: `${unread} unread`,                     go: 'messages' },
-              { icon: '✦', label: 'Edit Website',     sub: 'landing page content',                 go: 'content' },
+              { icon: 'users',    label: 'Manage Users',     sub: `${m.users?.total ?? '—'} total`,    go: 'users' },
+              { icon: 'folders',  label: 'Manage Projects',  sub: `${m.projects?.total ?? '—'} total`, go: 'projects' },
+              { icon: 'mail',     label: 'View Messages',    sub: `${unread} unread`,                  go: 'messages' },
+              { icon: 'fileText', label: 'Edit Website',     sub: 'landing page content',              go: 'content' },
             ].map((a, i, arr) => (
               <button key={a.go} onClick={() => onNavigate(a.go)} style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '11px 20px', background: 'transparent', border: 'none', borderBottom: i < arr.length - 1 ? `1px solid ${C.brd}` : 'none', cursor: 'pointer', textAlign: 'left', fontFamily: FONT }}
-                onMouseEnter={e => e.currentTarget.style.background = `${C.acc}08`}
+                onMouseEnter={e => e.currentTarget.style.background = alpha(C.acc, '08')}
                 onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
               >
-                <span style={{ color: C.acc, fontSize: 14, width: 20, textAlign: 'center' }}>{a.icon}</span>
+                <span style={{ color: C.acc, width: 20, display: 'inline-flex', justifyContent: 'center' }}><Icon name={a.icon} size={14} /></span>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 12, fontWeight: 600, color: C.txt }}>{a.label}</div>
                   <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>{a.sub}</div>
@@ -438,19 +427,23 @@ function OverviewSection({ onNavigate }) {
 
 function InboxItem({ msg, selected, onClick }) {
   const isUnread = !msg.readByMe && !msg.archived;
+  // Clearer unread styling (prompt7): tinted row + accent dot next to the
+  // sender, in addition to the bold text and the yellow edge marker.
+  const restBg = selected ? alpha(C.acc, '10') : isUnread ? alpha(C.ylw, '08') : 'transparent';
   return (
     <div onClick={onClick} style={{
       padding: '11px 14px', borderBottom: `1px solid ${C.brd}`,
-      background: selected ? `${C.acc}10` : 'transparent',
+      background: restBg,
       borderLeft: `3px solid ${selected ? C.acc : isUnread ? C.ylw : 'transparent'}`,
       cursor: 'pointer', transition: 'background 0.1s',
     }}
-      onMouseEnter={e => { if (!selected) e.currentTarget.style.background = `${C.acc}07`; }}
-      onMouseLeave={e => { if (!selected) e.currentTarget.style.background = 'transparent'; }}
+      onMouseEnter={e => { if (!selected) e.currentTarget.style.background = alpha(C.acc, '07'); }}
+      onMouseLeave={e => { if (!selected) e.currentTarget.style.background = restBg; }}
     >
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 2 }}>
-        <span style={{ fontSize: 12, fontWeight: isUnread ? 700 : 500, color: isUnread ? C.txt : C.txt2, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8 }}>
-          {msg.name || msg.email}
+        <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, fontSize: 12, fontWeight: isUnread ? 700 : 500, color: isUnread ? C.txt : C.txt2, flex: 1, marginRight: 8 }}>
+          {isUnread && <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.ylw, flexShrink: 0 }} />}
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.name || msg.email}</span>
         </span>
         <span style={{ fontSize: 10, color: C.muted, fontFamily: MONO, flexShrink: 0 }}>{fmtAgo(msg.createdAt)}</span>
       </div>
@@ -487,8 +480,8 @@ function ReplyComposer({ msg, emailConfigured, onSent }) {
 
   if (!open) {
     return (
-      <button onClick={() => setOpen(true)} style={{ padding: '7px 14px', background: `${C.acc}15`, border: `1px solid ${C.acc}40`, borderRadius: 6, color: C.acc, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
-        ✎ Reply
+      <button onClick={() => setOpen(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', background: alpha(C.acc, '15'), border: `1px solid ${alpha(C.acc, '40')}`, borderRadius: 6, color: C.acc, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
+        <Icon name="pencil" size={12} /> Reply
       </button>
     );
   }
@@ -608,14 +601,14 @@ function MessageDetail({ msg, emailConfigured, onMarkRead, onArchive, onDelete, 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         <ReplyComposer msg={msg} emailConfigured={emailConfigured} onSent={handleSent} />
         {isUnread ? (
-          <button onClick={() => onMarkRead(msg.id, true)} style={{ padding: '7px 14px', background: `${C.grn}15`, border: `1px solid ${C.grn}30`, borderRadius: 6, color: C.grn, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>Mark as Read</button>
+          <button onClick={() => onMarkRead(msg.id, true)} style={{ padding: '7px 14px', background: alpha(C.grn, '15'), border: `1px solid ${alpha(C.grn, '30')}`, borderRadius: 6, color: C.grn, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>Mark as Read</button>
         ) : !msg.archived ? (
           <button onClick={() => onMarkRead(msg.id, false)} style={{ padding: '7px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>Mark as Unread</button>
         ) : null}
         {!msg.archived && (
           <button onClick={() => onArchive(msg.id)} style={{ padding: '7px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>Archive</button>
         )}
-        <button onClick={() => onDelete(msg)} style={{ padding: '7px 14px', background: `${C.red}12`, border: `1px solid ${C.red}30`, borderRadius: 6, color: C.red, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>Delete</button>
+        <button onClick={() => onDelete(msg)} style={{ padding: '7px 14px', background: alpha(C.red, '12'), border: `1px solid ${alpha(C.red, '30')}`, borderRadius: 6, color: C.red, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>Delete</button>
       </div>
 
       <ReplyThread replies={replies} />
@@ -765,7 +758,7 @@ function MessagesSection({ onUnreadChange }) {
               <button key={f.id} onClick={() => { setFilter(f.id); setPage(1); load(f.id, search, sort, 1); }} style={{
                 flex: 1, padding: '4px 2px', background: filter === f.id ? C.acc2 : 'transparent',
                 border: `1px solid ${filter === f.id ? C.acc2 : C.brd2}`, borderRadius: 5,
-                color: filter === f.id ? '#fff' : C.txt2, fontSize: 10, cursor: 'pointer', fontFamily: FONT,
+                color: filter === f.id ? C.accText : C.txt2, fontSize: 10, cursor: 'pointer', fontFamily: FONT,
               }}>
                 {f.label}{f.count > 0 ? ` (${f.count})` : ''}
               </button>
@@ -791,7 +784,7 @@ function MessagesSection({ onUnreadChange }) {
             <MessageDetail msg={selected} emailConfigured={emailConfigured} onMarkRead={markRead} onArchive={archiveMsg} onDelete={setConfirm} onReplied={markRepliedLocal} />
           ) : (
             <div style={{ height: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
-              <span style={{ fontSize: 28, color: C.brd2 }}>✉</span>
+              <span style={{ color: C.brd2, display: 'inline-flex' }}><Icon name="mail" size={28} /></span>
               <span style={{ fontSize: 13, color: C.muted }}>Select a message to read it</span>
             </div>
           )}
@@ -826,7 +819,8 @@ function UserProjectItem({ project }) {
   );
 }
 
-const ROLE_COLORS = { admin: C.acc, mod: C.teal, user: C.muted };
+// Institutional role colors (prompt7): admin gold, mod teal, ordinary user muted.
+const ROLE_COLORS = { admin: C.gold, mod: C.teal, user: C.muted };
 function RoleBadge({ role }) {
   return <Badge text={role || 'user'} color={ROLE_COLORS[role] || C.muted} />;
 }
@@ -909,6 +903,13 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
 
   const u = current;
 
+  // Task-1 (prompt7): mods must not be offered mutating controls on privileged
+  // targets. When the viewer is a mod (isAdmin === false) and the target row is
+  // an admin or another mod, Edit / Reset Password / Suspend are hidden entirely
+  // and a lock note is shown instead. The server 403s these calls regardless —
+  // this only mirrors that contract in the UI. Admins see everything unchanged.
+  const lockedForMod = !isAdmin && (u.role === 'admin' || u.role === 'mod');
+
   return (
     <div style={{ width: 300, flexShrink: 0, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, overflow: 'hidden', alignSelf: 'flex-start', position: 'sticky', top: TOPBAR_H + 28, maxHeight: `calc(100vh - ${TOPBAR_H + 60}px)`, overflowY: 'auto' }}>
       {/* Header */}
@@ -935,7 +936,9 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
           <>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 2 }}>
               <div style={{ fontSize: 15, fontWeight: 700, color: C.txt }}>{u.name || '—'}</div>
-              <button onClick={() => setEditing(true)} style={{ background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 11, padding: '3px 9px', cursor: 'pointer', fontFamily: FONT, flexShrink: 0 }}>Edit</button>
+              {!lockedForMod && (
+                <button onClick={() => setEditing(true)} style={{ background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 11, padding: '3px 9px', cursor: 'pointer', fontFamily: FONT, flexShrink: 0 }}>Edit</button>
+              )}
             </div>
             <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, marginBottom: 10 }}>{u.email}</div>
           </>
@@ -986,35 +989,47 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
         )}
       </div>
 
-      {/* Password reset */}
-      <div style={{ padding: '12px 16px', borderTop: `1px solid ${C.brd}` }}>
-        {pwError && <div style={{ fontSize: 11, color: C.red, marginBottom: 8 }}>{pwError}</div>}
-        {tempPw ? (
-          <div>
-            <CopyableBox value={tempPw} label="Temporary password (shown once)" />
-            <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
-              Share this securely with the user. It is not stored and cannot be retrieved again.
+      {/* Password reset — hidden from mods for admin/mod targets (Task-1) */}
+      {!lockedForMod && (
+        <div style={{ padding: '12px 16px', borderTop: `1px solid ${C.brd}` }}>
+          {pwError && <div style={{ fontSize: 11, color: C.red, marginBottom: 8 }}>{pwError}</div>}
+          {tempPw ? (
+            <div>
+              <CopyableBox value={tempPw} label="Temporary password (shown once)" />
+              <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+                Share this securely with the user. It is not stored and cannot be retrieved again.
+              </div>
             </div>
-          </div>
-        ) : (
-          <button onClick={doResetPassword} disabled={pwStatus === 'saving'} style={{ width: '100%', padding: '8px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 12, cursor: pwStatus === 'saving' ? 'not-allowed' : 'pointer', fontFamily: FONT }}>
-            {pwStatus === 'saving' ? 'Generating…' : 'Reset Password'}
-          </button>
-        )}
-      </div>
+          ) : (
+            <button onClick={doResetPassword} disabled={pwStatus === 'saving'} style={{ width: '100%', padding: '8px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 12, cursor: pwStatus === 'saving' ? 'not-allowed' : 'pointer', fontFamily: FONT }}>
+              {pwStatus === 'saving' ? 'Generating…' : 'Reset Password'}
+            </button>
+          )}
+        </div>
+      )}
 
-      {/* Status actions */}
-      {u.role !== 'admin' && (
+      {/* Status actions — admins can never be suspended; mods additionally
+          cannot suspend other mods (Task-1, lockedForMod) */}
+      {!lockedForMod && u.role !== 'admin' && (
         <div style={{ padding: '12px 16px', borderTop: `1px solid ${C.brd}` }}>
           {u.suspended ? (
-            <button onClick={() => setConfirm('reactivate')} style={{ width: '100%', padding: '8px', background: `${C.grn}15`, border: `1px solid ${C.grn}30`, borderRadius: 6, color: C.grn, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
+            <button onClick={() => setConfirm('reactivate')} style={{ width: '100%', padding: '8px', background: alpha(C.grn, '15'), border: `1px solid ${alpha(C.grn, '30')}`, borderRadius: 6, color: C.grn, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
               Reactivate Account
             </button>
           ) : (
-            <button onClick={() => setConfirm('suspend')} style={{ width: '100%', padding: '8px', background: `${C.red}10`, border: `1px solid ${C.red}30`, borderRadius: 6, color: C.red, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
+            <button onClick={() => setConfirm('suspend')} style={{ width: '100%', padding: '8px', background: alpha(C.red, '10'), border: `1px solid ${alpha(C.red, '30')}`, borderRadius: 6, color: C.red, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
               Suspend Account
             </button>
           )}
+        </div>
+      )}
+
+      {/* Task-1 lock note — shown to mods in place of the management controls
+          when the target is an admin or another mod */}
+      {lockedForMod && (
+        <div style={{ padding: '12px 16px', borderTop: `1px solid ${C.brd}`, display: 'flex', alignItems: 'center', gap: 7, color: C.muted, fontSize: 11 }}>
+          <Icon name="lock" size={12} />
+          <span>Managed by administrators</span>
         </div>
       )}
 
@@ -1079,6 +1094,20 @@ function UsersSection({ isAdmin = false }) {
     // Readable relative time ("3h ago"); em-dash when null (prompt6 Task 10).
     { key: 'lastActive',   label: 'Last Active',   render: v => v ? fmtAgo(v) : <span style={{ color: C.muted }}>—</span> },
   ];
+
+  // Task-1 lock note, row-level mirror of the UserDetailPanel one: mods see at
+  // a glance which rows are admin-managed (the server 403s those calls anyway).
+  if (!isAdmin) {
+    columns.push({
+      key: 'managed', label: '',
+      render: (_v, row) => (row.role === 'admin' || row.role === 'mod') ? (
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: C.muted, fontSize: 10, whiteSpace: 'nowrap' }}>
+          <Icon name="lock" size={12} />
+          <span>Managed by administrators</span>
+        </span>
+      ) : null,
+    });
+  }
 
   const filterDefs = [
     { id: 'all',       label: 'All' },
@@ -1185,11 +1214,11 @@ function ProjectDetailPanel({ project, onClose, onAction }) {
 
       <div style={{ padding: '12px 16px', borderTop: `1px solid ${C.brd}` }}>
         {isArchived ? (
-          <button onClick={() => setConfirm('restore')} style={{ width: '100%', padding: '8px', background: `${C.grn}15`, border: `1px solid ${C.grn}30`, borderRadius: 6, color: C.grn, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
+          <button onClick={() => setConfirm('restore')} style={{ width: '100%', padding: '8px', background: alpha(C.grn, '15'), border: `1px solid ${alpha(C.grn, '30')}`, borderRadius: 6, color: C.grn, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
             Restore Project
           </button>
         ) : (
-          <button onClick={() => setConfirm('archive')} style={{ width: '100%', padding: '8px', background: `${C.ylw}10`, border: `1px solid ${C.ylw}30`, borderRadius: 6, color: C.ylw, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
+          <button onClick={() => setConfirm('archive')} style={{ width: '100%', padding: '8px', background: alpha(C.ylw, '10'), border: `1px solid ${alpha(C.ylw, '30')}`, borderRadius: 6, color: C.ylw, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
             Archive Project
           </button>
         )}
@@ -1429,7 +1458,7 @@ function ContentSection() {
             <input key={f.key} type="text" value={item[f.key] || ''} onChange={e => onUpdate(i, f.key, e.target.value)}
               placeholder={f.placeholder} style={{ ...inputStyle, flex: f.flex || 1 }} />
           ))}
-          <button onClick={() => onRemove(i)} style={{ padding: '9px 10px', background: `${C.red}10`, border: `1px solid ${C.red}30`, borderRadius: 6, color: C.red, cursor: 'pointer', fontSize: 12 }}>✕</button>
+          <button onClick={() => onRemove(i)} style={{ padding: '9px 10px', background: alpha(C.red, '10'), border: `1px solid ${alpha(C.red, '30')}`, borderRadius: 6, color: C.red, cursor: 'pointer', fontSize: 12 }}>✕</button>
         </div>
       ))}
       <button onClick={onAdd} style={{ padding: '7px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
@@ -1560,7 +1589,7 @@ function ContentSection() {
                 {(content.whyStandards || []).map((s, i) => (
                   <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
                     <input type="text" value={s} onChange={e => updStandard(i, e.target.value)} style={{ ...inputStyle, flex: 1 }} />
-                    <button onClick={() => removeStandard(i)} style={{ padding: '9px 10px', background: `${C.red}10`, border: `1px solid ${C.red}30`, borderRadius: 6, color: C.red, cursor: 'pointer', fontSize: 12 }}>✕</button>
+                    <button onClick={() => removeStandard(i)} style={{ padding: '9px 10px', background: alpha(C.red, '10'), border: `1px solid ${alpha(C.red, '30')}`, borderRadius: 6, color: C.red, cursor: 'pointer', fontSize: 12 }}>✕</button>
                   </div>
                 ))}
                 <button onClick={addStandard} style={{ padding: '7px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
@@ -1963,7 +1992,7 @@ function SiftOverview() {
     { label: '2nd Review',      value: m.eligibleSecondReview, color: C.teal },
     { label: 'To Extraction',   value: m.sentToExtraction,   color: C.grn },
     { label: 'Handoffs Sent',   value: m.handoffSent,        color: C.grn },
-    { label: 'Disputes',        value: m.totalDisputes,      color: '#dba96a' },
+    { label: 'Disputes',        value: m.totalDisputes,      color: C.gold },
     { label: 'Resolved Conf.',  value: m.resolvedConflicts,  color: C.muted },
     { label: 'Dup Groups',      value: m.totalDuplicateGroups, color: C.muted },
     { label: 'Active Members',  value: m.activeMembers,      color: C.acc },
@@ -2061,7 +2090,7 @@ function SiftProjectDetailPanel({ projectId, onClose }) {
     { label: 'Included',      value: prog.included,     color: C.grn },
     { label: 'Excluded',      value: prog.excluded,     color: C.red },
     { label: 'Maybe',         value: prog.maybe,        color: C.ylw },
-    { label: 'Conflicts',     value: prog.conflicts,    color: '#dba96a' },
+    { label: 'Conflicts',     value: prog.conflicts,    color: C.gold },
     { label: 'Duplicates',    value: prog.duplicates,   color: C.muted },
     { label: '2nd Review',    value: prog.secondReview, color: C.teal },
     { label: 'To Extraction', value: prog.sentToExtraction, color: C.grn },
@@ -2508,7 +2537,7 @@ function SiftAdminSection() {
       <div style={{ marginBottom: 18 }}>
         <h2 style={{ fontSize: 18, fontWeight: 700, color: C.txt, margin: 0, letterSpacing: '-0.02em' }}>
           META·SIFT Beta
-          <span style={{ fontSize: 9, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', background: '#2dd4bf18', border: '1px solid #2dd4bf50', color: '#2dd4bf', borderRadius: 4, padding: '2px 7px', marginLeft: 10 }}>BETA</span>
+          <span style={{ fontSize: 9, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', background: alpha(C.teal, '18'), border: `1px solid ${alpha(C.teal, '50')}`, color: C.teal, borderRadius: 4, padding: '2px 7px', marginLeft: 10 }}>BETA</span>
         </h2>
         <p style={{ fontSize: 13, color: C.txt2, marginTop: 6, marginBottom: 0 }}>
           Manage the screening module, control feature access, and monitor usage.
@@ -2540,16 +2569,16 @@ function SiftAdminSection() {
    ════════════════════════════════════════════════════════════════════════ */
 
 const NAV_SECTIONS = [
-  { id: 'overview', icon: '⊞', label: 'Overview'  },
-  { id: 'users',    icon: '◈', label: 'Users'     },
-  { id: 'projects', icon: '⬡', label: 'Projects'  },
-  { id: 'sift',     icon: '◧', label: 'META·SIFT' },
-  { id: 'content',  icon: '✦', label: 'Content'   },
-  { id: 'settings', icon: '⚙', label: 'Settings'  },
-  { id: 'flags',    icon: '◉', label: 'Flags'     },
-  { id: 'messages', icon: '✉', label: 'Messages'  },
-  { id: 'security', icon: '◬', label: 'Security'  },
-  { id: 'health',   icon: '▣', label: 'Health'    },
+  { id: 'overview', icon: 'grid',     label: 'Overview'  },
+  { id: 'users',    icon: 'users',    label: 'Users'     },
+  { id: 'projects', icon: 'folders',  label: 'Projects'  },
+  { id: 'sift',     icon: 'hexagon',  label: 'META·SIFT' },
+  { id: 'content',  icon: 'fileText', label: 'Content'   },
+  { id: 'settings', icon: 'settings', label: 'Settings'  },
+  { id: 'flags',    icon: 'sliders',  label: 'Flags'     },
+  { id: 'messages', icon: 'mail',     label: 'Messages'  },
+  { id: 'security', icon: 'shield',   label: 'Security'  },
+  { id: 'health',   icon: 'activity', label: 'Health'    },
 ];
 
 // Role-derived section sets — mirror of server getConsole (the server descriptor
@@ -2646,25 +2675,25 @@ export default function AdminConsole() {
       {/* ── Top bar ──────────────────────────────────────────────────── */}
       <div style={{ position: 'fixed', top: 0, left: 0, right: 0, height: TOPBAR_H, background: C.surf, borderBottom: `1px solid ${C.brd}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px 0 16px', zIndex: 300 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontSize: 16, color: C.acc }}>⬡</span>
+          <span style={{ display: 'inline-flex', color: C.acc }}><Icon name="hexagon" size={16} /></span>
           <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.04em', color: C.txt }}>META·LAB</span>
           {/* Mods see the limited console labeled as such (prompt6 Task 14) —
               matches the "Mod Console" wording of the UserMenu /ops link. */}
           {isAdmin ? (
-            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, background: `${C.acc}14`, border: `1px solid ${C.acc}28`, borderRadius: 4, padding: '2px 7px', letterSpacing: '0.08em', textTransform: 'uppercase', marginLeft: 2 }}>OPS</span>
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '28')}`, borderRadius: 4, padding: '2px 7px', letterSpacing: '0.08em', textTransform: 'uppercase', marginLeft: 2 }}>OPS</span>
           ) : (
-            <span style={{ fontSize: 10, fontFamily: MONO, color: C.teal, background: `${C.teal}14`, border: `1px solid ${C.teal}28`, borderRadius: 4, padding: '2px 7px', letterSpacing: '0.08em', textTransform: 'uppercase', marginLeft: 2 }}>Mod Console</span>
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.teal, background: alpha(C.teal, '14'), border: `1px solid ${alpha(C.teal, '28')}`, borderRadius: 4, padding: '2px 7px', letterSpacing: '0.08em', textTransform: 'uppercase', marginLeft: 2 }}>Mod Console</span>
           )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           {/* Return to app button */}
           <button
             onClick={() => navigate('/app')}
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', background: `${C.acc}14`, border: `1px solid ${C.acc}28`, borderRadius: 7, color: C.acc, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: FONT, transition: 'background 0.15s' }}
-            onMouseEnter={e => e.currentTarget.style.background = `${C.acc}22`}
-            onMouseLeave={e => e.currentTarget.style.background = `${C.acc}14`}
+            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 14px', background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '28')}`, borderRadius: 7, color: C.acc, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: FONT, transition: 'background 0.15s' }}
+            onMouseEnter={e => e.currentTarget.style.background = alpha(C.acc, '22')}
+            onMouseLeave={e => e.currentTarget.style.background = alpha(C.acc, '14')}
           >
-            <span>⬡</span>
+            <Icon name="hexagon" size={13} />
             <span>Open App</span>
           </button>
           {/* Shared notifications bell (prompt6 Task 1) — inline in the top bar,
@@ -2683,11 +2712,11 @@ export default function AdminConsole() {
           const isActive = active === sec.id;
           const badge = sec.id === 'messages' && unread > 0 ? unread : null;
           return (
-            <button key={sec.id} onClick={() => setActive(sec.id)} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '9px 16px', background: isActive ? `${C.acc}14` : 'transparent', border: 'none', borderLeft: `3px solid ${isActive ? C.acc : 'transparent'}`, cursor: 'pointer', fontFamily: FONT, fontSize: 13, color: isActive ? C.acc : C.txt2, fontWeight: isActive ? 600 : 400, textAlign: 'left', transition: 'all 0.15s' }}
-              onMouseEnter={e => { if (!isActive) { e.currentTarget.style.background = `${C.acc}08`; e.currentTarget.style.color = C.txt; } }}
+            <button key={sec.id} onClick={() => setActive(sec.id)} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '9px 16px', background: isActive ? alpha(C.acc, '14') : 'transparent', border: 'none', borderLeft: `3px solid ${isActive ? C.acc : 'transparent'}`, cursor: 'pointer', fontFamily: FONT, fontSize: 13, color: isActive ? C.acc : C.txt2, fontWeight: isActive ? 600 : 400, textAlign: 'left', transition: 'all 0.15s' }}
+              onMouseEnter={e => { if (!isActive) { e.currentTarget.style.background = alpha(C.acc, '08'); e.currentTarget.style.color = C.txt; } }}
               onMouseLeave={e => { if (!isActive) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.txt2; } }}
             >
-              <span style={{ fontSize: 14, width: 20, textAlign: 'center', flexShrink: 0 }}>{sec.icon}</span>
+              <span style={{ width: 20, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Icon name={sec.icon} size={14} /></span>
               <span style={{ flex: 1 }}>{sec.label}</span>
               {badge && (
                 <span style={{ background: C.ylw, color: C.bg, borderRadius: 8, padding: '1px 6px', fontSize: 10, fontFamily: MONO, fontWeight: 700 }}>{badge}</span>

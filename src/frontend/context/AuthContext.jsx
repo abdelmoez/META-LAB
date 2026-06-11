@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { getMe } from '../auth/authClient.js';
 import { api } from '../api-client/apiClient.js';
+import { adoptServerTheme } from '../theme/tokens.js';
 
 const AuthContext = createContext(null);
 
@@ -12,13 +13,22 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     let cancelled = false;
     getMe()
-      .then(u => { if (!cancelled) { setUser(u); setLoading(false); } })
+      .then(u => {
+        if (!cancelled) {
+          setUser(u);
+          setLoading(false);
+          if (u) adoptServerTheme(u.themePreference); // cross-device theme bootstrap
+        }
+      })
       .catch(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
   }, []);
 
   // Called after a successful login or register
-  const login = useCallback(u => setUser(u), []);
+  const login = useCallback(u => {
+    setUser(u);
+    if (u) adoptServerTheme(u.themePreference);
+  }, []);
 
   // Clears session cookie + local state
   const logout = useCallback(async () => {

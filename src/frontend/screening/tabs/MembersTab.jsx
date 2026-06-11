@@ -16,7 +16,7 @@
  * are visually marked and rely on backend rejection.
  */
 import { useState, useEffect, useCallback } from 'react';
-import { C, FONT, MONO } from '../ui/theme.js';
+import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import {
   Loading, ErrorBanner, Button, Badge, Avatar, Toggle, Modal, Card,
   Field, fieldLabel, fieldInput, EmptyState,
@@ -87,7 +87,7 @@ function PermDot({ on, label }) {
       <span style={{
         width: 7, height: 7, borderRadius: '50%', flexShrink: 0,
         background: on ? C.grn : C.brd2,
-        boxShadow: on ? `0 0 0 2px ${C.grn}22` : 'none',
+        boxShadow: on ? `0 0 0 2px ${alpha(C.grn, '22')}` : 'none',
       }} />
       {label}
     </span>
@@ -310,7 +310,7 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, onPatch, onRemove
   return (
     <Card style={{
       padding: '14px 16px',
-      borderColor: isOwnerRow ? C.gold + '55' : isLeaderRow ? C.teal + '40' : C.brd,
+      borderColor: isOwnerRow ? alpha(C.gold, '55') : isLeaderRow ? alpha(C.teal, '40') : C.brd,
       opacity: m.status === 'inactive' ? 0.72 : 1,
     }}>
       {/* Top line: identity + badges + inline controls (when editable) */}
@@ -443,7 +443,7 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, onPatch, onRemove
 
       {rowErr && (
         <div style={{
-          marginTop: 12, background: '#450a0a', border: '1px solid #f8717150',
+          marginTop: 12, background: C.redBg, border: `1px solid ${alpha(C.red, '50')}`,
           borderRadius: 6, padding: '8px 12px', color: C.red, fontSize: 12,
         }}>
           {rowErr}
@@ -561,7 +561,7 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
 
         {pendingNote && (
           <div style={{
-            marginTop: 14, background: C.ylw + '14', border: `1px solid ${C.ylw}40`,
+            marginTop: 14, background: alpha(C.ylw, '14'), border: `1px solid ${alpha(C.ylw, '40')}`,
             borderRadius: 6, padding: '9px 12px', color: C.ylw, fontSize: 12, lineHeight: 1.5,
           }}>
             Invite created — user not yet registered. They will join once they sign up with this email.
@@ -570,7 +570,7 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
 
         {err && (
           <div style={{
-            marginTop: 14, background: '#450a0a', border: '1px solid #f8717150',
+            marginTop: 14, background: C.redBg, border: `1px solid ${alpha(C.red, '50')}`,
             borderRadius: 6, padding: '9px 12px', color: C.red, fontSize: 12,
           }}>
             {err}

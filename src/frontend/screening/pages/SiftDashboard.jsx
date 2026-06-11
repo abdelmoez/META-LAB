@@ -10,25 +10,15 @@ import { screeningApi } from '../api-client/screeningApi.js';
 import UserMenu from '../../components/UserMenu.jsx';
 import NotificationsBell from '../../components/NotificationsBell.jsx';
 
-const C = {
-  bg:    '#080c15', surf:  '#0c1322', card:  '#101929',
-  brd:   '#1a2b42', brd2:  '#213452',
-  acc:   '#5b9cf6', acc2:  '#3b7ef4',
-  gold:  '#dba96a', teal:  '#2dd4bf',
-  txt:   '#ecf0fb', txt2:  '#8b9ec6',
-  muted: '#4a5e82',
-  grn:   '#4ade80', red:   '#f87171', ylw:   '#fbbf24',
-};
-const FONT = "'IBM Plex Sans', system-ui, sans-serif";
-const MONO = "'IBM Plex Mono', monospace";
+import { C, FONT, MONO, alpha } from '../ui/theme.js';
 
 function BetaBadge() {
   return (
     <span style={{
       fontSize: 9, fontFamily: MONO, fontWeight: 700,
       letterSpacing: '0.12em', textTransform: 'uppercase',
-      background: '#2dd4bf18', border: '1px solid #2dd4bf50',
-      color: '#2dd4bf', borderRadius: 4, padding: '2px 7px',
+      background: alpha(C.teal, '18'), border: `1px solid ${alpha(C.teal, '50')}`,
+      color: C.teal, borderRadius: 4, padding: '2px 7px',
     }}>
       BETA
     </span>
@@ -37,7 +27,7 @@ function BetaBadge() {
 
 function ProgressBar({ pct, color = C.acc }) {
   return (
-    <div style={{ height: 3, background: '#1a2b42', borderRadius: 2, overflow: 'hidden' }}>
+    <div style={{ height: 3, background: C.brd, borderRadius: 2, overflow: 'hidden' }}>
       <div style={{
         width: `${Math.min(100, Math.max(0, pct))}%`,
         height: '100%',
@@ -199,7 +189,7 @@ export default function SiftDashboard() {
           <button
             onClick={() => { setShowNewModal(true); setCreateError(null); setNewForm(EMPTY_FORM); }}
             style={{
-              background: C.acc2, border: 'none', color: '#fff', fontSize: 12, fontWeight: 600,
+              background: C.acc2, border: 'none', color: C.accText, fontSize: 12, fontWeight: 600,
               fontFamily: FONT, padding: '7px 16px', borderRadius: 7, cursor: 'pointer',
               transition: 'background 0.15s',
             }}
@@ -238,11 +228,11 @@ export default function SiftDashboard() {
         {!loading && disabled && (
           <div style={{
             textAlign: 'center', padding: '64px 24px',
-            border: `1px solid #dba96a40`, borderRadius: 12,
-            background: '#dba96a08',
+            border: `1px solid ${alpha(C.gold, '40')}`, borderRadius: 12,
+            background: alpha(C.gold, '08'),
           }}>
             <div style={{ fontSize: 32, marginBottom: 16 }}>🔧</div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: '#dba96a', marginBottom: 8 }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: C.gold, marginBottom: 8 }}>
               META·SIFT is temporarily unavailable
             </div>
             <div style={{ fontSize: 13, color: C.txt2, maxWidth: 440, margin: '0 auto' }}>
@@ -254,7 +244,7 @@ export default function SiftDashboard() {
         {/* Error */}
         {!loading && !disabled && error && (
           <div style={{
-            background: '#450a0a', border: `1px solid #f8717150`,
+            background: C.redBg, border: `1px solid ${alpha(C.red, '50')}`,
             borderRadius: 8, padding: '14px 18px', color: C.red, fontSize: 13, marginBottom: 20,
           }}>
             {error}
@@ -283,7 +273,7 @@ export default function SiftDashboard() {
             <button
               onClick={() => { setShowNewModal(true); setCreateError(null); setNewForm(EMPTY_FORM); }}
               style={{
-                background: C.acc2, border: 'none', color: '#fff', fontSize: 13, fontWeight: 600,
+                background: C.acc2, border: 'none', color: C.accText, fontSize: 13, fontWeight: 600,
                 fontFamily: FONT, padding: '9px 22px', borderRadius: 7, cursor: 'pointer',
               }}
             >
@@ -311,7 +301,7 @@ export default function SiftDashboard() {
                   return (
                     <button key={st.key} onClick={() => setStatusFilter(st.key)}
                       style={{ cursor: 'pointer', fontFamily: FONT, fontSize: 12, fontWeight: 600, padding: '5px 12px', borderRadius: 20,
-                        background: on ? C.acc2 : 'transparent', color: on ? '#fff' : C.txt2, border: `1px solid ${on ? C.acc2 : C.brd2}` }}>
+                        background: on ? C.acc2 : 'transparent', color: on ? C.accText : C.txt2, border: `1px solid ${on ? C.acc2 : C.brd2}` }}>
                       {st.label} <span style={{ fontFamily: MONO, opacity: 0.8 }}>{countFor(st.key)}</span>
                     </button>
                   );
@@ -463,7 +453,7 @@ export default function SiftDashboard() {
               disabled={deleting}
               style={{
                 ...primaryBtnStyle,
-                background: '#c0392b',
+                background: C.red,
                 opacity: deleting ? 0.6 : 1,
               }}
             >
@@ -494,7 +484,7 @@ function RoleChip({ role, shared }) {
   return (
     <span style={{
       fontSize: 9, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em',
-      background: meta.color + '18', border: `1px solid ${meta.color}40`, color: meta.color,
+      background: alpha(meta.color, '18'), border: `1px solid ${alpha(meta.color, '40')}`, color: meta.color,
       borderRadius: 4, padding: '1px 6px', textTransform: 'uppercase',
     }}>{text}</span>
   );
@@ -510,11 +500,12 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
-        background: hover ? '#121f30' : C.card,
+        background: hover ? C.cardHover : C.card,
         border: `1px solid ${hover ? C.brd2 : C.brd}`,
         borderRadius: 10,
         padding: '18px 22px',
-        transition: 'background 0.15s, border-color 0.15s',
+        boxShadow: hover ? `0 6px 18px ${C.shadow}` : 'none',
+        transition: 'background 0.15s, border-color 0.15s, box-shadow 0.15s',
         cursor: 'default',
       }}
     >
@@ -532,7 +523,7 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
             {project.blindMode && (
               <span style={{
                 fontSize: 9, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em',
-                background: '#dba96a18', border: '1px solid #dba96a40', color: '#dba96a',
+                background: alpha(C.gold, '18'), border: `1px solid ${alpha(C.gold, '40')}`, color: C.gold,
                 borderRadius: 4, padding: '1px 6px',
               }}>BLIND</span>
             )}
@@ -543,7 +534,7 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
               return (
                 <span style={{
                   fontSize: 9, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em',
-                  background: col + '18', border: `1px solid ${col}40`, color: col,
+                  background: alpha(col, '18'), border: `1px solid ${alpha(col, '40')}`, color: col,
                   borderRadius: 4, padding: '1px 6px', textTransform: 'uppercase',
                 }}>{ps === 'done' ? 'DONE' : 'IN PROGRESS'}</span>
               );
@@ -627,7 +618,7 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
           <button
             onClick={onOpen}
             style={{
-              background: C.acc2, border: 'none', color: '#fff',
+              background: C.acc2, border: 'none', color: C.accText,
               fontSize: 12, fontWeight: 600, fontFamily: FONT,
               padding: '7px 18px', borderRadius: 6, cursor: 'pointer',
               transition: 'background 0.15s', whiteSpace: 'nowrap',
@@ -646,7 +637,7 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
                 padding: '6px 18px', borderRadius: 6, cursor: 'pointer',
                 transition: 'color 0.15s, border-color 0.15s',
               }}
-              onMouseEnter={e => { e.currentTarget.style.color = C.red; e.currentTarget.style.borderColor = C.red + '60'; }}
+              onMouseEnter={e => { e.currentTarget.style.color = C.red; e.currentTarget.style.borderColor = alpha(C.red, '60'); }}
               onMouseLeave={e => { e.currentTarget.style.color = C.muted; e.currentTarget.style.borderColor = C.brd; }}
             >
               Delete
@@ -672,7 +663,7 @@ function Modal({ children, onClose }) {
     <div
       style={{
         position: 'fixed', inset: 0, zIndex: 1000,
-        background: 'rgba(4,8,18,0.82)',
+        background: alpha(C.bg, 0.82),
         display: 'flex', alignItems: 'center', justifyContent: 'center',
         padding: 24,
       }}
@@ -682,7 +673,7 @@ function Modal({ children, onClose }) {
         background: C.surf, border: `1px solid ${C.brd2}`,
         borderRadius: 12, padding: '26px 28px',
         width: '100%', maxWidth: 480,
-        boxShadow: '0 20px 60px rgba(0,0,0,0.6)',
+        boxShadow: `0 20px 60px ${C.shadow}`,
       }}>
         {children}
       </div>
@@ -701,7 +692,7 @@ const inputStyle = {
   fontFamily: FONT, outline: 'none',
 };
 const primaryBtnStyle = {
-  background: C.acc2, border: 'none', color: '#fff', fontSize: 13, fontWeight: 600,
+  background: C.acc2, border: 'none', color: C.accText, fontSize: 13, fontWeight: 600,
   fontFamily: FONT, padding: '8px 20px', borderRadius: 7, cursor: 'pointer',
 };
 const cancelBtnStyle = {

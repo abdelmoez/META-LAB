@@ -4,6 +4,9 @@ import { screeningApi } from "./src/frontend/screening/api-client/screeningApi.j
 import { PERMISSION_PRESETS, ASSIGNABLE_PRESETS } from "./src/research-engine/screening/permissionPresets.js";
 import { useRealtime } from "./src/frontend/hooks/useRealtime.js";
 import { flushStorage, hasPendingSave } from "./src/frontend/storage/serverStorage.js";
+import { alpha as themeAlpha } from "./src/frontend/theme/tokens.js";
+import { Icon } from "./src/frontend/components/icons.jsx";
+import MetaLabChatLauncher from "./src/frontend/components/chat/MetaLabChatLauncher.jsx";
 
 /* ════════════ UTILS ════════════ */
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -658,7 +661,7 @@ const mkProject = name => ({
   id:uid(),name,created:now(),modified:now(),
   pico:{question:"",P:"",I:"",C:"",O:"",studyDesign:"RCT",timeframe:"",prosperoId:"",keywords:"",
     incl:"",excl:"",notes:""},
-  search:{dbs:{PubMed:false,Embase:false,"Cochrane CENTRAL":false,"Web of Science":false,Scopus:false,CINAHL:false,PsycINFO:false,LILACS:false,"Google Scholar":false,"ClinicalTrials.gov":false,"WHO ICTRP":false,OpenAlex:false},date:"",string:"",rayyan:false,notes:""},
+  search:{dbs:{PubMed:false,Embase:false,"Cochrane CENTRAL":false,"Web of Science":false,Scopus:false,CINAHL:false,PsycINFO:false,LILACS:false,"Google Scholar":false,"ClinicalTrials.gov":false,"WHO ICTRP":false,OpenAlex:false},date:"",string:"",notes:""},
   prisma:{dbs:"",reg:"",other:"",dedupe:"",screened:"",excTA:"",excFull:"",reasons:[{id:uid(),r:"",n:""}],included:"",qual:"",quant:""},
   records:[],   // imported citations for screening: {id,title,authors,year,journal,doi,abstract,source,decision,reviewer2,notes,dupOf}
   studies:[],robMethod:"RoB2",reportChecked:{},
@@ -974,24 +977,27 @@ const PROSP_FIELDS=[
 ];
 
 /* ════════════ THEME ════════════ */
+/* Theme tokens — CSS custom properties defined in src/frontend/theme/tokens.js
+   ([data-theme] on <html> switches night/day). Alpha tints MUST go through
+   themeAlpha(C.x,'NN') — `${C.x}NN` concatenation breaks on var() strings. */
 const C={
-  bg:"#0b0d13",       // deep background — near-black with cool undertone
-  surf:"#0f1220",     // sidebar / elevated surface
-  card:"#141826",     // card background
-  card2:"#1a2033",    // slightly lighter card for nesting
-  brd:"#1f2640",      // border
-  brd2:"#283050",     // slightly lighter border
-  acc:"#818cf8",      // indigo — professional & modern
-  acc2:"#6366f1",     // deeper indigo for hover/active
-  grn:"#34d399",      // emerald green
-  grn2:"#059669",     // deeper green
-  yel:"#fbbf24",      // amber
-  red:"#f87171",      // red
-  purp:"#c084fc",     // purple
-  txt:"#eaecf6",      // primary text — cool white
-  txt2:"#9ba6c4",     // secondary text
-  muted:"#536080",    // muted text
-  dim:"#253050",      // very dim
+  bg:"var(--t-bg)",        // deep background
+  surf:"var(--t-surf)",    // sidebar / elevated surface
+  card:"var(--t-card)",    // card background
+  card2:"var(--t-card2)",  // slightly lighter card for nesting
+  brd:"var(--t-brd)",      // border
+  brd2:"var(--t-brd2)",    // slightly lighter border
+  acc:"var(--t-acc)",      // accent
+  acc2:"var(--t-acc2)",    // deeper accent for hover/active
+  grn:"var(--t-grn)",      // green
+  grn2:"var(--t-grn2)",    // deeper green
+  yel:"var(--t-yel)",      // amber
+  red:"var(--t-red)",      // red
+  purp:"var(--t-purp)",    // purple
+  txt:"var(--t-txt)",      // primary text
+  txt2:"var(--t-txt2)",    // secondary text
+  muted:"var(--t-muted)",  // muted text
+  dim:"var(--t-dim)",      // very dim
 };
 const btnS=(v="primary")=>({
   padding:"7px 16px",borderRadius:8,border:"none",cursor:"pointer",
@@ -1000,16 +1006,16 @@ const btnS=(v="primary")=>({
   letterSpacing:0.2,display:"inline-flex",alignItems:"center",gap:5,whiteSpace:"nowrap",
   ...(v==="primary"?{
     background:`linear-gradient(145deg,${C.acc},${C.acc2})`,
-    color:"#fff",boxShadow:`0 1px 0 0 rgba(255,255,255,0.12) inset, 0 2px 12px ${C.acc2}40`}:
+    color:"var(--t-acc-text)",boxShadow:`0 1px 0 0 rgba(255,255,255,0.12) inset, 0 2px 12px ${themeAlpha(C.acc2,'40')}`}:
   v==="ghost"?{
     background:"transparent",color:C.txt2,
     border:`1px solid ${C.brd2}`}:
   v==="danger"?{
-    background:`${C.red}10`,color:C.red,
-    border:`1px solid ${C.red}30`}:
+    background:`${themeAlpha(C.red,'10')}`,color:C.red,
+    border:`1px solid ${themeAlpha(C.red,'30')}`}:
   v==="success"?{
     background:`linear-gradient(145deg,${C.grn},${C.grn2})`,
-    color:"#fff",boxShadow:`0 2px 10px ${C.grn}30`}:
+    color:"var(--t-acc-text)",boxShadow:`0 2px 10px ${themeAlpha(C.grn,'30')}`}:
   {background:C.card2,color:C.txt,border:`1px solid ${C.brd2}`})
 });
 const inp={
@@ -1030,11 +1036,11 @@ const th={
 const tagS=(c)=>({
   display:"inline-flex",alignItems:"center",padding:"2px 10px",borderRadius:99,
   fontSize:10,fontWeight:600,letterSpacing:0.3,whiteSpace:"nowrap",
-  ...(c==="green"?{background:`${C.grn}14`,color:C.grn,border:`1px solid ${C.grn}30`}:
-    c==="red"?{background:`${C.red}14`,color:C.red,border:`1px solid ${C.red}30`}:
-    c==="yellow"?{background:`${C.yel}14`,color:C.yel,border:`1px solid ${C.yel}30`}:
-    c==="blue"?{background:`${C.acc}14`,color:C.acc,border:`1px solid ${C.acc}30`}:
-    c==="purple"?{background:`${C.purp}14`,color:C.purp,border:`1px solid ${C.purp}30`}:
+  ...(c==="green"?{background:`${themeAlpha(C.grn,'14')}`,color:C.grn,border:`1px solid ${themeAlpha(C.grn,'30')}`}:
+    c==="red"?{background:`${themeAlpha(C.red,'14')}`,color:C.red,border:`1px solid ${themeAlpha(C.red,'30')}`}:
+    c==="yellow"?{background:`${themeAlpha(C.yel,'14')}`,color:C.yel,border:`1px solid ${themeAlpha(C.yel,'30')}`}:
+    c==="blue"?{background:`${themeAlpha(C.acc,'14')}`,color:C.acc,border:`1px solid ${themeAlpha(C.acc,'30')}`}:
+    c==="purple"?{background:`${themeAlpha(C.purp,'14')}`,color:C.purp,border:`1px solid ${themeAlpha(C.purp,'30')}`}:
     {background:C.card2,color:C.muted,border:`1px solid ${C.brd}`})
 });
 
@@ -1044,11 +1050,12 @@ function SectionHeader({icon,title,desc,badge}){
     <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:7}}>
       <div style={{
         width:34,height:34,borderRadius:10,
-        background:`${C.acc}18`,
-        border:`1px solid ${C.acc}28`,
+        background:`${themeAlpha(C.acc,'18')}`,
+        border:`1px solid ${themeAlpha(C.acc,'28')}`,
         display:"flex",alignItems:"center",justifyContent:"center",
-        fontSize:16,flexShrink:0,
-      }}>{icon}</div>
+        color:C.acc,flexShrink:0,
+      }}>{/* <Icon> renders nothing for unknown names, so stray emoji props show nothing */}
+        <Icon name={icon} size={15}/></div>
       <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
         <h2 style={{margin:0,fontSize:18,fontWeight:700,letterSpacing:-0.4,color:C.txt,lineHeight:1.2}}>{title}</h2>
         {badge&&<span style={{...tagS("blue")}}>{badge}</span>}
@@ -1060,7 +1067,7 @@ function SectionHeader({icon,title,desc,badge}){
 function InfoBox({children,color}){
   const col=color||C.acc;
   return(<div style={{
-    background:`${col}0c`,border:`1px solid ${col}22`,borderLeft:`3px solid ${col}80`,
+    background:`${themeAlpha(col,'0c')}`,border:`1px solid ${themeAlpha(col,'22')}`,borderLeft:`3px solid ${themeAlpha(col,'80')}`,
     borderRadius:10,padding:"12px 16px",marginTop:14,fontSize:12.5,color:C.txt2,lineHeight:1.7,
   }}>{children}</div>);
 }
@@ -1079,7 +1086,7 @@ function HelpTip({text}){
       position:"absolute",bottom:"calc(100% + 8px)",left:"50%",transform:"translateX(-50%)",
       background:"#0a1120",color:C.txt2,fontSize:11,fontWeight:400,lineHeight:1.6,
       padding:"9px 13px",borderRadius:8,width:260,zIndex:300,
-      border:`1px solid ${C.brd2}`,boxShadow:"0 12px 40px #00000099",
+      border:`1px solid ${C.brd2}`,boxShadow:"0 12px 40px var(--t-shadow)",
       textTransform:"none",letterSpacing:0,
     }}>{text}</span>}
   </span>);
@@ -1090,9 +1097,9 @@ function AIButton({onClick,loading,label,disabled}){
   if(!AI_FEATURES_ENABLED) return null; // AI features hidden pending future implementation
   return(<button onClick={onClick} disabled={loading||disabled}
     style={{
-      ...btnS("ghost"),fontSize:11,color:C.purp,borderColor:C.purp+"44",
+      ...btnS("ghost"),fontSize:11,color:C.purp,borderColor:themeAlpha(C.purp,'44'),
       opacity:(loading||disabled)?0.5:1,
-      background:loading?`${C.purp}0a`:"transparent",
+      background:loading?`${themeAlpha(C.purp,'0a')}`:"transparent",
     }}>
     {loading?<><span className="spin-ico">⟳</span> Working…</>:<>✦ {label}</>}
   </button>);
@@ -1115,6 +1122,8 @@ function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",showCount
     <div style={{fontSize:32,marginBottom:8}}>🌲</div>Enter effect sizes for at least 2 studies to generate a forest plot
   </div>);
   const{studies,pES,lo95,hi95,I2,Q,Qpval,tau2,k,pval}=result;
+  // Downloaded artifact (Dark SVG/PNG via XMLSerializer) — absolute hex only; theme vars must never leak into exports.
+  const FC={txt:"#eaecf6",dim:"#253050",brd:"#1f2640",muted:"#536080",acc:"#818cf8",grn:"#34d399"};
   const isLog=esType&&ES_TYPES[esType]&&ES_TYPES[esType].log;
   const isProp=esType==="PROP";
   const bt=x=>{ if(isLog)return Math.exp(x); if(isProp){const e=Math.exp(x);return e/(1+e);} return x; };
@@ -1143,57 +1152,57 @@ function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",showCount
     <svg id={svgId} width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{fontFamily:"'IBM Plex Mono',monospace",background:"#0e1420",borderRadius:8,display:"block"}}>
       <rect x={0} y={0} width={W} height={H} fill="#0e1420"/>
       {/* Header row */}
-      <text x={padL} y={26} fontSize={11} fill={C.txt} fontWeight={700}>Study</text>
-      {colCounts&&<text x={padL+nameW} y={20} fontSize={9} fill={C.dim} fontWeight={700}>Experimental</text>}
-      {colCounts&&<text x={padL+nameW} y={32} fontSize={9} fill={C.dim}>events / total</text>}
-      {colCounts&&<text x={padL+nameW+cExp} y={20} fontSize={9} fill={C.dim} fontWeight={700}>Control</text>}
-      {colCounts&&<text x={padL+nameW+cExp} y={32} fontSize={9} fill={C.dim}>events / total</text>}
-      <text x={colEffX} y={26} fontSize={10} fill={C.dim} fontWeight={700}>{isLog||isProp?"Effect [95% CI]":"ES [95% CI]"}</text>
-      {showWeights&&<text x={colWfX} y={20} fontSize={9} fill={C.dim} fontWeight={700}>Weight</text>}
-      {showWeights&&<text x={colWfX} y={32} fontSize={9} fill={C.dim}>(common)</text>}
-      {showWeights&&<text x={colWrX} y={20} fontSize={9} fill={C.dim} fontWeight={700}>Weight</text>}
-      {showWeights&&<text x={colWrX} y={32} fontSize={9} fill={C.dim}>(random)</text>}
-      <line x1={padL} y1={TOP-4} x2={W-6} y2={TOP-4} stroke={C.brd}/>
+      <text x={padL} y={26} fontSize={11} fill={FC.txt} fontWeight={700}>Study</text>
+      {colCounts&&<text x={padL+nameW} y={20} fontSize={9} fill={FC.dim} fontWeight={700}>Experimental</text>}
+      {colCounts&&<text x={padL+nameW} y={32} fontSize={9} fill={FC.dim}>events / total</text>}
+      {colCounts&&<text x={padL+nameW+cExp} y={20} fontSize={9} fill={FC.dim} fontWeight={700}>Control</text>}
+      {colCounts&&<text x={padL+nameW+cExp} y={32} fontSize={9} fill={FC.dim}>events / total</text>}
+      <text x={colEffX} y={26} fontSize={10} fill={FC.dim} fontWeight={700}>{isLog||isProp?"Effect [95% CI]":"ES [95% CI]"}</text>
+      {showWeights&&<text x={colWfX} y={20} fontSize={9} fill={FC.dim} fontWeight={700}>Weight</text>}
+      {showWeights&&<text x={colWfX} y={32} fontSize={9} fill={FC.dim}>(common)</text>}
+      {showWeights&&<text x={colWrX} y={20} fontSize={9} fill={FC.dim} fontWeight={700}>Weight</text>}
+      {showWeights&&<text x={colWrX} y={32} fontSize={9} fill={FC.dim}>(random)</text>}
+      <line x1={padL} y1={TOP-4} x2={W-6} y2={TOP-4} stroke={FC.brd}/>
       {/* grid + null line */}
-      {gridVals.map(v=><line key={v} x1={xS(v)} y1={TOP} x2={xS(v)} y2={TOP+k*ROW} stroke={v===nullLine?"#38bdf855":C.brd} strokeWidth={v===nullLine?1.5:0.5} strokeDasharray={v===nullLine?"none":"3,3"}/>)}
-      <line x1={xS(nullLine)} y1={TOP-4} x2={xS(nullLine)} y2={TOP+k*ROW+6} stroke={C.muted} strokeWidth={1}/>
+      {gridVals.map(v=><line key={v} x1={xS(v)} y1={TOP} x2={xS(v)} y2={TOP+k*ROW} stroke={v===nullLine?"#38bdf855":FC.brd} strokeWidth={v===nullLine?1.5:0.5} strokeDasharray={v===nullLine?"none":"3,3"}/>)}
+      <line x1={xS(nullLine)} y1={TOP-4} x2={xS(nullLine)} y2={TOP+k*ROW+6} stroke={FC.muted} strokeWidth={1}/>
       {studies.map((s,i)=>{
         const cy=yP(i),x1=xS(s._lo),x2=xS(s._hi),xc=xS(s._es),sq=Math.max(4,Math.min(12,(s._wFixedPct||10)/4+3));
         const expStr=(s.a!==""&&s.a!=null)?`${s.a} / ${(+s.a)+(+s.b||0)||s.nExp||"?"}`:(s.events!==""&&s.events!=null?`${s.events} / ${s.total||"?"}`:"—");
         const ctrlStr=(s.c!==""&&s.c!=null)?`${s.c} / ${(+s.c)+(+s.d||0)||s.nCtrl||"?"}`:"—";
         return(<g key={s.id||i}>
-          <text x={padL} y={cy+4} fontSize={11} fill={C.txt}>{(s.author||"Study").slice(0,20)}{s.year?` ${s.year}`:""}</text>
-          {colCounts&&<text x={padL+nameW} y={cy+4} fontSize={10} fill={C.muted}>{expStr}</text>}
-          {colCounts&&<text x={padL+nameW+cExp} y={cy+4} fontSize={10} fill={C.muted}>{ctrlStr}</text>}
-          <line x1={x1} y1={cy} x2={x2} y2={cy} stroke={C.acc} strokeWidth={1.5}/>
-          <line x1={x1} y1={cy-4} x2={x1} y2={cy+4} stroke={C.acc} strokeWidth={1.5}/>
-          <line x1={x2} y1={cy-4} x2={x2} y2={cy+4} stroke={C.acc} strokeWidth={1.5}/>
-          <rect x={xc-sq/2} y={cy-sq/2} width={sq} height={sq} fill={C.acc} rx={1}/>
-          <text x={colEffX} y={cy+4} fontSize={10} fill={C.muted}>{fmtV(s._es)} [{fmtV(s._lo)}, {fmtV(s._hi)}]</text>
-          {showWeights&&<text x={colWfX} y={cy+4} fontSize={10} fill={C.dim}>{(s._wFixedPct||0).toFixed(1)}%</text>}
-          {showWeights&&<text x={colWrX} y={cy+4} fontSize={10} fill={C.dim}>{(s._wRandomPct||0).toFixed(1)}%</text>}
+          <text x={padL} y={cy+4} fontSize={11} fill={FC.txt}>{(s.author||"Study").slice(0,20)}{s.year?` ${s.year}`:""}</text>
+          {colCounts&&<text x={padL+nameW} y={cy+4} fontSize={10} fill={FC.muted}>{expStr}</text>}
+          {colCounts&&<text x={padL+nameW+cExp} y={cy+4} fontSize={10} fill={FC.muted}>{ctrlStr}</text>}
+          <line x1={x1} y1={cy} x2={x2} y2={cy} stroke={FC.acc} strokeWidth={1.5}/>
+          <line x1={x1} y1={cy-4} x2={x1} y2={cy+4} stroke={FC.acc} strokeWidth={1.5}/>
+          <line x1={x2} y1={cy-4} x2={x2} y2={cy+4} stroke={FC.acc} strokeWidth={1.5}/>
+          <rect x={xc-sq/2} y={cy-sq/2} width={sq} height={sq} fill={FC.acc} rx={1}/>
+          <text x={colEffX} y={cy+4} fontSize={10} fill={FC.muted}>{fmtV(s._es)} [{fmtV(s._lo)}, {fmtV(s._hi)}]</text>
+          {showWeights&&<text x={colWfX} y={cy+4} fontSize={10} fill={FC.dim}>{(s._wFixedPct||0).toFixed(1)}%</text>}
+          {showWeights&&<text x={colWrX} y={cy+4} fontSize={10} fill={FC.dim}>{(s._wRandomPct||0).toFixed(1)}%</text>}
         </g>);
       })}
-      <line x1={padL} y1={TOP+k*ROW+6} x2={W-6} y2={TOP+k*ROW+6} stroke={C.brd}/>
+      <line x1={padL} y1={TOP+k*ROW+6} x2={W-6} y2={TOP+k*ROW+6} stroke={FC.brd}/>
       {/* Pooled diamond (selected model) */}
       {(()=>{
         const cy=yP(k+0.4),x1=xS(lo95),x2=xS(hi95),xc=xS(pES),dh=8;
         return(<g>
-          <text x={padL} y={cy+4} fontSize={11} fill={C.grn} fontWeight={700}>{result.method==="fixed"?"Pooled (common)":"Pooled (random)"}</text>
-          <polygon points={`${xc},${cy-dh} ${x2},${cy} ${xc},${cy+dh} ${x1},${cy}`} fill={C.grn} opacity={0.9}/>
-          <text x={colEffX} y={cy+4} fontSize={10} fill={C.grn} fontWeight={700}>{fmtV(pES)} [{fmtV(lo95)}, {fmtV(hi95)}]</text>
-          {showWeights&&<text x={colWfX} y={cy+4} fontSize={10} fill={C.grn}>100%</text>}
-          {showWeights&&<text x={colWrX} y={cy+4} fontSize={10} fill={C.grn}>100%</text>}
+          <text x={padL} y={cy+4} fontSize={11} fill={FC.grn} fontWeight={700}>{result.method==="fixed"?"Pooled (common)":"Pooled (random)"}</text>
+          <polygon points={`${xc},${cy-dh} ${x2},${cy} ${xc},${cy+dh} ${x1},${cy}`} fill={FC.grn} opacity={0.9}/>
+          <text x={colEffX} y={cy+4} fontSize={10} fill={FC.grn} fontWeight={700}>{fmtV(pES)} [{fmtV(lo95)}, {fmtV(hi95)}]</text>
+          {showWeights&&<text x={colWfX} y={cy+4} fontSize={10} fill={FC.grn}>100%</text>}
+          {showWeights&&<text x={colWrX} y={cy+4} fontSize={10} fill={FC.grn}>100%</text>}
         </g>);
       })()}
       {/* axis ticks (back-transformed labels for log/prop) */}
-      {gridVals.map(v=><text key={v} x={xS(v)} y={TOP+(k+1.5)*ROW} textAnchor="middle" fontSize={10} fill={C.muted}>{isLog?bt(v).toFixed(2):(isProp?(bt(v)*100).toFixed(0)+"%":v)}</text>)}
-      <text x={LM+plotW/2} y={TOP+(k+1.5)*ROW+18} textAnchor="middle" fontSize={11} fill={C.txt}>{esLabel}</text>
+      {gridVals.map(v=><text key={v} x={xS(v)} y={TOP+(k+1.5)*ROW} textAnchor="middle" fontSize={10} fill={FC.muted}>{isLog?bt(v).toFixed(2):(isProp?(bt(v)*100).toFixed(0)+"%":v)}</text>)}
+      <text x={LM+plotW/2} y={TOP+(k+1.5)*ROW+18} textAnchor="middle" fontSize={11} fill={FC.txt}>{esLabel}</text>
       {/* favours labels */}
-      <text x={xS(nullLine)-6} y={TOP+(k+1.5)*ROW+18} textAnchor="end" fontSize={9} fill={C.dim}>← favours</text>
-      <text x={xS(nullLine)+6} y={TOP+(k+1.5)*ROW+18} textAnchor="start" fontSize={9} fill={C.dim}>favours →</text>
+      <text x={xS(nullLine)-6} y={TOP+(k+1.5)*ROW+18} textAnchor="end" fontSize={9} fill={FC.dim}>← favours</text>
+      <text x={xS(nullLine)+6} y={TOP+(k+1.5)*ROW+18} textAnchor="start" fontSize={9} fill={FC.dim}>favours →</text>
       {/* heterogeneity line */}
-      <text x={padL} y={TOP+(k+2.4)*ROW+12} fontSize={10} fill={C.dim}>
+      <text x={padL} y={TOP+(k+2.4)*ROW+12} fontSize={10} fill={FC.dim}>
         Heterogeneity: I² = {I2}%  ·  τ² = {tau2}  ·  Q = {Q} (p {Qpval<0.001?"< 0.001":"= "+Qpval})  ·  overall p {pval<0.001?"< 0.001":"= "+pval}
       </text>
     </svg>
@@ -1245,7 +1254,7 @@ function FunnelPlot({studies}){
   return (<div style={{overflowX:"auto"}}>
     <svg width={W} height={H} style={{fontFamily:"'IBM Plex Mono',monospace",background:C.card,borderRadius:8,display:"block"}}>
       {/* funnel region (shaded 95% CI) */}
-      <path d={funnelPath} fill={C.acc+"15"} stroke={C.acc+"55"} strokeWidth={1} strokeDasharray="4,4"/>
+      <path d={funnelPath} fill={themeAlpha(C.acc,'15')} stroke={themeAlpha(C.acc,'55')} strokeWidth={1} strokeDasharray="4,4"/>
       {/* centre line */}
       <line x1={xS(centre)} y1={MT} x2={xS(centre)} y2={MT+plotH} stroke={C.grn} strokeWidth={1.5} strokeDasharray="3,3"/>
       {/* axis lines */}
@@ -1697,7 +1706,7 @@ function PICOTab({project,updNested,upd}){
   const reqTotal=requiredFields.length;
 
   return(<div>
-    <SectionHeader icon="📋" title="Research Question & PICO" desc="Start here. Refine your question, structure it as PICO, and define who's in and who's out. Everything downstream builds on this."/>
+    <SectionHeader icon="target" title="Research Question & PICO" desc="Start here. Refine your question, structure it as PICO, and define who's in and who's out. Everything downstream builds on this."/>
 
     {/* Required fields completion indicator */}
     <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:12}}>
@@ -1768,13 +1777,13 @@ function PICOTab({project,updNested,upd}){
       </div>
     </div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
-      <div style={{background:C.card,border:`1px solid ${C.grn}33`,borderRadius:8,padding:14,borderLeft:`3px solid ${C.grn}`}}>
+      <div style={{background:C.card,border:`1px solid ${themeAlpha(C.grn,'33')}`,borderRadius:8,padding:14,borderLeft:`3px solid ${C.grn}`}}>
         <label style={{...lbl,color:C.grn}}>✓ Inclusion Criteria</label>
         <textarea value={pico.incl||""} onChange={e=>ch("incl",e.target.value)}
           placeholder={"• Adults ≥18 with confirmed T2DM\n• RCTs with ≥12 weeks follow-up\n• Reports HbA1c or MACE"}
           style={{...inp,height:120,resize:"vertical",fontSize:12,lineHeight:1.6}}/>
       </div>
-      <div style={{background:C.card,border:`1px solid ${C.red}33`,borderRadius:8,padding:14,borderLeft:`3px solid ${C.red}`}}>
+      <div style={{background:C.card,border:`1px solid ${themeAlpha(C.red,'33')}`,borderRadius:8,padding:14,borderLeft:`3px solid ${C.red}`}}>
         <label style={{...lbl,color:C.red}}>✗ Exclusion Criteria</label>
         <textarea value={pico.excl||""} onChange={e=>ch("excl",e.target.value)}
           placeholder={"• Type 1 diabetes or gestational diabetes\n• Animal or in-vitro studies\n• Conference abstracts without full data"}
@@ -1984,7 +1993,7 @@ D | [study-design filter clause]
   };
 
   return(<div>
-    <SectionHeader icon="🔍" title="Search Builder" desc={AI_FEATURES_ENABLED?"Document your search strategy and generate expert AI search strings for every major database — all in one place.":"Document your search strategy — databases searched, search date, and the full query string — all in one place."}/>
+    <SectionHeader icon="search" title="Search Builder" desc={AI_FEATURES_ENABLED?"Document your search strategy and generate expert AI search strings for every major database — all in one place.":"Document your search strategy — databases searched, search date, and the full query string — all in one place."}/>
 
     {/* ── Database selection + date ── */}
     <div style={{display:"grid",gridTemplateColumns:"248px 1fr",gap:16,marginBottom:16}}>
@@ -2019,7 +2028,7 @@ D | [study-design filter clause]
       <HelpTip text="Paste or build your complete primary-database query here. PRISMA requires the full search strategy for at least one database to be published."/>
     </div>
     {saveNotification&&(
-      <div style={{background:"#052e16",border:`1px solid ${C.grn}`,borderRadius:6,padding:"10px 14px",marginBottom:12,fontSize:13,color:C.grn,display:"flex",alignItems:"center",gap:10}}>
+      <div style={{background:"var(--t-grn-bg)",border:`1px solid ${C.grn}`,borderRadius:6,padding:"10px 14px",marginBottom:12,fontSize:13,color:C.grn,display:"flex",alignItems:"center",gap:10}}>
         ✓ {saveNotification}
       </div>
     )}
@@ -2068,13 +2077,13 @@ D | [study-design filter clause]
       </div>
 
       {picoChangedSinceGen&&(
-        <div style={{background:"#2d1f08",border:`1px solid ${C.yel}55`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
+        <div style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'55')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
           <span style={{fontSize:13}}>🔄</span>
           <div style={{flex:1}}>
             <div style={{fontSize:12,fontWeight:700,color:C.yel}}>PICO or settings changed since last generation</div>
             <div style={{fontSize:11,color:C.muted,marginTop:2}}>The saved search strategies were built with different inputs. Click sync to regenerate.</div>
           </div>
-          <button onClick={generate} disabled={loading} style={{...btnS("ghost"),fontSize:11,color:C.yel,borderColor:C.yel+"55",opacity:loading?0.5:1}}>
+          <button onClick={generate} disabled={loading} style={{...btnS("ghost"),fontSize:11,color:C.yel,borderColor:themeAlpha(C.yel,'55'),opacity:loading?0.5:1}}>
             {loading?"⟳ Syncing…":"↻ Sync now"}
           </button>
         </div>
@@ -2092,16 +2101,16 @@ D | [study-design filter clause]
           setTestResult(r.ok?`✓ Connection OK · Response: "${r.message.slice(0,40)}"`:`✗ ${r.name}: ${r.message}`);
         }} style={{...btnS("ghost"),fontSize:11}}>🔌 Test API</button>
         {loading&&<span style={{fontSize:11,color:C.muted}}>{progress.total?`Building — ${progress.done} of ${progress.total} databases done…`:"Building search strategy…"}</span>}
-        <span style={{fontSize:11,fontFamily:"'IBM Plex Mono',monospace",background:persisted.generatedAt?`${C.grn}15`:C.card,
-          color:persisted.generatedAt?C.grn:C.dim,border:`1px solid ${persisted.generatedAt?C.grn+"44":C.brd}`,
+        <span style={{fontSize:11,fontFamily:"'IBM Plex Mono',monospace",background:persisted.generatedAt?`${themeAlpha(C.grn,'15')}`:C.card,
+          color:persisted.generatedAt?C.grn:C.dim,border:`1px solid ${persisted.generatedAt?themeAlpha(C.grn,'44'):C.brd}`,
           borderRadius:4,padding:"3px 8px",whiteSpace:"nowrap"}}>
           🕐 {persisted.generatedAt?`Last generated: ${fmtDate(persisted.generatedAt)} ${new Date(persisted.generatedAt).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}`:"Not yet generated"}
         </span>
         {rawResponse&&!loading&&<button onClick={()=>setShowRaw(!showRaw)} style={{...btnS("ghost"),fontSize:11,marginLeft:"auto"}}>{showRaw?"Hide":"Show"} raw response</button>}
       </div>
 
-      {testResult&&(<div style={{marginBottom:14,padding:"10px 14px",borderRadius:6,background:testResult.startsWith("✓")?"#052e16":(testResult.startsWith("✗")?"#3b0d12":C.card),border:`1px solid ${testResult.startsWith("✓")?C.grn:(testResult.startsWith("✗")?C.red:C.brd)}`,fontSize:12,fontFamily:"'IBM Plex Mono',monospace",color:testResult.startsWith("✓")?C.grn:(testResult.startsWith("✗")?C.red:C.muted),wordBreak:"break-word"}}>{testResult}</div>)}
-      {aiError&&(<div style={{background:"#3b0d12",border:`1px solid ${C.red}`,borderLeft:`4px solid ${C.red}`,borderRadius:6,padding:"12px 16px",marginBottom:14}}>
+      {testResult&&(<div style={{marginBottom:14,padding:"10px 14px",borderRadius:6,background:testResult.startsWith("✓")?"var(--t-grn-bg)":(testResult.startsWith("✗")?"var(--t-red-bg)":C.card),border:`1px solid ${testResult.startsWith("✓")?C.grn:(testResult.startsWith("✗")?C.red:C.brd)}`,fontSize:12,fontFamily:"'IBM Plex Mono',monospace",color:testResult.startsWith("✓")?C.grn:(testResult.startsWith("✗")?C.red:C.muted),wordBreak:"break-word"}}>{testResult}</div>)}
+      {aiError&&(<div style={{background:"var(--t-red-bg)",border:`1px solid ${C.red}`,borderLeft:`4px solid ${C.red}`,borderRadius:6,padding:"12px 16px",marginBottom:14}}>
         <div style={{fontSize:12,fontWeight:700,color:C.red,marginBottom:4}}>⚠ Generation Error</div>
         <div style={{fontSize:12,color:C.txt}}>{aiError}</div>
       </div>)}
@@ -2190,13 +2199,13 @@ D | [study-design filter clause]
                       </div>
                     )}
                     {r.validation&&(
-                      <div style={{background:C.bg,border:`1px solid ${C.grn}33`,borderLeft:`3px solid ${C.grn}`,borderRadius:6,padding:12}}>
+                      <div style={{background:C.bg,border:`1px solid ${themeAlpha(C.grn,'33')}`,borderLeft:`3px solid ${C.grn}`,borderRadius:6,padding:12}}>
                         <div style={{fontSize:11,fontWeight:700,color:C.grn,marginBottom:6}}>✅ SANITY CHECK PAPERS</div>
                         <div style={{fontSize:12,color:C.txt,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{r.validation}</div>
                       </div>
                     )}
                     {r.tradeoff&&(
-                      <div style={{background:C.bg,border:`1px solid ${C.yel}33`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:12}}>
+                      <div style={{background:C.bg,border:`1px solid ${themeAlpha(C.yel,'33')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:12}}>
                         <div style={{fontSize:11,fontWeight:700,color:C.yel,marginBottom:6}}>⚖️ TRADEOFF</div>
                         <div style={{fontSize:12,color:C.txt,lineHeight:1.7,whiteSpace:"pre-wrap"}}>{r.tradeoff}</div>
                       </div>
@@ -2385,7 +2394,7 @@ function ScreeningModule({project,updateProject,activeId,updNested}){
     const on=r[field]===val;
     return <button onClick={()=>setDecision(r.id,field,val)} style={{
       padding:"3px 9px",borderRadius:4,cursor:"pointer",fontSize:10,fontWeight:700,
-      border:`1px solid ${on?color:C.brd}`,background:on?`${color}25`:"transparent",color:on?color:C.muted
+      border:`1px solid ${on?color:C.brd}`,background:on?`${themeAlpha(color,'25')}`:"transparent",color:on?color:C.muted
     }}>{label}</button>;
   };
   const conColor={include:C.grn,exclude:C.red,maybe:C.yel,conflict:C.purp,pending:C.dim,dup:C.dim};
@@ -2419,7 +2428,7 @@ function ScreeningModule({project,updateProject,activeId,updNested}){
         {[["all","All",C.txt],["pending","Pending",C.dim],["include","Include",C.grn],["maybe","Maybe",C.yel],["exclude","Exclude",C.red],["conflict","Conflicts",C.purp],["dup","Duplicates",C.dim]].map(([f,label,color])=>(
           <button key={f} onClick={()=>setFilter(f)} style={{
             padding:"4px 10px",borderRadius:4,cursor:"pointer",fontSize:11,fontWeight:600,
-            border:`1px solid ${filter===f?color:C.brd}`,background:filter===f?`${color}22`:"transparent",color:filter===f?color:C.muted
+            border:`1px solid ${filter===f?color:C.brd}`,background:filter===f?`${themeAlpha(color,'22')}`:"transparent",color:filter===f?color:C.muted
           }}>{label} {f==="all"?counts.total:counts[f]||0}</button>
         ))}
         <input value={q} onChange={e=>setQ(e.target.value)} placeholder="Search titles/abstracts…" style={{...inp,width:200,fontSize:11,marginLeft:"auto"}}/>
@@ -2436,7 +2445,7 @@ function ScreeningModule({project,updateProject,activeId,updNested}){
           const dec=consensus(r);
           const dupTitle=r.dupOf?(records.find(x=>x.id===r.dupOf)||{}).title:"";
           return(
-          <div key={r.id} style={{border:`1px solid ${r.dupOf?C.dim:conColor[dec]+"55"}`,borderLeft:`3px solid ${conColor[dec]}`,borderRadius:6,padding:"10px 12px",background:C.bg,opacity:r.dupOf?0.6:1}}>
+          <div key={r.id} style={{border:`1px solid ${r.dupOf?C.dim:themeAlpha(conColor[dec],"55")}`,borderLeft:`3px solid ${conColor[dec]}`,borderRadius:6,padding:"10px 12px",background:C.bg,opacity:r.dupOf?0.6:1}}>
             <div style={{display:"flex",justifyContent:"space-between",gap:10,alignItems:"flex-start"}}>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{fontSize:12,fontWeight:600,color:C.txt,lineHeight:1.4}}>{r.title||"(untitled record)"}</div>
@@ -2463,8 +2472,8 @@ function ScreeningModule({project,updateProject,activeId,updNested}){
             {dec==="conflict"&&!r.dupOf&&(
               <div style={{marginTop:8,paddingTop:8,borderTop:`1px solid ${C.brd}`,display:"flex",gap:6,alignItems:"center"}}>
                 <span style={{fontSize:10,color:C.purp,fontWeight:700}}>Resolve to:</span>
-                <button onClick={()=>setRecords(rs=>rs.map(x=>x.id===r.id?{...x,decision:"include",reviewer2:"include"}:x))} style={{...btnS("ghost"),fontSize:10,padding:"2px 8px",color:C.grn,borderColor:C.grn+"55"}}>Include</button>
-                <button onClick={()=>setRecords(rs=>rs.map(x=>x.id===r.id?{...x,decision:"exclude",reviewer2:"exclude"}:x))} style={{...btnS("ghost"),fontSize:10,padding:"2px 8px",color:C.red,borderColor:C.red+"55"}}>Exclude</button>
+                <button onClick={()=>setRecords(rs=>rs.map(x=>x.id===r.id?{...x,decision:"include",reviewer2:"include"}:x))} style={{...btnS("ghost"),fontSize:10,padding:"2px 8px",color:C.grn,borderColor:themeAlpha(C.grn,'55')}}>Include</button>
+                <button onClick={()=>setRecords(rs=>rs.map(x=>x.id===r.id?{...x,decision:"exclude",reviewer2:"exclude"}:x))} style={{...btnS("ghost"),fontSize:10,padding:"2px 8px",color:C.red,borderColor:themeAlpha(C.red,'55')}}>Exclude</button>
               </div>
             )}
           </div>);
@@ -2529,7 +2538,7 @@ function MetaSiftPrismaSync({project,updateProject,activeId}){
 
   const wrap={background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:20};
   if(st.loading) return <div style={wrap}><div style={{fontSize:12,color:C.muted}}>Checking META·SIFT…</div></div>;
-  if(st.error) return <div style={{...wrap,borderColor:C.yel+"55"}}>
+  if(st.error) return <div style={{...wrap,borderColor:themeAlpha(C.yel,'55')}}>
     <div style={{fontSize:12,fontWeight:800,color:C.yel,letterSpacing:0.5,marginBottom:6}}>⬡ META·SIFT</div>
     <div style={{fontSize:12,color:C.muted,marginBottom:10}}>{st.error} You can still enter PRISMA numbers manually below.</div>
     <button onClick={()=>load(true)} style={{...btnS("ghost"),fontSize:11}}>↻ Retry</button>
@@ -2543,7 +2552,7 @@ function MetaSiftPrismaSync({project,updateProject,activeId}){
       else { setCreating(false); load(true); }
     }catch{ setCreating(false); }
   };
-  if(!st.linked) return <div style={{...wrap,borderColor:C.acc+"40",background:C.bg}}>
+  if(!st.linked) return <div style={{...wrap,borderColor:themeAlpha(C.acc,'40'),background:C.bg}}>
     <div style={{fontSize:12,fontWeight:800,color:C.acc,letterSpacing:0.5,marginBottom:6}}>⬡ Title / abstract screening is now in META·SIFT</div>
     <div style={{fontSize:12,color:C.muted,lineHeight:1.6,marginBottom:12}}>
       Screen your references with two reviewers in META·SIFT. Create a linked META·SIFT screening project for this review — they share one Review Workspace (same owner, members, and permissions), accepted second-review studies flow back to Data Extraction, and the PRISMA numbers below auto-fill.
@@ -2554,7 +2563,7 @@ function MetaSiftPrismaSync({project,updateProject,activeId}){
     </div>
   </div>;
   const p=st.prisma;
-  return <div style={{...wrap,borderColor:C.grn+"55"}}>
+  return <div style={{...wrap,borderColor:themeAlpha(C.grn,'55')}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10,marginBottom:8}}>
       <div style={{fontSize:12,fontWeight:800,color:C.grn,letterSpacing:0.5}}>⬡ Linked to META·SIFT — PRISMA auto-filled</div>
       <div style={{display:"flex",gap:8}}>
@@ -2578,13 +2587,13 @@ function PRISMATab({project,updNested,updateProject,activeId}){
   const dbs=+prisma.dbs||0,reg=+prisma.reg||0,other=+prisma.other||0,total=dbs+reg+other;
   const dedupe=+prisma.dedupe||0,screened=total-dedupe,excTA=+prisma.excTA||0,ftRet=screened-excTA,excFull=+prisma.excFull||0,included=ftRet-excFull;
   const FlowBox=({label,n,color=C.acc,small=false})=>(
-    <div style={{background:C.card,border:`2px solid ${color}55`,borderRadius:8,padding:small?"8px 14px":"12px 18px",textAlign:"center",minWidth:140}}>
+    <div style={{background:C.card,border:`2px solid ${themeAlpha(color,'55')}`,borderRadius:8,padding:small?"8px 14px":"12px 18px",textAlign:"center",minWidth:140}}>
       <div style={{fontSize:small?18:26,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color}}>{n||"?"}</div>
       <div style={{fontSize:11,color:C.muted,marginTop:2}}>{label}</div>
     </div>);
   const Arrow=()=><div style={{textAlign:"center",color:C.dim,fontSize:16,margin:"4px 0"}}>↓</div>;
   return(<div>
-    <SectionHeader icon="🔀" title="Screening & PRISMA Flow" desc="Title/abstract screening is handled in META·SIFT (two-reviewer, with duplicates & conflicts). Link a META·SIFT project and the PRISMA 2020 flow diagram below fills in automatically."/>
+    <SectionHeader icon="flow" title="Screening & PRISMA Flow" desc="Title/abstract screening is handled in META·SIFT (two-reviewer, with duplicates & conflicts). Link a META·SIFT project and the PRISMA 2020 flow diagram below fills in automatically."/>
     {updateProject&&<MetaSiftPrismaSync project={project} updateProject={updateProject} activeId={activeId}/>}
     <div style={{display:"grid",gridTemplateColumns:"320px 1fr",gap:20}}>
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
@@ -2631,7 +2640,7 @@ function PRISMATab({project,updNested,updateProject,activeId}){
         <div style={{display:"flex",gap:10,alignItems:"center"}}>
           <FlowBox label="Full texts assessed" n={ftRet} small/>
           <span style={{color:C.dim}}>→</span>
-          <div style={{background:C.card,border:`2px solid ${C.red}55`,borderRadius:8,padding:"8px 14px",minWidth:140}}>
+          <div style={{background:C.card,border:`2px solid ${themeAlpha(C.red,'55')}`,borderRadius:8,padding:"8px 14px",minWidth:140}}>
             <div style={{fontSize:18,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color:C.red,textAlign:"center"}}>{excFull||"?"}</div>
             <div style={{fontSize:11,color:C.muted,textAlign:"center",marginTop:2}}>Excluded</div>
             {prisma.reasons.filter(r=>r.r&&r.n).map(r=><div key={r.id} style={{fontSize:10,color:C.dim,marginTop:2,textAlign:"center"}}>{r.r}: {r.n}</div>)}
@@ -2655,7 +2664,7 @@ function PrismaFigureExport({project,prisma}){
   const[show,setShow]=useState(false);
   const opts={title:project.name||""};
   const safe=(project.name||"prisma").replace(/[^a-z0-9]/gi,"_");
-  return(<div style={{marginTop:18,background:C.card,border:`1px solid ${C.grn}55`,borderRadius:8,padding:14}}>
+  return(<div style={{marginTop:18,background:C.card,border:`1px solid ${themeAlpha(C.grn,'55')}`,borderRadius:8,padding:14}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:4}}>
       <div style={{fontSize:12,fontWeight:800,color:C.grn,letterSpacing:0.5}}>📄 PRISMA 2020 FLOW DIAGRAM (publication figure)</div>
       <span style={{fontSize:11,color:C.muted}}>white background · journal style</span>
@@ -2826,7 +2835,7 @@ function ConversionPanel({s,ch,onClose}){
         </optgroup>))}
       </select>
 
-      <div style={{background:C.bg,border:`1px solid ${C.acc}33`,borderLeft:`3px solid ${C.acc}`,borderRadius:6,padding:"9px 12px",marginBottom:12,fontSize:11,color:C.muted,lineHeight:1.6}}>
+      <div style={{background:C.bg,border:`1px solid ${themeAlpha(C.acc,'33')}`,borderLeft:`3px solid ${C.acc}`,borderRadius:6,padding:"9px 12px",marginBottom:12,fontSize:11,color:C.muted,lineHeight:1.6}}>
         <strong style={{color:C.acc}}>Method:</strong> {conv.method}
       </div>
 
@@ -2845,7 +2854,7 @@ function ConversionPanel({s,ch,onClose}){
         {err&&<span style={{fontSize:12,color:C.red}}>{err}</span>}
       </div>
 
-      {res&&(<div style={{background:C.bg,border:`1px solid ${C.grn}44`,borderRadius:8,padding:14}}>
+      {res&&(<div style={{background:C.bg,border:`1px solid ${themeAlpha(C.grn,'44')}`,borderRadius:8,padding:14}}>
         <div style={{fontSize:10,fontWeight:700,color:C.grn,letterSpacing:0.5,marginBottom:8}}>RESULT</div>
         <div style={{fontSize:14,fontFamily:"'IBM Plex Mono',monospace",color:C.grn,marginBottom:8}}>{res.detail}</div>
         <div style={{fontSize:11,color:C.muted,marginBottom:12,lineHeight:1.6}}><strong style={{color:C.txt}}>Formula:</strong> {res.formula}</div>
@@ -2956,7 +2965,7 @@ function AddStudyModal({onClose,onAdd}){
 
           {err&&<div style={{fontSize:12,color:C.red,marginBottom:12,lineHeight:1.5}}>{err}</div>}
 
-          {preview&&(<div style={{background:C.bg,border:`1px solid ${C.grn}44`,borderRadius:8,padding:14,marginBottom:12}}>
+          {preview&&(<div style={{background:C.bg,border:`1px solid ${themeAlpha(C.grn,'44')}`,borderRadius:8,padding:14,marginBottom:12}}>
             <div style={{fontSize:10,fontWeight:700,color:C.grn,letterSpacing:0.5,marginBottom:8}}>FOUND — VERIFY, THEN ADD (please confirm against the source)</div>
             {preview.title&&<div style={{fontSize:13,fontWeight:600,marginBottom:6,lineHeight:1.4}}>{preview.title}</div>}
             <div style={{fontSize:12,color:C.muted,lineHeight:1.7}}>
@@ -2989,7 +2998,7 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
   const warns=issues.filter(i=>i.sev==="warn");
   const esTypeLabel=s.esType?ES_TYPES[s.esType]?.scale||s.esType:null;
   const nonPrimary=isNonPrimary(s);
-  return(<div style={{background:C.card,border:`1px solid ${dup?C.red+"66":errors.length?C.red+"44":C.brd}`,borderRadius:8,overflow:"hidden"}}>
+  return(<div style={{background:C.card,border:`1px solid ${dup?themeAlpha(C.red,'66'):errors.length?themeAlpha(C.red,'44'):C.brd}`,borderRadius:8,overflow:"hidden"}}>
     {showConv&&<ConversionPanel s={s} ch={ch} onClose={()=>setShowConv(false)}/>}
     <div onClick={()=>setOpen(!open)} style={{display:"flex",alignItems:"center",padding:"10px 16px",cursor:"pointer",gap:10,userSelect:"none",flexWrap:"wrap"}}>
       <span style={{color:C.dim,fontSize:11,fontFamily:"'IBM Plex Mono',monospace",minWidth:22}}>#{idx+1}</span>
@@ -3095,7 +3104,7 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:10,flexWrap:"wrap",gap:8}}>
           <div style={{fontSize:10,fontWeight:700,color:C.acc,letterSpacing:0.8}}>EFFECT SIZE & 95% CI (analysis scale)</div>
           <div style={{display:"flex",alignItems:"center",gap:8}}>
-            <button onClick={()=>setShowConv(true)} style={{...btnS("ghost"),fontSize:11,color:C.purp,borderColor:C.purp+"55"}}>🔄 Convert data</button>
+            <button onClick={()=>setShowConv(true)} style={{...btnS("ghost"),fontSize:11,color:C.purp,borderColor:themeAlpha(C.purp,'55')}}>🔄 Convert data</button>
             <label style={{...lbl,marginBottom:0}}>Measure</label>
             <select value={s.esType||""} onChange={e=>ch("esType",e.target.value)} style={{...inp,width:"auto",fontSize:11,padding:"3px 6px"}}>
               <option value="">— set —</option>
@@ -3121,14 +3130,14 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
             const on=(s.flags||[]).includes(f);
             const danger=f==="noconfirm"||f==="highrisk";
             return(<button key={f} onClick={()=>toggleFlag(f)} style={{padding:"4px 10px",borderRadius:4,cursor:"pointer",fontSize:11,fontWeight:600,
-              border:`1px solid ${on?(danger?C.red:C.acc):C.brd}`,background:on?(danger?C.red+"22":C.acc+"22"):"transparent",
+              border:`1px solid ${on?(danger?C.red:C.acc):C.brd}`,background:on?(danger?themeAlpha(C.red,'22'):themeAlpha(C.acc,'22')):"transparent",
               color:on?(danger?C.red:C.acc):C.muted}}>{on?"✓ ":""}{label}</button>);
           })}
         </div>
       </div>
 
       {/* Conversion log */}
-      {(s.conversions||[]).length>0&&(<div style={{marginTop:12,background:`${C.purp}0d`,border:`1px solid ${C.purp}44`,borderRadius:6,padding:"10px 12px"}}>
+      {(s.conversions||[]).length>0&&(<div style={{marginTop:12,background:`${themeAlpha(C.purp,'0d')}`,border:`1px solid ${themeAlpha(C.purp,'44')}`,borderRadius:6,padding:"10px 12px"}}>
         <div style={{fontSize:10,fontWeight:700,color:C.purp,letterSpacing:0.5,marginBottom:8}}>⇄ CONVERSION AUDIT TRAIL ({s.conversions.length})</div>
         {s.conversions.map((cv,i)=>{
           const def=CONVERSIONS.find(x=>x.id===cv.type);
@@ -3162,7 +3171,7 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
         <textarea value={s.notes||""} onChange={e=>ch("notes",e.target.value)} placeholder="e.g. SD imputed from SE; median/IQR converted to mean/SD via Wan 2014; adjusted for age & sex…" style={{...inp,height:52,resize:"vertical",fontSize:12}}/></div>
 
       {/* Inline validation list */}
-      {issues.length>0&&(<div style={{marginTop:12,background:C.bg,border:`1px solid ${(errors.length?C.red:C.yel)}44`,borderRadius:6,padding:"10px 12px"}}>
+      {issues.length>0&&(<div style={{marginTop:12,background:C.bg,border:`1px solid ${themeAlpha((errors.length?C.red:C.yel),'44')}`,borderRadius:6,padding:"10px 12px"}}>
         <div style={{fontSize:10,fontWeight:700,color:errors.length?C.red:C.yel,letterSpacing:0.5,marginBottom:6}}>DATA CHECKS FOR THIS STUDY</div>
         {issues.map((it,i)=>(
           <div key={i} style={{display:"flex",gap:8,fontSize:11,color:C.muted,marginBottom:4,lineHeight:1.5}}>
@@ -3343,7 +3352,7 @@ ${paperText.slice(0,15000)}`;
       style={{...inp,fontSize:11,padding:"3px 5px",width:w||"100%",fontFamily:["es","lo","hi","n","nExp","nCtrl"].includes(k)?"'IBM Plex Mono',monospace":"inherit"}}/></td>);
 
   return(<div>
-    <SectionHeader icon="📊" title="Data Extraction" desc="Capture study-level data with the right template for your outcome type. Validation runs as you type; raw inputs are saved so every number is auditable." badge={`${studies.length} studies`}/>
+    <SectionHeader icon="table" title="Data Extraction" desc="Capture study-level data with the right template for your outcome type. Validation runs as you type; raw inputs are saved so every number is auditable." badge={`${studies.length} studies`}/>
 
     {AI_FEATURES_ENABLED && showAI && (
       <div style={{position:"fixed",inset:0,background:"#00000099",zIndex:998,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
@@ -3376,7 +3385,7 @@ ${paperText.slice(0,15000)}`;
                 <div style={{fontSize:11,color:C.dim}}>The full text, tables, and figures are read directly · up to 30 MB / ~100 pages</div>
               </label>
             ):(
-              <div style={{display:"flex",alignItems:"center",gap:12,border:`1px solid ${C.grn}55`,background:`${C.grn}0d`,borderRadius:8,padding:"12px 14px"}}>
+              <div style={{display:"flex",alignItems:"center",gap:12,border:`1px solid ${themeAlpha(C.grn,'55')}`,background:`${themeAlpha(C.grn,'0d')}`,borderRadius:8,padding:"12px 14px"}}>
                 <span style={{fontSize:22}}>📄</span>
                 <div style={{flex:1,minWidth:0}}>
                   <div style={{fontSize:13,fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{pdfFile.name}</div>
@@ -3448,7 +3457,7 @@ ${paperText.slice(0,15000)}`;
         </div>
         {studies.length>0&&<button onClick={()=>setShowQC(!showQC)} style={{...btnS(showQC?"primary":"ghost"),fontSize:12}}>🔍 Data Quality Check</button>}
         {studies.length>0&&<button onClick={exportCSV} style={{...btnS("ghost"),fontSize:12}}>⤓ Export CSV</button>}
-        {AI_FEATURES_ENABLED&&!readOnly&&<button onClick={()=>setShowAI(true)} style={{...btnS(),color:C.purp,borderColor:C.purp+"55",fontSize:12}}>✦ AI Extract</button>}
+        {AI_FEATURES_ENABLED&&!readOnly&&<button onClick={()=>setShowAI(true)} style={{...btnS(),color:C.purp,borderColor:themeAlpha(C.purp,'55'),fontSize:12}}>✦ AI Extract</button>}
         {!readOnly&&<button onClick={()=>setShowAdd(true)} style={{...btnS("primary"),fontSize:12}}>+ Add Study</button>}
       </div>
     </div>
@@ -3507,11 +3516,11 @@ ${paperText.slice(0,15000)}`;
           {qc.pool.blockers.length===0&&qc.pool.warnings.length===0&&qc.pool.ok&&
             <div style={{...tagS("green"),display:"inline-flex"}}>✓ No blocking compatibility problems detected</div>}
           {qc.pool.blockers.map((b,i)=>(
-            <div key={i} style={{background:"#3b0d12",border:`1px solid ${C.red}44`,borderLeft:`3px solid ${C.red}`,borderRadius:6,padding:"9px 12px",marginBottom:6,fontSize:12,color:C.txt,lineHeight:1.5}}>
+            <div key={i} style={{background:"var(--t-red-bg)",border:`1px solid ${themeAlpha(C.red,'44')}`,borderLeft:`3px solid ${C.red}`,borderRadius:6,padding:"9px 12px",marginBottom:6,fontSize:12,color:C.txt,lineHeight:1.5}}>
               <strong style={{color:C.red}}>✗ Do not pool: </strong>{b}</div>
           ))}
           {qc.pool.warnings.map((w,i)=>(
-            <div key={i} style={{background:"#2d1f08",border:`1px solid ${C.yel}44`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"9px 12px",marginBottom:6,fontSize:12,color:C.txt,lineHeight:1.5}}>
+            <div key={i} style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'44')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"9px 12px",marginBottom:6,fontSize:12,color:C.txt,lineHeight:1.5}}>
               <strong style={{color:C.yel}}>⚠ Caution: </strong>{w}</div>
           ))}
         </div>
@@ -3543,7 +3552,7 @@ ${paperText.slice(0,15000)}`;
       <div style={{fontSize:12,marginBottom:16}}>{AI_FEATURES_ENABLED?"Add a study by PubMed ID, DOI, or manually — or paste text / upload a PDF and let AI pre-fill a study for you to verify.":"Add a study by PubMed ID, DOI, or manually — every field stays editable and auditable."}</div>
       {!readOnly&&(
         <div style={{display:"flex",gap:8,justifyContent:"center"}}>
-          {AI_FEATURES_ENABLED&&<button onClick={()=>setShowAI(true)} style={{...btnS(),color:C.purp,borderColor:C.purp+"55"}}>✦ AI Extract</button>}
+          {AI_FEATURES_ENABLED&&<button onClick={()=>setShowAI(true)} style={{...btnS(),color:C.purp,borderColor:themeAlpha(C.purp,'55')}}>✦ AI Extract</button>}
           <button onClick={()=>setShowAdd(true)} style={btnS("primary")}>+ Add First Study</button>
         </div>
       )}
@@ -3568,7 +3577,7 @@ ${paperText.slice(0,15000)}`;
           <tbody>{filtered.map((s)=>{
             const idx=studies.indexOf(s);
             const iss=validateStudy(s);const e=iss.filter(x=>x.sev==="error").length;const w=iss.filter(x=>x.sev==="warn").length;
-            return(<tr key={s.id} style={{background:dup[s.id]?"#3b0d1222":"transparent"}}>
+            return(<tr key={s.id} style={{background:dup[s.id]?themeAlpha("var(--t-red-bg)","22"):"transparent"}}>
               <td style={{padding:"3px 4px",color:C.dim,fontFamily:"'IBM Plex Mono',monospace",borderBottom:`1px solid ${C.brd}`}}>{idx+1}</td>
               {TC(s,"author",100,"Smith J")}{TC(s,"year",50,"2024")}
               <td style={{padding:"3px 4px",borderBottom:`1px solid ${C.brd}`}}>
@@ -3621,7 +3630,7 @@ function RoBTab({project,updateProject,activeId}){
   const robColor=v=>{if(!v)return C.dim;if(robMethod==="RoB2")return v==="Low"?C.grn:v==="High"?C.red:C.yel;return v==="★"?C.yel:C.dim;};
   const getOverall=s=>{const vals=ROB2.map(d=>s.rob?.[d.id]);if(vals.some(v=>v==="High"))return"High";if(vals.some(v=>v==="Some concerns"))return"Some concerns";if(vals.every(v=>v==="Low"))return"Low";return null;};
   return(<div>
-    <SectionHeader icon="⚖️" title="Risk of Bias Assessment" desc="Evaluate methodological quality of each included study."/>
+    <SectionHeader icon="scale" title="Risk of Bias Assessment" desc="Evaluate methodological quality of each included study."/>
     <div style={{display:"flex",gap:8,marginBottom:16,alignItems:"center"}}>
       {[["RoB2","RoB 2 (RCTs)"],["NOS","Newcastle-Ottawa (Observational)"]].map(([m,label])=>(
         <button key={m} onClick={()=>setMethod(m)} style={btnS(robMethod===m?"primary":"ghost")}>{label}</button>
@@ -3775,7 +3784,7 @@ function AnalysisTab({project}){
   const methodLabel=method==="random"?"Random-effects (DerSimonian–Laird)":"Fixed-effect (inverse-variance)";
 
   return(<div>
-    <SectionHeader icon="📈" title="Meta-Analysis" desc="Pool effect sizes by outcome. Select an outcome below — each outcome is analysed separately." badge={valid.length>0?`k = ${valid.length}`:undefined}/>
+    <SectionHeader icon="sigma" title="Meta-Analysis" desc="Pool effect sizes by outcome. Select an outcome below — each outcome is analysed separately." badge={valid.length>0?`k = ${valid.length}`:undefined}/>
 
     {/* ── OUTCOME SELECTOR ── */}
     <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:14,marginBottom:16}}>
@@ -3799,7 +3808,7 @@ function AnalysisTab({project}){
         {outcomePairs.length>1&&<span style={{fontSize:11,color:C.muted}}>{outcomePairs.length} outcomes detected</span>}
       </div>
       {outcomePairs.length>1&&!effectiveKey&&(
-        <div style={{marginTop:10,background:"#2d1f08",border:`1px solid ${C.yel}44`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"9px 12px",fontSize:12,color:C.txt,lineHeight:1.6}}>
+        <div style={{marginTop:10,background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'44')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"9px 12px",fontSize:12,color:C.txt,lineHeight:1.6}}>
           <strong style={{color:C.yel}}>⚠ Multiple outcomes found across your studies.</strong> Select one outcome above before running the analysis. Pooling different outcomes together (e.g. mortality + readmission) in a single meta-analysis is not methodologically valid.
         </div>
       )}
@@ -3818,7 +3827,7 @@ function AnalysisTab({project}){
           if(seen[key]===2) dups.push((s.author||"?")+(s.year?" "+s.year:""));
         });
         return dups.length?(
-          <div style={{marginTop:10,background:"#2d1f08",border:`1px solid ${C.yel}44`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"9px 12px",fontSize:12,color:C.txt,lineHeight:1.6}}>
+          <div style={{marginTop:10,background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'44')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"9px 12px",fontSize:12,color:C.txt,lineHeight:1.6}}>
             <strong style={{color:C.yel}}>⚠ Possible unit-of-analysis issue.</strong> {dups.join(", ")} appear{dups.length===1?"s":""} more than once for this outcome. If these are multiple arms or time-points from the <em>same cohort</em>, pooling them as independent studies double-counts participants. Combine arms, pick one time-point, or use a single estimate per cohort.
           </div>
         ):null;
@@ -3849,7 +3858,7 @@ function AnalysisTab({project}){
               </tr></thead>
               <tbody>
                 {rows.map(({pr,r,et,dv,k})=>(
-                  <tr key={pr.key} style={{borderBottom:`1px solid ${C.brd}`,cursor:"pointer",background:pr.key===effectiveKey?`${C.acc}10`:"transparent"}} onClick={()=>setSelectedKey(pr.key)}>
+                  <tr key={pr.key} style={{borderBottom:`1px solid ${C.brd}`,cursor:"pointer",background:pr.key===effectiveKey?`${themeAlpha(C.acc,'10')}`:"transparent"}} onClick={()=>setSelectedKey(pr.key)}>
                     <td style={{padding:"6px 10px",fontWeight:pr.key===effectiveKey?700:400}}>{pr.outcome||"(unnamed)"}{pr.timepoint?` @ ${pr.timepoint}`:""}</td>
                     <td style={{padding:"6px 10px",color:C.muted}}>{et?ES_TYPES[et].scale:"—"}</td>
                     <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace"}}>{k}</td>
@@ -3869,7 +3878,7 @@ function AnalysisTab({project}){
     {typeWarn.length>0&&(
       <div style={{marginBottom:16}}>
         {typeWarn.map((w,i)=>(
-          <div key={i} style={{background:w.sev==="error"?"#3b0d12":"#2d1f08",border:`1px solid ${(w.sev==="error"?C.red:C.yel)}66`,borderLeft:`4px solid ${w.sev==="error"?C.red:C.yel}`,borderRadius:8,padding:"11px 16px",marginBottom:8}}>
+          <div key={i} style={{background:w.sev==="error"?"var(--t-red-bg)":"var(--t-yel-bg)",border:`1px solid ${themeAlpha((w.sev==="error"?C.red:C.yel),'66')}`,borderLeft:`4px solid ${w.sev==="error"?C.red:C.yel}`,borderRadius:8,padding:"11px 16px",marginBottom:8}}>
             <div style={{fontSize:12,color:C.txt,lineHeight:1.6}}>
               <strong style={{color:w.sev==="error"?C.red:C.yel}}>{w.sev==="error"?"⛔ Data/measure mismatch: ":"⚠ Check the measure: "}</strong>{w.msg}
             </div>
@@ -3890,18 +3899,18 @@ function AnalysisTab({project}){
     {(pool.blockers.length>0||pool.warnings.length>0)&&(
       <div style={{marginBottom:16}}>
         {pool.blockers.map((b,i)=>(
-          <div key={i} style={{background:"#3b0d12",border:`1px solid ${C.red}`,borderLeft:`4px solid ${C.red}`,borderRadius:8,padding:"12px 16px",marginBottom:8}}>
+          <div key={i} style={{background:"var(--t-red-bg)",border:`1px solid ${C.red}`,borderLeft:`4px solid ${C.red}`,borderRadius:8,padding:"12px 16px",marginBottom:8}}>
             <div style={{fontSize:12,fontWeight:700,color:C.red,marginBottom:4}}>⛔ Pooling may not be valid</div>
             <div style={{fontSize:12,color:C.txt,lineHeight:1.6}}>{b}</div>
           </div>
         ))}
         {pool.warnings.map((w,i)=>(
-          <div key={i} style={{background:"#2d1f08",border:`1px solid ${C.yel}55`,borderLeft:`4px solid ${C.yel}`,borderRadius:8,padding:"11px 16px",marginBottom:8}}>
+          <div key={i} style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'55')}`,borderLeft:`4px solid ${C.yel}`,borderRadius:8,padding:"11px 16px",marginBottom:8}}>
             <div style={{fontSize:12,color:C.txt,lineHeight:1.6}}><strong style={{color:C.yel}}>⚠ Check before trusting this result: </strong>{w}</div>
           </div>
         ))}
         {pool.blockers.length>0&&!forceShow&&(
-          <button onClick={()=>setForceShow(true)} style={{...btnS("ghost"),fontSize:11,color:C.red,borderColor:C.red+"55"}}>
+          <button onClick={()=>setForceShow(true)} style={{...btnS("ghost"),fontSize:11,color:C.red,borderColor:themeAlpha(C.red,'55')}}>
             I understand the limitation — show the pooled result anyway
           </button>
         )}
@@ -3924,7 +3933,7 @@ function AnalysisTab({project}){
 
       {/* Headline + heterogeneity */}
       <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16}}>
-        <div style={{background:C.card,border:`2px solid ${C.grn}44`,borderRadius:8,padding:18}}>
+        <div style={{background:C.card,border:`2px solid ${themeAlpha(C.grn,'44')}`,borderRadius:8,padding:18}}>
           <div style={{fontSize:10,fontWeight:700,color:C.grn,letterSpacing:1,marginBottom:14,display:"flex",justifyContent:"space-between"}}>
             <span>POOLED EFFECT ({method==="random"?"RE":"FE"})</span>
             {esType&&<span style={{color:C.muted}}>{ES_TYPES[esType]?.scale}</span>}
@@ -3937,7 +3946,7 @@ function AnalysisTab({project}){
             </div>
           )}
           <div style={{marginTop:10,fontSize:12,color:C.muted}}>z = {result.z.toFixed(3)} · SE = {result.pSE.toFixed(4)} · k = {result.k}</div>
-          <div style={{marginTop:6,padding:"6px 10px",borderRadius:4,background:interp&&!interp.crossesNull?"#052e16":"#2d1f08",display:"inline-block"}}>
+          <div style={{marginTop:6,padding:"6px 10px",borderRadius:4,background:interp&&!interp.crossesNull?"var(--t-grn-bg)":"var(--t-yel-bg)",display:"inline-block"}}>
             <span style={{fontSize:12,fontWeight:600,color:interp&&!interp.crossesNull?C.grn:C.yel}}>
               p = {result.pval<0.001?"<0.001":result.pval.toFixed(3)} · {interp&&!interp.crossesNull?"CI excludes no-effect":"CI includes no-effect (inconclusive)"}
             </span>
@@ -3965,7 +3974,7 @@ function AnalysisTab({project}){
         const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
         const dv=x=>isProp?(bt(x)*100).toFixed(1)+"%":isLog?bt(x).toFixed(3):(+x).toFixed(3);
         const Cell=({title,o,active})=>(
-          <div style={{flex:1,minWidth:200,background:active?`${C.grn}0d`:C.bg,border:`1px solid ${active?C.grn+"55":C.brd}`,borderRadius:8,padding:"12px 14px"}}>
+          <div style={{flex:1,minWidth:200,background:active?`${themeAlpha(C.grn,'0d')}`:C.bg,border:`1px solid ${active?themeAlpha(C.grn,'55'):C.brd}`,borderRadius:8,padding:"12px 14px"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
               <span style={{fontSize:10,fontWeight:700,letterSpacing:0.5,color:active?C.grn:C.muted}}>{title}</span>
               {active&&<span style={tagS("green")}>shown above</span>}
@@ -3994,7 +4003,7 @@ function AnalysisTab({project}){
         const hkSig=hk&&((isLog?bt(hk.lo)>1||bt(hk.hi)<1:hk.lo>0||hk.hi<0));
         const dlSig=interp&&!interp.crossesNull;
         const flips=hk&&(hkSig!==dlSig);
-        return(<div style={{background:C.card,border:`1px solid ${C.purp}44`,borderLeft:`3px solid ${C.purp}`,borderRadius:8,padding:16}}>
+        return(<div style={{background:C.card,border:`1px solid ${themeAlpha(C.purp,'44')}`,borderLeft:`3px solid ${C.purp}`,borderRadius:8,padding:16}}>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,flexWrap:"wrap"}}>
             <span style={{fontSize:11,fontWeight:700,color:C.purp,letterSpacing:1}}>🛡️ ROBUST ESTIMATES</span>
             <HelpTip text="HKSJ widens the random-effects CI using a t-distribution and is the recommended default when the number of studies is small. The prediction interval shows where the true effect of a future study would likely fall — it reflects heterogeneity, not just uncertainty in the mean."/>
@@ -4013,7 +4022,7 @@ function AnalysisTab({project}){
               <div style={{fontSize:10,color:C.dim,marginTop:6}}>t({pi.df}) based · widens with heterogeneity (τ = {(result.tau!=null?result.tau:Math.sqrt(result.tau2)).toFixed(3)})</div>
             </div>}
           </div>
-          {flips&&<div style={{marginTop:10,background:"#2d1f08",border:`1px solid ${C.yel}44`,borderRadius:6,padding:"8px 12px",fontSize:11,color:C.txt,lineHeight:1.5}}>
+          {flips&&<div style={{marginTop:10,background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'44')}`,borderRadius:6,padding:"8px 12px",fontSize:11,color:C.txt,lineHeight:1.5}}>
             <strong style={{color:C.yel}}>⚠ The HKSJ interval changes the conclusion.</strong> The standard random-effects CI {dlSig?"excludes":"includes"} the null, but the more conservative HKSJ interval {hkSig?"excludes":"includes"} it. With few studies, HKSJ is the more trustworthy result — report it as primary.
           </div>}
           {pi&&result.k>=3&&(()=>{
@@ -4025,7 +4034,7 @@ function AnalysisTab({project}){
           })()}
         </div>);
       })()}
-        <div style={{background:C.card,border:`1px solid ${C.acc}44`,borderLeft:`3px solid ${C.acc}`,borderRadius:8,padding:18}}>
+        <div style={{background:C.card,border:`1px solid ${themeAlpha(C.acc,'44')}`,borderLeft:`3px solid ${C.acc}`,borderRadius:8,padding:18}}>
           <div style={{fontSize:11,fontWeight:700,color:C.acc,letterSpacing:1,marginBottom:12}}>📖 PLAIN-LANGUAGE INTERPRETATION</div>
           <div style={{fontSize:13,color:C.txt,lineHeight:1.7}}>
             Pooling <strong>{result.k}</strong> studies with a <strong>{methodLabel.toLowerCase()}</strong> model gives {interp.direction} ({interp.ciText}).{interp.magnitude}
@@ -4095,7 +4104,7 @@ function AnalysisTab({project}){
               <td style={{padding:"6px 10px",textAlign:"right",color:pv<0.05?C.grn:C.muted}}>{pv<0.001?"<0.001":pv.toFixed(3)}</td>
             </tr>);
           })}
-          <tr style={{borderTop:`2px solid ${C.grn}55`}}>
+          <tr style={{borderTop:`2px solid ${themeAlpha(C.grn,'55')}`}}>
             <td style={{padding:"8px 10px",color:C.grn,fontWeight:700}}>Pooled ({method==="random"?"RE":"FE"})</td>
             <td style={{padding:"8px 10px",textAlign:"right",color:C.grn}}>—</td>
             <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:800,color:C.grn}}>{result.pES.toFixed(3)}</td>
@@ -4201,7 +4210,7 @@ function DataBehindAnalysis({result,studies,esType}){
         const noRob=used.filter(s=>Object.keys(s.rob||{}).length===0).length;
         if(noRob>0) warns.push(`${noRob} pooled stud${noRob===1?"y has":"ies have"} no risk-of-bias assessment.`);
         return warns.length>0?(
-          <div style={{marginTop:14,background:"#2d1f08",border:`1px solid ${C.yel}44`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 12px"}}>
+          <div style={{marginTop:14,background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'44')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 12px"}}>
             <div style={{fontSize:10,fontWeight:700,color:C.yel,letterSpacing:0.5,marginBottom:6}}>⚠ WARNINGS AFFECTING INTERPRETATION</div>
             {warns.map((w,i)=><div key={i} style={{fontSize:12,color:C.muted,marginBottom:3,lineHeight:1.5}}>• {w}</div>)}
           </div>
@@ -4294,7 +4303,7 @@ function ResearchExport({result,esType,method,studies}){
     `</tbody></table><br/><table border="1"><tr><td>Effect measure</td><td>${measureName}</td></tr><tr><td>Model</td><td>${method==="fixed"?"Fixed/common":"Random effects"}</td></tr><tr><td>Transformation</td><td>${transform}</td></tr><tr><td>Pooled common</td><td>${dispVal(fx.es)} (${dispVal(fx.lo)} to ${dispVal(fx.hi)})</td></tr><tr><td>Pooled random</td><td>${dispVal(rnd.es)} (${dispVal(rnd.lo)} to ${dispVal(rnd.hi)})</td></tr>${result.hksj?`<tr><td>Pooled random (HKSJ, t-based)</td><td>${dispVal(result.hksj.es)} (${dispVal(result.hksj.lo)} to ${dispVal(result.hksj.hi)}); t(${result.hksj.df})=${result.hksj.t}, p=${result.hksj.pval}</td></tr>`:""}${result.predInt?`<tr><td>95% Prediction interval</td><td>${dispVal(result.predInt.lo)} to ${dispVal(result.predInt.hi)}</td></tr>`:""}<tr><td>I²</td><td>${result.I2}%</td></tr><tr><td>tau²</td><td>${result.tau2}</td></tr><tr><td>tau</td><td>${result.tau!=null?result.tau:Math.sqrt(result.tau2).toFixed(4)}</td></tr><tr><td>Q (df=${result.k-1})</td><td>${result.Q}, p=${result.Qpval}</td></tr></table>`;
   const xlsDoc=`<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:x="urn:schemas-microsoft-com:office:excel"><head><meta charset="utf-8"></head><body>${xlsTable}</body></html>`;
 
-  return(<div style={{background:C.card,border:`1px solid ${C.acc}55`,borderRadius:8,padding:16}}>
+  return(<div style={{background:C.card,border:`1px solid ${themeAlpha(C.acc,'55')}`,borderRadius:8,padding:16}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:6}}>
       <div style={{fontSize:12,fontWeight:800,color:C.acc,letterSpacing:0.5}}>📤 EXTRACT RESEARCH-READY RESULTS</div>
       <span style={{fontSize:11,color:C.muted}}>{result.k} studies · {measureName}</span>
@@ -4332,7 +4341,7 @@ function ResearchExport({result,esType,method,studies}){
             <td style={{padding:"5px 8px",textAlign:"right",color:C.dim}}>{r.wF}%</td>
             <td style={{padding:"5px 8px",textAlign:"right",color:C.dim}}>{r.wR}%</td>
           </tr>))}
-          <tr style={{borderTop:`2px solid ${C.grn}55`}}>
+          <tr style={{borderTop:`2px solid ${themeAlpha(C.grn,'55')}`}}>
             <td style={{padding:"6px 8px",color:C.grn,fontWeight:700}}>Pooled (common)</td>
             {anyCounts&&<td/>}{anyCounts&&<td/>}
             <td style={{padding:"6px 8px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn,fontWeight:700}}>{dispVal(fx.es)}</td>
@@ -4760,7 +4769,7 @@ function ForestTab({project}){
   const outcomeSafeName=(activeOutcome?.outcome||"outcome").replace(/[^a-z0-9]/gi,"_");
 
   return(<div>
-    <SectionHeader icon="🌲" title="Forest Plot" desc="One forest plot per outcome. Select the outcome to visualise below."/>
+    <SectionHeader icon="forest" title="Forest Plot" desc="One forest plot per outcome. Select the outcome to visualise below."/>
 
     {/* ── OUTCOME SELECTOR ── */}
     <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:12,marginBottom:14,display:"flex",alignItems:"center",gap:12,flexWrap:"wrap"}}>
@@ -4815,7 +4824,7 @@ function ForestTab({project}){
       const outTitle=`${project.name||""}${activeOutcome?.outcome?` — ${activeOutcome.outcome}`:""}${activeOutcome?.timepoint?` (${activeOutcome.timepoint})`:""}`.trim();
       const pubOpts={esType,esLabel,nullLine,showCounts,showWeights,title:outTitle};
       const exportName=`${safeName}_${outcomeSafeName}_forest_publication`;
-      return(<div style={{marginTop:14,background:C.card,border:`1px solid ${C.grn}55`,borderRadius:8,padding:14}}>
+      return(<div style={{marginTop:14,background:C.card,border:`1px solid ${themeAlpha(C.grn,'55')}`,borderRadius:8,padding:14}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:4}}>
           <div style={{fontSize:12,fontWeight:800,color:C.grn,letterSpacing:0.5}}>📄 PUBLICATION-STYLE FIGURE (white background)</div>
           <span style={{fontSize:11,color:C.muted}}>Clean academic style — not a dark-mode screenshot</span>
@@ -4858,7 +4867,7 @@ function ReportTab({project,upd}){
   const done=Object.values(checked).filter(Boolean).length,total=PRISMA_CL.length,pct=Math.round((done/total)*100);
   const sections=[...new Set(PRISMA_CL.map(x=>x.sec))];
   return(<div>
-    <SectionHeader icon="✍️" title="PRISMA 2020 Reporting Checklist" desc="Track completeness of your manuscript. Check items as you complete each section."/>
+    <SectionHeader icon="checkSquare" title="PRISMA 2020 Reporting Checklist" desc="Track completeness of your manuscript. Check items as you complete each section."/>
     <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:16}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
         <span style={{fontSize:12,fontWeight:600}}>Manuscript Completeness</span>
@@ -5155,7 +5164,7 @@ function ExpertDBResult({db,r,copied,onCopy,onSave}){
       {section==="avoid"&&(<div style={{display:"flex",flexDirection:"column",gap:8}}>
         <div style={{fontSize:12,color:C.muted,marginBottom:4}}>Problematic terms, abbreviations, or constructs that hurt retrieval in {db.label}:</div>
         {(r.terms_to_avoid||[]).map((t,i)=>(
-          <div key={i} style={{background:C.bg,border:`1px solid ${C.red}33`,borderLeft:`3px solid ${C.red}`,borderRadius:6,padding:"10px 14px"}}>
+          <div key={i} style={{background:C.bg,border:`1px solid ${themeAlpha(C.red,'33')}`,borderLeft:`3px solid ${C.red}`,borderRadius:6,padding:"10px 14px"}}>
             <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:12,color:C.red,fontWeight:700,marginBottom:4}}>{t.term}</div>
             <div style={{fontSize:12,color:C.muted,lineHeight:1.5}}>{t.reason}</div>
           </div>
@@ -5380,7 +5389,7 @@ D | [study-design / publication-type filter clause]
   };
 
   return(<div>
-    <SectionHeader icon="🧲" title="AI Search String Generator"
+    <SectionHeader icon="flask" title="AI Search String Generator"
       desc="Expert-level search strategy with MeSH analysis, sensitivity optimization, and multi-database support."/>
     <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:16}}>
       <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:0.8,marginBottom:12}}>SELECT DATABASES</div>
@@ -5396,7 +5405,7 @@ D | [study-design / publication-type filter clause]
         })}
       </div>
       {selectedDBs.length>0&&(
-        <div style={{marginTop:10,background:`${C.acc}0a`,border:`1px solid ${C.acc}33`,borderRadius:6,padding:"8px 12px",fontSize:11,color:C.muted}}>
+        <div style={{marginTop:10,background:`${themeAlpha(C.acc,'0a')}`,border:`1px solid ${themeAlpha(C.acc,'33')}`,borderRadius:6,padding:"8px 12px",fontSize:11,color:C.muted}}>
           ✦ All selected databases use the <strong style={{color:C.acc}}>Expert High-Sensitivity strategy</strong> — broad query, narrow query, controlled vocabulary analysis, free-text terms, terms to avoid, design improvements, and secondary search strategies, all in each database's native syntax.
         </div>
       )}
@@ -5419,13 +5428,13 @@ D | [study-design / publication-type filter clause]
           style={{...inp,fontSize:12}}/></div>
     </div>
     {picoChangedSinceGen && (
-      <div style={{background:"#2d1f08",border:`1px solid ${C.yel}55`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
+      <div style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'55')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
         <span style={{fontSize:13}}>🔄</span>
         <div style={{flex:1}}>
           <div style={{fontSize:12,fontWeight:700,color:C.yel}}>PICO or settings changed since last generation</div>
           <div style={{fontSize:11,color:C.muted,marginTop:2}}>The saved search strategies were built with different inputs. Click sync to regenerate.</div>
         </div>
-        <button onClick={generate} disabled={loading} style={{...btnS("ghost"),fontSize:11,color:C.yel,borderColor:C.yel+"55",opacity:loading?0.5:1}}>
+        <button onClick={generate} disabled={loading} style={{...btnS("ghost"),fontSize:11,color:C.yel,borderColor:themeAlpha(C.yel,'55'),opacity:loading?0.5:1}}>
           {loading?"⟳ Syncing…":"↻ Sync now"}
         </button>
       </div>
@@ -5443,9 +5452,9 @@ D | [study-design / publication-type filter clause]
       {loading&&<span style={{fontSize:11,color:C.muted}}>{progress.total?`Building search strategy — ${progress.done} of ${progress.total} databases done…`:"Building search strategy…"}</span>}
       <span style={{
         fontSize:11,fontFamily:"'IBM Plex Mono',monospace",
-        background:persisted.generatedAt?`${C.grn}15`:C.card,
+        background:persisted.generatedAt?`${themeAlpha(C.grn,'15')}`:C.card,
         color:persisted.generatedAt?C.grn:C.dim,
-        border:`1px solid ${persisted.generatedAt?C.grn+"44":C.brd}`,
+        border:`1px solid ${persisted.generatedAt?themeAlpha(C.grn,'44'):C.brd}`,
         borderRadius:4,padding:"3px 8px",whiteSpace:"nowrap"
       }}>
         🕐 {persisted.generatedAt
@@ -5454,11 +5463,11 @@ D | [study-design / publication-type filter clause]
       </span>
       {rawResponse&&!loading&&!error&&<button onClick={()=>setShowRaw(!showRaw)} style={{...btnS("ghost"),fontSize:11,marginLeft:"auto"}}>{showRaw?"Hide":"Show"} raw response</button>}
     </div>
-    {testResult&&(<div style={{marginBottom:14,padding:"10px 14px",borderRadius:6,background:testResult.startsWith("✓")?"#052e16":(testResult.startsWith("✗")?"#3b0d12":C.card),border:`1px solid ${testResult.startsWith("✓")?C.grn:(testResult.startsWith("✗")?C.red:C.brd)}`,fontSize:12,fontFamily:"'IBM Plex Mono',monospace",color:testResult.startsWith("✓")?C.grn:(testResult.startsWith("✗")?C.red:C.muted),wordBreak:"break-word"}}>{testResult}</div>)}
-    {error&&(<div style={{background:"#3b0d12",border:`1px solid ${C.red}`,borderLeft:`4px solid ${C.red}`,borderRadius:6,padding:"12px 16px",marginBottom:14}}>
+    {testResult&&(<div style={{marginBottom:14,padding:"10px 14px",borderRadius:6,background:testResult.startsWith("✓")?"var(--t-grn-bg)":(testResult.startsWith("✗")?"var(--t-red-bg)":C.card),border:`1px solid ${testResult.startsWith("✓")?C.grn:(testResult.startsWith("✗")?C.red:C.brd)}`,fontSize:12,fontFamily:"'IBM Plex Mono',monospace",color:testResult.startsWith("✓")?C.grn:(testResult.startsWith("✗")?C.red:C.muted),wordBreak:"break-word"}}>{testResult}</div>)}
+    {error&&(<div style={{background:"var(--t-red-bg)",border:`1px solid ${C.red}`,borderLeft:`4px solid ${C.red}`,borderRadius:6,padding:"12px 16px",marginBottom:14}}>
       <div style={{fontSize:12,fontWeight:700,color:C.red,marginBottom:4}}>⚠ Generation Error</div>
       <div style={{fontSize:12,color:C.txt,marginBottom:8}}>{error}</div>
-      {rawResponse && <button onClick={()=>setShowRaw(!showRaw)} style={{...btnS("ghost"),fontSize:11,color:C.red,borderColor:C.red+"55"}}>{showRaw?"Hide":"Show"} raw response ({rawResponse.length} chars)</button>}
+      {rawResponse && <button onClick={()=>setShowRaw(!showRaw)} style={{...btnS("ghost"),fontSize:11,color:C.red,borderColor:themeAlpha(C.red,'55')}}>{showRaw?"Hide":"Show"} raw response ({rawResponse.length} chars)</button>}
     </div>)}
     {showRaw && rawResponse && (<div style={{background:C.bg,border:`1px solid ${C.brd}`,borderRadius:6,padding:12,marginBottom:14,maxHeight:320,overflowY:"auto"}}>
       <div style={{fontSize:10,fontWeight:700,color:C.muted,marginBottom:6,letterSpacing:0.8}}>RAW API RESPONSE</div>
@@ -5471,7 +5480,7 @@ D | [study-design / publication-type filter clause]
           <button onClick={()=>setActiveDBPersist("__combined__")} style={{padding:"10px 16px",border:"none",cursor:"pointer",fontSize:12,fontWeight:600,
             fontFamily:"'IBM Plex Sans',sans-serif",whiteSpace:"nowrap",background:activeDB==="__combined__"?C.bg:"transparent",
             color:activeDB==="__combined__"?C.acc:C.muted,borderBottom:activeDB==="__combined__"?`2px solid ${C.acc}`:"2px solid transparent",transition:"all 0.15s"}}>
-            🗂️ All Databases<span style={{fontSize:9,marginLeft:6,opacity:0.7,background:activeDB==="__combined__"?C.acc+"30":C.brd,padding:"1px 6px",borderRadius:8}}>{selectedDBs.filter(id=>results[id]).length}</span>
+            🗂️ All Databases<span style={{fontSize:9,marginLeft:6,opacity:0.7,background:activeDB==="__combined__"?themeAlpha(C.acc,'30'):C.brd,padding:"1px 6px",borderRadius:8}}>{selectedDBs.filter(id=>results[id]).length}</span>
           </button>
           {selectedDBs.filter(id=>results[id]).map(id=>{const db=MESH_DBS.find(d=>d.id===id),on=activeDB===id;return(
             <button key={id} onClick={()=>setActiveDBPersist(id)} style={{padding:"10px 16px",border:"none",cursor:"pointer",fontSize:12,fontWeight:600,
@@ -5667,7 +5676,7 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
   const visibleFields=activeSection==="All"?PROSP_FIELDS:PROSP_FIELDS.filter(f=>f.sec===activeSection);
 
   return(<div>
-    <SectionHeader icon="📝" title={AI_FEATURES_ENABLED?"PROSPERO Protocol Generator":"PROSPERO Protocol"} desc={AI_FEATURES_ENABLED?"AI-assisted completion of all PROSPERO registration fields — generated from your PICO. Edit any field before copying.":"Complete every PROSPERO registration field with live character limits, then copy each one into the registration form."}/>
+    <SectionHeader icon="clipboard" title={AI_FEATURES_ENABLED?"PROSPERO Protocol Generator":"PROSPERO Protocol"} desc={AI_FEATURES_ENABLED?"AI-assisted completion of all PROSPERO registration fields — generated from your PICO. Edit any field before copying.":"Complete every PROSPERO registration field with live character limits, then copy each one into the registration form."}/>
 
     {/* Top bar */}
     <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:16}}>
@@ -5678,9 +5687,9 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
             <div style={{display:"flex",gap:10,alignItems:"center"}}>
               {AI_FEATURES_ENABLED&&<span style={{
                 fontSize:11,fontFamily:"'IBM Plex Mono',monospace",
-                background:persistedP.generatedAt?`${C.grn}15`:C.card,
+                background:persistedP.generatedAt?`${themeAlpha(C.grn,'15')}`:C.card,
                 color:persistedP.generatedAt?C.grn:C.dim,
-                border:`1px solid ${persistedP.generatedAt?C.grn+"44":C.brd}`,
+                border:`1px solid ${persistedP.generatedAt?themeAlpha(C.grn,'44'):C.brd}`,
                 borderRadius:4,padding:"3px 8px",whiteSpace:"nowrap"
               }}>
                 🕐 {persistedP.generatedAt
@@ -5707,10 +5716,10 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
           <div style={{width:`${progress}%`,height:"100%",background:C.acc,transition:"width 1s ease",borderRadius:4}}/>
         </div>
       </div>)}
-      {genError&&(<div style={{marginTop:12,background:"#3b0d12",border:`1px solid ${C.red}`,borderLeft:`4px solid ${C.red}`,borderRadius:6,padding:"12px 16px"}}>
+      {genError&&(<div style={{marginTop:12,background:"var(--t-red-bg)",border:`1px solid ${C.red}`,borderLeft:`4px solid ${C.red}`,borderRadius:6,padding:"12px 16px"}}>
         <div style={{fontSize:12,fontWeight:700,color:C.red,marginBottom:4}}>⚠ Generation Error</div>
         <div style={{fontSize:12,color:C.txt,marginBottom:8}}>{genError}</div>
-        {rawGenResp&&<button onClick={()=>setShowGenRaw(!showGenRaw)} style={{...btnS("ghost"),fontSize:11,color:C.red,borderColor:C.red+"55"}}>{showGenRaw?"Hide":"Show"} raw response ({rawGenResp.length} chars)</button>}
+        {rawGenResp&&<button onClick={()=>setShowGenRaw(!showGenRaw)} style={{...btnS("ghost"),fontSize:11,color:C.red,borderColor:themeAlpha(C.red,'55')}}>{showGenRaw?"Hide":"Show"} raw response ({rawGenResp.length} chars)</button>}
       </div>)}
       {showGenRaw&&rawGenResp&&(<div style={{marginTop:10,background:C.bg,border:`1px solid ${C.brd}`,borderRadius:6,padding:12,maxHeight:320,overflowY:"auto"}}>
         <div style={{fontSize:10,fontWeight:700,color:C.muted,marginBottom:6,letterSpacing:0.8}}>RAW API RESPONSE</div>
@@ -5719,7 +5728,7 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
 
       {/* PICO changed banner — regeneration sync is an AI feature */}
       {AI_FEATURES_ENABLED&&picoChanged&&!generating&&filled>0&&(
-        <div style={{marginTop:12,background:"#2d1f08",border:`1px solid ${C.yel}55`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
+        <div style={{marginTop:12,background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'55')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
           <span style={{fontSize:13}}>🔄</span>
           <div style={{flex:1}}>
             <div style={{fontSize:12,fontWeight:700,color:C.yel}}>PICO has been updated</div>
@@ -5728,10 +5737,10 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
           <div style={{display:"flex",gap:8,flexShrink:0}}>
             <button onClick={()=>syncFromPICO(PROSP_FIELDS.filter(f=>fields[f.id]?.trim()).map(f=>f.id))}
               disabled={syncingFields.length>0}
-              style={{...btnS("ghost"),fontSize:11,color:C.yel,borderColor:C.yel+"55",opacity:syncingFields.length>0?0.5:1}}>
+              style={{...btnS("ghost"),fontSize:11,color:C.yel,borderColor:themeAlpha(C.yel,'55'),opacity:syncingFields.length>0?0.5:1}}>
               {syncingFields.length>0?`⟳ Syncing ${syncingFields.length} fields…`:"↻ Sync filled fields"}
             </button>
-            <button onClick={generateAll} disabled={generating} style={{...btnS("ghost"),fontSize:11,color:C.acc,borderColor:C.acc+"55"}}>✦ Regenerate all</button>
+            <button onClick={generateAll} disabled={generating} style={{...btnS("ghost"),fontSize:11,color:C.acc,borderColor:themeAlpha(C.acc,'55')}}>✦ Regenerate all</button>
           </div>
         </div>
       )}
@@ -5750,7 +5759,7 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
         const val=fields[field.id]||"",isGen=generatingField===field.id||syncingFields.includes(field.id);
         const over=val.length>field.maxLen,remaining=field.maxLen-val.length;
         const charColor=over?C.red:remaining<field.maxLen*0.1?C.yel:C.dim;
-        return(<div key={field.id} style={{background:C.card,border:`1px solid ${over?C.red+"66":C.brd}`,
+        return(<div key={field.id} style={{background:C.card,border:`1px solid ${over?themeAlpha(C.red,'66'):C.brd}`,
           borderLeft:`3px solid ${over?C.red:val?C.grn:C.brd}`,borderRadius:8,padding:16}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:8,gap:10}}>
             <div style={{flex:1}}>
@@ -5768,7 +5777,7 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
                 style={{...btnS("danger"),fontSize:10,padding:"3px 10px"}}>✂ Trim</button>}
               {val&&!over&&<button onClick={()=>copy(val,field.id)} style={{...btnS("ghost"),fontSize:10,padding:"3px 10px"}}>{copied===field.id?"✓":"Copy"}</button>}
               {AI_FEATURES_ENABLED&&<button onClick={()=>generateField(field.id)} disabled={isGen||!hasPICO}
-                style={{...btnS("ghost"),fontSize:10,padding:"3px 10px",color:C.acc,borderColor:C.acc+"55",opacity:!hasPICO?0.4:1}}>
+                style={{...btnS("ghost"),fontSize:10,padding:"3px 10px",color:C.acc,borderColor:themeAlpha(C.acc,'55'),opacity:!hasPICO?0.4:1}}>
                 {isGen?"⟳":val?"↻ Regen":"✦ Generate"}
               </button>}
             </div>
@@ -5779,7 +5788,7 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
           </div>
           <textarea value={val} onChange={e=>setFields(prev=>({...prev,[field.id]:e.target.value}))}
             placeholder={isGen?"Generating…":AI_FEATURES_ENABLED?"Click ✦ Generate or type directly…":"Type this field directly…"}
-            rows={field.rows} style={{...inp,resize:"vertical",lineHeight:1.6,fontSize:12,opacity:isGen?0.6:1,borderColor:over?C.red+"88":C.brd}}/>
+            rows={field.rows} style={{...inp,resize:"vertical",lineHeight:1.6,fontSize:12,opacity:isGen?0.6:1,borderColor:over?themeAlpha(C.red,'88'):C.brd}}/>
           {over&&<div style={{fontSize:11,color:C.red,marginTop:5}}>⚠ {Math.abs(remaining)} characters over the PROSPERO limit of {field.maxLen}. Click ✂ Trim or edit manually.</div>}
         </div>);
       })}
@@ -5805,7 +5814,7 @@ function SensitivityTab({project}){
   const primaryResult=useMemo(()=>runMeta(primaryStudies,method),[primaryStudies,method]);
 
   if(!result) return (<div>
-    <SectionHeader icon="🎯" title="Sensitivity & Publication Bias" desc="Assess robustness and small-study effects. Needs ≥3 studies with effect sizes."/>
+    <SectionHeader icon="activity" title="Sensitivity & Publication Bias" desc="Assess robustness and small-study effects. Needs ≥3 studies with effect sizes."/>
     <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
       <div style={{fontSize:36,marginBottom:10}}>🎯</div>Add at least 3 studies with effect sizes
     </div>
@@ -5819,9 +5828,9 @@ function SensitivityTab({project}){
   };
 
   return(<div>
-    <SectionHeader icon="🎯" title="Sensitivity & Publication Bias" desc="Robustness checks: leave-one-out, funnel plot, Egger's test." badge={`k = ${result.k}`}/>
+    <SectionHeader icon="activity" title="Sensitivity & Publication Bias" desc="Robustness checks: leave-one-out, funnel plot, Egger's test." badge={`k = ${result.k}`}/>
     {result.k<10&&(
-      <div style={{background:"#2d1f08",border:`1px solid ${C.yel}44`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",marginBottom:14,fontSize:12,color:C.muted,lineHeight:1.6}}>
+      <div style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'44')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",marginBottom:14,fontSize:12,color:C.muted,lineHeight:1.6}}>
         <strong style={{color:C.yel}}>⚠ Only {result.k} studies.</strong> Cochrane and most guidance recommend assessing publication bias (funnel plot, Egger's test) <strong>only when ≥10 studies</strong> are pooled. With fewer, these tests have low power and the funnel is hard to read — interpret the results below with caution and don't over-rely on them.
       </div>
     )}
@@ -5845,7 +5854,7 @@ function SensitivityTab({project}){
           {loo.map(s=>{
             const inf=isInfluential(s);
             const delta=s.pES!==null?((s.pES-result.pES)/Math.abs(result.pES||1)*100):null;
-            return(<tr key={s.omittedId} style={{borderBottom:`1px solid ${C.brd}`,background:inf?"#3b0d1222":"transparent"}}>
+            return(<tr key={s.omittedId} style={{borderBottom:`1px solid ${C.brd}`,background:inf?themeAlpha("var(--t-red-bg)","22"):"transparent"}}>
               <td style={{padding:"6px 10px",fontWeight:inf?700:400,color:inf?C.yel:C.txt}}>{inf?"⚠ ":""}{s.omitted}</td>
               <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:700}}>{s.pES!==null?s.pES.toFixed(3):"—"}</td>
               <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{s.lo95!==null?s.lo95.toFixed(3):"—"}</td>
@@ -5855,7 +5864,7 @@ function SensitivityTab({project}){
               <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:Math.abs(delta||0)>10?C.yel:C.dim}}>{delta!==null?(delta>0?"+":"")+delta.toFixed(1)+"%":"—"}</td>
             </tr>);
           })}
-          <tr style={{borderTop:`2px solid ${C.grn}55`}}>
+          <tr style={{borderTop:`2px solid ${themeAlpha(C.grn,'55')}`}}>
             <td style={{padding:"8px 10px",color:C.grn,fontWeight:700}}>Original (all studies)</td>
             <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:800,color:C.grn}}>{result.pES.toFixed(3)}</td>
             <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{result.lo95.toFixed(3)}</td>
@@ -5895,7 +5904,7 @@ function SensitivityTab({project}){
             <span style={{fontSize:12,color:C.muted}}>df</span>
             <span style={{fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{egger.dof}</span>
           </div>
-          <div style={{marginTop:10,padding:"10px 12px",borderRadius:6,background:egger.pval<0.05?"#3b0d12":"#052e16"}}>
+          <div style={{marginTop:10,padding:"10px 12px",borderRadius:6,background:egger.pval<0.05?"var(--t-red-bg)":"var(--t-grn-bg)"}}>
             <div style={{fontSize:10,color:C.muted,marginBottom:4}}>p-value (two-tailed)</div>
             <div style={{fontSize:22,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color:egger.pval<0.05?C.red:C.grn}}>{egger.pval<0.001?"<0.001":egger.pval.toFixed(4)}</div>
             <div style={{fontSize:11,color:C.muted,marginTop:4}}>{egger.pval<0.05?"⚠ Evidence of asymmetry":"✓ No significant asymmetry"}</div>
@@ -5921,7 +5930,7 @@ function SensitivityTab({project}){
               <div style={{fontSize:20,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{dv(tf.base.pES)}</div>
               <div style={{fontSize:11,color:C.muted,fontFamily:"'IBM Plex Mono',monospace"}}>[{dv(tf.base.lo95)}, {dv(tf.base.hi95)}]</div>
             </div>
-            <div style={{flex:1,minWidth:180,background:C.bg,border:`1px solid ${tf.k0>0?C.yel+"55":C.brd}`,borderRadius:8,padding:"12px 14px"}}>
+            <div style={{flex:1,minWidth:180,background:C.bg,border:`1px solid ${tf.k0>0?themeAlpha(C.yel,'55'):C.brd}`,borderRadius:8,padding:"12px 14px"}}>
               <div style={{fontSize:10,fontWeight:700,color:tf.k0>0?C.yel:C.muted,letterSpacing:0.5,marginBottom:4}}>ADJUSTED (+{tf.k0} imputed)</div>
               <div style={{fontSize:20,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color:tf.k0>0?C.yel:C.grn}}>{dv(tf.adjusted.pES)}</div>
               <div style={{fontSize:11,color:C.muted,fontFamily:"'IBM Plex Mono',monospace"}}>[{dv(tf.adjusted.lo95)}, {dv(tf.adjusted.hi95)}]</div>
@@ -5949,7 +5958,7 @@ function SensitivityTab({project}){
           </tr></thead>
           <tbody>
             {influence.map(d=>(
-              <tr key={d.id} style={{borderBottom:`1px solid ${C.brd}`,background:d.influential?"#2d1f0822":"transparent"}}>
+              <tr key={d.id} style={{borderBottom:`1px solid ${C.brd}`,background:d.influential?themeAlpha("var(--t-yel-bg)","22"):"transparent"}}>
                 <td style={{padding:"6px 10px",fontWeight:d.influential?700:400,color:d.influential?C.yel:C.txt}}>{d.influential?"⚠ ":""}{d.label}</td>
                 <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,color:Math.abs(d.dffit)>1?C.yel:C.txt}}>{d.dffit>0?"+":""}{d.dffit}</td>
                 <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:Math.abs(d.i2Drop)>25?C.yel:C.muted}}>{d.i2Drop>0?"−":"+"}{Math.abs(d.i2Drop)}%</td>
@@ -6016,8 +6025,8 @@ function SubgroupTab({project}){
   ];
 
   return(<div>
-    <SectionHeader icon="🔬" title="Subgroup Analysis" desc="Explore heterogeneity by stratifying studies. The Q-between test asks whether subgroups differ more than chance."/>
-    <div style={{background:"#2d1f08",border:`1px solid ${C.yel}44`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",marginBottom:14,fontSize:12,color:C.muted,lineHeight:1.6}}>
+    <SectionHeader icon="layers" title="Subgroup Analysis" desc="Explore heterogeneity by stratifying studies. The Q-between test asks whether subgroups differ more than chance."/>
+    <div style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'44')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",marginBottom:14,fontSize:12,color:C.muted,lineHeight:1.6}}>
       <strong style={{color:C.yel}}>⚠ Use subgroups responsibly.</strong> Subgroup analyses should be <strong>pre-specified in your protocol</strong>, not chosen after seeing the data. Treat post-hoc subgroups as exploratory only, and be cautious when any subgroup has fewer than ~5 studies — differences can easily arise by chance.
     </div>
     <div style={{display:"flex",gap:10,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
@@ -6188,7 +6197,7 @@ function GRADETab({project,upd}){
   const result=useMemo(()=>runMeta(project.studies,"random"),[project.studies]);
 
   return(<div>
-    <SectionHeader icon="🎖️" title="GRADE Certainty of Evidence" desc="Grade the body of evidence for your primary outcome. Required by most journals and Cochrane."/>
+    <SectionHeader icon="award" title="GRADE Certainty of Evidence" desc="Grade the body of evidence for your primary outcome. Required by most journals and Cochrane."/>
 
     <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:16,marginBottom:16}}>
       <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16}}>
@@ -6196,7 +6205,7 @@ function GRADETab({project,upd}){
           <div style={{fontSize:11,fontWeight:700,color:C.acc,letterSpacing:1}}>RATE EACH DOMAIN</div>
           {anySuggest&&<button onClick={applyAll} style={{...btnS("primary"),fontSize:11,padding:"5px 12px"}}>✨ Apply all data-based suggestions</button>}
         </div>
-        <div style={{fontSize:11,color:C.muted,marginBottom:12,lineHeight:1.5,background:`${C.acc}0a`,border:`1px solid ${C.acc}22`,borderRadius:6,padding:"8px 11px"}}>
+        <div style={{fontSize:11,color:C.muted,marginBottom:12,lineHeight:1.5,background:`${themeAlpha(C.acc,'0a')}`,border:`1px solid ${themeAlpha(C.acc,'22')}`,borderRadius:6,padding:"8px 11px"}}>
           💡 Suggestions below are computed from your actual data — risk-of-bias ratings, I², the pooled CI, study count, and Egger's test. They're a starting point; the final judgement is yours.
         </div>
         {GRADE_DOMAINS.map(d=>{
@@ -6216,7 +6225,7 @@ function GRADETab({project,upd}){
                 const on=grade[d.id]===o.v;
                 return(<button key={o.v} onClick={()=>setRating(d.id,on?"":o.v)} style={{
                   padding:"5px 11px",borderRadius:4,cursor:"pointer",fontSize:11,fontWeight:600,
-                  border:`1px solid ${on?o.color:C.brd}`,background:on?`${o.color}25`:"transparent",
+                  border:`1px solid ${on?o.color:C.brd}`,background:on?`${themeAlpha(o.color,'25')}`:"transparent",
                   color:on?o.color:C.muted,fontFamily:"'IBM Plex Sans',sans-serif"
                 }}>{o.label} {o.modifier!==0?`(${o.modifier})`:""}</button>);
               })}
@@ -6235,7 +6244,7 @@ function GRADETab({project,upd}){
         );})}
       </div>
 
-      <div style={{background:C.card,border:`2px solid ${levelColors[finalLevel-1]}55`,borderRadius:8,padding:18}}>
+      <div style={{background:C.card,border:`2px solid ${themeAlpha(levelColors[finalLevel-1],'55')}`,borderRadius:8,padding:18}}>
         <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:1,marginBottom:10}}>OVERALL CERTAINTY</div>
         <div style={{fontSize:36,fontWeight:800,color:levelColors[finalLevel-1],marginBottom:4}}>{levels[finalLevel-1]}</div>
         <div style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:18,color:levelColors[finalLevel-1],marginBottom:14}}>{levelEmoji[finalLevel-1]}</div>
@@ -6357,7 +6366,7 @@ Output ONLY the section text — no labels, no preamble, no markdown headers. Us
   const wordCount=(t)=>t?t.trim().split(/\s+/).length:0;
 
   return(<div>
-    <SectionHeader icon="✍️" title={AI_FEATURES_ENABLED?"AI Manuscript Drafter":"Manuscript Draft"} desc={AI_FEATURES_ENABLED?"Generate publication-ready draft sections from your project data. Edit and refine before submitting.":"Write your manuscript sections — Methods, Results, Discussion, Abstract — alongside your project data. Drafts save with the project."}/>
+    <SectionHeader icon="pencil" title={AI_FEATURES_ENABLED?"AI Manuscript Drafter":"Manuscript Draft"} desc={AI_FEATURES_ENABLED?"Generate publication-ready draft sections from your project data. Edit and refine before submitting.":"Write your manuscript sections — Methods, Results, Discussion, Abstract — alongside your project data. Drafts save with the project."}/>
 
     <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap"}}>
       {sections.map(s=>(
@@ -6370,13 +6379,13 @@ Output ONLY the section text — no labels, no preamble, no markdown headers. Us
     {(()=>{const sec=sections.find(s=>s.id===section); const stale = AI_FEATURES_ENABLED && drafts[section] && sourceKeys[section] && sourceKeys[section] !== currentDataKey; return(
       <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:18}}>
         {stale && (
-          <div style={{background:"#2d1f08",border:`1px solid ${C.yel}55`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:14}}>
+          <div style={{background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'55')}`,borderLeft:`3px solid ${C.yel}`,borderRadius:6,padding:"10px 14px",marginBottom:14,display:"flex",alignItems:"center",gap:14}}>
             <span style={{fontSize:13}}>🔄</span>
             <div style={{flex:1}}>
               <div style={{fontSize:12,fontWeight:700,color:C.yel}}>Source data changed since this section was drafted</div>
               <div style={{fontSize:11,color:C.muted,marginTop:2}}>PICO, studies, or analysis results have been updated. Click sync to regenerate with the latest data.</div>
             </div>
-            <button onClick={()=>generate(section)} disabled={loading===section} style={{...btnS("ghost"),fontSize:11,color:C.yel,borderColor:C.yel+"55",opacity:loading===section?0.5:1}}>
+            <button onClick={()=>generate(section)} disabled={loading===section} style={{...btnS("ghost"),fontSize:11,color:C.yel,borderColor:themeAlpha(C.yel,'55'),opacity:loading===section?0.5:1}}>
               {loading===section?"⟳ Syncing…":"↻ Sync this section"}
             </button>
           </div>
@@ -6396,9 +6405,9 @@ Output ONLY the section text — no labels, no preamble, no markdown headers. Us
             </div>
             {AI_FEATURES_ENABLED&&<span style={{
               fontSize:11,fontFamily:"'IBM Plex Mono',monospace",
-              background:persistedM.generatedAt?`${C.grn}15`:C.card,
+              background:persistedM.generatedAt?`${themeAlpha(C.grn,'15')}`:C.card,
               color:persistedM.generatedAt?C.grn:C.dim,
-              border:`1px solid ${persistedM.generatedAt?C.grn+"44":C.brd}`,
+              border:`1px solid ${persistedM.generatedAt?themeAlpha(C.grn,'44'):C.brd}`,
               borderRadius:4,padding:"3px 8px",whiteSpace:"nowrap"
             }}>
               🕐 {persistedM.generatedAt
@@ -6419,125 +6428,6 @@ Output ONLY the section text — no labels, no preamble, no markdown headers. Us
   </div>);
 }
 
-/* ════════════ TAB: RAYYAN ════════════ */
-function RayyanTab({project,updNested}){
-  const{search,records}=project;
-  const ch=(k,v)=>updNested("search",k,v);
-
-  // Compute screening stats from records if available
-  const allRecords=records||[];
-  const included=allRecords.filter(r=>r.decision==="include").length;
-  const excluded=allRecords.filter(r=>r.decision==="exclude").length;
-  const maybe=allRecords.filter(r=>r.decision==="maybe").length;
-  const conflicts=allRecords.filter(r=>r.conflict).length;
-  const pending=allRecords.length-included-excluded-maybe;
-
-  return(<div>
-    <SectionHeader icon="🔗" title="Rayyan & Screening" desc="Manage title/abstract screening for your systematic review. Use META·SIFT Beta for built-in screening or Rayyan for collaborative external screening. Record your PRISMA numbers in the Screening & PRISMA tab."/>
-
-    {/* META·SIFT Beta launch card */}
-    <div style={{background:"#0a1a1a",border:"1px solid #2dd4bf40",borderLeft:"3px solid #2dd4bf",borderRadius:8,padding:18,marginBottom:18}}>
-      <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:16,flexWrap:"wrap"}}>
-        <div style={{flex:1,minWidth:200}}>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-            <span style={{fontSize:13,fontWeight:700,color:"#2dd4bf",letterSpacing:"-0.01em"}}>META·SIFT</span>
-            <span style={{fontSize:8,fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,letterSpacing:"0.12em",textTransform:"uppercase",background:"#2dd4bf18",border:"1px solid #2dd4bf50",color:"#2dd4bf",borderRadius:4,padding:"1px 6px"}}>BETA</span>
-          </div>
-          <div style={{fontSize:12,color:"#7ab8b0",lineHeight:1.6,marginBottom:0}}>
-            A built-in screening workspace for title/abstract review, duplicate detection, conflict resolution, and inclusion decisions. Data is saved to your META·LAB account.
-          </div>
-        </div>
-        <button
-          onClick={()=>{
-            // prompt6 Task 3 — open the EXACT linked screening project when one
-            // exists; only fall back to the dashboard when this review is unlinked.
-            const lid=(project._linkedMetaSift&&project._linkedMetaSift.id)||project._screenProjectId;
-            window.location.href=lid?`/sift-beta/projects/${lid}`:"/sift-beta";
-          }}
-          style={{background:"#2dd4bf",border:"none",color:"#050f0f",fontSize:12,fontWeight:700,fontFamily:"'IBM Plex Sans',sans-serif",padding:"9px 20px",borderRadius:7,cursor:"pointer",whiteSpace:"nowrap",flexShrink:0,letterSpacing:"-0.01em"}}
-          onMouseEnter={e=>e.currentTarget.style.background="#22c5b0"}
-          onMouseLeave={e=>e.currentTarget.style.background="#2dd4bf"}
-        >
-          {(project._linkedMetaSift&&project._linkedMetaSift.id)||project._screenProjectId?"Open linked META·SIFT project →":"Open META·SIFT Beta →"}
-        </button>
-      </div>
-    </div>
-
-    {/* Rayyan import status */}
-    <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:16}}>
-      <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:0.8,marginBottom:12}}>IMPORT STATUS</div>
-      <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",marginBottom:12}}>
-        <input type="checkbox" checked={!!search.rayyan} onChange={e=>ch("rayyan",e.target.checked)} style={{accentColor:C.grn,width:16,height:16}}/>
-        <span style={{fontSize:13,color:search.rayyan?C.grn:C.muted,fontWeight:600}}>
-          {search.rayyan?"✓ Search results imported to Rayyan":"Mark as imported to Rayyan"}
-        </span>
-      </label>
-      <div style={{fontSize:12,color:C.muted,lineHeight:1.6}}>
-        Visit <a href="https://rayyan.ai" target="_blank" rel="noreferrer" style={{color:C.acc}}>rayyan.ai</a> to create or access your systematic review. Rayyan is free for up to 3 reviews. Sign in with your institutional email for unlimited access.
-      </div>
-    </div>
-
-    {/* Export reminder */}
-    <div style={{background:C.card,border:`1px solid ${C.yel}44`,borderLeft:`3px solid ${C.yel}`,borderRadius:8,padding:16,marginBottom:16}}>
-      <div style={{fontSize:11,fontWeight:700,color:C.yel,letterSpacing:0.8,marginBottom:10}}>STEP 1 — EXPORT FROM DATABASES</div>
-      <div style={{fontSize:12,color:C.muted,marginBottom:10}}>Before importing to Rayyan, export your results from each database in RIS or CSV format:</div>
-      {["PubMed: Send to → Citation Manager → RIS format","Embase: Export → RIS file","Cochrane CENTRAL: Export selected → RIS","Web of Science: Export → Other File Formats → BibTeX or RIS","Scopus: Export → RIS format"].map((step,i)=>(
-        <div key={i} style={{display:"flex",gap:10,marginBottom:6,fontSize:12,color:C.muted}}>
-          <span style={{color:C.yel,fontWeight:700,minWidth:18,flexShrink:0}}>{i+1}.</span><span>{step}</span>
-        </div>
-      ))}
-    </div>
-
-    {/* Rayyan workflow steps */}
-    <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:16}}>
-      <div style={{fontSize:11,fontWeight:700,color:C.acc,letterSpacing:0.8,marginBottom:12}}>STEP 2 — RAYYAN SCREENING WORKFLOW</div>
-      {[
-        {step:"Create review",desc:"Go to rayyan.ai → New Review → enter your review title and description."},
-        {step:"Import files",desc:"Import → Upload files. Import one RIS/CSV file per database. Rayyan will automatically detect duplicates."},
-        {step:"Invite co-reviewer",desc:"Members → Invite → add your co-reviewer's email. Both reviewers screen independently (blinded mode)."},
-        {step:"Screen titles/abstracts",desc:"Each reviewer marks every record as Include, Exclude, or Maybe. Do NOT discuss until both are done."},
-        {step:"Resolve conflicts",desc:"After independent screening, reveal decisions and discuss conflicting records. Document the resolution method."},
-        {step:"Full-text screening",desc:"Export included + maybe records. Obtain full texts and apply your eligibility criteria. Record reasons for exclusion."},
-      ].map(({step,desc},i)=>(
-        <div key={i} style={{display:"flex",gap:12,marginBottom:12,padding:"10px 12px",background:C.bg,borderRadius:6,border:`1px solid ${C.brd}`}}>
-          <div style={{minWidth:24,height:24,borderRadius:"50%",background:`${C.acc}22`,border:`1px solid ${C.acc}44`,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
-            <span style={{fontSize:11,fontWeight:800,color:C.acc}}>{i+1}</span>
-          </div>
-          <div>
-            <div style={{fontSize:12,fontWeight:700,color:C.txt,marginBottom:3}}>{step}</div>
-            <div style={{fontSize:12,color:C.muted,lineHeight:1.55}}>{desc}</div>
-          </div>
-        </div>
-      ))}
-      <InfoBox color={C.grn}>✓ Dual independent screening is a methodological requirement for systematic reviews, not optional. Document who screened, the agreement rate, and how conflicts were resolved (e.g., consensus discussion or third arbitrator).</InfoBox>
-    </div>
-
-    {/* Screening progress (from records) */}
-    {allRecords.length>0&&(
-      <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:16}}>
-        <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:0.8,marginBottom:12}}>SCREENING PROGRESS ({allRecords.length} records)</div>
-        <div style={{display:"flex",flexWrap:"wrap",gap:10,marginBottom:8}}>
-          {[
-            {label:"Included",count:included,color:C.grn},
-            {label:"Excluded",count:excluded,color:C.red},
-            {label:"Maybe",count:maybe,color:C.yel},
-            {label:"Pending",count:pending,color:C.muted},
-            {label:"Conflicts",count:conflicts,color:C.purp},
-          ].map(({label,count,color})=>(
-            <div key={label} style={{background:C.bg,border:`1px solid ${C.brd}`,borderRadius:6,padding:"10px 14px",minWidth:90,textAlign:"center"}}>
-              <div style={{fontSize:22,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color}}>{count}</div>
-              <div style={{fontSize:11,color:C.muted,marginTop:2}}>{label}</div>
-            </div>
-          ))}
-        </div>
-        <div style={{fontSize:12,color:C.muted}}>Record final numbers in the <strong style={{color:C.txt}}>Screening & PRISMA</strong> tab to generate your PRISMA flow diagram.</div>
-      </div>
-    )}
-
-    <InfoBox>💡 After completing full-text screening in Rayyan, export the final list of included studies and enter their data in the <strong style={{color:C.txt}}>Data Extraction</strong> tab. Use the <strong style={{color:C.txt}}>Screening & PRISMA</strong> tab to record your flow numbers and generate the PRISMA diagram for your manuscript.</InfoBox>
-  </div>);
-}
-
 /* ════════════ METHODS & EQUATIONS TAB (prompt6 Task 13) ════════════ */
 /* Replaces the removed Templates downloads. Renders the engine-owned
    METHODS_CONTENT catalogue (src/research-engine/docs/methods-content.js):
@@ -6554,7 +6444,7 @@ function Frac({num,den}){
 }
 function MethodsTab(){
   return(<div>
-    <SectionHeader icon="📐" title="Methods & Equations"
+    <SectionHeader icon="bookOpen" title="Methods & Equations"
       desc="Every statistical method implemented in META·LAB and META·SIFT, documented as computed: the equation, what it means in plain English, where it runs in the app, and verified references. Methods not listed here are not implemented."/>
     {METHODS_CONTENT.map(m=>(
       <div key={m.id} style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"16px 18px",marginBottom:14}}>
@@ -6599,28 +6489,28 @@ const TABS=[
   // group:"project" ⇒ project meta-tabs (prompt6 Tasks 15/4) — rendered in their
   // own "Project" sidebar group ABOVE Workflow; phase:null keeps them out of the
   // workflow map, the progress denominator, and the "Next step" walker.
-  {id:"overview",   icon:"🏠", label:"Overview",             phase:null,  group:"project"},
-  {id:"control",    icon:"👥", label:"Project Control",      phase:null,  group:"project"},
-  {id:"pico",       icon:"📋", label:"PICO & Question",      phase:"Plan",    num:1},
-  {id:"prospero",   icon:"📝", label:"Protocol",             phase:"Plan",    num:2},
-  {id:"search",     icon:"🔍", label:"Search Builder",       phase:"Search",  num:3},
-  {id:"rayyan",     icon:"🔗", label:"Rayyan & Screening",   phase:"Search",  num:4},
-  {id:"prisma",     icon:"🔀", label:"Screening & PRISMA",   phase:"Screen",  num:5},
-  {id:"extraction", icon:"📊", label:"Data Extraction",      phase:"Extract", num:6},
-  {id:"rob",        icon:"⚖️", label:"Risk of Bias",         phase:"Extract", num:7},
-  {id:"analysis",   icon:"📈", label:"Meta-Analysis",        phase:"Analyze", num:8},
-  {id:"forest",     icon:"🌲", label:"Forest Plot",          phase:"Analyze", num:9},
-  {id:"sensitivity",icon:"🎯", label:"Sensitivity & Bias",   phase:"Analyze", num:10},
-  {id:"subgroup",   icon:"🔬", label:"Subgroup Analysis",    phase:"Analyze", num:11},
-  {id:"grade",      icon:"🎖️", label:"GRADE Certainty",      phase:"Report",  num:12},
-  {id:"report",     icon:"✅", label:"PRISMA Checklist",     phase:"Report",  num:13},
-  {id:"manuscript", icon:"✍️", label:"Manuscript Draft",     phase:"Report",  num:14},
+  {id:"overview",   icon:"grid",        label:"Overview",             phase:null,  group:"project"},
+  {id:"control",    icon:"sliders",     label:"Project Control",      phase:null,  group:"project"},
+  {id:"pico",       icon:"target",      label:"PICO & Question",      phase:"Plan",    num:1},
+  {id:"prospero",   icon:"clipboard",   label:"Protocol",             phase:"Plan",    num:2},
+  {id:"search",     icon:"search",      label:"Search Builder",       phase:"Search",  num:3},
+  {id:"prisma",     icon:"flow",        label:"Screening & PRISMA",   phase:"Screen",  num:4},
+  {id:"extraction", icon:"table",       label:"Data Extraction",      phase:"Extract", num:5},
+  {id:"rob",        icon:"scale",       label:"Risk of Bias",         phase:"Extract", num:6},
+  {id:"analysis",   icon:"sigma",       label:"Meta-Analysis",        phase:"Analyze", num:7},
+  {id:"forest",     icon:"forest",      label:"Forest Plot",          phase:"Analyze", num:8},
+  {id:"sensitivity",icon:"activity",    label:"Sensitivity & Bias",   phase:"Analyze", num:9},
+  {id:"subgroup",   icon:"layers",      label:"Subgroup Analysis",    phase:"Analyze", num:10},
+  {id:"grade",      icon:"award",       label:"GRADE Certainty",      phase:"Report",  num:11},
+  {id:"report",     icon:"checkSquare", label:"PRISMA Checklist",     phase:"Report",  num:12},
+  {id:"manuscript", icon:"pencil",      label:"Manuscript Draft",     phase:"Report",  num:13},
   // phase:null ⇒ reference page, NOT a workflow step — excluded from the
   // workflow map, progress denominator and "Next step" walker (all filter on t.phase).
-  {id:"methods",    icon:"📐", label:"Methods & Equations",  phase:null,  group:"reference"},
+  {id:"methods",    icon:"bookOpen",    label:"Methods & Equations",  phase:null,  group:"reference"},
 ];
 const PHASES=["Plan","Search","Screen","Extract","Analyze","Report"];
-const PHASE_ICON={Plan:"🎯",Search:"🔍",Screen:"🔀",Extract:"📊",Analyze:"📈",Report:"📄"};
+/* Icon names (src/frontend/components/icons.jsx) — render via <Icon name={…}/> */
+const PHASE_ICON={Plan:"target",Search:"search",Screen:"filter",Extract:"table",Analyze:"sigma",Report:"fileText"};
 
 /* Green-light readiness check — returns { ok, missing[] } */
 function readinessCheck(project) {
@@ -6650,7 +6540,6 @@ function stepStatus(project){
     pico: (pico.P&&pico.I&&pico.O)?"done":(pico.P||pico.I||pico.O||pico.question)?"partial":"empty",
     prospero: (p.prospero&&p.prospero.fields&&Object.values(p.prospero.fields).filter(v=>v&&v.trim()).length>=15)?"done":(p.prospero&&p.prospero.fields&&Object.values(p.prospero.fields).filter(v=>v&&v.trim()).length>0)?"partial":"empty",
     search: (dbCount>=3&&search.string||(p.mesh&&p.mesh.results))?"done":(dbCount>0||search.string)?"partial":"empty",
-    rayyan: search.rayyan?"done":"empty",
     prisma: prisma.included?"done":(prisma.dbs||prisma.dedupe)?"partial":"empty",
     extraction: (()=>{
       if(p.studies.length===0) return "empty";
@@ -6696,7 +6585,7 @@ function auditProject(p){
   if(dbCount<3) add("high","Search",`Only ${dbCount} database${dbCount===1?"":"s"} selected. Most journals expect ≥3 (e.g. MEDLINE, Embase, CENTRAL).`);
   if(!search.string) add("med","Search","No search string documented. Save at least your primary database query for reproducibility.");
   if(!search.date) add("low","Search","Search date not recorded. PRISMA requires the date each source was last searched.");
-  if(!search.rayyan&&!search.notes) add("low","Search","No screening tool or grey-literature note. Document how duplicates were removed and titles screened.");
+  if(!search.notes) add("low","Search","No screening or grey-literature note. Document how duplicates were removed and titles screened.");
 
   // SCREEN
   if(!prisma.dbs&&!prisma.included) add("med","Screen","PRISMA flow numbers are empty. Track records identified → screened → included.");
@@ -6739,21 +6628,21 @@ function auditProject(p){
 function AuditPanel({project,onClose,onJump}){
   const items=useMemo(()=>auditProject(project),[project]);
   const high=items.filter(i=>i.sev==="high"),med=items.filter(i=>i.sev==="med"),low=items.filter(i=>i.sev==="low");
-  const sevMeta={high:{c:C.red,label:"Must fix",bg:"#3b0d12"},med:{c:C.yel,label:"Should address",bg:"#2d1f08"},low:{c:C.acc,label:"Consider",bg:"#0a2540"}};
+  const sevMeta={high:{c:C.red,label:"Must fix",bg:"var(--t-red-bg)"},med:{c:C.yel,label:"Should address",bg:"var(--t-yel-bg)"},low:{c:C.acc,label:"Consider",bg:"var(--t-acc-bg)"}};
   const phaseTab={Plan:"pico",Search:"search",Screen:"prisma",Extract:"extraction",Analyze:"analysis",Report:"report"};
   return(<div style={{position:"fixed",inset:0,background:"#00000099",zIndex:997,display:"flex",justifyContent:"flex-end"}} onClick={onClose}>
-    <div onClick={e=>e.stopPropagation()} style={{width:420,maxWidth:"92vw",background:C.surf,borderLeft:`1px solid ${C.brd}`,height:"100%",overflowY:"auto",boxShadow:"-12px 0 40px #00000066"}}>
+    <div onClick={e=>e.stopPropagation()} style={{width:420,maxWidth:"92vw",background:C.surf,borderLeft:`1px solid ${C.brd}`,height:"100%",overflowY:"auto",boxShadow:"-12px 0 40px var(--t-shadow)"}}>
       <div style={{position:"sticky",top:0,background:C.surf,borderBottom:`1px solid ${C.brd}`,padding:"16px 18px",display:"flex",justifyContent:"space-between",alignItems:"center",zIndex:1}}>
         <div>
           <div style={{fontSize:15,fontWeight:800}}>Project Audit</div>
-          <div style={{fontSize:11,color:C.muted,marginTop:2}}>{items.length===0?"Everything looks complete 🎉":`${items.length} item${items.length===1?"":"s"} to review`}</div>
+          <div style={{fontSize:11,color:C.muted,marginTop:2}}>{items.length===0?"Everything looks complete":`${items.length} item${items.length===1?"":"s"} to review`}</div>
         </div>
         <button onClick={onClose} style={{background:"none",border:"none",color:C.muted,fontSize:22,cursor:"pointer",padding:0,lineHeight:1}}>×</button>
       </div>
       <div style={{padding:18}}>
         {items.length===0?(
           <div style={{textAlign:"center",padding:"40px 20px",color:C.muted}}>
-            <div style={{fontSize:40,marginBottom:12}}>✅</div>
+            <div style={{marginBottom:12,color:C.grn}}><Icon name="checkSquare" size={36}/></div>
             <div style={{fontSize:14,color:C.grn,fontWeight:600,marginBottom:6}}>No gaps detected</div>
             <div style={{fontSize:12,lineHeight:1.6}}>Your project meets the key methodological checkpoints. Keep your documentation up to date as you finish.</div>
           </div>
@@ -6769,7 +6658,7 @@ function AuditPanel({project,onClose,onJump}){
                 <div style={{display:"flex",flexDirection:"column",gap:8}}>
                   {list.map((it,i)=>(
                     <div key={i} onClick={()=>{onJump(phaseTab[it.phase]||"pico");onClose();}}
-                      style={{background:sevMeta[it.sev].bg,border:`1px solid ${sevMeta[it.sev].c}44`,borderLeft:`3px solid ${sevMeta[it.sev].c}`,
+                      style={{background:sevMeta[it.sev].bg,border:`1px solid ${themeAlpha(sevMeta[it.sev].c,'44')}`,borderLeft:`3px solid ${sevMeta[it.sev].c}`,
                         borderRadius:6,padding:"10px 12px",cursor:"pointer",transition:"all 0.12s"}}
                       onMouseEnter={e=>e.currentTarget.style.transform="translateX(-3px)"}
                       onMouseLeave={e=>e.currentTarget.style.transform="translateX(0)"}>
@@ -6888,10 +6777,10 @@ function OverviewTab({project,setTab}){
   </div>);
 
   return(<div>
-    <SectionHeader icon="🏠" title="Overview" desc="Where this review stands right now — team, linked screening workspace, progress, and what to do next."/>
+    <SectionHeader icon="grid" title="Overview" desc="Where this review stands right now — team, linked screening workspace, progress, and what to do next."/>
 
     {/* Stat row */}
-    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:10,marginBottom:14}}>
+    <div className="ov-grid4" style={{marginBottom:14}}>
       {[
         {n:studies.length,l:"Studies in extraction"},
         {n:withES,l:"With effect size"},
@@ -6905,7 +6794,7 @@ function OverviewTab({project,setTab}){
       ))}
     </div>
 
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+    <div className="ov-grid2" style={{marginBottom:14}}>
       {/* Project identity */}
       <div style={card}>
         <div style={secLbl}>Project</div>
@@ -6922,13 +6811,13 @@ function OverviewTab({project,setTab}){
       </div>
 
       {/* Linked META·SIFT */}
-      <div style={{...card,borderColor:lid?"#2dd4bf40":C.brd}}>
-        <div style={{...secLbl,color:lid?"#2dd4bf":C.muted}}>Linked META·SIFT</div>
+      <div style={{...card,borderColor:lid?themeAlpha("var(--t-teal)","40"):C.brd}}>
+        <div style={{...secLbl,color:lid?"var(--t-teal)":C.muted}}>Linked META·SIFT</div>
         {lid?(<>
-          <div style={{fontSize:13,fontWeight:700,color:C.txt,marginBottom:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>🔗 {linkedTitle||"Screening project"}</div>
+          <div style={{fontSize:13,fontWeight:700,color:C.txt,marginBottom:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><Icon name="link" size={12} style={{marginRight:6,verticalAlign:"-1px"}}/>{linkedTitle||"Screening project"}</div>
           <div style={{fontSize:11,color:C.muted,lineHeight:1.6,marginBottom:10}}>Screening decisions, PRISMA numbers, and accepted studies flow from this shared workspace.</div>
           <button onClick={()=>{window.location.href=`/sift-beta/projects/${lid}`;}}
-            style={{background:"#2dd4bf",border:"none",color:"#050f0f",fontSize:11.5,fontWeight:700,fontFamily:"'IBM Plex Sans',sans-serif",padding:"7px 16px",borderRadius:7,cursor:"pointer"}}>
+            style={{background:"var(--t-teal)",border:"none",color:"var(--t-acc-text)",fontSize:11.5,fontWeight:700,fontFamily:"'IBM Plex Sans',sans-serif",padding:"7px 16px",borderRadius:7,cursor:"pointer"}}>
             Open in META·SIFT →
           </button>
         </>):(<>
@@ -6940,7 +6829,7 @@ function OverviewTab({project,setTab}){
       </div>
     </div>
 
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,marginBottom:14}}>
+    <div className="ov-grid2" style={{marginBottom:14}}>
       {/* Team */}
       <div style={card}>
         <div style={secLbl}>Team</div>
@@ -6989,9 +6878,9 @@ function OverviewTab({project,setTab}){
       </div>
     </div>
 
-    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+    <div className="ov-grid2">
       {/* Meta-analysis readiness */}
-      <div style={{...card,borderColor:(ready.ok?C.grn:C.yel)+"44"}}>
+      <div style={{...card,borderColor:themeAlpha((ready.ok?C.grn:C.yel),'44')}}>
         <div style={{...secLbl,color:ready.ok?C.grn:C.yel}}>Meta-analysis readiness</div>
         {ready.ok
           ?<div style={{fontSize:12.5,color:C.grn,lineHeight:1.6}}>✓ All prerequisites met — PICO, databases, and search strategy are in place.</div>
@@ -7005,16 +6894,16 @@ function OverviewTab({project,setTab}){
       </div>
 
       {/* Next suggested step */}
-      <div style={{...card,borderColor:C.acc+"40"}}>
+      <div style={{...card,borderColor:themeAlpha(C.acc,'40')}}>
         <div style={{...secLbl,color:C.acc}}>Next suggested step</div>
         {nextStep?(<>
-          <div style={{fontSize:13,fontWeight:700,color:C.txt,marginBottom:4}}>{nextStep.icon} {nextStep.label}</div>
+          <div style={{fontSize:13,fontWeight:700,color:C.txt,marginBottom:4,display:"flex",alignItems:"center",gap:6}}><Icon name={nextStep.icon} size={14}/>{nextStep.label}</div>
           <div style={{fontSize:11.5,color:C.muted,lineHeight:1.6,marginBottom:10}}>
             {status[nextStep.id]==="partial"?"Started but not finished — pick up where you left off.":"The first incomplete step in the PRISMA workflow."}
           </div>
           <button onClick={()=>setTab(nextStep.id)} style={{...btnS("primary"),fontSize:12}}>Go to {nextStep.label} →</button>
         </>):(
-          <div style={{fontSize:12.5,color:C.grn,lineHeight:1.6}}>🎉 Every workflow step is complete — run the audit, export your report, and submit.</div>
+          <div style={{fontSize:12.5,color:C.grn,lineHeight:1.6}}>✓ Every workflow step is complete — run the audit, export your report, and submit.</div>
         )}
       </div>
     </div>
@@ -7084,7 +6973,7 @@ function CtrlMemberRow({m,canManage,amOwner,busy,rowErr,onPatch,onRemove}){
   const currentPreset=m.permissionPreset&&presetOptions.includes(m.permissionPreset)?m.permissionPreset:"";
   const quick=[["canScreen","Screen"],["canChat","Chat"],["canResolveConflicts","Resolve"]];
   return(
-    <div style={{background:C.bg,border:`1px solid ${isOwnerRow?C.yel+"44":isLeaderRow?C.acc+"33":C.brd}`,borderRadius:8,padding:"12px 14px",opacity:m.status==="inactive"?0.72:1}}>
+    <div style={{background:C.bg,border:`1px solid ${isOwnerRow?themeAlpha(C.yel,'44'):isLeaderRow?themeAlpha(C.acc,'33'):C.brd}`,borderRadius:8,padding:"12px 14px",opacity:m.status==="inactive"?0.72:1}}>
       <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
         <div style={{flex:1,minWidth:0}}>
           <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
@@ -7153,7 +7042,7 @@ function CtrlMemberRow({m,canManage,amOwner,busy,rowErr,onPatch,onRemove}){
           ))}
         </div>
       )}
-      {rowErr&&<div style={{marginTop:10,background:"#3b0d12",border:`1px solid ${C.red}44`,borderRadius:6,padding:"7px 11px",color:C.red,fontSize:11.5}}>{rowErr}</div>}
+      {rowErr&&<div style={{marginTop:10,background:"var(--t-red-bg)",border:`1px solid ${themeAlpha(C.red,'44')}`,borderRadius:6,padding:"7px 11px",color:C.red,fontSize:11.5}}>{rowErr}</div>}
     </div>
   );
 }
@@ -7300,7 +7189,7 @@ function ControlTab({project,onAnnotate}){
   const statusMeta=CTRL_STATUS_OPTIONS.find(o=>o.value===spStatus);
 
   return(<div>
-    <SectionHeader icon="👥" title="Project Control"
+    <SectionHeader icon="sliders" title="Project Control"
       desc="Manage the shared Review Workspace — status, members, roles, permissions, and the META·SIFT link — all in one place."
       badge={`Your role · ${perms.role}`}/>
 
@@ -7353,14 +7242,14 @@ function ControlTab({project,onAnnotate}){
           )}
         </div>
         <div style={{borderTop:`1px solid ${C.brd}`,paddingTop:12,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-          <span style={tagS("green")}>🔗 {(project._linkedMetaSift&&project._linkedMetaSift.title)||(sp&&sp.title)||"Linked META·SIFT project"}</span>
+          <span style={tagS("green")}><Icon name="link" size={11}/> {(project._linkedMetaSift&&project._linkedMetaSift.title)||(sp&&sp.title)||"Linked META·SIFT project"}</span>
           <button onClick={()=>{window.location.href=`/sift-beta/projects/${lid}`;}} style={{...btnS("ghost"),fontSize:11}}>Open in META·SIFT →</button>
           <span style={{fontSize:10.5,color:C.muted}}>Accepted second-review studies hand off to Data Extraction; PRISMA numbers sync from screening.</span>
         </div>
       </div>
     ):(
-      <div style={{...card,borderColor:"#2dd4bf40",background:C.bg}}>
-        <div style={{...secLbl,color:"#2dd4bf"}}>Create &amp; link META·SIFT</div>
+      <div style={{...card,borderColor:themeAlpha("var(--t-teal)","40"),background:C.bg}}>
+        <div style={{...secLbl,color:"var(--t-teal)"}}>Create &amp; link META·SIFT</div>
         <div style={{fontSize:12,color:C.muted,lineHeight:1.6,marginBottom:12}}>
           This review has no linked screening project yet. Create one to screen titles/abstracts with your team in META·SIFT —
           same owner and title, shared members and permissions, PRISMA numbers and accepted studies flow back here automatically.
@@ -7414,7 +7303,7 @@ function ControlTab({project,onAnnotate}){
     {/* Remove confirm modal */}
     {confirmRemove&&(
       <div className="modal-bg" style={{position:"fixed",inset:0,background:"#00000099",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center"}}>
-        <div style={{background:C.surf,border:`1px solid ${C.red}44`,borderRadius:14,padding:26,width:400,boxShadow:"0 24px 80px #000000bb"}}>
+        <div style={{background:C.surf,border:`1px solid ${themeAlpha(C.red,'44')}`,borderRadius:14,padding:26,width:400,boxShadow:"0 24px 80px var(--t-shadow)"}}>
           <div style={{fontSize:15,fontWeight:800,marginBottom:6,color:C.txt}}>Remove member?</div>
           <div style={{fontSize:12.5,color:C.muted,marginBottom:8,lineHeight:1.6}}>
             Remove <strong style={{color:C.txt}}>{confirmRemove.name||confirmRemove.email}</strong> from this workspace?
@@ -7724,11 +7613,11 @@ export default function MetaLab(){
       <div style={{textAlign:"center"}}>
         <div style={{
           width:56,height:56,borderRadius:14,
-          background:`linear-gradient(135deg,${C.acc}30,${C.acc}10)`,
-          border:`1px solid ${C.acc}40`,
+          background:`linear-gradient(135deg,${themeAlpha(C.acc,'30')},${themeAlpha(C.acc,'10')})`,
+          border:`1px solid ${themeAlpha(C.acc,'40')}`,
           display:"flex",alignItems:"center",justifyContent:"center",
           fontSize:28,margin:"0 auto 16px",
-        }} className="pulse-soft">🧪</div>
+        }} className="pulse-soft"><Icon name="flask" size={26} style={{color:C.acc}}/></div>
         <div style={{fontSize:15,fontWeight:700,color:C.txt,marginBottom:6}}>META·LAB</div>
         <div style={{color:C.muted,fontSize:12}}>Loading your workspace…</div>
       </div>
@@ -7748,24 +7637,24 @@ export default function MetaLab(){
 
       *{box-sizing:border-box;margin:0;padding:0;}
       html{scroll-behavior:smooth;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;}
-      body{background:${C.bg};}
+      body{background:${C.bg};color:${C.txt};}
 
       /* Scrollbars */
       ::-webkit-scrollbar{width:3px;height:3px;}
       ::-webkit-scrollbar-track{background:transparent;}
-      ::-webkit-scrollbar-thumb{background:${C.brd2};border-radius:99px;transition:background 0.2s ease;}
+      ::-webkit-scrollbar-thumb{background:${C.brd};border-radius:99px;transition:background 0.2s ease;}
       ::-webkit-scrollbar-thumb:hover{background:${C.muted};}
 
       /* Inputs */
-      input,textarea,select{color-scheme:dark;transition:border-color 0.15s ease,box-shadow 0.15s ease;}
+      input,textarea,select{transition:border-color 0.15s ease,box-shadow 0.15s ease;}
       input:focus,textarea:focus,select:focus{
         outline:none!important;
-        border-color:${C.acc}80!important;
-        box-shadow:0 0 0 3px ${C.acc}14!important;
+        border-color:${themeAlpha(C.acc,'80')}!important;
+        box-shadow:0 0 0 3px ${themeAlpha(C.acc,'14')}!important;
       }
       /* Keyboard-only focus ring */
       button:focus-visible,[role="button"]:focus-visible,.nav-item:focus-visible{
-        outline:none;box-shadow:0 0 0 2px ${C.acc}50;border-radius:8px;
+        outline:none;box-shadow:0 0 0 2px ${themeAlpha(C.acc,'50')};border-radius:8px;
       }
 
       /* Buttons — specific properties (never transition:all), instant press feedback */
@@ -7800,8 +7689,18 @@ export default function MetaLab(){
       /* Stat numbers */
       .stat-num{font-variant-numeric:tabular-nums;}
 
+      /* Overview alignment grids (prompt7 Task 2) */
+      .ov-grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px;align-items:stretch;}
+      .ov-grid2>*{min-width:0;}
+      .ov-grid4{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;}
+      .ov-grid4>*{min-width:0;}
+      @media (max-width:1100px){
+        .ov-grid2{grid-template-columns:1fr;}
+        .ov-grid4{grid-template-columns:repeat(2,1fr);}
+      }
+
       /* Subtle glow on active accent elements */
-      .glow-acc{box-shadow:0 0 20px ${C.acc}22;}
+      .glow-acc{box-shadow:0 0 20px ${themeAlpha(C.acc,'22')};}
 
       /* Progress bar transitions */
       .prog-bar{transition:width 0.4s var(--ease-out),background 0.3s ease;}
@@ -7812,7 +7711,7 @@ export default function MetaLab(){
 
       /* Soft pulse for the loading splash logo */
       .pulse-soft{animation:pulseSoft 1.8s var(--ease-in-out) infinite;}
-      @keyframes pulseSoft{0%,100%{transform:scale(1);box-shadow:0 0 0 0 ${C.acc}22}50%{transform:scale(1.04);box-shadow:0 0 22px 2px ${C.acc}22}}
+      @keyframes pulseSoft{0%,100%{transform:scale(1);box-shadow:0 0 0 0 ${themeAlpha(C.acc,'22')}}50%{transform:scale(1.04);box-shadow:0 0 22px 2px ${themeAlpha(C.acc,'22')}}}
 
       /* Tooltip */
       [title]{cursor:help;}
@@ -7832,7 +7731,7 @@ export default function MetaLab(){
         button:hover:not(:disabled){filter:brightness(1.1);}
         a:hover{opacity:0.75;}
         .nav-item:hover{background:${C.card}!important;}
-        .hover-lift:hover{box-shadow:0 8px 32px #00000055,0 2px 8px #00000033;transform:translateY(-2px);border-color:${C.brd2}!important;}
+        .hover-lift:hover{box-shadow:0 8px 32px var(--t-shadow),0 2px 8px var(--t-shadow);transform:translateY(-2px);border-color:${C.brd2}!important;}
       }
 
       /* Respect reduced-motion: keep fades, drop movement & continuous spin slows */
@@ -7851,7 +7750,7 @@ export default function MetaLab(){
     {showModal&&(<div className="modal-bg" style={{position:"fixed",inset:0,background:"#00000099",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div style={{
         background:C.surf,border:`1px solid ${C.brd2}`,borderRadius:14,padding:28,width:400,
-        boxShadow:"0 24px 80px #000000bb",
+        boxShadow:"0 24px 80px var(--t-shadow)",
       }}>
         <div style={{fontSize:16,fontWeight:800,marginBottom:6,color:C.txt}}>New Project</div>
         <div style={{fontSize:12,color:C.muted,marginBottom:18,lineHeight:1.5}}>Give your systematic review a descriptive name — you can change it later.</div>
@@ -7864,7 +7763,7 @@ export default function MetaLab(){
           <input type="checkbox" checked={withSift} onChange={e=>setWithSift(e.target.checked)}
             style={{accentColor:C.acc,width:15,height:15,marginTop:1,flexShrink:0}}/>
           <span style={{fontSize:12,color:C.txt2,lineHeight:1.5}}>
-            Create linked <strong style={{color:"#2dd4bf"}}>META·SIFT</strong> screening project
+            Create linked <strong style={{color:"var(--t-teal)"}}>META·SIFT</strong> screening project
             <span style={{display:"block",fontSize:10.5,color:C.muted,marginTop:2}}>
               Same owner and title — screening decisions, PRISMA numbers, and accepted studies sync into this review.
             </span>
@@ -7882,8 +7781,8 @@ export default function MetaLab(){
     {/* Confirm delete modal */}
     {confirmDel&&(<div className="modal-bg" style={{position:"fixed",inset:0,background:"#00000099",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center"}}>
       <div style={{
-        background:C.surf,border:`1px solid ${C.red}44`,borderRadius:14,padding:28,width:380,
-        boxShadow:"0 24px 80px #000000bb",
+        background:C.surf,border:`1px solid ${themeAlpha(C.red,'44')}`,borderRadius:14,padding:28,width:380,
+        boxShadow:"0 24px 80px var(--t-shadow)",
       }}>
         <div style={{fontSize:16,fontWeight:800,marginBottom:6,color:C.txt}}>Delete Project?</div>
         <div style={{fontSize:13,color:C.muted,marginBottom:22,lineHeight:1.55}}>
@@ -7909,9 +7808,9 @@ export default function MetaLab(){
         <div style={{display:"flex",alignItems:"center",gap:9}}>
           <div style={{
             width:28,height:28,borderRadius:8,
-            background:`linear-gradient(135deg,${C.acc}40,${C.acc2}28)`,
-            display:"flex",alignItems:"center",justifyContent:"center",fontSize:13,flexShrink:0,
-          }}>⬡</div>
+            background:`linear-gradient(135deg,${themeAlpha(C.acc,'40')},${themeAlpha(C.acc2,'28')})`,
+            display:"flex",alignItems:"center",justifyContent:"center",color:C.acc,flexShrink:0,
+          }}><Icon name="hexagon" size={14}/></div>
           <div>
             <div style={{fontSize:14,fontWeight:800,color:C.txt,letterSpacing:-0.2,lineHeight:1}}>META·LAB</div>
             <div style={{fontSize:9.5,color:C.muted,letterSpacing:0.6,marginTop:2,textTransform:"uppercase"}}>Systematic Review</div>
@@ -7929,7 +7828,7 @@ export default function MetaLab(){
               fontSize:10,borderRadius:6,padding:"2px 7px",lineHeight:1.4,
             }}>Import</button>
             <button onClick={()=>setShowModal(true)} style={{
-              background:`${C.acc}1a`,border:`1px solid ${C.acc}30`,color:C.acc,
+              background:`${themeAlpha(C.acc,'1a')}`,border:`1px solid ${themeAlpha(C.acc,'30')}`,color:C.acc,
               cursor:"pointer",fontSize:10,borderRadius:6,padding:"2px 8px",lineHeight:1.4,fontWeight:600,
             }}>+ New</button>
           </div>
@@ -7942,8 +7841,8 @@ export default function MetaLab(){
               style={{
                 display:"flex",alignItems:"center",gap:8,padding:"7px 9px",borderRadius:8,
                 cursor:"pointer",marginBottom:1,
-                background:activeId===p.id?`${C.acc}16`:"transparent",
-                border:`1px solid ${activeId===p.id?C.acc+"28":"transparent"}`,
+                background:activeId===p.id?`${themeAlpha(C.acc,'16')}`:"transparent",
+                border:`1px solid ${activeId===p.id?themeAlpha(C.acc,'28'):"transparent"}`,
               }}>
               <div style={{
                 width:5,height:5,borderRadius:"50%",flexShrink:0,
@@ -7962,8 +7861,8 @@ export default function MetaLab(){
                     <span title={p._readOnly?`Shared read-only · owner ${p._owner?.name||p._owner?.email||""}`:`Shared · ${p._role||"member"} · owner ${p._owner?.name||p._owner?.email||""}`}
                       style={{flexShrink:0,fontSize:8,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",
                         padding:"1px 5px",borderRadius:4,
-                        color:p._readOnly?C.yel:C.acc,background:(p._readOnly?C.yel:C.acc)+"1a",
-                        border:`1px solid ${(p._readOnly?C.yel:C.acc)}40`}}>
+                        color:p._readOnly?C.yel:C.acc,background:themeAlpha((p._readOnly?C.yel:C.acc),'1a'),
+                        border:`1px solid ${themeAlpha((p._readOnly?C.yel:C.acc),'40')}`}}>
                       {p._readOnly?"View":"Shared"}
                     </span>
                   )}
@@ -7973,7 +7872,7 @@ export default function MetaLab(){
                       onClick={e=>{e.stopPropagation();window.location.href=`/sift-beta/projects/${p._linkedMetaSift.id}`;}}
                       style={{flexShrink:0,fontSize:8,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",
                         padding:"1px 5px",borderRadius:4,cursor:"pointer",
-                        color:"#2dd4bf",background:"#2dd4bf1a",border:"1px solid #2dd4bf40"}}>
+                        color:"var(--t-teal)",background:themeAlpha("var(--t-teal)","1a"),border:`1px solid ${themeAlpha("var(--t-teal)","40")}`}}>
                       ⬡ Sift
                     </span>
                   )}
@@ -8006,8 +7905,8 @@ export default function MetaLab(){
             const on=tab===t.id;
             return(<div key={t.id} onClick={()=>setTab(t.id)} className="nav-item"
               style={{display:"flex",alignItems:"center",gap:9,padding:"6px 10px",borderRadius:7,cursor:"pointer",marginBottom:1,
-                background:on?`${C.acc}1a`:"transparent"}}>
-              <span style={{fontSize:13,flexShrink:0,opacity:0.85}}>{t.icon}</span>
+                background:on?`${themeAlpha(C.acc,'1a')}`:"transparent"}}>
+              <Icon name={t.icon} size={14} style={{flexShrink:0,opacity:0.85}}/>
               <span style={{fontSize:12,color:on?C.acc:C.txt2,fontWeight:on?600:400,flex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{t.label}</span>
             </div>);
           })}
@@ -8054,12 +7953,12 @@ export default function MetaLab(){
                     style={{
                       display:"flex",alignItems:"center",gap:8,
                       padding:"6px 10px",borderRadius:7,cursor:"pointer",marginBottom:1,
-                      background:on?`${C.acc}1a`:"transparent",
+                      background:on?`${themeAlpha(C.acc,'1a')}`:"transparent",
                     }}>
                     <span style={{
                       width:5,height:5,borderRadius:"50%",flexShrink:0,
                       background:dotColor,
-                      boxShadow:st==="done"?`0 0 5px ${C.grn}70`:st==="partial"?`0 0 5px ${C.yel}50`:"none",
+                      boxShadow:st==="done"?`0 0 5px ${themeAlpha(C.grn,'70')}`:st==="partial"?`0 0 5px ${themeAlpha(C.yel,'50')}`:"none",
                       transition:"all 0.2s",
                     }}/>
                     <span style={{
@@ -8084,8 +7983,8 @@ export default function MetaLab(){
             const on=tab===t.id;
             return(<div key={t.id} onClick={()=>setTab(t.id)} className="nav-item"
               style={{display:"flex",alignItems:"center",gap:9,padding:"6px 10px",borderRadius:7,cursor:"pointer",marginBottom:1,
-                background:on?`${C.acc}1a`:"transparent"}}>
-              <span style={{fontSize:13,flexShrink:0,opacity:0.85}}>{t.icon}</span>
+                background:on?`${themeAlpha(C.acc,'1a')}`:"transparent"}}>
+              <Icon name={t.icon} size={14} style={{flexShrink:0,opacity:0.85}}/>
               <span style={{fontSize:12,color:on?C.acc:C.txt2,fontWeight:on?600:400,flex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{t.label}</span>
             </div>);
           })}
@@ -8112,8 +8011,8 @@ export default function MetaLab(){
     <div style={{marginLeft:256,flex:1,padding:"28px 36px 56px",overflowY:"auto",minHeight:"100vh"}}>
       {/* Non-fatal create warning (prompt6 Task 2) — e.g. linked SIFT creation failed */}
       {createWarning&&(
-        <div style={{maxWidth:960,marginBottom:18,padding:"10px 14px",borderRadius:8,fontSize:12.5,display:"flex",alignItems:"flex-start",gap:9,
-          background:C.yel+"14",border:`1px solid ${C.yel}40`}}>
+        <div style={{maxWidth:960,margin:"0 auto 18px",padding:"10px 14px",borderRadius:8,fontSize:12.5,display:"flex",alignItems:"flex-start",gap:9,
+          background:themeAlpha(C.yel,'14'),border:`1px solid ${themeAlpha(C.yel,'40')}`}}>
           <span style={{fontSize:14,flexShrink:0}}>⚠</span>
           <span style={{color:C.txt2,lineHeight:1.5,flex:1}}>{createWarning}</span>
           <button onClick={()=>setCreateWarning("")} style={{background:"none",border:"none",color:C.muted,fontSize:16,cursor:"pointer",padding:0,lineHeight:1,flexShrink:0}}>×</button>
@@ -8122,8 +8021,8 @@ export default function MetaLab(){
       {remoteUpdate&&(
         /* Realtime conflict banner (prompt6 Task 7): a collaborator changed this
            project while local edits were unsaved — never auto-apply over them. */
-        <div style={{maxWidth:960,marginBottom:18,padding:"10px 14px",borderRadius:8,fontSize:12.5,display:"flex",alignItems:"center",gap:9,
-          background:C.acc+"14",border:`1px solid ${C.acc}40`}}>
+        <div style={{maxWidth:960,margin:"0 auto 18px",padding:"10px 14px",borderRadius:8,fontSize:12.5,display:"flex",alignItems:"center",gap:9,
+          background:themeAlpha(C.acc,'14'),border:`1px solid ${themeAlpha(C.acc,'40')}`}}>
           <span style={{fontSize:14,flexShrink:0}}>↻</span>
           <span style={{color:C.txt2,lineHeight:1.5,flex:1}}>Updated by a collaborator — refresh to see changes.</span>
           <button onClick={applyRemoteUpdate} style={{...btnS("primary"),fontSize:11,padding:"5px 12px",flexShrink:0}}>Refresh</button>
@@ -8135,8 +8034,8 @@ export default function MetaLab(){
            never a silent fallback to the first project. */
         <div style={{maxWidth:560,margin:"96px auto",textAlign:"center"}}>
           <div style={{width:56,height:56,borderRadius:16,margin:"0 auto 20px",
-            background:`${C.yel}14`,border:`1px solid ${C.yel}40`,
-            display:"flex",alignItems:"center",justifyContent:"center",fontSize:24}}>🔒</div>
+            background:`${themeAlpha(C.yel,'14')}`,border:`1px solid ${themeAlpha(C.yel,'40')}`,
+            display:"flex",alignItems:"center",justifyContent:"center",color:C.yel}}><Icon name="lock" size={22}/></div>
           <h1 style={{fontSize:20,fontWeight:800,marginBottom:10,color:C.txt,letterSpacing:-0.4}}>Project unavailable</h1>
           <p style={{fontSize:13,color:C.txt2,lineHeight:1.7,marginBottom:8}}>
             You do not have access to this project, or the link is broken.
@@ -8152,10 +8051,10 @@ export default function MetaLab(){
           {/* Logo mark */}
           <div style={{
             width:56,height:56,borderRadius:16,margin:"0 auto 24px",
-            background:`linear-gradient(145deg,${C.acc}30,${C.acc2}18)`,
-            border:`1px solid ${C.acc}28`,
-            display:"flex",alignItems:"center",justifyContent:"center",fontSize:26,
-          }}>⬡</div>
+            background:`linear-gradient(145deg,${themeAlpha(C.acc,'30')},${themeAlpha(C.acc2,'18')})`,
+            border:`1px solid ${themeAlpha(C.acc,'28')}`,
+            display:"flex",alignItems:"center",justifyContent:"center",color:C.acc,
+          }}><Icon name="hexagon" size={26}/></div>
 
           <h1 style={{fontSize:32,fontWeight:800,marginBottom:14,letterSpacing:-1,color:C.txt,lineHeight:1.1}}>
             Welcome to META·LAB
@@ -8176,17 +8075,17 @@ export default function MetaLab(){
 
           <div className="stagger-grid" style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,textAlign:"left"}}>
             {[
-              {ph:"Plan",icon:"📋",steps:"PICO framework, PROSPERO registration, eligibility criteria"},
-              {ph:"Search",icon:"🔍",steps:AI_FEATURES_ENABLED?"AI search builder for 8 databases, MeSH terms, syntax-native":"Search builder for 8 databases, MeSH terms, full strategy documentation"},
-              {ph:"Screen",icon:"🔀",steps:"Import RIS/BibTeX, dual-reviewer triage, PRISMA 2020 flow"},
-              {ph:"Extract",icon:"📊",steps:AI_FEATURES_ENABLED?"AI-assisted extraction, DOI/PMID lookup, effect-size calculator":"Structured extraction, DOI/PMID lookup, effect-size calculator"},
-              {ph:"Analyze",icon:"📈",steps:"Meta-analysis with HKSJ, prediction intervals, forest plots"},
-              {ph:"Report",icon:"📄",steps:AI_FEATURES_ENABLED?"PRISMA checklist, GRADE certainty, AI manuscript drafter":"PRISMA checklist, GRADE certainty, manuscript workspace"},
+              {ph:"Plan",icon:"target",steps:"PICO framework, PROSPERO registration, eligibility criteria"},
+              {ph:"Search",icon:"search",steps:AI_FEATURES_ENABLED?"AI search builder for 8 databases, MeSH terms, syntax-native":"Search builder for 8 databases, MeSH terms, full strategy documentation"},
+              {ph:"Screen",icon:"filter",steps:"Import RIS/BibTeX, dual-reviewer triage, PRISMA 2020 flow"},
+              {ph:"Extract",icon:"table",steps:AI_FEATURES_ENABLED?"AI-assisted extraction, DOI/PMID lookup, effect-size calculator":"Structured extraction, DOI/PMID lookup, effect-size calculator"},
+              {ph:"Analyze",icon:"sigma",steps:"Meta-analysis with HKSJ, prediction intervals, forest plots"},
+              {ph:"Report",icon:"fileText",steps:AI_FEATURES_ENABLED?"PRISMA checklist, GRADE certainty, AI manuscript drafter":"PRISMA checklist, GRADE certainty, manuscript workspace"},
             ].map(c=>(
               <div key={c.ph} className="hover-lift" style={{
                 background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,padding:18,cursor:"default",
               }}>
-                <div style={{fontSize:18,marginBottom:10}}>{c.icon}</div>
+                <div style={{marginBottom:10,color:C.acc}}><Icon name={c.icon} size={18}/></div>
                 <div style={{fontSize:12,fontWeight:700,marginBottom:5,color:C.txt,letterSpacing:-0.2}}>{c.ph}</div>
                 <div style={{fontSize:11,color:C.muted,lineHeight:1.65}}>{c.steps}</div>
               </div>
@@ -8194,7 +8093,7 @@ export default function MetaLab(){
           </div>
         </div>
       ):(
-        <div style={{maxWidth:960}} className="tab-content">
+        <div style={{maxWidth:960,margin:"0 auto"}} className="tab-content">
           {/* Project header */}
           <div style={{marginBottom:32,paddingBottom:22,borderBottom:`1px solid ${C.brd}`}}>
             <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:16,flexWrap:"wrap"}}>
@@ -8206,8 +8105,10 @@ export default function MetaLab(){
                 </div>
               </div>
               <div style={{display:"flex",gap:6,flexShrink:0,flexWrap:"wrap",justifyContent:"flex-end",alignItems:"center"}}>
+                {/* Project chat drawer launcher (prompt7 Task 11) */}
+                <MetaLabChatLauncher metaLabProjectId={project.id}/>
                 {/* Persistent read-only pill (prompt6 Task 5) */}
-                {projectPerms(project).readOnly&&<span style={tagS("yellow")} title="You can view this shared project, but your changes will not be saved.">🔒 Read-only access</span>}
+                {projectPerms(project).readOnly&&<span style={tagS("yellow")} title="You can view this shared project, but your changes will not be saved."><Icon name="lock" size={11}/> Read-only access</span>}
                 {project.pico?.prosperoId&&<span style={tagS("blue")}>PROSPERO: {project.pico.prosperoId}</span>}
                 {project.pico?.studyDesign&&<span style={tagS()}>{project.pico.studyDesign}</span>}
                 {(()=>{const r=runMeta(project.studies,"random");return r?<span style={tagS("green")}>k={r.k} · I²={r.I2}%</span>:null;})()}
@@ -8222,14 +8123,14 @@ export default function MetaLab(){
                       >⚠ {r.missing.length} requirement{r.missing.length!==1?"s":""} missing</span>;
                 })()}
                 <input ref={importRef} type="file" accept=".json" onChange={onImport} style={{display:"none"}}/>
-                <button onClick={exportPDF} style={{...btnS("ghost"),fontSize:11}} title="Download a full HTML report — open it and use your browser's Print → Save as PDF">📄 Report</button>
-                <button onClick={()=>exportProject(false)} style={{...btnS("ghost"),fontSize:11}} title="Export project as JSON">⬇ Export</button>
-                <button onClick={()=>importRef.current&&importRef.current.click()} style={{...btnS("ghost"),fontSize:11}} title="Import project JSON">⬆ Import</button>
+                <button onClick={exportPDF} style={{...btnS("ghost"),fontSize:11,borderRadius:7}} title="Download a full HTML report — open it and use your browser's Print → Save as PDF"><Icon name="fileText" size={12}/>Report</button>
+                <button onClick={()=>exportProject(false)} style={{...btnS("ghost"),fontSize:11,borderRadius:7}} title="Export project as JSON"><Icon name="download" size={12}/>Export</button>
+                <button onClick={()=>importRef.current&&importRef.current.click()} style={{...btnS("ghost"),fontSize:11,borderRadius:7}} title="Import project JSON"><Icon name="upload" size={12}/>Import</button>
                 {(()=>{const n=auditProject(project).filter(i=>i.sev==="high").length;
                   return(<button onClick={()=>setShowAudit(true)} style={{
-                    ...btnS("ghost"),fontSize:11,
+                    ...btnS("ghost"),fontSize:11,borderRadius:7,
                     color:n>0?C.red:C.grn,
-                    borderColor:(n>0?C.red:C.grn)+"55",
+                    borderColor:themeAlpha((n>0?C.red:C.grn),'55'),
                     display:"inline-flex",alignItems:"center",gap:5,
                   }}>
                     {n>0?<><span style={{width:6,height:6,borderRadius:"50%",background:C.red,display:"inline-block",flexShrink:0}}/>Missing ({n})</>:<>✓ Audit</>}
@@ -8240,8 +8141,8 @@ export default function MetaLab(){
           {/* Shared (linked Review Workspace) project banner — owner + read-only state (prompt5 Task 1/4) */}
           {project._shared&&(
             <div style={{marginBottom:22,padding:"10px 14px",borderRadius:8,fontSize:12.5,display:"flex",alignItems:"center",gap:9,
-              background:(project._readOnly?C.yel:C.acc)+"14",border:`1px solid ${(project._readOnly?C.yel:C.acc)}40`}}>
-              <span style={{fontSize:14}}>{project._readOnly?"🔒":"🔗"}</span>
+              background:project._readOnly?"var(--t-yel-bg)":themeAlpha(C.acc,'14'),border:`1px solid ${project._readOnly?C.yel:themeAlpha(C.acc,'40')}`}}>
+              <Icon name={project._readOnly?"lock":"link"} size={14} style={{flexShrink:0}}/>
               <span style={{color:C.txt2,lineHeight:1.5}}>
                 {project._readOnly
                   ?<>This is a <b style={{color:C.txt}}>shared, read-only</b> project owned by {project._owner?.name||project._owner?.email||"another user"}. You can view it, but your changes won’t be saved.</>
@@ -8254,7 +8155,6 @@ export default function MetaLab(){
           {tab==="pico"&&<PICOTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="prospero"&&<PROSPEROTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="search"&&<SearchTab project={project} updNested={updNested} upd={upd}/>}
-          {tab==="rayyan"&&<RayyanTab project={project} updNested={updNested}/>}
           {tab==="prisma"&&<PRISMATab project={project} updNested={updNested} updateProject={updateProject} activeId={activeId}/>}
           {tab==="extraction"&&<ExtractionTab project={project} updateProject={updateProject} activeId={activeId}/>}
           {tab==="rob"&&<RoBTab project={project} updateProject={updateProject} activeId={activeId}/>}
@@ -8279,7 +8179,7 @@ export default function MetaLab(){
                   onClick={()=>setTab(next.id)}
                   style={{...btnS("primary"),padding:"10px 24px",fontSize:13,display:"flex",alignItems:"center",gap:8}}
                 >
-                  {next.icon} {next.label} <span style={{fontSize:16}}>→</span>
+                  <Icon name={next.icon} size={14}/>{next.label} <span style={{fontSize:16}}>→</span>
                 </button>
               </div>
             );
