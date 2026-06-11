@@ -608,13 +608,13 @@ export default function SiftWorkbench() {
               <div style={{ marginBottom: 20 }}>
                 <h2 style={{
                   fontSize: 17, fontWeight: 700, color: C.txt, lineHeight: 1.4,
-                  margin: '0 0 8px', letterSpacing: '-0.01em',
+                  margin: '0 0 8px', letterSpacing: '-0.01em', minWidth: 0, overflowWrap: 'anywhere',
                 }}>
                   {selectedRecord.title || <span style={{ color: C.muted, fontStyle: 'italic' }}>No title</span>}
                 </h2>
 
                 {!project?.blindMode && (
-                  <div style={{ fontSize: 12, color: C.txt2, marginBottom: 6, lineHeight: 1.5 }}>
+                  <div style={{ fontSize: 12, color: C.txt2, marginBottom: 6, lineHeight: 1.5, minWidth: 0, overflowWrap: 'anywhere' }}>
                     {selectedRecord.authors && <span>{selectedRecord.authors}</span>}
                     {selectedRecord.year && <span style={{ marginLeft: 6 }}>· {selectedRecord.year}</span>}
                     {selectedRecord.journal && <span style={{ marginLeft: 6, fontStyle: 'italic', color: C.muted }}>· {selectedRecord.journal}</span>}
@@ -626,7 +626,7 @@ export default function SiftWorkbench() {
                     <a
                       href={`https://doi.org/${selectedRecord.doi}`}
                       target="_blank" rel="noopener noreferrer"
-                      style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none' }}
+                      style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none', minWidth: 0, overflowWrap: 'anywhere', wordBreak: 'break-all' }}
                     >
                       DOI: {selectedRecord.doi}
                     </a>
@@ -658,7 +658,7 @@ export default function SiftWorkbench() {
                   Abstract
                 </div>
                 {selectedRecord.abstract ? (
-                  <p style={{ fontSize: 13, color: C.txt2, lineHeight: 1.7, margin: 0 }}>
+                  <p style={{ fontSize: 13, color: C.txt2, lineHeight: 1.7, margin: 0, minWidth: 0, overflowWrap: 'anywhere' }}>
                     {selectedRecord.abstract}
                   </p>
                 ) : (

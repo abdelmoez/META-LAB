@@ -32,6 +32,13 @@ export const adminApi = {
   // Platform metrics (admin only). prompt6 Task 9 adds unique-login counts:
   // logins: { day, week, month, quarter, year } — distinct userIds, rolling windows.
   metrics:        ()         => req(`${BASE}/metrics`),
+  // Per-day trend buckets (admin only, prompt8 ops control center):
+  // GET /metrics/timeseries?days=N → { days: [{ date:'YYYY-MM-DD', logins,
+  // uniqueLogins, newUsers, newProjects, screeningDecisions, doneTransitions,
+  // contactMessages, failedLogins }] } — ascending, zero-filled, last = today.
+  // Callers MUST treat any error/404 as "no trend data" (explicit chart empty
+  // state) — never fabricate values.
+  metricsTimeseries: (days = 14) => req(`${BASE}/metrics/timeseries?days=${encodeURIComponent(days)}`),
   health:         ()         => req(`${BASE}/health`),
   // Console capability descriptor — { role, sections, emailConfigured }. (admin + mod)
   console:        ()         => req(`${BASE}/console`),

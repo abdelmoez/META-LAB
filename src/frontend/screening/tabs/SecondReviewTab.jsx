@@ -339,7 +339,7 @@ function RecordCard({
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, marginBottom: 8 }}>
         <h3 style={{
           fontSize: 15, fontWeight: 600, color: C.txt, margin: 0,
-          lineHeight: 1.4, letterSpacing: '-0.01em', flex: 1, wordBreak: 'break-word',
+          lineHeight: 1.4, letterSpacing: '-0.01em', flex: 1, minWidth: 0, wordBreak: 'break-word', overflowWrap: 'anywhere',
         }}>
           {rec.title || <span style={{ fontStyle: 'italic', color: C.muted }}>Untitled record</span>}
         </h3>
@@ -351,14 +351,14 @@ function RecordCard({
       {/* Citation meta + links */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: rec.finalStatus === 'rejected' && rec.rejectedReason ? 8 : 14 }}>
         {metaParts.length > 0 && (
-          <span style={{ fontSize: 12, color: C.txt2 }}>{metaParts.join(' · ')}</span>
+          <span style={{ fontSize: 12, color: C.txt2, minWidth: 0, overflowWrap: 'anywhere' }}>{metaParts.join(' · ')}</span>
         )}
         {blindMode && (
           <Badge color={C.gold} title="Author / journal hidden during blind screening">Blind</Badge>
         )}
         {rec.doi && (
           <a href={`https://doi.org/${rec.doi}`} target="_blank" rel="noopener noreferrer"
-            style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none' }}
+            style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none', minWidth: 0, overflowWrap: 'anywhere', wordBreak: 'break-all' }}
             onMouseEnter={e => e.currentTarget.style.textDecoration = 'underline'}
             onMouseLeave={e => e.currentTarget.style.textDecoration = 'none'}>
             DOI: {rec.doi}
@@ -390,7 +390,7 @@ function RecordCard({
           background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 8,
           padding: '12px 14px', marginBottom: 14,
         }}>
-          <div style={{ fontSize: 13, color: C.txt, lineHeight: 1.65, whiteSpace: 'pre-wrap' }}>
+          <div style={{ fontSize: 13, color: C.txt, lineHeight: 1.65, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
             {renderHighlighted(shownAbstract, { inclusion, exclusion, showInclusion: true, showExclusion: true })}
           </div>
           {isLong && (

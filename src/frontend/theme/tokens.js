@@ -158,6 +158,9 @@ button:focus-visible, [role="button"]:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--t-acc) 28%, transparent);
 }
+.t-min0 { min-width: 0; }
+.t-truncate { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-wrap { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
 `;
 }
 

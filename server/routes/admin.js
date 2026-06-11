@@ -4,6 +4,7 @@ import { requireAdmin } from '../middleware/requireAdmin.js';
 import { requireAdminOrMod, requireTargetEditable } from '../middleware/requireRole.js';
 import {
   getMetrics,
+  getMetricsTimeseries,
   getUsers,
   getUserById,
   getUserProjects,
@@ -103,6 +104,7 @@ router.delete('/contact-messages/:id', requireAdmin, deleteContactMessage);
 
 // ── Admin-only: metrics, projects lifecycle, settings, flags, content, security ─
 router.get('/metrics', requireAdmin, getMetrics);
+router.get('/metrics/timeseries', requireAdmin, getMetricsTimeseries);
 
 router.get('/projects', requireAdmin, getProjects);
 router.patch('/projects/:id/archive', requireAdmin, archiveProject);

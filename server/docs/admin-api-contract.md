@@ -50,6 +50,47 @@ Monotonic: `day ≤ week ≤ month ≤ quarter ≤ year`.
 
 ---
 
+## 1b. GET /api/admin/metrics/timeseries
+
+**Auth:** admin required  
+**Query params:**
+- `days` — window size in days, default `14`, clamped to `[7, 90]`; non-numeric values fall back to the default
+
+**Response:**
+```json
+{
+  "days": [
+    {
+      "date": "2026-06-01",
+      "logins": 5,
+      "uniqueLogins": 3,
+      "newUsers": 1,
+      "newProjects": 2,
+      "screeningDecisions": 40,
+      "doneTransitions": 1,
+      "contactMessages": 0,
+      "failedLogins": 2
+    }
+  ]
+}
+```
+
+**Behavior (prompt8 — ops console sparklines):**
+- `days` is **ascending by date**, contains **exactly N entries** (zero-filled for
+  empty days), and the **last entry is today** in server-local time. Buckets are
+  local calendar days (`YYYY-MM-DD`), not UTC.
+- Per-day sources:
+  - `logins` — successful `LoginEvent` rows (`success = true`); `uniqueLogins` —
+    **distinct** userIds among them that day
+  - `newUsers` / `newProjects` — `User.createdAt` / `Project.createdAt`
+  - `screeningDecisions` — `ScreenDecision.createdAt`
+  - `doneTransitions` — `ScreenProjectStatusEvent` rows with `status = 'done'`
+  - `contactMessages` — `ContactMessage.createdAt`
+  - `failedLogins` — `SecurityEvent` rows with `type = 'FAILED_LOGIN'`
+- Read-only: does **not** write to `AdminAuditLog` (same policy as `GET /metrics`).
+
+---
+
 ## 2. GET /api/admin/users
 
 **Auth:** admin required  

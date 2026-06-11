@@ -252,55 +252,530 @@ function FilterBar({ filters, active, onSelect }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   SECTION: OVERVIEW (redesigned)
+   CHART KIT (prompt8) — tiny hand-rolled SVG charts. Theme-token colors
+   only, 10–11px MONO labels, explicit loading + empty states everywhere.
+   Draw-in animations run ONCE per mount; prefers-reduced-motion renders
+   every chart and counter instantly (no transition, no rAF loop).
    ════════════════════════════════════════════════════════════════════════ */
 
-function PrimaryMetric({ label, value, sub, loading, color = C.acc, onClick }) {
+const REDUCED_MOTION_MQ = '(prefers-reduced-motion: reduce)';
+
+function usePrefersReducedMotion() {
+  const [reduced, setReduced] = useState(() =>
+    typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      ? window.matchMedia(REDUCED_MOTION_MQ).matches : false);
+  useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined;
+    const mq = window.matchMedia(REDUCED_MOTION_MQ);
+    const onChange = e => setReduced(e.matches);
+    if (mq.addEventListener) mq.addEventListener('change', onChange);
+    else if (mq.addListener) mq.addListener(onChange);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', onChange);
+      else if (mq.removeListener) mq.removeListener(onChange);
+    };
+  }, []);
+  return reduced;
+}
+
+/* Container width via callback ref + ResizeObserver, so SVG charts render in
+   true pixel coordinates (no preserveAspectRatio stroke distortion). */
+function useMeasuredWidth() {
+  const [width, setWidth] = useState(0);
+  const roRef = useRef(null);
+  const ref = useCallback(node => {
+    if (roRef.current) { roRef.current.disconnect(); roRef.current = null; }
+    if (!node) return;
+    const update = () => setWidth(node.clientWidth || 0);
+    update();
+    if (typeof ResizeObserver !== 'undefined') {
+      roRef.current = new ResizeObserver(update);
+      roRef.current.observe(node);
+    }
+  }, []);
+  useEffect(() => () => { if (roRef.current) { roRef.current.disconnect(); roRef.current = null; } }, []);
+  return [ref, width];
+}
+
+/* One-shot draw-in trigger: flips `drawn` one frame after data is ready so
+   CSS transitions (dashoffset / width / dasharray) animate exactly once per
+   mount. Reduced motion → drawn immediately, transitions disabled. */
+function useDrawIn(ready) {
+  const reduced = usePrefersReducedMotion();
+  const [drawn, setDrawn] = useState(false);
+  useEffect(() => {
+    if (!ready || drawn) return undefined;
+    if (reduced) { setDrawn(true); return undefined; }
+    let id2 = 0;
+    const id1 = requestAnimationFrame(() => { id2 = requestAnimationFrame(() => setDrawn(true)); });
+    return () => { cancelAnimationFrame(id1); if (id2) cancelAnimationFrame(id2); };
+  }, [ready, reduced, drawn]);
+  return { drawn, reduced };
+}
+
+/* Animated count-up (rAF, ~600ms, ease-out cubic). Counts from the previous
+   value on refresh and from 0 on first load. Reduced motion → instant.
+   Callers render with fontVariantNumeric:'tabular-nums' so digits don't jitter. */
+function useCountUp(target, duration = 600) {
+  const reduced = usePrefersReducedMotion();
+  const [value, setValue] = useState(null);
+  const fromRef = useRef(0);
+  useEffect(() => {
+    if (target == null || Number.isNaN(Number(target))) { setValue(null); return undefined; }
+    const to = Number(target);
+    if (reduced || fromRef.current === to) { fromRef.current = to; setValue(to); return undefined; }
+    const from = fromRef.current;
+    const t0 = performance.now();
+    let raf = 0;
+    const tick = now => {
+      const p = Math.min(1, (now - t0) / duration);
+      const eased = 1 - Math.pow(1 - p, 3);
+      setValue(Math.round(from + (to - from) * eased));
+      if (p < 1) raf = requestAnimationFrame(tick);
+      else fromRef.current = to;
+    };
+    raf = requestAnimationFrame(tick);
+    return () => { cancelAnimationFrame(raf); fromRef.current = to; };
+  }, [target, duration, reduced]);
+  return value;
+}
+
+function ChartLoading({ height = 120 }) {
   return (
-    <div onClick={onClick} style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: '20px 22px', cursor: onClick ? 'pointer' : 'default', transition: 'border-color 0.15s' }}
+    <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <Spinner size={16} />
+    </div>
+  );
+}
+
+function ChartEmpty({ label = 'No trend data yet', height = 120 }) {
+  return (
+    <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, color: C.muted }}>
+      <Icon name="activity" size={13} />
+      <span style={{ fontSize: 11, fontFamily: MONO, letterSpacing: '0.04em' }}>{label}</span>
+    </div>
+  );
+}
+
+/* Catmull-Rom → cubic bezier smoothing; control-point Y is clamped into the
+   plot band so spiky series never overshoot below the baseline. */
+function smoothPath(pts, yMin = -Infinity, yMax = Infinity) {
+  if (!pts.length) return '';
+  if (pts.length === 1) return `M ${pts[0][0]} ${pts[0][1]}`;
+  const cl = y => Math.min(yMax, Math.max(yMin, y));
+  let d = `M ${pts[0][0]} ${pts[0][1]}`;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const p0 = pts[i - 1] || pts[i];
+    const p1 = pts[i];
+    const p2 = pts[i + 1];
+    const p3 = pts[i + 2] || p2;
+    const c1x = +(p1[0] + (p2[0] - p0[0]) / 6).toFixed(1);
+    const c1y = +cl(p1[1] + (p2[1] - p0[1]) / 6).toFixed(1);
+    const c2x = +(p2[0] - (p3[0] - p1[0]) / 6).toFixed(1);
+    const c2y = +cl(p2[1] - (p3[1] - p1[1]) / 6).toFixed(1);
+    d += ` C ${c1x} ${c1y} ${c2x} ${c2y} ${p2[0]} ${p2[1]}`;
+  }
+  return d;
+}
+
+function niceCeil(v) {
+  if (v <= 1) return 1;
+  const pow = Math.pow(10, Math.floor(Math.log10(v)));
+  return Math.ceil(v / pow) * pow;
+}
+
+/* ── AreaChart — multi-series smooth area/line chart with hover readout ── */
+function AreaChart({ series, labels, height = 180, loading, emptyLabel = 'No trend data yet' }) {
+  const [wrapRef, w] = useMeasuredWidth();
+  const hasData = !loading && Array.isArray(series) && series.length > 0 && Array.isArray(labels) && labels.length > 1;
+  const { drawn, reduced } = useDrawIn(hasData && w > 0);
+  const [hover, setHover] = useState(null);
+
+  if (loading) return <ChartLoading height={height + 46} />;
+  if (!hasData) return <ChartEmpty label={emptyLabel} height={height + 46} />;
+
+  const padL = 34, padR = 10, padT = 10, padB = 6;
+  const n = labels.length;
+  const innerW = Math.max(1, w - padL - padR);
+  const plotH = height - padT - padB;
+  const norm = series.map(s => ({ ...s, values: labels.map((_, i) => Math.max(0, Number(s.values?.[i]) || 0)) }));
+  const yMax = niceCeil(Math.max(1, ...norm.map(s => Math.max(...s.values))));
+  const X = i => padL + (i * innerW) / (n - 1);
+  const Y = v => padT + (1 - v / yMax) * plotH;
+  const baseY = padT + plotH;
+
+  const onMove = e => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const idx = Math.round(((e.clientX - rect.left - padL) / innerW) * (n - 1));
+    setHover(Math.max(0, Math.min(n - 1, idx)));
+  };
+
+  return (
+    <div>
+      <div ref={wrapRef} style={{ position: 'relative' }} onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+        {w > 0 && (
+          <svg width={w} height={height} style={{ display: 'block' }} aria-hidden="true">
+            {[0, 0.5, 1].map(f => (
+              <line key={f} x1={padL} x2={w - padR} y1={padT + f * plotH} y2={padT + f * plotH} stroke={alpha(C.muted, 0.16)} strokeDasharray="3 4" />
+            ))}
+            <text x={padL - 7} y={padT + 4} textAnchor="end" fontSize="10" fontFamily={MONO} fill={C.muted}>{yMax.toLocaleString()}</text>
+            <text x={padL - 7} y={padT + plotH / 2 + 4} textAnchor="end" fontSize="10" fontFamily={MONO} fill={C.muted}>{Math.round(yMax / 2).toLocaleString()}</text>
+            <text x={padL - 7} y={baseY + 3} textAnchor="end" fontSize="10" fontFamily={MONO} fill={C.muted}>0</text>
+            {norm.map(s => {
+              const pts = s.values.map((v, i) => [+X(i).toFixed(1), +Y(v).toFixed(1)]);
+              const line = smoothPath(pts, padT, baseY);
+              return (
+                <g key={s.id || s.label}>
+                  <path d={`${line} L ${pts[pts.length - 1][0]} ${baseY} L ${pts[0][0]} ${baseY} Z`} fill={alpha(s.color, 0.08)} stroke="none"
+                    style={{ opacity: drawn ? 1 : 0, transition: reduced ? 'none' : 'opacity 0.45s ease 0.25s' }} />
+                  <path d={line} fill="none" stroke={s.color} strokeWidth="1.8" pathLength="1"
+                    style={{ strokeDasharray: 1, strokeDashoffset: drawn ? 0 : 1, transition: reduced ? 'none' : 'stroke-dashoffset 0.5s ease' }} />
+                </g>
+              );
+            })}
+            {hover != null && (
+              <g>
+                <line x1={X(hover)} x2={X(hover)} y1={padT} y2={baseY} stroke={alpha(C.txt, 0.22)} />
+                {norm.map(s => (
+                  <circle key={s.id || s.label} cx={X(hover)} cy={Y(s.values[hover])} r="3" fill={s.color} stroke={C.card} strokeWidth="1.5" />
+                ))}
+              </g>
+            )}
+          </svg>
+        )}
+        {hover != null && w > 0 && (
+          <div style={{ position: 'absolute', top: 4, left: Math.min(Math.max(X(hover) + 12, padL), Math.max(padL, w - 170)), background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 7, padding: '7px 10px', pointerEvents: 'none', zIndex: 5, boxShadow: `0 8px 24px ${C.shadow}`, minWidth: 132 }}>
+            <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, marginBottom: 4 }}>{labels[hover]}</div>
+            {norm.map(s => (
+              <div key={s.id || s.label} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10, fontFamily: MONO, color: C.txt2, lineHeight: 1.7, minWidth: 0 }}>
+                <span style={{ width: 7, height: 7, borderRadius: 2, background: s.color, flexShrink: 0 }} />
+                <span style={{ flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.label}</span>
+                <span style={{ color: C.txt, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{s.values[hover].toLocaleString()}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', padding: `4px ${padR}px 0 ${padL}px` }}>
+        {[labels[0], labels[Math.floor((n - 1) / 2)], labels[n - 1]].map((d, i) => (
+          <span key={i} style={{ fontSize: 10, fontFamily: MONO, color: C.muted }}>{(d || '').slice(5)}</span>
+        ))}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 14, marginTop: 10 }}>
+        {norm.map(s => (
+          <span key={s.id || s.label} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 10, fontFamily: MONO, color: C.txt2, letterSpacing: '0.05em', textTransform: 'uppercase' }}>
+            <span style={{ width: 8, height: 8, borderRadius: 2, background: s.color, flexShrink: 0 }} />{s.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── Sparkline — single series, for KPI cards ── */
+function Sparkline({ values, color = C.acc, height = 30, loading, emptyLabel = 'no trend data yet' }) {
+  const [wrapRef, w] = useMeasuredWidth();
+  const hasData = !loading && Array.isArray(values) && values.length > 1;
+  const { drawn, reduced } = useDrawIn(hasData && w > 0);
+  if (loading) {
+    return <div style={{ height, display: 'flex', alignItems: 'center' }}><Spinner size={10} color={C.muted} /></div>;
+  }
+  if (!hasData) {
+    return <div style={{ height, display: 'flex', alignItems: 'center', color: C.muted, fontSize: 9, fontFamily: MONO, letterSpacing: '0.05em', textTransform: 'uppercase' }}>{emptyLabel}</div>;
+  }
+  const vals = values.map(v => Math.max(0, Number(v) || 0));
+  const max = Math.max(1, ...vals);
+  const n = vals.length;
+  const padY = 2;
+  const pts = w > 1 ? vals.map((v, i) => [+((i * (w - 2)) / (n - 1) + 1).toFixed(1), +(padY + (1 - v / max) * (height - padY * 2)).toFixed(1)]) : [];
+  const line = pts.length ? smoothPath(pts, padY, height - padY) : '';
+  return (
+    <div ref={wrapRef} style={{ height, minWidth: 0 }}>
+      {pts.length > 0 && (
+        <svg width={w} height={height} style={{ display: 'block' }} aria-hidden="true">
+          <path d={`${line} L ${pts[n - 1][0]} ${height - 1} L ${pts[0][0]} ${height - 1} Z`} fill={alpha(color, 0.12)} stroke="none"
+            style={{ opacity: drawn ? 1 : 0, transition: reduced ? 'none' : 'opacity 0.45s ease 0.2s' }} />
+          <path d={line} fill="none" stroke={color} strokeWidth="1.5" pathLength="1"
+            style={{ strokeDasharray: 1, strokeDashoffset: drawn ? 0 : 1, transition: reduced ? 'none' : 'stroke-dashoffset 0.5s ease' }} />
+        </svg>
+      )}
+    </div>
+  );
+}
+
+/* ── BarRow — horizontal labeled bars (e.g. unique-login windows) ── */
+function BarRow({ rows, color = C.acc, loading, emptyLabel = 'No data yet' }) {
+  const list = Array.isArray(rows) ? rows : [];
+  const ready = !loading && list.length > 0 && list.some(r => r.value != null);
+  const { drawn, reduced } = useDrawIn(ready);
+  if (loading) return <ChartLoading height={Math.max(100, list.length * 26)} />;
+  if (!ready) return <ChartEmpty label={emptyLabel} height={100} />;
+  const max = Math.max(1, ...list.map(r => Number(r.value) || 0));
+  return (
+    <div style={{ display: 'grid', gap: 9 }}>
+      {list.map(r => {
+        const v = Math.max(0, Number(r.value) || 0);
+        return (
+          <div key={r.label} style={{ display: 'grid', gridTemplateColumns: '78px minmax(0, 1fr) 48px', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.04em', textTransform: 'uppercase', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.label}>{r.label}</span>
+            <div style={{ height: 10, borderRadius: 5, background: alpha(C.muted, 0.14), overflow: 'hidden', minWidth: 0 }}>
+              <div style={{ height: '100%', borderRadius: 5, background: r.color || color, width: drawn ? `${v > 0 ? Math.max(2, (v / max) * 100) : 0}%` : '0%', transition: reduced ? 'none' : 'width 0.5s ease' }} />
+            </div>
+            <span style={{ fontSize: 11, fontFamily: MONO, color: C.txt, fontWeight: 700, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{v.toLocaleString()}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ── DonutGauge — segments + center label, with a side legend ── */
+function DonutGauge({ segments, centerValue, centerLabel, size = 132, thickness = 13, loading, emptyLabel = 'No data yet' }) {
+  const segs = (segments || []).map(s => ({ ...s, value: Math.max(0, Number(s.value) || 0) }));
+  const total = segs.reduce((a, s) => a + s.value, 0);
+  const ready = !loading && total > 0;
+  const { drawn, reduced } = useDrawIn(ready);
+  if (loading) return <ChartLoading height={size} />;
+  if (!ready) return <ChartEmpty label={emptyLabel} height={size} />;
+  const r = (size - thickness) / 2;
+  const circ = 2 * Math.PI * r;
+  let acc = 0;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap' }}>
+      <div style={{ position: 'relative', width: size, height: size, flexShrink: 0 }}>
+        <svg width={size} height={size} style={{ display: 'block', transform: 'rotate(-90deg)' }} aria-hidden="true">
+          <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke={alpha(C.muted, 0.14)} strokeWidth={thickness} />
+          {segs.filter(s => s.value > 0).map(s => {
+            const frac = s.value / total;
+            const offset = acc; acc += frac;
+            const seg = Math.max(0.5, frac * circ - 1.5);
+            return (
+              <circle key={s.label} cx={size / 2} cy={size / 2} r={r} fill="none" stroke={s.color} strokeWidth={thickness}
+                strokeDasharray={drawn ? `${seg} ${circ - seg}` : `0.01 ${circ}`}
+                strokeDashoffset={-offset * circ}
+                style={{ transition: reduced ? 'none' : 'stroke-dasharray 0.55s ease' }} />
+            );
+          })}
+        </svg>
+        <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none' }}>
+          <div style={{ fontSize: 21, fontWeight: 800, fontFamily: MONO, color: C.txt, fontVariantNumeric: 'tabular-nums', letterSpacing: '-0.5px' }}>{centerValue}</div>
+          {centerLabel && <div style={{ fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginTop: 2 }}>{centerLabel}</div>}
+        </div>
+      </div>
+      <div style={{ display: 'grid', gap: 7, minWidth: 0, flex: 1 }}>
+        {segs.map(s => (
+          <div key={s.label} style={{ display: 'flex', alignItems: 'center', gap: 7, minWidth: 0 }}>
+            <span style={{ width: 8, height: 8, borderRadius: 2, background: s.color, flexShrink: 0 }} />
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.txt2, letterSpacing: '0.04em', textTransform: 'uppercase', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={s.label}>{s.label}</span>
+            <span style={{ fontSize: 11, fontFamily: MONO, color: C.txt, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{s.value.toLocaleString()}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ── FunnelBar — labeled horizontal bars, widths relative to the first/max
+   stage; a stage may carry stacked sub-segments (e.g. decision mix) ── */
+function FunnelBar({ stages, loading, emptyLabel = 'No data yet' }) {
+  const list = (stages || []).map(s => ({ ...s, value: Math.max(0, Number(s.value) || 0) }));
+  const ready = !loading && list.length > 0 && list.some(s => s.value > 0);
+  const { drawn, reduced } = useDrawIn(ready);
+  if (loading) return <ChartLoading height={150} />;
+  if (!ready) return <ChartEmpty label={emptyLabel} height={150} />;
+  const max = Math.max(1, ...list.map(s => s.value));
+  return (
+    <div style={{ display: 'grid', gap: 12 }}>
+      {list.map(s => {
+        const pct = (s.value / max) * 100;
+        const segs = (s.segments || []).map(g => ({ ...g, value: Math.max(0, Number(g.value) || 0) }));
+        const segTotal = segs.reduce((a, g) => a + g.value, 0);
+        return (
+          <div key={s.label} style={{ minWidth: 0 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4, gap: 8 }}>
+              <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }} title={s.label}>{s.label}</span>
+              <span style={{ fontSize: 11, fontFamily: MONO, color: C.txt, fontWeight: 700, fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>{s.value.toLocaleString()}</span>
+            </div>
+            <div style={{ height: 16, borderRadius: 5, background: alpha(C.muted, 0.12), overflow: 'hidden' }}>
+              <div style={{ height: '100%', width: drawn ? `${s.value > 0 ? Math.max(1.5, pct) : 0}%` : '0%', transition: reduced ? 'none' : 'width 0.55s ease', display: 'flex', overflow: 'hidden', borderRadius: 5, background: segTotal > 0 ? 'transparent' : alpha(s.color || C.acc, 0.55) }}>
+                {segTotal > 0 && segs.map(g => (
+                  <div key={g.label} title={`${g.label}: ${g.value.toLocaleString()}`} style={{ height: '100%', width: `${(g.value / segTotal) * 100}%`, background: g.color, minWidth: g.value > 0 ? 2 : 0 }} />
+                ))}
+              </div>
+            </div>
+            {segTotal > 0 && (
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginTop: 5 }}>
+                {segs.map(g => (
+                  <span key={g.label} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+                    <span style={{ width: 7, height: 7, borderRadius: 2, background: g.color, flexShrink: 0 }} />
+                    {g.label} <span style={{ color: C.txt2, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{g.value.toLocaleString()}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   SECTION: OVERVIEW — ops control center (prompt8 redesign)
+   Tier 1: KPI cards (count-up + sparkline) · Tier 2: 14-day activity chart
+   + live system health · Tier 3: screening pipeline funnel, completion
+   donut, unique-login windows · Tier 4: live activity feed + alerts/actions.
+   Admin-only: never mounted for mods (allowed-set gating in the root), and
+   every fetch + the EventSource is additionally gated on `isAdmin`.
+   ════════════════════════════════════════════════════════════════════════ */
+
+function LivePulseDot({ live }) {
+  return (
+    <span style={{ position: 'relative', width: 9, height: 9, display: 'inline-block', flexShrink: 0 }}>
+      {live && <span className="ops-pulse" style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: alpha(C.grn, 0.55) }} />}
+      <span style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: live ? C.grn : C.muted }} />
+    </span>
+  );
+}
+
+function KpiCard({ label, value, sub, color = C.acc, spark, trendLoading, loading, onClick }) {
+  const display = useCountUp(loading ? null : value);
+  return (
+    <div onClick={onClick} style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: '16px 18px 12px', cursor: onClick ? 'pointer' : 'default', transition: 'border-color 0.15s', minWidth: 0 }}
       onMouseEnter={e => onClick && (e.currentTarget.style.borderColor = color)}
       onMouseLeave={e => onClick && (e.currentTarget.style.borderColor = C.brd)}
     >
-      {loading ? <div style={{ height: 40, display: 'flex', alignItems: 'center' }}><Spinner /></div> : (
-        <div style={{ fontSize: 32, fontWeight: 800, color, fontFamily: MONO, letterSpacing: '-1.5px', lineHeight: 1 }}>{value ?? '—'}</div>
+      {loading ? <div style={{ height: 32, display: 'flex', alignItems: 'center' }}><Spinner /></div> : (
+        <div style={{ fontSize: 30, fontWeight: 800, color, fontFamily: MONO, letterSpacing: '-1.2px', lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>
+          {display == null ? '—' : display.toLocaleString()}
+        </div>
       )}
-      <div style={{ fontSize: 11, color: C.muted, marginTop: 8, fontFamily: MONO, letterSpacing: '0.06em', textTransform: 'uppercase' }}>{label}</div>
-      {sub && <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>{sub}</div>}
+      <div style={{ fontSize: 10, color: C.muted, marginTop: 7, fontFamily: MONO, letterSpacing: '0.06em', textTransform: 'uppercase', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={label}>{label}</div>
+      {sub && <div style={{ fontSize: 11, color: C.muted, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={typeof sub === 'string' ? sub : undefined}>{sub}</div>}
+      <div style={{ marginTop: 8 }}>
+        <Sparkline values={spark} color={color} height={28} loading={trendLoading} emptyLabel="no trend data yet" />
+      </div>
     </div>
   );
 }
 
-function SmallMetric({ label, value, loading }) {
-  return (
-    <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '12px 14px' }}>
-      {loading ? <Spinner size={12} /> : <div style={{ fontSize: 18, fontWeight: 700, color: C.txt, fontFamily: MONO }}>{value ?? '—'}</div>}
-      <div style={{ fontSize: 10, color: C.muted, marginTop: 5, fontFamily: MONO, letterSpacing: '0.06em', textTransform: 'uppercase' }}>{label}</div>
-    </div>
-  );
-}
-
-function OverviewSection({ onNavigate }) {
+function OverviewSection({ onNavigate, isAdmin = true }) {
   const [metrics, setMetrics] = useState(null);
   const [health,  setHealth]  = useState(null);
+  const [siftM,   setSiftM]   = useState(null);      // screening metrics (funnel / donut / KPI sub-stat)
+  const [trend,   setTrend]   = useState(undefined); // undefined = loading, null = unavailable, array = data
+  const [feed,    setFeed]    = useState(null);      // null = loading, [] = empty
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState('');
+  const [live,    setLive]    = useState(false);     // SSE stream open
+  const [lastEventAt, setLastEventAt] = useState(null);
+  const feedDebounce = useRef(null);
+
+  // Live activity feed: merge latest audit-log + security events, newest first.
+  const loadFeed = useCallback(async () => {
+    if (!isAdmin) return;
+    const [a, s] = await Promise.all([
+      adminApi.auditLog({ limit: 10 }).catch(() => null),
+      adminApi.securityEvents({ limit: 10 }).catch(() => null),
+    ]);
+    const items = [
+      ...(a?.logs || []).map(l => ({
+        kind: 'audit', id: `a-${l.id}`, at: l.createdAt,
+        actor: l.admin?.email || 'system', action: l.action, entity: l.entityType,
+      })),
+      ...(s?.events || []).map(ev => ({
+        kind: 'security', id: `s-${ev.id}`, at: ev.createdAt,
+        actor: ev.email || ev.ip || 'unknown', action: ev.type, type: ev.type,
+      })),
+    ].sort((x, y) => new Date(y.at) - new Date(x.at)).slice(0, 12);
+    setFeed(items);
+  }, [isAdmin]);
 
   const load = useCallback(async () => {
+    if (!isAdmin) return;
     setLoading(true); setError('');
     try {
-      const [m, h] = await Promise.all([adminApi.metrics(), adminApi.health().catch(() => null)]);
-      setMetrics(m); setHealth(h);
+      const [m, h, sm] = await Promise.all([
+        adminApi.metrics(),
+        adminApi.health().catch(() => null),
+        adminApi.screening.getMetrics().catch(() => null),
+      ]);
+      setMetrics(m); setHealth(h); setSiftM(sm);
     } catch (e) { setError(e.message); }
     finally { setLoading(false); }
-  }, []);
+    // Trend buckets are best-effort: any error/404 → explicit "no trend data
+    // yet" chart states. NEVER fabricated values.
+    adminApi.metricsTimeseries(14)
+      .then(d => setTrend(Array.isArray(d?.days) ? d.days : null))
+      .catch(() => setTrend(null));
+    loadFeed();
+  }, [isAdmin, loadFeed]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Feed safety-net refresh (60s) on top of the debounced SSE poke below.
+  useEffect(() => {
+    if (!isAdmin) return undefined;
+    const t = setInterval(loadFeed, 60_000);
+    return () => clearInterval(t);
+  }, [isAdmin, loadFeed]);
+
+  // Live indicator: lightweight EventSource on the poke channel. Used ONLY to
+  // flip the pulse dot (open/error), stamp lastEventAt, and debounce a feed
+  // refetch — event payloads are never trusted as data. Admin-only (this
+  // section never mounts for mods) and closed on unmount.
+  useEffect(() => {
+    if (!isAdmin || typeof EventSource === 'undefined') return undefined;
+    let es;
+    try { es = new EventSource('/api/events'); } catch { return undefined; }
+    es.onopen = () => setLive(true);
+    es.onerror = () => setLive(false);
+    es.onmessage = () => {
+      setLastEventAt(Date.now());
+      if (feedDebounce.current) clearTimeout(feedDebounce.current);
+      feedDebounce.current = setTimeout(loadFeed, 4000);
+    };
+    return () => {
+      if (feedDebounce.current) { clearTimeout(feedDebounce.current); feedDebounce.current = null; }
+      try { es.close(); } catch { /* already closed */ }
+      setLive(false);
+    };
+  }, [isAdmin, loadFeed]);
 
   const m = metrics || {};
   const unread  = m.contactMessages?.unread ?? 0;
   const failed7 = m.securityEvents?.failedLogins7d ?? 0;
   const suspended = m.users?.suspended ?? 0;
   const dbOk = health?.db === 'ok' || health?.database === 'ok';
+
+  const trendLoading = trend === undefined;
+  const sparkOf = key => (Array.isArray(trend) ? trend.map(d => Math.max(0, Number(d?.[key]) || 0)) : undefined);
+  const areaSeries = Array.isArray(trend) ? [
+    { id: 'logins',      label: 'Logins',       color: C.acc,  values: sparkOf('logins') },
+    { id: 'newUsers',    label: 'New users',    color: C.grn,  values: sparkOf('newUsers') },
+    { id: 'newProjects', label: 'New projects', color: C.purp, values: sparkOf('newProjects') },
+    { id: 'decisions',   label: 'Screening decisions', color: C.teal, values: sparkOf('screeningDecisions') },
+  ] : null;
+  const areaLabels = Array.isArray(trend) ? trend.map(d => d?.date || '') : [];
+
+  // Screening pipeline + completion — real screening metrics; null (fetch
+  // failed / module empty) → explicit chart empty states.
+  const sift = siftM || null;
+  const funnelStages = sift ? [
+    { label: 'Records',  value: sift.totalRecords, color: C.txt2 },
+    { label: 'Screened', value: sift.screened, color: C.acc, segments: [
+      { label: 'Included', value: sift.included, color: C.grn },
+      { label: 'Excluded', value: sift.excluded, color: C.red },
+      { label: 'Maybe',    value: sift.maybe,    color: C.yel },
+    ] },
+    { label: '2nd Review',    value: sift.eligibleSecondReview, color: C.teal },
+    { label: 'To Extraction', value: sift.sentToExtraction,     color: C.grn },
+  ] : [];
+  const doneN       = sift?.doneProjects ?? 0;
+  const inProgN     = sift?.inProgressProjects ?? 0;
+  const totalSift   = sift?.totalProjects ?? 0;
+  const notStartedN = Math.max(0, totalSift - doneN - inProgN);
+  const donePct     = totalSift > 0 ? Math.round((doneN / totalSift) * 100) : 0;
 
   const attention = [
     unread > 0    && { icon: 'mail',     color: C.ylw, msg: `${unread} unread message${unread !== 1 ? 's' : ''}`,          go: 'messages' },
@@ -309,114 +784,194 @@ function OverviewSection({ onNavigate }) {
     health && !dbOk && { icon: 'activity', color: C.red, msg: 'Database health check failed',                              go: 'health' },
   ].filter(Boolean);
 
-  const secondary = [
-    { label: 'New Today',    value: m.users?.today },
-    { label: 'New This Week', value: m.users?.thisWeek },
-    { label: 'Active (not suspended)', value: (m.users?.total ?? 0) - (m.users?.suspended ?? 0) },
-    { label: 'Projects Today', value: m.projects?.today },
-    { label: 'Projects / Week', value: m.projects?.thisWeek },
-    { label: 'Total Studies', value: m.studies },
-    { label: 'Total Records', value: m.records },
-    { label: 'Total Messages', value: m.contactMessages?.total },
+  const secTint = t => ({ FAILED_LOGIN: C.red, ADMIN_ACCESS_DENIED: C.ylw, RATE_LIMITED: C.acc }[t] || C.muted);
+
+  const healthTiles = [
+    { label: 'Backend',     value: health ? <Badge text="OK" color={C.grn} /> : <Badge text="Unknown" color={C.muted} /> },
+    { label: 'Database',    value: health ? (dbOk ? <Badge text="OK" color={C.grn} /> : <Badge text="Error" color={C.red} />) : <Badge text="Unknown" color={C.muted} /> },
+    { label: 'Environment', value: <Badge text={health?.env || 'unknown'} color={health?.env === 'production' ? C.ylw : C.grn} /> },
+    { label: 'Version',     value: <span style={{ fontFamily: MONO, fontSize: 12, color: C.txt2 }}>{health?.version || '—'}</span> },
+    { label: 'Uptime',      value: health?.uptime != null ? <span style={{ fontFamily: MONO, fontSize: 12, color: C.txt2 }}>{Math.floor(health.uptime / 3600)}h {Math.floor((health.uptime % 3600) / 60)}m</span> : <span style={{ color: C.muted }}>—</span> },
+    { label: 'Last Event',  value: <span style={{ fontFamily: MONO, fontSize: 12, color: lastEventAt ? C.txt2 : C.muted }}>{lastEventAt ? fmtAgo(lastEventAt) : (live ? 'listening…' : '—')}</span> },
   ];
 
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 22 }}>
+      {/* Local keyframes: the live pulse is the ONLY persistent animation on
+          this page; prefers-reduced-motion kills it entirely. */}
+      <style>{`
+        @keyframes opsPulse { 0% { transform: scale(0.8); opacity: 0.9; } 70% { transform: scale(2.4); opacity: 0; } 100% { transform: scale(2.4); opacity: 0; } }
+        .ops-pulse { animation: opsPulse 2s ease-out infinite; }
+        @media (prefers-reduced-motion: reduce) { .ops-pulse { animation: none; opacity: 0; } }
+      `}</style>
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
         <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: 0 }}>Platform Overview</h2>
         <button onClick={load} style={{ padding: '6px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>↻ Refresh</button>
       </div>
 
       {error && <ErrorBox msg={error} />}
 
-      {/* Primary stats */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
-        <PrimaryMetric label="Total Users" value={m.users?.total} sub={`+${m.users?.thisMonth ?? 0} this month`} loading={loading} color={C.acc} onClick={() => onNavigate('users')} />
-        <PrimaryMetric label="Total Projects" value={m.projects?.total} sub={`+${m.projects?.thisMonth ?? 0} this month`} loading={loading} color={C.grn} onClick={() => onNavigate('projects')} />
-        <PrimaryMetric label="Unread Messages" value={unread} loading={loading} color={unread > 0 ? C.ylw : C.muted} onClick={() => onNavigate('messages')} />
-        <PrimaryMetric label="Failed Logins (7d)" value={failed7} loading={loading} color={failed7 > 10 ? C.red : C.muted} onClick={() => onNavigate('security')} />
+      {/* ── Tier 1: KPI cards — animated counters + sparklines ─────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 14, marginBottom: 14 }}>
+        <KpiCard label="Total Users" value={m.users?.total} sub={`+${m.users?.thisMonth ?? 0} this month`} color={C.acc}
+          spark={sparkOf('newUsers')} trendLoading={trendLoading} loading={loading} onClick={() => onNavigate('users')} />
+        <KpiCard label="Total Projects (LAB)" value={m.projects?.total} sub={`META·SIFT: ${sift ? (sift.totalProjects ?? 0).toLocaleString() : '—'}`} color={C.grn}
+          spark={sparkOf('newProjects')} trendLoading={trendLoading} loading={loading} onClick={() => onNavigate('projects')} />
+        <KpiCard label="Unread Messages" value={unread} sub={`${(m.contactMessages?.total ?? 0).toLocaleString()} total`} color={unread > 0 ? C.ylw : C.muted}
+          spark={sparkOf('contactMessages')} trendLoading={trendLoading} loading={loading} onClick={() => onNavigate('messages')} />
+        <KpiCard label="Failed Logins (7d)" value={failed7} sub="security posture" color={failed7 > 10 ? C.red : C.muted}
+          spark={sparkOf('failedLogins')} trendLoading={trendLoading} loading={loading} onClick={() => onNavigate('security')} />
       </div>
 
-      {/* Secondary stats */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, marginBottom: 20 }}>
-        {secondary.map(s => <SmallMetric key={s.label} label={s.label} value={s.value} loading={loading} />)}
-      </div>
-
-      {/* Unique logins (prompt6 Task 9) — distinct users with a successful login
-          in each ROLLING window (past 24h/7d/30d/90d/365d), from metrics.logins. */}
-      <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
-        Unique Logins
-      </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 8, marginBottom: 20 }}>
-        {[
-          { label: 'Past 24 Hours', value: m.logins?.day },
-          { label: 'Past Week',     value: m.logins?.week },
-          { label: 'Past Month',    value: m.logins?.month },
-          { label: 'Past Quarter',  value: m.logins?.quarter },
-          { label: 'Past Year',     value: m.logins?.year },
-        ].map(s => <SmallMetric key={s.label} label={s.label} value={s.value} loading={loading} />)}
-      </div>
-
-      {/* Needs Attention + Quick Actions */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16, marginBottom: 16 }}>
-        <SectionCard title="Needs Attention">
-          <div style={{ padding: '8px 0' }}>
-            {attention.length === 0 ? (
-              <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={{ color: C.grn, display: 'inline-flex' }}><Icon name="check" size={14} /></span>
-                <span style={{ fontSize: 12, color: C.txt2 }}>Everything looks good.</span>
+      {/* ── Tier 2: 14-day activity + live system health ───────────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.8fr) minmax(0, 1fr)', gap: 14 }}>
+        <SectionCard title="Activity — Last 14 Days">
+          <div style={{ padding: '16px 18px 14px' }}>
+            <AreaChart series={areaSeries} labels={areaLabels} height={190} loading={trendLoading} emptyLabel="No trend data yet" />
+          </div>
+        </SectionCard>
+        <SectionCard title="System Health" action={
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 10, fontFamily: MONO, letterSpacing: '0.08em', textTransform: 'uppercase', color: live ? C.grn : C.muted }}>
+            <LivePulseDot live={live} />
+            {live ? 'live' : 'offline'}
+          </span>
+        }>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
+            {healthTiles.map((row, i) => (
+              <div key={row.label} style={{ padding: '13px 16px', borderBottom: i < healthTiles.length - 2 ? `1px solid ${C.brd}` : 'none', borderRight: i % 2 === 0 ? `1px solid ${C.brd}` : 'none', minWidth: 0 }}>
+                <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.label}</div>
+                {loading ? <Spinner size={12} /> : row.value}
               </div>
-            ) : attention.map((a, i) => (
-              <button key={i} onClick={() => onNavigate(a.go)} style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '12px 20px', background: 'transparent', border: 'none', borderBottom: i < attention.length - 1 ? `1px solid ${C.brd}` : 'none', cursor: 'pointer', textAlign: 'left', fontFamily: FONT }}>
-                <span style={{ color: a.color, display: 'inline-flex', flexShrink: 0 }}><Icon name={a.icon} size={14} /></span>
-                <span style={{ fontSize: 12, color: C.txt2, flex: 1 }}>{a.msg}</span>
-                <span style={{ fontSize: 10, color: C.muted }}>→</span>
-              </button>
-            ))}
-          </div>
-        </SectionCard>
-
-        <SectionCard title="Quick Actions">
-          <div style={{ padding: '8px 0' }}>
-            {[
-              { icon: 'users',    label: 'Manage Users',     sub: `${m.users?.total ?? '—'} total`,    go: 'users' },
-              { icon: 'folders',  label: 'Manage Projects',  sub: `${m.projects?.total ?? '—'} total`, go: 'projects' },
-              { icon: 'mail',     label: 'View Messages',    sub: `${unread} unread`,                  go: 'messages' },
-              { icon: 'fileText', label: 'Edit Website',     sub: 'landing page content',              go: 'content' },
-            ].map((a, i, arr) => (
-              <button key={a.go} onClick={() => onNavigate(a.go)} style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '11px 20px', background: 'transparent', border: 'none', borderBottom: i < arr.length - 1 ? `1px solid ${C.brd}` : 'none', cursor: 'pointer', textAlign: 'left', fontFamily: FONT }}
-                onMouseEnter={e => e.currentTarget.style.background = alpha(C.acc, '08')}
-                onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
-              >
-                <span style={{ color: C.acc, width: 20, display: 'inline-flex', justifyContent: 'center' }}><Icon name={a.icon} size={14} /></span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, color: C.txt }}>{a.label}</div>
-                  <div style={{ fontSize: 10, color: C.muted, marginTop: 1 }}>{a.sub}</div>
-                </div>
-                <span style={{ fontSize: 10, color: C.muted }}>→</span>
-              </button>
             ))}
           </div>
         </SectionCard>
       </div>
 
-      {/* System health row */}
-      <SectionCard title="System Status">
-        <div style={{ display: 'flex', gap: 0 }}>
-          {[
-            { label: 'Backend',     value: health ? <Badge text="OK" color={C.grn} /> : <Badge text="Unknown" color={C.muted} /> },
-            { label: 'Database',    value: health ? (dbOk ? <Badge text="OK" color={C.grn} /> : <Badge text="Error" color={C.red} />) : <Badge text="Unknown" color={C.muted} /> },
-            { label: 'Environment', value: <Badge text={health?.env || 'unknown'} color={health?.env === 'production' ? C.ylw : C.grn} /> },
-            { label: 'Version',     value: <span style={{ fontFamily: MONO, fontSize: 12, color: C.txt2 }}>{health?.version || '—'}</span> },
-            { label: 'Uptime',      value: health?.uptime != null ? <span style={{ fontFamily: MONO, fontSize: 12, color: C.txt2 }}>{Math.floor(health.uptime / 3600)}h {Math.floor((health.uptime % 3600) / 60)}m</span> : <span style={{ color: C.muted }}>—</span> },
-          ].map((row, i, arr) => (
-            <div key={row.label} style={{ flex: 1, padding: '14px 18px', borderRight: i < arr.length - 1 ? `1px solid ${C.brd}` : 'none' }}>
-              <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 6 }}>{row.label}</div>
-              {loading ? <Spinner size={12} /> : row.value}
+      {/* ── Tier 3: screening pipeline · completion · login windows ────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 1.1fr) minmax(0, 1fr)', gap: 14 }}>
+        <SectionCard title="Screening Pipeline">
+          <div style={{ padding: '16px 18px' }}>
+            <FunnelBar stages={funnelStages} loading={loading} emptyLabel="No screening data yet" />
+          </div>
+        </SectionCard>
+        <SectionCard title="Completion (SIFT)">
+          <div style={{ padding: '16px 18px' }}>
+            <DonutGauge
+              loading={loading}
+              segments={[
+                { label: 'Done',        value: doneN,       color: C.grn },
+                { label: 'In Progress', value: inProgN,     color: C.teal },
+                { label: 'Not Started', value: notStartedN, color: C.muted },
+              ]}
+              centerValue={`${donePct}%`}
+              centerLabel="done"
+              emptyLabel="No screening projects yet"
+            />
+            {sift && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8, marginTop: 14 }}>
+                {[
+                  { label: 'Done Today', value: sift.doneToday },
+                  { label: 'This Week',  value: sift.doneThisWeek },
+                  { label: 'This Month', value: sift.doneThisMonth },
+                ].map(d => (
+                  <div key={d.label} style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 7, padding: '8px 10px', minWidth: 0 }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, fontFamily: MONO, color: C.grn, fontVariantNumeric: 'tabular-nums' }}>{d.value ?? 0}</div>
+                    <div style={{ fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.label}>{d.label}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </SectionCard>
+        <SectionCard title="Unique Logins">
+          <div style={{ padding: '16px 18px' }}>
+            <BarRow
+              loading={loading}
+              color={C.acc}
+              emptyLabel="No login data yet"
+              rows={[
+                { label: '24 hours', value: m.logins?.day },
+                { label: '7 days',   value: m.logins?.week },
+                { label: '30 days',  value: m.logins?.month },
+                { label: '90 days',  value: m.logins?.quarter },
+                { label: '365 days', value: m.logins?.year },
+              ]}
+            />
+            <div style={{ fontSize: 9, fontFamily: MONO, color: C.muted, marginTop: 12, letterSpacing: '0.04em', textTransform: 'uppercase' }}>distinct users · rolling windows</div>
+          </div>
+        </SectionCard>
+      </div>
+
+      {/* ── Tier 4: live activity feed + alerts / quick actions ────────── */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.6fr) minmax(0, 1fr)', gap: 14 }}>
+        <SectionCard title="Live Activity" action={
+          <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.05em' }}>audit log + security events</span>
+        }>
+          {feed === null ? <ChartLoading height={180} /> : feed.length === 0 ? (
+            <ChartEmpty label="No recent activity" height={180} />
+          ) : (
+            <div>
+              {feed.map((it, i) => (
+                <div key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 16px', borderBottom: i < feed.length - 1 ? `1px solid ${C.brd}` : 'none', minWidth: 0, background: it.kind === 'security' ? alpha(secTint(it.type), 0.05) : 'transparent' }}>
+                  <span style={{ color: it.kind === 'security' ? secTint(it.type) : C.acc, display: 'inline-flex', flexShrink: 0 }}>
+                    <Icon name={it.kind === 'security' ? 'shield' : 'clipboard'} size={13} />
+                  </span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, fontFamily: MONO, letterSpacing: '0.03em', color: it.kind === 'security' ? secTint(it.type) : C.txt, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={it.action}>
+                      {it.action}{it.entity ? <span style={{ color: C.muted, fontWeight: 400 }}>{` · ${it.entity}`}</span> : null}
+                    </div>
+                    <div style={{ fontSize: 10, color: C.muted, fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={it.actor}>{it.actor}</div>
+                  </div>
+                  <span style={{ fontSize: 10, color: C.muted, fontFamily: MONO, flexShrink: 0 }}>{fmtAgo(it.at)}</span>
+                </div>
+              ))}
             </div>
-          ))}
+          )}
+        </SectionCard>
+
+        <div style={{ minWidth: 0 }}>
+          <SectionCard title="Needs Attention">
+            <div style={{ padding: '4px 0' }}>
+              {attention.length === 0 ? (
+                <div style={{ padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{ color: C.grn, display: 'inline-flex' }}><Icon name="check" size={14} /></span>
+                  <span style={{ fontSize: 12, color: C.txt2 }}>Everything looks good.</span>
+                </div>
+              ) : attention.map((a, i) => (
+                <button key={i} onClick={() => onNavigate(a.go)} style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '10px 16px', background: 'transparent', border: 'none', borderBottom: i < attention.length - 1 ? `1px solid ${C.brd}` : 'none', cursor: 'pointer', textAlign: 'left', fontFamily: FONT, minWidth: 0 }}>
+                  <span style={{ color: a.color, display: 'inline-flex', flexShrink: 0 }}><Icon name={a.icon} size={14} /></span>
+                  <span style={{ fontSize: 12, color: C.txt2, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={a.msg}>{a.msg}</span>
+                  <span style={{ fontSize: 10, color: C.muted, flexShrink: 0 }}>→</span>
+                </button>
+              ))}
+            </div>
+          </SectionCard>
+
+          <SectionCard title="Quick Actions">
+            <div style={{ padding: '4px 0' }}>
+              {[
+                { icon: 'users',    label: 'Manage Users',     sub: `${m.users?.total ?? '—'} total`,    go: 'users' },
+                { icon: 'folders',  label: 'Manage Projects',  sub: `${m.projects?.total ?? '—'} total`, go: 'projects' },
+                { icon: 'mail',     label: 'View Messages',    sub: `${unread} unread`,                  go: 'messages' },
+                { icon: 'fileText', label: 'Edit Website',     sub: 'landing page content',              go: 'content' },
+              ].map((a, i, arr) => (
+                <button key={a.go} onClick={() => onNavigate(a.go)} style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', padding: '9px 16px', background: 'transparent', border: 'none', borderBottom: i < arr.length - 1 ? `1px solid ${C.brd}` : 'none', cursor: 'pointer', textAlign: 'left', fontFamily: FONT, minWidth: 0 }}
+                  onMouseEnter={e => e.currentTarget.style.background = alpha(C.acc, '08')}
+                  onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                >
+                  <span style={{ color: C.acc, width: 20, display: 'inline-flex', justifyContent: 'center', flexShrink: 0 }}><Icon name={a.icon} size={14} /></span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: C.txt, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.label}</div>
+                    <div style={{ fontSize: 10, color: C.muted, marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.sub}</div>
+                  </div>
+                  <span style={{ fontSize: 10, color: C.muted, flexShrink: 0 }}>→</span>
+                </button>
+              ))}
+            </div>
+          </SectionCard>
         </div>
-      </SectionCard>
+      </div>
     </div>
   );
 }
@@ -443,11 +998,11 @@ function InboxItem({ msg, selected, onClick }) {
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 2 }}>
         <span style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0, fontSize: 12, fontWeight: isUnread ? 700 : 500, color: isUnread ? C.txt : C.txt2, flex: 1, marginRight: 8 }}>
           {isUnread && <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.ylw, flexShrink: 0 }} />}
-          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.name || msg.email}</span>
+          <span title={msg.name || msg.email} style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{msg.name || msg.email}</span>
         </span>
         <span style={{ fontSize: 10, color: C.muted, fontFamily: MONO, flexShrink: 0 }}>{fmtAgo(msg.createdAt)}</span>
       </div>
-      <div style={{ fontSize: 11, color: isUnread ? C.txt2 : C.muted, fontWeight: isUnread ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 2 }}>
+      <div title={msg.subject || '(no subject)'} style={{ fontSize: 11, color: isUnread ? C.txt2 : C.muted, fontWeight: isUnread ? 600 : 400, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginBottom: 2 }}>
         {msg.subject || '(no subject)'}
       </div>
       <div style={{ fontSize: 11, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
@@ -573,8 +1128,8 @@ function MessageDetail({ msg, emailConfigured, onMarkRead, onArchive, onDelete, 
     <div style={{ padding: 28 }}>
       <div style={{ marginBottom: 22 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
-          <div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 6 }}>{msg.subject || '(no subject)'}</div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 6, minWidth: 0, overflowWrap: 'anywhere' }}>{msg.subject || '(no subject)'}</div>
             <div style={{ display: 'flex', gap: 6 }}>
               {msg.archived
                 ? <Badge text="archived" color={C.muted} />
@@ -589,12 +1144,12 @@ function MessageDetail({ msg, emailConfigured, onMarkRead, onArchive, onDelete, 
           </div>
         </div>
         <div style={{ padding: '12px 16px', background: C.surf, borderRadius: 8, border: `1px solid ${C.brd}` }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: C.txt, marginBottom: 3 }}>{msg.name}</div>
-          <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>{msg.email}</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: C.txt, marginBottom: 3, minWidth: 0, overflowWrap: 'anywhere' }}>{msg.name}</div>
+          <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, minWidth: 0, overflowWrap: 'anywhere' }}>{msg.email}</div>
         </div>
       </div>
 
-      <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.85, whiteSpace: 'pre-wrap', padding: 18, background: C.surf, borderRadius: 8, border: `1px solid ${C.brd}`, marginBottom: 18, minHeight: 100 }}>
+      <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.85, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', padding: 18, background: C.surf, borderRadius: 8, border: `1px solid ${C.brd}`, marginBottom: 18, minHeight: 100 }}>
         {msg.message}
       </div>
 
@@ -806,7 +1361,7 @@ function UserProjectItem({ project }) {
   return (
     <div style={{ margin: '0 12px 8px', padding: '10px 12px', background: C.surf, borderRadius: 7, border: `1px solid ${C.brd}` }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 4 }}>
-        <span style={{ fontSize: 12, fontWeight: 600, color: C.txt, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8 }}>{project.name}</span>
+        <span title={project.name} style={{ fontSize: 12, fontWeight: 600, color: C.txt, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginRight: 8 }}>{project.name}</span>
         {project.status === 'archived' && <Badge text="archived" color={C.ylw} />}
       </div>
       <div style={{ display: 'flex', gap: 12, fontSize: 10, color: C.muted, fontFamily: MONO, marginBottom: 3 }}>
@@ -935,12 +1490,12 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
         ) : (
           <>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 2 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: C.txt }}>{u.name || '—'}</div>
+              <div title={u.name || undefined} style={{ fontSize: 15, fontWeight: 700, color: C.txt, minWidth: 0, overflowWrap: 'anywhere' }}>{u.name || '—'}</div>
               {!lockedForMod && (
                 <button onClick={() => setEditing(true)} style={{ background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 11, padding: '3px 9px', cursor: 'pointer', fontFamily: FONT, flexShrink: 0 }}>Edit</button>
               )}
             </div>
-            <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, marginBottom: 10 }}>{u.email}</div>
+            <div title={u.email} style={{ fontSize: 11, color: C.muted, fontFamily: MONO, marginBottom: 10, minWidth: 0, overflowWrap: 'anywhere' }}>{u.email}</div>
           </>
         )}
         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -1085,8 +1640,8 @@ function UsersSection({ isAdmin = false }) {
   }
 
   const columns = [
-    { key: 'name',         label: 'Name',         render: (v, row) => <span style={{ color: C.txt, fontWeight: 600 }}>{v || <span style={{ color: C.muted }}>—</span>}</span> },
-    { key: 'email',        label: 'Email',         render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{v}</span> },
+    { key: 'name',         label: 'Name',         render: (v, row) => <span title={v || undefined} style={{ color: C.txt, fontWeight: 600, display: 'block', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v || <span style={{ color: C.muted }}>—</span>}</span> },
+    { key: 'email',        label: 'Email',         render: v => <span title={v} style={{ fontFamily: MONO, fontSize: 11, overflowWrap: 'anywhere' }}>{v}</span> },
     { key: 'role',         label: 'Role',          render: v => <RoleBadge role={v} /> },
     { key: 'status',       label: 'Status',        render: v => v === 'active' ? <Badge text="active" color={C.grn} /> : <Badge text="suspended" color={C.red} /> },
     { key: 'projectCount', label: 'Projects',      render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
@@ -1187,7 +1742,7 @@ function ProjectDetailPanel({ project, onClose, onAction }) {
       </div>
 
       <div style={{ padding: '16px 16px 12px' }}>
-        <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 4 }}>{project.name}</div>
+        <div title={project.name} style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 4, minWidth: 0, overflowWrap: 'anywhere' }}>{project.name}</div>
         <div style={{ display: 'flex', gap: 5, marginBottom: 12 }}>
           {isArchived ? <Badge text="archived" color={C.ylw} /> : <Badge text="active" color={C.grn} />}
         </div>
@@ -1205,9 +1760,9 @@ function ProjectDetailPanel({ project, onClose, onAction }) {
           { label: 'Studies',  value: project.studyCount ?? 0 },
           { label: 'Records',  value: project.recordCount ?? 0 },
         ].map(r => (
-          <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: `1px solid ${C.brd}` }}>
-            <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{r.label}</span>
-            <span style={{ fontSize: 11, color: C.txt2 }}>{r.value}</span>
+          <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '5px 0', borderBottom: `1px solid ${C.brd}`, minWidth: 0 }}>
+            <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.06em', flexShrink: 0 }}>{r.label}</span>
+            <span style={{ fontSize: 11, color: C.txt2, minWidth: 0, textAlign: 'right', overflowWrap: 'anywhere' }}>{r.value}</span>
           </div>
         ))}
       </div>
@@ -1267,14 +1822,14 @@ function ProjectsSection() {
   }
 
   const columns = [
-    { key: 'name',       label: 'Name',    render: v => <span style={{ color: C.txt, fontWeight: 600 }}>{v}</span> },
+    { key: 'name',       label: 'Name',    render: v => <span title={v} style={{ color: C.txt, fontWeight: 600, display: 'block', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span> },
     // Linked META·SIFT screening project (prompt6 Task 11). linkedMetaSift = { id, title } | null;
     // its id IS the shared Review Workspace id (shown in the detail panel).
     { key: 'linkedMetaSift', label: 'Linked META·SIFT',
       render: v => v?.id
-        ? <span style={{ fontSize: 11 }}>{v.title || '(linked, untitled)'}</span>
+        ? <span title={v.title || '(linked, untitled)'} style={{ fontSize: 11, display: 'block', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.title || '(linked, untitled)'}</span>
         : <span style={{ fontSize: 11, color: C.muted }}>— not linked</span> },
-    { key: 'ownerEmail', label: 'Owner',   render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{v || '—'}</span> },
+    { key: 'ownerEmail', label: 'Owner',   render: v => <span title={v || undefined} style={{ fontFamily: MONO, fontSize: 11, overflowWrap: 'anywhere' }}>{v || '—'}</span> },
     { key: 'createdAt',  label: 'Created', render: v => fmtDate(v) },
     { key: 'updatedAt',  label: 'Updated', render: v => fmtAgo(v) },
     { key: 'studyCount', label: 'Studies', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
@@ -1825,7 +2380,7 @@ function SecuritySection() {
 
   const auditCols = [
     { key: 'createdAt', label: 'Time',    render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{fmtDateTime(v)}</span> },
-    { key: 'admin',     label: 'Admin',   render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{v?.email || v}</span> },
+    { key: 'admin',     label: 'Admin',   render: v => <span style={{ fontFamily: MONO, fontSize: 11, overflowWrap: 'anywhere' }}>{v?.email || v}</span> },
     { key: 'action',    label: 'Action',  render: v => <span style={{ color: C.txt, fontWeight: 600 }}>{v}</span> },
     { key: 'entityType',label: 'Entity',  render: v => v || '—' },
     { key: 'details',   label: 'Details', render: v => <span style={{ fontFamily: MONO, fontSize: 10, color: C.muted, display: 'block', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={typeof v === 'object' ? JSON.stringify(v) : v}>{typeof v === 'object' ? JSON.stringify(v) : (v || '—')}</span> },
@@ -1834,7 +2389,7 @@ function SecuritySection() {
   const secCols = [
     { key: 'createdAt', label: 'Time',    render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{fmtDateTime(v)}</span> },
     { key: 'type',      label: 'Type',    render: v => <Badge text={v} color={typeColor(v)} /> },
-    { key: 'email',     label: 'Email',   render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{v || '—'}</span> },
+    { key: 'email',     label: 'Email',   render: v => <span style={{ fontFamily: MONO, fontSize: 11, overflowWrap: 'anywhere' }}>{v || '—'}</span> },
     { key: 'ip',        label: 'IP',      render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{v || '—'}</span> },
     { key: 'details',   label: 'Details', render: v => <span style={{ fontFamily: MONO, fontSize: 10, color: C.muted, display: 'block', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{typeof v === 'object' ? JSON.stringify(v) : (v || '—')}</span> },
   ];
@@ -1945,7 +2500,7 @@ const SIFT_TABS = [
 ];
 
 const siftMiniBtn = (color) => ({
-  padding: '3px 8px', background: `${color}18`, border: `1px solid ${color}40`,
+  padding: '3px 8px', background: alpha(color, '18'), border: `1px solid ${alpha(color, '40')}`,
   borderRadius: 5, color, fontSize: 10, fontFamily: MONO, cursor: 'pointer',
   letterSpacing: '0.05em', fontWeight: 600,
 });
@@ -1975,22 +2530,9 @@ function SiftOverview() {
     { label: 'Archived',        value: m.archivedProjects, color: C.muted },
     { label: 'Disabled',        value: m.disabledProjects, color: C.red },
   ];
+  // Counts already visualized by the funnel/donut below are NOT repeated here.
   const cards = [
-    { label: 'In Progress',     value: m.inProgressProjects, color: C.teal },
-    { label: 'Done',            value: m.doneProjects,       color: C.grn },
-    // prompt6 Task 12 — DISTINCT projects whose status changed to 'done' in the
-    // window (toggling done→in progress→done counts once).
-    { label: 'Done Today',      value: m.doneToday,          color: C.grn },
-    { label: 'Done This Week',  value: m.doneThisWeek,       color: C.grn },
-    { label: 'Done This Month', value: m.doneThisMonth,      color: C.grn },
-    { label: 'Records',         value: m.totalRecords,       color: C.txt2 },
-    { label: 'Screened',        value: m.screened,           color: C.acc },
-    { label: 'Included',        value: m.included,           color: C.grn },
-    { label: 'Excluded',        value: m.excluded,           color: C.red },
-    { label: 'Maybe',           value: m.maybe,              color: C.ylw },
     { label: 'Undecided',       value: m.undecided,          color: C.muted },
-    { label: '2nd Review',      value: m.eligibleSecondReview, color: C.teal },
-    { label: 'To Extraction',   value: m.sentToExtraction,   color: C.grn },
     { label: 'Handoffs Sent',   value: m.handoffSent,        color: C.grn },
     { label: 'Disputes',        value: m.totalDisputes,      color: C.gold },
     { label: 'Resolved Conf.',  value: m.resolvedConflicts,  color: C.muted },
@@ -2001,6 +2543,25 @@ function SiftOverview() {
     { label: 'New This Week',   value: m.projectsThisWeek,   color: C.teal },
   ];
 
+  // Pipeline + completion shapes (prompt8 chart kit) — same data as before,
+  // drawn instead of dumped as a flat card wall.
+  const hasMetrics = !!metrics;
+  const funnelStages = hasMetrics ? [
+    { label: 'Records',  value: m.totalRecords, color: C.txt2 },
+    { label: 'Screened', value: m.screened, color: C.acc, segments: [
+      { label: 'Included', value: m.included, color: C.grn },
+      { label: 'Excluded', value: m.excluded, color: C.red },
+      { label: 'Maybe',    value: m.maybe,    color: C.yel },
+    ] },
+    { label: '2nd Review',    value: m.eligibleSecondReview, color: C.teal },
+    { label: 'To Extraction', value: m.sentToExtraction,     color: C.grn },
+  ] : [];
+  const doneN       = m.doneProjects ?? 0;
+  const inProgN     = m.inProgressProjects ?? 0;
+  const totalN      = m.totalProjects ?? 0;
+  const notStartedN = Math.max(0, totalN - doneN - inProgN);
+  const donePct     = totalN > 0 ? Math.round((doneN / totalN) * 100) : 0;
+
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
@@ -2008,20 +2569,58 @@ function SiftOverview() {
         <button onClick={load} style={{ padding: '6px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>↻ Refresh</button>
       </div>
       {error && <ErrorBox msg={error} />}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12, marginBottom: 14 }}>
         {primary.map(p => (
-          <div key={p.label} style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: '18px 20px' }}>
+          <div key={p.label} style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: '18px 20px', minWidth: 0 }}>
             {loading ? <div style={{ height: 32, display: 'flex', alignItems: 'center' }}><Spinner /></div>
-              : <div style={{ fontSize: 28, fontWeight: 800, fontFamily: MONO, color: p.color, letterSpacing: '-1px', lineHeight: 1 }}>{p.value ?? 0}</div>}
-            <div style={{ fontSize: 10, color: C.muted, marginTop: 8, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: MONO }}>{p.label}</div>
+              : <div style={{ fontSize: 28, fontWeight: 800, fontFamily: MONO, color: p.color, letterSpacing: '-1px', lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>{p.value ?? 0}</div>}
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 8, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.label}>{p.label}</div>
           </div>
         ))}
       </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.5fr) minmax(0, 1fr)', gap: 14 }}>
+        <SectionCard title="Screening Pipeline">
+          <div style={{ padding: '16px 18px' }}>
+            <FunnelBar stages={funnelStages} loading={loading} emptyLabel="No screening data yet" />
+          </div>
+        </SectionCard>
+        <SectionCard title="Project Completion">
+          <div style={{ padding: '16px 18px' }}>
+            <DonutGauge
+              loading={loading}
+              segments={[
+                { label: 'Done',        value: doneN,       color: C.grn },
+                { label: 'In Progress', value: inProgN,     color: C.teal },
+                { label: 'Not Started', value: notStartedN, color: C.muted },
+              ]}
+              centerValue={`${donePct}%`}
+              centerLabel="done"
+              emptyLabel="No screening projects yet"
+            />
+            {hasMetrics && (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 8, marginTop: 14 }}>
+                {[
+                  // prompt6 Task 12 — DISTINCT projects whose status changed to
+                  // 'done' in the window (done→in progress→done counts once).
+                  { label: 'Done Today', value: m.doneToday },
+                  { label: 'This Week',  value: m.doneThisWeek },
+                  { label: 'This Month', value: m.doneThisMonth },
+                ].map(d => (
+                  <div key={d.label} style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 7, padding: '8px 10px', minWidth: 0 }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, fontFamily: MONO, color: C.grn, fontVariantNumeric: 'tabular-nums' }}>{d.value ?? 0}</div>
+                    <div style={{ fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.label}>{d.label}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </SectionCard>
+      </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(130px, 1fr))', gap: 8 }}>
         {cards.map(c => (
-          <div key={c.label} style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '12px 14px' }}>
-            {loading ? <Spinner size={12} /> : <div style={{ fontSize: 18, fontWeight: 700, fontFamily: MONO, color: c.color }}>{c.value ?? 0}</div>}
-            <div style={{ fontSize: 10, color: C.muted, marginTop: 4, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: MONO }}>{c.label}</div>
+          <div key={c.label} style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '12px 14px', minWidth: 0 }}>
+            {loading ? <Spinner size={12} /> : <div style={{ fontSize: 18, fontWeight: 700, fontFamily: MONO, color: c.color, fontVariantNumeric: 'tabular-nums' }}>{c.value ?? 0}</div>}
+            <div style={{ fontSize: 10, color: C.muted, marginTop: 4, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.label}>{c.label}</div>
           </div>
         ))}
       </div>
@@ -2121,7 +2720,7 @@ function SiftProjectDetailPanel({ projectId, onClose }) {
       ) : detail && (
         <>
           <div style={{ padding: '16px 16px 12px' }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 6 }}>{detail.title || '(untitled)'}</div>
+            <div title={detail.title || '(untitled)'} style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 6, minWidth: 0, overflowWrap: 'anywhere' }}>{detail.title || '(untitled)'}</div>
             <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 12 }}>
               <Badge text={detail.disabled ? 'disabled' : 'active'} color={detail.disabled ? C.red : C.grn} />
               {detail.archived && <Badge text="archived" color={C.muted} />}
@@ -2131,7 +2730,7 @@ function SiftProjectDetailPanel({ projectId, onClose }) {
             {infoRows.map(r => (
               <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, padding: '5px 0', borderBottom: `1px solid ${C.brd}` }}>
                 <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.06em', flexShrink: 0 }}>{r.label}</span>
-                <span style={{ fontSize: 11, color: C.txt2, textAlign: 'right', minWidth: 0 }}>{r.value}</span>
+                <span style={{ fontSize: 11, color: C.txt2, textAlign: 'right', minWidth: 0, overflowWrap: 'anywhere' }}>{r.value}</span>
               </div>
             ))}
           </div>
@@ -2162,7 +2761,7 @@ function SiftProjectDetailPanel({ projectId, onClose }) {
               return (
                 <div key={mm.id || mm.email || i} style={{ padding: '7px 0', borderBottom: i < members.length - 1 ? `1px solid ${C.brd}` : 'none' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: C.txt, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mm.name || mm.email || '—'}</span>
+                    <span title={mm.name || mm.email || undefined} style={{ fontSize: 12, fontWeight: 600, color: C.txt, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{mm.name || mm.email || '—'}</span>
                     <Badge text={mm.role || 'reviewer'} color={mm.role === 'owner' ? C.acc : mm.role === 'leader' ? C.acc : mm.role === 'viewer' ? C.muted : C.teal} />
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
@@ -2204,12 +2803,12 @@ function SiftProjects() {
   }
 
   const cols = [
-    { key: 'title',  label: 'Title', width: '18%', render: v => <span style={{ color: C.txt, fontWeight: 600 }}>{v || '—'}</span> },
+    { key: 'title',  label: 'Title', width: '18%', render: v => <span title={v || undefined} style={{ color: C.txt, fontWeight: 600, display: 'block', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v || '—'}</span> },
     { key: 'linkedMetaLabProjectTitle', label: 'Linked META·LAB', width: '15%',
       render: (v, row) => v
-        ? <span style={{ fontSize: 11 }}>{v}</span>
+        ? <span title={v} style={{ fontSize: 11, display: 'block', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span>
         : <span style={{ fontSize: 11, color: C.muted }}>{row.linkedMetaLabProjectId ? '(linked, untitled)' : '— not linked'}</span> },
-    { key: 'owner',  label: 'Owner', width: '13%', render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{v?.email || '—'}</span> },
+    { key: 'owner',  label: 'Owner', width: '13%', render: v => <span title={v?.email || undefined} style={{ fontFamily: MONO, fontSize: 11, overflowWrap: 'anywhere' }}>{v?.email || '—'}</span> },
     { key: 'recordCount', label: 'Articles', width: '7%', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
     { key: 'memberCount', label: 'Members', width: '7%', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
     { key: 'secondReviewCount', label: '2nd Rev', width: '6%', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
@@ -2296,8 +2895,8 @@ function SiftMembers() {
   }
 
   const cols = [
-    { key: 'name',  label: 'Name',  render: v => <span style={{ color: C.txt, fontWeight: 600 }}>{v || '—'}</span> },
-    { key: 'email', label: 'Email', render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{v || '—'}</span> },
+    { key: 'name',  label: 'Name',  render: v => <span title={v || undefined} style={{ color: C.txt, fontWeight: 600, overflowWrap: 'anywhere' }}>{v || '—'}</span> },
+    { key: 'email', label: 'Email', render: v => <span title={v || undefined} style={{ fontFamily: MONO, fontSize: 11, overflowWrap: 'anywhere' }}>{v || '—'}</span> },
     { key: 'role',  label: 'Role',  render: v => <Badge text={v || 'reviewer'} color={v === 'leader' ? C.acc : v === 'viewer' ? C.muted : C.teal} /> },
     { key: 'status', label: 'Status', render: v => <Badge text={v || 'active'} color={v === 'active' ? C.grn : v === 'pending' ? C.ylw : C.muted} /> },
     { key: 'canScreen', label: 'Screen', render: v => v ? <span style={{ color: C.grn }}>✓</span> : <span style={{ color: C.muted }}>—</span> },
@@ -2636,7 +3235,9 @@ export default function AdminConsole() {
   useEffect(() => { fetchVersion().then(setVersion); }, []);
 
   const sections = {
-    overview: <OverviewSection onNavigate={setActive} />,
+    // Overview is admin-only (MOD_SECTIONS unchanged): renderActive() never
+    // mounts it for mods; isAdmin additionally gates its fetches + EventSource.
+    overview: <OverviewSection onNavigate={setActive} isAdmin={isAdmin} />,
     users:    <UsersSection isAdmin={isAdmin} />,
     projects: <ProjectsSection />,
     sift:     <SiftAdminSection />,
@@ -2699,7 +3300,7 @@ export default function AdminConsole() {
           {/* Shared notifications bell (prompt6 Task 1) — inline in the top bar,
               before the user/logout area. Same component as META·LAB / META·SIFT. */}
           <NotificationsBell />
-          <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>{user?.email}</span>
+          <span title={user?.email} style={{ fontSize: 11, color: C.muted, fontFamily: MONO, minWidth: 0, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.email}</span>
           <RoleBadge role={uiRole} />
           {/* Shared account dropdown — same component as META·LAB / META·SIFT (Task 8) */}
           <UserMenu context="metalab" />

@@ -122,7 +122,7 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject 
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
               <h1 style={{
                 fontSize: 19, fontWeight: 700, color: C.txt, margin: 0,
-                letterSpacing: '-0.02em', lineHeight: 1.25, wordBreak: 'break-word',
+                letterSpacing: '-0.02em', lineHeight: 1.25, minWidth: 0, wordBreak: 'break-word', overflowWrap: 'anywhere',
               }}>
                 {title}
               </h1>
@@ -356,11 +356,11 @@ function MemberRow({ member, totalArticles }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 11, flexWrap: 'wrap' }}>
         <Avatar name={name} size={30} />
         <div style={{ minWidth: 0, flex: '1 1 200px' }}>
-          <div style={{ fontSize: 13.5, fontWeight: 600, color: C.txt, lineHeight: 1.3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div title={name} style={{ fontSize: 13.5, fontWeight: 600, color: C.txt, lineHeight: 1.3, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {name}
           </div>
           {member.email && member.email !== name && (
-            <div style={{ fontSize: 11, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            <div title={member.email} style={{ fontSize: 11, color: C.muted, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {member.email}
             </div>
           )}

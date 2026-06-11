@@ -269,7 +269,7 @@ export default function ChatDrawer({
   return (
     <div
       onClick={e => { if (e.target === e.currentTarget) onClose?.(); }}
-      style={{ position: 'fixed', inset: 0, zIndex: 1100, background: alpha(C.bg, 0.45), animation: 'chat-fade 0.15s ease' }}>
+      style={{ position: 'fixed', inset: 0, zIndex: 10000, background: alpha(C.bg, 0.45), animation: 'chat-fade 0.15s ease' }}>
       <div style={{
         position: 'absolute', top: 0, right: 0, height: '100%', width: 'min(420px, 92vw)',
         background: C.surf, borderLeft: `1px solid ${C.brd2}`, boxShadow: `-12px 0 40px ${C.shadow}`,
@@ -284,12 +284,12 @@ export default function ChatDrawer({
 
         {/* Header */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px', borderBottom: `1px solid ${C.brd}`, flexShrink: 0 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flex: '1 1 auto' }}>
             <Icon name="chat" size={14} style={{ color: C.txt2 }} />
-            <span style={{ fontSize: 13, fontWeight: 600, color: C.txt }}>{title}</span>
-            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 4, padding: '1px 6px' }}>{messages.length}</span>
+            <span title={title} style={{ fontSize: 13, fontWeight: 600, color: C.txt, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{title}</span>
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 4, padding: '1px 6px', flexShrink: 0 }}>{messages.length}</span>
           </div>
-          <button onClick={() => onClose?.()} title="Close" style={{ background: 'none', border: 'none', color: C.txt2, cursor: 'pointer', lineHeight: 1, padding: '4px 6px', display: 'inline-flex' }}>
+          <button onClick={() => onClose?.()} title="Close" style={{ background: 'none', border: 'none', color: C.txt2, cursor: 'pointer', lineHeight: 1, padding: '4px 6px', display: 'inline-flex', flexShrink: 0 }}>
             <Icon name="x" size={15} />
           </button>
         </div>
@@ -376,7 +376,7 @@ function MessageRow({ m, canDelete, onDelete }) {
       </div>
       <div style={{
         fontSize: 13, lineHeight: 1.5, color: C.txt, borderRadius: 9, padding: '8px 12px', maxWidth: '88%',
-        wordBreak: 'break-word', whiteSpace: 'pre-wrap',
+        minWidth: 0, wordBreak: 'break-word', overflowWrap: 'anywhere', whiteSpace: 'pre-wrap',
         background: mine ? alpha(C.acc2, '22') : C.card, border: `1px solid ${mine ? alpha(C.acc2, '55') : C.brd}`,
       }}>{m.message}</div>
     </div>

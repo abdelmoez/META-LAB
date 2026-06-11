@@ -512,7 +512,7 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 15.5, fontWeight: 600, color: C.txt, letterSpacing: '-0.01em' }}>
+            <span title={project.title} style={{ fontSize: 15.5, fontWeight: 600, color: C.txt, letterSpacing: '-0.01em', minWidth: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {project.title}
             </span>
             {/* Owner vs Leader vs member role — distinct (Task 1) */}
@@ -584,13 +584,13 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
                 style={{
                   background: 'none', border: 'none', padding: 0, cursor: 'pointer',
                   color: C.grn, fontSize: 11.5, fontFamily: FONT,
-                  display: 'inline-flex', alignItems: 'center', gap: 5,
+                  display: 'inline-flex', alignItems: 'center', gap: 5, minWidth: 0, maxWidth: '100%',
                 }}
                 onMouseEnter={e => e.currentTarget.style.textDecoration = 'underline'}
                 onMouseLeave={e => e.currentTarget.style.textDecoration = 'none'}
               >
                 <span>🔗</span>
-                <span>Linked to META·LAB: <strong style={{ color: C.txt }}>{project.linkedMetaLabProjectTitle || 'project'}</strong> →</span>
+                <span style={{ minWidth: 0 }}>Linked to META·LAB: <strong title={project.linkedMetaLabProjectTitle || 'project'} style={{ color: C.txt, display: 'inline-block', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}>{project.linkedMetaLabProjectTitle || 'project'}</strong> →</span>
               </button>
             ) : (
               <span style={{ color: C.muted, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
@@ -599,7 +599,7 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
             )}
           </div>
 
-          <div style={{ fontSize: 11.5, color: C.muted, marginTop: 5 }}>
+          <div style={{ fontSize: 11.5, color: C.muted, marginTop: 5, minWidth: 0, overflowWrap: 'anywhere' }}>
             Owner: <span style={{ color: C.txt2 }}>{ownerName}</span>
             {leaders.length > 0 && (
               <> · Leader{leaders.length > 1 ? 's' : ''}: <span style={{ color: C.txt2 }}>{leaders.map(l => l.name || l.email).join(', ')}</span></>

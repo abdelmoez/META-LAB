@@ -90,11 +90,11 @@ export default function UserMenu({ context = 'metalab', fixed = false, onBeforeL
         <div style={{
           position: 'absolute', top: 38, right: 0, background: C.card,
           border: `1px solid ${C.brd2}`, borderRadius: 10, padding: '4px 0',
-          minWidth: 218, boxShadow: `0 8px 32px ${C.shadow}`, zIndex: 9999,
+          minWidth: 218, maxWidth: 300, boxShadow: `0 8px 32px ${C.shadow}`, zIndex: 9999,
         }}>
           <div style={{ padding: '10px 14px 9px', borderBottom: `1px solid ${C.brd}`, marginBottom: 4 }}>
-            {user.name && <div style={{ fontSize: 12, fontWeight: 600, color: C.txt, marginBottom: 2 }}>{user.name}</div>}
-            <div style={{ fontSize: 11, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.email}</div>
+            {user.name && <div title={user.name} style={{ fontSize: 12, fontWeight: 600, color: C.txt, marginBottom: 2, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.name}</div>}
+            <div title={user.email} style={{ fontSize: 11, color: C.muted, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.email}</div>
             {user.role && user.role !== 'user' && (
               <div style={{ fontSize: 9, fontFamily: MONO, color: C.acc, marginTop: 4, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{user.role}</div>
             )}

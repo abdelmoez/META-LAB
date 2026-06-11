@@ -187,7 +187,7 @@ export default function NotificationsBell({ fixed = false, right = 16 }) {
         {count > 0 && (
           <span style={{
             position: 'absolute', top: -6, right: -6, minWidth: 16, height: 16, padding: '0 4px',
-            background: C.red, color: '#fff', fontSize: 9, fontFamily: MONO, fontWeight: 700,
+            background: C.red, color: C.accText, fontSize: 9, fontFamily: MONO, fontWeight: 700,
             borderRadius: 8, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
             border: `1px solid ${C.card}`, lineHeight: 1,
           }}>{count > 99 ? '99+' : count}</span>
@@ -266,7 +266,7 @@ function NotificationRow({ n, onOpen }) {
     >
       {/* Title + relative date */}
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-        <span style={{
+        <span title={n.title} style={{
           fontSize: 12, fontWeight: unread ? 700 : 500, color: unread ? C.txt : C.txt2,
           overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0,
         }}>{n.title}</span>
@@ -275,7 +275,7 @@ function NotificationRow({ n, onOpen }) {
 
       {/* Message (inviter + role live here too, but show explicit meta below) */}
       {n.message && (
-        <div style={{ fontSize: 11.5, color: C.txt2, marginTop: 3, lineHeight: 1.45 }}>{n.message}</div>
+        <div style={{ fontSize: 11.5, color: C.txt2, marginTop: 3, lineHeight: 1.45, minWidth: 0, overflowWrap: 'anywhere' }}>{n.message}</div>
       )}
 
       {/* App chip · actor · role granted */}

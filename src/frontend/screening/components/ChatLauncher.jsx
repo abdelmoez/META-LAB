@@ -14,7 +14,7 @@
  * Props: pid, access ({ isLeader, canChat })
  */
 import { useMemo, useState, useRef, useCallback } from 'react';
-import { C, FONT, MONO } from '../ui/theme.js';
+import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { Icon } from '../../components/icons.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 import ChatDrawer from '../../components/chat/ChatDrawer.jsx';
@@ -40,25 +40,30 @@ export default function ChatLauncher({ pid, access = {} }) {
 
   return (
     <>
-      {/* Header trigger */}
+      {/* Circular utility icon-button — matches NotificationsBell's idiom so the
+          header utility cluster reads [chat][bell][account] (prompt8). */}
       <button
+        type="button"
         onClick={() => setOpen(true)}
         title="Project chat"
+        aria-label="Project chat"
+        onMouseEnter={e => { if (!open) e.currentTarget.style.background = alpha(C.acc, '26'); }}
+        onMouseLeave={e => { if (!open) e.currentTarget.style.background = alpha(C.acc, '18'); }}
         style={{
-          position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 6,
-          background: C.card, border: `1px solid ${C.brd2}`, color: C.txt,
-          fontSize: 12, fontWeight: 600, fontFamily: FONT, padding: '6px 12px',
-          borderRadius: 7, cursor: 'pointer',
+          position: 'relative', width: 30, height: 30, borderRadius: '50%',
+          background: open ? alpha(C.acc, '30') : alpha(C.acc, '18'),
+          border: `1px solid ${open ? alpha(C.acc, '60') : alpha(C.acc, '30')}`,
+          color: C.acc, fontFamily: FONT, padding: 0, cursor: 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none',
         }}>
-        <Icon name="chat" size={14} style={{ color: C.txt2 }} />
-        <span>Chat</span>
+        <span aria-hidden="true" style={{ display: 'inline-flex' }}><Icon name="chat" size={15} /></span>
         {unread > 0 && (
           <span style={{
-            position: 'absolute', top: -7, right: -7, minWidth: 16, height: 16, padding: '0 4px',
-            background: C.red, color: '#fff', fontSize: 10, fontFamily: MONO, fontWeight: 700,
+            position: 'absolute', top: -6, right: -6, minWidth: 16, height: 16, padding: '0 4px',
+            background: C.red, color: C.accText, fontSize: 9, fontFamily: MONO, fontWeight: 700,
             borderRadius: 8, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            border: `1px solid ${C.surf}`,
-          }}>{unread > 99 ? '99+' : unread}</span>
+            border: `1px solid ${C.card}`, lineHeight: 1,
+          }}>{unread > 9 ? '9+' : unread}</span>
         )}
       </button>
 

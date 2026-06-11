@@ -232,7 +232,7 @@ export default function SiftImport() {
                 />
               </label>
             </div>
-            {filename && <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted }}>{filename}</span>}
+            {filename && <span title={filename} style={{ fontSize: 10, fontFamily: MONO, color: C.muted, minWidth: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{filename}</span>}
           </div>
 
           <textarea
@@ -314,10 +314,10 @@ export default function SiftImport() {
                   {previews.map((rec, i) => (
                     <tr key={i}>
                       <td style={{ padding: '6px 8px', color: C.muted, fontFamily: MONO, fontSize: 10 }}>{i + 1}</td>
-                      <td style={{ padding: '6px 8px', color: C.txt2, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <td title={rec.title || undefined} style={{ padding: '6px 8px', color: C.txt2, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {rec.title || <span style={{ fontStyle: 'italic', color: C.muted }}>No title</span>}
                       </td>
-                      <td style={{ padding: '6px 8px', color: C.muted, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      <td title={rec.author || undefined} style={{ padding: '6px 8px', color: C.muted, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {rec.author || '—'}
                       </td>
                       <td style={{ padding: '6px 8px', color: C.muted, fontFamily: MONO }}>{rec.year || '—'}</td>

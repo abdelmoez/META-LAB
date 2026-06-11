@@ -206,7 +206,7 @@ function TitleRow({ title, canManage, busy, save }) {
             <Button variant="ghost" onClick={() => { setDraft(title || ''); setEditing(false); }} disabled={busy}>Cancel</Button>
           </div>
         ) : (
-          <div style={{ fontSize: 14, color: C.txt, marginTop: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          <div title={title || 'Untitled project'} style={{ fontSize: 14, color: C.txt, marginTop: 6, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {title || 'Untitled project'}
           </div>
         )}

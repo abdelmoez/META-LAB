@@ -83,8 +83,8 @@ export default function ConflictsTab({ pid, project, access }) {
           const f = forms[c.id] || {};
           return (
             <Card key={c.id}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: C.txt, marginBottom: 4 }}>{c.record?.title || 'Untitled record'}</div>
-              <div style={{ fontSize: 12, color: C.txt2, marginBottom: 12 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: C.txt, marginBottom: 4, minWidth: 0, overflowWrap: 'anywhere' }}>{c.record?.title || 'Untitled record'}</div>
+              <div style={{ fontSize: 12, color: C.txt2, marginBottom: 12, minWidth: 0, overflowWrap: 'anywhere' }}>
                 {!project.blindMode && c.record?.authors} {c.record?.year && `· ${c.record.year}`}
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
@@ -132,13 +132,13 @@ export default function ConflictsTab({ pid, project, access }) {
               {resolved.map(c => (
                 <Card key={c.id} style={{ opacity: 0.75 }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
-                    <div style={{ fontSize: 13, color: C.txt }}>{c.record?.title || 'Untitled'}</div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <div style={{ fontSize: 13, color: C.txt, minWidth: 0, overflowWrap: 'anywhere' }}>{c.record?.title || 'Untitled'}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
                       <DecisionChip decision={c.finalDecision} />
                       <Badge color={c.resolvedBy === 'auto' ? C.teal : C.grn}>{c.resolvedBy === 'auto' ? 'AUTO' : 'RESOLVED'}</Badge>
                     </div>
                   </div>
-                  {c.notes && <div style={{ fontSize: 12, color: C.txt2, marginTop: 6 }}>{c.notes}</div>}
+                  {c.notes && <div style={{ fontSize: 12, color: C.txt2, marginTop: 6, minWidth: 0, overflowWrap: 'anywhere' }}>{c.notes}</div>}
                 </Card>
               ))}
             </div>

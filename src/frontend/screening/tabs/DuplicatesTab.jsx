@@ -408,7 +408,7 @@ function RecordRow({ record, groupId, isSelected, editable, onSelect }) {
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
             <div style={{
               fontSize: 13, fontWeight: 600, color: isSelected ? C.txt : C.txt,
-              lineHeight: 1.4, wordBreak: 'break-word',
+              lineHeight: 1.4, minWidth: 0, wordBreak: 'break-word', overflowWrap: 'anywhere',
             }}>
               {title}
             </div>
@@ -417,7 +417,7 @@ function RecordRow({ record, groupId, isSelected, editable, onSelect }) {
 
           {/* Authors · Year · Journal */}
           {metaBits.length > 0 && (
-            <div style={{ fontSize: 11.5, color: C.txt2, marginTop: 5, lineHeight: 1.45 }}>
+            <div style={{ fontSize: 11.5, color: C.txt2, marginTop: 5, lineHeight: 1.45, minWidth: 0, overflowWrap: 'anywhere' }}>
               {metaBits.map((b, i) => (
                 <span key={i}>
                   {i > 0 && <span style={{ color: C.brd2, margin: '0 6px' }}>·</span>}
@@ -481,7 +481,7 @@ function IdField({ label, children }) {
   return (
     <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6, minWidth: 0 }}>
       <FieldLabel>{label}</FieldLabel>
-      <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 320 }}>{children}</span>
+      <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 320, overflowWrap: 'anywhere', wordBreak: 'break-all' }}>{children}</span>
     </span>
   );
 }

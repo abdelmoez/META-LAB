@@ -1,8 +1,73 @@
 # META·LAB Test Report
 
-**Generated:** 2026-06-10 (prompt7 design/security/chat upgrade; earlier sections below unchanged)
+**Generated:** 2026-06-11 (prompt8 landing/ops/overflow/chat-placement upgrade; earlier sections below unchanged)
 **Framework:** Vitest v2.1.9
 **Working directory:** `H:/META-LAB/META-LAB`
+
+---
+
+## 0····. prompt8 — landing overhaul, ops control center, overflow fixes, chat placement (2026-06-11)
+
+**Full repo suite (`npx vitest run --no-file-parallelism`, server up): 883 pass / 6 pre-existing
+`serverStorage.test.js` fake-timer failures (quarantined — identical set and count since prompt1) / 7 skips
+(896 total, 38 files).** META·SIFT screening suite unchanged: **249/249 pass**. `npm run build` exit 0
+(pre-existing monolith esbuild JSX advisory + >500 kB chunk note only).
+
+| Suite | Baseline (pre-prompt8) | Now | Δ |
+|---|---|---|---|
+| Screening (`tests/screening/`, server up) | 249/249 | **249/249** | unchanged (UI-only changes; chat API contract untouched) |
+| Integration (`tests/integration/`) | 113 pass / 7 skip | **120 pass / 7 skip** | +7 `api-admin-timeseries.test.js` |
+| Full repo (server up) | 876 pass / 6 fail / 7 skip | **883 pass / 6 fail / 7 skip** | no net loss; failures unchanged |
+
+**Flipped assertions: NONE.** Every pre-prompt8 test passes unchanged.
+
+### api-admin-timeseries.test.js inventory (7 tests — new endpoint)
+
+| Test | What is pinned |
+|---|---|
+| auth enforcement | `GET /api/admin/metrics/timeseries` → **401 unauthenticated, 403 normal user** (mod also 403 via `requireAdmin`, verified manually) |
+| shape | 200 for admin: exactly 14 ascending `YYYY-MM-DD` days, zero-filled, last = today (server-local); all 8 fields (`logins, uniqueLogins, newUsers, newProjects, screeningDecisions, doneTransitions, contactMessages, failedLogins`) numeric ≥ 0; `uniqueLogins ≤ logins` |
+| `?days=7` | exactly 7 entries |
+| `?days=500` | clamped to 90 |
+| `?days=abc` | default 14 |
+| live counting | a fresh successful login increments today's `logins` and `uniqueLogins` buckets |
+
+### Delivered & verified (prompt8)
+
+- **Landing page overhaul** (`src/frontend/pages/Landing.jsx`): "evidence pipeline" design — Canvas-2D
+  converging-records hero, scroll-drawn evidence spine (8 numbered sections), self-drawing forest plot +
+  PRISMA count-ups, META·LAB⇄META·SIFT link-beam section, institution spec table, redesigned product frame.
+  All 26 admin-editable `landingContent` keys still consumed; anchors `#features/#workflow/#about/#contact`
+  intact; contact-form flow byte-compatible; `prefers-reduced-motion` renders static finals.
+- **Ops control center** (`AdminConsole.jsx`): four-tier Overview — KPI cards with rAF count-up + sparklines,
+  14-day multi-series activity AreaChart, system-health tiles with SSE live pulse, screening-pipeline funnel,
+  completion donut, unique-logins bars, merged audit/security live feed; SIFT admin overview gets the same
+  funnel/donut kit. New `GET /api/admin/metrics/timeseries` (admin-only) feeds the charts; on error the charts
+  show explicit "No trend data yet" empty states (no fabricated data).
+- **Global overflow fixes**: `.t-min0/.t-truncate/.t-wrap` utilities in `buildThemeCss()` + ~20 files patched
+  (`minmax(0,1fr)` grids, `minWidth:0` flex children, ellipsis + `title=` tooltips, `overflow-wrap:anywhere`
+  for emails/DOIs/abstracts). Verified with a 190-char project title, 70-char owner email, long linked titles.
+- **Chat placement**: launchers moved into the top-right utility cluster `[chat][bell][account]` on both
+  products (fixed overlay at right:96 in META·LAB, inline before the bell in META·SIFT), restyled to the
+  NotificationsBell circular idiom with red unread badge; ChatDrawer z-index 1100→10000. No endpoint changes —
+  `prompt7-chat.test.js` passes unchanged (6/6).
+- **Design-system sweep**: fixed a live token-concat bug (`siftMiniBtn` emitted invalid `var(--t-*)18` CSS in
+  the ops SIFT tab) + 10 day-theme contrast stragglers (hardcoded `#fff`/near-black on token fills → `C.accText`).
+
+### Manual / visual QA (Playwright 1.60, night+day)
+
+Screenshots in `.claude/tmp/prompt8/shots/`: landing at 390/768/1440/1920 + full scroll-through (reveals,
+forest-plot draw-in, PRISMA count-up verified mid-animation), SIFT dashboard + project header with long-title
+overflow cases (truncate + tooltip, no escapes), chat drawer open above the cluster, META·LAB project view
+with fixed `[chat][bell][account]` cluster, ops Overview night+day, ops SIFT tab, **ops as mod** (sidebar =
+Users+Messages only; `metrics`, `metrics/timeseries`, `health`, `screening/metrics`, `audit-log`,
+`security-events` all → 403 for the mod; console descriptor `{role:"mod", sections:["users","messages"]}`).
+
+> The 6 `serverStorage.test.js` failures are the same pre-existing fake-timer issues disclosed since prompt1;
+> the file was not touched. All integration tests use `127.0.0.1` per the Windows/Node `::1` convention.
+
+Details: `docs/manager/landing-page-redesign-opinion.md`, `docs/manager/ops-control-center-redesign-opinion.md`,
+`server/docs/admin-api-contract.md` §1b.
 
 ---
 

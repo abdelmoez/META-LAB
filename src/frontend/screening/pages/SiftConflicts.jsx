@@ -290,7 +290,7 @@ function ConflictCard({ conflict, form, onFormChange, onResolve, resolving, reso
       {/* Record info */}
       <div style={{ marginBottom: 14 }}>
         <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 4 }}>
-          <div style={{ fontSize: 13, fontWeight: 600, color: C.txt, lineHeight: 1.4, flex: 1 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: C.txt, lineHeight: 1.4, flex: 1, minWidth: 0, overflowWrap: 'anywhere' }}>
             {record.title || <span style={{ fontStyle: 'italic', color: C.muted }}>No title</span>}
           </div>
           {isResolved && (
@@ -301,12 +301,12 @@ function ConflictCard({ conflict, form, onFormChange, onResolve, resolving, reso
             }}>RESOLVED</span>
           )}
         </div>
-        <div style={{ fontSize: 11, color: C.muted }}>
+        <div style={{ fontSize: 11, color: C.muted, minWidth: 0, overflowWrap: 'anywhere' }}>
           {[record.authors?.split(',')[0] + (record.authors?.includes(',') ? ' et al.' : ''), record.year, record.journal].filter(Boolean).join(' · ')}
         </div>
         {record.doi && (
           <a href={`https://doi.org/${record.doi}`} target="_blank" rel="noopener noreferrer"
-            style={{ fontSize: 10, color: C.acc, fontFamily: MONO, textDecoration: 'none' }}>
+            style={{ fontSize: 10, color: C.acc, fontFamily: MONO, textDecoration: 'none', overflowWrap: 'anywhere', wordBreak: 'break-all' }}>
             DOI: {record.doi}
           </a>
         )}
@@ -323,8 +323,9 @@ function ConflictCard({ conflict, form, onFormChange, onResolve, resolving, reso
               <div key={i} style={{
                 background: C.surf, border: `1px solid ${C.brd}`,
                 borderRadius: 6, padding: '8px 12px', fontSize: 11,
+                minWidth: 0, maxWidth: '100%',
               }}>
-                <div style={{ color: C.muted, marginBottom: 4, fontSize: 10 }}>
+                <div style={{ color: C.muted, marginBottom: 4, fontSize: 10, minWidth: 0, overflowWrap: 'anywhere' }}>
                   {d.reviewer?.name || d.reviewer?.email || `Reviewer ${i + 1}`}
                 </div>
                 <DecisionChip decision={d.decision} />

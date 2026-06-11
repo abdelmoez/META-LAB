@@ -344,7 +344,7 @@ function DuplicateGroup({ group, primaryId, onSelectPrimary, onResolve, resolvin
       {/* Records side by side */}
       <div style={{
         display: 'grid',
-        gridTemplateColumns: `repeat(${Math.min(records.length, 3)}, 1fr)`,
+        gridTemplateColumns: `repeat(${Math.min(records.length, 3)}, minmax(0, 1fr))`,
         gap: 10,
       }}>
         {records.map(record => {

@@ -989,6 +989,7 @@ const C={
   brd2:"var(--t-brd2)",    // slightly lighter border
   acc:"var(--t-acc)",      // accent
   acc2:"var(--t-acc2)",    // deeper accent for hover/active
+  accText:"var(--t-acc-text)", // text on accent/saturated fills (theme-aware)
   grn:"var(--t-grn)",      // green
   grn2:"var(--t-grn2)",    // deeper green
   yel:"var(--t-yel)",      // amber
@@ -1084,7 +1085,7 @@ function HelpTip({text}){
     }}>?</span>
     {show&&<span style={{
       position:"absolute",bottom:"calc(100% + 8px)",left:"50%",transform:"translateX(-50%)",
-      background:"#0a1120",color:C.txt2,fontSize:11,fontWeight:400,lineHeight:1.6,
+      background:C.surf,color:C.txt2,fontSize:11,fontWeight:400,lineHeight:1.6,
       padding:"9px 13px",borderRadius:8,width:260,zIndex:300,
       border:`1px solid ${C.brd2}`,boxShadow:"0 12px 40px var(--t-shadow)",
       textTransform:"none",letterSpacing:0,
@@ -2565,10 +2566,10 @@ function MetaSiftPrismaSync({project,updateProject,activeId}){
   const p=st.prisma;
   return <div style={{...wrap,borderColor:themeAlpha(C.grn,'55')}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10,marginBottom:8}}>
-      <div style={{fontSize:12,fontWeight:800,color:C.grn,letterSpacing:0.5}}>⬡ Linked to META·SIFT — PRISMA auto-filled</div>
-      <div style={{display:"flex",gap:8}}>
+      <div style={{fontSize:12,fontWeight:800,color:C.grn,letterSpacing:0.5,minWidth:0,flex:"1 1 auto"}}>⬡ Linked to META·SIFT — PRISMA auto-filled</div>
+      <div style={{display:"flex",gap:8,minWidth:0}}>
         <button onClick={()=>load(true)} style={{...btnS("ghost"),fontSize:11}}>↻ Sync now</button>
-        <button onClick={()=>{window.location.href=`/sift-beta/projects/${st.screeningProjectId}`;}} style={{...btnS("primary"),fontSize:11}}>Open “{st.title}” →</button>
+        <button onClick={()=>{window.location.href=`/sift-beta/projects/${st.screeningProjectId}`;}} title={st.title} style={{...btnS("primary"),fontSize:11}}>Open “<span style={{display:"inline-block",maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",verticalAlign:"bottom"}}>{st.title}</span>” →</button>
       </div>
     </div>
     <div style={{fontSize:11,color:C.muted,lineHeight:1.7}}>
@@ -2628,7 +2629,7 @@ function PRISMATab({project,updNested,updateProject,activeId}){
       </div>
       <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:20,display:"flex",flexDirection:"column",alignItems:"center"}}>
         <div style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:1,marginBottom:16}}>LIVE FLOW DIAGRAM</div>
-        <FlowBox label={`Identified (DB:${dbs} Reg:${reg} Other:${other})`} n={total||0} color="#4a90d9"/>
+        <FlowBox label={`Identified (DB:${dbs} Reg:${reg} Other:${other})`} n={total||0}/>
         <Arrow/><FlowBox label="After duplicates removed" n={screened}/>
         <Arrow/>
         <div style={{display:"flex",gap:10,alignItems:"center"}}>
@@ -2939,7 +2940,7 @@ function AddStudyModal({onClose,onAdd}){
       <div style={{display:"flex",border:`1px solid ${C.brd}`,borderRadius:6,overflow:"hidden",marginBottom:14,width:"fit-content"}}>
         {modes.map(([m,label])=>(
           <button key={m} onClick={()=>{setMode(m);setErr("");setPreview(null);setVal("");}} style={{padding:"7px 14px",border:"none",cursor:"pointer",fontSize:12,fontWeight:600,
-            background:mode===m?C.acc:"transparent",color:mode===m?"#050a12":C.muted}}>{label}</button>
+            background:mode===m?C.acc:"transparent",color:mode===m?C.accText:C.muted}}>{label}</button>
         ))}
       </div>
 
@@ -3369,7 +3370,7 @@ ${paperText.slice(0,15000)}`;
           <div style={{display:"flex",border:`1px solid ${C.brd}`,borderRadius:6,overflow:"hidden",marginBottom:14,width:"fit-content"}}>
             {[["pdf","📄 Upload PDF"],["text","📋 Paste text"]].map(([m,label])=>(
               <button key={m} onClick={()=>{setAiMode(m);setAIError("");}} style={{padding:"7px 16px",border:"none",cursor:"pointer",fontSize:12,fontWeight:600,
-                background:aiMode===m?C.acc:"transparent",color:aiMode===m?"#050a12":C.muted}}>{label}</button>
+                background:aiMode===m?C.acc:"transparent",color:aiMode===m?C.accText:C.muted}}>{label}</button>
             ))}
           </div>
 
@@ -3452,7 +3453,7 @@ ${paperText.slice(0,15000)}`;
         <div style={{display:"flex",border:`1px solid ${C.brd}`,borderRadius:6,overflow:"hidden"}}>
           {[["cards","▦ Cards"],["table","▤ Table"]].map(([v,label])=>(
             <button key={v} onClick={()=>setView(v)} style={{padding:"6px 12px",border:"none",cursor:"pointer",fontSize:11,fontWeight:600,
-              background:view===v?C.acc:"transparent",color:view===v?"#050a12":C.muted}}>{label}</button>
+              background:view===v?C.acc:"transparent",color:view===v?C.accText:C.muted}}>{label}</button>
           ))}
         </div>
         {studies.length>0&&<button onClick={()=>setShowQC(!showQC)} style={{...btnS(showQC?"primary":"ghost"),fontSize:12}}>🔍 Data Quality Check</button>}
@@ -4885,7 +4886,7 @@ function ReportTab({project,upd}){
         {items.map(item=>(
           <label key={item.id} onClick={()=>toggle(item.id)} style={{display:"flex",gap:12,alignItems:"flex-start",padding:"8px 0",borderBottom:`1px solid ${C.brd}`,cursor:"pointer"}}>
             <div style={{width:18,height:18,borderRadius:4,border:`2px solid ${checked[item.id]?C.grn:C.brd}`,background:checked[item.id]?C.grn:"transparent",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,marginTop:1,transition:"all 0.15s"}}>
-              {checked[item.id]&&<span style={{color:"#050a12",fontSize:12,fontWeight:800}}>✓</span>}
+              {checked[item.id]&&<span style={{color:C.accText,fontSize:12,fontWeight:800}}>✓</span>}
             </div>
             <div>
               <div style={{fontSize:12,fontWeight:600,color:checked[item.id]?C.grn:C.txt,textDecoration:checked[item.id]?"line-through":"none"}}>{item.item}</div>
@@ -6717,7 +6718,7 @@ function ProjectTitle({project,canRename,onRename}){
   };
   if(!editing) return(
     <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0,marginBottom:5}}>
-      <h1 style={{fontSize:22,fontWeight:700,letterSpacing:-0.5,margin:0,color:C.txt,lineHeight:1.2,overflow:"hidden",textOverflow:"ellipsis"}}>{project.name}</h1>
+      <h1 title={project.name} style={{fontSize:22,fontWeight:700,letterSpacing:-0.5,margin:0,color:C.txt,lineHeight:1.2,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{project.name}</h1>
       {canRename&&(
         <button onClick={()=>setEditing(true)} title="Rename project (also renames the linked META·SIFT project if the titles match)"
           style={{background:"none",border:`1px solid ${C.brd2}`,color:C.muted,cursor:"pointer",fontSize:11,borderRadius:6,padding:"2px 8px",lineHeight:1.5,flexShrink:0}}>✎</button>
@@ -6771,9 +6772,9 @@ function OverviewTab({project,setTab}){
 
   const card={background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16};
   const secLbl={fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:0.8,textTransform:"uppercase",marginBottom:9};
-  const kv=(k,v)=>(<div key={k} style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:12,padding:"4px 0"}}>
+  const kv=(k,v)=>(<div key={k} style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:12,padding:"4px 0",minWidth:0}}>
     <span style={{color:C.muted,flexShrink:0}}>{k}</span>
-    <span style={{color:C.txt2,textAlign:"right",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v}</span>
+    <span title={String(v)} style={{color:C.txt2,textAlign:"right",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v}</span>
   </div>);
 
   return(<div>
@@ -6814,7 +6815,7 @@ function OverviewTab({project,setTab}){
       <div style={{...card,borderColor:lid?themeAlpha("var(--t-teal)","40"):C.brd}}>
         <div style={{...secLbl,color:lid?"var(--t-teal)":C.muted}}>Linked META·SIFT</div>
         {lid?(<>
-          <div style={{fontSize:13,fontWeight:700,color:C.txt,marginBottom:4,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><Icon name="link" size={12} style={{marginRight:6,verticalAlign:"-1px"}}/>{linkedTitle||"Screening project"}</div>
+          <div title={linkedTitle||"Screening project"} style={{fontSize:13,fontWeight:700,color:C.txt,marginBottom:4,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><Icon name="link" size={12} style={{marginRight:6,verticalAlign:"-1px"}}/>{linkedTitle||"Screening project"}</div>
           <div style={{fontSize:11,color:C.muted,lineHeight:1.6,marginBottom:10}}>Screening decisions, PRISMA numbers, and accepted studies flow from this shared workspace.</div>
           <button onClick={()=>{window.location.href=`/sift-beta/projects/${lid}`;}}
             style={{background:"var(--t-teal)",border:"none",color:"var(--t-acc-text)",fontSize:11.5,fontWeight:700,fontFamily:"'IBM Plex Sans',sans-serif",padding:"7px 16px",borderRadius:7,cursor:"pointer"}}>
@@ -6977,11 +6978,11 @@ function CtrlMemberRow({m,canManage,amOwner,busy,rowErr,onPatch,onRemove}){
       <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
         <div style={{flex:1,minWidth:0}}>
           <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-            <span style={{fontSize:13,fontWeight:600,color:C.txt,overflow:"hidden",textOverflow:"ellipsis"}}>{m.name||m.email||"Unknown"}</span>
+            <span title={m.name||m.email||"Unknown"} style={{fontSize:13,fontWeight:600,color:C.txt,minWidth:0,maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.name||m.email||"Unknown"}</span>
             <span style={tagS(CTRL_ROLE_TAG[m.role]||"")}>{isOwnerRow?"Owner":m.role}</span>
             <span style={tagS(m.status==="active"?"green":m.status==="pending"?"yellow":"")}>{m.status==="pending"?"Pending invite":m.status}</span>
           </div>
-          <div style={{fontSize:11,color:C.muted,marginTop:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.name?m.email:""}</div>
+          <div title={m.name?m.email:undefined} style={{fontSize:11,color:C.muted,marginTop:2,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.name?m.email:""}</div>
         </div>
         {editable?(
           <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
@@ -7203,7 +7204,7 @@ function ControlTab({project,onAnnotate}){
     {/* Project info */}
     <div style={card}>
       <div style={secLbl}>Project info</div>
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",columnGap:24,rowGap:2}}>
+      <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)",columnGap:24,rowGap:2}}>
         {[["Name",project.name],
           ["Owner",ownerRow?(ownerRow.name||ownerRow.email):(project._owner?(project._owner.name||project._owner.email):"You")],
           ["Created",fmtDate(project.created||project.createdAt)],
@@ -7211,9 +7212,9 @@ function ControlTab({project,onAnnotate}){
           ["Studies in extraction",String((project.studies||[]).length)],
           ["Workspace",lid?((project._linkedMetaSift&&project._linkedMetaSift.title)||(sp&&sp.title)||"Linked"):"Not linked"],
         ].map(([k,v])=>(
-          <div key={k} style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:12,padding:"4px 0"}}>
+          <div key={k} style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:12,padding:"4px 0",minWidth:0}}>
             <span style={{color:C.muted,flexShrink:0}}>{k}</span>
-            <span style={{color:C.txt2,textAlign:"right",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v}</span>
+            <span title={String(v)} style={{color:C.txt2,textAlign:"right",minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{v}</span>
           </div>
         ))}
       </div>
@@ -7242,7 +7243,8 @@ function ControlTab({project,onAnnotate}){
           )}
         </div>
         <div style={{borderTop:`1px solid ${C.brd}`,paddingTop:12,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-          <span style={tagS("green")}><Icon name="link" size={11}/> {(project._linkedMetaSift&&project._linkedMetaSift.title)||(sp&&sp.title)||"Linked META·SIFT project"}</span>
+          {(()=>{const linkedTagTitle=(project._linkedMetaSift&&project._linkedMetaSift.title)||(sp&&sp.title)||"Linked META·SIFT project";
+            return <span title={linkedTagTitle} style={{...tagS("green"),maxWidth:"100%",minWidth:0}}><Icon name="link" size={11}/> <span style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{linkedTagTitle}</span></span>;})()}
           <button onClick={()=>{window.location.href=`/sift-beta/projects/${lid}`;}} style={{...btnS("ghost"),fontSize:11}}>Open in META·SIFT →</button>
           <span style={{fontSize:10.5,color:C.muted}}>Accepted second-review studies hand off to Data Extraction; PRISMA numbers sync from screening.</span>
         </div>
@@ -7851,10 +7853,10 @@ export default function MetaLab(){
               }}/>
               <div style={{flex:1,minWidth:0}}>
                 <div style={{display:"flex",alignItems:"center",gap:6,minWidth:0}}>
-                  <span style={{
+                  <span title={p.name} style={{
                     fontSize:12,fontWeight:activeId===p.id?600:400,
                     color:activeId===p.id?C.txt:C.txt2,
-                    whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",lineHeight:1.3,
+                    minWidth:0,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",lineHeight:1.3,
                   }}>{p.name}</span>
                   {/* Shared (linked-workspace) projects — owner/role/read-only badge (prompt5 Task 1/4) */}
                   {p._shared&&(
@@ -8093,6 +8095,17 @@ export default function MetaLab(){
           </div>
         </div>
       ):(
+        <>
+        {/* Project chat launcher (prompt8) — fixed top-right utility cluster
+            [chat][bell][account]: bell sits at right:56 (30px button + 10px gap
+            → chat at right:96); AppWorkspace overlays bell/menu the same way.
+            Scoped to the project-view branch so the welcome screen has no chat.
+            Kept OUTSIDE .tab-content: its tabIn animation (fill both) retains a
+            transform, which would make that div the containing block for
+            position:fixed and break viewport alignment. */}
+        <div style={{position:"fixed",top:12,right:96,zIndex:9999}}>
+          <MetaLabChatLauncher metaLabProjectId={project.id}/>
+        </div>
         <div style={{maxWidth:960,margin:"0 auto"}} className="tab-content">
           {/* Project header */}
           <div style={{marginBottom:32,paddingBottom:22,borderBottom:`1px solid ${C.brd}`}}>
@@ -8105,8 +8118,6 @@ export default function MetaLab(){
                 </div>
               </div>
               <div style={{display:"flex",gap:6,flexShrink:0,flexWrap:"wrap",justifyContent:"flex-end",alignItems:"center"}}>
-                {/* Project chat drawer launcher (prompt7 Task 11) */}
-                <MetaLabChatLauncher metaLabProjectId={project.id}/>
                 {/* Persistent read-only pill (prompt6 Task 5) */}
                 {projectPerms(project).readOnly&&<span style={tagS("yellow")} title="You can view this shared project, but your changes will not be saved."><Icon name="lock" size={11}/> Read-only access</span>}
                 {project.pico?.prosperoId&&<span style={tagS("blue")}>PROSPERO: {project.pico.prosperoId}</span>}
@@ -8185,6 +8196,7 @@ export default function MetaLab(){
             );
           })()}
         </div>
+        </>
       )}
     </div>
     {showAudit&&project&&<AuditPanel project={project} onClose={()=>setShowAudit(false)} onJump={(t)=>setTab(t)}/>}

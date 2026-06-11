@@ -319,7 +319,7 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, onPatch, onRemove
 
         <div style={{ minWidth: 0, flex: 1 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 14, fontWeight: 600, color: C.txt, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            <span title={display} style={{ fontSize: 14, fontWeight: 600, color: C.txt, minWidth: 0, maxWidth: '100%', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {display}
             </span>
             <Badge color={roleColor}>{ROLE_LABEL[m.role] || m.role}</Badge>
@@ -327,7 +327,7 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, onPatch, onRemove
               {m.status === 'pending' ? 'Pending Invite' : status.label}
             </Badge>
           </div>
-          <div style={{ fontSize: 12, color: C.txt2, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          <div title={m.name ? m.email : undefined} style={{ fontSize: 12, color: C.txt2, marginTop: 3, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {m.name ? m.email : <span style={{ color: C.muted }}>no email</span>}
           </div>
         </div>

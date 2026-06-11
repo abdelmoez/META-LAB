@@ -1,5 +1,12 @@
 # META·SIFT — QA Report (collaboration upgrade)
 
+> **Update 2026-06-11 (prompt8 landing/ops/overflow/chat-placement):** ✅ **249/249 screening tests pass —
+> unchanged.** prompt8 touched no screening API: chat launchers moved into the top-right utility cluster
+> (UI only; `prompt7-chat.test.js` 6/6 green), SIFT pages got global overflow fixes (`minWidth:0`/ellipsis/
+> `title=` tooltips — verified visually with a 190-char title and long owner emails), and the ops SIFT
+> overview gained funnel/donut visuals from existing `/api/admin/screening/metrics` data. Full-repo result
+> and the new admin timeseries endpoint are reported in `tests/report.md` (prompt8 section).
+
 > **Update 2026-06-10 (prompt7 design/security/chat upgrade):** ✅ **249/249 screening tests pass**
 > (+4 `integration/prompt7.test.js`, +6 `integration/prompt7-chat.test.js`). prompt7 section below; prompt6…prompt1 follow unchanged.
 

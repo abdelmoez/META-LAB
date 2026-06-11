@@ -446,10 +446,12 @@ export default function Dashboard({ onOpenProject }) {
                   ) : (
                     <>
                       <div
+                        title={p.name}
                         style={{
                           fontSize: 14,
                           fontWeight: 600,
                           color: C.txt,
+                          minWidth: 0,
                           whiteSpace: "nowrap",
                           overflow: "hidden",
                           textOverflow: "ellipsis",

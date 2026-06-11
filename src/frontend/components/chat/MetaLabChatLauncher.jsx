@@ -1,14 +1,18 @@
 /**
  * MetaLabChatLauncher.jsx — META·LAB-side project chat launcher (prompt7).
  *
- * Mounted by the workspace header as:
- *   <MetaLabChatLauncher metaLabProjectId={project.id} />
+ * Mounted by the monolith's project view (prompt8) as a fixed top-right
+ * utility beside NotificationsBell/UserMenu ([chat][bell][account]):
+ *   <div style={{position:'fixed',top:12,right:96,zIndex:9999}}>
+ *     <MetaLabChatLauncher metaLabProjectId={project.id} />
+ *   </div>
  *
  * The chat thread lives on the linked META·SIFT ScreenProject; the META·LAB
  * door (/api/screening/metalab/:mlpid/chat*) resolves the link server-side.
  * On mount we probe the unread-count endpoint:
- *   • HTTP 404  → no linked META·SIFT project (or no access) → render a
- *     DISABLED ghost button (tooltip explains how to enable) and never poll.
+ *   • HTTP 404  → no linked META·SIFT project (or no access) → render the
+ *     same circular button DISABLED (tooltip explains how to enable) and
+ *     never poll.
  *   • success   → linked → mount the shared ChatDrawer with the metalab
  *     adapter; SSE chat.message pokes are matched on event.metaLabProjectId.
  *
@@ -17,7 +21,7 @@
  * after send) lives in ChatDrawer.
  */
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
-import { C, FONT, MONO } from '../../theme/tokens.js';
+import { C, FONT, MONO, alpha } from '../../theme/tokens.js';
 import { Icon } from '../icons.jsx';
 import { screeningApi } from '../../screening/api-client/screeningApi.js';
 import ChatDrawer from './ChatDrawer.jsx';
@@ -61,31 +65,35 @@ export default function MetaLabChatLauncher({ metaLabProjectId }) {
 
   return (
     <>
-      {/* Ghost icon-button */}
+      {/* Circular utility icon-button — matches NotificationsBell's idiom so the
+          fixed top-right cluster reads [chat][bell][account] (prompt8). */}
       <button
         type="button"
         onClick={() => { if (!disabled) setOpen(true); }}
         title={status === 'unlinked'
           ? 'Link a META·SIFT project to enable project chat'
           : 'Project chat'}
+        aria-label="Project chat"
         aria-disabled={disabled}
+        onMouseEnter={e => { if (!disabled && !open) e.currentTarget.style.background = alpha(C.acc, '26'); }}
+        onMouseLeave={e => { if (!disabled && !open) e.currentTarget.style.background = alpha(C.acc, '18'); }}
         style={{
-          position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 6,
-          background: 'none', border: `1px solid ${C.brd2}`, color: C.txt2,
-          fontSize: 12, fontWeight: 600, fontFamily: FONT, padding: '6px 10px',
-          borderRadius: 7,
-          opacity: disabled ? 0.5 : 1,
-          cursor: disabled ? 'default' : 'pointer',
+          position: 'relative', width: 30, height: 30, borderRadius: '50%',
+          background: open ? alpha(C.acc, '30') : alpha(C.acc, '18'),
+          border: `1px solid ${open ? alpha(C.acc, '60') : alpha(C.acc, '30')}`,
+          color: C.acc, fontFamily: FONT, padding: 0,
+          opacity: disabled ? 0.45 : 1,
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          display: 'flex', alignItems: 'center', justifyContent: 'center', userSelect: 'none',
         }}>
-        <Icon name="chat" size={14} />
-        <span>Chat</span>
+        <span aria-hidden="true" style={{ display: 'inline-flex' }}><Icon name="chat" size={15} /></span>
         {!disabled && unread > 0 && (
           <span style={{
-            position: 'absolute', top: -7, right: -7, minWidth: 16, height: 16, padding: '0 4px',
-            background: C.acc2, color: C.accText, fontSize: 10, fontFamily: MONO, fontWeight: 700,
+            position: 'absolute', top: -6, right: -6, minWidth: 16, height: 16, padding: '0 4px',
+            background: C.red, color: C.accText, fontSize: 9, fontFamily: MONO, fontWeight: 700,
             borderRadius: 8, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-            border: `1px solid ${C.surf}`,
-          }}>{unread > 99 ? '99+' : unread}</span>
+            border: `1px solid ${C.card}`, lineHeight: 1,
+          }}>{unread > 9 ? '9+' : unread}</span>
         )}
       </button>
 

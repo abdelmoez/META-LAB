@@ -1,18 +1,21 @@
 /**
  * Landing.jsx — public home page for META·LAB.
  *
- * v4 "institutional evidence-grade" redesign (prompt7):
- * theme tokens (night/day via CSS variables) · monochrome icon system ·
- * animated forest-plot evidence panel · PRISMA funnel strip ·
- * stylized product-frame section · CSS-only motion with
- * prefers-reduced-motion fallbacks.
+ * v5 "evidence pipeline" redesign (prompt8):
+ * "The page is a systematic review, running in slow motion."
+ * Full-bleed hero with a Canvas 2D field of drifting records converging
+ * into a forest plot · evidence spine with numbered PRISMA-style nodes ·
+ * self-drawing forest-plot climax with count-up PRISMA funnel ·
+ * META·LAB ⇄ META·SIFT linked-workspace beam · institution spec table.
  *
  * Content architecture unchanged: useLandingSettings() merges
  * GET /api/settings/public over DEFAULTS; every admin-editable key keeps
  * working (heroHeadline, featureCards, whyStandards, footerLinks, …).
+ * Anchors #features / #workflow / #about / #contact preserved.
+ * All motion honors prefers-reduced-motion (static final compositions).
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { api } from '../api-client/apiClient.js';
@@ -128,12 +131,95 @@ function useLandingSettings() {
   return settings;
 }
 
+/* ─── Motion hooks ───────────────────────────────────────────────────── */
+function usePrefersReducedMotion() {
+  const [reduced, setReduced] = useState(() => {
+    try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches; }
+    catch { return false; }
+  });
+  useEffect(() => {
+    let mq;
+    try { mq = window.matchMedia('(prefers-reduced-motion: reduce)'); } catch { return; }
+    const fn = e => setReduced(e.matches);
+    if (mq.addEventListener) mq.addEventListener('change', fn);
+    else if (mq.addListener) mq.addListener(fn);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener('change', fn);
+      else if (mq.removeListener) mq.removeListener(fn);
+    };
+  }, []);
+  return reduced;
+}
+
+/** One-shot in-view detector. Falls back to "visible" without IO support. */
+function useInView(threshold = 0.15, rootMargin = '0px 0px -10% 0px') {
+  const ref = useRef(null);
+  const [inView, setInView] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) { setInView(true); return; }
+    if (typeof IntersectionObserver === 'undefined') { setInView(true); return; }
+    const obs = new IntersectionObserver(entries => {
+      if (entries.some(e => e.isIntersecting)) {
+        setInView(true);
+        obs.disconnect();
+      }
+    }, { threshold, rootMargin });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [threshold, rootMargin]);
+  return [ref, inView];
+}
+
+/** rAF count-up: 0 → target once `run` is true (instant when reduced). */
+function useCountUp(target, run, reduced, dur = 1500) {
+  const [val, setVal] = useState(reduced ? target : 0);
+  useEffect(() => {
+    if (reduced) { setVal(target); return; }
+    if (!run) return;
+    let raf = 0;
+    const t0 = performance.now();
+    const tick = now => {
+      const p = Math.min(1, (now - t0) / dur);
+      const e = 1 - Math.pow(1 - p, 3);
+      setVal(Math.round(target * e));
+      if (p < 1) raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [run, target, reduced, dur]);
+  return val;
+}
+
+/* ─── Runtime theme color reads (canvas cannot use var(--t-*)) ────────── */
+function hexToRgb(hex) {
+  let h = String(hex || '').trim().replace('#', '');
+  if (h.length === 3) h = h.split('').map(c => c + c).join('');
+  const n = parseInt(h, 16);
+  if (Number.isNaN(n) || h.length !== 6) return [107, 161, 247];
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+function readCanvasColors() {
+  const cs = getComputedStyle(document.documentElement);
+  const get = (name, fb) => (cs.getPropertyValue(name) || '').trim() || fb;
+  return {
+    acc:  hexToRgb(get('--t-acc',  '#6ba1f7')),
+    gold: hexToRgb(get('--t-gold', '#d8ab6e')),
+    txt:  hexToRgb(get('--t-txt',  '#eef2fc')),
+    day:  document.documentElement.dataset.theme === 'day',
+  };
+}
+
+const rgba = (rgb, a) => `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`;
+
 /* ─── Tiny monospace section label ───────────────────────────────────── */
-function SectionLabel({ text }) {
+function SectionLabel({ text, style }) {
   return (
     <div style={{
       fontSize: 10, fontFamily: MONO, color: C.muted,
       letterSpacing: '0.22em', textTransform: 'uppercase', marginBottom: 14,
+      ...style,
     }}>
       {text}
     </div>
@@ -161,131 +247,337 @@ function HexLogo({ size = 18, color = C.acc }) {
   );
 }
 
-/* ─── Evidence panel: animated forest plot + PRISMA funnel strip ─────── */
-function ForestPlotPreview() {
-  const studies = [
-    { label: 'Smith et al., 2021',  n: 142, es: 0.62, lo: 0.36, hi: 0.88, w: '22.4%' },
-    { label: 'Chen et al., 2022',   n:  89, es: 0.44, lo: 0.13, hi: 0.75, w: '15.1%' },
-    { label: 'Kumar et al., 2020',  n: 203, es: 0.71, lo: 0.50, hi: 0.92, w: '28.6%' },
-    { label: 'Walsh et al., 2023',  n: 167, es: 0.55, lo: 0.31, hi: 0.79, w: '21.7%' },
-    { label: 'Nakamura, 2021',      n:  98, es: 0.38, lo: 0.06, hi: 0.70, w: '12.2%' },
-  ];
-  const pooled = { es: 0.58, lo: 0.44, hi: 0.72 };
+/* ════════════════════════════════════════════════════════════════════════
+   HERO CANVAS — records (drifting points) converging into a forest plot.
+   Single canvas, rAF, paused when tab hidden or canvas off-viewport,
+   DPR capped at 1.5. Reduced motion: one static final composition.
+   ════════════════════════════════════════════════════════════════════════ */
 
-  // SVG layout constants
-  const PLT_X = 144;   // plot area start x
-  const PLT_W = 224;   // plot area width
-  const STAT_X = 378;  // stats columns start
-  const VB_W   = 460;  // total viewBox width
+/* Study CI rows as fractions of the mini-plot width (matches the climax
+   plot data: SMD range −0.5…1.3 normalized to 0…1). */
+const CANVAS_ROWS = [
+  { lo: 0.478, hi: 0.767, es: 0.622, w: 1.00 },
+  { lo: 0.350, hi: 0.694, es: 0.522, w: 0.72 },
+  { lo: 0.556, hi: 0.789, es: 0.672, w: 1.18 },
+  { lo: 0.450, hi: 0.717, es: 0.583, w: 0.96 },
+  { lo: 0.311, hi: 0.667, es: 0.489, w: 0.64 },
+];
+const CANVAS_POOL = { lo: 0.522, hi: 0.678, es: 0.600 };
 
+function HeroCanvas({ reduced }) {
+  const canvasRef = useRef(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    let colors = readCanvasColors();
+    let raf = 0;
+    let running = false;
+    let tabVisible = !document.hidden;
+    let onScreen = true;
+    let W = 0, H = 0;
+    let rows = [];          // pixel geometry of the 5 CI rows
+    let pool = null;        // pooled diamond geometry
+    const particles = [];
+    const N = 120;          // total points
+    const NC = 46;          // of which converge onto the plot
+    const start = performance.now();
+
+    function layout() {
+      const host = canvas.parentElement;
+      if (!host) return;
+      const rect = host.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      W = Math.max(1, rect.width);
+      H = Math.max(1, rect.height);
+      canvas.width = Math.round(W * dpr);
+      canvas.height = Math.round(H * dpr);
+      canvas.style.width = W + 'px';
+      canvas.style.height = H + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      /* Forest geometry: right side of the hero (hidden under text on
+         small screens, where the canvas is mostly ambient). */
+      const fw = Math.min(W * 0.30, 380);
+      const fx = Math.min(W * 0.64, W - fw - 24);
+      const gap = Math.min(Math.max(H * 0.062, 30), 46);
+      const fy = H * 0.5 - gap * 3.1;
+      rows = CANVAS_ROWS.map((r, i) => ({
+        y:  fy + i * gap,
+        x1: fx + r.lo * fw,
+        x2: fx + r.hi * fw,
+        xm: fx + r.es * fw,
+        sz: 4 + r.w * 3.4,
+      }));
+      pool = {
+        x1: fx + CANVAS_POOL.lo * fw,
+        x2: fx + CANVAS_POOL.hi * fw,
+        xm: fx + CANVAS_POOL.es * fw,
+        y:  fy + rows.length * gap + gap * 0.7,
+        hh: Math.min(gap * 0.32, 11),
+      };
+      retarget();
+    }
+
+    function retarget() {
+      for (const p of particles) {
+        if (!p.conv) continue;
+        const row = rows[p.row % rows.length];
+        if (!row) continue;
+        p.tx = row.x1 + p.frac * (row.x2 - row.x1);
+        p.ty = row.y + p.jit;
+      }
+    }
+
+    function seed() {
+      particles.length = 0;
+      for (let i = 0; i < N; i++) {
+        const conv = i < NC;
+        particles.push({
+          x: Math.random() * W,
+          y: Math.random() * H,
+          vx: (Math.random() - 0.5) * 0.10,
+          vy: (Math.random() - 0.5) * 0.07,
+          r: 0.7 + Math.random() * 1.3,
+          a: 0.10 + Math.random() * 0.26,
+          tw: Math.random() * Math.PI * 2,           // twinkle phase
+          conv,
+          row: i % CANVAS_ROWS.length,
+          frac: Math.random(),
+          jit: (Math.random() - 0.5) * 5,
+          k: 0.0022 + Math.random() * 0.0030,        // attraction strength
+          delay: Math.random() * 9000,               // staggered departure
+          tx: 0, ty: 0,
+        });
+      }
+      retarget();
+    }
+
+    /* Single drawn frame. `t` = elapsed ms; `final` forces the converged
+       end-state (reduced-motion static composition). */
+    function draw(t, final) {
+      ctx.clearRect(0, 0, W, H);
+      const { acc, gold, txt, day } = colors;
+      const lineA  = day ? 0.34 : 0.30;
+      const ptBase = day ? 0.55 : 0.85;
+
+      /* Global convergence progress 0→1 over ~26s (the slow reveal). */
+      const prog = final ? 1 : Math.min(1, t / 26000);
+
+      /* Plot scaffold: CI rows strengthen as records arrive. */
+      if (rows.length) {
+        for (let i = 0; i < rows.length; i++) {
+          const r = rows[i];
+          const ra = Math.max(0, Math.min(1, prog * 1.6 - i * 0.12));
+          if (ra <= 0.01) continue;
+          ctx.strokeStyle = rgba(txt, lineA * ra * 0.55);
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(r.x1, r.y); ctx.lineTo(r.x2, r.y);
+          ctx.moveTo(r.x1, r.y - 3.5); ctx.lineTo(r.x1, r.y + 3.5);
+          ctx.moveTo(r.x2, r.y - 3.5); ctx.lineTo(r.x2, r.y + 3.5);
+          ctx.stroke();
+          /* Effect-size square, weight-scaled. */
+          ctx.fillStyle = rgba(acc, (day ? 0.7 : 0.8) * ra);
+          const s = r.sz;
+          ctx.fillRect(r.xm - s / 2, r.y - s / 2, s, s);
+        }
+
+        /* Pooled diamond lands last, with a soft breathing glow. */
+        const da = Math.max(0, Math.min(1, prog * 1.8 - 0.8));
+        if (pool && da > 0.01) {
+          const pulse = final ? 0.5 : 0.5 + 0.28 * Math.sin(t / 1700);
+          const grd = ctx.createRadialGradient(pool.xm, pool.y, 0, pool.xm, pool.y, 46);
+          grd.addColorStop(0, rgba(gold, (day ? 0.20 : 0.26) * da * (0.55 + pulse * 0.45)));
+          grd.addColorStop(1, rgba(gold, 0));
+          ctx.fillStyle = grd;
+          ctx.fillRect(pool.xm - 48, pool.y - 48, 96, 96);
+          ctx.fillStyle = rgba(gold, (day ? 0.85 : 0.95) * da);
+          ctx.beginPath();
+          ctx.moveTo(pool.x1, pool.y);
+          ctx.lineTo(pool.xm, pool.y - pool.hh);
+          ctx.lineTo(pool.x2, pool.y);
+          ctx.lineTo(pool.xm, pool.y + pool.hh);
+          ctx.closePath();
+          ctx.fill();
+        }
+      }
+
+      /* Records. Ambient ones drift forever; convergers ease home. */
+      for (const p of particles) {
+        if (p.conv && (final || t > p.delay)) {
+          /* eased attraction toward the assigned CI slot */
+          if (final) { p.x = p.tx; p.y = p.ty; }
+          else {
+            p.x += (p.tx - p.x) * p.k;
+            p.y += (p.ty - p.y) * p.k;
+            p.x += p.vx * 0.25;
+            p.y += p.vy * 0.25;
+          }
+        } else if (!final) {
+          p.x += p.vx;
+          p.y += p.vy;
+          if (p.x < -4) p.x = W + 4; else if (p.x > W + 4) p.x = -4;
+          if (p.y < -4) p.y = H + 4; else if (p.y > H + 4) p.y = -4;
+        }
+        const twinkle = final ? 1 : 0.78 + 0.22 * Math.sin(t / 2400 + p.tw);
+        let a = p.a * ptBase * twinkle;
+        if (p.conv) {
+          const d = Math.hypot(p.tx - p.x, p.ty - p.y);
+          const near = Math.max(0, 1 - d / 220);
+          a = Math.min(0.9, a + near * 0.35);   // brighten as they settle
+        }
+        ctx.fillStyle = rgba(p.conv ? acc : txt, a);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    function frame(now) {
+      raf = 0;
+      if (!running) return;
+      draw(now - start, false);
+      raf = requestAnimationFrame(frame);
+    }
+
+    function syncRun() {
+      const should = !reduced && tabVisible && onScreen;
+      if (should && !running) {
+        running = true;
+        if (!raf) raf = requestAnimationFrame(frame);
+      } else if (!should && running) {
+        running = false;
+        if (raf) { cancelAnimationFrame(raf); raf = 0; }
+      }
+    }
+
+    const onVis = () => { tabVisible = !document.hidden; syncRun(); };
+    const onTheme = () => {
+      colors = readCanvasColors();
+      if (reduced) draw(0, true);
+    };
+    const onResize = () => {
+      layout();
+      if (reduced) draw(0, true);
+    };
+
+    layout();
+    seed();
+
+    let io = null;
+    if (typeof IntersectionObserver !== 'undefined') {
+      io = new IntersectionObserver(entries => {
+        onScreen = entries.some(e => e.isIntersecting);
+        syncRun();
+      }, { threshold: 0 });
+      io.observe(canvas);
+    }
+
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('metalab:theme-change', onTheme);
+    window.addEventListener('resize', onResize);
+
+    if (reduced) draw(0, true);   // static final composition
+    else syncRun();
+
+    return () => {
+      running = false;
+      if (raf) cancelAnimationFrame(raf);
+      if (io) io.disconnect();
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('metalab:theme-change', onTheme);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [reduced]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      aria-hidden="true"
+      style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', display: 'block' }}
+    />
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   EVIDENCE CLIMAX — self-drawing forest plot (animates when scrolled into
+   view, one-shot) + PRISMA funnel count-up. Illustrative data.
+   ════════════════════════════════════════════════════════════════════════ */
+const FP_STUDIES = [
+  { label: 'Smith et al., 2021',  n: 142, es: 0.62, lo: 0.36, hi: 0.88, w: '22.4%' },
+  { label: 'Chen et al., 2022',   n:  89, es: 0.44, lo: 0.13, hi: 0.75, w: '15.1%' },
+  { label: 'Kumar et al., 2020',  n: 203, es: 0.71, lo: 0.50, hi: 0.92, w: '28.6%' },
+  { label: 'Walsh et al., 2023',  n: 167, es: 0.55, lo: 0.31, hi: 0.79, w: '21.7%' },
+  { label: 'Nakamura, 2021',      n:  98, es: 0.38, lo: 0.06, hi: 0.70, w: '12.2%' },
+];
+const FP_POOLED = { es: 0.58, lo: 0.44, hi: 0.72 };
+
+function ForestPlotClimax({ active }) {
+  const PLT_X = 144, PLT_W = 224, STAT_X = 378, VB_W = 460;
   const X_MIN = -0.5, X_MAX = 1.3;
   const toX = v => PLT_X + ((v - X_MIN) / (X_MAX - X_MIN)) * PLT_W;
   const ZERO = toX(0);
-
-  const ROW_H = 30;
-  const HDR_Y = 22;
+  const ROW_H = 30, HDR_Y = 22;
   const firstY = HDR_Y + ROW_H;
-  const poolY  = firstY + studies.length * ROW_H + ROW_H * 0.6;
+  const poolY  = firstY + FP_STUDIES.length * ROW_H + ROW_H * 0.6;
   const axisY  = poolY + ROW_H * 0.8;
-  const VB_H   = axisY + 24;
-
-  const boxSize = (w) => 5 + parseFloat(w) / 8;
-
-  const funnel = [
-    ['Identified', '1,284'],
-    ['Screened',   '1,022'],
-    ['Full-text',  '164'],
-    ['Included',   '38'],
-  ];
+  const VB_H   = axisY + 36;
+  const boxSize = w => 5 + parseFloat(w) / 8;
 
   return (
-    <div style={{
+    <div className={active ? 'lp-fpz in-view' : 'lp-fpz'} style={{
       background: C.card, border: `1px solid ${C.brd2}`,
       borderRadius: 12, overflow: 'hidden', fontFamily: FONT,
       boxShadow: `0 24px 60px ${C.shadow}`,
     }}>
-      {/* Window chrome — monochrome dots */}
       <div style={{
         background: C.surf, borderBottom: `1px solid ${C.brd}`,
         padding: '9px 14px', display: 'flex', alignItems: 'center', gap: 8,
       }}>
-        <div style={{ display: 'flex', gap: 5 }}>
-          {[0, 1, 2].map(i => (
-            <div key={i} style={{ width: 8, height: 8, borderRadius: '50%', background: C.dim, opacity: 0.8 - i * 0.18 }} />
-          ))}
-        </div>
-        <span style={{ fontSize: 10, color: C.muted, fontFamily: MONO, marginLeft: 4, letterSpacing: '0.04em' }}>
-          ADHD / Methylphenidate SR · Forest Plot
+        <Icon name="forest" size={12} style={{ color: C.acc }} />
+        <span style={{ fontSize: 10, color: C.muted, fontFamily: MONO, letterSpacing: '0.04em' }}>
+          Random-Effects Model · SMD · 95% CI
         </span>
         <span style={{
           marginLeft: 'auto', fontSize: 8.5, fontFamily: MONO, color: C.dim,
           letterSpacing: '0.12em', textTransform: 'uppercase',
         }}>
-          Illustrative
+          Illustrative data
         </span>
       </div>
 
-      {/* Tab strip */}
-      <div style={{
-        display: 'flex', background: C.surf,
-        borderBottom: `1px solid ${C.brd}`, padding: '0 12px',
-      }}>
-        {['PICO', 'Search', 'Screen', 'Extract', 'Analysis', 'Report'].map((t, i) => (
-          <div key={t} style={{
-            fontSize: 10, fontFamily: MONO, letterSpacing: '0.06em',
-            color: i === 4 ? C.acc : C.muted,
-            padding: '7px 10px',
-            borderBottom: i === 4 ? `2px solid ${C.acc}` : '2px solid transparent',
-            cursor: 'default',
-          }}>
-            {t}
-          </div>
-        ))}
-      </div>
-
-      {/* Plot */}
-      <div style={{ padding: '14px 14px 10px' }}>
-        <div style={{
-          fontSize: 9, fontFamily: MONO, color: C.muted,
-          letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8,
-        }}>
-          Random-Effects Model · SMD · 95% CI
-        </div>
-
+      <div style={{ padding: '16px 14px 12px' }}>
         <svg viewBox={`0 0 ${VB_W} ${VB_H}`} style={{ width: '100%', display: 'block', overflow: 'visible' }}>
-          {/* Column headers */}
           <text x={STAT_X + 22} y={HDR_Y - 4}
             style={{ fontSize: 9, fontFamily: MONO, fill: C.muted, textAnchor: 'middle' }}>N</text>
           <text x={STAT_X + 68} y={HDR_Y - 4}
             style={{ fontSize: 9, fontFamily: MONO, fill: C.muted, textAnchor: 'middle' }}>Weight</text>
 
-          {/* Zero line */}
           <line x1={ZERO} y1={HDR_Y} x2={ZERO} y2={poolY + ROW_H * 0.4}
             stroke={C.brd2} strokeWidth={1} strokeDasharray="3,3" />
 
-          {/* Studies — draw in once, staggered */}
-          {studies.map((s, i) => {
+          {FP_STUDIES.map((s, i) => {
             const y   = firstY + i * ROW_H + ROW_H / 2;
             const x1  = toX(s.lo);
             const x2  = toX(s.hi);
             const xm  = toX(s.es);
             const bsz = boxSize(s.w);
             return (
-              <g key={s.label} className="lp-fp-row" style={{ animationDelay: `${0.15 + i * 0.09}s` }}>
-                {/* Label */}
+              <g key={s.label} className="lp-fp-row" style={{ animationDelay: `${0.1 + i * 0.13}s` }}>
                 <text x={0} y={y + 3.5}
                   style={{ fontSize: 9.5, fontFamily: FONT, fill: C.txt2 }}>
                   {s.label}
                 </text>
-                {/* CI line */}
                 <line x1={x1} y1={y} x2={x2} y2={y} stroke={C.brd2} strokeWidth={1.5} />
                 <line x1={x1} y1={y - 4} x2={x1} y2={y + 4} stroke={C.brd2} strokeWidth={1} />
                 <line x1={x2} y1={y - 4} x2={x2} y2={y + 4} stroke={C.brd2} strokeWidth={1} />
-                {/* Effect box */}
                 <rect x={xm - bsz / 2} y={y - bsz / 2}
                   width={bsz} height={bsz}
                   fill={C.acc} stroke={C.acc2} strokeWidth={0.5} />
-                {/* Stats */}
                 <text x={STAT_X + 22} y={y + 3.5}
                   style={{ fontSize: 9, fontFamily: MONO, fill: C.muted, textAnchor: 'middle' }}>
                   {s.n}
@@ -298,19 +590,17 @@ function ForestPlotPreview() {
             );
           })}
 
-          {/* Divider before pooled */}
           <line x1={0} y1={poolY - ROW_H * 0.35} x2={VB_W} y2={poolY - ROW_H * 0.35}
             stroke={C.brd} strokeWidth={0.5} />
 
-          {/* Pooled diamond — scholar gold, lands last */}
           {(() => {
             const y   = poolY;
-            const xlo = toX(pooled.lo);
-            const xhi = toX(pooled.hi);
-            const xm  = toX(pooled.es);
+            const xlo = toX(FP_POOLED.lo);
+            const xhi = toX(FP_POOLED.hi);
+            const xm  = toX(FP_POOLED.es);
             const dh  = 8;
             return (
-              <g className="lp-fp-pool" style={{ animationDelay: '0.68s' }}>
+              <g className="lp-fp-pool" style={{ animationDelay: '0.85s' }}>
                 <text x={0} y={y + 4}
                   style={{ fontSize: 9.5, fontFamily: FONT, fill: C.txt, fontWeight: 600 }}>
                   Pooled estimate
@@ -326,26 +616,22 @@ function ForestPlotPreview() {
             );
           })()}
 
-          {/* X-axis tick labels */}
           {[-0.25, 0, 0.5, 1.0].map(v => (
             <text key={v} x={toX(v)} y={axisY + 12}
               style={{ fontSize: 8, fontFamily: MONO, fill: C.muted, textAnchor: 'middle' }}>
               {v}
             </text>
           ))}
-
-          {/* Favours labels */}
-          <text x={PLT_X + 4} y={axisY + 12}
+          <text x={PLT_X + 4} y={axisY + 26}
             style={{ fontSize: 8, fontFamily: FONT, fill: C.muted }}>
-            Favours control
+            ← Favours control
           </text>
-          <text x={PLT_X + PLT_W - 4} y={axisY + 12}
+          <text x={PLT_X + PLT_W - 4} y={axisY + 26}
             style={{ fontSize: 8, fontFamily: FONT, fill: C.muted, textAnchor: 'end' }}>
-            Favours treatment
+            Favours treatment →
           </text>
         </svg>
 
-        {/* Stat pills */}
         <div style={{
           display: 'flex', gap: 14, borderTop: `1px solid ${C.brd}`,
           paddingTop: 10, marginTop: 2, flexWrap: 'wrap',
@@ -363,32 +649,44 @@ function ForestPlotPreview() {
           ))}
         </div>
       </div>
-
-      {/* PRISMA funnel counts strip */}
-      <div style={{
-        display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap',
-        background: C.surf, borderTop: `1px solid ${C.brd}`,
-        padding: '9px 14px',
-      }}>
-        <Icon name="flow" size={11} style={{ color: C.muted }} />
-        <span style={{ fontSize: 8.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.14em', textTransform: 'uppercase' }}>
-          PRISMA
-        </span>
-        {funnel.map(([k, v], i) => (
-          <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 9 }}>
-            {i > 0 && <Icon name="chevronRight" size={9} style={{ color: C.dim }} />}
-            <span style={{ fontSize: 9.5, fontFamily: MONO, color: C.txt2 }}>
-              {k}{' '}
-              <span style={{ color: i === funnel.length - 1 ? C.gold : C.txt, fontWeight: 700 }}>{v}</span>
-            </span>
-          </span>
-        ))}
-      </div>
     </div>
   );
 }
 
-/* ─── Product frame: stylized in-code app composition ────────────────── */
+const PRISMA_STAGES = [
+  { label: 'Records identified', value: 1284, icon: 'search'   },
+  { label: 'After deduplication / screened', value: 1022, icon: 'filter' },
+  { label: 'Full-text assessed', value: 164,  icon: 'fileText' },
+  { label: 'Studies included',   value: 38,   icon: 'check'    },
+];
+
+function PrismaStageRow({ stage, run, reduced, last, delayIdx }) {
+  const val = useCountUp(stage.value, run, reduced, 1300 + delayIdx * 250);
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+      <span style={{
+        width: 30, height: 30, borderRadius: 8, flexShrink: 0,
+        border: `1px solid ${last ? alpha(C.gold, 0.5) : C.brd2}`,
+        background: last ? alpha(C.gold, 0.12) : C.surf,
+        color: last ? C.gold : C.muted,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <Icon name={stage.icon} size={14} />
+      </span>
+      <span style={{ fontSize: 13, color: C.txt2, flex: 1, minWidth: 0 }}>{stage.label}</span>
+      <span style={{
+        fontSize: 22, fontFamily: MONO, fontWeight: 700,
+        fontVariantNumeric: 'tabular-nums',
+        color: last ? C.gold : C.txt, letterSpacing: '-0.02em',
+        minWidth: 76, textAlign: 'right',
+      }}>
+        {val.toLocaleString('en-US')}
+      </span>
+    </div>
+  );
+}
+
+/* ─── Mini forest used inside the app preview frame ──────────────────── */
 function MiniForest() {
   const rows = [
     { lo: 50,  hi: 150, mid: 96,  w: 7 },
@@ -420,7 +718,8 @@ function MiniForest() {
   );
 }
 
-function AppFrame() {
+/* ─── Product preview: stylized in-code app composition ──────────────── */
+function AppPreview() {
   const sideItems = [
     ['grid',     'Overview'],
     ['search',   'Search'],
@@ -553,6 +852,196 @@ function AppFrame() {
   );
 }
 
+/* ─── META·LAB ⇄ META·SIFT linked-workspace cards + traveling pulse ──── */
+function LinkedProducts() {
+  const card = (name, tag, bullets) => (
+    <div className="lp-link-card" style={{
+      flex: 1, minWidth: 0, background: C.card,
+      border: `1px solid ${C.brd}`, borderRadius: 12, padding: '28px 28px 24px',
+      position: 'relative', zIndex: 1,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+        <HexLogo size={17} />
+        <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: '0.06em', color: C.txt }}>
+          {name.split('·')[0]}
+          <span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>
+          {name.split('·')[1]}
+        </span>
+      </div>
+      <div style={{ fontSize: 10.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 18 }}>
+        {tag}
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
+        {bullets.map(([ico, txt]) => (
+          <div key={txt} style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+            <Icon name={ico} size={13} style={{ color: C.acc, marginTop: 2 }} />
+            <span style={{ fontSize: 13, color: C.txt2, lineHeight: 1.6 }}>{txt}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div>
+      <div className="lp-link-row" style={{ display: 'flex', alignItems: 'stretch', gap: 0, position: 'relative' }}>
+        {card('META·LAB', 'Extraction · Analysis · Manuscript', [
+          ['table',    'Structured data extraction and outcome tables'],
+          ['sigma',    'Pooled analysis, heterogeneity, GRADE'],
+          ['fileText', 'IMRAD manuscript with PRISMA checklist export'],
+        ])}
+
+        {/* Link beam */}
+        <div className="lp-link-beam" style={{
+          width: 130, flexShrink: 0, position: 'relative',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+        }} aria-hidden="true">
+          <svg viewBox="0 0 130 60" style={{ width: '100%', height: 60, overflow: 'visible' }}>
+            <line x1="0" y1="30" x2="130" y2="30" stroke={alpha(C.acc, 0.25)} strokeWidth="1.5" />
+            <line className="lp-beam-pulse" x1="0" y1="30" x2="130" y2="30"
+              stroke={C.acc} strokeWidth="1.5" strokeLinecap="round"
+              strokeDasharray="16 240" />
+            <circle cx="0" cy="30" r="3" fill={C.acc} opacity="0.85" />
+            <circle cx="130" cy="30" r="3" fill={C.acc} opacity="0.85" />
+          </svg>
+          <span style={{
+            position: 'absolute', top: 'calc(50% - 34px)', left: '50%', transform: 'translateX(-50%)',
+            fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.14em',
+            textTransform: 'uppercase', whiteSpace: 'nowrap',
+          }}>
+            Linked
+          </span>
+        </div>
+
+        {card('META·SIFT', 'Screening · Conflicts · PRISMA', [
+          ['users',  'Dual-reviewer title/abstract and full-text screening'],
+          ['scale',  'Conflict detection and adjudication'],
+          ['flow',   'PRISMA counts auto-filled from screening decisions'],
+        ])}
+      </div>
+
+      <p style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.8, maxWidth: 640, margin: '26px 0 0' }}>
+        Linked projects share one Review Workspace — same owner, members, and
+        permissions on both sides. Studies accepted in META·SIFT flow back into
+        META·LAB extraction, and the PRISMA flow diagram fills itself from real
+        screening decisions.
+      </p>
+    </div>
+  );
+}
+
+/* ─── Evidence spine section wrapper ─────────────────────────────────── */
+/* A numbered PRISMA-style node on a thin vertical rail; the rail draws
+   downward and the body rises into view when the section is scrolled to.
+   The rail hides on mobile. */
+function SpineSection({ num, id, label, alt, children, wide }) {
+  const [ref, inView] = useInView(0.08, '0px 0px -6% 0px');
+  return (
+    <section
+      id={id}
+      ref={ref}
+      className={`lp-sp-sec${inView ? ' in-view' : ''}`}
+      style={{
+        background: alt ? C.surf : C.bg,
+        borderTop: `1px solid ${C.brd}`,
+      }}
+    >
+      <div className="lp-sp-inner" style={{
+        maxWidth: 1200, margin: '0 auto', padding: '0 48px',
+        display: 'grid', gridTemplateColumns: '72px minmax(0, 1fr)',
+      }}>
+        <div className="lp-sp-rail" style={{ position: 'relative' }} aria-hidden="true">
+          <div className="lp-sp-line" />
+          <div className="lp-sp-node" style={{ background: alt ? C.surf : C.bg }}>{num}</div>
+        </div>
+        <div className="lp-sp-body" style={{ minWidth: 0, padding: '78px 0 84px', maxWidth: wide ? undefined : 1020 }}>
+          <SectionLabel text={label} />
+          {children}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ─── Evidence climax block: self-drawing plot + PRISMA count-up ─────── */
+function EvidenceClimax({ reduced }) {
+  const [ref, inView] = useInView(0.25, '0px 0px -8% 0px');
+  const active = reduced || inView;
+  return (
+    <div ref={ref} className="lp-climax-grid" style={{
+      display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 1fr)',
+      gap: 48, alignItems: 'center',
+    }}>
+      <ForestPlotClimax active={active} />
+      <div>
+        <div style={{
+          fontSize: 10, fontFamily: MONO, color: C.muted,
+          letterSpacing: '0.18em', textTransform: 'uppercase', marginBottom: 22,
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          <Icon name="flow" size={12} /> PRISMA flow
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {PRISMA_STAGES.map((st, i) => (
+            <PrismaStageRow
+              key={st.label}
+              stage={st}
+              run={active}
+              reduced={reduced}
+              delayIdx={i}
+              last={i === PRISMA_STAGES.length - 1}
+            />
+          ))}
+        </div>
+        <div style={{
+          marginTop: 26, paddingTop: 18, borderTop: `1px solid ${C.brd}`,
+          fontSize: 12.5, color: C.muted, lineHeight: 1.7,
+        }}>
+          1,284 records enter. 38 survive. One pooled estimate comes out —
+          with every decision on the record.
+        </div>
+        <div style={{
+          marginTop: 12, fontSize: 9.5, fontFamily: MONO, color: C.dim,
+          letterSpacing: '0.1em', textTransform: 'uppercase',
+        }}>
+          Illustrative data
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Institution-grade specification table ──────────────────────────── */
+const INSTITUTION_SPECS = [
+  ['Workspaces',          'Multi-user review workspaces — one shared project across the whole team.'],
+  ['Roles & permissions', 'Owner, leader, and member roles with granular per-member permissions.'],
+  ['Audit trail',         'Per-decision audit trail across screening, extraction, and analysis.'],
+  ['Data isolation',      'Server-side per-user data isolation — every request is scoped to the signed-in account.'],
+  ['Deployment',          'Self-hostable on your own infrastructure.'],
+];
+
+function InstitutionSpecs() {
+  return (
+    <div style={{ border: `1px solid ${C.brd}`, borderRadius: 12, overflow: 'hidden', background: C.card }}>
+      {INSTITUTION_SPECS.map(([k, v], i) => (
+        <div key={k} className="lp-spec-row" style={{
+          display: 'grid', gridTemplateColumns: '220px minmax(0, 1fr)',
+          gap: 24, padding: '17px 26px',
+          borderTop: i > 0 ? `1px solid ${C.brd}` : 'none',
+        }}>
+          <span style={{
+            fontSize: 10.5, fontFamily: MONO, color: C.muted,
+            letterSpacing: '0.12em', textTransform: 'uppercase', paddingTop: 2,
+          }}>
+            {k}
+          </span>
+          <span style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.65 }}>{v}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ════════════════════════════════════════════════════════════════════════
    MAIN COMPONENT
    ════════════════════════════════════════════════════════════════════════ */
@@ -560,6 +1049,7 @@ export default function Landing() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const settings = useLandingSettings();
+  const reduced  = usePrefersReducedMotion();
 
   useEffect(() => {
     if (settings.seoTitle) document.title = settings.seoTitle;
@@ -568,6 +1058,7 @@ export default function Landing() {
   }, [settings.seoTitle, settings.seoDescription]);
 
   const [navOpen,          setNavOpen]          = useState(false);
+  const [activeStep,       setActiveStep]       = useState(0);
   const [bannerDismissed,  setBannerDismissed]  = useState(() => {
     try { return !!localStorage.getItem('ml_banner_dismissed'); } catch { return false; }
   });
@@ -625,6 +1116,14 @@ export default function Landing() {
     whiteSpace: 'nowrap',
   };
 
+  const h2Style = {
+    fontSize: 'clamp(24px, 3vw, 31px)', fontWeight: 700, color: C.txt,
+    letterSpacing: '-0.7px', margin: '0 0 14px', lineHeight: 1.2,
+  };
+  const subStyle = {
+    fontSize: 14.5, color: C.txt2, maxWidth: 560, lineHeight: 1.75, margin: 0,
+  };
+
   return (
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: FONT, color: C.txt }}>
       <style>{`
@@ -641,84 +1140,127 @@ export default function Landing() {
         .lp-val-card { transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s; }
         .lp-val-card:hover { border-color: ${C.brd2} !important; transform: translateY(-2px); box-shadow: 0 8px 28px ${C.shadow}; }
 
-        .lp-step-card { transition: border-color 0.2s, background 0.2s; }
-        .lp-step-card:hover { border-color: ${alpha(C.acc, '60')} !important; background: ${C.card2} !important; }
-        .lp-step-card:hover .lp-step-ico { color: ${C.acc} !important; }
+        .lp-link-card { transition: border-color 0.2s, transform 0.15s, box-shadow 0.15s; }
+        .lp-link-card:hover { border-color: ${alpha(C.acc, '55')} !important; transform: translateY(-2px); box-shadow: 0 10px 32px ${C.shadow}; }
+
+        .lp-rail-node { transition: border-color 0.15s, background 0.15s; }
+        .lp-rail-node:focus-visible { border-color: ${C.acc} !important; }
 
         .lp-footer-link { transition: color 0.15s; }
         .lp-footer-link:hover { color: ${C.txt2} !important; }
 
-        /* ── Motion (CSS only) ───────────────────────────────────────── */
+        /* ── Hero entrance ───────────────────────────────────────────── */
         @keyframes lpFadeUp {
           from { opacity: 0; transform: translateY(14px); }
           to   { opacity: 1; transform: none; }
         }
         .lp-fade-up { animation: lpFadeUp 0.55s cubic-bezier(0.22, 1, 0.36, 1) both; }
 
+        /* ── Evidence spine ──────────────────────────────────────────── */
+        .lp-sp-line {
+          position: absolute; left: 14px; top: 0; bottom: 0; width: 1px;
+          background: linear-gradient(to bottom, ${alpha(C.acc, 0.45)}, ${alpha(C.acc, 0.10)});
+          transform: scaleY(0); transform-origin: top;
+          transition: transform 1.2s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+        .lp-sp-sec.in-view .lp-sp-line { transform: scaleY(1); }
+        .lp-sp-node {
+          position: absolute; left: 0; top: 74px;
+          width: 29px; height: 29px; border-radius: 50%;
+          border: 1px solid ${alpha(C.acc, 0.55)};
+          background: ${C.bg};
+          color: ${C.acc}; font-family: ${MONO}; font-size: 10px;
+          letter-spacing: 0.04em;
+          display: flex; align-items: center; justify-content: center;
+          opacity: 0; transform: scale(0.55);
+          transition: opacity 0.5s ease 0.15s, transform 0.5s cubic-bezier(0.22, 1, 0.36, 1) 0.15s;
+          box-shadow: 0 0 0 5px ${alpha(C.bg, 0.01)};
+        }
+        .lp-sp-sec.in-view .lp-sp-node { opacity: 1; transform: scale(1); }
+        .lp-sp-body {
+          opacity: 0; transform: translateY(14px);
+          transition: opacity 0.7s ease 0.1s, transform 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.1s;
+        }
+        .lp-sp-sec.in-view .lp-sp-body { opacity: 1; transform: none; }
+
+        /* ── Forest plot climax (scroll-triggered, one-shot) ─────────── */
         @keyframes lpRowIn {
           from { opacity: 0; transform: translateX(-10px); }
           to   { opacity: 1; transform: none; }
-        }
-        .lp-fp-row {
-          opacity: 0;
-          animation: lpRowIn 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
         }
         @keyframes lpPoolIn {
           from { opacity: 0; transform: scale(0.6); }
           to   { opacity: 1; transform: none; }
         }
-        .lp-fp-pool {
-          opacity: 0;
-          transform-box: fill-box;
-          transform-origin: center;
-          animation: lpPoolIn 0.5s ease-out forwards;
-        }
+        .lp-fpz .lp-fp-row  { opacity: 0; }
+        .lp-fpz .lp-fp-pool { opacity: 0; transform-box: fill-box; transform-origin: center; }
+        .lp-fpz.in-view .lp-fp-row  { animation: lpRowIn 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+        .lp-fpz.in-view .lp-fp-pool { animation: lpPoolIn 0.5s ease-out forwards; }
 
+        /* ── Linked-products beam pulse ──────────────────────────────── */
+        @keyframes lpBeam {
+          from { stroke-dashoffset: 512; }
+          to   { stroke-dashoffset: 0; }
+        }
+        .lp-beam-pulse { animation: lpBeam 6.4s linear infinite; }
+
+        /* ── Reduced motion: static final compositions ───────────────── */
         @media (prefers-reduced-motion: reduce) {
           html { scroll-behavior: auto; }
-          .lp-fade-up, .lp-fp-row, .lp-fp-pool {
+          .lp-fade-up, .lp-fpz .lp-fp-row, .lp-fpz .lp-fp-pool {
             animation: none !important;
             opacity: 1 !important;
             transform: none !important;
           }
-          .lp-btn-primary:hover, .lp-val-card:hover { transform: none !important; }
+          .lp-sp-line { transform: scaleY(1) !important; transition: none !important; }
+          .lp-sp-node, .lp-sp-body { opacity: 1 !important; transform: none !important; transition: none !important; }
+          .lp-beam-pulse { animation: none !important; }
+          .lp-btn-primary:hover, .lp-val-card:hover, .lp-link-card:hover { transform: none !important; }
         }
 
         /* ── Responsive ──────────────────────────────────────────────── */
         @media (max-width: 1024px) {
-          .lp-hero-split   { grid-template-columns: 1fr !important; }
-          .lp-preview-col  { display: none !important; }
-          .lp-hero-text    { text-align: center !important; align-items: center !important; }
-          .lp-hero-ctas    { justify-content: center !important; }
-          .lp-hero-kpis    { justify-content: center !important; }
+          .lp-hero-inner   { padding: 96px 32px 84px !important; }
+          .lp-climax-grid  { grid-template-columns: 1fr !important; gap: 40px !important; }
+          .lp-diff-grid    { gap: 44px !important; }
         }
         @media (max-width: 768px) {
           .lp-nav-links    { display: none !important; }
           .lp-nav-ctas     { display: none !important; }
           .lp-ham-btn      { display: flex !important; }
           .lp-mob-menu     { display: flex !important; }
-          .lp-hero-name    { font-size: 52px !important; letter-spacing: -2px !important; }
-          .lp-hero-tagline { font-size: 18px !important; }
-          .lp-value-grid   { grid-template-columns: 1fr 1fr !important; }
-          .lp-steps-grid   { grid-template-columns: repeat(2, 1fr) !important; }
+          .lp-hero-inner   { padding: 84px 24px 72px !important; }
+          .lp-hero-kpis    { gap: 26px !important; }
+          .lp-sp-inner     { grid-template-columns: 1fr !important; padding: 0 24px !important; }
+          .lp-sp-rail      { display: none !important; }
+          .lp-sp-body      { padding: 60px 0 64px !important; }
+          .lp-value-grid   { grid-template-columns: 1fr !important; }
+          .lp-rail-grid    { grid-template-columns: repeat(4, 1fr) !important; }
           .lp-diff-grid    { grid-template-columns: 1fr !important; }
           .lp-trust-strip  { flex-wrap: wrap !important; gap: 12px !important; justify-content: flex-start !important; }
           .lp-footer-cols  { flex-direction: column !important; gap: 28px !important; }
           .lp-footer-bottom { flex-direction: column !important; align-items: flex-start !important; }
-          .lp-hero-desc-text { max-width: 100% !important; }
           .lp-frame-side   { display: none !important; }
           .lp-frame-stats  { grid-template-columns: 1fr 1fr !important; }
           .lp-frame-panels { grid-template-columns: 1fr !important; }
-        }
-        @media (max-width: 480px) {
-          .lp-hero-name  { font-size: 40px !important; letter-spacing: -1px !important; }
-          .lp-value-grid { grid-template-columns: 1fr !important; }
-          .lp-steps-grid { grid-template-columns: 1fr !important; }
-          .lp-diff-grid  { gap: 32px !important; }
+          .lp-link-row     { flex-direction: column !important; gap: 0 !important; }
+          .lp-link-beam    { width: 100% !important; height: 64px !important; }
+          .lp-link-beam svg { transform: rotate(90deg); width: 64px !important; }
+          .lp-spec-row     { grid-template-columns: 1fr !important; gap: 6px !important; }
+          .lp-sect-pad     { padding-left: 24px !important; padding-right: 24px !important; }
         }
         @media (min-width: 769px) {
           .lp-ham-btn  { display: none !important; }
           .lp-mob-menu { display: none !important; }
+        }
+        @media (max-width: 480px) {
+          .lp-hero-ctas    { width: 100%; }
+          .lp-hero-ctas button { flex: 1; }
+          .lp-rail-grid    { grid-template-columns: repeat(2, 1fr) !important; }
+          .lp-frame-stats  { grid-template-columns: 1fr 1fr !important; }
+        }
+        @media (min-width: 1025px) {
+          .lp-value-grid { grid-template-columns: 1fr 1fr !important; }
         }
       `}</style>
 
@@ -839,127 +1381,117 @@ export default function Landing() {
       )}
 
       {/* ═══════════════════════════════════════════════════════════════
-          HERO — split layout
+          HERO — full-bleed: records converging into a forest plot
           ═══════════════════════════════════════════════════════════════ */}
-      <section style={{ padding: '0 48px', background: C.bg, position: 'relative', overflow: 'hidden' }}>
-        {/* Subtle grid background */}
-        <div style={{
-          position: 'absolute', inset: 0, zIndex: 0, pointerEvents: 'none',
-          backgroundImage: `
-            linear-gradient(${alpha(C.brd, '26')} 1px, transparent 1px),
-            linear-gradient(90deg, ${alpha(C.brd, '26')} 1px, transparent 1px)
-          `,
-          backgroundSize: '52px 52px',
-          maskImage: 'radial-gradient(ellipse 80% 70% at 60% 40%, black 20%, transparent 90%)',
-          WebkitMaskImage: 'radial-gradient(ellipse 80% 70% at 60% 40%, black 20%, transparent 90%)',
+      <section style={{
+        position: 'relative', overflow: 'hidden', background: C.bg,
+        minHeight: 'min(88vh, 840px)', display: 'flex', alignItems: 'center',
+      }}>
+        <HeroCanvas reduced={reduced} />
+
+        {/* Readability gradient over the canvas (text side) + bottom fade */}
+        <div aria-hidden="true" style={{
+          position: 'absolute', inset: 0, pointerEvents: 'none',
+          background: `linear-gradient(90deg, ${alpha(C.bg, 0.88)} 0%, ${alpha(C.bg, 0.55)} 36%, transparent 64%)`,
+        }} />
+        <div aria-hidden="true" style={{
+          position: 'absolute', left: 0, right: 0, bottom: 0, height: 130,
+          pointerEvents: 'none',
+          background: `linear-gradient(to bottom, transparent, ${C.bg})`,
         }} />
 
-        <div
-          className="lp-hero-split"
-          style={{
-            maxWidth: 1200, margin: '0 auto',
-            display: 'grid', gridTemplateColumns: '1fr 1fr',
-            gap: 72, alignItems: 'center',
-            padding: '96px 0 88px',
-            position: 'relative', zIndex: 1,
-          }}
-        >
-          {/* LEFT: copy */}
-          <div className="lp-hero-text lp-fade-up" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start' }}>
-            {/* Eyebrow pill */}
-            <div style={{
-              display: 'inline-flex', alignItems: 'center', gap: 8,
-              background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '30')}`,
-              borderRadius: 100, padding: '5px 14px', marginBottom: 30,
-            }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.acc, display: 'inline-block', flexShrink: 0 }} />
-              <span style={{ fontSize: 11, fontFamily: MONO, color: C.acc, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
-                Systematic review platform
-              </span>
-            </div>
-
-            {/* App name — first and largest */}
-            <h1 className="lp-hero-name" style={{
-              fontSize: 78, fontWeight: 700, letterSpacing: '-3.5px',
-              color: C.txt, lineHeight: 0.94,
-              margin: '0 0 26px', fontFamily: FONT,
-            }}>
-              META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400, letterSpacing: 0, padding: '0 0.04em' }}>·</span>LAB
-            </h1>
-
-            {/* Tagline */}
-            <p className="lp-hero-tagline" style={{
-              fontSize: 22, color: C.txt2, fontWeight: 400,
-              lineHeight: 1.45, margin: '0 0 16px', maxWidth: 440,
-              whiteSpace: 'pre-line', letterSpacing: '-0.01em',
-            }}>
-              {settings.heroHeadline || DEFAULTS.heroHeadline}
-            </p>
-
-            {/* Description */}
-            <p className="lp-hero-desc-text" style={{
-              fontSize: 15, color: C.muted, lineHeight: 1.8,
-              maxWidth: 420, margin: '0 0 42px',
-            }}>
-              {settings.heroSubtitle || DEFAULTS.heroSubtitle}
-            </p>
-
-            {/* CTAs */}
-            <div className="lp-hero-ctas" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 50 }}>
-              {user ? (
-                <button className="lp-btn-primary" onClick={() => navigate('/app')}
-                  style={{ ...btnPrimary }}>
-                  Open Workspace
-                  <Icon name="arrowRight" size={15} />
-                </button>
-              ) : (
-                <>
-                  <button className="lp-btn-primary" onClick={() => navigate('/register')}
-                    style={{ ...btnPrimary }}>
-                    {settings.ctaText || 'Start Your Review'}
-                    <Icon name="arrowRight" size={15} />
-                  </button>
-                  <button className="lp-btn-ghost" onClick={() => navigate('/login')}
-                    style={{ ...btnGhost }}>
-                    {settings.ctaSecondaryText || 'Sign in'}
-                  </button>
-                </>
-              )}
-            </div>
-
-            {/* Key metrics — honest, descriptive */}
-            <div className="lp-hero-kpis" style={{ display: 'flex', gap: 40 }}>
-              {[
-                ['14',     'review stages'],
-                ['PRISMA', '2020 compliant'],
-                ['RoB 2',  'built in'],
-              ].map(([n, l]) => (
-                <div key={n}>
-                  <div style={{ fontSize: 18, fontWeight: 700, color: C.txt, letterSpacing: '-0.5px', marginBottom: 3 }}>
-                    {n}
-                  </div>
-                  <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, letterSpacing: '0.05em' }}>
-                    {l}
-                  </div>
-                </div>
-              ))}
-            </div>
+        <div className="lp-hero-inner lp-fade-up" style={{
+          position: 'relative', zIndex: 1, width: '100%', boxSizing: 'border-box',
+          maxWidth: 1200, margin: '0 auto', padding: '110px 48px 100px',
+        }}>
+          {/* Eyebrow */}
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', gap: 8,
+            background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '30')}`,
+            borderRadius: 100, padding: '5px 14px', marginBottom: 30,
+          }}>
+            <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.acc, display: 'inline-block', flexShrink: 0 }} />
+            <span style={{ fontSize: 11, fontFamily: MONO, color: C.acc, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+              Systematic review platform
+            </span>
           </div>
 
-          {/* RIGHT: evidence panel */}
-          <div className="lp-preview-col lp-fade-up" style={{ position: 'relative', animationDelay: '0.12s' }}>
-            <ForestPlotPreview />
+          {/* Wordmark */}
+          <h1 style={{
+            fontSize: 'clamp(44px, 7vw, 76px)', fontWeight: 700,
+            letterSpacing: '-0.045em', color: C.txt, lineHeight: 0.96,
+            margin: '0 0 24px', fontFamily: FONT,
+          }}>
+            META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400, letterSpacing: 0, padding: '0 0.04em' }}>·</span>LAB
+          </h1>
+
+          {/* Tagline (admin-editable) */}
+          <p style={{
+            fontSize: 'clamp(18px, 2.4vw, 23px)', color: C.txt2, fontWeight: 400,
+            lineHeight: 1.42, margin: '0 0 16px', maxWidth: 480,
+            whiteSpace: 'pre-line', letterSpacing: '-0.01em',
+          }}>
+            {settings.heroHeadline || DEFAULTS.heroHeadline}
+          </p>
+
+          {/* Subtitle (admin-editable) */}
+          <p style={{
+            fontSize: 15, color: C.muted, lineHeight: 1.8,
+            maxWidth: 440, margin: '0 0 40px',
+          }}>
+            {settings.heroSubtitle || DEFAULTS.heroSubtitle}
+          </p>
+
+          {/* CTAs */}
+          <div className="lp-hero-ctas" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 52 }}>
+            {user ? (
+              <button className="lp-btn-primary" onClick={() => navigate('/app')}
+                style={{ ...btnPrimary }}>
+                Open Workspace
+                <Icon name="arrowRight" size={15} />
+              </button>
+            ) : (
+              <>
+                <button className="lp-btn-primary" onClick={() => navigate('/register')}
+                  style={{ ...btnPrimary }}>
+                  {settings.ctaText || 'Start Your Review'}
+                  <Icon name="arrowRight" size={15} />
+                </button>
+                <button className="lp-btn-ghost" onClick={() => navigate('/login')}
+                  style={{ ...btnGhost }}>
+                  {settings.ctaSecondaryText || 'Sign in'}
+                </button>
+              </>
+            )}
+          </div>
+
+          {/* Honest KPI strip */}
+          <div className="lp-hero-kpis" style={{ display: 'flex', gap: 40, flexWrap: 'wrap' }}>
+            {[
+              ['14',     'review stages'],
+              ['PRISMA', '2020 compliant'],
+              ['RoB 2',  'built in'],
+            ].map(([n, l]) => (
+              <div key={n}>
+                <div style={{ fontSize: 18, fontWeight: 700, color: C.txt, letterSpacing: '-0.5px', marginBottom: 3 }}>
+                  {n}
+                </div>
+                <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, letterSpacing: '0.05em' }}>
+                  {l}
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </section>
 
-      {/* ── Trust strip ─────────────────────────────────────────────── */}
-      <div style={{
+      {/* ── Standards trust strip ────────────────────────────────────── */}
+      <div className="lp-sect-pad" style={{
         background: C.surf, borderTop: `1px solid ${C.brd}`,
         borderBottom: `1px solid ${C.brd}`, padding: '14px 48px',
       }}>
         <div className="lp-trust-strip" style={{
-          maxWidth: 1100, margin: '0 auto',
+          maxWidth: 1104, margin: '0 auto',
           display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0,
         }}>
           <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.15em', textTransform: 'uppercase', paddingRight: 24, whiteSpace: 'nowrap' }}>
@@ -977,217 +1509,225 @@ export default function Landing() {
         </div>
       </div>
 
-      {/* ── Features ─────────────────────────────────────────────────── */}
-      <section id="features" style={{ padding: '88px 48px', background: C.bg }}>
-        <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-          <div style={{ textAlign: 'center', marginBottom: 52 }}>
-            <SectionLabel text="Features" />
-            <h2 style={{ fontSize: 29, fontWeight: 700, color: C.txt, letterSpacing: '-0.6px', margin: '0 0 14px' }}>
-              {settings.featureTitle || 'Everything a rigorous review needs'}
-            </h2>
-            <p style={{ fontSize: 14, color: C.txt2, maxWidth: 460, margin: '0 auto', lineHeight: 1.75 }}>
-              From protocol registration to manuscript export — every stage of evidence synthesis, without switching tools.
-            </p>
-          </div>
+      {/* ═══════════════════════════════════════════════════════════════
+          THE EVIDENCE SPINE — every section below sits on the audit rail
+          ═══════════════════════════════════════════════════════════════ */}
 
-          <div className="lp-value-grid" style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(3, 1fr)',
-            gap: 16,
-          }}>
-            {(settings.featureCards || VALUE_PROPS).map((v, i) => (
-              <div key={v.label || i} className="lp-val-card" style={{
-                background: C.card, border: `1px solid ${C.brd}`,
-                borderLeft: `3px solid ${alpha(C.acc, '50')}`,
-                borderRadius: '0 10px 10px 0',
-                padding: '26px 24px',
-              }}>
-                <div style={{
-                  width: 34, height: 34, borderRadius: 8,
-                  background: C.accBg, border: `1px solid ${alpha(C.acc, '28')}`,
-                  color: C.acc, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  marginBottom: 16,
-                }}>
-                  <Icon name={resolveCardIcon(v.icon)} size={17} />
-                </div>
-                <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 8 }}>{v.label}</div>
-                <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.72 }}>{v.desc}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ── Workflow ─────────────────────────────────────────────────── */}
-      <section id="workflow" style={{
-        background: C.surf, borderTop: `1px solid ${C.brd}`,
-        borderBottom: `1px solid ${C.brd}`, padding: '88px 48px',
-      }}>
-        <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-          <div style={{ textAlign: 'center', marginBottom: 60 }}>
-            <SectionLabel text="Workflow" />
-            <h2 style={{ fontSize: 29, fontWeight: 700, color: C.txt, letterSpacing: '-0.6px', margin: '0 0 14px' }}>
-              {settings.workflowTitle || '14 steps from question to manuscript'}
-            </h2>
-            <p style={{ fontSize: 14, color: C.txt2, maxWidth: 500, margin: '0 auto', lineHeight: 1.75 }}>
-              {settings.workflowSubtitle || 'Every systematic review follows the same evidence-based process. META·LAB walks you through each stage without letting you skip ahead.'}
-            </p>
-          </div>
-
-          <div className="lp-steps-grid" style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(4, 1fr)',
-            gap: 2,
-          }}>
-            {STEPS.map((s, i) => (
-              <div key={s.n} className="lp-step-card" style={{
-                background: C.card, border: `1px solid ${C.brd}`,
-                padding: '20px 18px',
-                borderRadius:
-                  i === 0 ? '9px 0 0 9px' :
-                  i === STEPS.length - 1 ? '0 9px 9px 0' :
-                  0,
-              }}>
-                <div style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                  marginBottom: 12,
-                }}>
-                  <span style={{
-                    fontFamily: MONO, fontSize: 11.5, fontWeight: 700,
-                    color: C.gold, letterSpacing: '0.05em',
-                  }}>
-                    {s.n}
-                  </span>
-                  <span className="lp-step-ico" style={{ color: C.muted, display: 'inline-flex', transition: 'color 0.15s' }}>
-                    <Icon name={s.icon} size={15} />
-                  </span>
-                </div>
-                <div style={{ fontSize: 12.5, fontWeight: 700, color: C.txt, marginBottom: 6, letterSpacing: '0.01em' }}>
-                  {s.label}
-                </div>
-                <div style={{ fontSize: 11, color: C.muted, lineHeight: 1.65 }}>
-                  {s.desc}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ── Product preview: stylized app frame ──────────────────────── */}
-      <section style={{ padding: '88px 48px 80px', background: C.bg }}>
-        <div style={{ maxWidth: 980, margin: '0 auto' }}>
-          <div style={{ textAlign: 'center', marginBottom: 48 }}>
-            <SectionLabel text="Product" />
-            <h2 style={{ fontSize: 29, fontWeight: 700, color: C.txt, letterSpacing: '-0.6px', margin: '0 0 14px' }}>
-              Inside the workspace
-            </h2>
-            <p style={{ fontSize: 14, color: C.txt2, maxWidth: 480, margin: '0 auto', lineHeight: 1.75 }}>
-              One project, every stage — screening counts, pooled estimates, and the PRISMA flow stay in view as your review progresses.
-            </p>
-          </div>
-          <AppFrame />
-          <div style={{
-            textAlign: 'center', marginTop: 14,
-            fontSize: 10, fontFamily: MONO, color: C.dim, letterSpacing: '0.08em',
-          }}>
-            Illustrative composition — numbers shown are examples, not live data.
-          </div>
-        </div>
-      </section>
-
-      {/* ── Why META·LAB ─────────────────────────────────────────────── */}
-      <section style={{
-        padding: '88px 48px', background: C.surf,
-        borderTop: `1px solid ${C.brd}`,
-      }}>
-        <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-          <div style={{ textAlign: 'center', marginBottom: 64 }}>
-            <SectionLabel text="Research-grade" />
-            <h2 style={{ fontSize: 29, fontWeight: 700, color: C.txt, letterSpacing: '-0.6px', margin: '0 0 14px' }}>
-              {settings.whyTitle || 'For researchers who care about rigor'}
-            </h2>
-          </div>
-
-          <div className="lp-diff-grid" style={{
-            display: 'grid', gridTemplateColumns: '1fr 1fr',
-            gap: 72, alignItems: 'start',
-          }}>
-            {/* Left: body text */}
-            <div>
-              {[settings.whyBody1 || DEFAULTS.whyBody1, settings.whyBody2 || DEFAULTS.whyBody2, settings.whyBody3 || DEFAULTS.whyBody3].map((p, i) => (
-                p ? (
-                  <p key={i} style={{ fontSize: 15, color: C.txt2, lineHeight: 1.88, marginBottom: 20 }}>
-                    {p}
-                  </p>
-                ) : null
-              ))}
-            </div>
-
-            {/* Right: standards card */}
-            <div style={{
+      {/* 01 · Features — evidence workflow narrative */}
+      <SpineSection num="01" id="features" label="Features · Evidence workflow">
+        <h2 style={h2Style}>{settings.featureTitle || DEFAULTS.featureTitle}</h2>
+        <p style={{ ...subStyle, marginBottom: 44 }}>
+          From protocol registration to manuscript export — every stage of
+          evidence synthesis, without switching tools.
+        </p>
+        <div className="lp-value-grid" style={{
+          display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16,
+        }}>
+          {(settings.featureCards || VALUE_PROPS).map((v, i) => (
+            <div key={v.label || i} className="lp-val-card" style={{
               background: C.card, border: `1px solid ${C.brd}`,
-              borderRadius: 12, padding: '32px 36px',
+              borderLeft: `3px solid ${alpha(C.acc, '50')}`,
+              borderRadius: '0 10px 10px 0',
+              padding: '24px 24px 22px',
+              display: 'flex', gap: 18, alignItems: 'flex-start',
             }}>
               <div style={{
-                fontSize: 10, fontFamily: MONO, color: C.muted,
-                letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 24,
+                width: 34, height: 34, borderRadius: 8, flexShrink: 0,
+                background: C.accBg, border: `1px solid ${alpha(C.acc, '28')}`,
+                color: C.acc, display: 'flex', alignItems: 'center', justifyContent: 'center',
               }}>
-                Standards built in
+                <Icon name={resolveCardIcon(v.icon)} size={17} />
               </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 7 }}>{v.label}</div>
+                <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.7 }}>{v.desc}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </SpineSection>
 
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-                {(settings.whyStandards || STANDARDS).map((s, i) => (
-                  <div key={i} style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
-                    <Icon name="check" size={13} style={{ color: C.grn, marginTop: 3 }} />
-                    <span style={{ fontSize: 14, color: C.txt2, lineHeight: 1.65 }}>{s}</span>
-                  </div>
-                ))}
-              </div>
+      {/* 02 · Workflow — the 14-stage rail */}
+      <SpineSection num="02" id="workflow" label="Workflow" alt wide>
+        <h2 style={h2Style}>{settings.workflowTitle || DEFAULTS.workflowTitle}</h2>
+        <p style={{ ...subStyle, marginBottom: 40 }}>
+          {settings.workflowSubtitle || DEFAULTS.workflowSubtitle}
+        </p>
 
-              <div style={{ marginTop: 32, paddingTop: 28, borderTop: `1px solid ${C.brd}` }}>
-                <button className="lp-btn-primary" onClick={() => navigate(user ? '/app' : '/register')}
-                  style={{ ...btnPrimary, width: '100%' }}>
-                  {user ? 'Open Workspace' : (settings.ctaText || 'Start Your Review')}
-                  <Icon name="arrowRight" size={15} />
-                </button>
+        <div className="lp-rail-grid" style={{
+          display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2,
+        }}>
+          {STEPS.map((s, i) => {
+            const active = i === activeStep;
+            return (
+              <div
+                key={s.n}
+                className="lp-rail-node"
+                tabIndex={0}
+                title={s.desc}
+                onMouseEnter={() => setActiveStep(i)}
+                onFocus={() => setActiveStep(i)}
+                style={{
+                  background: active ? C.card2 : C.card,
+                  border: `1px solid ${active ? alpha(C.acc, '60') : C.brd}`,
+                  borderRadius: 8,
+                  padding: '12px 11px 10px',
+                  cursor: 'default', outline: 'none', minWidth: 0,
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <span style={{ fontFamily: MONO, fontSize: 10.5, fontWeight: 700, color: C.gold, letterSpacing: '0.05em' }}>
+                    {s.n}
+                  </span>
+                  <span style={{ color: active ? C.acc : C.muted, display: 'inline-flex' }}>
+                    <Icon name={s.icon} size={13} />
+                  </span>
+                </div>
+                <div style={{
+                  fontSize: 10.5, fontWeight: 600, letterSpacing: '0.01em',
+                  color: active ? C.txt : C.txt2,
+                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                }}>
+                  {s.label}
+                </div>
               </div>
+            );
+          })}
+        </div>
+
+        {/* Caption area — hovering/focusing a node reveals its description */}
+        <div style={{
+          marginTop: 16, minHeight: 46,
+          background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8,
+          padding: '12px 16px', display: 'flex', alignItems: 'baseline', gap: 10,
+          maxWidth: 760,
+        }} aria-live="polite">
+          <span style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, color: C.gold, flexShrink: 0 }}>
+            {STEPS[activeStep].n}
+          </span>
+          <span style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.6 }}>
+            <span style={{ color: C.txt, fontWeight: 600 }}>{STEPS[activeStep].label}</span>
+            {' — '}{STEPS[activeStep].desc}
+          </span>
+        </div>
+      </SpineSection>
+
+      {/* 03 · Synthesis — the evidence climax */}
+      <SpineSection num="03" label="Synthesis" wide>
+        <h2 style={h2Style}>Watch the evidence pool.</h2>
+        <p style={{ ...subStyle, marginBottom: 48 }}>
+          Five studies, weighted and pooled under a random-effects model —
+          the same plot META·LAB draws from your extracted data.
+        </p>
+        <EvidenceClimax reduced={reduced} />
+      </SpineSection>
+
+      {/* 04 · Linked workspaces — META·LAB ⇄ META·SIFT */}
+      <SpineSection num="04" label="Linked workspaces" alt wide>
+        <h2 style={h2Style}>Screening and synthesis, joined at the spine.</h2>
+        <p style={{ ...subStyle, marginBottom: 44 }}>
+          Pair a META·SIFT screening project with a META·LAB review and the
+          pipeline becomes one continuous, audited flow.
+        </p>
+        <LinkedProducts />
+      </SpineSection>
+
+      {/* 05 · Credibility — why rigor + standards card */}
+      <SpineSection num="05" label="Research-grade" wide>
+        <h2 style={{ ...h2Style, marginBottom: 40 }}>
+          {settings.whyTitle || DEFAULTS.whyTitle}
+        </h2>
+        <div className="lp-diff-grid" style={{
+          display: 'grid', gridTemplateColumns: '1fr 1fr',
+          gap: 64, alignItems: 'start',
+        }}>
+          <div>
+            {[settings.whyBody1 || DEFAULTS.whyBody1, settings.whyBody2 || DEFAULTS.whyBody2, settings.whyBody3 || DEFAULTS.whyBody3].map((p, i) => (
+              p ? (
+                <p key={i} style={{ fontSize: 15, color: C.txt2, lineHeight: 1.88, margin: '0 0 20px' }}>
+                  {p}
+                </p>
+              ) : null
+            ))}
+          </div>
+
+          <div style={{
+            background: C.card, border: `1px solid ${C.brd}`,
+            borderRadius: 12, padding: '30px 34px',
+          }}>
+            <div style={{
+              fontSize: 10, fontFamily: MONO, color: C.muted,
+              letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 24,
+            }}>
+              Standards built in
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+              {(settings.whyStandards || STANDARDS).map((s, i) => (
+                <div key={i} style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+                  <Icon name="check" size={13} style={{ color: C.grn, marginTop: 3 }} />
+                  <span style={{ fontSize: 14, color: C.txt2, lineHeight: 1.65 }}>{s}</span>
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: 30, paddingTop: 26, borderTop: `1px solid ${C.brd}` }}>
+              <button className="lp-btn-primary" onClick={() => navigate(user ? '/app' : '/register')}
+                style={{ ...btnPrimary, width: '100%' }}>
+                {user ? 'Open Workspace' : (settings.ctaText || 'Start Your Review')}
+                <Icon name="arrowRight" size={15} />
+              </button>
             </div>
           </div>
         </div>
-      </section>
+      </SpineSection>
 
-      {/* ── About ────────────────────────────────────────────────────── */}
-      <section id="about" style={{
-        background: C.bg, borderTop: `1px solid ${C.brd}`,
-        padding: '88px 48px',
-      }}>
-        <div style={{ maxWidth: 700, margin: '0 auto', textAlign: 'center' }}>
-          <SectionLabel text="About" />
-          <h2 style={{ fontSize: 29, fontWeight: 700, color: C.txt, letterSpacing: '-0.6px', margin: '0 0 28px' }}>
-            {settings.aboutHeadline || 'What is META·LAB?'}
-          </h2>
-          <p style={{ fontSize: 16, color: C.txt2, lineHeight: 1.88, marginBottom: 20 }}>
-            {settings.aboutText1 || DEFAULTS.aboutText1}
-          </p>
-          <p style={{ fontSize: 16, color: C.txt2, lineHeight: 1.88 }}>
-            {settings.aboutText2 || DEFAULTS.aboutText2}
-          </p>
+      {/* 06 · Institutions — quiet specification table */}
+      <SpineSection num="06" label="For institutions" alt>
+        <h2 style={h2Style}>Built to pass a research office review.</h2>
+        <p style={{ ...subStyle, marginBottom: 38 }}>
+          The governance questions IRBs and research offices actually ask —
+          answered in the architecture, not the brochure.
+        </p>
+        <InstitutionSpecs />
+      </SpineSection>
+
+      {/* 07 · Product preview */}
+      <SpineSection num="07" label="Product" wide>
+        <h2 style={h2Style}>Inside the workspace</h2>
+        <p style={{ ...subStyle, marginBottom: 44 }}>
+          One project, every stage — screening counts, pooled estimates, and
+          the PRISMA flow stay in view as your review progresses.
+        </p>
+        <AppPreview />
+        <div style={{
+          marginTop: 14, fontSize: 10, fontFamily: MONO, color: C.dim, letterSpacing: '0.08em',
+        }}>
+          Illustrative composition — numbers shown are examples, not live data.
         </div>
-      </section>
+      </SpineSection>
+
+      {/* 08 · About */}
+      <SpineSection num="08" id="about" label="About">
+        <h2 style={h2Style}>{settings.aboutHeadline || DEFAULTS.aboutHeadline}</h2>
+        <p style={{ fontSize: 16, color: C.txt2, lineHeight: 1.88, margin: '14px 0 20px', maxWidth: 760 }}>
+          {settings.aboutText1 || DEFAULTS.aboutText1}
+        </p>
+        <p style={{ fontSize: 16, color: C.txt2, lineHeight: 1.88, margin: 0, maxWidth: 760 }}>
+          {settings.aboutText2 || DEFAULTS.aboutText2}
+        </p>
+      </SpineSection>
 
       {/* ── Contact ──────────────────────────────────────────────────── */}
-      <section id="contact" style={{
+      <section id="contact" className="lp-sect-pad" style={{
         padding: '88px 48px', background: C.surf,
         borderTop: `1px solid ${C.brd}`,
       }}>
         <div style={{ maxWidth: 520, margin: '0 auto' }}>
           <div style={{ textAlign: 'center', marginBottom: 44 }}>
             <SectionLabel text="Contact" />
-            <h2 style={{ fontSize: 29, fontWeight: 700, color: C.txt, letterSpacing: '-0.6px', margin: '0 0 14px' }}>
+            <h2 style={{ ...h2Style, fontSize: 29 }}>
               {settings.contactTitle || 'Get in touch'}
             </h2>
-            <p style={{ fontSize: 14, color: C.txt2, lineHeight: 1.75 }}>
+            <p style={{ fontSize: 14, color: C.txt2, lineHeight: 1.75, margin: 0 }}>
               {settings.contactSubtitle || DEFAULTS.contactSubtitle}
             </p>
           </div>
@@ -1266,9 +1806,47 @@ export default function Landing() {
         </div>
       </section>
 
+      {/* ── Final CTA band ───────────────────────────────────────────── */}
+      <section className="lp-sect-pad" style={{
+        padding: '92px 48px', background: C.bg,
+        borderTop: `1px solid ${C.brd}`, textAlign: 'center',
+      }}>
+        <div style={{ maxWidth: 640, margin: '0 auto' }}>
+          <SectionLabel text="Begin" style={{ textAlign: 'center' }} />
+          <h2 style={{ ...h2Style, fontSize: 'clamp(26px, 3.4vw, 36px)', marginBottom: 16 }}>
+            From question to pooled estimate.
+          </h2>
+          <p style={{ fontSize: 14.5, color: C.txt2, lineHeight: 1.75, margin: '0 auto 36px', maxWidth: 460 }}>
+            Open a workspace and let the method carry the review —
+            documented, auditable, and ready for peer scrutiny.
+          </p>
+          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
+            {user ? (
+              <button className="lp-btn-primary" onClick={() => navigate('/app')}
+                style={{ ...btnPrimary }}>
+                Open Workspace
+                <Icon name="arrowRight" size={15} />
+              </button>
+            ) : (
+              <>
+                <button className="lp-btn-primary" onClick={() => navigate('/register')}
+                  style={{ ...btnPrimary }}>
+                  {settings.ctaText || 'Start Your Review'}
+                  <Icon name="arrowRight" size={15} />
+                </button>
+                <button className="lp-btn-ghost" onClick={() => navigate('/login')}
+                  style={{ ...btnGhost }}>
+                  {settings.ctaSecondaryText || 'Sign in'}
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </section>
+
       {/* ── Footer ───────────────────────────────────────────────────── */}
-      <footer style={{ borderTop: `1px solid ${C.brd}`, background: C.bg, padding: '60px 48px 36px' }}>
-        <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+      <footer className="lp-sect-pad" style={{ borderTop: `1px solid ${C.brd}`, background: C.bg, padding: '60px 48px 36px' }}>
+        <div style={{ maxWidth: 1104, margin: '0 auto' }}>
           {/* Top: columns */}
           <div className="lp-footer-cols" style={{ display: 'flex', gap: 64, marginBottom: 52 }}>
             {/* Brand column */}
@@ -1335,8 +1913,6 @@ export default function Landing() {
             <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>
               {settings.footerText || `© ${new Date().getFullYear()} META·LAB · Systematic review platform`}
             </span>
-            {/* Dead Privacy/Terms spans removed (no real policy pages yet);
-                replaced by a working contact anchor. */}
             <a href="#contact" className="lp-footer-link" style={{
               fontSize: 11, color: C.muted, fontFamily: FONT,
               textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6,

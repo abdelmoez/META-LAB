@@ -113,31 +113,32 @@ export default function SiftProject() {
 
       {/* Header */}
       <div style={{ borderBottom: `1px solid ${C.brd}`, background: C.surf, padding: '12px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexShrink: 0 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: '1 1 auto' }}>
           <button onClick={() => navigate('/sift-beta')}
-            style={{ background: 'none', border: 'none', color: C.txt2, cursor: 'pointer', fontSize: 12, fontFamily: FONT, padding: '4px 8px', borderRadius: 6 }}
+            style={{ background: 'none', border: 'none', color: C.txt2, cursor: 'pointer', fontSize: 12, fontFamily: FONT, padding: '4px 8px', borderRadius: 6, flexShrink: 0 }}
             onMouseEnter={e => e.currentTarget.style.color = C.txt}
             onMouseLeave={e => e.currentTarget.style.color = C.txt2}>← Projects</button>
           <span style={{ color: C.brd2 }}>|</span>
-          <span style={{ fontSize: 14, fontWeight: 600, color: C.txt, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 360 }}>
+          <span title={project?.title || ''} style={{ fontSize: 14, fontWeight: 600, color: C.txt, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 360, minWidth: 0 }}>
             {project?.title || 'Loading…'}
           </span>
           <BetaBadge />
           {project?.blindMode && <Badge color={C.gold}>Blind</Badge>}
           {project && <Badge color={pb.color}>{pb.label}</Badge>}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexShrink: 0 }}>
           {project?._count && (
             <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>
               {project._count.records} records · {project._count.members} members
             </span>
           )}
           {project && <LinkBadge pid={pid} isLeader={!!project.isLeader} navigate={navigate} onChanged={refreshProject} />}
-          {project && <ChatLauncher pid={pid} access={access} />}
           <button onClick={() => navigate(`/sift-beta/projects/${pid}/import`)}
             style={{ background: C.card, border: `1px solid ${C.brd2}`, color: C.txt, fontSize: 12, fontWeight: 600, fontFamily: FONT, padding: '6px 14px', borderRadius: 7, cursor: 'pointer' }}>
             ↑ Import
           </button>
+          {/* Utility cluster (prompt8): [chat][bell][account] */}
+          {project && <ChatLauncher pid={pid} access={access} />}
           <NotificationsBell />
           <UserMenu context="metasift" />
         </div>
@@ -234,7 +235,7 @@ function LinkBadge({ pid, isLeader, navigate, onChanged }) {
           fontSize: 11.5, fontWeight: 600, fontFamily: FONT, padding: '5px 11px', borderRadius: 7, cursor: 'pointer', maxWidth: 240,
         }}>
         <span>🔗</span>
-        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {linked ? (linked.missing ? 'Linked project missing' : linked.name) : 'Link META·LAB'}
         </span>
       </button>

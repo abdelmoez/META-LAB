@@ -580,12 +580,12 @@ function MiddleColumn({
       <div style={{ padding: '24px 28px', maxWidth: 860, margin: '0 auto', animation: 'sift-fade 0.25s ease' }}>
 
         {/* ── Header ─────────────────────────────────────────────────────── */}
-        <h2 style={{ fontSize: 17, fontWeight: 700, color: C.txt, lineHeight: 1.42, margin: '0 0 10px', letterSpacing: '-0.01em' }}>
+        <h2 style={{ fontSize: 17, fontWeight: 700, color: C.txt, lineHeight: 1.42, margin: '0 0 10px', letterSpacing: '-0.01em', minWidth: 0, overflowWrap: 'anywhere' }}>
           {record.title || <span style={{ color: C.muted, fontStyle: 'italic' }}>Untitled record</span>}
         </h2>
 
         {!blindMode && (record.authors || record.journal || record.year) && (
-          <div style={{ fontSize: 12.5, color: C.txt2, marginBottom: 10, lineHeight: 1.5 }}>
+          <div style={{ fontSize: 12.5, color: C.txt2, marginBottom: 10, lineHeight: 1.5, minWidth: 0, overflowWrap: 'anywhere' }}>
             {record.authors && <span>{record.authors}</span>}
             {record.journal && <span style={{ fontStyle: 'italic', color: C.muted }}>{record.authors ? ' · ' : ''}{record.journal}</span>}
             {record.year && <span style={{ color: C.muted }}>{(record.authors || record.journal) ? ' · ' : ''}{record.year}</span>}
@@ -595,7 +595,7 @@ function MiddleColumn({
         <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginBottom: 20 }}>
           {record.doi && (
             <a href={`https://doi.org/${record.doi}`} target="_blank" rel="noopener noreferrer"
-              style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none' }}>DOI: {record.doi}</a>
+              style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none', minWidth: 0, overflowWrap: 'anywhere', wordBreak: 'break-all' }}>DOI: {record.doi}</a>
           )}
           {record.pmid && (
             <a href={`https://pubmed.ncbi.nlm.nih.gov/${record.pmid}`} target="_blank" rel="noopener noreferrer"
@@ -609,7 +609,7 @@ function MiddleColumn({
         <Card style={{ marginBottom: 18, padding: '18px 20px' }}>
           <SectionLabel>Abstract</SectionLabel>
           {record.abstract ? (
-            <p style={{ fontSize: 14, color: C.txt, lineHeight: 1.75, margin: 0 }}>
+            <p style={{ fontSize: 14, color: C.txt, lineHeight: 1.75, margin: 0, minWidth: 0, overflowWrap: 'anywhere' }}>
               {renderHighlighted(record.abstract, { inclusion, exclusion, showInclusion, showExclusion })}
             </p>
           ) : (

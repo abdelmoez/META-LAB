@@ -165,6 +165,109 @@ export async function getMetrics(req, res) {
   }
 }
 
+// ── GET /api/admin/metrics/timeseries ────────────────────────────────────────
+// Per-day activity buckets for the ops console sparklines (prompt8).
+// ?days= optional (default 14, clamped to [7, 90], non-numeric → default).
+// Buckets are LOCAL calendar days (server time); the response is ascending,
+// zero-filled, exactly N entries, last entry = today. Read-only — no audit log
+// write (same policy as GET /metrics).
+
+const TIMESERIES_DEFAULT_DAYS = 14;
+const TIMESERIES_MIN_DAYS = 7;
+const TIMESERIES_MAX_DAYS = 90;
+
+/** Local-time YYYY-MM-DD key (NOT toISOString — that would bucket by UTC). */
+function localDayKey(value) {
+  const d = new Date(value);
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+export async function getMetricsTimeseries(req, res) {
+  try {
+    const raw = parseInt(req.query.days, 10);
+    const days = Number.isFinite(raw)
+      ? Math.min(TIMESERIES_MAX_DAYS, Math.max(TIMESERIES_MIN_DAYS, raw))
+      : TIMESERIES_DEFAULT_DAYS;
+
+    // Window starts at local midnight (days - 1) days ago so the LAST bucket
+    // is today. Date(y, m, d - n) rolls over month/year boundaries correctly.
+    const todayStart = startOf('day');
+    const windowStart = new Date(
+      todayStart.getFullYear(), todayStart.getMonth(), todayStart.getDate() - (days - 1),
+    );
+
+    // Pre-build zero-filled ascending buckets so empty days still appear.
+    const order = [];
+    const buckets = new Map();
+    for (let i = 0; i < days; i++) {
+      const key = localDayKey(new Date(
+        windowStart.getFullYear(), windowStart.getMonth(), windowStart.getDate() + i,
+      ));
+      order.push(key);
+      buckets.set(key, {
+        date: key,
+        logins: 0,
+        uniqueLogins: 0,
+        newUsers: 0,
+        newProjects: 0,
+        screeningDecisions: 0,
+        doneTransitions: 0,
+        contactMessages: 0,
+        failedLogins: 0,
+      });
+    }
+
+    // Fetch only createdAt (+userId for logins) within the window and bucket
+    // in JS — volumes are small (SQLite dev scale) and this avoids raw-SQL
+    // coupling to SQLite date storage (same rationale as getMetrics).
+    const inWindow = { createdAt: { gte: windowStart } };
+    const [
+      loginRows, userRows, projectRows, decisionRows, doneRows, messageRows, failedRows,
+    ] = await Promise.all([
+      prisma.loginEvent.findMany({ where: { success: true, ...inWindow }, select: { createdAt: true, userId: true } }),
+      prisma.user.findMany({ where: inWindow, select: { createdAt: true } }),
+      prisma.project.findMany({ where: inWindow, select: { createdAt: true } }),
+      prisma.screenDecision.findMany({ where: inWindow, select: { createdAt: true } }),
+      prisma.screenProjectStatusEvent.findMany({ where: { status: 'done', ...inWindow }, select: { createdAt: true } }),
+      prisma.contactMessage.findMany({ where: inWindow, select: { createdAt: true } }),
+      prisma.securityEvent.findMany({ where: { type: 'FAILED_LOGIN', ...inWindow }, select: { createdAt: true } }),
+    ]);
+
+    const bump = (rows, field) => {
+      for (const row of rows) {
+        const bucket = buckets.get(localDayKey(row.createdAt));
+        if (bucket) bucket[field] += 1; // rows later than "now" can't exist; guard is for safety
+      }
+    };
+    bump(userRows, 'newUsers');
+    bump(projectRows, 'newProjects');
+    bump(decisionRows, 'screeningDecisions');
+    bump(doneRows, 'doneTransitions');
+    bump(messageRows, 'contactMessages');
+    bump(failedRows, 'failedLogins');
+
+    // logins = total successful logins per day; uniqueLogins = distinct userIds per day.
+    const uniquePerDay = new Map();
+    for (const row of loginRows) {
+      const key = localDayKey(row.createdAt);
+      const bucket = buckets.get(key);
+      if (!bucket) continue;
+      bucket.logins += 1;
+      let set = uniquePerDay.get(key);
+      if (!set) { set = new Set(); uniquePerDay.set(key, set); }
+      set.add(row.userId);
+    }
+    for (const [key, set] of uniquePerDay) buckets.get(key).uniqueLogins = set.size;
+
+    return res.json({ days: order.map(key => buckets.get(key)) });
+  } catch (err) {
+    console.error('[admin] getMetricsTimeseries error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 // ── GET /api/admin/users ──────────────────────────────────────────────────────
 
 export async function getUsers(req, res) {
