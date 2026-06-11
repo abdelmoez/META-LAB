@@ -18,35 +18,41 @@ src/frontend/
     TagBadge.jsx          ← Small coloured pill badge
     Modal.jsx             ← Generic modal dialog with blurred backdrop
   pages/
-    Dashboard.jsx         ← Project list / welcome screen (server-connected)
-    ProjectHeader.jsx     ← Project name, dates, study count, action buttons
-  layout/
-    Sidebar.jsx           ← Left navigation sidebar
-  styles/
-    theme.js              ← C colour palette, btnS, tagS, inp, lbl, th helpers
+    Landing.jsx           ← Public landing page ("evidence pipeline" design)
+    Login.jsx / Register.jsx / Profile.jsx / AppWorkspace.jsx
+    admin/AdminConsole.jsx ← /ops control center
+  theme/
+    tokens.js             ← Canonical design tokens (CSS vars --t-*, alpha helper)
+    ThemeContext.jsx      ← night/day theme provider
 ```
+
+> Removed 2026-06-11 (dead code, never routed): `pages/Dashboard.jsx`,
+> `pages/ProjectHeader.jsx`, `layout/Sidebar.jsx`, `styles/theme.js` (legacy
+> hardcoded palette). The live workspace UI is the `meta-lab-3-patched.jsx`
+> monolith rendered by `pages/AppWorkspace.jsx`.
 
 ---
 
-## Style system (`styles/theme.js`)
+## Style system (`theme/tokens.js`)
 
-All components import the colour constants and style helpers from `theme.js`.
-Nothing hard-codes colours inline.
+All components import the colour constants from the canonical token module.
+Values are `var(--t-*)` CSS variables switched by `data-theme` on `<html>`
+(night default, day optional). Nothing hard-codes colours inline.
 
 ### Colour palette — `C`
 
 ```js
-import { C } from "../styles/theme.js";
+import { C, FONT, MONO, alpha } from "../theme/tokens.js";
 
-// Key tokens
-C.bg      // #060a12  — deepest background
-C.surf    // #0c1220  — sidebar / elevated surface
-C.card    // #111827  — card background
-C.acc     // #38bdf8  — sky blue accent
-C.grn     // #34d399  — emerald green
-C.red     // #f87171  — danger red
-C.txt     // #e2e8f0  — primary text
-C.muted   // #64748b  — muted text
+// Key tokens (all var(--t-*) strings — theme-aware)
+C.bg C.surf C.card C.card2   // background hierarchy
+C.brd C.brd2                 // borders
+C.txt C.txt2 C.muted C.dim   // text hierarchy
+C.acc C.accText              // accent + text-on-accent
+C.grn C.red C.yel C.purp C.gold C.teal  // status colours
+
+// Translucency — NEVER `${C.acc}44` (breaks on CSS vars); use:
+alpha(C.acc, 0.27)   // → color-mix(in srgb, var(--t-acc) 27%, transparent)
 ```
 
 ### Style helpers

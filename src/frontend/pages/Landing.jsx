@@ -1347,7 +1347,7 @@ export default function Landing() {
             padding: '6px 10px', fontSize: 16, display: 'none',
             alignItems: 'center',
           }}>
-          {navOpen ? <Icon name="x" size={15} /> : '☰'}
+          {navOpen ? <Icon name="x" size={15} /> : <Icon name="menu" size={15} />}
         </button>
       </nav>
 

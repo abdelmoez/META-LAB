@@ -82,6 +82,13 @@ const ICON_PATHS = {
   chat: (
     <path d="M21 14.5a2 2 0 0 1-2 2H8.2L3 20.8V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v9.5Z" />
   ),
+  menu: (
+    <>
+      <path d="M4 6.5h16" />
+      <path d="M4 12h16" />
+      <path d="M4 17.5h16" />
+    </>
+  ),
   send: (
     <>
       <path d="M21.5 2.5 11 13" />

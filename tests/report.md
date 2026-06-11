@@ -69,6 +69,23 @@ Users+Messages only; `metrics`, `metrics/timeseries`, `health`, `screening/metri
 Details: `docs/manager/landing-page-redesign-opinion.md`, `docs/manager/ops-control-center-redesign-opinion.md`,
 `server/docs/admin-api-contract.md` §1b.
 
+### prompt8 follow-up — cleanup & code splitting (2026-06-11, same day)
+
+- **Dead code removed** (verified unreferenced by routes, imports, and tests before deletion):
+  `styles/theme.js` (legacy hardcoded palette), `layout/Sidebar.jsx`, `pages/Dashboard.jsx`,
+  `pages/ProjectHeader.jsx`, and the pre-tabbed-shell screening pages `SiftWorkbench/SiftDuplicates/
+  SiftConflicts/SiftExport.jsx`. Both frontend READMEs updated to match reality.
+- **Route-level code splitting** (`src/App.jsx` React.lazy + Suspense, Landing stays eager): entry chunk
+  **905 kB → 260 kB** (gzip 250 kB → 82 kB); monolith 354 kB loads only on `/app`, AdminConsole 128 kB only
+  on `/ops`, SiftProject 128 kB only on the project shell. The >500 kB build warning is gone.
+- **`menu` icon** added to `icons.jsx`; Landing's mobile hamburger no longer uses the `☰` glyph.
+- **Ops live feed day-grouping**: Today / Yesterday / date separators between feed items.
+- `frame-ancestors` for the SPA remains a reverse-proxy deployment concern (API helmet already sends it) —
+  documented, no code change.
+- Verified: `npm run build` exit 0 (clean chunk list); Playwright spot-check of `/` (mobile menu), `/login`,
+  `/app`, `/sift-beta`, `/ops` — all lazy chunks render, zero page errors, feed shows "Today" header; unit
+  suites 685 pass / 6 pre-existing quarantined fails.
+
 ---
 
 ## 0···. prompt7 — design system, mod hardening, shared chat (2026-06-10)

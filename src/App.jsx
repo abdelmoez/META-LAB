@@ -1,18 +1,42 @@
+import { lazy, Suspense } from 'react';
 import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './frontend/context/AuthContext.jsx';
 import { ThemeProvider } from './frontend/theme/ThemeContext.jsx';
 import ProtectedRoute from './frontend/components/ProtectedRoute.jsx';
 import PublicRoute    from './frontend/components/PublicRoute.jsx';
 import AdminRoute     from './frontend/components/AdminRoute.jsx';
-import AppWorkspace   from './frontend/pages/AppWorkspace.jsx';
-import LoginPage      from './frontend/pages/Login.jsx';
-import RegisterPage   from './frontend/pages/Register.jsx';
 import Landing        from './frontend/pages/Landing.jsx';
-import Profile        from './frontend/pages/Profile.jsx';
-import AdminConsole   from './frontend/pages/admin/AdminConsole.jsx';
-import SiftDashboard  from './frontend/screening/pages/SiftDashboard.jsx';
-import SiftProject    from './frontend/screening/pages/SiftProject.jsx';
-import SiftImport     from './frontend/screening/pages/SiftImport.jsx';
+
+// ── Route-level code splitting ──────────────────────────────────────────
+// Landing stays eager (first paint of the public page). Everything else is
+// split per route so visitors never download the workspace monolith, the
+// ops console, or the screening module until they navigate there.
+const AppWorkspace  = lazy(() => import('./frontend/pages/AppWorkspace.jsx'));
+const LoginPage     = lazy(() => import('./frontend/pages/Login.jsx'));
+const RegisterPage  = lazy(() => import('./frontend/pages/Register.jsx'));
+const Profile       = lazy(() => import('./frontend/pages/Profile.jsx'));
+const AdminConsole  = lazy(() => import('./frontend/pages/admin/AdminConsole.jsx'));
+const SiftDashboard = lazy(() => import('./frontend/screening/pages/SiftDashboard.jsx'));
+const SiftProject   = lazy(() => import('./frontend/screening/pages/SiftProject.jsx'));
+const SiftImport    = lazy(() => import('./frontend/screening/pages/SiftImport.jsx'));
+
+/* Minimal theme-token loading state shown while a route chunk downloads. */
+function RouteFallback() {
+  return (
+    <div style={{
+      minHeight: '100vh', display: 'flex', alignItems: 'center',
+      justifyContent: 'center', background: 'var(--t-bg)',
+    }} aria-busy="true" aria-label="Loading">
+      <div style={{
+        width: 22, height: 22, borderRadius: '50%',
+        border: '2px solid var(--t-brd)', borderTopColor: 'var(--t-acc)',
+        animation: 'appChunkSpin 0.7s linear infinite',
+      }} />
+      <style>{`@keyframes appChunkSpin { to { transform: rotate(360deg); } }
+        @media (prefers-reduced-motion: reduce) { [aria-busy="true"] > div { animation: none; } }`}</style>
+    </div>
+  );
+}
 
 // ── Route adapters ──────────────────────────────────────────────────────
 // Login and Register were originally prop-driven (onSuccess, onRegister, onBack).
@@ -50,6 +74,7 @@ export default function App() {
   return (
     <ThemeProvider>
     <AuthProvider>
+      <Suspense fallback={<RouteFallback />}>
       <Routes>
         {/* Public landing page */}
         <Route path="/"         element={<Landing />} />
@@ -75,6 +100,7 @@ export default function App() {
         {/* Fallback */}
         <Route path="*"         element={<Navigate to="/" replace />} />
       </Routes>
+      </Suspense>
     </AuthProvider>
     </ThemeProvider>
   );

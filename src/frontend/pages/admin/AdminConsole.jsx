@@ -912,8 +912,21 @@ function OverviewSection({ onNavigate, isAdmin = true }) {
             <ChartEmpty label="No recent activity" height={180} />
           ) : (
             <div>
-              {feed.map((it, i) => (
-                <div key={it.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 16px', borderBottom: i < feed.length - 1 ? `1px solid ${C.brd}` : 'none', minWidth: 0, background: it.kind === 'security' ? alpha(secTint(it.type), 0.05) : 'transparent' }}>
+              {feed.map((it, i) => {
+                // Day-group separator whenever the (local) calendar day changes.
+                const day = new Date(it.at).toDateString();
+                const prevDay = i > 0 ? new Date(feed[i - 1].at).toDateString() : null;
+                const today = new Date().toDateString();
+                const yesterday = new Date(Date.now() - 86_400_000).toDateString();
+                const dayLabel = day === today ? 'Today' : day === yesterday ? 'Yesterday' : fmtDate(it.at);
+                return (
+                <div key={it.id}>
+                  {day !== prevDay && (
+                    <div style={{ padding: '7px 16px 3px', fontSize: 9, fontWeight: 700, fontFamily: MONO, color: C.muted, letterSpacing: '0.14em', textTransform: 'uppercase', borderBottom: `1px solid ${C.brd}`, background: alpha(C.brd, 0.18) }}>
+                      {dayLabel}
+                    </div>
+                  )}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 16px', borderBottom: i < feed.length - 1 ? `1px solid ${C.brd}` : 'none', minWidth: 0, background: it.kind === 'security' ? alpha(secTint(it.type), 0.05) : 'transparent' }}>
                   <span style={{ color: it.kind === 'security' ? secTint(it.type) : C.acc, display: 'inline-flex', flexShrink: 0 }}>
                     <Icon name={it.kind === 'security' ? 'shield' : 'clipboard'} size={13} />
                   </span>
@@ -924,8 +937,10 @@ function OverviewSection({ onNavigate, isAdmin = true }) {
                     <div style={{ fontSize: 10, color: C.muted, fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={it.actor}>{it.actor}</div>
                   </div>
                   <span style={{ fontSize: 10, color: C.muted, fontFamily: MONO, flexShrink: 0 }}>{fmtAgo(it.at)}</span>
+                  </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </SectionCard>

@@ -7,11 +7,16 @@ Systematic review title/abstract screening workspace, integrated into META·LAB.
 | Route | Component | Description |
 |---|---|---|
 | `/sift-beta` | `SiftDashboard` | Project list |
-| `/sift-beta/projects/:pid` | `SiftWorkbench` | Screening workbench |
+| `/sift-beta/projects/:pid` | `SiftProject` | Tabbed project shell (Overview · Screening · Second Review · Duplicates · Conflicts · Project Control · Export) |
 | `/sift-beta/projects/:pid/import` | `SiftImport` | Import RIS/BibTeX/NBIB |
-| `/sift-beta/projects/:pid/duplicates` | `SiftDuplicates` | Duplicate detection & resolution |
-| `/sift-beta/projects/:pid/conflicts` | `SiftConflicts` | Inter-reviewer conflict resolution |
-| `/sift-beta/projects/:pid/export` | `SiftExport` | Export screened data |
+
+The per-feature views live in `tabs/` (`OverviewTab`, `ScreeningTab`,
+`SecondReviewTab`, `DuplicatesTab`, `ConflictsTab`, `MembersTab`,
+`ProjectControlTab`, `ExportTab`) and render inside the `SiftProject` shell.
+
+> Removed 2026-06-11 (dead code from the pre-tabbed layout, never routed since):
+> `pages/SiftWorkbench.jsx`, `pages/SiftDuplicates.jsx`, `pages/SiftConflicts.jsx`,
+> `pages/SiftExport.jsx`.
 
 ## API
 
@@ -20,10 +25,11 @@ Session cookie is forwarded automatically (`credentials: 'include'`).
 
 ## Design
 
-Follows the main META·LAB palette (`C` tokens) plus SIFT-specific decision colors.
+Follows the central theme tokens (`C` from `src/frontend/theme/tokens.js`,
+re-exported through `ui/theme.js`) plus SIFT-specific decision colors.
 IBM Plex Sans + IBM Plex Mono fonts. Inline styles only — no Tailwind.
 
-## Keyboard shortcuts (Workbench)
+## Keyboard shortcuts (Screening tab)
 
 - `I` — Include record
 - `E` — Exclude record
