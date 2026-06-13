@@ -116,9 +116,39 @@ describe('calcES OR', () => {
     expect(res.se).toBeCloseTo(expected, 4);
   });
 
-  it('returns null when any cell is 0 or negative', () => {
-    expect(calcES('OR', { a: 0, b: 60, c: 20, d: 80 })).toBeNull();
+  it('applies a Haldane–Anscombe correction when a single event cell is 0 (no longer null)', () => {
+    const res = calcES('OR', { a: 0, b: 60, c: 20, d: 80 });
+    expect(res).not.toBeNull();
+    expect(res.continuityCorrectionApplied).toBe(true);
+    expect(res.continuityCorrectionValue).toBe(0.5);
+    expect(res.correctionMethod).toBe('Haldane-Anscombe');
+    // +0.5 to all four cells: ln((0.5×80.5)/(60.5×20.5))
+    expect(res.es).toBeCloseTo(Math.log((0.5 * 80.5) / (60.5 * 20.5)), 3);
+  });
+
+  it('article-like zero-event OR (a=0,b=64,c=2,d=62) is computed with correction', () => {
+    const res = calcES('OR', { a: 0, b: 64, c: 2, d: 62 });
+    expect(res).not.toBeNull();
+    expect(res.continuityCorrectionApplied).toBe(true);
+    expect(Number.isFinite(res.es)).toBe(true);
+    expect(res.se).toBeGreaterThan(0);
+  });
+
+  it('returns null for negative cells', () => {
     expect(calcES('OR', { a: 40, b: -1, c: 20, d: 80 })).toBeNull();
+  });
+
+  it('returns null for a double-zero-event table (not estimable as OR)', () => {
+    expect(calcES('OR', { a: 0, b: 64, c: 0, d: 62 })).toBeNull();
+  });
+
+  it('returns null for non-integer counts', () => {
+    expect(calcES('OR', { a: 2.5, b: 60, c: 20, d: 80 })).toBeNull();
+  });
+
+  it('returns null for missing cells', () => {
+    expect(calcES('OR', { a: '', b: 60, c: 20, d: 80 })).toBeNull();
+    expect(calcES('OR', { b: 60, c: 20, d: 80 })).toBeNull();
   });
 
   it('returns null for non-numeric input', () => {
@@ -160,8 +190,57 @@ describe('calcES RR', () => {
     expect(res.es).toBeCloseTo(0, 4);
   });
 
-  it('returns null when any cell <= 0', () => {
-    expect(calcES('RR', { a: 0, b: 70, c: 10, d: 90 })).toBeNull();
+  it('applies a continuity correction when a single event cell is 0', () => {
+    const res = calcES('RR', { a: 0, b: 70, c: 10, d: 90 });
+    expect(res).not.toBeNull();
+    expect(res.continuityCorrectionApplied).toBe(true);
+    expect(res.correctionMethod).toBe('Haldane-Anscombe');
+  });
+
+  it('article-like zero-event RR (a=0,b=64,c=2,d=62) is computed with correction', () => {
+    const res = calcES('RR', { a: 0, b: 64, c: 2, d: 62 });
+    expect(res).not.toBeNull();
+    expect(res.continuityCorrectionApplied).toBe(true);
+    // RR point ≈ 0.20 → ln ≈ -1.609 (with +0.5 to all cells)
+    expect(res.es).toBeCloseTo(Math.log((0.5 / 65) / (2.5 / 65)), 2);
+    expect(res.se).toBeGreaterThan(0);
+  });
+
+  it('returns null for a double-zero-event table (not estimable as RR)', () => {
+    expect(calcES('RR', { a: 0, b: 64, c: 0, d: 62 })).toBeNull();
+  });
+
+  it('returns null for negative / missing / non-integer cells', () => {
+    expect(calcES('RR', { a: -1, b: 70, c: 10, d: 90 })).toBeNull();
+    expect(calcES('RR', { a: '', b: 70, c: 10, d: 90 })).toBeNull();
+    expect(calcES('RR', { a: 1.5, b: 70, c: 10, d: 90 })).toBeNull();
+  });
+});
+
+// ── RD (Risk Difference — absolute scale, zeros natural) ──────────────────────
+describe('calcES RD', () => {
+  it('computes a valid risk difference', () => {
+    const res = calcES('RD', { a: 30, b: 70, c: 10, d: 90 });
+    expectValidResult(res);
+    expect(res.es).toBeCloseTo(0.2, 4); // 30/100 − 10/100
+  });
+
+  it('handles a zero event cell with NO continuity correction', () => {
+    const res = calcES('RD', { a: 0, b: 64, c: 2, d: 62 });
+    expect(res).not.toBeNull();
+    expect(res.continuityCorrectionApplied).toBeUndefined();
+    expect(res.es).toBeCloseTo(-0.0313, 3); // 0/64 − 2/64
+    expect(res.se).toBeGreaterThan(0);
+  });
+
+  it('returns null for a degenerate double-zero table (zero Wald SE)', () => {
+    expect(calcES('RD', { a: 0, b: 64, c: 0, d: 62 })).toBeNull();
+  });
+
+  it('returns null for negative / missing / non-integer counts', () => {
+    expect(calcES('RD', { a: -1, b: 64, c: 2, d: 62 })).toBeNull();
+    expect(calcES('RD', { a: '', b: 64, c: 2, d: 62 })).toBeNull();
+    expect(calcES('RD', { a: 1.5, b: 64, c: 2, d: 62 })).toBeNull();
   });
 });
 

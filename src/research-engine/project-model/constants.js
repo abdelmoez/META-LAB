@@ -124,6 +124,7 @@ export const ES_TYPES = {
   MD:   { label: "Mean Difference (raw units)",     family: "continuous-raw", log: false, nullVal: 0,    scale: "MD"    },
   OR:   { label: "Odds Ratio (log scale)",          family: "ratio",          log: true,  nullVal: 0,    scale: "lnOR"  },
   RR:   { label: "Risk Ratio (log scale)",          family: "ratio",          log: true,  nullVal: 0,    scale: "lnRR"  },
+  RD:   { label: "Risk Difference (raw)",           family: "ratio",          log: false, nullVal: 0,    scale: "RD"    },
   HR:   { label: "Hazard Ratio (log scale)",        family: "ratio",          log: true,  nullVal: 0,    scale: "lnHR"  },
   COR:  { label: "Correlation (Fisher z)",          family: "correlation",    log: false, nullVal: 0,    scale: "z"     },
   PROP: { label: "Single-arm proportion (logit)",   family: "proportion",     log: false, nullVal: null, scale: "logit" },

@@ -11,9 +11,10 @@
  * calcES(type, params)
  * Unified effect-size calculator.
  *
- * @param {string} type   One of: "SMD" | "MD" | "OR" | "RR" | "HR" | "COR" | "PROP" | "DIAG"
+ * @param {string} type   One of: "SMD" | "MD" | "OR" | "RR" | "RD" | "HR" | "COR" | "PROP" | "DIAG"
  * @param {object} params Raw data parameters (see per-type breakdown below)
- * @returns {object|null} { es, se, lo, hi, [display] } or null
+ * @returns {object|null} { es, se, lo, hi, [display], [continuityCorrectionApplied,
+ *                          continuityCorrectionValue, correctionMethod, note] } or null
  *
  * Supported types and required params:
  *
@@ -23,11 +24,18 @@
  *   MD   — Raw mean difference
  *          { n1, n2, sd1, sd2, m1, m2 }
  *
- *   OR   — Odds Ratio (returned on log scale)
- *          { a, b, c, d }  2×2 table: a=event/exp, b=no-event/exp, c=event/ctrl, d=no-event/ctrl
+ *   OR   — Odds Ratio (returned on log scale). 2×2 table { a, b, c, d }:
+ *          a=event/exp, b=no-event/exp, c=event/ctrl, d=no-event/ctrl.
+ *          Zero cells are valid: a Haldane–Anscombe correction (+0.5 to all four
+ *          cells) is applied when any cell is 0, with metadata flagging it.
+ *          Double-zero-event tables (a=0 AND c=0) are not estimable → null (use RD).
  *
- *   RR   — Risk Ratio (returned on log scale)
- *          { a, b, c, d }
+ *   RR   — Risk Ratio (returned on log scale); same { a, b, c, d } and zero-cell
+ *          handling as OR.
+ *
+ *   RD   — Risk Difference (absolute scale, NOT logged); { a, b, c, d }.
+ *          Zero cells are natural and need no correction; returns null only if a
+ *          group total is 0 or the Wald SE is degenerate (0 events in both arms).
  *
  *   HR   — Hazard Ratio (returned on log scale; CI back-transformed from reported CI)
  *          { hr, lo, hi }  — reported HR and its 95% CI
@@ -71,21 +79,64 @@ export function calcES(type, p) {
       };
     }
 
-    if (type === "OR" || type === "RR") {
+    if (type === "OR" || type === "RR" || type === "RD") {
+      // 2×2 counts: a = event/exp, b = no-event/exp, c = event/ctrl, d = no-event/ctrl.
+      // A real zero count is valid clinical data; only missing/negative/non-integer
+      // values are invalid. Distinguish missing ("" / null / undefined) from a real 0
+      // BEFORE coercion (since +"" === 0 would otherwise look like a zero count).
+      const raw = [p.a, p.b, p.c, p.d];
+      if (raw.some(v => v === "" || v === null || v === undefined)) return null;   // missing
       const a = +p.a, b = +p.b, c = +p.c, d2 = +p.d;
-      if ([a, b, c, d2].some(v => isNaN(v) || v <= 0)) return null;
+      const cells = [a, b, c, d2];
+      // counts must be non-negative finite integers (zero allowed)
+      if (cells.some(v => isNaN(v) || !isFinite(v) || v < 0 || !Number.isInteger(v))) return null;
+
+      if (type === "RD") {
+        // Risk difference (absolute scale): zeros are natural, no continuity correction.
+        const n1 = a + b, n2 = c + d2;
+        if (n1 < 1 || n2 < 1) return null;
+        const r1 = a / n1, r2 = c / n2;
+        const rd = r1 - r2;
+        const se = Math.sqrt(r1 * (1 - r1) / n1 + r2 * (1 - r2) / n2);
+        if (!(se > 0)) return null;   // degenerate (e.g. 0 events in BOTH arms) → not poolable
+        return {
+          es: +rd.toFixed(4), se: +se.toFixed(4),
+          lo: +(rd - 1.96 * se).toFixed(4),
+          hi: +(rd + 1.96 * se).toFixed(4),
+          display: `RD=${rd.toFixed(4)} [${(rd - 1.96*se).toFixed(4)}, ${(rd + 1.96*se).toFixed(4)}]`,
+        };
+      }
+
+      // OR / RR are computed on the log scale. A double-zero-event study
+      // (a = 0 AND c = 0) carries no information about a relative effect, so it is
+      // not estimable for OR/RR — Risk Difference (RD) should be used instead.
+      if (a === 0 && c === 0) return null;
+
+      // Haldane–Anscombe continuity correction: add 0.5 to every cell when any
+      // cell is zero so that log RR / log OR and their SE remain finite.
+      const corrected = cells.some(v => v === 0);
+      let A = a, B = b, C = c, D = d2;
+      if (corrected) { A += 0.5; B += 0.5; C += 0.5; D += 0.5; }
+
       const lnE = type === "OR"
-        ? Math.log((a * d2) / (b * c))
-        : Math.log((a / (a + b)) / (c / (c + d2)));
+        ? Math.log((A * D) / (B * C))
+        : Math.log((A / (A + B)) / (C / (C + D)));
       const se = type === "OR"
-        ? Math.sqrt(1/a + 1/b + 1/c + 1/d2)
-        : Math.sqrt(1/a - 1/(a + b) + 1/c - 1/(c + d2));
-      return {
+        ? Math.sqrt(1/A + 1/B + 1/C + 1/D)
+        : Math.sqrt(1/A - 1/(A + B) + 1/C - 1/(C + D));
+      const out = {
         es: +lnE.toFixed(4), se: +se.toFixed(4),
         lo: +(lnE - 1.96 * se).toFixed(4),
         hi: +(lnE + 1.96 * se).toFixed(4),
         display: `${type}=${Math.exp(lnE).toFixed(3)} [${Math.exp(lnE - 1.96*se).toFixed(3)}, ${Math.exp(lnE + 1.96*se).toFixed(3)}]`,
       };
+      if (corrected) {
+        out.continuityCorrectionApplied = true;
+        out.continuityCorrectionValue  = 0.5;
+        out.correctionMethod           = "Haldane-Anscombe";
+        out.note = `Zero cell detected — 0.5 added to all four cells (Haldane–Anscombe) for log ${type}.`;
+      }
+      return out;
     }
 
     if (type === "HR") {

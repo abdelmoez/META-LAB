@@ -121,28 +121,34 @@ p = 2 × (1 - Φ(|z|))
 
 ## 2. Publication-Bias Tests (`statistics/meta-analysis.js`)
 
-### 2.1 Egger's Weighted Regression Test
+### 2.1 Egger's Regression Test (unweighted OLS)
 
-Tests for funnel-plot asymmetry, which is a proxy for small-study effects
-and publication bias.
+Tests for funnel-plot asymmetry, a proxy for small-study effects and
+publication bias. This is the canonical Egger (1997) test and matches
+`metafor::regtest(model = "lm")`.
 
-Regresses standardised effect (y = ES / SE) on precision (x = 1/SE) using
-inverse-variance weights (w = 1/SE²):
+Regresses the standard normal deviate (y = ES / SE) on precision (x = 1/SE)
+by **ordinary, UNWEIGHTED least squares**. The intercept b₀ is Egger's bias
+coefficient. The regression is intentionally unweighted: y and x already
+embed the precision, so applying inverse-variance weights (w = 1/SE²) would
+double-count it and inflate the intercept, t and p (it did not match Egger
+1997 / metafor — fixed).
 ```
-y = intercept + slope × x
+y = b₀ + b₁·x        (all weights = 1)
 
-Weighted OLS:
-  slope     = [Σw(x-x̄)(y-ȳ)] / [Σw(x-x̄)²]  (weighted covariance / variance)
-  intercept = ȳ - slope × x̄
+Sx = Σx, Sy = Σy, Sxx = Σx², Sxy = Σxy
+slope     b₁ = (k·Sxy − Sx·Sy) / (k·Sxx − Sx²)
+intercept b₀ = (Sy − b₁·Sx) / k          ← Egger's bias coefficient
 
-SE(intercept) = √{ s² × [Σwx² / Σw] / [Σwx² - (Σwx)²/Σw] }
-  where s² = Σw(y - ŷ)² / (k-2)
-
-t = intercept / SE(intercept)  ~  t(k-2) under H₀: intercept = 0
+s²        = Σ(y − ŷ)² / (k − 2)
+SE(b₀)    = √( s² · Sxx / (k·Sxx − Sx²) )
+t         = b₀ / SE(b₀)  ~  t(k − 2)
+p         = 2 · (1 − T_cdf(|t|, k − 2))
 ```
 
-**Interpretation:** A significant intercept (p < 0.1) suggests funnel
-asymmetry. Requires k ≥ 3.
+**Interpretation:** A significant intercept (p < 0.10) suggests funnel
+asymmetry. Requires k ≥ 3. A degenerate SE (≤ 0) makes the test not
+computable (returns null).
 
 ---
 
@@ -322,8 +328,9 @@ All calculators use the standard normal z = 1.96 for 95% CI construction.
 |---|---|
 | SMD | Cohen's d = (m1-m2)/SD_pooled; SE = √((n1+n2)/(n1·n2) + d²/(2(n1+n2))) (large-sample variance of d) |
 | MD  | m1-m2; SE = √(SD1²/n1 + SD2²/n2) |
-| OR  | ln(ad/bc); SE = √(1/a+1/b+1/c+1/d) |
-| RR  | ln[(a/(a+b)) / (c/(c+d))]; SE = √(1/a - 1/(a+b) + 1/c - 1/(c+d)) |
+| OR  | ln(ad/bc); SE = √(1/a+1/b+1/c+1/d); Haldane–Anscombe +0.5 if any cell = 0 |
+| RR  | ln[(a/(a+b)) / (c/(c+d))]; SE = √(1/a - 1/(a+b) + 1/c - 1/(c+d)); Haldane–Anscombe +0.5 if any cell = 0 |
+| RD  | a/(a+b) − c/(c+d); SE = √(p₁(1-p₁)/n₁ + p₂(1-p₂)/n₂) (Wald; zeros natural, no correction) |
 | HR  | ln(HR); SE = (ln(hi)-ln(lo))/(2×1.96) |
 | COR | Fisher z = 0.5×ln((1+r)/(1-r)); SE = 1/√(n-3) |
 | PROP | logit(p) with 0.5 correction at extremes; SE = 1/√(n×p×(1-p)) |
@@ -336,6 +343,16 @@ overestimates the population effect in small samples. Applying the J
 correction is a recommended next step — it would change every SMD result
 (and the pinned unit-test expectations), so it must be introduced
 deliberately, not silently.
+
+**Note on zero cells (dichotomous measures).** A zero event count is valid
+clinical data, not an error. For **OR/RR** (computed on the log scale) a
+single zero cell makes the log/SE undefined, so a **Haldane–Anscombe
+continuity correction** adds 0.5 to all four cells when any cell is 0; the
+result is flagged (`continuityCorrectionApplied`, `correctionMethod =
+"Haldane-Anscombe"`). A **double-zero-event** table (a = 0 and c = 0) carries
+no information about a relative effect and is returned as **not estimable** —
+use **RD** (Risk Difference), whose absolute scale admits zero cells without
+correction. Negative, non-integer and missing counts remain hard errors.
 
 ---
 

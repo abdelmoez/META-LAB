@@ -38,6 +38,7 @@ const WHITELIST = [
   'es-smd-cohens-d',
   'es-log-odds-ratio',
   'es-log-risk-ratio',
+  'es-risk-difference',
   'es-log-hazard-ratio',
   'es-fisher-z',
   'es-logit-proportion',

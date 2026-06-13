@@ -164,32 +164,41 @@ function runMeta(studies, method="random") {
     hksj, predInt};
 }
 
-/* Egger's regression test for publication bias (small-study effects) */
+/* Egger's regression test for funnel-plot asymmetry / small-study effects.
+   Canonical Egger (1997): UNWEIGHTED ordinary least squares of the standard
+   normal deviate (y = ES/SE) on precision (x = 1/SE). The intercept is Egger's
+   bias coefficient. Matches metafor::regtest(..., model="lm").
+   (Previously used inverse-variance weights w = 1/SE², which double-count
+   precision and did NOT match Egger 1997 / metafor — now fixed to OLS.)
+   Ref: Egger M, Davey Smith G, Schneider M, Minder C. BMJ. 1997;315:629-634. */
 function eggersTest(studies) {
   var valid = studies.filter(function(s){ return s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi); });
   if (valid.length < 3) return null;
-  var pts = valid.map(function(s){
-    var es=+s.es, se=(+s.hi-+s.lo)/(2*Z975);
-    return { y: es/se, x: 1/se, w: 1/(se*se) };
-  });
-  // Weighted linear regression of y on x: y = intercept + slope*x
-  var n=pts.length;
-  var sw=0,sx=0,sy=0,sxx=0,sxy=0;
-  pts.forEach(function(p){ sw+=p.w; sx+=p.w*p.x; sy+=p.w*p.y; sxx+=p.w*p.x*p.x; sxy+=p.w*p.x*p.y; });
-  var mx=sx/sw, my=sy/sw;
-  var slope=(sxy-sw*mx*my)/(sxx-sw*mx*mx);
-  var intercept=my-slope*mx;
-  // SE of intercept
-  var resid=0;
-  pts.forEach(function(p){ var fit=intercept+slope*p.x; resid+=p.w*(p.y-fit)*(p.y-fit); });
-  var dof=n-2;
+  var pts=[];
+  for (var i=0;i<valid.length;i++){
+    var s=valid[i], es=+s.es, se=(+s.hi-+s.lo)/(2*Z975);
+    if (!(se>0)) return null;            // degenerate SE — cannot regress
+    pts.push({ y: es/se, x: 1/se });
+  }
+  // Unweighted OLS of y on x: y = intercept + slope*x  (all weights = 1)
+  var k=pts.length;
+  var Sx=0,Sy=0,Sxx=0,Sxy=0;
+  pts.forEach(function(p){ Sx+=p.x; Sy+=p.y; Sxx+=p.x*p.x; Sxy+=p.x*p.y; });
+  var denom=k*Sxx-Sx*Sx;
+  if (denom===0) return null;
+  var slope=(k*Sxy-Sx*Sy)/denom;
+  var intercept=(Sy-slope*Sx)/k;          // Egger's bias coefficient
+  var dof=k-2;
   if (dof<1) return null;
-  var s2=resid/dof;
-  var seInt=Math.sqrt(s2*(sxx/sw)/(sxx-sw*mx*mx));
+  // Residual variance and SE of intercept (standard OLS results)
+  var sse=0;
+  pts.forEach(function(p){ var e=p.y-(intercept+slope*p.x); sse+=e*e; });
+  var s2=sse/dof;
+  var seInt=Math.sqrt(s2*Sxx/denom);
   var t=intercept/seInt;
   // Two-tailed p from Student-t with df = k-2 (matches metafor's regtest)
   var p = 2*(1-tCDF(Math.abs(t), dof));
-  return { intercept:+intercept.toFixed(4), seInt:+seInt.toFixed(4), t:+t.toFixed(3), pval:+p.toFixed(4), dof:dof, k:n };
+  return { intercept:+intercept.toFixed(4), seInt:+seInt.toFixed(4), t:+t.toFixed(3), pval:+p.toFixed(4), dof:dof, k:k };
 }
 
 /* Leave-one-out sensitivity analysis */
@@ -409,13 +418,37 @@ function calcES(type,p) {
       const d=(m1-m2)/poolSD,se=Math.sqrt((n1+n2)/(n1*n2)+d**2/(2*(n1+n2)));
       return{es:+d.toFixed(4),se:+se.toFixed(4),lo:+(d-1.96*se).toFixed(4),hi:+(d+1.96*se).toFixed(4)};
     }
-    if(type==="OR"||type==="RR"){
+    if(type==="OR"||type==="RR"||type==="RD"){
+      // 2×2 counts a/b/c/d. A real zero count is valid; only missing/negative/
+      // non-integer values are invalid. Detect missing before coercion (+""===0).
+      const raw=[p.a,p.b,p.c,p.d];
+      if(raw.some(v=>v===""||v===null||v===undefined)) return null;   // missing
       const a=+p.a,b=+p.b,c=+p.c,d2=+p.d;
-      if([a,b,c,d2].some(v=>isNaN(v)||v<=0)) return null;
-      const lnE=type==="OR"?Math.log((a*d2)/(b*c)):Math.log((a/(a+b))/(c/(c+d2)));
-      const se=type==="OR"?Math.sqrt(1/a+1/b+1/c+1/d2):Math.sqrt(1/a-1/(a+b)+1/c-1/(c+d2));
-      return{es:+lnE.toFixed(4),se:+se.toFixed(4),lo:+(lnE-1.96*se).toFixed(4),hi:+(lnE+1.96*se).toFixed(4),
+      const cells=[a,b,c,d2];
+      if(cells.some(v=>isNaN(v)||!isFinite(v)||v<0||!Number.isInteger(v))) return null;
+      if(type==="RD"){
+        // Risk difference (absolute scale): zeros natural, no continuity correction.
+        const n1=a+b,n2=c+d2;
+        if(n1<1||n2<1) return null;
+        const r1=a/n1,r2=c/n2,rd=r1-r2;
+        const se=Math.sqrt(r1*(1-r1)/n1+r2*(1-r2)/n2);
+        if(!(se>0)) return null;   // degenerate (0 events both arms) → not poolable
+        return{es:+rd.toFixed(4),se:+se.toFixed(4),lo:+(rd-1.96*se).toFixed(4),hi:+(rd+1.96*se).toFixed(4),
+          display:`RD=${rd.toFixed(4)} [${(rd-1.96*se).toFixed(4)}, ${(rd+1.96*se).toFixed(4)}]`};
+      }
+      // OR/RR: double-zero-event table (a=0 AND c=0) is not estimable → use RD.
+      if(a===0&&c===0) return null;
+      // Haldane–Anscombe continuity correction: +0.5 to all cells when any cell is 0.
+      const corrected=cells.some(v=>v===0);
+      let A=a,B=b,Cc=c,D=d2;
+      if(corrected){ A+=0.5;B+=0.5;Cc+=0.5;D+=0.5; }
+      const lnE=type==="OR"?Math.log((A*D)/(B*Cc)):Math.log((A/(A+B))/(Cc/(Cc+D)));
+      const se=type==="OR"?Math.sqrt(1/A+1/B+1/Cc+1/D):Math.sqrt(1/A-1/(A+B)+1/Cc-1/(Cc+D));
+      const out={es:+lnE.toFixed(4),se:+se.toFixed(4),lo:+(lnE-1.96*se).toFixed(4),hi:+(lnE+1.96*se).toFixed(4),
         display:`${type}=${Math.exp(lnE).toFixed(3)} [${Math.exp(lnE-1.96*se).toFixed(3)}, ${Math.exp(lnE+1.96*se).toFixed(3)}]`};
+      if(corrected){ out.continuityCorrectionApplied=true; out.continuityCorrectionValue=0.5; out.correctionMethod="Haldane-Anscombe";
+        out.note=`Zero cell detected — 0.5 added to all four cells (Haldane–Anscombe) for log ${type}.`; }
+      return out;
     }
     if(type==="HR"){
       const hr=+p.hr,lo=+p.lo,hi=+p.hi;
@@ -960,6 +993,7 @@ const ES_TYPES={
   MD:{label:"Mean Difference (raw units)",family:"continuous-raw",log:false,nullVal:0,scale:"MD"},
   OR:{label:"Odds Ratio (log scale)",family:"ratio",log:true,nullVal:0,scale:"lnOR"},
   RR:{label:"Risk Ratio (log scale)",family:"ratio",log:true,nullVal:0,scale:"lnRR"},
+  RD:{label:"Risk Difference (raw)",family:"ratio",log:false,nullVal:0,scale:"RD"},
   HR:{label:"Hazard Ratio (log scale)",family:"ratio",log:true,nullVal:0,scale:"lnHR"},
   COR:{label:"Correlation (Fisher z)",family:"correlation",log:false,nullVal:0,scale:"z"},
   PROP:{label:"Single-arm proportion (logit)",family:"proportion",log:false,nullVal:null,scale:"logit"},
@@ -2769,6 +2803,7 @@ function ESCalcInline({s,ch}){
   const[type,setType]=useState(s.esType||"SMD");
   const[res,setRes]=useState(null);
   const[err,setErr]=useState("");
+  const[note,setNote]=useState("");
   // Read raw values straight from the study object so they persist & are auditable
   const sp=(k,v)=>ch(k,v);
   const fi=(k,ph,hint)=>(<div><div style={{fontSize:9,color:C.dim,marginBottom:2}} title={hint||""}>{ph}</div>
@@ -2776,7 +2811,7 @@ function ESCalcInline({s,ch}){
       style={{...inp,fontSize:11,fontFamily:"'IBM Plex Mono',monospace",padding:"4px 6px"}}/></div>);
 
   const calc=()=>{
-    setErr("");
+    setErr("");setNote("");
     // Map study fields to the names calcES expects
     const p={
       m1:s.meanExp,sd1:s.sdExp,n1:s.nExp,m2:s.meanCtrl,sd2:s.sdCtrl,n2:s.nCtrl,
@@ -2788,25 +2823,42 @@ function ESCalcInline({s,ch}){
     };
     // For HR the calculator reads hr/lo/hi from dedicated temp fields
     if(type==="HR"){ p.hr=s._hrVal; p.lo=s._hrLo; p.hi=s._hrHi; }
+    // Honest, specific validation for the dichotomous 2×2 measures. A zero count
+    // is valid clinical data and must never be rejected merely for being zero.
+    if(type==="OR"||type==="RR"||type==="RD"){
+      const raw=[p.a,p.b,p.c,p.d];
+      if(raw.some(v=>v===""||v==null)){ setRes(null); setErr("Enter all four 2×2 cells (a, b, c, d)."); return; }
+      const nums=raw.map(Number);
+      if(nums.some(v=>isNaN(v)||!isFinite(v))){ setRes(null); setErr("Counts must be numbers."); return; }
+      if(nums.some(v=>v<0||!Number.isInteger(v))){ setRes(null); setErr("Counts must be non-negative integers."); return; }
+      if((type==="OR"||type==="RR")&&nums[0]===0&&nums[2]===0){
+        setRes(null);
+        setErr(`Both event cells are zero — a double-zero study is not estimable as ${type} (no information about a relative effect). Use Risk Difference (RD), which can include zero-event studies.`);
+        return;
+      }
+    }
     const r=calcES(type,p);
     setRes(r);
     if(r){
       ch("es",String(r.es));ch("lo",String(r.lo));ch("hi",String(r.hi));
       ch("esType",type);
       ch("source","calculated");
+      if(r.continuityCorrectionApplied)
+        setNote(`Zero event cell detected — a 0.5 continuity correction (Haldane–Anscombe) was applied for log ${type}.`);
     } else {
-      setErr("Check inputs — values may be missing, zero, or out of range.");
+      setErr("Check inputs — values may be missing or out of range for this measure.");
     }
   };
 
   return(<div style={{background:C.bg,border:`1px solid ${C.brd}`,borderRadius:6,padding:12,marginTop:10}}>
     <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6,flexWrap:"wrap"}}>
       <span style={{fontSize:10,fontWeight:700,color:C.muted,letterSpacing:0.8}}>CALCULATE EFFECT SIZE FROM RAW DATA</span>
-      <select value={type} onChange={e=>{setType(e.target.value);setRes(null);setErr("");}} style={{...inp,width:"auto",fontSize:11}}>
+      <select value={type} onChange={e=>{setType(e.target.value);setRes(null);setErr("");setNote("");}} style={{...inp,width:"auto",fontSize:11}}>
         <option value="SMD">Continuous → SMD (Cohen's d)</option>
         <option value="MD">Continuous → Mean Difference</option>
         <option value="OR">Dichotomous → Odds Ratio</option>
         <option value="RR">Dichotomous → Risk Ratio</option>
+        <option value="RD">Dichotomous → Risk Difference</option>
         <option value="HR">Time-to-event → Hazard Ratio</option>
         <option value="COR">Correlation → Fisher's z</option>
         <option value="PROP">Single-arm → Proportion</option>
@@ -2816,7 +2868,7 @@ function ESCalcInline({s,ch}){
     <div style={{fontSize:10,color:C.dim,marginBottom:8,lineHeight:1.5}}>
       {type==="SMD"&&"Standardized mean difference — pool when studies use different scales for the same construct."}
       {type==="MD"&&"Raw mean difference — only when every study reports the same units."}
-      {(type==="OR"||type==="RR")&&"2×2 counts. a = events in intervention, b = non-events intervention, c = events control, d = non-events control."}
+      {(type==="OR"||type==="RR"||type==="RD")&&"2×2 counts. a = events in intervention, b = non-events intervention, c = events control, d = non-events control. Zero cells are valid clinical data — OR/RR apply a Haldane–Anscombe 0.5 correction when any cell is 0; RD needs none."}
       {type==="HR"&&"Enter the reported hazard ratio and its 95% CI — they are log-transformed for pooling."}
       {type==="COR"&&"Pearson r and sample size → Fisher's z transform."}
       {type==="PROP"&&"Single group: number of events and group total → logit proportion."}
@@ -2825,7 +2877,7 @@ function ESCalcInline({s,ch}){
     {(type==="SMD"||type==="MD")&&<div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:8,marginBottom:8}}>
       {fi("meanExp","Mean Exp")}{fi("sdExp","SD Exp")}{fi("nExp","n Exp")}{fi("meanCtrl","Mean Ctrl")}{fi("sdCtrl","SD Ctrl")}{fi("nCtrl","n Ctrl")}
     </div>}
-    {(type==="OR"||type==="RR")&&<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:8}}>{fi("a","a (event/Exp)")}{fi("b","b (no event/Exp)")}{fi("c","c (event/Ctrl)")}{fi("d","d (no event/Ctrl)")}</div>}
+    {(type==="OR"||type==="RR"||type==="RD")&&<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:8}}>{fi("a","a (event/Exp)")}{fi("b","b (no event/Exp)")}{fi("c","c (event/Ctrl)")}{fi("d","d (no event/Ctrl)")}</div>}
     {type==="HR"&&<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:8}}>
       <div><div style={{fontSize:9,color:C.dim,marginBottom:2}}>HR</div><input value={s._hrVal||""} onChange={e=>sp("_hrVal",e.target.value)} placeholder="HR" style={{...inp,fontSize:11,fontFamily:"'IBM Plex Mono',monospace",padding:"4px 6px"}}/></div>
       <div><div style={{fontSize:9,color:C.dim,marginBottom:2}}>95% CI Lower</div><input value={s._hrLo||""} onChange={e=>sp("_hrLo",e.target.value)} placeholder="lower" style={{...inp,fontSize:11,fontFamily:"'IBM Plex Mono',monospace",padding:"4px 6px"}}/></div>
@@ -2839,6 +2891,7 @@ function ESCalcInline({s,ch}){
       {res&&<span style={{fontSize:11,fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{res.display||`ES=${res.es} [${res.lo}, ${res.hi}]`}</span>}
       {err&&<span style={{fontSize:11,color:C.red}}>{err}</span>}
     </div>
+    {note&&<div style={{fontSize:10.5,color:C.yel,marginTop:6,lineHeight:1.5}}>⚠ {note}</div>}
     {res&&["OR","RR","HR","PROP","DIAG"].includes(type)&&<div style={{fontSize:10,color:C.dim,marginTop:6}}>✓ Stored on the analysis scale ({ES_TYPES[type]?.scale}). The forest plot and pooling use this transformed value; the readable value is shown above.</div>}
   </div>);
 }

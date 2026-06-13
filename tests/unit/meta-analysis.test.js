@@ -207,6 +207,41 @@ describe('eggersTest', () => {
     const res = eggersTest(studies);
     expect(res.seInt).toBeGreaterThan(0);
   });
+
+  // Canonical Egger (1997) / metafor::regtest(model="lm") fixture.
+  // 14 Cohen's d studies; SE round-trips because we rebuild the CI with the
+  // same Z975 (1.959963984540054) the engine uses to recover SE from lo/hi.
+  it('matches canonical UNWEIGHTED Egger on the 14-study fixture', () => {
+    const Z = 1.959963984540054;
+    const fx = [
+      { es: 1.4623, se: 0.6017 }, { es: 1.3832, se: 0.5950 }, { es: 1.1427, se: 0.3946 },
+      { es: -0.1032, se: 0.2377 }, { es: -0.3918, se: 0.2289 }, { es: 2.1994, se: 0.3028 },
+      { es: 1.1561, se: 0.6237 }, { es: 0.0732, se: 0.5775 }, { es: 0.7774, se: 0.2968 },
+      { es: 0.1620, se: 0.5008 }, { es: 0.1659, se: 0.5009 }, { es: 0.5937, se: 0.2867 },
+      { es: 0.6990, se: 0.2540 }, { es: -0.3172, se: 0.3803 },
+    ];
+    const fixtureStudies = fx.map((s, i) => ({
+      id: 'f' + i, es: String(s.es),
+      lo: String(s.es - Z * s.se), hi: String(s.es + Z * s.se),
+    }));
+    const res = eggersTest(fixtureStudies);
+    expect(res.k).toBe(14);
+    expect(res.dof).toBe(12);
+    expect(res.intercept).toBeCloseTo(1.86, 1);   // canonical ≈ 1.86 (was 3.94 when weighted)
+    expect(res.t).toBeCloseTo(1.01, 1);            // ≈ 1.01 (was 1.42)
+    expect(res.pval).toBeCloseTo(0.334, 2);        // ≈ 0.334 (was 0.181)
+    // Guard against regression to the old weighted numbers:
+    expect(res.intercept).toBeLessThan(2.5);
+    expect(res.pval).toBeGreaterThan(0.28);
+  });
+
+  it('returns null when a study has a degenerate SE (hi <= lo)', () => {
+    const bad = [
+      { id: 'x', es: '0.5', lo: '0.9', hi: '0.1' }, // hi < lo → SE <= 0
+      studies[0], studies[1], studies[2],
+    ];
+    expect(eggersTest(bad)).toBeNull();
+  });
 });
 
 // ── leaveOneOut ───────────────────────────────────────────────────────────────

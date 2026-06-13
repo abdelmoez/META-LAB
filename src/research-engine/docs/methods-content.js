@@ -250,13 +250,14 @@ export const METHODS_CONTENT = [
     id: 'eggers-test',
     title: "Egger's regression test for funnel-plot asymmetry",
     equations: [
-      { label: 'Regression (weighted OLS, w = 1/SE²)', text: 'y = ES/SE regressed on x = 1/SE:  y = intercept + slope × x' },
-      { label: 'Residual variance', text: 's² = Σ w (y − ŷ)² / (k − 2)' },
-      { label: 'SE of the intercept', text: 'SE(intercept) = √( s² × (Σwx²/Σw) / (Σwx² − (Σwx)²/Σw) )' },
-      { label: 'Test', text: 't = intercept / SE(intercept)  ~  t(k − 2) under H₀: intercept = 0' },
+      { label: 'Regression (unweighted OLS)', text: 'standard normal deviate y = ES/SE regressed on precision x = 1/SE:  y = b₀ + b₁·x' },
+      { label: "Egger's bias coefficient", text: 'b₀ = intercept;  H₀: b₀ = 0 (funnel symmetry)' },
+      { label: 'Residual variance', text: 's² = Σ(y − ŷ)² / (k − 2)' },
+      { label: 'SE of the intercept', text: 'SE(b₀) = √( s² · Σx² / (k·Σx² − (Σx)²) )' },
+      { label: 'Test', text: 't = b₀ / SE(b₀) ~ t(k − 2);  p = 2·(1 − T_cdf(|t|, k − 2))' },
     ],
     plainEnglish:
-      'Regresses each study’s standardized effect on its precision. If small (imprecise) studies systematically show larger effects — a typical signature of publication bias — the regression intercept deviates from zero.',
+      'Regresses each study’s standardized effect (ES/SE) on its precision (1/SE) by ordinary (UNWEIGHTED) least squares — the canonical Egger (1997) test, matching metafor::regtest(model="lm"). The intercept is the bias coefficient: when small, imprecise studies systematically show larger effects (a typical signature of publication bias), the intercept departs from zero. The regression is intentionally unweighted — y and x already embed the precision, so inverse-variance weights would double-count it.',
     usedIn: 'Sensitivity tab, publication-bias panel (requires k ≥ 3).',
     implementedIn: 'eggersTest() — ' + ENGINE_META,
     references: [REF.EGGER_1997],
@@ -370,14 +371,15 @@ export const METHODS_CONTENT = [
     equations: [
       { label: 'Effect size (2×2 table a/b/c/d)', text: 'ln OR = ln( (a × d) / (b × c) )' },
       { label: 'Standard error', text: 'SE = √(1/a + 1/b + 1/c + 1/d)' },
+      { label: 'Zero-cell continuity correction', text: 'if any of a,b,c,d = 0, add 0.5 to all four cells (Haldane–Anscombe) before taking logs' },
     ],
     plainEnglish:
       'The odds ratio from a 2×2 table, analyzed on the natural-log scale where its sampling distribution is approximately normal. Results are back-transformed (exponentiated) for display.',
     usedIn: 'Effect size calculator in the Data Extraction tab (type "OR"); pooled log ORs feed the Analysis and Forest plot tabs.',
     implementedIn: "calcES('OR', {a, b, c, d}) — " + ENGINE_CALC,
-    references: [REF.BORENSTEIN_2009],
+    references: [REF.BORENSTEIN_2009, REF.HALDANE_1956],
     limitations:
-      'No continuity correction is applied: any zero (or negative) cell makes the estimate not computable and the calculator returns null. All four cells must be > 0. 95% CI uses z = 1.96.',
+      'Zero event cells are valid clinical data. When any cell is zero a Haldane–Anscombe continuity correction adds 0.5 to all four cells so log OR and its SE stay finite (flagged in the result metadata: continuityCorrectionApplied / correctionMethod). A double-zero-event table (a = 0 AND c = 0) carries no information about a relative effect and is returned as not estimable — use Risk Difference instead. Negative, non-integer or missing counts are rejected. 95% CI uses z = 1.96.',
     verified: true,
   },
   {
@@ -386,14 +388,31 @@ export const METHODS_CONTENT = [
     equations: [
       { label: 'Effect size (2×2 table a/b/c/d)', text: 'ln RR = ln( (a/(a+b)) / (c/(c+d)) )' },
       { label: 'Standard error', text: 'SE = √(1/a − 1/(a+b) + 1/c − 1/(c+d))' },
+      { label: 'Zero-cell continuity correction', text: 'if any of a,b,c,d = 0, add 0.5 to all four cells (Haldane–Anscombe) before taking logs' },
     ],
     plainEnglish:
       'The ratio of event risks between two groups, analyzed on the natural-log scale. More directly interpretable than the odds ratio when events are common.',
     usedIn: 'Effect size calculator in the Data Extraction tab (type "RR"); pooled log RRs feed the Analysis and Forest plot tabs.',
     implementedIn: "calcES('RR', {a, b, c, d}) — " + ENGINE_CALC,
+    references: [REF.BORENSTEIN_2009, REF.HALDANE_1956],
+    limitations:
+      'Zero event cells are valid clinical data. When any cell is zero a Haldane–Anscombe continuity correction adds 0.5 to all four cells so log RR and its SE stay finite (flagged in the result metadata: continuityCorrectionApplied / correctionMethod). A double-zero-event table (a = 0 AND c = 0) carries no information about a relative effect and is returned as not estimable — use Risk Difference instead. Negative, non-integer or missing counts are rejected. 95% CI uses z = 1.96.',
+    verified: true,
+  },
+  {
+    id: 'es-risk-difference',
+    title: 'Risk difference (RD)',
+    equations: [
+      { label: 'Effect size (2×2 table a/b/c/d)', text: 'RD = a/(a+b) − c/(c+d)' },
+      { label: 'Standard error (Wald)', text: 'SE = √( p₁(1−p₁)/n₁ + p₂(1−p₂)/n₂ ),  p₁=a/(a+b), n₁=a+b,  p₂=c/(c+d), n₂=c+d' },
+    ],
+    plainEnglish:
+      'The absolute difference in event risk between the two arms, kept on the natural (untransformed) scale. Because it is an absolute measure, zero event cells are admissible with no continuity correction, which makes RD a sensible alternative when a study has zero events in one or both arms and the relative measures (OR/RR) are unstable or not estimable.',
+    usedIn: 'Effect size calculator in the Data Extraction tab (type "RD").',
+    implementedIn: "calcES('RD', {a, b, c, d}) — " + ENGINE_CALC,
     references: [REF.BORENSTEIN_2009],
     limitations:
-      'No continuity correction is applied: any zero (or negative) cell makes the estimate not computable and the calculator returns null. All four cells must be > 0. 95% CI uses z = 1.96.',
+      'Uses the Wald (large-sample normal) variance, which is unreliable for very small samples or risks near 0 or 1. A study with zero events in BOTH arms has RD = 0 with a degenerate (zero) Wald SE and is returned as not estimable, since it cannot be inverse-variance weighted. 95% CI uses z = 1.96.',
     verified: true,
   },
   {

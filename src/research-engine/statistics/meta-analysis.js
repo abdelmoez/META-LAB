@@ -147,9 +147,19 @@ export function runMeta(studies, method = "random") {
 
 /**
  * eggersTest(studies)
- * Egger's weighted linear regression test for small-study effects
- * (publication bias).  Regresses standardised effect (y = ES/SE) on
- * precision (x = 1/SE) with inverse-variance weights.
+ * Egger's regression test for funnel-plot asymmetry / small-study effects
+ * (publication bias). Canonical Egger (1997): an UNWEIGHTED ordinary
+ * least-squares regression of the standard normal deviate (y = ES/SE) on
+ * precision (x = 1/SE). The intercept is Egger's bias coefficient; an
+ * intercept significantly different from zero indicates asymmetry.
+ *
+ * This is the published method and matches metafor::regtest(..., model = "lm").
+ * The earlier implementation applied inverse-variance weights (w = 1/SE²),
+ * which double-counts precision (y and x already carry 1/SE) and inflates the
+ * intercept, t and p — it did NOT match Egger 1997 or metafor. Fixed to
+ * ordinary least squares (every weight = 1).
+ *
+ * Ref: Egger M, Davey Smith G, Schneider M, Minder C. BMJ. 1997;315:629-634.
  *
  * @param {Array} studies
  * @returns {object|null}  { intercept, seInt, t, pval, dof, k } or null if k < 3
@@ -161,36 +171,41 @@ export function eggersTest(studies) {
   );
   if (valid.length < 3) return null;
 
-  const pts = valid.map(s => {
+  // y = ES/SE (standard normal deviate), x = 1/SE (precision); SE from the 95% CI.
+  const pts = [];
+  for (const s of valid) {
     const es = +s.es, se = (+s.hi - +s.lo) / (2 * Z975);
-    return { y: es / se, x: 1 / se, w: 1 / (se * se) };
-  });
+    if (!(se > 0)) return null;            // degenerate SE — cannot regress
+    pts.push({ y: es / se, x: 1 / se });
+  }
 
-  const n = pts.length;
-  let sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
-  pts.forEach(p => { sw += p.w; sx += p.w * p.x; sy += p.w * p.y; sxx += p.w * p.x * p.x; sxy += p.w * p.x * p.y; });
+  // Unweighted OLS: y = intercept + slope·x  (Σ closed form, all weights = 1)
+  const k = pts.length;
+  let Sx = 0, Sy = 0, Sxx = 0, Sxy = 0;
+  pts.forEach(p => { Sx += p.x; Sy += p.y; Sxx += p.x * p.x; Sxy += p.x * p.y; });
 
-  const mx = sx / sw, my = sy / sw;
-  const slope     = (sxy - sw * mx * my) / (sxx - sw * mx * mx);
-  const intercept = my - slope * mx;
+  const denom = k * Sxx - Sx * Sx;
+  if (denom === 0) return null;
+  const slope     = (k * Sxy - Sx * Sy) / denom;
+  const intercept = (Sy - slope * Sx) / k;   // Egger's bias coefficient
 
-  // SE of intercept
-  let resid = 0;
-  pts.forEach(p => { const fit = intercept + slope * p.x; resid += p.w * (p.y - fit) ** 2; });
-  const dof = n - 2;
+  const dof = k - 2;
   if (dof < 1) return null;
 
-  const s2    = resid / dof;
-  const seInt = Math.sqrt(s2 * (sxx / sw) / (sxx - sw * mx * mx));
+  // Residual variance and SE of the intercept (standard OLS results)
+  let sse = 0;
+  pts.forEach(p => { const e = p.y - (intercept + slope * p.x); sse += e * e; });
+  const s2    = sse / dof;
+  const seInt = Math.sqrt(s2 * Sxx / denom);
   const t     = intercept / seInt;
-  const pv    = 2 * (1 - tCDF(Math.abs(t), dof));
+  const pv    = 2 * (1 - tCDF(Math.abs(t), dof));   // two-tailed t, df = k − 2
 
   return {
     intercept: +intercept.toFixed(4),
     seInt:     +seInt.toFixed(4),
     t:         +t.toFixed(3),
     pval:      +pv.toFixed(4),
-    dof, k: n,
+    dof, k,
   };
 }
 
