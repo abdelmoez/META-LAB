@@ -1811,7 +1811,11 @@ function ProjectDetailPanel({ project, onClose, onAction }) {
       <div style={{ padding: '16px 16px 12px' }}>
         <div title={project.name} style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 4, minWidth: 0, overflowWrap: 'anywhere' }}>{project.name}</div>
         <div style={{ display: 'flex', gap: 5, marginBottom: 12 }}>
-          {isArchived ? <Badge text="archived" color={C.ylw} /> : <Badge text="active" color={C.grn} />}
+          {!isArchived
+            ? <Badge text="active" color={C.grn} />
+            : project.deletedSource === 'owner'
+              ? <Badge text="owner-deleted" color={C.red} />
+              : <Badge text="admin-archived" color={C.ylw} />}
         </div>
         {[
           { label: 'Owner',    value: <span style={{ fontFamily: MONO, fontSize: 11 }}>{project.ownerEmail || project.userEmail || '—'}</span> },
@@ -1901,7 +1905,11 @@ function ProjectsSection() {
     { key: 'updatedAt',  label: 'Updated', render: v => fmtAgo(v) },
     { key: 'studyCount', label: 'Studies', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
     { key: 'recordCount',label: 'Records', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
-    { key: 'deletedAt',  label: 'Status',  render: v => v ? <Badge text="archived" color={C.ylw} /> : <Badge text="active" color={C.grn} /> },
+    { key: 'deletedAt',  label: 'Status',  render: (v, row) => {
+        if (!v) return <Badge text="active" color={C.grn} />;
+        if (row.deletedSource === 'owner') return <Badge text="owner-deleted" color={C.red} />;
+        return <Badge text="admin-archived" color={C.ylw} />;
+      } },
   ];
 
   const filterDefs = [
@@ -3032,18 +3040,23 @@ function SiftProjects() {
     catch (e) { setError('Failed to update: ' + e.message); }
   }
 
+  async function actRestore(id) {
+    try { await adminApi.screening.restore(id); load(page); }
+    catch (e) { setError('Failed to restore: ' + e.message); }
+  }
+
   const cols = [
-    { key: 'title',  label: 'Title', width: '18%', render: v => <span title={v || undefined} style={{ color: C.txt, fontWeight: 600, display: 'block', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v || '—'}</span> },
-    { key: 'linkedMetaLabProjectTitle', label: 'Linked META·LAB', width: '15%',
+    { key: 'title',  label: 'Title', width: '17%', render: v => <span title={v || undefined} style={{ color: C.txt, fontWeight: 600, display: 'block', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v || '—'}</span> },
+    { key: 'linkedMetaLabProjectTitle', label: 'Linked META·LAB', width: '14%',
       render: (v, row) => v
         ? <span title={v} style={{ fontSize: 11, display: 'block', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span>
         : <span style={{ fontSize: 11, color: C.muted }}>{row.linkedMetaLabProjectId ? '(linked, untitled)' : '— not linked'}</span> },
-    { key: 'owner',  label: 'Owner', width: '13%', render: v => <span title={v?.email || undefined} style={{ fontFamily: MONO, fontSize: 11, overflowWrap: 'anywhere' }}>{v?.email || '—'}</span> },
+    { key: 'owner',  label: 'Owner', width: '12%', render: v => <span title={v?.email || undefined} style={{ fontFamily: MONO, fontSize: 11, overflowWrap: 'anywhere' }}>{v?.email || '—'}</span> },
     { key: 'recordCount', label: 'Articles', width: '7%', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
-    { key: 'memberCount', label: 'Members', width: '7%', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
+    { key: 'memberCount', label: 'Members', width: '6%', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
     { key: 'secondReviewCount', label: '2nd Rev', width: '6%', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
     { key: 'handoffSentCount',  label: 'Handoff', width: '6%', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
-    { key: '_status', label: 'Status', width: '11%', render: (_, row) => (
+    { key: '_status', label: 'Status', width: '10%', render: (_, row) => (
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
         <Badge text={row.disabled ? 'disabled' : 'active'} color={row.disabled ? C.red : C.grn} />
         {row.archived && <Badge text="archived" color={C.muted} />}
@@ -3051,16 +3064,27 @@ function SiftProjects() {
           <Badge text={row.progressStatus.replace('_', ' ')} color={row.progressStatus === 'done' ? C.grn : C.teal} />}
       </div>
     )},
+    // Deleted state: shows owner-deleted badge when the workspace has been soft-deleted by its owner.
+    // Admin-restore is the only recovery path — surfaced in the Actions column for these rows.
+    { key: '_deleted', label: 'Deleted', width: '8%', render: (_, row) => (
+      row.deleted
+        ? <Badge text={row.deletedSource === 'owner' ? 'owner-deleted' : 'deleted'} color={C.red} />
+        : <span style={{ fontSize: 11, color: C.muted }}>—</span>
+    )},
     { key: 'updatedAt', label: 'Updated', width: '8%', render: v => <span style={{ fontSize: 11 }}>{fmtAgo(v)}</span> },
     // stopPropagation: rows are clickable (progress panel) — action buttons must not toggle it.
-    { key: '_actions', label: 'Actions', width: '15%', render: (_, row) => (
+    { key: '_actions', label: 'Actions', width: '16%', render: (_, row) => (
       <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-        {row.disabled
-          ? <button onClick={e => { e.stopPropagation(); act(row.id, { disabled: false }); }} style={siftMiniBtn(C.grn)}>Enable</button>
-          : <button onClick={e => { e.stopPropagation(); act(row.id, { disabled: true }); }}  style={siftMiniBtn(C.red)}>Disable</button>}
-        {row.archived
-          ? <button onClick={e => { e.stopPropagation(); act(row.id, { archived: false }); }} style={siftMiniBtn(C.grn)}>Unarchive</button>
-          : <button onClick={e => { e.stopPropagation(); act(row.id, { archived: true }); }}  style={siftMiniBtn(C.muted)}>Archive</button>}
+        {row.deleted
+          ? <button onClick={e => { e.stopPropagation(); actRestore(row.id); }} style={siftMiniBtn(C.grn)}>Restore</button>
+          : <>
+              {row.disabled
+                ? <button onClick={e => { e.stopPropagation(); act(row.id, { disabled: false }); }} style={siftMiniBtn(C.grn)}>Enable</button>
+                : <button onClick={e => { e.stopPropagation(); act(row.id, { disabled: true }); }}  style={siftMiniBtn(C.red)}>Disable</button>}
+              {row.archived
+                ? <button onClick={e => { e.stopPropagation(); act(row.id, { archived: false }); }} style={siftMiniBtn(C.grn)}>Unarchive</button>
+                : <button onClick={e => { e.stopPropagation(); act(row.id, { archived: true }); }}  style={siftMiniBtn(C.muted)}>Archive</button>}
+            </>}
       </div>
     )},
   ];

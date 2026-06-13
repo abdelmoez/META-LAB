@@ -48,6 +48,9 @@ r.post('/projects',        S.createProject);
 r.get('/projects/:pid',    S.getProject);
 r.put('/projects/:pid',    S.updateProject);
 r.delete('/projects/:pid', S.deleteProject);
+// Owner-only reversible archive/unarchive (prompt11 — user-facing, NOT admin lifecycle).
+r.post('/projects/:pid/archive',   S.archiveProject);
+r.post('/projects/:pid/unarchive', S.unarchiveProject);
 
 // META·LAB association (Task 4) — link/unlink + selectable targets + handoff rollup
 r.get('/projects/:pid/linkable',  S.getLinkable);

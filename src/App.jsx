@@ -11,6 +11,7 @@ import Landing        from './frontend/pages/Landing.jsx';
 // Landing stays eager (first paint of the public page). Everything else is
 // split per route so visitors never download the workspace monolith, the
 // ops console, or the screening module until they navigate there.
+const ProjectLanding = lazy(() => import('./frontend/pages/ProjectLanding.jsx'));
 const AppWorkspace  = lazy(() => import('./frontend/pages/AppWorkspace.jsx'));
 const LoginPage     = lazy(() => import('./frontend/pages/Login.jsx'));
 const RegisterPage  = lazy(() => import('./frontend/pages/Register.jsx'));
@@ -106,8 +107,11 @@ export default function App() {
             signed-out (PublicRoute would bounce signed-in invitees to /app) */}
         <Route path="/invite/:token" element={<InvitePage />} />
 
-        {/* Protected workspace */}
-        <Route path="/app"      element={<ProtectedRoute><AppWorkspace /></ProtectedRoute>} />
+        {/* Protected post-login home — project command center (prompt11) */}
+        <Route path="/app"      element={<ProtectedRoute><ProjectLanding /></ProtectedRoute>} />
+
+        {/* Protected workspace — opens one project by id into the existing overview/workflow */}
+        <Route path="/app/project/:projectId" element={<ProtectedRoute><AppWorkspace /></ProtectedRoute>} />
 
         {/* Protected profile */}
         <Route path="/profile"  element={<ProtectedRoute><Profile /></ProtectedRoute>} />

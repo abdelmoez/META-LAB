@@ -12,6 +12,8 @@ import {
   updateProject,
   deleteProject,
   ownerDeleteProject,
+  archiveProject,
+  unarchiveProject,
   autosaveProject,
   duplicateProject,
 } from '../controllers/projectsController.js';
@@ -28,6 +30,9 @@ router.put('/:id',            updateProject);
 router.delete('/:id',         deleteProject);
 // prompt9 — typed-name confirmed soft delete (+ optional linked-SIFT cascade).
 router.post('/:id/delete',    ownerDeleteProject);
+// prompt11 — owner-only reversible archive (hide) + linked-workspace cascade.
+router.post('/:id/archive',   archiveProject);
+router.post('/:id/unarchive', unarchiveProject);
 router.put('/:id/autosave',   autosaveProject);
 router.post('/:id/duplicate', duplicateProject);
 

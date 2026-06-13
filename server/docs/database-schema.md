@@ -40,8 +40,10 @@ Stores systematic review projects. Uses a "fat blob" pattern: only core identity
 | data         | String    | Default: "{}"         | JSON-serialized payload: studies[], records[], pico, search, etc. |
 | createdAt    | DateTime  | Default: now()        | Creation timestamp |
 | updatedAt    | DateTime  | Auto-updated          | Last DB write timestamp |
-| deletedAt    | DateTime? | Nullable              | Soft-delete marker (not yet used by queries; reserved for future trash-bin feature) |
+| deletedAt    | DateTime? | Nullable              | Soft-delete marker — set by `DELETE /api/projects/:id` and `POST /api/projects/:id/delete`; owner-deleted rows return 404 on all access paths |
 | lastSavedAt  | DateTime? | Nullable              | Reserved for client-driven "last autosave" tracking |
+| archived     | Boolean   | Default: false        | Whether the project is archived. Archived projects are excluded from `GET /api/projects` unless `?includeArchived=1` is supplied. Set via `POST /api/projects/:id/archive`; cleared by `/unarchive`. |
+| archivedAt   | DateTime? | Nullable              | Timestamp when the project was last archived; cleared (`null`) on unarchive. |
 
 **Note:** Studies and records are stored inside the `data` blob, not as separate table rows. This keeps the store simple and avoids N+1 joins on project load.
 
@@ -212,6 +214,7 @@ Migration files live in `server/prisma/migrations/`. Each migration has a timest
 | `20260609220139_workspace_perms_and_contact_replies` | Member module-permission flags (Review Workspace presets), `ContactReply`, `ContactMessage.replied` |
 | `20260609230000_add_contact_message_read` | `ContactMessageRead` (per-staff message read receipts) |
 | `20260610034844_prompt6_notifications_logins_status_fingerprint` | **prompt6 (additive, no destructive changes — all data preserved):** new `Notification`, `LoginEvent`, `ScreenProjectStatusEvent` tables; `ScreenImportBatch` fingerprint columns (`fileHash`, `fileSize`, `importedById`, `importedByName`, `parser`) + `[projectId, fileHash]` index; `@@index([linkedMetaLabProjectId])` on `ScreenProject` |
+| `20260613120000_prompt11_project_archive`                         | **prompt11:** added `Project.archived Boolean @default(false)` and `Project.archivedAt DateTime?`. Enables the archive/unarchive lifecycle (`POST /api/projects/:id/archive|unarchive` + cascade to linked `ScreenProject`). Additive — all existing rows default to `archived=false, archivedAt=null`; no data loss. |
 
 ---
 

@@ -389,6 +389,59 @@ export async function deleteProject(req, res) {
   }
 }
 
+/**
+ * POST /projects/:pid/archive  (prompt11 — owner-only, user-facing)
+ *
+ * Toggle ScreenProject.archived → true (a reversible hide, NOT the admin lifecycle
+ * path and NOT a delete). Owner-only (NOT leader for v1) via getOwnedProject, which
+ * also hides soft-deleted projects behind 404. Idempotent.
+ * Audit PROJECT_ARCHIVED + recordUsage(WORKSPACE_ARCHIVED). Returns { archived: true }.
+ */
+export async function archiveProject(req, res) {
+  try {
+    const p = await getOwnedProject(req.params.pid, req.user.id);
+    if (!p) return res.status(404).json({ error: 'Project not found' });
+    if (!p.archived) {
+      await prisma.screenProject.update({ where: { id: p.id }, data: { archived: true } });
+    }
+    await writeAudit(p.id, req.user, 'PROJECT_ARCHIVED', {
+      entityType: 'project', entityId: p.id, details: { title: p.title },
+    });
+    recordUsage({ type: USAGE.WORKSPACE_ARCHIVED, userId: req.user.id, screenProjectId: p.id });
+    // Members with the project open revalidate (it drops from their active list).
+    emitToProjectMembers(p.id, { type: 'project.updated' }, { exclude: req.user.id });
+    res.json({ archived: true });
+  } catch (err) {
+    console.error('[screening] archiveProject:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /projects/:pid/unarchive  (prompt11 — owner-only, user-facing)
+ *
+ * Toggle ScreenProject.archived → false. Owner-only via getOwnedProject. Idempotent.
+ * Audit PROJECT_UNARCHIVED + recordUsage(WORKSPACE_UNARCHIVED). Returns { archived: false }.
+ */
+export async function unarchiveProject(req, res) {
+  try {
+    const p = await getOwnedProject(req.params.pid, req.user.id);
+    if (!p) return res.status(404).json({ error: 'Project not found' });
+    if (p.archived) {
+      await prisma.screenProject.update({ where: { id: p.id }, data: { archived: false } });
+    }
+    await writeAudit(p.id, req.user, 'PROJECT_UNARCHIVED', {
+      entityType: 'project', entityId: p.id, details: { title: p.title },
+    });
+    recordUsage({ type: USAGE.WORKSPACE_UNARCHIVED, userId: req.user.id, screenProjectId: p.id });
+    emitToProjectMembers(p.id, { type: 'project.updated' }, { exclude: req.user.id });
+    res.json({ archived: false });
+  } catch (err) {
+    console.error('[screening] unarchiveProject:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 // ── META·LAB association (prompt2 Task 4) ────────────────────────────
 //
 // A META·SIFT project links to exactly one META·LAB project (the workspace

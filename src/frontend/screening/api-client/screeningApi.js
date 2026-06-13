@@ -101,6 +101,11 @@ export const screeningApi = {
   // Self-service exit (prompt9) — 200 {left:true}; the owner gets 400 with
   // transfer-ownership messaging (surfaced as the thrown error message).
   leaveProject: (pid)            => req('POST',   `/projects/${pid}/leave`),
+  // Archive / unarchive a workspace (owner-only, prompt11).
+  // Respond { archived: true|false }. Cascaded from the META·LAB archive
+  // action; also available as a direct workspace-side action.
+  archiveProject:   (pid) => req('POST', `/projects/${pid}/archive`),
+  unarchiveProject: (pid) => req('POST', `/projects/${pid}/unarchive`),
 
   // Per-member open-state (Part 11)
   markOpened: (pid, rid) => req('POST', `/projects/${pid}/records/${rid}/open`),

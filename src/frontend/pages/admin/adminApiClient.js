@@ -93,6 +93,9 @@ export const adminApi = {
     getMembers:   (id)       => req(`${BASE}/screening/projects/${id}/members`),
     getHandoffs:  ()         => req(`${BASE}/screening/handoffs`),
     getAudit:     (p)        => req(`${BASE}/screening/audit?${new URLSearchParams(p || {})}`),
+    // Restore an owner-soft-deleted workspace (clears deletedAt + deletedSource).
+    // PATCH /api/admin/screening/projects/:id/restore → { ok:true } | 400 if not deleted.
+    restore:      (id)       => req(`${BASE}/screening/projects/${id}/restore`, { method: 'PATCH' }),
   },
 
   auditLog:       (p)        => req(`${BASE}/audit-log?${new URLSearchParams(p || {})}`),

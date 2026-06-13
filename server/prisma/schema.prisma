@@ -38,6 +38,8 @@ model Project {
   updatedAt     DateTime  @updatedAt
   deletedAt     DateTime?
   deletedSource String?   // prompt9 — 'owner' | 'admin'; legacy null = admin archive
+  archived      Boolean   @default(false)  // prompt11 — user-facing archive (reversible hide)
+  archivedAt    DateTime?                   // prompt11 — when archived
   lastSavedAt   DateTime?
 }
 

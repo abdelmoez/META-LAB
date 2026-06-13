@@ -63,9 +63,17 @@ export const api = {
   projects: {
     /**
      * GET /api/projects — lightweight list (no studies/records arrays).
-     * @returns {Promise<Array<{ id, name, createdAt, updatedAt }>>}
+     * Pass `{ includeArchived: true }` to include archived projects in the
+     * result (adds `?includeArchived=1` to the request).  No-arg call is
+     * backward-compatible and continues to exclude archived rows.
+     * @param {{ includeArchived?: boolean }} [opts]
+     * @returns {Promise<Array<{ id, name, createdAt, updatedAt, _archived, _archivedAt, _studyCount, _recordCount, _permissions, _linkedMetaSift }>>}
      */
-    list: () => req(`${BASE}/projects`),
+    list: (opts) =>
+      req(
+        `${BASE}/projects` +
+          (opts && opts.includeArchived ? "?includeArchived=1" : "")
+      ),
 
     /**
      * GET /api/projects/:id — full project including studies and records.
@@ -76,10 +84,16 @@ export const api = {
     /**
      * POST /api/projects — create a new project.
      * @param {string} name
+     * @param {{ description?: string, createLinkedSift?: boolean }} [opts]
+     *   Extra fields merged into the request body.  `createLinkedSift:true`
+     *   tells the server to also spin up a linked META·SIFT workspace.
      * @returns {Promise<{ id, name, createdAt, updatedAt, studies, records }>}
      */
-    create: (name) =>
-      req(`${BASE}/projects`, { method: "POST", ...json({ name }) }),
+    create: (name, opts) =>
+      req(`${BASE}/projects`, {
+        method: "POST",
+        ...json({ name, ...(opts || {}) }),
+      }),
 
     /**
      * PUT /api/projects/:id — partial update of top-level fields.
@@ -90,12 +104,45 @@ export const api = {
       req(`${BASE}/projects/${id}`, { method: "PUT", ...json(patch) }),
 
     /**
-     * DELETE /api/projects/:id
+     * DELETE /api/projects/:id — legacy soft-delete (no typed-name confirmation).
+     * Prefer `confirmDelete` for owner-initiated deletion from the UI.
      * @param {string} id
      * @returns {Promise<{ deleted: true }>}
      */
     delete: (id) =>
       req(`${BASE}/projects/${id}`, { method: "DELETE" }),
+
+    /**
+     * POST /api/projects/:id/delete — owner-confirmed soft delete.
+     * Requires a typed-name confirmation and optionally cascades to the
+     * linked META·SIFT workspace.
+     * @param {string} id
+     * @param {{ confirmName: string, cascadeLinked?: boolean }} [body]
+     * @returns {Promise<{ deleted: true, cascaded: string[] }>}
+     */
+    confirmDelete: (id, body) =>
+      req(`${BASE}/projects/${id}/delete`, {
+        method: "POST",
+        ...json(body || {}),
+      }),
+
+    /**
+     * POST /api/projects/:id/archive — archive a project (owner-only).
+     * Best-effort cascades to the linked META·SIFT workspace.
+     * @param {string} id
+     * @returns {Promise<{ archived: true, archivedAt: string }>}
+     */
+    archive: (id) =>
+      req(`${BASE}/projects/${id}/archive`, { method: "POST" }),
+
+    /**
+     * POST /api/projects/:id/unarchive — unarchive a project (owner-only).
+     * Best-effort cascades to the linked META·SIFT workspace.
+     * @param {string} id
+     * @returns {Promise<{ archived: false }>}
+     */
+    unarchive: (id) =>
+      req(`${BASE}/projects/${id}/unarchive`, { method: "POST" }),
 
     /**
      * POST /api/projects/:id/duplicate — clone a project.

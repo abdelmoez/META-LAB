@@ -55,12 +55,20 @@ const NOT_OWNER_DELETED = { OR: [{ deletedSource: null }, { deletedSource: { not
 /**
  * Return all projects for a user (full project objects).
  * Excludes owner-soft-deleted rows; keeps admin-archived rows (owner-visible).
+ *
+ * prompt11: user-facing archived projects (`archived:true`, a reversible hide —
+ * distinct from soft delete) are EXCLUDED by default. Pass
+ * `{ includeArchived: true }` to surface them too. The flag defaults to false
+ * so every existing caller (incl. the monolith list) stops showing archived
+ * projects — that is the desired behaviour.
  * @param {string} userId
+ * @param {{ includeArchived?: boolean }} [opts]
  * @returns {Promise<object[]>}
  */
-export async function getAll(userId) {
+export async function getAll(userId, opts = {}) {
+  const includeArchived = opts && opts.includeArchived === true;
   const rows = await prisma.project.findMany({
-    where: { userId, ...NOT_OWNER_DELETED },
+    where: { userId, ...NOT_OWNER_DELETED, ...(includeArchived ? {} : { archived: false }) },
     orderBy: { updatedAt: 'desc' },
   });
   return rows.map(rowToProject);

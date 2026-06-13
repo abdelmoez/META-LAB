@@ -153,11 +153,13 @@ Returns all projects accessible to the caller (owned + shared). By default retur
 
 **Query parameters**
 
-| Param | Values          | Description |
-|-------|-----------------|-------------|
-| full  | `true` \| `1`  | When present, returns full project objects including studies and records |
+| Param           | Values         | Description |
+|-----------------|----------------|-------------|
+| full            | `true` \| `1` | When present, returns full project objects including studies and records |
+| includeArchived | `true` \| `1` | When present, includes archived projects in the result. Default: archived projects are **excluded** from all lists (both owned and shared). |
 
-**Example:** `GET /api/projects?full=true`
+**Example:** `GET /api/projects?full=true`  
+**Example:** `GET /api/projects?includeArchived=1`
 
 **Response 200**
 ```json
@@ -167,11 +169,31 @@ Returns all projects accessible to the caller (owned + shared). By default retur
     "name": "My Systematic Review",
     "createdAt": "2025-01-15T10:00:00.000Z",
     "updatedAt": "2025-01-15T10:00:00.000Z",
-    "_linkedMetaSift": { "id": "screenproject-uuid", "title": "My Systematic Review" },
+    "_archived": false,
+    "_archivedAt": null,
+    "_studyCount": 5,
+    "_recordCount": 120,
+    "_linkedMetaSift": {
+      "id": "screenproject-uuid",
+      "title": "My Systematic Review",
+      "progressStatus": "screening",
+      "recordCount": 120,
+      "memberCount": 3
+    },
     "_permissions": { "role": "owner", "isOwner": true, "canView": true, "canEdit": true, "readOnly": false, "canExport": true }
   }
 ]
 ```
+
+**New `_`-prefixed transient fields (prompt11) — stripped on persist, safe to echo back:**
+
+| Field            | Type           | Description |
+|------------------|----------------|-------------|
+| `_archived`      | boolean        | `true` when the project is archived |
+| `_archivedAt`    | string \| null | ISO-8601 timestamp of archival, or `null` |
+| `_studyCount`    | number         | Count of entries in the `data.studies` blob array |
+| `_recordCount`   | number         | Count of entries in the `data.records` blob array |
+| `_linkedMetaSift`| object \| null | Enriched with `{ id, title, progressStatus, recordCount, memberCount }` (previously `{ id, title }` only) |
 
 ---
 
@@ -257,7 +279,7 @@ Partial update of top-level project fields. The `id`, `studies`, and `records` f
 
 ### `DELETE /api/projects/:id`
 
-Permanently removes the project and all its studies and records.
+**Soft-delete** — marks the project as deleted (`deletedAt`, `deletedSource:'owner'`) so it is hidden from all lists including the owner's. The project data is not physically removed from the database. Owner-deleted projects return 404 on direct access; an admin can restore them via `PATCH /api/admin/projects/:id/restore`. Prefer `POST /api/projects/:id/delete` for owner-initiated deletion (requires typed-name confirmation). See prompt 9 additions below for full semantics.
 
 **Response 200**
 ```json
@@ -297,6 +319,64 @@ Creates a copy of the specified project with a new server-generated ID. The copy
 **Response 201** — The duplicate project object with a new `id`.
 
 **Error 404** — original project not found.
+
+---
+
+### `POST /api/projects/:id/archive`   *(prompt11, owner-only)*
+
+Archives the project. Archived projects are hidden from `GET /api/projects` unless `?includeArchived=1` is passed. Best-effort cascades to the linked META·SIFT workspace (sets `ScreenProject.archived=true` when `linkedMetaLabProjectId===id` and the owner matches). Records usage event `PROJECT_ARCHIVED` and writes an audit entry on the linked workspace if present.
+
+**Access:** owner-only (404 if not found or not owned).
+
+**Response 200**
+```json
+{ "archived": true, "archivedAt": "2026-06-13T12:00:00.000Z" }
+```
+
+**Error 404** — project not found or caller is not the owner.
+
+---
+
+### `POST /api/projects/:id/unarchive`   *(prompt11, owner-only)*
+
+Unarchives the project (clears `archived` flag and `archivedAt`). Best-effort cascades the unarchive to the linked META·SIFT workspace. Records usage event `PROJECT_UNARCHIVED`.
+
+**Access:** owner-only (404 if not found or not owned).
+
+**Response 200**
+```json
+{ "archived": false }
+```
+
+**Error 404** — project not found or caller is not the owner.
+
+---
+
+### `POST /api/screening/projects/:pid/archive`   *(prompt11, owner-only)*
+
+Archives the META·SIFT Review Workspace directly (i.e. the `ScreenProject` row). Owner-only (`ScreenProject.ownerId === req.user.id`). Writes an audit entry (`PROJECT_ARCHIVED`) and records usage event `WORKSPACE_ARCHIVED`. Can be triggered independently of the META·LAB project archive or as a cascade from it.
+
+**Response 200**
+```json
+{ "archived": true }
+```
+
+**Error 403** — caller is not the workspace owner.  
+**Error 404** — workspace not found.
+
+---
+
+### `POST /api/screening/projects/:pid/unarchive`   *(prompt11, owner-only)*
+
+Unarchives the META·SIFT Review Workspace. Writes audit entry (`PROJECT_UNARCHIVED`) and records `WORKSPACE_UNARCHIVED` usage event.
+
+**Response 200**
+```json
+{ "archived": false }
+```
+
+**Error 403** — caller is not the workspace owner.  
+**Error 404** — workspace not found.
 
 ---
 

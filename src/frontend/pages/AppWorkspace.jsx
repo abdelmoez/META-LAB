@@ -7,6 +7,7 @@
  */
 
 import { useState, useEffect } from 'react';
+import { useParams } from 'react-router-dom';
 import { subscribeToSaveStatus, flushStorage } from '../storage/serverStorage.js';
 import UserMenu from '../components/UserMenu.jsx';
 import NotificationsBell from '../components/NotificationsBell.jsx';
@@ -18,13 +19,16 @@ const SAVE_COLOR = { saving: C.muted, saved: C.grn, failed: C.red, idle: 'transp
 
 export default function AppWorkspace() {
   const [saveStatus, setSaveStatus] = useState('idle');
+  // prompt11 — /app/project/:projectId opens that exact project. The monolith
+  // seeds its activeId from this prop (durable across refresh; no projects[0] snap-back).
+  const { projectId } = useParams();
 
   // Subscribe to autosave events from serverStorage
   useEffect(() => subscribeToSaveStatus(setSaveStatus), []);
 
   return (
     <>
-      <MetaLab />
+      <MetaLab initialProjectId={projectId || null} />
 
       {/* ── Autosave status (bottom-right, non-interactive) ─────────── */}
       <div

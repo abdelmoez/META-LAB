@@ -7530,7 +7530,7 @@ function ControlTab({project,onAnnotate}){
 
 let _versionCache=null; // module-level so remounts don't refetch (same pattern as UserMenu.jsx)
 
-export default function MetaLab(){
+export default function MetaLab({ initialProjectId = null } = {}){
   const[projects,setProjects]=useState([]);
   const[activeId,setActiveId]=useState(null);
   const[tab,setTab]=useState("overview"); // Overview is the landing tab (prompt6 Task 15)
@@ -7566,10 +7566,14 @@ export default function MetaLab(){
   },[]);
 
   useEffect(()=>{(async()=>{
-    // Deep-link receiver (prompt6 Task 3) — the ?project= param is consumed in
-    // the SAME effect that loads the project list, so it can never race the fetch.
-    let want=null;
-    try{want=new URLSearchParams(window.location.search).get("project");}catch(_){}
+    // Project receiver. Priority: the route param (prompt11 — /app/project/:id,
+    // passed as initialProjectId; survives refresh, fixes the stale-activeId bug)
+    // → the legacy ?project= deep-link → first project. The ?project= param is
+    // consumed in the SAME effect that loads the project list, so it can never
+    // race the fetch.
+    let want=null, fromQuery=false;
+    if(initialProjectId){ want=initialProjectId; }
+    else { try{want=new URLSearchParams(window.location.search).get("project"); fromQuery=!!want;}catch(_){} }
     let pjs=[];
     try{const res=await window.storage.get("meta:projects");
       if(res?.value){pjs=JSON.parse(res.value);setProjects(pjs);}
@@ -7579,11 +7583,12 @@ export default function MetaLab(){
       // NEVER silently fall back to the first project — show the explicit
       // no-access panel instead (rendered in the main content area).
       else setDeepLinkMiss(want);
-      // Drop the param once consumed so refresh / project switching doesn't snap back.
-      try{window.history.replaceState({},"",window.location.pathname);}catch(_){}
+      // Drop a legacy ?project= query once consumed so refresh / switching doesn't
+      // snap back. Route-param opens keep the URL (it IS the durable address).
+      if(fromQuery){ try{window.history.replaceState({},"",window.location.pathname);}catch(_){} }
     } else if(pjs.length){setActiveId(pjs[0].id);}
     setLoading(false);
-  })();},[]);
+  })();},[initialProjectId]);
 
   // Debouncing is handled inside window.storage.set (serverStorage.js).
   // Calling set() directly here lets flushStorage() drain any pending save
