@@ -87,3 +87,17 @@ The production-preferred flow is a **token-based reset**:
 This avoids any human relaying the credential and gives the user control. Wiring it
 requires a token model + a public reset route (outside this prompt's file ownership),
 but the email transport here is ready to carry the link once those exist.
+
+---
+
+## Invite emails (prompt 9)
+
+`renderInviteEmail` in `services/emailService.js` builds the META·LAB-styled invitation (project name,
+inviter, role summary, CTA link, expiration note; every interpolated value escaped). It is sent
+**best-effort** from `addMember` when SMTP is configured and `appSettings.emailInvitesEnabled` is not
+false — a send failure never fails the request. When email is unconfigured, the inviter gets a copyable
+invite link in the 201 response instead (`invite.link`, with `emailConfigured:false`), following the
+contact-reply fallback precedent. Token links follow the hash-only storage rule above (single-use,
+time-limited via `metaSiftSettings.inviteExpiryDays`, SHA-256 hash at rest). `sendEmail` records
+`EMAIL_SENT` / `EMAIL_FAILED` UsageEvents for the ops email metrics (not_configured/no_recipient
+early-outs are not counted as failures).

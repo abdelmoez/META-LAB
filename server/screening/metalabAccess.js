@@ -35,8 +35,9 @@ export function mlAccessFromMember(m) {
  */
 export async function getMetaLabMemberAccess(metaLabProjectId, userId) {
   if (!metaLabProjectId || !userId) return null;
+  // Soft-deleted workspaces grant nothing (prompt9) — membership dies with them.
   const screenProjects = await prisma.screenProject.findMany({
-    where: { linkedMetaLabProjectId: metaLabProjectId },
+    where: { linkedMetaLabProjectId: metaLabProjectId, deletedAt: null },
     select: { id: true, ownerId: true, title: true },
   });
   if (!screenProjects.length) return null;
@@ -82,7 +83,8 @@ export async function listSharedMetaLabAccess(userId) {
   if (!memberships.length) return [];
 
   const screenProjects = await prisma.screenProject.findMany({
-    where: { id: { in: memberships.map(m => m.projectId) }, linkedMetaLabProjectId: { not: null } },
+    // deletedAt:null — soft-deleted workspaces stop granting shared ML access (prompt9).
+    where: { id: { in: memberships.map(m => m.projectId) }, linkedMetaLabProjectId: { not: null }, deletedAt: null },
     select: { id: true, ownerId: true, title: true, linkedMetaLabProjectId: true },
   });
   const spById = Object.fromEntries(screenProjects.map(s => [s.id, s]));

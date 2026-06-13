@@ -105,7 +105,20 @@ const DEFAULTS = {
   maintenanceBanner: '',
   seoTitle:          '',
   seoDescription:    '',
+  // prompt9: ops-controlled landing animation speed ('off'|'slow'|'normal'|
+  // 'fast'). The client-side default is the real fallback — the server
+  // never backfills this key into existing landingContent rows.
+  animationSpeed:    'normal',
 };
+
+/* ─── Animation speed (prompt9) ──────────────────────────────────────────
+   Ops-controlled pace for the EXISTING motion only (Motion Restraint
+   Budget: scale, never add). rate multiplies time progression (slow 0.6×,
+   fast 1.6×); CSS durations use --lp-dur = 1/rate via calc().
+   PRECEDENCE: prefers-reduced-motion ALWAYS wins; 'off' maps onto the same
+   static compositions as reduced motion. */
+const ANIM_SPEED_IDS = ['off', 'slow', 'normal', 'fast'];
+const ANIM_RATE = { slow: 0.6, normal: 1, fast: 1.6 };
 
 /* ─── Hook: fetch public settings (non-blocking) ─────────────────────── */
 function useLandingSettings() {
@@ -264,7 +277,7 @@ const CANVAS_ROWS = [
 ];
 const CANVAS_POOL = { lo: 0.522, hi: 0.678, es: 0.600 };
 
-function HeroCanvas({ reduced }) {
+function HeroCanvas({ reduced, speed = 1 }) {
   const canvasRef = useRef(null);
 
   useEffect(() => {
@@ -272,6 +285,11 @@ function HeroCanvas({ reduced }) {
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+
+    /* Ops speed multiplier (prompt9): scales the EXISTING time constants
+       only — convergence window, stagger, twinkle/pulse periods, easing.
+       reduced (OS preference) still short-circuits to the static frame. */
+    const rate = Number(speed) > 0 ? Number(speed) : 1;
 
     let colors = readCanvasColors();
     let raf = 0;
@@ -348,8 +366,8 @@ function HeroCanvas({ reduced }) {
           row: i % CANVAS_ROWS.length,
           frac: Math.random(),
           jit: (Math.random() - 0.5) * 5,
-          k: 0.0022 + Math.random() * 0.0030,        // attraction strength
-          delay: Math.random() * 9000,               // staggered departure
+          k: (0.0022 + Math.random() * 0.0030) * rate, // attraction strength
+          delay: (Math.random() * 9000) / rate,        // staggered departure
           tx: 0, ty: 0,
         });
       }
@@ -364,8 +382,9 @@ function HeroCanvas({ reduced }) {
       const lineA  = day ? 0.34 : 0.30;
       const ptBase = day ? 0.55 : 0.85;
 
-      /* Global convergence progress 0→1 over ~26s (the slow reveal). */
-      const prog = final ? 1 : Math.min(1, t / 26000);
+      /* Global convergence progress 0→1 over ~26s at normal speed
+         (the slow reveal) — rate-scaled by the ops setting. */
+      const prog = final ? 1 : Math.min(1, (t * rate) / 26000);
 
       /* Plot scaffold: CI rows strengthen as records arrive. */
       if (rows.length) {
@@ -389,7 +408,7 @@ function HeroCanvas({ reduced }) {
         /* Pooled diamond lands last, with a soft breathing glow. */
         const da = Math.max(0, Math.min(1, prog * 1.8 - 0.8));
         if (pool && da > 0.01) {
-          const pulse = final ? 0.5 : 0.5 + 0.28 * Math.sin(t / 1700);
+          const pulse = final ? 0.5 : 0.5 + 0.28 * Math.sin((t * rate) / 1700);
           const grd = ctx.createRadialGradient(pool.xm, pool.y, 0, pool.xm, pool.y, 46);
           grd.addColorStop(0, rgba(gold, (day ? 0.20 : 0.26) * da * (0.55 + pulse * 0.45)));
           grd.addColorStop(1, rgba(gold, 0));
@@ -423,7 +442,7 @@ function HeroCanvas({ reduced }) {
           if (p.x < -4) p.x = W + 4; else if (p.x > W + 4) p.x = -4;
           if (p.y < -4) p.y = H + 4; else if (p.y > H + 4) p.y = -4;
         }
-        const twinkle = final ? 1 : 0.78 + 0.22 * Math.sin(t / 2400 + p.tw);
+        const twinkle = final ? 1 : 0.78 + 0.22 * Math.sin((t * rate) / 2400 + p.tw);
         let a = p.a * ptBase * twinkle;
         if (p.conv) {
           const d = Math.hypot(p.tx - p.x, p.ty - p.y);
@@ -492,7 +511,9 @@ function HeroCanvas({ reduced }) {
       window.removeEventListener('metalab:theme-change', onTheme);
       window.removeEventListener('resize', onResize);
     };
-  }, [reduced]);
+    // speed in the deps so ops changes apply on next visit/refresh
+    // without a code change (prompt9 Task 4).
+  }, [reduced, speed]);
 
   return (
     <canvas
@@ -567,7 +588,7 @@ function ForestPlotClimax({ active }) {
             const xm  = toX(s.es);
             const bsz = boxSize(s.w);
             return (
-              <g key={s.label} className="lp-fp-row" style={{ animationDelay: `${0.1 + i * 0.13}s` }}>
+              <g key={s.label} className="lp-fp-row" style={{ animationDelay: `calc(${(0.1 + i * 0.13).toFixed(2)}s * var(--lp-dur, 1))` }}>
                 <text x={0} y={y + 3.5}
                   style={{ fontSize: 9.5, fontFamily: FONT, fill: C.txt2 }}>
                   {s.label}
@@ -600,7 +621,7 @@ function ForestPlotClimax({ active }) {
             const xm  = toX(FP_POOLED.es);
             const dh  = 8;
             return (
-              <g className="lp-fp-pool" style={{ animationDelay: '0.85s' }}>
+              <g className="lp-fp-pool" style={{ animationDelay: 'calc(0.85s * var(--lp-dur, 1))' }}>
                 <text x={0} y={y + 4}
                   style={{ fontSize: 9.5, fontFamily: FONT, fill: C.txt, fontWeight: 600 }}>
                   Pooled estimate
@@ -660,8 +681,8 @@ const PRISMA_STAGES = [
   { label: 'Studies included',   value: 38,   icon: 'check'    },
 ];
 
-function PrismaStageRow({ stage, run, reduced, last, delayIdx }) {
-  const val = useCountUp(stage.value, run, reduced, 1300 + delayIdx * 250);
+function PrismaStageRow({ stage, run, reduced, last, delayIdx, speed = 1 }) {
+  const val = useCountUp(stage.value, run, reduced, (1300 + delayIdx * 250) / (Number(speed) > 0 ? Number(speed) : 1));
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
       <span style={{
@@ -964,7 +985,7 @@ function SpineSection({ num, id, label, alt, children, wide }) {
 }
 
 /* ─── Evidence climax block: self-drawing plot + PRISMA count-up ─────── */
-function EvidenceClimax({ reduced }) {
+function EvidenceClimax({ reduced, speed = 1 }) {
   const [ref, inView] = useInView(0.25, '0px 0px -8% 0px');
   const active = reduced || inView;
   return (
@@ -988,6 +1009,7 @@ function EvidenceClimax({ reduced }) {
               stage={st}
               run={active}
               reduced={reduced}
+              speed={speed}
               delayIdx={i}
               last={i === PRISMA_STAGES.length - 1}
             />
@@ -1050,6 +1072,14 @@ export default function Landing() {
   const { user } = useAuth();
   const settings = useLandingSettings();
   const reduced  = usePrefersReducedMotion();
+
+  /* Ops animation speed (prompt9). prefers-reduced-motion ALWAYS wins:
+     reduced || 'off' → the existing static compositions ('motionOff').
+     rate scales JS time constants; --lp-dur (= 1/rate) scales CSS durations. */
+  const speedSetting = ANIM_SPEED_IDS.includes(settings.animationSpeed) ? settings.animationSpeed : 'normal';
+  const motionOff    = reduced || speedSetting === 'off';
+  const rate         = motionOff ? 1 : (ANIM_RATE[speedSetting] || 1);
+  const durMult      = +(1 / rate).toFixed(4); // slow ≈ 1.6667 · normal 1 · fast 0.625
 
   useEffect(() => {
     if (settings.seoTitle) document.title = settings.seoTitle;
@@ -1125,7 +1155,10 @@ export default function Landing() {
   };
 
   return (
-    <div style={{ minHeight: '100vh', background: C.bg, fontFamily: FONT, color: C.txt }}>
+    <div
+      className={motionOff ? 'lp-motion-off' : undefined}
+      style={{ minHeight: '100vh', background: C.bg, fontFamily: FONT, color: C.txt, '--lp-dur': durMult }}
+    >
       <style>{`
         html { scroll-behavior: smooth; }
 
@@ -1154,14 +1187,14 @@ export default function Landing() {
           from { opacity: 0; transform: translateY(14px); }
           to   { opacity: 1; transform: none; }
         }
-        .lp-fade-up { animation: lpFadeUp 0.55s cubic-bezier(0.22, 1, 0.36, 1) both; }
+        .lp-fade-up { animation: lpFadeUp calc(0.55s * var(--lp-dur, 1)) cubic-bezier(0.22, 1, 0.36, 1) both; }
 
         /* ── Evidence spine ──────────────────────────────────────────── */
         .lp-sp-line {
           position: absolute; left: 14px; top: 0; bottom: 0; width: 1px;
           background: linear-gradient(to bottom, ${alpha(C.acc, 0.45)}, ${alpha(C.acc, 0.10)});
           transform: scaleY(0); transform-origin: top;
-          transition: transform 1.2s cubic-bezier(0.22, 1, 0.36, 1);
+          transition: transform calc(1.2s * var(--lp-dur, 1)) cubic-bezier(0.22, 1, 0.36, 1);
         }
         .lp-sp-sec.in-view .lp-sp-line { transform: scaleY(1); }
         .lp-sp-node {
@@ -1173,13 +1206,13 @@ export default function Landing() {
           letter-spacing: 0.04em;
           display: flex; align-items: center; justify-content: center;
           opacity: 0; transform: scale(0.55);
-          transition: opacity 0.5s ease 0.15s, transform 0.5s cubic-bezier(0.22, 1, 0.36, 1) 0.15s;
+          transition: opacity calc(0.5s * var(--lp-dur, 1)) ease calc(0.15s * var(--lp-dur, 1)), transform calc(0.5s * var(--lp-dur, 1)) cubic-bezier(0.22, 1, 0.36, 1) calc(0.15s * var(--lp-dur, 1));
           box-shadow: 0 0 0 5px ${alpha(C.bg, 0.01)};
         }
         .lp-sp-sec.in-view .lp-sp-node { opacity: 1; transform: scale(1); }
         .lp-sp-body {
           opacity: 0; transform: translateY(14px);
-          transition: opacity 0.7s ease 0.1s, transform 0.7s cubic-bezier(0.22, 1, 0.36, 1) 0.1s;
+          transition: opacity calc(0.7s * var(--lp-dur, 1)) ease calc(0.1s * var(--lp-dur, 1)), transform calc(0.7s * var(--lp-dur, 1)) cubic-bezier(0.22, 1, 0.36, 1) calc(0.1s * var(--lp-dur, 1));
         }
         .lp-sp-sec.in-view .lp-sp-body { opacity: 1; transform: none; }
 
@@ -1194,15 +1227,15 @@ export default function Landing() {
         }
         .lp-fpz .lp-fp-row  { opacity: 0; }
         .lp-fpz .lp-fp-pool { opacity: 0; transform-box: fill-box; transform-origin: center; }
-        .lp-fpz.in-view .lp-fp-row  { animation: lpRowIn 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
-        .lp-fpz.in-view .lp-fp-pool { animation: lpPoolIn 0.5s ease-out forwards; }
+        .lp-fpz.in-view .lp-fp-row  { animation: lpRowIn calc(0.6s * var(--lp-dur, 1)) cubic-bezier(0.22, 1, 0.36, 1) forwards; }
+        .lp-fpz.in-view .lp-fp-pool { animation: lpPoolIn calc(0.5s * var(--lp-dur, 1)) ease-out forwards; }
 
         /* ── Linked-products beam pulse ──────────────────────────────── */
         @keyframes lpBeam {
           from { stroke-dashoffset: 512; }
           to   { stroke-dashoffset: 0; }
         }
-        .lp-beam-pulse { animation: lpBeam 6.4s linear infinite; }
+        .lp-beam-pulse { animation: lpBeam calc(6.4s * var(--lp-dur, 1)) linear infinite; }
 
         /* ── Reduced motion: static final compositions ───────────────── */
         @media (prefers-reduced-motion: reduce) {
@@ -1217,6 +1250,20 @@ export default function Landing() {
           .lp-beam-pulse { animation: none !important; }
           .lp-btn-primary:hover, .lp-val-card:hover, .lp-link-card:hover { transform: none !important; }
         }
+
+        /* ── Ops animationSpeed:'off' — same static compositions as the
+           reduced-motion block above (canvas/count-ups are handled in JS
+           via motionOff). The @media block stays unconditional, so the OS
+           preference always wins regardless of the ops setting. ────────── */
+        .lp-motion-off .lp-fade-up, .lp-motion-off .lp-fpz .lp-fp-row, .lp-motion-off .lp-fpz .lp-fp-pool {
+          animation: none !important;
+          opacity: 1 !important;
+          transform: none !important;
+        }
+        .lp-motion-off .lp-sp-line { transform: scaleY(1) !important; transition: none !important; }
+        .lp-motion-off .lp-sp-node, .lp-motion-off .lp-sp-body { opacity: 1 !important; transform: none !important; transition: none !important; }
+        .lp-motion-off .lp-beam-pulse { animation: none !important; }
+        .lp-motion-off .lp-btn-primary:hover, .lp-motion-off .lp-val-card:hover, .lp-motion-off .lp-link-card:hover { transform: none !important; }
 
         /* ── Responsive ──────────────────────────────────────────────── */
         @media (max-width: 1024px) {
@@ -1387,7 +1434,7 @@ export default function Landing() {
         position: 'relative', overflow: 'hidden', background: C.bg,
         minHeight: 'min(88vh, 840px)', display: 'flex', alignItems: 'center',
       }}>
-        <HeroCanvas reduced={reduced} />
+        <HeroCanvas reduced={motionOff} speed={rate} />
 
         {/* Readability gradient over the canvas (text side) + bottom fade */}
         <div aria-hidden="true" style={{
@@ -1619,7 +1666,7 @@ export default function Landing() {
           Five studies, weighted and pooled under a random-effects model —
           the same plot META·LAB draws from your extracted data.
         </p>
-        <EvidenceClimax reduced={reduced} />
+        <EvidenceClimax reduced={motionOff} speed={rate} />
       </SpineSection>
 
       {/* 04 · Linked workspaces — META·LAB ⇄ META·SIFT */}

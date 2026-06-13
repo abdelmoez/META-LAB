@@ -1,8 +1,34 @@
 # META·LAB Test Report
 
-**Generated:** 2026-06-11 (prompt8 landing/ops/overflow/chat-placement upgrade; earlier sections below unchanged)
+**Generated:** 2026-06-12 (prompt9 notifications/invites/exports/delete/ops upgrade; earlier sections below unchanged)
 **Framework:** Vitest v2.1.9
 **Working directory:** `H:/META-LAB/META-LAB`
+
+---
+
+## 0·····. prompt9 — notifications dismiss-on-click, invites, exports, project delete, ops expansion (2026-06-12)
+
+**Full repo suite (`npx vitest run --no-file-parallelism`, server up): 906 pass / 6 pre-existing
+`serverStorage.test.js` fake-timer failures (quarantined — identical set and count since prompt1) / 7 skips
+(919 total, 39 files).** META·SIFT screening suite: **272/272 pass** (+23 `prompt9.test.js`).
+`npm run build` exit 0 at v2.7.0 (pre-existing monolith esbuild JSX advisory + >500 kB chunk note only).
+
+| Suite | Baseline (pre-prompt9) | Now | Δ |
+|---|---|---|---|
+| Screening (`tests/screening/`, server up) | 249/249 | **272/272** | +23 `integration/prompt9.test.js` |
+| Integration (`tests/integration/`) | 120 pass / 7 skip | **120 pass / 7 skip** | unchanged |
+| Full repo (server up) | 883 pass / 6 fail / 7 skip | **906 pass / 6 fail / 7 skip** | no net loss; failure set identical |
+
+**Flipped assertions: NONE.** Every pre-prompt9 test passes unchanged. Soft delete kept both legacy wire
+contracts (`{deleted:true}` and 204); the notification `opened` endpoint is additive next to `/read` +
+`/dismiss`; new settings default to their previous effective behavior (`registrationOpen` open,
+`maintenanceMode` off, `exportTools` on), so no existing path changed response codes.
+
+Inventory and per-test detail for `prompt9.test.js` (23 tests: opened-idempotency, invite token lifecycle,
+leave, soft delete + cascade + resurrection guard, one-way SIFT delete, overview `linkedMetaLab`, RIS export,
+ops controls/metrics/audit, existence-hiding regression) live in `tests/screening/report.md` (prompt9 section).
+Server-side smoke `smoke-b2` additionally covered invite expiry (410), admin ML restore of owner-deleted
+projects, and exportTools-flag default-on (55/55).
 
 ---
 

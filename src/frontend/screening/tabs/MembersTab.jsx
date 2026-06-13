@@ -15,14 +15,19 @@
  * The owner row cannot be reliably detected from the payload, so leader rows
  * are visually marked and rely on backend rejection.
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import {
   Loading, ErrorBanner, Button, Badge, Avatar, Toggle, Modal, Card,
   Field, fieldLabel, fieldInput, EmptyState,
 } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
+import { useAuth } from '../../context/AuthContext.jsx';
 import { PERMISSION_PRESETS, ASSIGNABLE_PRESETS } from '../../../research-engine/screening/permissionPresets.js';
+
+// Client-side email format gate (the server validates too) — prompt9 Task 2.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // ── role / status presentation ──────────────────────────────────────────────
 
@@ -104,6 +109,8 @@ const selectStyle = {
 // ── MembersTab ──────────────────────────────────────────────────────────────
 
 export default function MembersTab({ pid, project, access, refreshProject }) {
+  const { user } = useAuth();
+  const navigate = useNavigate();
   const [members, setMembers] = useState([]);
   const [isLeader, setIsLeader] = useState(false);
   const [isOwner, setIsOwner] = useState(false);
@@ -119,6 +126,9 @@ export default function MembersTab({ pid, project, access, refreshProject }) {
   // modals
   const [showAdd, setShowAdd] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(null); // member object
+  const [confirmLeave, setConfirmLeave] = useState(false);  // self-leave (prompt9)
+  const [leaving, setLeaving] = useState(false);
+  const [leaveErr, setLeaveErr] = useState('');
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -172,6 +182,20 @@ export default function MembersTab({ pid, project, access, refreshProject }) {
     }
   }
 
+  // Self-service leave (prompt9) — POST /projects/:pid/leave, then back to the
+  // dashboard. The owner never sees this affordance (server 400s anyway).
+  async function handleLeave() {
+    setLeaving(true);
+    setLeaveErr('');
+    try {
+      await screeningApi.leaveProject(pid);
+      navigate('/sift-beta');
+    } catch (e) {
+      setLeaveErr(e.message || 'Could not leave the project.');
+      setLeaving(false);
+    }
+  }
+
   // ── render ────────────────────────────────────────────────────────────────
 
   if (loading) return <Loading label="Loading members…" />;
@@ -220,18 +244,25 @@ export default function MembersTab({ pid, project, access, refreshProject }) {
         </EmptyState>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {members.map(m => (
-            <MemberRow
-              key={m.id}
-              member={m}
-              canManage={canManage}
-              amOwner={amOwner}
-              busy={!!busy[m.id]}
-              rowErr={rowErr[m.id]}
-              onPatch={(body) => patchMember(m.id, body)}
-              onRemove={() => setConfirmRemove(m)}
-            />
-          ))}
+          {members.map(m => {
+            // Own row of a NON-owner gets a self-service "Leave project"
+            // affordance (prompt9). The owner row never does.
+            const isSelf = !!(m.userId && user?.id && m.userId === user.id);
+            const isOwnerRow = !!m.isOwner || m.role === 'owner';
+            return (
+              <MemberRow
+                key={m.id}
+                member={m}
+                canManage={canManage}
+                amOwner={amOwner}
+                busy={!!busy[m.id]}
+                rowErr={rowErr[m.id]}
+                onPatch={(body) => patchMember(m.id, body)}
+                onRemove={() => setConfirmRemove(m)}
+                onLeave={isSelf && !isOwnerRow ? () => { setLeaveErr(''); setConfirmLeave(true); } : undefined}
+              />
+            );
+          })}
         </div>
       )}
 
@@ -245,24 +276,62 @@ export default function MembersTab({ pid, project, access, refreshProject }) {
         />
       )}
 
-      {/* Remove confirm modal */}
-      {confirmRemove && (
-        <Modal onClose={() => setConfirmRemove(null)} width={420}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 10 }}>Remove member</div>
+      {/* Remove / revoke-invite confirm modal (pending rows = unclaimed
+          invites; removal of the row IS the revoke — prompt9 Task 2) */}
+      {confirmRemove && (() => {
+        const isInvite = confirmRemove.status === 'pending';
+        return (
+          <Modal onClose={() => setConfirmRemove(null)} width={420}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 10 }}>
+              {isInvite ? 'Revoke invite' : 'Remove member'}
+            </div>
+            <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.6, marginBottom: 6 }}>
+              {isInvite ? (
+                <>
+                  Revoke this invite?{' '}
+                  <span style={{ color: C.txt, fontWeight: 600 }}>{confirmRemove.email || confirmRemove.name}</span>{' '}
+                  will no longer be able to join this project, and their invite link stops working.
+                </>
+              ) : (
+                <>
+                  Remove{' '}
+                  <span style={{ color: C.txt, fontWeight: 600 }}>
+                    {confirmRemove.name || confirmRemove.email}
+                  </span>{' '}
+                  from this project? They will lose access and their screening assignments.
+                </>
+              )}
+            </div>
+            {rowErr[confirmRemove.id] && (
+              <div style={{ fontSize: 12, color: C.red, marginBottom: 6 }}>{rowErr[confirmRemove.id]}</div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}>
+              <Button variant="ghost" onClick={() => setConfirmRemove(null)} disabled={busy[confirmRemove.id]}>Cancel</Button>
+              <Button variant="danger" onClick={() => handleRemove(confirmRemove)} disabled={busy[confirmRemove.id]}>
+                {busy[confirmRemove.id]
+                  ? (isInvite ? 'Revoking…' : 'Removing…')
+                  : (isInvite ? 'Revoke invite' : 'Remove')}
+              </Button>
+            </div>
+          </Modal>
+        );
+      })()}
+
+      {/* Leave-project confirm modal (prompt9 — own row, non-owner) */}
+      {confirmLeave && (
+        <Modal onClose={() => !leaving && setConfirmLeave(false)} width={420}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 10 }}>Leave project</div>
           <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.6, marginBottom: 6 }}>
-            Remove{' '}
-            <span style={{ color: C.txt, fontWeight: 600 }}>
-              {confirmRemove.name || confirmRemove.email}
-            </span>{' '}
-            from this project? They will lose access and their screening assignments.
+            You will lose access to this workspace — its records, your screening view,
+            and the project chat. A project manager can add you back later.
           </div>
-          {rowErr[confirmRemove.id] && (
-            <div style={{ fontSize: 12, color: C.red, marginBottom: 6 }}>{rowErr[confirmRemove.id]}</div>
+          {leaveErr && (
+            <div style={{ fontSize: 12, color: C.red, marginBottom: 6 }}>{leaveErr}</div>
           )}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}>
-            <Button variant="ghost" onClick={() => setConfirmRemove(null)} disabled={busy[confirmRemove.id]}>Cancel</Button>
-            <Button variant="danger" onClick={() => handleRemove(confirmRemove)} disabled={busy[confirmRemove.id]}>
-              {busy[confirmRemove.id] ? 'Removing…' : 'Remove'}
+            <Button variant="ghost" onClick={() => setConfirmLeave(false)} disabled={leaving}>Cancel</Button>
+            <Button variant="danger" onClick={handleLeave} disabled={leaving}>
+              {leaving ? 'Leaving…' : 'Leave project'}
             </Button>
           </div>
         </Modal>
@@ -281,12 +350,13 @@ function LockNote({ children }) {
   );
 }
 
-function MemberRow({ member, canManage, amOwner, busy, rowErr, onPatch, onRemove }) {
+function MemberRow({ member, canManage, amOwner, busy, rowErr, onPatch, onRemove, onLeave }) {
   const m = member;
   const [showAllPerms, setShowAllPerms] = useState(false);
   const display = m.name || m.email || 'Unknown';
   const isOwnerRow  = !!m.isOwner || m.role === 'owner';
   const isLeaderRow = !isOwnerRow && (m.isLeader || m.role === 'leader');
+  const isPending   = m.status === 'pending';
   const status = STATUS_META[m.status] || STATUS_META.inactive;
   const roleColor = ROLE_COLOR[m.role] || C.muted;
 
@@ -355,16 +425,35 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, onPatch, onRemove
               label={m.status === 'pending' ? undefined : (m.status === 'active' ? 'Active' : 'Inactive')}
             />
 
-            <Button variant="ghost" onClick={onRemove} disabled={busy} style={{ padding: '6px 12px', fontSize: 12 }}>
-              Remove
+            <Button
+              variant="ghost"
+              onClick={onRemove}
+              disabled={busy}
+              title={isPending ? 'Revoke this pending invite' : undefined}
+              style={{ padding: '6px 12px', fontSize: 12 }}
+            >
+              {isPending ? 'Revoke invite' : 'Remove'}
             </Button>
           </div>
         ) : canManage && locked ? (
           <LockNote>{lockMsg}</LockNote>
-        ) : (
+        ) : !onLeave ? (
           <span style={{ fontSize: 11, fontFamily: MONO, color: C.muted }}>
             joined {fmtDate(m.joinedAt)}
           </span>
+        ) : null}
+
+        {/* Own row, non-owner — self-service exit (prompt9) */}
+        {onLeave && (
+          <Button
+            variant="ghost"
+            onClick={onLeave}
+            disabled={busy}
+            title="Leave this project"
+            style={{ padding: '6px 12px', fontSize: 12, color: C.red, borderColor: alpha(C.red, '50') }}
+          >
+            Leave project
+          </Button>
         )}
       </div>
 
@@ -483,21 +572,30 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState('');
   const [pendingNote, setPendingNote] = useState(false);
+  // Invite payload from the 201 response (pending only, prompt9 Task 2):
+  // { link, emailConfigured, emailSent, expiresAt } + the invited email.
+  const [invite, setInvite] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const linkInputRef = useRef(null);
 
   async function submit(e) {
     e?.preventDefault();
     const trimmed = email.trim();
     if (!trimmed) { setErr('Email is required.'); return; }
+    if (!EMAIL_RE.test(trimmed)) { setErr('Enter a valid email address.'); return; }
     setSubmitting(true);
     setErr('');
     setPendingNote(false);
+    setInvite(null);
+    setCopied(false);
     try {
       const res = await screeningApi.addMember(pid, { email: trimmed, preset, modules });
       await onAdded();
       if (res?.pending) {
-        // User not yet registered — show note, keep modal open briefly so the
-        // leader sees confirmation, then reset for another add.
+        // User not yet registered — show the invite panel, keep the modal open
+        // so the leader can copy the link, and reset the field for another add.
         setPendingNote(true);
+        if (res.invite) setInvite({ ...res.invite, email: trimmed });
         setEmail('');
       } else {
         onClose();
@@ -507,6 +605,21 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function copyLink() {
+    if (!invite?.link) return;
+    try {
+      await navigator.clipboard.writeText(invite.link);
+      setCopied(true);
+    } catch {
+      // Clipboard API unavailable (http / permissions) — select() fallback.
+      try {
+        const el = linkInputRef.current;
+        if (el) { el.focus(); el.select(); document.execCommand('copy'); setCopied(true); }
+      } catch { /* leave the link selected for manual copy */ }
+    }
+    setTimeout(() => setCopied(false), 2000);
   }
 
   return (
@@ -562,9 +675,52 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
         {pendingNote && (
           <div style={{
             marginTop: 14, background: alpha(C.ylw, '14'), border: `1px solid ${alpha(C.ylw, '40')}`,
-            borderRadius: 6, padding: '9px 12px', color: C.ylw, fontSize: 12, lineHeight: 1.5,
+            borderRadius: 6, padding: '10px 12px', fontSize: 12, lineHeight: 1.5,
           }}>
-            Invite created — user not yet registered. They will join once they sign up with this email.
+            <div style={{ color: C.ylw, fontWeight: 600, marginBottom: invite ? 6 : 0 }}>
+              {invite
+                ? (invite.emailSent
+                    ? `Invite created — an email was sent to ${invite.email}.`
+                    : invite.emailConfigured
+                      ? `Invite created, but the email to ${invite.email} could not be sent.`
+                      : 'Invite created — email is not configured on this server.')
+                : 'Invite created — user not yet registered. They will join once they sign up with this email.'}
+            </div>
+            {invite && (
+              <>
+                <div style={{ color: C.txt2, marginBottom: 8 }}>
+                  {invite.emailSent
+                    ? 'You can also share this invite link directly:'
+                    : 'Share this invite link with them instead:'}
+                </div>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input
+                    ref={linkInputRef}
+                    readOnly
+                    value={invite.link || ''}
+                    onFocus={e => e.target.select()}
+                    style={{
+                      flex: 1, minWidth: 0, background: C.card, border: `1px solid ${C.brd2}`,
+                      borderRadius: 6, padding: '6px 9px', color: C.txt, fontSize: 11.5,
+                      fontFamily: MONO, outline: 'none',
+                    }}
+                  />
+                  <Button
+                    variant="ghost"
+                    type="button"
+                    onClick={copyLink}
+                    style={{ padding: '6px 12px', fontSize: 12, color: copied ? C.grn : undefined }}
+                  >
+                    {copied ? '✓ Copied' : 'Copy'}
+                  </Button>
+                </div>
+                {invite.expiresAt && (
+                  <div style={{ color: C.muted, marginTop: 7, fontSize: 11.5 }}>
+                    Link expires {fmtDate(invite.expiresAt)}.
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
 

@@ -36,12 +36,17 @@ async function authReq(path, opts = {}) {
  * @param {string} email
  * @param {string} password
  * @param {string} [name]
+ * @param {string} [inviteToken] — optional invite token (prompt9 Task 2);
+ *   sent additively in the JSON body so the server can claim the pending
+ *   invite by token even when the registered email differs from the invite.
  * @returns {Promise<{ user: object }>}
  */
-export async function register(email, password, name) {
+export async function register(email, password, name, inviteToken) {
+  const payload = { email, password, name };
+  if (inviteToken) payload.inviteToken = inviteToken;
   return authReq("/register", {
     method: "POST",
-    body: JSON.stringify({ email, password, name }),
+    body: JSON.stringify(payload),
   });
 }
 

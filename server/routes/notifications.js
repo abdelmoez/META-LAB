@@ -14,6 +14,7 @@ import {
   getUnreadCount,
   markRead,
   dismissNotification,
+  markOpened,
   markAllRead,
 } from '../controllers/notificationsController.js';
 import { requireAuth } from '../middleware/auth.js';
@@ -26,6 +27,7 @@ router.get('/',               listNotifications);
 router.get('/unread-count',   getUnreadCount);
 router.post('/:id/read',      markRead);
 router.post('/:id/dismiss',   dismissNotification);
+router.post('/:id/opened',    markOpened);   // click contract: read+dismiss+clicked in one call (prompt9)
 router.post('/mark-all-read', markAllRead);
 
 export default router;

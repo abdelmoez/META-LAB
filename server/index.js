@@ -13,6 +13,7 @@ import rateLimit from 'express-rate-limit';
 import { requestLogger } from './middleware/requestLogger.js';
 import { errorHandler }  from './middleware/errorHandler.js';
 import { requireAuth }   from './middleware/auth.js';
+import { maintenanceGate } from './middleware/maintenance.js';
 
 import authRouter        from './routes/auth.js';
 import projectsRouter    from './routes/projects.js';
@@ -27,6 +28,7 @@ import settingsRouter    from './routes/settings.js';
 import adminRouter       from './routes/admin.js';
 import screeningRouter    from './routes/screening.js';
 import notificationsRouter from './routes/notifications.js';
+import invitesRouter      from './routes/invites.js';
 import eventsRouter       from './routes/events.js';
 
 import { initDefaultSettings } from './controllers/settingsController.js';
@@ -68,6 +70,15 @@ const contactLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// ── Rate limiter for public invite endpoints (prompt9; 30 req / 15 min in prod) ─
+const inviteLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 30 : 1000,
+  message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // ── Core middleware ────────────────────────────────────────────────────────────
 // CORS origin is env-driven for deployment (CORS_ORIGIN, then APP_BASE_URL),
 // falling back to the local Vite dev server. credentials:true is required so the
@@ -77,6 +88,14 @@ app.use(cors({ origin: ORIGIN, credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
 app.use(requestLogger);
+
+// ── Maintenance mode gate (prompt9) ───────────────────────────────────────────
+// AFTER cookieParser (needs the session cookie for the staff bypass), BEFORE
+// every API router. Exempts /api/health, /api/version, /api/settings/public,
+// /api/auth/*, /api/admin/*, /api/events; admin|mod sessions pass; everyone
+// else gets 503 { error: <maintenanceMessage>, maintenance: true } while
+// appSettings.maintenanceMode === true. 10s-TTL settings cache; default off.
+app.use(maintenanceGate);
 
 // ── Health check (public) ─────────────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
@@ -103,6 +122,13 @@ app.use('/api/validation',           validationRouter);
 // Bell polling endpoint — own mount, NEVER under the rate-limited /api/auth
 // or /api/admin routers (requireAuth applied inside the router).
 app.use('/api/notifications',        notificationsRouter);
+
+// ── Public invite endpoints (prompt9) — token landing + accept. Own mount with
+// a dedicated limiter. MUST be mounted BEFORE the bare '/api' importExport
+// router below: that router applies requireAuth at router level and would 401
+// every unauthenticated /api/* request, killing the pre-auth invite landing.
+app.use('/api/invites', inviteLimiter, invitesRouter);
+
 app.use('/api',                      importExportRouter);  // /api/import/... and /api/export/...
 
 // ── Admin routes (requireAuth + requireAdmin applied inside admin router) ──────

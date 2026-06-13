@@ -11,6 +11,13 @@ const DEFAULTS = {
     exportEnabled: true,
     maxProjectsPerUser: null,
     maxStudiesPerProject: null,
+    // ── prompt9 ops controls ──────────────────────────────────────────
+    notificationsEnabled: true,            // global notification kill-switch
+    emailInvitesEnabled: true,             // outbound invite emails on/off
+    defaultTheme: 'night',                 // site-wide default theme for new visitors
+    maintenanceMessage: 'META·LAB is temporarily down for maintenance. Please check back soon.',
+    exportFormats: ['png', 'svg', 'csv', 'json', 'ris', 'xls'],
+    projectDeletion: 'soft',               // deletion policy (read-mostly; hard delete disabled)
   }),
   landingContent: JSON.stringify({
     heroHeadline: 'A serious workspace for systematic reviews and meta-analysis.',
@@ -78,7 +85,22 @@ export async function getPublicSettings(req, res) {
       }
     }
 
-    return res.json(result);
+    // prompt9 — merge appSettings defaults so NEW keys (defaultTheme,
+    // maintenanceMessage, …) are always present even when the stored row
+    // predates them (initDefaultSettings never overwrites existing rows).
+    let appDefaults = {};
+    try { appDefaults = JSON.parse(DEFAULTS.appSettings); } catch { /* keep {} */ }
+    if (result.appSettings && typeof result.appSettings === 'object') {
+      result.appSettings = { ...appDefaults, ...result.appSettings };
+    }
+
+    // prompt9 — additive top-level conveniences for the frontend ThemeContext
+    // and maintenance banner (existing consumers of the nested keys unaffected).
+    return res.json({
+      ...result,
+      defaultTheme: result.appSettings?.defaultTheme || 'night',
+      maintenanceMessage: result.appSettings?.maintenanceMessage || appDefaults.maintenanceMessage || '',
+    });
   } catch (err) {
     console.error('[settings] getPublicSettings error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });

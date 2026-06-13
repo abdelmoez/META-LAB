@@ -6,11 +6,26 @@
  * Access to any of these endpoints requires owner-or-member access to the
  * project (null access → 404 to avoid leaking project existence).
  */
+import crypto from 'crypto';
 import { prisma } from '../db/client.js';
 import { getProjectAccess, ensureLeaderMember, findUserByEmail, writeAudit } from '../screening/access.js';
 import { PERMISSION_KEYS, GLOBAL_PERMISSION_KEYS, resolvePreset } from '../../src/research-engine/screening/permissionPresets.js';
 import { createNotification, notifyProjectInvite } from '../services/notificationService.js';
 import { emitToProjectMembers, emitToUsers } from '../realtime/bus.js';
+import { getMetaSiftSettings } from '../screening/settings.js';
+import { isEmailConfigured, sendEmail, renderInviteEmail } from '../services/emailService.js';
+import { isValidEmail } from '../utils/validators.js';
+import { recordUsage, USAGE } from '../utils/usage.js';
+
+/** Read the admin appSettings blob — best-effort, defaults to {}. */
+async function getAppSettings() {
+  try {
+    const row = await prisma.siteSetting.findUnique({ where: { key: 'appSettings' } });
+    return row ? JSON.parse(row.value || '{}') : {};
+  } catch {
+    return {};
+  }
+}
 
 // Optional `modules` values for addMember (prompt6 Task 6): which app(s) the
 // new member participates in, mapped onto the canView* flags atop the preset.
@@ -72,6 +87,9 @@ export async function addMember(req, res) {
 
     const { email } = req.body || {};
     if (!email || !String(email).trim()) return res.status(400).json({ error: 'email is required' });
+    // Format validation (prompt9) — BEFORE any lookup, so a malformed address
+    // can never become a permanent pending row.
+    if (!isValidEmail(String(email))) return res.status(400).json({ error: 'Invalid email address' });
     const normEmail = String(email).trim().toLowerCase();
     // Accept `preset` (prompt4 Task 9) or a legacy `role` (reviewer|viewer|leader,
     // which are also valid preset keys) for backward compatibility.
@@ -106,6 +124,19 @@ export async function addMember(req, res) {
     if (role === 'owner') return res.status(400).json({ error: 'Ownership cannot be assigned here' });
     // Link to a registered user when one exists; otherwise create a pending invite.
     const user = await findUserByEmail(normEmail);
+    // Invite token ceremony (prompt9) — pending invites get a single-use,
+    // expiring token. Only the SHA-256 hash is stored; the plaintext token
+    // appears ONLY in this response to the authorized inviter (never logged).
+    let inviteToken = null;
+    let inviteExpiresAt = null;
+    if (!user) {
+      inviteToken = crypto.randomBytes(32).toString('hex');
+      const siftSettings = await getMetaSiftSettings();
+      const days = Number.isFinite(siftSettings.inviteExpiryDays) && siftSettings.inviteExpiryDays > 0
+        ? siftSettings.inviteExpiryDays
+        : 14;
+      inviteExpiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+    }
     const member = await prisma.screenProjectMember.create({
       data: {
         projectId: req.params.pid,
@@ -119,6 +150,11 @@ export async function addMember(req, res) {
         canChat: !!perms.canChat,
         canResolveConflicts: !!perms.canResolveConflicts,
         ...Object.fromEntries(PERMISSION_KEYS.map(k => [k, !!perms[k]])),
+        ...(user ? {} : {
+          invitedByUserId: req.user.id,
+          inviteTokenHash: crypto.createHash('sha256').update(inviteToken).digest('hex'),
+          inviteExpiresAt,
+        }),
       },
     });
     await writeAudit(req.params.pid, req.user, 'MEMBER_ADDED', {
@@ -130,9 +166,54 @@ export async function addMember(req, res) {
     if (member.userId) {
       notifyProjectInvite({ member, project: access.project, actor: req.user, roleLabel: presetName }).catch(() => {});
     }
+    // Pending invite (prompt9): best-effort invite email + copyable-link
+    // fallback. Email failure NEVER fails the request — the response carries
+    // {emailConfigured, emailSent} so the inviter UI can show the right notice
+    // (contact-reply precedent). The plaintext token lives only in `link`.
+    let invite;
+    if (!user) {
+      const base = (process.env.APP_BASE_URL || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+      const link = `${base}/invite/${inviteToken}`;
+      const emailConfigured = isEmailConfigured();
+      let emailSent = false;
+      try {
+        const appSettings = await getAppSettings();
+        if (appSettings.emailInvitesEnabled !== false && emailConfigured) {
+          const inviterName = req.user.name || (req.user.email || '').split('@')[0] || 'A project manager';
+          const { html, text } = renderInviteEmail({
+            projectName: access.project.title,
+            inviterName,
+            roleLabel: presetName,
+            link,
+            expiresAt: inviteExpiresAt,
+          });
+          // EMAIL_SENT / EMAIL_FAILED usage is recorded inside sendEmail
+          // itself (prompt9, single chokepoint) — do NOT double-record here.
+          const result = await sendEmail({
+            to: normEmail,
+            subject: `You're invited to join "${access.project.title || 'a project'}" on META·LAB`,
+            html,
+            text,
+            context: 'invite',
+          });
+          emailSent = !!result.sent;
+        }
+      } catch { /* invite email is best-effort — never fail addMember */ }
+      invite = { link, emailConfigured, emailSent, expiresAt: inviteExpiresAt };
+      recordUsage({
+        type: USAGE.INVITE_CREATED,
+        userId: req.user.id,
+        screenProjectId: req.params.pid,
+        meta: { role, preset: presetName },
+      });
+    }
     // Realtime poke (Task 7) — emit-time resolution already includes the new member.
     emitToProjectMembers(req.params.pid, { type: 'members.changed' }, { exclude: req.user.id });
-    res.status(201).json({ member: shapeMember(member, access.project.ownerId), pending: !user });
+    res.status(201).json({
+      member: shapeMember(member, access.project.ownerId),
+      pending: !user,
+      ...(invite ? { invite } : {}),   // additive — only present for pending invites
+    });
   } catch (err) {
     console.error('[screening] addMember:', err.message);
     res.status(500).json({ error: 'Internal server error' });
@@ -284,6 +365,19 @@ export async function removeMember(req, res) {
     await writeAudit(req.params.pid, req.user, 'MEMBER_REMOVED', {
       entityType: 'member', entityId: member.id, details: { email: member.email },
     });
+    // Removing a pending row IS the invite-revoke path (prompt9) — the token
+    // hash dies with the row, so the invite link instantly turns 404.
+    if (member.status === 'pending') {
+      await writeAudit(req.params.pid, req.user, 'INVITE_REVOKED', {
+        entityType: 'member', entityId: member.id, details: { email: member.email },
+      });
+      recordUsage({
+        type: USAGE.INVITE_REVOKED,
+        userId: req.user.id,
+        screenProjectId: req.params.pid,
+        meta: { email: member.email },
+      });
+    }
     // Realtime pokes (Task 7): emit-time resolution already EXCLUDES the removed
     // member from members.changed; target them directly so their open UI
     // revalidates (the refetch will 404 → "access changed" + navigate away).
@@ -294,6 +388,44 @@ export async function removeMember(req, res) {
     res.status(204).send();
   } catch (err) {
     console.error('[screening] removeMember:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /api/screening/projects/:pid/leave — self-service exit (prompt9).
+ * Any non-owner member may remove their OWN member row. The owner gets 400
+ * (transfer ownership first). Non-members get the standard 404 existence
+ * hiding via getProjectAccess.
+ */
+export async function leaveProject(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    if (access.isOwner) {
+      return res.status(400).json({ error: 'The owner cannot leave the project (use transfer ownership instead)' });
+    }
+    const member = access.member;
+    if (!member) return res.status(404).json({ error: 'Project not found' });
+
+    await prisma.screenProjectMember.delete({ where: { id: member.id } });
+    await writeAudit(req.params.pid, req.user, 'MEMBER_LEFT', {
+      entityType: 'member', entityId: member.id, details: { email: member.email, role: member.role },
+    });
+    recordUsage({
+      type: USAGE.MEMBER_LEFT,
+      userId: req.user.id,
+      screenProjectId: req.params.pid,
+      meta: { role: member.role },
+    });
+    // Realtime pokes (mirror removeMember): roster change for the remaining
+    // members; a user-TARGETED permissions.changed so the leaver's other open
+    // tabs revalidate (their refetch will 404 → "access changed" + navigate).
+    emitToProjectMembers(req.params.pid, { type: 'members.changed' }, { exclude: req.user.id });
+    emitToUsers([req.user.id], { type: 'permissions.changed', projectId: req.params.pid });
+    res.json({ left: true });
+  } catch (err) {
+    console.error('[screening] leaveProject:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }

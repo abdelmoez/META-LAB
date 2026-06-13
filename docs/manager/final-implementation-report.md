@@ -1,4 +1,70 @@
-# META·LAB / META·SIFT — prompt6 Final Implementation Report
+# META·LAB / META·SIFT — Final Implementation Report
+
+## prompt9 — Notifications, Invites, Exports, Project Delete, Chat Fix, Ops Expansion (2026-06-12)
+
+Date: 2026-06-12 · Version: **2.7.0** · Brief: `.claude/Prompts/prompt9.md` (8 tasks)
+Baseline: v2.6.0 — screening 249/249, full repo 883 pass / 6 quarantined / 7 skip.
+Result: **screening 272/272 (+23 `prompt9.test.js`) · full repo 906 pass / 6 pre-existing fail / 7 skip ·
+`npm run build` exit 0 · flipped assertions: NONE.**
+
+Design rationale, invite architecture, delete-vs-archive decision, export architecture, ops-scope opinion,
+and security analysis: [`claude-opinion-notifications-invites-exports-ops.md`](claude-opinion-notifications-invites-exports-ops.md).
+API surface deltas: `server/docs/{api-contract, screening-api-contract, admin-api-contract, email-setup}.md`
+(each has a "Prompt 9 additions" section).
+
+**Delivered (all 17 deliverables):**
+1. **Notification click = open + read + dismiss** — new idempotent `POST /api/notifications/:id/opened`
+   stamps readAt/dismissedAt/clickedAt; the bell awaits it before full-reload navigation, removes the row
+   optimistically, and gained a "Show history" toggle (`?all=1`). Survives refresh and re-login.
+2. **Email validation** on add-member (frontend + backend, both apps' UIs) and register.
+3. **Invite tokens** — pending member row carries the ceremony (invitedBy, SHA-256 token hash, expiry,
+   acceptedAt); public `/api/invites/:token` landing + accept; styled `renderInviteEmail`; copyable-link
+   fallback in the 201 response when SMTP is unconfigured.
+4. **Auto-join after invite registration** — register accepts `inviteToken` (token claim alongside the
+   legacy email-match claim); mismatched-email accept binds the row to the accepting account; single-use.
+5. **META·SIFT Overview → linked META·LAB button** — `getOverview` additive `linkedMetaLab
+   {id,title,missing,canOpen}`; the card covers open / access-denied / missing / link-a-project states.
+6. **Landing animation speed from ops** — `landingContent.animationSpeed` (Off/Slow/Normal/Fast segmented
+   control in Content→Animation), wired via `--lp-dur` CSS multiplier + HeroCanvas rate;
+   `prefers-reduced-motion` always wins; Off reuses the static path.
+7. **Chat drawer fixed** — root cause was stacking-context entrapment (drawer's z 10000 capped inside the
+   monolith's fixed z-9999 wrapper, bell/account z-9999 later siblings painting over the X). The open
+   overlay now portals to `document.body` (first `createPortal` in the codebase); drawer stays mounted
+   while closed so unread poll + SSE survive. Consistent in both apps.
+8/9. **Export dialog + size chooser** — shared `ExportDialog` + `exportCore` (journal single/double column,
+   poster, slide, custom 320–6000 px, transparent background, light/dark variants) with per-item adapters;
+   all ~14 triggers routed through it (8 monolith adapters incl. the funnel plot's first-ever export +
+   SIFT ExportTab); RIS added server-side; `exportTools` flag now actually enforced; exports recorded
+   for the by-format metric.
+10–13. **Project lifecycle** — soft delete both apps (`deletedAt` + `deletedSource 'owner'|'admin'`),
+   owner-only, typed-name confirmation server-side (`POST /api/projects/:id/delete`), linked cascade
+   ML→SIFT (SIFT→ML deliberately one-way), autosave resurrection guard (200 `{skipped:true}`, never
+   revives), member/leader **leave** endpoint + UI, admin restore for both apps, audit trail survives
+   (SIFT audits before the mark — hard delete used to cascade its own audit log away).
+14. **Ops expansion** — no new sections (anti-clutter decision): Settings grouped cards (Platform /
+   Notifications & Invites / Exports / Projects), new enforced settings (`registrationOpen` 403 gate,
+   `maintenanceMode` 503 gate with configurable message + staff bypass, `notificationsEnabled`,
+   `emailInvitesEnabled`, `defaultTheme`, `exportFormats`, `inviteExpiryDays` 1–90), Engagement metrics
+   card (invites, notification funnel, lifecycle, emails, linking, exports-by-format) powered by the new
+   no-FK `UsageEvent` table. Fixed a latent bug: flat Settings edits were silently dropped server-side.
+15. **Audit** — previously-unaudited `updateScreeningSettings`/`updateScreeningProjectStatus` now log;
+   INVITE_REVOKED / MEMBER_LEFT / PROJECT_DELETED / RESTORE_SIFT_PROJECT actions added.
+16/17. **Tests + docs** — +23 integration tests (`tests/screening/integration/prompt9.test.js`, with an
+   anti-vacuous-green reachability guard and finally-block setting resets); 55/55 server-side smoke
+   (`smoke-b2`); reports updated; four contract docs extended.
+
+**DB (one additive migration `prompt9_invites_lifecycle_usage`):** Notification.clickedAt;
+ScreenProjectMember.{invitedByUserId, inviteTokenHash @unique, inviteExpiresAt, inviteAcceptedAt};
+Project.deletedSource; ScreenProject.{deletedAt, deletedSource}; new UsageEvent. No data wiped; no FK added.
+
+**Known limitations (deliberate, documented in the opinion doc):** ownership transfer not implemented
+(owner must delete; error copy says so); owner-side restore is admin-mediated; XLS export stays the honest
+HTML-based `.xls`; invite emails not sent to already-registered users (in-app notification instead);
+invite-expiry 410 covered by smoke, not the API-only vitest suite.
+
+---
+
+# prompt6 Final Implementation Report (historical)
 
 Date: 2026-06-10 · Version: **2.5.0** · Brief: `.claude/Prompts/prompt6.md` (19 tasks + 22 final-QA items)
 Baseline: v2.4.0 — screening suite 216/216, full repo 632 pass / 6 quarantined fail / 7 skip.

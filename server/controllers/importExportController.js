@@ -7,6 +7,18 @@
 import { detectAndParse, dedupeRecords } from '../../src/research-engine/import-export/parsers.js';
 import { getById, save, getByIdUnscoped, saveAsMember } from '../store.js';
 import { getMetaLabMemberAccess } from '../screening/metalabAccess.js';
+import { prisma } from '../db/client.js';
+import { recordUsage, USAGE } from '../utils/usage.js';
+
+/** Read the featureFlags SiteSetting — best-effort, defaults to {} (= all on). */
+async function getFeatureFlags() {
+  try {
+    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
+    return row ? JSON.parse(row.value || '{}') : {};
+  } catch {
+    return {};
+  }
+}
 
 /**
  * POST /api/import/references
@@ -83,6 +95,22 @@ export async function exportProject(req, res) {
       project = await getByIdUnscoped(req.params.id);
       if (!project) return res.status(404).json({ error: 'Project not found' });
     }
+
+    // prompt9 — the exportTools feature flag is enforced for real now.
+    // Checked AFTER access resolution so outsiders keep their 404
+    // (existence-hiding); default/missing = enabled (tests stay green).
+    const flags = await getFeatureFlags();
+    if (flags.exportTools === false) {
+      return res.status(403).json({ error: 'Export tools are disabled' });
+    }
+
+    recordUsage({
+      type: USAGE.EXPORT,
+      userId: req.user.id,
+      metaLabProjectId: req.params.id,
+      format: 'json',
+      meta: { source: 'metalab-project-export' },
+    });
 
     const filename = `${project.name.replace(/[^a-z0-9]/gi, '_')}_export.json`;
     res.setHeader('Content-Type', 'application/json');

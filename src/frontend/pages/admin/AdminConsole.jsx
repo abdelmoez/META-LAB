@@ -903,6 +903,58 @@ function OverviewSection({ onNavigate, isAdmin = true }) {
         </SectionCard>
       </div>
 
+      {/* ── Tier 3.5: engagement — prompt9 additive metric groups. Keys are
+          delivered by Wave B2 (invites / notificationsStats / lifecycle /
+          emailStats / linking / exportsByFormat); every tile renders '—'
+          gracefully while a key is absent. Existing metrics untouched. ── */}
+      <SectionCard title="Engagement" action={
+        <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.05em' }}>invites · notifications · lifecycle · email · linking</span>
+      }>
+        <div style={{ padding: '14px 18px 16px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(128px, 1fr))', gap: 8 }}>
+            {[
+              { label: 'Invites Pending',   value: m.invites?.pending,                 color: C.ylw },
+              { label: 'Invites Accepted',  value: m.invites?.accepted,                color: C.grn },
+              { label: 'Invites Expired',   value: m.invites?.expired,                 color: C.muted },
+              { label: 'Notifs Sent',       value: m.notificationsStats?.sent,         color: C.acc },
+              { label: 'Notifs Clicked',    value: m.notificationsStats?.clicked,      color: C.teal },
+              { label: 'Notifs Dismissed',  value: m.notificationsStats?.dismissed,    color: C.muted },
+              { label: 'Projects Deleted',  value: m.lifecycle?.projectsDeleted,       color: C.red },
+              { label: 'SIFT Deleted',      value: m.lifecycle?.siftProjectsDeleted,   color: C.red },
+              { label: 'Members Left',      value: m.lifecycle?.membersLeft,           color: C.muted },
+              { label: 'Emails Sent',       value: m.emailStats?.sent,                 color: C.grn },
+              { label: 'Emails Failed',     value: m.emailStats?.failed,               color: C.red },
+              { label: 'Linked Workspaces', value: m.linking?.linkedWorkspaces,        color: C.acc },
+              { label: 'Unlinked SIFT',     value: m.linking?.unlinkedSiftProjects,    color: C.muted },
+              { label: 'Unlinked LAB',      value: m.linking?.unlinkedMetaLabProjects, color: C.muted },
+            ].map(t => (
+              <div key={t.label} style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 7, padding: '9px 11px', minWidth: 0 }}>
+                {loading ? <Spinner size={12} /> : (
+                  <div style={{ fontSize: 16, fontWeight: 700, fontFamily: MONO, color: t.value == null ? C.muted : t.color, fontVariantNumeric: 'tabular-nums' }}>
+                    {t.value == null ? '—' : Number(t.value).toLocaleString()}
+                  </div>
+                )}
+                <div style={{ fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.label}>{t.label}</div>
+              </div>
+            ))}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginTop: 12 }}>
+            <span style={{ fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Exports by format</span>
+            {(() => {
+              const entries = m.exportsByFormat && typeof m.exportsByFormat === 'object'
+                ? Object.entries(m.exportsByFormat).filter(([, v]) => v != null) : [];
+              if (!entries.length) return <span style={{ fontSize: 11, fontFamily: MONO, color: C.muted }}>—</span>;
+              return entries.map(([fmt, count]) => (
+                <span key={fmt} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '3px 9px', background: alpha(C.acc, '10'), border: `1px solid ${alpha(C.acc, '30')}`, borderRadius: 10, fontSize: 10, fontFamily: MONO, letterSpacing: '0.05em', textTransform: 'uppercase', color: C.txt2 }}>
+                  {fmt}
+                  <span style={{ color: C.acc, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{Number(count).toLocaleString()}</span>
+                </span>
+              ));
+            })()}
+          </div>
+        </div>
+      </SectionCard>
+
       {/* ── Tier 4: live activity feed + alerts / quick actions ────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.6fr) minmax(0, 1fr)', gap: 14 }}>
         <SectionCard title="Live Activity" action={
@@ -1941,7 +1993,18 @@ const DEFAULT_CONTENT = {
   maintenanceBanner:  '',
   seoTitle:       'META·LAB — Systematic Review Platform',
   seoDescription: 'A structured, multi-user platform for conducting systematic reviews and meta-analyses.',
+  // prompt9: landing animation speed. CRITICAL — this default must exist
+  // client-side: saveAll() PUTs the WHOLE content object, so if the initial
+  // GET fails, any key missing from DEFAULT_CONTENT would be wiped server-side.
+  animationSpeed: 'normal',
 };
+
+const ANIMATION_SPEEDS = [
+  { id: 'off',    label: 'Off'    },
+  { id: 'slow',   label: 'Slow'   },
+  { id: 'normal', label: 'Normal' },
+  { id: 'fast',   label: 'Fast'   },
+];
 
 const CONTENT_TABS = [
   { id: 'hero',    label: 'Hero & CTA' },
@@ -1951,6 +2014,7 @@ const CONTENT_TABS = [
   { id: 'about',   label: 'About & Why' },
   { id: 'contact', label: 'Contact & Footer' },
   { id: 'seo',     label: 'SEO & Banners' },
+  { id: 'animation', label: 'Animation' },
 ];
 
 function ContentSection() {
@@ -2219,6 +2283,40 @@ function ContentSection() {
           </SectionCard>
         </div>
       );
+      case 'animation': {
+        const current = ANIMATION_SPEEDS.some(s => s.id === content.animationSpeed) ? content.animationSpeed : 'normal';
+        return (
+          <div>
+            <SectionCard title="Landing Animation">
+              <div style={{ padding: '18px 20px 4px' }}>
+                <Field label="Animation Speed" note="Off disables landing-page motion; users with reduced-motion preferences always get a static page.">
+                  <div role="radiogroup" aria-label="Landing animation speed" style={{ display: 'inline-flex', border: `1px solid ${C.brd2}`, borderRadius: 7, overflow: 'hidden' }}>
+                    {ANIMATION_SPEEDS.map((s, i) => {
+                      const on = current === s.id;
+                      return (
+                        <button
+                          key={s.id}
+                          role="radio"
+                          aria-checked={on}
+                          onClick={() => upd('animationSpeed', s.id)}
+                          style={{
+                            padding: '8px 18px', background: on ? C.acc2 : 'transparent',
+                            border: 'none', borderLeft: i > 0 ? `1px solid ${C.brd2}` : 'none',
+                            color: on ? C.accText : C.txt2, fontSize: 12,
+                            fontWeight: on ? 700 : 400, cursor: 'pointer', fontFamily: FONT,
+                          }}
+                        >
+                          {s.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </Field>
+              </div>
+            </SectionCard>
+          </div>
+        );
+      }
       default: return null;
     }
   };
@@ -2252,26 +2350,87 @@ function ContentSection() {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   SECTION: SETTINGS (unchanged logic, same as before)
+   SECTION: SETTINGS — grouped cards (prompt9)
+   Save mechanism (PINNED): GET /api/admin/settings returns the nested
+   { appSettings, landingContent, featureFlags } objects, which are merged
+   into the form and ride along on save so PUT /api/admin/settings always
+   carries valid SETTING_KEYS. Edited flat fields are additionally nested
+   into body.appSettings on save — additive: unknown stored keys survive
+   the round-trip via spread. Backend enforcement of the prompt9 keys
+   (notificationsEnabled, emailInvitesEnabled, defaultTheme,
+   maintenanceMessage, exportFormats, projectDeletion) lands in Wave B2.
    ════════════════════════════════════════════════════════════════════════ */
+
+const EXPORT_FORMATS = ['png', 'svg', 'csv', 'json', 'ris', 'xls'];
+
+// Flat appSettings keys owned by this form (existing 8 + prompt9 additions).
+const APP_SETTING_KEYS = [
+  'appName', 'registrationOpen', 'maintenanceMode', 'contactFormEnabled',
+  'projectCreationEnabled', 'exportEnabled', 'maxProjectsPerUser', 'maxStudiesPerProject',
+  'notificationsEnabled', 'emailInvitesEnabled', 'defaultTheme', 'maintenanceMessage',
+  'exportFormats', 'projectDeletion',
+];
 
 function SettingsSection() {
   const [form, setForm] = useState({
     appName: 'META·LAB', registrationOpen: true, maintenanceMode: false,
     contactFormEnabled: true, projectCreationEnabled: true, exportEnabled: true,
     maxProjectsPerUser: '', maxStudiesPerProject: '',
+    // prompt9 additions — defaults mirror the frozen Wave B2 spec.
+    notificationsEnabled: true, emailInvitesEnabled: true,
+    defaultTheme: 'night', maintenanceMessage: '',
+    exportFormats: [...EXPORT_FORMATS], projectDeletion: 'soft',
   });
   const [loading, setLoading] = useState(true);
   const [status,  setStatus]  = useState('idle');
+  // Wipe-safety: if the initial GET failed, the form holds client defaults
+  // only — saving would overwrite stored values, so saving is blocked.
+  const [loadFailed, setLoadFailed] = useState(false);
+
+  const mergeServer = d => setForm(f => ({
+    ...f,
+    // Flatten stored appSettings into the editable fields…
+    ...(d && typeof d.appSettings === 'object' && d.appSettings ? d.appSettings : {}),
+    // …and keep the nested objects riding along for the save round-trip.
+    ...(d && typeof d === 'object' ? d : {}),
+  }));
 
   useEffect(() => {
-    adminApi.settings.get().then(d => setForm(f => ({ ...f, ...d }))).catch(() => {}).finally(() => setLoading(false));
+    adminApi.settings.get()
+      .then(d => { mergeServer(d); setLoadFailed(false); })
+      .catch(() => setLoadFailed(true))
+      .finally(() => setLoading(false));
   }, []);
 
   async function save() {
+    if (loadFailed) return;
     setStatus('saving');
-    try { await adminApi.settings.save(form); setStatus('saved'); setTimeout(() => setStatus('idle'), 3000); }
+    try {
+      const flat = {};
+      for (const k of APP_SETTING_KEYS) if (form[k] !== undefined) flat[k] = form[k];
+      if (flat.maxProjectsPerUser === '')   flat.maxProjectsPerUser = null;
+      if (flat.maxStudiesPerProject === '') flat.maxStudiesPerProject = null;
+      const body = {
+        ...form,
+        // Spread the stored appSettings object first so unknown server-side
+        // keys survive; edited flat fields override (additive only).
+        appSettings: { ...(typeof form.appSettings === 'object' && form.appSettings ? form.appSettings : {}), ...flat },
+      };
+      const d = await adminApi.settings.save(body);
+      if (d && typeof d === 'object') mergeServer(d);
+      setStatus('saved'); setTimeout(() => setStatus('idle'), 3000);
+    }
     catch { setStatus('error'); setTimeout(() => setStatus('idle'), 3000); }
+  }
+
+  function toggleFormat(fmt) {
+    setForm(f => {
+      const cur = Array.isArray(f.exportFormats) ? f.exportFormats : [...EXPORT_FORMATS];
+      const next = cur.includes(fmt)
+        ? cur.filter(x => x !== fmt)
+        : EXPORT_FORMATS.filter(x => cur.includes(x) || x === fmt); // canonical order
+      return { ...f, exportFormats: next };
+    });
   }
 
   if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={20} /></div>;
@@ -2286,30 +2445,82 @@ function SettingsSection() {
     </div>
   );
 
+  const fmts = Array.isArray(form.exportFormats) ? form.exportFormats : EXPORT_FORMATS;
+
   return (
     <div>
       <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 20px' }}>App Settings</h2>
-      <SectionCard title="General">
-        <div style={{ padding: '14px 20px 10px', borderBottom: `1px solid ${C.brd}` }}>
-          <Field label="App Name"><input type="text" value={form.appName} onChange={e => setForm(f => ({ ...f, appName: e.target.value }))} style={{ ...inputStyle, maxWidth: 320 }} /></Field>
+
+      {loadFailed && <NoticeBox msg="Settings could not be loaded — saving is disabled so stored values are not overwritten. Reload to retry." color={C.red} />}
+
+      <SectionCard title="Platform">
+        <div style={{ padding: '14px 20px 0', borderBottom: `1px solid ${C.brd}` }}>
+          <Field label="App Name"><input type="text" value={form.appName ?? ''} onChange={e => setForm(f => ({ ...f, appName: e.target.value }))} style={{ ...inputStyle, maxWidth: 320 }} /></Field>
+          <Field label="Default Theme" note="Theme for first-visit users with no saved preference. Per-user choices always win.">
+            <select value={form.defaultTheme === 'day' ? 'day' : 'night'} onChange={e => setForm(f => ({ ...f, defaultTheme: e.target.value }))} style={{ ...inputStyle, maxWidth: 160 }}>
+              <option value="night">Night</option>
+              <option value="day">Day</option>
+            </select>
+          </Field>
         </div>
         <Row label="Registration Open" note="Allow new users to register."><Toggle checked={!!form.registrationOpen} onChange={v => setForm(f => ({ ...f, registrationOpen: v }))} /></Row>
         <Row label="Maintenance Mode" note={form.maintenanceMode ? '⚠ Users cannot log in.' : 'Put the site in maintenance mode.'}><Toggle checked={!!form.maintenanceMode} onChange={v => setForm(f => ({ ...f, maintenanceMode: v }))} /></Row>
-        <Row label="Contact Form Enabled"><Toggle checked={!!form.contactFormEnabled} onChange={v => setForm(f => ({ ...f, contactFormEnabled: v }))} /></Row>
-        <Row label="Project Creation Enabled"><Toggle checked={!!form.projectCreationEnabled} onChange={v => setForm(f => ({ ...f, projectCreationEnabled: v }))} /></Row>
-        <Row label="Export Enabled"><Toggle checked={!!form.exportEnabled} onChange={v => setForm(f => ({ ...f, exportEnabled: v }))} /></Row>
-      </SectionCard>
-      <SectionCard title="Limits">
-        <div style={{ padding: '14px 20px 4px' }}>
-          <Field label="Max Projects Per User" note="Leave blank for unlimited.">
-            <input type="number" min="0" value={form.maxProjectsPerUser} onChange={e => setForm(f => ({ ...f, maxProjectsPerUser: e.target.value }))} style={{ ...inputStyle, maxWidth: 160 }} placeholder="Unlimited" />
+        <div style={{ padding: '14px 20px 0', borderBottom: `1px solid ${C.brd}` }}>
+          <Field label="Maintenance Message" note="Shown to users while maintenance mode is on.">
+            <textarea value={form.maintenanceMessage ?? ''} onChange={e => setForm(f => ({ ...f, maintenanceMessage: e.target.value }))} rows={2} style={{ ...inputStyle, resize: 'vertical' }} placeholder="Optional message…" />
           </Field>
-          <Field label="Max Studies Per Project" note="Leave blank for unlimited.">
-            <input type="number" min="0" value={form.maxStudiesPerProject} onChange={e => setForm(f => ({ ...f, maxStudiesPerProject: e.target.value }))} style={{ ...inputStyle, maxWidth: 160 }} placeholder="Unlimited" />
+        </div>
+        <Row label="Contact Form Enabled"><Toggle checked={!!form.contactFormEnabled} onChange={v => setForm(f => ({ ...f, contactFormEnabled: v }))} /></Row>
+      </SectionCard>
+
+      <SectionCard title="Notifications & Invites">
+        <Row label="Notifications Enabled" note="Master switch for in-app notifications (invites, role changes, screening events).">
+          <Toggle checked={!!form.notificationsEnabled} onChange={v => setForm(f => ({ ...f, notificationsEnabled: v }))} />
+        </Row>
+        <Row label="Email Invites Enabled" note="Also send collaborator invites by email when SMTP is configured.">
+          <Toggle checked={!!form.emailInvitesEnabled} onChange={v => setForm(f => ({ ...f, emailInvitesEnabled: v }))} />
+        </Row>
+      </SectionCard>
+
+      <SectionCard title="Exports">
+        <Row label="Export Enabled" note="Master switch for project and data exports.">
+          <Toggle checked={!!form.exportEnabled} onChange={v => setForm(f => ({ ...f, exportEnabled: v }))} />
+        </Row>
+        <div style={{ padding: '14px 20px 4px' }}>
+          <Field label="Allowed Export Formats" note="Formats offered in export dialogs across the platform.">
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+              {EXPORT_FORMATS.map(fmt => {
+                const on = fmts.includes(fmt);
+                return (
+                  <label key={fmt} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '7px 12px', background: on ? alpha(C.acc, '12') : 'transparent', border: `1px solid ${on ? alpha(C.acc, '50') : C.brd2}`, borderRadius: 7, cursor: 'pointer', fontSize: 11, fontFamily: MONO, letterSpacing: '0.08em', textTransform: 'uppercase', color: on ? C.acc : C.txt2, userSelect: 'none' }}>
+                    <input type="checkbox" checked={on} onChange={() => toggleFormat(fmt)} style={{ accentColor: C.acc, margin: 0 }} />
+                    {fmt}
+                  </label>
+                );
+              })}
+            </div>
           </Field>
         </div>
       </SectionCard>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}><SaveButton onClick={save} status={status} /></div>
+
+      <SectionCard title="Projects">
+        <Row label="Project Creation Enabled"><Toggle checked={!!form.projectCreationEnabled} onChange={v => setForm(f => ({ ...f, projectCreationEnabled: v }))} /></Row>
+        <div style={{ padding: '14px 20px 0', borderBottom: `1px solid ${C.brd}` }}>
+          <Field label="Max Projects Per User" note="Leave blank for unlimited.">
+            <input type="number" min="0" value={form.maxProjectsPerUser ?? ''} onChange={e => setForm(f => ({ ...f, maxProjectsPerUser: e.target.value }))} style={{ ...inputStyle, maxWidth: 160 }} placeholder="Unlimited" />
+          </Field>
+          <Field label="Max Studies Per Project" note="Leave blank for unlimited.">
+            <input type="number" min="0" value={form.maxStudiesPerProject ?? ''} onChange={e => setForm(f => ({ ...f, maxStudiesPerProject: e.target.value }))} style={{ ...inputStyle, maxWidth: 160 }} placeholder="Unlimited" />
+          </Field>
+        </div>
+        <Row label="Deletion Policy" note="Platform-wide policy — not editable from the console.">
+          <span style={{ fontSize: 12, color: C.txt2, fontFamily: MONO, textAlign: 'right' }}>
+            {(form.projectDeletion || 'soft') === 'soft' ? 'Soft delete / archive — hard delete disabled' : String(form.projectDeletion)}
+          </span>
+        </Row>
+      </SectionCard>
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}><SaveButton onClick={save} status={status} disabled={loadFailed} /></div>
     </div>
   );
 }
@@ -2502,6 +2713,10 @@ const SIFT_DEFAULTS = {
   defaultBlindMode: false,
   maxPdfSizeMb: 25,
   maxRecordsPerProject: 10000,
+  // prompt9: invite-link lifetime (Wave B2 adds it to META_SIFT_DEFAULTS +
+  // coerceSettings; until then the server may drop it and this default
+  // keeps the round-trip intact).
+  inviteExpiryDays: 14,
   maintenanceMessage: 'META·SIFT Beta is currently undergoing maintenance. Please try again later.',
 };
 
@@ -3020,6 +3235,11 @@ function SiftSettings() {
           <Field label="Max Records / Project">
             <input type="number" min="1" value={settings.maxRecordsPerProject ?? 10000}
               onChange={e => upd('maxRecordsPerProject', Math.max(1, parseInt(e.target.value) || 1))}
+              style={{ ...inputStyle, width: 140 }} />
+          </Field>
+          <Field label="Invite Expiry (Days)" note="New invite links expire after this many days">
+            <input type="number" min="1" max="90" value={settings.inviteExpiryDays ?? 14}
+              onChange={e => upd('inviteExpiryDays', Math.min(90, Math.max(1, parseInt(e.target.value) || 1)))}
               style={{ ...inputStyle, width: 140 }} />
           </Field>
           <div style={{ gridColumn: '1 / -1' }}>

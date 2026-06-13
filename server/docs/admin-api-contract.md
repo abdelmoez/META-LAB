@@ -415,3 +415,45 @@ Common HTTP status codes:
 - `404` — resource not found
 - `429` — rate limited
 - `500` — internal server error (no stack traces exposed)
+
+---
+
+## Prompt 9 additions (2026-06-12)
+
+### Metrics (additive keys)
+
+`GET /api/admin/metrics` gains six top-level groups (all counts, cheap queries):
+`invites {pending, accepted, expired}` · `notificationsStats {sent, clicked, dismissed}` ·
+`lifecycle {projectsDeleted, siftProjectsDeleted, membersLeft}` · `exportsByFormat {<format>: count}` ·
+`emailStats {sent, failed}` · `linking {linkedWorkspaces, unlinkedSiftProjects, unlinkedMetaLabProjects}`.
+Sources: pending/accepted/expired from the invite columns on ScreenProjectMember; clicked from
+`Notification.clickedAt`; deletes from `deletedSource:'owner'` rows; membersLeft/exports/emails from the
+new no-FK `UsageEvent` table (`type` ∈ EXPORT, EMAIL_SENT, EMAIL_FAILED, MEMBER_LEFT, PROJECT_DELETED,
+INVITE_CREATED/ACCEPTED/REVOKED, NOTIFICATION_CLICKED; indexed `[type, createdAt]`).
+`GET /api/admin/screening/metrics` gains `pendingInvites`, `acceptedInvites`, `expiredInvites`.
+
+### Project lifecycle
+
+- `PATCH /api/admin/projects/:id/archive` now stamps `deletedSource:'admin'`;
+  `PATCH /api/admin/projects/:id/restore` clears `deletedAt` **and** `deletedSource` (so it also recovers
+  owner-deleted projects). `GET /api/admin/projects` rows carry additive `deletedSource` + `deleted`.
+- NEW `PATCH /api/admin/screening/projects/:id/restore` (admin) → `{ok:true}` | 400 not-deleted | 404;
+  logs `RESTORE_SIFT_PROJECT`; admin screening project lists include deleted rows with
+  `deleted`/`deletedAt`/`deletedSource`.
+
+### Settings
+
+New `appSettings` keys (all editable via `PUT /api/admin/settings`, seeded defaults in
+`settingsController.DEFAULTS`): `notificationsEnabled` (gates the notification-creation chokepoint),
+`emailInvitesEnabled` (gates invite emails), `defaultTheme` (`night`|`day` — first-visit fallback, exposed
+publicly), `maintenanceMessage` (the 503 body text), `exportFormats` (allowlist shown in the export dialog),
+`projectDeletion` (`'soft'` — policy display; hard delete is not exposed). **Now actually enforced:**
+`registrationOpen` (register → 403 when false) and `maintenanceMode` (non-staff API → 503; see
+api-contract.md). `GET /api/settings/public` additionally exposes top-level `defaultTheme` and
+`maintenanceMessage`. `landingContent` gains `animationSpeed` (`off`|`slow`|`normal`|`fast`) — flows to the
+landing page through the existing schemaless passthrough.
+
+### Audit
+
+Previously-unaudited writes now log: `UPDATE_SIFT_SETTINGS {updatedKeys}` (updateScreeningSettings),
+`SIFT_PROJECT_STATUS {projectId, changes}` (updateScreeningProjectStatus), `RESTORE_SIFT_PROJECT`.

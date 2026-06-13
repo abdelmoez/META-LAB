@@ -942,3 +942,60 @@ All error responses follow this shape:
 | abstract | string | Abstract text |
 | decision | string | `"pending"` \| `"include"` \| `"exclude"` |
 | notes    | string | Screener notes |
+
+---
+
+## Prompt 9 additions (2026-06-12)
+
+### Notifications — combined open
+
+- `POST /api/notifications/:id/opened` (auth) — the click-through endpoint: idempotently stamps `readAt`,
+  `dismissedAt`, and `clickedAt` (each only if null) in one call and returns `{ notification }`.
+  Foreign/unknown id → **404** (existence-hiding, same as `/read`). `/read`, `/dismiss`, `/mark-all-read`
+  are unchanged; `opened` is additive. The bell calls `opened` and awaits it before any full-page
+  `/app?project=` navigation (the request would otherwise be aborted by unload).
+
+### Project lifecycle — soft delete
+
+- `DELETE /api/projects/:id` keeps its wire contract (`{deleted:true}`, owner-scoped, 404 otherwise) but is
+  now a **soft delete**: sets `deletedAt` + `deletedSource:'owner'`. Owner-deleted projects are hidden from
+  every list **including the owner's** and return 404 on direct access; admin can see and restore them
+  (`PATCH /api/admin/projects/:id/restore` clears both fields). Admin archive keeps its old semantics under
+  `deletedSource:'admin'` (hidden from members, still visible to the owner).
+- `POST /api/projects/:id/delete` (auth, owner-scoped) — typed-name confirmed delete.
+  Body `{ confirmName, cascadeLinked? }`. `confirmName` must equal the project name (trimmed) →
+  else **400** `{error:'Project name does not match'}`. With `cascadeLinked:true`, every live linked
+  ScreenProject owned by the caller is soft-deleted too (audited before the mark, so the trail survives).
+  Returns `{ deleted:true, cascaded:[screenProjectIds] }`.
+- **Resurrection guard:** any save against a soft-deleted project is refused —
+  `PUT /api/projects/:id` → 404; `PUT /api/projects/:id/autosave` → **200 `{id, skipped:true}`**
+  (the pinned never-4xx autosave contract). A stale tab can no longer revive a deleted project.
+
+### Public invite endpoints
+
+- Mounted at `/api/invites` with a dedicated rate limiter. **Mount-order invariant:** public mounts must sit
+  BEFORE the bare `'/api'` importExport router in `server/index.js` (that router applies `requireAuth` at
+  router level and would 401 every unauthenticated `/api/*` request behind it).
+- `GET /api/invites/:token` (**public**) — sanitized landing info for a pending invite:
+  `{ projectName, inviterName, roleLabel, email (masked j***@e***.com), expiresAt }`.
+  Not-found / revoked / already-accepted are indistinguishable → **404** `{error:'This invite is invalid or
+  no longer available'}`. Expired → **410** `{error:'This invite has expired'}` (no oracle: the link holder
+  already knows the invite existed). Tokens are 32-byte CSPRNG hex; only the SHA-256 hash is stored.
+- `POST /api/invites/:token/accept` (auth) — binds the pending member row to the logged-in user
+  (single-use: nulls the hash, stamps `inviteAcceptedAt`, activates the row) and returns
+  `{ projectId, projectName }`. Works for accounts whose email differs from the invited address.
+  Already-a-member callers consume the invite and get the same success shape.
+
+### Auth
+
+- `POST /api/auth/register` accepts an optional `inviteToken`; after user creation the invite is claimed
+  best-effort (never fails or slows registration) alongside the legacy email-match claim. Email format is
+  validated server-side (400 on invalid). When `appSettings.registrationOpen === false` → **403**
+  `{error:'Registration is currently closed'}`.
+
+### Maintenance gate
+
+- When `appSettings.maintenanceMode === true`, non-staff API requests get **503**
+  `{ error: <maintenanceMessage>, maintenance: true }`. Exempt: `/api/health`, `/api/version`,
+  `/api/settings/public`, `/api/auth/*`, `/api/admin/*`, `/api/events`. Sessions with role admin|mod pass
+  (JWT role claim; admin routes still DB-verify). 10s settings cache, busted on settings write. Default off.

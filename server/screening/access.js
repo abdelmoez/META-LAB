@@ -33,6 +33,10 @@ export async function getProjectAccess(pid, user) {
   if (!pid || !user?.id) return null;
   const project = await prisma.screenProject.findUnique({ where: { id: pid } });
   if (!project) return null;
+  // Soft-deleted projects are nonexistent for EVERYONE incl. the owner
+  // (prompt9): single chokepoint → 404 everywhere (records, chat, members,
+  // overview, pdfs). Admin restore is the only way back.
+  if (project.deletedAt) return null;
 
   const isOwner = project.ownerId === user.id;
   const member = await prisma.screenProjectMember.findFirst({

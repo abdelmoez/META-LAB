@@ -1,7 +1,10 @@
-﻿import { prisma } from '../db/client.js';
+﻿import crypto from 'crypto';
+import { prisma } from '../db/client.js';
 import { hashPassword, verifyPassword } from '../auth/password.js';
 import { signToken } from '../auth/jwt.js';
 import { notifyProjectInvite } from '../services/notificationService.js';
+import { isValidEmail } from '../utils/validators.js';
+import { recordUsage, USAGE } from '../utils/usage.js';
 
 const COOKIE_NAME = 'metalab_session';
 
@@ -83,6 +86,17 @@ export async function register(req, res) {
     }
 
     const normalizedEmail = email.trim().toLowerCase();
+
+    // prompt9 — registrationOpen enforcement. Default/missing = open; only an
+    // explicit false closes the doors. Settings-read failures never block
+    // registration (best-effort gate).
+    try {
+      const row = await prisma.siteSetting.findUnique({ where: { key: 'appSettings' } });
+      const appSettings = row ? JSON.parse(row.value || '{}') : {};
+      if (appSettings.registrationOpen === false) {
+        return res.status(403).json({ error: 'Registration is currently closed' });
+      }
+    } catch { /* default open */ }
 
     const existing = await prisma.user.findUnique({ where: { email: normalizedEmail } });
     if (existing) {

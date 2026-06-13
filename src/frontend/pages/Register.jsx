@@ -55,11 +55,23 @@ function Field({ id, label, type = "text", value, onChange, placeholder, autoCom
   );
 }
 
+// Pragmatic email format check (shared regex decision, prompt9 Task 2).
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
 /**
  * Full-page registration form.
  * Props:
- *   onSuccess(user) — called with the user object on successful registration
+ *   onSuccess(user, redirectTo?) — called on successful registration; the
+ *     optional second argument overrides the default /app destination
+ *     (used by the invite flow to land directly in the joined project)
  *   onBack()        — called when user clicks "Sign in"
+ *
+ * Invite handoff (prompt9 Task 2): /register?invite=<token> passes the token
+ * through authClient.register, then AUTO-ACCEPTS (POST /api/invites/:token/
+ * accept — idempotent, so it is safe even when the server already claimed the
+ * invite during registration) and redirects straight into the project; on
+ * accept failure it falls back to /invite/<token> where the now-signed-in
+ * user gets the one-click accept with a readable error.
  */
 export default function Register({ onSuccess, onBack }) {
   const [name, setName]               = useState("");
@@ -68,11 +80,20 @@ export default function Register({ onSuccess, onBack }) {
   const [confirm, setConfirm]         = useState("");
   const [error, setError]             = useState(null);
   const [loading, setLoading]         = useState(false);
+  // Read once on mount — the page is reached via /register?invite=<token>.
+  const [inviteToken] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get("invite") || ""; }
+    catch { return ""; }
+  });
 
   async function handleSubmit(e) {
     e.preventDefault();
     setError(null);
 
+    if (!EMAIL_RE.test(email.trim())) {
+      setError("Enter a valid email address (e.g. you@institution.edu).");
+      return;
+    }
     if (password.length < 8) {
       setError("Password must be at least 8 characters.");
       return;
@@ -84,9 +105,30 @@ export default function Register({ onSuccess, onBack }) {
 
     setLoading(true);
     try {
-      const data = await register(email.trim(), password, name.trim() || undefined);
+      const data = await register(
+        email.trim(),
+        password,
+        name.trim() || undefined,
+        inviteToken || undefined
+      );
       const user = data && data.user ? data.user : data;
-      onSuccess(user);
+
+      // Invite auto-accept: fewer clicks — land directly in the project.
+      let redirectTo = null;
+      if (inviteToken) {
+        redirectTo = `/invite/${encodeURIComponent(inviteToken)}`; // fallback
+        try {
+          const res = await fetch(`/api/invites/${encodeURIComponent(inviteToken)}/accept`, {
+            method: "POST",
+            credentials: "include",
+          });
+          const body = await res.json().catch(() => null);
+          if (res.ok && body && body.projectId) {
+            redirectTo = `/sift-beta/projects/${body.projectId}`;
+          }
+        } catch { /* fall back to the invite page */ }
+      }
+      onSuccess(user, redirectTo || undefined);
     } catch (err) {
       setError(err.message || "Registration failed. Please try again.");
     } finally {
@@ -149,6 +191,25 @@ export default function Register({ onSuccess, onBack }) {
 
         {/* Divider */}
         <div style={{ height: 1, background: C.brd, marginBottom: 28 }} />
+
+        {/* Invite handoff notice */}
+        {inviteToken && (
+          <div
+            style={{
+              marginBottom: 20,
+              padding: "10px 14px",
+              background: alpha(C.acc, 0.08),
+              border: `1px solid ${alpha(C.acc, 0.3)}`,
+              borderRadius: 8,
+              color: C.txt2,
+              fontSize: 12.5,
+              lineHeight: 1.5,
+            }}
+          >
+            You're accepting a project invite — create your account to join the
+            project automatically.
+          </div>
+        )}
 
         {/* Form */}
         <form onSubmit={handleSubmit} noValidate>

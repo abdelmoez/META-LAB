@@ -13,10 +13,11 @@
  *   refreshProject — () => Promise, re-fetches the shell's project after a mutation
  */
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import {
   Loading, ErrorBanner, ProgressBar, StatTile, Badge,
-  Avatar, SectionLabel, Card,
+  Avatar, SectionLabel, Card, Button,
 } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 
@@ -34,11 +35,22 @@ const n = (v) => (typeof v === 'number' && !Number.isNaN(v) ? v : 0);
 
 // ── Component ─────────────────────────────────────────────────────────────────
 export default function OverviewTab({ pid, project, access = {}, refreshProject }) {
+  const navigate = useNavigate();
+  const [, setParams] = useSearchParams();
   const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
   const [saving, setSaving]   = useState(false);
   const [saveError, setSaveError] = useState(null);
+
+  // Cross-tab jump to Project Control (same ?tab= mechanism as the shell's
+  // setTab in SiftProject.jsx — the active tab lives in the search params).
+  const goToControlTab = useCallback(() => {
+    setParams(prev => { const p = new URLSearchParams(prev); p.set('tab', 'control'); return p; }, { replace: true });
+  }, [setParams]);
+
+  // Same gate Project Control uses for the link manager (ProjectControlTab L41).
+  const canManageSettings = !!(project?.canManageSettings || project?.isLeader || access?.isLeader);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -132,11 +144,6 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject 
               <span style={{ fontSize: 11.5, color: C.teal }}>
                 Quorum: <strong style={{ fontFamily: MONO, fontWeight: 600 }}>{n(proj.quorum)}</strong> reviewer{n(proj.quorum) === 1 ? '' : 's'} to advance
               </span>
-              {proj.linkedMetaLabProjectId && (
-                <span style={{ fontSize: 11.5, color: C.muted }}>
-                  Linked to META·LAB <span style={{ fontFamily: MONO, color: C.txt2 }}>#{proj.linkedMetaLabProjectId}</span>
-                </span>
-              )}
             </div>
           </div>
 
@@ -163,6 +170,19 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject 
           </div>
         )}
       </Card>
+
+      {/* ───────── A2) Linked META·LAB project (prompt9 Task 3) ───────── */}
+      <section style={{ marginBottom: 20 }}>
+        <SectionLabel>Linked META·LAB Project</SectionLabel>
+        <LinkedMetaLabCard
+          linkedMetaLab={data.linkedMetaLab}
+          legacyId={proj.linkedMetaLabProjectId}
+          legacyTitle={project?.linkedMetaLabProjectTitle}
+          canManageSettings={canManageSettings}
+          onOpen={(id) => navigate(`/app?project=${id}`)}
+          onGoLink={goToControlTab}
+        />
+      </section>
 
       {/* ───────── B) Data Summary ───────── */}
       <section style={{ marginBottom: 20 }}>
@@ -288,6 +308,117 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject 
         )}
       </section>
     </div>
+  );
+}
+
+// ── Linked META·LAB project card (prompt9 Task 3) ────────────────────────────
+//
+// Preferred source: the overview's additive `linkedMetaLab` payload
+// { id, title, missing, canOpen } (canOpen = caller may open the ML project).
+// BACKWARD COMPAT: when the field is absent (backend wave not merged yet) we
+// fall back to the legacy `linkedMetaLabProjectId` with a plain open button
+// (no canOpen awareness — the monolith's deep-link miss panel still guards).
+function LinkedMetaLabCard({ linkedMetaLab, legacyId, legacyTitle, canManageSettings, onOpen, onGoLink }) {
+  const hasNewPayload = linkedMetaLab !== undefined;
+  const lm = hasNewPayload ? linkedMetaLab : null;
+
+  // Linked but the target ML project no longer exists (mirrors the
+  // ProjectControlTab broken-link warning).
+  if (lm && lm.missing) {
+    return (
+      <Card style={{ borderColor: alpha(C.ylw, '50') }}>
+        <div style={{
+          background: C.yelBg, border: `1px solid ${alpha(C.ylw, '50')}`, borderRadius: 8,
+          padding: '10px 14px', fontSize: 12.5, color: C.ylw, lineHeight: 1.5,
+        }}>
+          ⚠ Linked META·LAB project is unavailable — it is missing or was deleted.
+          {canManageSettings ? ' Re-link or unlink it in the Project Control tab.' : ' Ask the owner or a leader to fix the link.'}
+        </div>
+        {canManageSettings && (
+          <div style={{ marginTop: 12 }}>
+            <Button variant="ghost" onClick={onGoLink}>Manage link →</Button>
+          </div>
+        )}
+      </Card>
+    );
+  }
+
+  // Linked and the new payload says the caller may (or may not) open it.
+  if (lm) {
+    const canOpen = !!lm.canOpen;
+    return (
+      <Card>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+          <div style={{ minWidth: 0, flex: '1 1 240px' }}>
+            <div title={lm.title} style={{
+              fontSize: 14, fontWeight: 600, color: C.txt, minWidth: 0,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              🔗 {lm.title || 'META·LAB project'}
+            </div>
+            <div style={{ fontSize: 11.5, color: C.txt2, marginTop: 3 }}>
+              Accepted second-review studies hand off to this project&rsquo;s Data Extraction.
+            </div>
+          </div>
+          <Button
+            variant="primary"
+            disabled={!canOpen}
+            onClick={() => canOpen && onOpen(lm.id)}
+            title={canOpen ? `Open the linked META·LAB project: ${lm.title || ''}` : 'No access to the linked META·LAB project'}
+          >
+            Open linked META·LAB project →
+          </Button>
+        </div>
+        {!canOpen && (
+          <div style={{ fontSize: 11.5, color: C.muted, marginTop: 9 }}>
+            You don&rsquo;t have access to the linked META·LAB project. Ask the owner or a leader to grant META·LAB access.
+          </div>
+        )}
+      </Card>
+    );
+  }
+
+  // Legacy fallback — linked id known, no canOpen/missing/title knowledge.
+  if (!hasNewPayload && legacyId) {
+    return (
+      <Card>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+          <div style={{ minWidth: 0, flex: '1 1 240px' }}>
+            <div title={legacyTitle || legacyId} style={{
+              fontSize: 14, fontWeight: 600, color: C.txt, minWidth: 0,
+              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+            }}>
+              🔗 {legacyTitle || <span style={{ fontFamily: MONO, fontSize: 12.5 }}>#{legacyId}</span>}
+            </div>
+            <div style={{ fontSize: 11.5, color: C.txt2, marginTop: 3 }}>
+              Accepted second-review studies hand off to this project&rsquo;s Data Extraction.
+            </div>
+          </div>
+          <Button variant="primary" onClick={() => onOpen(legacyId)} title="Open the linked META·LAB project">
+            Open linked META·LAB project →
+          </Button>
+        </div>
+      </Card>
+    );
+  }
+
+  // No link at all.
+  return (
+    <Card style={{ borderStyle: 'dashed' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+        <div style={{ minWidth: 0, flex: '1 1 240px' }}>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: C.txt2 }}>No linked META·LAB project</div>
+          <div style={{ fontSize: 11.5, color: C.muted, marginTop: 3 }}>
+            Link one to hand accepted studies off to Data Extraction and feed the PRISMA diagram.
+          </div>
+        </div>
+        {canManageSettings && (
+          <Button variant="ghost" onClick={onGoLink} title="Open Project Control to link a META·LAB project">
+            Link a project →
+          </Button>
+        )}
+      </div>
+    </Card>
   );
 }
 

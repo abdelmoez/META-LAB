@@ -7,11 +7,84 @@ import { flushStorage, hasPendingSave } from "./src/frontend/storage/serverStora
 import { alpha as themeAlpha } from "./src/frontend/theme/tokens.js";
 import { Icon } from "./src/frontend/components/icons.jsx";
 import MetaLabChatLauncher from "./src/frontend/components/chat/MetaLabChatLauncher.jsx";
+import ExportDialog from "./src/frontend/components/ExportDialog.jsx";
+import { rasterizeSvg, downloadBlob, downloadText } from "./src/frontend/components/exportCore.js";
 
 /* ════════════ UTILS ════════════ */
 const uid = () => Math.random().toString(36).slice(2, 10);
 const now = () => new Date().toISOString();
 const fmtDate = (iso) => iso ? new Date(iso).toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"}) : "—";
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+/* ════════════ EXPORT DIALOG PLUMBING (prompt9 Task 6) ════════════
+   ONE ExportDialog instance lives at the app root (MetaLab); deep components
+   open it via this module-level trampoline instead of prop-drilling through
+   every tab. MetaLab registers its setExpItem here on mount. */
+let _openExportDialog = null;
+const openExportDialog = (item) => { if (_openExportDialog) _openExportDialog(item); };
+
+const SVG_XML_HEADER = `<?xml version="1.0" encoding="UTF-8"?>\n`;
+
+/* Filename suffix for PNG presets — DPI is encoded by pixel width, so the
+   journal presets advertise it in the name (e.g. _journal-1col_@300dpi). */
+const presetTag = (choice) => {
+  if (!choice || choice.format !== "png" || !choice.presetId) return "";
+  const dpi = (choice.presetId === "journal-1col" || choice.presetId === "journal-2col") ? "_@300dpi" : "";
+  const tag = choice.presetId === "custom" ? `custom${choice.widthPx || ""}px` : choice.presetId;
+  return `_${tag}${dpi}`;
+};
+
+/* Serialize a LIVE on-screen SVG (theme-token colored JSX) into a standalone
+   string with every fill/stroke resolved to literal computed colors —
+   var(--t-*) custom properties never rasterize (the canvas <img> has no access
+   to the document's variables) and must not leak into exported artifacts.
+   opts.background:  '#hex'  → insert an opaque full-bleed rect under the figure
+                     'auto'  → use the element's resolved CSS background color
+                     null    → no rect inserted (caller paints via rasterizeSvg)
+   opts.stripBgRect: remove an existing full-bleed leading <rect> (for
+                     transparent PNG of figures that bake their own background).
+   Returns { svg, W, H, bg } — bg is the element's resolved background color. */
+function liveSvgToString(svgId, { background = null, stripBgRect = false } = {}) {
+  const el = document.getElementById(svgId);
+  if (!el) throw new Error("The figure is not on screen — open the tab that shows it, then export again.");
+  const W = +el.getAttribute("width") || (el.viewBox && el.viewBox.baseVal && el.viewBox.baseVal.width) || 800;
+  const H = +el.getAttribute("height") || (el.viewBox && el.viewBox.baseVal && el.viewBox.baseVal.height) || 600;
+  const clone = el.cloneNode(true);
+  // Inline computed fill/stroke from the live nodes onto the clone (1:1 order).
+  const srcAll = [el, ...el.querySelectorAll("*")];
+  const cloneAll = [clone, ...clone.querySelectorAll("*")];
+  srcAll.forEach((node, i) => {
+    const c = cloneAll[i];
+    if (!c || node.nodeType !== 1 || c.nodeType !== 1) return;
+    let cs; try { cs = window.getComputedStyle(node); } catch (_) { return; }
+    if (!cs) return;
+    const f = cs.fill, st = cs.stroke;
+    if (f && f !== "none") c.setAttribute("fill", f);
+    if (st && st !== "none") c.setAttribute("stroke", st);
+  });
+  let bg = null;
+  try {
+    const b = window.getComputedStyle(el).backgroundColor;
+    if (b && b !== "rgba(0, 0, 0, 0)" && b !== "transparent") bg = b;
+  } catch (_) {}
+  clone.removeAttribute("id");
+  if (clone.style) { clone.style.background = ""; clone.style.backgroundColor = ""; clone.style.borderRadius = ""; }
+  if (!clone.getAttribute("viewBox")) clone.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  if (stripBgRect) {
+    const first = clone.firstElementChild;
+    if (first && first.tagName && first.tagName.toLowerCase() === "rect"
+      && (+first.getAttribute("x") || 0) === 0 && (+first.getAttribute("y") || 0) === 0) first.remove();
+  }
+  let resolvedBg = background === "auto" ? (bg || "#ffffff") : background;
+  if (resolvedBg) {
+    const r = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    r.setAttribute("x", "0"); r.setAttribute("y", "0");
+    r.setAttribute("width", String(W)); r.setAttribute("height", String(H));
+    r.setAttribute("fill", resolvedBg);
+    clone.insertBefore(r, clone.firstChild);
+  }
+  return { svg: new XMLSerializer().serializeToString(clone), W, H, bg };
+}
 
 /* ════════════ STATISTICS ════════════ */
 const Z975 = 1.959963984540054; // qnorm(0.975), exact
@@ -1253,7 +1326,7 @@ function FunnelPlot({studies}){
   var esStep = (maxX-minX)/6;
   for (var et=0; et<=6; et++){ esTicks.push(minX + et*esStep); }
   return (<div style={{overflowX:"auto"}}>
-    <svg width={W} height={H} style={{fontFamily:"'IBM Plex Mono',monospace",background:C.card,borderRadius:8,display:"block"}}>
+    <svg id="funnelplot-svg" width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{fontFamily:"'IBM Plex Mono',monospace",background:C.card,borderRadius:8,display:"block"}}>
       {/* funnel region (shaded 95% CI) */}
       <path d={funnelPath} fill={themeAlpha(C.acc,'15')} stroke={themeAlpha(C.acc,'55')} strokeWidth={1} strokeDasharray="4,4"/>
       {/* centre line */}
@@ -2263,7 +2336,8 @@ function buildPrismaSVG(prisma,opts){
   const hArrow=(x1,x2,yy)=>`<line x1="${x1}" y1="${yy}" x2="${x2}" y2="${yy}" stroke="${GREY}" stroke-width="1.3" marker-end="url(#ah)"/>`;
 
   const cx=colL+boxW/2;
-  let svg=`<rect x="0" y="0" width="${W}" height="100%" fill="#ffffff"/>`;
+  // noBg → skip the full-bleed white rect so transparent PNG export works
+  let svg=o.noBg?"":`<rect x="0" y="0" width="${W}" height="100%" fill="#ffffff"/>`;
   if(o.title) { svg+=`<text x="${W/2}" y="24" text-anchor="middle" font-family="${FF}" font-size="14" font-weight="700" fill="${INK}">${esc(o.title)}</text>`; y=46; }
 
   // Identification
@@ -2304,21 +2378,8 @@ function buildPrismaSVG(prisma,opts){
   const defs=`<defs><marker id="ah" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="${GREY}"/></marker></defs>`;
   return {svg:`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${defs}${svg}</svg>`,W,H};
 }
-function downloadPrismaPNG(prisma,opts,filename,scale){
-  const built=buildPrismaSVG(prisma,opts); const s=scale||3;
-  const img=new Image();
-  img.onload=function(){
-    const c=document.createElement("canvas");c.width=built.W*s;c.height=built.H*s;
-    const ctx=c.getContext("2d");ctx.scale(s,s);ctx.fillStyle="#fff";ctx.fillRect(0,0,built.W,built.H);ctx.drawImage(img,0,0);
-    c.toBlob(b=>{const u=URL.createObjectURL(b);const a=document.createElement("a");a.href=u;a.download=filename+".png";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(u);},"image/png");
-  };
-  img.src="data:image/svg+xml;base64,"+btoa(unescape(encodeURIComponent(built.svg)));
-}
-function downloadPrismaSVG(prisma,opts,filename){
-  const built=buildPrismaSVG(prisma,opts);
-  const blob=new Blob([`<?xml version="1.0" encoding="UTF-8"?>\n`+built.svg],{type:"image/svg+xml;charset=utf-8"});
-  const u=URL.createObjectURL(blob);const a=document.createElement("a");a.href=u;a.download=filename+".svg";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(u);
-}
+/* PRISMA figure downloads now route through the shared ExportDialog
+   (PrismaFigureExport below) — the old fixed-scale helpers are gone. */
 
 /* ════════════ SCREENING MODULE (import + dual-reviewer triage) ════════════ */
 function ScreeningModule({project,updateProject,activeId,updNested}){
@@ -2660,11 +2721,29 @@ function PRISMATab({project,updNested,updateProject,activeId}){
   </div>);
 }
 
-/* White-background PRISMA figure with preview + PNG/SVG export */
+/* White-background PRISMA figure with preview + PNG/SVG export (via ExportDialog) */
 function PrismaFigureExport({project,prisma}){
   const[show,setShow]=useState(false);
   const opts={title:project.name||""};
   const safe=(project.name||"prisma").replace(/[^a-z0-9]/gi,"_");
+  const openExport=()=>openExportDialog({
+    id:"prisma-figure",
+    title:`PRISMA flow diagram — ${project.name||"project"}`,
+    formats:[{id:"png",label:"PNG (raster)"},{id:"svg",label:"SVG (vector)"}],
+    sizing:true,
+    defaults:{format:"png",presetId:"journal-1col"},
+    run:async(choice)=>{
+      if(choice.format==="svg"){
+        const built=buildPrismaSVG(prisma,opts);
+        downloadText(SVG_XML_HEADER+built.svg,`${safe}_prisma.svg`,"image/svg+xml;charset=utf-8");
+        return;
+      }
+      const built=buildPrismaSVG(prisma,{...opts,noBg:!!choice.transparent});
+      const blob=await rasterizeSvg(built.svg,built.W,built.H,
+        {targetWidthPx:choice.widthPx,transparent:choice.transparent,background:"#ffffff"});
+      downloadBlob(blob,`${safe}_prisma${presetTag(choice)}.png`);
+    },
+  });
   return(<div style={{marginTop:18,background:C.card,border:`1px solid ${themeAlpha(C.grn,'55')}`,borderRadius:8,padding:14}}>
     <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:4}}>
       <div style={{fontSize:12,fontWeight:800,color:C.grn,letterSpacing:0.5}}>📄 PRISMA 2020 FLOW DIAGRAM (publication figure)</div>
@@ -2674,8 +2753,7 @@ function PrismaFigureExport({project,prisma}){
       A clean black-on-white box-and-arrow PRISMA 2020 diagram built from the numbers above — identification, de-duplication, screening, exclusions (with reasons), and inclusion. Drop it straight into your manuscript.
     </div>
     <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-      <button onClick={()=>downloadPrismaPNG(prisma,opts,safe+"_prisma_flow",3)} style={btnS("success")}>🖼️ PNG (high-res)</button>
-      <button onClick={()=>downloadPrismaSVG(prisma,opts,safe+"_prisma_flow")} style={{...btnS("ghost"),fontSize:12}}>⬇ SVG (vector)</button>
+      <button onClick={openExport} style={btnS("success")}>⬇ Export figure…</button>
       <button onClick={()=>setShow(s=>!s)} style={{...btnS("ghost"),fontSize:12}}>{show?"▲ Hide preview":"👁 Preview"}</button>
     </div>
     {show&&(()=>{const built=buildPrismaSVG(prisma,opts);return(
@@ -3329,8 +3407,9 @@ ${paperText.slice(0,15000)}`;
     setExtracting(false);
   };
 
-  // CSV export (Excel-compatible) — includes metadata, provenance, conversion audit
-  const exportCSV=()=>{
+  // CSV export (Excel-compatible) — includes metadata, provenance, conversion audit.
+  // Routed through the shared ExportDialog (CSV only, BOM preserved for Excel).
+  const buildExtractionCSV=()=>{
     const cols=["author","year","title","authors","journal","doi","pmid","country","design","dataSource",
       "enrollPeriod","followup","populationDef","interventionDef","comparatorDef","funding",
       "outcome","primaryOutcome","secondaryOutcomes","timepoint","dataNature","adjusted","source","converted","flags",
@@ -3340,11 +3419,19 @@ ${paperText.slice(0,15000)}`;
       t=t.replace(/"/g,'""');return /[",\n]/.test(t)?`"${t}"`:t;};
     const header=cols.join(",");
     const rows=studies.map(s=>cols.map(c=>esc(s[c])).join(","));
-    const csv=[header,...rows].join("\n");
-    const blob=new Blob(["\ufeff"+csv],{type:"text/csv;charset=utf-8;"});
-    const url=URL.createObjectURL(blob);
-    const a=document.createElement("a");a.href=url;a.download=`${(project.name||"extraction").replace(/[^a-z0-9]/gi,"_")}_extraction.csv`;
-    document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+    return [header,...rows].join("\n");
+  };
+  const openExtractionExport=()=>{
+    const filename=`${(project.name||"extraction").replace(/[^a-z0-9]/gi,"_")}_extraction.csv`;
+    openExportDialog({
+      id:"extraction-csv",
+      title:`Data extraction \u2014 ${filename}`,
+      formats:[{id:"csv",label:"CSV (Excel-compatible, UTF-8 BOM)"}],
+      sizing:false,
+      run:async()=>{
+        downloadBlob(new Blob(["\ufeff"+buildExtractionCSV()],{type:"text/csv;charset=utf-8;"}),filename);
+      },
+    });
   };
 
   // compact table cell editor
@@ -3457,7 +3544,7 @@ ${paperText.slice(0,15000)}`;
           ))}
         </div>
         {studies.length>0&&<button onClick={()=>setShowQC(!showQC)} style={{...btnS(showQC?"primary":"ghost"),fontSize:12}}>🔍 Data Quality Check</button>}
-        {studies.length>0&&<button onClick={exportCSV} style={{...btnS("ghost"),fontSize:12}}>⤓ Export CSV</button>}
+        {studies.length>0&&<button onClick={openExtractionExport} style={{...btnS("ghost"),fontSize:12}}>⤓ Export CSV</button>}
         {AI_FEATURES_ENABLED&&!readOnly&&<button onClick={()=>setShowAI(true)} style={{...btnS(),color:C.purp,borderColor:themeAlpha(C.purp,'55'),fontSize:12}}>✦ AI Extract</button>}
         {!readOnly&&<button onClick={()=>setShowAdd(true)} style={{...btnS("primary"),fontSize:12}}>+ Add Study</button>}
       </div>
@@ -4291,11 +4378,6 @@ function ResearchExport({result,esType,method,studies}){
   ].filter(Boolean).join("\n");
   const csv="\ufeff"+[csvHead.join(","),...csvRows].join("\n")+"\n"+meta;
 
-  const safeName=(studies&&studies.length&&"meta")||"meta";
-  const dl=(content,mime,ext)=>{
-    const blob=new Blob([content],{type:mime});const url=URL.createObjectURL(blob);
-    const a=document.createElement("a");a.href=url;a.download=`meta-analysis_results.${ext}`;document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
-  };
   const copy=(txt,id)=>navigator.clipboard.writeText(txt).then(()=>{setCopied(id);setTimeout(()=>setCopied(""),1800);});
 
   // ---- Excel-compatible (.xls via HTML table) ----
@@ -4314,15 +4396,41 @@ function ResearchExport({result,esType,method,studies}){
     </div>
     <div style={{display:"flex",gap:8,flexWrap:"wrap",marginBottom:12}}>
       <button onClick={()=>copy(tsv,"clip")} style={btnS("primary")}>{copied==="clip"?"✓ Copied table":"📋 Copy table"}</button>
-      <button onClick={()=>dl(csv,"text/csv;charset=utf-8;","csv")} style={btnS("ghost")}>⬇ CSV</button>
-      <button onClick={()=>dl(xlsDoc,"application/vnd.ms-excel","xls")} style={btnS("ghost")}>⬇ Excel (.xls)</button>
+      <button onClick={()=>openExportDialog({
+        id:"meta-results",
+        title:"Meta-analysis results — meta-analysis_results",
+        formats:[{id:"csv",label:"CSV"},{id:"xls",label:"Excel (.xls, HTML-based)"}],
+        sizing:false,
+        defaults:{format:"csv"},
+        run:async(choice)=>{
+          if(choice.format==="xls") downloadBlob(new Blob([xlsDoc],{type:"application/vnd.ms-excel"}),"meta-analysis_results.xls");
+          else downloadBlob(new Blob([csv],{type:"text/csv;charset=utf-8;"}),"meta-analysis_results.csv");
+        },
+      })} style={btnS("ghost")}>⬇ Export results…</button>
       <button onClick={()=>copy(xlsTable.replace(/<[^>]+>/g,m=>m),"pub")} style={btnS("ghost")}>{copied==="pub"?"✓ Copied HTML":"📋 Copy HTML table"}</button>
-      {(()=>{const pubOpts={esType,esLabel:(t.scale||"Effect size")+(isLog?" (back-transformed)":isProp?" (%)":""),nullLine:0,showCounts:anyCounts,showWeights:true,title:""};
-        return(<>
-          <button onClick={()=>downloadPubForestPNG(result,pubOpts,"forest_publication",3)} style={btnS("success")}>🖼️ Forest PNG (white)</button>
-          <button onClick={()=>downloadPubForestSVG(result,pubOpts,"forest_publication")} style={btnS("ghost")}>⬇ Forest SVG</button>
-        </>);
-      })()}
+      <button onClick={()=>{
+        const pubOpts={esType,esLabel:(t.scale||"Effect size")+(isLog?" (back-transformed)":isProp?" (%)":""),nullLine:0,showCounts:anyCounts,showWeights:true,title:""};
+        openExportDialog({
+          id:"analysis-forest",
+          title:"Forest plot (publication, white background)",
+          formats:[{id:"png",label:"PNG (raster)"},{id:"svg",label:"SVG (vector)"}],
+          sizing:true,
+          defaults:{format:"png",presetId:"journal-1col"},
+          run:async(choice)=>{
+            if(choice.format==="svg"){
+              const built=buildPubForestSVG(result,pubOpts);
+              if(!built) throw new Error("Not enough studies to draw the figure.");
+              downloadText(SVG_XML_HEADER+built.svg,"forest_publication.svg","image/svg+xml;charset=utf-8");
+              return;
+            }
+            const built=buildPubForestSVG(result,{...pubOpts,noBg:!!choice.transparent});
+            if(!built) throw new Error("Not enough studies to draw the figure.");
+            const blob=await rasterizeSvg(built.svg,built.W,built.H,
+              {targetWidthPx:choice.widthPx,transparent:choice.transparent,background:"#ffffff"});
+            downloadBlob(blob,`forest_publication${presetTag(choice)}.png`);
+          },
+        });
+      }} style={btnS("success")}>🖼️ Export forest figure…</button>
       <button onClick={()=>setShowTable(!showTable)} style={btnS("ghost")}>{showTable?"▲ Hide preview":"▼ Preview table"}</button>
     </div>
 
@@ -4555,7 +4663,8 @@ function buildPubForestSVG(result,opts){
   const line=(x1,y1,x2,y2,stroke,sw,dash)=>`<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${stroke}" stroke-width="${sw||1}"${dash?` stroke-dasharray="${dash}"`:""}/>`;
 
   let svg="";
-  svg+=`<rect x="0" y="0" width="${W}" height="${H}" fill="#ffffff"/>`;
+  // noBg → skip the full-bleed white rect so transparent PNG export works
+  if(!o.noBg) svg+=`<rect x="0" y="0" width="${W}" height="${H}" fill="#ffffff"/>`;
 
   // ---- title (wrapped / shrunk, centered, never clipped) ----
   titleLines.forEach((ln,i)=>{ svg+=txt(W/2, MTOP+titleSize+i*(titleSize+5), ln, titleSize, {anchor:"middle",bold:true}); });
@@ -4669,60 +4778,9 @@ function buildPubForestSVG(result,opts){
   return {svg:full,W,H};
 }
 
-/* Download the publication-style figure as SVG (vector) */
-function downloadPubForestSVG(result,opts,filename){
-  const built=buildPubForestSVG(result,opts);
-  if(!built) return;
-  const blob=new Blob([`<?xml version="1.0" encoding="UTF-8"?>\n`+built.svg],{type:"image/svg+xml;charset=utf-8"});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement("a");a.href=url;a.download=filename+".svg";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
-}
-/* Download the publication-style figure as high-resolution PNG (white bg) */
-function downloadPubForestPNG(result,opts,filename,scale){
-  const built=buildPubForestSVG(result,opts);
-  if(!built) return;
-  const s=scale||3;  // 3× ≈ 300+ dpi at this figure size
-  const img=new Image();
-  const svg64="data:image/svg+xml;base64,"+btoa(unescape(encodeURIComponent(built.svg)));
-  img.onload=function(){
-    const canvas=document.createElement("canvas");canvas.width=built.W*s;canvas.height=built.H*s;
-    const ctx=canvas.getContext("2d");ctx.scale(s,s);
-    ctx.fillStyle="#ffffff";ctx.fillRect(0,0,built.W,built.H);ctx.drawImage(img,0,0);
-    canvas.toBlob(function(blob){
-      const url=URL.createObjectURL(blob);
-      const a=document.createElement("a");a.href=url;a.download=filename+".png";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
-    },"image/png");
-  };
-  img.src=svg64;
-}
-
-/* Download the live forest-plot SVG as .svg or rasterised .png */
-function downloadForestSVG(svgId,filename){
-  const el=document.getElementById(svgId);
-  if(!el) return;
-  const xml=new XMLSerializer().serializeToString(el);
-  const blob=new Blob([`<?xml version="1.0" encoding="UTF-8"?>\n`+xml],{type:"image/svg+xml;charset=utf-8"});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement("a");a.href=url;a.download=filename+".svg";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
-}
-function downloadForestPNG(svgId,filename){
-  const el=document.getElementById(svgId);
-  if(!el) return;
-  const xml=new XMLSerializer().serializeToString(el);
-  const w=+el.getAttribute("width")||800, h=+el.getAttribute("height")||600, scale=2;
-  const img=new Image();
-  const svg64="data:image/svg+xml;base64,"+btoa(unescape(encodeURIComponent(xml)));
-  img.onload=function(){
-    const canvas=document.createElement("canvas");canvas.width=w*scale;canvas.height=h*scale;
-    const ctx=canvas.getContext("2d");ctx.scale(scale,scale);
-    ctx.fillStyle="#0e1420";ctx.fillRect(0,0,w,h);ctx.drawImage(img,0,0);
-    canvas.toBlob(function(blob){
-      const url=URL.createObjectURL(blob);
-      const a=document.createElement("a");a.href=url;a.download=filename+".png";document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
-    },"image/png");
-  };
-  img.src=svg64;
-}
+/* Forest-plot downloads (publication white + live dark) now route through the
+   shared ExportDialog — see the export panel in ForestTab and ResearchExport.
+   The dark variant serializes the live #forestplot-svg via liveSvgToString. */
 
 function ForestTab({project}){
   const{studies}=project;
@@ -4834,9 +4892,42 @@ function ForestTab({project}){
           A standalone black-on-white figure: study names, events/totals, the forest plot, effect &amp; 95% CI, both weight columns, common and random pooled diamonds, the heterogeneity line, and a proper axis label. Suitable for manuscripts and posters.
         </div>
         <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-          <button onClick={()=>downloadPubForestPNG(result,pubOpts,exportName,3)} style={btnS("success")}>🖼️ PNG (high-res, 3×)</button>
-          <button onClick={()=>downloadPubForestPNG(result,pubOpts,exportName,4)} style={{...btnS("ghost"),fontSize:12}}>🖼️ PNG (4× extra-large)</button>
-          <button onClick={()=>downloadPubForestSVG(result,pubOpts,exportName)} style={{...btnS("ghost"),fontSize:12}}>⬇ SVG (vector)</button>
+          <button onClick={()=>openExportDialog({
+            id:"forest-pub",
+            title:`Forest plot — ${(activeOutcome?.outcome||project.name||"figure")}`,
+            formats:[{id:"png",label:"PNG (raster)"},{id:"svg",label:"SVG (vector)"}],
+            sizing:true,
+            variants:[{id:"light",label:"Light (publication)"},{id:"dark",label:"Dark (screen)"}],
+            defaults:{format:"png",presetId:"journal-1col",variantId:"light"},
+            run:async(choice)=>{
+              if(choice.variantId==="dark"){
+                // Serialize the LIVE dark plot with computed colors inlined —
+                // var(--t-*) must never reach the exported artifact.
+                const darkName=`${safeName}_${outcomeSafeName}_forest_dark`;
+                if(choice.format==="svg"){
+                  const out=liveSvgToString("forestplot-svg",{});
+                  downloadText(SVG_XML_HEADER+out.svg,darkName+".svg","image/svg+xml;charset=utf-8");
+                  return;
+                }
+                const out=liveSvgToString("forestplot-svg",{stripBgRect:!!choice.transparent});
+                const blob=await rasterizeSvg(out.svg,out.W,out.H,
+                  {targetWidthPx:choice.widthPx,transparent:choice.transparent,background:"#0e1420"});
+                downloadBlob(blob,`${darkName}${presetTag(choice)}.png`);
+                return;
+              }
+              if(choice.format==="svg"){
+                const built=buildPubForestSVG(result,pubOpts);
+                if(!built) throw new Error("Not enough studies to draw the figure.");
+                downloadText(SVG_XML_HEADER+built.svg,exportName+".svg","image/svg+xml;charset=utf-8");
+                return;
+              }
+              const built=buildPubForestSVG(result,{...pubOpts,noBg:!!choice.transparent});
+              if(!built) throw new Error("Not enough studies to draw the figure.");
+              const blob=await rasterizeSvg(built.svg,built.W,built.H,
+                {targetWidthPx:choice.widthPx,transparent:choice.transparent,background:"#ffffff"});
+              downloadBlob(blob,`${exportName}${presetTag(choice)}.png`);
+            },
+          })} style={btnS("success")}>⬇ Export figure…</button>
           <button onClick={()=>setShowPubPreview(v=>!v)} style={{...btnS("ghost"),fontSize:12}}>{showPubPreview?"▲ Hide preview":"👁 Preview"}</button>
         </div>
         {showPubPreview&&(()=>{
@@ -4847,13 +4938,7 @@ function ForestTab({project}){
         })()}
       </div>);
     })()}
-    {result&&(
-      <div style={{display:"flex",gap:8,marginTop:12,flexWrap:"wrap",alignItems:"center"}}>
-        <span style={{fontSize:11,color:C.dim}}>Dark UI version (matches the app theme):</span>
-        <button onClick={()=>downloadForestPNG("forestplot-svg",`${safeName}_${outcomeSafeName}_forest_dark`)} style={{...btnS("ghost"),fontSize:12}}>🖼️ Dark PNG</button>
-        <button onClick={()=>downloadForestSVG("forestplot-svg",`${safeName}_${outcomeSafeName}_forest_dark`)} style={{...btnS("ghost"),fontSize:12}}>⬇ Dark SVG</button>
-      </div>
-    )}
+    {/* Dark (screen) version is now a variant inside the export dialog above. */}
     {isLog
       ? <InfoBox>💡 This is a ratio measure shown on the log scale. A study left of the null line favours fewer events; right favours more. The ES column shows the back-transformed ratio.</InfoBox>
       : <InfoBox>💡 Squares left of the null line ({nullLine}) indicate effects in one direction, right of it the other. Set the effect-measure type per study (Data Extraction) so the axis labels itself correctly.</InfoBox>}
@@ -5881,7 +5966,36 @@ function SensitivityTab({project}){
     {/* === Funnel Plot + Egger's === */}
     <div style={{display:"grid",gridTemplateColumns:"2fr 1fr",gap:16,marginBottom:16}}>
       <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16}}>
-        <div style={{fontSize:11,fontWeight:700,color:C.acc,letterSpacing:1,marginBottom:12}}>FUNNEL PLOT</div>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:10,marginBottom:12}}>
+          <div style={{fontSize:11,fontWeight:700,color:C.acc,letterSpacing:1}}>FUNNEL PLOT</div>
+          <button onClick={()=>{
+            const funnelSafe=(project.name||"funnel").replace(/[^a-z0-9]/gi,"_");
+            openExportDialog({
+              id:"funnel-plot",
+              title:`Funnel plot — ${project.name||"project"}`,
+              formats:[{id:"png",label:"PNG (raster)"},{id:"svg",label:"SVG (vector)"}],
+              sizing:true,
+              variants:[{id:"light",label:"Light (publication)"},{id:"dark",label:"Dark (screen)"}],
+              defaults:{format:"png",presetId:"journal-1col",variantId:"light"},
+              run:async(choice)=>{
+                // Clone the live theme-colored funnel SVG and inline computed
+                // colors to literals — var(--t-*) won't rasterize or export.
+                const light=choice.variantId!=="dark";
+                const name=`${funnelSafe}_funnel_${light?"light":"dark"}`;
+                if(choice.format==="svg"){
+                  const out=liveSvgToString("funnelplot-svg",{background:light?"#ffffff":"auto"});
+                  downloadText(SVG_XML_HEADER+out.svg,name+".svg","image/svg+xml;charset=utf-8");
+                  return;
+                }
+                const out=liveSvgToString("funnelplot-svg",{background:null});
+                const blob=await rasterizeSvg(out.svg,out.W,out.H,
+                  {targetWidthPx:choice.widthPx,transparent:choice.transparent,
+                   background:light?"#ffffff":(out.bg||"#0e1420")});
+                downloadBlob(blob,`${name}${presetTag(choice)}.png`);
+              },
+            });
+          }} style={{...btnS("ghost"),fontSize:11}}>⬇ Export…</button>
+        </div>
         <div style={{fontSize:12,color:C.muted,marginBottom:12}}>Asymmetry suggests publication bias or small-study effects. Dashed funnel = 95% pseudo-confidence interval around pooled estimate.</div>
         <FunnelPlot studies={studies}/>
       </div>
@@ -7055,18 +7169,38 @@ function CtrlAddMember({lid,amOwner,onAdded}){
   const[busy,setBusy]=useState(false);
   const[err,setErr]=useState("");
   const[note,setNote]=useState("");
+  const[invite,setInvite]=useState(null);   // {link, emailSent, emailConfigured, expiresAt}
+  const[copied,setCopied]=useState(false);
+  const linkRef=useRef(null);
   const presets=amOwner?CTRL_ADD_PRESETS:CTRL_ADD_PRESETS.filter(([v])=>v!=="leader");
   const submit=async()=>{
     const v=email.trim();
     if(!v){setErr("Email is required.");return;}
-    setBusy(true);setErr("");setNote("");
+    if(!EMAIL_RE.test(v)){setErr("Enter a valid email address (e.g. name@example.com).");return;}
+    setBusy(true);setErr("");setNote("");setInvite(null);setCopied(false);
     try{
       const res=await screeningApi.addMember(lid,{email:v,preset,modules});
       setEmail("");
-      setNote(res&&res.pending?"Invite created — they'll join automatically once they register with this email.":"Member added.");
+      if(res&&res.invite&&res.invite.link){
+        setInvite(res.invite);   // success panel below carries the messaging
+      } else {
+        setNote(res&&res.pending?"Invite created — they'll join automatically once they register with this email.":"Member added.");
+      }
       await onAdded();
     }catch(e){setErr(e.message||"Could not add member.");}
     setBusy(false);
+  };
+  const copyLink=async()=>{
+    const link=invite&&invite.link;
+    if(!link)return;
+    let ok=false;
+    try{await navigator.clipboard.writeText(link);ok=true;}
+    catch(_){
+      try{
+        if(linkRef.current){linkRef.current.focus();linkRef.current.select();ok=document.execCommand("copy");}
+      }catch(__){}
+    }
+    if(ok){setCopied(true);setTimeout(()=>setCopied(false),1800);}
   };
   return(
     <div style={{background:C.bg,border:`1px dashed ${C.brd2}`,borderRadius:8,padding:"12px 14px",marginTop:10}}>
@@ -7088,6 +7222,19 @@ function CtrlAddMember({lid,amOwner,onAdded}){
         Presets set META·LAB + META·SIFT permissions across the linked workspace; “Participates in” narrows which app(s) they can open. Unregistered emails get a pending invite.
       </div>
       {note&&<div style={{marginTop:8,fontSize:11.5,color:C.grn}}>✓ {note}</div>}
+      {invite&&invite.link&&(
+        <div style={{marginTop:10,background:themeAlpha(C.grn,'0d'),border:`1px solid ${themeAlpha(C.grn,'40')}`,borderRadius:8,padding:"10px 12px"}}>
+          <div style={{fontSize:11.5,fontWeight:700,color:C.grn,marginBottom:7}}>
+            ✓ Invite created — {invite.emailSent?"invitation email sent":"email not configured — share this link"}
+          </div>
+          <div style={{display:"flex",gap:6,alignItems:"center"}}>
+            <input ref={linkRef} readOnly value={invite.link} onFocus={e=>e.target.select()}
+              style={{...inp,flex:1,minWidth:0,fontSize:11,fontFamily:"'IBM Plex Mono',monospace",padding:"5px 8px"}}/>
+            <button onClick={copyLink} style={{...btnS("ghost"),fontSize:11,whiteSpace:"nowrap",flexShrink:0}}>{copied?"✓ Copied":"Copy"}</button>
+          </div>
+          {invite.expiresAt&&<div style={{fontSize:10.5,color:C.muted,marginTop:6}}>Link expires {fmtDate(invite.expiresAt)}.</div>}
+        </div>
+      )}
       {err&&<div style={{marginTop:8,fontSize:11.5,color:C.red}}>{err}</div>}
     </div>
   );
@@ -7342,8 +7489,18 @@ export default function MetaLab(){
   const[deepLinkMiss,setDeepLinkMiss]=useState(null);   // Task 3 — ?project= id we couldn't open
   const[showModal,setShowModal]=useState(false);
   const[confirmDel,setConfirmDel]=useState(null);
+  const[delName,setDelName]=useState("");          // typed-name confirmation (prompt9 Task 7)
+  const[delErr,setDelErr]=useState("");
+  const[delBusy,setDelBusy]=useState(false);
   const[showAudit,setShowAudit]=useState(false);
   const[appVersion,setAppVersion]=useState(_versionCache);
+  // ONE shared ExportDialog instance for every monolith download (prompt9 Task 6).
+  // Deep components open it via the module-level openExportDialog() trampoline.
+  const[expItem,setExpItem]=useState(null);
+  useEffect(()=>{
+    _openExportDialog=setExpItem;
+    return()=>{if(_openExportDialog===setExpItem)_openExportDialog=null;};
+  },[]);
 
   // Sidebar footer version from the shared GET /api/version (prompt6) —
   // silent fallback: on any error the footer just shows the static label.
@@ -7497,10 +7654,49 @@ export default function MetaLab(){
     setProjects(next);setActiveId(proj.id);setTab("overview");save(next);
     setCreatingProject(false);setShowModal(false);setNewName("");setCreateWarning(warning);
   };
-  const confirmDelete=()=>{
-    const id=confirmDel,next=projects.filter(p=>p.id!==id);
-    setProjects(next);if(activeId===id)setActiveId(next[0]?.id||null);
-    save(next);setConfirmDel(null);
+  // prompt9 Task 7 — typed-name delete via the explicit endpoint
+  // POST /api/projects/:id/delete {confirmName, cascadeLinked:true}.
+  // The row is deleted SERVER-SIDE here, so local removal must NOT ride the
+  // autosave array-diff sweep (it would fire a duplicate DELETE): we
+  // (1) flush any pending debounced save first (its array still contains the
+  //     project — harmless, and it settles the sweep baseline),
+  // (2) call the delete endpoint,
+  // (3) re-baseline via window.storage.get() — the load path resets the
+  //     sweep's knownServerIds from the server, where the row is already gone,
+  //     so the next doSave() diff can never produce this id again.
+  const confirmDelete=async()=>{
+    const id=confirmDel;
+    const proj=projects.find(p=>p.id===id);
+    if(!proj){setConfirmDel(null);return;}
+    if(delBusy)return;
+    setDelBusy(true);setDelErr("");
+    try{
+      try{await flushStorage();}catch(_){/* best-effort */}
+      const r=await fetch(`/api/projects/${id}/delete`,{method:"POST",credentials:"include",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({confirmName:delName.trim(),cascadeLinked:true})});
+      const d=await r.json().catch(()=>({}));
+      if(!r.ok){
+        setDelErr(d.error||(r.status===400
+          ?"The name you typed does not match the project name."
+          :`Delete failed (${r.status}). Please try again.`));
+        setDelBusy(false);
+        return;
+      }
+      // Re-baseline the delete sweep + refresh local state from the server.
+      let fresh=null;
+      try{
+        const res=await window.storage.get("meta:projects");
+        if(res?.value)fresh=JSON.parse(res.value);
+      }catch(_){/* degraded: local filter below; a stray sweep DELETE would 404 and is swallowed */}
+      const next=Array.isArray(fresh)?fresh:projects.filter(p=>p.id!==id);
+      setProjects(next);
+      if(activeId===id)setActiveId(next[0]?.id||null);
+      setConfirmDel(null);setDelName("");setDelErr("");
+    }catch(_){
+      setDelErr("Could not reach the server. Please try again.");
+    }
+    setDelBusy(false);
   };
 
   const importRef=useRef(null);
@@ -7532,9 +7728,10 @@ export default function MetaLab(){
     if(importRef.current)importRef.current.value="";
   };
 
-  // One-click PDF report via a print window (user picks "Save as PDF")
-  const exportPDF=()=>{
-    if(!project) return;
+  // Self-contained report HTML (print CSS + embedded figures). The export
+  // dialog offers PDF (print window) or HTML file — user chooses explicitly.
+  const buildReportHTML=()=>{
+    if(!project) return null;
     const p=project, pico=p.pico||{}, pr=p.prisma||{};
     const res=runMeta(p.studies||[],"random");
     const esType=(p.studies||[]).map(s=>s.esType).filter(Boolean)[0]||"";
@@ -7593,21 +7790,46 @@ export default function MetaLab(){
 
     <div class="muted" style="margin-top:30px;border-top:1px solid #ccc;padding-top:8px;">Generated by META·LAB. Verify all numbers against your primary analysis before submission. Statistical methods: inverse-variance fixed effect and DerSimonian–Laird random effects${res&&res.hksj?", with Hartung–Knapp–Sidik–Jonkman adjustment":""}.</div>
     </body></html>`;
+    return html;
+  };
 
-    // Sandbox-safe: try a new tab first; if blocked (common in embedded/iframe contexts),
-    // fall back to downloading the report as a self-contained .html file the user can open & print.
-    let opened=null;
-    try{ opened=window.open("","_blank"); }catch(_){ opened=null; }
-    if(opened&&opened.document){
-      opened.document.write(html); opened.document.close();
-    } else {
-      const blob=new Blob([html],{type:"text/html"});
-      const url=URL.createObjectURL(blob);
-      const a=document.createElement("a");
-      a.href=url; a.download=(p.name||"report").replace(/[^a-z0-9]/gi,"_")+"_report.html";
-      document.body.appendChild(a); a.click(); document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    }
+  // prompt9 Task 6 — report + project-JSON exports open the shared dialog.
+  const openReportExport=()=>{
+    if(!project)return;
+    const htmlName=(project.name||"report").replace(/[^a-z0-9]/gi,"_")+"_report.html";
+    setExpItem({
+      id:"project-report",
+      title:`Report — ${project.name||"project"}`,
+      formats:[{id:"pdf",label:"PDF (print dialog)"},{id:"html",label:"HTML file"}],
+      sizing:false,
+      defaults:{format:"pdf"},
+      run:async(choice)=>{
+        const html=buildReportHTML();
+        if(!html) throw new Error("No project selected.");
+        if(choice.format==="pdf"){
+          // Existing print-window path; if pop-ups are blocked the user can
+          // pick "HTML file" instead (the inline error tells them so).
+          let opened=null;
+          try{ opened=window.open("","_blank"); }catch(_){ opened=null; }
+          if(!(opened&&opened.document))
+            throw new Error("Pop-up blocked — allow pop-ups for this site, or choose 'HTML file' instead.");
+          opened.document.write(html); opened.document.close();
+        } else {
+          downloadBlob(new Blob([html],{type:"text/html"}),htmlName);
+        }
+      },
+    });
+  };
+  const openProjectExport=()=>{
+    if(!project)return;
+    const jsonName=(project?.name||"project").replace(/[^a-z0-9]/gi,"_")+".json";
+    setExpItem({
+      id:"project-json",
+      title:`Project backup — ${jsonName}`,
+      formats:[{id:"json",label:"JSON (portable project file)"}],
+      sizing:false,
+      run:async()=>{exportProject(false);},   // existing payload shape, unchanged
+    });
   };
 
   if(loading) return(
@@ -7780,22 +8002,58 @@ export default function MetaLab(){
       </div>
     </div>)}
 
-    {/* Confirm delete modal */}
-    {confirmDel&&(<div className="modal-bg" style={{position:"fixed",inset:0,background:"#00000099",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center"}}>
-      <div style={{
-        background:C.surf,border:`1px solid ${themeAlpha(C.red,'44')}`,borderRadius:14,padding:28,width:380,
-        boxShadow:"0 24px 80px var(--t-shadow)",
-      }}>
-        <div style={{fontSize:16,fontWeight:800,marginBottom:6,color:C.txt}}>Delete Project?</div>
-        <div style={{fontSize:13,color:C.muted,marginBottom:22,lineHeight:1.55}}>
-          This permanently deletes <strong style={{color:C.txt}}>{projects.find(p=>p.id===confirmDel)?.name}</strong> and all its data. This cannot be undone.
+    {/* Typed-name confirm delete modal (prompt9 Task 7) */}
+    {confirmDel&&(()=>{
+      const delProj=projects.find(p=>p.id===confirmDel);
+      if(!delProj)return null;
+      const linkedTitle=delProj._linkedMetaSift&&delProj._linkedMetaSift.id
+        ?(delProj._linkedMetaSift.title||"linked META·SIFT workspace"):null;
+      const nameOk=delName.trim()===(delProj.name||"");
+      const closeDel=()=>{if(delBusy)return;setConfirmDel(null);setDelName("");setDelErr("");};
+      return(<div className="modal-bg" style={{position:"fixed",inset:0,background:"#00000099",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+        <div style={{
+          background:C.surf,border:`1px solid ${themeAlpha(C.red,'55')}`,borderRadius:14,padding:28,width:460,maxWidth:"94vw",
+          maxHeight:"90vh",overflowY:"auto",boxShadow:"0 24px 80px var(--t-shadow)",
+        }}>
+          <div style={{fontSize:16,fontWeight:800,marginBottom:8,color:C.red}}>⚠ Delete project — this cannot be undone</div>
+          <div style={{fontSize:12.5,color:C.txt2,marginBottom:10,lineHeight:1.55}}>
+            You are about to <strong style={{color:C.red}}>permanently delete</strong> <strong style={{color:C.txt}} className="t-wrap">{delProj.name}</strong>. This removes:
+          </div>
+          <ul style={{margin:"0 0 16px 18px",padding:0,fontSize:12,color:C.muted,lineHeight:1.75}}>
+            <li>The META·LAB project — studies, extraction data, analyses, and figures</li>
+            {linkedTitle&&<li>Its linked META·SIFT workspace <strong style={{color:C.txt2}}>{linkedTitle}</strong></li>}
+            <li>All screening records and screening decisions</li>
+            <li>Project chats and messages</li>
+            <li>Uploaded PDFs and attachments</li>
+            <li>Exports and audit history</li>
+          </ul>
+          <div style={{fontSize:11.5,color:C.txt2,marginBottom:6}}>
+            Type the project name <strong style={{color:C.txt,fontFamily:"'IBM Plex Mono',monospace"}}>{delProj.name}</strong> to confirm:
+          </div>
+          <input autoFocus value={delName} disabled={delBusy}
+            onChange={e=>{setDelName(e.target.value);setDelErr("");}}
+            onKeyDown={e=>{
+              if(e.key==="Enter"&&nameOk&&!delBusy)confirmDelete();
+              if(e.key==="Escape")closeDel();
+            }}
+            placeholder={delProj.name}
+            style={{...inp,marginBottom:10,fontSize:13}}/>
+          {delErr&&(
+            <div style={{marginBottom:10,padding:"7px 11px",background:"var(--t-red-bg)",
+              border:`1px solid ${themeAlpha(C.red,'44')}`,borderRadius:6,color:C.red,fontSize:11.5,lineHeight:1.5}}>
+              {delErr}
+            </div>
+          )}
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+            <button onClick={closeDel} disabled={delBusy} style={{...btnS("ghost"),opacity:delBusy?0.5:1}}>Cancel</button>
+            <button onClick={confirmDelete} disabled={!nameOk||delBusy}
+              style={{...btnS("danger"),opacity:(!nameOk||delBusy)?0.5:1,cursor:(!nameOk||delBusy)?"not-allowed":"pointer"}}>
+              {delBusy?"Deleting…":"Delete permanently"}
+            </button>
+          </div>
         </div>
-        <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
-          <button onClick={()=>setConfirmDel(null)} style={btnS("ghost")}>Cancel</button>
-          <button onClick={confirmDelete} style={btnS("danger")}>Delete Project</button>
-        </div>
-      </div>
-    </div>)}
+      </div>);
+    })()}
 
     {/* Sidebar */}
     <div style={{
@@ -7885,7 +8143,7 @@ export default function MetaLab(){
               </div>
               {/* Members cannot delete a shared project they don't own. */}
               {!p._shared&&(
-                <button onClick={e=>{e.stopPropagation();setConfirmDel(p.id);}}
+                <button onClick={e=>{e.stopPropagation();setDelName("");setDelErr("");setConfirmDel(p.id);}}
                   style={{background:"none",border:"none",color:C.muted,cursor:"pointer",
                     fontSize:14,padding:"0 2px",lineHeight:1,flexShrink:0,opacity:0,
                   }}
@@ -7999,7 +8257,7 @@ export default function MetaLab(){
         display:"flex",alignItems:"center",justifyContent:"space-between",
       }}>
         <div style={{fontSize:9,color:C.dim,fontFamily:"'IBM Plex Mono',monospace"}}>{appVersion?`v${appVersion} · `:""}PRISMA 2020</div>
-        {project&&<button onClick={()=>exportProject(false)} title="Export project as JSON" style={{
+        {project&&<button onClick={openProjectExport} title="Export project as JSON" style={{
           background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:10,
           padding:"2px 4px",borderRadius:4,transition:"color 0.15s",
         }}
@@ -8134,8 +8392,8 @@ export default function MetaLab(){
                       >⚠ {r.missing.length} requirement{r.missing.length!==1?"s":""} missing</span>;
                 })()}
                 <input ref={importRef} type="file" accept=".json" onChange={onImport} style={{display:"none"}}/>
-                <button onClick={exportPDF} style={{...btnS("ghost"),fontSize:11,borderRadius:7}} title="Download a full HTML report — open it and use your browser's Print → Save as PDF"><Icon name="fileText" size={12}/>Report</button>
-                <button onClick={()=>exportProject(false)} style={{...btnS("ghost"),fontSize:11,borderRadius:7}} title="Export project as JSON"><Icon name="download" size={12}/>Export</button>
+                <button onClick={openReportExport} style={{...btnS("ghost"),fontSize:11,borderRadius:7}} title="Export a full report — PDF (print dialog) or self-contained HTML file"><Icon name="fileText" size={12}/>Report</button>
+                <button onClick={openProjectExport} style={{...btnS("ghost"),fontSize:11,borderRadius:7}} title="Export project as JSON"><Icon name="download" size={12}/>Export</button>
                 <button onClick={()=>importRef.current&&importRef.current.click()} style={{...btnS("ghost"),fontSize:11,borderRadius:7}} title="Import project JSON"><Icon name="upload" size={12}/>Import</button>
                 {(()=>{const n=auditProject(project).filter(i=>i.sev==="high").length;
                   return(<button onClick={()=>setShowAudit(true)} style={{
@@ -8200,5 +8458,9 @@ export default function MetaLab(){
       )}
     </div>
     {showAudit&&project&&<AuditPanel project={project} onClose={()=>setShowAudit(false)} onJump={(t)=>setTab(t)}/>}
+    {/* Shared export dialog (prompt9 Task 6) — single instance for every
+        monolith download trigger; portals itself to document.body, so the
+        transformed .tab-content ancestor can't hijack its position:fixed. */}
+    <ExportDialog open={!!expItem} onClose={()=>setExpItem(null)} item={expItem}/>
   </div>);
 }

@@ -1,5 +1,9 @@
 # META·SIFT — QA Report (collaboration upgrade)
 
+> **Update 2026-06-12 (prompt9 notifications/invites/exports/delete/ops):** ✅ **272/272 screening tests pass**
+> (+23 `integration/prompt9.test.js`). Full repo: **906 pass / 6 pre-existing quarantined / 7 skips**.
+> prompt9 section below; prompt8…prompt1 follow unchanged.
+
 > **Update 2026-06-11 (prompt8 landing/ops/overflow/chat-placement):** ✅ **249/249 screening tests pass —
 > unchanged.** prompt8 touched no screening API: chat launchers moved into the top-right utility cluster
 > (UI only; `prompt7-chat.test.js` 6/6 green), SIFT pages got global overflow fixes (`minWidth:0`/ellipsis/
@@ -9,6 +13,45 @@
 
 > **Update 2026-06-10 (prompt7 design/security/chat upgrade):** ✅ **249/249 screening tests pass**
 > (+4 `integration/prompt7.test.js`, +6 `integration/prompt7-chat.test.js`). prompt7 section below; prompt6…prompt1 follow unchanged.
+
+---
+
+## prompt9 — Notifications dismiss-on-click, invite tokens, leave, soft delete, RIS, ops controls (2026-06-12)
+
+**Result:** ✅ **272/272 screening tests pass** (`npx vitest run tests/screening --no-file-parallelism`, server up).
+Adds **+23** integration tests: `integration/prompt9.test.js`. Full repo suite: **906 pass / 6 pre-existing
+`serverStorage.test.js` fake-timer failures (quarantined, identical set, unchanged from baseline) / 7 skips
+(919 total, 39 files)**. Baseline delta: 883→906 = exactly the 23 new tests; **0 new failures**.
+
+**Flipped assertions: NONE.** Every pre-prompt9 test passes unchanged — deletes went soft underneath their
+existing wire contracts (`{deleted:true}` / 204), `markRead`/`dismiss` semantics are untouched (the new
+`opened` endpoint is additive), and all the 403/404 permission matrices from prompts 2–7 are green as-is.
+
+**New in this file vs the legacy pattern:** T1 hard-fails when the server is down instead of self-skipping,
+so a server-down full run can no longer report vacuous green for prompt9 contracts. Every global setting the
+ops tests flip (`registrationOpen`, `maintenanceMode`, `animationSpeed`, `inviteExpiryDays`) is restored in a
+`finally` block.
+
+### prompt9.test.js inventory (23 tests)
+
+| Area | What is pinned |
+|---|---|
+| T1 reachability | live API on 127.0.0.1:3001 + seeded-admin login (anti-vacuous-green guard) |
+| T2 opened (2) | `POST /api/notifications/:id/opened` sets readAt+dismissedAt+clickedAt in one call; idempotent (stamps stable on repeat); removed from active list; present under `?all=1`; unread-count 0; **persists across re-login**; foreign id → 404 |
+| T3 invites (6) | invalid email → 400 with nothing persisted; existing user → immediate active member, **no invite field**; unknown email → `pending:true` + `invite{link,emailConfigured,emailSent,expiresAt}` with a 64-hex token link; public `GET /api/invites/:token` (no cookie) returns projectName/inviter/role/**masked** email; bogus token 404; register-with-`inviteToken` auto-joins (claim is fire-and-forget — polled); token single-use after claim; **mismatched-email accept** binds the row to the accepting account; revoke via removeMember kills the token |
+| T4 leave (2) | member `POST .../leave` → `{left:true}` then 404 on the project; owner leave → 400; non-member → 404 |
+| T5 ML soft delete (2) | typed-name mismatch → 400 `Project name does not match`; correct + `cascadeLinked` → `{deleted:true, cascaded:[workspaceId]}`; 404 + absent from list after; **autosave to deleted → 200 `{skipped:true}`, no resurrection**; legacy `DELETE` keeps `{deleted:true}` |
+| T6 one-way (1) | SIFT `DELETE` → 204; ML project survives (deliberate asymmetry per opinion doc §3) |
+| T7 overview link (1) | `linkedMetaLab {id,title,missing:false,canOpen:true}` for owner; `missing:true, canOpen:false` after ML delete; `null` when unlinked |
+| T8 RIS (1) | `?format=ris` → 200, `application/x-research-info-systems`, `TY  - JOUR`/`TI`/`ER  -` present; csv+json regression-green |
+| T9 ops (6) | `animationSpeed` round-trips landing-content → public settings; `registrationOpen:false` → register 403; `maintenanceMode` → plain user 503 `{maintenance:true}`, admin passes, public settings exempt; all six new metrics groups + screening invite counters present and numeric; plain user 403 on admin metrics; `inviteExpiryDays` round-trip + `UPDATE_SIFT_SETTINGS` in the audit log; admin SIFT restore returns the project to its owner |
+| T10 regression (1) | outsider → 404 (never 403) on a screening project |
+
+Not duplicated here (already pinned elsewhere in the suite, all green): `/read`+`/dismiss` single-column
+semantics and claim-on-register (prompt6 T1), export 403/404 permission matrix (prompt6 T17-adjacent),
+viewer autosave contract (prompt6 T5), mod RBAC matrix (prompt6 T14/prompt7). Invite **expiry** (410) is
+covered by the server-side smoke (`smoke-b2` ran 55/55 pre-QA) — flipping `inviteExpiresAt` requires direct
+DB access that the API-only test convention avoids.
 
 ---
 

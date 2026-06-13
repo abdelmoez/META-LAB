@@ -5,6 +5,7 @@
  */
 import { prisma } from '../db/client.js';
 import { getProjectAccess, ensureLeaderMember, QUORUM } from '../screening/access.js';
+import { mlAccessFromMember } from '../screening/metalabAccess.js';
 
 /** GET /projects/:pid/overview — summary metrics for the Overview tab. */
 export async function getOverview(req, res) {
@@ -64,6 +65,35 @@ export async function getOverview(req, res) {
     // so a non-leader can never receive other members' activity.
     const myProgress = memberProgress.filter(m => m.userId === req.user.id);
     const visibleMembers   = access.isLeader ? memberProgress : myProgress;
+
+    // ── prompt9 (additive): linked META·LAB descriptor for the Overview tab ──
+    // null when unlinked; otherwise { id, title, missing, canOpen }.
+    // missing = ML row gone OR soft-deleted (any source) OR not owned by the
+    // workspace owner (link invariant). canOpen: owner → ML live; member →
+    // ML-side view permission (mlAccessFromMember) AND ML live. Title is only
+    // disclosed while the target is live. Best-effort — never breaks Overview.
+    let linkedMetaLab = null;
+    if (access.project.linkedMetaLabProjectId) {
+      const linkedId = access.project.linkedMetaLabProjectId;
+      let ml = null;
+      try {
+        ml = await prisma.project.findFirst({
+          where: { id: linkedId, userId: access.project.ownerId },
+          select: { name: true, deletedAt: true },
+        });
+      } catch { ml = null; }
+      const live = !!ml && !ml.deletedAt;
+      const canOpen = live && (
+        access.isOwner ||
+        (access.member ? !!mlAccessFromMember(access.member).canView : false)
+      );
+      linkedMetaLab = {
+        id: linkedId,
+        title: live ? ml.name : null,
+        missing: !live,
+        canOpen,
+      };
+    }
     const wholeProjectProgress = access.isLeader ? {
       totalArticles: total,
       screened: screenedAtLeastOnce,
@@ -90,6 +120,8 @@ export async function getOverview(req, res) {
       members: visibleMembers,
       // null for non-leaders (frontend shows only "My Progress")
       projectProgress: wholeProjectProgress,
+      // prompt9 — additive; null when the project is not linked.
+      linkedMetaLab,
     });
   } catch (err) {
     console.error('[screening] getOverview:', err.message);

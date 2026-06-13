@@ -65,7 +65,9 @@ export default function SiftDashboard() {
   const [newForm,        setNewForm]        = useState(EMPTY_FORM);
   const [creating,       setCreating]       = useState(false);
   const [createError,    setCreateError]    = useState(null);
-  const [deleteConfirm,  setDeleteConfirm]  = useState(null); // pid to delete
+  const [deleteConfirm,  setDeleteConfirm]  = useState(null); // project object to delete (prompt9: typed-name confirm)
+  const [deleteName,     setDeleteName]     = useState('');   // typed-name confirmation input
+  const [deleteError,    setDeleteError]    = useState(null);
   const [deleting,       setDeleting]       = useState(false);
   const [statusFilter,   setStatusFilter]   = useState('all'); // all | not_started | in_progress | done
 
@@ -125,15 +127,18 @@ export default function SiftDashboard() {
   }
 
   async function handleDelete() {
-    if (!deleteConfirm) return;
+    // Typed-name confirmation gate (prompt9) — the button is disabled until the
+    // input matches, but re-check here so Enter-key paths can't slip through.
+    if (!deleteConfirm || deleteName !== deleteConfirm.title) return;
     setDeleting(true);
+    setDeleteError(null);
     try {
-      await screeningApi.deleteProject(deleteConfirm);
+      await screeningApi.deleteProject(deleteConfirm.id); // DELETE, 204 — endpoint unchanged
       setDeleteConfirm(null);
+      setDeleteName('');
       await loadProjects();
     } catch (e) {
-      setError(e.message || 'Failed to delete project');
-      setDeleteConfirm(null);
+      setDeleteError(e.message || 'Failed to delete project');
     } finally {
       setDeleting(false);
     }
@@ -329,7 +334,7 @@ export default function SiftDashboard() {
                       onOpenLinked={project.linkedMetaLabProjectId
                         ? () => navigate(`/app?project=${project.linkedMetaLabProjectId}`)
                         : undefined}
-                      onDelete={() => setDeleteConfirm(project.id)}
+                      onDelete={() => { setDeleteConfirm(project); setDeleteName(''); setDeleteError(null); }}
                     />
                   );
                 })}
@@ -430,38 +435,71 @@ export default function SiftDashboard() {
         </Modal>
       )}
 
-      {/* Delete confirmation modal */}
-      {deleteConfirm && (
-        <Modal onClose={() => !deleting && setDeleteConfirm(null)}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: C.txt, marginBottom: 10 }}>
-            Delete Project?
-          </div>
-          <p style={{ fontSize: 13, color: C.txt2, marginBottom: 22, lineHeight: 1.6 }}>
-            This will permanently delete the project and all associated records, decisions, and labels.
-            This action cannot be undone.
-          </p>
-          <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
-            <button
-              onClick={() => setDeleteConfirm(null)}
+      {/* Delete confirmation modal — typed-name confirm (prompt9 Task 7) */}
+      {deleteConfirm && (() => {
+        const nameMatches = deleteName === deleteConfirm.title;
+        return (
+          <Modal onClose={() => { if (!deleting) { setDeleteConfirm(null); setDeleteName(''); } }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.red, marginBottom: 10 }}>
+              Delete “{deleteConfirm.title}”?
+            </div>
+            <div style={{
+              background: alpha(C.red, '10'), border: `1px solid ${alpha(C.red, '40')}`,
+              borderRadius: 8, padding: '12px 14px', marginBottom: 14,
+            }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: C.red, marginBottom: 8 }}>
+                This permanently deletes the screening project and everything in it:
+              </div>
+              <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, color: C.txt2, lineHeight: 1.7 }}>
+                <li>All imported records and references</li>
+                <li>All screening decisions from every reviewer</li>
+                <li>The project chat history</li>
+                <li>Attached PDFs</li>
+                <li>The member roster and pending invites</li>
+              </ul>
+            </div>
+            <p style={{ fontSize: 12, color: C.muted, marginTop: 0, marginBottom: 16, lineHeight: 1.6 }}>
+              The linked META·LAB project (if any) is <strong style={{ color: C.txt2 }}>not</strong> deleted
+              from this side — it stays available in META·LAB.
+            </p>
+            <label style={labelStyle}>Type the project name to confirm</label>
+            <input
+              autoFocus
+              value={deleteName}
+              onChange={e => setDeleteName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter' && nameMatches && !deleting) handleDelete(); }}
+              placeholder={deleteConfirm.title}
               disabled={deleting}
-              style={cancelBtnStyle}
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleDelete}
-              disabled={deleting}
-              style={{
-                ...primaryBtnStyle,
-                background: C.red,
-                opacity: deleting ? 0.6 : 1,
-              }}
-            >
-              {deleting ? 'Deleting…' : 'Delete Project'}
-            </button>
-          </div>
-        </Modal>
-      )}
+              style={inputStyle}
+            />
+            {deleteError && (
+              <div style={{ color: C.red, fontSize: 12, marginTop: 10 }}>{deleteError}</div>
+            )}
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', marginTop: 20 }}>
+              <button
+                onClick={() => { setDeleteConfirm(null); setDeleteName(''); }}
+                disabled={deleting}
+                style={cancelBtnStyle}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleDelete}
+                disabled={deleting || !nameMatches}
+                title={nameMatches ? undefined : 'Type the project name exactly to enable deletion'}
+                style={{
+                  ...primaryBtnStyle,
+                  background: C.red,
+                  cursor: (deleting || !nameMatches) ? 'not-allowed' : 'pointer',
+                  opacity: (deleting || !nameMatches) ? 0.5 : 1,
+                }}
+              >
+                {deleting ? 'Deleting…' : 'Delete Project'}
+              </button>
+            </div>
+          </Modal>
+        );
+      })()}
     </div>
   );
 }

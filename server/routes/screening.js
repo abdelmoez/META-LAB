@@ -58,6 +58,8 @@ r.get('/projects/:pid/members',           M.listMembers);
 r.post('/projects/:pid/members',          M.addMember);
 r.patch('/projects/:pid/members/:mid',    M.updateMember);
 r.delete('/projects/:pid/members/:mid',   M.removeMember);
+// Self-service exit (prompt9) — any non-owner member can leave; owner → 400.
+r.post('/projects/:pid/leave',            M.leaveProject);
 
 // Overview dashboard + audit (Parts 10/5)
 r.get('/projects/:pid/overview',          OV.getOverview);

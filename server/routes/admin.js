@@ -41,6 +41,7 @@ import {
   listScreeningProjects,
   getScreeningProject,
   updateScreeningProjectStatus,
+  restoreScreeningProject,
   getScreeningProjectMembers,
   getHandoffLogs,
   getScreeningAuditLog,
@@ -135,5 +136,7 @@ router.get('/screening/projects',              requireAdmin, listScreeningProjec
 router.get('/screening/projects/:id',          requireAdmin, getScreeningProject);
 router.get('/screening/projects/:id/members',  requireAdmin, getScreeningProjectMembers);
 router.patch('/screening/projects/:id/status', requireAdmin, updateScreeningProjectStatus);
+// prompt9 — revive an owner-deleted ScreenProject (clears deletedAt + deletedSource).
+router.patch('/screening/projects/:id/restore', requireAdmin, restoreScreeningProject);
 
 export default router;

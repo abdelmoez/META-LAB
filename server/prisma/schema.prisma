@@ -29,15 +29,16 @@ model User {
 }
 
 model Project {
-  id          String    @id @default(uuid())
-  userId      String
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  name        String
-  data        String    @default("{}")  // JSON-serialised project payload (studies, records, pico, search, etc.)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  deletedAt   DateTime?
-  lastSavedAt DateTime?
+  id            String    @id @default(uuid())
+  userId        String
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name          String
+  data          String    @default("{}")  // JSON-serialised project payload (studies, records, pico, search, etc.)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+  deletedSource String?   // prompt9 — 'owner' | 'admin'; legacy null = admin archive
+  lastSavedAt   DateTime?
 }
 
 model ContactMessage {
@@ -135,6 +136,7 @@ model Notification {
   role                    String    @default("") // role/preset granted, for invite notifications
   readAt                  DateTime?
   dismissedAt             DateTime?
+  clickedAt               DateTime? // prompt9 — set when the user opens (clicks) the notification
   createdAt               DateTime  @default(now())
 
   @@index([userId, readAt])
@@ -190,6 +192,8 @@ model ScreenProject {
   studyTypeFilter        String                 @default("[]")           // JSON string[]
   picoSnapshot           String                 @default("{}")           // cached PICO/criteria (from linked META·LAB project or standalone)
   chatRestricted         Boolean                @default(false)          // when true, only members with canChat may post
+  deletedAt              DateTime?                                       // prompt9 — soft delete (owner/admin)
+  deletedSource          String?                                         // prompt9 — 'owner' | 'admin'
   createdAt              DateTime               @default(now())
   updatedAt              DateTime               @updatedAt
 
@@ -364,6 +368,11 @@ model ScreenProjectMember {
   // Global
   canManageMembers    Boolean       @default(false)
   canManageSettings   Boolean       @default(false)
+  // ── Invite lifecycle (prompt9 — token ceremony atop the pending row) ──
+  invitedByUserId     String?       // who created the invite (fixes "A project manager" UX gap)
+  inviteTokenHash     String?       @unique // SHA-256 hex of the invite token; plaintext never stored
+  inviteExpiresAt     DateTime?     // invite validity window (default now + inviteExpiryDays)
+  inviteAcceptedAt    DateTime?     // when the invite was accepted/claimed (single-use marker)
   joinedAt            DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
 
@@ -417,6 +426,22 @@ model ScreenChatRead {
   updatedAt  DateTime @updatedAt
 
   @@unique([projectId, userId])
+}
+
+// Best-effort product-usage events for ops metrics (prompt9).
+// No FKs on purpose (SecurityEvent/Notification precedent) — audit-survival:
+// rows must outlive the users/projects they describe.
+model UsageEvent {
+  id               String   @id @default(uuid())
+  type             String   // EXPORT | EMAIL_SENT | EMAIL_FAILED | MEMBER_LEFT | PROJECT_DELETED | INVITE_CREATED | INVITE_ACCEPTED | INVITE_REVOKED | NOTIFICATION_CLICKED
+  userId           String?
+  screenProjectId  String?
+  metaLabProjectId String?
+  format           String?  // export format (csv | json | ris | png | svg | ...)
+  meta             String?  // JSON-serialised context
+  createdAt        DateTime @default(now())
+
+  @@index([type, createdAt])
 }
 
 model ScreenAuditLog {

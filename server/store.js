@@ -45,13 +45,22 @@ function projectToData(project) {
 }
 
 /**
+ * Owner-read soft-delete filter (prompt9): rows the OWNER soft-deleted
+ * (deletedSource='owner') are hidden from the owner too — indistinguishable
+ * from nonexistent. ADMIN-archived rows (deletedAt set, deletedSource
+ * null/'admin') stay visible to the owner (current admin-archive semantics).
+ */
+const NOT_OWNER_DELETED = { OR: [{ deletedSource: null }, { deletedSource: { not: 'owner' } }] };
+
+/**
  * Return all projects for a user (full project objects).
+ * Excludes owner-soft-deleted rows; keeps admin-archived rows (owner-visible).
  * @param {string} userId
  * @returns {Promise<object[]>}
  */
 export async function getAll(userId) {
   const rows = await prisma.project.findMany({
-    where: { userId },
+    where: { userId, ...NOT_OWNER_DELETED },
     orderBy: { updatedAt: 'desc' },
   });
   return rows.map(rowToProject);
@@ -66,7 +75,7 @@ export async function getAll(userId) {
  */
 export async function getById(id, userId) {
   const row = await prisma.project.findFirst({
-    where: { id, userId },
+    where: { id, userId, ...NOT_OWNER_DELETED },
   });
   if (!row) return undefined;
   return rowToProject(row);
@@ -99,6 +108,13 @@ export async function save(project, userId) {
     err.status = 403;
     throw err;
   }
+
+  // RESURRECTION GUARD (prompt9): a soft-deleted row (either source — owner
+  // delete OR admin archive) must NEVER be revived by a write. A stale tab's
+  // autosave PUT maps this null to 200 {skipped:true}; the direct PUT save
+  // path maps it to 404. Without this, the upsert below would silently
+  // resurrect deleted projects.
+  if (existing && existing.deletedAt) return null;
 
   const row = await prisma.project.upsert({
     where: { id },
@@ -158,15 +174,21 @@ export async function saveAsMember(project) {
 }
 
 /**
- * Delete a project by id, scoped to the given user.
- * Returns true if a row was deleted, false if not found.
+ * Soft-delete a project by id, scoped to the given user (prompt9).
+ * Marks deletedAt + deletedSource='owner' instead of destroying the row —
+ * hidden from everyone incl. the owner (404), recoverable by admin restore.
+ * Returns true if a row was marked, false if not found (or already
+ * owner-deleted — indistinguishable from nonexistent).
  * @param {string} id
  * @param {string} userId
  * @returns {Promise<boolean>}
  */
 export async function remove(id, userId) {
-  const existing = await prisma.project.findFirst({ where: { id, userId } });
+  const existing = await prisma.project.findFirst({ where: { id, userId, ...NOT_OWNER_DELETED } });
   if (!existing) return false;
-  await prisma.project.delete({ where: { id } });
+  await prisma.project.update({
+    where: { id },
+    data: { deletedAt: new Date(), deletedSource: 'owner' },
+  });
   return true;
 }

@@ -30,6 +30,31 @@ export function ThemeProvider({ children }) {
     return () => window.removeEventListener('metalab:theme-change', onChange);
   }, []);
 
+  // Site-wide default theme (prompt9): for FIRST-VISIT users with no stored
+  // preference, adopt appSettings.defaultTheme from the public settings.
+  // Non-blocking — the current default renders immediately and only swaps
+  // when the key is present and valid (no flash regression; key absent →
+  // behave exactly as before). Deliberately NOT persisted to localStorage:
+  // it is a site default, not a user choice, so an explicit per-user pick
+  // (localStorage or adoptServerTheme after login) always wins over it.
+  useEffect(() => {
+    if (getSavedTheme()) return undefined; // explicit local choice wins
+    let alive = true;
+    fetch('/api/settings/public', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!alive) return;
+        const dt = data?.appSettings?.defaultTheme;
+        if (dt !== 'night' && dt !== 'day') return; // defensive: key may be absent until Wave B2 stores it
+        if (getSavedTheme()) return; // user chose while the fetch was in flight
+        document.documentElement.dataset.theme = dt;
+        setThemeState(dt);
+        window.dispatchEvent(new CustomEvent('metalab:theme-change', { detail: dt }));
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
   function setTheme(next) {
     const t = applyTheme(next); // sets attribute + localStorage + fires event
     setThemeState(t);

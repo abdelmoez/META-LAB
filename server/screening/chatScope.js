@@ -24,7 +24,10 @@ export async function resolveMetaLabChatScope(mlpid, user) {
   if (!mlpid || !user?.id) return null;
 
   const candidates = await prisma.screenProject.findMany({
-    where: { linkedMetaLabProjectId: mlpid },
+    // deletedAt:null — a soft-deleted workspace must not resolve a chat scope
+    // (getProjectAccess would also null it; filtering here lets a second live
+    // workspace win instead).
+    where: { linkedMetaLabProjectId: mlpid, deletedAt: null },
     orderBy: { updatedAt: 'desc' },
   });
   if (!candidates.length) return null;

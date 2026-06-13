@@ -54,6 +54,9 @@ export const screeningApi = {
   // applies). Thrown errors carry .status and .data (the parsed JSON body).
   importRecords: (pid, body, { force = false } = {}) =>
     req('POST', `/projects/${pid}/import`, force ? { ...body, force: true } : body),
+  // params: { format: 'csv'|'json'|'ris', filter } — no client-side format
+  // validation here; the ExportDialog item declares the valid formats and the
+  // server generates the file (prompt9 Task 6 adds 'ris').
   exportUrl: (pid, params = {}) => {
     const qs = new URLSearchParams(params).toString();
     return `${BASE}/projects/${pid}/export${qs ? '?' + qs : ''}`;
@@ -95,6 +98,9 @@ export const screeningApi = {
   // body: { preset } | { role, status } | raw permission flags (canScreen, …).
   updateMember: (pid, mid, body) => req('PATCH',  `/projects/${pid}/members/${mid}`, body),
   removeMember: (pid, mid)       => req('DELETE', `/projects/${pid}/members/${mid}`),
+  // Self-service exit (prompt9) — 200 {left:true}; the owner gets 400 with
+  // transfer-ownership messaging (surfaced as the thrown error message).
+  leaveProject: (pid)            => req('POST',   `/projects/${pid}/leave`),
 
   // Per-member open-state (Part 11)
   markOpened: (pid, rid) => req('POST', `/projects/${pid}/records/${rid}/open`),

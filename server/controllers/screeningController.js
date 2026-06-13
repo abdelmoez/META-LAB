@@ -14,6 +14,7 @@ import { DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS } from '../../src/re
 import { mkProject } from '../../src/research-engine/project-model/defaults.js';
 import { filterRecordsByKeywords, countArticlesByKeyword } from '../../src/research-engine/screening/keywordFilter.js';
 import { studyFromRecord } from './screeningReviewController.js';
+import { recordUsage, USAGE } from '../utils/usage.js';
 
 // Parse a comma-separated keyword param into a clean phrase list.
 function parseKeywordParam(v) {
@@ -28,8 +29,10 @@ function parseJsonList(json) {
 const prisma = new PrismaClient();
 
 // ── Ownership guard ──────────────────────────────────────────────────
+// deletedAt:null — soft-deleted projects are indistinguishable from
+// nonexistent, even to their owner (prompt9).
 async function getOwnedProject(pid, userId) {
-  return prisma.screenProject.findFirst({ where: { id: pid, ownerId: userId } });
+  return prisma.screenProject.findFirst({ where: { id: pid, ownerId: userId, deletedAt: null } });
 }
 
 // ── Projects ─────────────────────────────────────────────────────────
@@ -50,7 +53,8 @@ export async function listProjects(req, res) {
     const roleByProject = Object.fromEntries(visibleMemberships.map(m => [m.projectId, m.role]));
 
     const projects = await prisma.screenProject.findMany({
-      where: { OR: [{ ownerId: req.user.id }, { id: { in: memberProjectIds } }] },
+      // deletedAt:null — soft-deleted projects vanish from every list (prompt9).
+      where: { deletedAt: null, OR: [{ ownerId: req.user.id }, { id: { in: memberProjectIds } }] },
       orderBy: { updatedAt: 'desc' },
       include: {
         _count: { select: { records: true, members: true } },
@@ -358,7 +362,26 @@ export async function deleteProject(req, res) {
   try {
     const p = await getOwnedProject(req.params.pid, req.user.id);
     if (!p) return res.status(404).json({ error: 'Project not found' });
-    await prisma.screenProject.delete({ where: { id: p.id } });
+    // SOFT delete (prompt9): mark instead of destroy so the audit trail,
+    // records, decisions and chat survive for admin restore. Audit BEFORE the
+    // mark (the row persists either way now). Deleting from SIFT does NOT
+    // touch the linked META·LAB project (decided — the ML project is the
+    // owner's primary artifact). Wire contract stays 204.
+    await writeAudit(p.id, req.user, 'PROJECT_DELETED', {
+      entityType: 'project', entityId: p.id, details: { title: p.title },
+    });
+    await prisma.screenProject.update({
+      where: { id: p.id },
+      data: { deletedAt: new Date(), deletedSource: 'owner' },
+    });
+    recordUsage({
+      type: USAGE.PROJECT_DELETED,
+      userId: req.user.id,
+      screenProjectId: p.id,
+      meta: { source: 'sift' },
+    });
+    // Members with the project open revalidate → 404 → navigate away.
+    emitToProjectMembers(p.id, { type: 'members.changed' }, { exclude: req.user.id });
     res.status(204).send();
   } catch (err) {
     console.error('[screening] deleteProject:', err.message);
@@ -870,10 +893,57 @@ export async function exportRecords(req, res) {
     // Apply filter
     const filtered = filter === 'all' ? rows : rows.filter(r => r.decision === filter);
 
+    // Usage metric (prompt9) — every export, every format. Best-effort,
+    // fire-and-forget, recorded with the format actually emitted.
+    const emittedFormat = fmt === 'json' ? 'json' : fmt === 'ris' ? 'ris' : 'csv';
+    recordUsage({
+      type: USAGE.EXPORT,
+      userId: req.user.id,
+      screenProjectId: p.id,
+      format: emittedFormat,
+      meta: { filter },
+    });
+
     if (fmt === 'json') {
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Content-Disposition', `attachment; filename="sift-export-${p.id.slice(0,8)}.json"`);
       return res.json(filtered);
+    }
+
+    // RIS (prompt9) — standard reference-manager format. One record per row,
+    // TY..ER blocks; one AU line per author; values flattened to single lines.
+    if (fmt === 'ris') {
+      const oneLine = v => String(v ?? '').replace(/\r?\n/g, ' ').trim();
+      const blocks = filtered.map(r => {
+        const lines = ['TY  - JOUR'];
+        const title = oneLine(r.title);
+        if (title) lines.push(`TI  - ${title}`);
+        const authorsRaw = oneLine(r.authors);
+        if (authorsRaw) {
+          const authors = authorsRaw.includes(';')
+            ? authorsRaw.split(/;\s*/)
+            : authorsRaw.split(/,\s*/);
+          for (const a of authors.map(s => s.trim()).filter(Boolean)) {
+            lines.push(`AU  - ${a}`);
+          }
+        }
+        const journal = oneLine(r.journal);
+        if (journal) lines.push(`JO  - ${journal}`);
+        const year = oneLine(r.year);
+        if (year) lines.push(`PY  - ${year}`);
+        const doi = oneLine(r.doi);
+        if (doi) lines.push(`DO  - ${doi}`);
+        const pmid = oneLine(r.pmid);
+        if (pmid) lines.push(`AN  - ${pmid}`);
+        const abstract = oneLine(r.abstract);
+        if (abstract) lines.push(`AB  - ${abstract}`);
+        lines.push('ER  - ');
+        return lines.join('\n');
+      });
+      const ris = blocks.join('\n\n') + (blocks.length ? '\n' : '');
+      res.setHeader('Content-Type', 'application/x-research-info-systems');
+      res.setHeader('Content-Disposition', `attachment; filename="sift-export-${p.id.slice(0,8)}.ris"`);
+      return res.send(ris);
     }
 
     // CSV
@@ -1303,7 +1373,8 @@ export async function getStats(req, res) {
 export async function getMetaLabSummary(req, res) {
   try {
     const candidates = await prisma.screenProject.findMany({
-      where: { linkedMetaLabProjectId: req.params.mlpid },
+      // deletedAt:null — soft-deleted workspaces no longer answer for the pair (prompt9).
+      where: { linkedMetaLabProjectId: req.params.mlpid, deletedAt: null },
       orderBy: { updatedAt: 'desc' },
     });
     // Prefer the caller's own workspace (preserves the pre-prompt6 behavior

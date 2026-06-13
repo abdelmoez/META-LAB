@@ -1,10 +1,15 @@
 /**
- * ExportTab.jsx — export screening decisions as CSV or JSON.
+ * ExportTab.jsx — export screening decisions (CSV / JSON / RIS).
+ *
+ * prompt9 Task 6: the export routes through the shared ExportDialog (the
+ * dialog is the format chooser); the SERVER still generates the file — run()
+ * keeps the anchor-click on screeningApi.exportUrl exactly as before.
  */
 import { useState, useEffect, useCallback } from 'react';
-import { C, FONT, MONO } from '../ui/theme.js';
+import { C, MONO } from '../ui/theme.js';
 import { Loading, ErrorBanner, Button, StatTile, Card } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
+import ExportDialog from '../../components/ExportDialog.jsx';
 
 const FILTERS = [
   { key: 'all',      label: 'All records',  desc: 'Every record in the project' },
@@ -13,13 +18,20 @@ const FILTERS = [
   { key: 'maybe',    label: 'Maybe',        desc: 'Records you marked maybe' },
 ];
 
+// Only the formats the server's export endpoint accepts for decisions.
+const FORMATS = [
+  { id: 'csv',  label: 'CSV' },
+  { id: 'json', label: 'JSON' },
+  { id: 'ris',  label: 'RIS' },
+];
+
 export default function ExportTab({ pid }) {
   const [stats, setStats]   = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]   = useState(null);
   const [filter, setFilter] = useState('all');
-  const [format, setFormat] = useState('csv');
   const [note, setNote]     = useState('');
+  const [expItem, setExpItem] = useState(null);
 
   const load = useCallback(async () => {
     setError(null);
@@ -31,13 +43,24 @@ export default function ExportTab({ pid }) {
 
   const countFor = (k) => !stats ? 0 : k === 'all' ? stats.total : k === 'include' ? stats.included : k === 'exclude' ? stats.excluded : stats.maybe;
 
-  function handleExport() {
-    const url = screeningApi.exportUrl(pid, { format, filter });
-    const a = document.createElement('a');
-    a.href = url; a.download = '';
-    document.body.appendChild(a); a.click(); a.remove();
-    setNote('Download started.');
-    setTimeout(() => setNote(''), 3000);
+  function openExport() {
+    const chosenFilter = filter; // freeze the filter the dialog exports with
+    setExpItem({
+      id: 'sift-decisions',
+      title: 'Screening decisions',
+      formats: FORMATS,
+      sizing: false,
+      defaults: { format: 'csv' },
+      run: async ({ format }) => {
+        // Server-generated file — same anchor-click download as before.
+        const url = screeningApi.exportUrl(pid, { format, filter: chosenFilter });
+        const a = document.createElement('a');
+        a.href = url; a.download = '';
+        document.body.appendChild(a); a.click(); a.remove();
+        setNote('Download started.');
+        setTimeout(() => setNote(''), 3000);
+      },
+    });
   }
 
   if (loading) return <Loading label="Loading export…" />;
@@ -73,22 +96,13 @@ export default function ExportTab({ pid }) {
         </div>
       </Card>
 
-      <Card style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 12 }}>Format</div>
-        <div style={{ display: 'flex', gap: 10 }}>
-          {['csv', 'json'].map(fmt => (
-            <button key={fmt} onClick={() => setFormat(fmt)}
-              style={{ flex: 1, cursor: 'pointer', fontFamily: FONT, fontSize: 13, fontWeight: 600, padding: '10px 0', borderRadius: 7, textTransform: 'uppercase',
-                background: format === fmt ? C.acc2 : C.card, color: format === fmt ? C.accText : C.txt2, border: `1px solid ${format === fmt ? C.acc2 : C.brd2}` }}>{fmt}</button>
-          ))}
-        </div>
-      </Card>
-
       <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-        <Button onClick={handleExport} disabled={countFor(filter) === 0}>↓ Download {format.toUpperCase()}</Button>
-        <span style={{ fontSize: 12, color: C.muted }}>{countFor(filter)} records · {format.toUpperCase()}</span>
+        <Button onClick={openExport} disabled={countFor(filter) === 0}>↓ Export…</Button>
+        <span style={{ fontSize: 12, color: C.muted }}>{countFor(filter)} records selected · choose CSV, JSON or RIS</span>
         {note && <span style={{ fontSize: 12, color: C.grn }}>{note}</span>}
       </div>
+
+      <ExportDialog open={!!expItem} onClose={() => setExpItem(null)} item={expItem} />
     </div>
   );
 }

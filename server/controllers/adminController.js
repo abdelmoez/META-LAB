@@ -3,6 +3,8 @@ import { logAdminAction } from '../utils/audit.js';
 import { hashPassword } from '../auth/password.js';
 import { isEmailConfigured, sendEmail, renderReplyEmail } from '../services/emailService.js';
 import { getVersion } from '../version.js';
+import { bustMaintenanceCache } from '../middleware/maintenance.js';
+import { USAGE } from '../utils/usage.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -121,6 +123,55 @@ export async function getMetrics(req, res) {
       records += Array.isArray(data.records) ? data.records.length : 0;
     }
 
+    // ── prompt9 ops metrics (additive keys ONLY — never rename) ─────────────
+    // invites: pending excludes expired rows; expired = still-pending past the
+    // window; accepted = inviteAcceptedAt stamped. notificationsStats from the
+    // Notification columns; lifecycle/export/email counters from UsageEvent;
+    // linking counts only LIVE rows (deletedAt null). All cheap counts.
+    const [
+      pendingInvites, acceptedInvites, expiredInvites,
+      notifSent, notifClicked, notifDismissed,
+      projectsDeleted, siftProjectsDeleted, membersLeft,
+      exportGroups, emailsSent, emailsFailed,
+      linkedWorkspaces, unlinkedSiftProjects, liveMetaLabProjects, liveLinkRows,
+    ] = await Promise.all([
+      prisma.screenProjectMember.count({
+        where: { status: 'pending', OR: [{ inviteExpiresAt: null }, { inviteExpiresAt: { gte: now } }] },
+      }),
+      prisma.screenProjectMember.count({ where: { inviteAcceptedAt: { not: null } } }),
+      prisma.screenProjectMember.count({ where: { status: 'pending', inviteExpiresAt: { lt: now } } }),
+      prisma.notification.count(),
+      prisma.notification.count({ where: { clickedAt: { not: null } } }),
+      prisma.notification.count({ where: { dismissedAt: { not: null } } }),
+      prisma.project.count({ where: { deletedSource: 'owner' } }),
+      prisma.screenProject.count({ where: { deletedSource: 'owner' } }),
+      prisma.usageEvent.count({ where: { type: USAGE.MEMBER_LEFT } }),
+      prisma.usageEvent.groupBy({ by: ['format'], where: { type: USAGE.EXPORT }, _count: { _all: true } }),
+      prisma.usageEvent.count({ where: { type: USAGE.EMAIL_SENT } }),
+      prisma.usageEvent.count({ where: { type: USAGE.EMAIL_FAILED } }),
+      prisma.screenProject.count({ where: { deletedAt: null, linkedMetaLabProjectId: { not: null } } }),
+      prisma.screenProject.count({ where: { deletedAt: null, linkedMetaLabProjectId: null } }),
+      prisma.project.count({ where: { deletedAt: null } }),
+      prisma.screenProject.findMany({
+        where: { deletedAt: null, linkedMetaLabProjectId: { not: null } },
+        select: { linkedMetaLabProjectId: true },
+        distinct: ['linkedMetaLabProjectId'],
+      }),
+    ]);
+
+    const exportsByFormat = {};
+    for (const g of exportGroups) {
+      const key = g.format || 'unknown';
+      exportsByFormat[key] = (exportsByFormat[key] || 0) + (g._count?._all || 0);
+    }
+
+    // Live META·LAB projects with no live ScreenProject pointing at them.
+    const liveLinkedIds = liveLinkRows.map(r => r.linkedMetaLabProjectId).filter(Boolean);
+    const linkedLiveMetaLab = liveLinkedIds.length
+      ? await prisma.project.count({ where: { deletedAt: null, id: { in: liveLinkedIds } } })
+      : 0;
+    const unlinkedMetaLabProjects = Math.max(0, liveMetaLabProjects - linkedLiveMetaLab);
+
     // Quick DB health check
     let dbStatus = 'ok';
     try {
@@ -157,6 +208,13 @@ export async function getMetrics(req, res) {
         quarter: loginsQuarter.length,
         year: loginsYear.length,
       },
+      // ── prompt9 additions (additive — frontend reads these exact names) ──
+      invites: { pending: pendingInvites, accepted: acceptedInvites, expired: expiredInvites },
+      notificationsStats: { sent: notifSent, clicked: notifClicked, dismissed: notifDismissed },
+      lifecycle: { projectsDeleted, siftProjectsDeleted, membersLeft },
+      exportsByFormat,
+      emailStats: { sent: emailsSent, failed: emailsFailed },
+      linking: { linkedWorkspaces, unlinkedSiftProjects, unlinkedMetaLabProjects },
       db: dbStatus,
     });
   } catch (err) {
@@ -635,6 +693,7 @@ export async function getProjects(req, res) {
           createdAt: true,
           updatedAt: true,
           deletedAt: true,
+          deletedSource: true,
           user: { select: { name: true, email: true } },
         },
         orderBy: { createdAt: 'desc' },
@@ -672,6 +731,10 @@ export async function getProjects(req, res) {
         createdAt: p.createdAt,
         updatedAt: p.updatedAt,
         deletedAt: p.deletedAt,
+        // prompt9 (additive): lets ops distinguish admin archive (null/'admin')
+        // from an owner soft delete ('owner') — both show status 'archived'.
+        deletedSource: p.deletedSource || null,
+        deleted: p.deletedSource === 'owner',
         status: p.deletedAt ? 'archived' : 'active',
         linkedMetaSift: sift ? { id: sift.id, title: sift.title } : null,
         workspaceId: sift ? sift.id : null,
@@ -741,6 +804,10 @@ export async function updateAdminSettings(req, res) {
     if (updated.length === 0) {
       return res.status(400).json({ error: 'No valid settings keys provided' });
     }
+
+    // prompt9 — maintenanceMode/message live in appSettings; bust the gate's
+    // 10s cache so toggling maintenance takes effect immediately.
+    if (updated.includes('appSettings')) bustMaintenanceCache();
 
     await logAdminAction(req, 'UPDATE_SETTING', 'SiteSetting', null, { updatedKeys: updated });
 
@@ -1063,7 +1130,8 @@ export async function replyToMessage(req, res) {
     });
 
     // sendEmail never throws — { sent:false, reason } when not configured / on failure.
-    const result = await sendEmail({ to: msg.email, subject: finalSubject, html, text });
+    // (It also records the EMAIL_SENT/EMAIL_FAILED usage metric itself, prompt9.)
+    const result = await sendEmail({ to: msg.email, subject: finalSubject, html, text, context: 'contact_reply' });
     const sent = result.sent === true;
 
     const reply = await prisma.contactReply.create({
@@ -1133,7 +1201,9 @@ export async function archiveProject(req, res) {
     const project = await prisma.project.findUnique({ where: { id }, select: { id: true, name: true, deletedAt: true } });
     if (!project) return res.status(404).json({ error: 'Project not found' });
     if (project.deletedAt) return res.status(400).json({ error: 'Project already archived' });
-    await prisma.project.update({ where: { id }, data: { deletedAt: new Date() } });
+    // deletedSource:'admin' — keeps admin archive distinguishable from the
+    // owner soft delete (prompt9; legacy null also means admin archive).
+    await prisma.project.update({ where: { id }, data: { deletedAt: new Date(), deletedSource: 'admin' } });
     await logAdminAction(req, 'ARCHIVE_PROJECT', 'Project', id, { name: project.name });
     return res.json({ ok: true });
   } catch (err) {
@@ -1150,7 +1220,9 @@ export async function restoreProject(req, res) {
     const project = await prisma.project.findUnique({ where: { id }, select: { id: true, name: true, deletedAt: true } });
     if (!project) return res.status(404).json({ error: 'Project not found' });
     if (!project.deletedAt) return res.status(400).json({ error: 'Project is not archived' });
-    await prisma.project.update({ where: { id }, data: { deletedAt: null } });
+    // Clears deletedSource too — restoring an owner-deleted project must fully
+    // revive it (prompt9), not leave a stale 'owner' marker hiding it.
+    await prisma.project.update({ where: { id }, data: { deletedAt: null, deletedSource: null } });
     await logAdminAction(req, 'RESTORE_PROJECT', 'Project', id, { name: project.name });
     return res.json({ ok: true });
   } catch (err) {

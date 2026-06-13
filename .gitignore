@@ -50,3 +50,6 @@ bash.exe.stackdump
 
 # Build-time generated version metadata (npm run version:gen) — derived, not committed
 server/version.json
+
+# graphify knowledge graph (generated, rebuild with /graphify)
+graphify-out/

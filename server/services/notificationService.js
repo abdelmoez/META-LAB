@@ -12,6 +12,22 @@ import { prisma } from '../db/client.js';
 import { emitToUsers } from '../realtime/bus.js';
 
 /**
+ * Ops kill-switch (prompt9): appSettings.notificationsEnabled === false
+ * silently disables creation at this single chokepoint. Default (key missing,
+ * row missing, parse/DB error) = ENABLED — the gate must never throw and must
+ * fail open.
+ */
+async function notificationsEnabled() {
+  try {
+    const row = await prisma.siteSetting.findUnique({ where: { key: 'appSettings' } });
+    const settings = row ? JSON.parse(row.value || '{}') : {};
+    return settings.notificationsEnabled !== false;
+  } catch {
+    return true; // fail open — a settings read failure must not mute the product
+  }
+}
+
+/**
  * Create a notification row for one user. Best-effort — never throws.
  * Returns the created Notification or null on failure / missing required fields.
  */
@@ -30,6 +46,8 @@ export async function createNotification({
 } = {}) {
   if (!userId || !type || !title) return null;
   try {
+    // Admin kill-switch (prompt9): skip creation silently when disabled.
+    if (!(await notificationsEnabled())) return null;
     const created = await prisma.notification.create({
       data: {
         userId,

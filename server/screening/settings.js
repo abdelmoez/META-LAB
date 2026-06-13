@@ -32,6 +32,7 @@ export const META_SIFT_DEFAULTS = {
   // ── limits ─────────────────────────────────────────────────────────
   maxPdfSizeMb: 25,
   maxRecordsPerProject: 10000,
+  inviteExpiryDays: 14,        // prompt9 — pending-invite token validity window
   maintenanceMessage: 'META·SIFT Beta is currently undergoing maintenance. Please try again later.',
 };
 

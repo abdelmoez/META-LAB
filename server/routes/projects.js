@@ -11,6 +11,7 @@ import {
   getProject,
   updateProject,
   deleteProject,
+  ownerDeleteProject,
   autosaveProject,
   duplicateProject,
 } from '../controllers/projectsController.js';
@@ -25,6 +26,8 @@ router.post('/',              createProject);
 router.get('/:id',            getProject);
 router.put('/:id',            updateProject);
 router.delete('/:id',         deleteProject);
+// prompt9 — typed-name confirmed soft delete (+ optional linked-SIFT cascade).
+router.post('/:id/delete',    ownerDeleteProject);
 router.put('/:id/autosave',   autosaveProject);
 router.post('/:id/duplicate', duplicateProject);
 

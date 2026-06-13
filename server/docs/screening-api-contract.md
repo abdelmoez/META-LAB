@@ -713,3 +713,47 @@ across all projects (records where `handoffStatus != ''`, newest first, limit 10
   "total": 0
 }
 ```
+
+---
+
+## Prompt 9 additions (2026-06-12)
+
+### Members & invites
+
+- `POST /projects/:pid/members` now **validates email format** (400 `{error:'Invalid email address'}` before
+  any lookup). For unknown emails the pending member row carries the invite ceremony
+  (`invitedByUserId`, `inviteTokenHash` — hash only, never exposed —, `inviteExpiresAt`,
+  `inviteAcceptedAt`) and the 201 response gains an additive field for the inviter:
+  `invite: { link, emailConfigured, emailSent, expiresAt }` (`link` is `<APP_BASE_URL>/invite/<token>`;
+  the plaintext token appears only here). A styled invite email is sent best-effort when SMTP is configured
+  and `appSettings.emailInvitesEnabled` is not false — email failure never fails the request.
+- Invite expiry: `metaSiftSettings.inviteExpiryDays` (int 1–90, default 14, `coerceSettings`-whitelisted).
+- Revoke = `DELETE /projects/:pid/members/:memberId` on a pending row (audited `INVITE_REVOKED`; the token
+  dies with the row). Public token endpoints live under `/api/invites` (see api-contract.md).
+- `POST /projects/:pid/leave` (auth) — self-service exit for any active non-owner member:
+  200 `{left:true}`, audited `MEMBER_LEFT`, `members.changed` + targeted `permissions.changed` pokes.
+  Owner → 400 (transfer ownership is not implemented; delete instead). Non-member → 404.
+
+### Project lifecycle
+
+- `DELETE /projects/:pid` keeps **204** but is now a soft delete (`deletedAt` + `deletedSource:'owner'`),
+  audited `PROJECT_DELETED` *before* the mark so the workspace audit trail survives. Deliberately **one-way**:
+  deleting from META·SIFT never touches the linked META·LAB project. `getProjectAccess` treats deleted
+  workspaces as nonexistent → 404 everywhere (records, chat doors, members, overview, pdfs, leave).
+  Admin restore: `PATCH /api/admin/screening/projects/:id/restore`.
+
+### Export
+
+- `GET /projects/:pid/export` accepts `format=ris` in addition to `csv`/`json`: standard RIS
+  (`TY  - JOUR`, `TI`, one `AU` per author, `JO`, `PY`, `DO`, `AN` = pmid, `AB`, `ER  - `),
+  `Content-Type: application/x-research-info-systems`, filename `sift-export-<pid8>.ris`.
+  Permission gates unchanged (outsider 404, member without `canExportRecords` 403, admin `allowExport`
+  kill-switch 403). Every export records a `UsageEvent EXPORT {format}` (best-effort) for ops metrics.
+
+### Overview
+
+- `GET /projects/:pid/overview` gains the additive field
+  `linkedMetaLab: null | { id, title, missing, canOpen }` — `title` only while the target is live;
+  `missing:true` when the linked META·LAB project is gone, soft-deleted, or not owned by the workspace
+  owner; `canOpen` = caller is workspace owner (and target live) or member with `canViewMetaLab`.
+  All pre-existing fields are byte-identical.

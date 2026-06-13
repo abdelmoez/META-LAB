@@ -9,6 +9,7 @@
 import { prisma } from '../db/client.js';
 import { META_SIFT_DEFAULTS, SETTINGS_KEY } from '../screening/settings.js';
 import { emitToProjectMembers } from '../realtime/bus.js';
+import { logAdminAction } from '../utils/audit.js';
 
 /* ─── settings helpers ─────────────────────────────────────────────────── */
 
@@ -54,6 +55,11 @@ function coerceSettings(patch = {}) {
     const n = intIn(patch.maxRecordsPerProject, META_SIFT_DEFAULTS.maxRecordsPerProject);
     out.maxRecordsPerProject = Math.max(1, n);
   }
+  // prompt9 — pending-invite validity window, clamped to a sane 1–90 days.
+  if ('inviteExpiryDays' in patch) {
+    const n = intIn(patch.inviteExpiryDays, META_SIFT_DEFAULTS.inviteExpiryDays);
+    out.inviteExpiryDays = Math.min(90, Math.max(1, n));
+  }
 
   return out;
 }
@@ -78,6 +84,11 @@ export async function updateScreeningSettings(req, res) {
       where:  { key: SETTINGS_KEY },
       update: { value: JSON.stringify(updated), updatedBy: req.user?.id },
       create: { key: SETTINGS_KEY, value: JSON.stringify(updated), updatedBy: req.user?.id },
+    });
+    // prompt9 — SIFT settings changes were the one unaudited settings write.
+    // Best-effort (logAdminAction never throws): key names only, no values.
+    await logAdminAction(req, 'UPDATE_SIFT_SETTINGS', 'SiteSetting', SETTINGS_KEY, {
+      updatedKeys: Object.keys(patch),
     });
     res.json(updated);
   } catch (err) {
@@ -109,6 +120,7 @@ function startOf(unit) {
 // GET /api/admin/screening/metrics
 export async function getScreeningMetrics(req, res) {
   try {
+    const now = new Date();
     // Done-project events (prompt6 Task 12): one groupBy row per DISTINCT
     // projectId whose progressStatus changed to 'done' in the window, so
     // toggling done → in_progress → done in one day still counts once.
@@ -144,6 +156,9 @@ export async function getScreeningMetrics(req, res) {
       doneTodayGroups,
       doneWeekGroups,
       doneMonthGroups,
+      pendingInvites,
+      acceptedInvites,
+      expiredInvites,
     ] = await Promise.all([
       prisma.screenProject.count(),
       prisma.screenProject.count({ where: { archived: false, disabled: false } }),
@@ -177,6 +192,14 @@ export async function getScreeningMetrics(req, res) {
       doneSince(startOf('day')),
       doneSince(startOf('week')),
       doneSince(startOf('month')),
+      // prompt9 — invite lifecycle (same definitions as getMetrics):
+      // pending = still-valid pending rows; expired = pending past the window;
+      // accepted = inviteAcceptedAt stamped.
+      prisma.screenProjectMember.count({
+        where: { status: 'pending', OR: [{ inviteExpiresAt: null }, { inviteExpiresAt: { gte: now } }] },
+      }),
+      prisma.screenProjectMember.count({ where: { inviteAcceptedAt: { not: null } } }),
+      prisma.screenProjectMember.count({ where: { status: 'pending', inviteExpiresAt: { lt: now } } }),
     ]);
 
     // "screened" = records that have at least one non-undecided decision.
@@ -238,6 +261,10 @@ export async function getScreeningMetrics(req, res) {
       // growth
       projectsThisWeek,
       projectsThisMonth,
+      // invites (prompt9 — additive)
+      pendingInvites,
+      acceptedInvites,
+      expiredInvites,
     });
   } catch (err) {
     console.error('[admin/screening] getMetrics:', err.message);
@@ -299,6 +326,11 @@ export async function listScreeningProjects(req, res) {
         stage:          p.stage,
         archived:       p.archived,
         disabled:       p.disabled,
+        // prompt9 (additive): owner-deleted rows stay in the admin list with a
+        // status indicator so ops can see + restore them.
+        deleted:        !!p.deletedAt,
+        deletedAt:      p.deletedAt,
+        deletedSource:  p.deletedSource || null,
         progressStatus: p.progressStatus,
         status:         p.progressStatus,
         blindMode:      p.blindMode,
@@ -421,6 +453,8 @@ export async function getScreeningProject(req, res) {
       ...project,
       // The Review Workspace IS the ScreenProject row (prompt6 Task 11).
       workspaceId: project.id,
+      // prompt9 (additive) — owner-deleted indicator for the ops detail panel.
+      deleted: !!project.deletedAt,
       status: project.progressStatus,
       linkedMetaLab: project.linkedMetaLabProjectId
         ? { id: project.linkedMetaLabProjectId, title: linkedMetaLabProjectTitle }
@@ -495,9 +529,44 @@ export async function updateScreeningProjectStatus(req, res) {
       emitToProjectMembers(project.id, { type: 'status.changed' }, { exclude: req.user?.id });
     }
 
+    // prompt9 — admin lifecycle changes belong in the admin audit log.
+    // Best-effort (logAdminAction never throws).
+    await logAdminAction(req, 'SIFT_PROJECT_STATUS', 'ScreenProject', project.id, {
+      projectId: project.id,
+      changes: data,
+    });
+
     res.json(updated);
   } catch (err) {
     console.error('[admin/screening] updateStatus:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// PATCH /api/admin/screening/projects/:id/restore (prompt9 — additive)
+// Revives an owner-deleted (or otherwise soft-deleted) ScreenProject: clears
+// deletedAt AND deletedSource. 400 when the project is not deleted.
+export async function restoreScreeningProject(req, res) {
+  try {
+    const project = await prisma.screenProject.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, title: true, deletedAt: true, deletedSource: true },
+    });
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    if (!project.deletedAt) return res.status(400).json({ error: 'Project is not deleted' });
+
+    await prisma.screenProject.update({
+      where: { id: project.id },
+      data: { deletedAt: null, deletedSource: null },
+    });
+    await logAdminAction(req, 'RESTORE_SIFT_PROJECT', 'ScreenProject', project.id, {
+      title: project.title, deletedSource: project.deletedSource || null,
+    });
+    // Members regain access instantly — poke open UIs to revalidate.
+    emitToProjectMembers(project.id, { type: 'members.changed' }, { exclude: req.user?.id });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('[admin/screening] restoreProject:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }

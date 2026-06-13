@@ -1,0 +1,249 @@
+/**
+ * ExportDialog.jsx — the shared export dialog every download routes through
+ * (prompt9 Task 6). Dependency-free; theme tokens + alpha() only.
+ *
+ * FROZEN adapter contract (F-monolith / F-sift / F-ops wire triggers to this):
+ *
+ *   <ExportDialog open onClose={fn} item={item} />
+ *
+ *   item = {
+ *     id: string,
+ *     title: string,                       // dialog heading
+ *     formats: [{ id, label }],            // ONLY the formats valid for this item
+ *     sizing: boolean,                     // true → PNG preset/size/transparent UI
+ *     variants?: [{ id, label }],          // e.g. light/dark figure variants
+ *     defaults?: { format?, presetId?, variantId? },
+ *     run: async (choice) => void,         // performs the actual export/download
+ *   }
+ *   choice = { format, presetId, widthPx, transparent, variantId }
+ *     — presetId/widthPx/transparent are undefined/false unless
+ *       (item.sizing && format === 'png'); variantId undefined without variants.
+ *
+ * Rendered through createPortal(document.body): trigger buttons live inside
+ * the monolith's animated `.tab-content` (a transformed ancestor that hijacks
+ * position:fixed) and inside z-9999 fixed wrappers — the portal keeps the
+ * overlay in the ROOT stacking context at z 10000 everywhere.
+ */
+import { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
+import { C, FONT, MONO, alpha } from '../theme/tokens.js';
+import { PRESETS, validateCustomSize } from './exportCore.js';
+
+const sectionLabel = {
+  fontSize: 10, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.12em',
+  textTransform: 'uppercase', color: C.muted, marginBottom: 7,
+};
+
+const fieldStyle = {
+  width: '100%', boxSizing: 'border-box', background: C.surf,
+  border: `1px solid ${C.brd2}`, borderRadius: 8, padding: '8px 10px',
+  color: C.txt, fontSize: 12.5, fontFamily: FONT, outline: 'none',
+};
+
+function Spinner({ size = 13 }) {
+  return (
+    <span style={{
+      display: 'inline-block', width: size, height: size,
+      border: `2px solid ${C.brd2}`, borderTopColor: C.acc,
+      borderRadius: '50%', animation: 'exp-spin 0.7s linear infinite',
+    }} />
+  );
+}
+
+export default function ExportDialog({ open, onClose, item }) {
+  const [format, setFormat]           = useState(null);
+  const [presetId, setPresetId]       = useState(PRESETS[0].id);
+  const [customPx, setCustomPx]       = useState('1600');
+  const [transparent, setTransparent] = useState(false);
+  const [variantId, setVariantId]     = useState(null);
+  const [running, setRunning]         = useState(false);
+  const [error, setError]             = useState(null);
+
+  // (Re)initialise from item.defaults each time the dialog opens.
+  useEffect(() => {
+    if (!open || !item) return;
+    const d = item.defaults || {};
+    setFormat(d.format || item.formats?.[0]?.id || null);
+    setPresetId(d.presetId || PRESETS[0].id);
+    setVariantId(d.variantId || item.variants?.[0]?.id || null);
+    setCustomPx('1600');
+    setTransparent(false);
+    setRunning(false);
+    setError(null);
+  }, [open, item]);
+
+  const close = useCallback(() => { if (!running) onClose?.(); }, [running, onClose]);
+
+  // Escape closes (no-op while an export is running).
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKey = e => { if (e.key === 'Escape') close(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [open, close]);
+
+  if (!open || !item) return null;
+
+  const showSizing = !!item.sizing && format === 'png';
+  const custom = presetId === 'custom' ? validateCustomSize(customPx) : null;
+  const sizeInvalid = showSizing && presetId === 'custom' && !(custom && custom.ok);
+
+  const runExport = async () => {
+    if (running || !format) return;
+    let widthPx;
+    if (showSizing) {
+      if (presetId === 'custom') {
+        const v = validateCustomSize(customPx);
+        if (!v.ok) { setError(v.error); return; }
+        widthPx = v.value;
+      } else {
+        widthPx = PRESETS.find(p => p.id === presetId)?.px;
+      }
+    }
+    setRunning(true); setError(null);
+    try {
+      await item.run({
+        format,
+        presetId: showSizing ? presetId : undefined,
+        widthPx,
+        transparent: showSizing ? transparent : false,
+        variantId: item.variants?.length ? variantId : undefined,
+      });
+      onClose?.();
+    } catch (e) {
+      setError(e?.message || 'Export failed. Please try again.');
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return createPortal(
+    <div
+      onClick={e => { if (e.target === e.currentTarget) close(); }}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 10000, background: alpha(C.bg, 0.55),
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontFamily: FONT, animation: 'exp-fade 0.15s ease', padding: 16,
+      }}>
+      <style>{`
+        @keyframes exp-fade { from { opacity: 0 } to { opacity: 1 } }
+        @keyframes exp-spin { to { transform: rotate(360deg); } }
+      `}</style>
+      <div
+        role="dialog" aria-modal="true" aria-label={`Export ${item.title}`}
+        style={{
+          width: 'min(440px, 94vw)', maxHeight: '90vh', overflowY: 'auto',
+          background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 12,
+          boxShadow: `0 24px 64px ${C.shadow}`, padding: '18px 20px 16px', color: C.txt,
+        }}>
+
+        {/* Title */}
+        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 10, marginBottom: 14 }}>
+          <span className="t-truncate" title={item.title} style={{ fontSize: 14.5, fontWeight: 700 }}>Export — {item.title}</span>
+        </div>
+
+        {/* Format radio group (only this item's valid formats) */}
+        <div style={{ marginBottom: 14 }}>
+          <div style={sectionLabel}>Format</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {(item.formats || []).map(f => (
+              <label key={f.id} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 7, padding: '6px 11px',
+                border: `1px solid ${format === f.id ? alpha(C.acc, '60') : C.brd}`,
+                background: format === f.id ? alpha(C.acc, '14') : 'transparent',
+                borderRadius: 8, cursor: 'pointer', fontSize: 12.5, color: C.txt,
+              }}>
+                <input
+                  type="radio" name="exp-format" value={f.id}
+                  checked={format === f.id}
+                  onChange={() => { setFormat(f.id); setError(null); }}
+                  style={{ accentColor: C.acc, margin: 0 }}
+                />
+                {f.label}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Size presets — figures only, PNG only */}
+        {showSizing && (
+          <div style={{ marginBottom: 14 }}>
+            <div style={sectionLabel}>Size</div>
+            <select value={presetId} onChange={e => { setPresetId(e.target.value); setError(null); }} style={fieldStyle}>
+              {PRESETS.map(p => (
+                <option key={p.id} value={p.id}>
+                  {p.label}{p.px ? ` — ${p.px}px` : ''}{p.note ? ` (${p.note})` : ''}
+                </option>
+              ))}
+            </select>
+            {presetId === 'custom' && (
+              <div style={{ marginTop: 8 }}>
+                <input
+                  type="number" min={320} max={6000} step={10} value={customPx}
+                  onChange={e => { setCustomPx(e.target.value); setError(null); }}
+                  placeholder="Width in px (320–6000)"
+                  style={{ ...fieldStyle, fontFamily: MONO }}
+                />
+                {custom && !custom.ok && (
+                  <div style={{ fontSize: 11, color: C.red, marginTop: 5 }}>{custom.error}</div>
+                )}
+              </div>
+            )}
+            <label style={{ display: 'flex', alignItems: 'center', gap: 7, marginTop: 9, fontSize: 12, color: C.txt2, cursor: 'pointer' }}>
+              <input
+                type="checkbox" checked={transparent}
+                onChange={e => setTransparent(e.target.checked)}
+                style={{ accentColor: C.acc, margin: 0 }}
+              />
+              Transparent background
+            </label>
+          </div>
+        )}
+
+        {/* Variant (e.g. light/dark) */}
+        {!!item.variants?.length && (
+          <div style={{ marginBottom: 14 }}>
+            <div style={sectionLabel}>Variant</div>
+            <select value={variantId || ''} onChange={e => setVariantId(e.target.value)} style={fieldStyle}>
+              {item.variants.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
+            </select>
+          </div>
+        )}
+
+        {/* Inline error */}
+        {error && (
+          <div style={{
+            marginBottom: 12, padding: '8px 11px', background: C.redBg,
+            border: `1px solid ${alpha(C.red, 0.35)}`, borderRadius: 8,
+            color: C.red, fontSize: 12, lineHeight: 1.45,
+          }}>{error}</div>
+        )}
+
+        {/* Actions */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 9, marginTop: 4 }}>
+          <button
+            type="button" onClick={close} disabled={running}
+            style={{
+              background: 'none', border: `1px solid ${C.brd2}`, color: C.txt2,
+              fontSize: 12.5, fontFamily: FONT, fontWeight: 600, borderRadius: 8,
+              padding: '8px 14px', cursor: running ? 'not-allowed' : 'pointer',
+              opacity: running ? 0.5 : 1,
+            }}>Cancel</button>
+          <button
+            type="button" onClick={runExport} disabled={running || !format || sizeInvalid}
+            style={{
+              background: C.acc2, border: 'none', color: C.accText,
+              fontSize: 12.5, fontFamily: FONT, fontWeight: 600, borderRadius: 8,
+              padding: '8px 18px', minWidth: 86, display: 'inline-flex',
+              alignItems: 'center', justifyContent: 'center', gap: 7,
+              cursor: running || !format || sizeInvalid ? 'not-allowed' : 'pointer',
+              opacity: running || !format || sizeInvalid ? 0.55 : 1,
+            }}>
+            {running ? <><Spinner /> Exporting…</> : 'Export'}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}

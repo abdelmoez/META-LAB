@@ -19,6 +19,7 @@ const AdminConsole  = lazy(() => import('./frontend/pages/admin/AdminConsole.jsx
 const SiftDashboard = lazy(() => import('./frontend/screening/pages/SiftDashboard.jsx'));
 const SiftProject   = lazy(() => import('./frontend/screening/pages/SiftProject.jsx'));
 const SiftImport    = lazy(() => import('./frontend/screening/pages/SiftImport.jsx'));
+const InvitePage    = lazy(() => import('./frontend/pages/InvitePage.jsx'));
 
 /* Minimal theme-token loading state shown while a route chunk downloads. */
 function RouteFallback() {
@@ -43,13 +44,28 @@ function RouteFallback() {
 // These thin wrappers bridge that interface to React Router navigation so the
 // original page components don't need to change.
 
+// Invite handoff (prompt9 Task 2): /login?invite=<t> and /register?invite=<t>
+// keep the token alive across the auth pages without modifying Login.jsx —
+// the adapters read it from the live query string at navigation time.
+function inviteParam() {
+  try { return new URLSearchParams(window.location.search).get('invite') || ''; }
+  catch { return ''; }
+}
+
 function LoginRoute() {
   const navigate = useNavigate();
   const { login } = useAuth();
   return (
     <LoginPage
-      onSuccess={u => { login(u); navigate('/app'); }}
-      onRegister={() => navigate('/register')}
+      onSuccess={u => {
+        login(u);
+        const invite = inviteParam();
+        navigate(invite ? `/invite/${encodeURIComponent(invite)}` : '/app');
+      }}
+      onRegister={() => {
+        const invite = inviteParam();
+        navigate(invite ? `/register?invite=${encodeURIComponent(invite)}` : '/register');
+      }}
     />
   );
 }
@@ -59,8 +75,11 @@ function RegisterRoute() {
   const { login } = useAuth();
   return (
     <RegisterPage
-      onSuccess={u => { login(u); navigate('/app'); }}
-      onBack={() => navigate('/login')}
+      onSuccess={(u, redirectTo) => { login(u); navigate(redirectTo || '/app'); }}
+      onBack={() => {
+        const invite = inviteParam();
+        navigate(invite ? `/login?invite=${encodeURIComponent(invite)}` : '/login');
+      }}
     />
   );
 }
@@ -82,6 +101,10 @@ export default function App() {
         {/* Auth pages — redirect to /app when already signed in */}
         <Route path="/login"    element={<PublicRoute><LoginRoute /></PublicRoute>} />
         <Route path="/register" element={<PublicRoute><RegisterRoute /></PublicRoute>} />
+
+        {/* Invite landing — deliberately unwrapped: must work signed-in AND
+            signed-out (PublicRoute would bounce signed-in invitees to /app) */}
+        <Route path="/invite/:token" element={<InvitePage />} />
 
         {/* Protected workspace */}
         <Route path="/app"      element={<ProtectedRoute><AppWorkspace /></ProtectedRoute>} />

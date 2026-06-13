@@ -10,7 +10,9 @@ import { mkProject } from '../../src/research-engine/project-model/defaults.js';
 import { prisma } from '../db/client.js';
 import { getMetaLabMemberAccess, listSharedMetaLabAccess } from '../screening/metalabAccess.js';
 import { createLinkedScreenProject } from '../screening/createScreenProject.js';
-import { emitToMetaLabProject } from '../realtime/bus.js';
+import { emitToMetaLabProject, emitToProjectMembers } from '../realtime/bus.js';
+import { writeAudit } from '../screening/access.js';
+import { recordUsage, USAGE } from '../utils/usage.js';
 
 const generateId = () => randomBytes(4).toString('hex');
 
@@ -244,6 +246,8 @@ export async function updateProject(req, res) {
     if (project) {
       const updated = { ...project, ...allowed, id: project.id };
       const saved = await save(updated, req.user.id);
+      // Soft-deleted row (resurrection guard) → indistinguishable from gone.
+      if (!saved) return res.status(404).json({ error: 'Project not found' });
       await syncLinkedTitleIfInSync(project.id, req.user.id, project.name, saved.name);
       // Realtime poke (Task 7) — recipients resolve via the linked workspace.
       emitToMetaLabProject(project.id, req.user.id, { type: 'project.updated' }, { exclude: req.user.id });
@@ -281,15 +285,110 @@ export async function updateProject(req, res) {
 
 /**
  * DELETE /api/projects/:id
- * Removes the project; returns { deleted: true }.
+ * Legacy delete path (monolith autosave array-diff sweep). Now a SOFT delete
+ * (deletedSource='owner') underneath; the wire contract { deleted: true } is
+ * pinned and unchanged.
  */
 export async function deleteProject(req, res) {
   try {
     const existed = await remove(req.params.id, req.user.id);
     if (!existed) return res.status(404).json({ error: 'Project not found' });
+    recordUsage({
+      type: USAGE.PROJECT_DELETED,
+      userId: req.user.id,
+      metaLabProjectId: req.params.id,
+      meta: { source: 'sweep' },
+    });
     res.json({ deleted: true });
   } catch (err) {
     console.error('[projects] deleteProject error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /api/projects/:id/delete  (prompt9 — explicit owner delete)
+ * Body: { confirmName: string, cascadeLinked?: boolean }
+ *
+ * Typed-name confirmed soft delete. confirmName must equal the project's name
+ * exactly (both trimmed) → else 400. With cascadeLinked, the caller's own live
+ * linked ScreenProjects are soft-deleted too (audit row written BEFORE the
+ * mark — soft delete preserves the ScreenAuditLog history). Owner-scoped: any
+ * non-owner (or already-deleted project) gets 404 (existence-hiding).
+ * Returns { deleted: true, cascaded: [<screenProjectIds>] }.
+ */
+export async function ownerDeleteProject(req, res) {
+  try {
+    const { confirmName, cascadeLinked } = req.body || {};
+    const project = await prisma.project.findFirst({
+      where: {
+        id: req.params.id,
+        userId: req.user.id,
+        OR: [{ deletedSource: null }, { deletedSource: { not: 'owner' } }],
+      },
+      select: { id: true, name: true },
+    });
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const expected = String(project.name || '').trim();
+    if (typeof confirmName !== 'string' || confirmName.trim() !== expected) {
+      return res.status(400).json({ error: 'Project name does not match' });
+    }
+
+    const now = new Date();
+    const cascaded = [];
+    if (cascadeLinked === true) {
+      const linked = await prisma.screenProject.findMany({
+        where: { linkedMetaLabProjectId: project.id, ownerId: req.user.id, deletedAt: null },
+        select: { id: true, title: true },
+      });
+      for (const sp of linked) {
+        try {
+          // Audit BEFORE marking — soft delete keeps ScreenAuditLog rows alive.
+          await writeAudit(sp.id, req.user, 'PROJECT_DELETED', {
+            entityType: 'project', entityId: sp.id,
+            details: { title: sp.title, source: 'metalab-cascade', metaLabProjectId: project.id },
+          });
+          await prisma.screenProject.update({
+            where: { id: sp.id },
+            data: { deletedAt: now, deletedSource: 'owner' },
+          });
+          recordUsage({
+            type: USAGE.PROJECT_DELETED,
+            userId: req.user.id,
+            screenProjectId: sp.id,
+            metaLabProjectId: project.id,
+            meta: { source: 'cascade' },
+          });
+          cascaded.push(sp.id);
+        } catch (cascadeErr) {
+          // Per-workspace best-effort — a single failed cascade must not block
+          // the requested delete; the workspace stays live and removable later.
+          console.error('[projects] ownerDeleteProject cascade failed:', sp.id, cascadeErr.message);
+        }
+      }
+    }
+
+    await prisma.project.update({
+      where: { id: project.id },
+      data: { deletedAt: now, deletedSource: 'owner' },
+    });
+    recordUsage({
+      type: USAGE.PROJECT_DELETED,
+      userId: req.user.id,
+      metaLabProjectId: project.id,
+      meta: { source: 'explicit', cascadeLinked: cascaded.length },
+    });
+
+    // Realtime pokes — open UIs revalidate, refetch 404s → navigate away.
+    emitToMetaLabProject(project.id, req.user.id, { type: 'project.updated' }, { exclude: req.user.id });
+    for (const spId of cascaded) {
+      emitToProjectMembers(spId, { type: 'members.changed' }, { exclude: req.user.id });
+    }
+
+    return res.json({ deleted: true, cascaded });
+  } catch (err) {
+    console.error('[projects] ownerDeleteProject error:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }
@@ -312,6 +411,10 @@ export async function autosaveProject(req, res) {
     const existing = await prisma.project.findFirst({ where: { id }, select: { userId: true } });
     if (!existing || existing.userId === req.user.id) {
       const saved = await save(fullProject, req.user.id);
+      // Soft-deleted row (resurrection guard, prompt9): a stale tab must never
+      // revive a deleted project — and never 4xx (batch contract). Mirror the
+      // saveAsMember skipped shape.
+      if (!saved) return res.json({ id, skipped: true });
       // Realtime poke (Task 7) — fan out to linked-workspace members (owner is excluded).
       emitToMetaLabProject(id, req.user.id, { type: 'project.updated' }, { exclude: req.user.id });
       return res.json(saved);

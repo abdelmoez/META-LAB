@@ -35,6 +35,7 @@
  * polling, never over SSE (poke-only contract).
  */
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { C, FONT, MONO, alpha } from '../../theme/tokens.js';
 import { useRealtime } from '../../hooks/useRealtime.js';
 import Icon from '../icons.jsx';
@@ -266,7 +267,16 @@ export default function ChatDrawer({
 
   if (!open) return null;
 
-  return (
+  // The open overlay portals to document.body (prompt9 Task 5). In META·LAB
+  // the launcher mounts inside the monolith's fixed z-9999 wrapper — a
+  // stacking context that caps the drawer's z 10000 below the later-DOM
+  // bell/UserMenu siblings (also 9999), leaving the X unclickable under the
+  // avatar. The portal lifts the overlay into the ROOT stacking context so
+  // z 10000 wins everywhere; the component itself stays mounted while closed
+  // (returns null above) so the unread poll + SSE subscription keep running.
+  // In META·SIFT the drawer already lived in the root context — rendering
+  // from document.body is visually identical there.
+  return createPortal(
     <div
       onClick={e => { if (e.target === e.currentTarget) onClose?.(); }}
       style={{ position: 'fixed', inset: 0, zIndex: 10000, background: alpha(C.bg, 0.45), animation: 'chat-fade 0.15s ease' }}>
@@ -345,7 +355,8 @@ export default function ChatDrawer({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

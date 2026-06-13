@@ -8,13 +8,20 @@
  * Server contract lives in src/frontend/api-client/notificationsApi.js
  * (/api/notifications — its own router, never under rate-limited mounts).
  *
- * Opening a notification marks it read, then deep-links:
+ * Opening a notification (prompt9 Task 1) calls POST /:id/opened — one
+ * idempotent server call stamping readAt + dismissedAt + clickedAt — then
+ * deep-links:
  *   relatedMetaLabProjectId      → /app?project=<id>
  *   else relatedScreenProjectId  → /sift-beta/projects/<id>
+ * The clicked row leaves the active list optimistically and the badge
+ * decrements immediately; dismissed rows survive in the "Show history" view
+ * (?all=1), rendered dimmed with their readAt/dismissedAt stamps.
  * All four mounts live inside the app Router, so react-router navigation is
  * used — except when the target path equals the current one (e.g. /app → /app
  * with a new ?project=), where a full location.assign guarantees the monolith
- * re-reads the query param on mount.
+ * re-reads the query param on mount. That reload aborts in-flight requests,
+ * so opened() is awaited (bounded by a short timeout) BEFORE location.assign;
+ * SPA navigations let it complete concurrently.
  *
  * Props:
  *   fixed  boolean — fixed top-right positioning (default false = inline)
@@ -73,9 +80,14 @@ export default function NotificationsBell({ fixed = false, right = 16 }) {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(null);
   const [clearing, setClearing] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
   const ref = useRef(null);
 
   const lastPollRef = useRef(0);
+  // History mode mirrored into a ref so the stable loadList/realtime closures
+  // always reload the view the user is currently looking at.
+  const showHistoryRef = useRef(false);
+  showHistoryRef.current = showHistory;
 
   // Server-authoritative unread count — best-effort, never surfaces errors.
   const refreshCount = useCallback(() => {
@@ -86,11 +98,14 @@ export default function NotificationsBell({ fixed = false, right = 16 }) {
   }, []);
 
   // Load the panel list (newest first) whenever it opens (declared before the
-  // realtime handler so the poke can refresh an open panel).
+  // realtime handler so the poke can refresh an open panel). History mode
+  // (?all=1) includes dismissed rows for the "Show history" footer toggle.
   const loadList = useCallback(async () => {
     setLoading(true); setLoadError(null);
     try {
-      const d = await notificationsApi.list({ limit: 20 });
+      const d = await notificationsApi.list(
+        showHistoryRef.current ? { limit: 50, all: true } : { limit: 20 },
+      );
       setItems(d?.notifications || []);
       if (typeof d?.unreadCount === 'number') setCount(d.unreadCount);
     } catch (e) {
@@ -119,7 +134,13 @@ export default function NotificationsBell({ fixed = false, right = 16 }) {
     return () => clearInterval(timer);
   }, [user, refreshCount]);
 
-  useEffect(() => { if (open) loadList(); }, [open, loadList]);
+  // Opening always starts on the active (non-dismissed) list; toggling the
+  // history view refetches in the new mode.
+  useEffect(() => {
+    if (open) loadList();
+    else setShowHistory(false);
+  }, [open, loadList]);
+  useEffect(() => { if (open) loadList(); }, [showHistory]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Close on outside click / Escape.
   useEffect(() => {
@@ -139,16 +160,42 @@ export default function NotificationsBell({ fixed = false, right = 16 }) {
     else navigate(url);
   }, [navigate]);
 
-  // Open project: mark read (best-effort), update local state, navigate.
+  // Click-through (prompt9 Task 1): POST /:id/opened stamps readAt +
+  // dismissedAt + clickedAt server-side (idempotent). Optimistically the row
+  // leaves the active list (dims in history view) and the badge decrements at
+  // once; a server hiccup falls back to refreshCount on the next response.
+  // Full-reload navigations (same-path /app?project=) abort in-flight fetches,
+  // so opened() is awaited — bounded by a short timeout so a slow server
+  // never blocks navigation. SPA navigations let it run concurrently.
   const openNotification = useCallback(async (n) => {
-    if (!n.readAt) {
-      try { await notificationsApi.markRead(n.id); } catch { /* best-effort */ }
-      setItems(prev => prev.map(it => (it.id === n.id ? { ...it, readAt: new Date().toISOString() } : it)));
-      refreshCount();
-    }
     const url = targetUrl(n);
-    if (!url) return;
+    const alreadyDismissed = !!n.dismissedAt;
+    const wasUnread = !n.readAt && !alreadyDismissed;
+
+    if (!alreadyDismissed) {
+      const now = new Date().toISOString();
+      if (showHistoryRef.current) {
+        setItems(prev => prev.map(it => (
+          it.id === n.id ? { ...it, readAt: it.readAt || now, dismissedAt: now } : it
+        )));
+      } else {
+        setItems(prev => prev.filter(it => it.id !== n.id));
+      }
+      if (wasUnread) setCount(c => Math.max(0, c - 1));
+    }
+
+    const opened = alreadyDismissed
+      ? Promise.resolve()
+      : Promise.race([
+          notificationsApi.opened(n.id),
+          new Promise(resolve => setTimeout(resolve, 1500)),
+        ]).catch(() => { refreshCount(); });
+
+    if (!url) { await opened; return; } // no target: row dismissed in place, panel stays open
+
     setOpen(false);
+    const fullReload = window.location.pathname === url.split('?')[0];
+    if (fullReload) await opened; // otherwise the unload aborts the request
     go(url);
   }, [go, refreshCount]);
 
@@ -235,8 +282,24 @@ export default function NotificationsBell({ fixed = false, right = 16 }) {
                 <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>Project invites and updates will show up here.</div>
               </div>
             ) : (
-              items.map(n => <NotificationRow key={n.id} n={n} onOpen={() => openNotification(n)} />)
+              items.map(n => (
+                <NotificationRow key={n.id} n={n} history={showHistory} onOpen={() => openNotification(n)} />
+              ))
             )}
+          </div>
+
+          {/* Panel footer — history toggle (?all=1 includes dismissed rows) */}
+          <div style={{
+            borderTop: `1px solid ${C.brd}`, marginTop: 2,
+            padding: '7px 14px 5px', display: 'flex', justifyContent: 'center',
+          }}>
+            <button onClick={() => setShowHistory(h => !h)}
+              style={{
+                background: 'none', border: 'none', cursor: 'pointer',
+                color: showHistory ? C.acc : C.muted, fontSize: 11, fontFamily: FONT, padding: 0,
+              }}>
+              {showHistory ? '← Back to active' : 'Show history'}
+            </button>
           </div>
         </div>
       )}
@@ -244,12 +307,16 @@ export default function NotificationsBell({ fixed = false, right = 16 }) {
   );
 }
 
-function NotificationRow({ n, onOpen }) {
+function NotificationRow({ n, history = false, onOpen }) {
   const [hover, setHover] = useState(false);
-  const unread = !n.readAt;
+  const dismissed = !!n.dismissedAt;
+  const unread = !n.readAt && !dismissed;
   const app = APP_META[n.app];
   const actor = n.actorName || n.actorEmail || '';
   const hasTarget = !!targetUrl(n);
+  // Whole-row click always does something on active rows (opened + dismiss,
+  // even without a target); dismissed history rows only react with a target.
+  const clickable = hasTarget || !dismissed;
 
   return (
     <div
@@ -259,9 +326,10 @@ function NotificationRow({ n, onOpen }) {
       style={{
         padding: '10px 14px 11px',
         borderBottom: `1px solid ${C.brd}`,
-        background: hover ? C.card2 : unread ? alpha(C.acc, '0c') : 'transparent',
+        background: hover && clickable ? C.card2 : unread ? alpha(C.acc, '0c') : 'transparent',
         borderLeft: `2px solid ${unread ? C.acc : 'transparent'}`,
-        cursor: hasTarget || unread ? 'pointer' : 'default',
+        cursor: clickable ? 'pointer' : 'default',
+        opacity: dismissed ? 0.55 : 1,
       }}
     >
       {/* Title + relative date */}
@@ -307,6 +375,15 @@ function NotificationRow({ n, onOpen }) {
           }}>Open project →</button>
         )}
       </div>
+
+      {/* History view — read/dismissed stamps on soft-dismissed rows */}
+      {history && dismissed && (
+        <div style={{ fontSize: 9.5, fontFamily: MONO, color: C.muted, marginTop: 5 }}>
+          {n.readAt ? `read ${fmtAgo(n.readAt)}` : ''}
+          {n.readAt && n.dismissedAt ? ' · ' : ''}
+          {n.dismissedAt ? `dismissed ${fmtAgo(n.dismissedAt)}` : ''}
+        </div>
+      )}
     </div>
   );
 }

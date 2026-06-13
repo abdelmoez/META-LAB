@@ -52,6 +52,13 @@ export const notificationsApi = {
   /** POST /api/notifications/:id/read — mark one notification read. */
   markRead: (id) => req(`/${id}/read`, { method: 'POST' }),
 
+  /**
+   * POST /api/notifications/:id/opened — click-through (prompt9 Task 1):
+   * stamps readAt + dismissedAt + clickedAt in one idempotent call.
+   * 404 on foreign ids (existence hiding). → { notification }
+   */
+  opened: (id) => req(`/${id}/opened`, { method: 'POST' }),
+
   /** POST /api/notifications/:id/dismiss — dismiss (hide) one notification. */
   dismiss: (id) => req(`/${id}/dismiss`, { method: 'POST' }),
 
