@@ -370,13 +370,18 @@ model ScreenProjectMember {
   canManageSettings   Boolean       @default(false)
   // ── Invite lifecycle (prompt9 — token ceremony atop the pending row) ──
   invitedByUserId     String?       // who created the invite (fixes "A project manager" UX gap)
-  inviteTokenHash     String?       @unique // SHA-256 hex of the invite token; plaintext never stored
+  // Plain index, NOT @unique: a unique constraint forces `prisma db push` (the VPS deploy path)
+  // to demand --accept-data-loss, which the deploy script does not pass. Uniqueness is already
+  // guaranteed by 256-bit random token generation + single-use nulling on accept; the index keeps
+  // the hash lookup fast. Looked up via findFirst (findUnique requires a @unique field).
+  inviteTokenHash     String?       // SHA-256 hex of the invite token; plaintext never stored
   inviteExpiresAt     DateTime?     // invite validity window (default now + inviteExpiryDays)
   inviteAcceptedAt    DateTime?     // when the invite was accepted/claimed (single-use marker)
   joinedAt            DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
 
   @@unique([projectId, email])
+  @@index([inviteTokenHash])
 }
 
 model ScreenChatMessage {

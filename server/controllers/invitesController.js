@@ -7,7 +7,9 @@
  *
  * Security model:
  *   - Tokens are 32-byte CSPRNG hex; only the SHA-256 hash is stored
- *     (ScreenProjectMember.inviteTokenHash @unique). Lookup = hash & match.
+ *     (ScreenProjectMember.inviteTokenHash, plain-indexed). Lookup = hash & match
+ *     via findFirst (256-bit random tokens make collisions impossible; single-use
+ *     nulling enforces at-most-one-active per token, so no DB unique constraint).
  *   - Single-use: accept nulls the hash and stamps inviteAcceptedAt.
  *   - Not-found, revoked (row deleted) and already-accepted are
  *     INDISTINGUISHABLE: same 404 body. Expired is 410 (the link holder
@@ -58,7 +60,7 @@ function inviterDisplayName(user) {
  */
 async function resolveInvite(token) {
   if (!token || typeof token !== 'string' || token.length > 256) return { status: 'invalid' };
-  const member = await prisma.screenProjectMember.findUnique({
+  const member = await prisma.screenProjectMember.findFirst({
     where: { inviteTokenHash: hashToken(token) },
   });
   if (!member) return { status: 'invalid' };

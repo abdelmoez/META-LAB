@@ -30,5 +30,5 @@ CREATE TABLE "UsageEvent" (
 CREATE INDEX "UsageEvent_type_createdAt_idx" ON "UsageEvent"("type", "createdAt");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "ScreenProjectMember_inviteTokenHash_key" ON "ScreenProjectMember"("inviteTokenHash");
+CREATE INDEX "ScreenProjectMember_inviteTokenHash_idx" ON "ScreenProjectMember"("inviteTokenHash");
 

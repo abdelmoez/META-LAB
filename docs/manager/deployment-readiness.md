@@ -28,20 +28,32 @@ The frontend talks to the API via the relative `/api` path. In production the re
 
 ## 2. Database migration in production
 
-Dev uses SQLite (`server/prisma/dev.db`). **Production should use a managed database (PostgreSQL).** See §7.
+Dev uses SQLite (`server/prisma/dev.db`); the live VPS also runs **SQLite** (`prod.db` at
+`/var/lib/metalab/prod.db`). PostgreSQL remains the recommended target for scale (see §7) but is not what
+production runs today.
 
-Apply committed migrations on the production database (do NOT use `migrate dev` in prod — it can generate/reset):
+> **How the live VPS actually applies schema changes (verified from the deploy log, 2026-06-12):**
+> `/usr/local/bin/metalab-deploy.sh` runs **`npx prisma db push`** against `prod.db` — NOT `migrate deploy`.
+> `db push` diffs `schema.prisma` directly against the database and ignores `server/prisma/migrations/`
+> entirely. This is why committed migrations alone neither help nor break the VPS deploy.
 
-```bash
-cd server
-npx prisma migrate deploy
-```
+> **⚠️ db-push-safety rule (the prompt9 deploy failure — read before any schema change):**
+> The deploy script runs `db push` **without `--accept-data-loss`** (correct — an unattended prod deploy must
+> never silently drop data). So any change Prisma flags as data-loss **aborts the deploy** (`script_stop:true`)
+> and the site stays on the previous version. Flagged operations: **adding a `@unique`/unique index to an
+> existing table**, dropping a column/table, or narrowing a column type. prompt9 originally added
+> `inviteTokenHash @unique`, which aborted runs 9 and 10. Fix: keep schema changes **db-push-safe** — additive
+> nullable columns, new tables, and **plain `@@index` (never a new `@unique` on a populated table)**. If a
+> unique constraint is genuinely required, apply it as a separate **manual** step on the VPS
+> (`prisma db push --accept-data-loss` run by hand after reviewing the data), not through the unattended deploy.
 
-`migrate deploy` applies any pending migrations in `server/prisma/migrations/` against `DATABASE_URL`. Migrations are **additive** — never hand-edit applied migrations; create new ones for schema changes.
+The history-aware alternative (`cd server && npx prisma migrate deploy`) is preferred long-term but is **not
+wired into the deploy script**; adopting it needs the one-time baseline in §2b plus a script edit. Migrations
+are **additive** — never hand-edit an already-applied migration; create new ones for schema changes.
 
 **prompt6 (v2.5.0)** adds one additive migration — `20260610034844_prompt6_notifications_logins_status_fingerprint`: new `Notification`, `LoginEvent`, and `ScreenProjectStatusEvent` tables, fingerprint columns on `ScreenImportBatch` (nullable/defaulted), and an index on `ScreenProject.linkedMetaLabProjectId`. No destructive changes; existing users/projects/records/links are preserved. `npx prisma migrate deploy` + `npx prisma generate` is all the DB work this release needs.
 
-**prompt9 (v2.7.0)** adds one additive migration — `20260611165749_prompt9_invites_lifecycle_usage`: invite columns on `ScreenProjectMember` (`invitedByUserId`, `inviteTokenHash` unique, `inviteExpiresAt`, `inviteAcceptedAt`), `Notification.clickedAt`, `Project.deletedSource`, `ScreenProject.deletedAt`/`deletedSource`, and the new no-FK `UsageEvent` table. All nullable/defaulted; no destructive changes.
+**prompt9 (v2.7.0)** adds one additive migration — `20260611165749_prompt9_invites_lifecycle_usage`: invite columns on `ScreenProjectMember` (`invitedByUserId`, `inviteTokenHash` **plain-indexed, not unique** — see the db-push-safety rule above; uniqueness is guaranteed by 256-bit random tokens + single-use nulling), `inviteExpiresAt`, `inviteAcceptedAt`, `Notification.clickedAt`, `Project.deletedSource`, `ScreenProject.deletedAt`/`deletedSource`, and the new no-FK `UsageEvent` table. All nullable/defaulted; no destructive changes; **db-push-safe**.
 
 ### 2b. Migration history is now committed (fixed 2026-06-12)
 
@@ -66,8 +78,9 @@ npx prisma migrate deploy   # applies only what remains
 ```
 
 Quick check of what the DB already has: `npx prisma migrate status` (lists pending vs applied).
-If the deploy script uses `prisma db push` instead, it keeps working unchanged — `db push` reads the
-committed `schema.prisma` directly — but `migrate deploy` is the preferred, history-aware path.
+**This baseline is only needed if/when the deploy script is switched to `migrate deploy`.** The current VPS
+script uses `db push`, which reads `schema.prisma` directly and needs no migration history — so until the
+script is changed, the committed migrations serve clean clones and local `migrate deploy` only.
 
 ---
 
