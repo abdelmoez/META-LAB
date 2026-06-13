@@ -1,10 +1,11 @@
 import { prisma } from '../db/client.js';
 import { logAdminAction } from '../utils/audit.js';
 import { hashPassword } from '../auth/password.js';
-import { isEmailConfigured, sendEmail, renderReplyEmail } from '../services/emailService.js';
+import { isEmailConfigured, sendEmail, renderReplyEmail, renderPasswordResetEmail, emailStatus } from '../services/emailService.js';
+import { createResetToken } from '../services/passwordResetService.js';
 import { getVersion } from '../version.js';
 import { bustMaintenanceCache } from '../middleware/maintenance.js';
-import { USAGE } from '../utils/usage.js';
+import { USAGE, recordUsage } from '../utils/usage.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -159,6 +160,27 @@ export async function getMetrics(req, res) {
       }),
     ]);
 
+    // prompt14 — richer email metrics for the ops Email System card. Cheap
+    // counts + two findFirsts. Invite/contact_reply splits come from the EMAIL_*
+    // usage meta.context tag; password-reset has its own typed events;
+    // contact-reply draft/sent/failed are authoritative from the ContactReply table.
+    const [
+      lastSent, lastFailed,
+      prSent, prFailed,
+      inviteEmailSent, inviteEmailFailed,
+      crSent, crDraft, crFailed,
+    ] = await Promise.all([
+      prisma.usageEvent.findFirst({ where: { type: USAGE.EMAIL_SENT }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } }),
+      prisma.usageEvent.findFirst({ where: { type: USAGE.EMAIL_FAILED }, orderBy: { createdAt: 'desc' }, select: { createdAt: true } }),
+      prisma.usageEvent.count({ where: { type: USAGE.PASSWORD_RESET_EMAIL_SENT } }),
+      prisma.usageEvent.count({ where: { type: USAGE.PASSWORD_RESET_EMAIL_FAILED } }),
+      prisma.usageEvent.count({ where: { type: USAGE.EMAIL_SENT, meta: { contains: '"context":"invite"' } } }),
+      prisma.usageEvent.count({ where: { type: USAGE.EMAIL_FAILED, meta: { contains: '"context":"invite"' } } }),
+      prisma.contactReply.count({ where: { status: 'sent' } }),
+      prisma.contactReply.count({ where: { status: 'draft' } }),
+      prisma.contactReply.count({ where: { status: 'failed' } }),
+    ]);
+
     const exportsByFormat = {};
     for (const g of exportGroups) {
       const key = g.format || 'unknown';
@@ -213,7 +235,17 @@ export async function getMetrics(req, res) {
       notificationsStats: { sent: notifSent, clicked: notifClicked, dismissed: notifDismissed },
       lifecycle: { projectsDeleted, siftProjectsDeleted, membersLeft },
       exportsByFormat,
-      emailStats: { sent: emailsSent, failed: emailsFailed },
+      // prompt14 — config snapshot is SECRET-FREE (booleans + provider label only).
+      email: emailStatus(),
+      emailStats: {
+        sent: emailsSent,
+        failed: emailsFailed,
+        lastSentAt: lastSent?.createdAt || null,
+        lastFailedAt: lastFailed?.createdAt || null,
+        invites: { sent: inviteEmailSent, failed: inviteEmailFailed },
+        passwordResets: { sent: prSent, failed: prFailed },
+        contactReplies: { sent: crSent, draft: crDraft, failed: crFailed },
+      },
       linking: { linkedWorkspaces, unlinkedSiftProjects, unlinkedMetaLabProjects },
       db: dbStatus,
     });
@@ -610,6 +642,70 @@ export async function resetUserPassword(req, res) {
     return res.json({ tempPassword });
   } catch (err) {
     console.error('[admin] resetUserPassword error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── POST /api/admin/users/:id/send-password-reset ──────────────────────────────
+// Production-preferred reset (prompt14 Task 4): mints a single-use, time-limited
+// token (hash-only at rest) and emails the user a self-service reset link — the
+// operator never handles a plaintext credential. (admin + mod)
+// requireTargetEditable already 403s a mod acting on an admin/mod target; the
+// in-handler check is defense-in-depth. When email is unconfigured (or the send
+// fails) the authorized operator gets a copyable link in the response instead —
+// mirroring the invite-link fallback. The raw token is NEVER logged.
+export async function sendPasswordReset(req, res) {
+  try {
+    const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+    if (!target) return res.status(404).json({ error: 'User not found' });
+
+    if (req.user.role === 'mod' && target.role !== 'user') {
+      return res.status(403).json({ error: 'Moderators cannot modify administrator or moderator accounts' });
+    }
+
+    const { token, expiresAt } = await createResetToken(target.id, {
+      requestedByUserId: req.user.id,
+      ip: req.ip || '',
+    });
+    const base = (process.env.APP_BASE_URL || '').replace(/\/+$/, '') || `${req.protocol}://${req.get('host')}`;
+    const link = `${base}/reset?token=${token}`;
+
+    const emailConfigured = isEmailConfigured();
+    let sent = false;
+    if (emailConfigured) {
+      const { html, text } = renderPasswordResetEmail({
+        toName: target.name || '',
+        link,
+        expiresAt,
+        initiatedByOperator: true,
+      });
+      const result = await sendEmail({
+        to: target.email,
+        subject: 'Reset your META·LAB password',
+        html,
+        text,
+        context: 'password_reset',
+      });
+      sent = result.sent === true;
+      // Record only real outcomes: SENT on success, FAILED only on an actual
+      // send error (not the not-configured fallback, which is expected, not a fault).
+      if (sent) recordUsage({ type: USAGE.PASSWORD_RESET_EMAIL_SENT, userId: target.id, meta: { byOperator: req.user.id } });
+      else recordUsage({ type: USAGE.PASSWORD_RESET_EMAIL_FAILED, userId: target.id, meta: { byOperator: req.user.id, reason: result.reason || null } });
+    }
+
+    await logAdminAction(req, 'SEND_PASSWORD_RESET', 'User', target.id, { email: target.email, sent, emailConfigured });
+
+    // Copyable link is returned ONLY to the authorized operator when the email
+    // didn't actually go out (unconfigured / send failure) — never alongside a
+    // successful send, and never the raw token in logs.
+    return res.json({
+      sent,
+      emailConfigured,
+      expiresAt,
+      ...(sent ? {} : { link }),
+    });
+  } catch (err) {
+    console.error('[admin] sendPasswordReset error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }
@@ -1248,6 +1344,10 @@ export async function getConsole(req, res) {
     role,
     sections,
     emailConfigured: isEmailConfigured(),
+    // prompt14 — secret-free email config snapshot (booleans + provider label) so
+    // the ops Email System card can render status without a second round-trip and
+    // without ever exposing SMTP host/user/password values.
+    email: emailStatus(),
   });
 }
 

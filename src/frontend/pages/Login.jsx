@@ -34,8 +34,9 @@ const labelStyle = {
  * Props:
  *   onSuccess(user) — called with the user object on successful login
  *   onRegister()    — called when user clicks "Register"
+ *   onForgot()      — called when user clicks "Forgot password?" (optional)
  */
-export default function Login({ onSuccess, onRegister }) {
+export default function Login({ onSuccess, onRegister, onForgot }) {
   const [email, setEmail]       = useState("");
   const [password, setPassword] = useState("");
   const [error, setError]       = useState(null);
@@ -172,6 +173,25 @@ export default function Login({ onSuccess, onRegister }) {
               placeholder="••••••••"
             />
           </div>
+
+          {onForgot && (
+            <div style={{ textAlign: "right", marginTop: -10, marginBottom: 18 }}>
+              <button
+                type="button"
+                onClick={onForgot}
+                style={{
+                  background: "none", border: "none", color: C.muted, fontSize: 12.5,
+                  fontFamily: FONT, cursor: "pointer", padding: 0,
+                  textDecoration: "underline", textDecorationColor: "transparent",
+                  transition: "text-decoration-color 0.15s, color 0.15s",
+                }}
+                onMouseEnter={(e) => { e.target.style.color = C.acc; e.target.style.textDecorationColor = C.acc; }}
+                onMouseLeave={(e) => { e.target.style.color = C.muted; e.target.style.textDecorationColor = "transparent"; }}
+              >
+                Forgot password?
+              </button>
+            </div>
+          )}
 
           {error && (
             <div

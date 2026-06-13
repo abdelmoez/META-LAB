@@ -12,6 +12,7 @@ import {
   updateUserStatus,
   updateUserRole,
   resetUserPassword,
+  sendPasswordReset,
   getProjects,
   archiveProject,
   restoreProject,
@@ -89,6 +90,8 @@ router.get('/users/:id/projects', requireAdminOrMod, getUserProjects);
 router.patch('/users/:id', requireAdminOrMod, requireTargetEditable, updateUser);
 router.patch('/users/:id/status', requireAdminOrMod, requireTargetEditable, updateUserStatus);
 router.post('/users/:id/reset-password', requireAdminOrMod, requireTargetEditable, resetUserPassword);
+// prompt14 — production-preferred token-based reset (emails a self-service link).
+router.post('/users/:id/send-password-reset', requireAdminOrMod, requireTargetEditable, sendPasswordReset);
 // Role assignment + delete are ADMIN ONLY.
 router.patch('/users/:id/role', requireAdmin, updateUserRole);
 

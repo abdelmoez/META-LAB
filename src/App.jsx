@@ -21,6 +21,7 @@ const SiftDashboard = lazy(() => import('./frontend/screening/pages/SiftDashboar
 const SiftProject   = lazy(() => import('./frontend/screening/pages/SiftProject.jsx'));
 const SiftImport    = lazy(() => import('./frontend/screening/pages/SiftImport.jsx'));
 const InvitePage    = lazy(() => import('./frontend/pages/InvitePage.jsx'));
+const ResetPassword = lazy(() => import('./frontend/pages/ResetPassword.jsx'));
 
 /* Minimal theme-token loading state shown while a route chunk downloads. */
 function RouteFallback() {
@@ -67,6 +68,7 @@ function LoginRoute() {
         const invite = inviteParam();
         navigate(invite ? `/register?invite=${encodeURIComponent(invite)}` : '/register');
       }}
+      onForgot={() => navigate('/reset')}
     />
   );
 }
@@ -106,6 +108,10 @@ export default function App() {
         {/* Invite landing — deliberately unwrapped: must work signed-in AND
             signed-out (PublicRoute would bounce signed-in invitees to /app) */}
         <Route path="/invite/:token" element={<InvitePage />} />
+
+        {/* Public password reset — unwrapped (must work signed-out AND signed-in).
+            /reset = request a link; /reset?token=… = choose a new password. */}
+        <Route path="/reset" element={<ResetPassword />} />
 
         {/* Protected post-login home — project command center (prompt11) */}
         <Route path="/app"      element={<ProtectedRoute><ProjectLanding /></ProtectedRoute>} />

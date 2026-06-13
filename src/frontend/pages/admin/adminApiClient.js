@@ -51,6 +51,9 @@ export const adminApi = {
     updateStatus: (id, s)    => req(`${BASE}/users/${id}/status`, { method: 'PATCH', ...json(s) }),
     updateRole:   (id, role) => req(`${BASE}/users/${id}/role`, { method: 'PATCH', ...json({ role }) }),
     resetPassword:(id)       => req(`${BASE}/users/${id}/reset-password`, { method: 'POST' }),
+    // prompt14 — token-based reset: emails a self-service link. Returns
+    // { sent, emailConfigured, expiresAt, link? } (link only when not sent).
+    sendPasswordReset:(id)   => req(`${BASE}/users/${id}/send-password-reset`, { method: 'POST' }),
   },
 
   projects: {

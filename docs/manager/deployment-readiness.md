@@ -103,13 +103,14 @@ Two env files. Copy each `.example` and fill real values; never commit the real 
 | `ADMIN_EMAIL_2` | Second seeded admin account email. |
 | `ADMIN_SEED_PASSWORD` | Initial password for seeded admins; rotate after first login. |
 | `CORS_ORIGIN` | Allowed browser origin for credentialed requests. Primary CORS source. |
-| `APP_BASE_URL` | Canonical public base URL; CORS fallback when `CORS_ORIGIN` unset; used for email links. |
-| `EMAIL_PROVIDER` | Mail backend selector (e.g. `smtp`, `console`, `none`). |
-| `SMTP_HOST` | SMTP server host (when `EMAIL_PROVIDER=smtp`). |
-| `SMTP_PORT` | SMTP server port (e.g. `587`). |
-| `SMTP_USER` | SMTP auth username / API key. |
-| `SMTP_PASS` | SMTP auth password / API secret. |
-| `EMAIL_FROM` | Default `From:` address for outbound mail. |
+| `APP_BASE_URL` | Canonical public base URL; CORS fallback when `CORS_ORIGIN` unset; used to build invite + password-reset email links. |
+| `EMAIL_PROVIDER` | Informational mail-backend label shown in the ops console (e.g. `smtp`, `resend`). |
+| `SMTP_HOST` | SMTP server host. Sending requires this **and** `EMAIL_FROM`. |
+| `SMTP_PORT` | SMTP server port. `587`→STARTTLS (default), `465`→implicit TLS. |
+| `SMTP_USER` | SMTP auth username / API key (optional — omit for unauthenticated relays). |
+| `SMTP_PASS` | SMTP auth password / API secret (optional). |
+| `EMAIL_FROM` | Default `From:` address for outbound mail. Required to send. |
+| `PASSWORD_RESET_TTL_MINUTES` | (Optional) reset-token link lifetime in minutes (default `60`). |
 | `GIT_COMMIT` | (Optional) build commit shown by `/api/version`. Set in CI. |
 | `BUILD_DATE` | (Optional) ISO build timestamp shown by `/api/version`. Set in CI. |
 

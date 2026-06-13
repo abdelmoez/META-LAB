@@ -34,6 +34,25 @@ export function isEmailConfigured() {
 }
 
 /**
+ * emailStatus — a SECRET-FREE snapshot of the mail configuration for the ops
+ * console (prompt14 Task 5). Returns only booleans + the informational provider
+ * label — NEVER the SMTP host, user, password, or from-address values, so it is
+ * safe to ship to the admin/mod UI and over the API.
+ * @returns {{configured:boolean, provider:string, smtpHostConfigured:boolean,
+ *   emailFromConfigured:boolean, smtpAuthConfigured:boolean, appBaseUrlConfigured:boolean}}
+ */
+export function emailStatus() {
+  return {
+    configured: isEmailConfigured(),
+    provider: env('EMAIL_PROVIDER') || 'smtp',
+    smtpHostConfigured: Boolean(env('SMTP_HOST')),
+    emailFromConfigured: Boolean(env('EMAIL_FROM')),
+    smtpAuthConfigured: Boolean(env('SMTP_USER') || env('SMTP_PASS')),
+    appBaseUrlConfigured: Boolean(env('APP_BASE_URL')),
+  };
+}
+
+/**
  * sendEmail — send a single email. Never throws.
  * Records an EMAIL_SENT / EMAIL_FAILED UsageEvent (prompt9, best-effort) for
  * every REAL send attempt — the not_configured / no_recipient early-outs are
@@ -99,27 +118,23 @@ function escapeHtml(s) {
 }
 
 /**
- * renderReplyEmail — build a clean, professional META·LAB-styled reply email.
- * Returns both an HTML body (inline styles, dark-on-light) and a plain-text fallback.
+ * renderBaseEmailLayout — the shared META·LAB email chrome (prompt14): the 600px
+ * white card with the wordmark header and the footer link, into which each
+ * template injects its inner body HTML. Inline hex styles are intentional — CSS
+ * variables / external stylesheets don't work in mail clients. The caller is
+ * responsible for escaping every value inside `bodyHtml`.
  *
- * @param {{appName?:string, toName?:string, bodyText:string, originalSubject?:string}} opts
- * @returns {{html:string, text:string}}
+ * @param {{appName?:string, bodyHtml:string}} opts
+ * @returns {string} full HTML document
  */
-export function renderReplyEmail({ appName = 'META·LAB', toName = '', bodyText = '', originalSubject = '' } = {}) {
-  const greeting = toName ? `Hi ${escapeHtml(toName)},` : 'Hello,';
-  const safeBodyHtml = escapeHtml(bodyText).replace(/\n/g, '<br>');
+export function renderBaseEmailLayout({ appName = 'META·LAB', bodyHtml = '' } = {}) {
   const appBase = env('APP_BASE_URL');
   const year = new Date().getFullYear();
-
-  const refLine = originalSubject
-    ? `<div style="font-size:12px;color:#6b7280;margin-bottom:18px;">In reply to: ${escapeHtml(originalSubject)}</div>`
-    : '';
-
   const footerLink = appBase
     ? `<a href="${escapeHtml(appBase)}" style="color:#6366f1;text-decoration:none;">${escapeHtml(appBase)}</a>`
     : `${escapeHtml(appName)}`;
 
-  const html = `<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
 <body style="margin:0;padding:0;background:#f3f4f6;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;color:#1f2937;">
@@ -132,9 +147,7 @@ export function renderReplyEmail({ appName = 'META·LAB', toName = '', bodyText 
         </td></tr>
         <!-- Body -->
         <tr><td style="padding:28px 32px;">
-          ${refLine}
-          <div style="font-size:14px;color:#1f2937;line-height:1.6;margin-bottom:16px;">${escapeHtml(greeting)}</div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.7;">${safeBodyHtml}</div>
+${bodyHtml}
         </td></tr>
         <!-- Footer -->
         <tr><td style="padding:18px 32px;border-top:1px solid #e5e7eb;background:#fafafa;">
@@ -148,10 +161,121 @@ export function renderReplyEmail({ appName = 'META·LAB', toName = '', bodyText 
   </table>
 </body>
 </html>`;
+}
+
+/** Shared inline-styled CTA button (escaped href + label). */
+function ctaButton(href, label) {
+  return `<table role="presentation" cellpadding="0" cellspacing="0" style="margin:0 auto;">
+            <tr><td style="border-radius:8px;background:#6366f1;">
+              <a href="${escapeHtml(href)}" style="display:inline-block;padding:12px 28px;font-size:14px;font-weight:600;color:#ffffff;text-decoration:none;border-radius:8px;">${escapeHtml(label)}</a>
+            </td></tr>
+          </table>`;
+}
+
+/**
+ * renderReplyEmail — clean, professional META·LAB-styled reply email.
+ * Returns both an HTML body and a plain-text fallback.
+ *
+ * @param {{appName?:string, toName?:string, bodyText:string, originalSubject?:string}} opts
+ * @returns {{html:string, text:string}}
+ */
+export function renderReplyEmail({ appName = 'META·LAB', toName = '', bodyText = '', originalSubject = '' } = {}) {
+  const greeting = toName ? `Hi ${escapeHtml(toName)},` : 'Hello,';
+  const safeBodyHtml = escapeHtml(bodyText).replace(/\n/g, '<br>');
+  const appBase = env('APP_BASE_URL');
+
+  const refLine = originalSubject
+    ? `<div style="font-size:12px;color:#6b7280;margin-bottom:18px;">In reply to: ${escapeHtml(originalSubject)}</div>`
+    : '';
+
+  const bodyHtml = `          ${refLine}
+          <div style="font-size:14px;color:#1f2937;line-height:1.6;margin-bottom:16px;">${greeting}</div>
+          <div style="font-size:14px;color:#1f2937;line-height:1.7;">${safeBodyHtml}</div>`;
+
+  const html = renderBaseEmailLayout({ appName, bodyHtml });
 
   const textParts = [];
   if (originalSubject) textParts.push(`In reply to: ${originalSubject}`, '');
   textParts.push(toName ? `Hi ${toName},` : 'Hello,', '', bodyText, '', '—', `Sent by the ${appName} team`);
+  if (appBase) textParts.push(appBase);
+  const text = textParts.join('\n');
+
+  return { html, text };
+}
+
+/**
+ * renderContactReplyEmail — explicit alias for renderReplyEmail (prompt14 names
+ * the contract this way). Same output; kept as a stable export so call sites can
+ * use either name.
+ */
+export const renderContactReplyEmail = renderReplyEmail;
+
+/**
+ * renderPasswordResetEmail — META·LAB-styled password-reset email (prompt14 Task 4).
+ * The link carries the single-use reset token; the body never reveals account
+ * details. Every interpolated value is escaped. Returns HTML + plain text.
+ *
+ * @param {{appName?:string, toName?:string, link:string,
+ *          expiresAt?:Date|string|null, initiatedByOperator?:boolean}} opts
+ * @returns {{html:string, text:string}}
+ */
+export function renderPasswordResetEmail({
+  appName = 'META·LAB',
+  toName = '',
+  link = '',
+  expiresAt = null,
+  initiatedByOperator = false,
+} = {}) {
+  const greeting = toName ? `Hi ${escapeHtml(toName)},` : 'Hello,';
+  const appBase = env('APP_BASE_URL');
+
+  let expiryText = '';
+  if (expiresAt) {
+    const d = expiresAt instanceof Date ? expiresAt : new Date(expiresAt);
+    if (!Number.isNaN(d.getTime())) {
+      expiryText = d.toLocaleString('en-GB', {
+        day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
+      });
+    }
+  }
+  const expiryHtml = expiryText
+    ? `<div style="font-size:12px;color:#6b7280;margin-top:18px;">This link expires on ${escapeHtml(expiryText)}. After that, request a new one.</div>`
+    : '';
+
+  const intro = initiatedByOperator
+    ? `A ${escapeHtml(appName)} administrator started a password reset for your account.`
+    : `We received a request to reset the password for your ${escapeHtml(appName)} account.`;
+
+  const bodyHtml = `          <div style="font-size:16px;font-weight:600;color:#111827;margin-bottom:14px;">Reset your password</div>
+          <div style="font-size:14px;color:#1f2937;line-height:1.6;margin-bottom:8px;">${greeting}</div>
+          <div style="font-size:14px;color:#1f2937;line-height:1.7;margin-bottom:24px;">
+            ${intro} Click the button below to choose a new password.
+          </div>
+          ${ctaButton(link, 'Reset password')}
+          <div style="font-size:12px;color:#6b7280;margin-top:22px;line-height:1.6;">
+            If the button doesn&#39;t work, copy and paste this link into your browser:<br>
+            <a href="${escapeHtml(link)}" style="color:#6366f1;text-decoration:none;word-break:break-all;">${escapeHtml(link)}</a>
+          </div>
+          ${expiryHtml}
+          <div style="font-size:12px;color:#9ca3af;margin-top:18px;line-height:1.5;">
+            If you didn&#39;t request this, you can safely ignore this email &#8212; your password won&#39;t change.
+          </div>`;
+
+  const html = renderBaseEmailLayout({ appName, bodyHtml });
+
+  const textParts = [
+    'Reset your password',
+    '',
+    toName ? `Hi ${toName},` : 'Hello,',
+    '',
+    initiatedByOperator
+      ? `A ${appName} administrator started a password reset for your account.`
+      : `We received a request to reset the password for your ${appName} account.`,
+    '',
+    `Reset your password: ${link}`,
+  ];
+  if (expiryText) textParts.push('', `This link expires on ${expiryText}.`);
+  textParts.push('', `If you didn't request this, you can safely ignore this email — your password won't change.`, '', '—', `Sent by the ${appName} team`);
   if (appBase) textParts.push(appBase);
   const text = textParts.join('\n');
 

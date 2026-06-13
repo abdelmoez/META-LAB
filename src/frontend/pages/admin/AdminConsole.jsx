@@ -955,6 +955,80 @@ function OverviewSection({ onNavigate, isAdmin = true }) {
         </div>
       </SectionCard>
 
+      {/* ── Email System status + delivery metrics (prompt14 Task 5) ──────
+          Config snapshot (m.email) is secret-free; delivery counts (m.emailStats)
+          split by context. Each tile renders '—' gracefully when a key is absent. */}
+      <SectionCard title="Email System" action={
+        <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.05em' }}>SMTP · delivery · fallbacks</span>
+      }>
+        <div style={{ padding: '14px 18px 16px' }}>
+          {/* Config status pills (booleans + provider label only — never secrets) */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+            {(() => {
+              const e = m.email || {};
+              // Plain element-returning helper (NOT a component): called as pill(...)
+              // so it does not create a new component type — and thus no remount —
+              // on every Overview render.
+              const pill = ({ key, label, ok, okText, badText, neutral, text }) => (
+                <span key={key} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px',
+                  background: neutral ? alpha(C.acc, '10') : (ok ? alpha(C.grn, '12') : alpha(C.ylw, '12')),
+                  border: `1px solid ${neutral ? alpha(C.acc, '30') : (ok ? alpha(C.grn, '30') : alpha(C.ylw, '30'))}`,
+                  borderRadius: 10, fontSize: 10.5, fontFamily: MONO, letterSpacing: '0.04em',
+                  color: neutral ? C.txt2 : (ok ? C.grn : C.ylw),
+                }}>
+                  <span style={{ textTransform: 'uppercase', color: C.muted }}>{label}</span>
+                  {neutral ? text : (ok ? okText : badText)}
+                </span>
+              );
+              return [
+                pill({ key: 'status', label: 'Status', ok: !!e.configured, okText: 'configured', badText: 'not configured' }),
+                pill({ key: 'provider', label: 'Provider', neutral: true, text: e.provider || '—' }),
+                pill({ key: 'host', label: 'SMTP host', ok: !!e.smtpHostConfigured, okText: 'set', badText: 'missing' }),
+                pill({ key: 'from', label: 'From', ok: !!e.emailFromConfigured, okText: 'set', badText: 'missing' }),
+                pill({ key: 'auth', label: 'Auth', ok: !!e.smtpAuthConfigured, okText: 'set', badText: 'none' }),
+                pill({ key: 'baseurl', label: 'Base URL', ok: !!e.appBaseUrlConfigured, okText: 'set', badText: 'missing' }),
+              ];
+            })()}
+          </div>
+
+          {m.email && !m.email.configured && (
+            <div style={{ marginBottom: 12 }}>
+              <NoticeBox msg="Email is not configured — contact replies save as drafts and invite/reset links are shown to operators. See server/docs/email-setup.md." />
+            </div>
+          )}
+
+          {/* Delivery counts, split by context */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))', gap: 8 }}>
+            {[
+              { label: 'Emails Sent',   value: m.emailStats?.sent,                   color: C.grn },
+              { label: 'Emails Failed', value: m.emailStats?.failed,                 color: C.red },
+              { label: 'Invite Sent',   value: m.emailStats?.invites?.sent,          color: C.acc },
+              { label: 'Invite Failed', value: m.emailStats?.invites?.failed,        color: C.red },
+              { label: 'Reset Sent',    value: m.emailStats?.passwordResets?.sent,   color: C.acc },
+              { label: 'Reset Failed',  value: m.emailStats?.passwordResets?.failed, color: C.red },
+              { label: 'Reply Sent',    value: m.emailStats?.contactReplies?.sent,   color: C.grn },
+              { label: 'Reply Drafts',  value: m.emailStats?.contactReplies?.draft,  color: C.ylw },
+              { label: 'Reply Failed',  value: m.emailStats?.contactReplies?.failed, color: C.red },
+            ].map(t => (
+              <div key={t.label} style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 7, padding: '9px 11px', minWidth: 0 }}>
+                {loading ? <Spinner size={12} /> : (
+                  <div style={{ fontSize: 16, fontWeight: 700, fontFamily: MONO, color: t.value == null ? C.muted : t.color, fontVariantNumeric: 'tabular-nums' }}>
+                    {t.value == null ? '—' : Number(t.value).toLocaleString()}
+                  </div>
+                )}
+                <div style={{ fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={t.label}>{t.label}</div>
+              </div>
+            ))}
+          </div>
+
+          <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginTop: 12 }}>
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted }}>Last sent: <span style={{ color: C.txt2 }}>{m.emailStats?.lastSentAt ? fmtAgo(m.emailStats.lastSentAt) : '—'}</span></span>
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted }}>Last failed: <span style={{ color: C.txt2 }}>{m.emailStats?.lastFailedAt ? fmtAgo(m.emailStats.lastFailedAt) : '—'}</span></span>
+          </div>
+        </div>
+      </SectionCard>
+
       {/* ── Tier 4: live activity feed + alerts / quick actions ────────── */}
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.6fr) minmax(0, 1fr)', gap: 14 }}>
         <SectionCard title="Live Activity" action={
@@ -1464,15 +1538,20 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
   const [roleConfirm, setRoleConfirm] = useState(null); // pending new role
   const [roleError,   setRoleError]   = useState('');
 
-  // Reset password
+  // Reset password (legacy temp-password fallback)
   const [tempPw,      setTempPw]      = useState('');
   const [pwStatus,    setPwStatus]    = useState('idle');
   const [pwError,     setPwError]     = useState('');
+  // Token-based reset email (prompt14, preferred)
+  const [resetEmail,  setResetEmail]  = useState(null); // { sent, emailConfigured, link?, expiresAt }
+  const [resetStatus, setResetStatus] = useState('idle');
+  const [resetError,  setResetError]  = useState('');
 
   useEffect(() => {
     setCurrent(user);
     setEditing(false); setEditName(user.name || ''); setEditEmail(user.email || '');
     setEditError(''); setRoleError(''); setTempPw(''); setPwError('');
+    setResetEmail(null); setResetStatus('idle'); setResetError('');
   }, [user]);
 
   useEffect(() => {
@@ -1521,6 +1600,17 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
       const { tempPassword } = await adminApi.users.resetPassword(current.id);
       setTempPw(tempPassword); setPwStatus('idle');
     } catch (e) { setPwStatus('error'); setPwError(e.message); }
+  }
+
+  // Token-based reset (prompt14): emails the user a self-service link; when email
+  // is unconfigured or the send fails, the response carries a copyable link for
+  // the operator to relay. No plaintext password is ever handled.
+  async function doSendResetEmail() {
+    setResetStatus('saving'); setResetError(''); setResetEmail(null);
+    try {
+      const r = await adminApi.users.sendPasswordReset(current.id);
+      setResetEmail(r); setResetStatus('idle');
+    } catch (e) { setResetStatus('error'); setResetError(e.message); }
   }
 
   const u = current;
@@ -1611,9 +1701,37 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
         )}
       </div>
 
-      {/* Password reset — hidden from mods for admin/mod targets (Task-1) */}
+      {/* Password reset — hidden from mods for admin/mod targets (Task-1).
+          Preferred: token-based reset email (operator never handles a secret).
+          Fallback: legacy temporary password. (prompt14 Task 4) */}
       {!lockedForMod && (
         <div style={{ padding: '12px 16px', borderTop: `1px solid ${C.brd}` }}>
+          <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>Password</div>
+
+          {/* ── Preferred: send a self-service reset link ── */}
+          {resetError && <div style={{ fontSize: 11, color: C.red, marginBottom: 8 }}>{resetError}</div>}
+          {resetEmail?.sent && (
+            <div style={{ fontSize: 11, color: C.grn, marginBottom: 8, lineHeight: 1.5 }}>
+              ✓ Reset link emailed to the user. It is single-use and expires for security.
+            </div>
+          )}
+          {resetEmail && !resetEmail.sent && resetEmail.link && (
+            <div style={{ marginBottom: 8 }}>
+              <CopyableBox
+                value={resetEmail.link}
+                label={resetEmail.emailConfigured ? 'Reset link (email send failed)' : 'Reset link (email not configured)'}
+              />
+              <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+                Dev/fallback only — share over a trusted channel. The link is single-use; the user sets their own password.
+              </div>
+            </div>
+          )}
+          <button onClick={doSendResetEmail} disabled={resetStatus === 'saving'}
+            style={{ width: '100%', padding: '8px', background: alpha(C.acc, '15'), border: `1px solid ${alpha(C.acc, '30')}`, borderRadius: 6, color: C.acc, fontSize: 12, cursor: resetStatus === 'saving' ? 'not-allowed' : 'pointer', fontFamily: FONT, marginBottom: 10 }}>
+            {resetStatus === 'saving' ? 'Sending…' : 'Send password reset email'}
+          </button>
+
+          {/* ── Fallback: legacy temporary password ── */}
           {pwError && <div style={{ fontSize: 11, color: C.red, marginBottom: 8 }}>{pwError}</div>}
           {tempPw ? (
             <div>
@@ -1623,8 +1741,8 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
               </div>
             </div>
           ) : (
-            <button onClick={doResetPassword} disabled={pwStatus === 'saving'} style={{ width: '100%', padding: '8px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 12, cursor: pwStatus === 'saving' ? 'not-allowed' : 'pointer', fontFamily: FONT }}>
-              {pwStatus === 'saving' ? 'Generating…' : 'Reset Password'}
+            <button onClick={doResetPassword} disabled={pwStatus === 'saving'} style={{ width: '100%', padding: '7px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.muted, fontSize: 11, cursor: pwStatus === 'saving' ? 'not-allowed' : 'pointer', fontFamily: FONT }}>
+              {pwStatus === 'saving' ? 'Generating…' : 'Generate temporary password (legacy)'}
             </button>
           )}
         </div>

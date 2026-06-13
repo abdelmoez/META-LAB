@@ -31,6 +31,11 @@ export const USAGE = {
   // prompt11 — owner-only handoff of a workspace (and its linked META·LAB
   // project) to another active member.
   OWNERSHIP_TRANSFERRED: 'OWNERSHIP_TRANSFERRED',
+  // prompt14 — token-based password reset email outcomes. Generic EMAIL_SENT/
+  // EMAIL_FAILED are still recorded by sendEmail (with meta.context); these add a
+  // reset-specific signal for the ops email metrics without parsing meta.
+  PASSWORD_RESET_EMAIL_SENT: 'PASSWORD_RESET_EMAIL_SENT',
+  PASSWORD_RESET_EMAIL_FAILED: 'PASSWORD_RESET_EMAIL_FAILED',
 };
 
 /**

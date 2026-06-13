@@ -5,8 +5,17 @@ import { signToken } from '../auth/jwt.js';
 import { notifyProjectInvite } from '../services/notificationService.js';
 import { isValidEmail } from '../utils/validators.js';
 import { recordUsage, USAGE } from '../utils/usage.js';
+import { sendEmail, renderPasswordResetEmail } from '../services/emailService.js';
+import { createResetToken, consumeResetToken } from '../services/passwordResetService.js';
 
 const COOKIE_NAME = 'metalab_session';
+
+// Identical body for every forgot-password outcome — prevents account
+// enumeration (a valid, an invalid, and a suspended email all look the same).
+const FORGOT_PASSWORD_RESPONSE = {
+  ok: true,
+  message: 'If an account exists for that email, a password reset link has been sent.',
+};
 
 /**
  * Record a LoginEvent for ops unique-login metrics (prompt6 Task 9).
@@ -218,6 +227,112 @@ export async function getMe(req, res) {
     return res.json({ user });
   } catch (err) {
     console.error('[auth] getMe error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /api/auth/forgot-password (public; authLimiter)
+ * Body: { email }
+ * Self-service reset request. ALWAYS returns the same generic 200 body — it never
+ * reveals whether an account exists (no enumeration). When the email maps to a
+ * real, non-suspended account a single-use token is minted and the reset link is
+ * emailed (best-effort). The raw token is never returned to an unauthenticated
+ * caller and never logged.
+ */
+export async function forgotPassword(req, res) {
+  try {
+    const { email } = req.body || {};
+    if (!email || typeof email !== 'string' || !isValidEmail(email.trim())) {
+      // Malformed input is a format error, not an existence oracle.
+      return res.status(400).json({ error: 'A valid email is required' });
+    }
+    const normalizedEmail = email.trim().toLowerCase();
+    const ip = req.ip || '';
+    const userAgent = req.get('user-agent') || null;
+    const base = (process.env.APP_BASE_URL || '').replace(/\/+$/, '') || `${req.protocol}://${req.get('host')}`;
+
+    // Fire-and-forget the lookup + token mint + email send so the response time is
+    // INDEPENDENT of whether the account exists — closing the timing/latency
+    // enumeration side-channel (an awaited SMTP round-trip would otherwise make a
+    // known email measurably slower than an unknown one). Mirrors the
+    // recordLoginEvent fire-and-forget convention in this controller.
+    (async () => {
+      try {
+        const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+        if (!user || user.suspended) return;
+        const { token, expiresAt } = await createResetToken(user.id, { ip });
+        const link = `${base}/reset?token=${token}`;
+        const { html, text } = renderPasswordResetEmail({ toName: user.name || '', link, expiresAt });
+        const result = await sendEmail({
+          to: user.email,
+          subject: 'Reset your META·LAB password',
+          html,
+          text,
+          context: 'password_reset',
+        });
+        if (result.sent) recordUsage({ type: USAGE.PASSWORD_RESET_EMAIL_SENT, userId: user.id, meta: { self: true } });
+        else if (result.reason === 'send_failed') recordUsage({ type: USAGE.PASSWORD_RESET_EMAIL_FAILED, userId: user.id, meta: { self: true, reason: result.reason } });
+        // Audit the request (no raw token) for abuse forensics.
+        await prisma.securityEvent.create({
+          data: {
+            type: 'PASSWORD_RESET_REQUESTED',
+            userId: user.id,
+            email: user.email,
+            ip: ip || null,
+            userAgent,
+            details: JSON.stringify({ self: true, emailSent: result.sent }),
+          },
+        }).catch(() => {});
+      } catch (e) {
+        console.error('[auth] forgotPassword issue:', e.message);
+      }
+    })();
+
+    // Always the same generic body, returned immediately for every input.
+    return res.json(FORGOT_PASSWORD_RESPONSE);
+  } catch (err) {
+    console.error('[auth] forgotPassword error:', err.message);
+    return res.json(FORGOT_PASSWORD_RESPONSE);
+  }
+}
+
+/**
+ * POST /api/auth/reset-password (public; authLimiter)
+ * Body: { token, password }
+ * Consumes a single-use reset token and sets the new password. The token is
+ * invalidated on success; expired/invalid/used tokens are rejected with 400.
+ */
+export async function resetPassword(req, res) {
+  try {
+    const { token, password } = req.body || {};
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ error: 'Invalid or missing reset token' });
+    }
+    if (!password || typeof password !== 'string' || password.length < 8) {
+      return res.status(400).json({ error: 'password must be at least 8 characters' });
+    }
+
+    const result = await consumeResetToken(token, password);
+    if (!result.ok) {
+      if (result.reason === 'expired') {
+        return res.status(400).json({ error: 'This reset link has expired. Please request a new one.' });
+      }
+      return res.status(400).json({ error: 'This reset link is invalid or has already been used.' });
+    }
+
+    await prisma.securityEvent.create({
+      data: {
+        type: 'PASSWORD_RESET_COMPLETED',
+        userId: result.userId,
+        ip: req.ip || null,
+        userAgent: req.get('user-agent') || null,
+      },
+    }).catch(() => {});
+
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[auth] resetPassword error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

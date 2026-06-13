@@ -14,10 +14,13 @@ shows an amber notice. Nothing 500s and the console stays fully usable.
 | `SMTP_USER`      | no       | SMTP auth username. Omit for unauthenticated relays.                       |
 | `SMTP_PASS`      | no       | SMTP auth password / API key.                                              |
 | `EMAIL_PROVIDER` | no       | Informational label only (e.g. `smtp`, `resend`, `sendgrid`).              |
-| `APP_BASE_URL`   | no       | Public base URL, used in the email footer link.                            |
+| `APP_BASE_URL`   | no       | Public base URL, used in the footer link **and** to build invite + reset links (`${APP_BASE_URL}/reset?token=…`). Falls back to the request origin if unset. |
+| `PASSWORD_RESET_TTL_MINUTES` | no | Lifetime of a password-reset token link (default `60`).            |
 
 `isEmailConfigured()` returns true only when **both** `SMTP_HOST` and `EMAIL_FROM`
-are present.
+are present. `emailStatus()` exposes a **secret-free** snapshot (booleans + the
+provider label only) to the ops console — host/user/password values are never
+returned by any API.
 
 ## Example configs (.env)
 
@@ -72,21 +75,41 @@ send fails:
 Reply body: `{ subject?, body }`. If `subject` is omitted it defaults to
 `Re: <original subject>`. Response: `{ reply, emailConfigured, sent }`.
 
-## Production-preferred: token-based password reset
+## Token-based password reset (prompt14 — implemented)
 
-`POST /api/admin/users/:id/reset-password` generates a strong temporary password,
-hashes it, and returns the plaintext **once** for the admin/mod to relay securely.
-This is convenient but operationally weak (the operator handles the secret).
+The production-preferred **token-based reset** is now wired end to end. Tokens are
+32-byte CSPRNG; only the **SHA-256 hash** is stored (`PasswordResetToken.tokenHash`),
+they are **single-use** (`usedAt`) and **time-limited** (`PASSWORD_RESET_TTL_MINUTES`,
+default 60). Issuing a new token invalidates the user's prior unused ones; a
+successful reset invalidates all remaining ones. The raw token appears only in the
+emailed link / authorized-operator response and is **never logged**.
 
-The production-preferred flow is a **token-based reset**:
+### Flows
 
-1. Generate a single-use, time-limited reset token (store only its hash).
-2. Email the user a link (`${APP_BASE_URL}/reset?token=...`) using this email service.
-3. The user sets their own password; the token is consumed and invalidated.
+| Entry point | Route | Notes |
+|-------------|-------|-------|
+| Self-service | `POST /api/auth/forgot-password` `{email}` | Always returns the same generic 200 — **no account enumeration**. Emails a link if the account exists & is active. |
+| Set password | `POST /api/auth/reset-password` `{token,password}` | Consumes the token, sets the new password (min 8 chars). 400 on invalid/expired/used. |
+| Operator-initiated | `POST /api/admin/users/:id/send-password-reset` | admin + mod (`requireTargetEditable` → **mod cannot target admin/mod**). Emails the link; when email is unconfigured/fails, returns a copyable `link` for the operator to relay. |
+| Public page | `GET /reset` (request) · `GET /reset?token=…` (set) | `src/frontend/pages/ResetPassword.jsx`. A "Forgot password?" link on Login routes here. |
 
-This avoids any human relaying the credential and gives the user control. Wiring it
-requires a token model + a public reset route (outside this prompt's file ownership),
-but the email transport here is ready to carry the link once those exist.
+Both `/api/auth/forgot-password` and `/api/auth/reset-password` inherit the
+`/api/auth` rate limiter (20 req / 15 min in production).
+
+### Legacy fallback
+
+`POST /api/admin/users/:id/reset-password` (generate a temporary password,
+returned once) is **kept** as a secondary fallback in the ops user detail. Prefer
+the token-based reset — it never makes a human handle the credential.
+
+## Ops email status & metrics (prompt14 Task 5)
+
+- `GET /api/admin/console` and `GET /api/admin/metrics` both return `email`
+  (secret-free config snapshot: `configured`, `provider`, `smtpHostConfigured`,
+  `emailFromConfigured`, `smtpAuthConfigured`, `appBaseUrlConfigured`).
+- `GET /api/admin/metrics` → `emailStats`: `sent`, `failed`, `lastSentAt`,
+  `lastFailedAt`, and `invites` / `passwordResets` / `contactReplies` splits.
+- The ops Overview renders an **Email System** card from these.
 
 ---
 

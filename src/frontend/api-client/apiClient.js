@@ -409,6 +409,24 @@ export const api = {
      * @returns {Promise<{ user: object }>}
      */
     me: () => req(`${BASE}/auth/me`),
+
+    /**
+     * POST /api/auth/forgot-password — request a self-service reset link.
+     * Always resolves with a generic { ok, message } (no account enumeration).
+     * @param {string} email
+     * @returns {Promise<{ ok: boolean, message: string }>}
+     */
+    forgotPassword: (email) =>
+      req(`${BASE}/auth/forgot-password`, { method: "POST", ...json({ email }) }),
+
+    /**
+     * POST /api/auth/reset-password — consume a reset token + set a new password.
+     * @param {string} token
+     * @param {string} password
+     * @returns {Promise<{ ok: boolean }>}
+     */
+    resetPassword: (token, password) =>
+      req(`${BASE}/auth/reset-password`, { method: "POST", ...json({ token, password }) }),
   },
 };
 

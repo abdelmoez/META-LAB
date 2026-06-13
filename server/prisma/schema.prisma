@@ -26,6 +26,28 @@ model User {
   auditLogs   AdminAuditLog[]
   screenProjects ScreenProject[] @relation("UserScreenProjects")
   screenMemberships ScreenProjectMember[] @relation("UserScreenMemberships")
+  passwordResetTokens PasswordResetToken[]
+}
+
+// Single-use, time-limited password-reset token (prompt14 Task 4).
+// Mirrors the invite-token ceremony: only the SHA-256 HASH of the random token
+// is stored — the plaintext lives only in the email link / operator response and
+// is never logged. Single-use via `usedAt`; short-lived via `expiresAt`. Lookup
+// is a plain @@index (NOT @unique) so `prisma db push` (the VPS deploy path) never
+// needs --accept-data-loss; 256-bit tokens + single-use nulling make uniqueness moot.
+model PasswordResetToken {
+  id                String    @id @default(uuid())
+  userId            String
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash         String    // SHA-256 hex of the raw token; plaintext never stored
+  expiresAt         DateTime  // validity window (now + PASSWORD_RESET_TTL_MINUTES)
+  usedAt            DateTime? // set when consumed — single-use marker
+  requestedByUserId String?   // admin/mod who initiated; null = self-service forgot-password
+  ip                String    @default("")
+  createdAt         DateTime  @default(now())
+
+  @@index([tokenHash])
+  @@index([userId, createdAt])
 }
 
 model Project {
