@@ -28,6 +28,9 @@ export const USAGE = {
   PROJECT_UNARCHIVED: 'PROJECT_UNARCHIVED',
   WORKSPACE_ARCHIVED: 'WORKSPACE_ARCHIVED',
   WORKSPACE_UNARCHIVED: 'WORKSPACE_UNARCHIVED',
+  // prompt11 — owner-only handoff of a workspace (and its linked META·LAB
+  // project) to another active member.
+  OWNERSHIP_TRANSFERRED: 'OWNERSHIP_TRANSFERRED',
 };
 
 /**

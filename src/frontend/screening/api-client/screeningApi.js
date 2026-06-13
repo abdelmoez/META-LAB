@@ -101,6 +101,11 @@ export const screeningApi = {
   // Self-service exit (prompt9) — 200 {left:true}; the owner gets 400 with
   // transfer-ownership messaging (surfaced as the thrown error message).
   leaveProject: (pid)            => req('POST',   `/projects/${pid}/leave`),
+  // Transfer ownership (prompt11, owner-only) — hands the workspace (and its
+  // linked META·LAB project) to another active member. 200 { ok:true, ownerId }.
+  // 400 (not an active member / already owner), 403 (not owner), 409 (analysis
+  // shared by >1 workspace) — surfaced as the thrown error message.
+  transferOwner: (pid, toUserId) => req('POST',   `/projects/${pid}/transfer-owner`, { toUserId }),
   // Archive / unarchive a workspace (owner-only, prompt11).
   // Respond { archived: true|false }. Cascaded from the META·LAB archive
   // action; also available as a direct workspace-side action.

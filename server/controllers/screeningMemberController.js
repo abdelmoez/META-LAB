@@ -9,7 +9,7 @@
 import crypto from 'crypto';
 import { prisma } from '../db/client.js';
 import { getProjectAccess, ensureLeaderMember, findUserByEmail, writeAudit } from '../screening/access.js';
-import { PERMISSION_KEYS, GLOBAL_PERMISSION_KEYS, resolvePreset } from '../../src/research-engine/screening/permissionPresets.js';
+import { PERMISSION_KEYS, GLOBAL_PERMISSION_KEYS, resolvePreset, fullPermissions } from '../../src/research-engine/screening/permissionPresets.js';
 import { createNotification, notifyProjectInvite } from '../services/notificationService.js';
 import { emitToProjectMembers, emitToUsers } from '../realtime/bus.js';
 import { getMetaSiftSettings } from '../screening/settings.js';
@@ -426,6 +426,135 @@ export async function leaveProject(req, res) {
     res.json({ left: true });
   } catch (err) {
     console.error('[screening] leaveProject:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /api/screening/projects/:pid/transfer-owner — owner-only (prompt11).
+ *
+ * Hands the workspace to another ACTIVE member. Preserves the
+ * `ScreenProject.ownerId === linked Project.userId` invariant by moving the
+ * linked META·LAB project's userId along with the workspace ownerId, but ONLY
+ * when that META·LAB project is linked to exactly ONE live workspace (a project
+ * shared by >1 workspace cannot have a single owner → 409).
+ *
+ * The old owner is demoted to an ACTIVE leader (full perms) so they keep access
+ * and can subsequently leave; the new owner's member row is promoted to 'owner'
+ * with full perms. Body: { toUserId }. Responds { ok:true, ownerId }.
+ */
+export async function transferOwner(req, res) {
+  try {
+    const pid = req.params.pid;
+    const access = await getProjectAccess(pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    if (!access.isOwner) return res.status(403).json({ error: 'Only the owner can transfer ownership' });
+
+    const { toUserId } = req.body || {};
+    if (!toUserId || !String(toUserId).trim()) {
+      return res.status(400).json({ error: 'toUserId is required' });
+    }
+    const oldOwnerId = access.project.ownerId;
+    if (toUserId === oldOwnerId) {
+      return res.status(400).json({ error: 'That user is already the owner' });
+    }
+
+    // The new owner must be an ACTIVE member of THIS workspace with a real userId
+    // (no pending invites, no email-only rows).
+    const targetMember = await prisma.screenProjectMember.findFirst({
+      where: { projectId: pid, userId: toUserId, status: 'active' },
+    });
+    if (!targetMember) {
+      return res.status(400).json({ error: 'New owner must be an active member of this workspace' });
+    }
+    const targetUser = await prisma.user.findUnique({ where: { id: toUserId } });
+    if (!targetUser) {
+      return res.status(400).json({ error: 'New owner must be an active member of this workspace' });
+    }
+
+    // Linked META·LAB project moves with the workspace — but only if it is NOT
+    // shared by multiple live workspaces (the invariant ownerId === userId can't
+    // hold for more than one owner).
+    const linkedId = access.project.linkedMetaLabProjectId;
+    if (linkedId) {
+      const liveCount = await prisma.screenProject.count({
+        where: { linkedMetaLabProjectId: linkedId, deletedAt: null },
+      });
+      if (liveCount > 1) {
+        return res.status(409).json({
+          error: "This project's analysis is shared by multiple workspaces; ownership transfer isn't supported in that configuration.",
+        });
+      }
+    }
+
+    const full = fullPermissions();
+    const oldOwnerName  = req.user.name || '';
+    const oldOwnerEmail = req.user.email || '';
+
+    await prisma.$transaction(async (tx) => {
+      // 1. Flip the workspace owner.
+      await tx.screenProject.update({ where: { id: pid }, data: { ownerId: toUserId } });
+
+      // 2. Move the linked META·LAB project's userId too (guarded by the old
+      //    owner so a concurrent change can't clobber it) — keeps the invariant.
+      if (linkedId) {
+        await tx.project.updateMany({
+          where: { id: linkedId, userId: oldOwnerId },
+          data: { userId: toUserId },
+        });
+      }
+
+      // 3. Promote the new owner's member row → owner, full perms.
+      await tx.screenProjectMember.update({
+        where: { id: targetMember.id },
+        data: {
+          role: 'owner', permissionPreset: 'owner', status: 'active',
+          canScreen: true, canChat: true, canResolveConflicts: true, ...full,
+        },
+      });
+
+      // 4. Demote the old owner → active leader (full perms) so they keep access
+      //    and can later leave. Create the row if it never existed.
+      const oldRow = await tx.screenProjectMember.findFirst({
+        where: { projectId: pid, userId: oldOwnerId },
+      });
+      const leaderData = {
+        role: 'leader', permissionPreset: 'leader', status: 'active',
+        canScreen: true, canChat: true, canResolveConflicts: true, ...full,
+      };
+      if (oldRow) {
+        await tx.screenProjectMember.update({ where: { id: oldRow.id }, data: leaderData });
+      } else {
+        await tx.screenProjectMember.create({
+          data: {
+            projectId: pid,
+            userId: oldOwnerId,
+            name: oldOwnerName,
+            email: oldOwnerEmail,
+            ...leaderData,
+          },
+        });
+      }
+    });
+
+    await writeAudit(pid, req.user, 'OWNERSHIP_TRANSFERRED', {
+      details: { from: oldOwnerId, to: toUserId, metaLabProjectId: linkedId || null },
+    });
+    recordUsage({
+      type: USAGE.OWNERSHIP_TRANSFERRED,
+      userId: req.user.id,
+      screenProjectId: pid,
+      metaLabProjectId: linkedId || null,
+    });
+
+    // Realtime pokes: roster changed for everyone; both the old and new owner get
+    // a targeted permissions.changed so their open UIs revalidate immediately.
+    emitToProjectMembers(pid, { type: 'members.changed' }, { exclude: req.user.id });
+    emitToUsers([oldOwnerId, toUserId], { type: 'permissions.changed', projectId: pid });
+
+    res.json({ ok: true, ownerId: toUserId });
+  } catch (err) {
+    console.error('[screening] transferOwner:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }

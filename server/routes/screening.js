@@ -63,6 +63,8 @@ r.patch('/projects/:pid/members/:mid',    M.updateMember);
 r.delete('/projects/:pid/members/:mid',   M.removeMember);
 // Self-service exit (prompt9) — any non-owner member can leave; owner → 400.
 r.post('/projects/:pid/leave',            M.leaveProject);
+// Transfer ownership (prompt11) — owner-only; new owner must be an active member.
+r.post('/projects/:pid/transfer-owner',   M.transferOwner);
 
 // Overview dashboard + audit (Parts 10/5)
 r.get('/projects/:pid/overview',          OV.getOverview);

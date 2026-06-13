@@ -6,8 +6,8 @@
  *  - An autosave status indicator (bottom-right, non-interactive)
  */
 
-import { useState, useEffect } from 'react';
-import { useParams } from 'react-router-dom';
+import { useState, useEffect, useCallback } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
 import { subscribeToSaveStatus, flushStorage } from '../storage/serverStorage.js';
 import UserMenu from '../components/UserMenu.jsx';
 import NotificationsBell from '../components/NotificationsBell.jsx';
@@ -22,13 +22,21 @@ export default function AppWorkspace() {
   // prompt11 — /app/project/:projectId opens that exact project. The monolith
   // seeds its activeId from this prop (durable across refresh; no projects[0] snap-back).
   const { projectId } = useParams();
+  const navigate = useNavigate();
+
+  // prompt11 (route-sync): keep the URL in step with the project the monolith
+  // has open, so a refresh reopens the project the user actually switched to
+  // (replace → no history spam from in-app switching).
+  const onProjectChange = useCallback((id) => {
+    if (id && id !== projectId) navigate(`/app/project/${encodeURIComponent(id)}`, { replace: true });
+  }, [projectId, navigate]);
 
   // Subscribe to autosave events from serverStorage
   useEffect(() => subscribeToSaveStatus(setSaveStatus), []);
 
   return (
     <>
-      <MetaLab initialProjectId={projectId || null} />
+      <MetaLab initialProjectId={projectId || null} onProjectChange={onProjectChange} />
 
       {/* ── Autosave status (bottom-right, non-interactive) ─────────── */}
       <div

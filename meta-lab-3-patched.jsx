@@ -7530,7 +7530,7 @@ function ControlTab({project,onAnnotate}){
 
 let _versionCache=null; // module-level so remounts don't refetch (same pattern as UserMenu.jsx)
 
-export default function MetaLab({ initialProjectId = null } = {}){
+export default function MetaLab({ initialProjectId = null, onProjectChange = null } = {}){
   const[projects,setProjects]=useState([]);
   const[activeId,setActiveId]=useState(null);
   const[tab,setTab]=useState("overview"); // Overview is the landing tab (prompt6 Task 15)
@@ -7588,7 +7588,17 @@ export default function MetaLab({ initialProjectId = null } = {}){
       if(fromQuery){ try{window.history.replaceState({},"",window.location.pathname);}catch(_){} }
     } else if(pjs.length){setActiveId(pjs[0].id);}
     setLoading(false);
-  })();},[initialProjectId]);
+  })();},[]);
+
+  // prompt11 (route-sync): when the active project changes via the in-app sidebar
+  // switcher, push it into the URL (/app/project/:id) so a refresh stays on the
+  // project the user was actually in. One-way (activeId → URL); the initial seed
+  // from initialProjectId is skipped so we never fight our own first render.
+  const _syncedFirst=useRef(false);
+  useEffect(()=>{
+    if(!_syncedFirst.current){ _syncedFirst.current=true; return; }
+    if(activeId && typeof onProjectChange==="function") onProjectChange(activeId);
+  },[activeId,onProjectChange]);
 
   // Debouncing is handled inside window.storage.set (serverStorage.js).
   // Calling set() directly here lets flushStorage() drain any pending save

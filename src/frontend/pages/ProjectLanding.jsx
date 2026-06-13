@@ -24,6 +24,11 @@ import UserMenu from '../components/UserMenu.jsx';
 import NotificationsBell from '../components/NotificationsBell.jsx';
 import { Icon } from '../components/icons.jsx';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
+import {
+  ROLE_LABEL, ROLE_COLOR, STATUS_META, TAG_COLORS,
+  statusOf, roleOf, isOwnerOf, canEditOf,
+  relTime, progressOf, FILTERS, SORTS, ROLE_ORDER,
+} from './projectLanding.helpers.js';
 
 /* ════════════════════════════════════════════════════════════════════════
    Motion + count-up primitives (reduced-motion aware)
@@ -74,82 +79,39 @@ function useCountUp(target, reduced, duration = 620) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Pure helpers
+   Recently-opened persistence (localStorage, dedupe-by-id, newest-first, cap 6)
    ════════════════════════════════════════════════════════════════════════ */
 
-const ROLE_LABEL = { owner: 'Owner', leader: 'Leader', reviewer: 'Reviewer', viewer: 'Viewer' };
-const ROLE_COLOR = { owner: 'gold', leader: 'purple', reviewer: 'blue', viewer: 'default' };
+const RECENTS_KEY = 'metalab.recentProjects';
+const RECENTS_CAP = 6;
 
-/** Derive a coarse lifecycle status for a project row. */
-function statusOf(p) {
-  if (p._archived) return 'archived';
-  const ps = p._linkedMetaSift && p._linkedMetaSift.progressStatus;
-  if (ps === 'done') return 'done';
-  if (ps === 'in_progress') return 'in_progress';
-  return 'active';
+function readRecents() {
+  try {
+    const raw = window.localStorage.getItem(RECENTS_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    // Keep only well-formed rows; trust order (already newest-first on write).
+    return arr.filter(r => r && typeof r.id === 'string').slice(0, RECENTS_CAP);
+  } catch { return []; }
 }
 
-const STATUS_META = {
-  active:      { label: 'Active',      color: C.acc,   tag: 'blue'   },
-  in_progress: { label: 'In progress', color: C.acc,   tag: 'blue'   },
-  done:        { label: 'Done',        color: C.grn,   tag: 'green'  },
-  archived:    { label: 'Archived',    color: C.muted, tag: 'default'},
-};
-
-function roleOf(p) {
-  const r = (p._permissions && p._permissions.role) || p._role || 'owner';
-  return r;
-}
-function isOwnerOf(p) {
-  if (p._permissions && typeof p._permissions.isOwner === 'boolean') return p._permissions.isOwner;
-  return roleOf(p) === 'owner' && !p._shared;
-}
-function canEditOf(p) {
-  if (p._permissions && typeof p._permissions.canEdit === 'boolean') return p._permissions.canEdit;
-  return !!p._canEdit || isOwnerOf(p);
-}
-
-/** Relative "x ago" for an ISO timestamp; falls back to a short date. */
-function relTime(iso) {
-  if (!iso) return '—';
-  const then = new Date(iso).getTime();
-  if (Number.isNaN(then)) return '—';
-  const s = Math.max(0, Math.floor((Date.now() - then) / 1000));
-  if (s < 45) return 'just now';
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d ago`;
-  const mo = Math.floor(d / 30);
-  if (mo < 12) return `${mo}mo ago`;
-  return `${Math.floor(mo / 12)}y ago`;
-}
-
-/** A meaningful progress signal exists only for an actively-screening workspace. */
-function progressOf(p) {
-  const ms = p._linkedMetaSift;
-  if (!ms) return null;
-  if (ms.progressStatus === 'done') return 100;
-  if (ms.progressStatus === 'in_progress') return 50;
-  return null; // not_started / unknown → no fake bar
+function writeRecent(project) {
+  try {
+    const id = project && project.id;
+    if (!id) return readRecents();
+    const entry = { id: String(id), name: project.name || 'Untitled project', ts: Date.now() };
+    const next = [entry, ...readRecents().filter(r => r.id !== entry.id)].slice(0, RECENTS_CAP);
+    window.localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
+    return next;
+  } catch { return readRecents(); }
 }
 
 /* ════════════════════════════════════════════════════════════════════════
    Small styled atoms
    ════════════════════════════════════════════════════════════════════════ */
 
-const TAG_COLORS = {
-  green:   C.grn,
-  red:     C.red,
-  yellow:  C.yel,
-  blue:    C.acc,
-  purple:  C.purp,
-  teal:    C.teal,
-  gold:    C.gold,
-  default: C.muted,
-};
+// TAG_COLORS imported from projectLanding.helpers.js
 
 function Pill({ variant = 'default', children, style }) {
   const col = TAG_COLORS[variant] || C.muted;
@@ -361,6 +323,10 @@ function buildActions(p, handlers) {
         ? { label: 'Unarchive', icon: 'refresh', onClick: () => handlers.unarchive(p) }
         : { label: 'Archive', icon: 'layers', onClick: () => handlers.archive(p) }
     );
+  }
+  // Transfer ownership — owner of a linked workspace only.
+  if (owner && linked) {
+    actions.push({ label: 'Transfer ownership', icon: 'users', onClick: () => handlers.transfer(p) });
   }
   // Owners NEVER see Leave — only shared, non-owner members can leave.
   if (shared && !owner && linked) {
@@ -734,6 +700,127 @@ function DeleteModal({ project, onClose, onDone }) {
   );
 }
 
+function TransferModal({ project, onClose, onDone }) {
+  const linked = project._linkedMetaSift;
+  const [loading, setLoading] = useState(true);
+  const [members, setMembers] = useState([]);
+  const [picked, setPicked] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [loadErr, setLoadErr] = useState('');
+
+  useEffect(() => {
+    if (!linked || !linked.id) { setLoadErr('No linked workspace to transfer.'); setLoading(false); return undefined; }
+    let alive = true;
+    (async () => {
+      try {
+        const res = await screeningApi.listMembers(linked.id);
+        if (!alive) return;
+        const all = (res && res.members) || [];
+        // Eligible: an active member with a real userId, not the current owner.
+        const eligible = all.filter(m => m.status === 'active' && m.userId && !m.isOwner && m.role !== 'owner');
+        setMembers(eligible);
+      } catch (e) {
+        if (alive) setLoadErr(e.message || 'Could not load workspace members.');
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [linked]);
+
+  const confirm = async () => {
+    if (!picked || !linked || !linked.id) return;
+    setBusy(true); setErr('');
+    try {
+      await screeningApi.transferOwner(linked.id, picked);
+      onDone();
+    } catch (e) { setErr(e.message || 'Could not transfer ownership.'); setBusy(false); }
+  };
+
+  const nameOf = (m) => m.name || m.email || 'Member';
+  const initial = (m) => (nameOf(m).trim()[0] || '?').toUpperCase();
+
+  return (
+    <Modal
+      title="Transfer ownership"
+      subtitle={`Hand ${project.name || 'this project'} and its linked META·SIFT workspace to another active member. You keep full leader access afterward and can leave the project later.`}
+      onClose={onClose}
+    >
+      {loading ? (
+        <div style={{ padding: '24px 0', textAlign: 'center', color: C.muted, fontSize: 12.5 }}>
+          Loading workspace members…
+        </div>
+      ) : loadErr ? (
+        <div style={{ marginBottom: 16, fontSize: 12.5, color: C.red }}>{loadErr}</div>
+      ) : members.length === 0 ? (
+        <div style={{
+          padding: '18px 16px', borderRadius: 9, marginBottom: 18,
+          background: C.card2, border: `1px solid ${C.brd}`,
+          fontSize: 12.5, color: C.txt2, lineHeight: 1.6,
+        }}>
+          There are no other active members to transfer ownership to. Invite a collaborator to the linked
+          META·SIFT workspace first, then return here to hand over ownership.
+        </div>
+      ) : (
+        <div role="radiogroup" aria-label="Choose a new owner" style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
+          {members.map((m) => {
+            const active = picked === m.userId;
+            return (
+              <button
+                key={m.id}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                onClick={() => setPicked(m.userId)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 11, width: '100%', textAlign: 'left',
+                  padding: '10px 12px', borderRadius: 9, cursor: 'pointer', fontFamily: FONT,
+                  background: active ? alpha(C.acc, '12') : C.card,
+                  border: `1px solid ${active ? alpha(C.acc, '50') : C.brd2}`,
+                  transition: 'background 0.12s ease, border-color 0.12s ease',
+                }}
+              >
+                <span style={{
+                  width: 32, height: 32, borderRadius: 8, flexShrink: 0,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  background: alpha(C.acc, '16'), color: C.acc, fontWeight: 700, fontSize: 13,
+                  border: `1px solid ${alpha(C.acc, '24')}`,
+                }}>{initial(m)}</span>
+                <span style={{ minWidth: 0, flex: 1 }}>
+                  <span className="t-truncate" style={{ display: 'block', fontSize: 13, fontWeight: 600, color: C.txt }}>{nameOf(m)}</span>
+                  {m.email && m.email !== nameOf(m) && (
+                    <span className="t-truncate" style={{ display: 'block', fontSize: 11, color: C.muted, fontFamily: MONO }}>{m.email}</span>
+                  )}
+                </span>
+                <Pill variant={ROLE_COLOR[m.role] || 'default'}>{ROLE_LABEL[m.role] || m.role}</Pill>
+                <span style={{
+                  width: 16, height: 16, borderRadius: 99, flexShrink: 0,
+                  border: `2px solid ${active ? C.acc : C.brd2}`,
+                  background: active ? C.acc : 'transparent',
+                  display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                  {active && <span style={{ width: 6, height: 6, borderRadius: 99, background: C.accText }} />}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {err && <div style={{ marginBottom: 14, fontSize: 12, color: C.red }}>{err}</div>}
+      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+        <Btn variant="ghost" onClick={onClose} disabled={busy}>{members.length === 0 ? 'Close' : 'Cancel'}</Btn>
+        {members.length > 0 && (
+          <Btn variant="primary" onClick={confirm} disabled={busy || !picked}
+               style={{ opacity: picked ? 1 : 0.5, cursor: picked ? 'pointer' : 'not-allowed' }}>
+            {busy ? 'Transferring…' : 'Transfer ownership'}
+          </Btn>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
 /* ════════════════════════════════════════════════════════════════════════
    Empty states
    ════════════════════════════════════════════════════════════════════════ */
@@ -787,33 +874,51 @@ function Chip({ active, onClick, children, count }) {
   );
 }
 
+// FILTERS, SORTS, ROLE_ORDER imported from projectLanding.helpers.js
+
 /* ════════════════════════════════════════════════════════════════════════
-   Filter / sort definitions
+   Recently-opened rail
    ════════════════════════════════════════════════════════════════════════ */
 
-const FILTERS = [
-  { key: 'all',        label: 'All',             test: () => true },
-  { key: 'owned',      label: 'Owned by me',     test: (p) => isOwnerOf(p) },
-  { key: 'lead',       label: 'I lead',          test: (p) => roleOf(p) === 'leader' },
-  { key: 'shared',     label: 'Shared with me',  test: (p) => !!p._shared && !isOwnerOf(p) },
-  { key: 'readonly',   label: 'Read-only',       test: (p) => !!(p._readOnly || (p._permissions && p._permissions.readOnly)) },
-  { key: 'active',     label: 'Active',          test: (p) => statusOf(p) === 'active' },
-  { key: 'inprogress', label: 'In progress',     test: (p) => statusOf(p) === 'in_progress' },
-  { key: 'done',       label: 'Done',            test: (p) => statusOf(p) === 'done' },
-  { key: 'linked',     label: 'Linked',          test: (p) => !!p._linkedMetaSift },
-  { key: 'notlinked',  label: 'Not linked',      test: (p) => !p._linkedMetaSift },
-  { key: 'archived',   label: 'Archived',        test: (p) => !!p._archived },
-];
-
-const SORTS = [
-  { key: 'modified', label: 'Last modified', cmp: (a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0) },
-  { key: 'created',  label: 'Created',       cmp: (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0) },
-  { key: 'title',    label: 'Title A–Z',     cmp: (a, b) => (a.name || '').localeCompare(b.name || '') },
-  { key: 'status',   label: 'Status',        cmp: (a, b) => statusOf(a).localeCompare(statusOf(b)) },
-  { key: 'role',     label: 'My role',       cmp: (a, b) => roleOf(a).localeCompare(roleOf(b)) },
-];
-
-const ROLE_ORDER = { owner: 0, leader: 1, reviewer: 2, viewer: 3 };
+function RecentsRail({ items, onOpen, reduced }) {
+  if (!items.length) return null;
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <div style={{
+        fontSize: 11, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
+        color: C.muted, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 7,
+      }}>
+        <Icon name="clock" size={13} /> Recently opened
+      </div>
+      <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
+        {items.map((r) => (
+          <button
+            key={r.id}
+            onClick={() => onOpen(r)}
+            title={r.name}
+            style={{
+              flex: '0 0 auto', maxWidth: 220, display: 'flex', alignItems: 'center', gap: 9,
+              padding: '8px 13px', borderRadius: 10, cursor: 'pointer', fontFamily: FONT,
+              background: C.card, border: `1px solid ${C.brd}`, color: C.txt,
+              transition: reduced ? 'none' : 'background 0.15s ease, border-color 0.15s ease, transform 0.12s ease',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = C.cardHover; e.currentTarget.style.borderColor = C.brd2; if (!reduced) e.currentTarget.style.transform = 'translateY(-1px)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = C.card; e.currentTarget.style.borderColor = C.brd; e.currentTarget.style.transform = 'none'; }}
+          >
+            <span style={{
+              width: 26, height: 26, borderRadius: 7, flexShrink: 0,
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              background: alpha(C.acc, '14'), color: C.acc, border: `1px solid ${alpha(C.acc, '22')}`,
+            }}>
+              <Icon name="folder" size={13} />
+            </span>
+            <span className="t-truncate" style={{ fontSize: 12.5, fontWeight: 600 }}>{r.name}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 /* ════════════════════════════════════════════════════════════════════════
    Main page
@@ -838,6 +943,10 @@ export default function ProjectLanding() {
 
   // modals
   const [modal, setModal] = useState(null); // { type, project }
+
+  // recently-opened (localStorage-backed, dedupe-by-id, newest-first, cap 6)
+  const [recents, setRecents] = useState(() => readRecents());
+  const recordRecent = useCallback((p) => { setRecents(writeRecent(p)); }, []);
 
   /* ── Legacy /app?project=<id> deep-link → route-param workspace ─────── */
   useEffect(() => {
@@ -928,16 +1037,26 @@ export default function ProjectLanding() {
     return [...filtered].sort(cmp);
   }, [searchPool, filter, sort]);
 
+  /* ── Recently-opened (only ids still in the roster; skip stale) ─────── */
+  const recentItems = useMemo(() => {
+    if (!recents.length) return [];
+    const byId = new Map(projects.map(p => [String(p.id), p]));
+    return recents
+      .filter(r => byId.has(r.id))
+      .map(r => ({ id: r.id, name: (byId.get(r.id).name || r.name || 'Untitled project') }));
+  }, [recents, projects]);
+
   /* ── Action handlers ──────────────────────────────────────────────── */
   const handlers = useMemo(() => ({
-    open:      (p) => navigate(`/app/project/${encodeURIComponent(p.id)}`),
+    open:      (p) => { recordRecent(p); navigate(`/app/project/${encodeURIComponent(p.id)}`); },
     openSift:  (p) => { const id = p._linkedMetaSift && p._linkedMetaSift.id; if (id) navigate(`/sift-beta/projects/${encodeURIComponent(id)}`); },
     rename:    (p) => setModal({ type: 'rename', project: p }),
     archive:   (p) => setModal({ type: 'archive', project: p }),
     unarchive: async (p) => { try { await api.projects.unarchive(p.id); await reload(); } catch { setError('Could not unarchive the project.'); } },
     leave:     (p) => setModal({ type: 'leave', project: p }),
+    transfer:  (p) => setModal({ type: 'transfer', project: p }),
     del:       (p) => setModal({ type: 'delete', project: p }),
-  }), [navigate, reload]);
+  }), [navigate, reload, recordRecent]);
 
   const closeModal = () => setModal(null);
   const afterMutation = async () => { setModal(null); await reload(); };
@@ -994,6 +1113,11 @@ export default function ProjectLanding() {
             <KpiTile icon="flow"        label="Linked META·SIFT"  value={kpis.linked}     color={C.teal} reduced={reduced} />
             <KpiTile icon="layers"      label="Archived"          value={kpis.archived}   color={C.muted} reduced={reduced} />
           </div>
+        )}
+
+        {/* ── Recently opened rail (above the control bar) ──────────── */}
+        {!loading && hasAnyProject && (
+          <RecentsRail items={recentItems} onOpen={(r) => handlers.open(r)} reduced={reduced} />
         )}
 
         {/* ── Control bar ───────────────────────────────────────────── */}
@@ -1137,8 +1261,9 @@ export default function ProjectLanding() {
       )}
       {modal && modal.type === 'rename'  && <RenameModal  project={modal.project} onClose={closeModal} onRenamed={afterMutation} />}
       {modal && modal.type === 'archive' && <ArchiveModal project={modal.project} onClose={closeModal} onDone={afterMutation} />}
-      {modal && modal.type === 'leave'   && <LeaveModal   project={modal.project} onClose={closeModal} onDone={afterMutation} />}
-      {modal && modal.type === 'delete'  && <DeleteModal  project={modal.project} onClose={closeModal} onDone={afterMutation} />}
+      {modal && modal.type === 'leave'    && <LeaveModal    project={modal.project} onClose={closeModal} onDone={afterMutation} />}
+      {modal && modal.type === 'transfer' && <TransferModal project={modal.project} onClose={closeModal} onDone={afterMutation} />}
+      {modal && modal.type === 'delete'   && <DeleteModal   project={modal.project} onClose={closeModal} onDone={afterMutation} />}
     </div>
   );
 }
