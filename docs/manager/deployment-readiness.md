@@ -41,6 +41,34 @@ npx prisma migrate deploy
 
 **prompt6 (v2.5.0)** adds one additive migration — `20260610034844_prompt6_notifications_logins_status_fingerprint`: new `Notification`, `LoginEvent`, and `ScreenProjectStatusEvent` tables, fingerprint columns on `ScreenImportBatch` (nullable/defaulted), and an index on `ScreenProject.linkedMetaLabProjectId`. No destructive changes; existing users/projects/records/links are preserved. `npx prisma migrate deploy` + `npx prisma generate` is all the DB work this release needs.
 
+**prompt9 (v2.7.0)** adds one additive migration — `20260611165749_prompt9_invites_lifecycle_usage`: invite columns on `ScreenProjectMember` (`invitedByUserId`, `inviteTokenHash` unique, `inviteExpiresAt`, `inviteAcceptedAt`), `Notification.clickedAt`, `Project.deletedSource`, `ScreenProject.deletedAt`/`deletedSource`, and the new no-FK `UsageEvent` table. All nullable/defaulted; no destructive changes.
+
+### 2b. Migration history is now committed (fixed 2026-06-12)
+
+Until v2.7.0 this checklist said "migrations committed" while `.gitignore` excluded
+`server/prisma/migrations/` — every migration since `init` existed only on the dev machine, so a clean
+clone could not `migrate deploy`. As of this fix the **full 12-migration history + `migration_lock.toml`
+is in git** and the contradiction is closed.
+
+**One-time baseline for a pre-existing deployed database.** If the deployed DB was previously synced
+without migration history (e.g. `prisma db push`, or a copied dev.db), its `_prisma_migrations` table is
+missing or incomplete, and the first `migrate deploy` would try to re-apply migrations against existing
+tables and fail. Baseline it once by marking every migration that is already reflected in the schema as
+applied, then deploy normally:
+
+```bash
+cd server
+# for each already-reflected migration directory, oldest → newest:
+npx prisma migrate resolve --applied 20260607134620_init
+npx prisma migrate resolve --applied 20260607145855_add_autosave_profile_contact
+# ... (repeat through the newest migration already present in the DB schema)
+npx prisma migrate deploy   # applies only what remains
+```
+
+Quick check of what the DB already has: `npx prisma migrate status` (lists pending vs applied).
+If the deploy script uses `prisma db push` instead, it keeps working unchanged — `db push` reads the
+committed `schema.prisma` directly — but `migrate deploy` is the preferred, history-aware path.
+
 ---
 
 ## 3. Environment variables

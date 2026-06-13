@@ -10,8 +10,9 @@ dist/
 server/.env
 *.env.local
 
-# database migrations state (keep schema, not lock)
-server/prisma/migrations/
+# Prisma migrations ARE committed (full history + migration_lock.toml) so
+# `npx prisma migrate deploy` works from a clean clone. Fixed 2026-06-12 —
+# they were wrongly ignored before, contradicting deployment-readiness.md.
 
 # local SQLite databases — NEVER commit (contain user emails, password hashes,
 # contact messages). Found tracked during the prompt7 security review.
