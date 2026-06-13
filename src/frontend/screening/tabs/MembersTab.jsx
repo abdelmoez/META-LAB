@@ -544,6 +544,102 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, onPatch, onRemove
 
 // ── AddMemberModal ──────────────────────────────────────────────────────────
 
+/**
+ * presetBlurb — derives a plain-English explanation for the inviter from the
+ * selected preset + module selection.  Answers four questions:
+ *   1. Can this member open META·SIFT?
+ *   2. Can this member open META·LAB?
+ *   3. Are they read-only in those modules?
+ *   4. What can they actively do (screen / extract / analyze / manage members)?
+ *
+ * Derived from PERMISSION_PRESETS flags — no hard-coded strings per preset so
+ * the text stays correct if the preset perms ever change.
+ */
+function presetBlurb(presetKey, modules) {
+  const p = PERMISSION_PRESETS[presetKey];
+  if (!p) return '';
+  const { perms } = p;
+
+  // ── module access (what the preset enables, before the "Participates in"
+  //    narrowing — we explain the preset's own flags, not the intersection,
+  //    to keep the blurb stable regardless of module dropdown choice) ──────
+  const siftAccess = perms.canViewMetaSift;
+  const labAccess  = perms.canViewMetaLab;
+  const siftRO     = perms.readOnlyMetaSift;
+  const labRO      = perms.readOnlyMetaLab;
+
+  // ── capability phrases ───────────────────────────────────────────────────
+  const caps = [];
+
+  // META·SIFT capabilities
+  if (siftAccess && !siftRO) {
+    if (perms.canScreen)           caps.push('screen studies');
+    if (perms.canSecondReview)     caps.push('second-review');
+    if (perms.canResolveConflicts) caps.push('resolve conflicts');
+    if (perms.canImportRecords)    caps.push('import records');
+  }
+
+  // META·LAB capabilities
+  if (labAccess && !labRO) {
+    if (perms.canEditMetaLab || perms.canManageExtraction) caps.push('edit extraction');
+    if (perms.canRunAnalysis)  caps.push('run analysis');
+    if (perms.canExport)       caps.push('export data');
+  }
+
+  // Management
+  if (perms.canManageMembers || perms.canManageSettings) caps.push('manage members & settings');
+
+  // Chat (mention only when it's not implied by full access)
+  if (perms.canChat && !perms.canManageMembers) caps.push('chat');
+
+  // ── module access summary ────────────────────────────────────────────────
+  let accessSentence;
+  if (siftAccess && labAccess) {
+    if (siftRO && labRO) {
+      accessSentence = 'This user can open both META·SIFT and META·LAB in read-only mode.';
+    } else if (siftRO) {
+      accessSentence = 'This user can open META·SIFT (read-only) and META·LAB.';
+    } else if (labRO) {
+      accessSentence = 'This user can open META·SIFT and META·LAB (read-only).';
+    } else {
+      accessSentence = 'This user can access both META·SIFT and META·LAB.';
+    }
+  } else if (siftAccess) {
+    accessSentence = siftRO
+      ? 'This user can open META·SIFT in read-only mode. No access to META·LAB.'
+      : 'This user can access META·SIFT. No access to META·LAB.';
+  } else if (labAccess) {
+    accessSentence = labRO
+      ? 'This user can open META·LAB in read-only mode. No access to META·SIFT.'
+      : 'This user can access META·LAB. No access to META·SIFT.';
+  } else {
+    // owner/leader implicit full access
+    accessSentence = 'This user has full access to both META·SIFT and META·LAB.';
+  }
+
+  // ── capability sentence ──────────────────────────────────────────────────
+  let capSentence = '';
+  if (caps.length === 0) {
+    if (siftAccess || labAccess) capSentence = 'They cannot make changes.';
+  } else {
+    const joined = caps.length === 1
+      ? caps[0]
+      : caps.slice(0, -1).join(', ') + ' and ' + caps[caps.length - 1];
+    capSentence = `They can ${joined}.`;
+  }
+
+  // ── module override note ─────────────────────────────────────────────────
+  // Remind inviter that "Participates in" can further narrow access.
+  let modulesNote = '';
+  if (modules === 'metasift' && labAccess) {
+    modulesNote = ' "Participates in META·SIFT only" will hide META·LAB for this user.';
+  } else if (modules === 'metalab' && siftAccess) {
+    modulesNote = ' "Participates in META·LAB only" will hide META·SIFT for this user.';
+  }
+
+  return [accessSentence, capSentence, modulesNote].filter(Boolean).join(' ');
+}
+
 // Permission presets shown when adding a member (Task 9).
 const ADD_PRESETS = [
   { value: 'reviewer',          label: 'Reviewer — screen + second review + chat' },
@@ -668,9 +764,25 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
             {MODULE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
           <div style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 1.5 }}>
-            Limits which app(s) the member can open; combined with the preset&rsquo;s permissions.
+            Limits which app(s) the member can open; combined with the preset&apos;s permissions.
           </div>
         </div>
+
+        {/* Plain-English summary — derived from both dropdowns so updates live */}
+        {presetBlurb(preset, modules) && (
+          <div style={{
+            marginTop: 14,
+            background: alpha(C.acc, '14'),
+            border: `1px solid ${alpha(C.acc, '20')}`,
+            borderRadius: 6,
+            padding: '9px 12px',
+            fontSize: 11.5,
+            color: C.txt2,
+            lineHeight: 1.65,
+          }}>
+            {presetBlurb(preset, modules)}
+          </div>
+        )}
 
         {pendingNote && (
           <div style={{

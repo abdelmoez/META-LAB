@@ -1441,8 +1441,8 @@ function UserProjectItem({ project }) {
   );
 }
 
-// Institutional role colors (prompt7): admin gold, mod teal, ordinary user muted.
-const ROLE_COLORS = { admin: C.gold, mod: C.teal, user: C.muted };
+// Institutional role colors (prompt12 Task 2): admin subtle-red, mod subtle-green, user muted.
+const ROLE_COLORS = { admin: C.red, mod: C.grn, user: C.muted };
 function RoleBadge({ role }) {
   return <Badge text={role || 'user'} color={ROLE_COLORS[role] || C.muted} />;
 }

@@ -95,9 +95,20 @@ export default function UserMenu({ context = 'metalab', fixed = false, onBeforeL
           <div style={{ padding: '10px 14px 9px', borderBottom: `1px solid ${C.brd}`, marginBottom: 4 }}>
             {user.name && <div title={user.name} style={{ fontSize: 12, fontWeight: 600, color: C.txt, marginBottom: 2, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.name}</div>}
             <div title={user.email} style={{ fontSize: 11, color: C.muted, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user.email}</div>
-            {user.role && user.role !== 'user' && (
-              <div style={{ fontSize: 9, fontFamily: MONO, color: C.acc, marginTop: 4, textTransform: 'uppercase', letterSpacing: '0.1em' }}>{user.role}</div>
-            )}
+            {user.role && user.role !== 'user' && (() => {
+              const rc = user.role === 'admin' ? C.red : C.grn;
+              return (
+                <span style={{
+                  display: 'inline-block', marginTop: 5,
+                  padding: '2px 8px', borderRadius: 10, fontSize: 9,
+                  fontFamily: MONO, fontWeight: 700, letterSpacing: '0.08em',
+                  textTransform: 'uppercase',
+                  color: rc,
+                  background: alpha(rc, '14'),
+                  border: `1px solid ${alpha(rc, '30')}`,
+                }}>{user.role}</span>
+              );
+            })()}
           </div>
 
           <Item icon="user" label="Account & Profile" onClick={() => { setOpen(false); navigate('/profile'); }} />

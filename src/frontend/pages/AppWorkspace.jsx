@@ -31,12 +31,17 @@ export default function AppWorkspace() {
     if (id && id !== projectId) navigate(`/app/project/${encodeURIComponent(id)}`, { replace: true });
   }, [projectId, navigate]);
 
+  // prompt12 Task 1: a clear "Back to Projects" affordance inside a project returns
+  // to the landing/selector at /app (the monolith renders the button; it isn't
+  // router-aware, so navigation is delegated here).
+  const onBackToProjects = useCallback(() => navigate('/app'), [navigate]);
+
   // Subscribe to autosave events from serverStorage
   useEffect(() => subscribeToSaveStatus(setSaveStatus), []);
 
   return (
     <>
-      <MetaLab initialProjectId={projectId || null} onProjectChange={onProjectChange} />
+      <MetaLab initialProjectId={projectId || null} onProjectChange={onProjectChange} onBackToProjects={onBackToProjects} />
 
       {/* ── Autosave status (bottom-right, non-interactive) ─────────── */}
       <div

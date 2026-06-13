@@ -21,6 +21,18 @@ function fmtDate(iso) {
   } catch { return iso; }
 }
 
+// Date + time, with an honest "Not available" fallback (prompt12 Task 3 — Last active).
+function fmtDateTime(iso) {
+  if (!iso) return 'Not available';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return 'Not available';
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+    }).format(d);
+  } catch { return iso; }
+}
+
 function initials(user) {
   if (user?.name) return user.name.split(' ').map(w => w[0]).join('').toUpperCase().slice(0, 2);
   return (user?.email?.[0] ?? '?').toUpperCase();
@@ -356,7 +368,7 @@ export default function Profile() {
                 {[
                   ['Display name', user?.name || '—'],
                   ['Email address', user?.email || '—'],
-                  ['Last active', fmtDate(user?.updatedAt || user?.lastActive)],
+                  ['Last active', fmtDateTime(user?.lastActive)],
                 ].map(([label, value]) => (
                   <div key={label} style={{
                     display:      'flex',

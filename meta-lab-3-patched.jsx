@@ -7530,7 +7530,7 @@ function ControlTab({project,onAnnotate}){
 
 let _versionCache=null; // module-level so remounts don't refetch (same pattern as UserMenu.jsx)
 
-export default function MetaLab({ initialProjectId = null, onProjectChange = null } = {}){
+export default function MetaLab({ initialProjectId = null, onProjectChange = null, onBackToProjects = null } = {}){
   const[projects,setProjects]=useState([]);
   const[activeId,setActiveId]=useState(null);
   const[tab,setTab]=useState("overview"); // Overview is the landing tab (prompt6 Task 15)
@@ -8145,6 +8145,22 @@ export default function MetaLab({ initialProjectId = null, onProjectChange = nul
           </div>
         </div>
       </div>
+
+      {/* Back to the META·LAB project landing (prompt12 Task 1). Sidebar is fixed
+         on every tab, so this is reachable from overview/extraction/PRISMA/analysis/
+         methods/control alike. Wired via AppWorkspace (the monolith isn't router-aware). */}
+      {onBackToProjects&&(
+        <button onClick={onBackToProjects} title="Back to all projects" style={{
+          display:"flex",alignItems:"center",gap:8,width:"100%",
+          padding:"10px 16px",background:"none",border:"none",
+          borderBottom:`1px solid ${C.brd}`,color:C.muted,cursor:"pointer",
+          fontSize:11.5,fontWeight:600,fontFamily:"inherit",textAlign:"left",letterSpacing:0.2,
+          transition:"color 0.15s ease,background 0.15s ease",
+        }}
+          onMouseEnter={e=>{e.currentTarget.style.color=C.txt;e.currentTarget.style.background=themeAlpha(C.acc,'0c');}}
+          onMouseLeave={e=>{e.currentTarget.style.color=C.muted;e.currentTarget.style.background="none";}}
+        ><Icon name="arrowLeft" size={13}/>Back to Projects</button>
+      )}
 
       {/* Projects */}
       <div style={{padding:"10px 10px 8px",borderBottom:`1px solid ${C.brd}`}}>
