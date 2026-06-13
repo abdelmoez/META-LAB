@@ -373,6 +373,48 @@ describe('trimFill', () => {
     const res = trimFill(studies);
     expect(res.imputed).toHaveLength(res.k0);
   });
+
+  // metafor::trimfill fixture (14 Cohen's d studies). The L0 centre tracks the
+  // selected model: the random-effects funnel is ~symmetric (k0 = 0, no shift),
+  // while the fixed-effect model over-weights the precise positive studies, so
+  // trim-and-fill imputes 4 mirror studies on the left and pulls the estimate
+  // down to 0.242. SE round-trips because we rebuild the CI with the engine's Z975.
+  const TF_Z = 1.959963984540054;
+  const tfFx = [
+    { es: 1.4623, se: 0.6017 }, { es: 1.3832, se: 0.5950 }, { es: 1.1427, se: 0.3946 },
+    { es: -0.1032, se: 0.2377 }, { es: -0.3918, se: 0.2289 }, { es: 2.1994, se: 0.3028 },
+    { es: 1.1561, se: 0.6237 }, { es: 0.0732, se: 0.5775 }, { es: 0.7774, se: 0.2968 },
+    { es: 0.1620, se: 0.5008 }, { es: 0.1659, se: 0.5009 }, { es: 0.5937, se: 0.2867 },
+    { es: 0.6990, se: 0.2540 }, { es: -0.3172, se: 0.3803 },
+  ];
+  const tfStudies = tfFx.map((s, i) => ({
+    id: 't' + i, es: String(s.es),
+    lo: String(s.es - TF_Z * s.se), hi: String(s.es + TF_Z * s.se),
+  }));
+
+  it('random-effects: matches metafor::trimfill (k0 = 0, estimate unchanged)', () => {
+    const res = trimFill(tfStudies, 'random');
+    expect(res.base.pES).toBeCloseTo(0.6137, 3);   // DL pooled estimate
+    expect(res.k0).toBe(0);
+    expect(res.side).toBeNull();
+    expect(res.imputed).toHaveLength(0);
+    expect(res.adjusted.pES).toBeCloseTo(0.6137, 3); // no shift
+  });
+
+  it('fixed-effect: matches metafor::trimfill (k0 = 4, imputes on the left)', () => {
+    const res = trimFill(tfStudies, 'fixed');
+    expect(res.k0).toBe(4);
+    expect(res.side).toBe('left');
+    expect(res.imputed).toHaveLength(4);
+    expect(res.adjusted.pES).toBeCloseTo(0.2422, 3);
+    expect(res.adjusted.pES).toBeLessThan(res.base.pES); // imputation pulls it down
+  });
+
+  it('does not over-impute under random-effects (guards the old FE-centred bug)', () => {
+    // The previous implementation always centred on the fixed-effect mean and
+    // returned k0 = 3 here; the model-aware centre returns 0.
+    expect(trimFill(tfStudies, 'random').k0).toBeLessThan(3);
+  });
 });
 
 // ── subgroupAnalysis ──────────────────────────────────────────────────────────

@@ -221,51 +221,76 @@ function leaveOneOut(studies, method) {
 }
 
 /* Trim-and-fill (Duval & Tweedie L0 estimator) for publication-bias adjustment.
-   Works on the chosen effect scale; imputes mirror-image studies and re-pools. */
+   The centre driving the L0 iteration (and the final mirror point) is the pooled
+   estimate of the currently trimmed set under the SELECTED model — fixed-effect
+   inverse-variance, or DerSimonian–Laird random-effects with τ² re-estimated each
+   iteration; Tn and L0 are computed over the FULL k studies. Reproduces
+   metafor::trimfill(res) under the same model for clearly asymmetric funnels; the
+   over-represented side is chosen by a signed-rank rule (metafor uses a regression
+   slope, so results can differ on near-symmetric funnels). (The earlier version
+   always centred on the fixed-effect mean and ranked over the trimmed subset, so
+   random-effects over-imputed — now fixed.)
+   Ref: Duval S, Tweedie R. Biometrics 2000;56:455-463. */
 function trimFill(studies, method){
   var valid = studies.filter(function(s){ return s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi); });
   if (valid.length < 3) return null;
-  var base = runMeta(valid, method||"random");
+  var mdl = method||"random";
+  var base = runMeta(valid, mdl);
   if (!base) return null;
-  var d = valid.map(function(s){ var es=+s.es, se=(+s.hi-+s.lo)/(2*1.96); return {es:es, se:se}; });
+  // Z975 keeps the SE→CI round-trip exact with runMeta.
+  var obs = valid.map(function(s){ var es=+s.es, se=(+s.hi-+s.lo)/(2*Z975); return {es:es, se:se}; });
+  var k = obs.length;
 
-  // L0 estimator: iterate to estimate number of missing studies k0
-  function poolMean(arr){ var w=arr.map(function(x){return 1/(x.se*x.se);}); var W=w.reduce(function(a,b){return a+b;},0); return arr.reduce(function(a,x,i){return a+w[i]*x.es;},0)/W; }
-  var side = null; // which side studies are missing from
-  var k0=0, prevK0=-1, iter=0;
-  var working = d.slice();
-  while(k0!==prevK0 && iter<30){
+  // Pooled estimate of an {es,se} set under the selected model (FE inverse-variance,
+  // or DerSimonian–Laird random-effects with τ² re-estimated for this subset).
+  function pooled(arr){
+    var wf=arr.map(function(x){ return 1/(x.se*x.se); });
+    var Wf=wf.reduce(function(a,b){ return a+b; },0);
+    var muF=arr.reduce(function(a,x,i){ return a+wf[i]*x.es; },0)/Wf;
+    if(mdl==="fixed"||arr.length<2) return muF;
+    var Q=arr.reduce(function(a,x,i){ return a+wf[i]*(x.es-muF)*(x.es-muF); },0);
+    var W2=wf.reduce(function(a,w){ return a+w*w; },0);
+    var C=Wf-W2/Wf;
+    var tau2=C>0 ? Math.max(0,(Q-(arr.length-1))/C) : 0;
+    var wr=arr.map(function(x){ return 1/(x.se*x.se+tau2); });
+    var Wr=wr.reduce(function(a,b){ return a+b; },0);
+    return arr.reduce(function(a,x,i){ return a+wr[i]*x.es; },0)/Wr;
+  }
+  // Ranks of |yi - mu| over the FULL set; rank sums split by side of mu.
+  function rankSums(mu){
+    var dev=obs.map(function(x){ return x.es-mu; });
+    var order=dev.map(function(_,i){ return i; }).sort(function(a,b){ return Math.abs(dev[a])-Math.abs(dev[b]); });
+    var rank=new Array(k);
+    order.forEach(function(id,r){ rank[id]=r+1; });
+    var Tr=0, Tl=0;
+    dev.forEach(function(dv,i){ if(dv>0)Tr+=rank[i]; else if(dv<0)Tl+=rank[i]; });
+    return {Tr:Tr, Tl:Tl};
+  }
+  // Fix the heavy/over-represented side once from the full-data estimate.
+  var beta0=pooled(obs);
+  var t0=rankSums(beta0);
+  var heavyRight = t0.Tr >= t0.Tl;        // right tail over-represented -> impute left
+  var side = heavyRight ? "left" : "right";
+  var asc=obs.slice().sort(function(a,b){ return a.es-b.es; });
+
+  var k0=0, prevK0=-1, iter=0, mu=beta0;
+  while(k0!==prevK0 && iter<100){
     prevK0=k0; iter++;
-    var mu=poolMean(working);
-    // center, rank by |deviation|, signed ranks
-    var dev=working.map(function(x){ return {v:x.es-mu, es:x.es, se:x.se}; });
-    var sorted=dev.slice().sort(function(a,b){ return Math.abs(a.v)-Math.abs(b.v); });
-    var Tn=0; // sum of ranks of positive deviations
-    sorted.forEach(function(x,i){ if(x.v>0) Tn+=(i+1); });
-    var n=working.length;
-    // Sum of all ranks = n(n+1)/2; signed-rank statistic
-    var Sr=0; sorted.forEach(function(x,i){ Sr += (x.v>0?1:-1)*(i+1); });
-    // L0 = (4*Tn - n*(n+1)) / (2n - 1)
-    var L0=(4*Tn - n*(n+1))/(2*n-1);
-    k0=Math.max(0, Math.round(L0));
-    // Determine side: if mean pulled by larger positive deviations missing on left
-    side = Sr<0 ? "right" : "left"; // sign tells which tail dominates observed
-    // trim the k0 most extreme on the dominant side, recompute mean
-    var trimmed=d.slice().sort(function(a,b){ return Math.abs(b.es-mu)-Math.abs(a.es-mu); });
-    working = trimmed.slice(k0); // remove k0 most extreme
-    if(working.length<2){ working=d.slice(); break; }
+    var trimmed = heavyRight ? asc.slice(0, k-k0) : asc.slice(k0);
+    mu = pooled(trimmed);
+    var t = rankSums(mu);
+    var Tn = heavyRight ? t.Tr : t.Tl;
+    var L0 = (4*Tn - k*(k+1))/(2*k-1);
+    k0 = Math.max(0, Math.min(k-1, Math.round(L0)));
   }
   if(k0<=0){
     return {k0:0, adjusted:base, imputed:[], side:null, base:base};
   }
-  // Impute k0 studies as mirror images of the k0 most extreme on the over-represented side
-  var muFinal=poolMean(working);
-  var bySide=d.slice().sort(function(a,b){ return (b.es-muFinal)-(a.es-muFinal); });
-  // if missing on left, the over-represented are the largest; mirror them below mu
-  var extreme = side==="left" ? bySide.slice(0,k0) : bySide.slice(-k0);
-  var imputed = extreme.map(function(x){ var mir=2*muFinal-x.es; return {es:+mir.toFixed(4), se:x.se, lo:+(mir-1.96*x.se).toFixed(4), hi:+(mir+1.96*x.se).toFixed(4), imputed:true}; });
+  // Mirror the k0 most extreme studies on the heavy side about the final centre.
+  var extreme = heavyRight ? asc.slice(k-k0) : asc.slice(0,k0);
+  var imputed = extreme.map(function(x){ var mir=2*mu-x.es; return {es:+mir.toFixed(4), se:x.se, lo:+(mir-Z975*x.se).toFixed(4), hi:+(mir+Z975*x.se).toFixed(4), imputed:true}; });
   var augmented = valid.concat(imputed.map(function(x){ return {es:x.es, lo:x.lo, hi:x.hi}; }));
-  var adjusted = runMeta(augmented, method||"random");
+  var adjusted = runMeta(augmented, mdl);
   return {k0:k0, adjusted:adjusted, imputed:imputed, side:side, base:base};
 }
 

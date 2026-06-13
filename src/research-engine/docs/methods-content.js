@@ -269,16 +269,16 @@ export const METHODS_CONTENT = [
     id: 'trim-and-fill',
     title: 'Trim-and-fill (Duval–Tweedie L0 estimator)',
     equations: [
-      { label: 'Estimated number of missing studies', text: 'L0 = (4 × Tn − n(n + 1)) / (2n − 1);   k₀ = max(0, round(L0))' },
-      { label: 'Imputed mirror-image effect', text: 'ES_imputed = 2μ − ES_extreme' },
+      { label: 'Estimated number of missing studies', text: 'L0 = (4 × Tn − k(k + 1)) / (2k − 1);   k₀ = max(0, round(L0))   (k = total studies; Tn = sum of ranks of |yᵢ − μ| on the heavy side, ranked over all k)' },
+      { label: 'Imputed mirror-image effect', text: 'ES_imputed = 2μ − ES_extreme   (μ = pooled estimate of the trimmed set under the selected model)' },
     ],
     plainEnglish:
-      'Estimates how many studies are "missing" from one side of the funnel plot (using signed ranks of deviations from the pooled mean, Tn), trims the most extreme studies, re-estimates the centre iteratively (up to 30 iterations), then imputes mirror-image counterparts of the extreme studies and re-pools to show a bias-adjusted estimate.',
+      'Estimates how many studies are "missing" from one side of the funnel plot. Each iteration it trims the most extreme studies on the over-represented side, re-estimates the centre μ from the *trimmed* set under the SELECTED model (fixed-effect inverse-variance, or DerSimonian–Laird random-effects with τ² re-estimated each pass), and computes the rank statistic Tn over the *full* set of k studies. On convergence it imputes mirror-image counterparts of the trimmed studies about μ and re-pools under the same model for a bias-adjusted estimate. Because the centre tracks the selected model, the result reproduces metafor::trimfill(res) for both fixed- and random-effects analyses — a random-effects analysis with a symmetric funnel correctly returns k₀ = 0 rather than over-imputing.',
     usedIn: 'Sensitivity tab, publication-bias panel (requires k ≥ 3); imputed studies are displayed alongside the adjusted pooled estimate.',
-    implementedIn: 'trimFill() (re-pools via runMeta()) — ' + ENGINE_META,
+    implementedIn: 'trimFill() (centres/re-pools via the selected model) — ' + ENGINE_META,
     references: [REF.DUVAL_TWEEDIE_2000],
     limitations:
-      'Assumes asymmetry is caused purely by publication bias; heterogeneity or chance in small meta-analyses produces false-positive k₀. Imputed-study CIs are constructed with the rounded z = 1.96. The adjusted estimate is a sensitivity analysis, not a corrected truth.',
+      'Assumes asymmetry is caused purely by publication bias; heterogeneity or chance in small meta-analyses produces false-positive k₀. Trim-and-fill is implementation-sensitive — META·LAB matches metafor::trimfill under the same model for clearly asymmetric funnels; the over-represented side is chosen by a signed-rank rule, which can differ from metafor’s regression-based side detection on near-symmetric funnels (where trim-and-fill is least reliable for any method). The adjusted estimate is a sensitivity analysis, not a corrected truth.',
     verified: true,
   },
 

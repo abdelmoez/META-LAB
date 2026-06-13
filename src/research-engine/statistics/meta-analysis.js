@@ -243,6 +243,27 @@ export function leaveOneOut(studies, method) {
  * Duval & Tweedie L0 trim-and-fill estimator for publication-bias adjustment.
  * Imputes mirror-image studies on the under-represented side and re-pools.
  *
+ * Reproduces metafor::trimfill(res) under the SELECTED model when the funnel's
+ * over-represented side is unambiguous — k₀ and the adjusted estimate match metafor
+ * to 4 d.p. on the validation fixture (random-effects k₀=0/0.6137, fixed-effect
+ * k₀=4/0.2422). The centre that drives the L0 iteration (and the final mirror point)
+ * is the pooled estimate of the *currently trimmed* set under the selected model —
+ * fixed-effect inverse-variance, or DerSimonian–Laird random-effects with τ²
+ * re-estimated each iteration. The rank statistic Tₙ and L0 are computed over the
+ * FULL k studies.
+ *
+ * Side selection: the over-represented tail is chosen here by a signed-rank rule
+ * (heavier side = larger Σ ranks of |yᵢ−μ|). metafor instead infers the side from a
+ * regression slope; the two agree for clearly asymmetric funnels but can differ on
+ * near-symmetric ones, where metafor's own docs note automatic side detection "is
+ * not always reliable".
+ *
+ * (The earlier version always centred on the fixed-effect mean and ranked over the
+ * trimmed subset with the trimmed count in L0, so a random-effects analysis
+ * over-imputed — it matched neither metafor model. Fixed here.)
+ *
+ * Ref: Duval S, Tweedie R. Biometrics 2000;56:455-463.
+ *
  * @param {Array}  studies
  * @param {string} method  "fixed" | "random"
  * @returns {object|null}  { k0, adjusted, imputed, side, base } or null
@@ -253,59 +274,81 @@ export function trimFill(studies, method) {
          !isNaN(+s.es) && !isNaN(+s.lo) && !isNaN(+s.hi)
   );
   if (valid.length < 3) return null;
-  const base = runMeta(valid, method || "random");
+  const mdl  = method || "random";
+  const base = runMeta(valid, mdl);
   if (!base) return null;
 
-  const d = valid.map(s => {
-    const es = +s.es, se = (+s.hi - +s.lo) / (2 * 1.96);
+  // Observed effects and SEs (Z975 keeps the SE→CI round-trip exact with runMeta).
+  const obs = valid.map(s => {
+    const es = +s.es, se = (+s.hi - +s.lo) / (2 * Z975);
     return { es, se };
   });
+  const k = obs.length;
 
-  function poolMean(arr) {
-    const w = arr.map(x => 1 / (x.se * x.se));
-    const W = w.reduce((a, b) => a + b, 0);
-    return arr.reduce((a, x, i) => a + w[i] * x.es, 0) / W;
-  }
+  // Pooled estimate of an {es,se} set under the SELECTED model (FE inverse-variance,
+  // or DerSimonian–Laird random-effects with τ² re-estimated for this subset).
+  const pooled = arr => {
+    const wf = arr.map(x => 1 / (x.se * x.se));
+    const Wf = wf.reduce((a, b) => a + b, 0);
+    const muF = arr.reduce((a, x, i) => a + wf[i] * x.es, 0) / Wf;
+    if (mdl === "fixed" || arr.length < 2) return muF;
+    const Q  = arr.reduce((a, x, i) => a + wf[i] * (x.es - muF) ** 2, 0);
+    const W2 = wf.reduce((a, w) => a + w * w, 0);
+    const C  = Wf - W2 / Wf;
+    const tau2 = C > 0 ? Math.max(0, (Q - (arr.length - 1)) / C) : 0;
+    const wr = arr.map(x => 1 / (x.se * x.se + tau2));
+    const Wr = wr.reduce((a, b) => a + b, 0);
+    return arr.reduce((a, x, i) => a + wr[i] * x.es, 0) / Wr;
+  };
 
-  let side = null, k0 = 0, prevK0 = -1, iter = 0;
-  let working = d.slice();
+  // Ranks of |yᵢ − μ| over the FULL set; split rank sums by side of μ.
+  const rankSums = mu => {
+    const dev = obs.map(x => x.es - mu);
+    const order = dev.map((_, i) => i).sort((a, b) => Math.abs(dev[a]) - Math.abs(dev[b]));
+    const rank = new Array(k);
+    order.forEach((id, r) => { rank[id] = r + 1; });
+    let Tr = 0, Tl = 0;
+    dev.forEach((dv, i) => { if (dv > 0) Tr += rank[i]; else if (dv < 0) Tl += rank[i]; });
+    return { Tr, Tl };
+  };
 
-  while (k0 !== prevK0 && iter < 30) {
+  // Fix the heavy/over-represented side once from the full-data estimate; the
+  // missing studies are imputed on the opposite ("side") tail.
+  const beta0 = pooled(obs);
+  const t0 = rankSums(beta0);
+  const heavyRight = t0.Tr >= t0.Tl;     // right tail over-represented → impute left
+  const side = heavyRight ? "left" : "right";
+  const asc = obs.slice().sort((a, b) => a.es - b.es);
+
+  let k0 = 0, prevK0 = -1, iter = 0, mu = beta0;
+  while (k0 !== prevK0 && iter < 100) {
     prevK0 = k0; iter++;
-    const mu  = poolMean(working);
-    const dev = working.map(x => ({ v: x.es - mu, es: x.es, se: x.se }));
-    const sorted = dev.slice().sort((a, b) => Math.abs(a.v) - Math.abs(b.v));
-    let Tn = 0, Sr = 0;
-    sorted.forEach((x, i) => { if (x.v > 0) Tn += (i + 1); });
-    sorted.forEach((x, i) => { Sr += (x.v > 0 ? 1 : -1) * (i + 1); });
-    const n  = working.length;
-    const L0 = (4 * Tn - n * (n + 1)) / (2 * n - 1);
-    k0 = Math.max(0, Math.round(L0));
-    side = Sr < 0 ? "right" : "left";
-    const trimmed = d.slice().sort((a, b) => Math.abs(b.es - mu) - Math.abs(a.es - mu));
-    working = trimmed.slice(k0);
-    if (working.length < 2) { working = d.slice(); break; }
+    const trimmed = heavyRight ? asc.slice(0, k - k0) : asc.slice(k0);
+    mu = pooled(trimmed);
+    const t  = rankSums(mu);
+    const Tn = heavyRight ? t.Tr : t.Tl;
+    const L0 = (4 * Tn - k * (k + 1)) / (2 * k - 1);
+    k0 = Math.max(0, Math.min(k - 1, Math.round(L0)));
   }
 
   if (k0 <= 0) {
     return { k0: 0, adjusted: base, imputed: [], side: null, base };
   }
 
-  const muFinal = poolMean(working);
-  const bySide  = d.slice().sort((a, b) => (b.es - muFinal) - (a.es - muFinal));
-  const extreme = side === "left" ? bySide.slice(0, k0) : bySide.slice(-k0);
+  // Mirror the k0 most extreme studies on the heavy side about the final centre.
+  const extreme = heavyRight ? asc.slice(k - k0) : asc.slice(0, k0);
   const imputed = extreme.map(x => {
-    const mir = 2 * muFinal - x.es;
+    const mir = 2 * mu - x.es;
     return {
       es: +mir.toFixed(4), se: x.se,
-      lo: +(mir - 1.96 * x.se).toFixed(4),
-      hi: +(mir + 1.96 * x.se).toFixed(4),
+      lo: +(mir - Z975 * x.se).toFixed(4),
+      hi: +(mir + Z975 * x.se).toFixed(4),
       imputed: true,
     };
   });
 
   const augmented = valid.concat(imputed.map(x => ({ es: x.es, lo: x.lo, hi: x.hi })));
-  const adjusted  = runMeta(augmented, method || "random");
+  const adjusted  = runMeta(augmented, mdl);
   return { k0, adjusted, imputed, side, base };
 }
 
