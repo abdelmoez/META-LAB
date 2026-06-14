@@ -89,15 +89,16 @@ export function runMeta(studies, method = "random") {
     const tc   = tCrit(0.95, k - 1);
     const tStat = ranES / seHK;
     const pHK  = 2 * (1 - tCDF(Math.abs(tStat), k - 1));
+    // Full precision — display/export rounding happens at the UI edge only.
     hksj = {
-      es:    +ranES.toFixed(4),
-      se:    +seHK.toFixed(4),
-      lo:    +(ranES - tc * seHK).toFixed(4),
-      hi:    +(ranES + tc * seHK).toFixed(4),
-      t:     +tStat.toFixed(3),
+      es:    ranES,
+      se:    seHK,
+      lo:    ranES - tc * seHK,
+      hi:    ranES + tc * seHK,
+      t:     tStat,
       df:    k - 1,
-      tcrit: +tc.toFixed(3),
-      pval:  +pHK.toFixed(4),
+      tcrit: tc,
+      pval:  pHK,
     };
   }
 
@@ -108,38 +109,41 @@ export function runMeta(studies, method = "random") {
     const tcP    = tCrit(0.95, k - 2);
     const sePred = Math.sqrt(tau2all + ranSE * ranSE);
     predInt = {
-      lo:     +(ranES - tcP * sePred).toFixed(4),
-      hi:     +(ranES + tcP * sePred).toFixed(4),
+      lo:     ranES - tcP * sePred,
+      hi:     ranES + tcP * sePred,
       df:     k - 2,
-      sePred: +sePred.toFixed(4),
+      sePred: sePred,
     };
   }
 
+  // All numeric fields are returned at FULL precision. Rounding for display or
+  // export is applied at the UI/export edge via src/research-engine/format/precision.js
+  // — never here (prompt15 Task 1). I2desc is the only derived label.
   return {
     studies: d, k,
-    Q:      +Q.toFixed(3),
-    Qpval:  +Qpval.toFixed(4),
-    I2:     +I2.toFixed(1),
+    Q,
+    Qpval,
+    I2,
     I2desc,
-    tau2:   +tau2.toFixed(5),
-    pES:    +pES.toFixed(4),
-    pSE:    +pSE.toFixed(4),
-    lo95:   +(pES - Z975 * pSE).toFixed(4),
-    hi95:   +(pES + Z975 * pSE).toFixed(4),
-    pval:   +pval.toFixed(4),
-    z:      +z.toFixed(3),
-    method, W: +W.toFixed(4),
-    tau:    +Math.sqrt(tau2all).toFixed(4),
+    tau2,
+    pES,
+    pSE,
+    lo95:   pES - Z975 * pSE,
+    hi95:   pES + Z975 * pSE,
+    pval,
+    z,
+    method, W,
+    tau:    Math.sqrt(tau2all),
     fixed: {
-      es: +fixES.toFixed(4), se: +fixSE.toFixed(4),
-      lo: +(fixES - Z975 * fixSE).toFixed(4),
-      hi: +(fixES + Z975 * fixSE).toFixed(4),
+      es: fixES, se: fixSE,
+      lo: fixES - Z975 * fixSE,
+      hi: fixES + Z975 * fixSE,
     },
     random: {
-      es:   +ranES.toFixed(4), se: +ranSE.toFixed(4),
-      lo:   +(ranES - Z975 * ranSE).toFixed(4),
-      hi:   +(ranES + Z975 * ranSE).toFixed(4),
-      tau2: +tau2all.toFixed(5),
+      es:   ranES, se: ranSE,
+      lo:   ranES - Z975 * ranSE,
+      hi:   ranES + Z975 * ranSE,
+      tau2: tau2all,
     },
     hksj, predInt,
   };
@@ -200,13 +204,7 @@ export function eggersTest(studies) {
   const t     = intercept / seInt;
   const pv    = 2 * (1 - tCDF(Math.abs(t), dof));   // two-tailed t, df = k − 2
 
-  return {
-    intercept: +intercept.toFixed(4),
-    seInt:     +seInt.toFixed(4),
-    t:         +t.toFixed(3),
-    pval:      +pv.toFixed(4),
-    dof, k,
-  };
+  return { intercept, seInt, t, pval: pv, dof, k };  // full precision; round at display edge
 }
 
 /**
@@ -340,9 +338,9 @@ export function trimFill(studies, method) {
   const imputed = extreme.map(x => {
     const mir = 2 * mu - x.es;
     return {
-      es: +mir.toFixed(4), se: x.se,
-      lo: +(mir - Z975 * x.se).toFixed(4),
-      hi: +(mir + Z975 * x.se).toFixed(4),
+      es: mir, se: x.se,            // full precision — display rounds at the edge
+      lo: mir - Z975 * x.se,
+      hi: mir + Z975 * x.se,
       imputed: true,
     };
   });
@@ -381,9 +379,9 @@ export function influenceDiagnostics(studies, method) {
       pES:      r.pES,
       tau2:     r.tau2,
       I2:       r.I2,
-      dffit:    +dffit.toFixed(3),
-      tau2Drop: +(full.tau2 - r.tau2).toFixed(4),
-      i2Drop:   +(full.I2 - r.I2).toFixed(1),
+      dffit,
+      tau2Drop: full.tau2 - r.tau2,
+      i2Drop:   full.I2 - r.I2,
       influential: Math.abs(dffit) > 1 || Math.abs(full.I2 - r.I2) > 25,
     };
   }).filter(Boolean);
@@ -423,10 +421,5 @@ export function subgroupAnalysis(studies, groupKey, method) {
   const df = results.length - 1;
   const p  = df > 0 ? 1 - chiSquareCDF(Qb, df) : null;
 
-  return {
-    groups:    results,
-    Qbetween:  +Qb.toFixed(3),
-    df,
-    pBetween:  p !== null ? +p.toFixed(4) : null,
-  };
+  return { groups: results, Qbetween: Qb, df, pBetween: p };  // full precision
 }

@@ -39,6 +39,7 @@ Rate limit (reshaped in prompt6): **300 requests per 15 minutes per IP in produc
   "contactMessages": { "total": 15, "unread": 4 },
   "securityEvents": { "failedLogins7d": 7 },
   "logins": { "day": 5, "week": 12, "month": 30, "quarter": 38, "year": 41 },
+  "activeUsers": { "day": 8, "week": 19, "month": 35, "quarter": 40, "year": 42 },
   "db": "ok"
 }
 ```
@@ -47,6 +48,19 @@ Rate limit (reshaped in prompt6): **300 requests per 15 minutes per IP in produc
 window — past 24 hours / 7 days / 30 days / 90 days / 365 days — counted from the
 `LoginEvent` table. One user logging in three times today moves `day` by exactly 1.
 Monotonic: `day ≤ week ≤ month ≤ quarter ≤ year`.
+
+`activeUsers` (prompt15 Task 2): **distinct** userIds who were **active on the site**
+in each rolling window — `COUNT(User WHERE lastActive >= now − window)` for the same
+24h / 7d / 30d / 90d / 365d windows. This is the broader, more accurate "who used the
+product" metric: it counts a user the moment they do **any** authenticated action —
+opening the app, hitting `/api/auth/me` with an already-valid session, opening or saving
+a project, screening, importing/exporting, sending a message — not only fresh sign-ins.
+`lastActive` is updated by the throttled `touchLastActive()` hook in `requireAuth`
+(at most one DB write per user per 5 minutes — see `server/middleware/auth.js`), so the
+metric is spam-safe and needs no new table or migration. Because every login is also an
+authenticated action, `activeUsers ≥ logins` for the same window; likewise monotonic
+across windows. `logins` is retained unchanged as the narrower sign-in-event metric;
+the ops console surfaces both ("Unique active users" vs "Unique logins").
 
 ---
 

@@ -74,6 +74,10 @@ export const mkProject = name => ({
   studies:       [],
   robMethod:     "RoB2",
   reportChecked: {},
+  // Display/export precision for analysis output (prompt15 Task 1). Underlying
+  // calculations are always full precision; this only controls rounding at the
+  // UI/export edge. Missing on legacy projects → formatter defaults to 3 dp.
+  analysisPrecision: { decimals: 3, trailingZeros: true },
 });
 
 /**
@@ -133,5 +137,6 @@ export const mkStudy = () => ({
   conversions: [],         // [{id,target,type,method,reason,original,result,at}]
   needsReview: false,
   extractedBy: "", extractedAt: "",
+  addedAt: "", updatedAt: "",   // prompt15 Task 3 — optional timestamps for "recently added/modified" sorts
   rob: {}, notes: "",
 });

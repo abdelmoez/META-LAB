@@ -89,6 +89,7 @@ export async function getMetrics(req, res) {
       totalMessages, activeMessages, myReadActive,
       failedLogins7d,
       loginsDay, loginsWeek, loginsMonth, loginsQuarter, loginsYear,
+      activeUsersDay, activeUsersWeek, activeUsersMonth, activeUsersQuarter, activeUsersYear,
       allProjects,
     ] = await Promise.all([
       prisma.user.count(),
@@ -112,6 +113,16 @@ export async function getMetrics(req, res) {
       uniqueLogins(monthAgo),
       uniqueLogins(quarterAgo),
       uniqueLogins(yearAgo),
+      // Unique ACTIVE USERS per rolling window (prompt15 Task 2).
+      // Uses User.lastActive — set by requireAuth's throttled touchLastActive() on
+      // every authenticated request (opens app, saves, exports, opens project, etc.)
+      // AND by login(). No new schema column needed; no new DB spam (5-min throttle).
+      // Cheap count() — one per window, much cheaper than loginEvent groupBy.
+      prisma.user.count({ where: { lastActive: { gte: dayAgo } } }),
+      prisma.user.count({ where: { lastActive: { gte: weekAgo } } }),
+      prisma.user.count({ where: { lastActive: { gte: monthAgo } } }),
+      prisma.user.count({ where: { lastActive: { gte: quarterAgo } } }),
+      prisma.user.count({ where: { lastActive: { gte: yearAgo } } }),
       prisma.project.findMany({ select: { data: true } }),
     ]);
     const unreadMessages = Math.max(0, activeMessages - myReadActive);
@@ -229,6 +240,18 @@ export async function getMetrics(req, res) {
         month: loginsMonth.length,
         quarter: loginsQuarter.length,
         year: loginsYear.length,
+      },
+      // Unique ACTIVE USERS per rolling window (prompt15 Task 2).
+      // Distinct from logins: counts ANY user whose lastActive >= cutoff,
+      // including returning users who never logged out (existing session),
+      // opened the app, opened/saved a project, ran or exported an analysis,
+      // or hit any other authenticated endpoint — not only fresh sign-in events.
+      activeUsers: {
+        day: activeUsersDay,
+        week: activeUsersWeek,
+        month: activeUsersMonth,
+        quarter: activeUsersQuarter,
+        year: activeUsersYear,
       },
       // ── prompt9 additions (additive — frontend reads these exact names) ──
       invites: { pending: pendingInvites, accepted: acceptedInvites, expired: expiredInvites },

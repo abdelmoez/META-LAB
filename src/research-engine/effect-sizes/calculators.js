@@ -58,11 +58,8 @@ export function calcES(type, p) {
       if (type === "MD") {
         const es = m1 - m2;
         const se = Math.sqrt(sd1 ** 2 / n1 + sd2 ** 2 / n2);
-        return {
-          es: +es.toFixed(4), se: +se.toFixed(4),
-          lo: +(es - 1.96 * se).toFixed(4),
-          hi: +(es + 1.96 * se).toFixed(4),
-        };
+        // Full precision — display/export rounding is applied at the UI edge.
+        return { es, se, lo: es - 1.96 * se, hi: es + 1.96 * se };
       }
 
       // SMD — Cohen's d with the pooled-SD standardiser and the large-sample
@@ -72,11 +69,7 @@ export function calcES(type, p) {
       const poolSD = Math.sqrt(((n1 - 1) * sd1 ** 2 + (n2 - 1) * sd2 ** 2) / (n1 + n2 - 2));
       const d  = (m1 - m2) / poolSD;
       const se = Math.sqrt((n1 + n2) / (n1 * n2) + d ** 2 / (2 * (n1 + n2)));
-      return {
-        es: +d.toFixed(4), se: +se.toFixed(4),
-        lo: +(d - 1.96 * se).toFixed(4),
-        hi: +(d + 1.96 * se).toFixed(4),
-      };
+      return { es: d, se, lo: d - 1.96 * se, hi: d + 1.96 * se };
     }
 
     if (type === "OR" || type === "RR" || type === "RD") {
@@ -100,9 +93,9 @@ export function calcES(type, p) {
         const se = Math.sqrt(r1 * (1 - r1) / n1 + r2 * (1 - r2) / n2);
         if (!(se > 0)) return null;   // degenerate (e.g. 0 events in BOTH arms) → not poolable
         return {
-          es: +rd.toFixed(4), se: +se.toFixed(4),
-          lo: +(rd - 1.96 * se).toFixed(4),
-          hi: +(rd + 1.96 * se).toFixed(4),
+          es: rd, se,
+          lo: rd - 1.96 * se,
+          hi: rd + 1.96 * se,
           display: `RD=${rd.toFixed(4)} [${(rd - 1.96*se).toFixed(4)}, ${(rd + 1.96*se).toFixed(4)}]`,
         };
       }
@@ -125,9 +118,9 @@ export function calcES(type, p) {
         ? Math.sqrt(1/A + 1/B + 1/C + 1/D)
         : Math.sqrt(1/A - 1/(A + B) + 1/C - 1/(C + D));
       const out = {
-        es: +lnE.toFixed(4), se: +se.toFixed(4),
-        lo: +(lnE - 1.96 * se).toFixed(4),
-        hi: +(lnE + 1.96 * se).toFixed(4),
+        es: lnE, se,
+        lo: lnE - 1.96 * se,
+        hi: lnE + 1.96 * se,
         display: `${type}=${Math.exp(lnE).toFixed(3)} [${Math.exp(lnE - 1.96*se).toFixed(3)}, ${Math.exp(lnE + 1.96*se).toFixed(3)}]`,
       };
       if (corrected) {
@@ -145,9 +138,9 @@ export function calcES(type, p) {
       const lnHR = Math.log(hr);
       const se   = (Math.log(hi) - Math.log(lo)) / (2 * 1.96);
       return {
-        es: +lnHR.toFixed(4), se: +se.toFixed(4),
-        lo: +(lnHR - 1.96 * se).toFixed(4),
-        hi: +(lnHR + 1.96 * se).toFixed(4),
+        es: lnHR, se,
+        lo: lnHR - 1.96 * se,
+        hi: lnHR + 1.96 * se,
         display: `HR=${hr} [${lo}, ${hi}]`,
       };
     }
@@ -158,9 +151,9 @@ export function calcES(type, p) {
       const z  = 0.5 * Math.log((1 + r) / (1 - r));
       const se = 1 / Math.sqrt(n - 3);
       return {
-        es: +z.toFixed(4), se: +se.toFixed(4),
-        lo: +(z - 1.96 * se).toFixed(4),
-        hi: +(z + 1.96 * se).toFixed(4),
+        es: z, se,
+        lo: z - 1.96 * se,
+        hi: z + 1.96 * se,
         display: `r=${r}, z=${z.toFixed(3)} [${(z - 1.96*se).toFixed(3)}, ${(z + 1.96*se).toFixed(3)}]`,
       };
     }
@@ -175,9 +168,9 @@ export function calcES(type, p) {
       const se    = Math.sqrt(1 / (tot * pr * (1 - pr)));
       const back  = x => { const e = Math.exp(x); return e / (1 + e); };
       return {
-        es: +logit.toFixed(4), se: +se.toFixed(4),
-        lo: +(logit - 1.96 * se).toFixed(4),
-        hi: +(logit + 1.96 * se).toFixed(4),
+        es: logit, se,
+        lo: logit - 1.96 * se,
+        hi: logit + 1.96 * se,
         display: `proportion=${(ev/tot).toFixed(3)} (logit ${logit.toFixed(3)}) → ${(100*back(logit - 1.96*se)).toFixed(1)}%–${(100*back(logit + 1.96*se)).toFixed(1)}%`,
       };
     }
@@ -191,9 +184,9 @@ export function calcES(type, p) {
       const se    = Math.sqrt(1/tp + 1/fp + 1/fn + 1/tn);
       const sens  = tp / (tp + fn), spec = tn / (tn + fp);
       return {
-        es: +lnDOR.toFixed(4), se: +se.toFixed(4),
-        lo: +(lnDOR - 1.96 * se).toFixed(4),
-        hi: +(lnDOR + 1.96 * se).toFixed(4),
+        es: lnDOR, se,
+        lo: lnDOR - 1.96 * se,
+        hi: lnDOR + 1.96 * se,
         display: `Sens=${(sens*100).toFixed(1)}% Spec=${(spec*100).toFixed(1)}% · DOR=${Math.exp(lnDOR).toFixed(2)} [${Math.exp(lnDOR - 1.96*se).toFixed(2)}, ${Math.exp(lnDOR + 1.96*se).toFixed(2)}]`,
       };
     }

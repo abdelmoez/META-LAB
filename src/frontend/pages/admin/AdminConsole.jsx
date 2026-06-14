@@ -884,6 +884,25 @@ function OverviewSection({ onNavigate, isAdmin = true }) {
             )}
           </div>
         </SectionCard>
+        <SectionCard title="Unique Active Users">
+          <div style={{ padding: '16px 18px' }}>
+            <BarRow
+              loading={loading}
+              color={C.teal}
+              emptyLabel="No activity data yet"
+              rows={[
+                { label: '24h',      value: m.activeUsers?.day },
+                { label: '7 days',   value: m.activeUsers?.week },
+                { label: '30 days',  value: m.activeUsers?.month },
+                { label: '90 days',  value: m.activeUsers?.quarter },
+                { label: '365 days', value: m.activeUsers?.year },
+              ]}
+            />
+            <div style={{ fontSize: 9, fontFamily: MONO, color: C.muted, marginTop: 12, letterSpacing: '0.04em', textTransform: 'uppercase', lineHeight: 1.6 }}>
+              active users · rolling windows · any authenticated action (open app, open/save project, run/export analysis, …) — includes returning sessions, not only fresh logins
+            </div>
+          </div>
+        </SectionCard>
         <SectionCard title="Unique Logins">
           <div style={{ padding: '16px 18px' }}>
             <BarRow
@@ -898,7 +917,9 @@ function OverviewSection({ onNavigate, isAdmin = true }) {
                 { label: '365 days', value: m.logins?.year },
               ]}
             />
-            <div style={{ fontSize: 9, fontFamily: MONO, color: C.muted, marginTop: 12, letterSpacing: '0.04em', textTransform: 'uppercase' }}>distinct users · rolling windows</div>
+            <div style={{ fontSize: 9, fontFamily: MONO, color: C.muted, marginTop: 12, letterSpacing: '0.04em', textTransform: 'uppercase', lineHeight: 1.6 }}>
+              sign-in events only · rolling windows · distinct users who authenticated with a password during the window
+            </div>
           </div>
         </SectionCard>
       </div>

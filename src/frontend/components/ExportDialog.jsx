@@ -4,7 +4,7 @@
  *
  * FROZEN adapter contract (F-monolith / F-sift / F-ops wire triggers to this):
  *
- *   <ExportDialog open onClose={fn} item={item} />
+ *   <ExportDialog open onClose={fn} item={item} precision={precision} />
  *
  *   item = {
  *     id: string,
@@ -15,9 +15,17 @@
  *     defaults?: { format?, presetId?, variantId? },
  *     run: async (choice) => void,         // performs the actual export/download
  *   }
- *   choice = { format, presetId, widthPx, transparent, variantId }
+ *   precision = { decimals: 2|3|4|5|6, trailingZeros: boolean }  (optional)
+ *     — project-level precision passed from the monolith; the user can override
+ *       it for this export only using the "Decimal places" selector in the dialog.
+ *       Machine formats (CSV/JSON) always export raw full-precision values.
+ *       Report/figure formats (SVG/PNG/table text) respect the chosen precision.
+ *
+ *   choice = { format, presetId, widthPx, transparent, variantId, precision }
  *     — presetId/widthPx/transparent are undefined/false unless
  *       (item.sizing && format === 'png'); variantId undefined without variants.
+ *       precision = { decimals, trailingZeros, full } — full=true when user picks
+ *       "Full precision (raw values)".
  *
  * Rendered through createPortal(document.body): trigger buttons live inside
  * the monolith's animated `.tab-content` (a transformed ancestor that hijacks
@@ -28,6 +36,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import { PRESETS, validateCustomSize } from './exportCore.js';
+import { DECIMAL_OPTIONS, DEFAULT_DECIMALS } from '../../research-engine/format/precision.js';
 
 const sectionLabel = {
   fontSize: 10, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.12em',
@@ -50,7 +59,11 @@ function Spinner({ size = 13 }) {
   );
 }
 
-export default function ExportDialog({ open, onClose, item }) {
+// Machine formats (CSV/JSON) always export at full/raw precision; the
+// precision selector applies to report/figure-style outputs (SVG/PNG/table text).
+const MACHINE_FORMATS = new Set(['csv', 'json', 'ris', 'bib']);
+
+export default function ExportDialog({ open, onClose, item, precision }) {
   const [format, setFormat]           = useState(null);
   const [presetId, setPresetId]       = useState(PRESETS[0].id);
   const [customPx, setCustomPx]       = useState('1600');
@@ -58,6 +71,11 @@ export default function ExportDialog({ open, onClose, item }) {
   const [variantId, setVariantId]     = useState(null);
   const [running, setRunning]         = useState(false);
   const [error, setError]             = useState(null);
+  // Precision selector: default from the project-level precision prop.
+  // 'full' means raw unrounded values (overrides decimals for report formats).
+  const defaultDecimals = precision?.decimals ?? DEFAULT_DECIMALS;
+  const [decimals, setDecimals]       = useState(defaultDecimals);
+  const [fullPrec, setFullPrec]       = useState(false);
 
   // (Re)initialise from item.defaults each time the dialog opens.
   useEffect(() => {
@@ -70,7 +88,9 @@ export default function ExportDialog({ open, onClose, item }) {
     setTransparent(false);
     setRunning(false);
     setError(null);
-  }, [open, item]);
+    setDecimals(precision?.decimals ?? DEFAULT_DECIMALS);
+    setFullPrec(false);
+  }, [open, item, precision]);
 
   const close = useCallback(() => { if (!running) onClose?.(); }, [running, onClose]);
 
@@ -87,6 +107,15 @@ export default function ExportDialog({ open, onClose, item }) {
   const showSizing = !!item.sizing && format === 'png';
   const custom = presetId === 'custom' ? validateCustomSize(customPx) : null;
   const sizeInvalid = showSizing && presetId === 'custom' && !(custom && custom.ok);
+
+  // Resolved precision for this export.
+  // Machine formats (CSV/JSON/RIS/BIB) always get full/raw precision regardless
+  // of the user's selector — lossless data is always correct for those formats.
+  // Report/figure formats (SVG/PNG/table text) use the selected precision.
+  const isMachine = format ? MACHINE_FORMATS.has(format.toLowerCase()) : false;
+  const chosenPrecision = isMachine
+    ? { decimals: DEFAULT_DECIMALS, trailingZeros: true, full: true }
+    : { decimals, trailingZeros: precision?.trailingZeros !== false, full: fullPrec };
 
   const runExport = async () => {
     if (running || !format) return;
@@ -108,6 +137,7 @@ export default function ExportDialog({ open, onClose, item }) {
         widthPx,
         transparent: showSizing ? transparent : false,
         variantId: item.variants?.length ? variantId : undefined,
+        precision: chosenPrecision,
       });
       onClose?.();
     } catch (e) {
@@ -207,6 +237,49 @@ export default function ExportDialog({ open, onClose, item }) {
             <select value={variantId || ''} onChange={e => setVariantId(e.target.value)} style={fieldStyle}>
               {item.variants.map(v => <option key={v.id} value={v.id}>{v.label}</option>)}
             </select>
+          </div>
+        )}
+
+        {/* Decimal places — report/figure formats only.
+            Machine formats (CSV/JSON/RIS/BIB) are always exported at raw precision
+            for lossless data; this selector is hidden for those formats. */}
+        {!isMachine && (
+          <div style={{ marginBottom: 14 }}>
+            <div style={sectionLabel}>Decimal places</div>
+            <select
+              value={fullPrec ? 'full' : String(decimals)}
+              onChange={e => {
+                if (e.target.value === 'full') { setFullPrec(true); }
+                else { setFullPrec(false); setDecimals(Number(e.target.value)); }
+                setError(null);
+              }}
+              style={fieldStyle}
+              disabled={isMachine}
+            >
+              {DECIMAL_OPTIONS.map(d => (
+                <option key={d} value={String(d)}>
+                  {d} decimal{d !== 1 ? 's' : ''}{d === defaultDecimals ? ' (project default)' : ''}
+                </option>
+              ))}
+              <option value="full">Full precision (raw values)</option>
+            </select>
+            {fullPrec && (
+              <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, marginTop: 5, letterSpacing: '0.03em' }}>
+                Raw unrounded values — recommended for supplementary tables.
+              </div>
+            )}
+            {!fullPrec && decimals !== defaultDecimals && (
+              <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, marginTop: 5, letterSpacing: '0.03em' }}>
+                Overrides the project default ({defaultDecimals} dp) for this export only.
+              </div>
+            )}
+          </div>
+        )}
+        {isMachine && format && (
+          <div style={{ marginBottom: 14, padding: '7px 10px', background: alpha(C.acc, '0a'), border: `1px solid ${alpha(C.acc, '20')}`, borderRadius: 7 }}>
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.04em', textTransform: 'uppercase' }}>
+              {format.toUpperCase()} — exported at full raw precision (lossless data format)
+            </span>
           </div>
         )}
 

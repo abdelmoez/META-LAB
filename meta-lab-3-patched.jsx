@@ -9,6 +9,8 @@ import { Icon } from "./src/frontend/components/icons.jsx";
 import MetaLabChatLauncher from "./src/frontend/components/chat/MetaLabChatLauncher.jsx";
 import ExportDialog from "./src/frontend/components/ExportDialog.jsx";
 import { rasterizeSvg, downloadBlob, downloadText } from "./src/frontend/components/exportCore.js";
+import { fmtNum, fmtES, fmtCI, fmtEstCI, fmtP, fmtPct, fmtI2, fmtWeight, fmtInt, normalizePrecision, DECIMAL_OPTIONS } from "./src/research-engine/format/precision.js";
+import { orderStudies, EXTRACTION_SORTS, DEFAULT_EXTRACTION_SORT } from "./src/frontend/pages/extractionOrder.js";
 
 /* ════════════ UTILS ════════════ */
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -141,9 +143,8 @@ function runMeta(studies, method="random") {
     const seHK=Math.sqrt(Math.max(qHK,1e-12))*Math.sqrt(1/rWall);
     const tc=tCrit(0.95,k-1);
     const tStat=ranES/seHK, pHK=2*(1-tCDF(Math.abs(tStat),k-1));
-    hksj={es:+ranES.toFixed(4),se:+seHK.toFixed(4),
-      lo:+(ranES-tc*seHK).toFixed(4),hi:+(ranES+tc*seHK).toFixed(4),
-      t:+tStat.toFixed(3),df:k-1,tcrit:+tc.toFixed(3),pval:+pHK.toFixed(4)};
+    // Full precision — rounding happens only at the display/export edge (prompt15).
+    hksj={es:ranES,se:seHK,lo:ranES-tc*seHK,hi:ranES+tc*seHK,t:tStat,df:k-1,tcrit:tc,pval:pHK};
   }
 
   // ── Prediction interval (where a future study's true effect would likely fall) ──
@@ -152,15 +153,16 @@ function runMeta(studies, method="random") {
   if(k>=3){
     const tcP=tCrit(0.95,k-2);
     const sePred=Math.sqrt(tau2all+ranSE*ranSE);
-    predInt={lo:+(ranES-tcP*sePred).toFixed(4),hi:+(ranES+tcP*sePred).toFixed(4),df:k-2,sePred:+sePred.toFixed(4)};
+    predInt={lo:ranES-tcP*sePred,hi:ranES+tcP*sePred,df:k-2,sePred:sePred};
   }
 
-  return {studies:d,k,Q:+Q.toFixed(3),Qpval:+Qpval.toFixed(4),I2:+I2.toFixed(1),I2desc,tau2:+tau2.toFixed(5),
-    pES:+pES.toFixed(4),pSE:+pSE.toFixed(4),lo95:+(pES-Z975*pSE).toFixed(4),
-    hi95:+(pES+Z975*pSE).toFixed(4),pval:+pval.toFixed(4),z:+z.toFixed(3),
-    method,W:+W.toFixed(4),tau:+Math.sqrt(tau2all).toFixed(4),
-    fixed:{es:+fixES.toFixed(4),se:+fixSE.toFixed(4),lo:+(fixES-Z975*fixSE).toFixed(4),hi:+(fixES+Z975*fixSE).toFixed(4)},
-    random:{es:+ranES.toFixed(4),se:+ranSE.toFixed(4),lo:+(ranES-Z975*ranSE).toFixed(4),hi:+(ranES+Z975*ranSE).toFixed(4),tau2:+tau2all.toFixed(5)},
+  // Full precision returned; display/export rounding via src/research-engine/format/precision.js.
+  return {studies:d,k,Q,Qpval,I2,I2desc,tau2,
+    pES,pSE,lo95:pES-Z975*pSE,
+    hi95:pES+Z975*pSE,pval,z,
+    method,W,tau:Math.sqrt(tau2all),
+    fixed:{es:fixES,se:fixSE,lo:fixES-Z975*fixSE,hi:fixES+Z975*fixSE},
+    random:{es:ranES,se:ranSE,lo:ranES-Z975*ranSE,hi:ranES+Z975*ranSE,tau2:tau2all},
     hksj, predInt};
 }
 
@@ -198,7 +200,7 @@ function eggersTest(studies) {
   var t=intercept/seInt;
   // Two-tailed p from Student-t with df = k-2 (matches metafor's regtest)
   var p = 2*(1-tCDF(Math.abs(t), dof));
-  return { intercept:+intercept.toFixed(4), seInt:+seInt.toFixed(4), t:+t.toFixed(3), pval:+p.toFixed(4), dof:dof, k:k };
+  return { intercept:intercept, seInt:seInt, t:t, pval:p, dof:dof, k:k };  // full precision
 }
 
 /* Leave-one-out sensitivity analysis */
@@ -288,7 +290,7 @@ function trimFill(studies, method){
   }
   // Mirror the k0 most extreme studies on the heavy side about the final centre.
   var extreme = heavyRight ? asc.slice(k-k0) : asc.slice(0,k0);
-  var imputed = extreme.map(function(x){ var mir=2*mu-x.es; return {es:+mir.toFixed(4), se:x.se, lo:+(mir-Z975*x.se).toFixed(4), hi:+(mir+Z975*x.se).toFixed(4), imputed:true}; });
+  var imputed = extreme.map(function(x){ var mir=2*mu-x.es; return {es:mir, se:x.se, lo:mir-Z975*x.se, hi:mir+Z975*x.se, imputed:true}; });
   var augmented = valid.concat(imputed.map(function(x){ return {es:x.es, lo:x.lo, hi:x.hi}; }));
   var adjusted = runMeta(augmented, mdl);
   return {k0:k0, adjusted:adjusted, imputed:imputed, side:side, base:base};
@@ -310,9 +312,9 @@ function influenceDiagnostics(studies, method){
       id: omit.id,
       label: (omit.author||"Study")+(omit.year?" "+omit.year:""),
       pES: r.pES, tau2: r.tau2, I2: r.I2,
-      dffit: +dffit.toFixed(3),
-      tau2Drop: +(full.tau2 - r.tau2).toFixed(4),   // how much heterogeneity this study adds
-      i2Drop: +(full.I2 - r.I2).toFixed(1),
+      dffit: dffit,
+      tau2Drop: full.tau2 - r.tau2,   // how much heterogeneity this study adds
+      i2Drop: full.I2 - r.I2,
       influential: Math.abs(dffit) > 1 || Math.abs(full.I2 - r.I2) > 25
     };
   }).filter(Boolean);
@@ -341,7 +343,7 @@ function subgroupAnalysis(studies, groupKey, method) {
   var df = results.length - 1;
   // approximate chi-square p
   var p = df>0 ? 1 - chiSquareCDF(Qb, df) : null;
-  return { groups: results, Qbetween:+Qb.toFixed(3), df:df, pBetween: p!==null?+p.toFixed(4):null };
+  return { groups: results, Qbetween:Qb, df:df, pBetween: p };  // full precision
 }
 
 /* Exact chi-square CDF via the regularised lower incomplete gamma P(df/2, x/2).
@@ -438,10 +440,10 @@ function calcES(type,p) {
     if(type==="SMD"||type==="MD"){
       const n1=+p.n1,n2=+p.n2,sd1=+p.sd1,sd2=+p.sd2,m1=+p.m1,m2=+p.m2;
       if([n1,n2,sd1,sd2,m1,m2].some(isNaN)||n1<2||n2<2) return null;
-      if(type==="MD"){const es=m1-m2,se=Math.sqrt(sd1**2/n1+sd2**2/n2);return{es:+es.toFixed(4),se:+se.toFixed(4),lo:+(es-1.96*se).toFixed(4),hi:+(es+1.96*se).toFixed(4)};}
+      if(type==="MD"){const es=m1-m2,se=Math.sqrt(sd1**2/n1+sd2**2/n2);return{es:es,se:se,lo:es-1.96*se,hi:es+1.96*se};}
       const poolSD=Math.sqrt(((n1-1)*sd1**2+(n2-1)*sd2**2)/(n1+n2-2));
       const d=(m1-m2)/poolSD,se=Math.sqrt((n1+n2)/(n1*n2)+d**2/(2*(n1+n2)));
-      return{es:+d.toFixed(4),se:+se.toFixed(4),lo:+(d-1.96*se).toFixed(4),hi:+(d+1.96*se).toFixed(4)};
+      return{es:d,se:se,lo:d-1.96*se,hi:d+1.96*se};
     }
     if(type==="OR"||type==="RR"||type==="RD"){
       // 2×2 counts a/b/c/d. A real zero count is valid; only missing/negative/
@@ -458,7 +460,7 @@ function calcES(type,p) {
         const r1=a/n1,r2=c/n2,rd=r1-r2;
         const se=Math.sqrt(r1*(1-r1)/n1+r2*(1-r2)/n2);
         if(!(se>0)) return null;   // degenerate (0 events both arms) → not poolable
-        return{es:+rd.toFixed(4),se:+se.toFixed(4),lo:+(rd-1.96*se).toFixed(4),hi:+(rd+1.96*se).toFixed(4),
+        return{es:rd,se:se,lo:rd-1.96*se,hi:rd+1.96*se,
           display:`RD=${rd.toFixed(4)} [${(rd-1.96*se).toFixed(4)}, ${(rd+1.96*se).toFixed(4)}]`};
       }
       // OR/RR: double-zero-event table (a=0 AND c=0) is not estimable → use RD.
@@ -469,7 +471,7 @@ function calcES(type,p) {
       if(corrected){ A+=0.5;B+=0.5;Cc+=0.5;D+=0.5; }
       const lnE=type==="OR"?Math.log((A*D)/(B*Cc)):Math.log((A/(A+B))/(Cc/(Cc+D)));
       const se=type==="OR"?Math.sqrt(1/A+1/B+1/Cc+1/D):Math.sqrt(1/A-1/(A+B)+1/Cc-1/(Cc+D));
-      const out={es:+lnE.toFixed(4),se:+se.toFixed(4),lo:+(lnE-1.96*se).toFixed(4),hi:+(lnE+1.96*se).toFixed(4),
+      const out={es:lnE,se:se,lo:lnE-1.96*se,hi:lnE+1.96*se,
         display:`${type}=${Math.exp(lnE).toFixed(3)} [${Math.exp(lnE-1.96*se).toFixed(3)}, ${Math.exp(lnE+1.96*se).toFixed(3)}]`};
       if(corrected){ out.continuityCorrectionApplied=true; out.continuityCorrectionValue=0.5; out.correctionMethod="Haldane-Anscombe";
         out.note=`Zero cell detected — 0.5 added to all four cells (Haldane–Anscombe) for log ${type}.`; }
@@ -479,14 +481,14 @@ function calcES(type,p) {
       const hr=+p.hr,lo=+p.lo,hi=+p.hi;
       if([hr,lo,hi].some(isNaN)||hr<=0||lo<=0||hi<=0) return null;
       const lnHR=Math.log(hr),se=(Math.log(hi)-Math.log(lo))/(2*1.96);
-      return{es:+lnHR.toFixed(4),se:+se.toFixed(4),lo:+(lnHR-1.96*se).toFixed(4),hi:+(lnHR+1.96*se).toFixed(4),
+      return{es:lnHR,se:se,lo:lnHR-1.96*se,hi:lnHR+1.96*se,
         display:`HR=${hr} [${lo}, ${hi}]`};
     }
     if(type==="COR"){
       const r=+p.r,n=+p.n;
       if(isNaN(r)||isNaN(n)||Math.abs(r)>=1||n<4) return null;
       const z=0.5*Math.log((1+r)/(1-r)),se=1/Math.sqrt(n-3);
-      return{es:+z.toFixed(4),se:+se.toFixed(4),lo:+(z-1.96*se).toFixed(4),hi:+(z+1.96*se).toFixed(4),
+      return{es:z,se:se,lo:z-1.96*se,hi:z+1.96*se,
         display:`r=${r}, z=${z.toFixed(3)} [${(z-1.96*se).toFixed(3)}, ${(z+1.96*se).toFixed(3)}]`};
     }
     if(type==="PROP"){
@@ -497,7 +499,7 @@ function calcES(type,p) {
       if(ev===0||ev===tot){ ev+=0.5; tot+=1; pr=ev/tot; } // correction
       const logit=Math.log(pr/(1-pr)),se=Math.sqrt(1/(tot*pr*(1-pr)));
       const back=x=>{const e=Math.exp(x);return e/(1+e);};
-      return{es:+logit.toFixed(4),se:+se.toFixed(4),lo:+(logit-1.96*se).toFixed(4),hi:+(logit+1.96*se).toFixed(4),
+      return{es:logit,se:se,lo:logit-1.96*se,hi:logit+1.96*se,
         display:`proportion=${(ev/tot).toFixed(3)} (logit ${logit.toFixed(3)}) → ${(100*back(logit-1.96*se)).toFixed(1)}%–${(100*back(logit+1.96*se)).toFixed(1)}%`};
     }
     if(type==="DIAG"){
@@ -507,7 +509,7 @@ function calcES(type,p) {
       if([tp,fp,fn,tn].some(v=>v===0)){ tp+=0.5;fp+=0.5;fn+=0.5;tn+=0.5; }
       const lnDOR=Math.log((tp*tn)/(fp*fn)),se=Math.sqrt(1/tp+1/fp+1/fn+1/tn);
       const sens=tp/(tp+fn),spec=tn/(tn+fp);
-      return{es:+lnDOR.toFixed(4),se:+se.toFixed(4),lo:+(lnDOR-1.96*se).toFixed(4),hi:+(lnDOR+1.96*se).toFixed(4),
+      return{es:lnDOR,se:se,lo:lnDOR-1.96*se,hi:lnDOR+1.96*se,
         display:`Sens=${(sens*100).toFixed(1)}% Spec=${(spec*100).toFixed(1)}% · DOR=${Math.exp(lnDOR).toFixed(2)} [${Math.exp(lnDOR-1.96*se).toFixed(2)}, ${Math.exp(lnDOR+1.96*se).toFixed(2)}]`};
     }
   } catch(_){}
@@ -796,6 +798,9 @@ const mkProject = name => ({
   prisma:{dbs:"",reg:"",other:"",dedupe:"",screened:"",excTA:"",excFull:"",reasons:[{id:uid(),r:"",n:""}],included:"",qual:"",quant:""},
   records:[],   // imported citations for screening: {id,title,authors,year,journal,doi,abstract,source,decision,reviewer2,notes,dupOf}
   studies:[],robMethod:"RoB2",reportChecked:{},
+  // Display/export precision (prompt15 Task 1) — calculations stay full precision;
+  // this only controls rounding at the UI/export edge. Legacy projects default to 3 dp.
+  analysisPrecision:{decimals:3,trailingZeros:true},
 });
 const mkStudy = () => ({id:uid(),author:"",year:"",country:"",design:"RCT",n:"",outcome:"",
   // citation metadata (auto-fillable from PMID/DOI)
@@ -827,6 +832,7 @@ const mkStudy = () => ({id:uid(),author:"",year:"",country:"",design:"RCT",n:"",
   conversions:[],       // [{id,target,type,method,reason,original,result,at}]
   needsReview:false,    // needs second-reviewer confirmation
   extractedBy:"",extractedAt:"",  // reviewer initials + ISO timestamp
+  addedAt:"",updatedAt:"",        // prompt15 Task 3 — optional timestamps for "recently added/modified" sorts
   rob:{},notes:""});
 
 /* Physical location of an extracted value (WHERE in the paper) */
@@ -1250,7 +1256,7 @@ function ProgressBar({done,total,color}){
 }
 
 /* ════════════ FOREST PLOT ════════════ */
-function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",showCounts=true,showWeights=true,svgId="forestplot-svg"}){
+function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",showCounts=true,showWeights=true,svgId="forestplot-svg",prec}){
   if(!result) return(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
     <div style={{fontSize:32,marginBottom:8}}>🌲</div>Enter effect sizes for at least 2 studies to generate a forest plot
   </div>);
@@ -1260,7 +1266,7 @@ function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",showCount
   const isLog=esType&&ES_TYPES[esType]&&ES_TYPES[esType].log;
   const isProp=esType==="PROP";
   const bt=x=>{ if(isLog)return Math.exp(x); if(isProp){const e=Math.exp(x);return e/(1+e);} return x; };
-  const fmtV=x=>isProp?(bt(x)*100).toFixed(1)+"%":(isLog?bt(x).toFixed(2):x.toFixed(2));
+  const fmtV=(x,pr)=>isProp?(bt(x)*100).toFixed(normalizePrecision(pr||prec).decimals)+"%":(isLog?fmtES(bt(x),pr||prec):fmtES(x,pr||prec));
   // does any study actually have count data to show?
   const anyExp=studies.some(s=>s.a!==""&&s.a!=null), anyCtrl=studies.some(s=>s.c!==""&&s.c!=null);
   const colCounts=showCounts&&(anyExp||anyCtrl);
@@ -1311,9 +1317,9 @@ function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",showCount
           <line x1={x1} y1={cy-4} x2={x1} y2={cy+4} stroke={FC.acc} strokeWidth={1.5}/>
           <line x1={x2} y1={cy-4} x2={x2} y2={cy+4} stroke={FC.acc} strokeWidth={1.5}/>
           <rect x={xc-sq/2} y={cy-sq/2} width={sq} height={sq} fill={FC.acc} rx={1}/>
-          <text x={colEffX} y={cy+4} fontSize={10} fill={FC.muted}>{fmtV(s._es)} [{fmtV(s._lo)}, {fmtV(s._hi)}]</text>
-          {showWeights&&<text x={colWfX} y={cy+4} fontSize={10} fill={FC.dim}>{(s._wFixedPct||0).toFixed(1)}%</text>}
-          {showWeights&&<text x={colWrX} y={cy+4} fontSize={10} fill={FC.dim}>{(s._wRandomPct||0).toFixed(1)}%</text>}
+          <text x={colEffX} y={cy+4} fontSize={10} fill={FC.muted}>{fmtV(s._es,prec)} [{fmtV(s._lo,prec)}, {fmtV(s._hi,prec)}]</text>
+          {showWeights&&<text x={colWfX} y={cy+4} fontSize={10} fill={FC.dim}>{fmtWeight(s._wFixedPct||0,prec)}%</text>}
+          {showWeights&&<text x={colWrX} y={cy+4} fontSize={10} fill={FC.dim}>{fmtWeight(s._wRandomPct||0,prec)}%</text>}
         </g>);
       })}
       <line x1={padL} y1={TOP+k*ROW+6} x2={W-6} y2={TOP+k*ROW+6} stroke={FC.brd}/>
@@ -1323,7 +1329,7 @@ function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",showCount
         return(<g>
           <text x={padL} y={cy+4} fontSize={11} fill={FC.grn} fontWeight={700}>{result.method==="fixed"?"Pooled (common)":"Pooled (random)"}</text>
           <polygon points={`${xc},${cy-dh} ${x2},${cy} ${xc},${cy+dh} ${x1},${cy}`} fill={FC.grn} opacity={0.9}/>
-          <text x={colEffX} y={cy+4} fontSize={10} fill={FC.grn} fontWeight={700}>{fmtV(pES)} [{fmtV(lo95)}, {fmtV(hi95)}]</text>
+          <text x={colEffX} y={cy+4} fontSize={10} fill={FC.grn} fontWeight={700}>{fmtV(pES,prec)} [{fmtV(lo95,prec)}, {fmtV(hi95,prec)}]</text>
           {showWeights&&<text x={colWfX} y={cy+4} fontSize={10} fill={FC.grn}>100%</text>}
           {showWeights&&<text x={colWrX} y={cy+4} fontSize={10} fill={FC.grn}>100%</text>}
         </g>);
@@ -2865,7 +2871,7 @@ function ESCalcInline({s,ch}){
     const r=calcES(type,p);
     setRes(r);
     if(r){
-      ch("es",String(r.es));ch("lo",String(r.lo));ch("hi",String(r.hi));
+      ch("es",String(+Number(r.es).toFixed(6)));ch("lo",String(+Number(r.lo).toFixed(6)));ch("hi",String(+Number(r.hi).toFixed(6)));
       ch("esType",type);
       ch("source","calculated");
       if(r.continuityCorrectionApplied)
@@ -3173,7 +3179,7 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
       {errors.length>0&&<span style={tagS("red")}>{errors.length} error{errors.length>1?"s":""}</span>}
       {errors.length===0&&warns.length>0&&<span style={tagS("yellow")}>{warns.length} warning{warns.length>1?"s":""}</span>}
       {errors.length===0&&warns.length===0&&s.es!==""&&<span style={tagS("green")}>✓ Complete</span>}
-      {s.es!==""&&<span style={tagS("blue")}>{esTypeLabel?`${esTypeLabel}: `:"ES: "}{(+s.es).toFixed(3)}</span>}
+      {s.es!==""&&<span style={tagS("blue")}>{esTypeLabel?`${esTypeLabel}: `:"ES: "}{fmtES(+s.es)}</span>}
       <span style={{fontSize:11,color:C.dim,background:C.bg,padding:"2px 8px",borderRadius:4,border:`1px solid ${C.brd}`}}>{s.design}</span>
       <span style={{color:C.dim,fontSize:14}}>{open?"▲":"▼"}</span>
     </div>
@@ -3351,7 +3357,7 @@ function ExtractionTab({project,updateProject,activeId}){
   const readOnly=!!((project._permissions&&project._permissions.readOnly)||project._readOnly);
   const addStudy=()=>updateProject(activeId,p=>({...p,studies:[...p.studies,mkStudy()]}));
   const addStudyObj=(st)=>updateProject(activeId,p=>({...p,studies:[...p.studies,st]}));
-  const updStudy=(id,k,v)=>updateProject(activeId,p=>({...p,studies:p.studies.map(s=>s.id===id?{...s,[k]:v}:s)}));
+  const updStudy=(id,k,v)=>updateProject(activeId,p=>({...p,studies:p.studies.map(s=>s.id===id?{...s,[k]:v,updatedAt:new Date().toISOString()}:s)}));
   const delStudy=id=>updateProject(activeId,p=>({...p,studies:p.studies.filter(s=>s.id!==id)}));
   // Clone study-level metadata into a new row for another outcome / time point / arm
   const cloneForOutcome=(s)=>{
@@ -3361,6 +3367,18 @@ function ExtractionTab({project,updateProject,activeId}){
     META.forEach(k=>{fresh[k]=s[k];});
     fresh.outcome="";fresh.timepoint="";fresh.notes=`Same cohort as ${s.author||"study"} ${s.year||""} — additional outcome/time point.`;
     updateProject(activeId,p=>({...p,studies:[...p.studies,fresh]}));
+  };
+  const moveStudy=(id,dir)=>{
+    if(readOnly) return;
+    updateProject(activeId,p=>{
+      const arr=[...p.studies];
+      const idx=arr.findIndex(s=>s.id===id);
+      if(idx<0) return p;
+      const to=idx+dir;
+      if(to<0||to>=arr.length) return p;
+      [arr[idx],arr[to]]=[arr[to],arr[idx]];
+      return {...p,studies:arr};
+    });
   };
   const[showAdd,setShowAdd]=useState(false);
   const[showAI,setShowAI]=useState(false);
@@ -3377,6 +3395,8 @@ function ExtractionTab({project,updateProject,activeId}){
   const[fTime,setFTime]=useState("");
   const[fNature,setFNature]=useState("");
   const[fStatus,setFStatus]=useState("");
+  const sortKey = project.extractionSort || DEFAULT_EXTRACTION_SORT;
+  const setSortKey = (key) => updateProject(activeId, p=>({...p, extractionSort:key}));
 
   const dup=useMemo(()=>findDuplicates(studies),[studies]);
   const withES=studies.filter(s=>s.es!=="").length;
@@ -3393,13 +3413,16 @@ function ExtractionTab({project,updateProject,activeId}){
     if(iss.some(i=>i.sev==="warn")) return "warn";
     return "complete";
   };
-  const filtered=useMemo(()=>studies.filter(s=>{
-    if(fOutcome&&(s.outcome||"").trim()!==fOutcome) return false;
-    if(fTime&&(s.timepoint||"").trim()!==fTime) return false;
-    if(fNature&&(s.dataNature||"primary")!==fNature) return false;
-    if(fStatus&&statusOf(s)!==fStatus) return false;
-    return true;
-  }),[studies,fOutcome,fTime,fNature,fStatus]);
+  const filtered=useMemo(()=>{
+    const ordered=orderStudies(studies,sortKey);
+    return ordered.filter(s=>{
+      if(fOutcome&&(s.outcome||"").trim()!==fOutcome) return false;
+      if(fTime&&(s.timepoint||"").trim()!==fTime) return false;
+      if(fNature&&(s.dataNature||"primary")!==fNature) return false;
+      if(fStatus&&statusOf(s)!==fStatus) return false;
+      return true;
+    });
+  },[studies,sortKey,fOutcome,fTime,fNature,fStatus]);
   const filterActive=fOutcome||fTime||fNature||fStatus;
 
   // primary-data composition
@@ -3666,6 +3689,9 @@ ${paperText.slice(0,15000)}`;
         </select>
         {filterActive&&<button onClick={()=>{setFOutcome("");setFTime("");setFNature("");setFStatus("");}} style={{...btnS("ghost"),fontSize:11,padding:"4px 10px"}}>Clear</button>}
         {filterActive&&<span style={{fontSize:11,color:C.muted}}>{filtered.length} of {studies.length}</span>}
+        <select value={sortKey} onChange={e=>setSortKey(e.target.value)} style={{...inp,width:"auto",fontSize:11,padding:"4px 8px"}}>
+          {EXTRACTION_SORTS.map(s=><option key={s.key} value={s.key}>{s.label}</option>)}
+        </select>
       </div>
     )}
 
@@ -3729,7 +3755,19 @@ ${paperText.slice(0,15000)}`;
       </div>
     ):view==="cards"?(
       <div style={{display:"flex",flexDirection:"column",gap:8}}>
-        {filtered.map((s)=><StudyCard key={s.id} s={s} idx={studies.indexOf(s)} updStudy={updStudy} delStudy={delStudy} dup={dup[s.id]} onClone={cloneForOutcome}/>)}
+        {filtered.map((s,idx)=>(
+          <div key={s.id} style={{display:"flex",gap:6,alignItems:"flex-start"}}>
+            {sortKey==="manual"&&!readOnly&&(
+              <div style={{display:"flex",flexDirection:"column",gap:2,paddingTop:8,flexShrink:0}}>
+                <button onClick={()=>moveStudy(s.id,-1)} disabled={idx===0} title="Move up" style={{...btnS("ghost"),padding:"2px 6px",fontSize:11,opacity:idx===0?0.3:1}}>▲</button>
+                <button onClick={()=>moveStudy(s.id,1)} disabled={idx===filtered.length-1} title="Move down" style={{...btnS("ghost"),padding:"2px 6px",fontSize:11,opacity:idx===filtered.length-1?0.3:1}}>▼</button>
+              </div>
+            )}
+            <div style={{flex:1}}>
+              <StudyCard s={s} idx={studies.indexOf(s)} updStudy={updStudy} delStudy={delStudy} dup={dup[s.id]} onClone={cloneForOutcome}/>
+            </div>
+          </div>
+        ))}
       </div>
     ):(
       /* TABLE VIEW — quick compare & edit common fields */
@@ -3851,7 +3889,7 @@ function RoBTab({project,updateProject,activeId}){
 
 /* ════════════ TAB: ANALYSIS ════════════ */
 /* Build a researcher-facing interpretation of a pooled result */
-function interpretResult(result,esType,studies){
+function interpretResult(result,esType,studies,prec){
   if(!result) return null;
   const t=ES_TYPES[esType]||{};
   const isRatio=t.log;
@@ -3868,9 +3906,9 @@ function interpretResult(result,esType,studies){
   const scaleName=t.scale||esType||"effect size";
   // direction
   let direction;
-  if(isProp){direction=`a pooled proportion of ${(pe*100).toFixed(1)}%`;}
+  if(isProp){direction=`a pooled proportion of ${fmtPct(pe,prec)}%`;}
   else if(isRatio){
-    direction = result.pES>0?`an increase (${scaleName.replace('ln','')} ${pe.toFixed(2)} > 1)`:result.pES<0?`a reduction (${scaleName.replace('ln','')} ${pe.toFixed(2)} < 1)`:"no difference";
+    direction = result.pES>0?`an increase (${scaleName.replace('ln','')} ${fmtES(pe,prec)} > 1)`:result.pES<0?`a reduction (${scaleName.replace('ln','')} ${fmtES(pe,prec)} < 1)`:"no difference";
   } else {
     direction = result.pES>0?"a positive effect (favouring the higher value)":result.pES<0?"a negative effect (favouring the lower value)":"no difference";
   }
@@ -3879,13 +3917,13 @@ function interpretResult(result,esType,studies){
   if(esType==="SMD"){const a=Math.abs(result.pES);magnitude=a<0.2?"negligible":a<0.5?"small":a<0.8?"moderate":"large";magnitude=` The standardized effect is ${magnitude} by Cohen's benchmarks.`;}
   // CI text
   const ciText=isProp
-    ? `95% CI ${(lo*100).toFixed(1)}%–${(hi*100).toFixed(1)}%`
+    ? `95% CI ${fmtPct(lo,prec)}%–${fmtPct(hi,prec)}%`
     : isRatio
-      ? `${scaleName.replace('ln','')} ${pe.toFixed(2)}, 95% CI ${lo.toFixed(2)}–${hi.toFixed(2)}`
-      : `${pe.toFixed(2)}, 95% CI ${lo.toFixed(2)} to ${hi.toFixed(2)}`;
+      ? `${scaleName.replace('ln','')} ${fmtES(pe,prec)}, 95% CI ${fmtES(lo,prec)}–${fmtES(hi,prec)}`
+      : `${fmtES(pe,prec)}, 95% CI ${fmtES(lo,prec)} to ${fmtES(hi,prec)}`;
   const crossesNull = nullV!==null && !sigByCI;
   // heterogeneity
-  const hetText=`I² = ${result.I2}% (${result.I2desc} heterogeneity), Q p ${result.Qpval<0.001?"< 0.001":"= "+result.Qpval.toFixed(3)}`;
+  const hetText=`I² = ${result.I2}% (${result.I2desc} heterogeneity), Q p ${result.Qpval<0.001?"< 0.001":"= "+fmtNum(result.Qpval,prec)}`;
   // reliability flags
   const flags=[];
   if(result.k<5) flags.push(`Only ${result.k} studies were pooled — the estimate is imprecise and small-study effects can't be assessed.`);
@@ -3898,7 +3936,7 @@ function interpretResult(result,esType,studies){
   return {pe,lo,hi,ciText,direction,magnitude,hetText,crossesNull,sigByCI,flags,isRatio,isProp,nullV,scaleName};
 }
 
-function AnalysisTab({project}){
+function AnalysisTab({project,updateProject}){
   const{studies}=project;
   const[method,setMethod]=useState("random");
   const[showAudit,setShowAudit]=useState(false);
@@ -3945,7 +3983,8 @@ function AnalysisTab({project}){
     const types=valid.map(s=>s.esType).filter(Boolean);
     return types.length?types.sort((a,b)=>types.filter(t=>t===b).length-types.filter(t=>t===a).length)[0]:"";
   },[valid]);
-  const interp=useMemo(()=>interpretResult(result,esType,filteredStudies),[result,esType,filteredStudies]);
+  const prec = project?.analysisPrecision;
+  const interp=useMemo(()=>interpretResult(result,esType,filteredStudies,prec),[result,esType,filteredStudies,prec]);
   const typeWarn=useMemo(()=>analysisTypeWarnings(filteredStudies),[filteredStudies]);
   const methodLabel=method==="random"?"Random-effects (DerSimonian–Laird)":"Fixed-effect (inverse-variance)";
 
@@ -4009,7 +4048,7 @@ function AnalysisTab({project}){
           const et=subset.map(s=>s.esType).filter(Boolean)[0]||"";
           const tt=ES_TYPES[et]||{};const isLog=!!tt.log,isProp=et==="PROP";
           const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
-          const dv=x=>x==null?"—":isProp?(bt(x)*100).toFixed(1)+"%":isLog?bt(x).toFixed(2):(+x).toFixed(2);
+          const dv=x=>x==null?"—":isProp?(bt(x)*100).toFixed(normalizePrecision(prec).decimals)+"%":isLog?fmtES(bt(x),prec):fmtES(+x,prec);
           return {pr,r,et,dv,k:subset.length};
         });
         return(
@@ -4059,6 +4098,15 @@ function AnalysisTab({project}){
       ))}
       <HelpTip text="Random-effects assumes the true effect varies across studies and is the safer default when studies differ. Fixed-effect assumes one common true effect — only justified when studies are very similar."/>
       <span style={{marginLeft:"auto",fontSize:11,color:C.muted}}>{valid.length} of {studies.length} studies usable</span>
+      {updateProject&&(()=>{const np=normalizePrecision(prec);return(<div style={{display:"flex",alignItems:"center",gap:8,marginLeft:8,paddingLeft:8,borderLeft:`1px solid ${themeAlpha(C.brd,'88')}`}}>
+        <span style={{fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>Decimal places:</span>
+        <select value={np.decimals} onChange={e=>updateProject(ap=>({...ap,analysisPrecision:{...np,decimals:Number(e.target.value)}}))} style={{...inp,width:"auto",fontSize:11,padding:"3px 6px"}}>
+          {DECIMAL_OPTIONS.map(d=><option key={d} value={d}>{d}</option>)}
+        </select>
+        <label style={{display:"flex",alignItems:"center",gap:4,fontSize:11,color:C.muted,cursor:"pointer",whiteSpace:"nowrap"}}>
+          <input type="checkbox" checked={np.trailingZeros} onChange={e=>updateProject(ap=>({...ap,analysisPrecision:{...np,trailingZeros:e.target.checked}}))} style={{accentColor:C.acc}}/>trailing zeros
+        </label>
+      </div>);})()}
     </div>
 
     {/* POOLABILITY GATE */}
@@ -4104,26 +4152,26 @@ function AnalysisTab({project}){
             <span>POOLED EFFECT ({method==="random"?"RE":"FE"})</span>
             {esType&&<span style={{color:C.muted}}>{ES_TYPES[esType]?.scale}</span>}
           </div>
-          <div style={{fontSize:40,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color:C.grn,marginBottom:4}}>{result.pES.toFixed(3)}</div>
-          <div style={{fontSize:13,color:C.muted,fontFamily:"'IBM Plex Mono',monospace"}}>95% CI [{result.lo95.toFixed(3)}, {result.hi95.toFixed(3)}]</div>
+          <div style={{fontSize:40,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color:C.grn,marginBottom:4}}>{fmtES(result.pES,prec)}</div>
+          <div style={{fontSize:13,color:C.muted,fontFamily:"'IBM Plex Mono',monospace"}}>95% CI [{fmtES(result.lo95,prec)}, {fmtES(result.hi95,prec)}]</div>
           {interp&&(interp.isRatio||interp.isProp)&&(
             <div style={{fontSize:12,color:C.acc,marginTop:6}}>
-              = {interp.isProp?`${(interp.pe*100).toFixed(1)}% [${(interp.lo*100).toFixed(1)}%, ${(interp.hi*100).toFixed(1)}%]`:`${ES_TYPES[esType]?.scale.replace('ln','')} ${interp.pe.toFixed(3)} [${interp.lo.toFixed(3)}, ${interp.hi.toFixed(3)}]`} (back-transformed)
+              = {interp.isProp?`${fmtPct(interp.pe,prec)}% [${fmtPct(interp.lo,prec)}%, ${fmtPct(interp.hi,prec)}%]`:`${ES_TYPES[esType]?.scale.replace('ln','')} ${fmtES(interp.pe,prec)} [${fmtES(interp.lo,prec)}, ${fmtES(interp.hi,prec)}]`} (back-transformed)
             </div>
           )}
-          <div style={{marginTop:10,fontSize:12,color:C.muted}}>z = {result.z.toFixed(3)} · SE = {result.pSE.toFixed(4)} · k = {result.k}</div>
+          <div style={{marginTop:10,fontSize:12,color:C.muted}}>z = {fmtNum(result.z,prec)} · SE = {fmtNum(result.pSE,prec)} · k = {result.k}</div>
           <div style={{marginTop:6,padding:"6px 10px",borderRadius:4,background:interp&&!interp.crossesNull?"var(--t-grn-bg)":"var(--t-yel-bg)",display:"inline-block"}}>
             <span style={{fontSize:12,fontWeight:600,color:interp&&!interp.crossesNull?C.grn:C.yel}}>
-              p = {result.pval<0.001?"<0.001":result.pval.toFixed(3)} · {interp&&!interp.crossesNull?"CI excludes no-effect":"CI includes no-effect (inconclusive)"}
+              p = {fmtP(result.pval,prec)} · {interp&&!interp.crossesNull?"CI excludes no-effect":"CI includes no-effect (inconclusive)"}
             </span>
           </div>
         </div>
         <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:18}}>
           <div style={{fontSize:10,fontWeight:700,color:C.acc,letterSpacing:1,marginBottom:14}}>HETEROGENEITY</div>
           {[{label:"I²",value:`${result.I2}%`,color:result.I2<25?C.grn:result.I2<50?C.yel:C.red,note:result.I2desc+" — variation across studies"},
-            {label:"Q (Cochran)",value:result.Q.toFixed(2),color:C.txt,note:`df = ${result.k-1} · p ${result.Qpval<0.001?"<0.001":"= "+result.Qpval.toFixed(3)}`},
-            {label:"τ² (tau²)",value:result.tau2.toFixed(4),color:C.txt,note:"between-study variance"},
-            {label:"τ (tau)",value:(result.tau!=null?result.tau:Math.sqrt(result.tau2)).toFixed(4),color:C.txt,note:"between-study SD (same scale as the effect)"},
+            {label:"Q (Cochran)",value:fmtNum(result.Q,prec),color:C.txt,note:`df = ${result.k-1} · p ${fmtP(result.Qpval,prec)}`},
+            {label:"τ² (tau²)",value:fmtNum(result.tau2,prec),color:C.txt,note:"between-study variance"},
+            {label:"τ (tau)",value:fmtNum(result.tau!=null?result.tau:Math.sqrt(result.tau2),prec),color:C.txt,note:"between-study SD (same scale as the effect)"},
           ].map(({label,value,color,note})=>(
             <div key={label} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"7px 0",borderBottom:`1px solid ${C.brd}`}}>
               <div><span style={{fontSize:12,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace"}}>{label}</span>
@@ -4138,7 +4186,7 @@ function AnalysisTab({project}){
       {result.fixed&&result.random&&(()=>{
         const t=ES_TYPES[esType]||{};const isLog=!!t.log,isProp=esType==="PROP";
         const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
-        const dv=x=>isProp?(bt(x)*100).toFixed(1)+"%":isLog?bt(x).toFixed(3):(+x).toFixed(3);
+        const dv=x=>isProp?(bt(x)*100).toFixed(normalizePrecision(prec).decimals)+"%":isLog?fmtES(bt(x),prec):fmtES(+x,prec);
         const Cell=({title,o,active})=>(
           <div style={{flex:1,minWidth:200,background:active?`${themeAlpha(C.grn,'0d')}`:C.bg,border:`1px solid ${active?themeAlpha(C.grn,'55'):C.brd}`,borderRadius:8,padding:"12px 14px"}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
@@ -4163,7 +4211,7 @@ function AnalysisTab({project}){
       {(result.hksj||result.predInt)&&(()=>{
         const t=ES_TYPES[esType]||{};const isLog=!!t.log,isProp=esType==="PROP";
         const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
-        const dv=x=>isProp?(bt(x)*100).toFixed(1)+"%":isLog?bt(x).toFixed(3):(+x).toFixed(3);
+        const dv=x=>isProp?(bt(x)*100).toFixed(normalizePrecision(prec).decimals)+"%":isLog?fmtES(bt(x),prec):fmtES(+x,prec);
         const nullV=isLog?1:0; // on display scale
         const hk=result.hksj, pi=result.predInt;
         const hkSig=hk&&((isLog?bt(hk.lo)>1||bt(hk.hi)<1:hk.lo>0||hk.hi<0));
@@ -4179,13 +4227,13 @@ function AnalysisTab({project}){
               <div style={{fontSize:10,fontWeight:700,letterSpacing:0.5,color:C.purp,marginBottom:4}}>HARTUNG–KNAPP–SIDIK–JONKMAN</div>
               <div style={{fontSize:20,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color:C.txt}}>{dv(hk.es)}</div>
               <div style={{fontSize:11,color:C.muted,fontFamily:"'IBM Plex Mono',monospace"}}>95% CI [{dv(hk.lo)}, {dv(hk.hi)}]</div>
-              <div style={{fontSize:10,color:C.dim,marginTop:6}}>t({hk.df}) = {hk.t} · p {hk.pval<0.001?"<0.001":"= "+hk.pval.toFixed(3)} · t* = {hk.tcrit}</div>
+              <div style={{fontSize:10,color:C.dim,marginTop:6}}>t({hk.df}) = {fmtNum(hk.t,prec)} · p {fmtP(hk.pval,prec)} · t* = {fmtNum(hk.tcrit,prec)}</div>
             </div>}
             {pi&&<div style={{flex:1,minWidth:230,background:C.bg,border:`1px solid ${C.brd}`,borderRadius:8,padding:"12px 14px"}}>
               <div style={{fontSize:10,fontWeight:700,letterSpacing:0.5,color:C.purp,marginBottom:4}}>95% PREDICTION INTERVAL</div>
               <div style={{fontSize:20,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color:C.txt}}>[{dv(pi.lo)}, {dv(pi.hi)}]</div>
               <div style={{fontSize:11,color:C.muted}}>likely range of a future study's true effect</div>
-              <div style={{fontSize:10,color:C.dim,marginTop:6}}>t({pi.df}) based · widens with heterogeneity (τ = {(result.tau!=null?result.tau:Math.sqrt(result.tau2)).toFixed(3)})</div>
+              <div style={{fontSize:10,color:C.dim,marginTop:6}}>t({pi.df}) based · widens with heterogeneity (τ = {fmtNum(result.tau!=null?result.tau:Math.sqrt(result.tau2),prec)})</div>
             </div>}
           </div>
           {flips&&<div style={{marginTop:10,background:"var(--t-yel-bg)",border:`1px solid ${themeAlpha(C.yel,'44')}`,borderRadius:6,padding:"8px 12px",fontSize:11,color:C.txt,lineHeight:1.5}}>
@@ -4256,41 +4304,41 @@ function AnalysisTab({project}){
             return(<tr key={s.id} style={{borderBottom:`1px solid ${C.brd}`}}>
               <td style={{padding:"6px 10px",fontWeight:500}}>{s.author||"Study"}{s.year?` ${s.year}`:""}</td>
               <td style={{padding:"6px 10px",textAlign:"right",color:C.muted}}>{s.n||"—"}</td>
-              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:700}}>{s._es.toFixed(3)}</td>
-              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{s._lo.toFixed(3)}</td>
-              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{s._hi.toFixed(3)}</td>
+              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:700}}>{fmtES(s._es,prec)}</td>
+              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{fmtES(s._lo,prec)}</td>
+              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{fmtES(s._hi,prec)}</td>
               <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace"}}>
                 <div style={{display:"flex",alignItems:"center",justifyContent:"flex-end",gap:6}}>
                   <div style={{width:40,height:4,background:C.brd,borderRadius:2,overflow:"hidden"}}>
                     <div style={{width:`${s._pct||0}%`,height:"100%",background:C.acc,borderRadius:2}}/>
-                  </div>{(s._pct||0).toFixed(1)}%
+                  </div>{fmtWeight(s._pct||0,prec)}%
                 </div>
               </td>
-              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{z2.toFixed(2)}</td>
-              <td style={{padding:"6px 10px",textAlign:"right",color:pv<0.05?C.grn:C.muted}}>{pv<0.001?"<0.001":pv.toFixed(3)}</td>
+              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{fmtNum(z2,prec)}</td>
+              <td style={{padding:"6px 10px",textAlign:"right",color:pv<0.05?C.grn:C.muted}}>{fmtP(pv,prec)}</td>
             </tr>);
           })}
           <tr style={{borderTop:`2px solid ${themeAlpha(C.grn,'55')}`}}>
             <td style={{padding:"8px 10px",color:C.grn,fontWeight:700}}>Pooled ({method==="random"?"RE":"FE"})</td>
             <td style={{padding:"8px 10px",textAlign:"right",color:C.grn}}>—</td>
-            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:800,color:C.grn}}>{result.pES.toFixed(3)}</td>
-            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{result.lo95.toFixed(3)}</td>
-            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{result.hi95.toFixed(3)}</td>
+            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:800,color:C.grn}}>{fmtES(result.pES,prec)}</td>
+            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{fmtES(result.lo95,prec)}</td>
+            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{fmtES(result.hi95,prec)}</td>
             <td style={{padding:"8px 10px",textAlign:"right",color:C.grn}}>100%</td>
-            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{result.z.toFixed(3)}</td>
-            <td style={{padding:"8px 10px",textAlign:"right",color:result.pval<0.05?C.grn:C.red,fontWeight:700}}>{result.pval<0.001?"<0.001":result.pval.toFixed(3)}</td>
+            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{fmtNum(result.z,prec)}</td>
+            <td style={{padding:"8px 10px",textAlign:"right",color:result.pval<0.05?C.grn:C.red,fontWeight:700}}>{fmtP(result.pval,prec)}</td>
           </tr></tbody>
         </table>
       </div>
 
       {/* DATA BEHIND THIS ANALYSIS */}
-      <DataBehindAnalysis result={result} studies={filteredStudies} esType={esType}/>
+      <DataBehindAnalysis result={result} studies={filteredStudies} esType={esType} prec={prec}/>
 
       {/* RESEARCH-READY EXPORT */}
-      <ResearchExport result={result} esType={esType} method={method} studies={filteredStudies}/>
+      <ResearchExport result={result} esType={esType} method={method} studies={filteredStudies} prec={prec}/>
 
       {/* COPYABLE STRUCTURED OUTPUTS */}
-      <ResultsWriteup result={result} interp={interp} esType={esType} method={method} methodLabel={methodLabel} studies={filteredStudies}/>
+      <ResultsWriteup result={result} interp={interp} esType={esType} method={method} methodLabel={methodLabel} studies={filteredStudies} prec={prec}/>
 
       {result.I2>50&&<InfoBox color={C.yel}>⚠️ Substantial heterogeneity (I² = {result.I2}%). Explore it on the Subgroup and Sensitivity tabs before relying on the pooled estimate.</InfoBox>}
     </div>)}
@@ -4298,7 +4346,7 @@ function AnalysisTab({project}){
 }
 
 /* "Data Behind This Analysis" — full provenance of what fed the pooled result */
-function DataBehindAnalysis({result,studies,esType}){
+function DataBehindAnalysis({result,studies,esType,prec}){
   const[open,setOpen]=useState(false);
   if(!result) return null;
   const usedIds=new Set(result.studies.map(s=>s.id));
@@ -4340,7 +4388,7 @@ function DataBehindAnalysis({result,studies,esType}){
               <td style={{padding:"6px 8px",fontWeight:500}}>{s.author||"Study"}{s.year?` ${s.year}`:""}{s.needsReview&&<span title="Needs review" style={{color:C.yel,marginLeft:4}}>👁</span>}</td>
               <td style={{padding:"6px 8px",color:C.muted}}>{s.outcome||"—"}</td>
               <td style={{padding:"6px 8px",color:C.muted}}>{s.timepoint||"—"}</td>
-              <td style={{padding:"6px 8px",fontFamily:"'IBM Plex Mono',monospace"}}>{(+s.es).toFixed(3)}</td>
+              <td style={{padding:"6px 8px",fontFamily:"'IBM Plex Mono',monospace"}}>{fmtES(+s.es,prec)}</td>
               <td style={{padding:"6px 8px"}}><span style={tagS(tg.c)}>{tg.t}</span></td>
               <td style={{padding:"6px 8px",color:C.muted}}>{SOURCE_LABEL[s.source]||"—"}</td>
               <td style={{padding:"6px 8px",color:C.muted}}>{ADJUST_LABEL[s.adjusted]||"Unadjusted"}</td>
@@ -4390,7 +4438,7 @@ function DataBehindAnalysis({result,studies,esType}){
 
 /* ════════════ RESEARCH-READY EXPORT ════════════ */
 /* Builds study-level + pooled + heterogeneity tables and offers copy / CSV / Excel(.xls) / publication table */
-function ResearchExport({result,esType,method,studies}){
+function ResearchExport({result,esType,method,studies,prec}){
   const[copied,setCopied]=useState("");
   const[showTable,setShowTable]=useState(false);
   if(!result) return null;
@@ -4401,7 +4449,7 @@ function ResearchExport({result,esType,method,studies}){
   const ratioName=scale.replace("ln","");        // OR / RR / HR
   const transform=isLog?"natural-log, back-transformed for display":isProp?"logit, back-transformed to %":esType==="COR"?"Fisher's z":"none";
   const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
-  const dispVal=x=>isProp?(bt(x)*100).toFixed(1)+"%":isLog?bt(x).toFixed(3):(+x).toFixed(3);
+  const dispVal=x=>isProp?(bt(x)*100).toFixed(normalizePrecision(prec).decimals)+"%":isLog?fmtES(bt(x),prec):fmtES(+x,prec);
 
   // build per-study rows
   const expTot=s=>(s.a!==""&&s.a!=null)?`${s.a}/${(+s.a)+(+s.b||0)||s.nExp||"?"}`:(s.events!==""&&s.events!=null?`${s.events}/${s.total||"?"}`:"");
@@ -4412,7 +4460,7 @@ function ResearchExport({result,esType,method,studies}){
     es:dispVal(s._es),
     ci:`${dispVal(s._lo)} to ${dispVal(s._hi)}`,
     raw_es:s._es.toFixed(4), raw_lo:s._lo.toFixed(4), raw_hi:s._hi.toFixed(4),
-    wF:(s._wFixedPct||0).toFixed(1), wR:(s._wRandomPct||0).toFixed(1),
+    wF:fmtWeight(s._wFixedPct||0,prec), wR:fmtWeight(s._wRandomPct||0,prec),
   }));
   const anyCounts=rows.some(r=>r.exp||r.ctrl);
   const fx=result.fixed, rnd=result.random;
@@ -4487,7 +4535,7 @@ function ResearchExport({result,esType,method,studies}){
       })} style={btnS("ghost")}>⬇ Export results…</button>
       <button onClick={()=>copy(xlsTable.replace(/<[^>]+>/g,m=>m),"pub")} style={btnS("ghost")}>{copied==="pub"?"✓ Copied HTML":"📋 Copy HTML table"}</button>
       <button onClick={()=>{
-        const pubOpts={esType,esLabel:(t.scale||"Effect size")+(isLog?" (back-transformed)":isProp?" (%)":""),nullLine:0,showCounts:anyCounts,showWeights:true,title:""};
+        const pubOpts={esType,esLabel:(t.scale||"Effect size")+(isLog?" (back-transformed)":isProp?" (%)":""),nullLine:0,showCounts:anyCounts,showWeights:true,title:"",prec};
         openExportDialog({
           id:"analysis-forest",
           title:"Forest plot (publication, white background)",
@@ -4554,7 +4602,7 @@ function ResearchExport({result,esType,method,studies}){
 }
 
 /* Copyable manuscript-ready text blocks derived from the analysis */
-function ResultsWriteup({result,interp,esType,method,methodLabel,studies}){
+function ResultsWriteup({result,interp,esType,method,methodLabel,studies,prec}){
   const[copied,setCopied]=useState("");
   const copy=(t,id)=>navigator.clipboard.writeText(t).then(()=>{setCopied(id);setTimeout(()=>setCopied(""),1800);});
   if(!result||!interp) return null;
@@ -4563,17 +4611,17 @@ function ResultsWriteup({result,interp,esType,method,methodLabel,studies}){
   // local display-scale formatter (back-transform log/logit measures)
   const _isLog=!!ES_TYPES[esType]?.log, _isProp=esType==="PROP";
   const _bt=x=>_isLog?Math.exp(x):_isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
-  const dispVal=x=>x==null?"—":_isProp?(_bt(x)*100).toFixed(1)+"%":_isLog?_bt(x).toFixed(3):(+x).toFixed(3);
-  const ciStr=interp.isProp?`${(interp.pe*100).toFixed(1)}% (95% CI ${(interp.lo*100).toFixed(1)}–${(interp.hi*100).toFixed(1)})`
-    :interp.isRatio?`${scale.replace('ln','')} ${interp.pe.toFixed(2)} (95% CI ${interp.lo.toFixed(2)}–${interp.hi.toFixed(2)})`
-    :`${interp.pe.toFixed(2)} (95% CI ${interp.lo.toFixed(2)} to ${interp.hi.toFixed(2)})`;
-  const pStr=result.pval<0.001?"P < 0.001":`P = ${result.pval.toFixed(3)}`;
+  const dispVal=x=>x==null?"—":_isProp?fmtPct(_bt(x),prec)+"%":_isLog?fmtES(_bt(x),prec):fmtES(+x,prec);
+  const ciStr=interp.isProp?`${fmtPct(interp.pe,prec)}% (95% CI ${fmtPct(interp.lo,prec)}–${fmtPct(interp.hi,prec)})`
+    :interp.isRatio?`${scale.replace('ln','')} ${fmtES(interp.pe,prec)} (95% CI ${fmtES(interp.lo,prec)}–${fmtES(interp.hi,prec)})`
+    :`${fmtES(interp.pe,prec)} (95% CI ${fmtES(interp.lo,prec)} to ${fmtES(interp.hi,prec)})`;
+  const pStr=result.pval<0.001?"P < 0.001":`P = ${fmtNum(result.pval,prec)}`;
 
   const methods=`A ${method==="random"?"random-effects":"fixed-effect"} meta-analysis was performed using the ${method==="random"?"DerSimonian and Laird method":"inverse-variance method"}. Effect sizes were expressed as the ${measureName.toLowerCase()}${ES_TYPES[esType]?.log?", pooled on the natural-logarithmic scale and back-transformed for presentation":""}. Standard errors were derived from reported 95% confidence intervals. Statistical heterogeneity was quantified with the I² statistic and Cochran's Q test, with τ² estimating between-study variance.${result.hksj?" Confidence intervals for the random-effects estimate were additionally calculated using the Hartung-Knapp-Sidik-Jonkman (HKSJ) method, which is recommended when the number of studies is small.":""}${result.predInt?" A 95% prediction interval was calculated to describe the likely range of the true effect in a future study.":""} A two-sided P < 0.05 was considered statistically significant. [State software here — e.g. analyses were verified in R using the metafor package.]`;
 
-  const hkStr=result.hksj?`; HKSJ-adjusted 95% CI ${dispVal(result.hksj.lo)} to ${dispVal(result.hksj.hi)}, t(${result.hksj.df}) = ${result.hksj.t}, P ${result.hksj.pval<0.001?"< 0.001":"= "+result.hksj.pval.toFixed(3)}`:"";
+  const hkStr=result.hksj?`; HKSJ-adjusted 95% CI ${dispVal(result.hksj.lo)} to ${dispVal(result.hksj.hi)}, t(${result.hksj.df}) = ${fmtNum(result.hksj.t,prec)}, P ${result.hksj.pval<0.001?"< 0.001":"= "+fmtNum(result.hksj.pval,prec)}`:"";
   const piStr=result.predInt?` The 95% prediction interval was ${dispVal(result.predInt.lo)} to ${dispVal(result.predInt.hi)}.`:"";
-  const results=`${result.k} studies were pooled. The summary ${scale.replace('ln','')} was ${ciStr}, ${pStr}${hkStr}. Between-study heterogeneity was I² = ${result.I2}% (${result.I2desc}), Cochran's Q ${result.Qpval<0.001?"P < 0.001":"P = "+result.Qpval.toFixed(3)}, τ² = ${result.tau2.toFixed(4)}.${piStr} ${interp.crossesNull?"The confidence interval included the null value, indicating no statistically significant pooled effect.":"The confidence interval excluded the null value."}`;
+  const results=`${result.k} studies were pooled. The summary ${scale.replace('ln','')} was ${ciStr}, ${pStr}${hkStr}. Between-study heterogeneity was I² = ${result.I2}% (${result.I2desc}), Cochran's Q ${result.Qpval<0.001?"P < 0.001":"P = "+fmtNum(result.Qpval,prec)}, τ² = ${fmtNum(result.tau2,prec)}.${piStr} ${interp.crossesNull?"The confidence interval included the null value, indicating no statistically significant pooled effect.":"The confidence interval excluded the null value."}`;
 
   const limitations=`Interpretation is limited by ${[
     result.k<10?`the small number of pooled studies (k = ${result.k})`:null,
@@ -4630,12 +4678,13 @@ function buildPubForestSVG(result,opts){
   const ratioScale = isLog && !logOut;   // show actual ratio axis for OR/RR/HR
   // back-transform a stored (log/logit) value to display units
   const bt=x=>{ if(isLog)return Math.exp(x); if(isProp){const e=Math.exp(x);return e/(1+e);} return x; };
+  const prec=o.prec;
   // value formatting for the right-hand ES column
   const fmt=x=>{
-    if(isProp) return (bt(x)*100).toFixed(1);
-    if(isLog&&!logOut){ const v=bt(x); return v<1?v.toFixed(2):v.toFixed(2); }
-    if(isLog&&logOut) return (+x).toFixed(2);
-    return (+x).toFixed(2);
+    if(isProp) return fmtPct(bt(x),prec);
+    if(isLog&&!logOut) return fmtES(bt(x),prec);
+    if(isLog&&logOut) return fmtES(+x,prec);
+    return fmtES(+x,prec);
   };
   const fmtCI=(lo,hi)=>`[${fmt(lo)}, ${fmt(hi)}]`;
   const studies=result.studies;
@@ -4844,9 +4893,9 @@ function buildPubForestSVG(result,opts){
   svg+=txt((xPlot+xPlotEnd)/2, axisLabelY, axisName, 11, {anchor:"middle",bold:true});
 
   // ---- heterogeneity + model line (well spaced) ----
-  const Qp=result.Qpval<0.001?"< 0.001":"= "+result.Qpval.toFixed(3);
-  const op=result.pval<0.001?"< 0.001":"= "+result.pval.toFixed(3);
-  const het=`Heterogeneity: I² = ${result.I2}%,  τ² = ${result.tau2.toFixed(4)},  Q = ${result.Q.toFixed(2)} (df = ${result.k-1}),  p ${Qp}`;
+  const Qp=result.Qpval<0.001?"< 0.001":"= "+fmtNum(result.Qpval,prec);
+  const op=result.pval<0.001?"< 0.001":"= "+fmtNum(result.pval,prec);
+  const het=`Heterogeneity: I² = ${result.I2}%,  τ² = ${fmtNum(result.tau2,prec)},  Q = ${fmtNum(result.Q,prec)} (df = ${result.k-1}),  p ${Qp}`;
   svg+=txt(MLEFT,hetY,het,9.5,{italic:true});
   let line2=`Test for overall effect: p ${op}  ·  Filled diamond: ${method==="random"?"random effects":"common / fixed effect"}`;
   if(result.hksj) line2+=`  ·  HKSJ 95% CI: ${fmt(result.hksj.lo)} to ${fmt(result.hksj.hi)} (t-based)`;
@@ -4904,6 +4953,7 @@ function ForestTab({project}){
   const isLog=esType&&ES_TYPES[esType]?.log;
   const safeName=(project.name||"forest").replace(/[^a-z0-9]/gi,"_");
   const outcomeSafeName=(activeOutcome?.outcome||"outcome").replace(/[^a-z0-9]/gi,"_");
+  const prec = project?.analysisPrecision;
 
   return(<div>
     <SectionHeader icon="forest" title="Forest Plot" desc="One forest plot per outcome. Select the outcome to visualise below."/>
@@ -4956,10 +5006,10 @@ function ForestTab({project}){
     {esType&&<div style={{marginBottom:12,fontSize:11,color:C.muted}}>
       Detected measure: <strong style={{color:C.acc}}>{ES_TYPES[esType]?.label}</strong>. {isLog?"Pooled on the log scale; axis ticks and the ES column show back-transformed values. Keep the null line at 0.":esType==="PROP"?"Pooled on the logit scale; shown as percentages.":"Null line at 0 represents no effect."}
     </div>}
-    <ForestPlot result={result} esLabel={esLabel} nullLine={nullLine} esType={esType} showCounts={showCounts} showWeights={showWeights} svgId="forestplot-svg"/>
+    <ForestPlot result={result} esLabel={esLabel} nullLine={nullLine} esType={esType} showCounts={showCounts} showWeights={showWeights} svgId="forestplot-svg" prec={prec}/>
     {result&&(()=>{
       const outTitle=`${project.name||""}${activeOutcome?.outcome?` — ${activeOutcome.outcome}`:""}${activeOutcome?.timepoint?` (${activeOutcome.timepoint})`:""}`.trim();
-      const pubOpts={esType,esLabel,nullLine,showCounts,showWeights,title:outTitle};
+      const pubOpts={esType,esLabel,nullLine,showCounts,showWeights,title:outTitle,prec};
       const exportName=`${safeName}_${outcomeSafeName}_forest_publication`;
       return(<div style={{marginTop:14,background:C.card,border:`1px solid ${themeAlpha(C.grn,'55')}`,borderRadius:8,padding:14}}>
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:10,marginBottom:4}}>
@@ -5965,6 +6015,7 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
 /* ════════════ TAB: SENSITIVITY ANALYSIS ════════════ */
 function SensitivityTab({project}){
   const{studies}=project;
+  const prec = project?.analysisPrecision;
   const[method,setMethod]=useState("random");
   const result=useMemo(()=>runMeta(studies,method),[studies,method]);
   const loo=useMemo(()=>leaveOneOut(studies,method),[studies,method]);
@@ -6020,21 +6071,21 @@ function SensitivityTab({project}){
             const delta=s.pES!==null?((s.pES-result.pES)/Math.abs(result.pES||1)*100):null;
             return(<tr key={s.omittedId} style={{borderBottom:`1px solid ${C.brd}`,background:inf?themeAlpha("var(--t-red-bg)","22"):"transparent"}}>
               <td style={{padding:"6px 10px",fontWeight:inf?700:400,color:inf?C.yel:C.txt}}>{inf?"⚠ ":""}{s.omitted}</td>
-              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:700}}>{s.pES!==null?s.pES.toFixed(3):"—"}</td>
-              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{s.lo95!==null?s.lo95.toFixed(3):"—"}</td>
-              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{s.hi95!==null?s.hi95.toFixed(3):"—"}</td>
+              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:700}}>{s.pES!==null?fmtES(s.pES,prec):"—"}</td>
+              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{s.lo95!==null?fmtES(s.lo95,prec):"—"}</td>
+              <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{s.hi95!==null?fmtES(s.hi95,prec):"—"}</td>
               <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace"}}>{s.I2!==null?s.I2+"%":"—"}</td>
-              <td style={{padding:"6px 10px",textAlign:"right",color:s.pval<0.05?C.grn:C.muted}}>{s.pval!==null?(s.pval<0.001?"<0.001":s.pval.toFixed(3)):"—"}</td>
+              <td style={{padding:"6px 10px",textAlign:"right",color:s.pval<0.05?C.grn:C.muted}}>{s.pval!==null?fmtP(s.pval,prec):"—"}</td>
               <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:Math.abs(delta||0)>10?C.yel:C.dim}}>{delta!==null?(delta>0?"+":"")+delta.toFixed(1)+"%":"—"}</td>
             </tr>);
           })}
           <tr style={{borderTop:`2px solid ${themeAlpha(C.grn,'55')}`}}>
             <td style={{padding:"8px 10px",color:C.grn,fontWeight:700}}>Original (all studies)</td>
-            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:800,color:C.grn}}>{result.pES.toFixed(3)}</td>
-            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{result.lo95.toFixed(3)}</td>
-            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{result.hi95.toFixed(3)}</td>
+            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:800,color:C.grn}}>{fmtES(result.pES,prec)}</td>
+            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{fmtES(result.lo95,prec)}</td>
+            <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{fmtES(result.hi95,prec)}</td>
             <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{result.I2}%</td>
-            <td style={{padding:"8px 10px",textAlign:"right",color:result.pval<0.05?C.grn:C.red,fontWeight:700}}>{result.pval<0.001?"<0.001":result.pval.toFixed(3)}</td>
+            <td style={{padding:"8px 10px",textAlign:"right",color:result.pval<0.05?C.grn:C.red,fontWeight:700}}>{fmtP(result.pval,prec)}</td>
             <td style={{padding:"8px 10px",textAlign:"right",color:C.grn}}>—</td>
           </tr>
         </tbody>
@@ -6099,7 +6150,7 @@ function SensitivityTab({project}){
           </div>
           <div style={{marginTop:10,padding:"10px 12px",borderRadius:6,background:egger.pval<0.05?"var(--t-red-bg)":"var(--t-grn-bg)"}}>
             <div style={{fontSize:10,color:C.muted,marginBottom:4}}>p-value (two-tailed)</div>
-            <div style={{fontSize:22,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color:egger.pval<0.05?C.red:C.grn}}>{egger.pval<0.001?"<0.001":egger.pval.toFixed(4)}</div>
+            <div style={{fontSize:22,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color:egger.pval<0.05?C.red:C.grn}}>{fmtP(egger.pval,prec)}</div>
             <div style={{fontSize:11,color:C.muted,marginTop:4}}>{egger.pval<0.05?"⚠ Evidence of asymmetry":"✓ No significant asymmetry"}</div>
           </div>
         </>):<div style={{fontSize:12,color:C.muted,padding:12}}>Needs ≥3 studies</div>}
@@ -6112,7 +6163,7 @@ function SensitivityTab({project}){
     {(()=>{
       const t=ES_TYPES[esType]||{};const isLog=!!t.log,isProp=esType==="PROP";
       const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
-      const dv=x=>isProp?(bt(x)*100).toFixed(1)+"%":isLog?bt(x).toFixed(3):(+x).toFixed(3);
+      const dv=x=>isProp?(bt(x)*100).toFixed(normalizePrecision(prec).decimals)+"%":isLog?fmtES(bt(x),prec):fmtES(+x,prec);
       return(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:16}}>
         <div style={{fontSize:11,fontWeight:700,color:C.acc,letterSpacing:1,marginBottom:6}}>TRIM-AND-FILL (Duval &amp; Tweedie)</div>
         <div style={{fontSize:12,color:C.muted,marginBottom:12,lineHeight:1.5}}>Estimates how many studies may be "missing" due to publication bias, imputes their mirror images, and re-pools. A large shift between observed and adjusted estimates signals the conclusion is sensitive to small-study effects.</div>
@@ -6153,9 +6204,9 @@ function SensitivityTab({project}){
             {influence.map(d=>(
               <tr key={d.id} style={{borderBottom:`1px solid ${C.brd}`,background:d.influential?themeAlpha("var(--t-yel-bg)","22"):"transparent"}}>
                 <td style={{padding:"6px 10px",fontWeight:d.influential?700:400,color:d.influential?C.yel:C.txt}}>{d.influential?"⚠ ":""}{d.label}</td>
-                <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,color:Math.abs(d.dffit)>1?C.yel:C.txt}}>{d.dffit>0?"+":""}{d.dffit}</td>
-                <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:Math.abs(d.i2Drop)>25?C.yel:C.muted}}>{d.i2Drop>0?"−":"+"}{Math.abs(d.i2Drop)}%</td>
-                <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{d.tau2Drop>0?"−":"+"}{Math.abs(d.tau2Drop)}</td>
+                <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,color:Math.abs(d.dffit)>1?C.yel:C.txt}}>{d.dffit>0?"+":""}{fmtNum(d.dffit,prec)}</td>
+                <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:Math.abs(d.i2Drop)>25?C.yel:C.muted}}>{d.i2Drop>0?"−":"+"}{fmtI2(Math.abs(d.i2Drop),prec)}%</td>
+                <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>{d.tau2Drop>0?"−":"+"}{fmtNum(Math.abs(d.tau2Drop),prec)}</td>
                 <td style={{padding:"6px 10px",textAlign:"right"}}>{d.influential?<span style={tagS("yellow")}>influential</span>:<span style={{color:C.dim}}>—</span>}</td>
               </tr>
             ))}
@@ -6169,7 +6220,7 @@ function SensitivityTab({project}){
     {(()=>{
       const t=ES_TYPES[esType]||{};const isLog=!!t.log,isProp=esType==="PROP";
       const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
-      const dv=x=>isProp?(bt(x)*100).toFixed(1)+"%":isLog?bt(x).toFixed(3):(+x).toFixed(3);
+      const dv=x=>isProp?(bt(x)*100).toFixed(normalizePrecision(prec).decimals)+"%":isLog?fmtES(bt(x),prec):fmtES(+x,prec);
       return(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:16}}>
         <div style={{fontSize:11,fontWeight:700,color:C.acc,letterSpacing:1,marginBottom:6}}>PRIMARY-DATA-ONLY RE-ANALYSIS</div>
         <div style={{fontSize:12,color:C.muted,marginBottom:12,lineHeight:1.5}}>Re-pools using only studies with directly-reported primary data, excluding any flagged as converted, calculated, digitised from a figure, or otherwise indirect. If the conclusion holds, it doesn't hinge on derived numbers.</div>
@@ -6204,6 +6255,7 @@ function SensitivityTab({project}){
 /* ════════════ TAB: SUBGROUP ANALYSIS ════════════ */
 function SubgroupTab({project}){
   const{studies}=project;
+  const prec = project?.analysisPrecision;
   const[groupKey,setGroupKey]=useState("design");
   const[method,setMethod]=useState("random");
   const result=useMemo(()=>subgroupAnalysis(studies,groupKey,method),[studies,groupKey,method]);
@@ -6241,11 +6293,11 @@ function SubgroupTab({project}){
           <div key={g.group} style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,borderLeft:`3px solid ${C.acc}`}}>
             <div style={{fontSize:12,fontWeight:700,marginBottom:4}}>{g.group}</div>
             <div style={{fontSize:10,color:C.muted,marginBottom:10}}>k = {g.k} studies</div>
-            <div style={{fontSize:24,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{g.pES.toFixed(3)}</div>
-            <div style={{fontSize:11,color:C.muted,fontFamily:"'IBM Plex Mono',monospace"}}>95% CI [{g.lo95.toFixed(3)}, {g.hi95.toFixed(3)}]</div>
+            <div style={{fontSize:24,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color:C.grn}}>{fmtES(g.pES,prec)}</div>
+            <div style={{fontSize:11,color:C.muted,fontFamily:"'IBM Plex Mono',monospace"}}>95% CI [{fmtES(g.lo95,prec)}, {fmtES(g.hi95,prec)}]</div>
             <div style={{marginTop:10,display:"flex",gap:10,fontSize:11,color:C.muted}}>
               <span>I² = <strong style={{color:g.I2>50?C.yel:C.txt}}>{g.I2}%</strong></span>
-              <span>p = <strong style={{color:g.pval<0.05?C.grn:C.muted}}>{g.pval<0.001?"<0.001":g.pval.toFixed(3)}</strong></span>
+              <span>p = <strong style={{color:g.pval<0.05?C.grn:C.muted}}>{fmtP(g.pval,prec)}</strong></span>
             </div>
           </div>
         ))}
@@ -6265,7 +6317,7 @@ function SubgroupTab({project}){
             </div>
             <div>
               <div style={{fontSize:10,color:C.muted,marginBottom:4}}>p-value</div>
-              <div style={{fontSize:22,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color:result.pBetween<0.05?C.grn:C.muted}}>{result.pBetween!==null?(result.pBetween<0.001?"<0.001":result.pBetween.toFixed(3)):"—"}</div>
+              <div style={{fontSize:22,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color:result.pBetween<0.05?C.grn:C.muted}}>{result.pBetween!==null?fmtP(result.pBetween,prec):"—"}</div>
             </div>
           </div>
           <div style={{marginTop:12,fontSize:12,color:C.muted}}>
@@ -6367,6 +6419,7 @@ function gradeSuggestions(project){
 
 function GRADETab({project,upd}){
   const grade=project.grade||{};
+  const prec=project?.analysisPrecision;
   const setRating=(domain,val)=>upd("grade",{...grade,[domain]:val});
   const suggestions=useMemo(()=>gradeSuggestions(project),[project.studies,project.robMethod]);
   const applyAll=()=>{
@@ -6449,7 +6502,7 @@ function GRADETab({project,upd}){
           <div style={{marginTop:14,paddingTop:14,borderTop:`1px solid ${C.brd}`}}>
             <div style={{fontSize:10,color:C.muted,marginBottom:6}}>EVIDENCE BASE</div>
             <div style={{fontSize:12,color:C.muted}}>k = <strong style={{color:C.txt}}>{result.k}</strong> studies</div>
-            <div style={{fontSize:12,color:C.muted}}>Pooled ES = <strong style={{color:C.txt,fontFamily:"'IBM Plex Mono',monospace"}}>{result.pES.toFixed(3)}</strong></div>
+            <div style={{fontSize:12,color:C.muted}}>Pooled ES = <strong style={{color:C.txt,fontFamily:"'IBM Plex Mono',monospace"}}>{fmtES(result.pES,prec)}</strong></div>
             <div style={{fontSize:12,color:C.muted}}>I² = <strong style={{color:result.I2>50?C.yel:C.txt}}>{result.I2}%</strong></div>
           </div>
         )}
@@ -7830,9 +7883,10 @@ export default function MetaLab({ initialProjectId = null, onProjectChange = nul
     const esType=(p.studies||[]).map(s=>s.esType).filter(Boolean)[0]||"";
     const t=ES_TYPES[esType]||{}; const isLog=!!t.log, isProp=esType==="PROP";
     const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
-    const dv=x=>x==null?"—":isProp?(bt(x)*100).toFixed(1)+"%":isLog?bt(x).toFixed(3):(+x).toFixed(3);
+    const prec=p.analysisPrecision;
+    const dv=x=>x==null?"—":isProp?fmtPct(bt(x),prec)+"%":isLog?fmtES(bt(x),prec):fmtES(+x,prec);
     const esc=s=>String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
-    const forest=res?buildPubForestSVG(res,{esType,esLabel:t.scale||"Effect",nullLine:0,showCounts:true,showWeights:true,title:""}):null;
+    const forest=res?buildPubForestSVG(res,{esType,esLabel:t.scale||"Effect",nullLine:0,showCounts:true,showWeights:true,title:"",prec}):null;
     const prismaFig=buildPrismaSVG(pr,{title:""});
     const grade=p.grade||{};
     const gradeRows=GRADE_DOMAINS.map(d=>{const o=GRADE_OPTIONS.find(x=>x.v===grade[d.id]);return `<tr><td>${esc(d.label)}</td><td>${o?esc(o.label):"—"}</td></tr>`;}).join("");
@@ -7875,7 +7929,7 @@ export default function MetaLab({ initialProjectId = null, onProjectChange = nul
       ${res.hksj?`<tr><td>Random effects (HKSJ)</td><td>${dv(res.hksj.es)}</td><td>${dv(res.hksj.lo)} to ${dv(res.hksj.hi)}</td></tr>`:""}
       ${res.predInt?`<tr><td>95% prediction interval</td><td>—</td><td>${dv(res.predInt.lo)} to ${dv(res.predInt.hi)}</td></tr>`:""}
     </table>
-    <div class="muted">Heterogeneity: I² = ${res.I2}%, τ² = ${res.tau2.toFixed(4)}, Q = ${res.Q.toFixed(2)} (df ${res.k-1}, p ${res.Qpval<0.001?"&lt; 0.001":"= "+res.Qpval.toFixed(3)}). k = ${res.k} studies.</div>
+    <div class="muted">Heterogeneity: I² = ${res.I2}%, τ² = ${fmtNum(res.tau2,prec)}, Q = ${fmtNum(res.Q,prec)} (df ${res.k-1}, p ${res.Qpval<0.001?"&lt; 0.001":"= "+fmtNum(res.Qpval,prec)}). k = ${res.k} studies.</div>
     <h2>Forest plot</h2>${forest?forest.svg:""}`:"<h2>Meta-analysis</h2><div class='muted'>Not enough studies with effect sizes to pool.</div>"}
 
     <h2>GRADE certainty of evidence</h2>
@@ -8536,7 +8590,7 @@ export default function MetaLab({ initialProjectId = null, onProjectChange = nul
           {tab==="prisma"&&<PRISMATab project={project} updNested={updNested} updateProject={updateProject} activeId={activeId}/>}
           {tab==="extraction"&&<ExtractionTab project={project} updateProject={updateProject} activeId={activeId}/>}
           {tab==="rob"&&<RoBTab project={project} updateProject={updateProject} activeId={activeId}/>}
-          {tab==="analysis"&&<AnalysisTab project={project}/>}
+          {tab==="analysis"&&<AnalysisTab project={project} updateProject={fn=>updateProject(activeId,fn)}/>}
           {tab==="forest"&&<ForestTab project={project}/>}
           {tab==="sensitivity"&&<SensitivityTab project={project}/>}
           {tab==="subgroup"&&<SubgroupTab project={project}/>}
@@ -8570,6 +8624,6 @@ export default function MetaLab({ initialProjectId = null, onProjectChange = nul
     {/* Shared export dialog (prompt9 Task 6) — single instance for every
         monolith download trigger; portals itself to document.body, so the
         transformed .tab-content ancestor can't hijack its position:fixed. */}
-    <ExportDialog open={!!expItem} onClose={()=>setExpItem(null)} item={expItem}/>
+    <ExportDialog open={!!expItem} onClose={()=>setExpItem(null)} item={expItem} precision={(project&&project.analysisPrecision)||undefined}/>
   </div>);
 }
