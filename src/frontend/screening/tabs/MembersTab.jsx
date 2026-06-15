@@ -127,8 +127,13 @@ const selectStyle = {
 
 // ── MembersTab ──────────────────────────────────────────────────────────────
 
-export default function MembersTab({ pid, project, access, refreshProject }) {
+export default function MembersTab({ pid, project, access, refreshProject, presence }) {
   const { user } = useAuth();
+  // prompt23 Task 14 — live presence: who is active and where (+ what they're editing).
+  const presenceByUser = {};
+  (presence?.users || []).forEach(u => { presenceByUser[u.userId] = u; });
+  const locksByUser = {};
+  (presence?.locks || []).forEach(l => { (locksByUser[l.userId] ||= []).push(l); });
   const navigate = useNavigate();
   const [members, setMembers] = useState([]);
   const [isLeader, setIsLeader] = useState(false);
@@ -280,6 +285,7 @@ export default function MembersTab({ pid, project, access, refreshProject }) {
                       amOwner={amOwner}
                       busy={!!busy[m.id]}
                       rowErr={rowErr[m.id]}
+                      activity={m.userId ? { presence: presenceByUser[m.userId], lock: (locksByUser[m.userId] || [])[0] } : null}
                       onPatch={(body) => patchMember(m.id, body)}
                       onRemove={() => setConfirmRemove(m)}
                       onLeave={isSelf && !isOwnerRow ? () => { setLeaveErr(''); setConfirmLeave(true); } : undefined}
@@ -376,8 +382,14 @@ function LockNote({ children }) {
   );
 }
 
-function MemberRow({ member, canManage, amOwner, busy, rowErr, onPatch, onRemove, onLeave }) {
+function MemberRow({ member, canManage, amOwner, busy, rowErr, activity, onPatch, onRemove, onLeave }) {
   const m = member;
+  // prompt23 Task 14 — live activity: green dot + current location (+ field being edited).
+  const pres = activity?.presence || null;
+  const lock = activity?.lock || null;
+  const activityText = pres
+    ? (lock ? `Active now · editing ${String(lock.field || '').split('.').pop()}` : `Active now${pres.location ? ` · ${pres.location}` : ''}`)
+    : null;
   const [showAllPerms, setShowAllPerms] = useState(false);
   const display = m.name || m.email || 'Unknown';
   const isOwnerRow  = !!m.isOwner || m.role === 'owner';
@@ -423,6 +435,12 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, onPatch, onRemove
               {m.status === 'pending' ? 'Pending Invite' : status.label}
             </Badge>
           </div>
+          {activityText && (
+            <div style={{ fontSize: 11, color: C.grn, marginTop: 3, display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
+              <span style={{ width: 7, height: 7, borderRadius: '50%', background: C.grn, flexShrink: 0 }} />
+              <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{activityText}</span>
+            </div>
+          )}
           <div title={m.name ? m.email : undefined} style={{ fontSize: 12, color: C.txt2, marginTop: 3, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
             {m.name ? m.email : <span style={{ color: C.muted }}>no email</span>}
           </div>

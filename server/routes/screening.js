@@ -14,6 +14,7 @@ import * as RV from '../controllers/screeningReviewController.js';
 import * as CH from '../controllers/screeningChatController.js';
 import * as OV from '../controllers/screeningOverviewController.js';
 import * as PDF from '../controllers/screeningPdfController.js';
+import * as PR from '../controllers/presenceController.js';
 
 const r = Router();
 const prisma = new PrismaClient();
@@ -55,6 +56,13 @@ r.post('/projects/:pid/unarchive', S.unarchiveProject);
 // META·LAB association (Task 4) — link/unlink + selectable targets + handoff rollup
 r.get('/projects/:pid/linkable',  S.getLinkable);
 r.post('/projects/:pid/link',     S.linkMetaLab);
+
+// Presence + field locking (prompt23 Tasks 5/13/14/15) — ephemeral, member-gated.
+r.get('/projects/:pid/presence',            PR.list);
+r.post('/projects/:pid/presence/heartbeat', PR.heartbeat);
+r.post('/projects/:pid/presence/leave',     PR.leave);
+r.post('/projects/:pid/locks/acquire',      PR.acquireLock);
+r.post('/projects/:pid/locks/release',      PR.releaseLock);
 
 // Members (Part 4) — leader-gated mutations enforced in the controller
 r.get('/projects/:pid/members',           M.listMembers);

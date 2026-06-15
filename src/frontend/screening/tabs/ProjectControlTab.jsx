@@ -18,6 +18,7 @@ import { useNavigate } from 'react-router-dom';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { Loading, ErrorBanner, Button, Badge, Toggle, Card, SectionLabel } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
+import { useFieldLock } from '../hooks/usePresence.js';
 import MembersTab from './MembersTab.jsx';
 
 const STATUS_OPTIONS = [
@@ -37,7 +38,7 @@ const selectStyle = {
   padding: '7px 10px', color: C.txt, fontSize: 13, fontFamily: FONT, outline: 'none', cursor: 'pointer',
 };
 
-export default function ProjectControlTab({ pid, project, access, refreshProject, embedded = false }) {
+export default function ProjectControlTab({ pid, project, access, refreshProject, embedded = false, presence }) {
   const canManageSettings = !!(project?.canManageSettings || project?.isLeader || access?.isLeader);
   const myRole = project?.myRole || access?.myRole || 'reviewer';
   const roleMeta = ROLE_META[myRole] || ROLE_META.reviewer;
@@ -65,7 +66,7 @@ export default function ProjectControlTab({ pid, project, access, refreshProject
         </div>
       )}
 
-      <SettingsSection pid={pid} project={project} canManage={canManageSettings} refreshProject={refreshProject} />
+      <SettingsSection pid={pid} project={project} canManage={canManageSettings} refreshProject={refreshProject} presence={presence} />
 
       {/* prompt18: the META·LAB link is an internal detail — hidden inside the
           unified workspace (you're already in the project), shown only in the
@@ -75,7 +76,7 @@ export default function ProjectControlTab({ pid, project, access, refreshProject
       <div>
         <SectionLabel>Members &amp; permissions</SectionLabel>
         <Card style={{ padding: '18px 18px 8px' }}>
-          <MembersTab pid={pid} project={project} access={access} refreshProject={refreshProject} />
+          <MembersTab pid={pid} project={project} access={access} refreshProject={refreshProject} presence={presence} />
         </Card>
       </div>
     </div>
@@ -84,7 +85,10 @@ export default function ProjectControlTab({ pid, project, access, refreshProject
 
 // ── Project settings: status / blind mode / chat restriction ────────────────
 
-function SettingsSection({ pid, project, canManage, refreshProject }) {
+function SettingsSection({ pid, project, canManage, refreshProject, presence }) {
+  // prompt23 Task 5 — collaborative field lock on the shared "Required reviewers"
+  // setting: while one leader edits it, others see it locked with their name.
+  const reqLock = useFieldLock({ pid, field: 'settings.requiredReviewers', myUserId: presence?.myUserId, locks: presence?.locks, enabled: !!canManage });
   const [status, setStatus] = useState(project?.progressStatus || 'not_started');
   const [blind, setBlind] = useState(!!project?.blindMode);
   const [chatRestricted, setChatRestricted] = useState(!!project?.chatRestricted);
@@ -165,11 +169,20 @@ function SettingsSection({ pid, project, canManage, refreshProject }) {
         <div style={{ borderTop: `1px solid ${C.brd}`, marginTop: 14, paddingTop: 14 }}>
           <Row title="Required reviewers" hint="Independent title & abstract decisions needed before a record can advance to Final Review. The research standard is 2; only the owner or a leader can change it.">
             {canManage
-              ? <select value={reqReviewers} disabled={busy}
-                  onChange={e => { const v = parseInt(e.target.value, 10); const prev = reqReviewers; setReqReviewers(v); save({ requiredScreeningReviewers: v }).then(ok => { if (!ok) setReqReviewers(prev); }); }}
-                  style={{ ...selectStyle, opacity: busy ? 0.6 : 1 }}>
-                  {[2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => <option key={n} value={n}>{n} reviewers</option>)}
-                </select>
+              ? <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+                  <select value={reqReviewers} disabled={busy || !!reqLock.lockedByOther}
+                    onFocus={() => reqLock.acquire()}
+                    onBlur={() => reqLock.release()}
+                    onChange={e => { const v = parseInt(e.target.value, 10); const prev = reqReviewers; setReqReviewers(v); save({ requiredScreeningReviewers: v }).then(ok => { if (!ok) setReqReviewers(prev); else reqLock.release(); }); }}
+                    style={{ ...selectStyle, opacity: (busy || reqLock.lockedByOther) ? 0.6 : 1, cursor: reqLock.lockedByOther ? 'not-allowed' : 'pointer' }}>
+                    {[2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => <option key={n} value={n}>{n} reviewers</option>)}
+                  </select>
+                  {reqLock.lockedByOther && (
+                    <span style={{ fontSize: 10.5, color: C.gold, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                      <span style={{ fontSize: 11 }}>🔒</span>{reqLock.lockedByOther.name} is editing
+                    </span>
+                  )}
+                </div>
               : <Badge color={C.acc}>{reqReviewers} reviewers</Badge>}
           </Row>
         </div>

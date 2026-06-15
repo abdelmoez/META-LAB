@@ -70,6 +70,13 @@ export const screeningApi = {
   listConflicts:   (pid)          => req('GET',  `/projects/${pid}/conflicts`),
   resolveConflict: (pid, cid, body) => req('POST', `/projects/${pid}/conflicts/${cid}/resolve`, body),
 
+  // Presence + field locking (prompt23) — ephemeral; all best-effort on the client.
+  getPresence:       (pid)       => req('GET',  `/projects/${pid}/presence`),
+  presenceHeartbeat: (pid, body) => req('POST', `/projects/${pid}/presence/heartbeat`, body),
+  presenceLeave:     (pid)       => req('POST', `/projects/${pid}/presence/leave`, {}),
+  acquireLock:       (pid, body) => req('POST', `/projects/${pid}/locks/acquire`, body),
+  releaseLock:       (pid, body) => req('POST', `/projects/${pid}/locks/release`, body),
+
   // Duplicates
   listDuplicates:        (pid)            => req('GET',  `/projects/${pid}/duplicates`),
   detectDuplicates:      (pid)            => req('POST', `/projects/${pid}/duplicates/detect`, {}),

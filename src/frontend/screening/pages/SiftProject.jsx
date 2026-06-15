@@ -10,6 +10,9 @@ import { GlobalStyle, BetaBadge, Badge, Loading, ErrorBanner, Modal, Button } fr
 import { Icon } from '../../components/icons.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 import { useRealtime } from '../../hooks/useRealtime.js';
+import { useProjectPresence } from '../hooks/usePresence.js';
+import { useAuth } from '../../context/AuthContext.jsx';
+import PresenceIndicator from '../components/PresenceIndicator.jsx';
 import ChatLauncher from '../components/ChatLauncher.jsx';
 import UserMenu from '../../components/UserMenu.jsx';
 import NotificationsBell from '../../components/NotificationsBell.jsx';
@@ -68,10 +71,23 @@ const PROGRESS_BADGE = {
   done:        { label: 'DONE',        color: C.grn },
 };
 
+// Human-readable presence location per sub-tab (prompt23 Task 13).
+const LOCATION_LABELS = {
+  overview: 'Overview',
+  import: 'Screening · Import',
+  duplicates: 'Screening · Duplicates',
+  screening: 'Screening · Title & Abstract',
+  conflicts: 'Screening · Conflicts',
+  'second-review': 'Screening · Final Review',
+  control: 'Settings',
+  export: 'Export',
+};
+
 export default function SiftProject({ embedded = false, embeddedPid = null, onGoToExtraction = null } = {}) {
   const routeParams = useParams();
   const pid = embedded ? embeddedPid : routeParams.pid;
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [params, setParams] = useSearchParams();
   // Sub-tab routing (prompt20 Task 1). Standalone (/sift-beta) drives the sub-tab
   // from ?tab=. The EMBEDDED Screening stage lives inside the META·LAB monolith,
@@ -161,6 +177,14 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
   const isFullBleed = active.key === 'screening';
   const pb = PROGRESS_BADGE[project?.progressStatus] || PROGRESS_BADGE.not_started;
 
+  // Project presence (prompt23 Tasks 13/14/15) — heartbeat the user's current
+  // screening location and expose who else is here + which fields are locked.
+  // Best-effort: degrades to nothing if the endpoints are unavailable.
+  const presenceLocation = LOCATION_LABELS[active.key] || 'Screening';
+  const { users: presenceUsers, locks: presenceLocks } = useProjectPresence(pid, presenceLocation, { enabled: !!project && !disabled && !error });
+  const presence = { users: presenceUsers, locks: presenceLocks, myUserId: user?.id };
+  const totalMembers = project?._count?.members;
+
   // ── Embedded "Screening stage" (prompt18) ───────────────────────────────
   // Rendered inside the META·LAB monolith's Screening tab. No page shell, no
   // account menu / notifications / META·LAB link chip — just the screening
@@ -220,14 +244,13 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
         <nav aria-label="Screening workflow"
           style={{ display: 'flex', gap: 2, padding: '0 12px', background: C.surf, borderBottom: `1px solid ${C.brd}`, flexShrink: 0, overflowX: 'auto', alignItems: 'flex-start' }}>
           {tabSet.map(navCol)}
-          {/* prompt23 Task 12 — "records · members" removed from the submenu (clutter);
-              live member/active-user info now lives in the project's top-right presence
-              indicator. Blind-mode stays here as it's screening-specific context. */}
-          {project?.blindMode && (
-            <div style={{ marginLeft: 'auto', alignSelf: 'center', display: 'flex', alignItems: 'center', paddingRight: 4, flexShrink: 0 }}>
-              <Badge color={C.gold}>Blind</Badge>
-            </div>
-          )}
+          {/* prompt23 Task 12/13 — "records · members" replaced by a live presence
+              indicator (who's active + where). Blind-mode stays here as screening
+              context. */}
+          <div style={{ marginLeft: 'auto', alignSelf: 'center', display: 'flex', alignItems: 'center', gap: 8, paddingRight: 4, flexShrink: 0 }}>
+            {project?.blindMode && <Badge color={C.gold}>Blind</Badge>}
+            <PresenceIndicator users={presenceUsers} locks={presenceLocks} totalMembers={totalMembers} myUserId={user?.id} />
+          </div>
         </nav>
 
         <div style={{ flex: 1, overflow: isFullBleed ? 'hidden' : 'auto', minHeight: 0 }}>
@@ -251,9 +274,9 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
                     onBack={() => setTab('overview')} />
                 </div>
               : isFullBleed
-                ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} embedded /></div>
+                ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} presence={presence} embedded /></div>
                 : <div style={{ maxWidth: 1180, margin: '0 auto', padding: '20px 20px 48px' }}>
-                    <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} embedded />
+                    <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} presence={presence} embedded />
                   </div>
           )}
         </div>
@@ -291,7 +314,8 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
             style={{ background: C.card, border: `1px solid ${C.brd2}`, color: C.txt, fontSize: 12, fontWeight: 600, fontFamily: FONT, padding: '6px 14px', borderRadius: 7, cursor: 'pointer' }}>
             ↑ Import
           </button>
-          {/* Utility cluster (prompt8): [chat][bell][account] */}
+          {/* Utility cluster (prompt8): [presence][chat][bell][account] */}
+          {project && <PresenceIndicator users={presenceUsers} locks={presenceLocks} totalMembers={totalMembers} myUserId={user?.id} />}
           {project && <ChatLauncher pid={pid} access={access} projectName={project.title} />}
           <NotificationsBell />
           <UserMenu context="metasift" />
@@ -336,9 +360,9 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
 
         {!loading && !error && !disabled && project && (
           isFullBleed
-            ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} /></div>
+            ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} presence={presence} /></div>
             : <div style={{ maxWidth: 1180, margin: '0 auto', padding: '24px 24px 56px' }}>
-                <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} />
+                <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} presence={presence} />
               </div>
         )}
       </div>
