@@ -69,14 +69,21 @@ failures are unrelated/baseline).
 28. **Commits** — shipped in parts: pt1 UX/sort/stepper/quorum/conflict, pt2
     import→duplicates, pt3 PICO, pt4 presence+locking, plus this docs+version commit.
 29. **Push** — to `main` (see commit log).
-30. **Known limitations**
-    - Presence/locking is scoped to the **screening workspace**; monolith-stage
-      (PICO/Data Extraction) locking reuses the same infra and is the next step.
-    - Single-process SSE (no Redis) → per-instance presence; polling fallback covers
-      correctness.
-    - Dashboard sort is per-browser (not cross-device) by design this cycle.
-    - Backend realtime/duplicate changes could not be runtime-tested locally (no DB);
-      they are additive and fail-safe.
+30. **Known limitations** — most resolved in the v3.5.1 follow-up:
+    - ✅ **RESOLVED** — presence now spans **all monolith stages** (PICO, Data
+      Extraction, Analysis, …) scoped to the linked screening project, and **PICO
+      fields (P/I/C/O) are field-locked**; monolith + screening users share one
+      presence room. (Screening Settings field lock already shipped.)
+    - ✅ **RESOLVED** — dashboard prefs are now **cross-device**: server-backed via
+      `User.dashboardPreferences` (PUT/GET `/api/profile`), localStorage as the
+      instant/offline fallback.
+    - ✅ **RESOLVED** — backend presence/locking/prefs are now **runtime-tested**
+      via two-session integration tests against a live server (DB stood up locally).
+    - ⚠️ **Remaining (architectural):** single-process SSE bus (no Redis) → presence
+      lives per-instance. This is **inherent to the current single-Node + SQLite
+      deployment and shared by ALL realtime features** (chat, pokes), not new to
+      presence; the polling fallback preserves correctness. Multi-instance would
+      need a Redis pub/sub broker (out of scope — would change the deployment model).
 31. **Recommended next steps**
     - Extend presence + field locks to monolith PICO/extraction fields (infra ready).
     - Add `User.dashboardPreferences` for cross-device dashboard prefs.

@@ -29,7 +29,7 @@ import {
   ROLE_LABEL, ROLE_COLOR, STATUS_META, TAG_COLORS,
   statusOf, roleOf, isOwnerOf, canEditOf,
   relTime, progressOf, SORTS, ROLE_ORDER,
-  readDashboardPrefs, writeDashboardPrefs,
+  readDashboardPrefs, writeDashboardPrefs, sanitizeDashboardPrefs,
 } from './projectLanding.helpers.js';
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -1098,21 +1098,36 @@ export default function ProjectLanding() {
   const [showArchived, setShowArchived] = useState(false);
 
   /* ── Persisted dashboard view preferences (prompt23 Task 2) ───────
-     Hydrate sort/filter/view/show-archived from this user's saved prefs once
-     auth is known, then write back on any change. Per-user localStorage keeps
-     the choice across refresh, browser restart, and logout/login. */
+     Hydrate sort/filter/view/show-archived once auth is known, then write back on
+     any change. SERVER prefs (User.dashboardPreferences) win for cross-device
+     sync; localStorage is the instant + offline fallback. Writes go to both
+     (localStorage immediately, server best-effort — same pattern as theme). */
   const prefsHydrated = useRef(false);
   useEffect(() => {
-    const saved = readDashboardPrefs(user?.id);
-    if (saved.sort) setSort(saved.sort);
-    if (saved.filter) setFilter(saved.filter);
-    if (saved.view) setView(saved.view);
-    if (typeof saved.showArchived === 'boolean') setShowArchived(saved.showArchived);
-    prefsHydrated.current = true;
+    let alive = true;
+    prefsHydrated.current = false;
+    (async () => {
+      let saved = readDashboardPrefs(user?.id); // fast: local first
+      try {
+        const prof = await api.profile.get();
+        const serverPrefs = prof?.user?.dashboardPreferences ? JSON.parse(prof.user.dashboardPreferences) : null;
+        const clean = sanitizeDashboardPrefs(serverPrefs);
+        if (Object.keys(clean).length) saved = { ...saved, ...clean }; // server wins
+      } catch { /* offline / unauth → localStorage only */ }
+      if (!alive) return;
+      if (saved.sort) setSort(saved.sort);
+      if (saved.filter) setFilter(saved.filter);
+      if (saved.view) setView(saved.view);
+      if (typeof saved.showArchived === 'boolean') setShowArchived(saved.showArchived);
+      prefsHydrated.current = true;
+    })();
+    return () => { alive = false; };
   }, [user?.id]);
   useEffect(() => {
     if (!prefsHydrated.current) return; // don't clobber saved prefs with initial defaults
-    writeDashboardPrefs(user?.id, { sort, filter, view, showArchived });
+    const prefs = { sort, filter, view, showArchived };
+    writeDashboardPrefs(user?.id, prefs);               // instant, per-browser
+    api.profile.update({ dashboardPreferences: prefs }).catch(() => {}); // best-effort cross-device
   }, [user?.id, sort, filter, view, showArchived]);
 
   /* modals */

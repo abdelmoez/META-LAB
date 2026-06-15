@@ -143,19 +143,25 @@ function dashPrefsKey(userId) {
   return DASH_PREFS_PREFIX + (userId || 'anon');
 }
 
+/** Validate a raw prefs object against the live FILTERS/SORTS/views. Drops unknown
+ *  or invalid keys so a stale/tampered value (from localStorage OR the server)
+ *  never breaks the dashboard. */
+export function sanitizeDashboardPrefs(p) {
+  if (!p || typeof p !== 'object') return {};
+  const out = {};
+  if (SORTS.some(s => s.key === p.sort)) out.sort = p.sort;
+  if (FILTERS.some(f => f.key === p.filter)) out.filter = p.filter;
+  if (DASH_VIEWS.includes(p.view)) out.view = p.view;
+  if (typeof p.showArchived === 'boolean') out.showArchived = p.showArchived;
+  return out;
+}
+
 /** Read + validate the saved dashboard prefs for a user. Unknown keys dropped. */
 export function readDashboardPrefs(userId) {
   try {
     const raw = localStorage.getItem(dashPrefsKey(userId));
     if (!raw) return {};
-    const p = JSON.parse(raw);
-    if (!p || typeof p !== 'object') return {};
-    const out = {};
-    if (SORTS.some(s => s.key === p.sort)) out.sort = p.sort;
-    if (FILTERS.some(f => f.key === p.filter)) out.filter = p.filter;
-    if (DASH_VIEWS.includes(p.view)) out.view = p.view;
-    if (typeof p.showArchived === 'boolean') out.showArchived = p.showArchived;
-    return out;
+    return sanitizeDashboardPrefs(JSON.parse(raw));
   } catch {
     return {};
   }

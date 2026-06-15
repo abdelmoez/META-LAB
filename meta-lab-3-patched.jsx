@@ -4,6 +4,9 @@ import { screeningApi } from "./src/frontend/screening/api-client/screeningApi.j
 import SiftProject from "./src/frontend/screening/pages/SiftProject.jsx";
 import { PERMISSION_PRESETS, ASSIGNABLE_PRESETS } from "./src/research-engine/screening/permissionPresets.js";
 import { useRealtime } from "./src/frontend/hooks/useRealtime.js";
+import { useProjectPresence, useFieldLock } from "./src/frontend/screening/hooks/usePresence.js";
+import PresenceIndicator from "./src/frontend/screening/components/PresenceIndicator.jsx";
+import { useAuth } from "./src/frontend/context/AuthContext.jsx";
 import { flushStorage, hasPendingSave } from "./src/frontend/storage/serverStorage.js";
 import { alpha as themeAlpha } from "./src/frontend/theme/tokens.js";
 import { useTheme } from "./src/frontend/theme/ThemeContext.jsx";
@@ -1796,11 +1799,21 @@ function parseFilters(text) {
 
 
 /* ════════════ TAB: PICO ════════════ */
-function PICOTab({project,updNested,upd}){
+function PICOTab({project,updNested,upd,lockCtx}){
   const{pico}=project;
   const ch=(k,v)=>updNested("pico",k,v);
   const[busy,setBusy]=useState("");
   const hasCore=pico.P||pico.I||pico.O;
+
+  // prompt23 Task 5 (L1 follow-up) — collaborative field locks on the shared PICO
+  // fields. One useFieldLock per field (fixed count → safe hook order); fail-open
+  // when no screening workspace is linked (lockCtx.pid null → editing never blocked).
+  const lc = lockCtx || {};
+  const lockP = useFieldLock({ pid: lc.pid, field: "pico.P", myUserId: lc.myUserId, locks: lc.locks, enabled: !!lc.pid });
+  const lockI = useFieldLock({ pid: lc.pid, field: "pico.I", myUserId: lc.myUserId, locks: lc.locks, enabled: !!lc.pid });
+  const lockC = useFieldLock({ pid: lc.pid, field: "pico.C", myUserId: lc.myUserId, locks: lc.locks, enabled: !!lc.pid });
+  const lockO = useFieldLock({ pid: lc.pid, field: "pico.O", myUserId: lc.myUserId, locks: lc.locks, enabled: !!lc.pid });
+  const fieldLocks = { P: lockP, I: lockI, C: lockC, O: lockO };
 
   // AI: refine the research question into a focused, answerable SR question
   const refineQuestion=async()=>{
@@ -1906,13 +1919,20 @@ function PICOTab({project,updNested,upd}){
         {k:"I",label:"Intervention / Exposure",ph:"e.g. SGLT2 inhibitor added to metformin",color:C.grn,req:true},
         {k:"C",label:"Comparator / Control",ph:"e.g. Metformin alone, placebo, or standard care",color:C.yel,req:true},
         {k:"O",label:"Outcome(s)",ph:"e.g. MACE; HbA1c reduction (%); all-cause mortality",color:C.purp,req:true},
-      ].map(({k,label,ph,color,req})=>(
+      ].map(({k,label,ph,color,req})=>{
+        const fl=fieldLocks[k]||{};
+        const lockedBy=fl.lockedByOther;
+        return(
         <div key={k} style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:14,borderLeft:`3px solid ${color}`}}>
           <label style={{...lbl,color}}>{k} — {label} {req&&<span style={{color:C.red}}>*</span>}</label>
           <textarea value={pico[k]||""} onChange={e=>ch(k,e.target.value)} placeholder={ph}
-            style={{...inp,height:68,resize:"vertical",fontSize:12,lineHeight:1.5}}/>
+            disabled={!!lockedBy}
+            onFocus={()=>fl.acquire&&fl.acquire()}
+            onBlur={()=>fl.release&&fl.release()}
+            style={{...inp,height:68,resize:"vertical",fontSize:12,lineHeight:1.5,opacity:lockedBy?0.6:1,cursor:lockedBy?"not-allowed":"text"}}/>
+          {lockedBy&&<div style={{fontSize:10.5,color:C.yel,marginTop:4,display:"inline-flex",alignItems:"center",gap:4}}><span>🔒</span>{lockedBy.name} is editing</div>}
         </div>
-      ))}
+      );})}
     </div>
 
     {/* Study design / timeframe / prospero */}
@@ -8006,6 +8026,18 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   });
 
   const project=useMemo(()=>projects.find(p=>p.id===activeId)||null,[projects,activeId]);
+
+  // prompt23 Tasks 13/14/15 (L1 follow-up) — project presence across ALL monolith
+  // stages (PICO, Data Extraction, Analysis, …). Scoped to the linked screening
+  // project id so monolith users and screening users share ONE presence room.
+  // Disabled while the Screening stage is open (SiftProject heartbeats there) to
+  // avoid a double heartbeat. Field locks (e.g. PICO) reuse the same room.
+  const { user: authUser } = useAuth();
+  const spId = linkedSiftId(project);
+  const monolithLocation = (TABS.find(t=>t.id===tab)?.label) || "Project";
+  const { users: presenceUsers, locks: presenceLocks } = useProjectPresence(
+    spId, monolithLocation, { enabled: !!spId && tab !== "screening" }
+  );
   const upd=useCallback((field,val)=>{if(activeId)updateProject(activeId,p=>({...p,[field]:val}));},[activeId,updateProject]);
   const updNested=useCallback((field,key,val)=>{if(activeId)updateProject(activeId,p=>({...p,[field]:{...p[field],[key]:val}}));},[activeId,updateProject]);
 
@@ -8704,6 +8736,12 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
         <div style={{position:"fixed",top:12,right:96,zIndex:9999}}>
           <MetaLabChatLauncher metaLabProjectId={project.id} projectName={project.name}/>
         </div>
+        {/* prompt23 Task 13 — project presence chip, left of the chat launcher. */}
+        {spId&&(
+          <div style={{position:"fixed",top:14,right:136,zIndex:9999}}>
+            <PresenceIndicator users={presenceUsers} locks={presenceLocks} totalMembers={project?._memberCount} myUserId={authUser?.id}/>
+          </div>
+        )}
         {tab==="screening"?(
           <ScreeningWorkspaceFrame project={project} focus={focus} onToggleFocus={()=>setScreeningFocus(f=>!f)} setTab={setTab} onBackToProjects={onBackToProjects}/>
         ):(
@@ -8764,7 +8802,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           )}
           {tab==="overview"&&<OverviewTab project={project} setTab={setTab}/>}
           {tab==="control"&&<ControlTab project={project} onAnnotate={patchAnnotations} setTab={setTab}/>}
-          {tab==="pico"&&<PICOTab project={project} updNested={updNested} upd={upd}/>}
+          {tab==="pico"&&<PICOTab project={project} updNested={updNested} upd={upd} lockCtx={{pid:spId,myUserId:authUser?.id,locks:presenceLocks}}/>}
           {tab==="prospero"&&<PROSPEROTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="search"&&<SearchTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="prisma"&&<PRISMATab project={project} updNested={updNested} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}

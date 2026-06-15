@@ -56,8 +56,16 @@ members 403 — nobody learns about activity in projects they can't access.
   (demonstrated on the shared *Required reviewers* setting).
 
 ## Scope & limitations
-- Applies to the **screening workspace** and its shared fields. Monolith-stage
-  presence/locks (PICO, Data Extraction) reuse this exact infra and are the
-  documented next step.
-- In-process store → multi-instance deployments would need a Redis broker (same
-  caveat as the SSE bus); polling fallback preserves correctness.
+- **Now spans the whole project (v3.5.1).** The monolith (`meta-lab-3-patched.jsx`)
+  heartbeats presence across **all stages** (PICO, Data Extraction, Analysis, …)
+  scoped to the **linked screening project id** (`linkedSiftId`), so monolith and
+  screening users share ONE presence room. The monolith's heartbeat is disabled
+  while the Screening stage is open (SiftProject owns it there) to avoid a double
+  beat. **PICO P/I/C/O fields are field-locked** (plus the screening *Required
+  reviewers* setting). Field locking is fail-open — a lock error never blocks editing.
+- Verified end-to-end by `tests/integration/prompt23-presence.test.js` (two real
+  sessions: presence, single-holder lock contention, release, non-member 404).
+- **Remaining (architectural):** the SSE bus is in-process (single Node + SQLite),
+  so presence is per-instance — the SAME caveat as every existing realtime feature
+  (chat, pokes). Multi-instance delivery needs a Redis pub/sub broker; the polling
+  fallback preserves correctness in the meantime.
