@@ -1,57 +1,66 @@
 /**
  * Landing.jsx — public home page for META·LAB.
  *
- * v6 "Nextly" redesign (prompt16):
- * Translated from Nextly design template (Next.js/Tailwind) into this app's
- * inline-style + token system. Bright white/indigo day theme; dark adaptation
- * via night tokens. Framer Motion for hero stagger + section scroll reveals +
- * card stagger + button micro-interactions.
+ * v7 "Nextly faithful" redesign (prompt17):
+ * Strict 10-section structure: Navbar · Hero · Credibility strip ·
+ * Features · Workflow · META·SIFT · META·LAB · Benefits · CTA · Footer.
  *
- * Preserved from v5:
- * - useLandingSettings() → all ~26 admin-editable landingContent keys intact.
- * - Section anchors: #features, #workflow, #about, #contact.
- * - Contact form → api.contact() flow unchanged.
- * - Login / Register / /app navigation links unchanged.
- * - usePrefersReducedMotion() gates all Framer Motion (no motion when reduced).
- * - HeroCanvas (animated forest-plot) used as hero right-column illustration.
- * - animationSpeed ops setting (prompt9) respected via motionOff + rate.
- * - Reduced-motion CSS block (@media prefers-reduced-motion) retained for
- *   pure-CSS animations (forest-plot SVG rows, spine line, beam pulse).
+ * Changes from v6:
+ * - Removed KPI strip ("14 review stages" tiles) from hero.
+ * - Removed InstitutionSpecs table section.
+ * - Removed AppPreview + stat-card section.
+ * - Removed EvidenceClimax / MiniForest (PRISMA count-up with fake numeric
+ *   tiles). ForestPlotClimax retained as illustrative visual inside
+ *   META·LAB section (labelled "Illustrative data").
+ * - Added: Credibility strip (text-only, real standards), META·SIFT section,
+ *   META·LAB section, Benefits section — all new.
+ * - All removed helper components (InstitutionSpecs, AppPreview, MiniForest,
+ *   EvidenceClimax, PrismaStageRow, useCountUp) also removed.
+ * - Section anchors #features #workflow #about #contact preserved.
+ * - All ~26 landingContent keys from useLandingSettings() preserved.
+ * - Contact form, sign-in/get-started, reducedMotion, animationSpeed intact.
  */
 
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
 import { useAuth } from '../context/AuthContext.jsx';
 import { api } from '../api-client/apiClient.js';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import { Icon, ICON_NAMES } from '../components/icons.jsx';
 
 /* ─── Static content ─────────────────────────────────────────────────── */
-const STEPS = [
-  { n: '01', icon: 'target',    label: 'PICO Framework',    desc: 'Define Population, Intervention, Comparator, and Outcome fields.' },
-  { n: '02', icon: 'clipboard', label: 'PROSPERO Protocol', desc: 'Draft and export a structured registration protocol aligned with PROSPERO.' },
-  { n: '03', icon: 'search',    label: 'Search Strategy',   desc: 'Build reproducible search strings with syntax-native query construction.' },
-  { n: '04', icon: 'bookOpen',  label: 'MeSH Terms',        desc: 'Comprehensive MeSH term expansion across PubMed, Embase, and Cochrane.' },
-  { n: '05', icon: 'flow',      label: 'PRISMA Flow',       desc: 'Track screening at each stage and generate the PRISMA 2020 flow diagram.' },
-  { n: '06', icon: 'filter',    label: 'Screening',         desc: 'Dual-reviewer citation triage with conflict resolution and audit trail.' },
-  { n: '07', icon: 'table',     label: 'Data Extraction',   desc: 'Structured tables for study characteristics, outcomes, and effect sizes.' },
-  { n: '08', icon: 'scale',     label: 'Risk of Bias',      desc: 'Cochrane RoB 2.0 and ROBINS-I assessments with domain-level judgements.' },
-  { n: '09', icon: 'sigma',     label: 'Meta-Analysis',     desc: 'Random- and fixed-effects pooling with HKSJ variance correction.' },
-  { n: '10', icon: 'forest',    label: 'Forest Plot',       desc: 'Publication-ready forest plots with confidence intervals and weights.' },
-  { n: '11', icon: 'activity',  label: 'Sensitivity',       desc: 'Leave-one-out analysis and influence diagnostics for robustness checks.' },
-  { n: '12', icon: 'layers',    label: 'Subgroup',          desc: 'Pre-specified subgroup analyses with between-group heterogeneity tests.' },
-  { n: '13', icon: 'award',     label: 'GRADE',             desc: 'Certainty-of-evidence ratings across five domains for each outcome.' },
-  { n: '14', icon: 'fileText',  label: 'Manuscript',        desc: 'IMRAD-structured manuscript template with PRISMA checklist export.' },
+
+/** Golden-path workflow steps (Project → Export) */
+const WORKFLOW_STEPS = [
+  { icon: 'target',    label: 'Project',   desc: 'Define scope, PICO, and register your PROSPERO protocol.' },
+  { icon: 'clipboard', label: 'Protocol',  desc: 'Draft a structured registration protocol aligned with PROSPERO.' },
+  { icon: 'search',    label: 'Import',    desc: 'Load citation exports from PubMed, Embase, Cochrane, and more.' },
+  { icon: 'filter',    label: 'Screen',    desc: 'Dual-reviewer title/abstract and full-text triage with conflict resolution.' },
+  { icon: 'table',     label: 'Extract',   desc: 'Structured data extraction tables for study characteristics and outcomes.' },
+  { icon: 'sigma',     label: 'Analyse',   desc: 'Pooled effects, heterogeneity, subgroup, and sensitivity analyses.' },
+  { icon: 'flow',      label: 'PRISMA',    desc: 'Auto-generated PRISMA 2020 flow diagram from screening decisions.' },
+  { icon: 'fileText',  label: 'Export',    desc: 'Publication-ready forest plots, PRISMA checklist, and manuscript draft.' },
 ];
 
+/** Feature cards (admin-editable via featureCards key) */
 const VALUE_PROPS = [
-  { icon: 'clipboard',   label: 'Protocol-first',   desc: 'Start with PICO and PROSPERO registration before touching a single record.' },
-  { icon: 'checkSquare', label: 'Reproducible',     desc: 'Every search string, screening decision, and diagram is logged and exportable.' },
-  { icon: 'sigma',       label: 'Analysis-ready',   desc: "Built-in forest plots, heterogeneity stats, Egger's test, and GRADE ratings." },
-  { icon: 'hexagon',     label: 'Single workspace', desc: 'From research question to manuscript draft — all in one structured tool.' },
-  { icon: 'clock',       label: 'Audit trail',      desc: 'Every decision timestamped and exportable for transparent peer review.' },
-  { icon: 'users',       label: 'Multi-user',       desc: 'Collaborative extraction and dual-reviewer screening with conflict resolution.' },
+  { icon: 'target',       label: 'Guided review workflow',    desc: 'Step-by-step structure from PICO definition through manuscript export — no shortcuts.' },
+  { icon: 'filter',       label: 'Fast study screening',      desc: 'Title/abstract and full-text review with a keyboard-first interface for speed.' },
+  { icon: 'checkSquare',  label: 'Duplicate detection',       desc: 'Automatic deduplication across citation sources before screening begins.' },
+  { icon: 'table',        label: 'Data extraction',           desc: 'Structured forms for study characteristics, outcomes, and effect-size data.' },
+  { icon: 'sigma',        label: 'Meta-analysis engine',      desc: 'Random- and fixed-effects pooling, HKSJ correction, heterogeneity, GRADE.' },
+  { icon: 'flow',         label: 'PRISMA & exports',          desc: 'PRISMA 2020 flow diagram and checklist generated from real screening decisions.' },
+  { icon: 'users',        label: 'Team collaboration',        desc: 'Multi-user workspaces with owner, leader, and member roles per project.' },
+  { icon: 'clock',        label: 'Audit-ready workspace',     desc: 'Every screening decision and extraction timestamped in a tamper-evident trail.' },
+];
+
+/** Benefits blocks */
+const BENEFITS = [
+  { icon: 'hexagon',     title: 'Less scattered workflow',      desc: 'Protocol, search, screening, extraction, and analysis live in one structured project — no more juggling spreadsheets, email threads, and separate tools.' },
+  { icon: 'users',       title: 'Easier team review',           desc: 'Dual-reviewer screening with conflict detection and adjudication built in. Everyone works in the same workspace with the same data.' },
+  { icon: 'checkSquare', title: 'Cleaner evidence synthesis',   desc: 'Weighted pooling, subgroup analyses, Egger\'s test, and trim-and-fill run on the data you extracted — no manual copying to statistics software.' },
+  { icon: 'fileText',    title: 'Publication-ready outputs',    desc: 'Forest plots, PRISMA flow diagrams, and GRADE summary tables export directly from your review data, ready for submission.' },
 ];
 
 const GLYPH_ICONS = {
@@ -65,13 +74,6 @@ function resolveCardIcon(icon) {
   return 'hexagon';
 }
 
-const STANDARDS = [
-  'PRISMA 2020 — flow diagram generation',
-  'Cochrane RoB 2.0 & ROBINS-I',
-  'GRADE certainty-of-evidence framework',
-  'Full audit trail — every decision timestamped',
-];
-
 /* ─── Default settings ───────────────────────────────────────────────── */
 const DEFAULTS = {
   logoText:          'META·LAB',
@@ -81,19 +83,24 @@ const DEFAULTS = {
     { label: 'About',    href: '#about'    },
     { label: 'Contact',  href: '#contact'  },
   ],
-  heroHeadline:      'A serious workspace for\nsystematic reviews.',
-  heroSubtitle:      'Organize evidence, extract data, run pooled analyses, and export research-ready reports — from one secure platform.',
-  ctaText:           'Start Your Review',
+  heroHeadline:      'From screening to meta-analysis,\none clean workspace for evidence synthesis.',
+  heroSubtitle:      'Organize citations, screen studies, extract data, run pooled analyses, and export research-ready reports — all in one auditable platform.',
+  ctaText:           'Get started',
   ctaSecondaryText:  'Sign in',
   featureTitle:      'Everything a rigorous review needs',
   featureCards:      VALUE_PROPS,
-  workflowTitle:     '14 steps from question to manuscript',
-  workflowSubtitle:  'Every systematic review follows the same evidence-based process. META·LAB walks you through each stage without letting you skip ahead.',
+  workflowTitle:     'The evidence-synthesis pipeline',
+  workflowSubtitle:  'Eight stages, one continuous workspace. META·LAB walks every step from project setup to final export without letting you skip the method.',
   whyTitle:          'For researchers who care about rigor',
   whyBody1:          'Systematic reviews demand a level of methodological transparency that general research tools cannot provide.',
   whyBody2:          'META·LAB enforces a structured workflow aligned with Cochrane Handbook principles and international reporting standards.',
   whyBody3:          'Every decision — from inclusion criteria to subgroup definitions — is documented in a tamper-evident audit trail, so peer reviewers and editors can retrace your entire process.',
-  whyStandards:      STANDARDS,
+  whyStandards:      [
+    'PRISMA 2020 — flow diagram generation',
+    'Cochrane RoB 2.0 & ROBINS-I',
+    'GRADE certainty-of-evidence framework',
+    'Full audit trail — every decision timestamped',
+  ],
   aboutHeadline:     'What is META·LAB?',
   aboutText1:        'META·LAB is a structured, multi-user platform for conducting systematic reviews and meta-analyses. It covers the complete research cycle — from PICO definition and search strategy through screening, data extraction, statistical analysis, and manuscript preparation.',
   aboutText2:        'Built for academic researchers, clinical teams, and evidence synthesis groups who need a single, auditable workspace rather than a collection of disconnected tools.',
@@ -154,46 +161,6 @@ function usePrefersReducedMotion() {
     };
   }, []);
   return reduced;
-}
-
-/** One-shot in-view detector. Falls back to "visible" without IO support. */
-function useInView(threshold = 0.15, rootMargin = '0px 0px -10% 0px') {
-  const ref = useRef(null);
-  const [inView, setInView] = useState(false);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) { setInView(true); return; }
-    if (typeof IntersectionObserver === 'undefined') { setInView(true); return; }
-    const obs = new IntersectionObserver(entries => {
-      if (entries.some(e => e.isIntersecting)) {
-        setInView(true);
-        obs.disconnect();
-      }
-    }, { threshold, rootMargin });
-    obs.observe(el);
-    return () => obs.disconnect();
-  }, [threshold, rootMargin]);
-  return [ref, inView];
-}
-
-/** rAF count-up: 0 → target once `run` is true. */
-function useCountUp(target, run, reduced, dur = 1500) {
-  const [val, setVal] = useState(reduced ? target : 0);
-  useEffect(() => {
-    if (reduced) { setVal(target); return; }
-    if (!run) return;
-    let raf = 0;
-    const t0 = performance.now();
-    const tick = now => {
-      const p = Math.min(1, (now - t0) / dur);
-      const e = 1 - Math.pow(1 - p, 3);
-      setVal(Math.round(target * e));
-      if (p < 1) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [run, target, reduced, dur]);
-  return val;
 }
 
 /* ─── Framer Motion variants ─────────────────────────────────────────── */
@@ -292,7 +259,7 @@ function SectionTitle({ pretitle, title, children, align = 'center' }) {
   );
 }
 
-/* ─── Tiny mono section label (legacy, kept for spine sections) ───────  */
+/* ─── Tiny mono section label (kept for legacy) ──────────────────────── */
 function SectionLabel({ text, style }) {
   return (
     <div style={{
@@ -306,7 +273,7 @@ function SectionLabel({ text, style }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   HERO CANVAS — records drifting → forest plot (kept from v5)
+   HERO CANVAS — records drifting → forest plot (product illustration)
    ════════════════════════════════════════════════════════════════════════ */
 const CANVAS_ROWS = [
   { lo: 0.478, hi: 0.767, es: 0.622, w: 1.00 },
@@ -512,7 +479,7 @@ function HeroCanvas({ reduced, speed = 1 }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   EVIDENCE CLIMAX — self-drawing forest plot + PRISMA count-up
+   FOREST PLOT — illustrative product visual (META·LAB section)
    ════════════════════════════════════════════════════════════════════════ */
 const FP_STUDIES = [
   { label: 'Smith et al., 2021',  n: 142, es: 0.62, lo: 0.36, hi: 0.88, w: '22.4%' },
@@ -523,7 +490,7 @@ const FP_STUDIES = [
 ];
 const FP_POOLED = { es: 0.58, lo: 0.44, hi: 0.72 };
 
-function ForestPlotClimax({ active }) {
+function ForestPlotIllustration({ active }) {
   const PLT_X = 144, PLT_W = 224, STAT_X = 378, VB_W = 460;
   const X_MIN = -0.5, X_MAX = 1.3;
   const toX = v => PLT_X + ((v - X_MIN) / (X_MAX - X_MIN)) * PLT_W;
@@ -603,231 +570,6 @@ function ForestPlotClimax({ active }) {
   );
 }
 
-const PRISMA_STAGES = [
-  { label: 'Records identified',            value: 1284, icon: 'search'   },
-  { label: 'After deduplication / screened', value: 1022, icon: 'filter' },
-  { label: 'Full-text assessed',            value: 164,  icon: 'fileText' },
-  { label: 'Studies included',              value: 38,   icon: 'check'    },
-];
-
-function PrismaStageRow({ stage, run, reduced, last, delayIdx, speed = 1 }) {
-  const val = useCountUp(stage.value, run, reduced, (1300 + delayIdx * 250) / (Number(speed) > 0 ? Number(speed) : 1));
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-      <span style={{
-        width: 30, height: 30, borderRadius: 8, flexShrink: 0,
-        border: `1px solid ${last ? alpha(C.gold, 0.5) : C.brd2}`,
-        background: last ? alpha(C.gold, 0.12) : C.surf,
-        color: last ? C.gold : C.muted,
-        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-      }}>
-        <Icon name={stage.icon} size={14} />
-      </span>
-      <span style={{ fontSize: 13, color: C.txt2, flex: 1, minWidth: 0 }}>{stage.label}</span>
-      <span style={{ fontSize: 22, fontFamily: MONO, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: last ? C.gold : C.txt, letterSpacing: '-0.02em', minWidth: 76, textAlign: 'right' }}>
-        {val.toLocaleString('en-US')}
-      </span>
-    </div>
-  );
-}
-
-function EvidenceClimax({ reduced, speed = 1 }) {
-  const [ref, inView] = useInView(0.25, '0px 0px -8% 0px');
-  const active = reduced || inView;
-  return (
-    <div ref={ref} className="lp-climax-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 1fr)', gap: 48, alignItems: 'center' }}>
-      <ForestPlotClimax active={active} />
-      <div>
-        <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.18em', textTransform: 'uppercase', marginBottom: 22, display: 'flex', alignItems: 'center', gap: 8 }}>
-          <Icon name="flow" size={12} /> PRISMA flow
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-          {PRISMA_STAGES.map((st, i) => (
-            <PrismaStageRow key={st.label} stage={st} run={active} reduced={reduced} speed={speed} delayIdx={i} last={i === PRISMA_STAGES.length - 1} />
-          ))}
-        </div>
-        <div style={{ marginTop: 26, paddingTop: 18, borderTop: `1px solid ${C.brd}`, fontSize: 12.5, color: C.muted, lineHeight: 1.7 }}>
-          1,284 records enter. 38 survive. One pooled estimate comes out — with every decision on the record.
-        </div>
-        <div style={{ marginTop: 12, fontSize: 9.5, fontFamily: MONO, color: C.dim, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
-          Illustrative data
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─── Mini forest (in AppPreview) ───────────────────────────────────── */
-function MiniForest() {
-  const rows = [
-    { lo: 50,  hi: 150, mid: 96,  w: 7 },
-    { lo: 34,  hi: 118, mid: 72,  w: 6 },
-    { lo: 76,  hi: 172, mid: 122, w: 9 },
-    { lo: 58,  hi: 140, mid: 102, w: 8 },
-    { lo: 26,  hi: 132, mid: 80,  w: 6 },
-    { lo: 64,  hi: 156, mid: 110, w: 7 },
-  ];
-  const ROW = 21, TOP = 14, poolY = TOP + rows.length * ROW + 12, H = poolY + 18;
-  return (
-    <svg viewBox={`0 0 210 ${H}`} style={{ width: '100%', display: 'block' }} aria-hidden="true">
-      <line x1={92} y1={6} x2={92} y2={poolY + 8} stroke={C.brd2} strokeWidth={1} strokeDasharray="3,3" />
-      {rows.map((r, i) => {
-        const y = TOP + i * ROW;
-        return (
-          <g key={i}>
-            <line x1={r.lo / 1.3 + 30} y1={y} x2={r.hi / 1.3 + 30} y2={y} stroke={C.brd2} strokeWidth={1.4} />
-            <rect x={r.mid / 1.3 + 30 - r.w / 2} y={y - r.w / 2} width={r.w} height={r.w} fill={C.acc} />
-          </g>
-        );
-      })}
-      <polygon points={`${88},${poolY} ${106},${poolY - 7} ${124},${poolY} ${106},${poolY + 7}`} fill={C.gold} />
-    </svg>
-  );
-}
-
-/* ─── App preview frame ──────────────────────────────────────────────── */
-function AppPreview() {
-  const sideItems = [['grid', 'Overview'], ['search', 'Search'], ['filter', 'Screening'], ['table', 'Extraction'], ['scale', 'Risk of Bias'], ['sigma', 'Analysis'], ['fileText', 'Manuscript']];
-  const stats = [['Included studies', '38'], ['Pooled SMD', '0.58'], ['I²', '23.4%'], ['GRADE', 'Moderate']];
-  const funnel = [['Identified', '1,284', 100], ['Deduplicated', '1,022', 80], ['Screened', '1,022', 80], ['Full-text', '164', 38], ['Included', '38', 16]];
-  return (
-    <div style={{ background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 14, overflow: 'hidden', boxShadow: `0 28px 70px ${C.shadow}` }}>
-      <div style={{ background: C.surf, borderBottom: `1px solid ${C.brd}`, padding: '9px 14px', display: 'flex', alignItems: 'center', gap: 8 }}>
-        <div style={{ display: 'flex', gap: 5 }}>
-          {[0, 1, 2].map(i => (<div key={i} style={{ width: 8, height: 8, borderRadius: '50%', background: C.dim, opacity: 0.8 - i * 0.18 }} />))}
-        </div>
-        <span style={{ fontSize: 10, color: C.muted, fontFamily: MONO, marginLeft: 4, letterSpacing: '0.04em' }}>META·LAB — Workspace · Analysis</span>
-        <span style={{ marginLeft: 'auto', fontSize: 8.5, fontFamily: MONO, color: C.dim, letterSpacing: '0.12em', textTransform: 'uppercase' }}>Illustrative</span>
-      </div>
-      <div style={{ display: 'flex', minHeight: 300 }}>
-        <div className="lp-frame-side" style={{ width: 168, flexShrink: 0, background: C.surf, borderRight: `1px solid ${C.brd}`, padding: '14px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '2px 8px 12px' }}>
-            <HexLogo size={14} /><Wordmark size={11} />
-          </div>
-          {sideItems.map(([ico, label]) => {
-            const active = label === 'Analysis';
-            return (
-              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '7px 9px', borderRadius: 6, background: active ? C.accBg : 'transparent', color: active ? C.acc : C.muted, fontSize: 11.5, fontWeight: active ? 600 : 400 }}>
-                <Icon name={ico} size={13} />{label}
-              </div>
-            );
-          })}
-        </div>
-        <div style={{ flex: 1, padding: '18px 18px 16px', minWidth: 0 }}>
-          <div className="lp-frame-stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
-            {stats.map(([k, v], i) => (
-              <div key={k} style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '10px 12px', minWidth: 0 }}>
-                <div style={{ fontSize: 8.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{k}</div>
-                <div style={{ fontSize: 16, fontFamily: MONO, fontWeight: 700, color: i === 3 ? C.gold : C.txt, letterSpacing: '-0.02em' }}>{v}</div>
-              </div>
-            ))}
-          </div>
-          <div className="lp-frame-panels" style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr', gap: 10 }}>
-            <div style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '12px 14px', minWidth: 0 }}>
-              <div style={{ fontSize: 8.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Icon name="forest" size={11} /> Forest plot
-              </div>
-              <MiniForest />
-            </div>
-            <div style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '12px 14px', minWidth: 0 }}>
-              <div style={{ fontSize: 8.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Icon name="flow" size={11} /> PRISMA flow
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {funnel.map(([k, v, w], i) => (
-                  <div key={k + i}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
-                      <span style={{ fontSize: 9.5, color: C.txt2 }}>{k}</span>
-                      <span style={{ fontSize: 9.5, fontFamily: MONO, color: i === funnel.length - 1 ? C.gold : C.txt, fontWeight: 700 }}>{v}</span>
-                    </div>
-                    <div style={{ height: 4, borderRadius: 99, background: alpha(C.brd, 0.9), overflow: 'hidden' }}>
-                      <div style={{ height: '100%', width: `${w}%`, borderRadius: 99, background: i === funnel.length - 1 ? C.gold : C.acc, opacity: i === funnel.length - 1 ? 1 : 0.75 }} />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─── META·LAB ⇄ META·SIFT linked-products ──────────────────────────── */
-function LinkedProducts() {
-  const card = (name, tag, bullets) => (
-    <div className="lp-link-card" style={{ flex: 1, minWidth: 0, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 14, padding: '28px 28px 24px', position: 'relative', zIndex: 1 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-        <HexLogo size={17} />
-        <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: '0.06em', color: C.txt }}>
-          {name.split('·')[0]}<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>{name.split('·')[1]}
-        </span>
-      </div>
-      <div style={{ fontSize: 10.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 18 }}>{tag}</div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
-        {bullets.map(([ico, txt]) => (
-          <div key={txt} style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
-            <Icon name={ico} size={13} style={{ color: C.acc, marginTop: 2 }} />
-            <span style={{ fontSize: 13, color: C.txt2, lineHeight: 1.6 }}>{txt}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-
-  return (
-    <div>
-      <div className="lp-link-row" style={{ display: 'flex', alignItems: 'stretch', gap: 0, position: 'relative' }}>
-        {card('META·LAB', 'Extraction · Analysis · Manuscript', [
-          ['table', 'Structured data extraction and outcome tables'],
-          ['sigma', 'Pooled analysis, heterogeneity, GRADE'],
-          ['fileText', 'IMRAD manuscript with PRISMA checklist export'],
-        ])}
-        <div className="lp-link-beam" style={{ width: 130, flexShrink: 0, position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }} aria-hidden="true">
-          <svg viewBox="0 0 130 60" style={{ width: '100%', height: 60, overflow: 'visible' }}>
-            <line x1="0" y1="30" x2="130" y2="30" stroke={alpha(C.acc, 0.25)} strokeWidth="1.5" />
-            <line className="lp-beam-pulse" x1="0" y1="30" x2="130" y2="30" stroke={C.acc} strokeWidth="1.5" strokeLinecap="round" strokeDasharray="16 240" />
-            <circle cx="0" cy="30" r="3" fill={C.acc} opacity="0.85" />
-            <circle cx="130" cy="30" r="3" fill={C.acc} opacity="0.85" />
-          </svg>
-          <span style={{ position: 'absolute', top: 'calc(50% - 34px)', left: '50%', transform: 'translateX(-50%)', fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.14em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>Linked</span>
-        </div>
-        {card('META·SIFT', 'Screening · Conflicts · PRISMA', [
-          ['users', 'Dual-reviewer title/abstract and full-text screening'],
-          ['scale', 'Conflict detection and adjudication'],
-          ['flow', 'PRISMA counts auto-filled from screening decisions'],
-        ])}
-      </div>
-      <p style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.8, maxWidth: 640, margin: '26px 0 0' }}>
-        Linked projects share one Review Workspace — same owner, members, and permissions on both sides. Studies accepted in META·SIFT flow back into META·LAB extraction, and the PRISMA flow diagram fills itself from real screening decisions.
-      </p>
-    </div>
-  );
-}
-
-/* ─── Institution-grade spec table ───────────────────────────────────── */
-const INSTITUTION_SPECS = [
-  ['Workspaces',          'Multi-user review workspaces — one shared project across the whole team.'],
-  ['Roles & permissions', 'Owner, leader, and member roles with granular per-member permissions.'],
-  ['Audit trail',         'Per-decision audit trail across screening, extraction, and analysis.'],
-  ['Data isolation',      'Server-side per-user data isolation — every request is scoped to the signed-in account.'],
-  ['Deployment',          'Self-hostable on your own infrastructure.'],
-];
-
-function InstitutionSpecs() {
-  return (
-    <div style={{ border: `1px solid ${C.brd}`, borderRadius: 14, overflow: 'hidden', background: C.card }}>
-      {INSTITUTION_SPECS.map(([k, v], i) => (
-        <div key={k} className="lp-spec-row" style={{ display: 'grid', gridTemplateColumns: '220px minmax(0, 1fr)', gap: 24, padding: '17px 26px', borderTop: i > 0 ? `1px solid ${C.brd}` : 'none' }}>
-          <span style={{ fontSize: 10.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.12em', textTransform: 'uppercase', paddingTop: 2 }}>{k}</span>
-          <span style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.65 }}>{v}</span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 /* ─── Scroll-reveal wrapper (Framer Motion) ──────────────────────────── */
 function Reveal({ children, reduced, delay = 0, style }) {
   if (reduced) return <div style={style}>{children}</div>;
@@ -842,6 +584,26 @@ function Reveal({ children, reduced, delay = 0, style }) {
       {children}
     </motion.div>
   );
+}
+
+/* ─── InView hook for forest plot trigger ────────────────────────────── */
+function useInView(threshold = 0.15, rootMargin = '0px 0px -10% 0px') {
+  const ref = useRef(null);
+  const [inView, setInView] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) { setInView(true); return; }
+    if (typeof IntersectionObserver === 'undefined') { setInView(true); return; }
+    const obs = new IntersectionObserver(entries => {
+      if (entries.some(e => e.isIntersecting)) {
+        setInView(true);
+        obs.disconnect();
+      }
+    }, { threshold, rootMargin });
+    obs.observe(el);
+    return () => obs.disconnect();
+  }, [threshold, rootMargin]);
+  return [ref, inView];
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -864,14 +626,17 @@ export default function Landing() {
     if (meta && settings.seoDescription) meta.setAttribute('content', settings.seoDescription);
   }, [settings.seoTitle, settings.seoDescription]);
 
-  const [navOpen,          setNavOpen]         = useState(false);
-  const [activeStep,       setActiveStep]      = useState(0);
-  const [bannerDismissed,  setBannerDismissed] = useState(() => {
+  const [navOpen,         setNavOpen]        = useState(false);
+  const [activeStep,      setActiveStep]     = useState(0);
+  const [bannerDismissed, setBannerDismissed] = useState(() => {
     try { return !!localStorage.getItem('ml_banner_dismissed'); } catch { return false; }
   });
-  const [contact,          setContact]         = useState({ name: '', email: '', message: '' });
-  const [contactStatus,    setContactStatus]   = useState(null);
-  const [contactErr,       setContactErr]      = useState('');
+  const [contact,      setContact]      = useState({ name: '', email: '', message: '' });
+  const [contactStatus, setContactStatus] = useState(null);
+  const [contactErr,    setContactErr]    = useState('');
+
+  // Forest plot in-view trigger (META·LAB section)
+  const [fpRef, fpInView] = useInView(0.2, '0px 0px -5% 0px');
 
   function dismissBanner() {
     try { localStorage.setItem('ml_banner_dismissed', '1'); } catch {}
@@ -922,7 +687,7 @@ export default function Landing() {
   };
   const sectionPad = { maxWidth: 1200, margin: '0 auto', padding: '96px 48px' };
 
-  /* ── Framer Motion button wrappers (when motion enabled) ───────────── */
+  /* ── Framer Motion button wrappers ─────────────────────────────────── */
   const MotionBtn = ({ style, className, onClick, children, type, disabled }) => {
     if (motionOff) {
       return <button style={style} className={className} onClick={onClick} type={type} disabled={disabled}>{children}</button>;
@@ -960,19 +725,22 @@ export default function Landing() {
         .lp-val-card { transition: box-shadow 0.18s, transform 0.18s, border-color 0.18s; }
         .lp-val-card:hover { transform: translateY(-3px); box-shadow: 0 12px 32px ${C.shadow}; border-color: ${alpha(C.acc, 0.35)} !important; }
 
-        /* ── Linked-product cards ────────────────────────────────────── */
-        .lp-link-card { transition: border-color 0.2s, transform 0.18s, box-shadow 0.18s; }
-        .lp-link-card:hover { border-color: ${alpha(C.acc, 0.5)} !important; transform: translateY(-2px); box-shadow: 0 10px 32px ${C.shadow}; }
+        /* ── Benefit cards ───────────────────────────────────────────── */
+        .lp-benefit-card { transition: box-shadow 0.18s, transform 0.18s, border-color 0.18s; }
+        .lp-benefit-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px ${C.shadow}; border-color: ${alpha(C.acc, 0.3)} !important; }
 
-        /* ── Workflow rail nodes ─────────────────────────────────────── */
-        .lp-rail-node { transition: border-color 0.15s, background 0.15s; }
-        .lp-rail-node:focus-visible { border-color: ${C.acc} !important; outline: none; box-shadow: 0 0 0 3px ${alpha(C.acc, 0.2)}; }
+        /* ── Workflow step nodes ──────────────────────────────────────── */
+        .lp-step-node { transition: border-color 0.15s, background 0.15s; }
+        .lp-step-node:focus-visible { border-color: ${C.acc} !important; outline: none; box-shadow: 0 0 0 3px ${alpha(C.acc, 0.2)}; }
+
+        /* ── META·SIFT / META·LAB benefit rows ───────────────────────── */
+        .lp-prod-bullet { transition: color 0.12s; }
 
         /* ── Footer links ────────────────────────────────────────────── */
         .lp-footer-link { transition: color 0.15s; }
         .lp-footer-link:hover { color: ${C.acc} !important; }
 
-        /* ── Forest plot climax (scroll-triggered) ───────────────────── */
+        /* ── Forest plot (scroll-triggered) ─────────────────────────── */
         @keyframes lpRowIn {
           from { opacity: 0; transform: translateX(-10px); }
           to   { opacity: 1; transform: none; }
@@ -986,51 +754,38 @@ export default function Landing() {
         .lp-fpz.in-view .lp-fp-row  { animation: lpRowIn calc(0.6s * var(--lp-dur, 1)) cubic-bezier(0.22, 1, 0.36, 1) forwards; }
         .lp-fpz.in-view .lp-fp-pool { animation: lpPoolIn calc(0.5s * var(--lp-dur, 1)) ease-out forwards; }
 
-        /* ── Linked-products beam pulse ──────────────────────────────── */
-        @keyframes lpBeam { from { stroke-dashoffset: 512; } to { stroke-dashoffset: 0; } }
-        .lp-beam-pulse { animation: lpBeam calc(6.4s * var(--lp-dur, 1)) linear infinite; }
-
         /* ── Reduced motion ──────────────────────────────────────────── */
         @media (prefers-reduced-motion: reduce) {
           html { scroll-behavior: auto; }
           .lp-fpz .lp-fp-row, .lp-fpz .lp-fp-pool { animation: none !important; opacity: 1 !important; transform: none !important; }
-          .lp-beam-pulse { animation: none !important; }
-          .lp-btn-primary:hover, .lp-val-card:hover, .lp-link-card:hover { transform: none !important; }
+          .lp-btn-primary:hover, .lp-val-card:hover, .lp-benefit-card:hover { transform: none !important; }
         }
 
         /* ── Ops animationSpeed:'off' ────────────────────────────────── */
         .lp-motion-off .lp-fpz .lp-fp-row, .lp-motion-off .lp-fpz .lp-fp-pool { animation: none !important; opacity: 1 !important; transform: none !important; }
-        .lp-motion-off .lp-beam-pulse { animation: none !important; }
-        .lp-motion-off .lp-btn-primary:hover, .lp-motion-off .lp-val-card:hover, .lp-motion-off .lp-link-card:hover { transform: none !important; }
+        .lp-motion-off .lp-btn-primary:hover, .lp-motion-off .lp-val-card:hover, .lp-motion-off .lp-benefit-card:hover { transform: none !important; }
 
         /* ── Responsive ──────────────────────────────────────────────── */
         @media (max-width: 1024px) {
           .lp-hero-cols    { flex-direction: column !important; }
           .lp-hero-right   { display: none !important; }
-          .lp-climax-grid  { grid-template-columns: 1fr !important; gap: 40px !important; }
-          .lp-diff-grid    { gap: 44px !important; }
           .lp-sect-inner   { padding-left: 32px !important; padding-right: 32px !important; }
+          .lp-sift-grid    { grid-template-columns: 1fr !important; gap: 40px !important; }
+          .lp-lab-grid     { grid-template-columns: 1fr !important; gap: 40px !important; }
         }
         @media (max-width: 768px) {
           .lp-nav-links    { display: none !important; }
           .lp-nav-ctas     { display: none !important; }
           .lp-ham-btn      { display: flex !important; }
           .lp-mob-menu     { display: flex !important; }
-          .lp-hero-kpis    { gap: 26px !important; }
           .lp-value-grid   { grid-template-columns: 1fr !important; }
-          .lp-rail-grid    { grid-template-columns: repeat(4, 1fr) !important; }
-          .lp-diff-grid    { grid-template-columns: 1fr !important; }
-          .lp-trust-strip  { flex-wrap: wrap !important; gap: 12px !important; justify-content: flex-start !important; }
+          .lp-step-grid    { grid-template-columns: repeat(4, 1fr) !important; }
+          .lp-benefit-grid { grid-template-columns: 1fr !important; }
+          .lp-trust-strip  { flex-wrap: wrap !important; gap: 8px !important; justify-content: flex-start !important; }
           .lp-footer-cols  { flex-direction: column !important; gap: 28px !important; }
           .lp-footer-bottom{ flex-direction: column !important; align-items: flex-start !important; }
-          .lp-frame-side   { display: none !important; }
-          .lp-frame-stats  { grid-template-columns: 1fr 1fr !important; }
-          .lp-frame-panels { grid-template-columns: 1fr !important; }
-          .lp-link-row     { flex-direction: column !important; gap: 0 !important; }
-          .lp-link-beam    { width: 100% !important; height: 64px !important; }
-          .lp-link-beam svg{ transform: rotate(90deg); width: 64px !important; }
-          .lp-spec-row     { grid-template-columns: 1fr !important; gap: 6px !important; }
           .lp-sect-inner   { padding-left: 24px !important; padding-right: 24px !important; }
+          .lp-cta-band     { flex-direction: column !important; text-align: center !important; }
         }
         @media (min-width: 769px) {
           .lp-ham-btn  { display: none !important; }
@@ -1038,11 +793,11 @@ export default function Landing() {
         }
         @media (max-width: 480px) {
           .lp-hero-ctas  button { flex: 1; }
-          .lp-rail-grid  { grid-template-columns: repeat(2, 1fr) !important; }
-          .lp-frame-stats{ grid-template-columns: 1fr 1fr !important; }
+          .lp-step-grid  { grid-template-columns: repeat(2, 1fr) !important; }
         }
         @media (min-width: 1025px) {
-          .lp-value-grid { grid-template-columns: 1fr 1fr !important; }
+          .lp-value-grid   { grid-template-columns: 1fr 1fr !important; }
+          .lp-benefit-grid { grid-template-columns: 1fr 1fr !important; }
         }
       `}</style>
 
@@ -1066,7 +821,7 @@ export default function Landing() {
       )}
 
       {/* ══════════════════════════════════════════════════════════════
-          NAVBAR — Nextly style: logo left, links center, CTA right
+          1. NAVBAR
           ══════════════════════════════════════════════════════════════ */}
       <nav style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
@@ -1109,7 +864,7 @@ export default function Landing() {
               </button>
               <MotionBtn className="lp-btn-primary" onClick={() => navigate('/register')}
                 style={{ ...btnPrimary, padding: '9px 20px', fontSize: 13, borderRadius: 8 }}>
-                Get Started
+                {settings.ctaText || 'Get started'}
               </MotionBtn>
             </>
           )}
@@ -1136,8 +891,12 @@ export default function Landing() {
               <button className="lp-btn-primary" onClick={() => navigate('/app')} style={{ ...btnPrimary, width: '100%' }}>Open Workspace</button>
             ) : (
               <>
-                <button className="lp-btn-ghost" onClick={() => navigate('/login')} style={{ ...btnGhost, flex: 1 }}>Sign in</button>
-                <button className="lp-btn-primary" onClick={() => navigate('/register')} style={{ ...btnPrimary, flex: 1 }}>Register</button>
+                <button className="lp-btn-ghost" onClick={() => navigate('/login')} style={{ ...btnGhost, flex: 1 }}>
+                  {settings.ctaSecondaryText || 'Sign in'}
+                </button>
+                <button className="lp-btn-primary" onClick={() => navigate('/register')} style={{ ...btnPrimary, flex: 1 }}>
+                  {settings.ctaText || 'Get started'}
+                </button>
               </>
             )}
           </div>
@@ -1145,13 +904,13 @@ export default function Landing() {
       )}
 
       {/* ══════════════════════════════════════════════════════════════
-          HERO — Nextly two-column: left = text + CTAs, right = canvas
+          2. HERO — two-column: left text + CTAs, right HeroCanvas
           ══════════════════════════════════════════════════════════════ */}
       <section style={{ background: C.bg, overflow: 'hidden', borderBottom: `1px solid ${C.brd}` }}>
         <div className="lp-sect-inner" style={{ maxWidth: 1200, margin: '0 auto', padding: '0 48px' }}>
           <div className="lp-hero-cols" style={{ display: 'flex', alignItems: 'center', gap: 64, minHeight: 'min(86vh, 820px)' }}>
 
-            {/* Left column — headline, sub, CTAs, KPIs */}
+            {/* Left column */}
             <div style={{ flex: '1 1 480px', minWidth: 0, paddingTop: 96, paddingBottom: 96 }}>
               {motionOff ? (
                 <>
@@ -1160,16 +919,19 @@ export default function Landing() {
                     <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.acc, display: 'inline-block', flexShrink: 0 }} />
                     <span style={{ fontSize: 11, fontFamily: MONO, color: C.acc, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Evidence synthesis platform</span>
                   </div>
-                  <h1 style={{ fontSize: 'clamp(40px, 6.5vw, 72px)', fontWeight: 800, letterSpacing: '-0.045em', color: C.txt, lineHeight: 0.97, margin: '0 0 20px', fontFamily: FONT }}>
-                    META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400, letterSpacing: 0, padding: '0 0.04em' }}>·</span>LAB
-                  </h1>
-                  <p style={{ fontSize: 'clamp(17px, 2.2vw, 22px)', color: C.txt2, fontWeight: 400, lineHeight: 1.45, margin: '0 0 14px', maxWidth: 500, whiteSpace: 'pre-line', letterSpacing: '-0.01em' }}>
+
+                  {/* H1 */}
+                  <h1 style={{ fontSize: 'clamp(36px, 5.5vw, 64px)', fontWeight: 800, letterSpacing: '-0.04em', color: C.txt, lineHeight: 1.06, margin: '0 0 22px', fontFamily: FONT, whiteSpace: 'pre-line' }}>
                     {settings.heroHeadline || DEFAULTS.heroHeadline}
-                  </p>
-                  <p style={{ fontSize: 15.5, color: C.muted, lineHeight: 1.8, maxWidth: 460, margin: '0 0 38px' }}>
+                  </h1>
+
+                  {/* Subtitle */}
+                  <p style={{ fontSize: 'clamp(15px, 1.8vw, 18px)', color: C.txt2, lineHeight: 1.75, maxWidth: 480, margin: '0 0 38px', overflowWrap: 'break-word' }}>
                     {settings.heroSubtitle || DEFAULTS.heroSubtitle}
                   </p>
-                  <div className="lp-hero-ctas" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 52 }}>
+
+                  {/* CTAs */}
+                  <div className="lp-hero-ctas" style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                     {user ? (
                       <button className="lp-btn-primary" onClick={() => navigate('/app')} style={{ ...btnPrimary, borderRadius: 9 }}>
                         Open Workspace <Icon name="arrowRight" size={15} />
@@ -1177,7 +939,7 @@ export default function Landing() {
                     ) : (
                       <>
                         <button className="lp-btn-primary" onClick={() => navigate('/register')} style={{ ...btnPrimary, borderRadius: 9 }}>
-                          {settings.ctaText || 'Start Your Review'} <Icon name="arrowRight" size={15} />
+                          {settings.ctaText || 'Get started'} <Icon name="arrowRight" size={15} />
                         </button>
                         <button className="lp-btn-ghost" onClick={() => navigate('/login')} style={{ ...btnGhost, borderRadius: 9 }}>
                           {settings.ctaSecondaryText || 'Sign in'}
@@ -1185,21 +947,9 @@ export default function Landing() {
                       </>
                     )}
                   </div>
-                  <div className="lp-hero-kpis" style={{ display: 'flex', gap: 40, flexWrap: 'wrap' }}>
-                    {[['14', 'review stages'], ['PRISMA', '2020 compliant'], ['RoB 2', 'built in']].map(([n, l]) => (
-                      <div key={n}>
-                        <div style={{ fontSize: 19, fontWeight: 800, color: C.txt, letterSpacing: '-0.5px', marginBottom: 3 }}>{n}</div>
-                        <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, letterSpacing: '0.06em' }}>{l}</div>
-                      </div>
-                    ))}
-                  </div>
                 </>
               ) : (
-                <motion.div
-                  variants={staggerContainer}
-                  initial="hidden"
-                  animate="visible"
-                >
+                <motion.div variants={staggerContainer} initial="hidden" animate="visible">
                   {/* Eyebrow */}
                   <motion.div variants={fadeUp} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: C.accBg, border: `1px solid ${alpha(C.acc, 0.25)}`, borderRadius: 100, padding: '5px 14px', marginBottom: 28 }}>
                     <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.acc, display: 'inline-block', flexShrink: 0 }} />
@@ -1207,22 +957,17 @@ export default function Landing() {
                   </motion.div>
 
                   {/* H1 */}
-                  <motion.h1 variants={fadeUp} style={{ fontSize: 'clamp(40px, 6.5vw, 72px)', fontWeight: 800, letterSpacing: '-0.045em', color: C.txt, lineHeight: 0.97, margin: '0 0 20px', fontFamily: FONT }}>
-                    META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400, letterSpacing: 0, padding: '0 0.04em' }}>·</span>LAB
+                  <motion.h1 variants={fadeUp} style={{ fontSize: 'clamp(36px, 5.5vw, 64px)', fontWeight: 800, letterSpacing: '-0.04em', color: C.txt, lineHeight: 1.06, margin: '0 0 22px', fontFamily: FONT, whiteSpace: 'pre-line' }}>
+                    {settings.heroHeadline || DEFAULTS.heroHeadline}
                   </motion.h1>
 
-                  {/* Tagline */}
-                  <motion.p variants={fadeUp} style={{ fontSize: 'clamp(17px, 2.2vw, 22px)', color: C.txt2, fontWeight: 400, lineHeight: 1.45, margin: '0 0 14px', maxWidth: 500, whiteSpace: 'pre-line', letterSpacing: '-0.01em' }}>
-                    {settings.heroHeadline || DEFAULTS.heroHeadline}
-                  </motion.p>
-
                   {/* Subtitle */}
-                  <motion.p variants={fadeUpSlow} style={{ fontSize: 15.5, color: C.muted, lineHeight: 1.8, maxWidth: 460, margin: '0 0 38px' }}>
+                  <motion.p variants={fadeUpSlow} style={{ fontSize: 'clamp(15px, 1.8vw, 18px)', color: C.txt2, lineHeight: 1.75, maxWidth: 480, margin: '0 0 38px', overflowWrap: 'break-word' }}>
                     {settings.heroSubtitle || DEFAULTS.heroSubtitle}
                   </motion.p>
 
                   {/* CTAs */}
-                  <motion.div variants={fadeUp} className="lp-hero-ctas" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 52 }}>
+                  <motion.div variants={fadeUp} className="lp-hero-ctas" style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
                     {user ? (
                       <MotionBtn className="lp-btn-primary" onClick={() => navigate('/app')} style={{ ...btnPrimary, borderRadius: 9 }}>
                         Open Workspace <Icon name="arrowRight" size={15} />
@@ -1230,7 +975,7 @@ export default function Landing() {
                     ) : (
                       <>
                         <MotionBtn className="lp-btn-primary" onClick={() => navigate('/register')} style={{ ...btnPrimary, borderRadius: 9 }}>
-                          {settings.ctaText || 'Start Your Review'} <Icon name="arrowRight" size={15} />
+                          {settings.ctaText || 'Get started'} <Icon name="arrowRight" size={15} />
                         </MotionBtn>
                         <MotionBtn className="lp-btn-ghost" onClick={() => navigate('/login')} style={{ ...btnGhost, borderRadius: 9 }}>
                           {settings.ctaSecondaryText || 'Sign in'}
@@ -1238,71 +983,97 @@ export default function Landing() {
                       </>
                     )}
                   </motion.div>
-
-                  {/* KPI strip */}
-                  <motion.div variants={staggerFast} className="lp-hero-kpis" style={{ display: 'flex', gap: 40, flexWrap: 'wrap' }}>
-                    {[['14', 'review stages'], ['PRISMA', '2020 compliant'], ['RoB 2', 'built in']].map(([n, l]) => (
-                      <motion.div key={n} variants={fadeUp}>
-                        <div style={{ fontSize: 19, fontWeight: 800, color: C.txt, letterSpacing: '-0.5px', marginBottom: 3 }}>{n}</div>
-                        <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, letterSpacing: '0.06em' }}>{l}</div>
-                      </motion.div>
-                    ))}
-                  </motion.div>
                 </motion.div>
               )}
             </div>
 
-            {/* Right column — HeroCanvas in a styled frame */}
+            {/* Right column — HeroCanvas */}
             <div className="lp-hero-right" style={{ flex: '1 1 420px', minWidth: 0, alignSelf: 'stretch', display: 'flex', alignItems: 'center', paddingTop: 48, paddingBottom: 48 }}>
-              <div style={{
-                position: 'relative', width: '100%', minHeight: 480, maxHeight: 600,
-                flex: 1,
-                borderRadius: 20, overflow: 'hidden',
-                border: `1px solid ${C.brd}`,
-                background: C.surf,
-                boxShadow: `0 24px 64px ${C.shadow}, 0 0 0 1px ${C.brd}`,
-              }}>
-                {/* Decorative grid overlay */}
-                <div aria-hidden="true" style={{
-                  position: 'absolute', inset: 0, pointerEvents: 'none',
-                  backgroundImage: `linear-gradient(${alpha(C.acc, 0.04)} 1px, transparent 1px), linear-gradient(90deg, ${alpha(C.acc, 0.04)} 1px, transparent 1px)`,
-                  backgroundSize: '32px 32px',
-                  zIndex: 0,
-                }} />
-                <HeroCanvas reduced={motionOff} speed={rate} />
-                {/* Bottom label */}
-                <div aria-hidden="true" style={{
-                  position: 'absolute', bottom: 14, left: 14, right: 14,
-                  display: 'flex', alignItems: 'center', gap: 7, zIndex: 2, pointerEvents: 'none',
+              {motionOff ? (
+                <div style={{
+                  position: 'relative', width: '100%', minHeight: 480, maxHeight: 600,
+                  flex: 1, borderRadius: 20, overflow: 'hidden',
+                  border: `1px solid ${C.brd}`, background: C.surf,
+                  boxShadow: `0 24px 64px ${C.shadow}, 0 0 0 1px ${C.brd}`,
                 }}>
-                  <div style={{ height: 1, flex: 1, background: `linear-gradient(to right, ${alpha(C.acc, 0.35)}, transparent)` }} />
-                  <span style={{ fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.16em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
-                    Evidence pipeline
-                  </span>
-                  <div style={{ height: 1, flex: 1, background: `linear-gradient(to left, ${alpha(C.acc, 0.35)}, transparent)` }} />
+                  <div aria-hidden="true" style={{
+                    position: 'absolute', inset: 0, pointerEvents: 'none',
+                    backgroundImage: `linear-gradient(${alpha(C.acc, 0.04)} 1px, transparent 1px), linear-gradient(90deg, ${alpha(C.acc, 0.04)} 1px, transparent 1px)`,
+                    backgroundSize: '32px 32px', zIndex: 0,
+                  }} />
+                  <HeroCanvas reduced={motionOff} speed={rate} />
+                  <div aria-hidden="true" style={{
+                    position: 'absolute', bottom: 14, left: 14, right: 14,
+                    display: 'flex', alignItems: 'center', gap: 7, zIndex: 2, pointerEvents: 'none',
+                  }}>
+                    <div style={{ height: 1, flex: 1, background: `linear-gradient(to right, ${alpha(C.acc, 0.35)}, transparent)` }} />
+                    <span style={{ fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.16em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
+                      Evidence pipeline · Illustrative
+                    </span>
+                    <div style={{ height: 1, flex: 1, background: `linear-gradient(to left, ${alpha(C.acc, 0.35)}, transparent)` }} />
+                  </div>
                 </div>
-              </div>
+              ) : (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.96 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ duration: 0.7, delay: 0.3, ease: [0.22, 1, 0.36, 1] }}
+                  style={{
+                    position: 'relative', width: '100%', minHeight: 480, maxHeight: 600,
+                    flex: 1, borderRadius: 20, overflow: 'hidden',
+                    border: `1px solid ${C.brd}`, background: C.surf,
+                    boxShadow: `0 24px 64px ${C.shadow}, 0 0 0 1px ${C.brd}`,
+                  }}
+                >
+                  <div aria-hidden="true" style={{
+                    position: 'absolute', inset: 0, pointerEvents: 'none',
+                    backgroundImage: `linear-gradient(${alpha(C.acc, 0.04)} 1px, transparent 1px), linear-gradient(90deg, ${alpha(C.acc, 0.04)} 1px, transparent 1px)`,
+                    backgroundSize: '32px 32px', zIndex: 0,
+                  }} />
+                  <HeroCanvas reduced={motionOff} speed={rate} />
+                  <div aria-hidden="true" style={{
+                    position: 'absolute', bottom: 14, left: 14, right: 14,
+                    display: 'flex', alignItems: 'center', gap: 7, zIndex: 2, pointerEvents: 'none',
+                  }}>
+                    <div style={{ height: 1, flex: 1, background: `linear-gradient(to right, ${alpha(C.acc, 0.35)}, transparent)` }} />
+                    <span style={{ fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.16em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
+                      Evidence pipeline · Illustrative
+                    </span>
+                    <div style={{ height: 1, flex: 1, background: `linear-gradient(to left, ${alpha(C.acc, 0.35)}, transparent)` }} />
+                  </div>
+                </motion.div>
+              )}
             </div>
           </div>
         </div>
       </section>
 
-      {/* ── Standards trust strip ─────────────────────────────────────── */}
-      <div style={{ background: C.surf, borderBottom: `1px solid ${C.brd}`, padding: '14px 48px' }}>
-        <div className="lp-trust-strip" style={{ maxWidth: 1104, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0 }}>
-          <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.15em', textTransform: 'uppercase', paddingRight: 24, whiteSpace: 'nowrap' }}>
-            Built around
-          </span>
-          {['PRISMA 2020', 'Cochrane RoB 2.0', 'GRADE', 'PROSPERO', 'HKSJ Method'].map(s => (
-            <span key={s} style={{ fontSize: 11, fontFamily: MONO, color: C.txt2, letterSpacing: '0.06em', whiteSpace: 'nowrap', borderLeft: `1px solid ${C.brd2}`, padding: '0 24px' }}>
-              {s}
+      {/* ══════════════════════════════════════════════════════════════
+          3. CREDIBILITY STRIP — text-only, real methodology standards
+          ══════════════════════════════════════════════════════════════ */}
+      <div style={{ background: C.surf, borderBottom: `1px solid ${C.brd}`, padding: '20px 48px' }}>
+        <div style={{ maxWidth: 1104, margin: '0 auto' }}>
+          <p style={{ fontSize: 13, color: C.txt2, textAlign: 'center', lineHeight: 1.8, margin: '0 0 14px' }}>
+            Built for systematic reviews, screening, extraction, meta-analysis, and PRISMA workflows.
+          </p>
+          <div className="lp-trust-strip" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.15em', textTransform: 'uppercase', paddingRight: 20, whiteSpace: 'nowrap' }}>
+              Implements
             </span>
-          ))}
+            {['PRISMA 2020', 'Cochrane RoB 2.0', 'GRADE', 'PROSPERO', 'HKSJ Method'].map((s, i) => (
+              <span key={s} style={{
+                fontSize: 11, fontFamily: MONO, color: C.txt2, letterSpacing: '0.06em',
+                whiteSpace: 'nowrap', borderLeft: `1px solid ${C.brd2}`, padding: '0 20px',
+              }}>
+                {s}
+              </span>
+            ))}
+          </div>
         </div>
       </div>
 
       {/* ══════════════════════════════════════════════════════════════
-          FEATURES — #features anchor (Nextly Benefits layout)
+          4. FEATURES — #features anchor (Nextly card grid)
           ══════════════════════════════════════════════════════════════ */}
       <section id="features" style={{ background: C.bg, borderBottom: `1px solid ${C.brd}` }}>
         <div className="lp-sect-inner" style={sectionPad}>
@@ -1365,7 +1136,7 @@ export default function Landing() {
       </section>
 
       {/* ══════════════════════════════════════════════════════════════
-          WORKFLOW — #workflow anchor (14-stage rail)
+          5. WORKFLOW — #workflow anchor (golden path steps)
           ══════════════════════════════════════════════════════════════ */}
       <section id="workflow" style={{ background: C.surf, borderBottom: `1px solid ${C.brd}` }}>
         <div className="lp-sect-inner" style={sectionPad}>
@@ -1378,12 +1149,13 @@ export default function Landing() {
             </SectionTitle>
           </Reveal>
 
-          <Reveal reduced={motionOff} delay={0.1}>
-            <div className="lp-rail-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2 }}>
-              {STEPS.map((s, i) => {
+          {/* Step nodes */}
+          {motionOff ? (
+            <div className="lp-step-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 2 }}>
+              {WORKFLOW_STEPS.map((s, i) => {
                 const active = i === activeStep;
                 return (
-                  <div key={s.n} className="lp-rail-node" tabIndex={0} title={s.desc}
+                  <div key={s.label} className="lp-step-node" tabIndex={0}
                     onMouseEnter={() => setActiveStep(i)} onFocus={() => setActiveStep(i)}
                     style={{
                       background: active ? C.card2 : C.card,
@@ -1391,7 +1163,7 @@ export default function Landing() {
                       borderRadius: 10, padding: '13px 11px 11px', cursor: 'default', outline: 'none', minWidth: 0,
                     }}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                      <span style={{ fontFamily: MONO, fontSize: 10.5, fontWeight: 700, color: C.gold, letterSpacing: '0.05em' }}>{s.n}</span>
+                      <span style={{ fontFamily: MONO, fontSize: 10, fontWeight: 700, color: C.gold, letterSpacing: '0.05em' }}>0{i + 1}</span>
                       <span style={{ color: active ? C.acc : C.muted, display: 'inline-flex' }}><Icon name={s.icon} size={13} /></span>
                     </div>
                     <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.01em', color: active ? C.txt : C.txt2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -1401,14 +1173,45 @@ export default function Landing() {
                 );
               })}
             </div>
-          </Reveal>
+          ) : (
+            <motion.div
+              className="lp-step-grid"
+              style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 2 }}
+              variants={staggerFast}
+              initial="hidden"
+              whileInView="visible"
+              viewport={{ once: true, margin: '-40px' }}
+            >
+              {WORKFLOW_STEPS.map((s, i) => {
+                const active = i === activeStep;
+                return (
+                  <motion.div key={s.label} variants={fadeUp} className="lp-step-node" tabIndex={0}
+                    onMouseEnter={() => setActiveStep(i)} onFocus={() => setActiveStep(i)}
+                    style={{
+                      background: active ? C.card2 : C.card,
+                      border: `1px solid ${active ? alpha(C.acc, 0.55) : C.brd}`,
+                      borderRadius: 10, padding: '13px 11px 11px', cursor: 'default', outline: 'none', minWidth: 0,
+                    }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                      <span style={{ fontFamily: MONO, fontSize: 10, fontWeight: 700, color: C.gold, letterSpacing: '0.05em' }}>0{i + 1}</span>
+                      <span style={{ color: active ? C.acc : C.muted, display: 'inline-flex' }}><Icon name={s.icon} size={13} /></span>
+                    </div>
+                    <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.01em', color: active ? C.txt : C.txt2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {s.label}
+                    </div>
+                  </motion.div>
+                );
+              })}
+            </motion.div>
+          )}
 
-          <Reveal reduced={motionOff} delay={0.16}>
-            <div style={{ marginTop: 16, minHeight: 46, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: '12px 18px', display: 'flex', alignItems: 'baseline', gap: 10, maxWidth: 760 }} aria-live="polite">
-              <span style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, color: C.gold, flexShrink: 0 }}>{STEPS[activeStep].n}</span>
+          {/* Active step description panel */}
+          <Reveal reduced={motionOff} delay={0.12}>
+            <div style={{ marginTop: 16, minHeight: 46, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: '12px 18px', display: 'flex', alignItems: 'baseline', gap: 10, maxWidth: 720 }} aria-live="polite">
+              <span style={{ fontFamily: MONO, fontSize: 10, fontWeight: 700, color: C.gold, flexShrink: 0 }}>0{activeStep + 1}</span>
               <span style={{ fontSize: 13, color: C.txt2, lineHeight: 1.6 }}>
-                <span style={{ color: C.txt, fontWeight: 600 }}>{STEPS[activeStep].label}</span>
-                {' — '}{STEPS[activeStep].desc}
+                <span style={{ color: C.txt, fontWeight: 600 }}>{WORKFLOW_STEPS[activeStep].label}</span>
+                {' — '}{WORKFLOW_STEPS[activeStep].desc}
               </span>
             </div>
           </Reveal>
@@ -1416,73 +1219,91 @@ export default function Landing() {
       </section>
 
       {/* ══════════════════════════════════════════════════════════════
-          SYNTHESIS — self-drawing forest plot + PRISMA count-up
+          6. META·SIFT SECTION — screening, conflicts, reviewer flow
           ══════════════════════════════════════════════════════════════ */}
       <section style={{ background: C.bg, borderBottom: `1px solid ${C.brd}` }}>
         <div className="lp-sect-inner" style={sectionPad}>
           <Reveal reduced={motionOff} style={{ marginBottom: 52 }}>
-            <SectionTitle pretitle="Synthesis" title="Watch the evidence pool.">
-              Five studies, weighted and pooled under a random-effects model — the same plot META·LAB draws from your extracted data.
+            <SectionTitle pretitle="META·SIFT" title="Screening built for systematic reviews.">
+              Citation triage with dual-reviewer support, conflict detection, and PRISMA-ready counts — all in a single module.
             </SectionTitle>
           </Reveal>
-          <EvidenceClimax reduced={motionOff} speed={rate} />
-        </div>
-      </section>
 
-      {/* ══════════════════════════════════════════════════════════════
-          LINKED WORKSPACES — META·LAB ⇄ META·SIFT
-          ══════════════════════════════════════════════════════════════ */}
-      <section style={{ background: C.surf, borderBottom: `1px solid ${C.brd}` }}>
-        <div className="lp-sect-inner" style={sectionPad}>
-          <Reveal reduced={motionOff} style={{ marginBottom: 52 }}>
-            <SectionTitle pretitle="Linked workspaces" title="Screening and synthesis, joined at the spine.">
-              Pair a META·SIFT screening project with a META·LAB review and the pipeline becomes one continuous, audited flow.
-            </SectionTitle>
-          </Reveal>
-          <Reveal reduced={motionOff} delay={0.08}>
-            <LinkedProducts />
-          </Reveal>
-        </div>
-      </section>
-
-      {/* ══════════════════════════════════════════════════════════════
-          RIGOR — why + standards (Nextly Benefits 2-col)
-          ══════════════════════════════════════════════════════════════ */}
-      <section style={{ background: C.bg, borderBottom: `1px solid ${C.brd}` }}>
-        <div className="lp-sect-inner" style={sectionPad}>
-          <Reveal reduced={motionOff} style={{ marginBottom: 56 }}>
-            <SectionTitle pretitle="Research-grade" title={settings.whyTitle || DEFAULTS.whyTitle} />
-          </Reveal>
-
-          <div className="lp-diff-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 64, alignItems: 'start' }}>
-            <Reveal reduced={motionOff}>
-              <div>
-                {[settings.whyBody1 || DEFAULTS.whyBody1, settings.whyBody2 || DEFAULTS.whyBody2, settings.whyBody3 || DEFAULTS.whyBody3].map((p, i) => (
-                  p ? (
-                    <p key={i} style={{ fontSize: 15.5, color: C.txt2, lineHeight: 1.9, margin: '0 0 22px' }}>{p}</p>
-                  ) : null
+          <div className="lp-sift-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 48, alignItems: 'start' }}>
+            {/* Left: feature bullets */}
+            {motionOff ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 32 }}>
+                {[
+                  { icon: 'filter',  title: 'Fast title/abstract screening', body: 'Single-reviewer or dual-reviewer mode. Keyboard-first interface lets you move through hundreds of records quickly without losing context.' },
+                  { icon: 'scale',   title: 'Conflict management',           body: 'When reviewers disagree, conflicts surface automatically. A third adjudicator resolves them with full context on both decisions.' },
+                  { icon: 'fileText',title: 'Full-text review',              body: 'Studies that pass title/abstract screening queue for full-text assessment. Decisions and notes carry through to extraction.' },
+                  { icon: 'users',   title: 'Reviewer assignments',          body: 'Assign specific reviewers to citation batches. Track progress per reviewer and see coverage at a glance.' },
+                ].map(({ icon, title, body }) => (
+                  <div key={title} style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 9, flexShrink: 0, background: C.accBg, color: C.acc, display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 2 }}>
+                      <Icon name={icon} size={16} />
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 6 }}>{title}</div>
+                      <div style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.7 }}>{body}</div>
+                    </div>
+                  </div>
                 ))}
               </div>
-            </Reveal>
+            ) : (
+              <motion.div
+                style={{ display: 'flex', flexDirection: 'column', gap: 32 }}
+                variants={staggerContainer}
+                initial="hidden"
+                whileInView="visible"
+                viewport={{ once: true, margin: '-40px' }}
+              >
+                {[
+                  { icon: 'filter',  title: 'Fast title/abstract screening', body: 'Single-reviewer or dual-reviewer mode. Keyboard-first interface lets you move through hundreds of records quickly without losing context.' },
+                  { icon: 'scale',   title: 'Conflict management',           body: 'When reviewers disagree, conflicts surface automatically. A third adjudicator resolves them with full context on both decisions.' },
+                  { icon: 'fileText',title: 'Full-text review',              body: 'Studies that pass title/abstract screening queue for full-text assessment. Decisions and notes carry through to extraction.' },
+                  { icon: 'users',   title: 'Reviewer assignments',          body: 'Assign specific reviewers to citation batches. Track progress per reviewer and see coverage at a glance.' },
+                ].map(({ icon, title, body }) => (
+                  <motion.div key={title} variants={fadeUp} style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 9, flexShrink: 0, background: C.accBg, color: C.acc, display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 2 }}>
+                      <Icon name={icon} size={16} />
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 6 }}>{title}</div>
+                      <div style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.7 }}>{body}</div>
+                    </div>
+                  </motion.div>
+                ))}
+              </motion.div>
+            )}
 
+            {/* Right: summary card */}
             <Reveal reduced={motionOff} delay={0.1}>
               <div style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 16, padding: '32px 36px', boxShadow: `0 4px 20px ${C.shadow}` }}>
-                <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 24 }}>Standards built in</div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-                  {(settings.whyStandards || STANDARDS).map((s, i) => (
-                    <div key={i} style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
-                      <div style={{ width: 22, height: 22, borderRadius: 6, flexShrink: 0, background: alpha(C.grn, 0.12), color: C.grn, display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 1 }}>
-                        <Icon name="check" size={12} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
+                  <HexLogo size={16} />
+                  <span style={{ fontSize: 15, fontWeight: 700, letterSpacing: '0.06em', color: C.txt }}>
+                    META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>SIFT
+                  </span>
+                  <span style={{ marginLeft: 'auto', fontSize: 9.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.12em', textTransform: 'uppercase' }}>Screening module</span>
+                </div>
+                <p style={{ fontSize: 14, color: C.txt2, lineHeight: 1.8, margin: '0 0 24px' }}>
+                  META·SIFT is the screening half of the review workspace. Pair it with a META·LAB project and the PRISMA counts fill automatically from real decisions — no manual tracking.
+                </p>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                  {[
+                    'Duplicate detection before screening begins',
+                    'Title/abstract and full-text review stages',
+                    'PRISMA 2020 counts auto-filled from decisions',
+                    'Shared workspace — same team, same project',
+                  ].map((item, i) => (
+                    <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                      <div style={{ width: 20, height: 20, borderRadius: 5, flexShrink: 0, background: alpha(C.grn, 0.12), color: C.grn, display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 1 }}>
+                        <Icon name="check" size={11} />
                       </div>
-                      <span style={{ fontSize: 14, color: C.txt2, lineHeight: 1.65 }}>{s}</span>
+                      <span style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.65 }}>{item}</span>
                     </div>
                   ))}
-                </div>
-                <div style={{ marginTop: 30, paddingTop: 26, borderTop: `1px solid ${C.brd}` }}>
-                  <MotionBtn className="lp-btn-primary" onClick={() => navigate(user ? '/app' : '/register')} style={{ ...btnPrimary, width: '100%', borderRadius: 9 }}>
-                    {user ? 'Open Workspace' : (settings.ctaText || 'Start Your Review')}
-                    <Icon name="arrowRight" size={15} />
-                  </MotionBtn>
                 </div>
               </div>
             </Reveal>
@@ -1491,81 +1312,165 @@ export default function Landing() {
       </section>
 
       {/* ══════════════════════════════════════════════════════════════
-          INSTITUTIONS — spec table
+          7. META·LAB SECTION — extraction, analysis, forest plot
           ══════════════════════════════════════════════════════════════ */}
       <section style={{ background: C.surf, borderBottom: `1px solid ${C.brd}` }}>
         <div className="lp-sect-inner" style={sectionPad}>
-          <Reveal reduced={motionOff} style={{ marginBottom: 48 }}>
-            <SectionTitle pretitle="For institutions" title="Built to pass a research office review.">
-              The governance questions IRBs and research offices actually ask — answered in the architecture, not the brochure.
+          <Reveal reduced={motionOff} style={{ marginBottom: 52 }}>
+            <SectionTitle pretitle="META·LAB" title="From extracted data to pooled estimate.">
+              Structured extraction tables, effect-size calculations, meta-analysis engine, and publication-ready plots — all driven by your own data.
             </SectionTitle>
           </Reveal>
-          <Reveal reduced={motionOff} delay={0.08}>
-            <InstitutionSpecs />
-          </Reveal>
+
+          <div className="lp-lab-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(0, 1fr)', gap: 48, alignItems: 'center' }}>
+            {/* Left: forest plot illustration */}
+            <div ref={fpRef}>
+              <ForestPlotIllustration active={reduced || fpInView} />
+            </div>
+
+            {/* Right: bullets */}
+            {motionOff ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
+                {[
+                  { icon: 'table',    title: 'Structured extraction',       body: 'Pre-defined forms for study characteristics, outcomes, and risk-of-bias domains. Custom fields for any additional data points.' },
+                  { icon: 'sigma',    title: 'Meta-analysis engine',        body: 'Random- and fixed-effects pooling with HKSJ variance correction. Subgroup analyses, leave-one-out, Egger\'s test, and trim-and-fill.' },
+                  { icon: 'forest',   title: 'Forest & funnel plots',       body: 'Weighted forest plots and funnel plots generated from your extracted data, formatted for journal submission.' },
+                  { icon: 'award',    title: 'GRADE ratings',               body: 'Certainty-of-evidence assessments across five domains for each outcome, exportable as a summary-of-findings table.' },
+                ].map(({ icon, title, body }) => (
+                  <div key={title} style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 9, flexShrink: 0, background: C.accBg, color: C.acc, display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 2 }}>
+                      <Icon name={icon} size={16} />
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 6 }}>{title}</div>
+                      <div style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.7 }}>{body}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <motion.div
+                style={{ display: 'flex', flexDirection: 'column', gap: 28 }}
+                variants={staggerContainer}
+                initial="hidden"
+                whileInView="visible"
+                viewport={{ once: true, margin: '-40px' }}
+              >
+                {[
+                  { icon: 'table',    title: 'Structured extraction',       body: 'Pre-defined forms for study characteristics, outcomes, and risk-of-bias domains. Custom fields for any additional data points.' },
+                  { icon: 'sigma',    title: 'Meta-analysis engine',        body: 'Random- and fixed-effects pooling with HKSJ variance correction. Subgroup analyses, leave-one-out, Egger\'s test, and trim-and-fill.' },
+                  { icon: 'forest',   title: 'Forest & funnel plots',       body: 'Weighted forest plots and funnel plots generated from your extracted data, formatted for journal submission.' },
+                  { icon: 'award',    title: 'GRADE ratings',               body: 'Certainty-of-evidence assessments across five domains for each outcome, exportable as a summary-of-findings table.' },
+                ].map(({ icon, title, body }) => (
+                  <motion.div key={title} variants={fadeUp} style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
+                    <div style={{ width: 36, height: 36, borderRadius: 9, flexShrink: 0, background: C.accBg, color: C.acc, display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 2 }}>
+                      <Icon name={icon} size={16} />
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 6 }}>{title}</div>
+                      <div style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.7 }}>{body}</div>
+                    </div>
+                  </motion.div>
+                ))}
+              </motion.div>
+            )}
+          </div>
         </div>
       </section>
 
       {/* ══════════════════════════════════════════════════════════════
-          PRODUCT PREVIEW — app frame
+          8. BENEFITS — simple blocks (Nextly Benefits style)
           ══════════════════════════════════════════════════════════════ */}
-      <section style={{ background: C.bg, borderBottom: `1px solid ${C.brd}` }}>
+      <section id="about" style={{ background: C.bg, borderBottom: `1px solid ${C.brd}` }}>
         <div className="lp-sect-inner" style={sectionPad}>
-          <Reveal reduced={motionOff} style={{ marginBottom: 48 }}>
-            <SectionTitle pretitle="Product" title="Inside the workspace">
-              One project, every stage — screening counts, pooled estimates, and the PRISMA flow stay in view as your review progresses.
+          <Reveal reduced={motionOff} style={{ marginBottom: 56 }}>
+            <SectionTitle pretitle="Why META·LAB" title={settings.whyTitle || DEFAULTS.whyTitle}>
+              A dedicated workspace built around the methods — not a general tool adapted for reviews.
             </SectionTitle>
           </Reveal>
-          <Reveal reduced={motionOff} delay={0.1}>
-            <AppPreview />
-            <div style={{ marginTop: 12, fontSize: 10, fontFamily: MONO, color: C.dim, letterSpacing: '0.08em', textAlign: 'center' }}>
-              Illustrative composition — numbers shown are examples, not live data.
+
+          {motionOff ? (
+            <div className="lp-benefit-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}>
+              {BENEFITS.map((b, i) => (
+                <div key={b.title} className="lp-benefit-card" style={{
+                  background: C.surf, border: `1px solid ${C.brd}`,
+                  borderRadius: 14, padding: '28px 26px',
+                  boxShadow: `0 1px 4px ${C.shadow}`,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+                    <div style={{ width: 38, height: 38, borderRadius: 10, flexShrink: 0, background: C.accBg, color: C.acc, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <Icon name={b.icon} size={17} />
+                    </div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: C.txt }}>{b.title}</div>
+                  </div>
+                  <div style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.75 }}>{b.desc}</div>
+                </div>
+              ))}
             </div>
-          </Reveal>
+          ) : (
+            <motion.div
+              className="lp-benefit-grid"
+              style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 24 }}
+              variants={staggerContainer}
+              initial="hidden"
+              whileInView="visible"
+              viewport={{ once: true, margin: '-40px' }}
+            >
+              {BENEFITS.map((b, i) => (
+                <motion.div key={b.title} variants={fadeUp} className="lp-benefit-card" style={{
+                  background: C.surf, border: `1px solid ${C.brd}`,
+                  borderRadius: 14, padding: '28px 26px',
+                  boxShadow: `0 1px 4px ${C.shadow}`,
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14 }}>
+                    <div style={{ width: 38, height: 38, borderRadius: 10, flexShrink: 0, background: C.accBg, color: C.acc, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                      <Icon name={b.icon} size={17} />
+                    </div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: C.txt }}>{b.title}</div>
+                  </div>
+                  <div style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.75 }}>{b.desc}</div>
+                </motion.div>
+              ))}
+            </motion.div>
+          )}
+
+          {/* About text (preserves aboutText1/2 keys) */}
+          {(settings.aboutText1 || settings.aboutText2) && (
+            <Reveal reduced={motionOff} delay={0.1} style={{ marginTop: 56 }}>
+              <div style={{ maxWidth: 720, margin: '0 auto', textAlign: 'center' }}>
+                {settings.aboutText1 && (
+                  <p style={{ fontSize: 16, color: C.txt2, lineHeight: 1.85, margin: '0 0 18px' }}>
+                    {settings.aboutText1}
+                  </p>
+                )}
+                {settings.aboutText2 && (
+                  <p style={{ fontSize: 16, color: C.txt2, lineHeight: 1.85, margin: 0 }}>
+                    {settings.aboutText2}
+                  </p>
+                )}
+              </div>
+            </Reveal>
+          )}
         </div>
       </section>
 
       {/* ══════════════════════════════════════════════════════════════
-          ABOUT — #about anchor
+          9. FINAL CTA — Nextly indigo band
           ══════════════════════════════════════════════════════════════ */}
-      <section id="about" style={{ background: C.surf, borderBottom: `1px solid ${C.brd}` }}>
-        <div className="lp-sect-inner" style={sectionPad}>
-          <Reveal reduced={motionOff} style={{ marginBottom: 32 }}>
-            <SectionTitle pretitle="About" title={settings.aboutHeadline || DEFAULTS.aboutHeadline} />
-          </Reveal>
-          <Reveal reduced={motionOff} delay={0.08}>
-            <div style={{ maxWidth: 780, margin: '0 auto', textAlign: 'center' }}>
-              <p style={{ fontSize: 16.5, color: C.txt2, lineHeight: 1.9, margin: '0 0 20px' }}>
-                {settings.aboutText1 || DEFAULTS.aboutText1}
-              </p>
-              <p style={{ fontSize: 16.5, color: C.txt2, lineHeight: 1.9, margin: 0 }}>
-                {settings.aboutText2 || DEFAULTS.aboutText2}
-              </p>
-            </div>
-          </Reveal>
-        </div>
-      </section>
-
-      {/* ══════════════════════════════════════════════════════════════
-          CTA BAND — Nextly indigo band before footer
-          ══════════════════════════════════════════════════════════════ */}
-      <section style={{ background: C.bg, padding: '96px 48px', borderBottom: `1px solid ${C.brd}` }}>
+      <section style={{ background: C.surf, padding: '96px 48px', borderBottom: `1px solid ${C.brd}` }}>
         <div style={{ maxWidth: 880, margin: '0 auto' }}>
           <Reveal reduced={motionOff}>
-            <div style={{
+            <div className="lp-cta-band" style={{
               display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between',
-              gap: 28, background: C.acc, borderRadius: 20, padding: '48px 52px',
+              gap: 28, background: C.acc, borderRadius: 20, padding: '52px 56px',
               boxShadow: `0 20px 60px ${alpha(C.acc, 0.28)}`,
             }}>
               <div style={{ flex: '1 1 300px', minWidth: 0 }}>
-                <div style={{ fontSize: 11, fontFamily: MONO, letterSpacing: '0.14em', textTransform: 'uppercase', color: alpha('#ffffff', 0.65), marginBottom: 10 }}>
-                  Begin
-                </div>
-                <h2 style={{ fontSize: 'clamp(22px, 3vw, 32px)', fontWeight: 800, letterSpacing: '-0.03em', color: '#ffffff', margin: '0 0 10px', lineHeight: 1.2 }}>
-                  From question to pooled estimate.
+                <h2 style={{ fontSize: 'clamp(22px, 3vw, 34px)', fontWeight: 800, letterSpacing: '-0.03em', color: '#ffffff', margin: '0 0 12px', lineHeight: 1.18 }}>
+                  Start your systematic review today.
                 </h2>
-                <p style={{ fontSize: 15, color: alpha('#ffffff', 0.82), lineHeight: 1.7, margin: 0, maxWidth: 400 }}>
-                  Open a workspace and let the method carry the review — documented, auditable, and ready for peer scrutiny.
+                <p style={{ fontSize: 16, color: alpha('#ffffff', 0.82), lineHeight: 1.7, margin: 0, maxWidth: 420, overflowWrap: 'break-word' }}>
+                  One workspace from protocol to pooled estimate — documented, auditable, and ready for peer scrutiny.
                 </p>
               </div>
               <div style={{ flexShrink: 0, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
@@ -1582,7 +1487,7 @@ export default function Landing() {
                       ...btnPrimary, background: '#ffffff', color: C.acc, borderRadius: 10, fontSize: 15,
                       boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
                     }}>
-                      {settings.ctaText || 'Start Your Review'} <Icon name="arrowRight" size={16} />
+                      {settings.ctaText || 'Get started'} <Icon name="arrowRight" size={16} />
                     </MotionBtn>
                     <MotionBtn onClick={() => navigate('/login')} style={{
                       ...btnGhost, border: '1.5px solid rgba(255,255,255,0.4)', color: '#ffffff', background: 'transparent', borderRadius: 10, fontSize: 15,
@@ -1598,9 +1503,9 @@ export default function Landing() {
       </section>
 
       {/* ══════════════════════════════════════════════════════════════
-          CONTACT — #contact anchor
+          CONTACT — #contact anchor (preserved, restyled only)
           ══════════════════════════════════════════════════════════════ */}
-      <section id="contact" style={{ padding: '96px 48px', background: C.surf, borderTop: `1px solid ${C.brd}` }}>
+      <section id="contact" style={{ padding: '96px 48px', background: C.bg, borderTop: `1px solid ${C.brd}` }}>
         <div style={{ maxWidth: 560, margin: '0 auto' }}>
           <Reveal reduced={motionOff} style={{ textAlign: 'center', marginBottom: 48 }}>
             <SectionTitle
@@ -1666,9 +1571,9 @@ export default function Landing() {
       </section>
 
       {/* ══════════════════════════════════════════════════════════════
-          FOOTER — multi-column Nextly style
+          10. FOOTER — clean, minimal, Nextly style
           ══════════════════════════════════════════════════════════════ */}
-      <footer style={{ borderTop: `1px solid ${C.brd}`, background: C.bg, padding: '64px 48px 40px' }}>
+      <footer style={{ borderTop: `1px solid ${C.brd}`, background: C.surf, padding: '64px 48px 40px' }}>
         <div style={{ maxWidth: 1104, margin: '0 auto' }}>
           <div className="lp-footer-cols" style={{ display: 'flex', gap: 64, marginBottom: 52 }}>
             {/* Brand */}
