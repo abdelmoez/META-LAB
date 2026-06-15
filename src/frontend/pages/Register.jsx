@@ -1,39 +1,45 @@
 import { useState } from "react";
+import { motion } from "framer-motion";
 import { register } from "../auth/authClient.js";
 import { Icon } from "../components/icons.jsx";
-// Theme-aware tokens (prompt7) — C values are `var(--t-*)` strings; use
-// alpha(C.x, '40') instead of hex+alpha concatenation.
 import { C, FONT, MONO, alpha } from "../theme/tokens.js";
 
-const inputStyle = {
+/* ── Shared input / label tokens ─────────────────────────────────────────── */
+const inputBase = {
   width: "100%",
-  padding: "10px 14px",
+  padding: "11px 14px",
   background: C.surf,
-  border: `1px solid ${C.brd2}`,
-  borderRadius: 8,
+  border: `1.5px solid ${C.brd2}`,
+  borderRadius: 10,
   color: C.txt,
-  fontSize: 14,
+  fontSize: 15,
   fontFamily: FONT,
   outline: "none",
   boxSizing: "border-box",
   transition: "border-color 0.15s, box-shadow 0.15s",
 };
 
-const labelStyle = {
+const labelBase = {
   display: "block",
-  fontSize: 12,
+  fontSize: 13,
   fontWeight: 600,
   color: C.txt2,
   marginBottom: 6,
-  letterSpacing: "0.05em",
-  textTransform: "uppercase",
 };
 
-function Field({ id, label, type = "text", value, onChange, placeholder, autoComplete, focusColor }) {
+/* ── Card entrance animation ─────────────────────────────────────────────── */
+const cardVariants = {
+  hidden:  { opacity: 0, y: 18, scale: 0.98 },
+  visible: { opacity: 1, y: 0,  scale: 1,
+    transition: { duration: 0.35, ease: [0.22, 1, 0.36, 1] } },
+};
+
+/* ── Field component (focus-ring managed locally) ───────────────────────── */
+function Field({ id, label, type = "text", value, onChange, placeholder, autoComplete }) {
   const [focused, setFocused] = useState(false);
   return (
     <div style={{ marginBottom: 16 }}>
-      <label style={labelStyle} htmlFor={id}>
+      <label style={labelBase} htmlFor={id}>
         {label}
       </label>
       <input
@@ -45,7 +51,7 @@ function Field({ id, label, type = "text", value, onChange, placeholder, autoCom
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
         style={{
-          ...inputStyle,
+          ...inputBase,
           borderColor: focused ? C.acc : C.brd2,
           boxShadow: focused ? `0 0 0 3px ${alpha(C.acc, 0.12)}` : "none",
         }}
@@ -148,62 +154,66 @@ export default function Register({ onSuccess, onBack }) {
         padding: "24px 16px",
       }}
     >
-      <div
+      <motion.div
+        variants={cardVariants}
+        initial="hidden"
+        animate="visible"
         style={{
           width: "100%",
-          maxWidth: 420,
+          maxWidth: 440,
           background: C.card,
           border: `1px solid ${C.brd}`,
-          borderRadius: 16,
-          padding: "40px 36px 36px",
-          boxShadow: `0 24px 64px ${C.shadow}`,
+          borderRadius: 14,
+          padding: "44px 40px 40px",
+          boxShadow: `0 4px 6px ${alpha(C.shadow, 0.4)}, 0 24px 48px ${C.shadow}`,
         }}
       >
-        {/* Wordmark — matches the Landing navbar logo (hex mark + MONO middot) */}
-        <div style={{ textAlign: "center", marginBottom: 32 }}>
+        {/* Brand ─────────────────────────────────────────────────────────── */}
+        <div style={{ textAlign: "center", marginBottom: 8 }}>
           <div
             style={{
               color: C.acc,
               lineHeight: 1,
-              marginBottom: 12,
+              marginBottom: 14,
               userSelect: "none",
               display: "flex",
               justifyContent: "center",
             }}
           >
-            <Icon name="hexagon" size={36} strokeWidth={1.4} />
+            <Icon name="hexagon" size={40} strokeWidth={1.4} />
           </div>
           <div
             style={{
-              fontSize: 24,
+              fontSize: 26,
               fontWeight: 700,
               color: C.txt,
-              letterSpacing: "0.08em",
+              letterSpacing: "0.06em",
               whiteSpace: "nowrap",
+              lineHeight: 1.1,
             }}
           >
             META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>LAB
           </div>
-          <div style={{ fontSize: 13, color: C.muted, marginTop: 6 }}>
-            Create your account
+          <div style={{ fontSize: 14, color: C.muted, marginTop: 8, lineHeight: 1.5 }}>
+            Create your research account
           </div>
         </div>
 
-        {/* Divider */}
-        <div style={{ height: 1, background: C.brd, marginBottom: 28 }} />
+        {/* Divider ───────────────────────────────────────────────────────── */}
+        <div style={{ height: 1, background: C.brd, margin: "28px 0" }} />
 
-        {/* Invite handoff notice */}
+        {/* Invite handoff notice ─────────────────────────────────────────── */}
         {inviteToken && (
           <div
             style={{
               marginBottom: 20,
-              padding: "10px 14px",
-              background: alpha(C.acc, 0.08),
+              padding: "11px 14px",
+              background: C.accBg,
               border: `1px solid ${alpha(C.acc, 0.3)}`,
-              borderRadius: 8,
+              borderRadius: 10,
               color: C.txt2,
-              fontSize: 12.5,
-              lineHeight: 1.5,
+              fontSize: 13,
+              lineHeight: 1.55,
             }}
           >
             You're accepting a project invite — create your account to join the
@@ -211,7 +221,7 @@ export default function Register({ onSuccess, onBack }) {
           </div>
         )}
 
-        {/* Form */}
+        {/* Form ──────────────────────────────────────────────────────────── */}
         <form onSubmit={handleSubmit} noValidate>
           <Field
             id="reg-name"
@@ -257,12 +267,12 @@ export default function Register({ onSuccess, onBack }) {
             <div
               style={{
                 marginBottom: 16,
-                padding: "10px 14px",
+                padding: "11px 14px",
                 background: C.redBg,
-                border: `1px solid ${alpha(C.red, 0.35)}`,
-                borderRadius: 8,
+                border: `1px solid ${alpha(C.red, 0.3)}`,
+                borderRadius: 10,
                 color: C.red,
-                fontSize: 13,
+                fontSize: 13.5,
                 lineHeight: 1.5,
               }}
             >
@@ -270,36 +280,39 @@ export default function Register({ onSuccess, onBack }) {
             </div>
           )}
 
-          <button
+          <motion.button
             type="submit"
             disabled={loading}
+            whileHover={loading ? {} : { scale: 1.02 }}
+            whileTap={loading   ? {} : { scale: 0.98 }}
+            transition={{ type: "spring", stiffness: 400, damping: 20 }}
             style={{
               width: "100%",
-              padding: "11px 0",
+              padding: "12px 0",
+              marginTop: 4,
               background: loading ? C.brd2 : C.acc,
               border: "none",
-              borderRadius: 8,
+              borderRadius: 10,
               color: loading ? C.muted : C.accText,
-              fontSize: 14,
+              fontSize: 15,
               fontWeight: 600,
               fontFamily: FONT,
               cursor: loading ? "not-allowed" : "pointer",
-              transition: "opacity 0.15s, background 0.15s",
-              letterSpacing: "0.02em",
+              letterSpacing: "0.01em",
               opacity: loading ? 0.7 : 1,
-              marginTop: 4,
+              transition: "background 0.15s, opacity 0.15s",
             }}
           >
             {loading ? "Creating account…" : "Create account"}
-          </button>
+          </motion.button>
         </form>
 
-        {/* Sign-in link */}
+        {/* Sign-in link ──────────────────────────────────────────────────── */}
         <div
           style={{
             marginTop: 24,
             textAlign: "center",
-            fontSize: 13,
+            fontSize: 13.5,
             color: C.muted,
           }}
         >
@@ -311,21 +324,17 @@ export default function Register({ onSuccess, onBack }) {
               background: "none",
               border: "none",
               color: C.acc,
-              fontSize: 13,
+              fontSize: 13.5,
               fontFamily: FONT,
               cursor: "pointer",
               padding: 0,
-              textDecoration: "underline",
-              textDecorationColor: "transparent",
-              transition: "text-decoration-color 0.15s",
+              fontWeight: 600,
             }}
-            onMouseEnter={(e) => (e.target.style.textDecorationColor = C.acc)}
-            onMouseLeave={(e) => (e.target.style.textDecorationColor = "transparent")}
           >
             Sign in
           </button>
         </div>
-      </div>
+      </motion.div>
     </div>
   );
 }

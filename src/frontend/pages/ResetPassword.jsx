@@ -13,91 +13,139 @@
  * tokens so it feels native.
  */
 import { useState } from 'react';
+import { motion } from 'framer-motion';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Icon } from '../components/icons.jsx';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import { api } from '../api-client/apiClient.js';
 
-const inputStyle = {
-  width: '100%', padding: '10px 14px', background: C.surf,
-  border: `1px solid ${C.brd2}`, borderRadius: 8, color: C.txt,
-  fontSize: 14, fontFamily: FONT, outline: 'none', boxSizing: 'border-box',
+/* ── Shared style tokens ─────────────────────────────────────────────────── */
+const inputBase = {
+  width: '100%', padding: '11px 14px', background: C.surf,
+  border: `1.5px solid ${C.brd2}`, borderRadius: 10, color: C.txt,
+  fontSize: 15, fontFamily: FONT, outline: 'none', boxSizing: 'border-box',
+  transition: 'border-color 0.15s, box-shadow 0.15s',
 };
-const labelStyle = {
-  display: 'block', fontSize: 12, fontWeight: 600, color: C.txt2,
-  marginBottom: 6, letterSpacing: '0.05em', textTransform: 'uppercase',
+const labelBase = {
+  display: 'block', fontSize: 13, fontWeight: 600, color: C.txt2,
+  marginBottom: 6,
 };
 const btnBase = {
-  width: '100%', padding: '11px 0', borderRadius: 8, fontSize: 14,
-  fontWeight: 600, fontFamily: FONT, cursor: 'pointer', letterSpacing: '0.02em',
+  width: '100%', padding: '12px 0', borderRadius: 10, fontSize: 15,
+  fontWeight: 600, fontFamily: FONT, letterSpacing: '0.01em',
   display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
+  cursor: 'pointer',
 };
 
+/* ── Card entrance animation ─────────────────────────────────────────────── */
+const cardVariants = {
+  hidden:  { opacity: 0, y: 18, scale: 0.98 },
+  visible: { opacity: 1, y: 0,  scale: 1,
+    transition: { duration: 0.35, ease: [0.22, 1, 0.36, 1] } },
+};
+
+/* ── Sub-components ──────────────────────────────────────────────────────── */
 function Shell({ children }) {
   return (
     <div style={{
       minHeight: '100vh', background: C.bg, display: 'flex', alignItems: 'center',
       justifyContent: 'center', fontFamily: FONT, padding: '24px 16px',
     }}>
-      <div style={{
-        width: '100%', maxWidth: 440, background: C.card, border: `1px solid ${C.brd}`,
-        borderRadius: 16, padding: '36px 32px 32px', boxShadow: `0 24px 64px ${C.shadow}`,
-      }}>
-        <div style={{ textAlign: 'center', marginBottom: 24 }}>
-          <div style={{ color: C.acc, lineHeight: 1, marginBottom: 12, display: 'flex', justifyContent: 'center' }}>
-            <Icon name="hexagon" size={34} strokeWidth={1.4} />
+      <motion.div
+        variants={cardVariants}
+        initial="hidden"
+        animate="visible"
+        style={{
+          width: '100%', maxWidth: 460, background: C.card,
+          border: `1px solid ${C.brd}`, borderRadius: 14,
+          padding: '44px 40px 40px',
+          boxShadow: `0 4px 6px ${alpha(C.shadow, 0.4)}, 0 24px 48px ${C.shadow}`,
+        }}
+      >
+        {/* Brand */}
+        <div style={{ textAlign: 'center', marginBottom: 8 }}>
+          <div style={{
+            color: C.acc, lineHeight: 1, marginBottom: 14,
+            display: 'flex', justifyContent: 'center', userSelect: 'none',
+          }}>
+            <Icon name="hexagon" size={40} strokeWidth={1.4} />
           </div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: C.txt, letterSpacing: '0.08em', whiteSpace: 'nowrap' }}>
+          <div style={{
+            fontSize: 26, fontWeight: 700, color: C.txt,
+            letterSpacing: '0.06em', whiteSpace: 'nowrap', lineHeight: 1.1,
+          }}>
             META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>LAB
           </div>
         </div>
-        <div style={{ height: 1, background: C.brd, marginBottom: 24 }} />
+        <div style={{ height: 1, background: C.brd, margin: '28px 0' }} />
         {children}
-      </div>
+      </motion.div>
     </div>
   );
 }
 
 function Notice({ tone = 'error', children }) {
   const col = tone === 'success' ? C.grn : C.red;
-  const bg = tone === 'success' ? C.grnBg : C.redBg;
+  const bg  = tone === 'success' ? C.grnBg : C.redBg;
   return (
     <div style={{
-      marginBottom: 16, padding: '10px 14px', background: bg,
-      border: `1px solid ${alpha(col, 0.35)}`, borderRadius: 8,
-      color: col, fontSize: 13, lineHeight: 1.5,
+      marginBottom: 16, padding: '11px 14px', background: bg,
+      border: `1px solid ${alpha(col, 0.3)}`, borderRadius: 10,
+      color: col, fontSize: 13.5, lineHeight: 1.5,
     }}>{children}</div>
   );
 }
 
 function PrimaryBtn({ loading, children, ...rest }) {
   return (
-    <button type="submit" disabled={loading} {...rest}
+    <motion.button
+      type="submit"
+      disabled={loading}
+      whileHover={loading ? {} : { scale: 1.02 }}
+      whileTap={loading   ? {} : { scale: 0.98 }}
+      transition={{ type: 'spring', stiffness: 400, damping: 20 }}
       style={{
-        ...btnBase, background: loading ? C.brd2 : C.acc, border: 'none',
-        color: loading ? C.muted : C.accText, opacity: loading ? 0.7 : 1,
+        ...btnBase,
+        background: loading ? C.brd2 : C.acc,
+        border: 'none',
+        color: loading ? C.muted : C.accText,
+        opacity: loading ? 0.7 : 1,
         cursor: loading ? 'not-allowed' : 'pointer',
-      }}>
+      }}
+      {...rest}
+    >
       {children}
-    </button>
+    </motion.button>
   );
 }
 
 function GhostBtn({ children, ...rest }) {
   return (
-    <button type="button" {...rest}
-      style={{ ...btnBase, marginTop: 10, background: 'none', border: `1px solid ${C.brd2}`, color: C.txt2 }}>
+    <motion.button
+      type="button"
+      whileHover={{ scale: 1.02 }}
+      whileTap={{ scale: 0.98 }}
+      transition={{ type: 'spring', stiffness: 400, damping: 20 }}
+      style={{
+        ...btnBase, marginTop: 10,
+        background: 'none',
+        border: `1.5px solid ${C.brd2}`,
+        color: C.txt2,
+      }}
+      {...rest}
+    >
       {children}
-    </button>
+    </motion.button>
   );
 }
 
-/* ── Request mode: ask for the email ───────────────────────────────── */
+/* ── Request mode: ask for the email ─────────────────────────────────────── */
 function RequestForm({ onBackToLogin }) {
-  const [email, setEmail] = useState('');
+  const [email, setEmail]     = useState('');
   const [loading, setLoading] = useState(false);
-  const [done, setDone] = useState(false);
-  const [error, setError] = useState(null);
+  const [done, setDone]       = useState(false);
+  const [error, setError]     = useState(null);
+  const [focused, setFocused] = useState(false);
 
   async function submit(e) {
     e.preventDefault();
@@ -113,13 +161,16 @@ function RequestForm({ onBackToLogin }) {
   if (done) {
     return (
       <div style={{ textAlign: 'center' }}>
-        <div style={{ color: C.grn, display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
-          <Icon name="mail" size={26} />
+        <div style={{ color: C.grn, display: 'flex', justifyContent: 'center', marginBottom: 14 }}>
+          <Icon name="mail" size={28} />
         </div>
-        <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 8 }}>Check your email</div>
-        <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.55, marginBottom: 20 }}>
-          If an account exists for <span style={{ fontFamily: MONO, color: C.txt }}>{email.trim()}</span>, a
-          password reset link is on its way. The link expires for your security — use it soon.
+        <div style={{ fontSize: 18, fontWeight: 700, color: C.txt, marginBottom: 8 }}>
+          Check your email
+        </div>
+        <div style={{ fontSize: 14, color: C.txt2, lineHeight: 1.6, marginBottom: 24 }}>
+          If an account exists for{' '}
+          <span style={{ fontFamily: MONO, color: C.txt }}>{email.trim()}</span>
+          , a password reset link is on its way. The link expires for your security — use it soon.
         </div>
         <GhostBtn onClick={onBackToLogin}>Back to sign in</GhostBtn>
       </div>
@@ -128,17 +179,26 @@ function RequestForm({ onBackToLogin }) {
 
   return (
     <form onSubmit={submit} noValidate>
-      <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 6, textAlign: 'center' }}>
+      <div style={{ fontSize: 18, fontWeight: 700, color: C.txt, marginBottom: 6, textAlign: 'center' }}>
         Reset your password
       </div>
-      <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.55, marginBottom: 22, textAlign: 'center' }}>
+      <div style={{ fontSize: 14, color: C.txt2, lineHeight: 1.6, marginBottom: 24, textAlign: 'center' }}>
         Enter your account email and we'll send you a link to choose a new password.
       </div>
       {error && <Notice>{error}</Notice>}
       <div style={{ marginBottom: 20 }}>
-        <label style={labelStyle} htmlFor="reset-email">Email</label>
-        <input id="reset-email" type="email" autoComplete="email" required value={email}
-          onChange={e => setEmail(e.target.value)} placeholder="you@institution.edu" style={inputStyle} />
+        <label style={labelBase} htmlFor="reset-email">Email</label>
+        <input
+          id="reset-email" type="email" autoComplete="email" required
+          value={email} onChange={e => setEmail(e.target.value)}
+          onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+          placeholder="you@institution.edu"
+          style={{
+            ...inputBase,
+            borderColor: focused ? C.acc : C.brd2,
+            boxShadow: focused ? `0 0 0 3px ${alpha(C.acc, 0.12)}` : 'none',
+          }}
+        />
       </div>
       <PrimaryBtn loading={loading}>{loading ? 'Sending…' : 'Send reset link'}</PrimaryBtn>
       <GhostBtn onClick={onBackToLogin}>Back to sign in</GhostBtn>
@@ -146,14 +206,16 @@ function RequestForm({ onBackToLogin }) {
   );
 }
 
-/* ── Set mode: choose a new password ───────────────────────────────── */
+/* ── Set mode: choose a new password ─────────────────────────────────────── */
 function SetForm({ token, onBackToLogin, onRequestNew }) {
-  const [password, setPassword] = useState('');
-  const [confirm, setConfirm] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [done, setDone] = useState(false);
-  const [error, setError] = useState(null);
-  const [expired, setExpired] = useState(false);
+  const [password, setPassword]   = useState('');
+  const [confirm, setConfirm]     = useState('');
+  const [loading, setLoading]     = useState(false);
+  const [done, setDone]           = useState(false);
+  const [error, setError]         = useState(null);
+  const [expired, setExpired]     = useState(false);
+  const [pw1Focus, setPw1Focus]   = useState(false);
+  const [pw2Focus, setPw2Focus]   = useState(false);
 
   async function submit(e) {
     e.preventDefault();
@@ -177,39 +239,65 @@ function SetForm({ token, onBackToLogin, onRequestNew }) {
   if (done) {
     return (
       <div style={{ textAlign: 'center' }}>
-        <div style={{ color: C.grn, display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
-          <Icon name="check" size={26} />
+        <div style={{ color: C.grn, display: 'flex', justifyContent: 'center', marginBottom: 14 }}>
+          <Icon name="check" size={28} />
         </div>
-        <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 8 }}>Password updated</div>
-        <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.55, marginBottom: 20 }}>
+        <div style={{ fontSize: 18, fontWeight: 700, color: C.txt, marginBottom: 8 }}>
+          Password updated
+        </div>
+        <div style={{ fontSize: 14, color: C.txt2, lineHeight: 1.6, marginBottom: 24 }}>
           Your password has been changed. You can now sign in with your new password.
         </div>
-        <button type="button" onClick={onBackToLogin}
-          style={{ ...btnBase, background: C.acc, border: 'none', color: C.accText }}>
+        <motion.button
+          type="button"
+          onClick={onBackToLogin}
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+          transition={{ type: 'spring', stiffness: 400, damping: 20 }}
+          style={{ ...btnBase, background: C.acc, border: 'none', color: C.accText }}
+        >
           Sign in
-        </button>
+        </motion.button>
       </div>
     );
   }
 
   return (
     <form onSubmit={submit} noValidate>
-      <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 6, textAlign: 'center' }}>
+      <div style={{ fontSize: 18, fontWeight: 700, color: C.txt, marginBottom: 6, textAlign: 'center' }}>
         Choose a new password
       </div>
-      <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.55, marginBottom: 22, textAlign: 'center' }}>
+      <div style={{ fontSize: 14, color: C.txt2, lineHeight: 1.6, marginBottom: 24, textAlign: 'center' }}>
         Pick a strong password you don't use anywhere else.
       </div>
       {error && <Notice>{error}</Notice>}
       <div style={{ marginBottom: 16 }}>
-        <label style={labelStyle} htmlFor="reset-pw">New password</label>
-        <input id="reset-pw" type="password" autoComplete="new-password" required value={password}
-          onChange={e => setPassword(e.target.value)} placeholder="At least 8 characters" style={inputStyle} />
+        <label style={labelBase} htmlFor="reset-pw">New password</label>
+        <input
+          id="reset-pw" type="password" autoComplete="new-password" required
+          value={password} onChange={e => setPassword(e.target.value)}
+          onFocus={() => setPw1Focus(true)} onBlur={() => setPw1Focus(false)}
+          placeholder="At least 8 characters"
+          style={{
+            ...inputBase,
+            borderColor: pw1Focus ? C.acc : C.brd2,
+            boxShadow: pw1Focus ? `0 0 0 3px ${alpha(C.acc, 0.12)}` : 'none',
+          }}
+        />
       </div>
-      <div style={{ marginBottom: 22 }}>
-        <label style={labelStyle} htmlFor="reset-pw2">Confirm password</label>
-        <input id="reset-pw2" type="password" autoComplete="new-password" required value={confirm}
-          onChange={e => setConfirm(e.target.value)} placeholder="Re-enter your new password" style={inputStyle} />
+      <div style={{ marginBottom: 24 }}>
+        <label style={labelBase} htmlFor="reset-pw2">Confirm password</label>
+        <input
+          id="reset-pw2" type="password" autoComplete="new-password" required
+          value={confirm} onChange={e => setConfirm(e.target.value)}
+          onFocus={() => setPw2Focus(true)} onBlur={() => setPw2Focus(false)}
+          placeholder="Re-enter your new password"
+          style={{
+            ...inputBase,
+            borderColor: pw2Focus ? C.acc : C.brd2,
+            boxShadow: pw2Focus ? `0 0 0 3px ${alpha(C.acc, 0.12)}` : 'none',
+          }}
+        />
       </div>
       {expired
         ? <GhostBtn onClick={onRequestNew}>Request a new link</GhostBtn>
@@ -224,7 +312,7 @@ export default function ResetPassword() {
   const [params] = useSearchParams();
   const token = params.get('token') || '';
 
-  const toLogin = () => navigate('/login');
+  const toLogin   = () => navigate('/login');
   const toRequest = () => navigate('/reset');
 
   return (

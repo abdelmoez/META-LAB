@@ -1,22 +1,23 @@
 /**
- * ProjectLanding.jsx — premium post-login project command center (prompt11).
+ * ProjectLanding.jsx — Nextly-design workspace selector (prompt16).
  *
  * Route: /app  (the deterministic-by-id workspace lives at /app/project/:id).
  *
- * Lists every META·LAB project the signed-in user can touch — owned and shared
- * through a workspace membership — from GET /api/projects, annotated with role,
- * linked-META·SIFT status, study/record/member counts and archive state. The
- * page lets the user search / filter / sort / triage and act safely by role
- * (open, archive, leave, delete, create, open META·SIFT) without ever writing a
- * project blob (lifecycle goes through dedicated endpoints).
+ * DESIGN: Nextly template language — bright white/indigo SaaS palette, soft
+ * cards (rounded-12-16px), subtle borders, generous spacing, Inter font, indigo
+ * accents, staggered Framer Motion entrance, whileHover card lift.
  *
- * Self-contained: KPI tiles, control bar, card + table browser, action menu and
- * the Create / Archive / Delete / Leave modals are all co-located below. Theme
- * comes entirely from ../theme/tokens.js (never hex-concat — always alpha()).
- * All motion is gated on prefers-reduced-motion.
+ * DATA / LOGIC: 100% unchanged from prompt11–14. All props, data fetching,
+ * navigation, permissions, filters, sorts, actions and recent-projects logic
+ * are preserved. Only the visual layer (containers, cards, controls) is
+ * restyled.
+ *
+ * Style: ../theme/tokens.js (C, FONT, MONO, alpha) — never hex-concat.
+ * Motion: framer-motion (installed). Reduced-motion respected.
  */
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion';
 import { api } from '../api-client/apiClient.js';
 import { screeningApi } from '../screening/api-client/screeningApi.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -31,7 +32,7 @@ import {
 } from './projectLanding.helpers.js';
 
 /* ════════════════════════════════════════════════════════════════════════
-   Motion + count-up primitives (reduced-motion aware)
+   Reduced-motion hook
    ════════════════════════════════════════════════════════════════════════ */
 
 function usePrefersReducedMotion() {
@@ -54,7 +55,10 @@ function usePrefersReducedMotion() {
   return reduced;
 }
 
-/** Eased count-up to `target`; snaps instantly when reduced motion is on. */
+/* ════════════════════════════════════════════════════════════════════════
+   Count-up animation (eased, reduced-motion aware)
+   ════════════════════════════════════════════════════════════════════════ */
+
 function useCountUp(target, reduced, duration = 620) {
   const [val, setVal] = useState(reduced ? target : 0);
   const fromRef = useRef(reduced ? target : 0);
@@ -67,7 +71,7 @@ function useCountUp(target, reduced, duration = 620) {
     const start = performance.now();
     const tick = (now) => {
       const t = Math.min(1, (now - start) / duration);
-      const eased = 1 - Math.pow(1 - t, 3); // ease-out cubic
+      const eased = 1 - Math.pow(1 - t, 3);
       setVal(Math.round(from + delta * eased));
       if (t < 1) rafRef.current = requestAnimationFrame(tick);
       else fromRef.current = target;
@@ -91,7 +95,6 @@ function readRecents() {
     if (!raw) return [];
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return [];
-    // Keep only well-formed rows; trust order (already newest-first on write).
     return arr.filter(r => r && typeof r.id === 'string').slice(0, RECENTS_CAP);
   } catch { return []; }
 }
@@ -108,43 +111,77 @@ function writeRecent(project) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Small styled atoms
+   Framer Motion variants
    ════════════════════════════════════════════════════════════════════════ */
 
-// TAG_COLORS imported from projectLanding.helpers.js
+const headerVariants = {
+  hidden:  { opacity: 0, y: -16 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.45, ease: [0.22, 1, 0.36, 1] } },
+};
 
+const gridContainerVariants = {
+  hidden:  {},
+  visible: { transition: { staggerChildren: 0.055, delayChildren: 0.05 } },
+};
+
+const cardVariants = {
+  hidden:  { opacity: 0, y: 22 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.22, 1, 0.36, 1] } },
+};
+
+const reducedVariants = {
+  hidden:  { opacity: 0 },
+  visible: { opacity: 1, transition: { duration: 0.2 } },
+};
+
+/* ════════════════════════════════════════════════════════════════════════
+   Nextly-style design atoms
+   ════════════════════════════════════════════════════════════════════════ */
+
+/** Small pill / badge — adapts colour from TAG_COLORS. */
 function Pill({ variant = 'default', children, style }) {
   const col = TAG_COLORS[variant] || C.muted;
   const isDefault = variant === 'default';
   return (
     <span style={{
       display: 'inline-flex', alignItems: 'center', gap: 4,
-      padding: '2px 10px', borderRadius: 99, fontSize: 10, fontWeight: 600,
+      padding: '2px 10px', borderRadius: 99, fontSize: 10.5, fontWeight: 600,
       letterSpacing: 0.3, lineHeight: 1.5, whiteSpace: 'nowrap',
-      background: isDefault ? C.card2 : alpha(col, '14'),
+      background: isDefault ? C.card2 : alpha(col, 0.10),
       color: isDefault ? C.muted : col,
-      border: `1px solid ${isDefault ? C.brd : alpha(col, '30')}`,
+      border: `1px solid ${isDefault ? C.brd : alpha(col, 0.22)}`,
       ...style,
     }}>{children}</span>
   );
 }
 
+/** Primary / ghost / danger / default button. */
 function Btn({ variant = 'default', children, style, ...rest }) {
   const base = {
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-    padding: '7px 16px', borderRadius: 8, fontSize: 12, fontWeight: 600,
+    padding: '8px 18px', borderRadius: 8, fontSize: 13, fontWeight: 600,
     fontFamily: FONT, cursor: 'pointer', whiteSpace: 'nowrap',
-    transition: 'background 0.15s ease, border-color 0.15s ease, transform 0.12s ease',
+    transition: 'background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease',
     border: '1px solid transparent',
   };
   const variants = {
     primary: {
-      background: `linear-gradient(145deg, ${C.acc}, ${C.acc2})`,
-      color: C.accText, boxShadow: `0 2px 12px ${alpha(C.acc2, '40')}`,
+      background: `linear-gradient(135deg, ${C.acc} 0%, ${C.acc2} 100%)`,
+      color: C.accText,
+      boxShadow: `0 2px 14px ${alpha(C.acc, 0.28)}`,
     },
-    ghost:   { background: 'transparent', color: C.txt2, border: `1px solid ${C.brd2}` },
-    danger:  { background: alpha(C.red, '10'), color: C.red, border: `1px solid ${alpha(C.red, '30')}` },
-    default: { background: C.card2, color: C.txt, border: `1px solid ${C.brd2}` },
+    ghost: {
+      background: 'transparent', color: C.txt2,
+      border: `1px solid ${C.brd2}`,
+    },
+    danger: {
+      background: alpha(C.red, 0.08), color: C.red,
+      border: `1px solid ${alpha(C.red, 0.25)}`,
+    },
+    default: {
+      background: C.card2, color: C.txt,
+      border: `1px solid ${C.brd2}`,
+    },
   };
   return (
     <button {...rest} style={{ ...base, ...(variants[variant] || variants.default), ...style }}>
@@ -153,14 +190,16 @@ function Btn({ variant = 'default', children, style, ...rest }) {
   );
 }
 
+/** Shared form field styles. */
 const labelStyle = {
-  display: 'block', fontSize: 11, fontWeight: 700, letterSpacing: '0.05em',
+  display: 'block', fontSize: 11, fontWeight: 700, letterSpacing: '0.06em',
   textTransform: 'uppercase', color: C.muted, marginBottom: 6,
 };
 const inputStyle = {
-  width: '100%', boxSizing: 'border-box', padding: '9px 12px', borderRadius: 8,
+  width: '100%', boxSizing: 'border-box', padding: '9px 13px', borderRadius: 9,
   background: C.card, border: `1px solid ${C.brd2}`, color: C.txt,
   fontSize: 13, fontFamily: FONT, outline: 'none',
+  transition: 'border-color 0.15s ease, box-shadow 0.15s ease',
 };
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -179,58 +218,69 @@ function Modal({ title, subtitle, onClose, children, maxWidth = 480 }) {
       style={{
         position: 'fixed', inset: 0, zIndex: 2000, display: 'flex',
         alignItems: 'center', justifyContent: 'center', padding: 24,
-        background: alpha(C.bg, 0.82), backdropFilter: 'blur(2px)',
+        background: alpha(C.bg, 0.82), backdropFilter: 'blur(3px)',
       }}
     >
-      <div
+      <motion.div
         role="dialog"
         aria-modal="true"
+        initial={{ opacity: 0, scale: 0.96, y: 12 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
         style={{
           width: '100%', maxWidth, maxHeight: '90vh', overflowY: 'auto',
-          background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 12,
-          padding: '24px 26px', boxShadow: `0 20px 60px ${C.shadow}`,
+          background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 16,
+          padding: '26px 28px', boxShadow: `0 24px 64px ${C.shadow}`,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: subtitle ? 6 : 18 }}>
-          <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: C.txt, letterSpacing: '-0.01em' }}>{title}</h2>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: subtitle ? 6 : 20 }}>
+          <h2 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: C.txt, letterSpacing: '-0.015em' }}>{title}</h2>
           <button
             onClick={onClose}
             aria-label="Close"
-            style={{ background: 'transparent', border: 'none', color: C.muted, cursor: 'pointer', padding: 2, lineHeight: 0 }}
+            style={{ background: 'transparent', border: 'none', color: C.muted, cursor: 'pointer', padding: 2, lineHeight: 0, borderRadius: 6 }}
           >
             <Icon name="x" size={18} />
           </button>
         </div>
-        {subtitle && <p style={{ margin: '0 0 18px', fontSize: 12.5, color: C.txt2, lineHeight: 1.6 }}>{subtitle}</p>}
+        {subtitle && <p style={{ margin: '0 0 20px', fontSize: 12.5, color: C.txt2, lineHeight: 1.65 }}>{subtitle}</p>}
         {children}
-      </div>
+      </motion.div>
     </div>
   );
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   KPI summary tiles
+   KPI summary tile — Nextly benefit-card style
    ════════════════════════════════════════════════════════════════════════ */
 
 function KpiTile({ icon, label, value, color, reduced }) {
   const shown = useCountUp(value, reduced);
   return (
     <div style={{
-      background: C.card, border: `1px solid ${C.brd}`, borderRadius: 12,
-      padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12, minWidth: 0,
+      background: C.card, border: `1px solid ${C.brd}`, borderRadius: 14,
+      padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 14, minWidth: 0,
+      boxShadow: `0 1px 4px ${C.shadow}`,
     }}>
       <div style={{
-        width: 36, height: 36, borderRadius: 9, flexShrink: 0,
+        width: 42, height: 42, borderRadius: 11, flexShrink: 0,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: alpha(color, '14'), color, border: `1px solid ${alpha(color, '24')}`,
+        background: alpha(color, 0.10), color,
+        border: `1.5px solid ${alpha(color, 0.20)}`,
       }}>
-        <Icon name={icon} size={18} />
+        <Icon name={icon} size={20} />
       </div>
       <div style={{ minWidth: 0 }}>
-        <div style={{ fontFamily: MONO, fontSize: 22, fontWeight: 600, color: C.txt, lineHeight: 1.1, fontVariantNumeric: 'tabular-nums' }}>
+        <div style={{
+          fontFamily: MONO, fontSize: 24, fontWeight: 700, color: C.txt,
+          lineHeight: 1.1, fontVariantNumeric: 'tabular-nums',
+        }}>
           {shown}
         </div>
-        <div className="t-truncate" style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.04em', textTransform: 'uppercase', color: C.muted }}>
+        <div className="t-truncate" style={{
+          fontSize: 10.5, fontWeight: 600, letterSpacing: '0.05em',
+          textTransform: 'uppercase', color: C.muted, marginTop: 2,
+        }}>
           {label}
         </div>
       </div>
@@ -258,47 +308,56 @@ function ActionMenu({ actions }) {
   return (
     <div ref={ref} style={{ position: 'relative' }}>
       <button
-        onClick={() => setOpen(o => !o)}
+        onClick={(e) => { e.stopPropagation(); setOpen(o => !o); }}
         aria-label="More actions"
         aria-haspopup="menu"
         aria-expanded={open}
         style={{
           width: 32, height: 32, borderRadius: 8, cursor: 'pointer',
           display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-          background: open ? C.card2 : 'transparent', color: C.txt2,
-          border: `1px solid ${open ? C.brd2 : C.brd}`, fontSize: 18, lineHeight: 1,
-          fontFamily: FONT,
+          background: open ? C.card2 : 'transparent',
+          color: C.txt2,
+          border: `1px solid ${open ? C.brd2 : 'transparent'}`,
+          fontSize: 18, lineHeight: 1, fontFamily: FONT,
+          transition: 'background 0.12s ease, border-color 0.12s ease',
         }}
       >…</button>
-      {open && (
-        <div
-          role="menu"
-          style={{
-            position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 50,
-            minWidth: 190, background: C.surf, border: `1px solid ${C.brd2}`,
-            borderRadius: 10, padding: 6, boxShadow: `0 8px 32px ${C.shadow}`,
-          }}
-        >
-          {items.map((it, i) => (
-            <button
-              key={i}
-              role="menuitem"
-              onClick={() => { setOpen(false); it.onClick(); }}
-              style={{
-                width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 9,
-                padding: '8px 10px', borderRadius: 7, cursor: 'pointer', fontSize: 12.5,
-                fontWeight: 500, fontFamily: FONT, background: 'transparent', border: 'none',
-                color: it.danger ? C.red : C.txt,
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = it.danger ? alpha(C.red, '12') : C.card2; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-            >
-              {it.icon && <Icon name={it.icon} size={15} />}
-              <span>{it.label}</span>
-            </button>
-          ))}
-        </div>
-      )}
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            role="menu"
+            initial={{ opacity: 0, y: -6, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -4, scale: 0.97 }}
+            transition={{ duration: 0.15, ease: 'easeOut' }}
+            style={{
+              position: 'absolute', top: 'calc(100% + 6px)', right: 0, zIndex: 50,
+              minWidth: 196, background: C.surf, border: `1px solid ${C.brd}`,
+              borderRadius: 12, padding: '5px', boxShadow: `0 10px 36px ${C.shadow}`,
+            }}
+          >
+            {items.map((it, i) => (
+              <button
+                key={i}
+                role="menuitem"
+                onClick={() => { setOpen(false); it.onClick(); }}
+                style={{
+                  width: '100%', textAlign: 'left', display: 'flex', alignItems: 'center', gap: 9,
+                  padding: '8px 11px', borderRadius: 8, cursor: 'pointer', fontSize: 12.5,
+                  fontWeight: 500, fontFamily: FONT, background: 'transparent', border: 'none',
+                  color: it.danger ? C.red : C.txt,
+                  transition: 'background 0.1s ease',
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = it.danger ? alpha(C.red, 0.08) : C.card2; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+              >
+                {it.icon && <Icon name={it.icon} size={14} />}
+                <span>{it.label}</span>
+              </button>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
@@ -324,11 +383,9 @@ function buildActions(p, handlers) {
         : { label: 'Archive', icon: 'layers', onClick: () => handlers.archive(p) }
     );
   }
-  // Transfer ownership — owner of a linked workspace only.
   if (owner && linked) {
     actions.push({ label: 'Transfer ownership', icon: 'users', onClick: () => handlers.transfer(p) });
   }
-  // Owners NEVER see Leave — only shared, non-owner members can leave.
   if (shared && !owner && linked) {
     actions.push({ label: 'Leave project', icon: 'logout', onClick: () => handlers.leave(p) });
   }
@@ -339,11 +396,10 @@ function buildActions(p, handlers) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Project card
+   Project card — Nextly soft-card style with Framer Motion lift
    ════════════════════════════════════════════════════════════════════════ */
 
 function ProjectCard({ p, handlers, reduced }) {
-  const [hover, setHover] = useState(false);
   const status = statusOf(p);
   const sm = STATUS_META[status];
   const role = roleOf(p);
@@ -352,29 +408,36 @@ function ProjectCard({ p, handlers, reduced }) {
   const owner = isOwnerOf(p);
 
   return (
-    <div
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
+    <motion.div
+      variants={reduced ? reducedVariants : cardVariants}
+      whileHover={reduced ? {} : { y: -4, boxShadow: `0 12px 32px ${C.shadow}`, borderColor: C.brd2 }}
+      transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
       style={{
         position: 'relative', display: 'flex', flexDirection: 'column',
-        background: hover ? C.cardHover : C.card,
-        border: `1px solid ${hover ? C.brd2 : C.brd}`, borderRadius: 12,
-        padding: '16px 18px 14px 20px', overflow: 'hidden', minWidth: 0,
-        boxShadow: hover ? `0 6px 18px ${C.shadow}` : 'none',
-        transform: hover && !reduced ? 'translateY(-2px)' : 'none',
-        transition: reduced ? 'none' : 'background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease',
+        background: C.card, border: `1px solid ${C.brd}`, borderRadius: 14,
+        padding: '20px 20px 16px 24px', overflow: 'hidden', minWidth: 0,
+        boxShadow: `0 1px 4px ${C.shadow}`,
+        cursor: 'default',
       }}
     >
-      {/* left status stripe */}
+      {/* left status accent stripe */}
       <span style={{
         position: 'absolute', left: 0, top: 0, bottom: 0, width: 4,
-        background: sm.color, opacity: status === 'archived' ? 0.5 : 0.95,
+        background: sm.color, opacity: status === 'archived' ? 0.45 : 1,
+        borderRadius: '14px 0 0 14px',
       }} />
 
       {/* title row */}
-      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, marginBottom: 9 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, marginBottom: 10 }}>
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div className="t-truncate" title={p.name || 'Untitled project'} style={{ fontSize: 15, fontWeight: 600, color: C.txt, marginBottom: 7 }}>
+          <div
+            className="t-truncate"
+            title={p.name || 'Untitled project'}
+            style={{
+              fontSize: 15.5, fontWeight: 700, color: C.txt,
+              marginBottom: 8, letterSpacing: '-0.01em',
+            }}
+          >
             {p.name || 'Untitled project'}
           </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
@@ -386,51 +449,64 @@ function ProjectCard({ p, handlers, reduced }) {
       </div>
 
       {/* linked META·SIFT */}
-      <div style={{ marginBottom: 10 }}>
+      <div style={{ marginBottom: 11 }}>
         {linked ? (
           <Pill variant="teal" style={{ maxWidth: '100%' }}>
             <Icon name="flow" size={11} />
-            <span className="t-truncate" style={{ maxWidth: 200 }}>META·SIFT · {linked.title || 'Workspace'}</span>
+            <span className="t-truncate" style={{ maxWidth: 210 }}>META·SIFT · {linked.title || 'Workspace'}</span>
           </Pill>
         ) : (
           <Pill variant="default"><Icon name="link" size={11} />Not linked</Pill>
         )}
       </div>
 
-      {/* meta row (MONO, tabular-nums) */}
+      {/* meta row */}
       <div style={{
         fontFamily: MONO, fontVariantNumeric: 'tabular-nums', fontSize: 11,
-        color: C.muted, display: 'flex', flexWrap: 'wrap', gap: '4px 12px', lineHeight: 1.7,
+        color: C.muted, display: 'flex', flexWrap: 'wrap', gap: '3px 12px', lineHeight: 1.8,
       }}>
         {p._shared && p._owner && (
-          <span className="t-truncate" style={{ maxWidth: 170 }} title={`Owner: ${p._owner.name || p._owner.email}`}>
+          <span className="t-truncate" style={{ maxWidth: 180 }} title={`Owner: ${p._owner.name || p._owner.email}`}>
             {p._owner.name || p._owner.email}
           </span>
         )}
         <span>{p._studyCount || 0} studies</span>
         {linked && <span>{linked.recordCount || 0} records</span>}
         {linked && <span>{linked.memberCount || 0} members</span>}
-        <span>{relTime(p.createdAt)} · upd {relTime(p.updatedAt)}</span>
+        <span>upd {relTime(p.updatedAt)}</span>
       </div>
 
-      {/* progress bar — only when meaningful */}
+      {/* progress bar */}
       {pct != null && (
-        <div style={{ marginTop: 11, height: 3, borderRadius: 99, background: C.brd, overflow: 'hidden' }}>
-          <div style={{
-            height: '100%', width: `${pct}%`, borderRadius: 99,
-            background: pct >= 100 ? C.grn : C.acc,
-            transition: reduced ? 'none' : 'width 0.4s cubic-bezier(0.22,1,0.36,1)',
-          }} />
+        <div style={{ marginTop: 12, height: 4, borderRadius: 99, background: C.brd, overflow: 'hidden' }}>
+          <motion.div
+            initial={{ width: 0 }}
+            animate={{ width: `${pct}%` }}
+            transition={reduced ? { duration: 0 } : { duration: 0.55, ease: [0.22, 1, 0.36, 1], delay: 0.15 }}
+            style={{
+              height: '100%', borderRadius: 99,
+              background: pct >= 100 ? C.grn : C.acc,
+            }}
+          />
         </div>
       )}
 
       {/* footer */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 13 }}>
-        <Btn variant="primary" onClick={() => handlers.open(p)} style={{ flex: 1 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 15 }}>
+        <Btn
+          variant="primary"
+          onClick={() => handlers.open(p)}
+          style={{ flex: 1, justifyContent: 'center' }}
+        >
           Open Project <Icon name="arrowRight" size={14} />
         </Btn>
         {linked && (
-          <Btn variant="ghost" onClick={() => handlers.openSift(p)} title="Open the linked META·SIFT workspace">
+          <Btn
+            variant="ghost"
+            onClick={() => handlers.openSift(p)}
+            title="Open the linked META·SIFT workspace"
+            style={{ padding: '8px 12px' }}
+          >
             <Icon name="flow" size={14} /> META·SIFT
           </Btn>
         )}
@@ -440,23 +516,30 @@ function ProjectCard({ p, handlers, reduced }) {
           archived {relTime(p._archivedAt)}
         </div>
       )}
-    </div>
+    </motion.div>
   );
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Table view
+   Table view — clean, right-aligned numerics
    ════════════════════════════════════════════════════════════════════════ */
 
 function ProjectTable({ rows, handlers }) {
   const th = {
-    textAlign: 'left', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.05em',
-    textTransform: 'uppercase', color: C.muted, padding: '10px 12px', whiteSpace: 'nowrap',
+    textAlign: 'left', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.06em',
+    textTransform: 'uppercase', color: C.muted, padding: '11px 14px', whiteSpace: 'nowrap',
     borderBottom: `1px solid ${C.brd}`,
+    background: C.card2,
   };
-  const td = { padding: '11px 12px', fontSize: 12.5, color: C.txt, borderBottom: `1px solid ${C.brd}`, verticalAlign: 'middle' };
+  const td = {
+    padding: '12px 14px', fontSize: 12.5, color: C.txt,
+    borderBottom: `1px solid ${C.brd}`, verticalAlign: 'middle',
+  };
   return (
-    <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 12, overflow: 'hidden' }}>
+    <div style={{
+      background: C.card, border: `1px solid ${C.brd}`, borderRadius: 14,
+      overflow: 'hidden', boxShadow: `0 1px 4px ${C.shadow}`,
+    }}>
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 760 }}>
           <thead>
@@ -464,7 +547,7 @@ function ProjectTable({ rows, handlers }) {
               <th style={th}>Project</th>
               <th style={th}>Role</th>
               <th style={th}>Status</th>
-              <th style={th}>Linked</th>
+              <th style={th}>Linked workspace</th>
               <th style={{ ...th, textAlign: 'right' }}>Studies</th>
               <th style={th}>Updated</th>
               <th style={{ ...th, width: 1 }} aria-label="Actions" />
@@ -479,23 +562,29 @@ function ProjectTable({ rows, handlers }) {
               return (
                 <tr
                   key={p.id}
-                  style={{ cursor: 'pointer' }}
+                  style={{ cursor: 'pointer', transition: 'background 0.1s ease' }}
                   onClick={() => handlers.open(p)}
                   onMouseEnter={(e) => { e.currentTarget.style.background = C.card2; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
                 >
                   <td style={td}>
-                    <div className="t-truncate" style={{ fontWeight: 600, maxWidth: 260 }} title={p.name}>{p.name || 'Untitled project'}</div>
+                    <div className="t-truncate" style={{ fontWeight: 600, maxWidth: 260 }} title={p.name}>
+                      {p.name || 'Untitled project'}
+                    </div>
                   </td>
                   <td style={td}><Pill variant={ROLE_COLOR[role] || 'default'}>{ROLE_LABEL[role] || 'Owner'}</Pill></td>
                   <td style={td}><Pill variant={sm.tag}>{sm.label}</Pill></td>
                   <td style={td}>
                     {linked
                       ? <span className="t-truncate" style={{ color: C.teal, maxWidth: 180, display: 'inline-block', verticalAlign: 'bottom' }} title={linked.title}>{linked.title || 'Workspace'}</span>
-                      : <span style={{ color: C.muted }}>—</span>}
+                      : <span style={{ color: C.dim }}>—</span>}
                   </td>
-                  <td style={{ ...td, textAlign: 'right', fontFamily: MONO, fontVariantNumeric: 'tabular-nums', color: C.txt2 }}>{p._studyCount || 0}</td>
-                  <td style={{ ...td, fontFamily: MONO, fontSize: 11, color: C.muted, whiteSpace: 'nowrap' }}>{relTime(p.updatedAt)}</td>
+                  <td style={{ ...td, textAlign: 'right', fontFamily: MONO, fontVariantNumeric: 'tabular-nums', color: C.txt2 }}>
+                    {p._studyCount || 0}
+                  </td>
+                  <td style={{ ...td, fontFamily: MONO, fontSize: 11, color: C.muted, whiteSpace: 'nowrap' }}>
+                    {relTime(p.updatedAt)}
+                  </td>
                   <td style={{ ...td, textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
                     <ActionMenu actions={buildActions(p, handlers)} />
                   </td>
@@ -510,7 +599,7 @@ function ProjectTable({ rows, handlers }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Modals
+   Modals — all logic unchanged, Nextly-styled chrome
    ════════════════════════════════════════════════════════════════════════ */
 
 function CreateModal({ onClose, onCreated }) {
@@ -546,19 +635,25 @@ function CreateModal({ onClose, onCreated }) {
                  placeholder="e.g. Statins for primary prevention" style={inputStyle} />
         </div>
         <div style={{ marginBottom: 16 }}>
-          <label style={labelStyle} htmlFor="np-desc">Description <span style={{ textTransform: 'none', fontWeight: 500, color: C.dim }}>(optional)</span></label>
+          <label style={labelStyle} htmlFor="np-desc">
+            Description{' '}
+            <span style={{ textTransform: 'none', fontWeight: 500, color: C.dim }}>(optional)</span>
+          </label>
           <textarea id="np-desc" value={description} onChange={(e) => setDescription(e.target.value)} rows={3}
-                    placeholder="A short summary of the review question" style={{ ...inputStyle, resize: 'vertical' }} />
+                    placeholder="A short summary of the review question"
+                    style={{ ...inputStyle, resize: 'vertical' }} />
         </div>
         <label style={{
-          display: 'flex', alignItems: 'flex-start', gap: 10, padding: '11px 13px', cursor: 'pointer',
-          background: alpha(C.acc, '08'), border: `1px solid ${alpha(C.acc, '28')}`, borderRadius: 9, marginBottom: 18,
+          display: 'flex', alignItems: 'flex-start', gap: 11, padding: '12px 14px', cursor: 'pointer',
+          background: alpha(C.acc, 0.06), border: `1px solid ${alpha(C.acc, 0.22)}`, borderRadius: 10, marginBottom: 20,
         }}>
           <input type="checkbox" checked={createLinkedSift} onChange={(e) => setCreateLinkedSift(e.target.checked)}
                  style={{ marginTop: 2, accentColor: C.acc, width: 15, height: 15 }} />
           <span>
-            <span style={{ display: 'block', fontSize: 12.5, fontWeight: 600, color: C.txt }}>Create linked META·SIFT screening project</span>
-            <span style={{ display: 'block', fontSize: 11.5, color: C.txt2, marginTop: 2, lineHeight: 1.5 }}>
+            <span style={{ display: 'block', fontSize: 12.5, fontWeight: 600, color: C.txt }}>
+              Create linked META·SIFT screening project
+            </span>
+            <span style={{ display: 'block', fontSize: 11.5, color: C.txt2, marginTop: 3, lineHeight: 1.55 }}>
               Spins up a collaborative citation-screening workspace linked to this project.
             </span>
           </span>
@@ -613,7 +708,11 @@ function ArchiveModal({ project, onClose, onDone }) {
     catch (e) { setErr(e.message || 'Could not archive the project.'); setBusy(false); }
   };
   return (
-    <Modal title="Archive this project?" subtitle="You can restore it later. Archived projects are hidden from the active list and become read-only. A linked META·SIFT workspace you own is archived alongside it." onClose={onClose}>
+    <Modal
+      title="Archive this project?"
+      subtitle="You can restore it later. Archived projects are hidden from the active list and become read-only. A linked META·SIFT workspace you own is archived alongside it."
+      onClose={onClose}
+    >
       {err && <div style={{ marginBottom: 14, fontSize: 12, color: C.red }}>{err}</div>}
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
         <Btn variant="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
@@ -664,26 +763,28 @@ function DeleteModal({ project, onClose, onDone }) {
   };
   const consequences = [
     'This META·LAB project and its analysis data',
-    linked ? `The linked META·SIFT workspace “${linked.title || 'Workspace'}”` : null,
+    linked ? `The linked META·SIFT workspace "${linked.title || 'Workspace'}"` : null,
     'Extraction, PRISMA, analysis and screening data',
     'Access for all members of the linked workspace',
   ].filter(Boolean);
   return (
     <Modal title="Delete project" subtitle="This is a guarded, reversible-by-ops soft delete. It removes the project from everyone's workspace." onClose={onClose}>
       <div style={{
-        background: alpha(C.red, '08'), border: `1px solid ${alpha(C.red, '28')}`, borderRadius: 9,
-        padding: '12px 14px', marginBottom: 18,
+        background: alpha(C.red, 0.06), border: `1px solid ${alpha(C.red, 0.22)}`, borderRadius: 10,
+        padding: '13px 15px', marginBottom: 18,
       }}>
-        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: C.red, marginBottom: 8 }}>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', color: C.red, marginBottom: 8 }}>
           This will remove
         </div>
-        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: C.txt2, lineHeight: 1.7 }}>
+        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: C.txt2, lineHeight: 1.75 }}>
           {consequences.map((c, i) => <li key={i}>{c}</li>)}
         </ul>
       </div>
       <div style={{ marginBottom: 16 }}>
         <label style={labelStyle} htmlFor="del-confirm">
-          Type <span style={{ textTransform: 'none', fontWeight: 700, color: C.txt, fontFamily: MONO }}>{project.name}</span> to confirm
+          Type{' '}
+          <span style={{ textTransform: 'none', fontWeight: 700, color: C.txt, fontFamily: MONO }}>{project.name}</span>
+          {' '}to confirm
         </label>
         <input id="del-confirm" autoFocus value={confirmName} onChange={(e) => setConfirmName(e.target.value)}
                placeholder={project.name} style={inputStyle} />
@@ -692,7 +793,7 @@ function DeleteModal({ project, onClose, onDone }) {
       <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
         <Btn variant="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
         <Btn variant="danger" onClick={confirm} disabled={busy || !matches}
-             style={{ opacity: matches ? 1 : 0.5, cursor: matches ? 'pointer' : 'not-allowed' }}>
+             style={{ opacity: matches ? 1 : 0.45, cursor: matches ? 'pointer' : 'not-allowed' }}>
           {busy ? 'Deleting…' : 'Delete project'}
         </Btn>
       </div>
@@ -717,7 +818,6 @@ function TransferModal({ project, onClose, onDone }) {
         const res = await screeningApi.listMembers(linked.id);
         if (!alive) return;
         const all = (res && res.members) || [];
-        // Eligible: an active member with a real userId, not the current owner.
         const eligible = all.filter(m => m.status === 'active' && m.userId && !m.isOwner && m.role !== 'owner');
         setMembers(eligible);
       } catch (e) {
@@ -755,7 +855,7 @@ function TransferModal({ project, onClose, onDone }) {
         <div style={{ marginBottom: 16, fontSize: 12.5, color: C.red }}>{loadErr}</div>
       ) : members.length === 0 ? (
         <div style={{
-          padding: '18px 16px', borderRadius: 9, marginBottom: 18,
+          padding: '18px 16px', borderRadius: 10, marginBottom: 18,
           background: C.card2, border: `1px solid ${C.brd}`,
           fontSize: 12.5, color: C.txt2, lineHeight: 1.6,
         }}>
@@ -775,17 +875,17 @@ function TransferModal({ project, onClose, onDone }) {
                 onClick={() => setPicked(m.userId)}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 11, width: '100%', textAlign: 'left',
-                  padding: '10px 12px', borderRadius: 9, cursor: 'pointer', fontFamily: FONT,
-                  background: active ? alpha(C.acc, '12') : C.card,
-                  border: `1px solid ${active ? alpha(C.acc, '50') : C.brd2}`,
+                  padding: '10px 13px', borderRadius: 10, cursor: 'pointer', fontFamily: FONT,
+                  background: active ? alpha(C.acc, 0.10) : C.card,
+                  border: `1px solid ${active ? alpha(C.acc, 0.40) : C.brd2}`,
                   transition: 'background 0.12s ease, border-color 0.12s ease',
                 }}
               >
                 <span style={{
-                  width: 32, height: 32, borderRadius: 8, flexShrink: 0,
+                  width: 34, height: 34, borderRadius: 9, flexShrink: 0,
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  background: alpha(C.acc, '16'), color: C.acc, fontWeight: 700, fontSize: 13,
-                  border: `1px solid ${alpha(C.acc, '24')}`,
+                  background: alpha(C.acc, 0.14), color: C.acc, fontWeight: 700, fontSize: 13,
+                  border: `1px solid ${alpha(C.acc, 0.22)}`,
                 }}>{initial(m)}</span>
                 <span style={{ minWidth: 0, flex: 1 }}>
                   <span className="t-truncate" style={{ display: 'block', fontSize: 13, fontWeight: 600, color: C.txt }}>{nameOf(m)}</span>
@@ -799,6 +899,7 @@ function TransferModal({ project, onClose, onDone }) {
                   border: `2px solid ${active ? C.acc : C.brd2}`,
                   background: active ? C.acc : 'transparent',
                   display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                  transition: 'background 0.12s ease, border-color 0.12s ease',
                 }}>
                   {active && <span style={{ width: 6, height: 6, borderRadius: 99, background: C.accText }} />}
                 </span>
@@ -812,7 +913,7 @@ function TransferModal({ project, onClose, onDone }) {
         <Btn variant="ghost" onClick={onClose} disabled={busy}>{members.length === 0 ? 'Close' : 'Cancel'}</Btn>
         {members.length > 0 && (
           <Btn variant="primary" onClick={confirm} disabled={busy || !picked}
-               style={{ opacity: picked ? 1 : 0.5, cursor: picked ? 'pointer' : 'not-allowed' }}>
+               style={{ opacity: picked ? 1 : 0.45, cursor: picked ? 'pointer' : 'not-allowed' }}>
             {busy ? 'Transferring…' : 'Transfer ownership'}
           </Btn>
         )}
@@ -822,31 +923,38 @@ function TransferModal({ project, onClose, onDone }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Empty states
+   Empty / loading / error states — Nextly soft illustration style
    ════════════════════════════════════════════════════════════════════════ */
 
 function EmptyState({ icon, title, body, cta }) {
   return (
-    <div style={{
-      textAlign: 'center', padding: '56px 24px', border: `1px dashed ${C.brd}`,
-      borderRadius: 14, background: alpha(C.card, 0.4),
-    }}>
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+      style={{
+        textAlign: 'center', padding: '64px 24px',
+        border: `1.5px dashed ${C.brd2}`,
+        borderRadius: 16, background: alpha(C.card, 0.5),
+      }}
+    >
       <div style={{
-        width: 52, height: 52, margin: '0 auto 16px', borderRadius: 14,
+        width: 56, height: 56, margin: '0 auto 18px', borderRadius: 16,
         display: 'flex', alignItems: 'center', justifyContent: 'center',
-        background: alpha(C.acc, '12'), color: C.acc, border: `1px solid ${alpha(C.acc, '22')}`,
+        background: alpha(C.acc, 0.10), color: C.acc,
+        border: `1.5px solid ${alpha(C.acc, 0.20)}`,
       }}>
-        <Icon name={icon} size={24} />
+        <Icon name={icon} size={26} />
       </div>
-      <div style={{ fontSize: 15.5, fontWeight: 600, color: C.txt, marginBottom: 8 }}>{title}</div>
-      <p style={{ margin: '0 auto 18px', maxWidth: 420, fontSize: 12.5, color: C.txt2, lineHeight: 1.65 }}>{body}</p>
+      <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 8, letterSpacing: '-0.01em' }}>{title}</div>
+      <p style={{ margin: '0 auto 20px', maxWidth: 440, fontSize: 13, color: C.txt2, lineHeight: 1.7 }}>{body}</p>
       {cta}
-    </div>
+    </motion.div>
   );
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Control bar pieces
+   Filter chip
    ════════════════════════════════════════════════════════════════════════ */
 
 function Chip({ active, onClick, children, count }) {
@@ -854,27 +962,26 @@ function Chip({ active, onClick, children, count }) {
     <button
       onClick={onClick}
       style={{
-        display: 'inline-flex', alignItems: 'center', gap: 7, padding: '6px 12px',
-        borderRadius: 20, fontSize: 12, fontWeight: 600, fontFamily: FONT, cursor: 'pointer',
-        whiteSpace: 'nowrap',
-        background: active ? C.acc2 : 'transparent',
+        display: 'inline-flex', alignItems: 'center', gap: 7,
+        padding: '6px 13px', borderRadius: 99, fontSize: 12.5, fontWeight: 600,
+        fontFamily: FONT, cursor: 'pointer', whiteSpace: 'nowrap',
+        background: active ? C.acc : C.card,
         color: active ? C.accText : C.txt2,
-        border: `1px solid ${active ? C.acc2 : C.brd2}`,
-        transition: 'background 0.12s ease, color 0.12s ease, border-color 0.12s ease',
+        border: `1.5px solid ${active ? C.acc : C.brd2}`,
+        boxShadow: active ? `0 2px 10px ${alpha(C.acc, 0.22)}` : 'none',
+        transition: 'background 0.15s ease, color 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease',
       }}
     >
       {children}
       <span style={{
-        fontFamily: MONO, fontVariantNumeric: 'tabular-nums', fontSize: 10.5, fontWeight: 600,
-        padding: '0 5px', borderRadius: 99, lineHeight: '16px',
-        background: active ? alpha(C.accText, '20') : C.card2,
+        fontFamily: MONO, fontVariantNumeric: 'tabular-nums', fontSize: 10.5, fontWeight: 700,
+        padding: '0 6px', borderRadius: 99, lineHeight: '17px',
+        background: active ? alpha(C.accText, 0.18) : C.card2,
         color: active ? C.accText : C.muted,
       }}>{count}</span>
     </button>
   );
 }
-
-// FILTERS, SORTS, ROLE_ORDER imported from projectLanding.helpers.js
 
 /* ════════════════════════════════════════════════════════════════════════
    Recently-opened rail
@@ -883,37 +990,40 @@ function Chip({ active, onClick, children, count }) {
 function RecentsRail({ items, onOpen, reduced }) {
   if (!items.length) return null;
   return (
-    <div style={{ marginBottom: 22 }}>
+    <div style={{ marginBottom: 24 }}>
       <div style={{
-        fontSize: 11, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase',
-        color: C.muted, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 7,
+        fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase',
+        color: C.muted, marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6,
       }}>
         <Icon name="clock" size={13} /> Recently opened
       </div>
       <div style={{ display: 'flex', gap: 10, overflowX: 'auto', paddingBottom: 4 }}>
-        {items.map((r) => (
-          <button
+        {items.map((r, i) => (
+          <motion.button
             key={r.id}
             onClick={() => onOpen(r)}
             title={r.name}
+            initial={reduced ? { opacity: 1 } : { opacity: 0, x: -8 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.3, delay: i * 0.04, ease: [0.22, 1, 0.36, 1] }}
+            whileHover={reduced ? {} : { y: -2, boxShadow: `0 4px 14px ${C.shadow}` }}
             style={{
               flex: '0 0 auto', maxWidth: 220, display: 'flex', alignItems: 'center', gap: 9,
-              padding: '8px 13px', borderRadius: 10, cursor: 'pointer', fontFamily: FONT,
+              padding: '9px 14px', borderRadius: 11, cursor: 'pointer', fontFamily: FONT,
               background: C.card, border: `1px solid ${C.brd}`, color: C.txt,
-              transition: reduced ? 'none' : 'background 0.15s ease, border-color 0.15s ease, transform 0.12s ease',
+              boxShadow: `0 1px 3px ${C.shadow}`,
             }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = C.cardHover; e.currentTarget.style.borderColor = C.brd2; if (!reduced) e.currentTarget.style.transform = 'translateY(-1px)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = C.card; e.currentTarget.style.borderColor = C.brd; e.currentTarget.style.transform = 'none'; }}
           >
             <span style={{
-              width: 26, height: 26, borderRadius: 7, flexShrink: 0,
+              width: 28, height: 28, borderRadius: 8, flexShrink: 0,
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: alpha(C.acc, '14'), color: C.acc, border: `1px solid ${alpha(C.acc, '22')}`,
+              background: alpha(C.acc, 0.12), color: C.acc,
+              border: `1px solid ${alpha(C.acc, 0.20)}`,
             }}>
               <Icon name="folder" size={13} />
             </span>
             <span className="t-truncate" style={{ fontSize: 12.5, fontWeight: 600 }}>{r.name}</span>
-          </button>
+          </motion.button>
         ))}
       </div>
     </div>
@@ -921,7 +1031,24 @@ function RecentsRail({ items, onOpen, reduced }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   Main page
+   Divider / section label helpers
+   ════════════════════════════════════════════════════════════════════════ */
+
+function SectionLabel({ children }) {
+  return (
+    <div style={{
+      fontSize: 11, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase',
+      color: C.muted, marginBottom: 12, display: 'flex', alignItems: 'center', gap: 8,
+    }}>
+      <span style={{ flex: 1, height: 1, background: C.brd }} />
+      {children}
+      <span style={{ flex: 1, height: 1, background: C.brd }} />
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   Main page component
    ════════════════════════════════════════════════════════════════════════ */
 
 export default function ProjectLanding() {
@@ -929,26 +1056,26 @@ export default function ProjectLanding() {
   const { user } = useAuth();
   const reduced = usePrefersReducedMotion();
 
-  const [projects, setProjects] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
+  const [projects, setProjects]   = useState([]);
+  const [loading, setLoading]     = useState(true);
+  const [error, setError]         = useState('');
 
-  // controls
+  /* controls */
   const [searchRaw, setSearchRaw] = useState('');
-  const [search, setSearch] = useState('');
-  const [filter, setFilter] = useState('all');
-  const [sort, setSort] = useState('modified');
-  const [view, setView] = useState('cards'); // 'cards' | 'table'
+  const [search, setSearch]       = useState('');
+  const [filter, setFilter]       = useState('all');
+  const [sort, setSort]           = useState('modified');
+  const [view, setView]           = useState('cards'); // 'cards' | 'table'
   const [showArchived, setShowArchived] = useState(false);
 
-  // modals
-  const [modal, setModal] = useState(null); // { type, project }
+  /* modals */
+  const [modal, setModal] = useState(null); // { type, project? }
 
-  // recently-opened (localStorage-backed, dedupe-by-id, newest-first, cap 6)
+  /* recently-opened (localStorage-backed) */
   const [recents, setRecents] = useState(() => readRecents());
   const recordRecent = useCallback((p) => { setRecents(writeRecent(p)); }, []);
 
-  /* ── Legacy /app?project=<id> deep-link → route-param workspace ─────── */
+  /* ── Legacy /app?project=<id> deep-link ─────────────────────────── */
   useEffect(() => {
     try {
       const want = new URLSearchParams(window.location.search).get('project');
@@ -956,8 +1083,7 @@ export default function ProjectLanding() {
     } catch { /* ignore */ }
   }, [navigate]);
 
-  /* ── Load roster (always include archived; we filter client-side so the
-        "show archived" toggle and the Archived chip count are accurate) ── */
+  /* ── Load roster (always include archived; filter client-side) ─── */
   const reload = useCallback(async () => {
     try {
       setError('');
@@ -983,26 +1109,26 @@ export default function ProjectLanding() {
     return () => { alive = false; };
   }, []);
 
-  /* ── Debounce search ──────────────────────────────────────────────── */
+  /* ── Debounce search ──────────────────────────────────────────── */
   useEffect(() => {
     const t = setTimeout(() => setSearch(searchRaw.trim().toLowerCase()), 220);
     return () => clearTimeout(t);
   }, [searchRaw]);
 
-  /* ── KPI counts (real, derived from the full roster) ──────────────── */
+  /* ── KPI counts ───────────────────────────────────────────────── */
   const kpis = useMemo(() => {
     const accessible = projects.filter(p => !p._archived);
     return {
       accessible: accessible.length,
-      owned: projects.filter(p => isOwnerOf(p) && !p._archived).length,
-      lead: projects.filter(p => roleOf(p) === 'leader' && !p._archived).length,
-      active: projects.filter(p => { const s = statusOf(p); return s === 'active' || s === 'in_progress'; }).length,
-      linked: projects.filter(p => p._linkedMetaSift && !p._archived).length,
-      archived: projects.filter(p => p._archived).length,
+      owned:      projects.filter(p => isOwnerOf(p) && !p._archived).length,
+      lead:       projects.filter(p => roleOf(p) === 'leader' && !p._archived).length,
+      active:     projects.filter(p => { const s = statusOf(p); return s === 'active' || s === 'in_progress'; }).length,
+      linked:     projects.filter(p => p._linkedMetaSift && !p._archived).length,
+      archived:   projects.filter(p => p._archived).length,
     };
   }, [projects]);
 
-  /* ── Per-chip counts (respect search + show-archived scope) ───────── */
+  /* ── Per-chip counts (respect search + show-archived scope) ──── */
   const searchPool = useMemo(() => {
     const matchesSearch = (p) => {
       if (!search) return true;
@@ -1026,7 +1152,7 @@ export default function ProjectLanding() {
     return out;
   }, [searchPool]);
 
-  /* ── Final visible list ───────────────────────────────────────────── */
+  /* ── Final visible list ───────────────────────────────────────── */
   const visible = useMemo(() => {
     const f = FILTERS.find(x => x.key === filter) || FILTERS[0];
     const s = SORTS.find(x => x.key === sort) || SORTS[0];
@@ -1037,7 +1163,7 @@ export default function ProjectLanding() {
     return [...filtered].sort(cmp);
   }, [searchPool, filter, sort]);
 
-  /* ── Recently-opened (only ids still in the roster; skip stale) ─────── */
+  /* ── Recently-opened (only ids still in the roster) ───────────── */
   const recentItems = useMemo(() => {
     if (!recents.length) return [];
     const byId = new Map(projects.map(p => [String(p.id), p]));
@@ -1046,7 +1172,7 @@ export default function ProjectLanding() {
       .map(r => ({ id: r.id, name: (byId.get(r.id).name || r.name || 'Untitled project') }));
   }, [recents, projects]);
 
-  /* ── Action handlers ──────────────────────────────────────────────── */
+  /* ── Action handlers ──────────────────────────────────────────── */
   const handlers = useMemo(() => ({
     open:      (p) => { recordRecent(p); navigate(`/app/project/${encodeURIComponent(p.id)}`); },
     openSift:  (p) => { const id = p._linkedMetaSift && p._linkedMetaSift.id; if (id) navigate(`/sift-beta/projects/${encodeURIComponent(id)}`); },
@@ -1058,75 +1184,137 @@ export default function ProjectLanding() {
     del:       (p) => setModal({ type: 'delete', project: p }),
   }), [navigate, reload, recordRecent]);
 
-  const closeModal = () => setModal(null);
+  const closeModal  = () => setModal(null);
   const afterMutation = async () => { setModal(null); await reload(); };
 
-  /* ── Render ───────────────────────────────────────────────────────── */
+  /* ── Derived display flags ────────────────────────────────────── */
   const name = (user && user.name) || (user && user.email && user.email.split('@')[0]) || 'there';
   const hasAnyProject = projects.length > 0;
   const archivedExist = kpis.archived > 0;
   const activeVisibleEmpty = visible.length === 0;
 
+  /* ── Grid animation key — changes when filter/search changes so
+        cards re-enter on a meaningful content change, not on every
+        hover or toggle of a non-structural control. ──────────────── */
+  const gridKey = `${filter}-${search}-${showArchived}`;
+
+  /* ════════════════════════════════════════════════════════════════
+     Render
+     ════════════════════════════════════════════════════════════════ */
   return (
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: FONT, color: C.txt }}>
       <NotificationsBell fixed right={56} />
       <UserMenu context="metalab" fixed />
 
-      <div style={{ maxWidth: 1180, margin: '0 auto', padding: '40px 32px 64px' }}>
+      <div style={{ maxWidth: 1200, margin: '0 auto', padding: '48px 32px 80px' }}>
 
-        {/* ── Greeting band ─────────────────────────────────────────── */}
-        <div style={{ display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', gap: 20, flexWrap: 'wrap', marginBottom: 28 }}>
+        {/* ── Welcome header ──────────────────────────────────────── */}
+        <motion.div
+          variants={reduced ? reducedVariants : headerVariants}
+          initial="hidden"
+          animate="visible"
+          style={{
+            display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between',
+            gap: 20, flexWrap: 'wrap', marginBottom: 32,
+          }}
+        >
           <div style={{ minWidth: 0 }}>
-            <h1 style={{ margin: '0 0 6px', fontSize: 25, fontWeight: 700, letterSpacing: '-0.02em', color: C.txt }}>
+            {/* Nextly-style pretitle */}
+            <div style={{
+              fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase',
+              color: C.acc, marginBottom: 6,
+            }}>
+              META·LAB Workspace
+            </div>
+            <h1 style={{
+              margin: '0 0 6px', fontSize: 28, fontWeight: 800,
+              letterSpacing: '-0.025em', color: C.txt, lineHeight: 1.15,
+            }}>
               Welcome back, {name}
             </h1>
-            <p style={{ margin: 0, fontSize: 13.5, color: C.txt2 }}>
+            <p style={{ margin: 0, fontSize: 14, color: C.txt2, lineHeight: 1.55 }}>
               Choose a workspace to continue your evidence synthesis.
             </p>
           </div>
-          <Btn variant="primary" onClick={() => setModal({ type: 'create' })} style={{ padding: '9px 18px', fontSize: 13 }}>
-            <Icon name="plus" size={15} /> New Project
+          <Btn
+            variant="primary"
+            onClick={() => setModal({ type: 'create' })}
+            style={{ padding: '10px 22px', fontSize: 13.5, borderRadius: 10 }}
+          >
+            <Icon name="plus" size={16} /> New Project
           </Btn>
-        </div>
+        </motion.div>
 
-        {error && (
-          <div style={{
-            marginBottom: 20, padding: '11px 14px', borderRadius: 9, fontSize: 12.5,
-            background: C.redBg, color: C.red, border: `1px solid ${alpha(C.red, '30')}`,
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
-          }}>
-            <span><Icon name="alert" size={14} style={{ marginRight: 6, verticalAlign: 'text-bottom' }} />{error}</span>
-            <button onClick={reload} style={{ background: 'transparent', border: `1px solid ${alpha(C.red, '40')}`, color: C.red, borderRadius: 7, padding: '4px 10px', fontSize: 11.5, fontWeight: 600, cursor: 'pointer', fontFamily: FONT }}>Retry</button>
-          </div>
-        )}
+        {/* ── Error banner ─────────────────────────────────────────── */}
+        <AnimatePresence>
+          {error && (
+            <motion.div
+              key="err"
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.22 }}
+              style={{
+                marginBottom: 22, padding: '12px 16px', borderRadius: 10, fontSize: 12.5,
+                background: C.redBg, color: C.red,
+                border: `1px solid ${alpha(C.red, 0.25)}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+              }}
+            >
+              <span><Icon name="alert" size={14} style={{ marginRight: 7, verticalAlign: 'text-bottom' }} />{error}</span>
+              <button
+                onClick={reload}
+                style={{
+                  background: 'transparent', border: `1px solid ${alpha(C.red, 0.35)}`,
+                  color: C.red, borderRadius: 7, padding: '4px 10px',
+                  fontSize: 11.5, fontWeight: 600, cursor: 'pointer', fontFamily: FONT,
+                }}
+              >Retry</button>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-        {/* ── KPI summary tiles ─────────────────────────────────────── */}
+        {/* ── KPI tiles ────────────────────────────────────────────── */}
         {!loading && hasAnyProject && (
-          <div style={{
-            display: 'grid', gap: 12, marginBottom: 26,
-            gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-          }}>
-            <KpiTile icon="folders"     label="Accessible"        value={kpis.accessible} color={C.acc}  reduced={reduced} />
-            <KpiTile icon="user"        label="Owned"             value={kpis.owned}      color={C.gold} reduced={reduced} />
-            <KpiTile icon="award"       label="I lead"            value={kpis.lead}       color={C.purp} reduced={reduced} />
-            <KpiTile icon="activity"    label="Active"            value={kpis.active}     color={C.grn}  reduced={reduced} />
-            <KpiTile icon="flow"        label="Linked META·SIFT"  value={kpis.linked}     color={C.teal} reduced={reduced} />
-            <KpiTile icon="layers"      label="Archived"          value={kpis.archived}   color={C.muted} reduced={reduced} />
-          </div>
+          <motion.div
+            initial={reduced ? { opacity: 1 } : { opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, ease: [0.22, 1, 0.36, 1] }}
+            style={{
+              display: 'grid', gap: 12, marginBottom: 28,
+              gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
+            }}
+          >
+            <KpiTile icon="folders"  label="Accessible"       value={kpis.accessible} color={C.acc}   reduced={reduced} />
+            <KpiTile icon="user"     label="Owned"            value={kpis.owned}      color={C.gold}  reduced={reduced} />
+            <KpiTile icon="award"    label="I lead"           value={kpis.lead}       color={C.purp}  reduced={reduced} />
+            <KpiTile icon="activity" label="Active"           value={kpis.active}     color={C.grn}   reduced={reduced} />
+            <KpiTile icon="flow"     label="Linked META·SIFT" value={kpis.linked}     color={C.teal}  reduced={reduced} />
+            <KpiTile icon="layers"   label="Archived"         value={kpis.archived}   color={C.muted} reduced={reduced} />
+          </motion.div>
         )}
 
-        {/* ── Recently opened rail (above the control bar) ──────────── */}
+        {/* ── Recently-opened rail ──────────────────────────────────── */}
         {!loading && hasAnyProject && (
           <RecentsRail items={recentItems} onOpen={(r) => handlers.open(r)} reduced={reduced} />
         )}
 
-        {/* ── Control bar ───────────────────────────────────────────── */}
+        {/* ── Control bar ──────────────────────────────────────────── */}
         {!loading && hasAnyProject && (
-          <div style={{ marginBottom: 22 }}>
-            {/* row 1: search + sort + view + show-archived */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 14 }}>
-              <div style={{ position: 'relative', flex: '1 1 260px', minWidth: 220 }}>
-                <span style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: C.muted, pointerEvents: 'none' }}>
+          <div style={{
+            marginBottom: 24,
+            background: C.card, border: `1px solid ${C.brd}`, borderRadius: 14,
+            padding: '16px 20px', boxShadow: `0 1px 4px ${C.shadow}`,
+          }}>
+            {/* row 1: search + sort + view toggle + show-archived */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
+
+              {/* search input */}
+              <div style={{ position: 'relative', flex: '1 1 280px', minWidth: 220 }}>
+                <span style={{
+                  position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)',
+                  color: C.muted, pointerEvents: 'none', lineHeight: 0,
+                }}>
                   <Icon name="search" size={15} />
                 </span>
                 <input
@@ -1134,54 +1322,82 @@ export default function ProjectLanding() {
                   onChange={(e) => setSearchRaw(e.target.value)}
                   placeholder="Search title, owner, linked workspace, status…"
                   aria-label="Search projects"
-                  style={{ ...inputStyle, paddingLeft: 34 }}
+                  style={{ ...inputStyle, paddingLeft: 36, borderRadius: 9 }}
                 />
                 {searchRaw && (
-                  <button onClick={() => setSearchRaw('')} aria-label="Clear search"
-                          style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'transparent', border: 'none', color: C.muted, cursor: 'pointer', padding: 2, lineHeight: 0 }}>
-                    <Icon name="x" size={15} />
+                  <button
+                    onClick={() => setSearchRaw('')}
+                    aria-label="Clear search"
+                    style={{
+                      position: 'absolute', right: 9, top: '50%', transform: 'translateY(-50%)',
+                      background: 'transparent', border: 'none', color: C.muted,
+                      cursor: 'pointer', padding: 2, lineHeight: 0,
+                    }}
+                  >
+                    <Icon name="x" size={14} />
                   </button>
                 )}
               </div>
 
-              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 12, color: C.txt2 }}>
-                <span style={{ color: C.muted, fontWeight: 600 }}>Sort</span>
-                <select value={sort} onChange={(e) => setSort(e.target.value)}
-                        style={{ ...inputStyle, width: 'auto', padding: '7px 10px', cursor: 'pointer' }}>
+              {/* sort */}
+              <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: C.txt2, flexShrink: 0 }}>
+                <span style={{ fontWeight: 600, color: C.muted, fontSize: 11 }}>Sort</span>
+                <select
+                  value={sort}
+                  onChange={(e) => setSort(e.target.value)}
+                  style={{ ...inputStyle, width: 'auto', padding: '7px 10px', cursor: 'pointer', fontSize: 12.5 }}
+                >
                   {SORTS.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
                 </select>
               </label>
 
               {/* view toggle */}
-              <div style={{ display: 'inline-flex', background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 8, padding: 2 }}>
+              <div style={{
+                display: 'inline-flex', background: C.card2,
+                border: `1px solid ${C.brd}`, borderRadius: 9, padding: 2, flexShrink: 0,
+              }}>
                 {[{ k: 'cards', icon: 'grid', t: 'Card view' }, { k: 'table', icon: 'table', t: 'Table view' }].map(v => (
-                  <button key={v.k} onClick={() => setView(v.k)} title={v.t} aria-label={v.t} aria-pressed={view === v.k}
-                          style={{
-                            display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 32, height: 28,
-                            borderRadius: 6, cursor: 'pointer', border: 'none',
-                            background: view === v.k ? C.acc2 : 'transparent',
-                            color: view === v.k ? C.accText : C.txt2,
-                          }}>
+                  <button
+                    key={v.k}
+                    onClick={() => setView(v.k)}
+                    title={v.t}
+                    aria-label={v.t}
+                    aria-pressed={view === v.k}
+                    style={{
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      width: 32, height: 30, borderRadius: 7, cursor: 'pointer', border: 'none',
+                      background: view === v.k ? C.acc : 'transparent',
+                      color: view === v.k ? C.accText : C.txt2,
+                      boxShadow: view === v.k ? `0 1px 6px ${alpha(C.acc, 0.25)}` : 'none',
+                      transition: 'background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease',
+                    }}
+                  >
                     <Icon name={v.icon} size={15} />
                   </button>
                 ))}
               </div>
 
-              {/* show archived */}
+              {/* show archived toggle */}
               <button
                 onClick={() => setShowArchived(s => !s)}
                 aria-pressed={showArchived}
                 style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 7, padding: '7px 12px', borderRadius: 8,
-                  fontSize: 12, fontWeight: 600, fontFamily: FONT, cursor: 'pointer',
-                  background: showArchived ? alpha(C.acc, '12') : C.card,
+                  display: 'inline-flex', alignItems: 'center', gap: 7,
+                  padding: '7px 13px', borderRadius: 9, fontSize: 12.5, fontWeight: 600,
+                  fontFamily: FONT, cursor: 'pointer', flexShrink: 0,
+                  background: showArchived ? alpha(C.acc, 0.10) : 'transparent',
                   color: showArchived ? C.acc : C.txt2,
-                  border: `1px solid ${showArchived ? alpha(C.acc, '40') : C.brd2}`,
-                }}>
+                  border: `1px solid ${showArchived ? alpha(C.acc, 0.35) : C.brd2}`,
+                  transition: 'background 0.15s ease, color 0.15s ease, border-color 0.15s ease',
+                }}
+              >
                 <Icon name={showArchived ? 'eye' : 'layers'} size={14} />
                 Archived
                 {kpis.archived > 0 && (
-                  <span style={{ fontFamily: MONO, fontVariantNumeric: 'tabular-nums', fontSize: 10.5, color: showArchived ? C.acc : C.muted }}>
+                  <span style={{
+                    fontFamily: MONO, fontSize: 10.5, fontVariantNumeric: 'tabular-nums',
+                    color: showArchived ? C.acc : C.muted,
+                  }}>
                     {kpis.archived}
                   </span>
                 )}
@@ -1191,8 +1407,12 @@ export default function ProjectLanding() {
             {/* row 2: quick-filter chips */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
               {FILTERS.filter(f => f.key !== 'archived' || showArchived).map(f => (
-                <Chip key={f.key} active={filter === f.key} count={chipCounts[f.key] || 0}
-                      onClick={() => setFilter(f.key)}>
+                <Chip
+                  key={f.key}
+                  active={filter === f.key}
+                  count={chipCounts[f.key] || 0}
+                  onClick={() => setFilter(f.key)}
+                >
                   {f.label}
                 </Chip>
               ))}
@@ -1200,49 +1420,108 @@ export default function ProjectLanding() {
           </div>
         )}
 
-        {/* ── Body ──────────────────────────────────────────────────── */}
+        {/* ── Body ────────────────────────────────────────────────── */}
         {loading ? (
-          <div style={{ padding: '64px 0', textAlign: 'center', color: C.muted, fontSize: 13 }}>
-            Loading your projects…
-          </div>
+          /* Loading skeleton shimmer */
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            style={{ padding: '80px 0', textAlign: 'center' }}
+          >
+            <div style={{
+              display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 12,
+              color: C.muted, fontSize: 13,
+            }}>
+              <div style={{
+                width: 40, height: 40, borderRadius: 12,
+                background: alpha(C.acc, 0.10), color: C.acc,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+              }}>
+                <Icon name="folders" size={20} />
+              </div>
+              Loading your projects…
+            </div>
+          </motion.div>
+
         ) : !hasAnyProject ? (
           <EmptyState
             icon="folders"
             title="No projects yet"
             body="META·LAB is your evidence-synthesis workspace; META·SIFT handles collaborative citation screening. Create your first project to get started — you can link a screening workspace in one click."
-            cta={<Btn variant="primary" onClick={() => setModal({ type: 'create' })}><Icon name="plus" size={15} /> Create your first project</Btn>}
+            cta={
+              <Btn variant="primary" onClick={() => setModal({ type: 'create' })} style={{ margin: '0 auto' }}>
+                <Icon name="plus" size={15} /> Create your first project
+              </Btn>
+            }
           />
+
         ) : activeVisibleEmpty ? (
           search ? (
             <EmptyState
               icon="search"
               title="No matching projects"
-              body={`Nothing matches “${searchRaw.trim()}” in the current filter. Try a different term or clear the search.`}
-              cta={<Btn variant="ghost" onClick={() => { setSearchRaw(''); setFilter('all'); }}>Clear search & filters</Btn>}
+              body={`Nothing matches "${searchRaw.trim()}" in the current filter. Try a different term or clear the search.`}
+              cta={
+                <Btn variant="ghost" onClick={() => { setSearchRaw(''); setFilter('all'); }}>
+                  Clear search &amp; filters
+                </Btn>
+              }
             />
           ) : (!showArchived && archivedExist) ? (
             <EmptyState
               icon="layers"
               title="Nothing active here"
               body={`Every project matching this filter is archived. You have ${kpis.archived} archived ${kpis.archived === 1 ? 'project' : 'projects'} hidden from the active view.`}
-              cta={<Btn variant="primary" onClick={() => setShowArchived(true)}><Icon name="eye" size={15} /> Show archived</Btn>}
+              cta={
+                <Btn variant="primary" onClick={() => setShowArchived(true)}>
+                  <Icon name="eye" size={15} /> Show archived
+                </Btn>
+              }
             />
           ) : (
             <EmptyState
               icon="filter"
               title="No projects in this filter"
-              body="No projects match the selected quick-filter. Switch back to “All” to see everything you can access."
+              body='No projects match the selected quick-filter. Switch back to "All" to see everything you can access.'
               cta={<Btn variant="ghost" onClick={() => setFilter('all')}>Show all projects</Btn>}
             />
           )
+
         ) : view === 'table' ? (
-          <ProjectTable rows={visible} handlers={handlers} />
+          <motion.div
+            key={`table-${gridKey}`}
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
+          >
+            <ProjectTable rows={visible} handlers={handlers} />
+          </motion.div>
+
         ) : (
+          /* Card grid with staggered entrance */
+          <motion.div
+            key={`grid-${gridKey}`}
+            variants={reduced ? reducedVariants : gridContainerVariants}
+            initial="hidden"
+            animate="visible"
+            style={{
+              display: 'grid', gap: 18,
+              gridTemplateColumns: 'repeat(auto-fill, minmax(330px, 1fr))',
+            }}
+          >
+            {visible.map(p => (
+              <ProjectCard key={p.id} p={p} handlers={handlers} reduced={reduced} />
+            ))}
+          </motion.div>
+        )}
+
+        {/* ── Footer count ─────────────────────────────────────────── */}
+        {!loading && hasAnyProject && !activeVisibleEmpty && (
           <div style={{
-            display: 'grid', gap: 16,
-            gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))',
+            marginTop: 24, textAlign: 'center',
+            fontSize: 11.5, color: C.dim, fontFamily: MONO,
           }}>
-            {visible.map(p => <ProjectCard key={p.id} p={p} handlers={handlers} reduced={reduced} />)}
+            {visible.length} {visible.length === 1 ? 'project' : 'projects'}
           </div>
         )}
       </div>
@@ -1259,8 +1538,8 @@ export default function ProjectLanding() {
           }}
         />
       )}
-      {modal && modal.type === 'rename'  && <RenameModal  project={modal.project} onClose={closeModal} onRenamed={afterMutation} />}
-      {modal && modal.type === 'archive' && <ArchiveModal project={modal.project} onClose={closeModal} onDone={afterMutation} />}
+      {modal && modal.type === 'rename'   && <RenameModal   project={modal.project} onClose={closeModal} onRenamed={afterMutation} />}
+      {modal && modal.type === 'archive'  && <ArchiveModal  project={modal.project} onClose={closeModal} onDone={afterMutation} />}
       {modal && modal.type === 'leave'    && <LeaveModal    project={modal.project} onClose={closeModal} onDone={afterMutation} />}
       {modal && modal.type === 'transfer' && <TransferModal project={modal.project} onClose={closeModal} onDone={afterMutation} />}
       {modal && modal.type === 'delete'   && <DeleteModal   project={modal.project} onClose={closeModal} onDone={afterMutation} />}

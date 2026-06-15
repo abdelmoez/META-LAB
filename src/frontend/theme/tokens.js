@@ -21,21 +21,54 @@
 
 /* ─── Theme value maps ────────────────────────────────────────────── */
 
+// prompt16 — Nextly-inspired design language. DAY is the default theme: a bright,
+// clean, white/indigo SaaS palette (Tailwind gray scale + indigo-600 primary).
+// NIGHT is the same language adapted to a dark slate-indigo surface.
 export const THEMES = {
+  day: {
+    bg:      '#f6f7f9',   // faint gray page so white cards lift
+    surf:    '#ffffff',
+    card:    '#ffffff',
+    card2:   '#f3f4f6',   // gray-100
+    brd:     '#e5e7eb',   // gray-200
+    brd2:    '#d1d5db',   // gray-300
+    txt:     '#1f2937',   // gray-800 — headings / primary
+    txt2:    '#4b5563',   // gray-600 — secondary
+    muted:   '#6b7280',   // gray-500 — muted body
+    dim:     '#9ca3af',   // gray-400 — faint
+    acc:     '#4f46e5',   // indigo-600 — primary
+    acc2:    '#4338ca',   // indigo-700 — hover / pressed
+    accText: '#ffffff',
+    gold:    '#b45309',   // amber-700
+    teal:    '#0d9488',   // teal-600
+    grn:     '#059669',   // emerald-600
+    grn2:    '#047857',   // emerald-700
+    red:     '#dc2626',   // red-600
+    yel:     '#d97706',   // amber-600
+    purp:    '#7c3aed',   // violet-600
+    accBg:   '#eef2ff',   // indigo-50
+    grnBg:   '#ecfdf5',   // emerald-50
+    redBg:   '#fef2f2',   // red-50
+    yelBg:   '#fffbeb',   // amber-50
+    purpBg:  '#f5f3ff',   // violet-50
+    goldBg:  '#fffbeb',
+    tealBg:  '#f0fdfa',   // teal-50
+    shadow:  'rgba(17, 24, 39, 0.08)',
+  },
   night: {
-    bg:      '#070b14',
-    surf:    '#0c1322',
-    card:    '#101a2c',
-    card2:   '#152238',
-    brd:     '#1d2d49',
-    brd2:    '#283c60',
-    txt:     '#eef2fc',
-    txt2:    '#9fb0d4',
-    muted:   '#5f7195',
-    dim:     '#3a4660',
-    acc:     '#6ba1f7',
-    acc2:    '#3d7bf0',
-    accText: '#071124',
+    bg:      '#0b1120',   // slate-950
+    surf:    '#111827',   // gray-900
+    card:    '#151e30',
+    card2:   '#1d2840',
+    brd:     '#283449',
+    brd2:    '#384761',
+    txt:     '#f1f5f9',
+    txt2:    '#aab6cf',
+    muted:   '#6c7a99',
+    dim:     '#414e69',
+    acc:     '#818cf8',   // indigo-400 — primary in dark
+    acc2:    '#6366f1',   // indigo-500
+    accText: '#0b1020',
     gold:    '#d8ab6e',
     teal:    '#37cdbb',
     grn:     '#48d597',
@@ -43,7 +76,7 @@ export const THEMES = {
     red:     '#f37e7e',
     yel:     '#ecbb4e',
     purp:    '#a98ef7',
-    accBg:   '#0e2243',
+    accBg:   '#1e2547',
     grnBg:   '#0b2b20',
     redBg:   '#331316',
     yelBg:   '#2e2310',
@@ -51,36 +84,6 @@ export const THEMES = {
     goldBg:  '#2c2113',
     tealBg:  '#0b2a27',
     shadow:  'rgba(2, 6, 16, 0.55)',
-  },
-  day: {
-    bg:      '#f2f0ea',
-    surf:    '#faf8f4',
-    card:    '#ffffff',
-    card2:   '#f3f1ea',
-    brd:     '#dcd7c9',
-    brd2:    '#c4beac',
-    txt:     '#1a2233',
-    txt2:    '#48556e',
-    muted:   '#7a849c',
-    dim:     '#b9c0cf',
-    acc:     '#1f5dd6',
-    acc2:    '#1745a5',
-    accText: '#ffffff',
-    gold:    '#8a6a35',
-    teal:    '#0f766e',
-    grn:     '#188047',
-    grn2:    '#136539',
-    red:     '#bb3a32',
-    yel:     '#946800',
-    purp:    '#6a3bd1',
-    accBg:   '#e8eefb',
-    grnBg:   '#e2f2e8',
-    redBg:   '#fae8e6',
-    yelBg:   '#f7efd9',
-    purpBg:  '#efe9fb',
-    goldBg:  '#f2ecdb',
-    tealBg:  '#e0f1ef',
-    shadow:  'rgba(74, 68, 50, 0.18)',
   },
 };
 
@@ -107,8 +110,10 @@ export const C = {
   shadow: v('shadow'),
 };
 
-export const FONT = "'IBM Plex Sans', system-ui, sans-serif";
-export const MONO = "'IBM Plex Mono', monospace";
+// prompt16 — Inter is the Nextly template font; IBM Plex Sans kept as a fallback.
+// Monospace stays IBM Plex Mono for statistical numbers / code (reads cleanly in tables).
+export const FONT = "'Inter', 'IBM Plex Sans', system-ui, sans-serif";
+export const MONO = "'IBM Plex Mono', ui-monospace, monospace";
 
 /* ─── Alpha helper ────────────────────────────────────────────────── */
 /**
@@ -140,8 +145,8 @@ function cssBlock(values) {
  */
 export function buildThemeCss() {
   return `
-:root, :root[data-theme="night"] { ${cssBlock(THEMES.night)} color-scheme: dark; }
-:root[data-theme="day"] { ${cssBlock(THEMES.day)} color-scheme: light; }
+:root, :root[data-theme="day"] { ${cssBlock(THEMES.day)} color-scheme: light; }
+:root[data-theme="night"] { ${cssBlock(THEMES.night)} color-scheme: dark; }
 body { background: var(--t-bg); color: var(--t-txt); font-family: ${FONT}; }
 html { transition: background 0.2s ease; }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
@@ -177,7 +182,7 @@ export function getSavedTheme() {
 }
 
 export function applyTheme(theme) {
-  const t = THEME_NAMES.includes(theme) ? theme : 'night';
+  const t = THEME_NAMES.includes(theme) ? theme : 'day';
   document.documentElement.dataset.theme = t;
   try { localStorage.setItem(STORAGE_KEY, t); } catch { /* private mode */ }
   // Let any listener (ThemeProvider) know about out-of-band changes.

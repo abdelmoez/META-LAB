@@ -1,22 +1,27 @@
 /**
  * Landing.jsx — public home page for META·LAB.
  *
- * v5 "evidence pipeline" redesign (prompt8):
- * "The page is a systematic review, running in slow motion."
- * Full-bleed hero with a Canvas 2D field of drifting records converging
- * into a forest plot · evidence spine with numbered PRISMA-style nodes ·
- * self-drawing forest-plot climax with count-up PRISMA funnel ·
- * META·LAB ⇄ META·SIFT linked-workspace beam · institution spec table.
+ * v6 "Nextly" redesign (prompt16):
+ * Translated from Nextly design template (Next.js/Tailwind) into this app's
+ * inline-style + token system. Bright white/indigo day theme; dark adaptation
+ * via night tokens. Framer Motion for hero stagger + section scroll reveals +
+ * card stagger + button micro-interactions.
  *
- * Content architecture unchanged: useLandingSettings() merges
- * GET /api/settings/public over DEFAULTS; every admin-editable key keeps
- * working (heroHeadline, featureCards, whyStandards, footerLinks, …).
- * Anchors #features / #workflow / #about / #contact preserved.
- * All motion honors prefers-reduced-motion (static final compositions).
+ * Preserved from v5:
+ * - useLandingSettings() → all ~26 admin-editable landingContent keys intact.
+ * - Section anchors: #features, #workflow, #about, #contact.
+ * - Contact form → api.contact() flow unchanged.
+ * - Login / Register / /app navigation links unchanged.
+ * - usePrefersReducedMotion() gates all Framer Motion (no motion when reduced).
+ * - HeroCanvas (animated forest-plot) used as hero right-column illustration.
+ * - animationSpeed ops setting (prompt9) respected via motionOff + rate.
+ * - Reduced-motion CSS block (@media prefers-reduced-motion) retained for
+ *   pure-CSS animations (forest-plot SVG rows, spine line, beam pulse).
  */
 
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '../context/AuthContext.jsx';
 import { api } from '../api-client/apiClient.js';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
@@ -49,14 +54,9 @@ const VALUE_PROPS = [
   { icon: 'users',       label: 'Multi-user',       desc: 'Collaborative extraction and dual-reviewer screening with conflict resolution.' },
 ];
 
-/* Legacy unicode glyphs (older admin-saved featureCards) → icon names. */
 const GLYPH_ICONS = {
-  '◈': 'clipboard',
-  '⊞': 'checkSquare',
-  '◉': 'sigma',
-  '⬡': 'hexagon',
-  '◎': 'clock',
-  '◫': 'users',
+  '◈': 'clipboard', '⊞': 'checkSquare', '◉': 'sigma',
+  '⬡': 'hexagon',   '◎': 'clock',       '◫': 'users',
 };
 
 function resolveCardIcon(icon) {
@@ -72,7 +72,7 @@ const STANDARDS = [
   'Full audit trail — every decision timestamped',
 ];
 
-/* ─── Default settings (shown immediately; replaced when server responds) */
+/* ─── Default settings ───────────────────────────────────────────────── */
 const DEFAULTS = {
   logoText:          'META·LAB',
   navLinks:          [
@@ -105,22 +105,14 @@ const DEFAULTS = {
   maintenanceBanner: '',
   seoTitle:          '',
   seoDescription:    '',
-  // prompt9: ops-controlled landing animation speed ('off'|'slow'|'normal'|
-  // 'fast'). The client-side default is the real fallback — the server
-  // never backfills this key into existing landingContent rows.
   animationSpeed:    'normal',
 };
 
-/* ─── Animation speed (prompt9) ──────────────────────────────────────────
-   Ops-controlled pace for the EXISTING motion only (Motion Restraint
-   Budget: scale, never add). rate multiplies time progression (slow 0.6×,
-   fast 1.6×); CSS durations use --lp-dur = 1/rate via calc().
-   PRECEDENCE: prefers-reduced-motion ALWAYS wins; 'off' maps onto the same
-   static compositions as reduced motion. */
+/* ─── Animation speed (prompt9) ─────────────────────────────────────── */
 const ANIM_SPEED_IDS = ['off', 'slow', 'normal', 'fast'];
 const ANIM_RATE = { slow: 0.6, normal: 1, fast: 1.6 };
 
-/* ─── Hook: fetch public settings (non-blocking) ─────────────────────── */
+/* ─── Hook: fetch public settings ────────────────────────────────────── */
 function useLandingSettings() {
   const [settings, setSettings] = useState(DEFAULTS);
   useEffect(() => {
@@ -184,7 +176,7 @@ function useInView(threshold = 0.15, rootMargin = '0px 0px -10% 0px') {
   return [ref, inView];
 }
 
-/** rAF count-up: 0 → target once `run` is true (instant when reduced). */
+/** rAF count-up: 0 → target once `run` is true. */
 function useCountUp(target, run, reduced, dur = 1500) {
   const [val, setVal] = useState(reduced ? target : 0);
   useEffect(() => {
@@ -204,7 +196,25 @@ function useCountUp(target, run, reduced, dur = 1500) {
   return val;
 }
 
-/* ─── Runtime theme color reads (canvas cannot use var(--t-*)) ────────── */
+/* ─── Framer Motion variants ─────────────────────────────────────────── */
+const fadeUp = {
+  hidden:  { opacity: 0, y: 24 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.55, ease: [0.22, 1, 0.36, 1] } },
+};
+const fadeUpSlow = {
+  hidden:  { opacity: 0, y: 18 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.7, ease: [0.22, 1, 0.36, 1] } },
+};
+const staggerContainer = {
+  hidden:  {},
+  visible: { transition: { staggerChildren: 0.09 } },
+};
+const staggerFast = {
+  hidden:  {},
+  visible: { transition: { staggerChildren: 0.06 } },
+};
+
+/* ─── Runtime theme color reads (canvas needs real hex values) ──────── */
 function hexToRgb(hex) {
   let h = String(hex || '').trim().replace('#', '');
   if (h.length === 3) h = h.split('').map(c => c + c).join('');
@@ -217,29 +227,16 @@ function readCanvasColors() {
   const cs = getComputedStyle(document.documentElement);
   const get = (name, fb) => (cs.getPropertyValue(name) || '').trim() || fb;
   return {
-    acc:  hexToRgb(get('--t-acc',  '#6ba1f7')),
-    gold: hexToRgb(get('--t-gold', '#d8ab6e')),
-    txt:  hexToRgb(get('--t-txt',  '#eef2fc')),
-    day:  document.documentElement.dataset.theme === 'day',
+    acc:  hexToRgb(get('--t-acc',  '#4f46e5')),
+    gold: hexToRgb(get('--t-gold', '#b45309')),
+    txt:  hexToRgb(get('--t-txt',  '#1f2937')),
+    day:  document.documentElement.dataset.theme !== 'night',
   };
 }
 
 const rgba = (rgb, a) => `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`;
 
-/* ─── Tiny monospace section label ───────────────────────────────────── */
-function SectionLabel({ text, style }) {
-  return (
-    <div style={{
-      fontSize: 10, fontFamily: MONO, color: C.muted,
-      letterSpacing: '0.22em', textTransform: 'uppercase', marginBottom: 14,
-      ...style,
-    }}>
-      {text}
-    </div>
-  );
-}
-
-/* ─── Wordmark: META·LAB with mono accent middot ─────────────────────── */
+/* ─── Wordmark: META·LAB ─────────────────────────────────────────────── */
 function Wordmark({ size = 13, weight = 700, spacing = '0.08em' }) {
   return (
     <span style={{ fontSize: size, fontWeight: weight, letterSpacing: spacing, color: C.txt, whiteSpace: 'nowrap' }}>
@@ -260,14 +257,57 @@ function HexLogo({ size = 18, color = C.acc }) {
   );
 }
 
-/* ════════════════════════════════════════════════════════════════════════
-   HERO CANVAS — records (drifting points) converging into a forest plot.
-   Single canvas, rAF, paused when tab hidden or canvas off-viewport,
-   DPR capped at 1.5. Reduced motion: one static final composition.
-   ════════════════════════════════════════════════════════════════════════ */
+/* ─── Nextly SectionTitle: centered pretitle + big title + desc ─────── */
+function SectionTitle({ pretitle, title, children, align = 'center' }) {
+  const centered = align !== 'left';
+  return (
+    <div style={{ textAlign: centered ? 'center' : 'left', maxWidth: centered ? 720 : undefined, margin: centered ? '0 auto' : undefined }}>
+      {pretitle && (
+        <div style={{
+          fontSize: 12, fontWeight: 700, letterSpacing: '0.12em',
+          textTransform: 'uppercase', color: C.acc, marginBottom: 12,
+          fontFamily: FONT,
+        }}>
+          {pretitle}
+        </div>
+      )}
+      {title && (
+        <h2 style={{
+          fontSize: 'clamp(26px, 3.2vw, 36px)', fontWeight: 800,
+          letterSpacing: '-0.03em', color: C.txt, lineHeight: 1.18,
+          margin: '0 0 16px', fontFamily: FONT,
+        }}>
+          {title}
+        </h2>
+      )}
+      {children && (
+        <p style={{
+          fontSize: 17, color: C.txt2, lineHeight: 1.75,
+          maxWidth: 640, margin: centered ? '0 auto' : '0',
+        }}>
+          {children}
+        </p>
+      )}
+    </div>
+  );
+}
 
-/* Study CI rows as fractions of the mini-plot width (matches the climax
-   plot data: SMD range −0.5…1.3 normalized to 0…1). */
+/* ─── Tiny mono section label (legacy, kept for spine sections) ───────  */
+function SectionLabel({ text, style }) {
+  return (
+    <div style={{
+      fontSize: 11, fontFamily: MONO, color: C.muted,
+      letterSpacing: '0.18em', textTransform: 'uppercase', marginBottom: 12,
+      ...style,
+    }}>
+      {text}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   HERO CANVAS — records drifting → forest plot (kept from v5)
+   ════════════════════════════════════════════════════════════════════════ */
 const CANVAS_ROWS = [
   { lo: 0.478, hi: 0.767, es: 0.622, w: 1.00 },
   { lo: 0.350, hi: 0.694, es: 0.522, w: 0.72 },
@@ -286,22 +326,12 @@ function HeroCanvas({ reduced, speed = 1 }) {
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    /* Ops speed multiplier (prompt9): scales the EXISTING time constants
-       only — convergence window, stagger, twinkle/pulse periods, easing.
-       reduced (OS preference) still short-circuits to the static frame. */
     const rate = Number(speed) > 0 ? Number(speed) : 1;
-
     let colors = readCanvasColors();
-    let raf = 0;
-    let running = false;
-    let tabVisible = !document.hidden;
-    let onScreen = true;
-    let W = 0, H = 0;
-    let rows = [];          // pixel geometry of the 5 CI rows
-    let pool = null;        // pooled diamond geometry
+    let raf = 0, running = false, tabVisible = !document.hidden, onScreen = true;
+    let W = 0, H = 0, rows = [], pool = null;
     const particles = [];
-    const N = 120;          // total points
-    const NC = 46;          // of which converge onto the plot
+    const N = 120, NC = 46;
     const start = performance.now();
 
     function layout() {
@@ -316,25 +346,18 @@ function HeroCanvas({ reduced, speed = 1 }) {
       canvas.style.width = W + 'px';
       canvas.style.height = H + 'px';
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-      /* Forest geometry: right side of the hero (hidden under text on
-         small screens, where the canvas is mostly ambient). */
-      const fw = Math.min(W * 0.30, 380);
-      const fx = Math.min(W * 0.64, W - fw - 24);
-      const gap = Math.min(Math.max(H * 0.062, 30), 46);
+      const fw = Math.min(W * 0.55, 340);
+      const fx = (W - fw) / 2;
+      const gap = Math.min(Math.max(H * 0.072, 32), 50);
       const fy = H * 0.5 - gap * 3.1;
       rows = CANVAS_ROWS.map((r, i) => ({
-        y:  fy + i * gap,
-        x1: fx + r.lo * fw,
-        x2: fx + r.hi * fw,
-        xm: fx + r.es * fw,
-        sz: 4 + r.w * 3.4,
+        y: fy + i * gap, x1: fx + r.lo * fw, x2: fx + r.hi * fw,
+        xm: fx + r.es * fw, sz: 4 + r.w * 3.4,
       }));
       pool = {
-        x1: fx + CANVAS_POOL.lo * fw,
-        x2: fx + CANVAS_POOL.hi * fw,
+        x1: fx + CANVAS_POOL.lo * fw, x2: fx + CANVAS_POOL.hi * fw,
         xm: fx + CANVAS_POOL.es * fw,
-        y:  fy + rows.length * gap + gap * 0.7,
+        y: fy + rows.length * gap + gap * 0.7,
         hh: Math.min(gap * 0.32, 11),
       };
       retarget();
@@ -355,38 +378,27 @@ function HeroCanvas({ reduced, speed = 1 }) {
       for (let i = 0; i < N; i++) {
         const conv = i < NC;
         particles.push({
-          x: Math.random() * W,
-          y: Math.random() * H,
-          vx: (Math.random() - 0.5) * 0.10,
-          vy: (Math.random() - 0.5) * 0.07,
-          r: 0.7 + Math.random() * 1.3,
-          a: 0.10 + Math.random() * 0.26,
-          tw: Math.random() * Math.PI * 2,           // twinkle phase
-          conv,
-          row: i % CANVAS_ROWS.length,
-          frac: Math.random(),
+          x: Math.random() * W, y: Math.random() * H,
+          vx: (Math.random() - 0.5) * 0.10, vy: (Math.random() - 0.5) * 0.07,
+          r: 0.7 + Math.random() * 1.3, a: 0.10 + Math.random() * 0.26,
+          tw: Math.random() * Math.PI * 2, conv,
+          row: i % CANVAS_ROWS.length, frac: Math.random(),
           jit: (Math.random() - 0.5) * 5,
-          k: (0.0022 + Math.random() * 0.0030) * rate, // attraction strength
-          delay: (Math.random() * 9000) / rate,        // staggered departure
+          k: (0.0022 + Math.random() * 0.0030) * rate,
+          delay: (Math.random() * 9000) / rate,
           tx: 0, ty: 0,
         });
       }
       retarget();
     }
 
-    /* Single drawn frame. `t` = elapsed ms; `final` forces the converged
-       end-state (reduced-motion static composition). */
     function draw(t, final) {
       ctx.clearRect(0, 0, W, H);
       const { acc, gold, txt, day } = colors;
-      const lineA  = day ? 0.34 : 0.30;
+      const lineA = day ? 0.34 : 0.30;
       const ptBase = day ? 0.55 : 0.85;
-
-      /* Global convergence progress 0→1 over ~26s at normal speed
-         (the slow reveal) — rate-scaled by the ops setting. */
       const prog = final ? 1 : Math.min(1, (t * rate) / 26000);
 
-      /* Plot scaffold: CI rows strengthen as records arrive. */
       if (rows.length) {
         for (let i = 0; i < rows.length; i++) {
           const r = rows[i];
@@ -399,13 +411,10 @@ function HeroCanvas({ reduced, speed = 1 }) {
           ctx.moveTo(r.x1, r.y - 3.5); ctx.lineTo(r.x1, r.y + 3.5);
           ctx.moveTo(r.x2, r.y - 3.5); ctx.lineTo(r.x2, r.y + 3.5);
           ctx.stroke();
-          /* Effect-size square, weight-scaled. */
           ctx.fillStyle = rgba(acc, (day ? 0.7 : 0.8) * ra);
           const s = r.sz;
           ctx.fillRect(r.xm - s / 2, r.y - s / 2, s, s);
         }
-
-        /* Pooled diamond lands last, with a soft breathing glow. */
         const da = Math.max(0, Math.min(1, prog * 1.8 - 0.8));
         if (pool && da > 0.01) {
           const pulse = final ? 0.5 : 0.5 + 0.28 * Math.sin((t * rate) / 1700);
@@ -425,20 +434,15 @@ function HeroCanvas({ reduced, speed = 1 }) {
         }
       }
 
-      /* Records. Ambient ones drift forever; convergers ease home. */
       for (const p of particles) {
         if (p.conv && (final || t > p.delay)) {
-          /* eased attraction toward the assigned CI slot */
           if (final) { p.x = p.tx; p.y = p.ty; }
           else {
-            p.x += (p.tx - p.x) * p.k;
-            p.y += (p.ty - p.y) * p.k;
-            p.x += p.vx * 0.25;
-            p.y += p.vy * 0.25;
+            p.x += (p.tx - p.x) * p.k; p.y += (p.ty - p.y) * p.k;
+            p.x += p.vx * 0.25; p.y += p.vy * 0.25;
           }
         } else if (!final) {
-          p.x += p.vx;
-          p.y += p.vy;
+          p.x += p.vx; p.y += p.vy;
           if (p.x < -4) p.x = W + 4; else if (p.x > W + 4) p.x = -4;
           if (p.y < -4) p.y = H + 4; else if (p.y > H + 4) p.y = -4;
         }
@@ -447,7 +451,7 @@ function HeroCanvas({ reduced, speed = 1 }) {
         if (p.conv) {
           const d = Math.hypot(p.tx - p.x, p.ty - p.y);
           const near = Math.max(0, 1 - d / 220);
-          a = Math.min(0.9, a + near * 0.35);   // brighten as they settle
+          a = Math.min(0.9, a + near * 0.35);
         }
         ctx.fillStyle = rgba(p.conv ? acc : txt, a);
         ctx.beginPath();
@@ -465,34 +469,19 @@ function HeroCanvas({ reduced, speed = 1 }) {
 
     function syncRun() {
       const should = !reduced && tabVisible && onScreen;
-      if (should && !running) {
-        running = true;
-        if (!raf) raf = requestAnimationFrame(frame);
-      } else if (!should && running) {
-        running = false;
-        if (raf) { cancelAnimationFrame(raf); raf = 0; }
-      }
+      if (should && !running) { running = true; if (!raf) raf = requestAnimationFrame(frame); }
+      else if (!should && running) { running = false; if (raf) { cancelAnimationFrame(raf); raf = 0; } }
     }
 
     const onVis = () => { tabVisible = !document.hidden; syncRun(); };
-    const onTheme = () => {
-      colors = readCanvasColors();
-      if (reduced) draw(0, true);
-    };
-    const onResize = () => {
-      layout();
-      if (reduced) draw(0, true);
-    };
+    const onTheme = () => { colors = readCanvasColors(); if (reduced) draw(0, true); };
+    const onResize = () => { layout(); if (reduced) draw(0, true); };
 
-    layout();
-    seed();
+    layout(); seed();
 
     let io = null;
     if (typeof IntersectionObserver !== 'undefined') {
-      io = new IntersectionObserver(entries => {
-        onScreen = entries.some(e => e.isIntersecting);
-        syncRun();
-      }, { threshold: 0 });
+      io = new IntersectionObserver(entries => { onScreen = entries.some(e => e.isIntersecting); syncRun(); }, { threshold: 0 });
       io.observe(canvas);
     }
 
@@ -500,7 +489,7 @@ function HeroCanvas({ reduced, speed = 1 }) {
     window.addEventListener('metalab:theme-change', onTheme);
     window.addEventListener('resize', onResize);
 
-    if (reduced) draw(0, true);   // static final composition
+    if (reduced) draw(0, true);
     else syncRun();
 
     return () => {
@@ -511,8 +500,6 @@ function HeroCanvas({ reduced, speed = 1 }) {
       window.removeEventListener('metalab:theme-change', onTheme);
       window.removeEventListener('resize', onResize);
     };
-    // speed in the deps so ops changes apply on next visit/refresh
-    // without a code change (prompt9 Task 4).
   }, [reduced, speed]);
 
   return (
@@ -525,8 +512,7 @@ function HeroCanvas({ reduced, speed = 1 }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   EVIDENCE CLIMAX — self-drawing forest plot (animates when scrolled into
-   view, one-shot) + PRISMA funnel count-up. Illustrative data.
+   EVIDENCE CLIMAX — self-drawing forest plot + PRISMA count-up
    ════════════════════════════════════════════════════════════════════════ */
 const FP_STUDIES = [
   { label: 'Smith et al., 2021',  n: 142, es: 0.62, lo: 0.36, hi: 0.88, w: '22.4%' },
@@ -552,7 +538,7 @@ function ForestPlotClimax({ active }) {
   return (
     <div className={active ? 'lp-fpz in-view' : 'lp-fpz'} style={{
       background: C.card, border: `1px solid ${C.brd2}`,
-      borderRadius: 12, overflow: 'hidden', fontFamily: FONT,
+      borderRadius: 14, overflow: 'hidden', fontFamily: FONT,
       boxShadow: `0 24px 60px ${C.shadow}`,
     }}>
       <div style={{
@@ -563,106 +549,49 @@ function ForestPlotClimax({ active }) {
         <span style={{ fontSize: 10, color: C.muted, fontFamily: MONO, letterSpacing: '0.04em' }}>
           Random-Effects Model · SMD · 95% CI
         </span>
-        <span style={{
-          marginLeft: 'auto', fontSize: 8.5, fontFamily: MONO, color: C.dim,
-          letterSpacing: '0.12em', textTransform: 'uppercase',
-        }}>
+        <span style={{ marginLeft: 'auto', fontSize: 8.5, fontFamily: MONO, color: C.dim, letterSpacing: '0.12em', textTransform: 'uppercase' }}>
           Illustrative data
         </span>
       </div>
-
       <div style={{ padding: '16px 14px 12px' }}>
         <svg viewBox={`0 0 ${VB_W} ${VB_H}`} style={{ width: '100%', display: 'block', overflow: 'visible' }}>
-          <text x={STAT_X + 22} y={HDR_Y - 4}
-            style={{ fontSize: 9, fontFamily: MONO, fill: C.muted, textAnchor: 'middle' }}>N</text>
-          <text x={STAT_X + 68} y={HDR_Y - 4}
-            style={{ fontSize: 9, fontFamily: MONO, fill: C.muted, textAnchor: 'middle' }}>Weight</text>
-
-          <line x1={ZERO} y1={HDR_Y} x2={ZERO} y2={poolY + ROW_H * 0.4}
-            stroke={C.brd2} strokeWidth={1} strokeDasharray="3,3" />
-
+          <text x={STAT_X + 22} y={HDR_Y - 4} style={{ fontSize: 9, fontFamily: MONO, fill: C.muted, textAnchor: 'middle' }}>N</text>
+          <text x={STAT_X + 68} y={HDR_Y - 4} style={{ fontSize: 9, fontFamily: MONO, fill: C.muted, textAnchor: 'middle' }}>Weight</text>
+          <line x1={ZERO} y1={HDR_Y} x2={ZERO} y2={poolY + ROW_H * 0.4} stroke={C.brd2} strokeWidth={1} strokeDasharray="3,3" />
           {FP_STUDIES.map((s, i) => {
-            const y   = firstY + i * ROW_H + ROW_H / 2;
-            const x1  = toX(s.lo);
-            const x2  = toX(s.hi);
-            const xm  = toX(s.es);
-            const bsz = boxSize(s.w);
+            const y = firstY + i * ROW_H + ROW_H / 2;
+            const x1 = toX(s.lo), x2 = toX(s.hi), xm = toX(s.es), bsz = boxSize(s.w);
             return (
               <g key={s.label} className="lp-fp-row" style={{ animationDelay: `calc(${(0.1 + i * 0.13).toFixed(2)}s * var(--lp-dur, 1))` }}>
-                <text x={0} y={y + 3.5}
-                  style={{ fontSize: 9.5, fontFamily: FONT, fill: C.txt2 }}>
-                  {s.label}
-                </text>
+                <text x={0} y={y + 3.5} style={{ fontSize: 9.5, fontFamily: FONT, fill: C.txt2 }}>{s.label}</text>
                 <line x1={x1} y1={y} x2={x2} y2={y} stroke={C.brd2} strokeWidth={1.5} />
                 <line x1={x1} y1={y - 4} x2={x1} y2={y + 4} stroke={C.brd2} strokeWidth={1} />
                 <line x1={x2} y1={y - 4} x2={x2} y2={y + 4} stroke={C.brd2} strokeWidth={1} />
-                <rect x={xm - bsz / 2} y={y - bsz / 2}
-                  width={bsz} height={bsz}
-                  fill={C.acc} stroke={C.acc2} strokeWidth={0.5} />
-                <text x={STAT_X + 22} y={y + 3.5}
-                  style={{ fontSize: 9, fontFamily: MONO, fill: C.muted, textAnchor: 'middle' }}>
-                  {s.n}
-                </text>
-                <text x={STAT_X + 68} y={y + 3.5}
-                  style={{ fontSize: 9, fontFamily: MONO, fill: C.muted, textAnchor: 'middle' }}>
-                  {s.w}
-                </text>
+                <rect x={xm - bsz / 2} y={y - bsz / 2} width={bsz} height={bsz} fill={C.acc} stroke={C.acc2} strokeWidth={0.5} />
+                <text x={STAT_X + 22} y={y + 3.5} style={{ fontSize: 9, fontFamily: MONO, fill: C.muted, textAnchor: 'middle' }}>{s.n}</text>
+                <text x={STAT_X + 68} y={y + 3.5} style={{ fontSize: 9, fontFamily: MONO, fill: C.muted, textAnchor: 'middle' }}>{s.w}</text>
               </g>
             );
           })}
-
-          <line x1={0} y1={poolY - ROW_H * 0.35} x2={VB_W} y2={poolY - ROW_H * 0.35}
-            stroke={C.brd} strokeWidth={0.5} />
-
+          <line x1={0} y1={poolY - ROW_H * 0.35} x2={VB_W} y2={poolY - ROW_H * 0.35} stroke={C.brd} strokeWidth={0.5} />
           {(() => {
-            const y   = poolY;
-            const xlo = toX(FP_POOLED.lo);
-            const xhi = toX(FP_POOLED.hi);
-            const xm  = toX(FP_POOLED.es);
-            const dh  = 8;
+            const y = poolY, xlo = toX(FP_POOLED.lo), xhi = toX(FP_POOLED.hi), xm = toX(FP_POOLED.es), dh = 8;
             return (
               <g className="lp-fp-pool" style={{ animationDelay: 'calc(0.85s * var(--lp-dur, 1))' }}>
-                <text x={0} y={y + 4}
-                  style={{ fontSize: 9.5, fontFamily: FONT, fill: C.txt, fontWeight: 600 }}>
-                  Pooled estimate
-                </text>
-                <polygon
-                  points={`${xlo},${y} ${xm},${y - dh} ${xhi},${y} ${xm},${y + dh}`}
-                  fill={C.gold} stroke="none" />
-                <text x={STAT_X + 68} y={y + 4}
-                  style={{ fontSize: 9, fontFamily: MONO, fill: C.gold, textAnchor: 'middle', fontWeight: 700 }}>
-                  100%
-                </text>
+                <text x={0} y={y + 4} style={{ fontSize: 9.5, fontFamily: FONT, fill: C.txt, fontWeight: 600 }}>Pooled estimate</text>
+                <polygon points={`${xlo},${y} ${xm},${y - dh} ${xhi},${y} ${xm},${y + dh}`} fill={C.gold} stroke="none" />
+                <text x={STAT_X + 68} y={y + 4} style={{ fontSize: 9, fontFamily: MONO, fill: C.gold, textAnchor: 'middle', fontWeight: 700 }}>100%</text>
               </g>
             );
           })()}
-
           {[-0.25, 0, 0.5, 1.0].map(v => (
-            <text key={v} x={toX(v)} y={axisY + 12}
-              style={{ fontSize: 8, fontFamily: MONO, fill: C.muted, textAnchor: 'middle' }}>
-              {v}
-            </text>
+            <text key={v} x={toX(v)} y={axisY + 12} style={{ fontSize: 8, fontFamily: MONO, fill: C.muted, textAnchor: 'middle' }}>{v}</text>
           ))}
-          <text x={PLT_X + 4} y={axisY + 26}
-            style={{ fontSize: 8, fontFamily: FONT, fill: C.muted }}>
-            ← Favours control
-          </text>
-          <text x={PLT_X + PLT_W - 4} y={axisY + 26}
-            style={{ fontSize: 8, fontFamily: FONT, fill: C.muted, textAnchor: 'end' }}>
-            Favours treatment →
-          </text>
+          <text x={PLT_X + 4} y={axisY + 26} style={{ fontSize: 8, fontFamily: FONT, fill: C.muted }}>← Favours control</text>
+          <text x={PLT_X + PLT_W - 4} y={axisY + 26} style={{ fontSize: 8, fontFamily: FONT, fill: C.muted, textAnchor: 'end' }}>Favours treatment →</text>
         </svg>
-
-        <div style={{
-          display: 'flex', gap: 14, borderTop: `1px solid ${C.brd}`,
-          paddingTop: 10, marginTop: 2, flexWrap: 'wrap',
-        }}>
-          {[
-            ['SMD', '0.58 [0.44–0.72]'],
-            ['I²',  '23.4%'],
-            ['τ²',  '0.021'],
-            ['p',   '< 0.001'],
-          ].map(([k, v]) => (
+        <div style={{ display: 'flex', gap: 14, borderTop: `1px solid ${C.brd}`, paddingTop: 10, marginTop: 2, flexWrap: 'wrap' }}>
+          {[['SMD', '0.58 [0.44–0.72]'], ['I²', '23.4%'], ['τ²', '0.021'], ['p', '< 0.001']].map(([k, v]) => (
             <div key={k} style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
               <span style={{ fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em' }}>{k}</span>
               <span style={{ fontSize: 11, fontFamily: MONO, color: C.teal, fontWeight: 700 }}>{v}</span>
@@ -675,10 +604,10 @@ function ForestPlotClimax({ active }) {
 }
 
 const PRISMA_STAGES = [
-  { label: 'Records identified', value: 1284, icon: 'search'   },
+  { label: 'Records identified',            value: 1284, icon: 'search'   },
   { label: 'After deduplication / screened', value: 1022, icon: 'filter' },
-  { label: 'Full-text assessed', value: 164,  icon: 'fileText' },
-  { label: 'Studies included',   value: 38,   icon: 'check'    },
+  { label: 'Full-text assessed',            value: 164,  icon: 'fileText' },
+  { label: 'Studies included',              value: 38,   icon: 'check'    },
 ];
 
 function PrismaStageRow({ stage, run, reduced, last, delayIdx, speed = 1 }) {
@@ -695,19 +624,40 @@ function PrismaStageRow({ stage, run, reduced, last, delayIdx, speed = 1 }) {
         <Icon name={stage.icon} size={14} />
       </span>
       <span style={{ fontSize: 13, color: C.txt2, flex: 1, minWidth: 0 }}>{stage.label}</span>
-      <span style={{
-        fontSize: 22, fontFamily: MONO, fontWeight: 700,
-        fontVariantNumeric: 'tabular-nums',
-        color: last ? C.gold : C.txt, letterSpacing: '-0.02em',
-        minWidth: 76, textAlign: 'right',
-      }}>
+      <span style={{ fontSize: 22, fontFamily: MONO, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: last ? C.gold : C.txt, letterSpacing: '-0.02em', minWidth: 76, textAlign: 'right' }}>
         {val.toLocaleString('en-US')}
       </span>
     </div>
   );
 }
 
-/* ─── Mini forest used inside the app preview frame ──────────────────── */
+function EvidenceClimax({ reduced, speed = 1 }) {
+  const [ref, inView] = useInView(0.25, '0px 0px -8% 0px');
+  const active = reduced || inView;
+  return (
+    <div ref={ref} className="lp-climax-grid" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 1fr)', gap: 48, alignItems: 'center' }}>
+      <ForestPlotClimax active={active} />
+      <div>
+        <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.18em', textTransform: 'uppercase', marginBottom: 22, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Icon name="flow" size={12} /> PRISMA flow
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {PRISMA_STAGES.map((st, i) => (
+            <PrismaStageRow key={st.label} stage={st} run={active} reduced={reduced} speed={speed} delayIdx={i} last={i === PRISMA_STAGES.length - 1} />
+          ))}
+        </div>
+        <div style={{ marginTop: 26, paddingTop: 18, borderTop: `1px solid ${C.brd}`, fontSize: 12.5, color: C.muted, lineHeight: 1.7 }}>
+          1,284 records enter. 38 survive. One pooled estimate comes out — with every decision on the record.
+        </div>
+        <div style={{ marginTop: 12, fontSize: 9.5, fontFamily: MONO, color: C.dim, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
+          Illustrative data
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Mini forest (in AppPreview) ───────────────────────────────────── */
 function MiniForest() {
   const rows = [
     { lo: 50,  hi: 150, mid: 96,  w: 7 },
@@ -717,9 +667,7 @@ function MiniForest() {
     { lo: 26,  hi: 132, mid: 80,  w: 6 },
     { lo: 64,  hi: 156, mid: 110, w: 7 },
   ];
-  const ROW = 21, TOP = 14;
-  const poolY = TOP + rows.length * ROW + 12;
-  const H = poolY + 18;
+  const ROW = 21, TOP = 14, poolY = TOP + rows.length * ROW + 12, H = poolY + 18;
   return (
     <svg viewBox={`0 0 210 ${H}`} style={{ width: '100%', display: 'block' }} aria-hidden="true">
       <line x1={92} y1={6} x2={92} y2={poolY + 8} stroke={C.brd2} strokeWidth={1} strokeDasharray="3,3" />
@@ -732,111 +680,48 @@ function MiniForest() {
           </g>
         );
       })}
-      <polygon
-        points={`${88},${poolY} ${106},${poolY - 7} ${124},${poolY} ${106},${poolY + 7}`}
-        fill={C.gold} />
+      <polygon points={`${88},${poolY} ${106},${poolY - 7} ${124},${poolY} ${106},${poolY + 7}`} fill={C.gold} />
     </svg>
   );
 }
 
-/* ─── Product preview: stylized in-code app composition ──────────────── */
+/* ─── App preview frame ──────────────────────────────────────────────── */
 function AppPreview() {
-  const sideItems = [
-    ['grid',     'Overview'],
-    ['search',   'Search'],
-    ['filter',   'Screening'],
-    ['table',    'Extraction'],
-    ['scale',    'Risk of Bias'],
-    ['sigma',    'Analysis'],
-    ['fileText', 'Manuscript'],
-  ];
-  const stats = [
-    ['Included studies', '38'],
-    ['Pooled SMD',       '0.58'],
-    ['I²',               '23.4%'],
-    ['GRADE',            'Moderate'],
-  ];
-  const funnel = [
-    ['Identified',  '1,284', 100],
-    ['Deduplicated','1,022', 80],
-    ['Screened',    '1,022', 80],
-    ['Full-text',   '164',   38],
-    ['Included',    '38',    16],
-  ];
+  const sideItems = [['grid', 'Overview'], ['search', 'Search'], ['filter', 'Screening'], ['table', 'Extraction'], ['scale', 'Risk of Bias'], ['sigma', 'Analysis'], ['fileText', 'Manuscript']];
+  const stats = [['Included studies', '38'], ['Pooled SMD', '0.58'], ['I²', '23.4%'], ['GRADE', 'Moderate']];
+  const funnel = [['Identified', '1,284', 100], ['Deduplicated', '1,022', 80], ['Screened', '1,022', 80], ['Full-text', '164', 38], ['Included', '38', 16]];
   return (
-    <div style={{
-      background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 12,
-      overflow: 'hidden', boxShadow: `0 28px 70px ${C.shadow}`,
-    }}>
-      {/* Chrome bar */}
-      <div style={{
-        background: C.surf, borderBottom: `1px solid ${C.brd}`,
-        padding: '9px 14px', display: 'flex', alignItems: 'center', gap: 8,
-      }}>
+    <div style={{ background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 14, overflow: 'hidden', boxShadow: `0 28px 70px ${C.shadow}` }}>
+      <div style={{ background: C.surf, borderBottom: `1px solid ${C.brd}`, padding: '9px 14px', display: 'flex', alignItems: 'center', gap: 8 }}>
         <div style={{ display: 'flex', gap: 5 }}>
-          {[0, 1, 2].map(i => (
-            <div key={i} style={{ width: 8, height: 8, borderRadius: '50%', background: C.dim, opacity: 0.8 - i * 0.18 }} />
-          ))}
+          {[0, 1, 2].map(i => (<div key={i} style={{ width: 8, height: 8, borderRadius: '50%', background: C.dim, opacity: 0.8 - i * 0.18 }} />))}
         </div>
-        <span style={{ fontSize: 10, color: C.muted, fontFamily: MONO, marginLeft: 4, letterSpacing: '0.04em' }}>
-          META·LAB — Workspace · Analysis
-        </span>
-        <span style={{
-          marginLeft: 'auto', fontSize: 8.5, fontFamily: MONO, color: C.dim,
-          letterSpacing: '0.12em', textTransform: 'uppercase',
-        }}>
-          Illustrative
-        </span>
+        <span style={{ fontSize: 10, color: C.muted, fontFamily: MONO, marginLeft: 4, letterSpacing: '0.04em' }}>META·LAB — Workspace · Analysis</span>
+        <span style={{ marginLeft: 'auto', fontSize: 8.5, fontFamily: MONO, color: C.dim, letterSpacing: '0.12em', textTransform: 'uppercase' }}>Illustrative</span>
       </div>
-
       <div style={{ display: 'flex', minHeight: 300 }}>
-        {/* Sidebar */}
-        <div className="lp-frame-side" style={{
-          width: 168, flexShrink: 0, background: C.surf,
-          borderRight: `1px solid ${C.brd}`, padding: '14px 10px',
-          display: 'flex', flexDirection: 'column', gap: 2,
-        }}>
+        <div className="lp-frame-side" style={{ width: 168, flexShrink: 0, background: C.surf, borderRight: `1px solid ${C.brd}`, padding: '14px 10px', display: 'flex', flexDirection: 'column', gap: 2 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '2px 8px 12px' }}>
-            <HexLogo size={14} />
-            <Wordmark size={11} />
+            <HexLogo size={14} /><Wordmark size={11} />
           </div>
           {sideItems.map(([ico, label]) => {
             const active = label === 'Analysis';
             return (
-              <div key={label} style={{
-                display: 'flex', alignItems: 'center', gap: 9,
-                padding: '7px 9px', borderRadius: 6,
-                background: active ? C.accBg : 'transparent',
-                color: active ? C.acc : C.muted,
-                fontSize: 11.5, fontWeight: active ? 600 : 400,
-              }}>
-                <Icon name={ico} size={13} />
-                {label}
+              <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '7px 9px', borderRadius: 6, background: active ? C.accBg : 'transparent', color: active ? C.acc : C.muted, fontSize: 11.5, fontWeight: active ? 600 : 400 }}>
+                <Icon name={ico} size={13} />{label}
               </div>
             );
           })}
         </div>
-
-        {/* Main area */}
         <div style={{ flex: 1, padding: '18px 18px 16px', minWidth: 0 }}>
-          {/* Stat cards */}
           <div className="lp-frame-stats" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 16 }}>
             {stats.map(([k, v], i) => (
-              <div key={k} style={{
-                background: C.surf, border: `1px solid ${C.brd}`,
-                borderRadius: 8, padding: '10px 12px', minWidth: 0,
-              }}>
-                <div style={{ fontSize: 8.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {k}
-                </div>
-                <div style={{ fontSize: 16, fontFamily: MONO, fontWeight: 700, color: i === 3 ? C.gold : C.txt, letterSpacing: '-0.02em' }}>
-                  {v}
-                </div>
+              <div key={k} style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '10px 12px', minWidth: 0 }}>
+                <div style={{ fontSize: 8.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 5, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{k}</div>
+                <div style={{ fontSize: 16, fontFamily: MONO, fontWeight: 700, color: i === 3 ? C.gold : C.txt, letterSpacing: '-0.02em' }}>{v}</div>
               </div>
             ))}
           </div>
-
-          {/* Forest plot + PRISMA funnel */}
           <div className="lp-frame-panels" style={{ display: 'grid', gridTemplateColumns: '1.6fr 1fr', gap: 10 }}>
             <div style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '12px 14px', minWidth: 0 }}>
               <div style={{ fontSize: 8.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 10, display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -855,12 +740,8 @@ function AppPreview() {
                       <span style={{ fontSize: 9.5, color: C.txt2 }}>{k}</span>
                       <span style={{ fontSize: 9.5, fontFamily: MONO, color: i === funnel.length - 1 ? C.gold : C.txt, fontWeight: 700 }}>{v}</span>
                     </div>
-                    <div style={{ height: 4, borderRadius: 99, background: alpha(C.brd, '90'), overflow: 'hidden' }}>
-                      <div style={{
-                        height: '100%', width: `${w}%`, borderRadius: 99,
-                        background: i === funnel.length - 1 ? C.gold : C.acc,
-                        opacity: i === funnel.length - 1 ? 1 : 0.75,
-                      }} />
+                    <div style={{ height: 4, borderRadius: 99, background: alpha(C.brd, 0.9), overflow: 'hidden' }}>
+                      <div style={{ height: '100%', width: `${w}%`, borderRadius: 99, background: i === funnel.length - 1 ? C.gold : C.acc, opacity: i === funnel.length - 1 ? 1 : 0.75 }} />
                     </div>
                   </div>
                 ))}
@@ -873,25 +754,17 @@ function AppPreview() {
   );
 }
 
-/* ─── META·LAB ⇄ META·SIFT linked-workspace cards + traveling pulse ──── */
+/* ─── META·LAB ⇄ META·SIFT linked-products ──────────────────────────── */
 function LinkedProducts() {
   const card = (name, tag, bullets) => (
-    <div className="lp-link-card" style={{
-      flex: 1, minWidth: 0, background: C.card,
-      border: `1px solid ${C.brd}`, borderRadius: 12, padding: '28px 28px 24px',
-      position: 'relative', zIndex: 1,
-    }}>
+    <div className="lp-link-card" style={{ flex: 1, minWidth: 0, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 14, padding: '28px 28px 24px', position: 'relative', zIndex: 1 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
         <HexLogo size={17} />
         <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: '0.06em', color: C.txt }}>
-          {name.split('·')[0]}
-          <span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>
-          {name.split('·')[1]}
+          {name.split('·')[0]}<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>{name.split('·')[1]}
         </span>
       </div>
-      <div style={{ fontSize: 10.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 18 }}>
-        {tag}
-      </div>
+      <div style={{ fontSize: 10.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 18 }}>{tag}</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 11 }}>
         {bullets.map(([ico, txt]) => (
           <div key={txt} style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
@@ -907,133 +780,33 @@ function LinkedProducts() {
     <div>
       <div className="lp-link-row" style={{ display: 'flex', alignItems: 'stretch', gap: 0, position: 'relative' }}>
         {card('META·LAB', 'Extraction · Analysis · Manuscript', [
-          ['table',    'Structured data extraction and outcome tables'],
-          ['sigma',    'Pooled analysis, heterogeneity, GRADE'],
+          ['table', 'Structured data extraction and outcome tables'],
+          ['sigma', 'Pooled analysis, heterogeneity, GRADE'],
           ['fileText', 'IMRAD manuscript with PRISMA checklist export'],
         ])}
-
-        {/* Link beam */}
-        <div className="lp-link-beam" style={{
-          width: 130, flexShrink: 0, position: 'relative',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-        }} aria-hidden="true">
+        <div className="lp-link-beam" style={{ width: 130, flexShrink: 0, position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }} aria-hidden="true">
           <svg viewBox="0 0 130 60" style={{ width: '100%', height: 60, overflow: 'visible' }}>
             <line x1="0" y1="30" x2="130" y2="30" stroke={alpha(C.acc, 0.25)} strokeWidth="1.5" />
-            <line className="lp-beam-pulse" x1="0" y1="30" x2="130" y2="30"
-              stroke={C.acc} strokeWidth="1.5" strokeLinecap="round"
-              strokeDasharray="16 240" />
+            <line className="lp-beam-pulse" x1="0" y1="30" x2="130" y2="30" stroke={C.acc} strokeWidth="1.5" strokeLinecap="round" strokeDasharray="16 240" />
             <circle cx="0" cy="30" r="3" fill={C.acc} opacity="0.85" />
             <circle cx="130" cy="30" r="3" fill={C.acc} opacity="0.85" />
           </svg>
-          <span style={{
-            position: 'absolute', top: 'calc(50% - 34px)', left: '50%', transform: 'translateX(-50%)',
-            fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.14em',
-            textTransform: 'uppercase', whiteSpace: 'nowrap',
-          }}>
-            Linked
-          </span>
+          <span style={{ position: 'absolute', top: 'calc(50% - 34px)', left: '50%', transform: 'translateX(-50%)', fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.14em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>Linked</span>
         </div>
-
         {card('META·SIFT', 'Screening · Conflicts · PRISMA', [
-          ['users',  'Dual-reviewer title/abstract and full-text screening'],
-          ['scale',  'Conflict detection and adjudication'],
-          ['flow',   'PRISMA counts auto-filled from screening decisions'],
+          ['users', 'Dual-reviewer title/abstract and full-text screening'],
+          ['scale', 'Conflict detection and adjudication'],
+          ['flow', 'PRISMA counts auto-filled from screening decisions'],
         ])}
       </div>
-
       <p style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.8, maxWidth: 640, margin: '26px 0 0' }}>
-        Linked projects share one Review Workspace — same owner, members, and
-        permissions on both sides. Studies accepted in META·SIFT flow back into
-        META·LAB extraction, and the PRISMA flow diagram fills itself from real
-        screening decisions.
+        Linked projects share one Review Workspace — same owner, members, and permissions on both sides. Studies accepted in META·SIFT flow back into META·LAB extraction, and the PRISMA flow diagram fills itself from real screening decisions.
       </p>
     </div>
   );
 }
 
-/* ─── Evidence spine section wrapper ─────────────────────────────────── */
-/* A numbered PRISMA-style node on a thin vertical rail; the rail draws
-   downward and the body rises into view when the section is scrolled to.
-   The rail hides on mobile. */
-function SpineSection({ num, id, label, alt, children, wide }) {
-  const [ref, inView] = useInView(0.08, '0px 0px -6% 0px');
-  return (
-    <section
-      id={id}
-      ref={ref}
-      className={`lp-sp-sec${inView ? ' in-view' : ''}`}
-      style={{
-        background: alt ? C.surf : C.bg,
-        borderTop: `1px solid ${C.brd}`,
-      }}
-    >
-      <div className="lp-sp-inner" style={{
-        maxWidth: 1200, margin: '0 auto', padding: '0 48px',
-        display: 'grid', gridTemplateColumns: '72px minmax(0, 1fr)',
-      }}>
-        <div className="lp-sp-rail" style={{ position: 'relative' }} aria-hidden="true">
-          <div className="lp-sp-line" />
-          <div className="lp-sp-node" style={{ background: alt ? C.surf : C.bg }}>{num}</div>
-        </div>
-        <div className="lp-sp-body" style={{ minWidth: 0, padding: '78px 0 84px', maxWidth: wide ? undefined : 1020 }}>
-          <SectionLabel text={label} />
-          {children}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-/* ─── Evidence climax block: self-drawing plot + PRISMA count-up ─────── */
-function EvidenceClimax({ reduced, speed = 1 }) {
-  const [ref, inView] = useInView(0.25, '0px 0px -8% 0px');
-  const active = reduced || inView;
-  return (
-    <div ref={ref} className="lp-climax-grid" style={{
-      display: 'grid', gridTemplateColumns: 'minmax(0, 1.4fr) minmax(0, 1fr)',
-      gap: 48, alignItems: 'center',
-    }}>
-      <ForestPlotClimax active={active} />
-      <div>
-        <div style={{
-          fontSize: 10, fontFamily: MONO, color: C.muted,
-          letterSpacing: '0.18em', textTransform: 'uppercase', marginBottom: 22,
-          display: 'flex', alignItems: 'center', gap: 8,
-        }}>
-          <Icon name="flow" size={12} /> PRISMA flow
-        </div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-          {PRISMA_STAGES.map((st, i) => (
-            <PrismaStageRow
-              key={st.label}
-              stage={st}
-              run={active}
-              reduced={reduced}
-              speed={speed}
-              delayIdx={i}
-              last={i === PRISMA_STAGES.length - 1}
-            />
-          ))}
-        </div>
-        <div style={{
-          marginTop: 26, paddingTop: 18, borderTop: `1px solid ${C.brd}`,
-          fontSize: 12.5, color: C.muted, lineHeight: 1.7,
-        }}>
-          1,284 records enter. 38 survive. One pooled estimate comes out —
-          with every decision on the record.
-        </div>
-        <div style={{
-          marginTop: 12, fontSize: 9.5, fontFamily: MONO, color: C.dim,
-          letterSpacing: '0.1em', textTransform: 'uppercase',
-        }}>
-          Illustrative data
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ─── Institution-grade specification table ──────────────────────────── */
+/* ─── Institution-grade spec table ───────────────────────────────────── */
 const INSTITUTION_SPECS = [
   ['Workspaces',          'Multi-user review workspaces — one shared project across the whole team.'],
   ['Roles & permissions', 'Owner, leader, and member roles with granular per-member permissions.'],
@@ -1044,19 +817,10 @@ const INSTITUTION_SPECS = [
 
 function InstitutionSpecs() {
   return (
-    <div style={{ border: `1px solid ${C.brd}`, borderRadius: 12, overflow: 'hidden', background: C.card }}>
+    <div style={{ border: `1px solid ${C.brd}`, borderRadius: 14, overflow: 'hidden', background: C.card }}>
       {INSTITUTION_SPECS.map(([k, v], i) => (
-        <div key={k} className="lp-spec-row" style={{
-          display: 'grid', gridTemplateColumns: '220px minmax(0, 1fr)',
-          gap: 24, padding: '17px 26px',
-          borderTop: i > 0 ? `1px solid ${C.brd}` : 'none',
-        }}>
-          <span style={{
-            fontSize: 10.5, fontFamily: MONO, color: C.muted,
-            letterSpacing: '0.12em', textTransform: 'uppercase', paddingTop: 2,
-          }}>
-            {k}
-          </span>
+        <div key={k} className="lp-spec-row" style={{ display: 'grid', gridTemplateColumns: '220px minmax(0, 1fr)', gap: 24, padding: '17px 26px', borderTop: i > 0 ? `1px solid ${C.brd}` : 'none' }}>
+          <span style={{ fontSize: 10.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.12em', textTransform: 'uppercase', paddingTop: 2 }}>{k}</span>
           <span style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.65 }}>{v}</span>
         </div>
       ))}
@@ -1064,22 +828,35 @@ function InstitutionSpecs() {
   );
 }
 
+/* ─── Scroll-reveal wrapper (Framer Motion) ──────────────────────────── */
+function Reveal({ children, reduced, delay = 0, style }) {
+  if (reduced) return <div style={style}>{children}</div>;
+  return (
+    <motion.div
+      initial="hidden"
+      whileInView="visible"
+      viewport={{ once: true, margin: '-80px' }}
+      variants={{ hidden: { opacity: 0, y: 24 }, visible: { opacity: 1, y: 0, transition: { duration: 0.6, delay, ease: [0.22, 1, 0.36, 1] } } }}
+      style={style}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
 /* ════════════════════════════════════════════════════════════════════════
    MAIN COMPONENT
    ════════════════════════════════════════════════════════════════════════ */
 export default function Landing() {
-  const navigate = useNavigate();
-  const { user } = useAuth();
-  const settings = useLandingSettings();
-  const reduced  = usePrefersReducedMotion();
+  const navigate  = useNavigate();
+  const { user }  = useAuth();
+  const settings  = useLandingSettings();
+  const reduced   = usePrefersReducedMotion();
 
-  /* Ops animation speed (prompt9). prefers-reduced-motion ALWAYS wins:
-     reduced || 'off' → the existing static compositions ('motionOff').
-     rate scales JS time constants; --lp-dur (= 1/rate) scales CSS durations. */
   const speedSetting = ANIM_SPEED_IDS.includes(settings.animationSpeed) ? settings.animationSpeed : 'normal';
   const motionOff    = reduced || speedSetting === 'off';
   const rate         = motionOff ? 1 : (ANIM_RATE[speedSetting] || 1);
-  const durMult      = +(1 / rate).toFixed(4); // slow ≈ 1.6667 · normal 1 · fast 0.625
+  const durMult      = +(1 / rate).toFixed(4);
 
   useEffect(() => {
     if (settings.seoTitle) document.title = settings.seoTitle;
@@ -1087,14 +864,14 @@ export default function Landing() {
     if (meta && settings.seoDescription) meta.setAttribute('content', settings.seoDescription);
   }, [settings.seoTitle, settings.seoDescription]);
 
-  const [navOpen,          setNavOpen]          = useState(false);
-  const [activeStep,       setActiveStep]       = useState(0);
-  const [bannerDismissed,  setBannerDismissed]  = useState(() => {
+  const [navOpen,          setNavOpen]         = useState(false);
+  const [activeStep,       setActiveStep]      = useState(0);
+  const [bannerDismissed,  setBannerDismissed] = useState(() => {
     try { return !!localStorage.getItem('ml_banner_dismissed'); } catch { return false; }
   });
-  const [contact,          setContact]          = useState({ name: '', email: '', message: '' });
-  const [contactStatus,    setContactStatus]    = useState(null);
-  const [contactErr,       setContactErr]       = useState('');
+  const [contact,          setContact]         = useState({ name: '', email: '', message: '' });
+  const [contactStatus,    setContactStatus]   = useState(null);
+  const [contactErr,       setContactErr]      = useState('');
 
   function dismissBanner() {
     try { localStorage.setItem('ml_banner_dismissed', '1'); } catch {}
@@ -1124,34 +901,41 @@ export default function Landing() {
   const showBanner      = !!settings.announcementBanner && !bannerDismissed;
   const showMaintenance = !!settings.maintenanceBanner;
 
+  /* ── Shared style objects ──────────────────────────────────────────── */
   const inpStyle = {
-    width: '100%', background: C.card, border: `1px solid ${C.brd2}`,
-    borderRadius: 7, padding: '11px 14px', color: C.txt,
+    width: '100%', background: C.surf, border: `1px solid ${C.brd2}`,
+    borderRadius: 8, padding: '11px 14px', color: C.txt,
     fontFamily: FONT, fontSize: 13, outline: 'none', boxSizing: 'border-box',
   };
-
   const btnPrimary = {
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
     gap: 9, padding: '13px 28px', background: C.acc, border: 'none',
     borderRadius: 8, color: C.accText, fontSize: 14, fontWeight: 600,
-    cursor: 'pointer', fontFamily: FONT, letterSpacing: '0.01em',
-    whiteSpace: 'nowrap',
+    cursor: 'pointer', fontFamily: FONT, letterSpacing: '0.01em', whiteSpace: 'nowrap',
   };
   const btnGhost = {
     display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
     gap: 8, padding: '13px 28px', background: 'transparent',
     border: `1px solid ${C.brd2}`, borderRadius: 8,
     color: C.txt2, fontSize: 14, cursor: 'pointer',
-    fontFamily: FONT, letterSpacing: '0.01em',
-    whiteSpace: 'nowrap',
+    fontFamily: FONT, letterSpacing: '0.01em', whiteSpace: 'nowrap',
   };
+  const sectionPad = { maxWidth: 1200, margin: '0 auto', padding: '96px 48px' };
 
-  const h2Style = {
-    fontSize: 'clamp(24px, 3vw, 31px)', fontWeight: 700, color: C.txt,
-    letterSpacing: '-0.7px', margin: '0 0 14px', lineHeight: 1.2,
-  };
-  const subStyle = {
-    fontSize: 14.5, color: C.txt2, maxWidth: 560, lineHeight: 1.75, margin: 0,
+  /* ── Framer Motion button wrappers (when motion enabled) ───────────── */
+  const MotionBtn = ({ style, className, onClick, children, type, disabled }) => {
+    if (motionOff) {
+      return <button style={style} className={className} onClick={onClick} type={type} disabled={disabled}>{children}</button>;
+    }
+    return (
+      <motion.button
+        style={style} className={className} onClick={onClick} type={type} disabled={disabled}
+        whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }}
+        transition={{ type: 'spring', stiffness: 400, damping: 25 }}
+      >
+        {children}
+      </motion.button>
+    );
   };
 
   return (
@@ -1162,61 +946,33 @@ export default function Landing() {
       <style>{`
         html { scroll-behavior: smooth; }
 
-        .lp-btn-primary { transition: background 0.15s, transform 0.12s, box-shadow 0.15s; }
-        .lp-btn-primary:hover { background: ${C.acc2} !important; transform: translateY(-1px); box-shadow: 0 6px 20px ${alpha(C.acc, '40')}; }
+        /* ── Navbar ──────────────────────────────────────────────────── */
+        .lp-nav-link { transition: color 0.15s; }
+        .lp-nav-link:hover { color: ${C.acc} !important; }
+
+        /* ── Buttons ─────────────────────────────────────────────────── */
+        .lp-btn-primary { transition: background 0.15s, box-shadow 0.15s; }
+        .lp-btn-primary:hover { background: ${C.acc2} !important; box-shadow: 0 6px 20px ${alpha(C.acc, 0.28)}; }
         .lp-btn-ghost { transition: border-color 0.15s, color 0.15s; }
         .lp-btn-ghost:hover { border-color: ${C.acc} !important; color: ${C.acc} !important; }
 
-        .lp-nav-link { transition: color 0.15s; }
-        .lp-nav-link:hover { color: ${C.txt} !important; }
+        /* ── Feature cards ───────────────────────────────────────────── */
+        .lp-val-card { transition: box-shadow 0.18s, transform 0.18s, border-color 0.18s; }
+        .lp-val-card:hover { transform: translateY(-3px); box-shadow: 0 12px 32px ${C.shadow}; border-color: ${alpha(C.acc, 0.35)} !important; }
 
-        .lp-val-card { transition: border-color 0.15s, transform 0.15s, box-shadow 0.15s; }
-        .lp-val-card:hover { border-color: ${C.brd2} !important; transform: translateY(-2px); box-shadow: 0 8px 28px ${C.shadow}; }
+        /* ── Linked-product cards ────────────────────────────────────── */
+        .lp-link-card { transition: border-color 0.2s, transform 0.18s, box-shadow 0.18s; }
+        .lp-link-card:hover { border-color: ${alpha(C.acc, 0.5)} !important; transform: translateY(-2px); box-shadow: 0 10px 32px ${C.shadow}; }
 
-        .lp-link-card { transition: border-color 0.2s, transform 0.15s, box-shadow 0.15s; }
-        .lp-link-card:hover { border-color: ${alpha(C.acc, '55')} !important; transform: translateY(-2px); box-shadow: 0 10px 32px ${C.shadow}; }
-
+        /* ── Workflow rail nodes ─────────────────────────────────────── */
         .lp-rail-node { transition: border-color 0.15s, background 0.15s; }
-        .lp-rail-node:focus-visible { border-color: ${C.acc} !important; }
+        .lp-rail-node:focus-visible { border-color: ${C.acc} !important; outline: none; box-shadow: 0 0 0 3px ${alpha(C.acc, 0.2)}; }
 
+        /* ── Footer links ────────────────────────────────────────────── */
         .lp-footer-link { transition: color 0.15s; }
-        .lp-footer-link:hover { color: ${C.txt2} !important; }
+        .lp-footer-link:hover { color: ${C.acc} !important; }
 
-        /* ── Hero entrance ───────────────────────────────────────────── */
-        @keyframes lpFadeUp {
-          from { opacity: 0; transform: translateY(14px); }
-          to   { opacity: 1; transform: none; }
-        }
-        .lp-fade-up { animation: lpFadeUp calc(0.55s * var(--lp-dur, 1)) cubic-bezier(0.22, 1, 0.36, 1) both; }
-
-        /* ── Evidence spine ──────────────────────────────────────────── */
-        .lp-sp-line {
-          position: absolute; left: 14px; top: 0; bottom: 0; width: 1px;
-          background: linear-gradient(to bottom, ${alpha(C.acc, 0.45)}, ${alpha(C.acc, 0.10)});
-          transform: scaleY(0); transform-origin: top;
-          transition: transform calc(1.2s * var(--lp-dur, 1)) cubic-bezier(0.22, 1, 0.36, 1);
-        }
-        .lp-sp-sec.in-view .lp-sp-line { transform: scaleY(1); }
-        .lp-sp-node {
-          position: absolute; left: 0; top: 74px;
-          width: 29px; height: 29px; border-radius: 50%;
-          border: 1px solid ${alpha(C.acc, 0.55)};
-          background: ${C.bg};
-          color: ${C.acc}; font-family: ${MONO}; font-size: 10px;
-          letter-spacing: 0.04em;
-          display: flex; align-items: center; justify-content: center;
-          opacity: 0; transform: scale(0.55);
-          transition: opacity calc(0.5s * var(--lp-dur, 1)) ease calc(0.15s * var(--lp-dur, 1)), transform calc(0.5s * var(--lp-dur, 1)) cubic-bezier(0.22, 1, 0.36, 1) calc(0.15s * var(--lp-dur, 1));
-          box-shadow: 0 0 0 5px ${alpha(C.bg, 0.01)};
-        }
-        .lp-sp-sec.in-view .lp-sp-node { opacity: 1; transform: scale(1); }
-        .lp-sp-body {
-          opacity: 0; transform: translateY(14px);
-          transition: opacity calc(0.7s * var(--lp-dur, 1)) ease calc(0.1s * var(--lp-dur, 1)), transform calc(0.7s * var(--lp-dur, 1)) cubic-bezier(0.22, 1, 0.36, 1) calc(0.1s * var(--lp-dur, 1));
-        }
-        .lp-sp-sec.in-view .lp-sp-body { opacity: 1; transform: none; }
-
-        /* ── Forest plot climax (scroll-triggered, one-shot) ─────────── */
+        /* ── Forest plot climax (scroll-triggered) ───────────────────── */
         @keyframes lpRowIn {
           from { opacity: 0; transform: translateX(-10px); }
           to   { opacity: 1; transform: none; }
@@ -1231,80 +987,59 @@ export default function Landing() {
         .lp-fpz.in-view .lp-fp-pool { animation: lpPoolIn calc(0.5s * var(--lp-dur, 1)) ease-out forwards; }
 
         /* ── Linked-products beam pulse ──────────────────────────────── */
-        @keyframes lpBeam {
-          from { stroke-dashoffset: 512; }
-          to   { stroke-dashoffset: 0; }
-        }
+        @keyframes lpBeam { from { stroke-dashoffset: 512; } to { stroke-dashoffset: 0; } }
         .lp-beam-pulse { animation: lpBeam calc(6.4s * var(--lp-dur, 1)) linear infinite; }
 
-        /* ── Reduced motion: static final compositions ───────────────── */
+        /* ── Reduced motion ──────────────────────────────────────────── */
         @media (prefers-reduced-motion: reduce) {
           html { scroll-behavior: auto; }
-          .lp-fade-up, .lp-fpz .lp-fp-row, .lp-fpz .lp-fp-pool {
-            animation: none !important;
-            opacity: 1 !important;
-            transform: none !important;
-          }
-          .lp-sp-line { transform: scaleY(1) !important; transition: none !important; }
-          .lp-sp-node, .lp-sp-body { opacity: 1 !important; transform: none !important; transition: none !important; }
+          .lp-fpz .lp-fp-row, .lp-fpz .lp-fp-pool { animation: none !important; opacity: 1 !important; transform: none !important; }
           .lp-beam-pulse { animation: none !important; }
           .lp-btn-primary:hover, .lp-val-card:hover, .lp-link-card:hover { transform: none !important; }
         }
 
-        /* ── Ops animationSpeed:'off' — same static compositions as the
-           reduced-motion block above (canvas/count-ups are handled in JS
-           via motionOff). The @media block stays unconditional, so the OS
-           preference always wins regardless of the ops setting. ────────── */
-        .lp-motion-off .lp-fade-up, .lp-motion-off .lp-fpz .lp-fp-row, .lp-motion-off .lp-fpz .lp-fp-pool {
-          animation: none !important;
-          opacity: 1 !important;
-          transform: none !important;
-        }
-        .lp-motion-off .lp-sp-line { transform: scaleY(1) !important; transition: none !important; }
-        .lp-motion-off .lp-sp-node, .lp-motion-off .lp-sp-body { opacity: 1 !important; transform: none !important; transition: none !important; }
+        /* ── Ops animationSpeed:'off' ────────────────────────────────── */
+        .lp-motion-off .lp-fpz .lp-fp-row, .lp-motion-off .lp-fpz .lp-fp-pool { animation: none !important; opacity: 1 !important; transform: none !important; }
         .lp-motion-off .lp-beam-pulse { animation: none !important; }
         .lp-motion-off .lp-btn-primary:hover, .lp-motion-off .lp-val-card:hover, .lp-motion-off .lp-link-card:hover { transform: none !important; }
 
         /* ── Responsive ──────────────────────────────────────────────── */
         @media (max-width: 1024px) {
-          .lp-hero-inner   { padding: 96px 32px 84px !important; }
+          .lp-hero-cols    { flex-direction: column !important; }
+          .lp-hero-right   { display: none !important; }
           .lp-climax-grid  { grid-template-columns: 1fr !important; gap: 40px !important; }
           .lp-diff-grid    { gap: 44px !important; }
+          .lp-sect-inner   { padding-left: 32px !important; padding-right: 32px !important; }
         }
         @media (max-width: 768px) {
           .lp-nav-links    { display: none !important; }
           .lp-nav-ctas     { display: none !important; }
           .lp-ham-btn      { display: flex !important; }
           .lp-mob-menu     { display: flex !important; }
-          .lp-hero-inner   { padding: 84px 24px 72px !important; }
           .lp-hero-kpis    { gap: 26px !important; }
-          .lp-sp-inner     { grid-template-columns: 1fr !important; padding: 0 24px !important; }
-          .lp-sp-rail      { display: none !important; }
-          .lp-sp-body      { padding: 60px 0 64px !important; }
           .lp-value-grid   { grid-template-columns: 1fr !important; }
           .lp-rail-grid    { grid-template-columns: repeat(4, 1fr) !important; }
           .lp-diff-grid    { grid-template-columns: 1fr !important; }
           .lp-trust-strip  { flex-wrap: wrap !important; gap: 12px !important; justify-content: flex-start !important; }
           .lp-footer-cols  { flex-direction: column !important; gap: 28px !important; }
-          .lp-footer-bottom { flex-direction: column !important; align-items: flex-start !important; }
+          .lp-footer-bottom{ flex-direction: column !important; align-items: flex-start !important; }
           .lp-frame-side   { display: none !important; }
           .lp-frame-stats  { grid-template-columns: 1fr 1fr !important; }
           .lp-frame-panels { grid-template-columns: 1fr !important; }
           .lp-link-row     { flex-direction: column !important; gap: 0 !important; }
           .lp-link-beam    { width: 100% !important; height: 64px !important; }
-          .lp-link-beam svg { transform: rotate(90deg); width: 64px !important; }
+          .lp-link-beam svg{ transform: rotate(90deg); width: 64px !important; }
           .lp-spec-row     { grid-template-columns: 1fr !important; gap: 6px !important; }
-          .lp-sect-pad     { padding-left: 24px !important; padding-right: 24px !important; }
+          .lp-sect-inner   { padding-left: 24px !important; padding-right: 24px !important; }
         }
         @media (min-width: 769px) {
           .lp-ham-btn  { display: none !important; }
           .lp-mob-menu { display: none !important; }
         }
         @media (max-width: 480px) {
-          .lp-hero-ctas    { width: 100%; }
-          .lp-hero-ctas button { flex: 1; }
-          .lp-rail-grid    { grid-template-columns: repeat(2, 1fr) !important; }
-          .lp-frame-stats  { grid-template-columns: 1fr 1fr !important; }
+          .lp-hero-ctas  button { flex: 1; }
+          .lp-rail-grid  { grid-template-columns: repeat(2, 1fr) !important; }
+          .lp-frame-stats{ grid-template-columns: 1fr 1fr !important; }
         }
         @media (min-width: 1025px) {
           .lp-value-grid { grid-template-columns: 1fr 1fr !important; }
@@ -1313,500 +1048,586 @@ export default function Landing() {
 
       {/* ── Announcement banner ──────────────────────────────────────── */}
       {showBanner && (
-        <div style={{
-          background: C.surf, borderBottom: `1px solid ${C.brd2}`,
-          padding: '8px 24px', display: 'flex', alignItems: 'center',
-          justifyContent: 'center', gap: 10, position: 'relative',
-        }}>
+        <div style={{ background: C.accBg, borderBottom: `1px solid ${alpha(C.acc, 0.2)}`, padding: '9px 24px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, position: 'relative' }}>
           <Icon name="info" size={13} style={{ color: C.acc }} />
-          <span style={{ fontSize: 12, color: C.txt2 }}>{settings.announcementBanner}</span>
-          <button onClick={dismissBanner} aria-label="Dismiss announcement" style={{
-            position: 'absolute', right: 16, background: 'none', border: 'none',
-            color: C.muted, cursor: 'pointer', lineHeight: 1, padding: 2,
-            display: 'inline-flex',
-          }}><Icon name="x" size={13} /></button>
+          <span style={{ fontSize: 12.5, color: C.acc }}>{settings.announcementBanner}</span>
+          <button onClick={dismissBanner} aria-label="Dismiss announcement" style={{ position: 'absolute', right: 16, background: 'none', border: 'none', color: C.muted, cursor: 'pointer', lineHeight: 1, padding: 2, display: 'inline-flex' }}>
+            <Icon name="x" size={13} />
+          </button>
         </div>
       )}
 
       {/* ── Maintenance banner ───────────────────────────────────────── */}
       {showMaintenance && (
-        <div style={{
-          background: C.yelBg, border: `1px solid ${alpha(C.yel, '40')}`,
-          padding: '12px 32px', display: 'flex', alignItems: 'center',
-          justifyContent: 'center', gap: 9,
-          fontSize: 13, color: C.yel, fontWeight: 500,
-        }}>
+        <div style={{ background: C.yelBg, border: `1px solid ${alpha(C.yel, 0.4)}`, padding: '12px 32px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 9, fontSize: 13, color: C.yel, fontWeight: 500 }}>
           <Icon name="alert" size={14} style={{ color: C.yel }} />
           {settings.maintenanceBanner}
         </div>
       )}
 
-      {/* ── Sticky navbar ───────────────────────────────────────────── */}
+      {/* ══════════════════════════════════════════════════════════════
+          NAVBAR — Nextly style: logo left, links center, CTA right
+          ══════════════════════════════════════════════════════════════ */}
       <nav style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '0 48px', height: 60, borderBottom: `1px solid ${C.brd}`,
+        padding: '0 48px', height: 64, borderBottom: `1px solid ${C.brd}`,
         position: 'sticky', top: 0,
-        background: alpha(C.bg, 0.9), backdropFilter: 'blur(16px)',
-        WebkitBackdropFilter: 'blur(16px)',
-        zIndex: 200,
+        background: alpha(C.surf, 0.92), backdropFilter: 'blur(18px)',
+        WebkitBackdropFilter: 'blur(18px)', zIndex: 200,
+        boxShadow: `0 1px 0 ${C.brd}`,
       }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 9, cursor: 'default', userSelect: 'none' }}>
-          <HexLogo />
-          <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.08em', color: C.txt }}>
+        {/* Logo */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9, cursor: 'default', userSelect: 'none', flexShrink: 0 }}>
+          <HexLogo size={20} />
+          <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: '0.08em', color: C.txt }}>
             {settings.logoText || 'META·LAB'}
           </span>
         </div>
 
-        <div className="lp-nav-links" style={{ display: 'flex', alignItems: 'center', gap: 36 }}>
+        {/* Center nav links */}
+        <div className="lp-nav-links" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {(settings.navLinks || []).map(link => (
             <a key={link.label} href={link.href} className="lp-nav-link"
-              style={{ fontSize: 13, color: C.txt2, textDecoration: 'none' }}>
+              style={{ fontSize: 14, color: C.txt2, textDecoration: 'none', padding: '6px 14px', borderRadius: 6 }}>
               {link.label}
             </a>
           ))}
         </div>
 
-        <div className="lp-nav-ctas" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        {/* Right CTAs */}
+        <div className="lp-nav-ctas" style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
           {user ? (
-            <button className="lp-btn-primary" onClick={() => navigate('/app')}
-              style={{ ...btnPrimary, padding: '8px 20px', fontSize: 13 }}>
+            <MotionBtn className="lp-btn-primary" onClick={() => navigate('/app')}
+              style={{ ...btnPrimary, padding: '9px 20px', fontSize: 13, borderRadius: 8 }}>
               Open Workspace
-            </button>
+            </MotionBtn>
           ) : (
             <>
               <button className="lp-btn-ghost" onClick={() => navigate('/login')}
-                style={{ ...btnGhost, padding: '8px 18px', fontSize: 13 }}>
+                style={{ ...btnGhost, padding: '9px 18px', fontSize: 13, borderRadius: 8 }}>
                 {settings.ctaSecondaryText || 'Sign in'}
               </button>
-              <button className="lp-btn-primary" onClick={() => navigate('/register')}
-                style={{ ...btnPrimary, padding: '8px 20px', fontSize: 13 }}>
-                Get started
-              </button>
+              <MotionBtn className="lp-btn-primary" onClick={() => navigate('/register')}
+                style={{ ...btnPrimary, padding: '9px 20px', fontSize: 13, borderRadius: 8 }}>
+                Get Started
+              </MotionBtn>
             </>
           )}
         </div>
 
-        <button className="lp-ham-btn" onClick={() => setNavOpen(o => !o)}
-          aria-label="Toggle navigation menu"
-          style={{
-            background: 'none', border: `1px solid ${C.brd2}`,
-            borderRadius: 6, color: C.txt2, cursor: 'pointer',
-            padding: '6px 10px', fontSize: 16, display: 'none',
-            alignItems: 'center',
-          }}>
+        {/* Hamburger */}
+        <button className="lp-ham-btn" onClick={() => setNavOpen(o => !o)} aria-label="Toggle navigation menu"
+          style={{ background: 'none', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, cursor: 'pointer', padding: '6px 10px', fontSize: 16, display: 'none', alignItems: 'center' }}>
           {navOpen ? <Icon name="x" size={15} /> : <Icon name="menu" size={15} />}
         </button>
       </nav>
 
       {/* Mobile menu */}
       {navOpen && (
-        <div className="lp-mob-menu" style={{
-          display: 'flex', flexDirection: 'column',
-          background: C.surf, borderBottom: `1px solid ${C.brd}`,
-          padding: '16px 24px', gap: 10,
-        }}>
+        <div className="lp-mob-menu" style={{ display: 'flex', flexDirection: 'column', background: C.surf, borderBottom: `1px solid ${C.brd}`, padding: '16px 24px', gap: 10 }}>
           {(settings.navLinks || []).map(link => (
             <a key={link.label} href={link.href} onClick={() => setNavOpen(false)}
-              style={{ fontSize: 14, color: C.txt2, textDecoration: 'none', padding: '6px 0' }}>
+              style={{ fontSize: 14, color: C.txt2, textDecoration: 'none', padding: '8px 0' }}>
               {link.label}
             </a>
           ))}
           <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 12, display: 'flex', gap: 8 }}>
             {user ? (
-              <button className="lp-btn-primary" onClick={() => navigate('/app')}
-                style={{ ...btnPrimary, width: '100%' }}>Open Workspace</button>
+              <button className="lp-btn-primary" onClick={() => navigate('/app')} style={{ ...btnPrimary, width: '100%' }}>Open Workspace</button>
             ) : (
               <>
-                <button className="lp-btn-ghost" onClick={() => navigate('/login')}
-                  style={{ ...btnGhost, flex: 1 }}>Sign in</button>
-                <button className="lp-btn-primary" onClick={() => navigate('/register')}
-                  style={{ ...btnPrimary, flex: 1 }}>Register</button>
+                <button className="lp-btn-ghost" onClick={() => navigate('/login')} style={{ ...btnGhost, flex: 1 }}>Sign in</button>
+                <button className="lp-btn-primary" onClick={() => navigate('/register')} style={{ ...btnPrimary, flex: 1 }}>Register</button>
               </>
             )}
           </div>
         </div>
       )}
 
-      {/* ═══════════════════════════════════════════════════════════════
-          HERO — full-bleed: records converging into a forest plot
-          ═══════════════════════════════════════════════════════════════ */}
-      <section style={{
-        position: 'relative', overflow: 'hidden', background: C.bg,
-        minHeight: 'min(88vh, 840px)', display: 'flex', alignItems: 'center',
-      }}>
-        <HeroCanvas reduced={motionOff} speed={rate} />
+      {/* ══════════════════════════════════════════════════════════════
+          HERO — Nextly two-column: left = text + CTAs, right = canvas
+          ══════════════════════════════════════════════════════════════ */}
+      <section style={{ background: C.bg, overflow: 'hidden', borderBottom: `1px solid ${C.brd}` }}>
+        <div className="lp-sect-inner" style={{ maxWidth: 1200, margin: '0 auto', padding: '0 48px' }}>
+          <div className="lp-hero-cols" style={{ display: 'flex', alignItems: 'center', gap: 64, minHeight: 'min(86vh, 820px)' }}>
 
-        {/* Readability gradient over the canvas (text side) + bottom fade */}
-        <div aria-hidden="true" style={{
-          position: 'absolute', inset: 0, pointerEvents: 'none',
-          background: `linear-gradient(90deg, ${alpha(C.bg, 0.88)} 0%, ${alpha(C.bg, 0.55)} 36%, transparent 64%)`,
-        }} />
-        <div aria-hidden="true" style={{
-          position: 'absolute', left: 0, right: 0, bottom: 0, height: 130,
-          pointerEvents: 'none',
-          background: `linear-gradient(to bottom, transparent, ${C.bg})`,
-        }} />
+            {/* Left column — headline, sub, CTAs, KPIs */}
+            <div style={{ flex: '1 1 480px', minWidth: 0, paddingTop: 96, paddingBottom: 96 }}>
+              {motionOff ? (
+                <>
+                  {/* Eyebrow */}
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: C.accBg, border: `1px solid ${alpha(C.acc, 0.25)}`, borderRadius: 100, padding: '5px 14px', marginBottom: 28 }}>
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.acc, display: 'inline-block', flexShrink: 0 }} />
+                    <span style={{ fontSize: 11, fontFamily: MONO, color: C.acc, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Evidence synthesis platform</span>
+                  </div>
+                  <h1 style={{ fontSize: 'clamp(40px, 6.5vw, 72px)', fontWeight: 800, letterSpacing: '-0.045em', color: C.txt, lineHeight: 0.97, margin: '0 0 20px', fontFamily: FONT }}>
+                    META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400, letterSpacing: 0, padding: '0 0.04em' }}>·</span>LAB
+                  </h1>
+                  <p style={{ fontSize: 'clamp(17px, 2.2vw, 22px)', color: C.txt2, fontWeight: 400, lineHeight: 1.45, margin: '0 0 14px', maxWidth: 500, whiteSpace: 'pre-line', letterSpacing: '-0.01em' }}>
+                    {settings.heroHeadline || DEFAULTS.heroHeadline}
+                  </p>
+                  <p style={{ fontSize: 15.5, color: C.muted, lineHeight: 1.8, maxWidth: 460, margin: '0 0 38px' }}>
+                    {settings.heroSubtitle || DEFAULTS.heroSubtitle}
+                  </p>
+                  <div className="lp-hero-ctas" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 52 }}>
+                    {user ? (
+                      <button className="lp-btn-primary" onClick={() => navigate('/app')} style={{ ...btnPrimary, borderRadius: 9 }}>
+                        Open Workspace <Icon name="arrowRight" size={15} />
+                      </button>
+                    ) : (
+                      <>
+                        <button className="lp-btn-primary" onClick={() => navigate('/register')} style={{ ...btnPrimary, borderRadius: 9 }}>
+                          {settings.ctaText || 'Start Your Review'} <Icon name="arrowRight" size={15} />
+                        </button>
+                        <button className="lp-btn-ghost" onClick={() => navigate('/login')} style={{ ...btnGhost, borderRadius: 9 }}>
+                          {settings.ctaSecondaryText || 'Sign in'}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                  <div className="lp-hero-kpis" style={{ display: 'flex', gap: 40, flexWrap: 'wrap' }}>
+                    {[['14', 'review stages'], ['PRISMA', '2020 compliant'], ['RoB 2', 'built in']].map(([n, l]) => (
+                      <div key={n}>
+                        <div style={{ fontSize: 19, fontWeight: 800, color: C.txt, letterSpacing: '-0.5px', marginBottom: 3 }}>{n}</div>
+                        <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, letterSpacing: '0.06em' }}>{l}</div>
+                      </div>
+                    ))}
+                  </div>
+                </>
+              ) : (
+                <motion.div
+                  variants={staggerContainer}
+                  initial="hidden"
+                  animate="visible"
+                >
+                  {/* Eyebrow */}
+                  <motion.div variants={fadeUp} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: C.accBg, border: `1px solid ${alpha(C.acc, 0.25)}`, borderRadius: 100, padding: '5px 14px', marginBottom: 28 }}>
+                    <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.acc, display: 'inline-block', flexShrink: 0 }} />
+                    <span style={{ fontSize: 11, fontFamily: MONO, color: C.acc, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Evidence synthesis platform</span>
+                  </motion.div>
 
-        <div className="lp-hero-inner lp-fade-up" style={{
-          position: 'relative', zIndex: 1, width: '100%', boxSizing: 'border-box',
-          maxWidth: 1200, margin: '0 auto', padding: '110px 48px 100px',
-        }}>
-          {/* Eyebrow */}
-          <div style={{
-            display: 'inline-flex', alignItems: 'center', gap: 8,
-            background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '30')}`,
-            borderRadius: 100, padding: '5px 14px', marginBottom: 30,
-          }}>
-            <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.acc, display: 'inline-block', flexShrink: 0 }} />
-            <span style={{ fontSize: 11, fontFamily: MONO, color: C.acc, letterSpacing: '0.1em', textTransform: 'uppercase' }}>
-              Systematic review platform
-            </span>
-          </div>
+                  {/* H1 */}
+                  <motion.h1 variants={fadeUp} style={{ fontSize: 'clamp(40px, 6.5vw, 72px)', fontWeight: 800, letterSpacing: '-0.045em', color: C.txt, lineHeight: 0.97, margin: '0 0 20px', fontFamily: FONT }}>
+                    META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400, letterSpacing: 0, padding: '0 0.04em' }}>·</span>LAB
+                  </motion.h1>
 
-          {/* Wordmark */}
-          <h1 style={{
-            fontSize: 'clamp(44px, 7vw, 76px)', fontWeight: 700,
-            letterSpacing: '-0.045em', color: C.txt, lineHeight: 0.96,
-            margin: '0 0 24px', fontFamily: FONT,
-          }}>
-            META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400, letterSpacing: 0, padding: '0 0.04em' }}>·</span>LAB
-          </h1>
+                  {/* Tagline */}
+                  <motion.p variants={fadeUp} style={{ fontSize: 'clamp(17px, 2.2vw, 22px)', color: C.txt2, fontWeight: 400, lineHeight: 1.45, margin: '0 0 14px', maxWidth: 500, whiteSpace: 'pre-line', letterSpacing: '-0.01em' }}>
+                    {settings.heroHeadline || DEFAULTS.heroHeadline}
+                  </motion.p>
 
-          {/* Tagline (admin-editable) */}
-          <p style={{
-            fontSize: 'clamp(18px, 2.4vw, 23px)', color: C.txt2, fontWeight: 400,
-            lineHeight: 1.42, margin: '0 0 16px', maxWidth: 480,
-            whiteSpace: 'pre-line', letterSpacing: '-0.01em',
-          }}>
-            {settings.heroHeadline || DEFAULTS.heroHeadline}
-          </p>
+                  {/* Subtitle */}
+                  <motion.p variants={fadeUpSlow} style={{ fontSize: 15.5, color: C.muted, lineHeight: 1.8, maxWidth: 460, margin: '0 0 38px' }}>
+                    {settings.heroSubtitle || DEFAULTS.heroSubtitle}
+                  </motion.p>
 
-          {/* Subtitle (admin-editable) */}
-          <p style={{
-            fontSize: 15, color: C.muted, lineHeight: 1.8,
-            maxWidth: 440, margin: '0 0 40px',
-          }}>
-            {settings.heroSubtitle || DEFAULTS.heroSubtitle}
-          </p>
+                  {/* CTAs */}
+                  <motion.div variants={fadeUp} className="lp-hero-ctas" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 52 }}>
+                    {user ? (
+                      <MotionBtn className="lp-btn-primary" onClick={() => navigate('/app')} style={{ ...btnPrimary, borderRadius: 9 }}>
+                        Open Workspace <Icon name="arrowRight" size={15} />
+                      </MotionBtn>
+                    ) : (
+                      <>
+                        <MotionBtn className="lp-btn-primary" onClick={() => navigate('/register')} style={{ ...btnPrimary, borderRadius: 9 }}>
+                          {settings.ctaText || 'Start Your Review'} <Icon name="arrowRight" size={15} />
+                        </MotionBtn>
+                        <MotionBtn className="lp-btn-ghost" onClick={() => navigate('/login')} style={{ ...btnGhost, borderRadius: 9 }}>
+                          {settings.ctaSecondaryText || 'Sign in'}
+                        </MotionBtn>
+                      </>
+                    )}
+                  </motion.div>
 
-          {/* CTAs */}
-          <div className="lp-hero-ctas" style={{ display: 'flex', gap: 12, flexWrap: 'wrap', marginBottom: 52 }}>
-            {user ? (
-              <button className="lp-btn-primary" onClick={() => navigate('/app')}
-                style={{ ...btnPrimary }}>
-                Open Workspace
-                <Icon name="arrowRight" size={15} />
-              </button>
-            ) : (
-              <>
-                <button className="lp-btn-primary" onClick={() => navigate('/register')}
-                  style={{ ...btnPrimary }}>
-                  {settings.ctaText || 'Start Your Review'}
-                  <Icon name="arrowRight" size={15} />
-                </button>
-                <button className="lp-btn-ghost" onClick={() => navigate('/login')}
-                  style={{ ...btnGhost }}>
-                  {settings.ctaSecondaryText || 'Sign in'}
-                </button>
-              </>
-            )}
-          </div>
+                  {/* KPI strip */}
+                  <motion.div variants={staggerFast} className="lp-hero-kpis" style={{ display: 'flex', gap: 40, flexWrap: 'wrap' }}>
+                    {[['14', 'review stages'], ['PRISMA', '2020 compliant'], ['RoB 2', 'built in']].map(([n, l]) => (
+                      <motion.div key={n} variants={fadeUp}>
+                        <div style={{ fontSize: 19, fontWeight: 800, color: C.txt, letterSpacing: '-0.5px', marginBottom: 3 }}>{n}</div>
+                        <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, letterSpacing: '0.06em' }}>{l}</div>
+                      </motion.div>
+                    ))}
+                  </motion.div>
+                </motion.div>
+              )}
+            </div>
 
-          {/* Honest KPI strip */}
-          <div className="lp-hero-kpis" style={{ display: 'flex', gap: 40, flexWrap: 'wrap' }}>
-            {[
-              ['14',     'review stages'],
-              ['PRISMA', '2020 compliant'],
-              ['RoB 2',  'built in'],
-            ].map(([n, l]) => (
-              <div key={n}>
-                <div style={{ fontSize: 18, fontWeight: 700, color: C.txt, letterSpacing: '-0.5px', marginBottom: 3 }}>
-                  {n}
-                </div>
-                <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, letterSpacing: '0.05em' }}>
-                  {l}
+            {/* Right column — HeroCanvas in a styled frame */}
+            <div className="lp-hero-right" style={{ flex: '1 1 420px', minWidth: 0, alignSelf: 'stretch', display: 'flex', alignItems: 'center', paddingTop: 48, paddingBottom: 48 }}>
+              <div style={{
+                position: 'relative', width: '100%', minHeight: 480, maxHeight: 600,
+                flex: 1,
+                borderRadius: 20, overflow: 'hidden',
+                border: `1px solid ${C.brd}`,
+                background: C.surf,
+                boxShadow: `0 24px 64px ${C.shadow}, 0 0 0 1px ${C.brd}`,
+              }}>
+                {/* Decorative grid overlay */}
+                <div aria-hidden="true" style={{
+                  position: 'absolute', inset: 0, pointerEvents: 'none',
+                  backgroundImage: `linear-gradient(${alpha(C.acc, 0.04)} 1px, transparent 1px), linear-gradient(90deg, ${alpha(C.acc, 0.04)} 1px, transparent 1px)`,
+                  backgroundSize: '32px 32px',
+                  zIndex: 0,
+                }} />
+                <HeroCanvas reduced={motionOff} speed={rate} />
+                {/* Bottom label */}
+                <div aria-hidden="true" style={{
+                  position: 'absolute', bottom: 14, left: 14, right: 14,
+                  display: 'flex', alignItems: 'center', gap: 7, zIndex: 2, pointerEvents: 'none',
+                }}>
+                  <div style={{ height: 1, flex: 1, background: `linear-gradient(to right, ${alpha(C.acc, 0.35)}, transparent)` }} />
+                  <span style={{ fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.16em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
+                    Evidence pipeline
+                  </span>
+                  <div style={{ height: 1, flex: 1, background: `linear-gradient(to left, ${alpha(C.acc, 0.35)}, transparent)` }} />
                 </div>
               </div>
-            ))}
+            </div>
           </div>
         </div>
       </section>
 
-      {/* ── Standards trust strip ────────────────────────────────────── */}
-      <div className="lp-sect-pad" style={{
-        background: C.surf, borderTop: `1px solid ${C.brd}`,
-        borderBottom: `1px solid ${C.brd}`, padding: '14px 48px',
-      }}>
-        <div className="lp-trust-strip" style={{
-          maxWidth: 1104, margin: '0 auto',
-          display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0,
-        }}>
+      {/* ── Standards trust strip ─────────────────────────────────────── */}
+      <div style={{ background: C.surf, borderBottom: `1px solid ${C.brd}`, padding: '14px 48px' }}>
+        <div className="lp-trust-strip" style={{ maxWidth: 1104, margin: '0 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 0 }}>
           <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.15em', textTransform: 'uppercase', paddingRight: 24, whiteSpace: 'nowrap' }}>
             Built around
           </span>
           {['PRISMA 2020', 'Cochrane RoB 2.0', 'GRADE', 'PROSPERO', 'HKSJ Method'].map(s => (
-            <span key={s} style={{
-              fontSize: 11, fontFamily: MONO, color: C.txt2,
-              letterSpacing: '0.06em', whiteSpace: 'nowrap',
-              borderLeft: `1px solid ${C.brd2}`, padding: '0 24px',
-            }}>
+            <span key={s} style={{ fontSize: 11, fontFamily: MONO, color: C.txt2, letterSpacing: '0.06em', whiteSpace: 'nowrap', borderLeft: `1px solid ${C.brd2}`, padding: '0 24px' }}>
               {s}
             </span>
           ))}
         </div>
       </div>
 
-      {/* ═══════════════════════════════════════════════════════════════
-          THE EVIDENCE SPINE — every section below sits on the audit rail
-          ═══════════════════════════════════════════════════════════════ */}
+      {/* ══════════════════════════════════════════════════════════════
+          FEATURES — #features anchor (Nextly Benefits layout)
+          ══════════════════════════════════════════════════════════════ */}
+      <section id="features" style={{ background: C.bg, borderBottom: `1px solid ${C.brd}` }}>
+        <div className="lp-sect-inner" style={sectionPad}>
+          <Reveal reduced={motionOff} style={{ marginBottom: 56 }}>
+            <SectionTitle
+              pretitle="Features"
+              title={settings.featureTitle || DEFAULTS.featureTitle}
+            >
+              From protocol registration to manuscript export — every stage of evidence synthesis, without switching tools.
+            </SectionTitle>
+          </Reveal>
 
-      {/* 01 · Features — evidence workflow narrative */}
-      <SpineSection num="01" id="features" label="Features · Evidence workflow">
-        <h2 style={h2Style}>{settings.featureTitle || DEFAULTS.featureTitle}</h2>
-        <p style={{ ...subStyle, marginBottom: 44 }}>
-          From protocol registration to manuscript export — every stage of
-          evidence synthesis, without switching tools.
-        </p>
-        <div className="lp-value-grid" style={{
-          display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16,
-        }}>
-          {(settings.featureCards || VALUE_PROPS).map((v, i) => (
-            <div key={v.label || i} className="lp-val-card" style={{
-              background: C.card, border: `1px solid ${C.brd}`,
-              borderLeft: `3px solid ${alpha(C.acc, '50')}`,
-              borderRadius: '0 10px 10px 0',
-              padding: '24px 24px 22px',
-              display: 'flex', gap: 18, alignItems: 'flex-start',
-            }}>
-              <div style={{
-                width: 34, height: 34, borderRadius: 8, flexShrink: 0,
-                background: C.accBg, border: `1px solid ${alpha(C.acc, '28')}`,
-                color: C.acc, display: 'flex', alignItems: 'center', justifyContent: 'center',
-              }}>
-                <Icon name={resolveCardIcon(v.icon)} size={17} />
-              </div>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 7 }}>{v.label}</div>
-                <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.7 }}>{v.desc}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </SpineSection>
-
-      {/* 02 · Workflow — the 14-stage rail */}
-      <SpineSection num="02" id="workflow" label="Workflow" alt wide>
-        <h2 style={h2Style}>{settings.workflowTitle || DEFAULTS.workflowTitle}</h2>
-        <p style={{ ...subStyle, marginBottom: 40 }}>
-          {settings.workflowSubtitle || DEFAULTS.workflowSubtitle}
-        </p>
-
-        <div className="lp-rail-grid" style={{
-          display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2,
-        }}>
-          {STEPS.map((s, i) => {
-            const active = i === activeStep;
-            return (
-              <div
-                key={s.n}
-                className="lp-rail-node"
-                tabIndex={0}
-                title={s.desc}
-                onMouseEnter={() => setActiveStep(i)}
-                onFocus={() => setActiveStep(i)}
-                style={{
-                  background: active ? C.card2 : C.card,
-                  border: `1px solid ${active ? alpha(C.acc, '60') : C.brd}`,
-                  borderRadius: 8,
-                  padding: '12px 11px 10px',
-                  cursor: 'default', outline: 'none', minWidth: 0,
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                  <span style={{ fontFamily: MONO, fontSize: 10.5, fontWeight: 700, color: C.gold, letterSpacing: '0.05em' }}>
-                    {s.n}
-                  </span>
-                  <span style={{ color: active ? C.acc : C.muted, display: 'inline-flex' }}>
-                    <Icon name={s.icon} size={13} />
-                  </span>
-                </div>
-                <div style={{
-                  fontSize: 10.5, fontWeight: 600, letterSpacing: '0.01em',
-                  color: active ? C.txt : C.txt2,
-                  whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          {motionOff ? (
+            <div className="lp-value-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
+              {(settings.featureCards || VALUE_PROPS).map((v, i) => (
+                <div key={v.label || i} className="lp-val-card" style={{
+                  background: C.surf, border: `1px solid ${C.brd}`,
+                  borderRadius: 14, padding: '26px 24px 24px',
+                  display: 'flex', gap: 18, alignItems: 'flex-start',
+                  boxShadow: `0 1px 4px ${C.shadow}`,
                 }}>
-                  {s.label}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Caption area — hovering/focusing a node reveals its description */}
-        <div style={{
-          marginTop: 16, minHeight: 46,
-          background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8,
-          padding: '12px 16px', display: 'flex', alignItems: 'baseline', gap: 10,
-          maxWidth: 760,
-        }} aria-live="polite">
-          <span style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, color: C.gold, flexShrink: 0 }}>
-            {STEPS[activeStep].n}
-          </span>
-          <span style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.6 }}>
-            <span style={{ color: C.txt, fontWeight: 600 }}>{STEPS[activeStep].label}</span>
-            {' — '}{STEPS[activeStep].desc}
-          </span>
-        </div>
-      </SpineSection>
-
-      {/* 03 · Synthesis — the evidence climax */}
-      <SpineSection num="03" label="Synthesis" wide>
-        <h2 style={h2Style}>Watch the evidence pool.</h2>
-        <p style={{ ...subStyle, marginBottom: 48 }}>
-          Five studies, weighted and pooled under a random-effects model —
-          the same plot META·LAB draws from your extracted data.
-        </p>
-        <EvidenceClimax reduced={motionOff} speed={rate} />
-      </SpineSection>
-
-      {/* 04 · Linked workspaces — META·LAB ⇄ META·SIFT */}
-      <SpineSection num="04" label="Linked workspaces" alt wide>
-        <h2 style={h2Style}>Screening and synthesis, joined at the spine.</h2>
-        <p style={{ ...subStyle, marginBottom: 44 }}>
-          Pair a META·SIFT screening project with a META·LAB review and the
-          pipeline becomes one continuous, audited flow.
-        </p>
-        <LinkedProducts />
-      </SpineSection>
-
-      {/* 05 · Credibility — why rigor + standards card */}
-      <SpineSection num="05" label="Research-grade" wide>
-        <h2 style={{ ...h2Style, marginBottom: 40 }}>
-          {settings.whyTitle || DEFAULTS.whyTitle}
-        </h2>
-        <div className="lp-diff-grid" style={{
-          display: 'grid', gridTemplateColumns: '1fr 1fr',
-          gap: 64, alignItems: 'start',
-        }}>
-          <div>
-            {[settings.whyBody1 || DEFAULTS.whyBody1, settings.whyBody2 || DEFAULTS.whyBody2, settings.whyBody3 || DEFAULTS.whyBody3].map((p, i) => (
-              p ? (
-                <p key={i} style={{ fontSize: 15, color: C.txt2, lineHeight: 1.88, margin: '0 0 20px' }}>
-                  {p}
-                </p>
-              ) : null
-            ))}
-          </div>
-
-          <div style={{
-            background: C.card, border: `1px solid ${C.brd}`,
-            borderRadius: 12, padding: '30px 34px',
-          }}>
-            <div style={{
-              fontSize: 10, fontFamily: MONO, color: C.muted,
-              letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 24,
-            }}>
-              Standards built in
-            </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-              {(settings.whyStandards || STANDARDS).map((s, i) => (
-                <div key={i} style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
-                  <Icon name="check" size={13} style={{ color: C.grn, marginTop: 3 }} />
-                  <span style={{ fontSize: 14, color: C.txt2, lineHeight: 1.65 }}>{s}</span>
+                  <div style={{ width: 40, height: 40, borderRadius: 10, flexShrink: 0, background: C.accBg, color: C.acc, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Icon name={resolveCardIcon(v.icon)} size={18} />
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: C.txt, marginBottom: 8 }}>{v.label}</div>
+                    <div style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.7 }}>{v.desc}</div>
+                  </div>
                 </div>
               ))}
             </div>
-            <div style={{ marginTop: 30, paddingTop: 26, borderTop: `1px solid ${C.brd}` }}>
-              <button className="lp-btn-primary" onClick={() => navigate(user ? '/app' : '/register')}
-                style={{ ...btnPrimary, width: '100%' }}>
-                {user ? 'Open Workspace' : (settings.ctaText || 'Start Your Review')}
-                <Icon name="arrowRight" size={15} />
-              </button>
+          ) : (
+            <motion.div
+              className="lp-value-grid"
+              style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}
+              variants={staggerContainer}
+              initial="hidden"
+              whileInView="visible"
+              viewport={{ once: true, margin: '-60px' }}
+            >
+              {(settings.featureCards || VALUE_PROPS).map((v, i) => (
+                <motion.div key={v.label || i} variants={fadeUp} className="lp-val-card" style={{
+                  background: C.surf, border: `1px solid ${C.brd}`,
+                  borderRadius: 14, padding: '26px 24px 24px',
+                  display: 'flex', gap: 18, alignItems: 'flex-start',
+                  boxShadow: `0 1px 4px ${C.shadow}`,
+                }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 10, flexShrink: 0, background: C.accBg, color: C.acc, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <Icon name={resolveCardIcon(v.icon)} size={18} />
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: C.txt, marginBottom: 8 }}>{v.label}</div>
+                    <div style={{ fontSize: 13.5, color: C.txt2, lineHeight: 1.7 }}>{v.desc}</div>
+                  </div>
+                </motion.div>
+              ))}
+            </motion.div>
+          )}
+        </div>
+      </section>
+
+      {/* ══════════════════════════════════════════════════════════════
+          WORKFLOW — #workflow anchor (14-stage rail)
+          ══════════════════════════════════════════════════════════════ */}
+      <section id="workflow" style={{ background: C.surf, borderBottom: `1px solid ${C.brd}` }}>
+        <div className="lp-sect-inner" style={sectionPad}>
+          <Reveal reduced={motionOff} style={{ marginBottom: 52 }}>
+            <SectionTitle
+              pretitle="Workflow"
+              title={settings.workflowTitle || DEFAULTS.workflowTitle}
+            >
+              {settings.workflowSubtitle || DEFAULTS.workflowSubtitle}
+            </SectionTitle>
+          </Reveal>
+
+          <Reveal reduced={motionOff} delay={0.1}>
+            <div className="lp-rail-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 2 }}>
+              {STEPS.map((s, i) => {
+                const active = i === activeStep;
+                return (
+                  <div key={s.n} className="lp-rail-node" tabIndex={0} title={s.desc}
+                    onMouseEnter={() => setActiveStep(i)} onFocus={() => setActiveStep(i)}
+                    style={{
+                      background: active ? C.card2 : C.card,
+                      border: `1px solid ${active ? alpha(C.acc, 0.55) : C.brd}`,
+                      borderRadius: 10, padding: '13px 11px 11px', cursor: 'default', outline: 'none', minWidth: 0,
+                    }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                      <span style={{ fontFamily: MONO, fontSize: 10.5, fontWeight: 700, color: C.gold, letterSpacing: '0.05em' }}>{s.n}</span>
+                      <span style={{ color: active ? C.acc : C.muted, display: 'inline-flex' }}><Icon name={s.icon} size={13} /></span>
+                    </div>
+                    <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.01em', color: active ? C.txt : C.txt2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {s.label}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
+          </Reveal>
+
+          <Reveal reduced={motionOff} delay={0.16}>
+            <div style={{ marginTop: 16, minHeight: 46, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: '12px 18px', display: 'flex', alignItems: 'baseline', gap: 10, maxWidth: 760 }} aria-live="polite">
+              <span style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, color: C.gold, flexShrink: 0 }}>{STEPS[activeStep].n}</span>
+              <span style={{ fontSize: 13, color: C.txt2, lineHeight: 1.6 }}>
+                <span style={{ color: C.txt, fontWeight: 600 }}>{STEPS[activeStep].label}</span>
+                {' — '}{STEPS[activeStep].desc}
+              </span>
+            </div>
+          </Reveal>
+        </div>
+      </section>
+
+      {/* ══════════════════════════════════════════════════════════════
+          SYNTHESIS — self-drawing forest plot + PRISMA count-up
+          ══════════════════════════════════════════════════════════════ */}
+      <section style={{ background: C.bg, borderBottom: `1px solid ${C.brd}` }}>
+        <div className="lp-sect-inner" style={sectionPad}>
+          <Reveal reduced={motionOff} style={{ marginBottom: 52 }}>
+            <SectionTitle pretitle="Synthesis" title="Watch the evidence pool.">
+              Five studies, weighted and pooled under a random-effects model — the same plot META·LAB draws from your extracted data.
+            </SectionTitle>
+          </Reveal>
+          <EvidenceClimax reduced={motionOff} speed={rate} />
+        </div>
+      </section>
+
+      {/* ══════════════════════════════════════════════════════════════
+          LINKED WORKSPACES — META·LAB ⇄ META·SIFT
+          ══════════════════════════════════════════════════════════════ */}
+      <section style={{ background: C.surf, borderBottom: `1px solid ${C.brd}` }}>
+        <div className="lp-sect-inner" style={sectionPad}>
+          <Reveal reduced={motionOff} style={{ marginBottom: 52 }}>
+            <SectionTitle pretitle="Linked workspaces" title="Screening and synthesis, joined at the spine.">
+              Pair a META·SIFT screening project with a META·LAB review and the pipeline becomes one continuous, audited flow.
+            </SectionTitle>
+          </Reveal>
+          <Reveal reduced={motionOff} delay={0.08}>
+            <LinkedProducts />
+          </Reveal>
+        </div>
+      </section>
+
+      {/* ══════════════════════════════════════════════════════════════
+          RIGOR — why + standards (Nextly Benefits 2-col)
+          ══════════════════════════════════════════════════════════════ */}
+      <section style={{ background: C.bg, borderBottom: `1px solid ${C.brd}` }}>
+        <div className="lp-sect-inner" style={sectionPad}>
+          <Reveal reduced={motionOff} style={{ marginBottom: 56 }}>
+            <SectionTitle pretitle="Research-grade" title={settings.whyTitle || DEFAULTS.whyTitle} />
+          </Reveal>
+
+          <div className="lp-diff-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 64, alignItems: 'start' }}>
+            <Reveal reduced={motionOff}>
+              <div>
+                {[settings.whyBody1 || DEFAULTS.whyBody1, settings.whyBody2 || DEFAULTS.whyBody2, settings.whyBody3 || DEFAULTS.whyBody3].map((p, i) => (
+                  p ? (
+                    <p key={i} style={{ fontSize: 15.5, color: C.txt2, lineHeight: 1.9, margin: '0 0 22px' }}>{p}</p>
+                  ) : null
+                ))}
+              </div>
+            </Reveal>
+
+            <Reveal reduced={motionOff} delay={0.1}>
+              <div style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 16, padding: '32px 36px', boxShadow: `0 4px 20px ${C.shadow}` }}>
+                <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 24 }}>Standards built in</div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+                  {(settings.whyStandards || STANDARDS).map((s, i) => (
+                    <div key={i} style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+                      <div style={{ width: 22, height: 22, borderRadius: 6, flexShrink: 0, background: alpha(C.grn, 0.12), color: C.grn, display: 'flex', alignItems: 'center', justifyContent: 'center', marginTop: 1 }}>
+                        <Icon name="check" size={12} />
+                      </div>
+                      <span style={{ fontSize: 14, color: C.txt2, lineHeight: 1.65 }}>{s}</span>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ marginTop: 30, paddingTop: 26, borderTop: `1px solid ${C.brd}` }}>
+                  <MotionBtn className="lp-btn-primary" onClick={() => navigate(user ? '/app' : '/register')} style={{ ...btnPrimary, width: '100%', borderRadius: 9 }}>
+                    {user ? 'Open Workspace' : (settings.ctaText || 'Start Your Review')}
+                    <Icon name="arrowRight" size={15} />
+                  </MotionBtn>
+                </div>
+              </div>
+            </Reveal>
           </div>
         </div>
-      </SpineSection>
+      </section>
 
-      {/* 06 · Institutions — quiet specification table */}
-      <SpineSection num="06" label="For institutions" alt>
-        <h2 style={h2Style}>Built to pass a research office review.</h2>
-        <p style={{ ...subStyle, marginBottom: 38 }}>
-          The governance questions IRBs and research offices actually ask —
-          answered in the architecture, not the brochure.
-        </p>
-        <InstitutionSpecs />
-      </SpineSection>
-
-      {/* 07 · Product preview */}
-      <SpineSection num="07" label="Product" wide>
-        <h2 style={h2Style}>Inside the workspace</h2>
-        <p style={{ ...subStyle, marginBottom: 44 }}>
-          One project, every stage — screening counts, pooled estimates, and
-          the PRISMA flow stay in view as your review progresses.
-        </p>
-        <AppPreview />
-        <div style={{
-          marginTop: 14, fontSize: 10, fontFamily: MONO, color: C.dim, letterSpacing: '0.08em',
-        }}>
-          Illustrative composition — numbers shown are examples, not live data.
+      {/* ══════════════════════════════════════════════════════════════
+          INSTITUTIONS — spec table
+          ══════════════════════════════════════════════════════════════ */}
+      <section style={{ background: C.surf, borderBottom: `1px solid ${C.brd}` }}>
+        <div className="lp-sect-inner" style={sectionPad}>
+          <Reveal reduced={motionOff} style={{ marginBottom: 48 }}>
+            <SectionTitle pretitle="For institutions" title="Built to pass a research office review.">
+              The governance questions IRBs and research offices actually ask — answered in the architecture, not the brochure.
+            </SectionTitle>
+          </Reveal>
+          <Reveal reduced={motionOff} delay={0.08}>
+            <InstitutionSpecs />
+          </Reveal>
         </div>
-      </SpineSection>
+      </section>
 
-      {/* 08 · About */}
-      <SpineSection num="08" id="about" label="About">
-        <h2 style={h2Style}>{settings.aboutHeadline || DEFAULTS.aboutHeadline}</h2>
-        <p style={{ fontSize: 16, color: C.txt2, lineHeight: 1.88, margin: '14px 0 20px', maxWidth: 760 }}>
-          {settings.aboutText1 || DEFAULTS.aboutText1}
-        </p>
-        <p style={{ fontSize: 16, color: C.txt2, lineHeight: 1.88, margin: 0, maxWidth: 760 }}>
-          {settings.aboutText2 || DEFAULTS.aboutText2}
-        </p>
-      </SpineSection>
+      {/* ══════════════════════════════════════════════════════════════
+          PRODUCT PREVIEW — app frame
+          ══════════════════════════════════════════════════════════════ */}
+      <section style={{ background: C.bg, borderBottom: `1px solid ${C.brd}` }}>
+        <div className="lp-sect-inner" style={sectionPad}>
+          <Reveal reduced={motionOff} style={{ marginBottom: 48 }}>
+            <SectionTitle pretitle="Product" title="Inside the workspace">
+              One project, every stage — screening counts, pooled estimates, and the PRISMA flow stay in view as your review progresses.
+            </SectionTitle>
+          </Reveal>
+          <Reveal reduced={motionOff} delay={0.1}>
+            <AppPreview />
+            <div style={{ marginTop: 12, fontSize: 10, fontFamily: MONO, color: C.dim, letterSpacing: '0.08em', textAlign: 'center' }}>
+              Illustrative composition — numbers shown are examples, not live data.
+            </div>
+          </Reveal>
+        </div>
+      </section>
 
-      {/* ── Contact ──────────────────────────────────────────────────── */}
-      <section id="contact" className="lp-sect-pad" style={{
-        padding: '88px 48px', background: C.surf,
-        borderTop: `1px solid ${C.brd}`,
-      }}>
-        <div style={{ maxWidth: 520, margin: '0 auto' }}>
-          <div style={{ textAlign: 'center', marginBottom: 44 }}>
-            <SectionLabel text="Contact" />
-            <h2 style={{ ...h2Style, fontSize: 29 }}>
-              {settings.contactTitle || 'Get in touch'}
-            </h2>
-            <p style={{ fontSize: 14, color: C.txt2, lineHeight: 1.75, margin: 0 }}>
+      {/* ══════════════════════════════════════════════════════════════
+          ABOUT — #about anchor
+          ══════════════════════════════════════════════════════════════ */}
+      <section id="about" style={{ background: C.surf, borderBottom: `1px solid ${C.brd}` }}>
+        <div className="lp-sect-inner" style={sectionPad}>
+          <Reveal reduced={motionOff} style={{ marginBottom: 32 }}>
+            <SectionTitle pretitle="About" title={settings.aboutHeadline || DEFAULTS.aboutHeadline} />
+          </Reveal>
+          <Reveal reduced={motionOff} delay={0.08}>
+            <div style={{ maxWidth: 780, margin: '0 auto', textAlign: 'center' }}>
+              <p style={{ fontSize: 16.5, color: C.txt2, lineHeight: 1.9, margin: '0 0 20px' }}>
+                {settings.aboutText1 || DEFAULTS.aboutText1}
+              </p>
+              <p style={{ fontSize: 16.5, color: C.txt2, lineHeight: 1.9, margin: 0 }}>
+                {settings.aboutText2 || DEFAULTS.aboutText2}
+              </p>
+            </div>
+          </Reveal>
+        </div>
+      </section>
+
+      {/* ══════════════════════════════════════════════════════════════
+          CTA BAND — Nextly indigo band before footer
+          ══════════════════════════════════════════════════════════════ */}
+      <section style={{ background: C.bg, padding: '96px 48px', borderBottom: `1px solid ${C.brd}` }}>
+        <div style={{ maxWidth: 880, margin: '0 auto' }}>
+          <Reveal reduced={motionOff}>
+            <div style={{
+              display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between',
+              gap: 28, background: C.acc, borderRadius: 20, padding: '48px 52px',
+              boxShadow: `0 20px 60px ${alpha(C.acc, 0.28)}`,
+            }}>
+              <div style={{ flex: '1 1 300px', minWidth: 0 }}>
+                <div style={{ fontSize: 11, fontFamily: MONO, letterSpacing: '0.14em', textTransform: 'uppercase', color: alpha('#ffffff', 0.65), marginBottom: 10 }}>
+                  Begin
+                </div>
+                <h2 style={{ fontSize: 'clamp(22px, 3vw, 32px)', fontWeight: 800, letterSpacing: '-0.03em', color: '#ffffff', margin: '0 0 10px', lineHeight: 1.2 }}>
+                  From question to pooled estimate.
+                </h2>
+                <p style={{ fontSize: 15, color: alpha('#ffffff', 0.82), lineHeight: 1.7, margin: 0, maxWidth: 400 }}>
+                  Open a workspace and let the method carry the review — documented, auditable, and ready for peer scrutiny.
+                </p>
+              </div>
+              <div style={{ flexShrink: 0, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                {user ? (
+                  <MotionBtn onClick={() => navigate('/app')} style={{
+                    ...btnPrimary, background: '#ffffff', color: C.acc, borderRadius: 10, fontSize: 15,
+                    boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+                  }}>
+                    Open Workspace <Icon name="arrowRight" size={16} />
+                  </MotionBtn>
+                ) : (
+                  <>
+                    <MotionBtn onClick={() => navigate('/register')} style={{
+                      ...btnPrimary, background: '#ffffff', color: C.acc, borderRadius: 10, fontSize: 15,
+                      boxShadow: '0 4px 16px rgba(0,0,0,0.15)',
+                    }}>
+                      {settings.ctaText || 'Start Your Review'} <Icon name="arrowRight" size={16} />
+                    </MotionBtn>
+                    <MotionBtn onClick={() => navigate('/login')} style={{
+                      ...btnGhost, border: '1.5px solid rgba(255,255,255,0.4)', color: '#ffffff', background: 'transparent', borderRadius: 10, fontSize: 15,
+                    }}>
+                      {settings.ctaSecondaryText || 'Sign in'}
+                    </MotionBtn>
+                  </>
+                )}
+              </div>
+            </div>
+          </Reveal>
+        </div>
+      </section>
+
+      {/* ══════════════════════════════════════════════════════════════
+          CONTACT — #contact anchor
+          ══════════════════════════════════════════════════════════════ */}
+      <section id="contact" style={{ padding: '96px 48px', background: C.surf, borderTop: `1px solid ${C.brd}` }}>
+        <div style={{ maxWidth: 560, margin: '0 auto' }}>
+          <Reveal reduced={motionOff} style={{ textAlign: 'center', marginBottom: 48 }}>
+            <SectionTitle
+              pretitle="Contact"
+              title={settings.contactTitle || 'Get in touch'}
+            >
               {settings.contactSubtitle || DEFAULTS.contactSubtitle}
-            </p>
-          </div>
+            </SectionTitle>
+          </Reveal>
 
           {contactStatus === 'ok' ? (
-            <div style={{
-              padding: '36px', background: C.grnBg,
-              border: `1px solid ${alpha(C.grn, '40')}`, borderRadius: 12, textAlign: 'center',
-            }}>
-              <div style={{ marginBottom: 12 }}>
-                <Icon name="check" size={24} style={{ color: C.grn }} />
-              </div>
-              <div style={{ fontSize: 15, fontWeight: 600, color: C.grn, marginBottom: 8 }}>Message sent</div>
-              <div style={{ fontSize: 13, color: C.txt2, marginBottom: 22 }}>We'll get back to you soon.</div>
-              <button className="lp-btn-ghost" onClick={() => setContactStatus(null)}
-                style={{ ...btnGhost, fontSize: 12, padding: '8px 20px' }}>
+            <div style={{ padding: '36px', background: C.grnBg, border: `1px solid ${alpha(C.grn, 0.3)}`, borderRadius: 14, textAlign: 'center' }}>
+              <div style={{ marginBottom: 12 }}><Icon name="check" size={26} style={{ color: C.grn }} /></div>
+              <div style={{ fontSize: 16, fontWeight: 600, color: C.grn, marginBottom: 8 }}>Message sent</div>
+              <div style={{ fontSize: 13.5, color: C.txt2, marginBottom: 22 }}>We'll get back to you soon.</div>
+              <button className="lp-btn-ghost" onClick={() => setContactStatus(null)} style={{ ...btnGhost, fontSize: 13, padding: '9px 22px', borderRadius: 8 }}>
                 Send another
               </button>
             </div>
           ) : (
-            <form onSubmit={handleContact} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            <form onSubmit={handleContact} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
               {[
                 { key: 'name',  label: 'Name',  type: 'text',  placeholder: 'Your name' },
                 { key: 'email', label: 'Email', type: 'email', placeholder: 'you@institution.edu' },
               ].map(f => (
                 <div key={f.key}>
-                  <label style={{
-                    display: 'block', fontSize: 10, fontFamily: MONO, color: C.muted,
-                    letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 7,
-                  }}>
-                    {f.label}
-                  </label>
+                  <label style={{ display: 'block', fontSize: 11, fontFamily: MONO, color: C.muted, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>{f.label}</label>
                   <input
                     className="lp-contact-input"
                     type={f.type} required
@@ -1818,103 +1639,57 @@ export default function Landing() {
                 </div>
               ))}
               <div>
-                <label style={{
-                  display: 'block', fontSize: 10, fontFamily: MONO, color: C.muted,
-                  letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 7,
-                }}>
-                  Message
-                </label>
+                <label style={{ display: 'block', fontSize: 11, fontFamily: MONO, color: C.muted, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Message</label>
                 <textarea
                   className="lp-contact-input"
                   required rows={5}
                   value={contact.message}
                   onChange={e => setContact(c => ({ ...c, message: e.target.value }))}
                   placeholder="Your message…"
-                  style={{ ...inpStyle, resize: 'vertical', minHeight: 110 }}
+                  style={{ ...inpStyle, resize: 'vertical', minHeight: 120 }}
                 />
               </div>
               {contactStatus === 'err' && (
-                <div style={{
-                  fontSize: 12, color: C.red, padding: '9px 13px',
-                  background: C.redBg, border: `1px solid ${alpha(C.red, '30')}`, borderRadius: 6,
-                }}>
+                <div style={{ fontSize: 12.5, color: C.red, padding: '10px 14px', background: C.redBg, border: `1px solid ${alpha(C.red, 0.25)}`, borderRadius: 8 }}>
                   {contactErr}
                 </div>
               )}
               <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                <button className="lp-btn-primary" type="submit"
-                  disabled={contactStatus === 'sending'}
-                  style={{ ...btnPrimary, opacity: contactStatus === 'sending' ? 0.6 : 1 }}>
+                <MotionBtn className="lp-btn-primary" type="submit" disabled={contactStatus === 'sending'}
+                  style={{ ...btnPrimary, borderRadius: 9, opacity: contactStatus === 'sending' ? 0.6 : 1 }}>
                   {contactStatus === 'sending' ? 'Sending…' : 'Send message'}
-                </button>
+                </MotionBtn>
               </div>
             </form>
           )}
         </div>
       </section>
 
-      {/* ── Final CTA band ───────────────────────────────────────────── */}
-      <section className="lp-sect-pad" style={{
-        padding: '92px 48px', background: C.bg,
-        borderTop: `1px solid ${C.brd}`, textAlign: 'center',
-      }}>
-        <div style={{ maxWidth: 640, margin: '0 auto' }}>
-          <SectionLabel text="Begin" style={{ textAlign: 'center' }} />
-          <h2 style={{ ...h2Style, fontSize: 'clamp(26px, 3.4vw, 36px)', marginBottom: 16 }}>
-            From question to pooled estimate.
-          </h2>
-          <p style={{ fontSize: 14.5, color: C.txt2, lineHeight: 1.75, margin: '0 auto 36px', maxWidth: 460 }}>
-            Open a workspace and let the method carry the review —
-            documented, auditable, and ready for peer scrutiny.
-          </p>
-          <div style={{ display: 'flex', gap: 12, justifyContent: 'center', flexWrap: 'wrap' }}>
-            {user ? (
-              <button className="lp-btn-primary" onClick={() => navigate('/app')}
-                style={{ ...btnPrimary }}>
-                Open Workspace
-                <Icon name="arrowRight" size={15} />
-              </button>
-            ) : (
-              <>
-                <button className="lp-btn-primary" onClick={() => navigate('/register')}
-                  style={{ ...btnPrimary }}>
-                  {settings.ctaText || 'Start Your Review'}
-                  <Icon name="arrowRight" size={15} />
-                </button>
-                <button className="lp-btn-ghost" onClick={() => navigate('/login')}
-                  style={{ ...btnGhost }}>
-                  {settings.ctaSecondaryText || 'Sign in'}
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      </section>
-
-      {/* ── Footer ───────────────────────────────────────────────────── */}
-      <footer className="lp-sect-pad" style={{ borderTop: `1px solid ${C.brd}`, background: C.bg, padding: '60px 48px 36px' }}>
+      {/* ══════════════════════════════════════════════════════════════
+          FOOTER — multi-column Nextly style
+          ══════════════════════════════════════════════════════════════ */}
+      <footer style={{ borderTop: `1px solid ${C.brd}`, background: C.bg, padding: '64px 48px 40px' }}>
         <div style={{ maxWidth: 1104, margin: '0 auto' }}>
-          {/* Top: columns */}
           <div className="lp-footer-cols" style={{ display: 'flex', gap: 64, marginBottom: 52 }}>
-            {/* Brand column */}
-            <div style={{ flex: '0 0 200px', minWidth: 0 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-                <HexLogo size={16} />
-                <Wordmark />
+            {/* Brand */}
+            <div style={{ flex: '0 0 220px', minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 16 }}>
+                <HexLogo size={18} />
+                <Wordmark size={14} />
               </div>
-              <p style={{ fontSize: 12, color: C.muted, lineHeight: 1.75, maxWidth: 180 }}>
+              <p style={{ fontSize: 13, color: C.muted, lineHeight: 1.8, maxWidth: 200 }}>
                 A structured workspace for systematic reviews and meta-analyses.
               </p>
             </div>
 
             {/* Platform */}
             <div>
-              <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 18 }}>
+              <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 18, fontWeight: 700 }}>
                 Platform
               </div>
               {['Features', 'Workflow', 'About', 'Contact'].map(l => (
                 <a key={l} href={`#${l.toLowerCase()}`} className="lp-footer-link"
-                  style={{ display: 'block', fontSize: 13, color: C.muted, textDecoration: 'none', marginBottom: 11 }}>
+                  style={{ display: 'block', fontSize: 14, color: C.muted, textDecoration: 'none', marginBottom: 12 }}>
                   {l}
                 </a>
               ))}
@@ -1922,17 +1697,13 @@ export default function Landing() {
 
             {/* Account */}
             <div>
-              <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 18 }}>
+              <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 18, fontWeight: 700 }}>
                 Account
               </div>
               {(settings.footerLinks || [{ label: 'Register', path: '/register' }, { label: 'Sign In', path: '/login' }]).map(link => (
                 <button key={link.label} className="lp-footer-link"
                   onClick={() => navigate(link.path)}
-                  style={{
-                    display: 'block', background: 'none', border: 'none',
-                    color: C.muted, cursor: 'pointer', fontSize: 13,
-                    fontFamily: FONT, padding: '0 0 11px 0', textAlign: 'left',
-                  }}>
+                  style={{ display: 'block', background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 14, fontFamily: FONT, padding: '0 0 12px 0', textAlign: 'left' }}>
                   {link.label}
                 </button>
               ))}
@@ -1940,30 +1711,21 @@ export default function Landing() {
 
             {/* Standards */}
             <div>
-              <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 18 }}>
+              <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.15em', textTransform: 'uppercase', marginBottom: 18, fontWeight: 700 }}>
                 Standards
               </div>
               {['PRISMA 2020', 'Cochrane RoB 2.0', 'GRADE', 'PROSPERO'].map(s => (
-                <div key={s} style={{ fontSize: 12, color: C.muted, fontFamily: MONO, marginBottom: 10, letterSpacing: '0.04em' }}>
-                  {s}
-                </div>
+                <div key={s} style={{ fontSize: 12.5, color: C.muted, fontFamily: MONO, marginBottom: 10, letterSpacing: '0.04em' }}>{s}</div>
               ))}
             </div>
           </div>
 
           {/* Bottom bar */}
-          <div className="lp-footer-bottom" style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            borderTop: `1px solid ${C.brd}`, paddingTop: 24,
-            flexWrap: 'wrap', gap: 12,
-          }}>
-            <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>
+          <div className="lp-footer-bottom" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: `1px solid ${C.brd}`, paddingTop: 24, flexWrap: 'wrap', gap: 12 }}>
+            <span style={{ fontSize: 12, color: C.muted, fontFamily: MONO }}>
               {settings.footerText || `© ${new Date().getFullYear()} META·LAB · Systematic review platform`}
             </span>
-            <a href="#contact" className="lp-footer-link" style={{
-              fontSize: 11, color: C.muted, fontFamily: FONT,
-              textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6,
-            }}>
+            <a href="#contact" className="lp-footer-link" style={{ fontSize: 12, color: C.muted, fontFamily: FONT, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <Icon name="mail" size={12} />
               Contact us
             </a>
