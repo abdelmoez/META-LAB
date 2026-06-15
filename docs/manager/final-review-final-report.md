@@ -50,7 +50,13 @@
 
 22. **Version.** 3.2.0 → **3.3.0** (minor — workflow/UX change; additive, non-breaking; no API/route/data contract breakage; defaults preserve prior behaviour).
 
-23. **Commit hash + push status.** (commit hash + push status filled in at ship time)
+23. **Commit hash + push status.** Shipped v3.3.0 `a24469e` (pushed to origin/main). Follow-ups below shipped in the next commit.
+
+> **Follow-ups (addressed after the initial ship):**
+> - **Exact stepper progress** — the overview `dataSummary` now exposes project-wide, member-visible `screeningPool` + `titleAbstractPending` (records below the `effectiveRequired` reviewer bar). `buildScreeningSteps` uses them so "Title & Abstract" is `active` with an "N to screen" hint until 0 pending, then `done` (falls back to the old heuristic if absent). Limitation 24(a) resolved.
+> - **No stale Overview card** — the monolith's project-Overview "Screening Progress" card now refetches on the `handoff.updated` / `decision.saved` / `status.changed` SSE pokes (keyed on the linked screen project), so a revert/accept made elsewhere updates it live. Resolves the manual-refresh caveat.
+> - **Restore vs reset on re-accept** — `finalizeRecord` accepts `restoreSnapshot` (default true); `listSecondReview` returns `hasRevertSnapshot`; re-accepting a previously-reverted study prompts "Restore previous data" or "Start fresh". Recommendation (c) shipped.
+> - **Revert for accepted-but-not-yet-sent** — the "↩ Return to Final Review" action is now offered for every accepted record (sent or pending send), not only sent ones. Limitation 24 (revert scope) resolved.
 
 24. **Known limitations.** (a) No single project-wide "title/abstract fully screened" or "final-review complete" signal is available to non-leaders — stepper statuses for those steps are derived from `eligibleSecondReview` / `decided` counts; `projectProgress` is leader-only and is not used; no fake progress is shown. (b) The snapshot column retains the JSON until the study is re-sent or permanently excluded — it is not auto-purged. (c) Standalone `/sift-beta` shell and admin-only `LinkSection` / `LinkedMetaLabCard` retain some legacy copy (intentionally, admin/back-compat, not user-facing in the unified project flow). (d) Pre-existing serverStorage unit flakiness (6 fails) and AnalysisTab esbuild warning remain unaddressed.
 

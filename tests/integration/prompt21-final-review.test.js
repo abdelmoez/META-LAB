@@ -107,6 +107,7 @@ describe('Final Review — accept → revert → re-accept', () => {
     const reverted = sr.data.records.find(r => r.id === rid);
     expect(reverted?.finalStatus).toBe('');     // returned to pending Final Review
     expect(reverted?.handoffStatus).toBe('');
+    expect(reverted?.hasRevertSnapshot).toBe(true); // snapshot kept → re-accept can restore
 
     // Reverting again (now non-accepted) → 400.
     const revertAgain = await api(`/screening/projects/${pid}/records/${rid}/final-review/revert`, { method: 'POST', cookie: owner.cookie });

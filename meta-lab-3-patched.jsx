@@ -7102,17 +7102,28 @@ function OverviewTab({project,setTab}){
   },[lid]);
 
   // prompt19 — live Screening progress for the overview card (PRISMA-shaped roll-up).
+  // prompt21 follow-up — refetch on realtime screening pokes (accept / revert /
+  // decisions / status) keyed on the linked screen project (lid), so this card
+  // never shows stale numbers after a Final Review change made elsewhere.
   const[scr,setScr]=useState({loading:!!project?.id,data:null});
-  useEffect(()=>{
-    let dead=false;
-    if(!project?.id){setScr({loading:false,data:null});return undefined;}
-    setScr({loading:true,data:null});
+  const loadScr=useCallback(()=>{
+    if(!project?.id)return;
     fetch(`/api/screening/metalab/${project.id}/summary`,{credentials:"include"})
       .then(r=>r.ok?r.json():null)
-      .then(d=>{if(!dead)setScr({loading:false,data:(d&&d.linked)?d:null});})
-      .catch(()=>{if(!dead)setScr({loading:false,data:null});});
-    return()=>{dead=true;};
+      .then(d=>setScr({loading:false,data:(d&&d.linked)?d:null}))
+      .catch(()=>setScr({loading:false,data:null}));
   },[project?.id]);
+  useEffect(()=>{
+    if(!project?.id){setScr({loading:false,data:null});return undefined;}
+    setScr(s=>({loading:true,data:s.data}));
+    loadScr();
+    return undefined;
+  },[project?.id,loadScr]);
+  useRealtime({
+    "handoff.updated":ev=>{if(ev?.projectId===lid)loadScr();},
+    "decision.saved": ev=>{if(ev?.projectId===lid)loadScr();},
+    "status.changed": ev=>{if(ev?.projectId===lid)loadScr();},
+  });
 
   const studies=project.studies||[];
   const withES=studies.filter(s=>s.es!=="").length;

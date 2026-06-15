@@ -72,6 +72,7 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
   const [rejectFor, setRejectFor] = useState(null);
   const [rejectReason, setRejectReason] = useState('');
   const [revertFor, setRevertFor] = useState(null); // record awaiting revert confirm
+  const [restoreFor, setRestoreFor] = useState(null); // re-accept: restore vs start fresh
 
   const [toast, setToast] = useState(null); // { kind: 'ok'|'info'|'err', text }
 
@@ -120,15 +121,17 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
     }
   }, [pid, savingDecision, load]);
 
-  const handleAccept = useCallback(async (rec) => {
+  const handleAccept = useCallback(async (rec, restoreSnapshot = true) => {
     if (finalizing[rec.id]) return;
+    setRestoreFor(null);
     setFinalizing(prev => ({ ...prev, [rec.id]: true }));
     setRowError(prev => ({ ...prev, [rec.id]: '' }));
     try {
-      const resp = await screeningApi.finalizeRecord(pid, rec.id, { decision: 'accept' });
+      const resp = await screeningApi.finalizeRecord(pid, rec.id, { decision: 'accept', restoreSnapshot });
       const h = resp?.handoff || {};
       const kind = h.handoffStatus === 'sent' ? 'ok' : h.handoffStatus === 'failed' ? 'err' : 'info';
-      setToast({ kind, text: h.message || (h.handed ? 'Sent to Data Extraction.' : 'Record accepted.') });
+      const restored = h.restored ? ' (previous extraction restored)' : '';
+      setToast({ kind, text: (h.message || (h.handed ? 'Sent to Data Extraction.' : 'Record accepted.')) + restored });
       await load();
       if (refreshProject) await refreshProject();
     } catch (e) {
@@ -137,6 +140,12 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
       setFinalizing(prev => { const n = { ...prev }; delete n[rec.id]; return n; });
     }
   }, [pid, finalizing, load, refreshProject]);
+
+  // Re-accepting a record that was previously reverted: offer restore vs start fresh.
+  const requestAccept = useCallback((rec) => {
+    if (rec.hasRevertSnapshot) setRestoreFor(rec);
+    else handleAccept(rec, true);
+  }, [handleAccept]);
 
   // Retry the Data Extraction send for an accepted record (e.g. linked later).
   const handleRetryHandoff = useCallback(async (rec) => {
@@ -304,7 +313,7 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
               finalizing={!!finalizing[rec.id]}
               rowError={rowError[rec.id]}
               onDecision={handleDecision}
-              onAccept={handleAccept}
+              onAccept={requestAccept}
               onRetryHandoff={handleRetryHandoff}
               onRevert={() => setRevertFor(rec)}
               onRejectClick={() => { setRejectFor(rec); setRejectReason(rec.rejectedReason || ''); }}
@@ -393,6 +402,26 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
             <Button variant="primary" disabled={!!finalizing[revertFor.id]}
               style={{ background: C.gold, color: C.bg }}
               onClick={submitRevert}>{finalizing[revertFor.id] ? 'Reverting…' : 'Return to Final Review'}</Button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Re-accept choice — this record was previously reverted out of extraction */}
+      {restoreFor && (
+        <Modal onClose={() => { if (!finalizing[restoreFor.id]) setRestoreFor(null); }} width={460}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.txt, marginBottom: 6 }}>Send to Data Extraction</div>
+          <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.6, marginBottom: 16 }}>
+            This study was previously in Data Extraction and then returned to Final Review.
+            Its extracted data was kept. Restore that data, or start a fresh extraction entry?
+          </div>
+          {rowError[restoreFor.id] && (
+            <div style={{ fontSize: 12, color: C.red, marginBottom: 10 }}>{rowError[restoreFor.id]}</div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, flexWrap: 'wrap' }}>
+            <Button variant="ghost" disabled={!!finalizing[restoreFor.id]}
+              onClick={() => handleAccept(restoreFor, false)}>{finalizing[restoreFor.id] ? '…' : 'Start fresh'}</Button>
+            <Button variant="primary" disabled={!!finalizing[restoreFor.id]} style={{ background: C.grn, color: C.bg }}
+              onClick={() => handleAccept(restoreFor, true)}>{finalizing[restoreFor.id] ? 'Sending…' : 'Restore previous data'}</Button>
           </div>
         </Modal>
       )}
@@ -604,12 +633,14 @@ function RecordCard({
         </div>
       )}
 
-      {/* Sent records: leader can revert back to Final Review */}
-      {sent && access.isLeader && (
+      {/* Accepted records (sent OR pending send): leader can return to Final Review */}
+      {rec.finalStatus === 'accepted' && access.isLeader && (
         <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 14, marginTop: 14, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 12, color: C.txt2 }}>This study is in Data Extraction.</span>
+          <span style={{ fontSize: 12, color: C.txt2 }}>
+            {sent ? 'This study is in Data Extraction.' : 'This study is accepted, not yet in Data Extraction.'}
+          </span>
           <Button variant="ghost" disabled={finalizing} onClick={() => onRevert(rec)}
-            title="Remove from Data Extraction and return to pending Final Review (safe — restorable)">
+            title="Return to pending Final Review (safe — extracted data is kept and restorable)">
             {finalizing ? 'Working…' : '↩ Return to Final Review'}
           </Button>
         </div>

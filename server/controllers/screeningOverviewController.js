@@ -41,6 +41,24 @@ export async function getOverview(req, res) {
     });
     const disputedDecisions = Object.values(byRecord).filter(s => s.size > 1).length;
 
+    // prompt21 follow-up — EXACT, member-visible title/abstract progress for the
+    // workflow stepper (previously the stepper only knew "some records advanced").
+    // A record's T/A work is done once enough DISTINCT reviewers have weighed in —
+    // the same effectiveRequired bar the promotion gate uses (access.js). Records
+    // below that bar still need screening. Duplicates are out of the pool.
+    const effectiveRequired = Math.max(Number(access.project.requiredScreeningReviewers) || 2, QUORUM);
+    const taReviewers = {};
+    decisions.forEach(d => {
+      if (d.stage === 'title_abstract' && d.decision !== 'undecided') {
+        (taReviewers[d.recordId] ||= new Set()).add(d.reviewerId);
+      }
+    });
+    const screeningPool = records.filter(r => !r.isDuplicate).length;
+    const titleAbstractPending = records.filter(r =>
+      !r.isDuplicate && r.currentStage === 'title_abstract' &&
+      (taReviewers[r.id]?.size || 0) < effectiveRequired
+    ).length;
+
     const memberProgress = members.map(m => {
       const md = m.userId ? decisions.filter(d => d.reviewerId === m.userId && d.stage === 'title_abstract') : [];
       const c = { include: 0, exclude: 0, maybe: 0 };
@@ -116,6 +134,8 @@ export async function getOverview(req, res) {
         confirmedDuplicates, unresolvedDuplicateGroups, resolvedDuplicateGroups,
         disputedDecisions, unresolvedConflicts,
         eligibleSecondReview, acceptedToExtraction, rejectedSecond,
+        // prompt21 follow-up — exact, member-visible title/abstract progress.
+        screeningPool, titleAbstractPending,
       },
       members: visibleMembers,
       // null for non-leaders (frontend shows only "My Progress")

@@ -57,6 +57,16 @@ describe('buildScreeningSteps', () => {
     expect(s.extraction.status).toBe('pending');
   });
 
+  it('exact title/abstract progress (prompt21 follow-up): active while records still need screening, done at 0 pending', () => {
+    // titleAbstractPending present → exact path (not the coarse "advanced" heuristic).
+    const active = byId(buildScreeningSteps({ totalArticles: 10, screeningPool: 10, titleAbstractPending: 4, eligibleSecondReview: 2 }));
+    expect(active.screening.status).toBe('active');
+    expect(active.screening.hint).toMatch(/4 to screen/);
+    const done = byId(buildScreeningSteps({ totalArticles: 10, screeningPool: 10, titleAbstractPending: 0, eligibleSecondReview: 6 }));
+    expect(done.screening.status).toBe('done');
+    expect(done.screening.hint).toBeNull();
+  });
+
   it('Data Extraction step is status-only (not clickable); pipeline steps map to screens', () => {
     const s = byId(buildScreeningSteps({ totalArticles: 5, acceptedToExtraction: 2 }));
     expect(s.extraction.screen).toBeNull();

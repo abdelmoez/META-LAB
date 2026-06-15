@@ -140,6 +140,8 @@ export async function listSecondReview(req, res) {
         finalStatus: r.finalStatus, rejectedReason: r.rejectedReason,
         acceptedAt: r.acceptedAt, promotedAt: r.promotedAt, promotedVia: r.promotedVia,
         handoffStatus: r.handoffStatus, handoffError: r.handoffError,
+        // prompt21 follow-up — lets the UI offer "restore vs start fresh" on re-accept.
+        hasRevertSnapshot: !!r.revertedExtractionSnapshot,
         decisions: r.decisions.map((d, i) => ({
           reviewerId: blind ? undefined : d.reviewerId,
           reviewerName: blind ? `Reviewer ${i + 1}` : d.reviewerName,
@@ -175,7 +177,7 @@ export async function finalizeRecord(req, res) {
       return res.status(400).json({ error: 'Record has not reached second review' });
     }
 
-    const { decision, reason = '' } = req.body || {};
+    const { decision, reason = '', restoreSnapshot = true } = req.body || {};
     if (!['accept', 'reject'].includes(decision)) {
       return res.status(400).json({ error: "decision must be 'accept' or 'reject'" });
     }
@@ -192,8 +194,12 @@ export async function finalizeRecord(req, res) {
       return res.json({ record: updated, handoff: { handed: false, reason: 'rejected' } });
     }
 
-    // accept → handoff to META·LAB Data Extraction (record is accepted regardless;
-    // the handoff status reflects whether the study reached Data Extraction).
+    // accept → send to Data Extraction (the record is accepted regardless; the
+    // handoff status reflects whether the study reached Data Extraction). prompt21
+    // follow-up: if a revert snapshot exists, the operator may START FRESH
+    // (restoreSnapshot:false) instead of restoring the prior extracted data — drop
+    // the snapshot so handoffToMetaLab builds a blank study.
+    if (restoreSnapshot === false) rec.revertedExtractionSnapshot = null;
     const handoff = await handoffToMetaLab(access.project, rec, req.user);
     const mapped = mapHandoff(handoff);
     const updated = await prisma.screenRecord.update({

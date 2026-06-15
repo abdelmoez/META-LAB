@@ -27,6 +27,13 @@ export function buildScreeningSteps(summary) {
   const decided        = accepted + rejected;
   const finalRemaining = Math.max(0, eligible - decided);
   const advanced       = eligible > 0 || decided > 0;
+  // Exact, member-visible title/abstract progress when the overview exposes it
+  // (prompt21 follow-up); falls back to the coarse "advanced" heuristic otherwise.
+  const taExact   = typeof s.titleAbstractPending === 'number';
+  const taPending = s.titleAbstractPending || 0;
+  const taStatus  = total === 0 ? 'pending'
+    : taExact ? (taPending === 0 ? 'done' : 'active')
+    : (advanced ? 'done' : 'active');
 
   return [
     { id: 'import',        screen: 'import',        label: 'Import',           icon: 'upload',
@@ -35,7 +42,8 @@ export function buildScreeningSteps(summary) {
       status: total === 0 ? 'pending' : unresolvedDups > 0 ? 'attention' : (dupRun ? 'done' : 'active'),
       hint: unresolvedDups > 0 ? `${unresolvedDups} to resolve` : null },
     { id: 'screening',     screen: 'screening',     label: 'Title & Abstract', icon: 'filter',
-      status: total === 0 ? 'pending' : advanced ? 'done' : 'active' },
+      status: taStatus,
+      hint: taExact && taPending > 0 ? `${taPending} to screen` : null },
     { id: 'conflicts',     screen: 'conflicts',     label: 'Conflicts',        icon: 'alert',
       status: total === 0 ? 'pending' : conflicts > 0 ? 'attention' : (advanced ? 'done' : 'pending'),
       hint: conflicts > 0 ? `${conflicts} open` : null },
