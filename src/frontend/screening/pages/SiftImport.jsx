@@ -72,11 +72,18 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
   const pid = embedded ? embeddedPid : routeParams.pid;
   const { user }  = useAuth();
   const navigate  = useNavigate();
-  // After a successful import: standalone returns to the screening workbench;
-  // embedded hands control back to the host Screening stage (onDone).
-  const goWorkbench = () => {
+  // After a successful import, send the user to Step 2 (Duplicates). We trigger
+  // duplicate detection FIRST and await it, so the Duplicates page opens with
+  // results already indexed instead of racing an empty/erroring queue (prompt23
+  // Task 9). Detection is best-effort — if the user lacks permission or it fails,
+  // we still navigate; the Duplicates page can detect on demand.
+  const [preparing, setPreparing] = useState(false);
+  const goToDuplicates = async () => {
+    setPreparing(true);
+    try { await screeningApi.detectDuplicates(pid); } catch { /* non-fatal — page handles empty/detect */ }
+    setPreparing(false);
     if (embedded) { (onDone || onBack || (() => {}))(); }
-    else navigate(`/sift-beta/projects/${pid}`);
+    else navigate(`/sift-beta/projects/${pid}?tab=duplicates`);
   };
 
   const [format,     setFormat]     = useState('ris');
@@ -413,16 +420,18 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
                 return skipped > 0 ? ` (${skipped} skipped as duplicates)` : '';
               })()}.
             </div>
-            <div style={{ display: 'flex', gap: 10 }}>
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
               <button
-                onClick={goWorkbench}
+                onClick={goToDuplicates}
+                disabled={preparing}
                 style={{
                   background: C.grn, border: 'none', color: C.bg,
                   fontSize: 12, fontWeight: 700, fontFamily: FONT,
-                  padding: '7px 18px', borderRadius: 6, cursor: 'pointer',
+                  padding: '7px 18px', borderRadius: 6, cursor: preparing ? 'wait' : 'pointer',
+                  opacity: preparing ? 0.75 : 1,
                 }}
               >
-                {embedded ? 'Go to screening →' : 'Go to Workbench →'}
+                {preparing ? 'Preparing duplicate review…' : 'Continue to Duplicates →'}
               </button>
               <button
                 onClick={() => { setContent(''); setResult(null); setPreviews([]); setPreviewDone(false); setFilename(''); }}

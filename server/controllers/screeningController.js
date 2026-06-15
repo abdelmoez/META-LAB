@@ -1347,13 +1347,27 @@ export async function resolveDuplicateGroup(req, res) {
     const p = access.project;
     const group = await prisma.screenDuplicateGroup.findFirst({ where: { id: req.params.gid, projectId: p.id } });
     if (!group) return res.status(404).json({ error: 'Duplicate group not found' });
-    const { primaryId } = req.body || {};
+    const { primaryId, keepAll } = req.body || {};
+
+    // prompt23 Task 10 — "Not duplicates / keep all": the suggestion was a false
+    // positive. Resolve the group WITHOUT merging — every record stays active (no
+    // record is flagged isDuplicate), so both remain in screening.
+    if (keepAll) {
+      await prisma.screenRecord.updateMany({ where: { duplicateGroupId: group.id }, data: { isDuplicate: false, isPrimary: false } });
+      await prisma.screenDuplicateGroup.update({ where: { id: group.id }, data: { resolvedAt: new Date(), primaryId: null } });
+      await writeAudit(p.id, req.user, 'DUPLICATE_GROUP_KEEP_ALL', { entityType: 'duplicateGroup', entityId: group.id });
+      emitToProjectMembers(p.id, { type: 'project.updated' }, { exclude: req.user.id });
+      return res.json({ resolved: true, keepAll: true });
+    }
+
     if (!primaryId) return res.status(400).json({ error: 'primaryId is required' });
 
     // Mark all in group as duplicate, except primary
     await prisma.screenRecord.updateMany({ where: { duplicateGroupId: group.id }, data: { isDuplicate: true, isPrimary: false } });
     await prisma.screenRecord.update({ where: { id: primaryId }, data: { isDuplicate: false, isPrimary: true } });
     await prisma.screenDuplicateGroup.update({ where: { id: group.id }, data: { resolvedAt: new Date(), primaryId } });
+    await writeAudit(p.id, req.user, 'DUPLICATE_GROUP_RESOLVED', { entityType: 'duplicateGroup', entityId: group.id, primaryId });
+    emitToProjectMembers(p.id, { type: 'project.updated' }, { exclude: req.user.id });
 
     res.json({ resolved: true, primaryId });
   } catch (err) {

@@ -129,6 +129,23 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
     }
   }, [pid, primarySel, resolving, load, refreshProject]);
 
+  // prompt23 Task 10 — "Not duplicates": the suggestion is a false positive; keep
+  // every record active and resolve the group without merging.
+  const handleKeepAll = useCallback(async (gid) => {
+    if (resolving[gid]) return;
+    setResolving(prev => ({ ...prev, [gid]: true }));
+    setResolveErr(prev => ({ ...prev, [gid]: '' }));
+    try {
+      await screeningApi.resolveDuplicateGroup(pid, gid, { keepAll: true });
+      await load();
+      if (refreshProject) await refreshProject();
+    } catch (e) {
+      setResolveErr(prev => ({ ...prev, [gid]: e?.message || 'Failed to update this group.' }));
+    } finally {
+      setResolving(prev => ({ ...prev, [gid]: false }));
+    }
+  }, [pid, resolving, load, refreshProject]);
+
   const unresolved = groups.filter(g => !g.resolved);
   const resolved   = groups.filter(g => g.resolved);
 
@@ -209,6 +226,7 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
                     selectedId={primarySel[group.id]}
                     onSelect={(rid) => setPrimarySel(prev => ({ ...prev, [group.id]: rid }))}
                     onResolve={() => handleResolve(group.id)}
+                    onKeepAll={() => handleKeepAll(group.id)}
                     resolving={!!resolving[group.id]}
                     resolveError={resolveErr[group.id]}
                   />
@@ -285,7 +303,7 @@ function SectionHeader({ label, count, countColor = C.muted }) {
 }
 
 // ── DuplicateGroup ───────────────────────────────────────────────────────────
-function DuplicateGroup({ group, isLeader, selectedId, onSelect, onResolve, resolving, resolveError }) {
+function DuplicateGroup({ group, isLeader, selectedId, onSelect, onResolve, onKeepAll, resolving, resolveError }) {
   const records  = group.records || [];
   const resolved = !!group.resolved;
   const pct      = pctOf(group.similarity);
@@ -346,12 +364,20 @@ function DuplicateGroup({ group, isLeader, selectedId, onSelect, onResolve, reso
       {editable && (
         <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.brd}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 11.5, color: C.muted }}>
-            Others in this group will be marked as duplicates.
+            Keep the selected record and mark the rest as duplicates — or keep them all if these aren&rsquo;t duplicates.
           </span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, flexWrap: 'wrap' }}>
             {resolveError && (
               <span style={{ fontSize: 11, color: C.red, fontFamily: MONO }}>{resolveError}</span>
             )}
+            <Button
+              variant="ghost"
+              onClick={onKeepAll}
+              disabled={resolving}
+              title="These are not duplicates — keep every record as a separate study"
+            >
+              {resolving ? '…' : 'Not duplicates — keep all'}
+            </Button>
             <Button
               variant="primary"
               onClick={onResolve}
@@ -371,6 +397,9 @@ function DuplicateGroup({ group, isLeader, selectedId, onSelect, onResolve, reso
 function RecordRow({ record, groupId, isSelected, editable, onSelect }) {
   const title    = record.title || 'Untitled record';
   const metaBits = [record.authors, record.year, record.journal].filter(Boolean);
+  const [showFull, setShowFull] = useState(false);
+  const abstract = record.abstract || '';
+  const isLong = abstract.length > 240; // worth a "Show more" toggle
 
   return (
     <div
@@ -458,16 +487,26 @@ function RecordRow({ record, groupId, isSelected, editable, onSelect }) {
             </IdField>
           </div>
 
-          {/* Abstract preview (2-3 line clamp) */}
-          {record.abstract && (
+          {/* Abstract preview — 3-line clamp by default, expandable (prompt23 Task 10) */}
+          {abstract && (
             <div style={{ marginTop: 10 }}>
               <FieldLabel>Abstract</FieldLabel>
               <div style={{
                 fontSize: 11.5, color: C.txt2, lineHeight: 1.5, marginTop: 3,
-                display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden',
+                whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
+                ...(showFull ? {} : { display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }),
               }}>
-                {record.abstract}
+                {abstract}
               </div>
+              {isLong && (
+                <button
+                  type="button"
+                  onClick={(e) => { e.stopPropagation(); setShowFull(v => !v); }}
+                  style={{ marginTop: 4, background: 'none', border: 'none', color: C.acc, fontSize: 11, fontFamily: FONT, fontWeight: 600, cursor: 'pointer', padding: 0 }}
+                >
+                  {showFull ? '▲ Show less' : '▼ Show more'}
+                </button>
+              )}
             </div>
           )}
         </div>

@@ -247,7 +247,7 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
             active.key === 'import'
               ? <div style={{ maxWidth: 800, margin: '0 auto', padding: '8px 16px 40px' }}>
                   <SiftImport embedded embeddedPid={pid}
-                    onDone={() => { setTab('screening'); refreshProject(); }}
+                    onDone={() => { setTab('duplicates'); refreshProject(); }}
                     onBack={() => setTab('overview')} />
                 </div>
               : isFullBleed
