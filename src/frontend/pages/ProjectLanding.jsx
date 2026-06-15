@@ -370,9 +370,9 @@ function buildActions(p, handlers) {
   const shared = !!p._shared;
   const actions = [];
 
-  if (linked) {
-    actions.push({ label: 'Open META·SIFT', icon: 'flow', onClick: () => handlers.openSift(p) });
-  }
+  // prompt18 — screening is an in-project stage, not a separate app. Always offer
+  // it; opening it auto-creates the screening workspace if it doesn't exist yet.
+  actions.push({ label: 'Screening', icon: 'filter', onClick: () => handlers.openSift(p) });
   if (owner || canEdit) {
     actions.push({ label: 'Rename', icon: 'pencil', onClick: () => handlers.rename(p) });
   }
@@ -448,15 +448,15 @@ function ProjectCard({ p, handlers, reduced }) {
         <ActionMenu actions={buildActions(p, handlers)} />
       </div>
 
-      {/* linked META·SIFT */}
+      {/* screening status (prompt18) — one project, screening is a stage inside it */}
       <div style={{ marginBottom: 11 }}>
         {linked ? (
           <Pill variant="teal" style={{ maxWidth: '100%' }}>
-            <Icon name="flow" size={11} />
-            <span className="t-truncate" style={{ maxWidth: 210 }}>META·SIFT · {linked.title || 'Workspace'}</span>
+            <Icon name="filter" size={11} />
+            <span className="t-truncate" style={{ maxWidth: 210 }}>Screening{linked.recordCount ? ` · ${linked.recordCount} records` : ' ready'}</span>
           </Pill>
         ) : (
-          <Pill variant="default"><Icon name="link" size={11} />Not linked</Pill>
+          <Pill variant="default"><Icon name="filter" size={11} />Screening</Pill>
         )}
       </div>
 
@@ -500,16 +500,14 @@ function ProjectCard({ p, handlers, reduced }) {
         >
           Open Project <Icon name="arrowRight" size={14} />
         </Btn>
-        {linked && (
-          <Btn
-            variant="ghost"
-            onClick={() => handlers.openSift(p)}
-            title="Open the linked META·SIFT workspace"
-            style={{ padding: '8px 12px' }}
-          >
-            <Icon name="flow" size={14} /> META·SIFT
-          </Btn>
-        )}
+        <Btn
+          variant="ghost"
+          onClick={() => handlers.openSift(p)}
+          title="Open the Screening stage"
+          style={{ padding: '8px 12px' }}
+        >
+          <Icon name="filter" size={14} /> Screening
+        </Btn>
       </div>
       {owner && p._archived && (
         <div style={{ marginTop: 8, fontSize: 10.5, color: C.muted, fontFamily: MONO }}>
@@ -605,7 +603,6 @@ function ProjectTable({ rows, handlers }) {
 function CreateModal({ onClose, onCreated }) {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [createLinkedSift, setCreateLinkedSift] = useState(true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -617,7 +614,9 @@ function CreateModal({ onClose, onCreated }) {
     try {
       const res = await api.projects.create(trimmed, {
         description: description.trim() || undefined,
-        createLinkedSift,
+        // prompt18 — a review project always includes its screening stage; the
+        // screening workspace is created automatically (no opt-in checkbox).
+        createLinkedSift: true,
       });
       onCreated(res);
     } catch (e2) {
@@ -643,21 +642,20 @@ function CreateModal({ onClose, onCreated }) {
                     placeholder="A short summary of the review question"
                     style={{ ...inputStyle, resize: 'vertical' }} />
         </div>
-        <label style={{
-          display: 'flex', alignItems: 'flex-start', gap: 11, padding: '12px 14px', cursor: 'pointer',
+        <div style={{
+          display: 'flex', alignItems: 'flex-start', gap: 11, padding: '12px 14px',
           background: alpha(C.acc, 0.06), border: `1px solid ${alpha(C.acc, 0.22)}`, borderRadius: 10, marginBottom: 20,
         }}>
-          <input type="checkbox" checked={createLinkedSift} onChange={(e) => setCreateLinkedSift(e.target.checked)}
-                 style={{ marginTop: 2, accentColor: C.acc, width: 15, height: 15 }} />
+          <Icon name="filter" size={15} style={{ marginTop: 2, color: C.acc, flexShrink: 0 }} />
           <span>
             <span style={{ display: 'block', fontSize: 12.5, fontWeight: 600, color: C.txt }}>
-              Create linked META·SIFT screening project
+              Screening is built in
             </span>
             <span style={{ display: 'block', fontSize: 11.5, color: C.txt2, marginTop: 3, lineHeight: 1.55 }}>
-              Spins up a collaborative citation-screening workspace linked to this project.
+              Your project includes a collaborative Screening stage — import references, de-duplicate, screen titles &amp; abstracts with your team, then flow accepted studies into Data Extraction. Nothing to link.
             </span>
           </span>
-        </label>
+        </div>
         {err && <div style={{ marginBottom: 14, fontSize: 12, color: C.red }}>{err}</div>}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
           <Btn type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
@@ -1175,7 +1173,9 @@ export default function ProjectLanding() {
   /* ── Action handlers ──────────────────────────────────────────── */
   const handlers = useMemo(() => ({
     open:      (p) => { recordRecent(p); navigate(`/app/project/${encodeURIComponent(p.id)}`); },
-    openSift:  (p) => { const id = p._linkedMetaSift && p._linkedMetaSift.id; if (id) navigate(`/sift-beta/projects/${encodeURIComponent(id)}`); },
+    // prompt18 — "Screening" opens the project's in-app Screening stage (deep
+    // link ?tab=screening); the workspace is auto-created there if missing.
+    openSift:  (p) => { if (p && p.id) navigate(`/app/project/${encodeURIComponent(p.id)}?tab=screening`); },
     rename:    (p) => setModal({ type: 'rename', project: p }),
     archive:   (p) => setModal({ type: 'archive', project: p }),
     unarchive: async (p) => { try { await api.projects.unarchive(p.id); await reload(); } catch { setError('Could not unarchive the project.'); } },
@@ -1289,7 +1289,7 @@ export default function ProjectLanding() {
             <KpiTile icon="user"     label="Owned"            value={kpis.owned}      color={C.gold}  reduced={reduced} />
             <KpiTile icon="award"    label="I lead"           value={kpis.lead}       color={C.purp}  reduced={reduced} />
             <KpiTile icon="activity" label="Active"           value={kpis.active}     color={C.grn}   reduced={reduced} />
-            <KpiTile icon="flow"     label="Linked META·SIFT" value={kpis.linked}     color={C.teal}  reduced={reduced} />
+            <KpiTile icon="filter"   label="With screening"   value={kpis.linked}     color={C.teal}  reduced={reduced} />
             <KpiTile icon="layers"   label="Archived"         value={kpis.archived}   color={C.muted} reduced={reduced} />
           </motion.div>
         )}

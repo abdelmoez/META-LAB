@@ -253,7 +253,9 @@ describe('prompt6 T2 — linked pair creation (both directions, opt-in only)', (
     expect(lsp.title).toBe(`Pair ${r}`);               // same title
     expect(lsp.ownerId).toBe(a.id);                    // same owner
     expect(lsp.linkedMetaLabProjectId).toBe(project.id);
-    expect(project._linkedMetaSift).toEqual({ id: lsp.id, title: lsp.title });
+    // _linkedMetaSift carries the prompt11 landing-card fields too
+    // (progressStatus/recordCount/memberCount); assert the identity subset.
+    expect(project._linkedMetaSift).toMatchObject({ id: lsp.id, title: lsp.title });
     expect(project._permissions.isOwner).toBe(true);
     expect(project._permissions.canEdit).toBe(true);
     // PICO snapshot captured at create (mkProject always carries a pico block).

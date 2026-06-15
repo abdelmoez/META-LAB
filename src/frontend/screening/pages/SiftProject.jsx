@@ -21,6 +21,7 @@ import DuplicatesTab     from '../tabs/DuplicatesTab.jsx';
 import ConflictsTab      from '../tabs/ConflictsTab.jsx';
 import ProjectControlTab from '../tabs/ProjectControlTab.jsx';
 import ExportTab         from '../tabs/ExportTab.jsx';
+import SiftImport        from './SiftImport.jsx';
 
 const TABS = [
   { key: 'overview',      label: 'Overview',        icon: 'grid',        Comp: OverviewTab },
@@ -35,17 +36,39 @@ const TABS = [
 // Legacy deep links used ?tab=members — the roster now lives inside Project Control.
 const TAB_ALIASES = { members: 'control' };
 
+// prompt18 — embedded "Screening stage" sub-navigation. The SAME META·SIFT
+// engine, rendered INSIDE the META·LAB project workspace as one "Screening"
+// stage. "Import" becomes an inline sub-view (SiftImport) instead of a separate
+// page; the page chrome, account menu, notifications, and the META·LAB link
+// control are all dropped (the host project provides them). Order follows the
+// natural screening flow: Import → Duplicates → Title/Abstract → Conflicts →
+// Full Text → Settings → Export.
+const EMBEDDED_TABS = [
+  { key: 'overview',      label: 'Overview',         icon: 'grid',        Comp: OverviewTab },
+  { key: 'import',        label: 'Import',           icon: 'upload',      Comp: null },
+  { key: 'duplicates',    label: 'Duplicates',       icon: 'copy',        Comp: DuplicatesTab },
+  { key: 'screening',     label: 'Title & Abstract', icon: 'filter',      Comp: ScreeningTab },
+  { key: 'conflicts',     label: 'Conflicts',        icon: 'alert',       Comp: ConflictsTab },
+  { key: 'second-review', label: 'Full Text',        icon: 'checkSquare', Comp: SecondReviewTab },
+  { key: 'control',       label: 'Settings',         icon: 'sliders',     Comp: ProjectControlTab },
+  { key: 'export',        label: 'Export',           icon: 'download',    Comp: ExportTab },
+];
+
 const PROGRESS_BADGE = {
   not_started: { label: 'NOT STARTED', color: C.muted },
   in_progress: { label: 'IN PROGRESS', color: C.acc },
   done:        { label: 'DONE',        color: C.grn },
 };
 
-export default function SiftProject() {
-  const { pid } = useParams();
+export default function SiftProject({ embedded = false, embeddedPid = null } = {}) {
+  const routeParams = useParams();
+  const pid = embedded ? embeddedPid : routeParams.pid;
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
-  const rawTab = params.get('tab') || 'overview';
+  // Embedded mode keeps the active sub-tab in local state so it never writes to
+  // the host project's URL (?tab= belongs to the META·LAB workspace, not here).
+  const [embTab, setEmbTab] = useState('overview');
+  const rawTab = embedded ? embTab : (params.get('tab') || 'overview');
   const tab = TAB_ALIASES[rawTab] || rawTab;
 
   const [project, setProject] = useState(null);
@@ -80,8 +103,10 @@ export default function SiftProject() {
     catch (e) {
       if (e?.status === 403 || e?.status === 404) {
         setProject(null);
-        setError('Your access to this project changed. Returning to your projects…');
-        setTimeout(() => navigate('/sift-beta'), 1800);
+        setError('Your access to this project changed.');
+        // Standalone: bounce to the dashboard. Embedded: the host workspace owns
+        // navigation — just surface the message in place.
+        if (!embedded) setTimeout(() => navigate('/sift-beta'), 1800);
       }
     }
   }, [pid, navigate]);
@@ -102,10 +127,81 @@ export default function SiftProject() {
     canResolveConflicts: project.canResolveConflicts, blindMode: project.blindMode,
   } : {};
 
-  const active = TABS.find(t => t.key === tab) || TABS[0];
+  const tabSet = embedded ? EMBEDDED_TABS : TABS;
+  const active = tabSet.find(t => t.key === tab) || tabSet[0];
   const ActiveComp = active.Comp;
   const isFullBleed = active.key === 'screening';
   const pb = PROGRESS_BADGE[project?.progressStatus] || PROGRESS_BADGE.not_started;
+
+  // ── Embedded "Screening stage" (prompt18) ───────────────────────────────
+  // Rendered inside the META·LAB monolith's Screening tab. No page shell, no
+  // account menu / notifications / META·LAB link chip — just the screening
+  // sub-navigation + body, sized to sit within the host workspace content area.
+  if (embedded) {
+    const tabBtn = (t) => {
+      const on = t.key === active.key;
+      return (
+        <button key={t.key} onClick={() => setTab(t.key)}
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer', fontFamily: FONT,
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            fontSize: 12.5, fontWeight: on ? 600 : 500, color: on ? C.txt : C.txt2,
+            padding: '10px 13px', borderBottom: `2px solid ${on ? C.acc : 'transparent'}`,
+            transition: 'color 0.15s', whiteSpace: 'nowrap',
+          }}
+          onMouseEnter={e => { if (!on) e.currentTarget.style.color = C.txt; }}
+          onMouseLeave={e => { if (!on) e.currentTarget.style.color = C.txt2; }}>
+          <Icon name={t.icon} size={13} style={{ opacity: on ? 1 : 0.75 }} />
+          {t.label}
+        </button>
+      );
+    };
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 168px)', minHeight: 520, background: C.bg, border: `1px solid ${C.brd}`, borderRadius: 10, overflow: 'hidden', fontFamily: FONT, color: C.txt }}>
+        <GlobalStyle />
+        {/* Screening sub-navigation — the META·SIFT engine, nested in the stage */}
+        <div style={{ display: 'flex', gap: 2, padding: '0 12px', background: C.surf, borderBottom: `1px solid ${C.brd}`, flexShrink: 0, overflowX: 'auto', alignItems: 'center' }}>
+          {tabSet.map(tabBtn)}
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10, paddingRight: 4, flexShrink: 0 }}>
+            {project?.blindMode && <Badge color={C.gold}>Blind</Badge>}
+            {project?._count && (
+              <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>
+                {project._count.records} records · {project._count.members} members
+              </span>
+            )}
+          </div>
+        </div>
+
+        <div style={{ flex: 1, overflow: isFullBleed ? 'hidden' : 'auto', minHeight: 0 }}>
+          {loading && <div style={{ padding: 32 }}><Loading label="Loading screening…" /></div>}
+
+          {!loading && disabled && (
+            <div style={{ padding: 32, maxWidth: 520, margin: '40px auto', textAlign: 'center', border: `1px solid ${alpha(C.gold, '40')}`, borderRadius: 12, background: alpha(C.gold, '08') }}>
+              <div style={{ fontSize: 32, marginBottom: 14 }}>🔧</div>
+              <div style={{ fontSize: 15, fontWeight: 600, color: C.gold, marginBottom: 8 }}>Screening is temporarily unavailable</div>
+              <div style={{ fontSize: 13, color: C.txt2 }}>{disabled}</div>
+            </div>
+          )}
+
+          {!loading && error && <div style={{ padding: 32, maxWidth: 720, margin: '0 auto' }}><ErrorBanner onRetry={load}>{error}</ErrorBanner></div>}
+
+          {!loading && !error && !disabled && project && (
+            active.key === 'import'
+              ? <div style={{ maxWidth: 800, margin: '0 auto', padding: '8px 16px 40px' }}>
+                  <SiftImport embedded embeddedPid={pid}
+                    onDone={() => { setTab('screening'); refreshProject(); }}
+                    onBack={() => setTab('overview')} />
+                </div>
+              : isFullBleed
+                ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} /></div>
+                : <div style={{ maxWidth: 1180, margin: '0 auto', padding: '20px 20px 48px' }}>
+                    <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} />
+                  </div>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight: '100vh', height: '100vh', background: C.bg, fontFamily: FONT, color: C.txt, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>

@@ -119,6 +119,11 @@ export const screeningApi = {
   getLinkable:  (pid)                  => req('GET',  `/projects/${pid}/linkable`),
   linkMetaLab:  (pid, metaLabProjectId) => req('POST', `/projects/${pid}/link`, { metaLabProjectId }),
 
+  // Unified Review Workspace (prompt18) — resolve/ensure the internal screening
+  // module for a META·LAB project. Returns { screenProjectId, created, repaired }.
+  // Owner: creates it silently if missing. Member: resolves it. 404 = no access.
+  getWorkspace: (mlpid)                => req('GET',  `/metalab/${mlpid}/workspace`),
+
   // Second Review (Part 3)
   listSecondReview: (pid)            => req('GET',  `/projects/${pid}/second-review`),
   finalizeRecord:   (pid, rid, body) => req('POST', `/projects/${pid}/records/${rid}/finalize`, body),

@@ -15,6 +15,7 @@ import { mkProject } from '../../src/research-engine/project-model/defaults.js';
 import { filterRecordsByKeywords, countArticlesByKeyword } from '../../src/research-engine/screening/keywordFilter.js';
 import { studyFromRecord } from './screeningReviewController.js';
 import { recordUsage, USAGE } from '../utils/usage.js';
+import { ensureScreenModuleForMetaLab } from '../screening/ensureWorkspace.js';
 
 // Parse a comma-separated keyword param into a clean phrase list.
 function parseKeywordParam(v) {
@@ -1467,6 +1468,28 @@ export async function getMetaLabSummary(req, res) {
     });
   } catch (err) {
     console.error('[screening] getMetaLabSummary:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * GET /metalab/:mlpid/workspace  (prompt18 — unified Review Workspace)
+ *
+ * Resolve — and, for the project OWNER, silently create — the internal META·SIFT
+ * screening module for a META·LAB project. This powers the unified "Screening"
+ * stage so the frontend never asks the user to link anything.
+ *
+ * Returns { screenProjectId, ownerId, created, repaired }.
+ * 404 when the caller has no access to the project (existence-hiding).
+ * (Under checkEnabled — returns 503 when META·SIFT is disabled by an admin.)
+ */
+export async function getWorkspace(req, res) {
+  try {
+    const result = await ensureScreenModuleForMetaLab(req.params.mlpid, req.user);
+    if (!result) return res.status(404).json({ error: 'Project not found' });
+    return res.json(result);
+  } catch (err) {
+    console.error('[screening] getWorkspace:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }

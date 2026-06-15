@@ -349,3 +349,33 @@ npx vitest run tests/screening/unit/
 ```
 
 The smoke scripts under `scripts/smoke-*.mjs` and `server/scripts/smoke-secondreview.mjs` are standalone equivalents kept for manual debugging.
+
+---
+
+## prompt18 — Unified Review Workspace (Screening as one stage)
+
+**What was tested:** the new resolver/repair endpoint `GET /api/screening/metalab/:mlpid/workspace`
+and the unified-project flow, plus a no-regression pass on the screening + integration suites.
+
+New suite: `tests/screening/integration/prompt18.test.js` (live API on 127.0.0.1:3001):
+
+| # | Case | Result |
+|---|------|--------|
+| T1 | Create project with `createLinkedSift` → screening module created; workspace resolves it (`created:false`) | ✅ |
+| T2 | "Old" project (no module) → module auto-created on first resolve (`created:true`); idempotent on repeat (`created:false`) | ✅ |
+| T3 | Workspace member resolves the SAME module (`created:false`); a stranger gets 404 | ✅ |
+| T4 | Unknown META·LAB project id → 404 | ✅ |
+
+**Run results (this session):**
+- Unit: **653 passed / 6 pre-existing fails** (`serverStorage.test.js` timing — untouched by this work). No new regressions.
+- Integration (live server): screening + integration suites green, including prompt18 (5) and prompt2 link/handoff/conflict/second-review/PDF/admin (6).
+- Fixed a stale assertion in `prompt6.test.js` T2 (`_linkedMetaSift` gained prompt11 landing-card keys; switched `toEqual` → `toMatchObject` for the identity subset).
+
+**Coverage of prompt18 acceptance items:** create→module ✅(T1); ensure idempotent ✅(T2); old project gets module on demand ✅(T2 repair); screening uses correct module ✅(T1/T3 same id); extraction handoff + PRISMA sync ✅(prompt2); permissions/no-leak ✅(T3/T4); no duplicate module ✅(T2).
+
+**Reproduce:**
+```bash
+npm run server
+npx vitest run tests/screening/integration/prompt18.test.js --pool=forks --poolOptions.forks.singleFork=true
+node server/scripts/backfill-workspaces.js   # one-time data repair for pre-existing projects
+```

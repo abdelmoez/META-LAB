@@ -7,7 +7,7 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { subscribeToSaveStatus, flushStorage } from '../storage/serverStorage.js';
 import UserMenu from '../components/UserMenu.jsx';
 import NotificationsBell from '../components/NotificationsBell.jsx';
@@ -23,6 +23,10 @@ export default function AppWorkspace() {
   // seeds its activeId from this prop (durable across refresh; no projects[0] snap-back).
   const { projectId } = useParams();
   const navigate = useNavigate();
+  // prompt18 — /app/project/:id?tab=screening deep-links straight into a stage
+  // (e.g. the "Screening" action on the project landing). Read once for the seed.
+  const [searchParams] = useSearchParams();
+  const initialTab = searchParams.get('tab') || null;
 
   // prompt11 (route-sync): keep the URL in step with the project the monolith
   // has open, so a refresh reopens the project the user actually switched to
@@ -41,7 +45,7 @@ export default function AppWorkspace() {
 
   return (
     <>
-      <MetaLab initialProjectId={projectId || null} onProjectChange={onProjectChange} onBackToProjects={onBackToProjects} />
+      <MetaLab initialProjectId={projectId || null} initialTab={initialTab} onProjectChange={onProjectChange} onBackToProjects={onBackToProjects} />
 
       {/* ── Autosave status (bottom-right, non-interactive) ─────────── */}
       <div

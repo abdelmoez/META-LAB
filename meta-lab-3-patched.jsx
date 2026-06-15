@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef, memo } from "react";
 import { METHODS_CONTENT, NOT_IMPLEMENTED } from "./src/research-engine/docs/methods-content.js";
 import { screeningApi } from "./src/frontend/screening/api-client/screeningApi.js";
+import SiftProject from "./src/frontend/screening/pages/SiftProject.jsx";
 import { PERMISSION_PRESETS, ASSIGNABLE_PRESETS } from "./src/research-engine/screening/permissionPresets.js";
 import { useRealtime } from "./src/frontend/hooks/useRealtime.js";
 import { flushStorage, hasPendingSave } from "./src/frontend/storage/serverStorage.js";
@@ -2616,7 +2617,7 @@ function ScreeningModule({project,updateProject,activeId,updNested}){
 /* META·SIFT link — auto-fills the PRISMA flow from the linked screening project (Part 12).
    The manual ScreeningModule above is preserved in source but no longer rendered:
    title/abstract screening is now owned by META·SIFT. project.records is never deleted. */
-function MetaSiftPrismaSync({project,updateProject,activeId}){
+function MetaSiftPrismaSync({project,updateProject,activeId,setTab}){
   const[st,setSt]=useState({loading:true});
   const[creating,setCreating]=useState(false);
   const apply=(summary)=>{
@@ -2655,7 +2656,7 @@ function MetaSiftPrismaSync({project,updateProject,activeId}){
     setSt(s=>({...s,loading:true,error:null}));
     try{
       const r=await fetch(`/api/screening/metalab/${project.id}/summary`,{credentials:"include"});
-      if(!r.ok){ setSt({loading:false,error:r.status===503?"META·SIFT is currently disabled by the administrator.":"Couldn't reach META·SIFT."}); return; }
+      if(!r.ok){ setSt({loading:false,error:r.status===503?"Screening is currently disabled by the administrator.":"Couldn't reach the screening service."}); return; }
       const data=await r.json();
       setSt({loading:false,...data});
       if(doApply&&data.linked) apply(data);
@@ -2664,9 +2665,9 @@ function MetaSiftPrismaSync({project,updateProject,activeId}){
   useEffect(()=>{ load(true); },[load]);
 
   const wrap={background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:20};
-  if(st.loading) return <div style={wrap}><div style={{fontSize:12,color:C.muted}}>Checking META·SIFT…</div></div>;
+  if(st.loading) return <div style={wrap}><div style={{fontSize:12,color:C.muted}}>Checking screening…</div></div>;
   if(st.error) return <div style={{...wrap,borderColor:themeAlpha(C.yel,'55')}}>
-    <div style={{fontSize:12,fontWeight:800,color:C.yel,letterSpacing:0.5,marginBottom:6}}>⬡ META·SIFT</div>
+    <div style={{fontSize:12,fontWeight:800,color:C.yel,letterSpacing:0.5,marginBottom:6}}>⬡ Screening</div>
     <div style={{fontSize:12,color:C.muted,marginBottom:10}}>{st.error} You can still enter PRISMA numbers manually below.</div>
     <button onClick={()=>load(true)} style={{...btnS("ghost"),fontSize:11}}>↻ Retry</button>
   </div>;
@@ -2680,32 +2681,32 @@ function MetaSiftPrismaSync({project,updateProject,activeId}){
     }catch{ setCreating(false); }
   };
   if(!st.linked) return <div style={{...wrap,borderColor:themeAlpha(C.acc,'40'),background:C.bg}}>
-    <div style={{fontSize:12,fontWeight:800,color:C.acc,letterSpacing:0.5,marginBottom:6}}>⬡ Title / abstract screening is now in META·SIFT</div>
+    <div style={{fontSize:12,fontWeight:800,color:C.acc,letterSpacing:0.5,marginBottom:6}}>⬡ PRISMA fills in from Screening</div>
     <div style={{fontSize:12,color:C.muted,lineHeight:1.6,marginBottom:12}}>
-      Screen your references with two reviewers in META·SIFT. Create a linked META·SIFT screening project for this review — they share one Review Workspace (same owner, members, and permissions), accepted second-review studies flow back to Data Extraction, and the PRISMA numbers below auto-fill.
+      Screen your references in the <strong style={{color:C.txt}}>Screening</strong> stage — import, de-duplicate, screen titles &amp; abstracts with your team, resolve conflicts, and assess full text. As you go, these PRISMA counts fill in automatically and accepted studies flow into Data Extraction.
     </div>
     <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-      <button onClick={createLinked} disabled={creating} style={btnS("primary")}>{creating?"Creating…":"+ Create & link META·SIFT project"}</button>
-      <button onClick={()=>{window.location.href="/sift-beta";}} style={btnS("ghost")}>Open META·SIFT →</button>
+      {setTab&&<button onClick={()=>setTab("screening")} style={btnS("primary")}>Go to Screening →</button>}
+      <button onClick={()=>load(true)} style={btnS("ghost")}>↻ Sync now</button>
     </div>
   </div>;
   const p=st.prisma;
   return <div style={{...wrap,borderColor:themeAlpha(C.grn,'55')}}>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",flexWrap:"wrap",gap:10,marginBottom:8}}>
-      <div style={{fontSize:12,fontWeight:800,color:C.grn,letterSpacing:0.5,minWidth:0,flex:"1 1 auto"}}>⬡ Linked to META·SIFT — PRISMA auto-filled</div>
+      <div style={{fontSize:12,fontWeight:800,color:C.grn,letterSpacing:0.5,minWidth:0,flex:"1 1 auto"}}>⬡ PRISMA — auto-filled from Screening</div>
       <div style={{display:"flex",gap:8,minWidth:0}}>
         <button onClick={()=>load(true)} style={{...btnS("ghost"),fontSize:11}}>↻ Sync now</button>
-        <button onClick={()=>{window.location.href=`/sift-beta/projects/${st.screeningProjectId}`;}} title={st.title} style={{...btnS("primary"),fontSize:11}}>Open “<span style={{display:"inline-block",maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",verticalAlign:"bottom"}}>{st.title}</span>” →</button>
+        {setTab&&<button onClick={()=>setTab("screening")} style={{...btnS("primary"),fontSize:11}}>Open Screening →</button>}
       </div>
     </div>
     <div style={{fontSize:11,color:C.muted,lineHeight:1.7}}>
       <strong style={{color:C.txt}}>{p.identified}</strong> identified · <strong style={{color:C.txt}}>{p.duplicatesRemoved}</strong> duplicates removed · <strong style={{color:C.txt}}>{p.screened}</strong> screened · <strong style={{color:C.red}}>{p.excludedTitleAbstract}</strong> excluded (title/abstract) · <strong style={{color:C.txt}}>{p.fullTextAssessed}</strong> full-text assessed · <strong style={{color:C.red}}>{p.fullTextExcluded}</strong> full-text excluded · <strong style={{color:C.grn}}>{p.included}</strong> included → Data Extraction.
     </div>
-    <div style={{fontSize:10,color:C.dim,marginTop:8}}>These numbers update automatically from META·SIFT screening. You can still fine-tune the fields below; “Sync now” re-pulls from META·SIFT.</div>
+    <div style={{fontSize:10,color:C.dim,marginTop:8}}>These numbers update automatically from the Screening stage. You can still fine-tune the fields below; “Sync now” re-pulls the latest.</div>
   </div>;
 }
 
-function PRISMATab({project,updNested,updateProject,activeId}){
+function PRISMATab({project,updNested,updateProject,activeId,setTab}){
   const{prisma}=project;
   const ch=(k,v)=>updNested("prisma",k,v);
   const addR=()=>ch("reasons",[...prisma.reasons,{id:uid(),r:"",n:""}]);
@@ -2721,7 +2722,7 @@ function PRISMATab({project,updNested,updateProject,activeId}){
   const Arrow=()=><div style={{textAlign:"center",color:C.dim,fontSize:16,margin:"4px 0"}}>↓</div>;
   return(<div>
     <SectionHeader icon="flow" title="Screening & PRISMA Flow" desc="Title/abstract screening is handled in META·SIFT (two-reviewer, with duplicates & conflicts). Link a META·SIFT project and the PRISMA 2020 flow diagram below fills in automatically."/>
-    {updateProject&&<MetaSiftPrismaSync project={project} updateProject={updateProject} activeId={activeId}/>}
+    {updateProject&&<MetaSiftPrismaSync project={project} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
     <div style={{display:"grid",gridTemplateColumns:"320px 1fr",gap:20}}>
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
         {[{title:"IDENTIFICATION",fields:[["dbs","Records from databases"],["reg","Records from registers"],["other","Records from other sources"],["dedupe","Duplicates removed"]]},
@@ -6741,16 +6742,20 @@ const TABS=[
   {id:"pico",       icon:"target",      label:"PICO & Question",      phase:"Plan",    num:1},
   {id:"prospero",   icon:"clipboard",   label:"Protocol",             phase:"Plan",    num:2},
   {id:"search",     icon:"search",      label:"Search Builder",       phase:"Search",  num:3},
-  {id:"prisma",     icon:"flow",        label:"Screening & PRISMA",   phase:"Screen",  num:4},
-  {id:"extraction", icon:"table",       label:"Data Extraction",      phase:"Extract", num:5},
-  {id:"rob",        icon:"scale",       label:"Risk of Bias",         phase:"Extract", num:6},
-  {id:"analysis",   icon:"sigma",       label:"Meta-Analysis",        phase:"Analyze", num:7},
-  {id:"forest",     icon:"forest",      label:"Forest Plot",          phase:"Analyze", num:8},
-  {id:"sensitivity",icon:"activity",    label:"Sensitivity & Bias",   phase:"Analyze", num:9},
-  {id:"subgroup",   icon:"layers",      label:"Subgroup Analysis",    phase:"Analyze", num:10},
-  {id:"grade",      icon:"award",       label:"GRADE Certainty",      phase:"Report",  num:11},
-  {id:"report",     icon:"checkSquare", label:"PRISMA Checklist",     phase:"Report",  num:12},
-  {id:"manuscript", icon:"pencil",      label:"Manuscript Draft",     phase:"Report",  num:13},
+  // prompt18 — Screening is now ONE in-project stage that embeds the full
+  // META·SIFT engine (import → duplicates → title/abstract → conflicts → full
+  // text). The old "Screening & PRISMA" tab is demoted to the PRISMA flow only.
+  {id:"screening",  icon:"filter",      label:"Screening",            phase:"Screen",  num:4},
+  {id:"prisma",     icon:"flow",        label:"PRISMA Flow",          phase:"Screen",  num:5},
+  {id:"extraction", icon:"table",       label:"Data Extraction",      phase:"Extract", num:6},
+  {id:"rob",        icon:"scale",       label:"Risk of Bias",         phase:"Extract", num:7},
+  {id:"analysis",   icon:"sigma",       label:"Meta-Analysis",        phase:"Analyze", num:8},
+  {id:"forest",     icon:"forest",      label:"Forest Plot",          phase:"Analyze", num:9},
+  {id:"sensitivity",icon:"activity",    label:"Sensitivity & Bias",   phase:"Analyze", num:10},
+  {id:"subgroup",   icon:"layers",      label:"Subgroup Analysis",    phase:"Analyze", num:11},
+  {id:"grade",      icon:"award",       label:"GRADE Certainty",      phase:"Report",  num:12},
+  {id:"report",     icon:"checkSquare", label:"PRISMA Checklist",     phase:"Report",  num:13},
+  {id:"manuscript", icon:"pencil",      label:"Manuscript Draft",     phase:"Report",  num:14},
   // phase:null ⇒ reference page, NOT a workflow step — excluded from the
   // workflow map, progress denominator and "Next step" walker (all filter on t.phase).
   {id:"methods",    icon:"bookOpen",    label:"Methods & Equations",  phase:null,  group:"reference"},
@@ -6787,6 +6792,9 @@ function stepStatus(project){
     pico: (pico.P&&pico.I&&pico.O)?"done":(pico.P||pico.I||pico.O||pico.question)?"partial":"empty",
     prospero: (p.prospero&&p.prospero.fields&&Object.values(p.prospero.fields).filter(v=>v&&v.trim()).length>=15)?"done":(p.prospero&&p.prospero.fields&&Object.values(p.prospero.fields).filter(v=>v&&v.trim()).length>0)?"partial":"empty",
     search: (dbCount>=3&&search.string||(p.mesh&&p.mesh.results))?"done":(dbCount>0||search.string)?"partial":"empty",
+    // prompt18 — screening progress from the linked workspace rollup (record
+    // count) + PRISMA included count (set once studies reach Data Extraction).
+    screening: (()=>{ const lm=p._linkedMetaSift; const recs=(lm&&lm.recordCount)||0; const inc=prisma.included||0; return inc?"done":recs?"partial":"empty"; })(),
     prisma: prisma.included?"done":(prisma.dbs||prisma.dedupe)?"partial":"empty",
     extraction: (()=>{
       if(p.studies.length===0) return "empty";
@@ -6985,6 +6993,41 @@ function ProjectTitle({project,canRename,onRename}){
   );
 }
 
+/* ════════════ TAB: SCREENING (prompt18 — embedded META·SIFT engine) ════════════ */
+/* The Screening stage. META·SIFT stays a separate backend engine, but here it is
+   shown as ONE in-project stage: resolve (and, for the owner, silently create)
+   the linked screening module, then render its full workbench inline. The user
+   never "links a META·SIFT project" — it is created/repaired automatically. */
+function EmbeddedScreening({project}){
+  const lid=linkedSiftId(project);
+  const pid=project&&project.id;
+  const[spId,setSpId]=useState(lid||null);
+  const[state,setState]=useState(lid?"ready":"loading"); // loading|ready|error|disabled
+  const[msg,setMsg]=useState("");
+  useEffect(()=>{
+    let dead=false;
+    if(lid){setSpId(lid);setState("ready");return undefined;}
+    if(!pid){setState("error");setMsg("Open a project to start screening.");return undefined;}
+    setState("loading");
+    screeningApi.getWorkspace(pid)
+      .then(r=>{ if(dead)return;
+        if(r&&r.screenProjectId){setSpId(r.screenProjectId);setState("ready");}
+        else {setState("error");setMsg("Couldn't open the screening workspace.");} })
+      .catch(e=>{ if(dead)return;
+        if(e&&e.status===503){setState("disabled");setMsg(e.message||"Screening is temporarily unavailable.");}
+        else if(e&&e.status===404){setState("error");setMsg("Screening is available to the project owner and its members.");}
+        else {setState("error");setMsg((e&&e.message)||"Couldn't open the screening workspace.");} });
+    return()=>{dead=true;};
+  },[lid,pid]);
+
+  if(state==="ready"&&spId) return <SiftProject embedded embeddedPid={spId}/>;
+
+  const box={maxWidth:560,margin:"48px auto",textAlign:"center",border:`1px solid ${C.brd}`,borderRadius:12,background:C.card,padding:"32px 28px"};
+  if(state==="loading") return <div style={box}><div style={{fontSize:13,color:C.muted}}>Opening screening…</div></div>;
+  if(state==="disabled") return <div style={{...box,borderColor:themeAlpha(C.gold,'40'),background:themeAlpha(C.gold,'08')}}><div style={{fontSize:30,marginBottom:12}}>🔧</div><div style={{fontSize:15,fontWeight:600,color:C.gold,marginBottom:8}}>Screening is temporarily unavailable</div><div style={{fontSize:13,color:C.txt2}}>{msg}</div></div>;
+  return <div style={box}><div style={{fontSize:30,marginBottom:12}}>📭</div><div style={{fontSize:14,fontWeight:600,color:C.txt,marginBottom:8}}>Screening unavailable</div><div style={{fontSize:13,color:C.txt2}}>{msg}</div></div>;
+}
+
 /* ════════════ TAB: OVERVIEW (prompt6 Task 15) ════════════ */
 /* Project landing page — every project-enter path lands here: identity, team,
    linked screening workspace, PICO, progress, readiness, and the next step. */
@@ -7057,22 +7100,16 @@ function OverviewTab({project,setTab}){
         {kv("Last modified",fmtDate(project.modified||project.updatedAt))}
       </div>
 
-      {/* Linked META·SIFT */}
-      <div style={{...card,borderColor:lid?themeAlpha("var(--t-teal)","40"):C.brd}}>
-        <div style={{...secLbl,color:lid?"var(--t-teal)":C.muted}}>Linked META·SIFT</div>
-        {lid?(<>
-          <div title={linkedTitle||"Screening project"} style={{fontSize:13,fontWeight:700,color:C.txt,marginBottom:4,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}><Icon name="link" size={12} style={{marginRight:6,verticalAlign:"-1px"}}/>{linkedTitle||"Screening project"}</div>
-          <div style={{fontSize:11,color:C.muted,lineHeight:1.6,marginBottom:10}}>Screening decisions, PRISMA numbers, and accepted studies flow from this shared workspace.</div>
-          <button onClick={()=>{window.location.href=`/sift-beta/projects/${lid}`;}}
-            style={{background:"var(--t-teal)",border:"none",color:"var(--t-acc-text)",fontSize:11.5,fontWeight:700,fontFamily:"'IBM Plex Sans',sans-serif",padding:"7px 16px",borderRadius:7,cursor:"pointer"}}>
-            Open in META·SIFT →
-          </button>
-        </>):(<>
-          <div style={{fontSize:12,color:C.muted,lineHeight:1.6,marginBottom:10}}>
-            Not linked. Create a linked META·SIFT screening project to screen with your team and auto-fill the PRISMA flow.
-          </div>
-          <button onClick={()=>setTab("control")} style={{...btnS("ghost"),fontSize:11}}>Set up in Project Control →</button>
-        </>)}
+      {/* Screening (prompt18 — the META·SIFT engine, shown as one in-project stage) */}
+      <div style={{...card,borderColor:themeAlpha("var(--t-teal)","40")}}>
+        <div style={{...secLbl,color:"var(--t-teal)"}}>Screening</div>
+        <div style={{fontSize:12,color:C.muted,lineHeight:1.6,marginBottom:10}}>
+          Import references, remove duplicates, screen titles &amp; abstracts with your team, resolve conflicts, and assess full text — all in the Screening stage. Accepted studies flow into Data Extraction and the PRISMA numbers fill in automatically.
+        </div>
+        <button onClick={()=>setTab("screening")}
+          style={{background:"var(--t-teal)",border:"none",color:"var(--t-acc-text)",fontSize:11.5,fontWeight:700,fontFamily:"'IBM Plex Sans',sans-serif",padding:"7px 16px",borderRadius:7,cursor:"pointer"}}>
+          {(prisma.included||(project._linkedMetaSift&&project._linkedMetaSift.recordCount))?"Continue screening →":"Start screening →"}
+        </button>
       </div>
     </div>
 
@@ -7372,7 +7409,7 @@ function CtrlAddMember({lid,amOwner,onAdded}){
   );
 }
 
-function ControlTab({project,onAnnotate}){
+function ControlTab({project,onAnnotate,setTab}){
   const lid=linkedSiftId(project);
   const perms=projectPerms(project);
   const amProjectOwner=!project._shared;
@@ -7470,7 +7507,7 @@ function ControlTab({project,onAnnotate}){
 
   return(<div>
     <SectionHeader icon="sliders" title="Project Control"
-      desc="Manage the shared Review Workspace — status, members, roles, permissions, and the META·SIFT link — all in one place."
+      desc="Manage this review project — status, members, roles, and permissions — all in one place."
       badge={`Your role · ${perms.role}`}/>
 
     {perms.readOnly&&(
@@ -7489,7 +7526,7 @@ function ControlTab({project,onAnnotate}){
           ["Created",fmtDate(project.created||project.createdAt)],
           ["Last modified",fmtDate(project.modified||project.updatedAt)],
           ["Studies in extraction",String((project.studies||[]).length)],
-          ["Workspace",lid?((project._linkedMetaSift&&project._linkedMetaSift.title)||(sp&&sp.title)||"Linked"):"Not linked"],
+          ["Screening",lid?((project._linkedMetaSift&&project._linkedMetaSift.title)||(sp&&sp.title)||"Set up"):"Set up on open"],
         ].map(([k,v])=>(
           <div key={k} style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:12,padding:"4px 0",minWidth:0}}>
             <span style={{color:C.muted,flexShrink:0}}>{k}</span>
@@ -7503,13 +7540,13 @@ function ControlTab({project,onAnnotate}){
     {lid?(
       <div style={card}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-          <div style={secLbl}>Project status &amp; link{statusFlash&&<span style={{marginLeft:8,color:C.grn,textTransform:"none",letterSpacing:0,fontFamily:"'IBM Plex Mono',monospace"}}>✓ saved</span>}</div>
+          <div style={secLbl}>Project status{statusFlash&&<span style={{marginLeft:8,color:C.grn,textTransform:"none",letterSpacing:0,fontFamily:"'IBM Plex Mono',monospace"}}>✓ saved</span>}</div>
         </div>
         {spErr&&<div style={{fontSize:11.5,color:C.red,marginBottom:8}}>{spErr}</div>}
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:12}}>
           <div>
             <div style={{fontSize:12.5,color:C.txt,fontWeight:600}}>Status</div>
-            <div style={{fontSize:11,color:C.muted,marginTop:2}}>Where this review stands — stored on the shared workspace, visible in both apps.</div>
+            <div style={{fontSize:11,color:C.muted,marginTop:2}}>Where this review stands — shared across the whole project team.</div>
           </div>
           {canManageStatus?(
             <select value={spStatus} disabled={statusBusy}
@@ -7522,27 +7559,18 @@ function ControlTab({project,onAnnotate}){
           )}
         </div>
         <div style={{borderTop:`1px solid ${C.brd}`,paddingTop:12,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-          {(()=>{const linkedTagTitle=(project._linkedMetaSift&&project._linkedMetaSift.title)||(sp&&sp.title)||"Linked META·SIFT project";
-            return <span title={linkedTagTitle} style={{...tagS("green"),maxWidth:"100%",minWidth:0}}><Icon name="link" size={11}/> <span style={{minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{linkedTagTitle}</span></span>;})()}
-          <button onClick={()=>{window.location.href=`/sift-beta/projects/${lid}`;}} style={{...btnS("ghost"),fontSize:11}}>Open in META·SIFT →</button>
-          <span style={{fontSize:10.5,color:C.muted}}>Accepted second-review studies hand off to Data Extraction; PRISMA numbers sync from screening.</span>
+          {setTab&&<button onClick={()=>setTab("screening")} style={{...btnS("ghost"),fontSize:11}}><Icon name="filter" size={11}/> Open Screening →</button>}
+          <span style={{fontSize:10.5,color:C.muted}}>Accepted full-text studies hand off to Data Extraction; PRISMA numbers fill in from screening.</span>
         </div>
       </div>
     ):(
       <div style={{...card,borderColor:themeAlpha("var(--t-teal)","40"),background:C.bg}}>
-        <div style={{...secLbl,color:"var(--t-teal)"}}>Create &amp; link META·SIFT</div>
+        <div style={{...secLbl,color:"var(--t-teal)"}}>Screening</div>
         <div style={{fontSize:12,color:C.muted,lineHeight:1.6,marginBottom:12}}>
-          This review has no linked screening project yet. Create one to screen titles/abstracts with your team in META·SIFT —
-          same owner and title, shared members and permissions, PRISMA numbers and accepted studies flow back here automatically.
+          Open the <strong style={{color:C.txt}}>Screening</strong> stage to import references and screen with your team. The screening
+          workspace — including its members and permissions — is set up automatically the first time the owner opens it. No manual linking needed.
         </div>
-        {linkErr&&<div style={{fontSize:11.5,color:C.red,marginBottom:8}}>{linkErr}</div>}
-        {amProjectOwner?(
-          <button onClick={createLink} disabled={linkBusy} style={btnS("primary")}>
-            {linkBusy?"Creating…":"+ Create & link META·SIFT project"}
-          </button>
-        ):(
-          <div style={{fontSize:11.5,color:C.muted,fontStyle:"italic"}}>Only the project owner can create the linked screening project.</div>
-        )}
+        {setTab&&<button onClick={()=>setTab("screening")} style={btnS("primary")}>Go to Screening →</button>}
       </div>
     )}
 
@@ -7558,8 +7586,8 @@ function ControlTab({project,onAnnotate}){
       </div>
       {!lid?(
         <div style={{fontSize:12,color:C.muted,lineHeight:1.6}}>
-          Members are managed through the linked META·SIFT workspace. Create the link above to invite collaborators —
-          everyone you add participates in both apps according to their permissions.
+          Open the <strong style={{color:C.txt}}>Screening</strong> stage once to set up this project's workspace, then invite collaborators here —
+          everyone you add participates across the whole project according to their permissions.
         </div>
       ):data.loading?(
         <div style={{fontSize:12,color:C.muted}}>Loading members…</div>
@@ -7609,10 +7637,10 @@ function ControlTab({project,onAnnotate}){
 
 let _versionCache=null; // module-level so remounts don't refetch (same pattern as UserMenu.jsx)
 
-export default function MetaLab({ initialProjectId = null, onProjectChange = null, onBackToProjects = null } = {}){
+export default function MetaLab({ initialProjectId = null, initialTab = null, onProjectChange = null, onBackToProjects = null } = {}){
   const[projects,setProjects]=useState([]);
   const[activeId,setActiveId]=useState(null);
-  const[tab,setTab]=useState("overview"); // Overview is the landing tab (prompt6 Task 15)
+  const[tab,setTab]=useState(initialTab||"overview"); // Overview is the landing tab (prompt6 Task 15); a ?tab= deep-link (e.g. screening) overrides on first open
   const[loading,setLoading]=useState(true);
   const[newName,setNewName]=useState("");
   const[withSift,setWithSift]=useState(true);          // Task 2 — default ON
@@ -7658,7 +7686,7 @@ export default function MetaLab({ initialProjectId = null, onProjectChange = nul
       if(res?.value){pjs=JSON.parse(res.value);setProjects(pjs);}
     }catch(_){}
     if(want){
-      if(pjs.some(p=>p.id===want)){setActiveId(want);setTab("overview");}
+      if(pjs.some(p=>p.id===want)){setActiveId(want);setTab(initialTab||"overview");}
       // NEVER silently fall back to the first project — show the explicit
       // no-access panel instead (rendered in the main content area).
       else setDeepLinkMiss(want);
@@ -8290,16 +8318,6 @@ export default function MetaLab({ initialProjectId = null, onProjectChange = nul
                       {p._readOnly?"View":"Shared"}
                     </span>
                   )}
-                  {/* Linked META·SIFT badge (prompt6 Task 2) — opens the EXACT linked screening project */}
-                  {p._linkedMetaSift&&p._linkedMetaSift.id&&(
-                    <span title={`Linked META·SIFT: ${p._linkedMetaSift.title||"screening project"} — click to open`}
-                      onClick={e=>{e.stopPropagation();window.location.href=`/sift-beta/projects/${p._linkedMetaSift.id}`;}}
-                      style={{flexShrink:0,fontSize:8,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",
-                        padding:"1px 5px",borderRadius:4,cursor:"pointer",
-                        color:"var(--t-teal)",background:themeAlpha("var(--t-teal)","1a"),border:`1px solid ${themeAlpha("var(--t-teal)","40")}`}}>
-                      ⬡ Sift
-                    </span>
-                  )}
                 </div>
                 <div style={{fontSize:9,color:C.muted,marginTop:2}}>
                   {p.createdAt?`Created ${fmtDate(p.createdAt)}`:fmtDate(p.modified)}
@@ -8584,11 +8602,12 @@ export default function MetaLab({ initialProjectId = null, onProjectChange = nul
             </div>
           )}
           {tab==="overview"&&<OverviewTab project={project} setTab={setTab}/>}
-          {tab==="control"&&<ControlTab project={project} onAnnotate={patchAnnotations}/>}
+          {tab==="control"&&<ControlTab project={project} onAnnotate={patchAnnotations} setTab={setTab}/>}
           {tab==="pico"&&<PICOTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="prospero"&&<PROSPEROTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="search"&&<SearchTab project={project} updNested={updNested} upd={upd}/>}
-          {tab==="prisma"&&<PRISMATab project={project} updNested={updNested} updateProject={updateProject} activeId={activeId}/>}
+          {tab==="screening"&&<EmbeddedScreening project={project}/>}
+          {tab==="prisma"&&<PRISMATab project={project} updNested={updNested} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
           {tab==="extraction"&&<ExtractionTab project={project} updateProject={updateProject} activeId={activeId}/>}
           {tab==="rob"&&<RoBTab project={project} updateProject={updateProject} activeId={activeId}/>}
           {tab==="analysis"&&<AnalysisTab project={project} updateProject={fn=>updateProject(activeId,fn)} onApplyPrecisionToAll={prec=>projects.forEach(p=>updateProject(p.id,x=>({...x,analysisPrecision:prec})))}/>}

@@ -67,10 +67,17 @@ function countEntries(format, text) {
   return 0;
 }
 
-export default function SiftImport() {
-  const { pid }   = useParams();
+export default function SiftImport({ embedded = false, embeddedPid = null, onDone, onBack } = {}) {
+  const routeParams = useParams();
+  const pid = embedded ? embeddedPid : routeParams.pid;
   const { user }  = useAuth();
   const navigate  = useNavigate();
+  // After a successful import: standalone returns to the screening workbench;
+  // embedded hands control back to the host Screening stage (onDone).
+  const goWorkbench = () => {
+    if (embedded) { (onDone || onBack || (() => {}))(); }
+    else navigate(`/sift-beta/projects/${pid}`);
+  };
 
   const [format,     setFormat]     = useState('ris');
   const [content,    setContent]    = useState('');
@@ -154,33 +161,38 @@ export default function SiftImport() {
   ];
 
   return (
-    <div style={{ minHeight: '100vh', background: C.bg, fontFamily: FONT, color: C.txt }}>
+    <div style={embedded
+      ? { background: 'transparent', fontFamily: FONT, color: C.txt }
+      : { minHeight: '100vh', background: C.bg, fontFamily: FONT, color: C.txt }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@300;400;500;600;700&display=swap');
         @keyframes spin { to { transform: rotate(360deg); } }
         * { box-sizing: border-box; }
       `}</style>
 
-      {/* Header */}
-      <div style={{
-        background: C.surf, borderBottom: `1px solid ${C.brd}`,
-        padding: '12px 28px', display: 'flex', alignItems: 'center', gap: 12,
-        position: 'sticky', top: 0, zIndex: 100,
-      }}>
-        <button
-          onClick={() => navigate(`/sift-beta/projects/${pid}`)}
-          style={{ background: 'none', border: 'none', color: C.txt2, cursor: 'pointer', fontSize: 12, fontFamily: FONT }}
-          onMouseEnter={e => e.currentTarget.style.color = C.txt}
-          onMouseLeave={e => e.currentTarget.style.color = C.txt2}
-        >
-          ← Workbench
-        </button>
-        <span style={{ color: C.brd2 }}>|</span>
-        <span style={{ fontSize: 13, fontWeight: 600, color: C.txt }}>Import References</span>
-        <BetaBadge />
-      </div>
+      {/* Header — standalone only; the embedded Screening stage supplies its own
+          sub-navigation, so we skip the sticky page header there. */}
+      {!embedded && (
+        <div style={{
+          background: C.surf, borderBottom: `1px solid ${C.brd}`,
+          padding: '12px 28px', display: 'flex', alignItems: 'center', gap: 12,
+          position: 'sticky', top: 0, zIndex: 100,
+        }}>
+          <button
+            onClick={() => navigate(`/sift-beta/projects/${pid}`)}
+            style={{ background: 'none', border: 'none', color: C.txt2, cursor: 'pointer', fontSize: 12, fontFamily: FONT }}
+            onMouseEnter={e => e.currentTarget.style.color = C.txt}
+            onMouseLeave={e => e.currentTarget.style.color = C.txt2}
+          >
+            ← Workbench
+          </button>
+          <span style={{ color: C.brd2 }}>|</span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: C.txt }}>Import References</span>
+          <BetaBadge />
+        </div>
+      )}
 
-      <div style={{ maxWidth: 760, margin: '0 auto', padding: '32px 24px' }}>
+      <div style={{ maxWidth: 760, margin: '0 auto', padding: embedded ? '4px 0 8px' : '32px 24px' }}>
 
         {/* Format selector */}
         <div style={{ marginBottom: 24 }}>
@@ -403,14 +415,14 @@ export default function SiftImport() {
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <button
-                onClick={() => navigate(`/sift-beta/projects/${pid}`)}
+                onClick={goWorkbench}
                 style={{
                   background: C.grn, border: 'none', color: C.bg,
                   fontSize: 12, fontWeight: 700, fontFamily: FONT,
                   padding: '7px 18px', borderRadius: 6, cursor: 'pointer',
                 }}
               >
-                Go to Workbench →
+                {embedded ? 'Go to screening →' : 'Go to Workbench →'}
               </button>
               <button
                 onClick={() => { setContent(''); setResult(null); setPreviews([]); setPreviewDone(false); setFilename(''); }}

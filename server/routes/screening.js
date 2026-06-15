@@ -139,4 +139,9 @@ r.get('/projects/:pid/stats',            S.getStats);
 // META·LAB integration — PRISMA summary for a linked META·LAB project (Part 12)
 r.get('/metalab/:mlpid/summary',         S.getMetaLabSummary);
 
+// Unified Review Workspace (prompt18) — resolve (and, for the owner, silently
+// create) the internal screening module for a META·LAB project. Powers the
+// single "Screening" stage; no user-facing linking required.
+r.get('/metalab/:mlpid/workspace',       S.getWorkspace);
+
 export default r;

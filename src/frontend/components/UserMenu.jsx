@@ -113,9 +113,12 @@ export default function UserMenu({ context = 'metalab', fixed = false, onBeforeL
 
           <Item icon="user" label="Account & Profile" onClick={() => { setOpen(false); navigate('/profile'); }} />
 
+          {/* prompt18 — META·SIFT is no longer a separate user-facing app; screening
+              lives inside each project. The cross-app jump is kept only for staff
+              as an admin/debug entry into the standalone screening engine. */}
           {context === 'metasift'
             ? <Item icon="flask" label="Open META·LAB" onClick={() => { setOpen(false); navigate('/app'); }} />
-            : <Item icon="hexagon" label="Open META·SIFT" onClick={() => { setOpen(false); navigate('/sift-beta'); }} />}
+            : (isStaff && <Item icon="hexagon" label="Screening engine (admin)" onClick={() => { setOpen(false); navigate('/sift-beta'); }} />)}
 
           <Item
             icon={theme === 'night' ? 'sun' : 'moon'}
