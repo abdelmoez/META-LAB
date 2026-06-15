@@ -14,7 +14,7 @@ import { Icon } from "./src/frontend/components/icons.jsx";
 import MetaLabChatLauncher from "./src/frontend/components/chat/MetaLabChatLauncher.jsx";
 import NotificationsBell from "./src/frontend/components/NotificationsBell.jsx";
 import UserMenu from "./src/frontend/components/UserMenu.jsx";
-import MembersTab from "./src/frontend/screening/tabs/MembersTab.jsx";
+import ProjectMembersPanel from "./src/frontend/screening/tabs/ProjectMembersPanel.jsx";
 import ExportDialog from "./src/frontend/components/ExportDialog.jsx";
 import { rasterizeSvg, downloadBlob, downloadText } from "./src/frontend/components/exportCore.js";
 import { fmtNum, fmtES, fmtCI, fmtEstCI, fmtP, fmtPct, fmtI2, fmtWeight, fmtInt, normalizePrecision, DECIMAL_OPTIONS } from "./src/research-engine/format/precision.js";
@@ -7584,7 +7584,7 @@ function ControlTab({project,onAnnotate,setTab,presence}){
           everyone you add participates across the whole project according to their permissions.
         </div>
       ):(
-        <MembersTab
+        <ProjectMembersPanel
           pid={lid}
           project={sp||project}
           access={{isLeader:data.isLeader,myRole:data.myRole}}
@@ -7614,7 +7614,9 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   const[screeningFocus,setScreeningFocus]=useState(true);
   // prompt24 Task 4/7 — the universal header's ☰ toggles the sidebar on EVERY
   // tab. Screening keeps its own full-bleed focus state; other tabs use this one.
-  const[navCollapsed,setNavCollapsed]=useState(false);
+  // prompt24 follow-up — persist the collapse choice across sessions (per browser).
+  const[navCollapsed,setNavCollapsed]=useState(()=>{try{return localStorage.getItem("metalab.navCollapsed")==="1";}catch(_){return false;}});
+  useEffect(()=>{try{localStorage.setItem("metalab.navCollapsed",navCollapsed?"1":"0");}catch(_){/* best-effort */}},[navCollapsed]);
   const[loading,setLoading]=useState(true);
   const[newName,setNewName]=useState("");
   const[withSift,setWithSift]=useState(true);          // Task 2 — default ON
@@ -7803,7 +7805,25 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   // embedded SiftProject keeps owning the fine-grained "Screening · …" location
   // without a double heartbeat; everywhere else the header heartbeats the tab.
   const { user: authUser } = useAuth();
-  const spId = linkedSiftId(project);
+  const linkedSp = linkedSiftId(project);
+  // prompt24 follow-up (limitation #1) — presence is scoped to the linked
+  // ScreenProject. A project that has none yet would show NO presence anywhere
+  // until Screening is first opened. For the OWNER we lazily resolve/create the
+  // workspace (the same getWorkspace path Screening uses) so presence works
+  // project-wide immediately. Best-effort + owner-only: a member never has a
+  // missing link (membership implies a workspace), and any error leaves presence
+  // simply off rather than breaking the page.
+  const[resolvedSpId,setResolvedSpId]=useState(null);
+  useEffect(()=>{
+    let dead=false;
+    setResolvedSpId(null);
+    if(!project||linkedSp||project._shared) return undefined;
+    screeningApi.getWorkspace(project.id)
+      .then(r=>{ if(!dead&&r&&r.screenProjectId) setResolvedSpId(r.screenProjectId); })
+      .catch(()=>{ /* no workspace / no access → presence stays off */ });
+    return ()=>{dead=true;};
+  },[project?.id,linkedSp,project?._shared]);
+  const spId = linkedSp || resolvedSpId;
   const monolithLocation = (TABS.find(t=>t.id===tab)?.label) || "Project";
   const { users: presenceUsers, locks: presenceLocks } = useProjectPresence(
     spId, monolithLocation, { enabled: !!spId, heartbeat: tab !== "screening" }

@@ -39,8 +39,10 @@ export default function PresenceIndicator({ users = [], locks = [], totalMembers
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState({ top: 0, left: 0 });
   const triggerRef = useRef(null);
+  const triggerBtnRef = useRef(null);
   const popRef = useRef(null);
   const closeTimer = useRef(null);
+  const kbRef = useRef(false); // opened via keyboard → manage focus on open/close
 
   const active = users.length;
 
@@ -65,11 +67,23 @@ export default function PresenceIndicator({ users = [], locks = [], totalMembers
 
   useEffect(() => () => cancelClose(), []);
 
+  // Close + return focus to the trigger (used by Escape and keyboard close).
+  const closeAndRefocus = useCallback(() => {
+    setOpen(false);
+    if (kbRef.current) { kbRef.current = false; triggerBtnRef.current?.focus(); }
+  }, []);
+
+  // When opened via keyboard, move focus into the popover so keyboard / screen
+  // reader users land on the teammate list (focus returns to the chip on close).
+  useEffect(() => {
+    if (open && kbRef.current) popRef.current?.focus();
+  }, [open]);
+
   // While open: reposition on scroll/resize, close on Escape / outside-click.
   useEffect(() => {
     if (!open) return undefined;
     const onMove = () => place();
-    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') closeAndRefocus(); };
     const onDown = (e) => {
       if (popRef.current && popRef.current.contains(e.target)) return;
       if (triggerRef.current && triggerRef.current.contains(e.target)) return;
@@ -85,7 +99,7 @@ export default function PresenceIndicator({ users = [], locks = [], totalMembers
       window.removeEventListener('keydown', onKey);
       window.removeEventListener('mousedown', onDown);
     };
-  }, [open, place]);
+  }, [open, place, closeAndRefocus]);
 
   if (active === 0) return null; // nothing to show until presence is flowing
 
@@ -100,9 +114,15 @@ export default function PresenceIndicator({ users = [], locks = [], totalMembers
       onMouseLeave={scheduleClose}
     >
       <button
+        ref={triggerBtnRef}
         type="button"
         onClick={() => (open ? setOpen(false) : openNow())}
-        aria-haspopup="true"
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown' || ((e.key === 'Enter' || e.key === ' ') && !open)) {
+            e.preventDefault(); kbRef.current = true; openNow();
+          }
+        }}
+        aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={`${active} active${totalMembers != null ? ` of ${totalMembers} members` : ''}`}
         style={{
@@ -121,7 +141,9 @@ export default function PresenceIndicator({ users = [], locks = [], totalMembers
           ref={popRef}
           onMouseEnter={cancelClose}
           onMouseLeave={scheduleClose}
-          role="menu"
+          role="dialog"
+          aria-label="Active teammates"
+          tabIndex={-1}
           style={{
             position: 'fixed', top: pos.top, left: pos.left, width: POPOVER_W, zIndex: 10000,
             background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 10,

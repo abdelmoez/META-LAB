@@ -186,3 +186,26 @@ cleanup, screening layout, members unification).
    `src/frontend/screening/tabs/` into a shared components directory would make
    the dependency direction explicit and prevent future confusion about which
    "side" owns it.
+
+---
+
+## Follow-up update — limitations resolved (v3.6.1)
+
+Shipped as a separate patch immediately after v3.6.0; addresses four of the
+limitations / recommended next steps above.
+
+| # | Limitation | Resolution |
+|---|------------|------------|
+| 1 | Presence needed a linked workspace (none on brand-new projects) | The monolith now **lazily resolves/creates the screening workspace for the project owner** when none is linked (the same owner-only `screeningApi.getWorkspace()` path Screening already uses), via a best-effort effect keyed on `project.id`. Presence is now live project-wide from first open for owners. Members are unaffected (membership already implies a workspace); any error simply leaves presence off. |
+| 4 | `navCollapsed` was per-session | The ☰ sidebar-collapse state now **persists to `localStorage` (`metalab.navCollapsed`)** and is restored on load. |
+| 3 (a11y) | Popover was mouse/hover-only | The presence popover is now **keyboard-accessible**: the chip opens on `Enter`/`Space`/`ArrowDown`, focus moves into the popover (`role="dialog"`, `aria-label`, `tabIndex=-1`), `Escape` closes **and returns focus to the chip**, and `aria-haspopup="dialog"` is set. Hover-bridge behaviour is unchanged. |
+| Naming | `MembersTab` lacked the suggested shared name | Added **`src/frontend/screening/tabs/ProjectMembersPanel.jsx`** (re-export of `MembersTab`) as the canonical shared-component name; Project Control now imports `ProjectMembersPanel`. |
+
+**Still open (intentionally deferred):** in-memory/single-process presence (needs
+a pub/sub broker for multi-instance — architectural, out of scope); popover
+`ResizeObserver` tracking (low value — `scroll`/`resize` reposition already
+covers real usage); the "Recently opened" 1-item display cap (intentional UX).
+
+**Verification:** `npx vite build` green; unit suite 719 pass / 6 pre-existing
+`serverStorage` fails (unchanged baseline); `presenceIndicator.test.js` green.
+Version `3.6.0` → `3.6.1`.
