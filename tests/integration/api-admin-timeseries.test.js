@@ -66,7 +66,7 @@ function localDayKey(d = new Date()) {
 }
 
 const FIELDS = [
-  'logins', 'uniqueLogins', 'newUsers', 'newProjects',
+  'logins', 'uniqueLogins', 'activeUsers', 'newUsers', 'newProjects',
   'screeningDecisions', 'doneTransitions', 'contactMessages', 'failedLogins',
 ];
 

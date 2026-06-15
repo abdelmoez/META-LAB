@@ -1,5 +1,6 @@
 import { verifyToken } from '../auth/jwt.js';
 import { prisma } from '../db/client.js';
+import { recordUsage, USAGE } from '../utils/usage.js';
 
 const COOKIE_NAME = 'metalab_session';
 
@@ -18,6 +19,9 @@ function touchLastActive(userId) {
   // Fire-and-forget — NEVER awaited; auth must not slow or fail on this write
   // (e.g. user deleted while their JWT is still valid).
   prisma.user.update({ where: { id: userId }, data: { lastActive: new Date() } }).catch(() => {});
+  // prompt15 follow-up — also drop one APP_ACTIVE event behind the SAME throttle
+  // (≤1/user/5min) so the ops console can chart per-day active users over time.
+  recordUsage({ type: USAGE.APP_ACTIVE, userId });
 }
 
 /**

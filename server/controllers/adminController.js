@@ -323,6 +323,7 @@ export async function getMetricsTimeseries(req, res) {
         date: key,
         logins: 0,
         uniqueLogins: 0,
+        activeUsers: 0,
         newUsers: 0,
         newProjects: 0,
         screeningDecisions: 0,
@@ -337,7 +338,7 @@ export async function getMetricsTimeseries(req, res) {
     // coupling to SQLite date storage (same rationale as getMetrics).
     const inWindow = { createdAt: { gte: windowStart } };
     const [
-      loginRows, userRows, projectRows, decisionRows, doneRows, messageRows, failedRows,
+      loginRows, userRows, projectRows, decisionRows, doneRows, messageRows, failedRows, activeRows,
     ] = await Promise.all([
       prisma.loginEvent.findMany({ where: { success: true, ...inWindow }, select: { createdAt: true, userId: true } }),
       prisma.user.findMany({ where: inWindow, select: { createdAt: true } }),
@@ -346,6 +347,8 @@ export async function getMetricsTimeseries(req, res) {
       prisma.screenProjectStatusEvent.findMany({ where: { status: 'done', ...inWindow }, select: { createdAt: true } }),
       prisma.contactMessage.findMany({ where: inWindow, select: { createdAt: true } }),
       prisma.securityEvent.findMany({ where: { type: 'FAILED_LOGIN', ...inWindow }, select: { createdAt: true } }),
+      // prompt15 follow-up — APP_ACTIVE usage events for the per-day active-user series.
+      prisma.usageEvent.findMany({ where: { type: USAGE.APP_ACTIVE, ...inWindow }, select: { createdAt: true, userId: true } }),
     ]);
 
     const bump = (rows, field) => {
@@ -373,6 +376,18 @@ export async function getMetricsTimeseries(req, res) {
       set.add(row.userId);
     }
     for (const [key, set] of uniquePerDay) buckets.get(key).uniqueLogins = set.size;
+
+    // activeUsers = distinct userIds with an APP_ACTIVE event per day (any authenticated
+    // action, not only logins). Same distinct-per-day shape as uniqueLogins.
+    const activePerDay = new Map();
+    for (const row of activeRows) {
+      const key = localDayKey(row.createdAt);
+      if (!buckets.has(key)) continue;
+      let set = activePerDay.get(key);
+      if (!set) { set = new Set(); activePerDay.set(key, set); }
+      set.add(row.userId);
+    }
+    for (const [key, set] of activePerDay) buckets.get(key).activeUsers = set.size;
 
     return res.json({ days: order.map(key => buckets.get(key)) });
   } catch (err) {

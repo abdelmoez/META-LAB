@@ -76,6 +76,7 @@ export default function ExportDialog({ open, onClose, item, precision }) {
   const defaultDecimals = precision?.decimals ?? DEFAULT_DECIMALS;
   const [decimals, setDecimals]       = useState(defaultDecimals);
   const [fullPrec, setFullPrec]       = useState(false);
+  const [trailZeros, setTrailZeros]   = useState(precision?.trailingZeros !== false);
 
   // (Re)initialise from item.defaults each time the dialog opens.
   useEffect(() => {
@@ -90,6 +91,7 @@ export default function ExportDialog({ open, onClose, item, precision }) {
     setError(null);
     setDecimals(precision?.decimals ?? DEFAULT_DECIMALS);
     setFullPrec(false);
+    setTrailZeros(precision?.trailingZeros !== false);
   }, [open, item, precision]);
 
   const close = useCallback(() => { if (!running) onClose?.(); }, [running, onClose]);
@@ -115,7 +117,16 @@ export default function ExportDialog({ open, onClose, item, precision }) {
   const isMachine = format ? MACHINE_FORMATS.has(format.toLowerCase()) : false;
   const chosenPrecision = isMachine
     ? { decimals: DEFAULT_DECIMALS, trailingZeros: true, full: true }
-    : { decimals, trailingZeros: precision?.trailingZeros !== false, full: fullPrec };
+    : { decimals, trailingZeros: trailZeros, full: fullPrec };
+
+  // One-click "validation table" preset: fixed decimals + trailing zeros, no
+  // raw-precision collapsing — the journal/metafor-comparison-friendly style.
+  const applyValidationPreset = () => {
+    setFullPrec(false);
+    setDecimals(precision?.decimals ?? DEFAULT_DECIMALS);
+    setTrailZeros(true);
+    setError(null);
+  };
 
   const runExport = async () => {
     if (running || !format) return;
@@ -271,6 +282,22 @@ export default function ExportDialog({ open, onClose, item, precision }) {
             {!fullPrec && decimals !== defaultDecimals && (
               <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, marginTop: 5, letterSpacing: '0.03em' }}>
                 Overrides the project default ({defaultDecimals} dp) for this export only.
+              </div>
+            )}
+            {!fullPrec && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 9, flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.txt2, cursor: 'pointer' }}>
+                  <input type="checkbox" checked={trailZeros} onChange={e => setTrailZeros(e.target.checked)} style={{ accentColor: C.acc, margin: 0 }} />
+                  Keep trailing zeros
+                </label>
+                <button
+                  type="button" onClick={applyValidationPreset}
+                  title="Fixed decimals with trailing zeros — journal / metafor-comparison style"
+                  style={{
+                    background: 'none', border: `1px solid ${C.brd2}`, color: C.txt2,
+                    fontSize: 11, fontFamily: FONT, fontWeight: 600, borderRadius: 7,
+                    padding: '4px 10px', cursor: 'pointer',
+                  }}>Validation table preset</button>
               </div>
             )}
           </div>

@@ -3936,7 +3936,7 @@ function interpretResult(result,esType,studies,prec){
   return {pe,lo,hi,ciText,direction,magnitude,hetText,crossesNull,sigByCI,flags,isRatio,isProp,nullV,scaleName};
 }
 
-function AnalysisTab({project,updateProject}){
+function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
   const{studies}=project;
   const[method,setMethod]=useState("random");
   const[showAudit,setShowAudit]=useState(false);
@@ -4106,6 +4106,7 @@ function AnalysisTab({project,updateProject}){
         <label style={{display:"flex",alignItems:"center",gap:4,fontSize:11,color:C.muted,cursor:"pointer",whiteSpace:"nowrap"}}>
           <input type="checkbox" checked={np.trailingZeros} onChange={e=>updateProject(ap=>({...ap,analysisPrecision:{...np,trailingZeros:e.target.checked}}))} style={{accentColor:C.acc}}/>trailing zeros
         </label>
+        {onApplyPrecisionToAll&&<button onClick={()=>onApplyPrecisionToAll({decimals:np.decimals,trailingZeros:np.trailingZeros})} title="Apply this decimal-places setting to every project you can edit" style={{...btnS("ghost"),fontSize:10,padding:"3px 8px",whiteSpace:"nowrap"}}>Apply to all</button>}
       </div>);})()}
     </div>
 
@@ -8590,7 +8591,7 @@ export default function MetaLab({ initialProjectId = null, onProjectChange = nul
           {tab==="prisma"&&<PRISMATab project={project} updNested={updNested} updateProject={updateProject} activeId={activeId}/>}
           {tab==="extraction"&&<ExtractionTab project={project} updateProject={updateProject} activeId={activeId}/>}
           {tab==="rob"&&<RoBTab project={project} updateProject={updateProject} activeId={activeId}/>}
-          {tab==="analysis"&&<AnalysisTab project={project} updateProject={fn=>updateProject(activeId,fn)}/>}
+          {tab==="analysis"&&<AnalysisTab project={project} updateProject={fn=>updateProject(activeId,fn)} onApplyPrecisionToAll={prec=>projects.forEach(p=>updateProject(p.id,x=>({...x,analysisPrecision:prec})))}/>}
           {tab==="forest"&&<ForestTab project={project}/>}
           {tab==="sensitivity"&&<SensitivityTab project={project}/>}
           {tab==="subgroup"&&<SubgroupTab project={project}/>}

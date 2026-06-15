@@ -36,6 +36,11 @@ export const USAGE = {
   // reset-specific signal for the ops email metrics without parsing meta.
   PASSWORD_RESET_EMAIL_SENT: 'PASSWORD_RESET_EMAIL_SENT',
   PASSWORD_RESET_EMAIL_FAILED: 'PASSWORD_RESET_EMAIL_FAILED',
+  // prompt15 follow-up — one row per active user per throttle window (≤1/user/5min,
+  // gated by the same requireAuth lastActive throttle). Powers the ops "active users"
+  // per-day series/sparkline (lastActive alone only holds the latest timestamp, so it
+  // cannot reconstruct historical per-day active counts; these events can).
+  APP_ACTIVE: 'APP_ACTIVE',
 };
 
 /**
