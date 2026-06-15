@@ -142,6 +142,9 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
     'status.changed':      ev => { if (ev?.projectId === pid) refreshProject(); },
     'handoff.updated':     ev => { if (ev?.projectId === pid) refreshProject(); },
     'permissions.changed': ev => { if (ev?.projectId === pid) revalidateAccess(); },
+    // prompt23 Task 4 — a decision or resolved conflict changes the workflow counts;
+    // refresh the stepper/overview summary so the stage indicators stay live.
+    'decision.saved':      ev => { if (!ev || ev.projectId === pid || ev.projectId === undefined) loadSummary(); },
   });
 
   const setTab = (key) => setParams(prev => { const n = new URLSearchParams(prev); n.set(tabParam, key); return n; }, { replace: true });
@@ -197,7 +200,15 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
             <Icon name={t.icon} size={13} style={{ opacity: on ? 1 : 0.75 }} />
             {t.label}
           </button>
-          {showSteps && <StepIndicator step={step} num={stepNumByKey[t.key]} current={on} />}
+          {showSteps && (
+            <StepIndicator
+              step={step}
+              num={stepNumByKey[t.key]}
+              current={on}
+              first={stepNumByKey[t.key] === 1}
+              last={stepNumByKey[t.key] === stepNo}
+            />
+          )}
         </div>
       );
     };
@@ -209,14 +220,14 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
         <nav aria-label="Screening workflow"
           style={{ display: 'flex', gap: 2, padding: '0 12px', background: C.surf, borderBottom: `1px solid ${C.brd}`, flexShrink: 0, overflowX: 'auto', alignItems: 'flex-start' }}>
           {tabSet.map(navCol)}
-          <div style={{ marginLeft: 'auto', alignSelf: 'center', display: 'flex', alignItems: 'center', gap: 10, paddingRight: 4, flexShrink: 0 }}>
-            {project?.blindMode && <Badge color={C.gold}>Blind</Badge>}
-            {project?._count && (
-              <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>
-                {project._count.records} records · {project._count.members} members
-              </span>
-            )}
-          </div>
+          {/* prompt23 Task 12 — "records · members" removed from the submenu (clutter);
+              live member/active-user info now lives in the project's top-right presence
+              indicator. Blind-mode stays here as it's screening-specific context. */}
+          {project?.blindMode && (
+            <div style={{ marginLeft: 'auto', alignSelf: 'center', display: 'flex', alignItems: 'center', paddingRight: 4, flexShrink: 0 }}>
+              <Badge color={C.gold}>Blind</Badge>
+            </div>
+          )}
         </nav>
 
         <div style={{ flex: 1, overflow: isFullBleed ? 'hidden' : 'auto', minHeight: 0 }}>

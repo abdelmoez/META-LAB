@@ -25,8 +25,11 @@ const STEP_STYLE = {
 };
 
 // Fixed height so submenu tabs WITHOUT a step (Overview/Settings/Export) can
-// reserve the same vertical space and keep the row's baseline even.
-export const STEP_ROW_HEIGHT = 26;
+// reserve the same vertical space and keep the row's baseline even. Tall enough
+// for the pip + "Step N" + the task-count line (prompt23 Task 3).
+export const STEP_ROW_HEIGHT = 46;
+const PIP = 16;            // status-pip diameter
+const PIP_CENTER = 9;      // vertical centre of the pip from the cell top (padding-top 1 + PIP/2)
 
 /**
  * StepIndicator — one read-only workflow step, shown beneath its submenu tab.
@@ -34,35 +37,52 @@ export const STEP_ROW_HEIGHT = 26;
  *             an equal-height spacer for tabs that aren't workflow steps)
  *   num     — the step's 1-based number in the pipeline
  *   current — whether this step's tab is the active route (drives aria-current)
+ *   first / last — ends of the pipeline, so the connecting line doesn't overhang
+ *
+ * NOT interactive: no role, no tabindex, no pointer cursor — the submenu above is
+ * the only navigation. A subtle connecting line runs behind the pips (Task 3).
  */
-export function StepIndicator({ step, num, current }) {
+export function StepIndicator({ step, num, current, first = false, last = false }) {
   if (!step) return <span aria-hidden style={{ display: 'block', height: STEP_ROW_HEIGHT }} />;
   const st = STEP_STYLE[step.status] || STEP_STYLE.pending;
   const label = num ? `Step ${num}` : step.label;
-  const title = step.hint ? `${label} · ${step.label} — ${step.hint}` : `${label} · ${step.label} (${step.status})`;
+  const count = step.count || null;
+  const title = `${label} · ${step.label} (${step.status})${count ? ` — ${count}` : ''}`;
+  // Connector segment colour: green once this step is done, else a faint rule.
+  const lineColor = step.status === 'done' ? alpha(C.grn, 0.55) : C.brd2;
   return (
     <span
       aria-current={current ? 'step' : undefined}
-      aria-label={`${label}: ${step.label} — ${step.status}`}
+      aria-label={`${label}: ${step.label} — ${step.status}${count ? ` (${count})` : ''}`}
       title={title}
       style={{
-        height: STEP_ROW_HEIGHT, cursor: 'default', userSelect: 'none',
-        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
-        padding: '0 6px 3px',
+        position: 'relative', height: STEP_ROW_HEIGHT, cursor: 'default', userSelect: 'none',
+        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'flex-start',
+        gap: 1, padding: '1px 8px 3px',
       }}>
+      {/* Connecting line behind the pips — left edge for non-first, right edge for
+          non-last; extended a touch to bridge the inter-column gap. */}
+      <span aria-hidden style={{
+        position: 'absolute', top: PIP_CENTER, height: 2, zIndex: 0, background: lineColor,
+        left: first ? '50%' : -2, right: last ? '50%' : -2,
+      }} />
       {/* Status pip — check (done) / alert (attention) / step number otherwise */}
       <span style={{
-        width: 15, height: 15, borderRadius: '50%', flexShrink: 0,
+        position: 'relative', zIndex: 1,
+        width: PIP, height: PIP, borderRadius: '50%', flexShrink: 0,
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        background: st.bg, border: `1.5px solid ${st.ring}`, color: st.fg,
-        fontSize: 8.5, fontWeight: 700, fontFamily: MONO, lineHeight: 1,
+        background: step.status === 'pending' ? C.surf : st.bg, border: `1.5px solid ${st.ring}`, color: st.fg,
+        fontSize: 9, fontWeight: 700, fontFamily: MONO, lineHeight: 1,
       }}>
-        {st.glyph ? <Icon name={st.glyph} size={8.5} strokeWidth={2.4} /> : (num || '')}
+        {st.glyph ? <Icon name={st.glyph} size={9} strokeWidth={2.4} /> : (num || '')}
       </span>
       <span style={{
         fontSize: 10, fontFamily: MONO, fontWeight: current ? 700 : 600, whiteSpace: 'nowrap',
-        letterSpacing: '0.02em', color: step.status === 'pending' ? C.muted : st.fg,
+        letterSpacing: '0.02em', color: step.status === 'pending' ? C.muted : st.fg, marginTop: 1,
       }}>{label}</span>
+      {count && (
+        <span style={{ fontSize: 9.5, whiteSpace: 'nowrap', color: C.muted, lineHeight: 1.2 }}>{count}</span>
+      )}
     </span>
   );
 }

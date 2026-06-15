@@ -127,3 +127,47 @@ export const SORTS = [
 ];
 
 export const ROLE_ORDER = { owner: 0, leader: 1, reviewer: 2, viewer: 3 };
+
+/* ════════════════════════════════════════════════════════════════════════
+   Dashboard view preferences (prompt23 Task 2)
+   Persist the user's sort / filter / view / show-archived choices so they
+   survive refresh, browser restart, and logout/login. Keyed PER USER so two
+   accounts on one browser keep separate preferences. Every stored value is
+   re-validated against the live FILTERS/SORTS lists on read, so a stale or
+   tampered value falls back safely to the default rather than breaking the list.
+   ════════════════════════════════════════════════════════════════════════ */
+const DASH_PREFS_PREFIX = 'metalab.dashboardPrefs.';
+const DASH_VIEWS = ['cards', 'table'];
+
+function dashPrefsKey(userId) {
+  return DASH_PREFS_PREFIX + (userId || 'anon');
+}
+
+/** Read + validate the saved dashboard prefs for a user. Unknown keys dropped. */
+export function readDashboardPrefs(userId) {
+  try {
+    const raw = localStorage.getItem(dashPrefsKey(userId));
+    if (!raw) return {};
+    const p = JSON.parse(raw);
+    if (!p || typeof p !== 'object') return {};
+    const out = {};
+    if (SORTS.some(s => s.key === p.sort)) out.sort = p.sort;
+    if (FILTERS.some(f => f.key === p.filter)) out.filter = p.filter;
+    if (DASH_VIEWS.includes(p.view)) out.view = p.view;
+    if (typeof p.showArchived === 'boolean') out.showArchived = p.showArchived;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Merge + persist dashboard prefs for a user. Best-effort (never throws). */
+export function writeDashboardPrefs(userId, prefs) {
+  try {
+    const next = { ...readDashboardPrefs(userId), ...(prefs || {}) };
+    localStorage.setItem(dashPrefsKey(userId), JSON.stringify(next));
+    return next;
+  } catch {
+    return prefs || {};
+  }
+}

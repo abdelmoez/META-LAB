@@ -79,6 +79,8 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
   const inclusion = parseKeywords(project?.inclusionKeywords);
   const exclusion = parseKeywords(project?.exclusionKeywords);
   const blindMode = !!(data?.blindMode ?? project?.blindMode ?? access.blindMode);
+  // prompt23 Task 11 — required-reviewer count follows the project setting, not a 2.
+  const quorum = Number(data?.quorum) || Number(project?.requiredScreeningReviewers) || 2;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -262,7 +264,7 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
             Final Review
           </div>
           <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.6 }}>
-            Records that reached inclusion quorum (≥2 reviewers) appear here for the final
+            Records that reached inclusion quorum (≥{quorum} reviewer{quorum === 1 ? '' : 's'}) appear here for the final
             inclusion decision. {access.isLeader
               ? 'Accept studies to send them to Data Extraction, or exclude them with a documented reason.'
               : 'Cast your final-review decision; the project leader makes the final call.'}

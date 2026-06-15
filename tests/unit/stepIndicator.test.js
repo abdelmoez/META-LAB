@@ -39,4 +39,10 @@ describe('StepIndicator — read-only, non-clickable', () => {
     expect(html).not.toContain('Step');
     expect(html).not.toContain('cursor:pointer');
   });
+
+  it('shows the task-count line under the step (prompt23 Task 3)', () => {
+    const html = render({ step: { status: 'attention', label: 'Duplicates', count: '3 unresolved' }, num: 2, current: false });
+    expect(html).toContain('Step 2');
+    expect(html).toContain('3 unresolved');
+  });
 });

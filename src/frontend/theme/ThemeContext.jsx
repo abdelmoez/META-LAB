@@ -13,10 +13,13 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import { applyTheme, getSavedTheme, buildThemeCss } from './tokens.js';
 
-const ThemeContext = createContext({ theme: 'night', setTheme: () => {}, toggleTheme: () => {} });
+const ThemeContext = createContext({ theme: 'day', setTheme: () => {}, toggleTheme: () => {} });
 
 export function ThemeProvider({ children }) {
-  const [theme, setThemeState] = useState(() => getSavedTheme() || document.documentElement.dataset.theme || 'night');
+  // Day/light is the product default (prompt23 Task 6). The HTML bootstrap already
+  // sets data-theme to 'day' pre-paint for users with no saved preference; this
+  // final fallback just documents that intent (saved prefs still win above).
+  const [theme, setThemeState] = useState(() => getSavedTheme() || document.documentElement.dataset.theme || 'day');
 
   // Keep the attribute consistent on mount (index.html bootstraps it pre-paint).
   useEffect(() => {

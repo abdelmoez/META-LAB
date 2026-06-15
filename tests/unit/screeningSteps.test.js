@@ -74,4 +74,27 @@ describe('buildScreeningSteps', () => {
     expect(s['second-review'].screen).toBe('second-review');
     expect(s.extraction.status).toBe('done');
   });
+
+  it('every step exposes a real, non-fake task-count line (prompt23 Task 3)', () => {
+    // Empty project → safe fallbacks, never a fabricated number.
+    const empty = byId(buildScreeningSteps({}));
+    expect(empty.import.count).toBe('Not started');
+    expect(empty.duplicates.count).toBe('—');
+    expect(empty.screening.count).toBe('—');
+    expect(empty.conflicts.count).toBe('—');
+    expect(empty['second-review'].count).toBe('—');
+
+    // Populated project → real counts reflecting the data.
+    const live = byId(buildScreeningSteps({
+      totalArticles: 124, duplicateDetectionRun: true, unresolvedDuplicateGroups: 3,
+      titleAbstractPending: 45, unresolvedConflicts: 2, eligibleSecondReview: 10,
+      acceptedToExtraction: 4, rejectedSecond: 0,
+    }));
+    expect(live.import.count).toBe('124 records');
+    expect(live.duplicates.count).toBe('3 unresolved');
+    expect(live.screening.count).toBe('45 remaining');
+    expect(live.conflicts.count).toBe('2 conflicts');
+    expect(live['second-review'].count).toMatch(/pending|sent/);
+    expect(live.extraction.count).toBe('4 sent');
+  });
 });

@@ -13,7 +13,7 @@ function parseDecisions(json) {
   } catch { return []; }
 }
 
-export default function ConflictsTab({ pid, project, access }) {
+export default function ConflictsTab({ pid, project, access, refreshProject }) {
   const [conflicts, setConflicts] = useState([]);
   const [loading, setLoading]   = useState(true);
   const [error, setError]       = useState(null);
@@ -46,6 +46,10 @@ export default function ConflictsTab({ pid, project, access }) {
         ? 'Resolved as include — moved to Final Review.'
         : `Conflict resolved as ${f.finalDecision}.`);
       await load();
+      // prompt23 Task 4 — the resolver is excluded from their own realtime event, so
+      // refresh the project here to update the workflow stepper, overview counts, and
+      // (on tab switch) the Title & Abstract list for this user immediately.
+      refreshProject?.();
     } catch (e) { setError(e.message || 'Failed to resolve'); }
     finally { setBusy(null); }
   }

@@ -8412,73 +8412,10 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
         ><Icon name="arrowLeft" size={13}/>Back to Projects</button>
       )}
 
-      {/* Projects */}
-      <div style={{padding:"10px 10px 8px",borderBottom:`1px solid ${C.brd}`}}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6,padding:"0 4px"}}>
-          <span style={{fontSize:9,fontWeight:700,color:C.muted,letterSpacing:0.8,textTransform:"uppercase"}}>Projects</span>
-          <div style={{display:"flex",gap:3}}>
-            <button onClick={()=>importRef.current&&importRef.current.click()} title="Import project" style={{
-              background:"none",border:`1px solid ${C.brd2}`,color:C.muted,cursor:"pointer",
-              fontSize:10,borderRadius:6,padding:"2px 7px",lineHeight:1.4,
-            }}>Import</button>
-            <button onClick={()=>setShowModal(true)} style={{
-              background:`${themeAlpha(C.acc,'1a')}`,border:`1px solid ${themeAlpha(C.acc,'30')}`,color:C.acc,
-              cursor:"pointer",fontSize:10,borderRadius:6,padding:"2px 8px",lineHeight:1.4,fontWeight:600,
-            }}>+ New</button>
-          </div>
-        </div>
-        <div style={{maxHeight:180,overflowY:"auto"}}>
-          {projects.length===0&&<div style={{fontSize:11,color:C.dim,padding:"8px 6px",textAlign:"center"}}>No projects yet</div>}
-          {projects.map(p=>(
-            <div key={p.id} onClick={()=>{setActiveId(p.id);setTab("overview");setDeepLinkMiss(null);}}
-              className="nav-item"
-              style={{
-                display:"flex",alignItems:"center",gap:8,padding:"7px 9px",borderRadius:8,
-                cursor:"pointer",marginBottom:1,
-                background:activeId===p.id?`${themeAlpha(C.acc,'16')}`:"transparent",
-                border:`1px solid ${activeId===p.id?themeAlpha(C.acc,'28'):"transparent"}`,
-              }}>
-              <div style={{
-                width:5,height:5,borderRadius:"50%",flexShrink:0,
-                background:activeId===p.id?C.acc:C.brd2,
-                transition:"background 0.2s",
-              }}/>
-              <div style={{flex:1,minWidth:0}}>
-                <div style={{display:"flex",alignItems:"center",gap:6,minWidth:0}}>
-                  <span title={p.name} style={{
-                    fontSize:12,fontWeight:activeId===p.id?600:400,
-                    color:activeId===p.id?C.txt:C.txt2,
-                    minWidth:0,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",lineHeight:1.3,
-                  }}>{p.name}</span>
-                  {/* Shared (linked-workspace) projects — owner/role/read-only badge (prompt5 Task 1/4) */}
-                  {p._shared&&(
-                    <span title={p._readOnly?`Shared read-only · owner ${p._owner?.name||p._owner?.email||""}`:`Shared · ${p._role||"member"} · owner ${p._owner?.name||p._owner?.email||""}`}
-                      style={{flexShrink:0,fontSize:8,fontWeight:700,letterSpacing:0.5,textTransform:"uppercase",
-                        padding:"1px 5px",borderRadius:4,
-                        color:p._readOnly?C.yel:C.acc,background:themeAlpha((p._readOnly?C.yel:C.acc),'1a'),
-                        border:`1px solid ${themeAlpha((p._readOnly?C.yel:C.acc),'40')}`}}>
-                      {p._readOnly?"View":"Shared"}
-                    </span>
-                  )}
-                </div>
-                <div style={{fontSize:9,color:C.muted,marginTop:2}}>
-                  {p.createdAt?`Created ${fmtDate(p.createdAt)}`:fmtDate(p.modified)}
-                </div>
-              </div>
-              {/* Members cannot delete a shared project they don't own. */}
-              {!p._shared&&(
-                <button onClick={e=>{e.stopPropagation();setDelName("");setDelErr("");setConfirmDel(p.id);}}
-                  style={{background:"none",border:"none",color:C.muted,cursor:"pointer",
-                    fontSize:14,padding:"0 2px",lineHeight:1,flexShrink:0,opacity:0,
-                  }}
-                  onMouseEnter={e=>e.currentTarget.style.opacity="1"}
-                  onMouseLeave={e=>e.currentTarget.style.opacity="0"}
-                >×</button>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
+      {/* prompt23 Task 1 — the redundant "Projects" switcher was removed from the
+          workspace sidebar (it duplicated the project dashboard at /app and cluttered
+          the panel). Use "Back to Projects" above to reach the dashboard, which owns
+          project listing, creation, import, and deletion. */}
 
       {/* Project — meta tabs (Overview, Project Control); phase:null keeps them
           out of the workflow map, progress math, and the "Next step" walker */}

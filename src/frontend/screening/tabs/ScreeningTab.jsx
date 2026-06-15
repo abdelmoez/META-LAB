@@ -18,6 +18,7 @@ import { extractKeywords } from '../../../research-engine/screening/keywords.js'
 import { DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS } from '../../../research-engine/screening/defaultKeywords.js';
 import PdfViewer from '../components/PdfViewer.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
+import { useRealtime } from '../../hooks/useRealtime.js';
 
 const LIMIT = 50;
 
@@ -176,6 +177,19 @@ export default function ScreeningTab({ pid, project, access, refreshProject }) {
     ]).then(([ls, rs]) => { setLabels(ls); setReasons(rs); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pid]);
+
+  // prompt23 Task 4 — keep the Title & Abstract list live when ANY decision lands
+  // (a teammate's screening decision OR a resolved conflict, which promotes/decides
+  // a record). The server emits `decision.saved` to project members on both; refetch
+  // page 1 with the current filters so a resolved/advanced record leaves this list
+  // (or updates its quorum/disputed flags) without a manual refresh.
+  useRealtime({
+    'decision.saved': (ev) => {
+      if (!ev || ev.projectId === pid || ev.projectId === undefined) {
+        loadRecords({ reset: true, s: searchRef.current, f: filterRef.current });
+      }
+    },
+  });
 
   // Keyword article counts — refresh on project load and whenever the project's
   // keyword lists change (a leader edited them).

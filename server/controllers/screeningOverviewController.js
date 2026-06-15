@@ -125,7 +125,11 @@ export async function getOverview(req, res) {
         id: access.project.id, title: access.project.title,
         blindMode: access.project.blindMode, progressStatus: access.project.progressStatus,
         linkedMetaLabProjectId: access.project.linkedMetaLabProjectId, stage: access.project.stage,
-        quorum: QUORUM,
+        // prompt23 Task 11 — report the EFFECTIVE required-reviewer count (driven by
+        // the project's requiredScreeningReviewers setting, floored by the global
+        // quorum) so every "quorum" label in the UI follows the setting, not a 2.
+        quorum: effectiveRequired,
+        requiredScreeningReviewers: access.project.requiredScreeningReviewers || effectiveRequired,
       },
       isLeader: access.isLeader, myRole: access.role,
       dataSummary: {

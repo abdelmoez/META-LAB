@@ -29,6 +29,7 @@ import {
   ROLE_LABEL, ROLE_COLOR, STATUS_META, TAG_COLORS,
   statusOf, roleOf, isOwnerOf, canEditOf,
   relTime, progressOf, SORTS, ROLE_ORDER,
+  readDashboardPrefs, writeDashboardPrefs,
 } from './projectLanding.helpers.js';
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -686,20 +687,6 @@ function CreateModal({ onClose, onCreated }) {
                     placeholder="A short summary of the review question"
                     style={{ ...inputStyle, resize: 'vertical' }} />
         </div>
-        <div style={{
-          display: 'flex', alignItems: 'flex-start', gap: 11, padding: '12px 14px',
-          background: alpha(C.acc, 0.06), border: `1px solid ${alpha(C.acc, 0.22)}`, borderRadius: 10, marginBottom: 20,
-        }}>
-          <Icon name="filter" size={15} style={{ marginTop: 2, color: C.acc, flexShrink: 0 }} />
-          <span>
-            <span style={{ display: 'block', fontSize: 12.5, fontWeight: 600, color: C.txt }}>
-              Screening is built in
-            </span>
-            <span style={{ display: 'block', fontSize: 11.5, color: C.txt2, marginTop: 3, lineHeight: 1.55 }}>
-              Your project includes a collaborative Screening stage — import references, de-duplicate, screen titles &amp; abstracts with your team, then flow accepted studies into Data Extraction. Nothing to link.
-            </span>
-          </span>
-        </div>
         {err && <div style={{ marginBottom: 14, fontSize: 12, color: C.red }}>{err}</div>}
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
           <Btn type="button" variant="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
@@ -1109,6 +1096,24 @@ export default function ProjectLanding() {
   const [sort, setSort]           = useState('modified');
   const [view, setView]           = useState('cards'); // 'cards' | 'table'
   const [showArchived, setShowArchived] = useState(false);
+
+  /* ── Persisted dashboard view preferences (prompt23 Task 2) ───────
+     Hydrate sort/filter/view/show-archived from this user's saved prefs once
+     auth is known, then write back on any change. Per-user localStorage keeps
+     the choice across refresh, browser restart, and logout/login. */
+  const prefsHydrated = useRef(false);
+  useEffect(() => {
+    const saved = readDashboardPrefs(user?.id);
+    if (saved.sort) setSort(saved.sort);
+    if (saved.filter) setFilter(saved.filter);
+    if (saved.view) setView(saved.view);
+    if (typeof saved.showArchived === 'boolean') setShowArchived(saved.showArchived);
+    prefsHydrated.current = true;
+  }, [user?.id]);
+  useEffect(() => {
+    if (!prefsHydrated.current) return; // don't clobber saved prefs with initial defaults
+    writeDashboardPrefs(user?.id, { sort, filter, view, showArchived });
+  }, [user?.id, sort, filter, view, showArchived]);
 
   /* modals */
   const [modal, setModal] = useState(null); // { type, project? }
