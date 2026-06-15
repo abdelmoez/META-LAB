@@ -2886,6 +2886,77 @@ function siftHandoffColor(status) {
   return ({ sent: C.grn, failed: C.red, already_exists: C.teal, pending: C.ylw }[status] || C.muted);
 }
 
+/* ── Internal screening-engine health (prompt18 unified Review Workspace) ──
+   Lets ops confirm every review project has its internal META·SIFT module, and
+   one-click repair any legacy project that predates auto-creation. */
+function SiftWorkspaceHealth() {
+  const [h, setH]           = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy]     = useState(false);
+  const [error, setError]   = useState('');
+  const [msg, setMsg]       = useState('');
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try { setH(await adminApi.screening.getWorkspaceHealth()); }
+    catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const repair = async () => {
+    setBusy(true); setError(''); setMsg('');
+    try {
+      const r = await adminApi.screening.repairWorkspaces();
+      setH(r.health);
+      setMsg(`Repaired — created ${r.summary?.created ?? 0} module(s).`);
+    } catch (e) { setError(e.message || 'Repair failed.'); }
+    finally { setBusy(false); }
+  };
+
+  const missing = h?.missingModule ?? 0;
+  const healthy = !loading && !error && missing === 0;
+  const dot = loading ? C.muted : error ? C.red : (healthy ? C.grn : C.gold);
+
+  return (
+    <SectionCard title="Internal Screening Engine">
+      <div style={{ padding: '16px 18px' }}>
+        {error && <ErrorBox msg={error} />}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+          <span style={{ width: 9, height: 9, borderRadius: '50%', background: dot, display: 'inline-block', flexShrink: 0 }} />
+          <span style={{ fontSize: 13, fontWeight: 700, color: dot }}>
+            {loading ? 'Checking…' : error ? 'Unavailable' : (healthy ? 'Healthy — every project has its screening module' : `${missing} project${missing === 1 ? '' : 's'} missing a screening module`)}
+          </span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0,1fr))', gap: 12 }}>
+          {[
+            { label: 'Projects',    value: h?.projects,         color: C.acc },
+            { label: 'With module', value: h?.withModule,       color: C.grn },
+            { label: 'Missing',     value: h?.missingModule,    color: missing > 0 ? C.gold : C.muted },
+            { label: 'Standalone',  value: h?.standaloneModules, color: C.muted },
+          ].map(s => (
+            <div key={s.label} style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '12px 14px', minWidth: 0 }}>
+              {loading ? <Spinner /> : <div style={{ fontSize: 22, fontWeight: 800, fontFamily: MONO, color: s.color, lineHeight: 1, fontVariantNumeric: 'tabular-nums' }}>{s.value ?? 0}</div>}
+              <div style={{ fontSize: 10, color: C.muted, marginTop: 6, letterSpacing: '0.06em', textTransform: 'uppercase', fontFamily: MONO }}>{s.label}</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 14, flexWrap: 'wrap' }}>
+          <button onClick={repair} disabled={busy || loading || missing === 0}
+            style={{ padding: '7px 16px', background: missing > 0 ? alpha(C.acc, '18') : 'transparent', border: `1px solid ${missing > 0 ? C.acc : C.brd2}`, borderRadius: 7, color: missing > 0 ? C.acc : C.muted, fontSize: 12, fontWeight: 600, cursor: (busy || loading || missing === 0) ? 'not-allowed' : 'pointer', fontFamily: FONT, opacity: (busy || missing === 0) ? 0.75 : 1 }}>
+            {busy ? 'Repairing…' : (missing > 0 ? `Repair ${missing} now` : 'Nothing to repair')}
+          </button>
+          <button onClick={load} disabled={loading || busy} style={{ padding: '7px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>↻ Refresh</button>
+          {msg && <span style={{ fontSize: 12, color: C.grn }}>{msg}</span>}
+        </div>
+        <div style={{ fontSize: 10.5, color: C.muted, marginTop: 10, lineHeight: 1.5 }}>
+          Every review project carries an internal META·SIFT screening module, created automatically on project creation and on first open of the Screening stage. Repair backfills any older project that predates that. <b>Standalone</b> = screening projects with no linked META·LAB project (legacy/admin-only).
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
+
 /* ── (A) Overview panel ── */
 function SiftOverview() {
   const [metrics, setMetrics] = useState(null);
@@ -2954,6 +3025,10 @@ function SiftOverview() {
             <div style={{ fontSize: 10, color: C.muted, marginTop: 8, letterSpacing: '0.07em', textTransform: 'uppercase', fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.label}>{p.label}</div>
           </div>
         ))}
+      </div>
+      {/* Internal screening-engine health + repair (prompt18) */}
+      <div style={{ marginBottom: 14 }}>
+        <SiftWorkspaceHealth />
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.5fr) minmax(0, 1fr)', gap: 14 }}>
         <SectionCard title="Screening Pipeline">

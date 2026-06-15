@@ -200,13 +200,24 @@ Pushed to `origin/main` (recorded at push time).
 
 ## 20. Known limitations
 
-- Inside the Screening stage, a couple of legacy screening-tab affordances still
-  link to the standalone META·LAB project view (`/app?project=`); harmless and
-  redundant from within the project, slated for a follow-up polish.
-- The Screening stage uses a viewport-relative height (`calc(100vh - 168px)`); on
-  very short viewports the inner workbench scrolls within the stage.
-- Ops module-health is exposed via the staff-gated "Screening engine" view + the
-  backfill script's report rather than a dedicated AdminConsole card.
+**Resolved in the follow-up pass (post-`6c07ae0`):**
+- ✅ **Ops module-health card** — AdminConsole now has an "Internal Screening Engine"
+  card (projects / with-module / missing / standalone) with a one-click **Repair**
+  button, backed by `GET /api/admin/screening/workspace-health` and
+  `POST /api/admin/screening/workspace-health/repair` (read-only audit +
+  idempotent backfill; admin-gated + audit-logged). Covered by prompt18 T5/T6.
+- ✅ **Legacy in-Screening affordances** — the redundant "Linked META·LAB Project"
+  card (OverviewTab) and the "META·LAB link" section (ProjectControlTab) are now
+  hidden when embedded (`embedded` prop threaded from SiftProject); the standalone
+  shell's "Open META·LAB project" links were canonicalized to `/app/project/:id`.
+
+**Remaining (minor):**
+- The Screening stage uses a viewport-relative height (`calc(100vh - 168px)`,
+  `minHeight: 520`); on very short viewports the inner workbench scrolls within the
+  stage (graceful, not broken).
+- A few notification / standalone-dashboard links still use the legacy
+  `/app?project=<id>` form — these resolve correctly via ProjectLanding's legacy
+  deep-link handler and are outside the in-project flow.
 - The pre-existing `serverStorage` unit-test flakiness and the pre-existing
   AnalysisTab esbuild `"}"` warning are untouched (documented, build still exits 0).
 

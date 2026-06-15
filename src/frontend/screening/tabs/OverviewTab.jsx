@@ -34,7 +34,7 @@ const STATUS_COLOR = { active: C.grn, inactive: C.muted, pending: C.ylw };
 const n = (v) => (typeof v === 'number' && !Number.isNaN(v) ? v : 0);
 
 // ── Component ─────────────────────────────────────────────────────────────────
-export default function OverviewTab({ pid, project, access = {}, refreshProject }) {
+export default function OverviewTab({ pid, project, access = {}, refreshProject, embedded = false }) {
   const navigate = useNavigate();
   const [, setParams] = useSearchParams();
   const [data, setData]       = useState(null);
@@ -171,18 +171,22 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject 
         )}
       </Card>
 
-      {/* ───────── A2) Linked META·LAB project (prompt9 Task 3) ───────── */}
-      <section style={{ marginBottom: 20 }}>
-        <SectionLabel>Linked META·LAB Project</SectionLabel>
-        <LinkedMetaLabCard
-          linkedMetaLab={data.linkedMetaLab}
-          legacyId={proj.linkedMetaLabProjectId}
-          legacyTitle={project?.linkedMetaLabProjectTitle}
-          canManageSettings={canManageSettings}
-          onOpen={(id) => navigate(`/app?project=${id}`)}
-          onGoLink={goToControlTab}
-        />
-      </section>
+      {/* ───────── A2) Linked META·LAB project (prompt9 Task 3) ─────────
+          prompt18: hidden when embedded — inside the unified workspace the user
+          IS already in the META·LAB project, so a "linked project" card is noise. */}
+      {!embedded && (
+        <section style={{ marginBottom: 20 }}>
+          <SectionLabel>Linked META·LAB Project</SectionLabel>
+          <LinkedMetaLabCard
+            linkedMetaLab={data.linkedMetaLab}
+            legacyId={proj.linkedMetaLabProjectId}
+            legacyTitle={project?.linkedMetaLabProjectTitle}
+            canManageSettings={canManageSettings}
+            onOpen={(id) => navigate(`/app/project/${id}`)}
+            onGoLink={goToControlTab}
+          />
+        </section>
+      )}
 
       {/* ───────── B) Data Summary ───────── */}
       <section style={{ marginBottom: 20 }}>

@@ -365,6 +365,8 @@ New suite: `tests/screening/integration/prompt18.test.js` (live API on 127.0.0.1
 | T2 | "Old" project (no module) → module auto-created on first resolve (`created:true`); idempotent on repeat (`created:false`) | ✅ |
 | T3 | Workspace member resolves the SAME module (`created:false`); a stranger gets 404 | ✅ |
 | T4 | Unknown META·LAB project id → 404 | ✅ |
+| T5 | Admin `GET /screening/workspace-health` returns the engine roll-up; non-admin → 403 | ✅ |
+| T6 | Admin repair backfills missing modules; `missing_after === failed`; legacy project then resolves `created:false` | ✅ |
 
 **Run results (this session):**
 - Unit: **653 passed / 6 pre-existing fails** (`serverStorage.test.js` timing — untouched by this work). No new regressions.

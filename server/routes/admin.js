@@ -46,6 +46,8 @@ import {
   getScreeningProjectMembers,
   getHandoffLogs,
   getScreeningAuditLog,
+  getWorkspaceHealth,
+  repairWorkspaces,
 } from '../controllers/screeningAdminController.js';
 
 const router = Router();
@@ -133,6 +135,9 @@ router.get('/health', requireAdmin, getHealth);
 router.get('/screening/settings',              requireAdmin, getScreeningSettings);
 router.put('/screening/settings',              requireAdmin, updateScreeningSettings);
 router.get('/screening/metrics',               requireAdmin, getScreeningMetrics);
+// Internal screening-engine health + one-click repair (prompt18 unified workspace)
+router.get('/screening/workspace-health',        requireAdmin, getWorkspaceHealth);
+router.post('/screening/workspace-health/repair', requireAdmin, repairWorkspaces);
 router.get('/screening/handoffs',              requireAdmin, getHandoffLogs);
 router.get('/screening/audit',                 requireAdmin, getScreeningAuditLog);
 router.get('/screening/projects',              requireAdmin, listScreeningProjects);

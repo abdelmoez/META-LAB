@@ -30,8 +30,15 @@ async function api(path, { method = 'GET', body, cookie } = {}) {
 }
 async function register(email) { const r = await api('/auth/register', { method: 'POST', body: { email, password: 'Password123!', name: email.split('@')[0] } }); return { cookie: r.cookie, id: r.data?.user?.id }; }
 
+let adminCookie = '';
+
 beforeAll(async () => {
   try { const r = await fetch(BASE + '/health'); up = r.ok; } catch { up = false; }
+  if (up) {
+    const pw = process.env.ADMIN_SEED_PASSWORD || 'MetaLabAdmin2026!';
+    const r = await api('/auth/login', { method: 'POST', body: { email: 'ops@metalab.local', password: pw } });
+    if (r.status === 200) adminCookie = r.cookie;
+  }
 }, 30000);
 
 describe('prompt18 — unified Review Workspace (integration)', () => {
@@ -119,5 +126,46 @@ describe('prompt18 — unified Review Workspace (integration)', () => {
     const a = await register(`u18x_${r}@t.local`);
     const ws = await api(`/screening/metalab/does-not-exist-${r}/workspace`, { cookie: a.cookie });
     expect(ws.status).toBe(404);
+  });
+
+  it('T5: admin workspace-health returns the engine roll-up; non-admin is forbidden', async () => {
+    if (!up) return;
+    if (!adminCookie) { console.warn('[prompt18] admin login failed — T5 skipped'); return; }
+    const health = await api('/admin/screening/workspace-health', { cookie: adminCookie });
+    expect(health.status).toBe(200);
+    expect(typeof health.data.projects).toBe('number');
+    expect(typeof health.data.withModule).toBe('number');
+    expect(typeof health.data.missingModule).toBe('number');
+    expect(Array.isArray(health.data.missingProjectIds)).toBe(true);
+
+    // A normal user cannot reach the admin health endpoint.
+    const u = await register(`u18h_${rnd()}@t.local`);
+    const denied = await api('/admin/screening/workspace-health', { cookie: u.cookie });
+    expect(denied.status).toBe(403);
+  });
+
+  it('T6: admin repair backfills missing modules → health reports 0 missing', async () => {
+    if (!up) return;
+    if (!adminCookie) { console.warn('[prompt18] admin login failed — T6 skipped'); return; }
+    // Create a legacy project (no module) so there is at least one to repair.
+    const a = await register(`u18r_${rnd()}@t.local`);
+    const ml = await api('/projects', { method: 'POST', cookie: a.cookie, body: { name: `Repair ${rnd()}` } });
+    const mlId = ml.data?.id || ml.data?.project?.id;
+    expect(mlId).toBeTruthy();
+
+    const rep = await api('/admin/screening/workspace-health/repair', { method: 'POST', cookie: adminCookie });
+    expect(rep.status).toBe(200);
+    expect(rep.data.summary).toBeTruthy();
+    expect(rep.data.summary.created).toBeGreaterThanOrEqual(1);
+    // After a full backfill the only projects still missing a module are exactly
+    // those whose creation failed (invariant: missing_after === failed).
+    expect(rep.data.health.missingModule).toBe(rep.data.summary.failed);
+
+    // And the once-legacy project now resolves to an existing module (created:false).
+    const ws = await api(`/screening/metalab/${mlId}/workspace`, { cookie: a.cookie });
+    expect(ws.status).toBe(200);
+    expect(ws.data.created).toBe(false);
+
+    await api(`/projects/${mlId}`, { method: 'DELETE', cookie: a.cookie });
   });
 });

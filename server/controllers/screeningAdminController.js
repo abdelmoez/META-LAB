@@ -10,6 +10,7 @@ import { prisma } from '../db/client.js';
 import { META_SIFT_DEFAULTS, SETTINGS_KEY } from '../screening/settings.js';
 import { emitToProjectMembers } from '../realtime/bus.js';
 import { logAdminAction } from '../utils/audit.js';
+import { auditScreenModules, backfillScreenModules } from '../screening/ensureWorkspace.js';
 
 /* ─── settings helpers ─────────────────────────────────────────────────── */
 
@@ -718,6 +719,43 @@ export async function getScreeningAuditLog(req, res) {
     res.json({ entries: rows, total: rows.length });
   } catch (err) {
     console.error('[admin/screening] getAuditLog:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/* ─── Internal screening-engine health (prompt18 — unified Review Workspace) ─── */
+
+/**
+ * GET /api/admin/screening/workspace-health
+ * Read-only roll-up of how many live META·LAB projects have / lack their internal
+ * screening module, plus the count of standalone screening projects. Lets ops see
+ * "Internal screening engine: healthy/missing" without exposing linking to users.
+ */
+export async function getWorkspaceHealth(req, res) {
+  try {
+    res.json(await auditScreenModules());
+  } catch (err) {
+    console.error('[admin/screening] getWorkspaceHealth:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /api/admin/screening/workspace-health/repair
+ * Idempotent, non-destructive backfill: create the internal screening module for
+ * any live project missing one. Returns { summary, health } (health re-audited
+ * after repair). Admin-gated; logged.
+ */
+export async function repairWorkspaces(req, res) {
+  try {
+    const summary = await backfillScreenModules();
+    await logAdminAction(req, 'REPAIR_SCREENING_WORKSPACES', 'ScreenProject', null, {
+      scanned: summary.scanned, created: summary.created, failed: summary.failed,
+    });
+    const health = await auditScreenModules();
+    res.json({ summary, health });
+  } catch (err) {
+    console.error('[admin/screening] repairWorkspaces:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }

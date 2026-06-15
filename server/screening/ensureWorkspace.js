@@ -100,6 +100,37 @@ export async function ensureScreenModuleForMetaLab(mlProjectId, user) {
 }
 
 /**
+ * Read-only health audit for ops (prompt18 follow-up). Counts live META·LAB
+ * projects that HAVE vs LACK a linked, live screening module, plus standalone
+ * screening projects (no `linkedMetaLabProjectId`). Never writes — safe to poll.
+ *
+ * @returns {Promise<{ projects, withModule, missingModule, missingProjectIds, standaloneModules }>}
+ */
+export async function auditScreenModules() {
+  const projects = await prisma.project.findMany({
+    where: { deletedAt: null },
+    select: { id: true },
+  });
+  const linkRows = await prisma.screenProject.findMany({
+    where: { linkedMetaLabProjectId: { not: null }, deletedAt: null },
+    select: { linkedMetaLabProjectId: true },
+  });
+  const linked = new Set(linkRows.map(r => r.linkedMetaLabProjectId));
+  const missing = projects.filter(p => !linked.has(p.id));
+  const standaloneModules = await prisma.screenProject.count({
+    where: { linkedMetaLabProjectId: null, deletedAt: null },
+  });
+  return {
+    projects: projects.length,
+    withModule: projects.length - missing.length,
+    missingModule: missing.length,
+    // Cap the id list so the payload stays small on large instances.
+    missingProjectIds: missing.slice(0, 50).map(p => p.id),
+    standaloneModules,
+  };
+}
+
+/**
  * Bulk, system-level repair used by the backfill script (prompt18 migration).
  * For every LIVE META·LAB project that has no linked, live ScreenProject, create
  * one owned by the project's owner. Idempotent — safe to re-run. Returns a

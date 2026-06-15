@@ -85,6 +85,9 @@ export const adminApi = {
     // prompt6 Task 12 adds doneToday / doneThisWeek / doneThisMonth
     // (DISTINCT projects whose status changed to 'done' in the window).
     getMetrics:   ()         => req(`${BASE}/screening/metrics`),
+    // Internal screening-engine health (prompt18): projects with/without a module.
+    getWorkspaceHealth: ()   => req(`${BASE}/screening/workspace-health`),
+    repairWorkspaces:   ()   => req(`${BASE}/screening/workspace-health/repair`, { method: 'POST' }),
     listProjects: (p)        => req(`${BASE}/screening/projects?${new URLSearchParams(p || {})}`),
     // prompt6 Task 11: expanded progress detail — total/screened/unscreened/
     // included/excluded/maybe/conflicts/duplicates/secondReview/sentToExtraction

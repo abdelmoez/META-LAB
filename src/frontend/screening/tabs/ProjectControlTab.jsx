@@ -37,7 +37,7 @@ const selectStyle = {
   padding: '7px 10px', color: C.txt, fontSize: 13, fontFamily: FONT, outline: 'none', cursor: 'pointer',
 };
 
-export default function ProjectControlTab({ pid, project, access, refreshProject }) {
+export default function ProjectControlTab({ pid, project, access, refreshProject, embedded = false }) {
   const canManageSettings = !!(project?.canManageSettings || project?.isLeader || access?.isLeader);
   const myRole = project?.myRole || access?.myRole || 'reviewer';
   const roleMeta = ROLE_META[myRole] || ROLE_META.reviewer;
@@ -67,7 +67,10 @@ export default function ProjectControlTab({ pid, project, access, refreshProject
 
       <SettingsSection pid={pid} project={project} canManage={canManageSettings} refreshProject={refreshProject} />
 
-      <LinkSection pid={pid} canManage={canManageSettings} />
+      {/* prompt18: the META·LAB link is an internal detail — hidden inside the
+          unified workspace (you're already in the project), shown only in the
+          standalone/admin screening shell. */}
+      {!embedded && <LinkSection pid={pid} canManage={canManageSettings} />}
 
       <div>
         <SectionLabel>Members &amp; permissions</SectionLabel>
@@ -289,7 +292,7 @@ function LinkSection({ pid, canManage }) {
                     <>
                       <Badge color={C.grn}>{`🔗 ${linked.name}`}</Badge>
                       <button
-                        onClick={() => navigate(`/app?project=${linked.id}`)}
+                        onClick={() => navigate(`/app/project/${linked.id}`)}
                         title={`Open the linked META·LAB project: ${linked.name}`}
                         style={{
                           background: 'none', border: `1px solid ${C.brd2}`, color: C.acc,

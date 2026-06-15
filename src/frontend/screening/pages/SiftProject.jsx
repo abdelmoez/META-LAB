@@ -193,9 +193,9 @@ export default function SiftProject({ embedded = false, embeddedPid = null } = {
                     onBack={() => setTab('overview')} />
                 </div>
               : isFullBleed
-                ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} /></div>
+                ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} embedded /></div>
                 : <div style={{ maxWidth: 1180, margin: '0 auto', padding: '20px 20px 48px' }}>
-                    <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} />
+                    <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} embedded />
                   </div>
           )}
         </div>
