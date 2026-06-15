@@ -45,6 +45,11 @@ export const adminApi = {
 
   users: {
     list:         (p)        => req(`${BASE}/users?${new URLSearchParams(p || {})}`),
+    // prompt19 — aggregate users-by-country distribution (admin only). Returns
+    // { countries: [{ countryCode, countryName, userCount, percentage,
+    // latestRegistrationAt }], summary: { totalUsers, totalKnown, unknown,
+    // countriesRepresented } } sorted by userCount desc. COUNTRY-LEVEL only.
+    countries:    ()         => req(`${BASE}/users/countries`),
     get:          (id)       => req(`${BASE}/users/${id}`),
     getProjects:  (id, p)    => req(`${BASE}/users/${id}/projects?${new URLSearchParams(p || {})}`),
     update:       (id, b)    => req(`${BASE}/users/${id}`, { method: 'PATCH', ...json(b) }),

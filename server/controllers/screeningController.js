@@ -36,6 +36,34 @@ async function getOwnedProject(pid, userId) {
   return prisma.screenProject.findFirst({ where: { id: pid, ownerId: userId, deletedAt: null } });
 }
 
+// ── Reviewer-quorum policy (prompt19 Task 9) ─────────────────────────
+//
+// REQUIRED_REVIEWERS_MIN / MAX bound the per-project requiredScreeningReviewers
+// value a leader may set. The floor is 2 because the product guarantees at least
+// two reviewers (mirrors getEffectiveQuorum's two-reviewer guarantee); the ceiling
+// keeps the requirement sane.
+const REQUIRED_REVIEWERS_MIN = 2;
+const REQUIRED_REVIEWERS_MAX = 10;
+
+/**
+ * Effective number of DISTINCT title/abstract reviewer decisions a record must
+ * have before it can advance to full_text for a given project.
+ *
+ *   effectiveRequired = max(project.requiredScreeningReviewers || 2, getEffectiveQuorum())
+ *
+ * The per-project value is primary, but it can NEVER drop below the global
+ * two-reviewer guarantee (getEffectiveQuorum returns >= 2 when requireTwoReviewers
+ * is on). This is the single source of truth for "how many reviewers gate promotion"
+ * and is used by saveDecision's auto-promotion.
+ */
+async function effectiveRequiredReviewers(project) {
+  const perProject = Number.isFinite(project?.requiredScreeningReviewers)
+    ? project.requiredScreeningReviewers
+    : 2;
+  const globalQuorum = await getEffectiveQuorum();
+  return Math.max(perProject || 2, globalQuorum);
+}
+
 // ── Projects ─────────────────────────────────────────────────────────
 
 export async function listProjects(req, res) {
@@ -93,6 +121,8 @@ export async function listProjects(req, res) {
       return {
         id: p.id, title: p.title, description: p.description,
         reviewQuestion: p.reviewQuestion, stage: p.stage, blindMode: p.blindMode,
+        // prompt19 Task 9: per-project reviewer requirement on each card (default 2).
+        requiredScreeningReviewers: p.requiredScreeningReviewers ?? 2,
         progressStatus: p.progressStatus, archived: p.archived,
         linkedMetaLabProjectId: p.linkedMetaLabProjectId,
         linkedMetaLabProjectTitle: p.linkedMetaLabProjectId ? (linkedTitleById[p.linkedMetaLabProjectId] || null) : null,
@@ -241,6 +271,10 @@ export async function getProject(req, res) {
     res.json({
       ...p,
       linkedMetaLabProjectTitle,
+      // prompt19 Task 9: surface the per-project reviewer requirement so the UI can
+      // show/edit it. p.requiredScreeningReviewers comes straight from the column
+      // (Int @default(2)); fall back to 2 for any legacy row read as null.
+      requiredScreeningReviewers: p.requiredScreeningReviewers ?? 2,
       myRole: access.role,
       isLeader: access.isLeader,
       isOwner: access.isOwner,
@@ -269,9 +303,29 @@ export async function updateProject(req, res) {
       title, description, reviewQuestion, stage, blindMode,
       linkedMetaLabProjectId, progressStatus,
       inclusionKeywords, exclusionKeywords, studyTypeFilter, chatRestricted,
+      requiredScreeningReviewers,
     } = req.body || {};
 
     const data = {};
+
+    // prompt19 Task 9: per-project required reviewers. canManageSettings is already
+    // enforced above (owner / leader / member with the perm), so reaching here means
+    // the caller may edit settings. Validate strictly: must be an integer, then clamp
+    // to [REQUIRED_REVIEWERS_MIN, REQUIRED_REVIEWERS_MAX] (the 2-floor preserves the
+    // two-reviewer guarantee). Non-integer / non-finite => 400 (no silent coercion).
+    let requiredReviewersChange = null; // { from, to } when it actually changes
+    if (requiredScreeningReviewers !== undefined) {
+      const n = Number(requiredScreeningReviewers);
+      if (!Number.isFinite(n) || !Number.isInteger(n)) {
+        return res.status(400).json({ error: 'requiredScreeningReviewers must be an integer' });
+      }
+      const clamped = Math.min(REQUIRED_REVIEWERS_MAX, Math.max(REQUIRED_REVIEWERS_MIN, n));
+      const current = Number.isFinite(p.requiredScreeningReviewers) ? p.requiredScreeningReviewers : 2;
+      if (clamped !== current) {
+        data.requiredScreeningReviewers = clamped;
+        requiredReviewersChange = { from: current, to: clamped };
+      }
+    }
     if (title !== undefined) data.title = String(title).trim();
     if (description !== undefined) data.description = description;
     if (reviewQuestion !== undefined) data.reviewQuestion = reviewQuestion;
@@ -309,6 +363,13 @@ export async function updateProject(req, res) {
     // Audit blind-mode changes (Part 5).
     if (blindMode !== undefined && !!blindMode !== p.blindMode) {
       await writeAudit(p.id, req.user, blindMode ? 'BLIND_MODE_ON' : 'BLIND_MODE_OFF', { entityType: 'project', entityId: p.id });
+    }
+
+    // Audit required-reviewers changes (prompt19 Task 9).
+    if (requiredReviewersChange) {
+      await writeAudit(p.id, req.user, 'REQUIRED_REVIEWERS_CHANGED', {
+        entityType: 'project', entityId: p.id, details: requiredReviewersChange,
+      });
     }
 
     // Task 12: record REAL status transitions (old !== new) for the ops
@@ -1055,22 +1116,48 @@ export async function saveDecision(req, res) {
       },
     });
 
-    // Quorum (Part 2/3): when >= QUORUM distinct reviewers INCLUDE a record at
-    // the title/abstract stage, it becomes eligible for Second Review (full_text).
+    // Promotion gate (prompt19 Task 9 — BACKEND-ENFORCED).
+    //
+    // A record advances title_abstract → full_text ONLY when BOTH hold:
+    //   (1) it has at least `effectiveRequired` DISTINCT reviewer decisions at the
+    //       title/abstract stage (any decision counts toward "enough reviewers
+    //       weighed in"), AND
+    //   (2) the include threshold is met: >= getEffectiveQuorum() distinct
+    //       reviewers chose INCLUDE (reuses the existing include/quorum logic).
+    //
+    // `effectiveRequired = max(project.requiredScreeningReviewers||2, quorum)`, so
+    // raising requiredScreeningReviewers raises the reviewer bar but never lowers
+    // the global two-reviewer guarantee. Insufficient distinct decisions OR too few
+    // includes => the record stays pending in title_abstract. include+exclude (and
+    // any disagreement) is left to syncConflicts as a CONFLICT (unchanged) — the
+    // leader resolves it via resolveConflict. This runs server-side so a forged
+    // request body cannot bypass the requirement.
     let promoted = false;
     if (stage === 'title_abstract' && rec.currentStage === 'title_abstract') {
-      const includeCount = await prisma.screenDecision.count({
-        where: { recordId: rec.id, stage: 'title_abstract', decision: 'include' },
+      const stageDecisions = await prisma.screenDecision.findMany({
+        where: { recordId: rec.id, stage: 'title_abstract', decision: { not: 'undecided' } },
+        select: { reviewerId: true, decision: true },
       });
-      const quorum = await getEffectiveQuorum();
-      if (includeCount >= quorum) {
+      // DISTINCT reviewers: collapse any duplicate rows per reviewer (the unique
+      // constraint already enforces one row per reviewer/stage, but be defensive).
+      const byReviewer = new Map();
+      for (const dec of stageDecisions) byReviewer.set(dec.reviewerId, dec.decision);
+      const distinctDecisions = byReviewer.size;
+      let includeCount = 0;
+      for (const v of byReviewer.values()) if (v === 'include') includeCount++;
+
+      const effectiveRequired = await effectiveRequiredReviewers(p);
+      const includeThreshold = await getEffectiveQuorum();
+
+      if (distinctDecisions >= effectiveRequired && includeCount >= includeThreshold) {
         await prisma.screenRecord.update({
           where: { id: rec.id },
           data: { currentStage: 'full_text', promotedAt: new Date(), promotedVia: 'quorum' },
         });
         promoted = true;
         await writeAudit(p.id, req.user, 'RECORD_PROMOTED', {
-          entityType: 'record', entityId: rec.id, details: { via: 'quorum', includeCount, quorum },
+          entityType: 'record', entityId: rec.id,
+          details: { via: 'quorum', includeCount, distinctDecisions, effectiveRequired, includeThreshold },
         });
       }
     }

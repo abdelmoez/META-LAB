@@ -7,6 +7,7 @@ import { isValidEmail } from '../utils/validators.js';
 import { recordUsage, USAGE } from '../utils/usage.js';
 import { sendEmail, renderPasswordResetEmail } from '../services/emailService.js';
 import { createResetToken, consumeResetToken } from '../services/passwordResetService.js';
+import { resolveCountry, getClientIp, hashIp } from '../utils/geo.js';
 
 const COOKIE_NAME = 'metalab_session';
 
@@ -70,6 +71,28 @@ async function claimPendingScreenInvites(user) {
   } catch { /* best-effort side-effect â€” swallow */ }
 }
 
+/**
+ * Best-effort COUNTRY-LEVEL capture at registration (prompt19 Task 12).
+ * Resolves the registrant's country (proxy header → optional geoip → local/
+ * unknown) and persists the 4 nullable registration* fields. Privacy: country
+ * only — never city/coords, never the raw IP (only an optional salted hash).
+ * Fully wrapped so geolocation can NEVER block or 500 registration.
+ */
+async function captureRegistrationCountry(req, user) {
+  try {
+    const { code, name, source } = await resolveCountry(req);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        registrationCountryCode: code || '',
+        registrationCountryName: name || 'Unknown',
+        registrationIpCountrySource: source || 'none',
+        registrationIpHash: hashIp(getClientIp(req)),
+      },
+    });
+  } catch { /* best-effort side-effect — swallow, never affect the response */ }
+}
+
 function cookieOptions() {
   return {
     httpOnly: true,
@@ -125,6 +148,10 @@ export async function register(req, res) {
     // Claim pending METAÂ·SIFT invites for this email + emit deferred invite
     // notifications â€” fire-and-forget, never blocks registration.
     claimPendingScreenInvites(user).catch(() => {});
+
+    // Best-effort COUNTRY-LEVEL capture for ops analytics (prompt19 Task 12).
+    // Fire-and-forget — geolocation must never block or 500 registration.
+    captureRegistrationCountry(req, user).catch(() => {});
 
     const token = signToken({ id: user.id, email: user.email, role: user.role });
     res.cookie(COOKIE_NAME, token, cookieOptions());

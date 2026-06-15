@@ -88,6 +88,7 @@ function SettingsSection({ pid, project, canManage, refreshProject }) {
   const [status, setStatus] = useState(project?.progressStatus || 'not_started');
   const [blind, setBlind] = useState(!!project?.blindMode);
   const [chatRestricted, setChatRestricted] = useState(!!project?.chatRestricted);
+  const [reqReviewers, setReqReviewers] = useState(project?.requiredScreeningReviewers ?? 2);
   const [busy, setBusy] = useState(false);
   const [flash, setFlash] = useState(false);
   const [err, setErr] = useState('');
@@ -96,7 +97,8 @@ function SettingsSection({ pid, project, canManage, refreshProject }) {
     setStatus(project?.progressStatus || 'not_started');
     setBlind(!!project?.blindMode);
     setChatRestricted(!!project?.chatRestricted);
-  }, [project?.id, project?.progressStatus, project?.blindMode, project?.chatRestricted]);
+    setReqReviewers(project?.requiredScreeningReviewers ?? 2);
+  }, [project?.id, project?.progressStatus, project?.blindMode, project?.chatRestricted, project?.requiredScreeningReviewers]);
 
   // Returns true on success; callers revert their optimistic state on false.
   const save = useCallback(async (patch) => {
@@ -159,6 +161,18 @@ function SettingsSection({ pid, project, canManage, refreshProject }) {
               : <Badge color={chatRestricted ? C.ylw : C.muted}>{chatRestricted ? 'Restricted' : 'Open'}</Badge>}
           </Row>
         </div>
+
+        <div style={{ borderTop: `1px solid ${C.brd}`, marginTop: 14, paddingTop: 14 }}>
+          <Row title="Required reviewers" hint="Independent title & abstract decisions needed before a record can advance to Full Text. The research standard is 2; only the owner or a leader can change it.">
+            {canManage
+              ? <select value={reqReviewers} disabled={busy}
+                  onChange={e => { const v = parseInt(e.target.value, 10); const prev = reqReviewers; setReqReviewers(v); save({ requiredScreeningReviewers: v }).then(ok => { if (!ok) setReqReviewers(prev); }); }}
+                  style={{ ...selectStyle, opacity: busy ? 0.6 : 1 }}>
+                  {[2, 3, 4, 5, 6, 7, 8, 9, 10].map(n => <option key={n} value={n}>{n} reviewers</option>)}
+                </select>
+              : <Badge color={C.acc}>{reqReviewers} reviewers</Badge>}
+          </Row>
+        </div>
       </Card>
     </div>
   );
@@ -187,7 +201,7 @@ function TitleRow({ title, canManage, busy, save }) {
       <div style={{ minWidth: 0, flex: 1 }}>
         <div style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>Project name</div>
         <div style={{ fontSize: 11.5, color: C.muted, marginTop: 2 }}>
-          If the linked META·LAB project shares this name, renaming updates both.
+          Renaming updates the project name across all of its stages.
         </div>
         {editing ? (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>

@@ -1809,6 +1809,216 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
   );
 }
 
+/* ════════════════════════════════════════════════════════════════════════
+   USERS BY COUNTRY (prompt19 Task 12) — interactive accent-scaled world map +
+   ranked table + summary. Country-LEVEL only. Lightweight: a single inline SVG
+   equirectangular world outline with accent-scaled markers at country centroids
+   (no map library, no heavy deps). The accent (C.acc) drives the colour scale so
+   it stays clean in BOTH day and night themes via the alpha() color-mix helper.
+   ════════════════════════════════════════════════════════════════════════ */
+
+// Equirectangular projection helpers for a 360×180-unit viewBox (lon/lat → x/y).
+const MAP_W = 360;
+const MAP_H = 180;
+const lonToX = lon => (lon + 180) * (MAP_W / 360);
+const latToY = lat => (90 - lat) * (MAP_H / 180);
+
+// Approximate country centroids (lon, lat) for marker placement. Country-level
+// only — these are coarse national centroids, never user coordinates. Codes not
+// listed still appear in the table; they simply render no map marker.
+const COUNTRY_CENTROIDS = {
+  US: [-98, 39], CA: [-106, 56], MX: [-102, 23], BR: [-51, -10], AR: [-64, -34],
+  CL: [-71, -30], CO: [-74, 4], PE: [-75, -10], VE: [-66, 7],
+  GB: [-2, 54], IE: [-8, 53], FR: [2, 46], ES: [-4, 40], PT: [-8, 39], DE: [10, 51],
+  NL: [5, 52], BE: [4, 50], CH: [8, 47], AT: [14, 47], IT: [12, 42], SE: [16, 62],
+  NO: [9, 61], FI: [26, 64], DK: [10, 56], PL: [19, 52], CZ: [15, 50], GR: [22, 39],
+  RO: [25, 46], HU: [19, 47], UA: [32, 49], RU: [90, 61], TR: [35, 39],
+  IL: [35, 31], SA: [45, 24], AE: [54, 24], EG: [30, 27], ZA: [24, -29], NG: [8, 9],
+  KE: [38, 0], MA: [-7, 32], ET: [40, 9], GH: [-1, 8],
+  IN: [79, 22], PK: [70, 30], BD: [90, 24], CN: [104, 35], JP: [138, 36],
+  KR: [128, 36], TW: [121, 24], HK: [114, 22], SG: [104, 1], MY: [102, 4],
+  ID: [113, -1], TH: [101, 15], VN: [108, 16], PH: [122, 12],
+  AU: [134, -25], NZ: [172, -41],
+};
+
+// A coarse but recognizable world land outline (continent blobs) so the markers
+// have geographic context. Hand-simplified equirectangular polygons — purely
+// decorative; correctness of marker placement does not depend on these.
+const WORLD_LAND = [
+  // North America
+  '32,30 70,28 95,40 100,55 75,75 40,78 22,60 28,42',
+  // South America
+  '95,108 118,100 125,118 118,150 100,168 92,150 90,125',
+  // Europe
+  '168,40 205,33 212,52 195,70 172,66 165,52',
+  // Africa
+  '168,72 210,70 222,100 210,135 188,150 175,120 170,95',
+  // Asia
+  '212,33 320,30 340,55 330,90 290,98 250,88 220,70 210,50',
+  // Oceania / Australia
+  '300,128 340,122 348,150 320,160 300,148',
+];
+
+function UsersByCountryCard() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [selected, setSelected] = useState(null);   // selected countryCode (table↔map link)
+  const [hover, setHover] = useState(null);          // { name, count, pct, x, y }
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true); setError('');
+      try {
+        const d = await adminApi.users.countries();
+        if (alive) setData(d);
+      } catch (e) {
+        if (alive) setError(e.message);
+      } finally {
+        if (alive) setLoading(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const countries = data?.countries || [];
+  const summary = data?.summary || { totalUsers: 0, totalKnown: 0, unknown: 0, countriesRepresented: 0 };
+  // Scale by the largest KNOWN-country count (the Unknown bucket is excluded
+  // from the map and from the colour ceiling so one big Unknown bucket can't
+  // wash out the real geographic signal).
+  const mapped = countries.filter(c => c.countryCode && COUNTRY_CENTROIDS[c.countryCode]);
+  const maxCount = mapped.reduce((m, c) => Math.max(m, c.userCount), 0) || 1;
+
+  // Accent-driven colour scale: 0 → neutral light; more users → closer to accent.
+  // Uses alpha()'s color-mix path so it reads cleanly in both themes.
+  const fillFor = count => {
+    if (!count) return alpha(C.muted, 0.18);
+    const t = Math.min(1, count / maxCount);
+    // 0.30 floor so even the smallest country is visibly accented; ramp to 0.92.
+    return alpha(C.acc, 0.3 + t * 0.62);
+  };
+  const radiusFor = count => {
+    if (!count) return 2.2;
+    const t = Math.min(1, count / maxCount);
+    return 3 + Math.sqrt(t) * 6; // sqrt → area-ish scaling, capped ~9 units
+  };
+
+  const Chip = ({ label, value, color = C.acc }) => (
+    <div style={{ flex: '1 1 120px', minWidth: 0, background: alpha(color, '10'), border: `1px solid ${alpha(color, '30')}`, borderRadius: 9, padding: '10px 14px' }}>
+      <div style={{ fontSize: 20, fontWeight: 700, color: C.txt, fontFamily: MONO, lineHeight: 1.1 }}>{value}</div>
+      <div style={{ fontSize: 10, color: C.muted, fontFamily: MONO, letterSpacing: '0.08em', textTransform: 'uppercase', marginTop: 3 }}>{label}</div>
+    </div>
+  );
+
+  return (
+    <SectionCard title="Users by Country">
+      <div style={{ padding: '16px 18px' }}>
+        {error && <ErrorBox msg={error} />}
+
+        {/* Summary chips */}
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+          <Chip label="Total users" value={loading ? '—' : summary.totalUsers} />
+          <Chip label="Known country" value={loading ? '—' : summary.totalKnown} color={C.grn} />
+          <Chip label="Unknown / local" value={loading ? '—' : summary.unknown} color={C.muted} />
+          <Chip label="Countries" value={loading ? '—' : summary.countriesRepresented} color={C.teal} />
+        </div>
+
+        {loading ? (
+          <div style={{ padding: '40px 0', textAlign: 'center', color: C.muted, fontSize: 12 }}>Loading distribution…</div>
+        ) : countries.length === 0 ? (
+          <div style={{ padding: '40px 0', textAlign: 'center', color: C.muted, fontSize: 12 }}>No users yet.</div>
+        ) : (
+          <div style={{ display: 'flex', gap: 18, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            {/* ── Choropleth map ──────────────────────────────────────── */}
+            <div style={{ flex: '1 1 360px', minWidth: 300, position: 'relative' }}>
+              <svg viewBox={`0 0 ${MAP_W} ${MAP_H}`} width="100%" role="img"
+                aria-label="World map of users by country"
+                style={{ display: 'block', background: alpha(C.brd, 0.15), border: `1px solid ${C.brd}`, borderRadius: 10 }}
+                onMouseLeave={() => setHover(null)}>
+                {/* land outline (decorative context) */}
+                {WORLD_LAND.map((pts, i) => (
+                  <polygon key={i} points={pts} fill={alpha(C.muted, 0.12)} stroke={alpha(C.muted, 0.2)} strokeWidth={0.4} />
+                ))}
+                {/* country markers */}
+                {mapped.map(c => {
+                  const [lon, lat] = COUNTRY_CENTROIDS[c.countryCode];
+                  const cx = lonToX(lon), cy = latToY(lat);
+                  const isSel = selected === c.countryCode;
+                  return (
+                    <circle key={c.countryCode}
+                      cx={cx} cy={cy} r={radiusFor(c.userCount)}
+                      fill={fillFor(c.userCount)}
+                      stroke={isSel ? C.acc : alpha(C.acc, 0.55)}
+                      strokeWidth={isSel ? 1.4 : 0.6}
+                      style={{ cursor: 'pointer' }}
+                      onClick={() => setSelected(prev => prev === c.countryCode ? null : c.countryCode)}
+                      onMouseEnter={() => setHover({ name: c.countryName, count: c.userCount, pct: c.percentage, x: cx, y: cy })}
+                      onMouseLeave={() => setHover(null)}>
+                      <title>{`${c.countryName}: ${c.userCount} users (${c.percentage}%)`}</title>
+                    </circle>
+                  );
+                })}
+                {/* hover tooltip (SVG-space) */}
+                {hover && (
+                  <g pointerEvents="none" transform={`translate(${Math.min(MAP_W - 92, Math.max(2, hover.x - 46))}, ${Math.max(2, hover.y - 30)})`}>
+                    <rect width={92} height={26} rx={4} fill={C.card} stroke={C.brd} strokeWidth={0.5} />
+                    <text x={6} y={11} fontSize={7} fill={C.txt} fontWeight={700}>{hover.name}</text>
+                    <text x={6} y={21} fontSize={6.5} fill={C.muted}>{hover.count} users · {hover.pct}%</text>
+                  </g>
+                )}
+              </svg>
+              <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+                Marker size and accent intensity scale with the number of users registered from each country.
+                Users without a resolved country (local or unknown) are listed in the table but not plotted.
+              </div>
+            </div>
+
+            {/* ── Ranked table ────────────────────────────────────────── */}
+            <div style={{ flex: '1 1 320px', minWidth: 280 }}>
+              <div style={{ border: `1px solid ${C.brd}`, borderRadius: 10, overflow: 'hidden' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '32px 1fr 56px 56px', gap: 0, padding: '8px 12px', borderBottom: `1px solid ${C.brd}`, fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', background: alpha(C.brd, 0.18) }}>
+                  <span>#</span><span>Country</span><span style={{ textAlign: 'right' }}>Users</span><span style={{ textAlign: 'right' }}>%</span>
+                </div>
+                <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+                  {countries.map((c, i) => {
+                    const known = !!c.countryCode;
+                    const isSel = known && selected === c.countryCode;
+                    const barPct = summary.totalUsers > 0 ? (c.userCount / summary.totalUsers) * 100 : 0;
+                    return (
+                      <div key={c.countryCode || `unknown-${i}`}
+                        onClick={() => known && setSelected(prev => prev === c.countryCode ? null : c.countryCode)}
+                        title={c.latestRegistrationAt ? `Latest registration: ${fmtDate(c.latestRegistrationAt)}` : undefined}
+                        style={{
+                          position: 'relative', display: 'grid', gridTemplateColumns: '32px 1fr 56px 56px',
+                          alignItems: 'center', padding: '7px 12px',
+                          borderBottom: i < countries.length - 1 ? `1px solid ${C.brd}` : 'none',
+                          background: isSel ? alpha(C.acc, '12') : 'transparent',
+                          borderLeft: isSel ? `3px solid ${C.acc}` : '3px solid transparent',
+                          cursor: known ? 'pointer' : 'default',
+                        }}>
+                        {/* accent bar behind the row, scaled to share of total */}
+                        <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${barPct}%`, background: alpha(known ? C.acc : C.muted, 0.1), pointerEvents: 'none' }} />
+                        <span style={{ position: 'relative', fontSize: 11, fontFamily: MONO, color: C.muted }}>{i + 1}</span>
+                        <span style={{ position: 'relative', fontSize: 12, color: C.txt, fontWeight: known ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {known && <span style={{ fontFamily: MONO, fontSize: 10, color: C.muted, marginRight: 6 }}>{c.countryCode}</span>}
+                          {c.countryName}
+                        </span>
+                        <span style={{ position: 'relative', textAlign: 'right', fontSize: 12, fontFamily: MONO, color: C.txt }}>{c.userCount}</span>
+                        <span style={{ position: 'relative', textAlign: 'right', fontSize: 11, fontFamily: MONO, color: C.muted }}>{c.percentage}%</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </SectionCard>
+  );
+}
+
 function UsersSection({ isAdmin = false }) {
   const [rows,    setRows]    = useState([]);
   const [total,   setTotal]   = useState(0);
@@ -1882,6 +2092,9 @@ function UsersSection({ isAdmin = false }) {
     <div>
       <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 20px' }}>User Management</h2>
       {error && <ErrorBox msg={error} />}
+
+      {/* prompt19 — users-by-country distribution (admin only; endpoint is requireAdmin). */}
+      {isAdmin && <UsersByCountryCard />}
 
       <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
         <input type="text" placeholder="Search name or email…" value={search} onChange={e => handleSearch(e.target.value)}

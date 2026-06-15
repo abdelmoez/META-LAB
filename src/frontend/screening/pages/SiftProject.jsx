@@ -157,7 +157,7 @@ export default function SiftProject({ embedded = false, embeddedPid = null } = {
       );
     };
     return (
-      <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 168px)', minHeight: 520, background: C.bg, border: `1px solid ${C.brd}`, borderRadius: 10, overflow: 'hidden', fontFamily: FONT, color: C.txt }}>
+      <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 480, background: C.bg, overflow: 'hidden', fontFamily: FONT, color: C.txt }}>
         <GlobalStyle />
         {/* Screening sub-navigation — the META·SIFT engine, nested in the stage */}
         <div style={{ display: 'flex', gap: 2, padding: '0 12px', background: C.surf, borderBottom: `1px solid ${C.brd}`, flexShrink: 0, overflowX: 'auto', alignItems: 'center' }}>
@@ -269,7 +269,7 @@ export default function SiftProject({ embedded = false, embeddedPid = null } = {
         {!loading && disabled && (
           <div style={{ padding: 32, maxWidth: 520, margin: '40px auto', textAlign: 'center', border: `1px solid ${alpha(C.gold, '40')}`, borderRadius: 12, background: alpha(C.gold, '08') }}>
             <div style={{ fontSize: 32, marginBottom: 14 }}>🔧</div>
-            <div style={{ fontSize: 15, fontWeight: 600, color: C.gold, marginBottom: 8 }}>META·SIFT is temporarily unavailable</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: C.gold, marginBottom: 8 }}>Screening is temporarily unavailable</div>
             <div style={{ fontSize: 13, color: C.txt2 }}>{disabled}</div>
           </div>
         )}

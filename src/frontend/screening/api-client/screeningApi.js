@@ -12,10 +12,10 @@ async function req(method, path, body) {
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
     const msg =
-      r.status === 401 ? 'You must be signed in to use META·SIFT.' :
+      r.status === 401 ? 'You must be signed in to use Screening.' :
       r.status === 403 ? 'Access denied.' :
       r.status === 404 ? (data.error || 'Not found.') :
-      r.status === 503 ? (data.error || 'META·SIFT is currently unavailable.') :
+      r.status === 503 ? (data.error || 'Screening is currently unavailable.') :
       (data.error || `Server error (${r.status})`);
     throw Object.assign(new Error(msg), { status: r.status, data });
   }

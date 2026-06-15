@@ -6,6 +6,7 @@ import { PERMISSION_PRESETS, ASSIGNABLE_PRESETS } from "./src/research-engine/sc
 import { useRealtime } from "./src/frontend/hooks/useRealtime.js";
 import { flushStorage, hasPendingSave } from "./src/frontend/storage/serverStorage.js";
 import { alpha as themeAlpha } from "./src/frontend/theme/tokens.js";
+import { useTheme } from "./src/frontend/theme/ThemeContext.jsx";
 import { Icon } from "./src/frontend/components/icons.jsx";
 import MetaLabChatLauncher from "./src/frontend/components/chat/MetaLabChatLauncher.jsx";
 import ExportDialog from "./src/frontend/components/ExportDialog.jsx";
@@ -1257,13 +1258,20 @@ function ProgressBar({done,total,color}){
 }
 
 /* ════════════ FOREST PLOT ════════════ */
-function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",showCounts=true,showWeights=true,svgId="forestplot-svg",prec}){
+function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",showCounts=true,showWeights=true,svgId="forestplot-svg",prec,live=false,theme="night"}){
   if(!result) return(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
     <div style={{fontSize:32,marginBottom:8}}>🌲</div>Enter effect sizes for at least 2 studies to generate a forest plot
   </div>);
   const{studies,pES,lo95,hi95,I2,Q,Qpval,tau2,k,pval}=result;
-  // Downloaded artifact (Dark SVG/PNG via XMLSerializer) — absolute hex only; theme vars must never leak into exports.
-  const FC={txt:"#eaecf6",dim:"#253050",brd:"#1f2640",muted:"#536080",acc:"#818cf8",grn:"#34d399"};
+  // prompt19 — the LIVE on-screen plot follows the app theme (day=light, night=dark)
+  // and scales to its container; the EXPORT render (live=false) keeps the absolute
+  // dark hex so the downloaded "Dark (screen)" artifact never changes. The white
+  // "Light (publication)" export is a separate builder and is untouched.
+  const DARK={txt:"#eaecf6",dim:"#253050",brd:"#1f2640",muted:"#536080",acc:"#818cf8",grn:"#34d399"};
+  const LIGHT={txt:"#0f172a",dim:"#64748b",brd:"#e2e8f0",muted:"#64748b",acc:"#4f46e5",grn:"#059669"};
+  const dayLive=live&&theme==="day";
+  const FC=dayLive?LIGHT:DARK;
+  const BG=dayLive?"#ffffff":"#0e1420";
   const isLog=esType&&ES_TYPES[esType]&&ES_TYPES[esType].log;
   const isProp=esType==="PROP";
   const bt=x=>{ if(isLog)return Math.exp(x); if(isProp){const e=Math.exp(x);return e/(1+e);} return x; };
@@ -1288,9 +1296,11 @@ function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",showCount
   for(let v=Math.ceil(minV*2)/2;v<=maxV;v+=0.5) gridVals.push(+v.toFixed(1));
   const xPlotEnd=LM+plotW;
   const colEffX=xPlotEnd+10, colWfX=colEffX+cEff, colWrX=colWfX+cWf;
-  return(<div style={{overflowX:"auto"}}>
-    <svg id={svgId} width={W} height={H} viewBox={`0 0 ${W} ${H}`} style={{fontFamily:"'IBM Plex Mono',monospace",background:"#0e1420",borderRadius:8,display:"block"}}>
-      <rect x={0} y={0} width={W} height={H} fill="#0e1420"/>
+  return(<div style={{overflowX:"auto",width:"100%"}}>
+    <svg id={svgId} width={live?"100%":W} height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet"
+      style={{fontFamily:"'IBM Plex Mono',monospace",background:BG,borderRadius:8,display:"block",
+        ...(live?{width:"100%",height:"auto",maxWidth:Math.round(W*1.5),border:`1px solid ${dayLive?"#e2e8f0":"#1f2640"}`}:{})}}>
+      <rect x={0} y={0} width={W} height={H} fill={BG}/>
       {/* Header row */}
       <text x={padL} y={26} fontSize={11} fill={FC.txt} fontWeight={700}>Study</text>
       {colCounts&&<text x={padL+nameW} y={20} fontSize={9} fill={FC.dim} fontWeight={700}>Experimental</text>}
@@ -2660,7 +2670,7 @@ function MetaSiftPrismaSync({project,updateProject,activeId,setTab}){
       const data=await r.json();
       setSt({loading:false,...data});
       if(doApply&&data.linked) apply(data);
-    }catch(e){ setSt({loading:false,error:"Couldn't reach META·SIFT."}); }
+    }catch(e){ setSt({loading:false,error:"Couldn't reach the screening service."}); }
   },[project.id]);
   useEffect(()=>{ load(true); },[load]);
 
@@ -2721,7 +2731,7 @@ function PRISMATab({project,updNested,updateProject,activeId,setTab}){
     </div>);
   const Arrow=()=><div style={{textAlign:"center",color:C.dim,fontSize:16,margin:"4px 0"}}>↓</div>;
   return(<div>
-    <SectionHeader icon="flow" title="Screening & PRISMA Flow" desc="Title/abstract screening is handled in META·SIFT (two-reviewer, with duplicates & conflicts). Link a META·SIFT project and the PRISMA 2020 flow diagram below fills in automatically."/>
+    <SectionHeader icon="flow" title="PRISMA Flow" desc="Title/abstract screening happens in the Screening stage (two independent reviewers, with duplicates & conflicts). As you screen, the PRISMA 2020 flow diagram below fills in automatically."/>
     {updateProject&&<MetaSiftPrismaSync project={project} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
     <div style={{display:"grid",gridTemplateColumns:"320px 1fr",gap:20}}>
       <div style={{display:"flex",flexDirection:"column",gap:10}}>
@@ -3172,7 +3182,7 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
         {s.outcome&&<span style={{fontSize:11,color:C.muted,marginLeft:8}}>· {s.outcome}</span>}
         {s.timepoint&&<span style={{fontSize:11,color:C.dim,marginLeft:6}}>@ {s.timepoint}</span>}
       </div>
-      {s.siftOrigin&&<span style={tagS("blue")} title="Imported from META·SIFT second review">⬡ META·SIFT</span>}
+      {s.siftOrigin&&<span style={tagS("blue")} title="Added from Screening (full-text accept)">⬡ Screening</span>}
       {dup&&<span style={tagS("red")} title="Possible duplicate (same author+year or identical ES+n)">⚠ Dup?</span>}
       {s.converted&&<span style={tagS("purple")} title="Contains converted values">⇄ Converted</span>}
       {nonPrimary&&!s.converted&&<span style={tagS("yellow")} title="Not directly-reported primary data">◆ Non-primary</span>}
@@ -4913,6 +4923,7 @@ function buildPubForestSVG(result,opts){
 
 function ForestTab({project}){
   const{studies}=project;
+  const{theme}=useTheme(); // prompt19 — live forest plot follows day/night
   const[method,setMethod]=useState("random");
   const[showCounts,setShowCounts]=useState(true);
   const[showWeights,setShowWeights]=useState(true);
@@ -5008,7 +5019,13 @@ function ForestTab({project}){
     {esType&&<div style={{marginBottom:12,fontSize:11,color:C.muted}}>
       Detected measure: <strong style={{color:C.acc}}>{ES_TYPES[esType]?.label}</strong>. {isLog?"Pooled on the log scale; axis ticks and the ES column show back-transformed values. Keep the null line at 0.":esType==="PROP"?"Pooled on the logit scale; shown as percentages.":"Null line at 0 represents no effect."}
     </div>}
-    <ForestPlot result={result} esLabel={esLabel} nullLine={nullLine} esType={esType} showCounts={showCounts} showWeights={showWeights} svgId="forestplot-svg" prec={prec}/>
+    {/* prompt19 — LIVE plot follows the theme + scales to the column width. */}
+    <ForestPlot result={result} esLabel={esLabel} nullLine={nullLine} esType={esType} showCounts={showCounts} showWeights={showWeights} svgId="forestplot-live" prec={prec} live theme={theme}/>
+    {/* Hidden dark render kept in the DOM as the "Dark (screen)" PNG export source
+        (serialized by id) — so the live theme switch never changes that download. */}
+    <div aria-hidden="true" style={{position:"absolute",width:0,height:0,overflow:"hidden",left:-99999,top:0,pointerEvents:"none"}}>
+      <ForestPlot result={result} esLabel={esLabel} nullLine={nullLine} esType={esType} showCounts={showCounts} showWeights={showWeights} svgId="forestplot-svg" prec={prec}/>
+    </div>
     {result&&(()=>{
       const outTitle=`${project.name||""}${activeOutcome?.outcome?` — ${activeOutcome.outcome}`:""}${activeOutcome?.timepoint?` (${activeOutcome.timepoint})`:""}`.trim();
       const pubOpts={esType,esLabel,nullLine,showCounts,showWeights,title:outTitle,prec};
@@ -6693,7 +6710,7 @@ function Frac({num,den}){
 function MethodsTab(){
   return(<div>
     <SectionHeader icon="bookOpen" title="Methods & Equations"
-      desc="Every statistical method implemented in META·LAB and META·SIFT, documented as computed: the equation, what it means in plain English, where it runs in the app, and verified references. Methods not listed here are not implemented."/>
+      desc="Every statistical method implemented in META·LAB, documented as computed: the equation, what it means in plain English, where it runs in the app, and verified references. Methods not listed here are not implemented."/>
     {METHODS_CONTENT.map(m=>(
       <div key={m.id} style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"16px 18px",marginBottom:14}}>
         <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:10}}>
@@ -6974,7 +6991,7 @@ function ProjectTitle({project,canRename,onRename}){
     <div style={{display:"flex",alignItems:"center",gap:8,minWidth:0,marginBottom:5}}>
       <h1 title={project.name} style={{fontSize:22,fontWeight:700,letterSpacing:-0.5,margin:0,color:C.txt,lineHeight:1.2,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{project.name}</h1>
       {canRename&&(
-        <button onClick={()=>setEditing(true)} title="Rename project (also renames the linked META·SIFT project if the titles match)"
+        <button onClick={()=>setEditing(true)} title="Rename project"
           style={{background:"none",border:`1px solid ${C.brd2}`,color:C.muted,cursor:"pointer",fontSize:11,borderRadius:6,padding:"2px 8px",lineHeight:1.5,flexShrink:0}}>✎</button>
       )}
     </div>
@@ -6989,6 +7006,32 @@ function ProjectTitle({project,canRename,onRename}){
         <button onClick={()=>{setEditing(false);setErr("");}} disabled={busy} style={{...btnS("ghost"),fontSize:11}}>Cancel</button>
       </div>
       {err&&<div style={{fontSize:11,color:C.red,marginTop:5}}>{err}</div>}
+    </div>
+  );
+}
+
+/* prompt19 — full-bleed Screening workspace frame. Own top bar (focus toggle +
+   breadcrumb + back-to-overview/projects); the embedded engine fills the rest.
+   The user is never trapped: ☰ shows the project menu, and Project overview /
+   Projects stay one click away. */
+function ScreeningWorkspaceFrame({project,focus,onToggleFocus,setTab,onBackToProjects}){
+  return(
+    <div style={{display:"flex",flexDirection:"column",height:"100%",minHeight:0}}>
+      <div style={{display:"flex",alignItems:"center",gap:12,padding:"9px 16px",borderBottom:`1px solid ${C.brd}`,background:C.surf,flexShrink:0}}>
+        <button onClick={onToggleFocus} title={focus?"Show project menu":"Focus mode — hide menu"}
+          style={{background:focus?themeAlpha(C.acc,'14'):"none",border:`1px solid ${focus?themeAlpha(C.acc,'40'):C.brd2}`,color:focus?C.acc:C.txt2,cursor:"pointer",borderRadius:7,padding:"4px 9px",fontSize:15,lineHeight:1,flexShrink:0}}>☰</button>
+        <div style={{display:"flex",alignItems:"center",gap:7,fontSize:12.5,minWidth:0}}>
+          <button onClick={()=>setTab("overview")} title="Back to project overview"
+            style={{background:"none",border:"none",color:C.txt2,cursor:"pointer",fontFamily:"'IBM Plex Sans',sans-serif",fontSize:12.5,padding:0,maxWidth:280,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{project.name||"Review project"}</button>
+          <span style={{color:C.dim,flexShrink:0}}>▸</span>
+          <span style={{fontWeight:700,color:C.txt,flexShrink:0}}>Screening</span>
+        </div>
+        <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+          <button onClick={()=>setTab("overview")} style={{...btnS("ghost"),fontSize:11.5,display:"inline-flex",alignItems:"center",gap:5}}><Icon name="arrowLeft" size={12}/>Project overview</button>
+          {onBackToProjects&&<button onClick={onBackToProjects} style={{...btnS("ghost"),fontSize:11.5}}>Projects</button>}
+        </div>
+      </div>
+      <div style={{flex:1,minHeight:0}}><EmbeddedScreening project={project}/></div>
     </div>
   );
 }
@@ -7020,7 +7063,7 @@ function EmbeddedScreening({project}){
     return()=>{dead=true;};
   },[lid,pid]);
 
-  if(state==="ready"&&spId) return <SiftProject embedded embeddedPid={spId}/>;
+  if(state==="ready"&&spId) return <div style={{height:"100%"}}><SiftProject embedded embeddedPid={spId}/></div>;
 
   const box={maxWidth:560,margin:"48px auto",textAlign:"center",border:`1px solid ${C.brd}`,borderRadius:12,background:C.card,padding:"32px 28px"};
   if(state==="loading") return <div style={box}><div style={{fontSize:13,color:C.muted}}>Opening screening…</div></div>;
@@ -7046,6 +7089,19 @@ function OverviewTab({project,setTab}){
       .catch(e=>{if(!dead)setMem({loading:false,members:null,error:e.message||"Couldn't load members."});});
     return()=>{dead=true;};
   },[lid]);
+
+  // prompt19 — live Screening progress for the overview card (PRISMA-shaped roll-up).
+  const[scr,setScr]=useState({loading:!!project?.id,data:null});
+  useEffect(()=>{
+    let dead=false;
+    if(!project?.id){setScr({loading:false,data:null});return undefined;}
+    setScr({loading:true,data:null});
+    fetch(`/api/screening/metalab/${project.id}/summary`,{credentials:"include"})
+      .then(r=>r.ok?r.json():null)
+      .then(d=>{if(!dead)setScr({loading:false,data:(d&&d.linked)?d:null});})
+      .catch(()=>{if(!dead)setScr({loading:false,data:null});});
+    return()=>{dead=true;};
+  },[project?.id]);
 
   const studies=project.studies||[];
   const withES=studies.filter(s=>s.es!=="").length;
@@ -7100,15 +7156,38 @@ function OverviewTab({project,setTab}){
         {kv("Last modified",fmtDate(project.modified||project.updatedAt))}
       </div>
 
-      {/* Screening (prompt18 — the META·SIFT engine, shown as one in-project stage) */}
+      {/* Screening Progress (prompt19) — live PRISMA-shaped numbers from the
+          Screening stage + the next recommended action. NOT general project status. */}
       <div style={{...card,borderColor:themeAlpha("var(--t-teal)","40")}}>
-        <div style={{...secLbl,color:"var(--t-teal)"}}>Screening</div>
-        <div style={{fontSize:12,color:C.muted,lineHeight:1.6,marginBottom:10}}>
-          Import references, remove duplicates, screen titles &amp; abstracts with your team, resolve conflicts, and assess full text — all in the Screening stage. Accepted studies flow into Data Extraction and the PRISMA numbers fill in automatically.
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:8,marginBottom:9}}>
+          <div style={{...secLbl,color:"var(--t-teal)",marginBottom:0}}>Screening Progress</div>
+          {scr.loading&&<span style={{fontSize:10,color:C.muted,fontFamily:"'IBM Plex Mono',monospace"}}>…</span>}
         </div>
+        {scr.data&&scr.data.prisma?(()=>{
+          const p=scr.data.prisma;
+          const stat=(n,l)=>(<div key={l} style={{textAlign:"center",minWidth:0}}>
+            <div style={{fontSize:18,fontWeight:800,fontFamily:"'IBM Plex Mono',monospace",color:C.txt,lineHeight:1}}>{n??0}</div>
+            <div style={{fontSize:9.5,color:C.muted,marginTop:3}}>{l}</div>
+          </div>);
+          const nextAction=(p.identified||0)===0?"Import references":((p.included||0)===0?"Screen titles & abstracts":((p.fullTextAssessed||0)>((p.fullTextExcluded||0)+(p.included||0))?"Review full text":"Send included studies to extraction"));
+          return(<>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6,marginBottom:12}}>
+              {stat(p.identified,"Imported")}
+              {stat(p.duplicatesRemoved,"Duplicates")}
+              {stat(p.screened,"Screened")}
+              {stat(p.fullTextAssessed,"Full text")}
+              {stat(p.included,"Included")}
+            </div>
+            <div style={{fontSize:11,color:C.muted,marginBottom:11}}>Next: <strong style={{color:C.txt2}}>{nextAction}</strong></div>
+          </>);
+        })():(
+          <div style={{fontSize:12,color:C.muted,lineHeight:1.6,marginBottom:11}}>
+            Import references, remove duplicates, screen titles &amp; abstracts with your team, resolve conflicts, and assess full text — all in the Screening stage. Accepted studies flow into Data Extraction and the PRISMA numbers fill in automatically.
+          </div>
+        )}
         <button onClick={()=>setTab("screening")}
           style={{background:"var(--t-teal)",border:"none",color:"var(--t-acc-text)",fontSize:11.5,fontWeight:700,fontFamily:"'IBM Plex Sans',sans-serif",padding:"7px 16px",borderRadius:7,cursor:"pointer"}}>
-          {(prisma.included||(project._linkedMetaSift&&project._linkedMetaSift.recordCount))?"Continue screening →":"Start screening →"}
+          {((scr.data&&scr.data.prisma&&(scr.data.prisma.identified||scr.data.prisma.included))||(project._linkedMetaSift&&project._linkedMetaSift.recordCount))?"Continue screening →":"Start screening →"}
         </button>
       </div>
     </div>
@@ -7117,7 +7196,7 @@ function OverviewTab({project,setTab}){
       {/* Team */}
       <div style={card}>
         <div style={secLbl}>Team</div>
-        {!lid?<div style={{fontSize:12,color:C.muted,lineHeight:1.6}}>Members are managed through the linked META·SIFT workspace — link one in Project Control to invite collaborators.</div>
+        {!lid?<div style={{fontSize:12,color:C.muted,lineHeight:1.6}}>Open the Screening stage once to set up this project's workspace, then invite collaborators here.</div>
         :mem.loading?<div style={{fontSize:12,color:C.muted}}>Loading members…</div>
         :mem.error?<div style={{fontSize:12,color:C.yel}}>⚠ {mem.error}</div>
         :(<>
@@ -7208,7 +7287,7 @@ const CTRL_STATUS_OPTIONS=[
 ];
 const CTRL_ROLE_TAG={owner:"green",leader:"blue",reviewer:"blue",viewer:"yellow"};
 const CTRL_PERM_GROUPS=[
-  {title:"META·SIFT",keys:[
+  {title:"Screening",keys:[
     ["canViewMetaSift","View"],["canScreen","Screen"],["canSecondReview","Second review"],
     ["canResolveConflicts","Resolve conflicts"],["canManageDuplicates","Duplicates"],
     ["canImportRecords","Import"],["canExportRecords","Export"],["canChat","Chat"],
@@ -7227,15 +7306,15 @@ const CTRL_ADD_PRESETS=[
   ["reviewer","Reviewer — screen + second review + chat"],
   ["data_extractor","Data Extractor — META·LAB extraction + analysis"],
   ["leader","Leader — full control (except owner)"],
-  ["readonly_metasift","Read-only META·SIFT"],
+  ["readonly_metasift","Read-only Screening"],
   ["readonly_metalab","Read-only META·LAB"],
   ["readonly_both","Read-only (both modules)"],
   ["viewer","Viewer — read-only both, can chat"],
 ];
 const CTRL_MODULE_OPTIONS=[
-  ["both","Both META·LAB & META·SIFT"],
-  ["metalab","META·LAB only"],
-  ["metasift","META·SIFT only"],
+  ["both","Analysis & Screening"],
+  ["metalab","Analysis only"],
+  ["metasift","Screening only"],
 ];
 
 function CtrlPermDot({on,label}){
@@ -7388,7 +7467,7 @@ function CtrlAddMember({lid,amOwner,onAdded}){
         <button onClick={submit} disabled={busy} style={{...btnS("primary"),fontSize:11,opacity:busy?0.6:1}}>{busy?"Adding…":"Add member"}</button>
       </div>
       <div style={{fontSize:10.5,color:C.muted,marginTop:7,lineHeight:1.5}}>
-        Presets set META·LAB + META·SIFT permissions across the linked workspace; “Participates in” narrows which app(s) they can open. Unregistered emails get a pending invite.
+        Presets set analysis + screening permissions across the project; “Participates in” narrows which stages they can open. Unregistered emails get a pending invite.
       </div>
       {note&&<div style={{marginTop:8,fontSize:11.5,color:C.grn}}>✓ {note}</div>}
       {invite&&invite.link&&(
@@ -7616,7 +7695,7 @@ function ControlTab({project,onAnnotate,setTab}){
           <div style={{fontSize:15,fontWeight:800,marginBottom:6,color:C.txt}}>Remove member?</div>
           <div style={{fontSize:12.5,color:C.muted,marginBottom:8,lineHeight:1.6}}>
             Remove <strong style={{color:C.txt}}>{confirmRemove.name||confirmRemove.email}</strong> from this workspace?
-            They lose access to both META·LAB and META·SIFT for this project.
+            They lose access to this project.
           </div>
           {rowErr[confirmRemove.id]&&<div style={{fontSize:11.5,color:C.red,marginBottom:8}}>{rowErr[confirmRemove.id]}</div>}
           <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:14}}>
@@ -7629,7 +7708,7 @@ function ControlTab({project,onAnnotate,setTab}){
       </div>
     )}
 
-    <InfoBox>💡 The shared Review Workspace (the META·SIFT project) is the source of truth for owner, leaders, members, roles, and permissions — changes here apply to both apps immediately. Leaders can manage members but cannot edit the owner or assign the Leader preset.</InfoBox>
+    <InfoBox>💡 This is the project's shared team — the source of truth for owner, leaders, members, roles, and permissions. Changes here apply across the whole project immediately. Leaders can manage members but cannot edit the owner or assign the Leader preset.</InfoBox>
   </div>);
 }
 
@@ -7641,6 +7720,11 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   const[projects,setProjects]=useState([]);
   const[activeId,setActiveId]=useState(null);
   const[tab,setTab]=useState(initialTab||"overview"); // Overview is the landing tab (prompt6 Task 15); a ?tab= deep-link (e.g. screening) overrides on first open
+  // prompt19 — Screening focus mode: when ON (default), the left sidebar slides
+  // away and the Screening workspace takes the full width so the workbench can
+  // breathe. The ☰ button in the Screening top bar toggles it; the user is never
+  // trapped (Back to overview / Projects stay in the Screening header).
+  const[screeningFocus,setScreeningFocus]=useState(true);
   const[loading,setLoading]=useState(true);
   const[newName,setNewName]=useState("");
   const[withSift,setWithSift]=useState(true);          // Task 2 — default ON
@@ -7823,7 +7907,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     }catch(_){/* offline / proxy error → local fallback below */}
     if(!proj||!proj.id){
       proj=mkProject(name);
-      if(withSift)warning="Project created locally — the linked META·SIFT screening project could not be created. You can create or link one later from Project Control.";
+      if(withSift)warning="Project created — its screening workspace could not be set up just now. It will be created automatically the next time you open Screening.";
     }
     const next=[proj,...projects];
     setProjects(next);setActiveId(proj.id);setTab("overview");save(next);
@@ -8024,6 +8108,10 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     </div>
   );
 
+  // prompt19 — Screening workspace gets a full-bleed, focus layout (escapes the
+  // 960px content clamp + the project header). `focus` also slides the sidebar away.
+  const inScreening=!!project&&tab==="screening";
+  const focus=inScreening&&screeningFocus;
   return(<div style={{display:"flex",minHeight:"100vh",background:C.bg,fontFamily:"'IBM Plex Sans',sans-serif",color:C.txt}}>
     <style>{`
       @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;700&display=swap');
@@ -8163,7 +8251,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           <input type="checkbox" checked={withSift} onChange={e=>setWithSift(e.target.checked)}
             style={{accentColor:C.acc,width:15,height:15,marginTop:1,flexShrink:0}}/>
           <span style={{fontSize:12,color:C.txt2,lineHeight:1.5}}>
-            Create linked <strong style={{color:"var(--t-teal)"}}>META·SIFT</strong> screening project
+            Set up <strong style={{color:"var(--t-teal)"}}>Screening</strong> for this project
             <span style={{display:"block",fontSize:10.5,color:C.muted,marginTop:2}}>
               Same owner and title — screening decisions, PRISMA numbers, and accepted studies sync into this review.
             </span>
@@ -8197,7 +8285,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           </div>
           <ul style={{margin:"0 0 16px 18px",padding:0,fontSize:12,color:C.muted,lineHeight:1.75}}>
             <li>The META·LAB project — studies, extraction data, analyses, and figures</li>
-            {linkedTitle&&<li>Its linked META·SIFT workspace <strong style={{color:C.txt2}}>{linkedTitle}</strong></li>}
+            {linkedTitle&&<li>Its screening workspace <strong style={{color:C.txt2}}>{linkedTitle}</strong></li>}
             <li>All screening records and screening decisions</li>
             <li>Project chats and messages</li>
             <li>Uploaded PDFs and attachments</li>
@@ -8231,13 +8319,16 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
       </div>);
     })()}
 
-    {/* Sidebar */}
+    {/* Sidebar — slides away in Screening focus mode (prompt19) so the workbench
+        gets the full viewport width. Toggled by the ☰ button in the Screening bar. */}
     <div style={{
       width:256,background:C.surf,
       borderRight:`1px solid ${C.brd}`,
       display:"flex",flexDirection:"column",
       position:"fixed",top:0,left:0,bottom:0,zIndex:100,
       boxShadow:"1px 0 0 0 "+C.brd,
+      transform:focus?"translateX(-100%)":"none",
+      transition:"transform 0.25s ease",
     }}>
       {/* Branding */}
       <div style={{padding:"18px 16px 14px",borderBottom:`1px solid ${C.brd}`}}>
@@ -8449,8 +8540,9 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
       </div>
     </div>
 
-    {/* Main content */}
-    <div style={{marginLeft:256,flex:1,padding:"28px 36px 56px",overflowY:"auto",minHeight:"100vh"}}>
+    {/* Main content — full-bleed for the Screening workspace (prompt19): no 960
+        clamp, no project header, sidebar slid away in focus mode. */}
+    <div style={{marginLeft:focus?0:256,flex:1,padding:inScreening?0:"28px 36px 56px",overflowY:inScreening?"hidden":"auto",height:inScreening?"100vh":undefined,minHeight:"100vh",transition:"margin-left 0.25s ease"}}>
       {/* Non-fatal create warning (prompt6 Task 2) — e.g. linked SIFT creation failed */}
       {createWarning&&(
         <div style={{maxWidth:960,margin:"0 auto 18px",padding:"10px 14px",borderRadius:8,fontSize:12.5,display:"flex",alignItems:"flex-start",gap:9,
@@ -8546,6 +8638,9 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
         <div style={{position:"fixed",top:12,right:96,zIndex:9999}}>
           <MetaLabChatLauncher metaLabProjectId={project.id}/>
         </div>
+        {tab==="screening"?(
+          <ScreeningWorkspaceFrame project={project} focus={focus} onToggleFocus={()=>setScreeningFocus(f=>!f)} setTab={setTab} onBackToProjects={onBackToProjects}/>
+        ):(
         <div style={{maxWidth:960,margin:"0 auto"}} className="tab-content">
           {/* Project header */}
           <div style={{marginBottom:32,paddingBottom:22,borderBottom:`1px solid ${C.brd}`}}>
@@ -8606,7 +8701,6 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           {tab==="pico"&&<PICOTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="prospero"&&<PROSPEROTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="search"&&<SearchTab project={project} updNested={updNested} upd={upd}/>}
-          {tab==="screening"&&<EmbeddedScreening project={project}/>}
           {tab==="prisma"&&<PRISMATab project={project} updNested={updNested} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
           {tab==="extraction"&&<ExtractionTab project={project} updateProject={updateProject} activeId={activeId}/>}
           {tab==="rob"&&<RoBTab project={project} updateProject={updateProject} activeId={activeId}/>}
@@ -8637,6 +8731,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
             );
           })()}
         </div>
+        )}
         </>
       )}
     </div>

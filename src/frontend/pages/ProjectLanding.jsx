@@ -28,8 +28,48 @@ import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import {
   ROLE_LABEL, ROLE_COLOR, STATUS_META, TAG_COLORS,
   statusOf, roleOf, isOwnerOf, canEditOf,
-  relTime, progressOf, FILTERS, SORTS, ROLE_ORDER,
+  relTime, progressOf, SORTS, ROLE_ORDER,
 } from './projectLanding.helpers.js';
+
+/* ════════════════════════════════════════════════════════════════════════
+   Dashboard quick-filters (prompt19)
+
+   Status-based segments derived ONLY from data already on each project
+   object. "Linking" is no longer a user-facing concept, so there are no
+   linked / unlinked filters here. Each predicate's data source:
+
+     all        → always true
+     active     → statusOf(p) === 'active'  (not archived, screening not yet
+                  in progress or done)        ← _archived + _linkedMetaSift.progressStatus
+     inprogress → statusOf(p) === 'in_progress' (screening underway)
+                                                 ← _linkedMetaSift.progressStatus === 'in_progress'
+     done       → statusOf(p) === 'done'    (screening complete)
+                                                 ← _linkedMetaSift.progressStatus === 'done'
+     owned      → isOwnerOf(p)               ← _permissions.isOwner / _role + !_shared
+     shared     → _shared && !isOwnerOf(p)   ← _shared
+     recent     → updatedAt within RECENT_WINDOW_MS ← updatedAt
+     archived   → _archived                  ← _archived
+   ════════════════════════════════════════════════════════════════════════ */
+
+const RECENT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
+
+function isRecent(p) {
+  if (!p || !p.updatedAt) return false;
+  const t = new Date(p.updatedAt).getTime();
+  if (Number.isNaN(t)) return false;
+  return Date.now() - t <= RECENT_WINDOW_MS;
+}
+
+const DASHBOARD_FILTERS = [
+  { key: 'all',        label: 'All',                   test: () => true },
+  { key: 'active',     label: 'Active',                test: (p) => statusOf(p) === 'active' },
+  { key: 'inprogress', label: 'Screening in progress', test: (p) => statusOf(p) === 'in_progress' },
+  { key: 'done',       label: 'Completed',             test: (p) => statusOf(p) === 'done' },
+  { key: 'owned',      label: 'Owned by me',           test: (p) => isOwnerOf(p) },
+  { key: 'shared',     label: 'Shared with me',        test: (p) => !!p._shared && !isOwnerOf(p) },
+  { key: 'recent',     label: 'Recent',                test: (p) => isRecent(p) },
+  { key: 'archived',   label: 'Archived',              test: (p) => !!p._archived },
+];
 
 /* ════════════════════════════════════════════════════════════════════════
    Reduced-motion hook
@@ -545,7 +585,7 @@ function ProjectTable({ rows, handlers }) {
               <th style={th}>Project</th>
               <th style={th}>Role</th>
               <th style={th}>Status</th>
-              <th style={th}>Linked workspace</th>
+              <th style={th}>Screening</th>
               <th style={{ ...th, textAlign: 'right' }}>Studies</th>
               <th style={th}>Updated</th>
               <th style={{ ...th, width: 1 }} aria-label="Actions" />
@@ -573,9 +613,13 @@ function ProjectTable({ rows, handlers }) {
                   <td style={td}><Pill variant={ROLE_COLOR[role] || 'default'}>{ROLE_LABEL[role] || 'Owner'}</Pill></td>
                   <td style={td}><Pill variant={sm.tag}>{sm.label}</Pill></td>
                   <td style={td}>
-                    {linked
-                      ? <span className="t-truncate" style={{ color: C.teal, maxWidth: 180, display: 'inline-block', verticalAlign: 'bottom' }} title={linked.title}>{linked.title || 'Workspace'}</span>
-                      : <span style={{ color: C.dim }}>—</span>}
+                    {linked && linked.recordCount
+                      ? <span className="t-truncate" style={{ color: C.teal, maxWidth: 180, display: 'inline-block', verticalAlign: 'bottom' }}>{linked.recordCount} records</span>
+                      : status === 'in_progress'
+                        ? <span style={{ color: C.teal }}>In progress</span>
+                        : status === 'done'
+                          ? <span style={{ color: C.grn }}>Complete</span>
+                          : <span style={{ color: C.dim }}>—</span>}
                   </td>
                   <td style={{ ...td, textAlign: 'right', fontFamily: MONO, fontVariantNumeric: 'tabular-nums', color: C.txt2 }}>
                     {p._studyCount || 0}
@@ -708,7 +752,7 @@ function ArchiveModal({ project, onClose, onDone }) {
   return (
     <Modal
       title="Archive this project?"
-      subtitle="You can restore it later. Archived projects are hidden from the active list and become read-only. A linked META·SIFT workspace you own is archived alongside it."
+      subtitle="You can restore it later. Archived projects are hidden from the active list and become read-only. The project's Screening stage is archived alongside it."
       onClose={onClose}
     >
       {err && <div style={{ marginBottom: 14, fontSize: 12, color: C.red }}>{err}</div>}
@@ -725,7 +769,7 @@ function LeaveModal({ project, onClose, onDone }) {
   const [err, setErr] = useState('');
   const confirm = async () => {
     const linkedId = project._linkedMetaSift && project._linkedMetaSift.id;
-    if (!linkedId) { setErr('No linked workspace to leave.'); return; }
+    if (!linkedId) { setErr('This project has no Screening stage to leave.'); return; }
     setBusy(true); setErr('');
     try { await screeningApi.leaveProject(linkedId); onDone(); }
     catch (e) { setErr(e.message || 'Could not leave the project.'); setBusy(false); }
@@ -733,7 +777,7 @@ function LeaveModal({ project, onClose, onDone }) {
   return (
     <Modal title="Leave this project?" onClose={onClose}>
       <p style={{ margin: '0 0 16px', fontSize: 12.5, color: C.txt2, lineHeight: 1.65 }}>
-        You will lose access to <strong style={{ color: C.txt }}>{project.name}</strong> and its linked META·SIFT workspace.
+        You will lose access to <strong style={{ color: C.txt }}>{project.name}</strong> and its Screening stage.
         Your past contributions remain with the project. To return, an owner or leader will need to re-invite you.
       </p>
       {err && <div style={{ marginBottom: 14, fontSize: 12, color: C.red }}>{err}</div>}
@@ -761,9 +805,9 @@ function DeleteModal({ project, onClose, onDone }) {
   };
   const consequences = [
     'This META·LAB project and its analysis data',
-    linked ? `The linked META·SIFT workspace "${linked.title || 'Workspace'}"` : null,
+    linked ? 'The project\'s Screening stage and all screening records' : null,
     'Extraction, PRISMA, analysis and screening data',
-    'Access for all members of the linked workspace',
+    'Access for all project members',
   ].filter(Boolean);
   return (
     <Modal title="Delete project" subtitle="This is a guarded, reversible-by-ops soft delete. It removes the project from everyone's workspace." onClose={onClose}>
@@ -809,7 +853,7 @@ function TransferModal({ project, onClose, onDone }) {
   const [loadErr, setLoadErr] = useState('');
 
   useEffect(() => {
-    if (!linked || !linked.id) { setLoadErr('No linked workspace to transfer.'); setLoading(false); return undefined; }
+    if (!linked || !linked.id) { setLoadErr('This project has no members to transfer ownership to yet.'); setLoading(false); return undefined; }
     let alive = true;
     (async () => {
       try {
@@ -819,7 +863,7 @@ function TransferModal({ project, onClose, onDone }) {
         const eligible = all.filter(m => m.status === 'active' && m.userId && !m.isOwner && m.role !== 'owner');
         setMembers(eligible);
       } catch (e) {
-        if (alive) setLoadErr(e.message || 'Could not load workspace members.');
+        if (alive) setLoadErr(e.message || 'Could not load project members.');
       } finally {
         if (alive) setLoading(false);
       }
@@ -842,12 +886,12 @@ function TransferModal({ project, onClose, onDone }) {
   return (
     <Modal
       title="Transfer ownership"
-      subtitle={`Hand ${project.name || 'this project'} and its linked META·SIFT workspace to another active member. You keep full leader access afterward and can leave the project later.`}
+      subtitle={`Hand ${project.name || 'this project'} to another active member. You keep full leader access afterward and can leave the project later.`}
       onClose={onClose}
     >
       {loading ? (
         <div style={{ padding: '24px 0', textAlign: 'center', color: C.muted, fontSize: 12.5 }}>
-          Loading workspace members…
+          Loading project members…
         </div>
       ) : loadErr ? (
         <div style={{ marginBottom: 16, fontSize: 12.5, color: C.red }}>{loadErr}</div>
@@ -857,8 +901,8 @@ function TransferModal({ project, onClose, onDone }) {
           background: C.card2, border: `1px solid ${C.brd}`,
           fontSize: 12.5, color: C.txt2, lineHeight: 1.6,
         }}>
-          There are no other active members to transfer ownership to. Invite a collaborator to the linked
-          META·SIFT workspace first, then return here to hand over ownership.
+          There are no other active members to transfer ownership to. Invite a collaborator to the project's
+          Screening stage first, then return here to hand over ownership.
         </div>
       ) : (
         <div role="radiogroup" aria-label="Choose a new owner" style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
@@ -1121,7 +1165,8 @@ export default function ProjectLanding() {
       owned:      projects.filter(p => isOwnerOf(p) && !p._archived).length,
       lead:       projects.filter(p => roleOf(p) === 'leader' && !p._archived).length,
       active:     projects.filter(p => { const s = statusOf(p); return s === 'active' || s === 'in_progress'; }).length,
-      linked:     projects.filter(p => p._linkedMetaSift && !p._archived).length,
+      // Screening underway — derived from lifecycle status, not link presence.
+      inProgress: projects.filter(p => statusOf(p) === 'in_progress').length,
       archived:   projects.filter(p => p._archived).length,
     };
   }, [projects]);
@@ -1133,7 +1178,6 @@ export default function ProjectLanding() {
       const hay = [
         p.name,
         p._owner && (p._owner.name || p._owner.email),
-        p._linkedMetaSift && p._linkedMetaSift.title,
         STATUS_META[statusOf(p)] && STATUS_META[statusOf(p)].label,
       ].filter(Boolean).join(' ').toLowerCase();
       return hay.includes(search);
@@ -1146,13 +1190,13 @@ export default function ProjectLanding() {
 
   const chipCounts = useMemo(() => {
     const out = {};
-    for (const f of FILTERS) out[f.key] = searchPool.filter(f.test).length;
+    for (const f of DASHBOARD_FILTERS) out[f.key] = searchPool.filter(f.test).length;
     return out;
   }, [searchPool]);
 
   /* ── Final visible list ───────────────────────────────────────── */
   const visible = useMemo(() => {
-    const f = FILTERS.find(x => x.key === filter) || FILTERS[0];
+    const f = DASHBOARD_FILTERS.find(x => x.key === filter) || DASHBOARD_FILTERS[0];
     const s = SORTS.find(x => x.key === sort) || SORTS[0];
     const filtered = searchPool.filter(f.test);
     const cmp = sort === 'role'
@@ -1289,7 +1333,7 @@ export default function ProjectLanding() {
             <KpiTile icon="user"     label="Owned"            value={kpis.owned}      color={C.gold}  reduced={reduced} />
             <KpiTile icon="award"    label="I lead"           value={kpis.lead}       color={C.purp}  reduced={reduced} />
             <KpiTile icon="activity" label="Active"           value={kpis.active}     color={C.grn}   reduced={reduced} />
-            <KpiTile icon="filter"   label="With screening"   value={kpis.linked}     color={C.teal}  reduced={reduced} />
+            <KpiTile icon="filter"   label="In progress"      value={kpis.inProgress} color={C.teal}  reduced={reduced} />
             <KpiTile icon="layers"   label="Archived"         value={kpis.archived}   color={C.muted} reduced={reduced} />
           </motion.div>
         )}
@@ -1320,7 +1364,7 @@ export default function ProjectLanding() {
                 <input
                   value={searchRaw}
                   onChange={(e) => setSearchRaw(e.target.value)}
-                  placeholder="Search title, owner, linked workspace, status…"
+                  placeholder="Search title, owner, status…"
                   aria-label="Search projects"
                   style={{ ...inputStyle, paddingLeft: 36, borderRadius: 9 }}
                 />
@@ -1406,7 +1450,7 @@ export default function ProjectLanding() {
 
             {/* row 2: quick-filter chips */}
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-              {FILTERS.filter(f => f.key !== 'archived' || showArchived).map(f => (
+              {DASHBOARD_FILTERS.filter(f => f.key !== 'archived' || showArchived).map(f => (
                 <Chip
                   key={f.key}
                   active={filter === f.key}
@@ -1447,7 +1491,7 @@ export default function ProjectLanding() {
           <EmptyState
             icon="folders"
             title="No projects yet"
-            body="META·LAB is your evidence-synthesis workspace; META·SIFT handles collaborative citation screening. Create your first project to get started — you can link a screening workspace in one click."
+            body="META·LAB is your evidence-synthesis workspace, with collaborative citation Screening built into every project. Create your first project to get started."
             cta={
               <Btn variant="primary" onClick={() => setModal({ type: 'create' })} style={{ margin: '0 auto' }}>
                 <Icon name="plus" size={15} /> Create your first project

@@ -22,6 +22,14 @@ model User {
   updatedAt   DateTime  @updatedAt
   lastActive  DateTime?
   themePreference String? // "night" | "day" — UI theme, synced from the account menu toggle
+  // prompt19 — aggregate ops analytics only. COUNTRY-LEVEL ONLY; no city/coords.
+  // Captured best-effort at registration from a proxy country header (e.g.
+  // CF-IPCountry) or an offline lookup; raw IP is never stored (only an optional
+  // salted hash). All nullable → `prisma db push` stays additive-safe.
+  registrationCountryCode     String?  // ISO-3166 alpha-2 (e.g. "US"), or null/"" when unknown
+  registrationCountryName     String?  // human-readable country name, or null when unknown
+  registrationIpCountrySource String?  // "header" | "geoip" | "local" | "none"
+  registrationIpHash          String?  // optional salted SHA-256 of the IP — NEVER the raw IP
   projects    Project[]
   auditLogs   AdminAuditLog[]
   screenProjects ScreenProject[] @relation("UserScreenProjects")
@@ -207,6 +215,10 @@ model ScreenProject {
   reviewQuestion         String                 @default("")
   stage                  String                 @default("title_abstract")
   blindMode              Boolean                @default(false)
+  // prompt19 — per-project minimum independent title/abstract reviewer decisions
+  // required before a record may advance to Full Text. Owner/leader editable in
+  // Project Settings (default 2 = research standard). Additive int → db-push safe.
+  requiredScreeningReviewers Int                @default(2)
   // ── upgrade additions ──────────────────────────────────────────────
   progressStatus         String                 @default("not_started")  // not_started | in_progress | done (leader-editable)
   archived               Boolean                @default(false)          // admin lifecycle

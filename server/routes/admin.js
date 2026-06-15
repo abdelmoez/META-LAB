@@ -6,6 +6,7 @@ import {
   getMetrics,
   getMetricsTimeseries,
   getUsers,
+  getUserCountries,
   getUserById,
   getUserProjects,
   updateUser,
@@ -87,6 +88,9 @@ router.get('/console', requireAdminOrMod, getConsole);
 // are mod-allowed ONLY against ordinary users — requireTargetEditable 403s a
 // mod acting on an admin/mod target (admins are unrestricted).
 router.get('/users', requireAdminOrMod, getUsers);
+// prompt19 — aggregate users-by-country distribution for the Ops map (admin only).
+// MUST be declared before '/users/:id' so "countries" is not parsed as an :id.
+router.get('/users/countries', requireAdmin, getUserCountries);
 router.get('/users/:id', requireAdminOrMod, getUserById);
 router.get('/users/:id/projects', requireAdminOrMod, getUserProjects);
 router.patch('/users/:id', requireAdminOrMod, requireTargetEditable, updateUser);

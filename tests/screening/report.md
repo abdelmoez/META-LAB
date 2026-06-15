@@ -381,3 +381,17 @@ npm run server
 npx vitest run tests/screening/integration/prompt18.test.js --pool=forks --poolOptions.forks.singleFork=true
 node server/scripts/backfill-workspaces.js   # one-time data repair for pre-existing projects
 ```
+
+---
+
+## prompt19 — Screening rebuild, required reviewers, forest fix, dashboard, ops country map
+
+**Result (this session):** build green; integration **31 files / 325 passed / 0 failed / 7 skipped**; unit **653 passed / 6 pre-existing** (serverStorage timing). No new regressions.
+
+New suites (live server):
+- `tests/screening/integration/prompt19-reviewers.test.js` — **7 passed**: getProject exposes `requiredScreeningReviewers` (default 2); one include doesn't advance, second does; include+exclude = conflict; owner raises to 3 (two no longer enough, third advances); non-leader 403 on change; backend rejects insufficient-distinct-decision advance (no forge bypass); validation (non-integer→400, out-of-range clamped).
+- `tests/integration/prompt19-countries.test.js` — **12 passed**: `GET /api/admin/users/countries` shape for admin; non-admin → 403; registration still 201 with/without a country header (geolocation never blocks); country-level only, no raw IP leak.
+
+Regression anchors re-run green: `prompt2.test.js` (6 — promotion/handoff still correct with default required=2), full `tests/screening/integration` + `tests/integration`.
+
+Task coverage: broken tabs (root cause = 960px clamp, fixed via full-bleed focus workspace) · required reviewers (FE+BE+enforcement) · forest plot live theme/responsive (export preserved) · dashboard linked/unlinked filters removed · ops users-by-country (capture + endpoint + map). META·SIFT is internal-only; the user sees Screening.
