@@ -1296,6 +1296,13 @@ function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",showCount
   for(let v=Math.ceil(minV*2)/2;v<=maxV;v+=0.5) gridVals.push(+v.toFixed(1));
   const xPlotEnd=LM+plotW;
   const colEffX=xPlotEnd+10, colWfX=colEffX+cEff, colWrX=colWfX+cWf;
+  // prompt20 Task 4 — stack the x-axis annotations on SEPARATE rows so the
+  // centered effect-measure label (e.g. "SMD") never overlaps the "← favours /
+  // favours →" labels that flank the null line (they previously shared one y).
+  const yAxisTicks=TOP+(k+1.5)*ROW;   // back-transformed tick numbers
+  const yFavours=yAxisTicks+16;        // favours arrows, flanking the null line
+  const yEsLabel=yFavours+17;          // effect-measure label, centered, own row
+  const yHetero=yEsLabel+20;           // heterogeneity summary, below everything
   return(<div style={{overflowX:"auto",width:"100%"}}>
     <svg id={svgId} width={live?"100%":W} height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet"
       style={{fontFamily:"'IBM Plex Mono',monospace",background:BG,borderRadius:8,display:"block",
@@ -1346,13 +1353,14 @@ function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",showCount
         </g>);
       })()}
       {/* axis ticks (back-transformed labels for log/prop) */}
-      {gridVals.map(v=><text key={v} x={xS(v)} y={TOP+(k+1.5)*ROW} textAnchor="middle" fontSize={10} fill={FC.muted}>{isLog?bt(v).toFixed(2):(isProp?(bt(v)*100).toFixed(0)+"%":v)}</text>)}
-      <text x={LM+plotW/2} y={TOP+(k+1.5)*ROW+18} textAnchor="middle" fontSize={11} fill={FC.txt}>{esLabel}</text>
-      {/* favours labels */}
-      <text x={xS(nullLine)-6} y={TOP+(k+1.5)*ROW+18} textAnchor="end" fontSize={9} fill={FC.dim}>← favours</text>
-      <text x={xS(nullLine)+6} y={TOP+(k+1.5)*ROW+18} textAnchor="start" fontSize={9} fill={FC.dim}>favours →</text>
+      {gridVals.map(v=><text key={v} x={xS(v)} y={yAxisTicks} textAnchor="middle" fontSize={10} fill={FC.muted}>{isLog?bt(v).toFixed(2):(isProp?(bt(v)*100).toFixed(0)+"%":v)}</text>)}
+      {/* favours labels — flank the null line, one row below the ticks */}
+      <text x={xS(nullLine)-6} y={yFavours} textAnchor="end" fontSize={9} fill={FC.dim}>← favours</text>
+      <text x={xS(nullLine)+6} y={yFavours} textAnchor="start" fontSize={9} fill={FC.dim}>favours →</text>
+      {/* effect-measure label — centered under the plot, on its own row */}
+      <text x={LM+plotW/2} y={yEsLabel} textAnchor="middle" fontSize={11} fill={FC.txt}>{esLabel}</text>
       {/* heterogeneity line */}
-      <text x={padL} y={TOP+(k+2.4)*ROW+12} fontSize={10} fill={FC.dim}>
+      <text x={padL} y={yHetero} fontSize={10} fill={FC.dim}>
         Heterogeneity: I² = {I2}%  ·  τ² = {tau2}  ·  Q = {Q} (p {Qpval<0.001?"< 0.001":"= "+Qpval})  ·  overall p {pval<0.001?"< 0.001":"= "+pval}
       </text>
     </svg>
@@ -7026,7 +7034,10 @@ function ScreeningWorkspaceFrame({project,focus,onToggleFocus,setTab,onBackToPro
           <span style={{color:C.dim,flexShrink:0}}>▸</span>
           <span style={{fontWeight:700,color:C.txt,flexShrink:0}}>Screening</span>
         </div>
-        <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+        {/* prompt20 Task 2 — reserve room on the right for the fixed top-right
+            utility cluster ([chat][bell][account] sit at right:16–126px) so
+            these nav buttons are never overlapped by it, in either focus state. */}
+        <div style={{marginLeft:"auto",marginRight:134,display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
           <button onClick={()=>setTab("overview")} style={{...btnS("ghost"),fontSize:11.5,display:"inline-flex",alignItems:"center",gap:5}}><Icon name="arrowLeft" size={12}/>Project overview</button>
           {onBackToProjects&&<button onClick={onBackToProjects} style={{...btnS("ghost"),fontSize:11.5}}>Projects</button>}
         </div>
@@ -7716,7 +7727,7 @@ function ControlTab({project,onAnnotate,setTab}){
 
 let _versionCache=null; // module-level so remounts don't refetch (same pattern as UserMenu.jsx)
 
-export default function MetaLab({ initialProjectId = null, initialTab = null, onProjectChange = null, onBackToProjects = null } = {}){
+export default function MetaLab({ initialProjectId = null, initialTab = null, onProjectChange = null, onTabChange = null, onBackToProjects = null } = {}){
   const[projects,setProjects]=useState([]);
   const[activeId,setActiveId]=useState(null);
   const[tab,setTab]=useState(initialTab||"overview"); // Overview is the landing tab (prompt6 Task 15); a ?tab= deep-link (e.g. screening) overrides on first open
@@ -7790,6 +7801,18 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     if(!_syncedFirst.current){ _syncedFirst.current=true; return; }
     if(activeId && typeof onProjectChange==="function") onProjectChange(activeId);
   },[activeId,onProjectChange]);
+
+  // prompt20 Task 1 (stage route-sync): reflect the active stage into the host
+  // URL (?tab=) so a refresh reopens the SAME stage — including the Screening
+  // workspace — and so deep-links round-trip. One-way (tab → URL); the first
+  // render is skipped so we never fight the initialTab seed. AppWorkspace owns
+  // the actual write (the monolith is not router-aware) and clears the embedded
+  // ?screen= sub-tab when leaving Screening.
+  const _syncedTabFirst=useRef(false);
+  useEffect(()=>{
+    if(!_syncedTabFirst.current){ _syncedTabFirst.current=true; return; }
+    if(typeof onTabChange==="function") onTabChange(tab);
+  },[tab,onTabChange]);
 
   // Debouncing is handled inside window.storage.set (serverStorage.js).
   // Calling set() directly here lets flushStorage() drain any pending save
@@ -8636,7 +8659,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
             transform, which would make that div the containing block for
             position:fixed and break viewport alignment. */}
         <div style={{position:"fixed",top:12,right:96,zIndex:9999}}>
-          <MetaLabChatLauncher metaLabProjectId={project.id}/>
+          <MetaLabChatLauncher metaLabProjectId={project.id} projectName={project.name}/>
         </div>
         {tab==="screening"?(
           <ScreeningWorkspaceFrame project={project} focus={focus} onToggleFocus={()=>setScreeningFocus(f=>!f)} setTab={setTab} onBackToProjects={onBackToProjects}/>

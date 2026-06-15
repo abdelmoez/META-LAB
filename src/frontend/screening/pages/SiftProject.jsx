@@ -65,10 +65,16 @@ export default function SiftProject({ embedded = false, embeddedPid = null } = {
   const pid = embedded ? embeddedPid : routeParams.pid;
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
-  // Embedded mode keeps the active sub-tab in local state so it never writes to
-  // the host project's URL (?tab= belongs to the META·LAB workspace, not here).
-  const [embTab, setEmbTab] = useState('overview');
-  const rawTab = embedded ? embTab : (params.get('tab') || 'overview');
+  // Sub-tab routing (prompt20 Task 1). Standalone (/sift-beta) drives the sub-tab
+  // from ?tab=. The EMBEDDED Screening stage lives inside the META·LAB monolith,
+  // whose own stage already owns ?tab= — so the embedded sub-nav uses a SEPARATE,
+  // collision-free ?screen= param. The active tab is READ BACK from the param
+  // (the URL is the single source of truth), which is why clicking a sub-tab now
+  // updates BOTH the URL and the shown page, deep-links correctly, and survives
+  // refresh + browser back/forward. (Previously it wrote ?tab= but rendered from
+  // local state, so the URL changed while the page never did.)
+  const tabParam = embedded ? 'screen' : 'tab';
+  const rawTab = params.get(tabParam) || 'overview';
   const tab = TAB_ALIASES[rawTab] || rawTab;
 
   const [project, setProject] = useState(null);
@@ -119,7 +125,7 @@ export default function SiftProject({ embedded = false, embeddedPid = null } = {
     'permissions.changed': ev => { if (ev?.projectId === pid) revalidateAccess(); },
   });
 
-  const setTab = (key) => setParams(prev => { const n = new URLSearchParams(prev); n.set('tab', key); return n; }, { replace: true });
+  const setTab = (key) => setParams(prev => { const n = new URLSearchParams(prev); n.set(tabParam, key); return n; }, { replace: true });
 
   const access = project ? {
     isLeader: project.isLeader, myRole: project.myRole,
@@ -234,7 +240,7 @@ export default function SiftProject({ embedded = false, embeddedPid = null } = {
             ↑ Import
           </button>
           {/* Utility cluster (prompt8): [chat][bell][account] */}
-          {project && <ChatLauncher pid={pid} access={access} />}
+          {project && <ChatLauncher pid={pid} access={access} projectName={project.title} />}
           <NotificationsBell />
           <UserMenu context="metasift" />
         </div>

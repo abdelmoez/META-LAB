@@ -11,7 +11,7 @@
  * The drawer stays MOUNTED while the launcher is mounted (it renders null
  * when closed) so the background unread poll keeps running.
  *
- * Props: pid, access ({ isLeader, canChat })
+ * Props: pid, access ({ isLeader, canChat }), projectName (drawer title)
  */
 import { useMemo, useState, useRef, useCallback } from 'react';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
@@ -19,7 +19,10 @@ import { Icon } from '../../components/icons.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 import ChatDrawer from '../../components/chat/ChatDrawer.jsx';
 
-export default function ChatLauncher({ pid, access = {} }) {
+export default function ChatLauncher({ pid, access = {}, projectName = '' }) {
+  // prompt20 Task 3 — drawer title is the current project name (falls back while
+  // the project is still loading); the drawer truncates + tooltips long names.
+  const chatTitle = (projectName && projectName.trim()) ? projectName.trim() : 'Project chat';
   const [open, setOpen] = useState(false);
   const [unread, setUnread] = useState(0);
 
@@ -45,7 +48,7 @@ export default function ChatLauncher({ pid, access = {} }) {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        title="Project chat"
+        title={projectName ? `Project chat — ${projectName}` : 'Project chat'}
         aria-label="Project chat"
         onMouseEnter={e => { if (!open) e.currentTarget.style.background = alpha(C.acc, '26'); }}
         onMouseLeave={e => { if (!open) e.currentTarget.style.background = alpha(C.acc, '18'); }}
@@ -77,7 +80,7 @@ export default function ChatLauncher({ pid, access = {} }) {
         onUnreadChange={setUnread}
         canChat={access.canChat}
         isLeader={!!access.isLeader}
-        title="Project Chat"
+        title={chatTitle}
         realtimeMatch={realtimeMatch}
       />
     </>

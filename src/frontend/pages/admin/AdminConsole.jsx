@@ -16,6 +16,12 @@ import Icon from '../../components/icons.jsx';
 // data-theme on <html>. Hex+alpha concatenation does not work on vars — use
 // `alpha(C.x, '40')` instead.
 import { C, FONT, MONO, alpha } from '../../theme/tokens.js';
+// Central editable-user-field schema (shared with the server) — the Ops edit
+// form is rendered + validated from this single source of truth (prompt20 Task 5).
+import { editableFieldsForRole } from '../../../shared/editableUserFields.js';
+// Real world-country geometry (pre-projected equirectangular paths, no map lib)
+// for the Ops users-by-country choropleth (prompt20 Task 6).
+import { WORLD_COUNTRIES, WORLD_VIEWBOX } from './worldGeo.js';
 const SIDEBAR_W = 220;
 const TOPBAR_H  = 52;
 
@@ -1548,12 +1554,21 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
   const [projLoading, setProjLoading] = useState(true);
   const [confirm,     setConfirm]     = useState(null);
 
-  // Edit name/email
-  const [editing,     setEditing]     = useState(false);
-  const [editName,    setEditName]    = useState(user.name || '');
-  const [editEmail,   setEditEmail]   = useState(user.email || '');
-  const [editStatus,  setEditStatus]  = useState('idle');
-  const [editError,   setEditError]   = useState('');
+  // Schema-driven profile edit (prompt20 Task 5). The set of editable fields and
+  // their validation come from the shared editableUserFields schema, filtered to
+  // what THIS viewer (admin vs mod) may change; high-impact fields (role, status)
+  // keep their own dedicated controls below and are excluded here.
+  const viewerRole = isAdmin ? 'admin' : 'mod';
+  const formFields = editableFieldsForRole(viewerRole).filter(f => !f.dedicatedControl);
+  const seedForm = (u) => {
+    const f = {};
+    for (const fld of formFields) { const v = u ? u[fld.key] : undefined; f[fld.key] = v == null ? '' : v; }
+    return f;
+  };
+  const [editing,    setEditing]    = useState(false);
+  const [form,       setForm]       = useState(() => seedForm(user));
+  const [editStatus, setEditStatus] = useState('idle');
+  const [editError,  setEditError]  = useState('');
 
   // Role change
   const [roleConfirm, setRoleConfirm] = useState(null); // pending new role
@@ -1570,9 +1585,10 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
 
   useEffect(() => {
     setCurrent(user);
-    setEditing(false); setEditName(user.name || ''); setEditEmail(user.email || '');
+    setEditing(false); setForm(seedForm(user));
     setEditError(''); setRoleError(''); setTempPw(''); setPwError('');
     setResetEmail(null); setResetStatus('idle'); setResetError('');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
   useEffect(() => {
@@ -1581,6 +1597,18 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
       .then(d => setProjects(d.projects || []))
       .catch(() => setProjects([]))
       .finally(() => setProjLoading(false));
+  }, [user.id]);
+
+  // The list row carries only the summary columns; fetch the full record so the
+  // edit form + read-only display include the admin-editable profile fields
+  // (theme, registration country) and the latest server-side values.
+  useEffect(() => {
+    let alive = true;
+    adminApi.users.get(user.id)
+      .then(full => { if (alive && full && full.id) { setCurrent(c => ({ ...c, ...full })); setForm(seedForm(full)); } })
+      .catch(() => {});
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user.id]);
 
   async function doStatus() {
@@ -1594,10 +1622,23 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
   }
 
   async function saveEdit() {
-    setEditStatus('saving'); setEditError('');
+    setEditError('');
+    // Validate every field with the SAME schema the server enforces, then send
+    // only the fields that actually changed (keeps the audit trail meaningful).
+    const body = {};
+    for (const fld of formFields) {
+      const res = fld.validate(form[fld.key]);
+      if (!res.ok) { setEditStatus('error'); setEditError(`${fld.label}: ${res.error}`); return; }
+      const curVal  = current[fld.key] == null ? null : current[fld.key];
+      const nextVal = res.value == null ? null : res.value;
+      if (nextVal !== curVal) body[fld.key] = res.value;
+    }
+    if (Object.keys(body).length === 0) { setEditing(false); setEditStatus('idle'); return; }
+    setEditStatus('saving');
     try {
-      const { user: updated } = await adminApi.users.update(current.id, { name: editName, email: editEmail });
-      setCurrent(c => ({ ...c, name: updated.name, email: updated.email }));
+      const { user: updated } = await adminApi.users.update(current.id, body);
+      setCurrent(c => ({ ...c, ...updated }));
+      setForm(seedForm(updated));
       setEditStatus('saved'); setEditing(false);
       onUserUpdate?.();
       setTimeout(() => setEditStatus('idle'), 2000);
@@ -1656,13 +1697,29 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
         {editing ? (
           <div style={{ marginBottom: 12 }}>
             {editError && <div style={{ fontSize: 11, color: C.red, marginBottom: 8 }}>{editError}</div>}
-            <label style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Name</label>
-            <input type="text" value={editName} onChange={e => setEditName(e.target.value)} style={{ ...inputStyle, fontSize: 12, margin: '4px 0 10px' }} placeholder="Name" />
-            <label style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Email</label>
-            <input type="email" value={editEmail} onChange={e => setEditEmail(e.target.value)} style={{ ...inputStyle, fontSize: 12, margin: '4px 0 12px' }} placeholder="email@example.com" />
-            <div style={{ display: 'flex', gap: 8 }}>
+            {/* Fields + validation come from the shared schema; mods see fewer. */}
+            {formFields.map(fld => (
+              <div key={fld.key} style={{ marginBottom: 10 }}>
+                <label style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em', display: 'block', marginBottom: 4 }}>{fld.label}</label>
+                {fld.type === 'select' ? (
+                  <select value={form[fld.key] ?? ''} onChange={e => setForm(f => ({ ...f, [fld.key]: e.target.value }))} style={{ ...inputStyle, fontSize: 12 }}>
+                    {fld.options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                ) : (
+                  <input
+                    type={fld.type === 'email' ? 'email' : 'text'}
+                    value={form[fld.key] ?? ''}
+                    onChange={e => setForm(f => ({ ...f, [fld.key]: fld.uppercase ? e.target.value.toUpperCase() : e.target.value }))}
+                    maxLength={fld.maxLength}
+                    placeholder={fld.placeholder || ''}
+                    style={{ ...inputStyle, fontSize: 12 }} />
+                )}
+                {fld.help && <div style={{ fontSize: 10, color: C.muted, marginTop: 3, lineHeight: 1.4 }}>{fld.help}</div>}
+              </div>
+            ))}
+            <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
               <SaveButton onClick={saveEdit} status={editStatus} label="Save" />
-              <button onClick={() => { setEditing(false); setEditName(u.name || ''); setEditEmail(u.email || ''); setEditError(''); }} style={{ padding: '8px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 13, cursor: 'pointer', fontFamily: FONT }}>Cancel</button>
+              <button onClick={() => { setEditing(false); setForm(seedForm(current)); setEditError(''); setEditStatus('idle'); }} style={{ padding: '8px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 13, cursor: 'pointer', fontFamily: FONT }}>Cancel</button>
             </div>
           </div>
         ) : (
@@ -1670,10 +1727,11 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 2 }}>
               <div title={u.name || undefined} style={{ fontSize: 15, fontWeight: 700, color: C.txt, minWidth: 0, overflowWrap: 'anywhere' }}>{u.name || '—'}</div>
               {!lockedForMod && (
-                <button onClick={() => setEditing(true)} style={{ background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 11, padding: '3px 9px', cursor: 'pointer', fontFamily: FONT, flexShrink: 0 }}>Edit</button>
+                <button onClick={() => { setForm(seedForm(current)); setEditError(''); setEditStatus('idle'); setEditing(true); }} style={{ background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 11, padding: '3px 9px', cursor: 'pointer', fontFamily: FONT, flexShrink: 0 }}>Edit</button>
               )}
             </div>
             <div title={u.email} style={{ fontSize: 11, color: C.muted, fontFamily: MONO, marginBottom: 10, minWidth: 0, overflowWrap: 'anywhere' }}>{u.email}</div>
+            {editStatus === 'saved' && <div style={{ fontSize: 11, color: C.grn, marginBottom: 8 }}>✓ Changes saved</div>}
           </>
         )}
         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', marginBottom: 12 }}>
@@ -1684,6 +1742,10 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
           { label: 'Joined',      value: fmtDate(u.createdAt) },
           { label: 'Last Active', value: u.lastActive ? fmtAgo(u.lastActive) : '—' },
           { label: 'Projects',    value: u.projectCount ?? 0 },
+          { label: 'Theme',       value: u.themePreference || '—' },
+          { label: 'Country',     value: u.registrationCountryCode
+              ? `${u.registrationCountryName || ''} (${u.registrationCountryCode})`.trim()
+              : (u.registrationCountryName || '—') },
         ].map(r => (
           <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: `1px solid ${C.brd}` }}>
             <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{r.label}</span>
@@ -1810,61 +1872,25 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   USERS BY COUNTRY (prompt19 Task 12) — interactive accent-scaled world map +
-   ranked table + summary. Country-LEVEL only. Lightweight: a single inline SVG
-   equirectangular world outline with accent-scaled markers at country centroids
-   (no map library, no heavy deps). The accent (C.acc) drives the colour scale so
-   it stays clean in BOTH day and night themes via the alpha() color-mix helper.
+   USERS BY COUNTRY (prompt19 Task 12 · rebuilt prompt20 Task 6) — a REAL
+   interactive world-country choropleth + ranked table, in Map / Countries Table
+   sub-tabs. Country-LEVEL only. Geometry is real Natural Earth 110m polygons
+   (pre-projected equirectangular paths in worldGeo.js — no map library, no heavy
+   runtime deps). Country borders are light gray; fills scale with each country's
+   user share toward the app accent (C.acc) via the alpha() color-mix helper, so
+   the map re-themes automatically and works in BOTH day and night.
    ════════════════════════════════════════════════════════════════════════ */
-
-// Equirectangular projection helpers for a 360×180-unit viewBox (lon/lat → x/y).
-const MAP_W = 360;
-const MAP_H = 180;
-const lonToX = lon => (lon + 180) * (MAP_W / 360);
-const latToY = lat => (90 - lat) * (MAP_H / 180);
-
-// Approximate country centroids (lon, lat) for marker placement. Country-level
-// only — these are coarse national centroids, never user coordinates. Codes not
-// listed still appear in the table; they simply render no map marker.
-const COUNTRY_CENTROIDS = {
-  US: [-98, 39], CA: [-106, 56], MX: [-102, 23], BR: [-51, -10], AR: [-64, -34],
-  CL: [-71, -30], CO: [-74, 4], PE: [-75, -10], VE: [-66, 7],
-  GB: [-2, 54], IE: [-8, 53], FR: [2, 46], ES: [-4, 40], PT: [-8, 39], DE: [10, 51],
-  NL: [5, 52], BE: [4, 50], CH: [8, 47], AT: [14, 47], IT: [12, 42], SE: [16, 62],
-  NO: [9, 61], FI: [26, 64], DK: [10, 56], PL: [19, 52], CZ: [15, 50], GR: [22, 39],
-  RO: [25, 46], HU: [19, 47], UA: [32, 49], RU: [90, 61], TR: [35, 39],
-  IL: [35, 31], SA: [45, 24], AE: [54, 24], EG: [30, 27], ZA: [24, -29], NG: [8, 9],
-  KE: [38, 0], MA: [-7, 32], ET: [40, 9], GH: [-1, 8],
-  IN: [79, 22], PK: [70, 30], BD: [90, 24], CN: [104, 35], JP: [138, 36],
-  KR: [128, 36], TW: [121, 24], HK: [114, 22], SG: [104, 1], MY: [102, 4],
-  ID: [113, -1], TH: [101, 15], VN: [108, 16], PH: [122, 12],
-  AU: [134, -25], NZ: [172, -41],
-};
-
-// A coarse but recognizable world land outline (continent blobs) so the markers
-// have geographic context. Hand-simplified equirectangular polygons — purely
-// decorative; correctness of marker placement does not depend on these.
-const WORLD_LAND = [
-  // North America
-  '32,30 70,28 95,40 100,55 75,75 40,78 22,60 28,42',
-  // South America
-  '95,108 118,100 125,118 118,150 100,168 92,150 90,125',
-  // Europe
-  '168,40 205,33 212,52 195,70 172,66 165,52',
-  // Africa
-  '168,72 210,70 222,100 210,135 188,150 175,120 170,95',
-  // Asia
-  '212,33 320,30 340,55 330,90 290,98 250,88 220,70 210,50',
-  // Oceania / Australia
-  '300,128 340,122 348,150 320,160 300,148',
-];
 
 function UsersByCountryCard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selected, setSelected] = useState(null);   // selected countryCode (table↔map link)
-  const [hover, setHover] = useState(null);          // { name, count, pct, x, y }
+  const [view, setView] = useState('map');           // 'map' | 'table'
+  const [hover, setHover] = useState(null);          // { code, name, count, pct }
+  const [mouse, setMouse] = useState({ x: 0, y: 0 });
+  const mapWrapRef = useRef(null);
+  const mapWidthRef = useRef(0);
 
   useEffect(() => {
     let alive = true;
@@ -1884,24 +1910,30 @@ function UsersByCountryCard() {
 
   const countries = data?.countries || [];
   const summary = data?.summary || { totalUsers: 0, totalKnown: 0, unknown: 0, countriesRepresented: 0 };
-  // Scale by the largest KNOWN-country count (the Unknown bucket is excluded
-  // from the map and from the colour ceiling so one big Unknown bucket can't
-  // wash out the real geographic signal).
-  const mapped = countries.filter(c => c.countryCode && COUNTRY_CENTROIDS[c.countryCode]);
-  const maxCount = mapped.reduce((m, c) => Math.max(m, c.userCount), 0) || 1;
 
-  // Accent-driven colour scale: 0 → neutral light; more users → closer to accent.
-  // Uses alpha()'s color-mix path so it reads cleanly in both themes.
-  const fillFor = count => {
-    if (!count) return alpha(C.muted, 0.18);
-    const t = Math.min(1, count / maxCount);
-    // 0.30 floor so even the smallest country is visibly accented; ramp to 0.92.
-    return alpha(C.acc, 0.3 + t * 0.62);
+  // Join the endpoint data to the map by ISO-3166 alpha-2 (the canonical key —
+  // both sides are uppercased, so codes never silently mismatch). The Unknown
+  // bucket (countryCode '') is excluded from the map + the colour ceiling so one
+  // large Unknown bucket can't wash out the real geographic signal.
+  const byCode = {};
+  for (const c of countries) if (c.countryCode) byCode[c.countryCode] = c;
+  const maxCount = countries.reduce((m, c) => (c.countryCode ? Math.max(m, c.userCount) : m), 0) || 1;
+
+  // Accent-driven choropleth scale. No users → light neutral (near-white in day,
+  // faint in night); more users → closer to the app accent. color-mix via alpha()
+  // keeps it live under theme/accent changes.
+  const NEUTRAL_FILL = alpha(C.muted, 0.12);
+  const BORDER = alpha(C.muted, 0.5);                 // light gray country borders
+  const fillFor = (code) => {
+    const d = code ? byCode[code] : null;
+    if (!d || !d.userCount) return NEUTRAL_FILL;
+    const t = Math.min(1, d.userCount / maxCount);
+    return alpha(C.acc, 0.18 + Math.sqrt(t) * 0.72);
   };
-  const radiusFor = count => {
-    if (!count) return 2.2;
-    const t = Math.min(1, count / maxCount);
-    return 3 + Math.sqrt(t) * 6; // sqrt → area-ish scaling, capped ~9 units
+
+  const onMapMove = (e) => {
+    const r = mapWrapRef.current?.getBoundingClientRect();
+    if (r) { mapWidthRef.current = r.width; setMouse({ x: e.clientX - r.left, y: e.clientY - r.top }); }
   };
 
   const Chip = ({ label, value, color = C.acc }) => (
@@ -1911,109 +1943,130 @@ function UsersByCountryCard() {
     </div>
   );
 
+  const ViewTab = ({ id, label }) => {
+    const on = view === id;
+    return (
+      <button onClick={() => setView(id)} style={{
+        padding: '6px 14px', fontSize: 12, fontFamily: FONT, fontWeight: on ? 700 : 500,
+        cursor: 'pointer', background: on ? alpha(C.acc, '16') : 'transparent',
+        color: on ? C.acc : C.txt2, border: `1px solid ${on ? alpha(C.acc, '45') : C.brd2}`,
+        borderRadius: 8,
+      }}>{label}</button>
+    );
+  };
+
+  // ── Map view: real country choropleth, fills the whole container ──────────
+  const mapView = (
+    <div>
+      <div ref={mapWrapRef} onMouseMove={onMapMove} onMouseLeave={() => setHover(null)}
+        style={{ position: 'relative', width: '100%' }}>
+        <svg viewBox={`0 0 ${WORLD_VIEWBOX.w} ${WORLD_VIEWBOX.h}`} width="100%" role="img"
+          aria-label="World map of users by country"
+          style={{ display: 'block', width: '100%', height: 'auto', background: alpha(C.brd, 0.12), border: `1px solid ${C.brd}`, borderRadius: 10 }}>
+          {WORLD_COUNTRIES.map((f, i) => {
+            const d = f.a2 ? byCode[f.a2] : null;
+            return (
+              <path key={f.a2 || `g${i}`} d={f.d}
+                fill={fillFor(f.a2)} stroke={BORDER} strokeWidth={0.6} strokeLinejoin="round"
+                style={{ cursor: d ? 'pointer' : 'default', transition: 'fill 0.15s' }}
+                onClick={() => d && setSelected(prev => prev === f.a2 ? null : f.a2)}
+                onMouseEnter={() => setHover({ code: f.a2, name: (d?.countryName) || f.name, count: d?.userCount || 0, pct: d?.percentage || 0 })}>
+                <title>{d ? `${d.countryName}: ${d.userCount} users (${d.percentage}%)` : `${f.name}: 0 users`}</title>
+              </path>
+            );
+          })}
+          {/* selected country re-drawn on top so its highlight is never occluded */}
+          {selected && WORLD_COUNTRIES.filter(f => f.a2 === selected).map((f, i) => (
+            <path key={`sel${i}`} d={f.d} fill={fillFor(f.a2)} stroke={C.acc} strokeWidth={1.4} strokeLinejoin="round" pointerEvents="none" />
+          ))}
+        </svg>
+
+        {/* HTML hover tooltip — country name, users, percentage */}
+        {hover && (
+          <div style={{
+            position: 'absolute', pointerEvents: 'none', zIndex: 5,
+            left: Math.min(mouse.x + 14, Math.max(0, (mapWidthRef.current || 9999) - 168)),
+            top: Math.max(0, mouse.y + 14),
+            background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 8,
+            padding: '7px 10px', boxShadow: `0 6px 20px ${C.shadow}`, maxWidth: 168,
+          }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: C.txt, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{hover.name}</div>
+            <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, marginTop: 2 }}>{hover.count} users · {hover.pct}%</div>
+          </div>
+        )}
+      </div>
+      <div style={{ fontSize: 10, color: C.muted, marginTop: 8, lineHeight: 1.5 }}>
+        Country fill scales with each country's share of users toward the app accent colour.
+        Users without a resolved country (local or unknown) appear in the Countries Table, not on the map.
+        {summary.totalKnown === 0 && <span style={{ color: C.txt2 }}> {' '}No country-resolved users yet — the map is shown in its neutral state.</span>}
+      </div>
+    </div>
+  );
+
+  // ── Table view: ranked countries (rank, country, users, %, latest reg) ────
+  const tableView = countries.length === 0 ? (
+    <div style={{ padding: '40px 0', textAlign: 'center', color: C.muted, fontSize: 12 }}>No users yet.</div>
+  ) : (
+    <div style={{ border: `1px solid ${C.brd}`, borderRadius: 10, overflow: 'hidden' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '32px 1fr 64px 56px 1fr', gap: 0, padding: '8px 12px', borderBottom: `1px solid ${C.brd}`, fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', background: alpha(C.brd, 0.18) }}>
+        <span>#</span><span>Country</span><span style={{ textAlign: 'right' }}>Users</span><span style={{ textAlign: 'right' }}>%</span><span style={{ textAlign: 'right' }}>Latest</span>
+      </div>
+      <div style={{ maxHeight: 420, overflowY: 'auto' }}>
+        {countries.map((c, i) => {
+          const known = !!c.countryCode;
+          const isSel = known && selected === c.countryCode;
+          const barPct = summary.totalUsers > 0 ? (c.userCount / summary.totalUsers) * 100 : 0;
+          return (
+            <div key={c.countryCode || `unknown-${i}`}
+              onClick={() => known && setSelected(prev => prev === c.countryCode ? null : c.countryCode)}
+              style={{
+                position: 'relative', display: 'grid', gridTemplateColumns: '32px 1fr 64px 56px 1fr',
+                alignItems: 'center', padding: '7px 12px',
+                borderBottom: i < countries.length - 1 ? `1px solid ${C.brd}` : 'none',
+                background: isSel ? alpha(C.acc, '12') : 'transparent',
+                borderLeft: isSel ? `3px solid ${C.acc}` : '3px solid transparent',
+                cursor: known ? 'pointer' : 'default',
+              }}>
+              <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${barPct}%`, background: alpha(known ? C.acc : C.muted, 0.1), pointerEvents: 'none' }} />
+              <span style={{ position: 'relative', fontSize: 11, fontFamily: MONO, color: C.muted }}>{i + 1}</span>
+              <span style={{ position: 'relative', fontSize: 12, color: C.txt, fontWeight: known ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {known && <span style={{ fontFamily: MONO, fontSize: 10, color: C.muted, marginRight: 6 }}>{c.countryCode}</span>}
+                {c.countryName}
+              </span>
+              <span style={{ position: 'relative', textAlign: 'right', fontSize: 12, fontFamily: MONO, color: C.txt }}>{c.userCount}</span>
+              <span style={{ position: 'relative', textAlign: 'right', fontSize: 11, fontFamily: MONO, color: C.muted }}>{c.percentage}%</span>
+              <span style={{ position: 'relative', textAlign: 'right', fontSize: 10, fontFamily: MONO, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {c.latestRegistrationAt ? fmtDate(c.latestRegistrationAt) : '—'}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+
   return (
     <SectionCard title="Users by Country">
       <div style={{ padding: '16px 18px' }}>
         {error && <ErrorBox msg={error} />}
 
         {/* Summary chips */}
-        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
           <Chip label="Total users" value={loading ? '—' : summary.totalUsers} />
           <Chip label="Known country" value={loading ? '—' : summary.totalKnown} color={C.grn} />
           <Chip label="Unknown / local" value={loading ? '—' : summary.unknown} color={C.muted} />
           <Chip label="Countries" value={loading ? '—' : summary.countriesRepresented} color={C.teal} />
         </div>
 
-        {loading ? (
-          <div style={{ padding: '40px 0', textAlign: 'center', color: C.muted, fontSize: 12 }}>Loading distribution…</div>
-        ) : countries.length === 0 ? (
-          <div style={{ padding: '40px 0', textAlign: 'center', color: C.muted, fontSize: 12 }}>No users yet.</div>
-        ) : (
-          <div style={{ display: 'flex', gap: 18, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-            {/* ── Choropleth map ──────────────────────────────────────── */}
-            <div style={{ flex: '1 1 360px', minWidth: 300, position: 'relative' }}>
-              <svg viewBox={`0 0 ${MAP_W} ${MAP_H}`} width="100%" role="img"
-                aria-label="World map of users by country"
-                style={{ display: 'block', background: alpha(C.brd, 0.15), border: `1px solid ${C.brd}`, borderRadius: 10 }}
-                onMouseLeave={() => setHover(null)}>
-                {/* land outline (decorative context) */}
-                {WORLD_LAND.map((pts, i) => (
-                  <polygon key={i} points={pts} fill={alpha(C.muted, 0.12)} stroke={alpha(C.muted, 0.2)} strokeWidth={0.4} />
-                ))}
-                {/* country markers */}
-                {mapped.map(c => {
-                  const [lon, lat] = COUNTRY_CENTROIDS[c.countryCode];
-                  const cx = lonToX(lon), cy = latToY(lat);
-                  const isSel = selected === c.countryCode;
-                  return (
-                    <circle key={c.countryCode}
-                      cx={cx} cy={cy} r={radiusFor(c.userCount)}
-                      fill={fillFor(c.userCount)}
-                      stroke={isSel ? C.acc : alpha(C.acc, 0.55)}
-                      strokeWidth={isSel ? 1.4 : 0.6}
-                      style={{ cursor: 'pointer' }}
-                      onClick={() => setSelected(prev => prev === c.countryCode ? null : c.countryCode)}
-                      onMouseEnter={() => setHover({ name: c.countryName, count: c.userCount, pct: c.percentage, x: cx, y: cy })}
-                      onMouseLeave={() => setHover(null)}>
-                      <title>{`${c.countryName}: ${c.userCount} users (${c.percentage}%)`}</title>
-                    </circle>
-                  );
-                })}
-                {/* hover tooltip (SVG-space) */}
-                {hover && (
-                  <g pointerEvents="none" transform={`translate(${Math.min(MAP_W - 92, Math.max(2, hover.x - 46))}, ${Math.max(2, hover.y - 30)})`}>
-                    <rect width={92} height={26} rx={4} fill={C.card} stroke={C.brd} strokeWidth={0.5} />
-                    <text x={6} y={11} fontSize={7} fill={C.txt} fontWeight={700}>{hover.name}</text>
-                    <text x={6} y={21} fontSize={6.5} fill={C.muted}>{hover.count} users · {hover.pct}%</text>
-                  </g>
-                )}
-              </svg>
-              <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
-                Marker size and accent intensity scale with the number of users registered from each country.
-                Users without a resolved country (local or unknown) are listed in the table but not plotted.
-              </div>
-            </div>
+        {/* Map / Table sub-tabs */}
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+          <ViewTab id="map" label="Map" />
+          <ViewTab id="table" label="Countries Table" />
+        </div>
 
-            {/* ── Ranked table ────────────────────────────────────────── */}
-            <div style={{ flex: '1 1 320px', minWidth: 280 }}>
-              <div style={{ border: `1px solid ${C.brd}`, borderRadius: 10, overflow: 'hidden' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: '32px 1fr 56px 56px', gap: 0, padding: '8px 12px', borderBottom: `1px solid ${C.brd}`, fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', background: alpha(C.brd, 0.18) }}>
-                  <span>#</span><span>Country</span><span style={{ textAlign: 'right' }}>Users</span><span style={{ textAlign: 'right' }}>%</span>
-                </div>
-                <div style={{ maxHeight: 300, overflowY: 'auto' }}>
-                  {countries.map((c, i) => {
-                    const known = !!c.countryCode;
-                    const isSel = known && selected === c.countryCode;
-                    const barPct = summary.totalUsers > 0 ? (c.userCount / summary.totalUsers) * 100 : 0;
-                    return (
-                      <div key={c.countryCode || `unknown-${i}`}
-                        onClick={() => known && setSelected(prev => prev === c.countryCode ? null : c.countryCode)}
-                        title={c.latestRegistrationAt ? `Latest registration: ${fmtDate(c.latestRegistrationAt)}` : undefined}
-                        style={{
-                          position: 'relative', display: 'grid', gridTemplateColumns: '32px 1fr 56px 56px',
-                          alignItems: 'center', padding: '7px 12px',
-                          borderBottom: i < countries.length - 1 ? `1px solid ${C.brd}` : 'none',
-                          background: isSel ? alpha(C.acc, '12') : 'transparent',
-                          borderLeft: isSel ? `3px solid ${C.acc}` : '3px solid transparent',
-                          cursor: known ? 'pointer' : 'default',
-                        }}>
-                        {/* accent bar behind the row, scaled to share of total */}
-                        <span style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${barPct}%`, background: alpha(known ? C.acc : C.muted, 0.1), pointerEvents: 'none' }} />
-                        <span style={{ position: 'relative', fontSize: 11, fontFamily: MONO, color: C.muted }}>{i + 1}</span>
-                        <span style={{ position: 'relative', fontSize: 12, color: C.txt, fontWeight: known ? 600 : 400, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {known && <span style={{ fontFamily: MONO, fontSize: 10, color: C.muted, marginRight: 6 }}>{c.countryCode}</span>}
-                          {c.countryName}
-                        </span>
-                        <span style={{ position: 'relative', textAlign: 'right', fontSize: 12, fontFamily: MONO, color: C.txt }}>{c.userCount}</span>
-                        <span style={{ position: 'relative', textAlign: 'right', fontSize: 11, fontFamily: MONO, color: C.muted }}>{c.percentage}%</span>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
+        {loading
+          ? <div style={{ padding: '40px 0', textAlign: 'center', color: C.muted, fontSize: 12 }}>Loading distribution…</div>
+          : (view === 'map' ? mapView : tableView)}
       </div>
     </SectionCard>
   );

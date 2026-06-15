@@ -26,7 +26,13 @@ import { Icon } from '../icons.jsx';
 import { screeningApi } from '../../screening/api-client/screeningApi.js';
 import ChatDrawer from './ChatDrawer.jsx';
 
-export default function MetaLabChatLauncher({ metaLabProjectId }) {
+export default function MetaLabChatLauncher({ metaLabProjectId, projectName = '' }) {
+  // prompt20 Task 3 — the drawer title is the current Review Project name so users
+  // always know which project they are chatting in. The drawer header already
+  // truncates with an ellipsis + full-name tooltip and flex-shrinks the close
+  // button, so long names never overlap the controls. Falls back to a neutral
+  // label while the project name is still loading.
+  const chatTitle = (projectName && projectName.trim()) ? projectName.trim() : 'Project chat';
   const [open, setOpen] = useState(false);
   const [unread, setUnread] = useState(0);
   // 'probing' | 'linked' | 'unlinked'
@@ -72,7 +78,7 @@ export default function MetaLabChatLauncher({ metaLabProjectId }) {
         onClick={() => { if (!disabled) setOpen(true); }}
         title={status === 'unlinked'
           ? 'Link a META·SIFT project to enable project chat'
-          : 'Project chat'}
+          : (projectName ? `Project chat — ${projectName}` : 'Project chat')}
         aria-label="Project chat"
         aria-disabled={disabled}
         onMouseEnter={e => { if (!disabled && !open) e.currentTarget.style.background = alpha(C.acc, '26'); }}
@@ -106,7 +112,7 @@ export default function MetaLabChatLauncher({ metaLabProjectId }) {
           open={open}
           onClose={() => setOpen(false)}
           onUnreadChange={setUnread}
-          title="Project Chat"
+          title={chatTitle}
           realtimeMatch={realtimeMatch}
         />
       )}

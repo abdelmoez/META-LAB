@@ -6,10 +6,27 @@ import { createResetToken } from '../services/passwordResetService.js';
 import { getVersion } from '../version.js';
 import { bustMaintenanceCache } from '../middleware/maintenance.js';
 import { USAGE, recordUsage } from '../utils/usage.js';
+import { buildUserUpdate } from '../../src/shared/editableUserFields.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Safe, single source of the columns the Ops console may READ for a user. It
+// deliberately EXCLUDES every secret (password hash, registrationIpHash, reset/
+// invite/session tokens) — those are never selected and so can never leak.
+const USER_DETAIL_SELECT = {
+  id: true, email: true, name: true, role: true, suspended: true,
+  createdAt: true, updatedAt: true, lastActive: true, themePreference: true,
+  registrationCountryCode: true, registrationCountryName: true,
+  registrationIpCountrySource: true,
+  _count: { select: { projects: true } },
+};
+function formatUserDetail(u) {
+  if (!u) return u;
+  const { _count, ...rest } = u;
+  return { ...rest, projectCount: _count ? _count.projects : (u.projectCount ?? 0) };
+}
 
 /**
  * Generate a strong, human-typeable temporary password.
@@ -532,26 +549,15 @@ export async function getUserById(req, res) {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.params.id },
-      select: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        suspended: true,
-        createdAt: true,
-        lastActive: true,
-        updatedAt: true,
-        _count: { select: { projects: true } },
-      },
+      select: USER_DETAIL_SELECT,
     });
 
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    return res.json({
-      ...user,
-      projectCount: user._count.projects,
-      _count: undefined,
-    });
+    // Top-level shape (the PATCH handlers use a { user } envelope) — includes the
+    // admin-editable profile fields (theme, registration country) so the Ops
+    // edit form can populate them. Secrets are never in USER_DETAIL_SELECT.
+    return res.json(formatUserDetail(user));
   } catch (err) {
     console.error('[admin] getUserById error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
@@ -559,42 +565,36 @@ export async function getUserById(req, res) {
 }
 
 // ── PATCH /api/admin/users/:id ────────────────────────────────────────────────
-// Edit a user's name and/or email. (admin + mod)
+// Edit a user's admin-safe profile fields (name, email, theme, registration
+// country). The exact set + validation lives in the shared editableUserFields
+// schema — add a safe field there and it becomes editable here automatically.
+// Role and account status keep their dedicated, confirmation-gated endpoints
+// (/role, /status) with their own protections, so they are NOT handled here.
+// Password is NEVER editable; the reset-email flow is unchanged. (admin + mod —
+// mods get the editableByMod subset; requireTargetEditable already blocks mods
+// from touching admin/mod targets.)
 
 export async function updateUser(req, res) {
   try {
-    const body = req.body || {};
-    const data = {};
-
-    if (body.name !== undefined) {
-      if (body.name !== null && typeof body.name !== 'string') {
-        return res.status(400).json({ error: '`name` must be a string or null' });
-      }
-      const trimmed = typeof body.name === 'string' ? body.name.trim() : '';
-      data.name = trimmed || null;
-    }
-
-    if (body.email !== undefined) {
-      if (typeof body.email !== 'string' || !EMAIL_RE.test(body.email.trim())) {
-        return res.status(400).json({ error: 'A valid `email` is required' });
-      }
-      data.email = body.email.trim().toLowerCase();
-    }
-
-    if (Object.keys(data).length === 0) {
-      return res.status(400).json({ error: 'Provide `name` and/or `email` to update' });
+    // Schema-driven, allowlist-only patch. Unknown / sensitive / dedicated keys
+    // (password, tokens, role, suspended, …) are silently ignored — they can
+    // never reach `data`. Mods only get the fields flagged editableByMod.
+    const { data, changed, error } = buildUserUpdate(req.body || {}, req.user.role);
+    if (error) return res.status(400).json({ error });
+    if (!changed.length) {
+      return res.status(400).json({ error: 'Provide at least one editable field to update' });
     }
 
     const target = await prisma.user.findUnique({ where: { id: req.params.id } });
     if (!target) return res.status(404).json({ error: 'User not found' });
 
-    // Defense-in-depth (route also mounts requireTargetEditable): mods may
-    // only mutate ordinary users — never admin/mod accounts.
+    // Defense-in-depth (route also mounts requireTargetEditable): mods may only
+    // mutate ordinary users — never admin/mod accounts.
     if (req.user.role === 'mod' && target.role !== 'user') {
       return res.status(403).json({ error: 'Moderators cannot modify administrator or moderator accounts' });
     }
 
-    // Enforce unique email (case-insensitive via the lowercased value above)
+    // Enforce unique email (case-insensitive via the lowercased value from the schema).
     if (data.email && data.email !== target.email) {
       const clash = await prisma.user.findUnique({ where: { email: data.email } });
       if (clash && clash.id !== target.id) {
@@ -605,15 +605,17 @@ export async function updateUser(req, res) {
     const updated = await prisma.user.update({
       where: { id: req.params.id },
       data,
-      select: { id: true, email: true, name: true, role: true, suspended: true, createdAt: true, lastActive: true },
+      select: USER_DETAIL_SELECT,
     });
 
-    await logAdminAction(req, 'EDIT_USER', 'User', target.id, {
-      before: { name: target.name, email: target.email },
-      after: { name: updated.name, email: updated.email },
-    });
+    // Audit the change by field KEY + before/after. Every editable field is
+    // non-sensitive by construction (the schema never lists secrets), so the
+    // values are safe to record for an admin trail.
+    const before = {}, after = {};
+    for (const k of changed) { before[k] = target[k] ?? null; after[k] = updated[k] ?? null; }
+    await logAdminAction(req, 'USER_UPDATED_BY_ADMIN', 'User', target.id, { changed, before, after });
 
-    return res.json({ user: updated });
+    return res.json({ user: formatUserDetail(updated) });
   } catch (err) {
     console.error('[admin] updateUser error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
