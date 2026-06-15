@@ -244,13 +244,16 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
         <nav aria-label="Screening workflow"
           style={{ display: 'flex', gap: 2, padding: '0 12px', background: C.surf, borderBottom: `1px solid ${C.brd}`, flexShrink: 0, overflowX: 'auto', alignItems: 'flex-start' }}>
           {tabSet.map(navCol)}
-          {/* prompt23 Task 12/13 — "records · members" replaced by a live presence
-              indicator (who's active + where). Blind-mode stays here as screening
-              context. */}
-          <div style={{ marginLeft: 'auto', alignSelf: 'center', display: 'flex', alignItems: 'center', gap: 8, paddingRight: 4, flexShrink: 0 }}>
-            {project?.blindMode && <Badge color={C.gold}>Blind</Badge>}
-            <PresenceIndicator users={presenceUsers} locks={presenceLocks} totalMembers={totalMembers} myUserId={user?.id} />
-          </div>
+          {/* prompt24 Task 8 — when embedded in the META·LAB monolith, the
+              universal header owns the SINGLE presence indicator, so the screening
+              submenu no longer renders its own (avoids the duplicate chip). The
+              embedded SiftProject still heartbeats the fine-grained screening
+              location below. Blind-mode stays here as screening context. */}
+          {project?.blindMode && (
+            <div style={{ marginLeft: 'auto', alignSelf: 'center', display: 'flex', alignItems: 'center', gap: 8, paddingRight: 4, flexShrink: 0 }}>
+              <Badge color={C.gold}>Blind</Badge>
+            </div>
+          )}
         </nav>
 
         <div style={{ flex: 1, overflow: isFullBleed ? 'hidden' : 'auto', minHeight: 0 }}>

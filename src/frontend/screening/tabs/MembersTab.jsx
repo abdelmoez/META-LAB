@@ -127,7 +127,7 @@ const selectStyle = {
 
 // ── MembersTab ──────────────────────────────────────────────────────────────
 
-export default function MembersTab({ pid, project, access, refreshProject, presence }) {
+export default function MembersTab({ pid, project, access, refreshProject, presence, leaveRedirect = '/sift-beta' }) {
   const { user } = useAuth();
   // prompt23 Task 14 — live presence: who is active and where (+ what they're editing).
   const presenceByUser = {};
@@ -213,7 +213,7 @@ export default function MembersTab({ pid, project, access, refreshProject, prese
     setLeaveErr('');
     try {
       await screeningApi.leaveProject(pid);
-      navigate('/sift-beta');
+      navigate(leaveRedirect);
     } catch (e) {
       setLeaveErr(e.message || 'Could not leave the project.');
       setLeaving(false);

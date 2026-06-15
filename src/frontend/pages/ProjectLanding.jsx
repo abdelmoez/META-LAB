@@ -67,8 +67,6 @@ const DASHBOARD_FILTERS = [
   { key: 'inprogress', label: 'Screening in progress', test: (p) => statusOf(p) === 'in_progress' },
   { key: 'done',       label: 'Completed',             test: (p) => statusOf(p) === 'done' },
   { key: 'owned',      label: 'Owned by me',           test: (p) => isOwnerOf(p) },
-  { key: 'shared',     label: 'Shared with me',        test: (p) => !!p._shared && !isOwnerOf(p) },
-  { key: 'recent',     label: 'Recent',                test: (p) => isRecent(p) },
   { key: 'archived',   label: 'Archived',              test: (p) => !!p._archived },
 ];
 
@@ -1231,7 +1229,8 @@ export default function ProjectLanding() {
     const byId = new Map(projects.map(p => [String(p.id), p]));
     return recents
       .filter(r => byId.has(r.id))
-      .map(r => ({ id: r.id, name: (byId.get(r.id).name || r.name || 'Untitled project') }));
+      .map(r => ({ id: r.id, name: (byId.get(r.id).name || r.name || 'Untitled project') }))
+      .slice(0, 1);
   }, [recents, projects]);
 
   /* ── Action handlers ──────────────────────────────────────────── */

@@ -8,9 +8,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { subscribeToSaveStatus, flushStorage } from '../storage/serverStorage.js';
-import UserMenu from '../components/UserMenu.jsx';
-import NotificationsBell from '../components/NotificationsBell.jsx';
+import { subscribeToSaveStatus } from '../storage/serverStorage.js';
 import MetaLab from '../../../meta-lab-3-patched.jsx';
 import { C, MONO } from '../theme/tokens.js';
 
@@ -78,15 +76,9 @@ export default function AppWorkspace() {
         {SAVE_LABEL[saveStatus]}
       </div>
 
-      {/* ── Notifications bell (top-right, left of the account avatar) ── */}
-      <NotificationsBell fixed right={56} />
-
-      {/* ── Shared account menu (top-right) ─────────────────────────── */}
-      <UserMenu
-        context="metalab"
-        fixed
-        onBeforeLogout={async () => { try { await flushStorage(); } catch { /* best-effort */ } }}
-      />
+      {/* prompt24 — the notifications bell + account menu now live INSIDE the
+          monolith's universal project header (and the welcome-screen top-right),
+          so AppWorkspace no longer renders the fixed duplicates here. */}
     </>
   );
 }

@@ -12,6 +12,9 @@ import { alpha as themeAlpha } from "./src/frontend/theme/tokens.js";
 import { useTheme } from "./src/frontend/theme/ThemeContext.jsx";
 import { Icon } from "./src/frontend/components/icons.jsx";
 import MetaLabChatLauncher from "./src/frontend/components/chat/MetaLabChatLauncher.jsx";
+import NotificationsBell from "./src/frontend/components/NotificationsBell.jsx";
+import UserMenu from "./src/frontend/components/UserMenu.jsx";
+import MembersTab from "./src/frontend/screening/tabs/MembersTab.jsx";
 import ExportDialog from "./src/frontend/components/ExportDialog.jsx";
 import { rasterizeSvg, downloadBlob, downloadText } from "./src/frontend/components/exportCore.js";
 import { fmtNum, fmtES, fmtCI, fmtEstCI, fmtP, fmtPct, fmtI2, fmtWeight, fmtInt, normalizePrecision, DECIMAL_OPTIONS } from "./src/research-engine/format/precision.js";
@@ -7116,30 +7119,54 @@ function ProjectTitle({project,canRename,onRename}){
   );
 }
 
-/* prompt19 — full-bleed Screening workspace frame. Own top bar (focus toggle +
-   breadcrumb + back-to-overview/projects); the embedded engine fills the rest.
-   The user is never trapped: ☰ shows the project menu, and Project overview /
-   Projects stay one click away. */
-function ScreeningWorkspaceFrame({project,focus,onToggleFocus,setTab,onBackToProjects}){
+/* prompt24 Tasks 2/3/4/7/8/9 — UNIVERSAL PROJECT HEADER. One sticky bar shown on
+   EVERY project page (Overview, PICO, Screening, Extraction, Analysis, PRISMA,
+   Report, Project Control). It owns the project context (☰ menu toggle · project
+   title · ▸ current-section breadcrumb · Project overview / Projects nav) and the
+   single right-side utility cluster ([presence][chat][notifications][account]).
+   Flex layout with min-width:0 on the title region (truncates with ellipsis) and a
+   non-shrinking right cluster, so the buttons are never overlapped (Task 4). The
+   one PresenceIndicator here replaces the old floating chip + the screening-only
+   one (Task 8); its popover is portaled so it can't be clipped (Task 3). */
+function ProjectHeaderBar({project,tab,inScreening,focus,onToggleFocus,setTab,onBackToProjects,presenceUsers,presenceLocks,totalMembers,myUserId,spId}){
+  const sectionLabel=(TABS.find(t=>t.id===tab)?.label)||"Overview";
+  return(
+    <div style={{
+      display:"flex",alignItems:"center",gap:10,
+      padding:"8px 16px",borderBottom:`1px solid ${C.brd}`,background:C.surf,
+      flexShrink:0,minHeight:50,
+    }}>
+      {/* Left — ☰ toggle + truncating breadcrumb (min-width:0 so the title yields first) */}
+      <button onClick={onToggleFocus} title={focus?"Show menu":"Hide menu"}
+        style={{background:focus?themeAlpha(C.acc,'14'):"none",border:`1px solid ${focus?themeAlpha(C.acc,'40'):C.brd2}`,color:focus?C.acc:C.txt2,cursor:"pointer",borderRadius:7,padding:"4px 9px",fontSize:15,lineHeight:1,flexShrink:0}}>☰</button>
+      <div style={{display:"flex",alignItems:"center",gap:7,fontSize:12.5,minWidth:0,flex:"1 1 auto"}}>
+        <button onClick={()=>setTab("overview")} title={project?.name||""}
+          style={{background:"none",border:"none",color:C.txt,fontWeight:600,cursor:"pointer",fontFamily:"inherit",fontSize:13,padding:0,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{project?.name||"Project"}</button>
+        <span style={{color:C.dim,flexShrink:0}}>▸</span>
+        <span style={{fontWeight:700,color:C.txt2,flexShrink:0,whiteSpace:"nowrap"}}>{sectionLabel}</span>
+      </div>
+      {/* Middle — section nav (collapses to icons on narrow widths via the wrapper) */}
+      <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
+        {tab!=="overview"&&<button onClick={()=>setTab("overview")} title="Project overview" style={{...btnS("ghost"),fontSize:11.5,display:"inline-flex",alignItems:"center",gap:5}}><Icon name="arrowLeft" size={12}/><span className="uh-navlabel">Project overview</span></button>}
+        {onBackToProjects&&<button onClick={onBackToProjects} title="Back to all projects" style={{...btnS("ghost"),fontSize:11.5,display:"inline-flex",alignItems:"center",gap:5}}><Icon name="grid" size={12}/><span className="uh-navlabel">Projects</span></button>}
+      </div>
+      {/* Right — single utility cluster: [presence][chat][notifications][account] */}
+      <div style={{display:"flex",alignItems:"center",gap:10,flexShrink:0}}>
+        {spId&&<PresenceIndicator users={presenceUsers} locks={presenceLocks} totalMembers={totalMembers} myUserId={myUserId}/>}
+        {project&&<MetaLabChatLauncher metaLabProjectId={project.id} projectName={project.name}/>}
+        <NotificationsBell/>
+        <UserMenu context="metalab" onBeforeLogout={async()=>{try{await flushStorage();}catch(_){/* best-effort */}}}/>
+      </div>
+    </div>
+  );
+}
+
+/* prompt19/24 — full-bleed Screening workspace frame. The universal header now
+   owns the breadcrumb + nav + ☰ toggle, so the frame is just the embedded engine
+   filling the available height. */
+function ScreeningWorkspaceFrame({project,setTab}){
   return(
     <div style={{display:"flex",flexDirection:"column",height:"100%",minHeight:0}}>
-      <div style={{display:"flex",alignItems:"center",gap:12,padding:"9px 16px",borderBottom:`1px solid ${C.brd}`,background:C.surf,flexShrink:0}}>
-        <button onClick={onToggleFocus} title={focus?"Show project menu":"Focus mode — hide menu"}
-          style={{background:focus?themeAlpha(C.acc,'14'):"none",border:`1px solid ${focus?themeAlpha(C.acc,'40'):C.brd2}`,color:focus?C.acc:C.txt2,cursor:"pointer",borderRadius:7,padding:"4px 9px",fontSize:15,lineHeight:1,flexShrink:0}}>☰</button>
-        <div style={{display:"flex",alignItems:"center",gap:7,fontSize:12.5,minWidth:0}}>
-          <button onClick={()=>setTab("overview")} title="Back to project overview"
-            style={{background:"none",border:"none",color:C.txt2,cursor:"pointer",fontFamily:"'IBM Plex Sans',sans-serif",fontSize:12.5,padding:0,maxWidth:280,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{project.name||"Review project"}</button>
-          <span style={{color:C.dim,flexShrink:0}}>▸</span>
-          <span style={{fontWeight:700,color:C.txt,flexShrink:0}}>Screening</span>
-        </div>
-        {/* prompt20 Task 2 — reserve room on the right for the fixed top-right
-            utility cluster ([chat][bell][account] sit at right:16–126px) so
-            these nav buttons are never overlapped by it, in either focus state. */}
-        <div style={{marginLeft:"auto",marginRight:134,display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
-          <button onClick={()=>setTab("overview")} style={{...btnS("ghost"),fontSize:11.5,display:"inline-flex",alignItems:"center",gap:5}}><Icon name="arrowLeft" size={12}/>Project overview</button>
-          {onBackToProjects&&<button onClick={onBackToProjects} style={{...btnS("ghost"),fontSize:11.5}}>Projects</button>}
-        </div>
-      </div>
       {/* prompt22 Task 5 — Final Review's "Continue to Data Extraction" jumps to
           the SAME project's Data Extraction stage (no separate-project handoff). */}
       <div style={{flex:1,minHeight:0}}><EmbeddedScreening project={project} onGoToExtraction={()=>setTab("extraction")}/></div>
@@ -7407,210 +7434,7 @@ const CTRL_STATUS_OPTIONS=[
   {value:"in_progress",label:"In progress"},
   {value:"done",label:"Done"},
 ];
-const CTRL_ROLE_TAG={owner:"green",leader:"blue",reviewer:"blue",viewer:"yellow"};
-const CTRL_PERM_GROUPS=[
-  {title:"Screening",keys:[
-    ["canViewMetaSift","View"],["canScreen","Screen"],["canSecondReview","Second review"],
-    ["canResolveConflicts","Resolve conflicts"],["canManageDuplicates","Duplicates"],
-    ["canImportRecords","Import"],["canExportRecords","Export"],["canChat","Chat"],
-    ["readOnlyMetaSift","Read-only"],
-  ]},
-  {title:"META·LAB",keys:[
-    ["canViewMetaLab","View"],["canEditMetaLab","Edit"],["canManageExtraction","Extraction"],
-    ["canRunAnalysis","Analysis"],["canExport","Export"],["readOnlyMetaLab","Read-only"],
-  ]},
-  {title:"Global — owner-only",ownerOnly:true,keys:[
-    ["canManageMembers","Manage members"],["canManageSettings","Manage settings"],
-  ]},
-];
-// Add-member preset list (mirrors the SIFT AddMemberModal; Leader is owner-only).
-const CTRL_ADD_PRESETS=[
-  ["reviewer","Reviewer — screen + second review + chat"],
-  ["data_extractor","Data Extractor — META·LAB extraction + analysis"],
-  ["leader","Leader — full control (except owner)"],
-  ["readonly_metasift","Read-only Screening"],
-  ["readonly_metalab","Read-only META·LAB"],
-  ["readonly_both","Read-only (both modules)"],
-  ["viewer","Viewer — read-only both, can chat"],
-];
-const CTRL_MODULE_OPTIONS=[
-  ["both","Analysis & Screening"],
-  ["metalab","Analysis only"],
-  ["metasift","Screening only"],
-];
-
-function CtrlPermDot({on,label}){
-  return(<span title={`${label}: ${on?"enabled":"disabled"}`}
-    style={{display:"inline-flex",alignItems:"center",gap:5,fontSize:10.5,color:on?C.txt2:C.muted}}>
-    <span style={{width:7,height:7,borderRadius:"50%",flexShrink:0,background:on?C.grn:C.brd2}}/>
-    {label}
-  </span>);
-}
-
-function CtrlMemberRow({m,canManage,amOwner,busy,rowErr,onPatch,onRemove}){
-  const[showAll,setShowAll]=useState(false);
-  const isOwnerRow=!!m.isOwner||m.role==="owner";
-  const isLeaderRow=!isOwnerRow&&(m.isLeader||m.role==="leader");
-  // Owner row locked for everyone; leader rows only the owner may edit (server-enforced).
-  const locked=isOwnerRow||(isLeaderRow&&!amOwner);
-  const editable=canManage&&!locked;
-  const presetOptions=amOwner?ASSIGNABLE_PRESETS:ASSIGNABLE_PRESETS.filter(p=>p!=="leader");
-  const currentPreset=m.permissionPreset&&presetOptions.includes(m.permissionPreset)?m.permissionPreset:"";
-  const quick=[["canScreen","Screen"],["canChat","Chat"],["canResolveConflicts","Resolve"]];
-  return(
-    <div style={{background:C.bg,border:`1px solid ${isOwnerRow?themeAlpha(C.yel,'44'):isLeaderRow?themeAlpha(C.acc,'33'):C.brd}`,borderRadius:8,padding:"12px 14px",opacity:m.status==="inactive"?0.72:1}}>
-      <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-        <div style={{flex:1,minWidth:0}}>
-          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-            <span title={m.name||m.email||"Unknown"} style={{fontSize:13,fontWeight:600,color:C.txt,minWidth:0,maxWidth:"100%",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.name||m.email||"Unknown"}</span>
-            <span style={tagS(CTRL_ROLE_TAG[m.role]||"")}>{isOwnerRow?"Owner":m.role}</span>
-            <span style={tagS(m.status==="active"?"green":m.status==="pending"?"yellow":"")}>{m.status==="pending"?"Pending invite":m.status}</span>
-          </div>
-          <div title={m.name?m.email:undefined} style={{fontSize:11,color:C.muted,marginTop:2,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{m.name?m.email:""}</div>
-        </div>
-        {editable?(
-          <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
-            <select value={currentPreset} disabled={busy}
-              onChange={e=>{if(e.target.value)onPatch({preset:e.target.value});}}
-              title="Apply a role/permission preset (resets per-member toggles to the preset)"
-              style={{...inp,width:"auto",fontSize:11,padding:"4px 8px",opacity:busy?0.6:1}}>
-              {!currentPreset&&<option value="">Custom · {m.role}</option>}
-              {presetOptions.map(p=><option key={p} value={p}>{(PERMISSION_PRESETS[p]&&PERMISSION_PRESETS[p].label)||p}</option>)}
-            </select>
-            <label style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11,color:C.txt2,cursor:m.status==="pending"?"default":"pointer",userSelect:"none"}}>
-              <input type="checkbox" checked={m.status==="active"} disabled={busy||m.status==="pending"}
-                onChange={e=>onPatch({status:e.target.checked?"active":"inactive"})}
-                style={{accentColor:C.grn,width:14,height:14}}/>
-              Active
-            </label>
-            <button onClick={onRemove} disabled={busy} style={{...btnS("ghost"),fontSize:11,padding:"4px 10px"}}>Remove</button>
-          </div>
-        ):canManage&&locked?(
-          <span style={{fontSize:10.5,color:C.muted,fontStyle:"italic"}}>🔒 {isOwnerRow?"Owner permissions cannot be changed.":"Only the owner can change leader rows."}</span>
-        ):(
-          <span style={{fontSize:10,fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>joined {fmtDate(m.joinedAt)}</span>
-        )}
-      </div>
-      {/* Quick permissions + full per-flag matrix */}
-      <div style={{marginTop:10,paddingTop:9,borderTop:`1px solid ${C.brd}`,display:"flex",alignItems:"center",gap:editable?16:14,flexWrap:"wrap"}}>
-        <span style={{fontSize:9,fontWeight:700,color:C.muted,letterSpacing:0.8,textTransform:"uppercase"}}>Permissions</span>
-        {editable
-          ?quick.map(([k,label])=>(
-            <label key={k} style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11,color:C.txt2,cursor:"pointer",userSelect:"none"}}>
-              <input type="checkbox" checked={!!m[k]} disabled={busy} onChange={e=>onPatch({[k]:e.target.checked})}
-                style={{accentColor:C.acc,width:14,height:14}}/>
-              {label}
-            </label>))
-          :quick.map(([k,label])=><CtrlPermDot key={k} on={!!m[k]} label={label}/>)}
-        {editable&&(
-          <button onClick={()=>setShowAll(s=>!s)}
-            style={{background:"none",border:"none",cursor:"pointer",padding:0,fontSize:11,fontFamily:"'IBM Plex Sans',sans-serif",color:C.acc}}>
-            {showAll?"▾ Fewer permissions":"▸ All permissions"}
-          </button>
-        )}
-      </div>
-      {editable&&showAll&&(
-        <div style={{marginTop:10,background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 12px",display:"flex",flexDirection:"column",gap:10}}>
-          {CTRL_PERM_GROUPS.filter(g=>!g.ownerOnly||amOwner).map(g=>(
-            <div key={g.title}>
-              <div style={{fontSize:9,fontWeight:700,color:C.muted,letterSpacing:0.8,textTransform:"uppercase",marginBottom:7}}>{g.title}</div>
-              <div style={{display:"flex",alignItems:"center",gap:14,flexWrap:"wrap"}}>
-                {g.keys.map(([k,label])=>(
-                  <label key={k} style={{display:"inline-flex",alignItems:"center",gap:6,fontSize:11,color:C.txt2,cursor:"pointer",userSelect:"none"}}>
-                    <input type="checkbox" checked={!!m[k]} disabled={busy} onChange={e=>onPatch({[k]:e.target.checked})}
-                      style={{accentColor:C.acc,width:14,height:14}}/>
-                    {label}
-                  </label>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      {rowErr&&<div style={{marginTop:10,background:"var(--t-red-bg)",border:`1px solid ${themeAlpha(C.red,'44')}`,borderRadius:6,padding:"7px 11px",color:C.red,fontSize:11.5}}>{rowErr}</div>}
-    </div>
-  );
-}
-
-function CtrlAddMember({lid,amOwner,onAdded}){
-  const[email,setEmail]=useState("");
-  const[preset,setPreset]=useState("reviewer");
-  const[modules,setModules]=useState("both");
-  const[busy,setBusy]=useState(false);
-  const[err,setErr]=useState("");
-  const[note,setNote]=useState("");
-  const[invite,setInvite]=useState(null);   // {link, emailSent, emailConfigured, expiresAt}
-  const[copied,setCopied]=useState(false);
-  const linkRef=useRef(null);
-  const presets=amOwner?CTRL_ADD_PRESETS:CTRL_ADD_PRESETS.filter(([v])=>v!=="leader");
-  const submit=async()=>{
-    const v=email.trim();
-    if(!v){setErr("Email is required.");return;}
-    if(!EMAIL_RE.test(v)){setErr("Enter a valid email address (e.g. name@example.com).");return;}
-    setBusy(true);setErr("");setNote("");setInvite(null);setCopied(false);
-    try{
-      const res=await screeningApi.addMember(lid,{email:v,preset,modules});
-      setEmail("");
-      if(res&&res.invite&&res.invite.link){
-        setInvite(res.invite);   // success panel below carries the messaging
-      } else {
-        setNote(res&&res.pending?"Invite created — they'll join automatically once they register with this email.":"Member added.");
-      }
-      await onAdded();
-    }catch(e){setErr(e.message||"Could not add member.");}
-    setBusy(false);
-  };
-  const copyLink=async()=>{
-    const link=invite&&invite.link;
-    if(!link)return;
-    let ok=false;
-    try{await navigator.clipboard.writeText(link);ok=true;}
-    catch(_){
-      try{
-        if(linkRef.current){linkRef.current.focus();linkRef.current.select();ok=document.execCommand("copy");}
-      }catch(__){}
-    }
-    if(ok){setCopied(true);setTimeout(()=>setCopied(false),1800);}
-  };
-  return(
-    <div style={{background:C.bg,border:`1px dashed ${C.brd2}`,borderRadius:8,padding:"12px 14px",marginTop:10}}>
-      <div style={{fontSize:11,fontWeight:700,color:C.txt2,marginBottom:9}}>+ Add member</div>
-      <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-        <input type="email" value={email} disabled={busy} placeholder="colleague@example.com"
-          onChange={e=>{setEmail(e.target.value);setErr("");}}
-          onKeyDown={e=>{if(e.key==="Enter")submit();}}
-          style={{...inp,width:220,fontSize:12}}/>
-        <select value={preset} disabled={busy} onChange={e=>setPreset(e.target.value)} style={{...inp,width:"auto",fontSize:11,padding:"6px 8px"}}>
-          {presets.map(([v,label])=><option key={v} value={v}>{label}</option>)}
-        </select>
-        <select value={modules} disabled={busy} onChange={e=>setModules(e.target.value)} title="Which app(s) the member participates in" style={{...inp,width:"auto",fontSize:11,padding:"6px 8px"}}>
-          {CTRL_MODULE_OPTIONS.map(([v,label])=><option key={v} value={v}>{label}</option>)}
-        </select>
-        <button onClick={submit} disabled={busy} style={{...btnS("primary"),fontSize:11,opacity:busy?0.6:1}}>{busy?"Adding…":"Add member"}</button>
-      </div>
-      <div style={{fontSize:10.5,color:C.muted,marginTop:7,lineHeight:1.5}}>
-        Presets set analysis + screening permissions across the project; “Participates in” narrows which stages they can open. Unregistered emails get a pending invite.
-      </div>
-      {note&&<div style={{marginTop:8,fontSize:11.5,color:C.grn}}>✓ {note}</div>}
-      {invite&&invite.link&&(
-        <div style={{marginTop:10,background:themeAlpha(C.grn,'0d'),border:`1px solid ${themeAlpha(C.grn,'40')}`,borderRadius:8,padding:"10px 12px"}}>
-          <div style={{fontSize:11.5,fontWeight:700,color:C.grn,marginBottom:7}}>
-            ✓ Invite created — {invite.emailSent?"invitation email sent":"email not configured — share this link"}
-          </div>
-          <div style={{display:"flex",gap:6,alignItems:"center"}}>
-            <input ref={linkRef} readOnly value={invite.link} onFocus={e=>e.target.select()}
-              style={{...inp,flex:1,minWidth:0,fontSize:11,fontFamily:"'IBM Plex Mono',monospace",padding:"5px 8px"}}/>
-            <button onClick={copyLink} style={{...btnS("ghost"),fontSize:11,whiteSpace:"nowrap",flexShrink:0}}>{copied?"✓ Copied":"Copy"}</button>
-          </div>
-          {invite.expiresAt&&<div style={{fontSize:10.5,color:C.muted,marginTop:6}}>Link expires {fmtDate(invite.expiresAt)}.</div>}
-        </div>
-      )}
-      {err&&<div style={{marginTop:8,fontSize:11.5,color:C.red}}>{err}</div>}
-    </div>
-  );
-}
-
-function ControlTab({project,onAnnotate,setTab}){
+function ControlTab({project,onAnnotate,setTab,presence}){
   const lid=linkedSiftId(project);
   const perms=projectPerms(project);
   const amProjectOwner=!project._shared;
@@ -7618,9 +7442,6 @@ function ControlTab({project,onAnnotate,setTab}){
   const[data,setData]=useState({loading:!!lid,members:[],isOwner:false,isLeader:false,canManageMembers:false,myRole:null,error:null});
   const[sp,setSp]=useState(null);   // linked ScreenProject row (status, flags)
   const[spErr,setSpErr]=useState("");
-  const[busyId,setBusyId]=useState(null);
-  const[rowErr,setRowErr]=useState({});
-  const[confirmRemove,setConfirmRemove]=useState(null);
   const[statusBusy,setStatusBusy]=useState(false);
   const[statusFlash,setStatusFlash]=useState(false);
   const[linkBusy,setLinkBusy]=useState(false);
@@ -7645,36 +7466,12 @@ function ControlTab({project,onAnnotate,setTab}){
   },[lid]);
   useEffect(()=>{loadMembers();loadSp();},[loadMembers,loadSp]);
 
-  const amOwner=data.isOwner;
-  const canManage=data.canManageMembers||data.isLeader||data.isOwner;
+  // prompt24 — member add/edit/remove now lives entirely inside the shared
+  // MembersTab; ControlTab only needs `data` for the Project-info owner row and to
+  // hand MembersTab our workspace authority hint.
   const canManageStatus=!!(sp&&(sp.canManageSettings||sp.isLeader||sp.isOwner));
-  const leaders=data.members.filter(m=>m.role==="leader"&&!m.isOwner);
   const ownerRow=data.members.find(m=>m.isOwner||m.role==="owner")||null;
 
-  // Optimistic member patch with revert (preset / status / per-flag toggles).
-  const patchMember=async(m,body)=>{
-    setBusyId(m.id);setRowErr(er=>({...er,[m.id]:""}));
-    const prev=data.members;
-    setData(d=>({...d,members:d.members.map(x=>x.id===m.id
-      ?{...x,...body,...(body.preset?{permissionPreset:body.preset}:{})}:x)}));
-    try{
-      await screeningApi.updateMember(lid,m.id,body);
-      await loadMembers(); // authoritative state (presets change many flags)
-    }catch(e){
-      setData(d=>({...d,members:prev})); // revert
-      setRowErr(er=>({...er,[m.id]:e.message||"Update failed."}));
-    }
-    setBusyId(null);
-  };
-  const removeMember=async(m)=>{
-    setBusyId(m.id);setRowErr(er=>({...er,[m.id]:""}));
-    try{
-      await screeningApi.removeMember(lid,m.id);
-      setConfirmRemove(null);
-      await loadMembers();
-    }catch(e){setRowErr(er=>({...er,[m.id]:e.message||"Remove failed."}));}
-    setBusyId(null);
-  };
   // Project status lives on the ScreenProject (the workspace) — optimistic + revert.
   const setStatus=async(v)=>{
     if(!sp)return;
@@ -7775,60 +7572,28 @@ function ControlTab({project,onAnnotate,setTab}){
       </div>
     )}
 
-    {/* Members & permissions — the workspace is the source of truth */}
+    {/* Members & permissions (prompt24 Task 6) — reuses the SAME polished, grouped
+        MembersTab as Screening Settings (Owner ▸ Leaders ▸ Members ▸ Viewers, role
+        badges, presets, live presence/location) so the two never drift. The linked
+        workspace (ScreenProject) is the single source of truth. */}
     <div style={card}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:4}}>
-        <div style={secLbl}>Members &amp; permissions</div>
-        {lid&&!data.loading&&!data.error&&(
-          <span style={{fontSize:10.5,fontFamily:"'IBM Plex Mono',monospace",color:C.muted}}>
-            {data.members.length} member{data.members.length===1?"":"s"}{leaders.length>0?` · ${leaders.length} leader${leaders.length===1?"":"s"}`:""}
-          </span>
-        )}
-      </div>
+      <div style={secLbl}>Members &amp; permissions</div>
       {!lid?(
         <div style={{fontSize:12,color:C.muted,lineHeight:1.6}}>
           Open the <strong style={{color:C.txt}}>Screening</strong> stage once to set up this project's workspace, then invite collaborators here —
           everyone you add participates across the whole project according to their permissions.
         </div>
-      ):data.loading?(
-        <div style={{fontSize:12,color:C.muted}}>Loading members…</div>
-      ):data.error?(
-        <div style={{fontSize:12,color:C.yel}}>⚠ {data.error} <button onClick={loadMembers} style={{...btnS("ghost"),fontSize:10,padding:"2px 8px",marginLeft:6}}>↻ Retry</button></div>
-      ):(<>
-        {!canManage&&(
-          <div style={{fontSize:11.5,color:C.muted,marginBottom:10}}>🔒 Only the owner or a leader can manage members — shown read-only.</div>
-        )}
-        <div style={{display:"flex",flexDirection:"column",gap:8}}>
-          {data.members.map(m=>(
-            <CtrlMemberRow key={m.id} m={m} canManage={canManage} amOwner={amOwner}
-              busy={busyId===m.id} rowErr={rowErr[m.id]}
-              onPatch={(body)=>patchMember(m,body)}
-              onRemove={()=>setConfirmRemove(m)}/>
-          ))}
-        </div>
-        {canManage&&<CtrlAddMember lid={lid} amOwner={amOwner} onAdded={loadMembers}/>}
-      </>)}
+      ):(
+        <MembersTab
+          pid={lid}
+          project={sp||project}
+          access={{isLeader:data.isLeader,myRole:data.myRole}}
+          presence={presence}
+          refreshProject={()=>{loadMembers();loadSp();}}
+          leaveRedirect="/app"
+        />
+      )}
     </div>
-
-    {/* Remove confirm modal */}
-    {confirmRemove&&(
-      <div className="modal-bg" style={{position:"fixed",inset:0,background:"#00000099",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center"}}>
-        <div style={{background:C.surf,border:`1px solid ${themeAlpha(C.red,'44')}`,borderRadius:14,padding:26,width:400,boxShadow:"0 24px 80px var(--t-shadow)"}}>
-          <div style={{fontSize:15,fontWeight:800,marginBottom:6,color:C.txt}}>Remove member?</div>
-          <div style={{fontSize:12.5,color:C.muted,marginBottom:8,lineHeight:1.6}}>
-            Remove <strong style={{color:C.txt}}>{confirmRemove.name||confirmRemove.email}</strong> from this workspace?
-            They lose access to this project.
-          </div>
-          {rowErr[confirmRemove.id]&&<div style={{fontSize:11.5,color:C.red,marginBottom:8}}>{rowErr[confirmRemove.id]}</div>}
-          <div style={{display:"flex",gap:8,justifyContent:"flex-end",marginTop:14}}>
-            <button onClick={()=>setConfirmRemove(null)} disabled={busyId===confirmRemove.id} style={btnS("ghost")}>Cancel</button>
-            <button onClick={()=>removeMember(confirmRemove)} disabled={busyId===confirmRemove.id} style={btnS("danger")}>
-              {busyId===confirmRemove.id?"Removing…":"Remove"}
-            </button>
-          </div>
-        </div>
-      </div>
-    )}
 
     <InfoBox>💡 This is the project's shared team — the source of truth for owner, leaders, members, roles, and permissions. Changes here apply across the whole project immediately. Leaders can manage members but cannot edit the owner or assign the Leader preset.</InfoBox>
   </div>);
@@ -7847,6 +7612,9 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   // breathe. The ☰ button in the Screening top bar toggles it; the user is never
   // trapped (Back to overview / Projects stay in the Screening header).
   const[screeningFocus,setScreeningFocus]=useState(true);
+  // prompt24 Task 4/7 — the universal header's ☰ toggles the sidebar on EVERY
+  // tab. Screening keeps its own full-bleed focus state; other tabs use this one.
+  const[navCollapsed,setNavCollapsed]=useState(false);
   const[loading,setLoading]=useState(true);
   const[newName,setNewName]=useState("");
   const[withSift,setWithSift]=useState(true);          // Task 2 — default ON
@@ -8027,16 +7795,18 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
 
   const project=useMemo(()=>projects.find(p=>p.id===activeId)||null,[projects,activeId]);
 
-  // prompt23 Tasks 13/14/15 (L1 follow-up) — project presence across ALL monolith
-  // stages (PICO, Data Extraction, Analysis, …). Scoped to the linked screening
-  // project id so monolith users and screening users share ONE presence room.
-  // Disabled while the Screening stage is open (SiftProject heartbeats there) to
-  // avoid a double heartbeat. Field locks (e.g. PICO) reuse the same room.
+  // prompt23 Tasks 13/14/15 · prompt24 Tasks 2/8/9 — project presence across ALL
+  // monolith stages (PICO, Data Extraction, Analysis, …) AND the Screening stage,
+  // surfaced by the ONE PresenceIndicator in the universal header. Scoped to the
+  // linked screening project id so monolith and screening users share ONE room.
+  // On the Screening tab the header runs LISTEN-ONLY (heartbeat:false) so the
+  // embedded SiftProject keeps owning the fine-grained "Screening · …" location
+  // without a double heartbeat; everywhere else the header heartbeats the tab.
   const { user: authUser } = useAuth();
   const spId = linkedSiftId(project);
   const monolithLocation = (TABS.find(t=>t.id===tab)?.label) || "Project";
   const { users: presenceUsers, locks: presenceLocks } = useProjectPresence(
-    spId, monolithLocation, { enabled: !!spId && tab !== "screening" }
+    spId, monolithLocation, { enabled: !!spId, heartbeat: tab !== "screening" }
   );
   const upd=useCallback((field,val)=>{if(activeId)updateProject(activeId,p=>({...p,[field]:val}));},[activeId,updateProject]);
   const updNested=useCallback((field,key,val)=>{if(activeId)updateProject(activeId,p=>({...p,[field]:{...p[field],[key]:val}}));},[activeId,updateProject]);
@@ -8266,7 +8036,10 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   // prompt19 — Screening workspace gets a full-bleed, focus layout (escapes the
   // 960px content clamp + the project header). `focus` also slides the sidebar away.
   const inScreening=!!project&&tab==="screening";
-  const focus=inScreening&&screeningFocus;
+  // prompt24 — sidebar collapse. Screening keeps its bespoke focus toggle; other
+  // tabs collapse via the universal header's ☰ (navCollapsed).
+  const focus=inScreening?screeningFocus:navCollapsed;
+  const toggleNav=()=>{ if(inScreening) setScreeningFocus(f=>!f); else setNavCollapsed(c=>!c); };
   return(<div style={{display:"flex",minHeight:"100vh",background:C.bg,fontFamily:"'IBM Plex Sans',sans-serif",color:C.txt}}>
     <style>{`
       @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;700&display=swap');
@@ -8313,12 +8086,11 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
       /* Smooth tab content — fast (switched often), entrance only */
       .tab-content{animation:tabIn 0.2s var(--ease-out) both;}
       @keyframes tabIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
-      /* prompt20 follow-up — top-right safe zone. The fixed utility cluster
-         ([chat][bell][account], ~16–126px from the viewport's right edge) floats
-         over the project content. Above ~1480px the centered 960 column already
-         clears it; below that, reserve right padding on the tab content so the
-         project header's action buttons are never tucked under the cluster. */
-      @media (max-width:1480px){ .tab-content{ padding-right:118px; } }
+      /* prompt24 — the utility cluster moved INTO the universal header (no longer
+         floats over content), so the old right-padding reservation is gone. The
+         header's "Project overview"/"Projects" labels collapse to icons on narrow
+         widths so the cluster never gets crowded. */
+      @media (max-width:900px){ .uh-navlabel{ display:none; } }
       @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 
       /* Staggered entrance for grids/lists (first-load delight) */
@@ -8638,9 +8410,14 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
       </div>
     </div>
 
-    {/* Main content — full-bleed for the Screening workspace (prompt19): no 960
-        clamp, no project header, sidebar slid away in focus mode. */}
-    <div style={{marginLeft:focus?0:256,flex:1,padding:inScreening?0:"28px 36px 56px",overflowY:inScreening?"hidden":"auto",height:inScreening?"100vh":undefined,minHeight:"100vh",transition:"margin-left 0.25s ease"}}>
+    {/* Main content — universal project header (prompt24) on top, scrolling body
+        below. The header is shown on every project page; the body fills the rest
+        and scrolls internally (full-bleed + hidden for the Screening workspace). */}
+    <div style={{marginLeft:focus?0:256,flex:1,display:"flex",flexDirection:"column",height:"100vh",minHeight:0,overflow:"hidden",transition:"margin-left 0.25s ease"}}>
+      {project&&!deepLinkMiss&&(
+        <ProjectHeaderBar project={project} tab={tab} inScreening={inScreening} focus={focus} onToggleFocus={toggleNav} setTab={setTab} onBackToProjects={onBackToProjects} presenceUsers={presenceUsers} presenceLocks={presenceLocks} totalMembers={project?._memberCount} myUserId={authUser?.id} spId={spId}/>
+      )}
+      <div style={{flex:1,minHeight:0,overflowY:inScreening?"hidden":"auto",padding:inScreening?0:"28px 36px 56px"}}>
       {/* Non-fatal create warning (prompt6 Task 2) — e.g. linked SIFT creation failed */}
       {createWarning&&(
         <div style={{maxWidth:960,margin:"0 auto 18px",padding:"10px 14px",borderRadius:8,fontSize:12.5,display:"flex",alignItems:"flex-start",gap:9,
@@ -8680,6 +8457,12 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
         </div>
       ):!project?(
         <div style={{maxWidth:680,margin:"64px auto",textAlign:"center"}}>
+          {/* prompt24 — no project open ⇒ no universal header; keep notifications +
+              account reachable in the top-right of the welcome screen. */}
+          <div style={{position:"fixed",top:12,right:16,zIndex:9999,display:"flex",alignItems:"center",gap:10}}>
+            <NotificationsBell/>
+            <UserMenu context="metalab" onBeforeLogout={async()=>{try{await flushStorage();}catch(_){/* best-effort */}}}/>
+          </div>
           {/* Logo mark */}
           <div style={{
             width:56,height:56,borderRadius:16,margin:"0 auto 24px",
@@ -8726,24 +8509,11 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
         </div>
       ):(
         <>
-        {/* Project chat launcher (prompt8) — fixed top-right utility cluster
-            [chat][bell][account]: bell sits at right:56 (30px button + 10px gap
-            → chat at right:96); AppWorkspace overlays bell/menu the same way.
-            Scoped to the project-view branch so the welcome screen has no chat.
-            Kept OUTSIDE .tab-content: its tabIn animation (fill both) retains a
-            transform, which would make that div the containing block for
-            position:fixed and break viewport alignment. */}
-        <div style={{position:"fixed",top:12,right:96,zIndex:9999}}>
-          <MetaLabChatLauncher metaLabProjectId={project.id} projectName={project.name}/>
-        </div>
-        {/* prompt23 Task 13 — project presence chip, left of the chat launcher. */}
-        {spId&&(
-          <div style={{position:"fixed",top:14,right:136,zIndex:9999}}>
-            <PresenceIndicator users={presenceUsers} locks={presenceLocks} totalMembers={project?._memberCount} myUserId={authUser?.id}/>
-          </div>
-        )}
+        {/* prompt24 — the universal header (ProjectHeaderBar) now owns the single
+            [presence][chat][notifications][account] cluster, so the old floating
+            fixed chips are gone (no more duplicate/clipped presence indicator). */}
         {tab==="screening"?(
-          <ScreeningWorkspaceFrame project={project} focus={focus} onToggleFocus={()=>setScreeningFocus(f=>!f)} setTab={setTab} onBackToProjects={onBackToProjects}/>
+          <ScreeningWorkspaceFrame project={project} setTab={setTab}/>
         ):(
         <div style={{maxWidth:960,margin:"0 auto"}} className="tab-content">
           {/* Project header */}
@@ -8801,7 +8571,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
             </div>
           )}
           {tab==="overview"&&<OverviewTab project={project} setTab={setTab}/>}
-          {tab==="control"&&<ControlTab project={project} onAnnotate={patchAnnotations} setTab={setTab}/>}
+          {tab==="control"&&<ControlTab project={project} onAnnotate={patchAnnotations} setTab={setTab} presence={{users:presenceUsers,locks:presenceLocks}}/>}
           {tab==="pico"&&<PICOTab project={project} updNested={updNested} upd={upd} lockCtx={{pid:spId,myUserId:authUser?.id,locks:presenceLocks}}/>}
           {tab==="prospero"&&<PROSPEROTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="search"&&<SearchTab project={project} updNested={updNested} upd={upd}/>}
@@ -8838,6 +8608,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
         )}
         </>
       )}
+      </div>
     </div>
     {showAudit&&project&&<AuditPanel project={project} onClose={()=>setShowAudit(false)} onJump={(t)=>setTab(t)}/>}
     {/* Shared export dialog (prompt9 Task 6) — single instance for every

@@ -14,7 +14,12 @@ import { screeningApi } from '../api-client/screeningApi.js';
 
 const HEARTBEAT_MS = 30000;
 
-export function useProjectPresence(pid, location, { enabled = true } = {}) {
+export function useProjectPresence(pid, location, { enabled = true, heartbeat = true } = {}) {
+  // `heartbeat:false` = LISTEN-ONLY (prompt24 Task 2/9). The universal project
+  // header keeps a live presence LIST on every page — including the Screening
+  // stage — but on Screening the embedded SiftProject owns the (fine-grained)
+  // heartbeat, so the header must not also beat or it would overwrite the precise
+  // "Screening · Title & Abstract" location with the coarse "Screening" one.
   const [users, setUsers] = useState([]);
   const [locks, setLocks] = useState([]);
   const locationRef = useRef(location);
@@ -38,8 +43,11 @@ export function useProjectPresence(pid, location, { enabled = true } = {}) {
   }, [pid, enabled, apply]);
 
   // Heartbeat on mount + interval; announce leave on unmount / tab hide.
+  // Listen-only mode skips all writes but still loads the snapshot once (realtime
+  // pokes keep it fresh afterwards).
   useEffect(() => {
     if (!pid || !enabled) return undefined;
+    if (!heartbeat) { refetch(); return undefined; }
     beat();
     const t = setInterval(beat, HEARTBEAT_MS);
     const onVis = () => {
@@ -52,13 +60,14 @@ export function useProjectPresence(pid, location, { enabled = true } = {}) {
       document.removeEventListener('visibilitychange', onVis);
       screeningApi.presenceLeave(pid).catch(() => {});
     };
-  }, [pid, enabled, beat]);
+  }, [pid, enabled, heartbeat, beat, refetch]);
 
-  // Location change → immediate heartbeat so teammates see the move quickly.
+  // Location change → immediate heartbeat so teammates see the move quickly
+  // (no-op in listen-only mode).
   const firstLoc = useRef(true);
   useEffect(() => {
     if (firstLoc.current) { firstLoc.current = false; return; }
-    beat();
+    if (heartbeat) beat();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [location]);
 

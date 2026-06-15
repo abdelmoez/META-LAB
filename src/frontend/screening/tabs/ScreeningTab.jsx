@@ -343,7 +343,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject }) {
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
-    <div style={{ display: 'flex', height: 'calc(100vh - 56px)', background: C.bg, fontFamily: FONT, color: C.txt, overflow: 'hidden' }}>
+    <div style={{ display: 'flex', height: '100%', background: C.bg, fontFamily: FONT, color: C.txt, overflow: 'hidden' }}>
       <style>{`
         .sift-rl::-webkit-scrollbar, .sift-mid::-webkit-scrollbar, .sift-rt::-webkit-scrollbar { width: 8px; }
         .sift-rl::-webkit-scrollbar-thumb, .sift-mid::-webkit-scrollbar-thumb, .sift-rt::-webkit-scrollbar-thumb { background: ${C.brd2}; border-radius: 4px; }
@@ -405,7 +405,7 @@ function LeftColumn({
   selectedId, onSelect, blindMode, hasMore, onLoadMore,
 }) {
   return (
-    <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${C.brd}`, display: 'flex', flexDirection: 'column', background: C.surf, overflow: 'hidden' }}>
+    <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${C.brd}`, display: 'flex', flexDirection: 'column', background: C.surf, overflow: 'hidden', minHeight: 0 }}>
       {/* Sticky search + filter header */}
       <div style={{ padding: '12px 14px', borderBottom: `1px solid ${C.brd}`, flexShrink: 0 }}>
         <input
@@ -437,7 +437,7 @@ function LeftColumn({
       </div>
 
       {/* List */}
-      <div className="sift-rl" style={{ flex: 1, overflowY: 'auto' }}>
+      <div className="sift-rl" style={{ flex: 1, overflowY: 'auto', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         {loading ? (
           <div style={{ padding: '14px 16px' }}><Loading label="Loading records…" /></div>
         ) : listError ? (
@@ -454,7 +454,7 @@ function LeftColumn({
               <RecordRow key={r.id} record={r} selected={r.id === selectedId} onClick={() => onSelect(r.id)} blindMode={blindMode} />
             ))}
             {hasMore && (
-              <div style={{ padding: '12px 14px', textAlign: 'center' }}>
+              <div style={{ position: 'sticky', bottom: 0, background: C.surf, borderTop: `1px solid ${C.brd}`, padding: '10px 14px', textAlign: 'center', flexShrink: 0 }}>
                 <Button variant="ghost" onClick={onLoadMore} disabled={loadingMore} full style={{ fontSize: 12, padding: '7px 14px' }}>
                   {loadingMore ? 'Loading…' : `Load more (${total - records.length})`}
                 </Button>
@@ -590,7 +590,8 @@ function MiddleColumn({
   }
 
   return (
-    <div className="sift-mid" style={{ flex: 1, overflowY: 'auto' }}>
+    <div className="sift-mid" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+      <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
       <div style={{ padding: '24px 28px', maxWidth: 860, margin: '0 auto', animation: 'sift-fade 0.25s ease' }}>
 
         {/* ── Header ─────────────────────────────────────────────────────── */}
@@ -752,14 +753,16 @@ function MiddleColumn({
           )}
         </Card>
 
-        {/* ── Prev / Next nav ────────────────────────────────────────────── */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: 18, paddingBottom: 24 }}>
-          <Button variant="ghost" onClick={onPrev} disabled={recordIndex <= 0} style={{ fontSize: 12 }}>← Previous</Button>
-          <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>
-            {recordIndex + 1} / {recordCount}{totalCount > recordCount ? ` (of ${totalCount})` : ''}
-          </span>
-          <Button variant="ghost" onClick={onNext} disabled={recordIndex >= recordCount - 1} style={{ fontSize: 12 }}>Next →</Button>
-        </div>
+      </div>
+      </div>
+
+      {/* ── Prev / Next nav — sticky footer, always visible ────────────── */}
+      <div style={{ flexShrink: 0, borderTop: `1px solid ${C.brd}`, background: C.surf, padding: '12px 28px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <Button variant="ghost" onClick={onPrev} disabled={recordIndex <= 0} style={{ fontSize: 12 }}>← Previous</Button>
+        <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>
+          {recordIndex + 1} / {recordCount}{totalCount > recordCount ? ` (of ${totalCount})` : ''}
+        </span>
+        <Button variant="ghost" onClick={onNext} disabled={recordIndex >= recordCount - 1} style={{ fontSize: 12 }}>Next →</Button>
       </div>
     </div>
   );
@@ -905,7 +908,7 @@ function RightColumn({
   const toggle = key => setOpen(o => ({ ...o, [key]: !o[key] }));
 
   return (
-    <div className="sift-rt" style={{ width: 320, flexShrink: 0, borderLeft: `1px solid ${C.brd}`, background: C.surf, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
+    <div className="sift-rt" style={{ width: 320, flexShrink: 0, borderLeft: `1px solid ${C.brd}`, background: C.surf, overflowY: 'auto', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
       {/* Blind-mode banner */}
       {blindMode && (
         <div style={{ padding: '10px 16px', borderBottom: `1px solid ${C.brd}`, display: 'flex', alignItems: 'center', gap: 8 }}>
