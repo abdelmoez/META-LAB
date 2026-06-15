@@ -19,6 +19,7 @@ import { C, FONT, MONO, alpha } from '../../theme/tokens.js';
 // Central editable-user-field schema (shared with the server) — the Ops edit
 // form is rendered + validated from this single source of truth (prompt20 Task 5).
 import { editableFieldsForRole } from '../../../shared/editableUserFields.js';
+import { countryNameForCode } from '../../../shared/countries.js';
 // Real world-country geometry (pre-projected equirectangular paths, no map lib)
 // for the Ops users-by-country choropleth (prompt20 Task 6).
 import { WORLD_COUNTRIES, WORLD_VIEWBOX } from './worldGeo.js';
@@ -1744,7 +1745,8 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
           { label: 'Projects',    value: u.projectCount ?? 0 },
           { label: 'Theme',       value: u.themePreference || '—' },
           { label: 'Country',     value: u.registrationCountryCode
-              ? `${u.registrationCountryName || ''} (${u.registrationCountryCode})`.trim()
+              // Name derived from the ISO code (matches the map) — never the stale stored name.
+              ? `${countryNameForCode(u.registrationCountryCode) || u.registrationCountryName || ''} (${u.registrationCountryCode})`.trim()
               : (u.registrationCountryName || '—') },
         ].map(r => (
           <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: `1px solid ${C.brd}` }}>

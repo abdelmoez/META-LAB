@@ -163,7 +163,7 @@ function SettingsSection({ pid, project, canManage, refreshProject }) {
         </div>
 
         <div style={{ borderTop: `1px solid ${C.brd}`, marginTop: 14, paddingTop: 14 }}>
-          <Row title="Required reviewers" hint="Independent title & abstract decisions needed before a record can advance to Full Text. The research standard is 2; only the owner or a leader can change it.">
+          <Row title="Required reviewers" hint="Independent title & abstract decisions needed before a record can advance to Final Review. The research standard is 2; only the owner or a leader can change it.">
             {canManage
               ? <select value={reqReviewers} disabled={busy}
                   onChange={e => { const v = parseInt(e.target.value, 10); const prev = reqReviewers; setReqReviewers(v); save({ requiredScreeningReviewers: v }).then(ok => { if (!ok) setReqReviewers(prev); }); }}

@@ -25,6 +25,7 @@ import {
 import { screeningApi } from '../api-client/screeningApi.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { PERMISSION_PRESETS, ASSIGNABLE_PRESETS } from '../../../research-engine/screening/permissionPresets.js';
+import { groupMembers } from './memberOrder.js';
 
 // Client-side email format gate (the server validates too) — prompt9 Task 2.
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -79,6 +80,24 @@ function fmtDate(d) {
   const dt = new Date(d);
   if (Number.isNaN(dt.getTime())) return '—';
   return dt.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+}
+
+// ── subtle roster section header (prompt22 Task 2) ──────────────────────────
+// A quiet group divider — small mono uppercase label + count + a hairline rule.
+// Visible enough to separate Owner / Leaders / Members / Viewers, light enough to
+// not read as a second control bar.
+function RosterSectionLabel({ label, count }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 9 }}>
+      <span style={{
+        fontSize: 10, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.1em',
+        textTransform: 'uppercase', color: C.muted, flexShrink: 0,
+      }}>
+        {label}{typeof count === 'number' ? ` · ${count}` : ''}
+      </span>
+      <span style={{ flex: 1, height: 1, background: C.brd }} />
+    </div>
+  );
 }
 
 // ── small read-only permission dot (non-leader view) ────────────────────────
@@ -243,26 +262,33 @@ export default function MembersTab({ pid, project, access, refreshProject }) {
             : 'This project has no members yet.'}
         </EmptyState>
       ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {members.map(m => {
-            // Own row of a NON-owner gets a self-service "Leave project"
-            // affordance (prompt9). The owner row never does.
-            const isSelf = !!(m.userId && user?.id && m.userId === user.id);
-            const isOwnerRow = !!m.isOwner || m.role === 'owner';
-            return (
-              <MemberRow
-                key={m.id}
-                member={m}
-                canManage={canManage}
-                amOwner={amOwner}
-                busy={!!busy[m.id]}
-                rowErr={rowErr[m.id]}
-                onPatch={(body) => patchMember(m.id, body)}
-                onRemove={() => setConfirmRemove(m)}
-                onLeave={isSelf && !isOwnerRow ? () => { setLeaveErr(''); setConfirmLeave(true); } : undefined}
-              />
-            );
-          })}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+          {groupMembers(members).map(section => (
+            <div key={section.label}>
+              <RosterSectionLabel label={section.label} count={section.members.length} />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {section.members.map(m => {
+                  // Own row of a NON-owner gets a self-service "Leave project"
+                  // affordance (prompt9). The owner row never does.
+                  const isSelf = !!(m.userId && user?.id && m.userId === user.id);
+                  const isOwnerRow = !!m.isOwner || m.role === 'owner';
+                  return (
+                    <MemberRow
+                      key={m.id}
+                      member={m}
+                      canManage={canManage}
+                      amOwner={amOwner}
+                      busy={!!busy[m.id]}
+                      rowErr={rowErr[m.id]}
+                      onPatch={(body) => patchMember(m.id, body)}
+                      onRemove={() => setConfirmRemove(m)}
+                      onLeave={isSelf && !isOwnerRow ? () => { setLeaveErr(''); setConfirmLeave(true); } : undefined}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

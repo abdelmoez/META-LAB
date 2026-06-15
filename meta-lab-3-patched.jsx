@@ -7042,7 +7042,9 @@ function ScreeningWorkspaceFrame({project,focus,onToggleFocus,setTab,onBackToPro
           {onBackToProjects&&<button onClick={onBackToProjects} style={{...btnS("ghost"),fontSize:11.5}}>Projects</button>}
         </div>
       </div>
-      <div style={{flex:1,minHeight:0}}><EmbeddedScreening project={project}/></div>
+      {/* prompt22 Task 5 — Final Review's "Continue to Data Extraction" jumps to
+          the SAME project's Data Extraction stage (no separate-project handoff). */}
+      <div style={{flex:1,minHeight:0}}><EmbeddedScreening project={project} onGoToExtraction={()=>setTab("extraction")}/></div>
     </div>
   );
 }
@@ -7052,7 +7054,7 @@ function ScreeningWorkspaceFrame({project,focus,onToggleFocus,setTab,onBackToPro
    shown as ONE in-project stage: resolve (and, for the owner, silently create)
    the linked screening module, then render its full workbench inline. The user
    never "links a META·SIFT project" — it is created/repaired automatically. */
-function EmbeddedScreening({project}){
+function EmbeddedScreening({project,onGoToExtraction}){
   const lid=linkedSiftId(project);
   const pid=project&&project.id;
   const[spId,setSpId]=useState(lid||null);
@@ -7074,7 +7076,7 @@ function EmbeddedScreening({project}){
     return()=>{dead=true;};
   },[lid,pid]);
 
-  if(state==="ready"&&spId) return <div style={{height:"100%"}}><SiftProject embedded embeddedPid={spId}/></div>;
+  if(state==="ready"&&spId) return <div style={{height:"100%"}}><SiftProject embedded embeddedPid={spId} onGoToExtraction={onGoToExtraction}/></div>;
 
   const box={maxWidth:560,margin:"48px auto",textAlign:"center",border:`1px solid ${C.brd}`,borderRadius:12,background:C.card,padding:"32px 28px"};
   if(state==="loading") return <div style={box}><div style={{fontSize:13,color:C.muted}}>Opening screening…</div></div>;

@@ -1,91 +1,68 @@
 /**
- * Stepper.jsx — the Screening workflow progress stepper (prompt21 Tasks 6-9).
+ * Stepper.jsx — the Screening workflow progress indicator (prompt21; redesigned
+ * prompt22 Task 4).
  *
- * A compact, horizontal, theme-aware stepper that shows the whole Screening
- * pipeline at a glance: which steps exist, which are done, which needs attention,
- * which is the user's current location, and what's still pending. Pure inline
- * styles + theme tokens (no Tailwind / shadcn / external deps) and the in-house
- * Icon, matching the rest of the screening design system. Step colours mirror the
- * established PROGRESS_BADGE convention: pending=muted, active=accent, done=green.
+ * The stepper is now rendered INSIDE the Screening submenu: each step sits
+ * directly beneath its matching submenu tab (see SiftProject.jsx). This file
+ * exports the single, READ-ONLY <StepIndicator> for one step. It is deliberately
+ * NOT interactive — not a button, not focusable, no pointer cursor — because the
+ * submenu above is the only navigation. The indicator conveys progress with the
+ * established PROGRESS_BADGE palette (pending=muted, active=accent, attention=gold,
+ * done=green) plus a check/alert glyph or the step number, and aria-current for
+ * the user's current step.
  *
- * Status values: 'done' | 'active' | 'attention' | 'pending'.
- * Steps with an `onClick` are keyboard-operable (Enter/Space) tab stops.
+ * Pure status logic lives in screeningSteps.js so it stays unit-testable.
  */
-import { Fragment } from 'react';
-import { C, FONT, MONO, alpha } from './theme.js';
+import { C, MONO, alpha } from './theme.js';
 import { Icon } from '../../components/icons.jsx';
-// Pure status logic lives in its own module so it stays unit-testable without React.
 export { buildScreeningSteps } from './screeningSteps.js';
 
 const STEP_STYLE = {
-  done:      { ring: C.grn,  fg: C.grn,  bg: alpha(C.grn, 0.16),  glyph: 'check' },
-  active:    { ring: C.acc,  fg: C.acc,  bg: alpha(C.acc, 0.16),  glyph: null },
-  attention: { ring: C.gold, fg: C.gold, bg: alpha(C.gold, 0.16), glyph: 'alert' },
-  pending:   { ring: C.brd2, fg: C.muted, bg: 'transparent',      glyph: null },
+  done:      { ring: C.grn,  fg: C.grn,   bg: alpha(C.grn, 0.16),  glyph: 'check' },
+  active:    { ring: C.acc,  fg: C.acc,   bg: alpha(C.acc, 0.16),  glyph: null },
+  attention: { ring: C.gold, fg: C.gold,  bg: alpha(C.gold, 0.16), glyph: 'alert' },
+  pending:   { ring: C.brd2, fg: C.muted, bg: 'transparent',       glyph: null },
 };
 
-export function Stepper({ steps = [], currentId, onStepSelect }) {
+// Fixed height so submenu tabs WITHOUT a step (Overview/Settings/Export) can
+// reserve the same vertical space and keep the row's baseline even.
+export const STEP_ROW_HEIGHT = 26;
+
+/**
+ * StepIndicator — one read-only workflow step, shown beneath its submenu tab.
+ *   step    — descriptor from buildScreeningSteps() (or null/undefined to render
+ *             an equal-height spacer for tabs that aren't workflow steps)
+ *   num     — the step's 1-based number in the pipeline
+ *   current — whether this step's tab is the active route (drives aria-current)
+ */
+export function StepIndicator({ step, num, current }) {
+  if (!step) return <span aria-hidden style={{ display: 'block', height: STEP_ROW_HEIGHT }} />;
+  const st = STEP_STYLE[step.status] || STEP_STYLE.pending;
+  const label = num ? `Step ${num}` : step.label;
+  const title = step.hint ? `${label} · ${step.label} — ${step.hint}` : `${label} · ${step.label} (${step.status})`;
   return (
-    <nav aria-label="Screening workflow progress"
+    <span
+      aria-current={current ? 'step' : undefined}
+      aria-label={`${label}: ${step.label} — ${step.status}`}
+      title={title}
       style={{
-        display: 'flex', alignItems: 'flex-start', gap: 0, overflowX: 'auto',
-        padding: '10px 14px', background: C.surf, borderBottom: `1px solid ${C.brd}`,
-        fontFamily: FONT, scrollbarWidth: 'thin',
+        height: STEP_ROW_HEIGHT, cursor: 'default', userSelect: 'none',
+        display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 5,
+        padding: '0 6px 3px',
       }}>
-      {steps.map((s, i) => {
-        const st = STEP_STYLE[s.status] || STEP_STYLE.pending;
-        const isCurrent  = s.id === currentId;
-        const clickable  = !!s.screen;
-        const nextDone   = steps[i + 1] && (s.status === 'done');
-        const select = () => { if (clickable && onStepSelect) onStepSelect(s.screen); };
-        return (
-          <Fragment key={s.id}>
-            <div
-              role={clickable ? 'button' : undefined}
-              tabIndex={clickable ? 0 : undefined}
-              aria-current={isCurrent ? 'step' : undefined}
-              aria-label={`${s.label}${s.hint ? ', ' + s.hint : ''} — ${s.status}`}
-              onClick={select}
-              onKeyDown={e => { if (clickable && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); select(); } }}
-              title={clickable ? `Go to ${s.label}` : `${s.label} (status only)`}
-              style={{
-                display: 'flex', alignItems: 'center', gap: 9, flexShrink: 0,
-                padding: '5px 9px', borderRadius: 9, cursor: clickable ? 'pointer' : 'default',
-                background: isCurrent ? alpha(st.ring, 0.10) : 'transparent',
-                outline: isCurrent ? `1px solid ${alpha(st.ring, 0.45)}` : '1px solid transparent',
-                transition: 'background 0.15s, outline-color 0.15s',
-              }}
-              onMouseEnter={e => { if (clickable && !isCurrent) e.currentTarget.style.background = alpha(C.acc, 0.06); }}
-              onMouseLeave={e => { if (clickable && !isCurrent) e.currentTarget.style.background = 'transparent'; }}>
-              {/* Status circle */}
-              <span style={{
-                width: 26, height: 26, borderRadius: '50%', flexShrink: 0,
-                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                background: st.bg, border: `2px solid ${st.ring}`, color: st.fg,
-              }}>
-                <Icon name={st.glyph || s.icon} size={13} strokeWidth={2.1} />
-              </span>
-              {/* Label + hint */}
-              <span style={{ display: 'flex', flexDirection: 'column', lineHeight: 1.15, minWidth: 0 }}>
-                <span style={{
-                  fontSize: 12.5, fontWeight: isCurrent ? 700 : 600, whiteSpace: 'nowrap',
-                  color: s.status === 'pending' ? C.muted : (isCurrent ? C.txt : st.fg),
-                }}>{s.label}</span>
-                {s.hint && (
-                  <span style={{ fontSize: 10, fontFamily: MONO, color: st.fg, whiteSpace: 'nowrap', marginTop: 1 }}>{s.hint}</span>
-                )}
-              </span>
-            </div>
-            {/* Connector */}
-            {i < steps.length - 1 && (
-              <span aria-hidden style={{
-                flexShrink: 0, alignSelf: 'center', width: 18, height: 2, margin: '0 2px',
-                background: nextDone ? alpha(C.grn, 0.6) : C.brd2, borderRadius: 2,
-              }} />
-            )}
-          </Fragment>
-        );
-      })}
-    </nav>
+      {/* Status pip — check (done) / alert (attention) / step number otherwise */}
+      <span style={{
+        width: 15, height: 15, borderRadius: '50%', flexShrink: 0,
+        display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        background: st.bg, border: `1.5px solid ${st.ring}`, color: st.fg,
+        fontSize: 8.5, fontWeight: 700, fontFamily: MONO, lineHeight: 1,
+      }}>
+        {st.glyph ? <Icon name={st.glyph} size={8.5} strokeWidth={2.4} /> : (num || '')}
+      </span>
+      <span style={{
+        fontSize: 10, fontFamily: MONO, fontWeight: current ? 700 : 600, whiteSpace: 'nowrap',
+        letterSpacing: '0.02em', color: step.status === 'pending' ? C.muted : st.fg,
+      }}>{label}</span>
+    </span>
   );
 }

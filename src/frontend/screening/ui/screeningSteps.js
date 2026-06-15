@@ -1,7 +1,8 @@
 /**
  * screeningSteps.js — pure status logic for the Screening workflow stepper
  * (prompt21 Task 9). No React/JSX so it stays unit-testable in isolation; the
- * <Stepper> component (Stepper.jsx) renders the returned step descriptors.
+ * <StepIndicator> component (Stepper.jsx) renders each returned step descriptor
+ * beneath its matching Screening submenu tab (prompt22 Task 4).
  *
  * Derives each step's status from the Screening overview `dataSummary`. It is
  * deliberately CONSERVATIVE — it never invents progress and surfaces 'attention'

@@ -22,7 +22,7 @@ import ConflictsTab      from '../tabs/ConflictsTab.jsx';
 import ProjectControlTab from '../tabs/ProjectControlTab.jsx';
 import ExportTab         from '../tabs/ExportTab.jsx';
 import SiftImport        from './SiftImport.jsx';
-import { Stepper, buildScreeningSteps } from '../ui/Stepper.jsx';
+import { StepIndicator, buildScreeningSteps } from '../ui/Stepper.jsx';
 
 const TABS = [
   { key: 'overview',      label: 'Overview',        icon: 'grid',        Comp: OverviewTab },
@@ -68,7 +68,7 @@ const PROGRESS_BADGE = {
   done:        { label: 'DONE',        color: C.grn },
 };
 
-export default function SiftProject({ embedded = false, embeddedPid = null } = {}) {
+export default function SiftProject({ embedded = false, embeddedPid = null, onGoToExtraction = null } = {}) {
   const routeParams = useParams();
   const pid = embedded ? embeddedPid : routeParams.pid;
   const navigate = useNavigate();
@@ -163,31 +163,53 @@ export default function SiftProject({ embedded = false, embeddedPid = null } = {
   // account menu / notifications / META·LAB link chip — just the screening
   // sub-navigation + body, sized to sit within the host workspace content area.
   if (embedded) {
-    const tabBtn = (t) => {
+    // Workflow step status per submenu tab (prompt22 Task 4). The stepper now
+    // lives INSIDE the submenu — each step sits directly beneath its matching tab
+    // — and is READ-ONLY (the submenu is the only navigation). Pipeline steps
+    // (Import → … → Final Review) are numbered in flow order; Overview/Settings/
+    // Export tabs have no step and reserve equal height so the row stays even.
+    const steps = project ? buildScreeningSteps(summary) : [];
+    const stepByKey = Object.fromEntries(steps.map(s => [s.id, s]));
+    const stepNumByKey = {};
+    let stepNo = 0;
+    for (const s of steps) {
+      if (s.screen && tabSet.some(t => t.key === s.id)) stepNumByKey[s.id] = ++stepNo;
+    }
+    const showSteps = !!project && !disabled && !error;
+
+    const navCol = (t) => {
       const on = t.key === active.key;
+      const step = showSteps ? stepByKey[t.key] : null;
       return (
-        <button key={t.key} onClick={() => setTab(t.key)}
-          style={{
-            background: 'none', border: 'none', cursor: 'pointer', fontFamily: FONT,
-            display: 'inline-flex', alignItems: 'center', gap: 6,
-            fontSize: 12.5, fontWeight: on ? 600 : 500, color: on ? C.txt : C.txt2,
-            padding: '10px 13px', borderBottom: `2px solid ${on ? C.acc : 'transparent'}`,
-            transition: 'color 0.15s', whiteSpace: 'nowrap',
-          }}
-          onMouseEnter={e => { if (!on) e.currentTarget.style.color = C.txt; }}
-          onMouseLeave={e => { if (!on) e.currentTarget.style.color = C.txt2; }}>
-          <Icon name={t.icon} size={13} style={{ opacity: on ? 1 : 0.75 }} />
-          {t.label}
-        </button>
+        <div key={t.key} style={{
+          display: 'flex', flexDirection: 'column', alignItems: 'stretch', flexShrink: 0,
+          borderBottom: `2px solid ${on ? C.acc : 'transparent'}`,
+        }}>
+          <button onClick={() => setTab(t.key)}
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer', fontFamily: FONT,
+              display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+              fontSize: 12.5, fontWeight: on ? 600 : 500, color: on ? C.txt : C.txt2,
+              padding: '9px 14px 6px', transition: 'color 0.15s', whiteSpace: 'nowrap',
+            }}
+            onMouseEnter={e => { if (!on) e.currentTarget.style.color = C.txt; }}
+            onMouseLeave={e => { if (!on) e.currentTarget.style.color = C.txt2; }}>
+            <Icon name={t.icon} size={13} style={{ opacity: on ? 1 : 0.75 }} />
+            {t.label}
+          </button>
+          {showSteps && <StepIndicator step={step} num={stepNumByKey[t.key]} current={on} />}
+        </div>
       );
     };
     return (
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 480, background: C.bg, overflow: 'hidden', fontFamily: FONT, color: C.txt }}>
         <GlobalStyle />
-        {/* Screening sub-navigation — the META·SIFT engine, nested in the stage */}
-        <div style={{ display: 'flex', gap: 2, padding: '0 12px', background: C.surf, borderBottom: `1px solid ${C.brd}`, flexShrink: 0, overflowX: 'auto', alignItems: 'center' }}>
-          {tabSet.map(tabBtn)}
-          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10, paddingRight: 4, flexShrink: 0 }}>
+        {/* Screening submenu + read-only workflow stepper as one unit: each step
+            sits directly under its tab. The tabs are the only navigation. */}
+        <nav aria-label="Screening workflow"
+          style={{ display: 'flex', gap: 2, padding: '0 12px', background: C.surf, borderBottom: `1px solid ${C.brd}`, flexShrink: 0, overflowX: 'auto', alignItems: 'flex-start' }}>
+          {tabSet.map(navCol)}
+          <div style={{ marginLeft: 'auto', alignSelf: 'center', display: 'flex', alignItems: 'center', gap: 10, paddingRight: 4, flexShrink: 0 }}>
             {project?.blindMode && <Badge color={C.gold}>Blind</Badge>}
             {project?._count && (
               <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>
@@ -195,13 +217,7 @@ export default function SiftProject({ embedded = false, embeddedPid = null } = {
               </span>
             )}
           </div>
-        </div>
-
-        {/* Workflow stepper (prompt21) — Import → Duplicates → Title & Abstract →
-            Conflicts → Final Review → Data Extraction; completion from live counts. */}
-        {project && !disabled && !error && (
-          <Stepper steps={buildScreeningSteps(summary)} currentId={active.key} onStepSelect={setTab} />
-        )}
+        </nav>
 
         <div style={{ flex: 1, overflow: isFullBleed ? 'hidden' : 'auto', minHeight: 0 }}>
           {loading && <div style={{ padding: 32 }}><Loading label="Loading screening…" /></div>}
@@ -224,9 +240,9 @@ export default function SiftProject({ embedded = false, embeddedPid = null } = {
                     onBack={() => setTab('overview')} />
                 </div>
               : isFullBleed
-                ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} embedded /></div>
+                ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} embedded /></div>
                 : <div style={{ maxWidth: 1180, margin: '0 auto', padding: '20px 20px 48px' }}>
-                    <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} embedded />
+                    <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} embedded />
                   </div>
           )}
         </div>

@@ -58,7 +58,7 @@ function statusBadge(rec) {
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
-export default function SecondReviewTab({ pid, project, access = {}, refreshProject }) {
+export default function SecondReviewTab({ pid, project, access = {}, refreshProject, onGoToExtraction }) {
   const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
@@ -227,6 +227,12 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
   const pendingRecords = records.filter(r => !isSent(r));
   const shown = subTab === 'sent' ? sentRecords : pendingRecords;
 
+  // Continue-to-Data-Extraction CTA (prompt22 Task 5). Only shown when embedded in
+  // the project workspace (onGoToExtraction is wired); jumps to THIS project's Data
+  // Extraction stage — no separate-project handoff. Active once any study is sent.
+  const sentCount    = sentRecords.length;
+  const undecided    = records.filter(r => !r.finalStatus).length; // pending final decisions
+
   const SUBTABS = [
     { key: 'pending', label: 'Not Sent to Data Extraction', count: pendingRecords.length },
     { key: 'sent',    label: 'Sent to Data Extraction',     count: sentRecords.length },
@@ -264,28 +270,53 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
         </div>
       </div>
 
-      {/* Sub-tabs: Not Sent / Sent to Data Extraction (with counts) */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
-        {SUBTABS.map(t => {
-          const on = subTab === t.key;
-          return (
-            <button key={t.key} onClick={() => setSubTab(t.key)}
-              style={{
-                fontFamily: FONT, fontSize: 12.5, fontWeight: on ? 700 : 500,
-                padding: '7px 15px', borderRadius: 9, cursor: 'pointer',
-                background: on ? alpha(C.acc, '16') : 'transparent',
-                color: on ? C.acc : C.txt2, border: `1px solid ${on ? alpha(C.acc, '45') : C.brd2}`,
-                display: 'inline-flex', alignItems: 'center', gap: 8,
-              }}>
-              {t.label}
-              <span style={{
-                fontFamily: MONO, fontSize: 11, fontWeight: 700,
-                background: on ? alpha(C.acc, '22') : C.card, color: on ? C.acc : C.muted,
-                borderRadius: 20, padding: '1px 8px', minWidth: 20, textAlign: 'center',
-              }}>{t.count}</span>
-            </button>
-          );
-        })}
+      {/* Sub-tabs (Not Sent / Sent) + the Continue-to-Data-Extraction CTA */}
+      <div style={{ display: 'flex', gap: 12, marginBottom: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {SUBTABS.map(t => {
+            const on = subTab === t.key;
+            return (
+              <button key={t.key} onClick={() => setSubTab(t.key)}
+                style={{
+                  fontFamily: FONT, fontSize: 12.5, fontWeight: on ? 700 : 500,
+                  padding: '7px 15px', borderRadius: 9, cursor: 'pointer',
+                  background: on ? alpha(C.acc, '16') : 'transparent',
+                  color: on ? C.acc : C.txt2, border: `1px solid ${on ? alpha(C.acc, '45') : C.brd2}`,
+                  display: 'inline-flex', alignItems: 'center', gap: 8,
+                }}>
+                {t.label}
+                <span style={{
+                  fontFamily: MONO, fontSize: 11, fontWeight: 700,
+                  background: on ? alpha(C.acc, '22') : C.card, color: on ? C.acc : C.muted,
+                  borderRadius: 20, padding: '1px 8px', minWidth: 20, textAlign: 'center',
+                }}>{t.count}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {onGoToExtraction && (
+          <div style={{ marginLeft: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 4 }}>
+            <Button
+              variant="primary"
+              disabled={sentCount === 0}
+              onClick={onGoToExtraction}
+              title={sentCount === 0
+                ? 'Accept studies in Final Review before continuing to Data Extraction.'
+                : 'Open Data Extraction for this project'}>
+              Continue to Data Extraction →
+            </Button>
+            {sentCount === 0 ? (
+              <span style={{ fontSize: 11, color: C.muted, maxWidth: 240, textAlign: 'right', lineHeight: 1.4 }}>
+                Accept studies in Final Review to continue.
+              </span>
+            ) : undecided > 0 ? (
+              <span style={{ fontSize: 11, color: C.muted, maxWidth: 260, textAlign: 'right', lineHeight: 1.4 }}>
+                You can extract sent studies while {undecided} decision{undecided === 1 ? '' : 's'} remain.
+              </span>
+            ) : null}
+          </div>
+        )}
       </div>
 
       {/* List */}

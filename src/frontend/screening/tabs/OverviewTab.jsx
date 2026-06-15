@@ -3,7 +3,7 @@
  *
  * The first-impression dashboard for a screening project: top status bar,
  * data summary tiles, whole-project progress, and per-member progress.
- * Read-mostly — members are managed in the Members tab; only the project
+ * Read-mostly — members are managed from the Settings tab; only the project
  * leader can change the project status here.
  *
  * Props:
@@ -34,7 +34,7 @@ const STATUS_COLOR = { active: C.grn, inactive: C.muted, pending: C.ylw };
 const n = (v) => (typeof v === 'number' && !Number.isNaN(v) ? v : 0);
 
 // ── Component ─────────────────────────────────────────────────────────────────
-export default function OverviewTab({ pid, project, access = {}, refreshProject, embedded = false }) {
+export default function OverviewTab({ pid, project, access = {}, refreshProject, embedded = false, onGoToExtraction }) {
   const navigate = useNavigate();
   const [, setParams] = useSearchParams();
   const [data, setData]       = useState(null);
@@ -171,6 +171,26 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject,
         )}
       </Card>
 
+      {/* ───────── A1) Continue to Data Extraction (prompt22 Task 5) ─────────
+          Shown once studies have been sent to Data Extraction; jumps to THIS
+          project's Data Extraction stage. Embedded-only (onGoToExtraction wired). */}
+      {embedded && onGoToExtraction && n(ds.acceptedToExtraction) > 0 && (
+        <div style={{
+          marginBottom: 18, padding: '12px 16px', borderRadius: 10,
+          border: `1px solid ${alpha(C.grn, '40')}`, background: alpha(C.grn, '0e'),
+          display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap',
+        }}>
+          <span style={{ fontSize: 18, lineHeight: 1 }} aria-hidden>📤</span>
+          <span style={{ fontSize: 12.5, color: C.txt2, flex: '1 1 240px', lineHeight: 1.5 }}>
+            <strong style={{ color: C.txt }}>{n(ds.acceptedToExtraction)}</strong>{' '}
+            stud{n(ds.acceptedToExtraction) === 1 ? 'y has' : 'ies have'} been sent to Data Extraction.
+          </span>
+          <Button variant="primary" onClick={onGoToExtraction} title="Open Data Extraction for this project">
+            Continue to Data Extraction →
+          </Button>
+        </div>
+      )}
+
       {/* ───────── A2) Linked META·LAB project (prompt9 Task 3) ─────────
           prompt18: hidden when embedded — inside the unified workspace the user
           IS already in the META·LAB project, so a "linked project" card is noise. */}
@@ -294,7 +314,7 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject,
               {data.isLeader ? 'No reviewers yet' : 'No progress yet'}
             </div>
             <div style={{ fontSize: 12, color: C.txt2 }}>
-              {data.isLeader ? 'Add reviewers in the Members tab to start screening.' : 'Start screening records to see your progress here.'}
+              {data.isLeader ? 'Add reviewers from the Settings tab to start screening.' : 'Start screening records to see your progress here.'}
             </div>
           </Card>
         ) : (
@@ -307,7 +327,8 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject,
 
         {data.isLeader && (
           <div style={{ fontSize: 11.5, color: C.muted, marginTop: 12 }}>
-            Manage members in the <span style={{ color: C.txt2 }}>Members</span> tab.
+            Manage members, roles, permissions, and Screening settings from{' '}
+            <span style={{ color: C.txt2 }}>Settings</span>.
           </div>
         )}
       </section>

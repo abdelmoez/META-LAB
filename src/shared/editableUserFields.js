@@ -15,8 +15,18 @@
  * to `import` from the Express controllers (same pattern the research-engine uses).
  */
 
+import { COUNTRY_OPTIONS } from './countries.js';
+
 export const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export const USER_ROLES = ['user', 'mod', 'admin'];
+
+// Country picker options for the Ops console (prompt22 Task 1). A SELECT — never a
+// free-text field — so a code can only ever be a real ISO alpha-2 and can never be
+// a truncated abbreviation ("UAE" → "UA"). Blank = explicit "unknown" bucket.
+export const COUNTRY_CODE_OPTIONS = [
+  { value: '', label: '— Unknown / unset —' },
+  ...COUNTRY_OPTIONS.map(c => ({ value: c.code, label: `${c.name} (${c.code})` })),
+];
 export const USER_THEME_OPTIONS = [
   { value: '',      label: 'Default (unset)' },
   { value: 'day',   label: 'Day' },
@@ -66,10 +76,13 @@ export const EDITABLE_USER_FIELDS = [
     },
   },
   {
-    key: 'registrationCountryCode', label: 'Country code (ISO-2)', type: 'text',
-    placeholder: 'US', uppercase: true, maxLength: 2,
+    key: 'registrationCountryCode', label: 'Country', type: 'select',
+    options: COUNTRY_CODE_OPTIONS,
     editableByAdmin: true, editableByMod: false,
-    help: 'Two-letter ISO-3166 code that drives the Ops users map. Blank = unknown.',
+    help: 'Drives the Ops users map. Pick a country (sets the ISO-3166 code) — the map and tooltip name are derived from this code.',
+    // Picked from COUNTRY_CODE_OPTIONS, but still validated server-side: a real
+    // 2-letter ISO code, or blank for the "unknown" bucket. Rejects truncated
+    // abbreviations (e.g. "USA") — the exact class of value that mislocated UAE.
     validate(v) {
       if (v == null) return ok(null);
       const t = String(v).trim().toUpperCase();
@@ -79,9 +92,10 @@ export const EDITABLE_USER_FIELDS = [
     },
   },
   {
-    key: 'registrationCountryName', label: 'Country name', type: 'text',
+    key: 'registrationCountryName', label: 'Country name (display)', type: 'text',
     placeholder: 'United States', maxLength: 80,
     editableByAdmin: true, editableByMod: false,
+    help: 'Informational only. The Ops map labels each country from its ISO code above, not from this field.',
     validate(v) {
       if (v == null) return ok(null);
       if (typeof v !== 'string') return bad('Country name must be text');

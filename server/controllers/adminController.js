@@ -7,6 +7,7 @@ import { getVersion } from '../version.js';
 import { bustMaintenanceCache } from '../middleware/maintenance.js';
 import { USAGE, recordUsage } from '../utils/usage.js';
 import { buildUserUpdate } from '../../src/shared/editableUserFields.js';
+import { buildCountryDistribution } from '../utils/countryStats.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -470,10 +471,11 @@ export async function getUsers(req, res) {
 
 // ── GET /api/admin/users/countries ──────────────────────────────────────────────
 // Aggregate, COUNTRY-LEVEL-ONLY distribution of live users for the Ops Users map
-// (prompt19 Task 12). Groups every user by registrationCountryCode; null/'' codes
-// collapse into a single "Unknown" bucket (named from registrationCountryName when
-// present — e.g. "Local" — else "Unknown"). No raw IPs, no city/coords are ever
-// read or returned. Sorted by userCount desc. (admin only)
+// (prompt19 Task 12). Groups every user by registrationCountryCode; null/''/junk
+// codes collapse into a single "Unknown" bucket. The displayed country NAME is
+// DERIVED FROM THE ISO CODE (prompt22 Task 1) so the map tooltip can never
+// disagree with the geometry it colours. No raw IPs, no city/coords are ever read
+// or returned. Sorted by userCount desc. (admin only)
 
 export async function getUserCountries(req, res) {
   try {
@@ -485,58 +487,8 @@ export async function getUserCountries(req, res) {
       },
     });
 
-    const totalUsers = users.length;
-    const UNKNOWN = '__unknown__'; // sentinel key for the null/'' bucket
-    const buckets = new Map(); // key → { countryCode, countryName, userCount, latestRegistrationAt }
-
-    for (const u of users) {
-      const rawCode = (u.registrationCountryCode || '').trim().toUpperCase();
-      const isKnown = rawCode.length === 2;
-      const key = isKnown ? rawCode : UNKNOWN;
-
-      let b = buckets.get(key);
-      if (!b) {
-        b = {
-          countryCode: isKnown ? rawCode : '',
-          // Known: prefer stored name, else derive from code. Unknown: the stored
-          // name (e.g. "Local") when any user in the bucket has one, else "Unknown".
-          countryName: isKnown
-            ? (u.registrationCountryName || rawCode)
-            : (u.registrationCountryName || 'Unknown'),
-          userCount: 0,
-          latestRegistrationAt: null,
-        };
-        buckets.set(key, b);
-      }
-      b.userCount += 1;
-      // Keep a sensible Unknown-bucket label: "Local" beats a bare "Unknown".
-      if (!isKnown && u.registrationCountryName && b.countryName === 'Unknown') {
-        b.countryName = u.registrationCountryName;
-      }
-      if (u.createdAt && (!b.latestRegistrationAt || u.createdAt > b.latestRegistrationAt)) {
-        b.latestRegistrationAt = u.createdAt;
-      }
-    }
-
-    const countries = Array.from(buckets.values())
-      .map(b => ({
-        countryCode: b.countryCode,
-        countryName: b.countryName,
-        userCount: b.userCount,
-        percentage: totalUsers > 0 ? Math.round((b.userCount / totalUsers) * 1000) / 10 : 0,
-        latestRegistrationAt: b.latestRegistrationAt,
-      }))
-      .sort((a, b) => b.userCount - a.userCount || a.countryName.localeCompare(b.countryName));
-
-    const unknownBucket = buckets.get(UNKNOWN);
-    const unknown = unknownBucket ? unknownBucket.userCount : 0;
-    const totalKnown = totalUsers - unknown;
-    const countriesRepresented = countries.filter(c => c.countryCode).length;
-
-    return res.json({
-      countries,
-      summary: { totalUsers, totalKnown, unknown, countriesRepresented },
-    });
+    // Pure, unit-tested aggregation (server/utils/countryStats.js).
+    return res.json(buildCountryDistribution(users));
   } catch (err) {
     console.error('[admin] getUserCountries error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
