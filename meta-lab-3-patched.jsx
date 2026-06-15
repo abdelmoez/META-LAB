@@ -1858,6 +1858,7 @@ function PICOTab({project,updNested,upd}){
   const requiredFields=[
     {key:"P",label:"Population"},
     {key:"I",label:"Intervention"},
+    {key:"C",label:"Comparator"},
     {key:"O",label:"Outcome"},
   ];
   const reqFilled=requiredFields.filter(f=>!!(pico[f.key]&&pico[f.key].trim())).length;
@@ -1871,7 +1872,7 @@ function PICOTab({project,updNested,upd}){
       <div style={{flex:1}}>
         <div style={{fontSize:11,fontWeight:700,color:reqFilled===reqTotal?C.grn:C.yel,marginBottom:4}}>
           {reqFilled===reqTotal?"✓ All required PICO fields complete":
-           `${reqFilled}/${reqTotal} required fields filled — P, I, and O are mandatory`}
+           `${reqFilled}/${reqTotal} required fields filled — P, I, C, and O are mandatory`}
         </div>
         <div style={{height:4,background:C.brd,borderRadius:2}}>
           <div style={{height:4,background:reqFilled===reqTotal?C.grn:C.yel,borderRadius:2,width:`${(reqFilled/reqTotal)*100}%`,transition:"width 0.3s"}}/>
@@ -1898,12 +1899,12 @@ function PICOTab({project,updNested,upd}){
     {/* PICO grid */}
     <div style={{display:"flex",alignItems:"center",marginBottom:8}}>
       <span style={{...lbl,marginBottom:0}}>② PICO Components</span>
-      <HelpTip text="Break your question into its parts. P and I (or exposure) and O are required; C is optional for single-arm or prevalence reviews."/>
+      <HelpTip text="Break your question into its parts. Population, Intervention/Exposure, Comparator/Control, and Outcome are all required."/>
     </div>
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
       {[{k:"P",label:"Population / Problem",ph:"e.g. Adults ≥18 with Type 2 diabetes, diagnosed ≥1 year",color:C.acc,req:true},
         {k:"I",label:"Intervention / Exposure",ph:"e.g. SGLT2 inhibitor added to metformin",color:C.grn,req:true},
-        {k:"C",label:"Comparator / Control",ph:"e.g. Metformin alone, placebo, or standard care",color:C.yel,req:false},
+        {k:"C",label:"Comparator / Control",ph:"e.g. Metformin alone, placebo, or standard care",color:C.yel,req:true},
         {k:"O",label:"Outcome(s)",ph:"e.g. MACE; HbA1c reduction (%); all-cause mortality",color:C.purp,req:true},
       ].map(({k,label,ph,color,req})=>(
         <div key={k} style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:14,borderLeft:`3px solid ${color}`}}>
@@ -1920,8 +1921,22 @@ function PICOTab({project,updNested,upd}){
         <select value={pico.studyDesign||"RCT"} onChange={e=>ch("studyDesign",e.target.value)} style={inp}>
           {["RCT","Quasi-RCT","Cohort Study","Case-Control","Cross-Sectional","Case Series","Mixed"].map(d=><option key={d}>{d}</option>)}
         </select></div>
-      <div><label style={lbl}>Time Frame</label>
-        <input value={pico.timeframe||""} onChange={e=>ch("timeframe",e.target.value)} placeholder="e.g. 2000 – 2025" style={inp}/></div>
+      <div><label style={lbl}>Time Frame <span style={{color:C.red}}>*</span></label>
+        <select value={pico.timeframeMode||""} onChange={e=>ch("timeframeMode",e.target.value)} style={inp}>
+          <option value="">Select…</option>
+          {TIMEFRAME_OPTIONS.map(o=><option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+        {pico.timeframeMode==="custom"&&(()=>{
+          const s=parseInt(pico.tfStart,10), e=pico.tfEnd?parseInt(pico.tfEnd,10):null;
+          const bad=(pico.tfStart&&!Number.isFinite(s))||(Number.isFinite(e)&&Number.isFinite(s)&&e<s);
+          return(<div style={{marginTop:8}}>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+              <input type="number" min="1900" max="2100" value={pico.tfStart||""} onChange={ev=>ch("tfStart",ev.target.value)} placeholder="Start year" style={inp}/>
+              <input type="number" min="1900" max="2100" value={pico.tfEnd||""} onChange={ev=>ch("tfEnd",ev.target.value)} placeholder="End year (optional)" style={inp}/>
+            </div>
+            {bad&&<div style={{fontSize:11,color:C.red,marginTop:4}}>Enter a valid start year; end year must be ≥ start.</div>}
+          </div>);
+        })()}</div>
       <div><label style={lbl}>PROSPERO ID <HelpTip text="Register your protocol on PROSPERO before screening. Paste your CRD number here once registered."/></label>
         <input value={pico.prosperoId||""} onChange={e=>ch("prosperoId",e.target.value)} placeholder="CRD42024…" style={inp}/></div>
     </div>
@@ -1937,15 +1952,13 @@ function PICOTab({project,updNested,upd}){
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
       <div style={{background:C.card,border:`1px solid ${themeAlpha(C.grn,'33')}`,borderRadius:8,padding:14,borderLeft:`3px solid ${C.grn}`}}>
         <label style={{...lbl,color:C.grn}}>✓ Inclusion Criteria</label>
-        <textarea value={pico.incl||""} onChange={e=>ch("incl",e.target.value)}
-          placeholder={"• Adults ≥18 with confirmed T2DM\n• RCTs with ≥12 weeks follow-up\n• Reports HbA1c or MACE"}
-          style={{...inp,height:120,resize:"vertical",fontSize:12,lineHeight:1.6}}/>
+        <CriteriaList value={pico.incl} onChange={v=>ch("incl",v)} accent={C.grn}
+          placeholders={["Adults ≥18 with confirmed T2DM","RCTs with ≥12 weeks follow-up","Reports HbA1c or MACE"]}/>
       </div>
       <div style={{background:C.card,border:`1px solid ${themeAlpha(C.red,'33')}`,borderRadius:8,padding:14,borderLeft:`3px solid ${C.red}`}}>
         <label style={{...lbl,color:C.red}}>✗ Exclusion Criteria</label>
-        <textarea value={pico.excl||""} onChange={e=>ch("excl",e.target.value)}
-          placeholder={"• Type 1 diabetes or gestational diabetes\n• Animal or in-vitro studies\n• Conference abstracts without full data"}
-          style={{...inp,height:120,resize:"vertical",fontSize:12,lineHeight:1.6}}/>
+        <CriteriaList value={pico.excl} onChange={v=>ch("excl",v)} accent={C.red}
+          placeholders={["Type 1 diabetes or gestational diabetes","Animal or in-vitro studies","Conference abstracts without full data"]}/>
       </div>
     </div>
 
@@ -6789,6 +6802,67 @@ const PHASES=["Plan","Search","Screen","Extract","Analyze","Report"];
 /* Icon names (src/frontend/components/icons.jsx) — render via <Icon name={…}/> */
 const PHASE_ICON={Plan:"target",Search:"search",Screen:"filter",Extract:"table",Analyze:"sigma",Report:"fileText"};
 
+/* PICO Time Frame — controlled options (prompt23 Task 8A). The value lives in
+   pico.timeframeMode; "custom" reveals pico.tfStart / pico.tfEnd (years). Legacy
+   free-text pico.timeframe is still honoured for older projects. */
+const TIMEFRAME_OPTIONS = [
+  { value: "any",       label: "No time restriction" },
+  { value: "last1",     label: "Last 1 year" },
+  { value: "last3",     label: "Last 3 years" },
+  { value: "last5",     label: "Last 5 years" },
+  { value: "last10",    label: "Last 10 years" },
+  { value: "since2000", label: "Since 2000" },
+  { value: "inception", label: "Since inception" },
+  { value: "custom",    label: "Custom date range" },
+];
+
+/* True once the Time Frame is validly specified — a preset selection, a valid
+   custom range (start year present, end ≥ start when given), or legacy text. */
+function timeframeComplete(pico) {
+  const p = pico || {};
+  if (p.timeframeMode === "custom") {
+    const s = parseInt(p.tfStart, 10);
+    if (!Number.isFinite(s)) return false;
+    const e = p.tfEnd ? parseInt(p.tfEnd, 10) : null;
+    if (Number.isFinite(e) && e < s) return false;
+    return true;
+  }
+  if (p.timeframeMode) return true;          // a preset is selected
+  return !!(p.timeframe && p.timeframe.trim()); // legacy free-text fallback
+}
+
+/* CriteriaList — structured inclusion/exclusion editor (prompt23 Task 8C). Each
+   criterion is its own add/removable row instead of one opaque blob, but it
+   serialises back to the SAME "• item\n• item" string stored in pico.incl /
+   pico.excl — so screening keyword extraction, export, and older projects keep
+   working unchanged. */
+function CriteriaList({ value, onChange, accent, placeholders }) {
+  const rows = String(value || "").split("\n").map(l => l.replace(/^\s*[•\-*]\s?/, ""));
+  const eff = rows.length ? rows : [""];
+  const commit = (next) => onChange(next.map(r => "• " + r).join("\n"));
+  const upd = (i, v) => { const n = [...eff]; n[i] = v; commit(n); };
+  const add = () => commit([...eff, ""]);
+  const remove = (i) => { const n = eff.filter((_, j) => j !== i); commit(n.length ? n : [""]); };
+  const ph = placeholders || [];
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 6 }}>
+      {eff.map((r, i) => (
+        <div key={i} style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <input value={r} onChange={e => upd(i, e.target.value)}
+            placeholder={ph[i] || ph[ph.length - 1] || "Add a criterion…"}
+            style={{ flex: 1, minWidth: 0, background: C.bg, border: `1px solid ${C.brd}`, borderRadius: 6, padding: "7px 10px", color: C.txt, fontSize: 12, fontFamily: "inherit" }} />
+          <button type="button" onClick={() => remove(i)} title="Remove criterion" aria-label="Remove criterion"
+            style={{ background: "none", border: `1px solid ${C.brd}`, color: C.muted, cursor: "pointer", borderRadius: 6, width: 28, height: 28, flexShrink: 0, lineHeight: 1, fontSize: 15 }}>×</button>
+        </div>
+      ))}
+      <button type="button" onClick={add}
+        style={{ alignSelf: "flex-start", background: themeAlpha(accent, '14'), border: `1px dashed ${themeAlpha(accent, '55')}`, color: accent, cursor: "pointer", borderRadius: 6, padding: "6px 12px", fontSize: 11.5, fontWeight: 600, fontFamily: "inherit", marginTop: 2 }}>
+        + Add criterion
+      </button>
+    </div>
+  );
+}
+
 /* Green-light readiness check — returns { ok, missing[] } */
 function readinessCheck(project) {
   const missing = [];
@@ -6796,7 +6870,10 @@ function readinessCheck(project) {
   const search = project.search || {};
   if (!pico.P) missing.push("Population (P) is required in PICO");
   if (!pico.I) missing.push("Intervention (I) is required in PICO");
+  // Comparator/Control is now mandatory (prompt23 Task 8B).
+  if (!pico.C) missing.push("Comparator / Control (C) is required in PICO");
   if (!pico.O) missing.push("Outcome (O) is required in PICO");
+  if (!timeframeComplete(pico)) missing.push("Time Frame must be selected (and a valid range when custom)");
   const dbCount = Object.values(search.dbs||{}).filter(Boolean).length;
   if (dbCount < 3) missing.push(`At least 3 databases required (${dbCount} selected)`);
   if (!search.string) missing.push("Search strategy not saved yet");
@@ -6814,7 +6891,7 @@ function stepStatus(project){
   const meta=runMeta(p.studies,"random");
   const gradeDone=Object.keys(p.grade||{}).length;
   return {
-    pico: (pico.P&&pico.I&&pico.O)?"done":(pico.P||pico.I||pico.O||pico.question)?"partial":"empty",
+    pico: (pico.P&&pico.I&&pico.C&&pico.O&&timeframeComplete(pico))?"done":(pico.P||pico.I||pico.C||pico.O||pico.question)?"partial":"empty",
     prospero: (p.prospero&&p.prospero.fields&&Object.values(p.prospero.fields).filter(v=>v&&v.trim()).length>=15)?"done":(p.prospero&&p.prospero.fields&&Object.values(p.prospero.fields).filter(v=>v&&v.trim()).length>0)?"partial":"empty",
     search: (dbCount>=3&&search.string||(p.mesh&&p.mesh.results))?"done":(dbCount>0||search.string)?"partial":"empty",
     // prompt18 — screening progress from the linked workspace rollup (record
@@ -6856,7 +6933,8 @@ function auditProject(p){
   const add=(sev,phase,msg)=>items.push({sev,phase,msg});
 
   // PLAN
-  if(!(pico.P&&pico.I&&pico.O)) add("high","Plan","PICO is incomplete — Population, Intervention, and Outcome are all required.");
+  if(!(pico.P&&pico.I&&pico.C&&pico.O)) add("high","Plan","PICO is incomplete — Population, Intervention, Comparator, and Outcome are all required.");
+  if(!timeframeComplete(pico)) add("high","Plan","Time Frame is not specified — choose a time-frame option (or a valid custom range).");
   if(!pico.question) add("med","Plan","No research question stated. A focused question keeps screening decisions consistent.");
   if(!pico.incl||!pico.excl) add("high","Plan","Eligibility criteria are not fully defined (inclusion + exclusion). PRISMA requires explicit criteria.");
   if(!pico.prosperoId) add("med","Plan","No PROSPERO registration ID. Register the protocol before screening to reduce bias and meet journal requirements.");
