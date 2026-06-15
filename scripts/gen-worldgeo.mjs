@@ -1,22 +1,66 @@
-// One-shot generator for the Ops world-map geometry asset (prompt20 Task 6).
-// Fetches Natural Earth 110m country polygons (already-decoded GeoJSON with ISO
-// codes), projects them to a fixed equirectangular 1000x500 viewBox, rounds the
-// coordinates, and emits compact SVG path `d` strings keyed by ISO-3166 alpha-2.
-// No runtime map library — the React component just renders these <path>s.
+// One-shot generator for the Ops world-map geometry asset (prompt20 Task 6,
+// upgraded to 1:50m for small-nation coverage).
+//
+// Fetches Natural Earth 1:50m admin-0 country polygons (already-decoded GeoJSON
+// with ISO codes), projects them to a fixed equirectangular 1000x500 viewBox,
+// rounds to 1 decimal, then Douglas-Peucker–simplifies the big coastlines (with
+// a fallback that NEVER drops a small nation) so the asset stays lean (~265KB,
+// vs ~1.1MB unsimplified) while still rendering every country — including the
+// micro-states 1:110m omits (Singapore, Hong Kong, Malta, Bahrain, Maldives…).
+// Emits compact SVG path `d` strings keyed by ISO-3166 alpha-2. No runtime map
+// library — the React component just renders these <path>s.
+//
+// Regenerate with: node scripts/gen-worldgeo.mjs  (run from the repo root).
 import { writeFileSync } from 'node:fs';
 
-const SRC = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson';
+const SRC = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_countries.geojson';
 const W = 1000, H = 500;
-const px = (lon) => +(((lon + 180) / 360) * W).toFixed(1);
-const py = (lat) => +(((90 - lat) / 180) * H).toFixed(1);
-
+const EPS = 0.25; // DP tolerance in viewBox units (~0.15px at the ops render size)
+const X = (lon) => +(((lon + 180) / 360) * W).toFixed(1);
+const Y = (lat) => +(((90 - lat) / 180) * H).toFixed(1);
 const valid2 = (c) => typeof c === 'string' && /^[A-Z]{2}$/.test(c);
-function ringToPath(ring) {
-  let d = '';
-  for (let i = 0; i < ring.length; i++) {
-    const [lon, lat] = ring[i];
-    d += (i === 0 ? 'M' : 'L') + px(lon) + ' ' + py(lat);
+
+// Iterative Douglas-Peucker on an OPEN polyline of [x,y] points (no recursion →
+// safe for the dense 50m rings). Keeps endpoints; drops points within EPS of the
+// running chord.
+function dp(pts, eps) {
+  const n = pts.length;
+  if (n < 3) return pts;
+  const keep = new Uint8Array(n); keep[0] = 1; keep[n - 1] = 1;
+  const stack = [[0, n - 1]];
+  while (stack.length) {
+    const [s, e] = stack.pop();
+    const [ax, ay] = pts[s], [bx, by] = pts[e];
+    const dx = bx - ax, dy = by - ay, len = Math.hypot(dx, dy) || 1e-9;
+    let dmax = 0, idx = -1;
+    for (let i = s + 1; i < e; i++) {
+      const [pxv, pyv] = pts[i];
+      const d = Math.abs((pxv - ax) * dy - (pyv - ay) * dx) / len;
+      if (d > dmax) { dmax = d; idx = i; }
+    }
+    if (idx !== -1 && dmax > eps) { keep[idx] = 1; stack.push([s, idx]); stack.push([idx, e]); }
   }
+  const out = [];
+  for (let i = 0; i < n; i++) if (keep[i]) out.push(pts[i]);
+  return out;
+}
+
+function ringToPath(ring) {
+  // Project + round, then collapse consecutive duplicate pixels.
+  const dd = [];
+  for (const [lon, lat] of ring) {
+    const p = [X(lon), Y(lat)];
+    const l = dd[dd.length - 1];
+    if (!l || l[0] !== p[0] || l[1] !== p[1]) dd.push(p);
+  }
+  // Drop the closing duplicate so DP runs on an open polyline.
+  if (dd.length > 1 && dd[0][0] === dd[dd.length - 1][0] && dd[0][1] === dd[dd.length - 1][1]) dd.pop();
+  if (dd.length < 3) return ''; // genuinely sub-pixel ring
+  // Simplify large rings; if simplification would collapse a small ring, keep it.
+  let s = dp(dd, EPS);
+  if (s.length < 3) s = dd;
+  let d = '';
+  for (let i = 0; i < s.length; i++) d += (i === 0 ? 'M' : 'L') + s[i][0] + ' ' + s[i][1];
   return d + 'Z';
 }
 function geomToPath(geom) {
@@ -50,8 +94,9 @@ features.sort((a, b) => (a.a2 || 'ZZ').localeCompare(b.a2 || 'ZZ') || a.name.loc
 const banner = `/**
  * worldGeo.js — pre-projected world-country geometry for the Ops users map (prompt20 Task 6).
  *
- * Source: Natural Earth 1:110m admin-0 countries (public domain), projected to a
- * fixed equirectangular ${W}x${H} viewBox and rounded to 1 decimal. Each entry:
+ * Source: Natural Earth 1:50m admin-0 countries (public domain), projected to a
+ * fixed equirectangular ${W}x${H} viewBox, rounded to 1 decimal and Douglas-Peucker
+ * simplified (small nations preserved). Each entry:
  *   { a2: ISO-3166 alpha-2 (uppercase) | null, name: English name, d: SVG path }
  * Regenerate with: node scripts/gen-worldgeo.mjs  (run from the repo root).
  * No runtime map dependency — the React component just renders these paths.
@@ -65,8 +110,7 @@ writeFileSync(
 );
 const withCode = features.filter(f => f.a2).length;
 const bytes = Buffer.byteLength(JSON.stringify(features));
-console.log(`wrote ${features.length} features (${withCode} with ISO a2), ~${Math.round(bytes/1024)}KB`);
-const us = features.find(f => f.a2 === 'US');
-const fr = features.find(f => f.a2 === 'FR');
-console.log('US present:', !!us, us && us.name);
-console.log('FR present:', !!fr, fr && fr.name);
+console.log(`wrote ${features.length} features (${withCode} with ISO a2), ~${Math.round(bytes / 1024)}KB`);
+for (const code of ['US', 'FR', 'SG', 'HK', 'MT', 'BH', 'MV']) {
+  console.log(`${code}:`, features.some(f => f.a2 === code) ? 'present' : 'MISSING');
+}

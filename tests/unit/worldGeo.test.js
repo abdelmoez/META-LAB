@@ -12,10 +12,10 @@ describe('worldGeo asset', () => {
     expect(WORLD_VIEWBOX).toEqual({ w: 1000, h: 500 });
   });
 
-  it('renders a full set of country polygons', () => {
+  it('renders a full set of country polygons (50m coverage incl. small nations)', () => {
     expect(Array.isArray(WORLD_COUNTRIES)).toBe(true);
-    // Natural Earth 110m has ~170+ admin-0 features.
-    expect(WORLD_COUNTRIES.length).toBeGreaterThan(150);
+    // Natural Earth 50m admin-0 yields ~240 features (vs ~177 at 110m).
+    expect(WORLD_COUNTRIES.length).toBeGreaterThan(220);
   });
 
   it('every feature has a valid SVG path and a 2-letter ISO code or null', () => {
@@ -27,9 +27,10 @@ describe('worldGeo asset', () => {
     }
   });
 
-  it('includes well-known countries keyed by ISO alpha-2 (the join key)', () => {
+  it('includes well-known + small countries keyed by ISO alpha-2 (the join key)', () => {
     const byCode = Object.fromEntries(WORLD_COUNTRIES.filter(f => f.a2).map(f => [f.a2, f]));
-    for (const code of ['US', 'FR', 'BR', 'CN', 'IN', 'ZA', 'AU']) {
+    // Major countries + the micro-states that 110m omits (the reason for 50m).
+    for (const code of ['US', 'FR', 'BR', 'CN', 'IN', 'ZA', 'AU', 'SG', 'HK', 'MT', 'BH']) {
       expect(byCode[code], `expected geometry for ${code}`).toBeTruthy();
     }
   });

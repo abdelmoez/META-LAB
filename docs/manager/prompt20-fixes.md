@@ -76,12 +76,17 @@ already returned the right shape — frontend-only change.
   prompt7 + prompt4 + prompt19-countries + api-permission-invariants → 34/34 pass against
   the live server. `vite build` green.
 
-## Known limitations / next steps
-- The NON-screening project header's action buttons can still tuck under the fixed cluster
-  on a narrow medium-width window (~1100–1290px) because the content is a centered 960 box;
-  the reported overlap (Screening bar) is fixed. A viewport-level top-right safe-zone would
-  close this generally.
-- Stage back/forward: the monolith reads `?tab=` once at mount, so the SUB-TAB follows
-  back/forward (reactive `?screen=`), but the STAGE itself isn't re-read on popstate.
-- World map uses 110m geometry (small island nations may not render a polygon); they still
-  appear in the Countries Table.
+## Follow-ups (done in the same release)
+- **Header safe-zone (general):** a `@media (max-width:1480px)` rule reserves right padding
+  on `.tab-content` so the non-screening project-header action buttons clear the fixed
+  cluster at all laptop widths (above ~1480px the centered 960 column already clears it).
+- **Stage follows URL:** the monolith now re-syncs its active stage when the host `?tab=`
+  changes after mount (functional update, no loop), so browser back/forward + external
+  deep-links move between stages. In-app switches stay `replace` → no back-button spam.
+- **World map → 50m:** `scripts/gen-worldgeo.mjs` now pulls Natural Earth 1:50m and
+  Douglas-Peucker–simplifies the big coastlines (small nations preserved via a fallback) →
+  240 countries incl. Singapore/Hong Kong/Malta/Bahrain/Maldives, ~266KB (vs ~1.1MB raw).
+
+## Known limitations
+- The monolith stays a fixed-256px-sidebar desktop layout; true phone widths are out of
+  scope. Genuinely sub-pixel atolls still appear only in the Countries Table.

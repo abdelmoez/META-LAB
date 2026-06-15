@@ -7814,6 +7814,15 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     if(typeof onTabChange==="function") onTabChange(tab);
   },[tab,onTabChange]);
 
+  // prompt20 follow-up — let the active stage FOLLOW the host URL after mount, so
+  // browser back/forward and external deep-links move between stages (not just at
+  // first load). Functional update → no stale read, no-ops when already in sync,
+  // so it never fights the one-way tab→URL sync above (which uses replace, so
+  // in-app stage switches stay out of history — no back-button spam).
+  useEffect(()=>{
+    if(initialTab) setTab(t=> initialTab!==t ? initialTab : t);
+  },[initialTab]);
+
   // Debouncing is handled inside window.storage.set (serverStorage.js).
   // Calling set() directly here lets flushStorage() drain any pending save
   // before logout without needing access to an internal React timer.
@@ -8181,6 +8190,12 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
       /* Smooth tab content — fast (switched often), entrance only */
       .tab-content{animation:tabIn 0.2s var(--ease-out) both;}
       @keyframes tabIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+      /* prompt20 follow-up — top-right safe zone. The fixed utility cluster
+         ([chat][bell][account], ~16–126px from the viewport's right edge) floats
+         over the project content. Above ~1480px the centered 960 column already
+         clears it; below that, reserve right padding on the tab content so the
+         project header's action buttons are never tucked under the cluster. */
+      @media (max-width:1480px){ .tab-content{ padding-right:118px; } }
       @keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
 
       /* Staggered entrance for grids/lists (first-load delight) */
