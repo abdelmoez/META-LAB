@@ -88,7 +88,25 @@ export async function handoffToMetaLab(screenProject, record, actor) {
   );
   if (dup) return { handed: false, reason: 'duplicate' };
 
-  const study = studyFromRecord(record, actor);
+  // prompt21 — if this record was previously reverted out of Data Extraction, RESTORE
+  // the snapshotted study (with any extracted data the user had entered) rather than
+  // starting a fresh blank one. Provenance is re-asserted so re-sync stays idempotent.
+  let restored = false, study;
+  if (record.revertedExtractionSnapshot) {
+    try {
+      const snap = JSON.parse(record.revertedExtractionSnapshot);
+      if (snap && typeof snap === 'object') {
+        study = snap;
+        study.siftOrigin = true;
+        study.screeningRecordId  = record.id || '';
+        study.screeningProjectId = record.projectId || '';
+        if (!study.id) study.id = studyFromRecord(record, actor).id;
+        restored = true;
+      }
+    } catch { /* fall through to a fresh study */ }
+  }
+  if (!study) study = studyFromRecord(record, actor);
+
   data.studies.push(study);
   await prisma.project.update({
     where: { id: ml.id },
@@ -97,7 +115,7 @@ export async function handoffToMetaLab(screenProject, record, actor) {
   // Realtime poke (Task 7) — the META·LAB blob changed (study appended); open
   // monoliths refresh-when-clean / banner-when-dirty.
   emitToMetaLabProject(ml.id, screenProject.ownerId, { type: 'project.updated' }, { exclude: actor?.id });
-  return { handed: true, studyId: study.id, metaLabProjectId: ml.id };
+  return { handed: true, studyId: study.id, metaLabProjectId: ml.id, restored };
 }
 
 /** GET /projects/:pid/second-review — records that reached quorum (full_text stage). */
@@ -184,6 +202,8 @@ export async function finalizeRecord(req, res) {
         finalStatus: 'accepted', acceptedAt: new Date(),
         handoffStatus: mapped.handoffStatus, handoffAt: new Date(),
         handoffStudyId: mapped.handoffStudyId, handoffError: mapped.handoffError,
+        // Snapshot consumed once it is back in Data Extraction (restored or fresh).
+        revertedExtractionSnapshot: handoff.handed ? null : rec.revertedExtractionSnapshot,
       },
     });
     await writeAudit(access.project.id, req.user, 'RECORD_ACCEPTED', {
@@ -224,6 +244,7 @@ export async function retryHandoff(req, res) {
       data: {
         handoffStatus: mapped.handoffStatus, handoffAt: new Date(),
         handoffStudyId: mapped.handoffStudyId || rec.handoffStudyId, handoffError: mapped.handoffError,
+        revertedExtractionSnapshot: handoff.handed ? null : rec.revertedExtractionSnapshot,
       },
     });
     await writeAudit(access.project.id, req.user, 'HANDOFF_RETRY', {
@@ -233,6 +254,82 @@ export async function retryHandoff(req, res) {
     res.json({ record: updated, handoff: { ...handoff, ...mapped } });
   } catch (err) {
     console.error('[screening] retryHandoff:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /projects/:pid/records/:rid/final-review/revert — UNDO a Final Review
+ * "sent to Data Extraction" decision (prompt21 Task 3/10).
+ *
+ * Scientifically safe: the linked META·LAB study is NOT destroyed — it is
+ * snapshotted onto the record (so any extracted data survives) and then removed
+ * from the project's active studies[], which cleanly updates Data Extraction,
+ * PRISMA (re-derived from final-review state), analysis readiness, and any
+ * meta-analysis that used it. The record returns to the pending/undecided Final
+ * Review state. A later re-accept restores the snapshot intact.
+ */
+export async function revertFinalReview(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    if (!access.isLeader && !access.canResolveConflicts) {
+      return res.status(403).json({ error: 'Only the project leader can revert final-review decisions' });
+    }
+    const rec = await prisma.screenRecord.findFirst({
+      where: { id: req.params.rid, projectId: access.project.id },
+    });
+    if (!rec) return res.status(404).json({ error: 'Record not found' });
+    if (rec.finalStatus !== 'accepted') {
+      return res.status(400).json({ error: 'Only an accepted record can be reverted from Data Extraction' });
+    }
+
+    // Pull the study back out of the linked META·LAB project's active extraction,
+    // snapshotting it first (only studies THIS record created — matched by
+    // handoffStudyId / screeningRecordId — are ever touched).
+    let snapshot = rec.revertedExtractionSnapshot || null;
+    let removed = false;
+    if (access.project.linkedMetaLabProjectId) {
+      const ml = await prisma.project.findFirst({
+        where: { id: access.project.linkedMetaLabProjectId, userId: access.project.ownerId, deletedAt: null },
+      });
+      if (ml) {
+        let data; try { data = JSON.parse(ml.data || '{}'); } catch { data = {}; }
+        if (Array.isArray(data.studies)) {
+          const idx = data.studies.findIndex(st =>
+            (rec.handoffStudyId && st.id === rec.handoffStudyId) ||
+            (st.screeningRecordId && st.screeningRecordId === rec.id)
+          );
+          if (idx !== -1) {
+            snapshot = JSON.stringify(data.studies[idx]);
+            data.studies.splice(idx, 1);
+            removed = true;
+            await prisma.project.update({
+              where: { id: ml.id },
+              data: { data: JSON.stringify(data), lastSavedAt: new Date() },
+            });
+            emitToMetaLabProject(ml.id, access.project.ownerId, { type: 'project.updated' }, { exclude: req.user.id });
+          }
+        }
+      }
+    }
+
+    const updated = await prisma.screenRecord.update({
+      where: { id: rec.id },
+      data: {
+        finalStatus: '', acceptedAt: null,
+        handoffStatus: '', handoffStudyId: '', handoffAt: null, handoffError: '',
+        revertedExtractionSnapshot: snapshot,
+      },
+    });
+    await writeAudit(access.project.id, req.user, 'RECORD_REVERTED', {
+      entityType: 'record', entityId: rec.id,
+      details: { dataExtractionEntryDeactivated: removed, snapshotKept: !!snapshot },
+    });
+    emitToProjectMembers(access.project.id, { type: 'handoff.updated' }, { exclude: req.user.id });
+    res.json({ record: updated, reverted: { removedFromExtraction: removed, snapshotKept: !!snapshot } });
+  } catch (err) {
+    console.error('[screening] revertFinalReview:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }

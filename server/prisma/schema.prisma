@@ -278,6 +278,11 @@ model ScreenRecord {
   handoffAt        DateTime?
   handoffStudyId   String                @default("")                // id of the created META·LAB study (for idempotent re-sync)
   handoffError     String                @default("")
+  // prompt21 — when a Final Review decision is REVERTED out of Data Extraction, the
+  // removed META·LAB study (incl. any extracted data) is snapshotted here instead of
+  // being destroyed, so a later re-accept can RESTORE it rather than start blank.
+  // Nullable → `prisma db push` stays additive-safe.
+  revertedExtractionSnapshot String?
   createdAt        DateTime              @default(now())
   updatedAt        DateTime              @updatedAt
 

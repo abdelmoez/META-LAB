@@ -52,7 +52,7 @@ const PERMS = [
 // Global management flags are OWNER-only to grant/revoke (server-enforced; the
 // server silently ignores them from non-owners, so we hide them too).
 const PERM_GROUPS = [
-  { title: 'META·SIFT', keys: [
+  { title: 'Screening', keys: [
     { key: 'canViewMetaSift',    label: 'View' },
     { key: 'canSecondReview',    label: 'Second review' },
     { key: 'canManageDuplicates',label: 'Duplicates' },
@@ -60,7 +60,7 @@ const PERM_GROUPS = [
     { key: 'canExportRecords',   label: 'Export' },
     { key: 'readOnlyMetaSift',   label: 'Read-only' },
   ]},
-  { title: 'META·LAB', keys: [
+  { title: 'Project', keys: [
     { key: 'canViewMetaLab',     label: 'View' },
     { key: 'canEditMetaLab',     label: 'Edit' },
     { key: 'canManageExtraction',label: 'Extraction' },
@@ -596,25 +596,25 @@ function presetBlurb(presetKey, modules) {
   let accessSentence;
   if (siftAccess && labAccess) {
     if (siftRO && labRO) {
-      accessSentence = 'This user can open both META·SIFT and META·LAB in read-only mode.';
+      accessSentence = 'This user can open both Screening and the rest of the project in read-only mode.';
     } else if (siftRO) {
-      accessSentence = 'This user can open META·SIFT (read-only) and META·LAB.';
+      accessSentence = 'This user can open Screening (read-only) and the rest of the project.';
     } else if (labRO) {
-      accessSentence = 'This user can open META·SIFT and META·LAB (read-only).';
+      accessSentence = 'This user can open Screening and the rest of the project (read-only).';
     } else {
-      accessSentence = 'This user can access both META·SIFT and META·LAB.';
+      accessSentence = 'This user can access both Screening and the rest of the project.';
     }
   } else if (siftAccess) {
     accessSentence = siftRO
-      ? 'This user can open META·SIFT in read-only mode. No access to META·LAB.'
-      : 'This user can access META·SIFT. No access to META·LAB.';
+      ? 'This user can open Screening in read-only mode. No access to the rest of the project.'
+      : 'This user can access Screening. No access to the rest of the project.';
   } else if (labAccess) {
     accessSentence = labRO
-      ? 'This user can open META·LAB in read-only mode. No access to META·SIFT.'
-      : 'This user can access META·LAB. No access to META·SIFT.';
+      ? 'This user can open the rest of the project in read-only mode. No access to Screening.'
+      : 'This user can access the rest of the project. No access to Screening.';
   } else {
     // owner/leader implicit full access
-    accessSentence = 'This user has full access to both META·SIFT and META·LAB.';
+    accessSentence = 'This user has full access to the whole project, including Screening.';
   }
 
   // ── capability sentence ──────────────────────────────────────────────────
@@ -632,9 +632,9 @@ function presetBlurb(presetKey, modules) {
   // Remind inviter that "Participates in" can further narrow access.
   let modulesNote = '';
   if (modules === 'metasift' && labAccess) {
-    modulesNote = ' "Participates in META·SIFT only" will hide META·LAB for this user.';
+    modulesNote = ' "Participates in Screening only" will hide the rest of the project for this user.';
   } else if (modules === 'metalab' && siftAccess) {
-    modulesNote = ' "Participates in META·LAB only" will hide META·SIFT for this user.';
+    modulesNote = ' "Participates in project only" will hide Screening for this user.';
   }
 
   return [accessSentence, capSentence, modulesNote].filter(Boolean).join(' ');
@@ -643,10 +643,10 @@ function presetBlurb(presetKey, modules) {
 // Permission presets shown when adding a member (Task 9).
 const ADD_PRESETS = [
   { value: 'reviewer',          label: 'Reviewer — screen + second review + chat' },
-  { value: 'data_extractor',    label: 'Data Extractor — META·LAB extraction + analysis' },
+  { value: 'data_extractor',    label: 'Data Extractor — extraction + analysis' },
   { value: 'leader',            label: 'Leader — full control (except owner)' },
-  { value: 'readonly_metasift', label: 'Read-only META·SIFT' },
-  { value: 'readonly_metalab',  label: 'Read-only META·LAB' },
+  { value: 'readonly_metasift', label: 'Read-only Screening' },
+  { value: 'readonly_metalab',  label: 'Read-only project' },
   { value: 'readonly_both',     label: 'Read-only (both modules)' },
   { value: 'viewer',            label: 'Viewer — read-only both, can chat' },
 ];
@@ -654,9 +654,9 @@ const ADD_PRESETS = [
 // Which apps the new member participates in (prompt6 Task 6) — sent as
 // modules:'metalab'|'metasift'|'both'; the server maps it onto the canView* flags.
 const MODULE_OPTIONS = [
-  { value: 'both',     label: 'Both META·LAB & META·SIFT' },
-  { value: 'metalab',  label: 'META·LAB only' },
-  { value: 'metasift', label: 'META·SIFT only' },
+  { value: 'both',     label: 'Whole project (incl. Screening)' },
+  { value: 'metalab',  label: 'Project only' },
+  { value: 'metasift', label: 'Screening only' },
 ];
 
 function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
@@ -749,7 +749,7 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
             {presets.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
           </select>
           <div style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 1.5 }}>
-            Presets set META·LAB + META·SIFT permissions across the linked workspace. Fine-tune per-member toggles after adding.
+            Presets set permissions across the whole project, including Screening. Fine-tune per-member toggles after adding.
           </div>
         </div>
 

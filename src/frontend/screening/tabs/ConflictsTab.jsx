@@ -43,7 +43,7 @@ export default function ConflictsTab({ pid, project, access }) {
     try {
       const resp = await screeningApi.resolveConflict(pid, cid, { finalDecision: f.finalDecision, notes: f.notes || '' });
       setFlash(resp?.promoted
-        ? 'Resolved as include — moved to Second Review.'
+        ? 'Resolved as include — moved to Final Review.'
         : `Conflict resolved as ${f.finalDecision}.`);
       await load();
     } catch (e) { setError(e.message || 'Failed to resolve'); }

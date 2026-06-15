@@ -199,7 +199,7 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject,
           gap: 12,
         }}>
           <StatTile label="Total Articles" value={fmt(totalArticles)} color={C.txt} />
-          <StatTile label="Eligible for Second Review" value={fmt(n(ds.eligibleSecondReview))} color={C.teal} accent
+          <StatTile label="Eligible for Final Review" value={fmt(n(ds.eligibleSecondReview))} color={C.teal} accent
                     sub="Passed title/abstract" />
           <StatTile label="Accepted to Extraction" value={fmt(n(ds.acceptedToExtraction))} color={C.grn} accent
                     sub={n(ds.rejectedSecond) > 0 ? `${fmt(n(ds.rejectedSecond))} rejected at full-text` : undefined} />

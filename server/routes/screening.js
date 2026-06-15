@@ -113,6 +113,9 @@ r.get('/projects/:pid/decisions',              S.listDecisions);
 r.get('/projects/:pid/second-review',            RV.listSecondReview);
 r.post('/projects/:pid/records/:rid/finalize',   RV.finalizeRecord);
 r.post('/projects/:pid/records/:rid/handoff/retry', RV.retryHandoff);
+// prompt21 — revert a "sent to Data Extraction" final-review decision (safe: snapshots,
+// removes from active extraction, returns the record to pending; restores on re-accept).
+r.post('/projects/:pid/records/:rid/final-review/revert', RV.revertFinalReview);
 
 // Conflicts
 r.get('/projects/:pid/conflicts',                    S.listConflicts);

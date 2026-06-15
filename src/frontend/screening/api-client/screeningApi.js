@@ -124,10 +124,12 @@ export const screeningApi = {
   // Owner: creates it silently if missing. Member: resolves it. 404 = no access.
   getWorkspace: (mlpid)                => req('GET',  `/metalab/${mlpid}/workspace`),
 
-  // Second Review (Part 3)
+  // Second Review / Final Review (Part 3; prompt21)
   listSecondReview: (pid)            => req('GET',  `/projects/${pid}/second-review`),
   finalizeRecord:   (pid, rid, body) => req('POST', `/projects/${pid}/records/${rid}/finalize`, body),
   retryHandoff:     (pid, rid)       => req('POST', `/projects/${pid}/records/${rid}/handoff/retry`),
+  // Revert a "sent to Data Extraction" final-review decision (safe; restorable).
+  revertFinalReview:(pid, rid)       => req('POST', `/projects/${pid}/records/${rid}/final-review/revert`),
 
   // Chat (Part 6) — polling via ?since
   listChat: (pid, since) => req('GET', `/projects/${pid}/chat${since ? '?since=' + encodeURIComponent(since) : ''}`),

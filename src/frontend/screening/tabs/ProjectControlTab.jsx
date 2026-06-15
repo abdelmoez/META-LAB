@@ -49,7 +49,7 @@ export default function ProjectControlTab({ pid, project, access, refreshProject
         <div>
           <div style={{ fontSize: 18, fontWeight: 700, color: C.txt }}>Project Control</div>
           <div style={{ fontSize: 12, color: C.txt2, marginTop: 3 }}>
-            Manage status, blind mode, chat, the META·LAB link, and members — all in one place.
+            Manage project status, blind mode, chat, members, and Screening settings — all in one place.
           </div>
         </div>
         <Badge color={roleMeta.color} title={`Your role: ${roleMeta.label}`}>Your role · {roleMeta.label}</Badge>

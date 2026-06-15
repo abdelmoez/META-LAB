@@ -22,19 +22,27 @@ import ConflictsTab      from '../tabs/ConflictsTab.jsx';
 import ProjectControlTab from '../tabs/ProjectControlTab.jsx';
 import ExportTab         from '../tabs/ExportTab.jsx';
 import SiftImport        from './SiftImport.jsx';
+import { Stepper, buildScreeningSteps } from '../ui/Stepper.jsx';
 
 const TABS = [
   { key: 'overview',      label: 'Overview',        icon: 'grid',        Comp: OverviewTab },
   { key: 'screening',     label: 'Screening',       icon: 'filter',      Comp: ScreeningTab },
-  { key: 'second-review', label: 'Second Review',   icon: 'checkSquare', Comp: SecondReviewTab },
+  { key: 'second-review', label: 'Final Review',    icon: 'checkSquare', Comp: SecondReviewTab },
   { key: 'duplicates',    label: 'Duplicates',      icon: 'copy',        Comp: DuplicatesTab },
   { key: 'conflicts',     label: 'Conflicts',       icon: 'alert',       Comp: ConflictsTab },
   { key: 'control',       label: 'Project Control', icon: 'sliders',     Comp: ProjectControlTab },
   { key: 'export',        label: 'Export',          icon: 'upload',      Comp: ExportTab },
 ];
 
-// Legacy deep links used ?tab=members — the roster now lives inside Project Control.
-const TAB_ALIASES = { members: 'control' };
+// Deep-link aliases → canonical sub-tab keys (prompt20/21). The user-facing names
+// "final-review"/"title-abstract"/"full-text" resolve to the internal keys; the
+// internal key 'second-review' is kept for back-compat (DB/stage = full_text).
+const TAB_ALIASES = {
+  members: 'control',
+  'final-review': 'second-review',
+  'full-text': 'second-review',
+  'title-abstract': 'screening',
+};
 
 // prompt18 — embedded "Screening stage" sub-navigation. The SAME META·SIFT
 // engine, rendered INSIDE the META·LAB project workspace as one "Screening"
@@ -49,7 +57,7 @@ const EMBEDDED_TABS = [
   { key: 'duplicates',    label: 'Duplicates',       icon: 'copy',        Comp: DuplicatesTab },
   { key: 'screening',     label: 'Title & Abstract', icon: 'filter',      Comp: ScreeningTab },
   { key: 'conflicts',     label: 'Conflicts',        icon: 'alert',       Comp: ConflictsTab },
-  { key: 'second-review', label: 'Full Text',        icon: 'checkSquare', Comp: SecondReviewTab },
+  { key: 'second-review', label: 'Final Review',     icon: 'checkSquare', Comp: SecondReviewTab },
   { key: 'control',       label: 'Settings',         icon: 'sliders',     Comp: ProjectControlTab },
   { key: 'export',        label: 'Export',           icon: 'download',    Comp: ExportTab },
 ];
@@ -96,9 +104,20 @@ export default function SiftProject({ embedded = false, embeddedPid = null } = {
 
   useEffect(() => { load(); }, [load]);
 
+  // prompt21 — project-wide Screening counts that drive the workflow Stepper. Kept
+  // separate from getProject (overview is the richer, project-wide roll-up) and
+  // refreshed alongside the project so the stepper never shows a stale stage.
+  const [summary, setSummary] = useState(null);
+  const loadSummary = useCallback(async () => {
+    try { const o = await screeningApi.getOverview(pid); setSummary(o?.dataSummary || null); }
+    catch { /* non-fatal — the stepper degrades to a neutral state */ }
+  }, [pid]);
+  useEffect(() => { loadSummary(); }, [loadSummary]);
+
   const refreshProject = useCallback(async () => {
     try { setProject(await screeningApi.getProject(pid)); } catch { /* keep prior */ }
-  }, [pid]);
+    loadSummary();
+  }, [pid, loadSummary]);
 
   // Realtime (prompt6 Task 7) — thin pokes for THIS project trigger a refetch
   // through the authorized getProject endpoint (per-request re-auth; events
@@ -177,6 +196,12 @@ export default function SiftProject({ embedded = false, embeddedPid = null } = {
             )}
           </div>
         </div>
+
+        {/* Workflow stepper (prompt21) — Import → Duplicates → Title & Abstract →
+            Conflicts → Final Review → Data Extraction; completion from live counts. */}
+        {project && !disabled && !error && (
+          <Stepper steps={buildScreeningSteps(summary)} currentId={active.key} onStepSelect={setTab} />
+        )}
 
         <div style={{ flex: 1, overflow: isFullBleed ? 'hidden' : 'auto', minHeight: 0 }}>
           {loading && <div style={{ padding: 32 }}><Loading label="Loading screening…" /></div>}

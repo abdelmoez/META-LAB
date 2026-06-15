@@ -1,18 +1,20 @@
 /**
- * SecondReviewTab.jsx — META·SIFT full-text / second-review stage (Part 3).
+ * SecondReviewTab.jsx — Final Review (the full-text decision stage; prompt21).
  *
- * Records that reach inclusion quorum (≥2 reviewers include them in
- * title/abstract screening) are promoted to the `full_text` stage and surface
- * here. Reviewers cast a second-review decision; the project leader finalizes
- * each record by accepting it (handed off to the linked META·LAB project's Data
- * Extraction) or rejecting it with a reason.
+ * User-facing name: "Final Review" (internal stage = `full_text`; the engine name
+ * META·SIFT is kept out of the UI). Records that reach inclusion quorum (≥2
+ * reviewers include them at title/abstract) surface here for the final inclusion
+ * decision. The leader accepts a record to SEND it to Data Extraction, or excludes
+ * it with a reason. The page is split into two sub-tabs:
+ *   • Not Sent to Data Extraction — pending decisions, accepted-but-not-yet-sent, excluded
+ *   • Sent to Data Extraction      — accepted records now in Data Extraction (revertible)
  *
- * Props:
- *   pid            — screening project id
- *   project        — current project object (from the shell); used for keyword
- *                    highlighting + blindMode.
- *   access         — { isLeader, canScreen, ..., blindMode }
- *   refreshProject — () => Promise, re-fetches the shell's project after a mutation
+ * Reverting a sent record is scientifically safe: the backend snapshots the study
+ * (so extracted data survives), removes it from active extraction, and returns the
+ * record to pending — which cleanly updates PRISMA, analysis readiness, and any
+ * meta-analysis that used it. A later re-accept restores the snapshot.
+ *
+ * Props: pid, project, access ({ isLeader, canScreen, ..., blindMode }), refreshProject
  */
 import { useState, useEffect, useCallback } from 'react';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
@@ -35,17 +37,23 @@ function parseKeywords(raw) {
   }
 }
 
-// Map a second-review decision-button value → DecisionChip vocabulary.
 const SECOND_REVIEW_OPTIONS = [
   { value: 'include', label: 'Include', color: C.grn },
   { value: 'exclude', label: 'Exclude', color: C.red },
   { value: 'maybe',   label: 'Maybe',   color: C.ylw },
 ];
 
-// finalStatus → badge styling.
-function statusBadge(finalStatus) {
-  if (finalStatus === 'accepted') return { color: C.grn, label: 'ACCEPTED → DATA EXTRACTION' };
-  if (finalStatus === 'rejected') return { color: C.red, label: 'REJECTED' };
+// A record is "in Data Extraction" when accepted AND handed off (or already present).
+const isSent = (r) => r.finalStatus === 'accepted' && (r.handoffStatus === 'sent' || r.handoffStatus === 'already_exists');
+
+// finalStatus + handoff → badge styling.
+function statusBadge(rec) {
+  if (rec.finalStatus === 'accepted') {
+    return isSent(rec)
+      ? { color: C.grn,  label: 'IN DATA EXTRACTION' }
+      : { color: C.gold, label: 'ACCEPTED · NOT YET SENT' };
+  }
+  if (rec.finalStatus === 'rejected') return { color: C.red, label: 'EXCLUDED' };
   return { color: C.teal, label: 'PENDING REVIEW' };
 }
 
@@ -55,20 +63,20 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
 
-  // Per-record transient state.
-  const [savingDecision, setSavingDecision] = useState({}); // { [rid]: decision }
-  const [finalizing, setFinalizing]         = useState({}); // { [rid]: bool }
-  const [rowError, setRowError]             = useState({}); // { [rid]: string }
+  const [subTab, setSubTab] = useState('pending'); // 'pending' (Not Sent) | 'sent'
 
-  const [rejectFor, setRejectFor] = useState(null); // record being rejected (modal)
+  const [savingDecision, setSavingDecision] = useState({});
+  const [finalizing, setFinalizing]         = useState({});
+  const [rowError, setRowError]             = useState({});
+
+  const [rejectFor, setRejectFor] = useState(null);
   const [rejectReason, setRejectReason] = useState('');
+  const [revertFor, setRevertFor] = useState(null); // record awaiting revert confirm
 
   const [toast, setToast] = useState(null); // { kind: 'ok'|'info'|'err', text }
 
-  // Keyword highlighting (guarded parse).
   const inclusion = parseKeywords(project?.inclusionKeywords);
   const exclusion = parseKeywords(project?.exclusionKeywords);
-
   const blindMode = !!(data?.blindMode ?? project?.blindMode ?? access.blindMode);
 
   const load = useCallback(async () => {
@@ -78,7 +86,7 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
       const d = await screeningApi.listSecondReview(pid);
       setData(d);
     } catch (e) {
-      setError(e?.message || 'Failed to load second-review records.');
+      setError(e?.message || 'Failed to load final-review records.');
     } finally {
       setLoading(false);
     }
@@ -86,7 +94,6 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
 
   useEffect(() => { load(); }, [load]);
 
-  // Auto-dismiss toast.
   useEffect(() => {
     if (!toast) return;
     const t = setTimeout(() => setToast(null), 5200);
@@ -98,7 +105,6 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
     if (savingDecision[rec.id]) return;
     setSavingDecision(prev => ({ ...prev, [rec.id]: decision }));
     setRowError(prev => ({ ...prev, [rec.id]: '' }));
-    // Optimistic reflect of myDecision.
     setData(prev => prev && ({
       ...prev,
       records: prev.records.map(r =>
@@ -108,7 +114,7 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
       await screeningApi.saveDecision(pid, rec.id, { decision, stage: 'full_text' });
     } catch (e) {
       setRowError(prev => ({ ...prev, [rec.id]: e?.message || 'Failed to save decision.' }));
-      await load(); // re-sync truth from server on failure
+      await load();
     } finally {
       setSavingDecision(prev => { const n = { ...prev }; delete n[rec.id]; return n; });
     }
@@ -122,7 +128,7 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
       const resp = await screeningApi.finalizeRecord(pid, rec.id, { decision: 'accept' });
       const h = resp?.handoff || {};
       const kind = h.handoffStatus === 'sent' ? 'ok' : h.handoffStatus === 'failed' ? 'err' : 'info';
-      setToast({ kind, text: h.message || (h.handed ? 'Sent to META·LAB Data Extraction.' : 'Record accepted.') });
+      setToast({ kind, text: h.message || (h.handed ? 'Sent to Data Extraction.' : 'Record accepted.') });
       await load();
       if (refreshProject) await refreshProject();
     } catch (e) {
@@ -132,7 +138,7 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
     }
   }, [pid, finalizing, load, refreshProject]);
 
-  // Retry the Data Extraction handoff for an accepted record (e.g. linked later).
+  // Retry the Data Extraction send for an accepted record (e.g. linked later).
   const handleRetryHandoff = useCallback(async (rec) => {
     if (finalizing[rec.id]) return;
     setFinalizing(prev => ({ ...prev, [rec.id]: true }));
@@ -141,11 +147,11 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
       const resp = await screeningApi.retryHandoff(pid, rec.id);
       const h = resp?.handoff || {};
       const kind = h.handoffStatus === 'sent' ? 'ok' : h.handoffStatus === 'failed' ? 'err' : 'info';
-      setToast({ kind, text: h.message || 'Handoff retried.' });
+      setToast({ kind, text: h.message || 'Send retried.' });
       await load();
       if (refreshProject) await refreshProject();
     } catch (e) {
-      setRowError(prev => ({ ...prev, [rec.id]: e?.message || 'Failed to retry handoff.' }));
+      setRowError(prev => ({ ...prev, [rec.id]: e?.message || 'Failed to retry send.' }));
     } finally {
       setFinalizing(prev => { const n = { ...prev }; delete n[rec.id]; return n; });
     }
@@ -158,23 +164,44 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
     setRowError(prev => ({ ...prev, [rec.id]: '' }));
     try {
       await screeningApi.finalizeRecord(pid, rec.id, { decision: 'reject', reason: rejectReason.trim() });
-      setToast({ kind: 'info', text: 'Record rejected at full-text review.' });
+      setToast({ kind: 'info', text: 'Record excluded at final review.' });
       setRejectFor(null);
       setRejectReason('');
       await load();
       if (refreshProject) await refreshProject();
     } catch (e) {
-      setRowError(prev => ({ ...prev, [rec.id]: e?.message || 'Failed to reject record.' }));
+      setRowError(prev => ({ ...prev, [rec.id]: e?.message || 'Failed to exclude record.' }));
     } finally {
       setFinalizing(prev => { const n = { ...prev }; delete n[rec.id]; return n; });
     }
   }, [pid, rejectFor, rejectReason, load, refreshProject]);
 
+  // Revert a sent record back to pending Final Review (removes it from active
+  // Data Extraction; the server snapshots it so a re-accept restores it).
+  const submitRevert = useCallback(async () => {
+    const rec = revertFor;
+    if (!rec) return;
+    setFinalizing(prev => ({ ...prev, [rec.id]: true }));
+    setRowError(prev => ({ ...prev, [rec.id]: '' }));
+    try {
+      const resp = await screeningApi.revertFinalReview(pid, rec.id);
+      const removed = resp?.reverted?.removedFromExtraction;
+      setToast({ kind: 'info', text: removed ? 'Returned to Final Review and removed from Data Extraction.' : 'Returned to Final Review.' });
+      setRevertFor(null);
+      await load();
+      if (refreshProject) await refreshProject();
+    } catch (e) {
+      setRowError(prev => ({ ...prev, [rec.id]: e?.message || 'Failed to revert record.' }));
+    } finally {
+      setFinalizing(prev => { const n = { ...prev }; delete n[rec.id]; return n; });
+    }
+  }, [pid, revertFor, load, refreshProject]);
+
   // ── Loading / error ──
   if (loading && !data) {
     return (
       <div style={{ animation: 'sift-fade 0.3s ease' }}>
-        <Loading label="Loading second-review records…" />
+        <Loading label="Loading final-review records…" />
       </div>
     );
   }
@@ -187,57 +214,84 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
   }
 
   const records = Array.isArray(data?.records) ? data.records : [];
+  const sentRecords    = records.filter(isSent);
+  const pendingRecords = records.filter(r => !isSent(r));
+  const shown = subTab === 'sent' ? sentRecords : pendingRecords;
+
+  const SUBTABS = [
+    { key: 'pending', label: 'Not Sent to Data Extraction', count: pendingRecords.length },
+    { key: 'sent',    label: 'Sent to Data Extraction',     count: sentRecords.length },
+  ];
 
   return (
     <div style={{ fontFamily: FONT, color: C.txt, animation: 'sift-fade 0.3s ease', maxWidth: 1000, position: 'relative' }}>
 
-      {/* Transient toast */}
       {toast && <Toast toast={toast} onClose={() => setToast(null)} />}
 
-      {/* Soft error banner (when a refresh fails but we still have data) */}
       {error && data && (
         <div style={{ marginBottom: 16 }}>
           <ErrorBanner onRetry={load}>{error}</ErrorBanner>
         </div>
       )}
 
-      {/* Explainer banner */}
+      {/* Explainer banner — unified project wording (no separate-app language) */}
       <div style={{
         background: `linear-gradient(180deg, ${C.surf}, ${C.card})`,
         border: `1px solid ${C.brd}`, borderLeft: `3px solid ${C.teal}`,
-        borderRadius: 10, padding: '14px 18px', marginBottom: 20,
+        borderRadius: 10, padding: '14px 18px', marginBottom: 18,
         display: 'flex', alignItems: 'flex-start', gap: 12,
       }}>
         <span style={{ fontSize: 18, lineHeight: 1, marginTop: 1 }} aria-hidden>📑</span>
         <div>
           <div style={{ fontSize: 13.5, fontWeight: 600, color: C.txt, marginBottom: 3 }}>
-            Second Review · Full-Text Stage
+            Final Review
           </div>
           <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.6 }}>
-            Records that reached inclusion quorum (≥2 reviewers) appear here for full-text / second
-            review. {access.isLeader
-              ? 'Accept a record to hand it off to META·LAB Data Extraction, or reject it with a reason.'
-              : 'Cast your full-text decision; the project leader makes the final call.'}
+            Records that reached inclusion quorum (≥2 reviewers) appear here for the final
+            inclusion decision. {access.isLeader
+              ? 'Accept studies to send them to Data Extraction, or exclude them with a documented reason.'
+              : 'Cast your final-review decision; the project leader makes the final call.'}
           </div>
         </div>
-        <span style={{ marginLeft: 'auto', flexShrink: 0 }}>
-          <Badge color={C.acc} title="Records currently in second review">
-            {records.length} record{records.length === 1 ? '' : 's'}
-          </Badge>
-        </span>
       </div>
 
-      {/* Empty state */}
-      {records.length === 0 ? (
+      {/* Sub-tabs: Not Sent / Sent to Data Extraction (with counts) */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 18, flexWrap: 'wrap' }}>
+        {SUBTABS.map(t => {
+          const on = subTab === t.key;
+          return (
+            <button key={t.key} onClick={() => setSubTab(t.key)}
+              style={{
+                fontFamily: FONT, fontSize: 12.5, fontWeight: on ? 700 : 500,
+                padding: '7px 15px', borderRadius: 9, cursor: 'pointer',
+                background: on ? alpha(C.acc, '16') : 'transparent',
+                color: on ? C.acc : C.txt2, border: `1px solid ${on ? alpha(C.acc, '45') : C.brd2}`,
+                display: 'inline-flex', alignItems: 'center', gap: 8,
+              }}>
+              {t.label}
+              <span style={{
+                fontFamily: MONO, fontSize: 11, fontWeight: 700,
+                background: on ? alpha(C.acc, '22') : C.card, color: on ? C.acc : C.muted,
+                borderRadius: 20, padding: '1px 8px', minWidth: 20, textAlign: 'center',
+              }}>{t.count}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* List */}
+      {shown.length === 0 ? (
         <EmptyState
-          icon="🔎"
-          title="No records in second review yet"
+          icon={subTab === 'sent' ? '📤' : '🔎'}
+          title={subTab === 'sent' ? 'Nothing sent to Data Extraction yet' : 'No records awaiting final review'}
         >
-          Records advance here automatically once two reviewers include them in title/abstract screening.
+          {subTab === 'sent'
+            ? 'Accepted studies appear here once they are sent to Data Extraction.'
+            : 'Records advance here automatically once two reviewers include them in title & abstract screening.'}
         </EmptyState>
       ) : (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {records.map(rec => (
+          {shown.map(rec => (
             <RecordCard
               key={rec.id}
               pid={pid}
@@ -252,17 +306,18 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
               onDecision={handleDecision}
               onAccept={handleAccept}
               onRetryHandoff={handleRetryHandoff}
+              onRevert={() => setRevertFor(rec)}
               onRejectClick={() => { setRejectFor(rec); setRejectReason(rec.rejectedReason || ''); }}
             />
           ))}
         </div>
       )}
 
-      {/* Reject reason modal */}
+      {/* Exclude reason modal */}
       {rejectFor && (
         <Modal onClose={() => { if (!finalizing[rejectFor.id]) { setRejectFor(null); setRejectReason(''); } }} width={460}>
           <div style={{ fontSize: 15, fontWeight: 700, color: C.txt, marginBottom: 6 }}>
-            Reject record
+            Exclude record
           </div>
           <div style={{
             fontSize: 12.5, color: C.txt2, lineHeight: 1.5, marginBottom: 16,
@@ -275,7 +330,7 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
             display: 'block', fontSize: 11, fontWeight: 600, color: C.txt2,
             marginBottom: 6, letterSpacing: '0.04em', textTransform: 'uppercase',
           }}>
-            Reason for rejection
+            Reason for exclusion
           </label>
           <textarea
             value={rejectReason}
@@ -293,16 +348,51 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
             <div style={{ fontSize: 12, color: C.red, marginTop: 10 }}>{rowError[rejectFor.id]}</div>
           )}
           <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 18 }}>
-            <Button
-              variant="ghost"
-              disabled={!!finalizing[rejectFor.id]}
-              onClick={() => { setRejectFor(null); setRejectReason(''); }}
-            >Cancel</Button>
-            <Button
-              variant="danger"
-              disabled={!!finalizing[rejectFor.id]}
-              onClick={submitReject}
-            >{finalizing[rejectFor.id] ? 'Rejecting…' : 'Reject record'}</Button>
+            <Button variant="ghost" disabled={!!finalizing[rejectFor.id]}
+              onClick={() => { setRejectFor(null); setRejectReason(''); }}>Cancel</Button>
+            <Button variant="danger" disabled={!!finalizing[rejectFor.id]}
+              onClick={submitReject}>{finalizing[rejectFor.id] ? 'Excluding…' : 'Exclude record'}</Button>
+          </div>
+        </Modal>
+      )}
+
+      {/* Revert (return to Final Review) confirmation — explains downstream effects */}
+      {revertFor && (
+        <Modal onClose={() => { if (!finalizing[revertFor.id]) setRevertFor(null); }} width={480}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.txt, marginBottom: 6 }}>
+            Return to Final Review?
+          </div>
+          <div style={{
+            fontSize: 12.5, color: C.txt2, lineHeight: 1.5, marginBottom: 14,
+            overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box',
+            WebkitLineClamp: 2, WebkitBoxOrient: 'vertical',
+          }}>
+            {revertFor.title || <span style={{ fontStyle: 'italic', color: C.muted }}>Untitled record</span>}
+          </div>
+          <div style={{
+            fontSize: 12.5, color: C.txt2, lineHeight: 1.65, background: C.surf,
+            border: `1px solid ${alpha(C.gold, '40')}`, borderRadius: 8, padding: '11px 13px', marginBottom: 16,
+          }}>
+            This removes the study from active <strong style={{ color: C.txt }}>Data Extraction</strong> and returns
+            the record to pending Final Review. Downstream updates automatically:
+            <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+              <li>PRISMA flow counts</li>
+              <li>Data Extraction &amp; analysis readiness</li>
+              <li>any meta-analysis that used this study may need to be re-run</li>
+            </ul>
+            <div style={{ marginTop: 8, color: C.grn }}>
+              Extracted data is kept and restored automatically if you send it again.
+            </div>
+          </div>
+          {rowError[revertFor.id] && (
+            <div style={{ fontSize: 12, color: C.red, marginBottom: 10 }}>{rowError[revertFor.id]}</div>
+          )}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <Button variant="ghost" disabled={!!finalizing[revertFor.id]}
+              onClick={() => setRevertFor(null)}>Cancel</Button>
+            <Button variant="primary" disabled={!!finalizing[revertFor.id]}
+              style={{ background: C.gold, color: C.bg }}
+              onClick={submitRevert}>{finalizing[revertFor.id] ? 'Reverting…' : 'Return to Final Review'}</Button>
           </div>
         </Modal>
       )}
@@ -314,19 +404,19 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
 function RecordCard({
   pid, rec, access, blindMode, inclusion, exclusion,
   savingDecision, finalizing, rowError,
-  onDecision, onAccept, onRetryHandoff, onRejectClick,
+  onDecision, onAccept, onRetryHandoff, onRevert, onRejectClick,
 }) {
   const [expanded, setExpanded] = useState(false);
 
-  const sb = statusBadge(rec.finalStatus);
+  const sb = statusBadge(rec);
   const isPending = !rec.finalStatus;
+  const sent = isSent(rec);
   const myDecision = rec.myDecision?.decision || null;
 
   const abstract = rec.abstract || '';
   const isLong = abstract.length > ABSTRACT_CLAMP;
   const shownAbstract = expanded || !isLong ? abstract : abstract.slice(0, ABSTRACT_CLAMP) + '…';
 
-  // Citation meta line (authors / journal hidden under blind mode).
   const metaParts = [
     !blindMode && rec.authors ? firstAuthor(rec.authors) : null,
     !blindMode && rec.journal ? rec.journal : null,
@@ -374,7 +464,7 @@ function RecordCard({
         )}
       </div>
 
-      {/* Rejection reason (if rejected) */}
+      {/* Exclusion reason (if excluded) */}
       {rec.finalStatus === 'rejected' && rec.rejectedReason && (
         <div style={{
           fontSize: 12, color: C.red, background: C.redBg,
@@ -394,13 +484,8 @@ function RecordCard({
             {renderHighlighted(shownAbstract, { inclusion, exclusion, showInclusion: true, showExclusion: true })}
           </div>
           {isLong && (
-            <button
-              onClick={() => setExpanded(v => !v)}
-              style={{
-                marginTop: 8, background: 'none', border: 'none', color: C.acc,
-                fontSize: 12, fontFamily: FONT, fontWeight: 600, cursor: 'pointer', padding: 0,
-              }}
-            >
+            <button onClick={() => setExpanded(v => !v)}
+              style={{ marginTop: 8, background: 'none', border: 'none', color: C.acc, fontSize: 12, fontFamily: FONT, fontWeight: 600, cursor: 'pointer', padding: 0 }}>
               {expanded ? '▲ Show less' : '▼ Show more'}
             </button>
           )}
@@ -411,13 +496,13 @@ function RecordCard({
         </div>
       )}
 
-      {/* Full-text PDF — upload + in-browser preview (Task 1) */}
+      {/* Full-text PDF — upload + in-browser preview */}
       <div style={{ marginBottom: 14 }}>
         <PdfViewer pid={pid} recordId={rec.id} canManage={access.canScreen || access.isLeader} />
       </div>
 
-      {/* Handoff status for accepted records (Task 5) */}
-      {rec.finalStatus === 'accepted' && rec.handoffStatus && rec.handoffStatus !== 'sent' && (
+      {/* Send status for accepted-but-not-yet-sent records */}
+      {rec.finalStatus === 'accepted' && !sent && rec.handoffStatus && (
         <div style={{
           display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
           fontSize: 12, color: rec.handoffStatus === 'failed' ? C.red : C.gold,
@@ -426,20 +511,19 @@ function RecordCard({
           borderRadius: 7, padding: '8px 12px', marginBottom: 14,
         }}>
           <span style={{ fontWeight: 600 }}>
-            {rec.handoffStatus === 'pending' ? 'Accepted, not yet in Data Extraction — link a META·LAB project to send it.'
-              : rec.handoffStatus === 'already_exists' ? 'Already present in META·LAB Data Extraction.'
-              : `Handoff ${rec.handoffStatus}${rec.handoffError ? ' — ' + rec.handoffError : ''}.`}
+            {rec.handoffStatus === 'pending' ? 'Accepted, not yet in Data Extraction.'
+              : `Could not send to Data Extraction${rec.handoffError ? ' — ' + rec.handoffError : ''}.`}
           </span>
           {access.isLeader && (rec.handoffStatus === 'pending' || rec.handoffStatus === 'failed') && (
             <Button variant="ghost" disabled={finalizing} onClick={() => onRetryHandoff(rec)} style={{ fontSize: 11, padding: '4px 12px' }}>
-              {finalizing ? 'Retrying…' : 'Retry handoff'}
+              {finalizing ? 'Retrying…' : 'Retry send'}
             </Button>
           )}
         </div>
       )}
 
       {/* Reviewer decisions row */}
-      <div style={{ marginBottom: isPending && (access.canScreen || access.isLeader) ? 16 : 0 }}>
+      <div style={{ marginBottom: isPending && (access.canScreen || access.isLeader) ? 16 : (sent && access.isLeader ? 16 : 0) }}>
         <div style={{
           fontSize: 10, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em',
           textTransform: 'uppercase', color: C.muted, marginBottom: 8,
@@ -456,35 +540,30 @@ function RecordCard({
             ))}
           </div>
         ) : (
-          <div style={{ fontSize: 12, color: C.muted }}>No second-review decisions yet.</div>
+          <div style={{ fontSize: 12, color: C.muted }}>No final-review decisions yet.</div>
         )}
       </div>
 
-      {/* Actions */}
+      {/* Pending actions: reviewer decision + leader finalize */}
       {isPending && (
         <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 14, marginTop: 14 }}>
-          {/* Reviewer second-review decision */}
           {access.canScreen && (
             <div style={{ marginBottom: access.isLeader ? 14 : 0 }}>
               <div style={{
                 fontSize: 10, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.1em',
                 textTransform: 'uppercase', color: C.muted, marginBottom: 8,
               }}>
-                Your full-text decision
+                Your final-review decision
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {SECOND_REVIEW_OPTIONS.map(opt => {
                   const active = myDecision === opt.value;
                   const busy = savingDecision === opt.value;
                   return (
-                    <button
-                      key={opt.value}
-                      type="button"
-                      disabled={!!savingDecision}
+                    <button key={opt.value} type="button" disabled={!!savingDecision}
                       onClick={() => onDecision(rec, opt.value)}
                       style={{
-                        fontFamily: FONT, fontSize: 12.5, fontWeight: 600,
-                        padding: '7px 16px', borderRadius: 7,
+                        fontFamily: FONT, fontSize: 12.5, fontWeight: 600, padding: '7px 16px', borderRadius: 7,
                         cursor: savingDecision ? 'wait' : 'pointer',
                         background: active ? alpha(opt.color, '20') : 'transparent',
                         border: `1px solid ${active ? alpha(opt.color, '80') : C.brd}`,
@@ -493,8 +572,7 @@ function RecordCard({
                         opacity: savingDecision && !busy ? 0.5 : 1,
                       }}
                       onMouseEnter={e => { if (!active && !savingDecision) { e.currentTarget.style.borderColor = alpha(opt.color, '80'); e.currentTarget.style.color = opt.color; } }}
-                      onMouseLeave={e => { if (!active && !savingDecision) { e.currentTarget.style.borderColor = C.brd; e.currentTarget.style.color = C.txt2; } }}
-                    >
+                      onMouseLeave={e => { if (!active && !savingDecision) { e.currentTarget.style.borderColor = C.brd; e.currentTarget.style.color = C.txt2; } }}>
                       {busy ? 'Saving…' : opt.label}
                     </button>
                   );
@@ -503,7 +581,6 @@ function RecordCard({
             </div>
           )}
 
-          {/* Leader finalize actions */}
           {access.isLeader && (
             <div>
               <div style={{
@@ -513,22 +590,13 @@ function RecordCard({
                 Final decision (leader)
               </div>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-                <Button
-                  variant="primary"
-                  disabled={finalizing}
-                  style={{ background: C.grn, color: C.bg }}
-                  onClick={() => onAccept(rec)}
-                  title="Accept and hand off to META·LAB Data Extraction"
-                >
-                  {finalizing ? 'Finalizing…' : 'Accept → META·LAB'}
+                <Button variant="primary" disabled={finalizing} style={{ background: C.grn, color: C.bg }}
+                  onClick={() => onAccept(rec)} title="Accept and send to Data Extraction">
+                  {finalizing ? 'Finalizing…' : 'Accept → Data Extraction'}
                 </Button>
-                <Button
-                  variant="danger"
-                  disabled={finalizing}
-                  onClick={onRejectClick}
-                  title="Reject this record at full-text review"
-                >
-                  Reject
+                <Button variant="danger" disabled={finalizing} onClick={onRejectClick}
+                  title="Exclude this record at final review">
+                  Exclude
                 </Button>
               </div>
             </div>
@@ -536,7 +604,17 @@ function RecordCard({
         </div>
       )}
 
-      {/* Row-level error */}
+      {/* Sent records: leader can revert back to Final Review */}
+      {sent && access.isLeader && (
+        <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 14, marginTop: 14, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 12, color: C.txt2 }}>This study is in Data Extraction.</span>
+          <Button variant="ghost" disabled={finalizing} onClick={() => onRevert(rec)}
+            title="Remove from Data Extraction and return to pending Final Review (safe — restorable)">
+            {finalizing ? 'Working…' : '↩ Return to Final Review'}
+          </Button>
+        </div>
+      )}
+
       {rowError && (
         <div style={{ fontSize: 12, color: C.red, marginTop: 12 }}>{rowError}</div>
       )}
@@ -552,26 +630,21 @@ function Toast({ toast, onClose }) {
       ? { color: C.red, bg: C.redBg, brd: C.red }
       : { color: C.teal, bg: C.tealBg, brd: C.teal };
   return (
-    <div
-      role="status"
+    <div role="status"
       style={{
         position: 'sticky', top: 8, zIndex: 50, marginBottom: 16,
         background: C.surf, border: `1px solid ${alpha(tone.brd, '60')}`, borderLeft: `3px solid ${tone.brd}`,
         borderRadius: 9, padding: '11px 16px', display: 'flex', alignItems: 'center', gap: 10,
         boxShadow: `0 8px 30px ${C.shadow}`, animation: 'sift-fade 0.2s ease',
-      }}
-    >
+      }}>
       <span style={{ fontSize: 15 }} aria-hidden>
         {toast.kind === 'ok' ? '✓' : toast.kind === 'err' ? '✕' : 'ℹ'}
       </span>
       <span style={{ fontSize: 13, color: tone.color, fontWeight: 500, flex: 1 }}>{toast.text}</span>
-      <button
-        onClick={onClose}
-        aria-label="Dismiss"
+      <button onClick={onClose} aria-label="Dismiss"
         style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 16, lineHeight: 1, padding: 0 }}
         onMouseEnter={e => e.currentTarget.style.color = C.txt2}
-        onMouseLeave={e => e.currentTarget.style.color = C.muted}
-      >×</button>
+        onMouseLeave={e => e.currentTarget.style.color = C.muted}>×</button>
     </div>
   );
 }

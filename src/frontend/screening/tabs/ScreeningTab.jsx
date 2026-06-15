@@ -276,7 +276,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject }) {
       setRecords(prev => prev.map(r => r.id === rid
         ? { ...r, myDecision: { decision: body.decision, exclusionReason: body.exclusionReason, notes: body.notes, rating: body.rating, labels: JSON.stringify(body.labels) } }
         : r));
-      setSaveMsg(resp?.promoted ? 'Saved · advanced to Second Review' : 'Saved');
+      setSaveMsg(resp?.promoted ? 'Saved · advanced to Final Review' : 'Saved');
       refreshRow(rid); // re-sync reviewer indicators / quorum / disputed
       setTimeout(() => setSaveMsg(''), 2200);
     } catch (e) {
@@ -638,7 +638,7 @@ function MiddleColumn({
             <span style={{ color: C.muted }}> / 2 reviewers included</span>
           </span>
           {record.quorumMet && <Badge color={C.teal}>Quorum met</Badge>}
-          {record.currentStage === 'full_text' && <Badge color={C.grn}>✓ In Second Review</Badge>}
+          {record.currentStage === 'full_text' && <Badge color={C.grn}>✓ In Final Review</Badge>}
           {record.handoffStatus === 'sent' && <Badge color={C.acc}>↗ Sent to Data Extraction</Badge>}
           {record.disputed && <Badge color={C.gold}>⚠ Disputed</Badge>}
         </div>
