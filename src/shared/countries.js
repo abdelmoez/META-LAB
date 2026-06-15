@@ -346,3 +346,28 @@ export function normalizeCountryCode(input) {
   const byName = NAME_TO_A2[normName(s)];
   return byName || '';
 }
+
+/**
+ * Reconcile a stored (code, name) pair to the most trustworthy ISO alpha-2 code —
+ * the repair for LEGACY rows mangled by the old free-text country field, where a
+ * typed abbreviation was truncated ("UAE" → "UA" / Ukraine) while the NAME field
+ * still held the full, correct country ("United Arab Emirates").
+ *
+ * Rules (conservative — only corrects a clearly-wrong present code):
+ *   - present valid code that DISAGREES with a resolvable name → trust the name
+ *     (code 'UA' + name 'United Arab Emirates' → 'AE')
+ *   - present junk 2-letter code + resolvable name → trust the name
+ *   - otherwise keep the valid code, or '' when nothing resolves
+ *   - a BLANK code is left blank (never invent a location from a possibly-stale name)
+ *
+ * Registration always writes a consistent code+name (both from one resolveCountry
+ * call), so this only ever changes rows touched by the old Ops editor.
+ */
+export function reconcileCountryCode(code, name) {
+  const rawCode = (code == null ? '' : String(code)).trim().toUpperCase();
+  const validCode = ISO_A2_TO_NAME[rawCode] ? rawCode : '';
+  const nameCode = normalizeCountryCode(name);
+  if (validCode && nameCode && nameCode !== validCode) return nameCode; // truncation/mismatch fix
+  if (!validCode && rawCode && nameCode) return nameCode;               // junk code, trust the name
+  return validCode;
+}

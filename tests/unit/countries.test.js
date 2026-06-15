@@ -6,7 +6,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  countryNameForCode, normalizeCountryCode, isAlpha2,
+  countryNameForCode, normalizeCountryCode, isAlpha2, reconcileCountryCode,
   ISO_A2_TO_NAME, ISO_A3_TO_A2, COUNTRY_OPTIONS,
 } from '../../src/shared/countries.js';
 
@@ -75,5 +75,35 @@ describe('ISO tables + picker options', () => {
     // Sanity: a broad ISO set (not a stub).
     expect(COUNTRY_OPTIONS.length).toBeGreaterThan(200);
     expect(Object.keys(ISO_A2_TO_NAME).length).toBe(COUNTRY_OPTIONS.length);
+  });
+});
+
+describe('reconcileCountryCode — repair legacy truncated codes from the name', () => {
+  it('corrects a truncated code using the trustworthy stored name', () => {
+    // The exact legacy bug: code was truncated to UA, but the name is the truth.
+    expect(reconcileCountryCode('UA', 'United Arab Emirates')).toBe('AE');
+  });
+
+  it('leaves consistent rows untouched', () => {
+    expect(reconcileCountryCode('US', 'United States')).toBe('US');
+    expect(reconcileCountryCode('UA', 'Ukraine')).toBe('UA');
+    expect(reconcileCountryCode('AE', 'United Arab Emirates')).toBe('AE');
+  });
+
+  it('keeps a valid code when the name is unresolvable (Local/Unknown/blank)', () => {
+    expect(reconcileCountryCode('AE', 'Local')).toBe('AE');
+    expect(reconcileCountryCode('AE', 'Unknown')).toBe('AE');
+    expect(reconcileCountryCode('AE', '')).toBe('AE');
+    expect(reconcileCountryCode('AE', null)).toBe('AE');
+  });
+
+  it('never invents a location from a name when the code is blank', () => {
+    expect(reconcileCountryCode('', 'France')).toBe('');
+    expect(reconcileCountryCode(null, 'France')).toBe('');
+  });
+
+  it('replaces a junk 2-letter code when the name resolves', () => {
+    expect(reconcileCountryCode('ZZ', 'France')).toBe('FR');
+    expect(reconcileCountryCode('ZZ', 'nonsense')).toBe(''); // neither resolves
   });
 });
