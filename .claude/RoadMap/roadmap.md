@@ -31,7 +31,26 @@ The playbook was written at an earlier checkpoint. I verified the live repo:
 Phases 1–5 contain items that are each multi-week projects (network meta-analysis validated against `netmeta`, SSO/SAML, RAG chat, a PRISMA manuscript export engine, a mobile PWA, real-time CRDT collaboration). I will do the foundational and genuinely-achievable work for real, tested and committed, and I will be explicit in the final report about what is delivered vs. what remains and why — I will not fake completion of things a single session cannot correctly build. Correctness > coverage-theatre.
 
 ### Per-phase analysis (appended as I finish each gate)
-<!-- PHASE-0-ANALYSIS -->
+
+#### ▣ PHASE 0 — COMPLETE (branch `roadmap/phase-0`)
+**Commits:** `858acb2` digest · `ad00e04` 0.1 · `1fc1547` 0.3 · `c4586a6` 0.4 · `f595073` 0.2.
+
+**What I built (all four work-items):**
+- **0.1** — CI **deploy gate** (`deploy.yml` `test`→`deploy` `needs:`, runs on push+PR, deploy guarded to main; proved a failing test exits non-zero → deploy blocked). New `test:ci` hermetic suite. **32** statistics golden tests in `tests/unit/statistics/**` anchored to hand-computed fixtures (HC2/HC3) + metafor-pinned literals (D14) + independent inline reimplementations; `contract-coverage` guard ties exports to `agent-contract.md`. Fixed the 6 pre-existing `serverStorage` reds (debounce drift — test-only). Contracts synced (Egger=unweighted; `statistical-validation.md` §11 tolerances).
+- **0.3** — verified most was already done (dev.db untracked + absent from history, CORS already env-driven). Added `resolveCorsOrigin()` + guard tests (`cors-origin`, `no-tracked-databases`).
+- **0.4** — pure WCAG `contrast.js`; measured all theme pairs and **fixed 2 muted-text failures** (day `#6b7280→#676e77`, night `#6c7a99→#8693b4`) so every primary text pair is ≥4.5:1 in both themes; added Okabe–Ito **color-blind-safe palette** + `SCREEN_STATUS_CB` (blue↔orange) tokens; 36 a11y tests lock it.
+- **0.2** — additive `ReviewRecord`/`ReviewStudy` tables + committed additive migration + **pure round-trip adapter** `projectStore.js` (deep-equal proven incl. 5k records) + idempotent backfill (**runtime-verified on the live DB: 567 projects → 87 records + 110 studies, 0 failures**) + `relationalProjectStore` flag **default OFF**. Inert by default — JSON blob stays source of truth.
+
+**Tests:** gate suite **982 green** (was 933 after 0.1). With a live server, the **integration suites run as their own group are fully green — 338 passed / 7 skipped / 0 failed** (incl. `api-projects` against the new schema). The full 1327-test suite shows ~5 reds **only** under combined single-fork load — pre-existing integration contention flakiness (heavy-setup files sharing one server + SQLite), documented in `vitest.config.js`; the same files pass in isolation. Net vs. baseline: passes **+87**, **zero regressions**; `npm run build` exit 0.
+
+**Limitations / recommendations I surfaced (for the human gate):**
+1. *Operator-only 0.3 items not doable from an autonomous branch:* rotate prod/admin passwords, switch SSH to keys, mint a read-only monitoring token. **Recommend** the operator does these out-of-band.
+2. *CI gate scope:* it runs the hermetic suite (engine+units), **not** live-server integration tests. **Recommend** a follow-up CI job that boots the server + seeded DB and runs `npm test` (I proved locally the integration suite is green with a server). 
+3. *Pre-existing migration-history drift:* `migrate diff --from-migrations` wants to rebuild `ScreenProject` (destructive) — the committed migrations lag the db-push'd schema. I scoped my migration to the additive delta only and did **not** touch this. **Recommend** a dedicated migration-baseline reconciliation (separate, gated).
+4. *Statistics anchors:* golden values use metafor-pinned literals + hand-computation + independent reimplementation (R isn't in CI). **Recommend** an offline R job that regenerates fixtures periodically.
+5. *0.2 is step 1 only:* dual-write into the live autosave path, switching reads to relational, and dropping the JSON column are the **explicit gated follow-ups** (kept off the hot path deliberately).
+6. *axe-core:* 0.4 locks contrast/palette via pure math (hermetic); a full axe-core pass needs a rendered DOM. **Recommend** an e2e axe check in the future browser-test harness.
+
 <!-- PHASE-1-ANALYSIS -->
 
 ---
