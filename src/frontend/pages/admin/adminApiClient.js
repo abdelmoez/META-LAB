@@ -120,6 +120,25 @@ export const adminApi = {
   auditLog:       (p)        => req(`${BASE}/audit-log?${new URLSearchParams(p || {})}`),
   securityEvents: (p)        => req(`${BASE}/security-events?${new URLSearchParams(p || {})}`),
 
+  // ── Ops Users analytics + institution management (admin only) ────────────────
+  // getUserAnalytics → { totalUsers, byResearchField:[{label,count}],
+  //   byPrimaryRole:[{label,count}], byCountry:[{label,count}],
+  //   topInstitutions:[{key,canonicalName,count}], onboarding:{completed,total},
+  //   verification:{verified,unverified,total} }.
+  getUserAnalytics: ()       => req(`${BASE}/user-analytics`),
+  // getInstitutions → { institutions:[{ key, canonicalName, userCount,
+  //   aliases:[string], possibleDuplicates:[{key,canonicalName,confidence}] }] }.
+  getInstitutions:  ()       => req(`${BASE}/institutions`),
+  // merge → { ok:true, moved:number } (repoints User.institutionNormalized).
+  mergeInstitutions: (fromKey, toKey) =>
+    req(`${BASE}/institutions/merge`, { method: 'POST', ...json({ fromKey, toKey }) }),
+  // rename → { ok:true } (sets the canonical display-name override for a key).
+  renameInstitution: (key, name) =>
+    req(`${BASE}/institutions/rename`, { method: 'POST', ...json({ key, name }) }),
+  // reject → { ok:true } (marks a pair "not a duplicate"; never resurfaces).
+  rejectInstitutionDuplicate: (keyA, keyB) =>
+    req(`${BASE}/institutions/reject`, { method: 'POST', ...json({ keyA, keyB }) }),
+
   messages: {
     list:         (p)        => req(`${BASE}/contact-messages?${new URLSearchParams(p || {})}`),
     update:       (id, b)    => req(`${BASE}/contact-messages/${id}`, { method: 'PATCH', ...json(b) }),

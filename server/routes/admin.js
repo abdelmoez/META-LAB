@@ -27,6 +27,11 @@ import {
   updateFeatureFlags,
   getAuditLog,
   getSecurityEvents,
+  getUserAnalytics,
+  getInstitutions,
+  mergeInstitutions,
+  renameInstitution,
+  rejectInstitutionDuplicate,
   getContactMessages,
   getUnreadMessageCount,
   markMessageRead,
@@ -137,6 +142,13 @@ router.put('/feature-flags', requireAdmin, updateFeatureFlags);
 
 router.get('/audit-log', requireAdmin, getAuditLog);
 router.get('/security-events', requireAdmin, getSecurityEvents);
+
+// ── Ops Users analytics + institution management (admin only) ──────────────────
+router.get('/user-analytics', requireAdmin, getUserAnalytics);
+router.get('/institutions', requireAdmin, getInstitutions);
+router.post('/institutions/merge', requireAdmin, mergeInstitutions);
+router.post('/institutions/rename', requireAdmin, renameInstitution);
+router.post('/institutions/reject', requireAdmin, rejectInstitutionDuplicate);
 
 // Health (admin only — exposes runtime details)
 router.get('/health', requireAdmin, getHealth);

@@ -18,7 +18,7 @@ import Icon from '../../components/icons.jsx';
 import { C, FONT, MONO, alpha } from '../../theme/tokens.js';
 // Central editable-user-field schema (shared with the server) — the Ops edit
 // form is rendered + validated from this single source of truth (prompt20 Task 5).
-import { editableFieldsForRole } from '../../../shared/editableUserFields.js';
+import { editableFieldsForRole, PRIMARY_ROLE_OPTIONS, RESEARCH_FIELD_OPTIONS, MAIN_USE_CASE_OPTIONS } from '../../../shared/editableUserFields.js';
 import { countryNameForCode } from '../../../shared/countries.js';
 // Real world-country geometry (pre-projected equirectangular paths, no map lib)
 // for the Ops users-by-country choropleth (prompt20 Task 6).
@@ -623,6 +623,64 @@ function FunnelBar({ stages, loading, emptyLabel = 'No data yet' }) {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/* ── RankedBars — ranked horizontal bars from [{label,count}] (prompt26) ──
+   For analytics distributions (research field, primary role, country, etc.).
+   Bars scale to the max; shows a "+N more" line when truncated. */
+function RankedBars({ items, color = C.acc, max = 8, loading, emptyLabel = 'No data yet' }) {
+  const list = Array.isArray(items) ? items.filter(d => d && d.label != null) : [];
+  const ready = !loading && list.length > 0;
+  const { drawn, reduced } = useDrawIn(ready);
+  if (loading) return <ChartLoading height={Math.max(90, max * 24)} />;
+  if (!ready) return <ChartEmpty label={emptyLabel} height={120} />;
+  const shown = list.slice(0, max);
+  const hiddenCount = list.length - shown.length;
+  const top = Math.max(1, ...shown.map(d => Number(d.count) || 0));
+  return (
+    <div style={{ display: 'grid', gap: 8 }}>
+      {shown.map(d => {
+        const v = Math.max(0, Number(d.count) || 0);
+        return (
+          <div key={d.label} style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 40px', alignItems: 'center', gap: 10 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 11, color: C.txt2, marginBottom: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={d.label}>{d.label}</div>
+              <div style={{ height: 8, borderRadius: 4, background: alpha(C.muted, 0.14), overflow: 'hidden' }}>
+                <div style={{ height: '100%', borderRadius: 4, background: color, width: drawn ? `${v > 0 ? Math.max(3, (v / top) * 100) : 0}%` : '0%', transition: reduced ? 'none' : 'width 0.5s ease' }} />
+              </div>
+            </div>
+            <span style={{ fontSize: 12, fontFamily: MONO, color: C.txt, fontWeight: 700, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{v.toLocaleString()}</span>
+          </div>
+        );
+      })}
+      {hiddenCount > 0 && (
+        <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, marginTop: 2 }}>+{hiddenCount} more</div>
+      )}
+    </div>
+  );
+}
+
+/* ── PercentCard — a single big % with a slim progress bar + sub count.
+   Used for onboarding completion (prompt26). ── */
+function PercentCard({ value, total, label, color = C.acc, loading, suffix }) {
+  const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+  const { drawn, reduced } = useDrawIn(!loading);
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <span style={{ fontSize: 30, fontWeight: 800, fontFamily: MONO, color, letterSpacing: '-1px', fontVariantNumeric: 'tabular-nums' }}>
+          {loading ? '—' : `${pct}%`}
+        </span>
+        {!loading && (
+          <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>{value.toLocaleString()} / {total.toLocaleString()}{suffix ? ` ${suffix}` : ''}</span>
+        )}
+      </div>
+      <div style={{ height: 8, borderRadius: 4, background: alpha(C.muted, 0.14), overflow: 'hidden', marginTop: 10 }}>
+        <div style={{ height: '100%', borderRadius: 4, background: color, width: drawn && !loading ? `${pct}%` : '0%', transition: reduced ? 'none' : 'width 0.55s ease' }} />
+      </div>
+      {label && <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 8 }}>{label}</div>}
     </div>
   );
 }
@@ -2124,7 +2182,65 @@ function UsersByCountryCard() {
   );
 }
 
+/* prompt26 — Users area sub-tabs: Directory (table + filters), Analytics
+   (getUserAnalytics charts), Institutions (canonical institution management).
+   Keeps the area uncluttered — only one view is mounted at a time. */
+function UsersSubTabs({ active, onSelect, tabs }) {
+  return (
+    <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: `1px solid ${C.brd}`, flexWrap: 'wrap' }}>
+      {tabs.map(t => {
+        const on = active === t.id;
+        return (
+          <button key={t.id} onClick={() => onSelect(t.id)} style={{
+            display: 'inline-flex', alignItems: 'center', gap: 7, padding: '9px 16px',
+            background: 'transparent', border: 'none', borderBottom: `2px solid ${on ? C.acc : 'transparent'}`,
+            color: on ? C.acc : C.txt2, fontSize: 13, fontWeight: on ? 700 : 500, cursor: 'pointer',
+            fontFamily: FONT, marginBottom: -1, transition: 'color 0.15s',
+          }}
+            onMouseEnter={e => { if (!on) e.currentTarget.style.color = C.txt; }}
+            onMouseLeave={e => { if (!on) e.currentTarget.style.color = C.txt2; }}
+          >
+            {t.icon && <Icon name={t.icon} size={14} />}
+            <span>{t.label}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function UsersSection({ isAdmin = false }) {
+  // Sub-view: Directory (default) · Analytics (admin) · Institutions (admin).
+  const [view, setView] = useState('directory');
+
+  const subTabs = [
+    { id: 'directory', icon: 'users', label: 'Directory' },
+    ...(isAdmin ? [
+      { id: 'analytics',    icon: 'activity', label: 'Analytics' },
+      { id: 'institutions', icon: 'globe',    label: 'Institutions' },
+    ] : []),
+  ];
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 16px' }}>Users</h2>
+      <UsersSubTabs active={view} onSelect={setView} tabs={subTabs} />
+      {view === 'directory'    && <UsersDirectory isAdmin={isAdmin} />}
+      {view === 'analytics'    && isAdmin && <UserAnalyticsSection />}
+      {view === 'institutions' && isAdmin && <InstitutionsManager />}
+    </div>
+  );
+}
+
+/* Profile-field filter options (mirror the onboarding/editable schema). The
+   leading "" entry is the "any" option in each select. */
+const USER_FILTER_OPTS = {
+  primaryRole:   PRIMARY_ROLE_OPTIONS,
+  researchField: RESEARCH_FIELD_OPTIONS,
+  mainUseCase:   MAIN_USE_CASE_OPTIONS,
+};
+
+function UsersDirectory({ isAdmin = false }) {
   const [rows,    setRows]    = useState([]);
   const [total,   setTotal]   = useState(0);
   const [loading, setLoading] = useState(true);
@@ -2136,6 +2252,13 @@ function UsersSection({ isAdmin = false }) {
   // prompt25 — global online/offline summary from the dedicated endpoint
   // (gives the total across ALL pages, not just the current page).
   const [actSummary, setActSummary] = useState(null);
+  // prompt26 — advanced CLIENT-SIDE filters over the already-loaded page.
+  // Profile fields (role/field/use-case/country/verified/onboarding) are not in
+  // the list payload, so each page's rows are lazily enriched once via
+  // adminApi.users.get(id) and the result is cached + filtered in the browser.
+  const [adv, setAdv] = useState({ primaryRole: '', researchField: '', mainUseCase: '', country: '', verified: '', onboarded: '' });
+  const [advOpen, setAdvOpen] = useState(false);
+  const [profiles, setProfiles] = useState({});   // userId -> { primaryRole, researchField, ... } | 'loading'
   const searchTimer = useRef(null);
   const PER_PAGE = 25;
 
@@ -2166,11 +2289,58 @@ function UsersSection({ isAdmin = false }) {
 
   useEffect(() => { load(search, filter, page); }, [page, filter]);
 
+  // Lazily enrich the current page's rows with profile fields ONCE a profile
+  // filter is active (admin only — those fields are admin-readable). Cached by id.
+  const advActive = isAdmin && Object.values(adv).some(Boolean);
+  useEffect(() => {
+    if (!advActive || rows.length === 0) return;
+    const missing = rows.filter(r => profiles[r.id] === undefined);
+    if (missing.length === 0) return;
+    setProfiles(prev => { const n = { ...prev }; for (const r of missing) n[r.id] = 'loading'; return n; });
+    let alive = true;
+    (async () => {
+      const results = await Promise.allSettled(missing.map(r => adminApi.users.get(r.id)));
+      if (!alive) return;
+      setProfiles(prev => {
+        const n = { ...prev };
+        missing.forEach((r, i) => {
+          const res = results[i];
+          n[r.id] = res.status === 'fulfilled' && res.value ? res.value : null;
+        });
+        return n;
+      });
+    })();
+    return () => { alive = false; };
+  }, [advActive, rows, profiles]);
+
   function handleSearch(val) {
     setSearch(val);
     clearTimeout(searchTimer.current);
     searchTimer.current = setTimeout(() => { setPage(1); load(val, filter, 1); }, 280);
   }
+
+  // CLIENT-SIDE filter of the loaded page (does NOT change the server fetch).
+  const matchesAdv = (row) => {
+    if (!advActive) return true;
+    const prof = profiles[row.id];
+    if (prof === 'loading' || prof === undefined) return true;   // not yet known — keep visible
+    if (prof === null) return false;                              // enrich failed — hide under active profile filter
+    if (adv.primaryRole   && prof.primaryRole   !== adv.primaryRole)   return false;
+    if (adv.researchField && prof.researchField !== adv.researchField) return false;
+    if (adv.mainUseCase   && prof.mainUseCase   !== adv.mainUseCase)   return false;
+    if (adv.country) {
+      const c = (prof.country || prof.registrationCountryName || '').toLowerCase();
+      if (!c.includes(adv.country.toLowerCase())) return false;
+    }
+    if (adv.verified === 'yes' && !prof.emailVerifiedAt) return false;
+    if (adv.verified === 'no'  &&  prof.emailVerifiedAt) return false;
+    if (adv.onboarded === 'yes' && !prof.onboardingCompletedAt) return false;
+    if (adv.onboarded === 'no'  &&  prof.onboardingCompletedAt) return false;
+    return true;
+  };
+  const visibleRows = rows.filter(matchesAdv);
+  const advFilteredOut = rows.length - visibleRows.length;
+  const clearAdv = () => setAdv({ primaryRole: '', researchField: '', mainUseCase: '', country: '', verified: '', onboarded: '' });
 
   const columns = [
     { key: 'name',         label: 'Name',         render: (v, row) => <span title={v || undefined} style={{ color: C.txt, fontWeight: 600, display: 'block', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v || <span style={{ color: C.muted }}>—</span>}</span> },
@@ -2213,12 +2383,28 @@ function UsersSection({ isAdmin = false }) {
     { id: 'admins',    label: 'Admins' },
   ];
 
+  // Count of active advanced filters (for the "Filters" toggle badge).
+  const advCount = Object.values(adv).filter(Boolean).length;
+  const enriching = advActive && rows.some(r => profiles[r.id] === 'loading' || profiles[r.id] === undefined);
+
+  const advSelect = (key, label, opts, withYesNo) => (
+    <label style={{ display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 }}>
+      <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase' }}>{label}</span>
+      <select value={adv[key]} onChange={e => setAdv(a => ({ ...a, [key]: e.target.value }))}
+        style={{ ...inputStyle, padding: '7px 10px', fontSize: 12, cursor: 'pointer' }}>
+        <option value="">Any</option>
+        {withYesNo
+          ? (<><option value="yes">Yes</option><option value="no">No</option></>)
+          : opts.map(o => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </label>
+  );
+
   return (
     <div>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
-        <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: 0 }}>User Management</h2>
-        {/* prompt25 — global online/offline summary line */}
-        {isAdmin && actSummary && (
+      {/* prompt25 — global online/offline summary line */}
+      {isAdmin && actSummary && (
+        <div style={{ marginBottom: 16 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, fontSize: 11, fontFamily: MONO, color: C.muted }}>
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
               <LivePulseDot live={true} />
@@ -2232,23 +2418,68 @@ function UsersSection({ isAdmin = false }) {
               <><span>·</span><span style={{ color: C.acc }}>{actSummary.percentOnline}% online</span></>
             )}
           </span>
-        )}
-      </div>
+        </div>
+      )}
       {error && <ErrorBox msg={error} />}
 
       {/* prompt19 — users-by-country distribution (admin only; endpoint is requireAdmin). */}
       {isAdmin && <UsersByCountryCard />}
 
-      <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+      {/* Search + role/status quick filters + advanced-filters toggle */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <input type="text" placeholder="Search name or email…" value={search} onChange={e => handleSearch(e.target.value)}
           style={{ ...inputStyle, width: 260, flex: 'none' }} />
         <FilterBar filters={filterDefs} active={filter} onSelect={f => { setFilter(f); setPage(1); load(search, f, 1); }} />
+        {isAdmin && (
+          <button onClick={() => setAdvOpen(o => !o)} style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 13px',
+            background: advCount > 0 ? alpha(C.acc, '16') : 'transparent',
+            border: `1px solid ${advCount > 0 ? alpha(C.acc, '45') : C.brd2}`, borderRadius: 6,
+            color: advCount > 0 ? C.acc : C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT,
+          }}>
+            <Icon name="filter" size={13} />
+            <span>Filters</span>
+            {advCount > 0 && <span style={{ background: alpha(C.acc, '22'), borderRadius: 8, padding: '1px 6px', fontSize: 10, fontFamily: MONO, color: C.acc }}>{advCount}</span>}
+            <Icon name={advOpen ? 'chevronDown' : 'chevronRight'} size={12} />
+          </button>
+        )}
       </div>
+
+      {/* Advanced profile filters — applied CLIENT-SIDE to the loaded page */}
+      {isAdmin && advOpen && (
+        <SectionCard>
+          <div style={{ padding: '14px 18px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12 }}>
+              {advSelect('primaryRole',   'Primary role',   USER_FILTER_OPTS.primaryRole)}
+              {advSelect('researchField', 'Research field', USER_FILTER_OPTS.researchField)}
+              {advSelect('mainUseCase',   'Main use case',  USER_FILTER_OPTS.mainUseCase)}
+              <label style={{ display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0 }}>
+                <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Country contains</span>
+                <input type="text" value={adv.country} onChange={e => setAdv(a => ({ ...a, country: e.target.value }))}
+                  placeholder="e.g. United States" style={{ ...inputStyle, padding: '7px 10px', fontSize: 12 }} />
+              </label>
+              {advSelect('verified',  'Email verified',     null, true)}
+              {advSelect('onboarded', 'Onboarding done',    null, true)}
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: 12, gap: 12, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 11, color: C.muted }}>
+                {advActive
+                  ? <>Filtering the current page client-side{enriching ? ' (loading profiles…)' : ''}{advFilteredOut > 0 ? ` · ${advFilteredOut} hidden` : ''}</>
+                  : 'Filters apply to the rows on the current page.'}
+              </span>
+              {advCount > 0 && (
+                <button onClick={clearAdv} style={{ padding: '5px 12px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>Clear filters</button>
+              )}
+            </div>
+          </div>
+        </SectionCard>
+      )}
 
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <SectionCard>
-            <DataTable columns={columns} rows={rows} loading={loading} emptyMessage="No users found."
+            <DataTable columns={columns} rows={visibleRows} loading={loading}
+              emptyMessage={advActive && rows.length > 0 ? 'No users on this page match the active filters.' : 'No users found.'}
               onRowClick={u => setSelectedUser(prev => prev?.id === u.id ? null : u)}
               selectedId={selectedUser?.id} />
             <div style={{ padding: '0 14px' }}>
@@ -2272,6 +2503,284 @@ function UsersSection({ isAdmin = false }) {
           />
         )}
       </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   SECTION: USERS · ANALYTICS (prompt26) — one getUserAnalytics fetch →
+   distributions by research field / primary role / country, top institutions,
+   onboarding completion %, and email-verification donut. Small, theme-driven,
+   no chart library. Admin-only (the endpoint is requireAdmin).
+   ════════════════════════════════════════════════════════════════════════ */
+function UserAnalyticsSection() {
+  const [data, setData]       = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true); setError('');
+      try {
+        const d = await adminApi.getUserAnalytics();
+        if (alive) setData(d);
+      } catch (e) { if (alive) setError(e.message); }
+      finally { if (alive) setLoading(false); }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const onb = data?.onboarding || { completed: 0, total: 0 };
+  const ver = data?.verification || { verified: 0, unverified: 0, total: 0 };
+  const topInst = (data?.topInstitutions || []).map(i => ({ label: i.canonicalName || i.key, count: i.count }));
+
+  return (
+    <div>
+      {error && <ErrorBox msg={error} />}
+
+      {/* KPI row — total users + completion/verification headline cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: 18 }}>
+        <SectionCard title="Total users">
+          <div style={{ padding: '16px 18px' }}>
+            <div style={{ fontSize: 34, fontWeight: 800, fontFamily: MONO, color: C.acc, letterSpacing: '-1.2px', fontVariantNumeric: 'tabular-nums' }}>
+              {loading ? '—' : (data?.totalUsers ?? 0).toLocaleString()}
+            </div>
+            <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 6 }}>registered accounts</div>
+          </div>
+        </SectionCard>
+        <SectionCard title="Onboarding completion">
+          <div style={{ padding: '16px 18px' }}>
+            <PercentCard value={onb.completed || 0} total={onb.total || 0} label="completed onboarding" color={C.grn} loading={loading} suffix="users" />
+          </div>
+        </SectionCard>
+        <SectionCard title="Email verification">
+          <div style={{ padding: '16px 18px' }}>
+            <DonutGauge
+              segments={[
+                { label: 'Verified',   value: ver.verified || 0,   color: C.grn },
+                { label: 'Unverified', value: ver.unverified || 0, color: C.muted },
+              ]}
+              centerValue={ver.total > 0 ? `${Math.round(((ver.verified || 0) / ver.total) * 100)}%` : '—'}
+              centerLabel="verified"
+              size={108} thickness={12} loading={loading} emptyLabel="no users yet" />
+          </div>
+        </SectionCard>
+      </div>
+
+      {/* Distributions */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
+        <SectionCard title="By research field">
+          <div style={{ padding: '16px 18px' }}>
+            <RankedBars items={data?.byResearchField} color={C.acc} loading={loading} emptyLabel="no field data yet" />
+          </div>
+        </SectionCard>
+        <SectionCard title="By primary role">
+          <div style={{ padding: '16px 18px' }}>
+            <RankedBars items={data?.byPrimaryRole} color={C.teal} loading={loading} emptyLabel="no role data yet" />
+          </div>
+        </SectionCard>
+        <SectionCard title="By country">
+          <div style={{ padding: '16px 18px' }}>
+            <RankedBars items={data?.byCountry} color={C.acc2} loading={loading} emptyLabel="no country data yet" />
+          </div>
+        </SectionCard>
+        <SectionCard title="Top institutions">
+          <div style={{ padding: '16px 18px' }}>
+            <RankedBars items={topInst} color={C.grn} max={10} loading={loading} emptyLabel="no institutions yet" />
+          </div>
+        </SectionCard>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   SECTION: USERS · INSTITUTIONS (prompt26) — canonical-institution registry
+   with Rename / Merge / Reject-duplicate. Possible-duplicate pairs carry a
+   confidence badge and a "Needs review" state. Admin-only.
+   ════════════════════════════════════════════════════════════════════════ */
+function ConfidenceBadge({ confidence }) {
+  const pct = Math.round((Number(confidence) || 0) * 100);
+  // ≥95 = strong, ≥85 = likely, else possible. All are still "needs review".
+  const color = pct >= 95 ? C.red : pct >= 85 ? C.ylw : C.muted;
+  return <Badge text={`${pct}% match`} color={color} />;
+}
+
+function InstitutionsManager() {
+  const [institutions, setInstitutions] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState('');
+  const [busy, setBusy]       = useState('');          // key currently mutating
+  const [expanded, setExpanded] = useState({});        // key -> bool (aliases/dupes open)
+  const [mergeFor, setMergeFor] = useState(null);      // institution being merged
+  const [mergeInto, setMergeInto] = useState('');      // target key
+  const [onlyReview, setOnlyReview] = useState(false); // show only needs-review
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try {
+      const d = await adminApi.getInstitutions();
+      setInstitutions(d.institutions || []);
+    } catch (e) { setError(e.message); setInstitutions([]); }
+    finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const byKey = {};
+  for (const inst of institutions) byKey[inst.key] = inst;
+  const nameOf = k => byKey[k]?.canonicalName || k;
+
+  async function doRename(inst) {
+    const next = window.prompt(`Rename institution\n\nCanonical display name for all ${inst.userCount} user(s):`, inst.canonicalName || '');
+    if (next == null) return;
+    const name = next.trim();
+    if (!name || name === inst.canonicalName) return;
+    setBusy(inst.key); setError('');
+    try { await adminApi.renameInstitution(inst.key, name); await load(); }
+    catch (e) { setError(e.message); }
+    finally { setBusy(''); }
+  }
+
+  async function doMerge() {
+    if (!mergeFor || !mergeInto || mergeInto === mergeFor.key) return;
+    setBusy(mergeFor.key); setError('');
+    try {
+      await adminApi.mergeInstitutions(mergeFor.key, mergeInto);
+      setMergeFor(null); setMergeInto('');
+      await load();
+    } catch (e) { setError(e.message); }
+    finally { setBusy(''); }
+  }
+
+  async function doReject(keyA, keyB) {
+    setBusy(keyA); setError('');
+    try { await adminApi.rejectInstitutionDuplicate(keyA, keyB); await load(); }
+    catch (e) { setError(e.message); }
+    finally { setBusy(''); }
+  }
+
+  const needsReview = institutions.filter(i => (i.possibleDuplicates || []).length > 0);
+  const shown = onlyReview ? needsReview : institutions;
+
+  return (
+    <div>
+      {error && <ErrorBox msg={error} />}
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 12, color: C.txt2 }}>
+          <strong style={{ color: C.txt, fontFamily: MONO }}>{institutions.length}</strong> canonical institution{institutions.length === 1 ? '' : 's'}
+          {needsReview.length > 0 && <span style={{ color: C.ylw }}> · {needsReview.length} need review</span>}
+        </span>
+        <FilterBar
+          filters={[{ id: 'all', label: 'All' }, { id: 'review', label: 'Needs review', count: needsReview.length }]}
+          active={onlyReview ? 'review' : 'all'}
+          onSelect={id => setOnlyReview(id === 'review')} />
+        <button onClick={load} disabled={loading} style={{ marginLeft: 'auto', padding: '6px 13px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 12, cursor: loading ? 'wait' : 'pointer', fontFamily: FONT }}>Refresh</button>
+      </div>
+
+      {loading ? (
+        <div style={{ padding: '40px 0', textAlign: 'center' }}><Spinner size={20} /><div style={{ fontSize: 12, color: C.muted, marginTop: 12 }}>Loading institutions…</div></div>
+      ) : shown.length === 0 ? (
+        <SectionCard><div style={{ padding: '32px 18px', textAlign: 'center', color: C.muted, fontSize: 12 }}>{onlyReview ? 'No possible duplicates to review.' : 'No institutions recorded yet.'}</div></SectionCard>
+      ) : (
+        <div style={{ display: 'grid', gap: 12 }}>
+          {shown.map(inst => {
+            const dupes = inst.possibleDuplicates || [];
+            const aliases = inst.aliases || [];
+            const open = !!expanded[inst.key];
+            const isBusy = busy === inst.key;
+            return (
+              <div key={inst.key} style={{ background: C.card, border: `1px solid ${dupes.length > 0 ? alpha(C.ylw, '45') : C.brd}`, borderRadius: 10, overflow: 'hidden' }}>
+                <div style={{ padding: '14px 18px', display: 'flex', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap' }}>
+                  <div style={{ flex: 1, minWidth: 200 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 14, fontWeight: 700, color: C.txt, overflowWrap: 'anywhere' }}>{inst.canonicalName || inst.key}</span>
+                      {dupes.length > 0 && <Badge text="Needs review" color={C.ylw} />}
+                    </div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 6, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 11, fontFamily: MONO, color: C.muted }}>
+                        <strong style={{ color: C.txt2 }}>{inst.userCount}</strong> user{inst.userCount === 1 ? '' : 's'}
+                      </span>
+                      {aliases.length > 0 && (
+                        <button onClick={() => setExpanded(e => ({ ...e, [inst.key]: !open }))} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, background: 'none', border: 'none', color: C.acc, fontSize: 11, cursor: 'pointer', fontFamily: MONO, padding: 0 }}>
+                          <Icon name={open ? 'chevronDown' : 'chevronRight'} size={11} />
+                          {aliases.length} alias{aliases.length === 1 ? '' : 'es'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexShrink: 0 }}>
+                    {isBusy && <Spinner size={13} />}
+                    <button onClick={() => doRename(inst)} disabled={isBusy} title="Rename canonical display name" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 12px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 12, cursor: isBusy ? 'wait' : 'pointer', fontFamily: FONT }}>
+                      <Icon name="pencil" size={12} /> Rename
+                    </button>
+                    <button onClick={() => { setMergeFor(inst); setMergeInto(''); }} disabled={isBusy || institutions.length < 2} title="Merge this institution into another" style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '6px 12px', background: alpha(C.acc, '12'), border: `1px solid ${alpha(C.acc, '30')}`, borderRadius: 6, color: C.acc, fontSize: 12, cursor: (isBusy || institutions.length < 2) ? 'not-allowed' : 'pointer', fontFamily: FONT, opacity: institutions.length < 2 ? 0.5 : 1 }}>
+                      <Icon name="link" size={12} /> Merge
+                    </button>
+                  </div>
+                </div>
+
+                {/* Aliases (the distinct original names grouped under this key) */}
+                {open && aliases.length > 0 && (
+                  <div style={{ padding: '0 18px 14px', display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {aliases.map(a => (
+                      <span key={a} style={{ fontSize: 11, fontFamily: MONO, color: C.txt2, background: alpha(C.muted, 0.12), border: `1px solid ${C.brd}`, borderRadius: 6, padding: '3px 8px' }}>{a}</span>
+                    ))}
+                  </div>
+                )}
+
+                {/* Possible duplicates — each with confidence + merge/reject */}
+                {dupes.length > 0 && (
+                  <div style={{ borderTop: `1px solid ${C.brd}`, background: alpha(C.ylw, '08'), padding: '12px 18px' }}>
+                    <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>Possible duplicates</div>
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      {dupes.map(d => (
+                        <div key={d.key} style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                          <span style={{ fontSize: 12, color: C.txt, flex: 1, minWidth: 140, overflowWrap: 'anywhere' }}>{d.canonicalName || d.key}</span>
+                          <ConfidenceBadge confidence={d.confidence} />
+                          <button onClick={() => { setMergeFor(inst); setMergeInto(d.key); }} disabled={isBusy} style={{ padding: '5px 11px', background: alpha(C.acc, '12'), border: `1px solid ${alpha(C.acc, '30')}`, borderRadius: 6, color: C.acc, fontSize: 11, cursor: isBusy ? 'wait' : 'pointer', fontFamily: FONT }}>Merge →</button>
+                          <button onClick={() => doReject(inst.key, d.key)} disabled={isBusy} title="Mark as not a duplicate" style={{ padding: '5px 11px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 11, cursor: isBusy ? 'wait' : 'pointer', fontFamily: FONT }}>Not a duplicate</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Merge dialog — choose the target institution; users repoint into it */}
+      {mergeFor && (
+        <div style={{ position: 'fixed', inset: 0, background: alpha(C.bg, 0.65), zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 12, padding: '26px 30px', maxWidth: 460, width: '92%', boxShadow: `0 24px 64px ${C.shadow}` }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 12 }}>Merge institution</div>
+            <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.6, marginBottom: 18 }}>
+              Move all <strong style={{ color: C.txt }}>{mergeFor.userCount}</strong> user(s) from{' '}
+              <strong style={{ color: C.txt }}>{mergeFor.canonicalName || mergeFor.key}</strong> into the institution below.
+              Each user's original institution name is preserved as an alias. This cannot be undone automatically.
+            </div>
+            <Field label="Merge into">
+              <select value={mergeInto} onChange={e => setMergeInto(e.target.value)} style={{ ...inputStyle, cursor: 'pointer' }}>
+                <option value="">— Select target institution —</option>
+                {institutions.filter(i => i.key !== mergeFor.key).map(i => (
+                  <option key={i.key} value={i.key}>{i.canonicalName || i.key} ({i.userCount})</option>
+                ))}
+              </select>
+            </Field>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
+              <button onClick={() => { setMergeFor(null); setMergeInto(''); }} style={{ padding: '8px 16px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 13, cursor: 'pointer', fontFamily: FONT }}>Cancel</button>
+              <button onClick={doMerge} disabled={!mergeInto || mergeInto === mergeFor.key || busy === mergeFor.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 18px', background: C.acc2, border: 'none', borderRadius: 7, color: C.accText, fontSize: 13, fontWeight: 600, cursor: (!mergeInto || busy === mergeFor.key) ? 'not-allowed' : 'pointer', fontFamily: FONT, opacity: !mergeInto ? 0.6 : 1 }}>
+                {busy === mergeFor.key && <Spinner size={12} color={C.accText} />}
+                Merge {mergeInto ? `into ${nameOf(mergeInto)}` : ''}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

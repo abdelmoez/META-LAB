@@ -9,6 +9,19 @@ import { USAGE, recordUsage } from '../utils/usage.js';
 import { buildUserUpdate } from '../../src/shared/editableUserFields.js';
 import { buildCountryDistribution } from '../utils/countryStats.js';
 import * as Presence from '../realtime/presence.js';
+import {
+  groupInstitutions,
+  institutionSimilarity,
+  INST_REVIEW_THRESHOLD,
+} from '../../src/research-engine/index.js';
+import {
+  pairId,
+  getCanonicalOverrides,
+  setCanonicalOverrides,
+  getRejectedPairSet,
+  getRejectedPairs,
+  setRejectedPairs,
+} from '../utils/institutionStore.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -1201,6 +1214,226 @@ export async function getSecurityEvents(req, res) {
     return res.json({ events, total });
   } catch (err) {
     console.error('[admin] getSecurityEvents error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── Ops Users analytics + institution management (prompt26 follow-up) ──────────
+//
+// Read model: every analytics/listing handler reads ALL users' profile fields
+// once and aggregates in-memory. Two SiteSetting JSON rows hold the only mutable
+// state (see utils/institutionStore.js): canonical-name overrides and the list
+// of admin-rejected duplicate pairs. Institution grouping/matching is delegated
+// to the pure research-engine (groupInstitutions / institutionSimilarity).
+
+// Profile columns the analytics aggregation needs — a strict subset of the safe
+// USER_DETAIL_SELECT (no secret ever selected).
+const USER_ANALYTICS_SELECT = {
+  primaryRole: true, researchField: true, mainUseCase: true,
+  institutionOriginal: true, institutionNormalized: true, country: true,
+  registrationCountryName: true,
+  emailVerifiedAt: true, onboardingCompletedAt: true,
+};
+
+/** Tally non-empty trimmed string values → [{ label, count }] desc by count. */
+function tally(values) {
+  const counts = new Map();
+  for (const raw of values) {
+    const label = String(raw == null ? '' : raw).trim();
+    if (!label) continue;
+    counts.set(label, (counts.get(label) || 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([label, count]) => ({ label, count }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+}
+
+/**
+ * Build the institution groups (engine groupInstitutions over non-empty
+ * institutionOriginal) with canonical-name overrides applied for display.
+ * Returns [{ key, canonicalName, count, variants }].
+ */
+function buildInstitutionGroups(users, overrides) {
+  const originals = users
+    .map(u => (u.institutionOriginal || '').trim())
+    .filter(Boolean);
+  const groups = groupInstitutions(originals);
+  return groups.map(g => ({
+    ...g,
+    canonicalName: (overrides && overrides[g.key]) ? overrides[g.key] : g.canonicalName,
+  }));
+}
+
+// ── GET /api/admin/user-analytics ─────────────────────────────────────────────
+export async function getUserAnalytics(req, res) {
+  try {
+    const users = await prisma.user.findMany({ select: USER_ANALYTICS_SELECT });
+    const totalUsers = users.length;
+
+    const byResearchField = tally(users.map(u => u.researchField));
+    const byPrimaryRole = tally(users.map(u => u.primaryRole));
+    // Prefer the stated profile country; fall back to the inferred registration
+    // country name when the user never set one.
+    const byCountry = tally(users.map(u => u.country || u.registrationCountryName));
+
+    const overrides = await getCanonicalOverrides();
+    const groups = buildInstitutionGroups(users, overrides);
+    const topInstitutions = groups.slice(0, 12).map(g => ({
+      key: g.key,
+      canonicalName: g.canonicalName,
+      count: g.count,
+    }));
+
+    const onboardingCompleted = users.filter(u => u.onboardingCompletedAt).length;
+    const verified = users.filter(u => u.emailVerifiedAt).length;
+
+    return res.json({
+      totalUsers,
+      byResearchField,
+      byPrimaryRole,
+      byCountry,
+      topInstitutions,
+      onboarding: { completed: onboardingCompleted, total: totalUsers },
+      verification: { verified, unverified: totalUsers - verified, total: totalUsers },
+    });
+  } catch (err) {
+    console.error('[admin] getUserAnalytics error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── GET /api/admin/institutions ───────────────────────────────────────────────
+export async function getInstitutions(req, res) {
+  try {
+    const users = await prisma.user.findMany({
+      select: { institutionOriginal: true },
+    });
+    const [overrides, rejected] = await Promise.all([
+      getCanonicalOverrides(),
+      getRejectedPairSet(),
+    ]);
+
+    const groups = buildInstitutionGroups(users, overrides);
+
+    const institutions = groups.map(g => {
+      // possibleDuplicates: other groups whose canonical names are similar
+      // (>= 0.80), excluding admin-rejected pairs. Compare on canonical (override
+      // -aware) names so curated renames are reflected in the suggestions.
+      const possibleDuplicates = [];
+      for (const other of groups) {
+        if (other.key === g.key) continue;
+        if (rejected.has(pairId(g.key, other.key))) continue;
+        const confidence = institutionSimilarity(g.canonicalName, other.canonicalName);
+        if (confidence >= INST_REVIEW_THRESHOLD) {
+          possibleDuplicates.push({
+            key: other.key,
+            canonicalName: other.canonicalName,
+            confidence: Math.round(confidence * 100) / 100,
+          });
+        }
+      }
+      possibleDuplicates.sort((a, b) => b.confidence - a.confidence);
+
+      return {
+        key: g.key,
+        canonicalName: g.canonicalName,
+        userCount: g.count,
+        aliases: g.variants,            // distinct original spellings
+        possibleDuplicates,
+      };
+    });
+
+    return res.json({ institutions });
+  } catch (err) {
+    console.error('[admin] getInstitutions error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── POST /api/admin/institutions/merge ────────────────────────────────────────
+// body { fromKey, toKey } → repoint User.institutionNormalized from fromKey to
+// toKey (the user's institutionOriginal is preserved as the surviving alias).
+export async function mergeInstitutions(req, res) {
+  try {
+    const fromKey = String((req.body || {}).fromKey || '').trim();
+    const toKey = String((req.body || {}).toKey || '').trim();
+    if (!fromKey || !toKey) {
+      return res.status(400).json({ error: 'fromKey and toKey are required' });
+    }
+    if (fromKey === toKey) {
+      return res.status(400).json({ error: 'fromKey and toKey must differ' });
+    }
+
+    // institutionNormalized stores the grouping key, so repoint by key.
+    const result = await prisma.user.updateMany({
+      where: { institutionNormalized: fromKey },
+      data: { institutionNormalized: toKey },
+    });
+    const moved = result.count;
+
+    // Carry over any canonical-name override from the absorbed key (only if the
+    // surviving key has none of its own), then drop the stale override.
+    const overrides = await getCanonicalOverrides();
+    if (overrides[fromKey] && !overrides[toKey]) overrides[toKey] = overrides[fromKey];
+    if (Object.prototype.hasOwnProperty.call(overrides, fromKey)) delete overrides[fromKey];
+    await setCanonicalOverrides(overrides, req.user.id);
+
+    await logAdminAction(req, 'MERGE_INSTITUTION', 'Institution', toKey, { fromKey, toKey, moved });
+    return res.json({ ok: true, moved });
+  } catch (err) {
+    console.error('[admin] mergeInstitutions error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── POST /api/admin/institutions/rename ───────────────────────────────────────
+// body { key, name } → set the canonical display name override for a group key.
+export async function renameInstitution(req, res) {
+  try {
+    const key = String((req.body || {}).key || '').trim();
+    const name = String((req.body || {}).name || '').trim();
+    if (!key) return res.status(400).json({ error: 'key is required' });
+    if (!name) return res.status(400).json({ error: 'name is required' });
+
+    const overrides = await getCanonicalOverrides();
+    const before = overrides[key] || null;
+    overrides[key] = name;
+    await setCanonicalOverrides(overrides, req.user.id);
+
+    await logAdminAction(req, 'RENAME_INSTITUTION', 'Institution', key, { key, before, after: name });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[admin] renameInstitution error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── POST /api/admin/institutions/reject ───────────────────────────────────────
+// body { keyA, keyB } → record that this pair is NOT a duplicate so it never
+// resurfaces in possibleDuplicates. Idempotent (stored order-independent).
+export async function rejectInstitutionDuplicate(req, res) {
+  try {
+    const keyA = String((req.body || {}).keyA || '').trim();
+    const keyB = String((req.body || {}).keyB || '').trim();
+    if (!keyA || !keyB) {
+      return res.status(400).json({ error: 'keyA and keyB are required' });
+    }
+    if (keyA === keyB) {
+      return res.status(400).json({ error: 'keyA and keyB must differ' });
+    }
+
+    const pairs = await getRejectedPairs();
+    const id = pairId(keyA, keyB);
+    const exists = pairs.some(p => pairId(p[0], p[1]) === id);
+    if (!exists) {
+      pairs.push([keyA, keyB]);
+      await setRejectedPairs(pairs, req.user.id);
+    }
+
+    await logAdminAction(req, 'REJECT_INSTITUTION_DUPLICATE', 'Institution', id, { keyA, keyB });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[admin] rejectInstitutionDuplicate error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }
