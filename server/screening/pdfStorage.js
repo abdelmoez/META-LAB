@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
+import { findDoiInText } from '../../src/research-engine/screening/pdfMatching.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const STORAGE_ROOT = path.join(__dirname, '..', 'storage', 'screening-pdfs');
@@ -32,4 +33,17 @@ export function savePdf(projectId, buffer) {
 /** Best-effort delete of an on-disk PDF (never throws). */
 export function deletePdfFile(projectId, storedName) {
   try { fs.unlinkSync(path.join(STORAGE_ROOT, projectId, storedName)); } catch { /* already gone */ }
+}
+
+/**
+ * Best-effort DOI from a PDF buffer (XMP/Info-dict/uncompressed text only — no
+ * PDF library, so compressed content streams are not decoded). Scans the first
+ * `maxScanBytes` (where the Info dict + XMP packet usually live). Never throws.
+ */
+export function extractDoiFromPdfBuffer(buffer, maxScanBytes = 200000) {
+  if (!buffer || !buffer.length) return '';
+  try {
+    const slice = buffer.subarray(0, Math.min(buffer.length, maxScanBytes)).toString('latin1');
+    return findDoiInText(slice);
+  } catch { return ''; }
 }

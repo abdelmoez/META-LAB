@@ -75,6 +75,7 @@ export {
 export {
   extractIdentifiersFromFilename,
   normalizeDoi,
+  findDoiInText,
   classifyMatch,
   matchPdfToRecords,
   bestPdfMatch,

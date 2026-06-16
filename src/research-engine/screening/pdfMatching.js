@@ -32,6 +32,23 @@ export function normalizeDoi(doi) {
 }
 
 /**
+ * Best-effort DOI recovery from decoded PDF text (XMP / Info-dict / uncompressed
+ * content). Prefers an explicitly tagged DOI (prism:doi, dc:identifier, /doi);
+ * otherwise the first DOI-shaped token. A wrong guess is harmless — it can only
+ * match no record, never the wrong one. (Compressed content streams are NOT
+ * decoded — that would need a PDF library; this is the dependency-free subset.)
+ * @param {string} text
+ * @returns {string} normalised DOI or ''
+ */
+export function findDoiInText(text) {
+  const s = String(text || '');
+  const tagged = s.match(/(?:prism:doi>|dc:identifier[^>]*>(?:\s*doi:)?|\/doi\s*\(?)\s*(10\.\d{4,9}\/[^\s"'<>)\]]+)/i);
+  if (tagged) return normalizeDoi(tagged[1]);
+  const raw = s.match(DOI_RE);
+  return raw ? normalizeDoi(raw[1]) : '';
+}
+
+/**
  * Pull identifiers/hints out of a PDF filename. Publishers and reference
  * managers often encode the DOI or PMID in the filename; "/" is commonly
  * replaced by "_" so we try that recovery too.
@@ -72,7 +89,8 @@ export function extractIdentifiersFromFilename(filename) {
 export function matchPdfToRecords(pdf, records) {
   if (!Array.isArray(records) || records.length === 0) return [];
   const hints = pdf.filename ? extractIdentifiersFromFilename(pdf.filename) : { doi: '', pmid: '', year: '', titleHint: '' };
-  const doi = normalizeDoi(pdf.doi || hints.doi);
+  let doi = normalizeDoi(pdf.doi || hints.doi);
+  if (!doi && pdf.pdfText) doi = findDoiInText(pdf.pdfText); // best-effort DOI from PDF bytes
   const pmid = String(pdf.pmid || hints.pmid || '').trim();
   const title = pdf.title || hints.titleHint || '';
   const year = String(pdf.year || hints.year || '').trim();

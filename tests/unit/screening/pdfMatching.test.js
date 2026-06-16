@@ -3,7 +3,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  extractIdentifiersFromFilename, normalizeDoi, classifyMatch,
+  extractIdentifiersFromFilename, normalizeDoi, findDoiInText, classifyMatch,
   matchPdfToRecords, bestPdfMatch,
   AUTO_ATTACH_THRESHOLD, REVIEW_THRESHOLD,
 } from '../../../src/research-engine/screening/pdfMatching.js';
@@ -92,6 +92,34 @@ describe('matchPdfToRecords', () => {
   it('returns [] when nothing matches', () => {
     expect(matchPdfToRecords({ doi: '10.9999/none' }, records)).toEqual([]);
     expect(matchPdfToRecords({ title: 'unrelated' }, [])).toEqual([]);
+  });
+});
+
+describe('findDoiInText (best-effort DOI from PDF bytes)', () => {
+  it('extracts a prism:doi XMP tag', () => {
+    expect(findDoiInText('<prism:doi>10.1000/aaa</prism:doi>')).toBe('10.1000/aaa');
+  });
+  it('extracts a dc:identifier doi: tag', () => {
+    expect(findDoiInText('<dc:identifier>doi:10.2000/BBB</dc:identifier>')).toBe('10.2000/bbb');
+  });
+  it('extracts a /doi Info-dict entry', () => {
+    expect(findDoiInText('/doi (10.3000/ccc)')).toBe('10.3000/ccc');
+  });
+  it('falls back to the first DOI-shaped token', () => {
+    expect(findDoiInText('see also https://doi.org/10.4000/ddd in refs')).toBe('10.4000/ddd');
+  });
+  it('returns "" when no DOI is present', () => {
+    expect(findDoiInText('no identifiers here')).toBe('');
+    expect(findDoiInText('')).toBe('');
+  });
+});
+
+describe('matchPdfToRecords with pdfText', () => {
+  it('recovers the DOI from PDF text when filename/metadata lack it', () => {
+    const m = matchPdfToRecords({ filename: 'download.pdf', pdfText: '<prism:doi>10.1000/aaa</prism:doi>' }, records)[0];
+    expect(m.recordId).toBe('r1');
+    expect(m.matchedBy).toBe('doi');
+    expect(m.disposition).toBe('auto');
   });
 });
 

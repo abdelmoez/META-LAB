@@ -17,6 +17,7 @@ import { randomUUID } from 'crypto';
 import { prisma } from '../db/client.js';
 import { getProjectAccess, writeAudit } from '../screening/access.js';
 import { getMetaSiftSettings } from '../screening/settings.js';
+import { extractDoiFromPdfBuffer } from '../screening/pdfStorage.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STORAGE_ROOT = path.join(__dirname, '..', 'storage', 'screening-pdfs');
@@ -86,12 +87,17 @@ export async function uploadPdf(req, res) {
     const storedName = `${randomUUID()}.pdf`;
     fs.writeFileSync(path.join(dir, storedName), buf);
 
+    // Best-effort provenance: recover the DOI from the PDF bytes (no dependency).
+    let resolvedDoi = null;
+    try { resolvedDoi = extractDoiFromPdfBuffer(buf) || null; } catch { /* non-fatal */ }
+
     const att = await prisma.screenPdfAttachment.create({
       data: {
         projectId: access.project.id, recordId: rec.id,
         fileName: req.file.originalname.slice(0, 255),
         storedName, fileSize: buf.length, mimeType: 'application/pdf',
         uploadedBy: req.user.id,
+        source: 'manual_upload', resolvedDoi, matchedBy: 'manual',
       },
     });
     await writeAudit(access.project.id, req.user, 'PDF_UPLOADED', { entityType: 'record', entityId: rec.id, details: { fileName: att.fileName, fileSize: att.fileSize } });

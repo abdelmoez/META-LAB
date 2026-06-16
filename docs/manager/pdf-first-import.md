@@ -15,11 +15,21 @@ that have the PDF attached.
   hint produce an incomplete draft the user completes — **no bad records are
   created silently**.
 
-## Documented limitation (deliberate)
-**Deep PDF *text* extraction is NOT implemented.** The repo has no PDF-parsing
-dependency, and the roadmap explicitly says not to add a heavy dependency without
-checking. So metadata extraction is limited to **filename + client-supplied
-fields**, not the PDF's internal text/XMP. Consequences:
+## Best-effort DOI from PDF bytes (added in the limitations pass — no dependency)
+`findDoiInText` (engine) + `extractDoiFromPdfBuffer` (server) recover a DOI from a
+PDF's **uncompressed** text — the XMP packet (`prism:doi`, `dc:identifier`), the
+Info-dict `/doi`, or any DOI-shaped token in the first ~200 KB. This runs on every
+**manual upload** (populating `resolvedDoi` provenance) and is consumed by
+`match-pdfs` (pass `pdfText`). A recovered DOI that is wrong can only match no
+record — never the wrong one. This turns many opaquely-named PDFs (e.g.
+`download.pdf`) into exact DOI matches without any PDF library.
+
+## Remaining limitation (deliberate)
+**Deep PDF *text* extraction of COMPRESSED content streams is NOT implemented.**
+The repo has no PDF-parsing dependency, and the roadmap says not to add a heavy
+dependency without checking. So when a PDF stores its DOI/title only inside a
+Flate-compressed content stream (no XMP/Info DOI), extraction falls back to
+**filename + client-supplied fields**. Consequences:
 - A PDF named opaquely (e.g. `download.pdf`) yields only a weak title hint and will
   land in the **unmatched** queue for manual attachment — correct and safe.
 - Auto-population of title/abstract/authors from inside the PDF is a **follow-up**

@@ -115,7 +115,7 @@ export async function matchPdfs(req, res) {
       select: { id: true, doi: true, pmid: true, title: true, year: true },
     });
     const suggestions = pdfs.map(p => {
-      const best = bestPdfMatch({ filename: p.filename, doi: p.doi, pmid: p.pmid, title: p.title, year: p.year }, records);
+      const best = bestPdfMatch({ filename: p.filename, doi: p.doi, pmid: p.pmid, title: p.title, year: p.year, pdfText: p.pdfText }, records);
       return {
         filename: p.filename || null,
         match: best ? { recordId: best.recordId, confidence: best.confidence, matchedBy: best.matchedBy, disposition: best.disposition } : null,

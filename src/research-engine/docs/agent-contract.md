@@ -177,6 +177,7 @@ All exports are also available from the barrel:
 |---|---|---|
 | `extractIdentifiersFromFilename` | `(filename: string) → { doi, pmid, year, titleHint }` | Pull DOI/PMID/year/title hints from a PDF filename (incl. "/"→"_" DOI recovery) |
 | `normalizeDoi` | `(doi: string) → string` | Lower-case, strip URL prefix + trailing punctuation |
+| `findDoiInText` | `(text: string) → string` | Best-effort DOI from decoded PDF text (XMP/Info-dict/uncompressed); '' if none. `matchPdfToRecords` reads `pdf.pdfText` |
 | `classifyMatch` | `(confidence: number) → "auto"\|"review"\|"unmatched"` | Band a confidence (≥0.90 auto, ≥0.70 review) |
 | `matchPdfToRecords` | `(pdf, records) → Array<{recordId, confidence, matchedBy, disposition}>` | Ranked candidate matches (DOI/PMID/title[+year]) |
 | `bestPdfMatch` | `(pdf, records) → {recordId, confidence, matchedBy, disposition, candidates}\|null` | Top match (demotes near-tie title matches to review); null below the review floor |
