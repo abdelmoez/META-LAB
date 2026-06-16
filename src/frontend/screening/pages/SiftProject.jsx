@@ -71,16 +71,20 @@ const PROGRESS_BADGE = {
   done:        { label: 'DONE',        color: C.grn },
 };
 
-// Human-readable presence location per sub-tab (prompt23 Task 13).
+// Human-readable presence location per sub-tab (prompt23 Task 13 · prompt24
+// follow-up). Every screening sub-stage carries the "Screening > " prefix so the
+// universal-header popover and Members panel show exactly WHERE in Screening a
+// teammate is — e.g. "Screening > Title & Abstract" — and it updates live as they
+// move between sub-tabs (heartbeat fires on location change).
 const LOCATION_LABELS = {
-  overview: 'Overview',
-  import: 'Screening · Import',
-  duplicates: 'Screening · Duplicates',
-  screening: 'Screening · Title & Abstract',
-  conflicts: 'Screening · Conflicts',
-  'second-review': 'Screening · Final Review',
-  control: 'Settings',
-  export: 'Export',
+  overview: 'Screening > Overview',
+  import: 'Screening > Import',
+  duplicates: 'Screening > Duplicates',
+  screening: 'Screening > Title & Abstract',
+  conflicts: 'Screening > Conflicts',
+  'second-review': 'Screening > Final Review',
+  control: 'Screening > Settings',
+  export: 'Screening > Export',
 };
 
 export default function SiftProject({ embedded = false, embeddedPid = null, onGoToExtraction = null } = {}) {
