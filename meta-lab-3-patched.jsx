@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, memo } from "react";
+import { createPortal } from "react-dom";
 import { METHODS_CONTENT, NOT_IMPLEMENTED } from "./src/research-engine/docs/methods-content.js";
 import { screeningApi } from "./src/frontend/screening/api-client/screeningApi.js";
 import SiftProject from "./src/frontend/screening/pages/SiftProject.jsx";
@@ -1218,24 +1219,50 @@ function InfoBox({children,color}){
     borderRadius:10,padding:"12px 16px",marginTop:14,fontSize:12.5,color:C.txt2,lineHeight:1.7,
   }}>{children}</div>);
 }
-/* Hover tooltip with a help "?" trigger — for beginner guidance */
+/* Hover tooltip with a help "?" trigger — for beginner guidance. prompt24
+   follow-up: the bubble is PORTALED to <body> so it can never be clipped by an
+   overflow-hidden table/card or a transformed ancestor (the old position:absolute
+   z-300 bubble was getting trapped — e.g. the "?" beside Measure / Convert data in
+   Data Extraction). It floats above everything at z 10000, flips below the "?"
+   when there's no room above, and is clamped into the viewport. */
 function HelpTip({text}){
   const[show,setShow]=useState(false);
-  return(<span style={{position:"relative",display:"inline-flex",marginLeft:6}}
-    onMouseEnter={()=>setShow(true)} onMouseLeave={()=>setShow(false)}>
+  const[pos,setPos]=useState(null);
+  const ref=useRef(null);
+  const place=useCallback(()=>{
+    const el=ref.current; if(!el) return;
+    const r=el.getBoundingClientRect();
+    const W=260, margin=8;
+    let left=r.left+r.width/2-W/2;
+    left=Math.max(margin,Math.min(left,window.innerWidth-W-margin));
+    const above=r.top>150; // room above the trigger?
+    setPos(above
+      ?{left,bottom:window.innerHeight-r.top+8,top:"auto"}
+      :{left,top:r.bottom+8,bottom:"auto"});
+  },[]);
+  const open=useCallback(()=>{place();setShow(true);},[place]);
+  useEffect(()=>{
+    if(!show) return undefined;
+    const onMove=()=>place();
+    window.addEventListener("scroll",onMove,true);
+    window.addEventListener("resize",onMove);
+    return ()=>{window.removeEventListener("scroll",onMove,true);window.removeEventListener("resize",onMove);};
+  },[show,place]);
+  return(<span ref={ref} style={{position:"relative",display:"inline-flex",marginLeft:6}}
+    onMouseEnter={open} onMouseLeave={()=>setShow(false)}>
     <span style={{
       width:16,height:16,borderRadius:"50%",
       border:`1px solid ${C.brd2}`,color:C.muted,background:C.card2,
       fontSize:9,fontWeight:700,display:"inline-flex",alignItems:"center",justifyContent:"center",cursor:"help",
       transition:"border-color 0.15s",
     }}>?</span>
-    {show&&<span style={{
-      position:"absolute",bottom:"calc(100% + 8px)",left:"50%",transform:"translateX(-50%)",
+    {show&&pos&&createPortal(<span style={{
+      position:"fixed",top:pos.top,bottom:pos.bottom,left:pos.left,
       background:C.surf,color:C.txt2,fontSize:11,fontWeight:400,lineHeight:1.6,
-      padding:"9px 13px",borderRadius:8,width:260,zIndex:300,
+      padding:"9px 13px",borderRadius:8,width:260,maxWidth:"92vw",zIndex:10000,
       border:`1px solid ${C.brd2}`,boxShadow:"0 12px 40px var(--t-shadow)",
-      textTransform:"none",letterSpacing:0,
-    }}>{text}</span>}
+      textTransform:"none",letterSpacing:0,pointerEvents:"none",
+    }}>{text}</span>,document.body)}
   </span>);
 }
 /* Small AI button used for refine actions.

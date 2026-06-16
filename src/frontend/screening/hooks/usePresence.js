@@ -47,7 +47,18 @@ export function useProjectPresence(pid, location, { enabled = true, heartbeat = 
   // pokes keep it fresh afterwards).
   useEffect(() => {
     if (!pid || !enabled) return undefined;
-    if (!heartbeat) { refetch(); return undefined; }
+    if (!heartbeat) {
+      // Listen-only: another component (e.g. the embedded Screening engine) owns
+      // the heartbeat for this room. The server only pokes OTHER members on a
+      // heartbeat, so to see the live list — including OURSELVES — we refetch now,
+      // again shortly after (to catch our own heartbeat landing post-mount), then
+      // poll as a safety net on top of the realtime pokes. Without this the header
+      // shows "no one online" on the Screening tab even though we're present.
+      refetch();
+      const catchUp = setTimeout(refetch, 1200);
+      const poll = setInterval(refetch, 15000);
+      return () => { clearTimeout(catchUp); clearInterval(poll); };
+    }
     beat();
     const t = setInterval(beat, HEARTBEAT_MS);
     const onVis = () => {

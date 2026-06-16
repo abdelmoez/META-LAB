@@ -209,3 +209,28 @@ covers real usage); the "Recently opened" 1-item display cap (intentional UX).
 **Verification:** `npx vite build` green; unit suite 719 pass / 6 pre-existing
 `serverStorage` fails (unchanged baseline); `presenceIndicator.test.js` green.
 Version `3.6.0` → `3.6.1`.
+
+---
+
+## Follow-up patch — reported issues (v3.6.2)
+
+1. **Screening showed "no online".** On the Screening tab the universal-header
+   presence runs *listen-only* (the embedded engine owns the heartbeat so the
+   fine-grained "Screening · …" location is preserved). The server only pokes
+   *other* members on a heartbeat, so the header never refetched to include
+   **itself** → the chip read empty even though the user was present. Fix: in
+   `usePresence.js`, listen-only mode now refetches immediately, again at ~1.2 s
+   (to catch its own heartbeat landing post-mount), then polls every 15 s on top
+   of the realtime pokes — so the count converges to the true room, including self.
+2. **Custom "?" tooltips were clipped** (notably beside *Measure* / *Convert data*
+   in Data Extraction). The shared `HelpTip` bubble rendered as
+   `position:absolute; z-index:300` inside the content, so overflow-hidden
+   tables/cards and the transformed `.tab-content` ancestor trapped it. Fix:
+   `HelpTip` now **portals its bubble to `<body>`** at z-10000 with
+   `getBoundingClientRect` positioning, an above/below flip, and viewport
+   clamping — identical to the presence popover. This fixes **every** `HelpTip`
+   across the app (PICO, Search, Extraction, etc.); all other tooltips were
+   already native `title=` (never clipped).
+
+`npx vite build` green; suite 719 pass / 6 pre-existing fails. Version
+`3.6.1` → `3.6.2`.
