@@ -151,6 +151,16 @@ export const api = {
      */
     duplicate: (id) =>
       req(`${BASE}/projects/${id}/duplicate`, { method: "POST" }),
+
+    /**
+     * PUT /api/projects/:id/autosave — upsert a full project payload.
+     * Creates the row when the id is new (import flow).
+     * @param {string} id
+     * @param {object} body  Full project object (name required).
+     * @returns {Promise<object>}
+     */
+    autosave: (id, body) =>
+      req(`${BASE}/projects/${id}/autosave`, { method: "PUT", ...json(body) }),
   },
 
   /* ── Studies ─────────────────────────────────────────────────────── */

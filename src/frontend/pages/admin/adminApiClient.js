@@ -50,6 +50,14 @@ export const adminApi = {
     // latestRegistrationAt }], summary: { totalUsers, totalKnown, unknown,
     // countriesRepresented } } sorted by userCount desc. COUNTRY-LEVEL only.
     countries:    ()         => req(`${BASE}/users/countries`),
+    // prompt25 — global online/offline head-count (admin only).
+    // Returns { totalUsers, online, offline, percentOnline }.
+    // "Online" = presence heartbeat received within ~75 s.
+    activitySummary: ()     => req(`${BASE}/users/activity-summary`),
+    // prompt25 — per-user real-time activity snapshot (admin only).
+    // Returns { id, name, email, lastActive, onlineNow, currentProjectId,
+    //           currentProjectTitle, currentLocation }.
+    activity:     (id)      => req(`${BASE}/users/${id}/activity`),
     get:          (id)       => req(`${BASE}/users/${id}`),
     getProjects:  (id, p)    => req(`${BASE}/users/${id}/projects?${new URLSearchParams(p || {})}`),
     update:       (id, b)    => req(`${BASE}/users/${id}`, { method: 'PATCH', ...json(b) }),

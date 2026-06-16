@@ -123,14 +123,19 @@ function useCountUp(target, reduced, duration = 620) {
 
 /* ════════════════════════════════════════════════════════════════════════
    Recently-opened persistence (localStorage, dedupe-by-id, newest-first, cap 6)
+   Key is per-user so two accounts on one browser don't share recents (Task 4).
    ════════════════════════════════════════════════════════════════════════ */
 
-const RECENTS_KEY = 'metalab.recentProjects';
+const RECENTS_KEY_PREFIX = 'metalab.recentProjects';
 const RECENTS_CAP = 6;
 
-function readRecents() {
+function recentsKey(userId) {
+  return userId ? `${RECENTS_KEY_PREFIX}.${userId}` : RECENTS_KEY_PREFIX;
+}
+
+function readRecents(userId) {
   try {
-    const raw = window.localStorage.getItem(RECENTS_KEY);
+    const raw = window.localStorage.getItem(recentsKey(userId));
     if (!raw) return [];
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return [];
@@ -138,15 +143,26 @@ function readRecents() {
   } catch { return []; }
 }
 
-function writeRecent(project) {
+function writeRecent(project, userId) {
   try {
     const id = project && project.id;
-    if (!id) return readRecents();
+    if (!id) return readRecents(userId);
     const entry = { id: String(id), name: project.name || 'Untitled project', ts: Date.now() };
-    const next = [entry, ...readRecents().filter(r => r.id !== entry.id)].slice(0, RECENTS_CAP);
-    window.localStorage.setItem(RECENTS_KEY, JSON.stringify(next));
+    const next = [entry, ...readRecents(userId).filter(r => r.id !== entry.id)].slice(0, RECENTS_CAP);
+    window.localStorage.setItem(recentsKey(userId), JSON.stringify(next));
     return next;
-  } catch { return readRecents(); }
+  } catch { return readRecents(userId); }
+}
+
+/** Generate a fresh 8-hex-char id — matches the server's generateId() scheme. */
+function generateFreshId() {
+  try {
+    const arr = new Uint8Array(4);
+    window.crypto.getRandomValues(arr);
+    return Array.from(arr).map(b => b.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return Math.floor(Math.random() * 0xFFFFFFFF).toString(16).padStart(8, '0');
+  }
 }
 
 /* ════════════════════════════════════════════════════════════════════════
@@ -1086,6 +1102,7 @@ export default function ProjectLanding() {
   const [projects, setProjects]   = useState([]);
   const [loading, setLoading]     = useState(true);
   const [error, setError]         = useState('');
+  const [success, setSuccess]     = useState('');
 
   /* controls */
   const [searchRaw, setSearchRaw] = useState('');
@@ -1131,9 +1148,11 @@ export default function ProjectLanding() {
   /* modals */
   const [modal, setModal] = useState(null); // { type, project? }
 
-  /* recently-opened (localStorage-backed) */
-  const [recents, setRecents] = useState(() => readRecents());
-  const recordRecent = useCallback((p) => { setRecents(writeRecent(p)); }, []);
+  /* recently-opened (localStorage-backed, per-user key — Task 4) */
+  const [recents, setRecents] = useState(() => readRecents(user?.id));
+  // Re-seed when user changes (login/logout/switch)
+  useEffect(() => { setRecents(readRecents(user?.id)); }, [user?.id]);
+  const recordRecent = useCallback((p) => { setRecents(writeRecent(p, user?.id)); }, [user?.id]);
 
   /* ── Legacy /app?project=<id> deep-link ─────────────────────────── */
   useEffect(() => {
@@ -1233,6 +1252,75 @@ export default function ProjectLanding() {
       .slice(0, 1);
   }, [recents, projects]);
 
+  /* ── Import Project (Task 8) ──────────────────────────────────── */
+  const importRef = useRef(null);
+  const [importing, setImporting] = useState(false);
+
+  const onImport = useCallback(async (e) => {
+    const file = (e.target.files || [])[0];
+    if (!file) return;
+    setImporting(true);
+    setError('');
+    try {
+      const text = await file.text();
+      let data;
+      try { data = JSON.parse(text); }
+      catch { throw new Error('File is not valid JSON.'); }
+
+      // Parse the same shapes as the monolith importer (meta-lab-3-patched ~L7944)
+      let incoming;
+      if (data && data.type === 'metalab-backup' && Array.isArray(data.projects)) {
+        incoming = data.projects;
+      } else if (data && data.type === 'metalab-project' && data.project) {
+        incoming = [data.project];
+      } else if (Array.isArray(data)) {
+        incoming = data;
+      } else if (data && data.id && data.name) {
+        incoming = [data];
+      } else {
+        throw new Error('Unrecognised project file. Expected a metalab-backup, metalab-project, array, or bare project object.');
+      }
+
+      if (!incoming.length) throw new Error('No projects found in the file.');
+
+      const existingNames = new Set(projects.map(p => p.name));
+      let importedCount = 0;
+      let lastImported = null;
+
+      for (const raw of incoming) {
+        const freshId = generateFreshId();
+        const baseName = raw.name || 'Imported Project';
+        const finalName = existingNames.has(baseName) ? `${baseName} (imported)` : baseName;
+        existingNames.add(finalName); // prevent collisions within the same batch
+
+        const payload = {
+          ...raw,
+          id: freshId,
+          name: finalName,
+        };
+        // PUT to autosave — creates the row when id is new
+        const res = await api.projects.autosave(freshId, payload);
+        if (!res || res.error) throw new Error(res?.error || 'Server rejected the import.');
+        importedCount++;
+        lastImported = { id: freshId, name: finalName };
+      }
+
+      await reload();
+      setSuccess(`Imported ${importedCount} project${importedCount !== 1 ? 's' : ''} successfully.`);
+      if (importedCount === 1 && lastImported) {
+        // Open the single imported project after a brief moment so the user
+        // sees the success banner and the project appears in the list.
+        recordRecent(lastImported);
+        setTimeout(() => navigate(`/app/project/${encodeURIComponent(lastImported.id)}`), 900);
+      }
+    } catch (err) {
+      setError(`Import failed: ${err.message}`);
+    } finally {
+      setImporting(false);
+      if (importRef.current) importRef.current.value = '';
+    }
+  }, [projects, reload, recordRecent, navigate]);
+
   /* ── Action handlers ──────────────────────────────────────────── */
   const handlers = useMemo(() => ({
     open:      (p) => { recordRecent(p); navigate(`/app/project/${encodeURIComponent(p.id)}`); },
@@ -1299,13 +1387,31 @@ export default function ProjectLanding() {
               Choose a workspace to continue your evidence synthesis.
             </p>
           </div>
-          <Btn
-            variant="primary"
-            onClick={() => setModal({ type: 'create' })}
-            style={{ padding: '10px 22px', fontSize: 13.5, borderRadius: 10 }}
-          >
-            <Icon name="plus" size={16} /> New Project
-          </Btn>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+            {/* Hidden file input for project import */}
+            <input
+              ref={importRef}
+              type="file"
+              accept=".json,application/json"
+              onChange={onImport}
+              style={{ display: 'none' }}
+            />
+            <Btn
+              variant="ghost"
+              onClick={() => importRef.current && importRef.current.click()}
+              disabled={importing}
+              style={{ padding: '10px 18px', fontSize: 13.5, borderRadius: 10 }}
+            >
+              <Icon name="upload" size={16} /> {importing ? 'Importing…' : 'Import Project'}
+            </Btn>
+            <Btn
+              variant="primary"
+              onClick={() => setModal({ type: 'create' })}
+              style={{ padding: '10px 22px', fontSize: 13.5, borderRadius: 10 }}
+            >
+              <Icon name="plus" size={16} /> New Project
+            </Btn>
+          </div>
         </motion.div>
 
         {/* ── Error banner ─────────────────────────────────────────── */}
@@ -1333,6 +1439,35 @@ export default function ProjectLanding() {
                   fontSize: 11.5, fontWeight: 600, cursor: 'pointer', fontFamily: FONT,
                 }}
               >Retry</button>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* ── Success banner (import) ───────────────────────────────── */}
+        <AnimatePresence>
+          {success && (
+            <motion.div
+              key="ok"
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.22 }}
+              style={{
+                marginBottom: 22, padding: '12px 16px', borderRadius: 10, fontSize: 12.5,
+                background: alpha(C.grn, 0.10), color: C.grn,
+                border: `1px solid ${alpha(C.grn, 0.25)}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+              }}
+            >
+              <span><Icon name="check" size={14} style={{ marginRight: 7, verticalAlign: 'text-bottom' }} />{success}</span>
+              <button
+                onClick={() => setSuccess('')}
+                style={{
+                  background: 'transparent', border: 'none',
+                  color: C.grn, cursor: 'pointer', fontFamily: FONT,
+                  fontSize: 11.5, fontWeight: 600, padding: '4px 8px',
+                }}
+              >Dismiss</button>
             </motion.div>
           )}
         </AnimatePresence>

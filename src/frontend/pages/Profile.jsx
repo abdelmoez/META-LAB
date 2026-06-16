@@ -13,6 +13,7 @@ import Icon from '../components/icons.jsx';
 // Theme-aware tokens (prompt7) — C values are `var(--t-*)` strings; use
 // alpha(C.x, '40') instead of hex+alpha concatenation.
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
+import { DEFAULT_SCREENING_SHORTCUTS, parseScreeningShortcuts, keyLabel } from '../screening/screeningShortcuts.js';
 
 function fmtDate(iso) {
   if (!iso) return '—';
@@ -106,11 +107,163 @@ function PrimaryBtn({ onClick, disabled, children, style = {} }) {
 }
 
 const NAV_ITEMS = [
-  { id: 'account',  label: 'Account Info' },
-  { id: 'name',     label: 'Edit Name' },
-  { id: 'password', label: 'Change Password' },
-  { id: 'danger',   label: 'Danger Zone' },
+  { id: 'account',   label: 'Account Info' },
+  { id: 'name',      label: 'Edit Name' },
+  { id: 'shortcuts', label: 'Screening Shortcuts' },
+  { id: 'password',  label: 'Change Password' },
+  { id: 'danger',    label: 'Danger Zone' },
 ];
+
+// prompt25 Task 7 — per-user Screening keyboard-shortcut editor. Loads from
+// /api/profile, captures a key per action (with duplicate-key validation), and
+// saves the { enabled, keys } blob back. Mirrors the dashboard-prefs pattern.
+const SHORTCUT_ACTIONS = [
+  { key: 'next',     label: 'Next article' },
+  { key: 'previous', label: 'Previous article' },
+  { key: 'include',  label: 'Include' },
+  { key: 'exclude',  label: 'Exclude' },
+  { key: 'maybe',    label: 'Maybe' },
+  { key: 'undo',     label: 'Undo' },
+];
+
+// Normalise a captured KeyboardEvent.key: keep Arrow*/Enter etc. verbatim, lower
+// single letters. Ignore pure modifiers.
+function normalizeCaptured(e) {
+  const k = e.key;
+  if (['Shift', 'Control', 'Alt', 'Meta'].includes(k)) return null;
+  if (k.length === 1) return k.toLowerCase();
+  return k;
+}
+
+function ScreeningShortcutsSection() {
+  const [prefs, setPrefs]       = useState(() => parseScreeningShortcuts(null));
+  const [loaded, setLoaded]     = useState(false);
+  const [capturing, setCapturing] = useState(null); // action key being rebound
+  const [saving, setSaving]     = useState(false);
+  const [status, setStatus]     = useState(null);   // null | 'saved' | 'error'
+  const [errMsg, setErrMsg]     = useState('');
+
+  useEffect(() => {
+    api.profile.get()
+      .then(r => setPrefs(parseScreeningShortcuts(r?.user?.screeningShortcuts ?? null)))
+      .catch(() => { /* keep defaults */ })
+      .finally(() => setLoaded(true));
+  }, []);
+
+  // Capture the next keypress for the action being rebound.
+  useEffect(() => {
+    if (!capturing) return undefined;
+    const onKey = (e) => {
+      e.preventDefault();
+      if (e.key === 'Escape') { setCapturing(null); return; }
+      const k = normalizeCaptured(e);
+      if (!k) return;
+      setPrefs(p => ({ ...p, keys: { ...p.keys, [capturing]: k } }));
+      setStatus(null);
+      setCapturing(null);
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [capturing]);
+
+  // Duplicate-key detection (case-insensitive). Returns the set of action keys
+  // that collide with another action.
+  const dupActions = (() => {
+    const byKey = {};
+    for (const a of SHORTCUT_ACTIONS) {
+      const v = String(prefs.keys[a.key] || '').toLowerCase();
+      (byKey[v] ||= []).push(a.key);
+    }
+    const dups = new Set();
+    for (const v of Object.keys(byKey)) if (byKey[v].length > 1) byKey[v].forEach(x => dups.add(x));
+    return dups;
+  })();
+  const hasDup = dupActions.size > 0;
+
+  async function save() {
+    if (saving || hasDup) return;
+    setSaving(true); setStatus(null); setErrMsg('');
+    try {
+      await api.profile.update({ screeningShortcuts: { enabled: prefs.enabled, keys: prefs.keys } });
+      setStatus('saved');
+    } catch (err) {
+      setStatus('error'); setErrMsg(err.message || 'Failed to save shortcuts.');
+    } finally { setSaving(false); }
+  }
+  function resetDefaults() {
+    setPrefs({ enabled: DEFAULT_SCREENING_SHORTCUTS.enabled, keys: { ...DEFAULT_SCREENING_SHORTCUTS.keys } });
+    setStatus(null);
+  }
+
+  return (
+    <SectionCard title="Screening Shortcuts">
+      <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.6, marginBottom: 16 }}>
+        Review articles faster with the keyboard. Shortcuts are per-account and never fire while
+        you're typing in a note, search, or any text field.
+      </div>
+
+      {/* Enable toggle */}
+      <label style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18, cursor: 'pointer', userSelect: 'none' }}>
+        <input
+          type="checkbox"
+          checked={prefs.enabled}
+          onChange={e => { setPrefs(p => ({ ...p, enabled: e.target.checked })); setStatus(null); }}
+          style={{ width: 16, height: 16, accentColor: C.acc }}
+        />
+        <span style={{ fontSize: 13, color: C.txt }}>Enable Screening keyboard shortcuts</span>
+      </label>
+
+      {/* Key rows */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, opacity: prefs.enabled ? 1 : 0.5, pointerEvents: prefs.enabled ? 'auto' : 'none' }}>
+        {SHORTCUT_ACTIONS.map(a => {
+          const isDup = dupActions.has(a.key);
+          const isCapturing = capturing === a.key;
+          return (
+            <div key={a.key} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+              padding: '9px 12px', borderRadius: 7, background: C.surf,
+              border: `1px solid ${isDup ? C.red : C.brd}`,
+            }}>
+              <span style={{ fontSize: 13, color: C.txt }}>{a.label}</span>
+              <button
+                onClick={() => setCapturing(isCapturing ? null : a.key)}
+                style={{
+                  minWidth: 92, padding: '6px 12px', borderRadius: 6, cursor: 'pointer', fontFamily: MONO,
+                  fontSize: 12, fontWeight: 700,
+                  background: isCapturing ? alpha(C.acc, '20') : C.bg,
+                  border: `1px solid ${isCapturing ? C.acc : (isDup ? C.red : C.brd2)}`,
+                  color: isCapturing ? C.acc : (isDup ? C.red : C.txt),
+                }}
+              >
+                {isCapturing ? 'Press a key…' : keyLabel(prefs.keys[a.key])}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      {hasDup && (
+        <div style={{ fontSize: 12, color: C.red, marginTop: 12 }}>
+          ⚠ The same key is assigned to more than one action. Give each action a unique key before saving.
+        </div>
+      )}
+      {status === 'saved' && <div style={{ fontSize: 12, color: C.grn, marginTop: 12 }}>Shortcuts saved.</div>}
+      {status === 'error' && <div style={{ fontSize: 12, color: C.red, marginTop: 12 }}>{errMsg}</div>}
+
+      <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button
+          onClick={resetDefaults}
+          style={{ padding: '9px 16px', background: 'none', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 13, fontFamily: FONT, cursor: 'pointer' }}
+        >
+          Reset to defaults
+        </button>
+        <PrimaryBtn onClick={save} disabled={saving || hasDup || !loaded}>
+          {saving ? 'Saving…' : status === 'saved' ? 'Saved ✓' : 'Save shortcuts'}
+        </PrimaryBtn>
+      </div>
+    </SectionCard>
+  );
+}
 
 export default function Profile() {
   const { user, logout, refreshUser } = useAuth();
@@ -417,6 +570,11 @@ export default function Profile() {
                 </div>
               </form>
             </SectionCard>
+          </div>
+
+          {/* ── Screening Shortcuts (prompt25 Task 7) ────────────────── */}
+          <div id="section-shortcuts">
+            <ScreeningShortcutsSection />
           </div>
 
           {/* ── Change Password ──────────────────────────────────────── */}

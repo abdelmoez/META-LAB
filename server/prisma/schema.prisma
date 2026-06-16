@@ -26,6 +26,11 @@ model User {
   // JSON blob: { sort, filter, view, showArchived }. Nullable → `prisma db push`
   // stays additive-safe. Mirrors themePreference; cross-device, server-backed.
   dashboardPreferences String?
+  // prompt25 Task 7 — per-user Screening keyboard-shortcut preferences as a small
+  // JSON blob: { enabled, keys: { next, previous, include, exclude, maybe, undo } }.
+  // Nullable → `prisma db push` stays additive-safe. Mirrors dashboardPreferences;
+  // cross-device, server-backed.
+  screeningShortcuts String?
   // prompt19 — aggregate ops analytics only. COUNTRY-LEVEL ONLY; no city/coords.
   // Captured best-effort at registration from a proxy country header (e.g.
   // CF-IPCountry) or an offline lookup; raw IP is never stored (only an optional

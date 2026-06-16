@@ -804,13 +804,8 @@ function OverviewSection({ onNavigate, isAdmin = true }) {
 
   return (
     <div>
-      {/* Local keyframes: the live pulse is the ONLY persistent animation on
-          this page; prefers-reduced-motion kills it entirely. */}
-      <style>{`
-        @keyframes opsPulse { 0% { transform: scale(0.8); opacity: 0.9; } 70% { transform: scale(2.4); opacity: 0; } 100% { transform: scale(2.4); opacity: 0; } }
-        .ops-pulse { animation: opsPulse 2s ease-out infinite; }
-        @media (prefers-reduced-motion: reduce) { .ops-pulse { animation: none; opacity: 0; } }
-      `}</style>
+      {/* opsPulse keyframes are now in the AdminConsole root <style> tag so
+          UsersSection / UserDetailPanel can use them too. */}
 
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
         <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: 0 }}>Platform Overview</h2>
@@ -820,11 +815,17 @@ function OverviewSection({ onNavigate, isAdmin = true }) {
       {error && <ErrorBox msg={error} />}
 
       {/* ── Tier 1: KPI cards — animated counters + sparklines ─────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 14, marginBottom: 14 }}>
+      {/* grid uses auto-fit so the two new online/offline tiles reflow gracefully */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14, marginBottom: 14 }}>
         <KpiCard label="Total Users" value={m.users?.total} sub={`+${m.users?.thisMonth ?? 0} this month`} color={C.acc}
           spark={sparkOf('newUsers')} trendLoading={trendLoading} loading={loading} onClick={() => onNavigate('users')} />
         <KpiCard label="Total Projects (LAB)" value={m.projects?.total} sub={`META·SIFT: ${sift ? (sift.totalProjects ?? 0).toLocaleString() : '—'}`} color={C.grn}
           spark={sparkOf('newProjects')} trendLoading={trendLoading} loading={loading} onClick={() => onNavigate('projects')} />
+        {/* prompt25 — online/offline counts from live presence heartbeats (~75s window) */}
+        <KpiCard label="Online Users" value={m.users?.online} sub="live presence" color={C.grn}
+          trendLoading={false} loading={loading} onClick={() => onNavigate('users')} />
+        <KpiCard label="Offline Users" value={m.users?.offline} sub="no recent heartbeat" color={C.muted}
+          trendLoading={false} loading={loading} onClick={() => onNavigate('users')} />
         <KpiCard label="Unread Messages" value={unread} sub={`${(m.contactMessages?.total ?? 0).toLocaleString()} total`} color={unread > 0 ? C.ylw : C.muted}
           spark={sparkOf('contactMessages')} trendLoading={trendLoading} loading={loading} onClick={() => onNavigate('messages')} />
         <KpiCard label="Failed Logins (7d)" value={failed7} sub="security posture" color={failed7 > 10 ? C.red : C.muted}
@@ -1584,11 +1585,17 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
   const [resetStatus, setResetStatus] = useState('idle');
   const [resetError,  setResetError]  = useState('');
 
+  // prompt25 — real-time activity snapshot for this user (admin only).
+  // { id, name, email, lastActive, onlineNow, currentProjectId,
+  //   currentProjectTitle, currentLocation }
+  const [activity,    setActivity]    = useState(null);
+
   useEffect(() => {
     setCurrent(user);
     setEditing(false); setForm(seedForm(user));
     setEditError(''); setRoleError(''); setTempPw(''); setPwError('');
     setResetEmail(null); setResetStatus('idle'); setResetError('');
+    setActivity(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
@@ -1611,6 +1618,16 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user.id]);
+
+  // prompt25 — fetch real-time activity snapshot on panel open (admin only).
+  useEffect(() => {
+    if (!isAdmin) return;
+    let alive = true;
+    adminApi.users.activity(user.id)
+      .then(d => { if (alive) setActivity(d); })
+      .catch(() => { if (alive) setActivity(null); });
+    return () => { alive = false; };
+  }, [user.id, isAdmin]);
 
   async function doStatus() {
     if (!confirm) return;
@@ -1754,6 +1771,28 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
             <span style={{ fontSize: 11, color: C.txt2, fontFamily: MONO }}>{r.value}</span>
           </div>
         ))}
+
+        {/* prompt25 — online/offline status row + current location (admin only) */}
+        {isAdmin && activity != null && (
+          <div style={{ marginTop: 8, padding: '8px 0', borderBottom: `1px solid ${C.brd}` }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: activity.onlineNow ? 5 : 0 }}>
+              <LivePulseDot live={activity.onlineNow} />
+              {activity.onlineNow ? (
+                <span style={{ fontSize: 11, color: C.grn, fontFamily: MONO, fontWeight: 700 }}>Online now</span>
+              ) : (
+                <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>
+                  Offline{activity.lastActive ? ` · ${fmtAgo(activity.lastActive)}` : ''}
+                </span>
+              )}
+            </div>
+            {activity.onlineNow && activity.currentProjectTitle && (
+              <div style={{ fontSize: 10, color: C.txt2, fontFamily: MONO, lineHeight: 1.6, paddingLeft: 14 }}>
+                <div>Project: {activity.currentProjectTitle}</div>
+                {activity.currentLocation && <div>Location: {activity.currentLocation}</div>}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Role (admin only) */}
@@ -1972,7 +2011,7 @@ function UsersByCountryCard() {
                 fill={fillFor(f.a2)} stroke={BORDER} strokeWidth={0.6} strokeLinejoin="round"
                 style={{ cursor: d ? 'pointer' : 'default', transition: 'fill 0.15s' }}
                 onClick={() => d && setSelected(prev => prev === f.a2 ? null : f.a2)}
-                onMouseEnter={() => setHover({ code: f.a2, name: (d?.countryName) || f.name, count: d?.userCount || 0, pct: d?.percentage || 0 })}>
+                onMouseEnter={() => setHover({ code: f.a2, name: (d?.countryName) || f.name, count: d?.userCount || 0, pct: d?.percentage || 0, online: d?.onlineCount ?? 0, offline: d?.offlineCount ?? 0 })}>
                 <title>{d ? `${d.countryName}: ${d.userCount} users (${d.percentage}%)` : `${f.name}: 0 users`}</title>
               </path>
             );
@@ -1993,7 +2032,14 @@ function UsersByCountryCard() {
             padding: '7px 10px', boxShadow: `0 6px 20px ${C.shadow}`, maxWidth: 168,
           }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: C.txt, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{hover.name}</div>
-            <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, marginTop: 2 }}>{hover.count} users · {hover.pct}%</div>
+            {/* prompt25 — online/offline breakdown in map tooltip */}
+            {(hover.online > 0 || hover.offline > 0) && (
+              <div style={{ fontSize: 10, fontFamily: MONO, marginTop: 2 }}>
+                <span style={{ color: C.grn }}>{hover.online} online</span>
+                <span style={{ color: C.muted }}> · {hover.offline} offline</span>
+              </div>
+            )}
+            <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, marginTop: 2 }}>{hover.count} total · {hover.pct}%</div>
           </div>
         )}
       </div>
@@ -2010,8 +2056,9 @@ function UsersByCountryCard() {
     <div style={{ padding: '40px 0', textAlign: 'center', color: C.muted, fontSize: 12 }}>No users yet.</div>
   ) : (
     <div style={{ border: `1px solid ${C.brd}`, borderRadius: 10, overflow: 'hidden' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '32px 1fr 64px 56px 1fr', gap: 0, padding: '8px 12px', borderBottom: `1px solid ${C.brd}`, fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', background: alpha(C.brd, 0.18) }}>
-        <span>#</span><span>Country</span><span style={{ textAlign: 'right' }}>Users</span><span style={{ textAlign: 'right' }}>%</span><span style={{ textAlign: 'right' }}>Latest</span>
+      {/* prompt25 — Online/Offline columns added alongside existing Rank/Country/Users/%/Latest */}
+      <div style={{ display: 'grid', gridTemplateColumns: '32px 1fr 56px 52px 52px 56px 1fr', gap: 0, padding: '8px 12px', borderBottom: `1px solid ${C.brd}`, fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', background: alpha(C.brd, 0.18) }}>
+        <span>#</span><span>Country</span><span style={{ textAlign: 'right' }}>Users</span><span style={{ textAlign: 'right' }}>%</span><span style={{ textAlign: 'right', color: C.grn }}>Online</span><span style={{ textAlign: 'right' }}>Offline</span><span style={{ textAlign: 'right' }}>Latest</span>
       </div>
       <div style={{ maxHeight: 420, overflowY: 'auto' }}>
         {countries.map((c, i) => {
@@ -2022,7 +2069,7 @@ function UsersByCountryCard() {
             <div key={c.countryCode || `unknown-${i}`}
               onClick={() => known && setSelected(prev => prev === c.countryCode ? null : c.countryCode)}
               style={{
-                position: 'relative', display: 'grid', gridTemplateColumns: '32px 1fr 64px 56px 1fr',
+                position: 'relative', display: 'grid', gridTemplateColumns: '32px 1fr 56px 52px 52px 56px 1fr',
                 alignItems: 'center', padding: '7px 12px',
                 borderBottom: i < countries.length - 1 ? `1px solid ${C.brd}` : 'none',
                 background: isSel ? alpha(C.acc, '12') : 'transparent',
@@ -2037,6 +2084,9 @@ function UsersByCountryCard() {
               </span>
               <span style={{ position: 'relative', textAlign: 'right', fontSize: 12, fontFamily: MONO, color: C.txt }}>{c.userCount}</span>
               <span style={{ position: 'relative', textAlign: 'right', fontSize: 11, fontFamily: MONO, color: C.muted }}>{c.percentage}%</span>
+              {/* prompt25 — online/offline counts per country */}
+              <span style={{ position: 'relative', textAlign: 'right', fontSize: 11, fontFamily: MONO, color: (c.onlineCount ?? 0) > 0 ? C.grn : C.muted }}>{c.onlineCount ?? 0}</span>
+              <span style={{ position: 'relative', textAlign: 'right', fontSize: 11, fontFamily: MONO, color: C.muted }}>{c.offlineCount ?? 0}</span>
               <span style={{ position: 'relative', textAlign: 'right', fontSize: 10, fontFamily: MONO, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {c.latestRegistrationAt ? fmtDate(c.latestRegistrationAt) : '—'}
               </span>
@@ -2083,6 +2133,9 @@ function UsersSection({ isAdmin = false }) {
   const [filter,  setFilter]  = useState('all');
   const [page,    setPage]    = useState(1);
   const [selectedUser, setSelectedUser] = useState(null);
+  // prompt25 — global online/offline summary from the dedicated endpoint
+  // (gives the total across ALL pages, not just the current page).
+  const [actSummary, setActSummary] = useState(null);
   const searchTimer = useRef(null);
   const PER_PAGE = 25;
 
@@ -2102,6 +2155,15 @@ function UsersSection({ isAdmin = false }) {
     finally { setLoading(false); }
   }, []);
 
+  // prompt25 — fetch global online/offline summary on mount (admin only).
+  // Refreshes alongside the user list on page/filter changes.
+  useEffect(() => {
+    if (!isAdmin) return;
+    adminApi.users.activitySummary()
+      .then(d => setActSummary(d))
+      .catch(() => setActSummary(null));
+  }, [isAdmin, page, filter]);
+
   useEffect(() => { load(search, filter, page); }, [page, filter]);
 
   function handleSearch(val) {
@@ -2119,6 +2181,14 @@ function UsersSection({ isAdmin = false }) {
     { key: 'createdAt',    label: 'Joined',        render: v => fmtDate(v) },
     // Readable relative time ("3h ago"); em-dash when null (prompt6 Task 10).
     { key: 'lastActive',   label: 'Last Active',   render: v => v ? fmtAgo(v) : <span style={{ color: C.muted }}>—</span> },
+    // prompt25 — live presence status (green pulsing dot = online, muted = offline).
+    // Uses .ops-pulse keyframes now defined in the root AdminConsole <style>.
+    { key: 'isOnline', label: 'Status', render: v => (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}>
+        <LivePulseDot live={!!v} />
+        <span style={{ fontSize: 11, fontFamily: MONO, color: v ? C.grn : C.muted }}>{v ? 'Online' : 'Offline'}</span>
+      </span>
+    ) },
   ];
 
   // Task-1 lock note, row-level mirror of the UserDetailPanel one: mods see at
@@ -2145,7 +2215,25 @@ function UsersSection({ isAdmin = false }) {
 
   return (
     <div>
-      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 20px' }}>User Management</h2>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 16, marginBottom: 20, flexWrap: 'wrap' }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: 0 }}>User Management</h2>
+        {/* prompt25 — global online/offline summary line */}
+        {isAdmin && actSummary && (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 10, fontSize: 11, fontFamily: MONO, color: C.muted }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <LivePulseDot live={true} />
+              <span style={{ color: C.grn, fontWeight: 700 }}>{actSummary.online ?? 0} online</span>
+            </span>
+            <span>·</span>
+            <span style={{ color: C.muted }}>{actSummary.offline ?? 0} offline</span>
+            <span>·</span>
+            <span>{actSummary.totalUsers ?? 0} total</span>
+            {actSummary.percentOnline != null && (
+              <><span>·</span><span style={{ color: C.acc }}>{actSummary.percentOnline}% online</span></>
+            )}
+          </span>
+        )}
+      </div>
       {error && <ErrorBox msg={error} />}
 
       {/* prompt19 — users-by-country distribution (admin only; endpoint is requireAdmin). */}
@@ -2225,7 +2313,7 @@ function ProjectDetailPanel({ project, onClose, onAction }) {
               : <Badge text="admin-archived" color={C.ylw} />}
         </div>
         {[
-          { label: 'Owner',    value: <span style={{ fontFamily: MONO, fontSize: 11 }}>{project.ownerEmail || project.userEmail || '—'}</span> },
+          { label: 'Owner',    value: <span style={{ fontFamily: MONO, fontSize: 11 }}>{project.owner?.name || project.ownerEmail || project.userEmail || '—'}</span> },
           // Linked Review Workspace (prompt6 Task 11) — workspaceId == linked ScreenProject id.
           { label: 'Linked SIFT', value: project.linkedMetaSift?.id
               ? <span style={{ fontSize: 11 }}>{project.linkedMetaSift.title || '(untitled)'}</span>
@@ -2285,7 +2373,8 @@ function ProjectsSection() {
       if (s) params.search = s;
       if (f !== 'all') params.status = f;
       const data = await adminApi.projects.list(params);
-      setRows((data.projects || []).map(p => ({ ...p, ownerEmail: p.userEmail || p.ownerEmail })));
+      // prompt25 Task 5 — show the LIVE owner name (falls back to email) so a rename reflects.
+      setRows((data.projects || []).map(p => ({ ...p, ownerEmail: p.owner?.name || p.userEmail || p.ownerEmail })));
       setTotal(data.total || 0);
     } catch (e) { setRows([]); setError(e.message); }
     finally { setLoading(false); }
@@ -3416,7 +3505,7 @@ function SiftProjectDetailPanel({ projectId, onClose }) {
   ];
 
   const infoRows = detail ? [
-    { label: 'Owner', value: <span style={{ fontFamily: MONO, fontSize: 11 }}>{detail.owner?.email || '—'}</span> },
+    { label: 'Owner', value: <span style={{ fontFamily: MONO, fontSize: 11 }}>{detail.owner?.name || detail.owner?.email || '—'}</span> },
     { label: 'Linked LAB', value: detail.linkedMetaLabProjectId
         ? <span style={{ fontSize: 11 }}>{detail.linkedMetaLabProjectTitle || '(linked, untitled)'}</span>
         : <span style={{ color: C.muted }}>not linked</span> },
@@ -4007,6 +4096,9 @@ export default function AdminConsole() {
     <div style={{ minHeight: '100vh', background: C.bg, fontFamily: FONT, color: C.txt }}>
       <style>{`
         @keyframes spin { to { transform: rotate(360deg); } }
+        @keyframes opsPulse { 0% { transform: scale(0.8); opacity: 0.9; } 70% { transform: scale(2.4); opacity: 0; } 100% { transform: scale(2.4); opacity: 0; } }
+        .ops-pulse { animation: opsPulse 2s ease-out infinite; }
+        @media (prefers-reduced-motion: reduce) { .ops-pulse { animation: none; opacity: 0; } }
         * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 6px; height: 6px; }
         ::-webkit-scrollbar-track { background: ${C.bg}; }

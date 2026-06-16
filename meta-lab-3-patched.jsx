@@ -7547,7 +7547,10 @@ function ControlTab({project,onAnnotate,setTab,presence}){
       <div style={secLbl}>Project info</div>
       <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)",columnGap:24,rowGap:2}}>
         {[["Name",project.name],
-          ["Owner",ownerRow?(ownerRow.name||ownerRow.email):(project._owner?(project._owner.name||project._owner.email):"You")],
+          // prompt25 Task 5 — prefer the LIVE owner (project._owner, resolved fresh
+          // from the User row server-side) so a rename shows immediately; members
+          // list (now also live) is only a fallback.
+          ["Owner",project._owner?(project._owner.name||project._owner.email):(ownerRow?(ownerRow.name||ownerRow.email):"You")],
           ["Created",fmtDate(project.created||project.createdAt)],
           ["Last modified",fmtDate(project.modified||project.updatedAt)],
           ["Studies in extraction",String((project.studies||[]).length)],

@@ -79,3 +79,46 @@ describe('field locking', () => {
     expect(P.snapshot(PID, later).locks).toHaveLength(1);
   });
 });
+
+describe('prompt25 — display-name fallback (Task 3)', () => {
+  it('prefers the real name', () => {
+    P.heartbeat(PID, { id: 'u-d', name: 'Abdulmoiz', email: 'a@b.com' }, 'Overview', 1000);
+    expect(P.snapshot(PID, 1000).users.find(x => x.userId === 'u-d').name).toBe('Abdulmoiz');
+  });
+  it('falls back to the email local-part, NOT the full email', () => {
+    P.heartbeat(PID, { id: 'u-c', email: 'abdelmoezhj@gmail.com' }, 'Overview', 1000);
+    expect(P.snapshot(PID, 1000).users.find(x => x.userId === 'u-c').name).toBe('abdelmoezhj');
+  });
+  it('falls back to the full email when there is no @, then to a generic', () => {
+    P.heartbeat(PID, { id: 'u-e', email: 'plainstring' }, 'Overview', 1000);
+    expect(P.snapshot(PID, 1000).users.find(x => x.userId === 'u-e').name).toBe('plainstring');
+    P.heartbeat(PID, { id: 'u-f' }, 'Overview', 1000);
+    expect(P.snapshot(PID, 1000).users.find(x => x.userId === 'u-f').name).toBe('A teammate');
+  });
+});
+
+describe('prompt25 — global online snapshot for Ops (Tasks 1/2)', () => {
+  it('lists one entry per user across all project rooms', () => {
+    P.heartbeat('p1', A, 'PICO', 1000);
+    P.heartbeat('p2', B, 'Screening > Import', 1000);
+    const snap = P.globalOnlineSnapshot(1000);
+    expect(snap.size).toBe(2);
+    expect(snap.get('u-a').projectId).toBe('p1');
+    expect(snap.get('u-b').location).toBe('Screening > Import');
+  });
+
+  it('keeps the MOST RECENT location for a user present in two rooms', () => {
+    P.heartbeat('p1', A, 'PICO', 1000);
+    P.heartbeat('p2', A, 'Screening > Duplicates', 2000); // more recent
+    const e = P.globalOnlineSnapshot(2000).get('u-a');
+    expect(e.location).toBe('Screening > Duplicates');
+    expect(e.projectId).toBe('p2');
+    expect(e.projectIds.sort()).toEqual(['p1', 'p2']);
+  });
+
+  it('globalOnlineCount excludes users past the active window', () => {
+    P.heartbeat('p1', A, 'PICO', 1000);
+    expect(P.globalOnlineCount(1000 + P.ACTIVE_MS - 1)).toBe(1);
+    expect(P.globalOnlineCount(1000 + P.ACTIVE_MS + 1)).toBe(0);
+  });
+});

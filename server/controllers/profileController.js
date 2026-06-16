@@ -16,7 +16,7 @@ export async function getProfile(req, res) {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
-      select: { id: true, email: true, name: true, createdAt: true, lastActive: true, themePreference: true, dashboardPreferences: true },
+      select: { id: true, email: true, name: true, createdAt: true, lastActive: true, themePreference: true, dashboardPreferences: true, screeningShortcuts: true },
     });
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json({ user });
@@ -33,7 +33,7 @@ export async function getProfile(req, res) {
  */
 export async function updateProfile(req, res) {
   try {
-    const { name, themePreference, dashboardPreferences } = req.body || {};
+    const { name, themePreference, dashboardPreferences, screeningShortcuts } = req.body || {};
     if (name !== undefined && typeof name !== 'string') {
       return res.status(400).json({ error: 'name must be a string' });
     }
@@ -57,15 +57,32 @@ export async function updateProfile(req, res) {
         return res.status(400).json({ error: 'dashboardPreferences must be an object' });
       }
     }
+    // prompt25 Task 7 — per-user Screening keyboard-shortcut prefs, same JSON-blob
+    // pattern as dashboardPreferences (object or JSON string; null clears).
+    let shortcutPatch = {};
+    if (screeningShortcuts !== undefined) {
+      let obj = screeningShortcuts;
+      if (typeof obj === 'string') { try { obj = JSON.parse(obj); } catch { return res.status(400).json({ error: 'screeningShortcuts must be valid JSON' }); } }
+      if (obj === null) {
+        shortcutPatch = { screeningShortcuts: null };
+      } else if (typeof obj === 'object' && !Array.isArray(obj)) {
+        const json = JSON.stringify(obj);
+        if (json.length > 500) return res.status(400).json({ error: 'screeningShortcuts is too large' });
+        shortcutPatch = { screeningShortcuts: json };
+      } else {
+        return res.status(400).json({ error: 'screeningShortcuts must be an object' });
+      }
+    }
     const user = await prisma.user.update({
       where: { id: req.user.id },
       data: {
         ...(name !== undefined ? { name: name.trim() || null } : {}),
         ...(themePreference !== undefined ? { themePreference } : {}),
         ...dashPatch,
+        ...shortcutPatch,
         lastActive: new Date(),
       },
-      select: { id: true, email: true, name: true, createdAt: true, lastActive: true, themePreference: true, dashboardPreferences: true },
+      select: { id: true, email: true, name: true, createdAt: true, lastActive: true, themePreference: true, dashboardPreferences: true, screeningShortcuts: true },
     });
     res.json({ user });
   } catch (err) {

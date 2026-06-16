@@ -12,6 +12,7 @@
 import { getProjectAccess } from '../screening/access.js';
 import { emitToProjectMembers } from '../realtime/bus.js';
 import * as P from '../realtime/presence.js';
+import { prisma } from '../db/client.js';
 
 // Any owner/active member may participate in presence + locking.
 async function gate(req, res) {
@@ -25,12 +26,34 @@ const LOCATION_MAX = 80;
 const FIELD_MAX = 120;
 const clip = (v, n) => (typeof v === 'string' ? v.slice(0, n) : '');
 
+// prompt25 Task 3 — req.user only carries { id, email, role } (no name), so
+// presence would otherwise store the email. Resolve the user's CURRENT name from
+// the DB with a short cache (≤60s) so presence shows the real name AND stays
+// dynamic when the user renames themselves (Task 5), without a query per beat.
+const NAME_TTL_MS = 60_000;
+const nameCache = new Map(); // userId -> { name, email, ts }
+async function resolveUser(reqUser) {
+  const cached = nameCache.get(reqUser.id);
+  const now = Date.now();
+  if (cached && now - cached.ts < NAME_TTL_MS) {
+    return { id: reqUser.id, name: cached.name, email: cached.email || reqUser.email };
+  }
+  let name = null, email = reqUser.email;
+  try {
+    const u = await prisma.user.findUnique({ where: { id: reqUser.id }, select: { name: true, email: true } });
+    if (u) { name = u.name || null; email = u.email || reqUser.email; }
+  } catch { /* fall back to the email-derived name in displayName() */ }
+  nameCache.set(reqUser.id, { name, email, ts: now });
+  return { id: reqUser.id, name, email };
+}
+
 export async function heartbeat(req, res) {
   try {
     const access = await gate(req, res); if (!access) return;
     const pid = access.project.id;
     const location = clip(req.body?.location, LOCATION_MAX);
-    const { snapshot, changed } = P.heartbeat(pid, req.user, location);
+    const user = await resolveUser(req.user);
+    const { snapshot, changed } = P.heartbeat(pid, user, location);
     if (changed) emitToProjectMembers(pid, { type: 'presence.changed' }, { exclude: req.user.id });
     return res.json(snapshot);
   } catch (err) {
@@ -68,7 +91,8 @@ export async function acquireLock(req, res) {
     const pid = access.project.id;
     const field = clip(req.body?.field, FIELD_MAX);
     if (!field) return res.status(400).json({ error: 'field is required' });
-    const result = P.acquireLock(pid, req.user, field, clip(req.body?.location, LOCATION_MAX));
+    const user = await resolveUser(req.user);
+    const result = P.acquireLock(pid, user, field, clip(req.body?.location, LOCATION_MAX));
     if (result.ok && result.changed) emitToProjectMembers(pid, { type: 'lock.changed' }, { exclude: req.user.id });
     return res.status(result.ok ? 200 : 409).json(result);
   } catch (err) {

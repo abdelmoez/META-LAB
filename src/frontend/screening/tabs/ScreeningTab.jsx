@@ -19,6 +19,9 @@ import { DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS } from '../../../res
 import PdfViewer from '../components/PdfViewer.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 import { useRealtime } from '../../hooks/useRealtime.js';
+import { useScreeningShortcuts } from '../hooks/useScreeningShortcuts.js';
+import { parseScreeningShortcuts, DEFAULT_SCREENING_SHORTCUTS, keyLabel } from '../screeningShortcuts.js';
+import { api } from '../../api-client/apiClient.js';
 
 const LIMIT = 50;
 
@@ -59,7 +62,7 @@ function parseLabels(labels) {
 
 // ────────────────────────────────────────────────────────────────────────────
 
-export default function ScreeningTab({ pid, project, access, refreshProject }) {
+export default function ScreeningTab({ pid, project, access, refreshProject, userId }) {
   const isLeader = !!access?.isLeader;
   const canScreen = !!access?.canScreen;
   const blindMode = !!project?.blindMode;
@@ -72,6 +75,26 @@ export default function ScreeningTab({ pid, project, access, refreshProject }) {
   const inclusion = storedIncl.length ? storedIncl : DEFAULT_INCLUDE_KEYWORDS;
   const exclusion = storedExcl.length ? storedExcl : DEFAULT_EXCLUDE_KEYWORDS;
   const studyTypes = parseList(project?.studyTypeFilter);
+
+  // ── Keyboard shortcut prefs (per-user, persisted to /api/profile) ────────
+  const lsKey = userId ? `metalab.screeningShortcuts.${userId}` : null;
+  function readCachedPrefs() {
+    if (!lsKey) return DEFAULT_SCREENING_SHORTCUTS;
+    try { return parseScreeningShortcuts(localStorage.getItem(lsKey)); } catch { return DEFAULT_SCREENING_SHORTCUTS; }
+  }
+  const [shortcutPrefs, setShortcutPrefs] = useState(() => readCachedPrefs());
+
+  useEffect(() => {
+    // Fetch server prefs; update state and mirror to localStorage
+    api.profile.get().then(r => {
+      const prefs = parseScreeningShortcuts(r?.user?.screeningShortcuts ?? null);
+      setShortcutPrefs(prefs);
+      if (lsKey) {
+        try { localStorage.setItem(lsKey, JSON.stringify(prefs)); } catch { /* storage full */ }
+      }
+    }).catch(() => { /* non-fatal; keep cached value */ });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
 
   // ── Records & selection ──────────────────────────────────────────────────
   const [records, setRecords]       = useState([]);
@@ -323,23 +346,17 @@ export default function ScreeningTab({ pid, project, access, refreshProject }) {
     setChosenLabels(prev => prev.includes(lid) ? prev.filter(x => x !== lid) : [...prev, lid]);
   }
 
-  // ── Keyboard shortcuts (ignored while typing in a form control) ──────────
-  useEffect(() => {
-    function onKey(e) {
-      const tag = document.activeElement?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      const k = e.key.toLowerCase();
-      if (k === 'i' && canScreen) { e.preventDefault(); onDecisionClick('include'); }
-      else if (k === 'e' && canScreen) { e.preventDefault(); onDecisionClick('exclude'); }
-      else if (k === 'm' && canScreen) { e.preventDefault(); onDecisionClick('maybe'); }
-      else if (k === 'u' && canScreen) { e.preventDefault(); onUndo(); }
-      else if (e.key === 'ArrowDown') { e.preventDefault(); moveSelection(1); }
-      else if (e.key === 'ArrowUp')   { e.preventDefault(); moveSelection(-1); }
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canScreen, decision, excReason, notes, rating, chosenLabels, selectedId]);
+  // ── Keyboard shortcuts (user-configurable, guarded while typing) ─────────
+  useScreeningShortcuts({
+    enabled: shortcutPrefs.enabled && !!canScreen,
+    keys: shortcutPrefs.keys,
+    onNext:    () => moveSelection(1),
+    onPrev:    () => moveSelection(-1),
+    onInclude: () => onDecisionClick('include'),
+    onExclude: () => onDecisionClick('exclude'),
+    onMaybe:   () => onDecisionClick('maybe'),
+    onUndo:    () => onUndo(),
+  });
 
   // ── Render ───────────────────────────────────────────────────────────────
   return (
@@ -358,6 +375,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject }) {
         selectedId={selectedId} onSelect={selectRecord}
         blindMode={blindMode}
         hasMore={records.length < total} onLoadMore={loadMore}
+        shortcutPrefs={shortcutPrefs}
       />
 
       <MiddleColumn
@@ -375,6 +393,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject }) {
         recordIndex={records.findIndex(r => r.id === selectedId)}
         recordCount={records.length} totalCount={total}
         onPrev={() => moveSelection(-1)} onNext={() => moveSelection(1)}
+        shortcutPrefs={shortcutPrefs}
       />
 
       <RightColumn
@@ -403,7 +422,9 @@ function LeftColumn({
   records, total, loading, loadingMore, listError, onRetry,
   search, onSearchChange, filter, onFilterChange,
   selectedId, onSelect, blindMode, hasMore, onLoadMore,
+  shortcutPrefs,
 }) {
+  const k = shortcutPrefs?.keys ?? DEFAULT_SCREENING_SHORTCUTS.keys;
   return (
     <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${C.brd}`, display: 'flex', flexDirection: 'column', background: C.surf, overflow: 'hidden', minHeight: 0 }}>
       {/* Sticky search + filter header */}
@@ -464,9 +485,11 @@ function LeftColumn({
         )}
       </div>
 
-      {/* Keyboard hint */}
+      {/* Keyboard hint — reflects current user shortcut config */}
       <div style={{ padding: '8px 14px', borderTop: `1px solid ${C.brd}`, fontSize: 9.5, color: C.muted, fontFamily: MONO, letterSpacing: '0.04em', flexShrink: 0 }}>
-        I include · E exclude · M maybe · U undo · ↑↓ move
+        {shortcutPrefs?.enabled !== false
+          ? `${keyLabel(k.include)} include · ${keyLabel(k.exclude)} exclude · ${keyLabel(k.maybe)} maybe · ${keyLabel(k.undo)} undo · ${keyLabel(k.previous)}${keyLabel(k.next)} move`
+          : 'Keyboard shortcuts disabled'}
       </div>
     </div>
   );
@@ -575,7 +598,10 @@ function MiddleColumn({
   reasons, setReasons, labels, chosenLabels, toggleLabel,
   onDecisionClick, onUndo, onSaveDetails, saving, saveMsg, decErr,
   recordIndex, recordCount, totalCount, onPrev, onNext,
+  shortcutPrefs,
 }) {
+  const k = shortcutPrefs?.keys ?? DEFAULT_SCREENING_SHORTCUTS.keys;
+  const shortcutsOn = shortcutPrefs?.enabled !== false;
   if (loading && !record) {
     return <div className="sift-mid" style={{ flex: 1, overflowY: 'auto', padding: 28 }}><Loading label="Loading workbench…" /></div>;
   }
@@ -666,9 +692,9 @@ function MiddleColumn({
           </div>
 
           <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: decision === 'exclude' ? 16 : 0 }}>
-            <DecisionButton label="✓ Include" value="include" active={decision === 'include'} disabled={!canScreen} onClick={() => onDecisionClick('include')} />
-            <DecisionButton label="✗ Exclude" value="exclude" active={decision === 'exclude'} disabled={!canScreen} onClick={() => onDecisionClick('exclude')} />
-            <DecisionButton label="? Maybe"   value="maybe"   active={decision === 'maybe'}   disabled={!canScreen} onClick={() => onDecisionClick('maybe')} />
+            <DecisionButton label="✓ Include" value="include" active={decision === 'include'} disabled={!canScreen} onClick={() => onDecisionClick('include')} keyHint={shortcutsOn ? keyLabel(k.include) : null} />
+            <DecisionButton label="✗ Exclude" value="exclude" active={decision === 'exclude'} disabled={!canScreen} onClick={() => onDecisionClick('exclude')} keyHint={shortcutsOn ? keyLabel(k.exclude) : null} />
+            <DecisionButton label="? Maybe"   value="maybe"   active={decision === 'maybe'}   disabled={!canScreen} onClick={() => onDecisionClick('maybe')}   keyHint={shortcutsOn ? keyLabel(k.maybe)   : null} />
             <button
               onClick={onUndo}
               disabled={!canScreen || !decision}
@@ -677,9 +703,15 @@ function MiddleColumn({
                 fontSize: 13, fontWeight: 600, fontFamily: FONT, padding: '8px 18px',
                 borderRadius: 7, cursor: (!canScreen || !decision) ? 'not-allowed' : 'pointer',
                 opacity: (!canScreen || !decision) ? 0.4 : 1, transition: 'all 0.15s',
+                display: 'flex', alignItems: 'center', gap: 6,
               }}
             >
               ↩ Undo
+              {shortcutsOn && (
+                <span style={{ fontSize: 9, fontFamily: MONO, background: alpha(C.brd, '80'), border: `1px solid ${C.brd2}`, borderRadius: 3, padding: '1px 4px', color: C.muted, lineHeight: 1.2 }}>
+                  {keyLabel(k.undo)}
+                </span>
+              )}
             </button>
           </div>
 
@@ -758,17 +790,23 @@ function MiddleColumn({
 
       {/* ── Prev / Next nav — sticky footer, always visible ────────────── */}
       <div style={{ flexShrink: 0, borderTop: `1px solid ${C.brd}`, background: C.surf, padding: '12px 28px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <Button variant="ghost" onClick={onPrev} disabled={recordIndex <= 0} style={{ fontSize: 12 }}>← Previous</Button>
+        <Button variant="ghost" onClick={onPrev} disabled={recordIndex <= 0} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          {shortcutsOn && <span style={{ fontSize: 9, fontFamily: MONO, background: alpha(C.brd, '80'), border: `1px solid ${C.brd2}`, borderRadius: 3, padding: '1px 4px', color: C.muted, lineHeight: 1.2 }}>{keyLabel(k.previous)}</span>}
+          ← Previous
+        </Button>
         <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>
           {recordIndex + 1} / {recordCount}{totalCount > recordCount ? ` (of ${totalCount})` : ''}
         </span>
-        <Button variant="ghost" onClick={onNext} disabled={recordIndex >= recordCount - 1} style={{ fontSize: 12 }}>Next →</Button>
+        <Button variant="ghost" onClick={onNext} disabled={recordIndex >= recordCount - 1} style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          Next →
+          {shortcutsOn && <span style={{ fontSize: 9, fontFamily: MONO, background: alpha(C.brd, '80'), border: `1px solid ${C.brd2}`, borderRadius: 3, padding: '1px 4px', color: C.muted, lineHeight: 1.2 }}>{keyLabel(k.next)}</span>}
+        </Button>
       </div>
     </div>
   );
 }
 
-function DecisionButton({ label, value, active, disabled, onClick }) {
+function DecisionButton({ label, value, active, disabled, onClick, keyHint }) {
   const [hover, setHover] = useState(false);
   const dc = DECISION_COLORS[value];
   const bg     = active ? dc.bg     : hover && !disabled ? alpha(dc.bg, '55') : 'transparent';
@@ -785,9 +823,21 @@ function DecisionButton({ label, value, active, disabled, onClick }) {
         fontSize: 13, fontWeight: 600, fontFamily: FONT, padding: '8px 20px',
         borderRadius: 7, cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.5 : 1, minWidth: 104, transition: 'all 0.15s',
+        display: 'inline-flex', alignItems: 'center', gap: 6,
       }}
     >
       {label}
+      {keyHint && (
+        <span style={{
+          fontSize: 9, fontFamily: MONO,
+          background: active ? alpha(dc.border, '30') : alpha(C.brd, '80'),
+          border: `1px solid ${active ? alpha(dc.border, '60') : C.brd2}`,
+          borderRadius: 3, padding: '1px 4px', color: active ? dc.txt : C.muted,
+          lineHeight: 1.2, fontWeight: 400, letterSpacing: '0.04em',
+        }}>
+          {keyHint}
+        </span>
+      )}
     </button>
   );
 }

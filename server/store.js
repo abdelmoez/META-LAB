@@ -124,6 +124,17 @@ export async function save(project, userId) {
   // resurrect deleted projects.
   if (existing && existing.deletedAt) return null;
 
+  // prompt25 Task 4 (ROOT CAUSE) — only WRITE when the content actually changed.
+  // `updatedAt` is a Prisma @updatedAt column, so an upsert bumps it on EVERY
+  // call — even with byte-identical name/data. The autosave bridge PUTs EVERY
+  // project in the array on any change (or on open-triggered normalisation), so
+  // without this guard a single edit (or just opening a project) re-stamped
+  // `updatedAt` on ALL of the user's projects, making them all look "updated"
+  // at the same time. A no-op save now preserves the real per-project timestamp.
+  if (existing && existing.name === name && existing.data === dataStr) {
+    return rowToProject(existing);
+  }
+
   const row = await prisma.project.upsert({
     where: { id },
     update: { name, data: dataStr },
@@ -174,6 +185,11 @@ export async function saveAsMember(project) {
   const existing = await prisma.project.findFirst({ where: { id: project.id, deletedAt: null } });
   if (!existing) return null;
   const data = JSON.stringify(projectToData(project));
+  // prompt25 Task 4 — no-op when unchanged so a member's batch autosave doesn't
+  // bump updatedAt on a shared project they merely viewed (see save() above).
+  if (existing.name === project.name && existing.data === data) {
+    return rowToProject(existing);
+  }
   const row = await prisma.project.update({
     where: { id: project.id },
     data: { name: project.name, data },

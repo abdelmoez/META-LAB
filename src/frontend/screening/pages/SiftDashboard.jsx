@@ -531,7 +531,9 @@ function RoleChip({ role, shared }) {
 function ProjectCard({ project, stats, total, screened, pct, progressColor, formatDate, onOpen, onOpenLinked, onDelete }) {
   const [hover, setHover] = useState(false);
   const leaders = Array.isArray(project.leaders) ? project.leaders : [];
-  const ownerName = project.ownerName || project.owner?.name || project.owner?.email || 'Unknown';
+  // prompt25 Task 5 — prefer the LIVE owner (joined User row) over the stale
+  // denormalized ownerName so renames show immediately.
+  const ownerName = project.owner?.name || project.owner?.email || project.ownerName || 'Unknown';
 
   return (
     <div

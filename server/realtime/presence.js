@@ -32,8 +32,19 @@ function prune(r, now) {
   for (const [f, l] of r.locks) if (now - l.lastBeat > LOCK_TTL_MS) r.locks.delete(f);
 }
 
+// prompt25 Task 3 — show a real NAME, never the email. Fallback chain:
+// name → email local-part (before @) → full email → generic. Callers should
+// enrich `user` with the live name (presenceController resolves it from the DB,
+// since req.user only carries id/email/role).
 function displayName(user) {
-  return (user && (user.name || user.email)) || 'A teammate';
+  if (!user) return 'A teammate';
+  const name = user.name && String(user.name).trim();
+  if (name) return name;
+  if (user.email) {
+    const local = String(user.email).split('@')[0].trim();
+    return local || user.email;
+  }
+  return 'A teammate';
 }
 
 export function snapshot(projectId, now = Date.now()) {
@@ -109,6 +120,42 @@ export function releaseLock(projectId, userId, field, now = Date.now()) {
   if (released) r.locks.delete(field);
   prune(r, now);
   return { ok: true, changed: released };
+}
+
+/**
+ * prompt25 Tasks 1/2 — GLOBAL online snapshot across ALL project rooms, for the
+ * Ops console. Returns one entry per distinct user who has an active heartbeat
+ * (within ACTIVE_MS) in any room, with their most-recent location + the project
+ * room they're in. Pure (injectable `now`) and read-only.
+ *   Map<userId, { userId, name, location, lastBeat, projectId, projectIds: string[] }>
+ * `location`/`projectId` reflect the user's MOST RECENT beat (where they are now).
+ */
+export function globalOnlineSnapshot(now = Date.now()) {
+  const byUser = new Map();
+  for (const [projectId, r] of rooms) {
+    prune(r, now);
+    for (const u of r.users.values()) {
+      const prev = byUser.get(u.userId);
+      if (!prev) {
+        byUser.set(u.userId, {
+          userId: u.userId, name: u.name, location: u.location || null,
+          lastBeat: u.lastBeat, projectId, projectIds: [projectId],
+        });
+      } else {
+        prev.projectIds.push(projectId);
+        if (u.lastBeat > prev.lastBeat) { // most-recent beat wins for "current" location
+          prev.lastBeat = u.lastBeat; prev.location = u.location || null;
+          prev.projectId = projectId; prev.name = u.name;
+        }
+      }
+    }
+  }
+  return byUser;
+}
+
+/** Count of distinct users online right now across all projects. */
+export function globalOnlineCount(now = Date.now()) {
+  return globalOnlineSnapshot(now).size;
 }
 
 /** Test-only: wipe all rooms. */

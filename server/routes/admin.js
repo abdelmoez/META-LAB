@@ -7,6 +7,8 @@ import {
   getMetricsTimeseries,
   getUsers,
   getUserCountries,
+  getUserActivitySummary,
+  getUserActivity,
   getUserById,
   getUserProjects,
   updateUser,
@@ -91,8 +93,12 @@ router.get('/users', requireAdminOrMod, getUsers);
 // prompt19 — aggregate users-by-country distribution for the Ops map (admin only).
 // MUST be declared before '/users/:id' so "countries" is not parsed as an :id.
 router.get('/users/countries', requireAdmin, getUserCountries);
+// prompt25 Task 1 — live activity summary (admin only). Specific path BEFORE :id.
+router.get('/users/activity-summary', requireAdmin, getUserActivitySummary);
 router.get('/users/:id', requireAdminOrMod, getUserById);
 router.get('/users/:id/projects', requireAdminOrMod, getUserProjects);
+// prompt25 Task 1 — per-user live location/online (mod cannot target admin/mod).
+router.get('/users/:id/activity', requireAdminOrMod, requireTargetEditable, getUserActivity);
 router.patch('/users/:id', requireAdminOrMod, requireTargetEditable, updateUser);
 router.patch('/users/:id/status', requireAdminOrMod, requireTargetEditable, updateUserStatus);
 router.post('/users/:id/reset-password', requireAdminOrMod, requireTargetEditable, resetUserPassword);

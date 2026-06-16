@@ -8,6 +8,7 @@ import { bustMaintenanceCache } from '../middleware/maintenance.js';
 import { USAGE, recordUsage } from '../utils/usage.js';
 import { buildUserUpdate } from '../../src/shared/editableUserFields.js';
 import { buildCountryDistribution } from '../utils/countryStats.js';
+import * as Presence from '../realtime/presence.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -231,6 +232,11 @@ export async function getMetrics(req, res) {
       dbStatus = 'error';
     }
 
+    // prompt25 Task 1 — ONLINE NOW: distinct users with a live presence heartbeat
+    // (within ACTIVE_MS ≈ 75s) across all project rooms. This is the real-time
+    // signal; User.lastActive (throttled to 5min) drives the 24h "active" figure.
+    const onlineNow = Presence.globalOnlineCount(now.getTime());
+
     return res.json({
       users: {
         total: totalUsers,
@@ -239,6 +245,9 @@ export async function getMetrics(req, res) {
         thisMonth: monthUsers,
         suspended: suspendedUsers,
         admins: adminUsers,
+        // prompt25 Task 1 — live online/offline counts for the Ops Overview.
+        online: onlineNow,
+        offline: Math.max(0, totalUsers - onlineNow),
       },
       projects: {
         total: totalProjects,
@@ -451,6 +460,8 @@ export async function getUsers(req, res) {
       }),
     ]);
 
+    // prompt25 Task 1 — live online flag from the global presence snapshot.
+    const online = Presence.globalOnlineSnapshot();
     const formatted = users.map(u => ({
       id: u.id,
       email: u.email,
@@ -460,6 +471,7 @@ export async function getUsers(req, res) {
       createdAt: u.createdAt,
       lastActive: u.lastActive,
       projectCount: u._count.projects,
+      isOnline: online.has(u.id),
     }));
 
     return res.json({ users: formatted, total, page, pages: Math.ceil(total / limit) });
@@ -481,6 +493,7 @@ export async function getUserCountries(req, res) {
   try {
     const users = await prisma.user.findMany({
       select: {
+        id: true,
         registrationCountryCode: true,
         registrationCountryName: true,
         createdAt: true,
@@ -488,9 +501,88 @@ export async function getUserCountries(req, res) {
     });
 
     // Pure, unit-tested aggregation (server/utils/countryStats.js).
-    return res.json(buildCountryDistribution(users));
+    const dist = buildCountryDistribution(users);
+
+    // prompt25 Task 2 — overlay live ONLINE counts per country. Compute the
+    // online distribution over ONLY the currently-online users, then merge its
+    // per-code userCount onto the full distribution as onlineCount (offline =
+    // total − online). Country mapping is unchanged (still ISO-derived → no
+    // UAE/Ukraine regression).
+    const onlineIds = Presence.globalOnlineSnapshot();
+    const onlineUsers = users.filter(u => onlineIds.has(u.id));
+    const onlineByCode = {};
+    for (const c of buildCountryDistribution(onlineUsers).countries) onlineByCode[c.countryCode] = c.userCount;
+    let onlineTotal = 0;
+    dist.countries = dist.countries.map(c => {
+      const onlineCount = onlineByCode[c.countryCode] || 0;
+      onlineTotal += onlineCount;
+      return { ...c, onlineCount, offlineCount: Math.max(0, c.userCount - onlineCount) };
+    });
+    dist.summary = { ...dist.summary, online: onlineTotal, offline: Math.max(0, dist.summary.totalUsers - onlineTotal) };
+
+    return res.json(dist);
   } catch (err) {
     console.error('[admin] getUserCountries error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── GET /api/admin/users/activity-summary (prompt25 Task 1) ──────────────────
+// Live online/offline counts for the Ops Users tab header. "Online" = a distinct
+// user with a presence heartbeat within ~75s across any project room. Admin only.
+export async function getUserActivitySummary(req, res) {
+  try {
+    const totalUsers = await prisma.user.count();
+    const online = Presence.globalOnlineCount();
+    const offline = Math.max(0, totalUsers - online);
+    return res.json({
+      totalUsers,
+      online,
+      offline,
+      percentOnline: totalUsers ? Math.round((online / totalUsers) * 1000) / 10 : 0,
+    });
+  } catch (err) {
+    console.error('[admin] getUserActivitySummary error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── GET /api/admin/users/:id/activity (prompt25 Task 1) ──────────────────────
+// Per-user live activity for the clicked-user detail: online flag, current
+// project + section (from presence), and last-active. No raw IP. Admin or mod
+// (mod cannot target admin/mod users — enforced by requireTargetEditable).
+export async function getUserActivity(req, res) {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.params.id },
+      select: { id: true, name: true, email: true, lastActive: true },
+    });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const snap = Presence.globalOnlineSnapshot().get(user.id) || null;
+    let currentProjectId = null, currentProjectTitle = null, currentLocation = null;
+    if (snap) {
+      currentLocation = snap.location || null;   // e.g. "Screening > Title & Abstract"
+      currentProjectId = snap.projectId || null; // ScreenProject id (presence room key)
+      if (currentProjectId) {
+        const sp = await prisma.screenProject
+          .findUnique({ where: { id: currentProjectId }, select: { title: true } })
+          .catch(() => null);
+        currentProjectTitle = sp?.title || null;
+      }
+    }
+    return res.json({
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      lastActive: user.lastActive,
+      onlineNow: !!snap,
+      currentProjectId,
+      currentProjectTitle,
+      currentLocation,
+    });
+  } catch (err) {
+    console.error('[admin] getUserActivity error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

@@ -212,22 +212,28 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
       const on = t.key === active.key;
       const step = showSteps ? stepByKey[t.key] : null;
       return (
-        <div key={t.key} style={{
-          display: 'flex', flexDirection: 'column', alignItems: 'stretch', flexShrink: 0,
-          borderBottom: `2px solid ${on ? C.acc : 'transparent'}`,
-        }}>
-          <button onClick={() => setTab(t.key)}
-            style={{
-              background: 'none', border: 'none', cursor: 'pointer', fontFamily: FONT,
-              display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-              fontSize: 12.5, fontWeight: on ? 600 : 500, color: on ? C.txt : C.txt2,
-              padding: '9px 14px 6px', transition: 'color 0.15s', whiteSpace: 'nowrap',
-            }}
-            onMouseEnter={e => { if (!on) e.currentTarget.style.color = C.txt; }}
-            onMouseLeave={e => { if (!on) e.currentTarget.style.color = C.txt2; }}>
+        <button key={t.key}
+          onClick={() => setTab(t.key)}
+          aria-current={on ? 'page' : undefined}
+          title={t.label}
+          onMouseEnter={e => { if (!on) e.currentTarget.style.color = C.txt; }}
+          onMouseLeave={e => { if (!on) e.currentTarget.style.color = C.txt2; }}
+          style={{
+            background: 'none', border: 'none', padding: 0, margin: 0,
+            cursor: 'pointer', fontFamily: FONT,
+            display: 'flex', flexDirection: 'column', alignItems: 'stretch', flexShrink: 0,
+            borderBottom: `2px solid ${on ? C.acc : 'transparent'}`,
+            color: on ? C.txt : C.txt2, transition: 'color 0.15s',
+            textAlign: 'left',
+          }}>
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+            fontSize: 12.5, fontWeight: on ? 600 : 500, color: 'inherit',
+            padding: '9px 14px 6px', whiteSpace: 'nowrap', pointerEvents: 'none',
+          }}>
             <Icon name={t.icon} size={13} style={{ opacity: on ? 1 : 0.75 }} />
             {t.label}
-          </button>
+          </div>
           {showSteps && (
             <StepIndicator
               step={step}
@@ -237,7 +243,7 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
               last={stepNumByKey[t.key] === stepNo}
             />
           )}
-        </div>
+        </button>
       );
     };
     return (
@@ -281,9 +287,9 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
                     onBack={() => setTab('overview')} />
                 </div>
               : isFullBleed
-                ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} presence={presence} embedded /></div>
+                ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} presence={presence} userId={user?.id} embedded /></div>
                 : <div style={{ maxWidth: 1180, margin: '0 auto', padding: '20px 20px 48px' }}>
-                    <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} presence={presence} embedded />
+                    <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} presence={presence} userId={user?.id} embedded />
                   </div>
           )}
         </div>
@@ -367,9 +373,9 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
 
         {!loading && !error && !disabled && project && (
           isFullBleed
-            ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} presence={presence} /></div>
+            ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} presence={presence} userId={user?.id} /></div>
             : <div style={{ maxWidth: 1180, margin: '0 auto', padding: '24px 24px 56px' }}>
-                <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} presence={presence} />
+                <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} presence={presence} userId={user?.id} />
               </div>
         )}
       </div>

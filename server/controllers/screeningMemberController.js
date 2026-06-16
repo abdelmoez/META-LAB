@@ -36,10 +36,16 @@ const MODULES = ['metalab', 'metasift', 'both'];
 const ROLES = ['leader', 'reviewer', 'viewer'];
 const STATUSES = ['active', 'inactive', 'pending'];
 
-function shapeMember(m, ownerId) {
+function shapeMember(m, ownerId, liveById) {
   const isOwner = m.role === 'owner' || (!!ownerId && m.userId === ownerId);
+  // prompt25 Task 5 — prefer the LIVE User name/email over the denormalized member
+  // row, so renaming yourself updates everywhere (owner + member display) at once.
+  // Pending invites have no userId yet → keep the stored email.
+  const live = (m.userId && liveById) ? liveById.get(m.userId) : null;
   const out = {
-    id: m.id, userId: m.userId, name: m.name, email: m.email,
+    id: m.id, userId: m.userId,
+    name: (live && live.name) || m.name,
+    email: (live && live.email) || m.email,
     role: m.role, status: m.status,
     isOwner,                       // prompt5 Task 1/2 — flag the owner row distinctly
     isLeader: m.role === 'leader', // a leader is NOT the owner
@@ -62,8 +68,14 @@ export async function listMembers(req, res) {
       orderBy: [{ role: 'asc' }, { joinedAt: 'asc' }],
     });
     const ownerId = access.project.ownerId;
+    // prompt25 Task 5 — resolve LIVE names for members that map to a real user.
+    const userIds = [...new Set(members.map(m => m.userId).filter(Boolean))];
+    const liveUsers = userIds.length
+      ? await prisma.user.findMany({ where: { id: { in: userIds } }, select: { id: true, name: true, email: true } })
+      : [];
+    const liveById = new Map(liveUsers.map(u => [u.id, u]));
     res.json({
-      members: members.map(m => shapeMember(m, ownerId)),
+      members: members.map(m => shapeMember(m, ownerId, liveById)),
       myRole: access.role,
       myUserId: req.user.id,
       ownerId,
