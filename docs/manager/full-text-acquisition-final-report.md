@@ -45,9 +45,24 @@ Set `autoPdfRetrieval=false` (default) → zero outbound calls. New parsers are
 isolated and additive. Schema columns are nullable/defaulted. Manual upload path is
 unchanged.
 
-## Recommended next steps
-1. Build the Screening-Import UI (References | Upload PDFs | Find OA PDFs | Review
-   unmatched) over the new endpoints.
-2. Add a flagged PDF text/XMP metadata extractor feeding `match-pdfs`.
-3. Move OA retrieval to a background-job runner for large projects.
-4. Add live-server integration tests for `oa-retrieve`/`match-pdfs` in a richer CI job.
+## Follow-up shipped (post-1.4, v3.8.1)
+- **Account-linked email** — OA lookups now send the **requesting user's account
+  email** (`req.user.email`) as the provider polite-pool identifier (per-call
+  override; env email is only a fallback; 400 if the account has no email). A
+  shared module-level resolver makes the TTL cache + rate-limiter persist across
+  requests. (+3 resolver tests.)
+- **Feature enabled** — `autoPdfRetrieval` default **ON** (acts only on an explicit
+  user click; admin-disable-able).
+- **UI** — a **“🔍 Find open-access PDF”** action in the per-record PDF panel
+  (`PdfViewer`) over `oa-retrieve`, with friendly status handling.
+- **Integration tests** — `tests/screening/integration/oa-fulltext.test.js`
+  (self-skipping; 4 tests) verify `match-pdfs` (DOI match + null) and `oa-retrieve`
+  (contract shape + 404) end-to-end against a live server, **without** any external
+  provider call. Verified green locally with the server up.
+
+## Still recommended (larger follow-ups)
+1. Full Screening-Import landing (References | Upload PDFs | Find OA PDFs | Review
+   unmatched) — the per-record button covers the common case now.
+2. A flagged PDF text/XMP extractor with a vetted library for **compressed**
+   content streams (uncompressed XMP/Info DOI already covered, dependency-free).
+3. A background-job runner for OA at scale (currently bounded to 25/call).

@@ -126,6 +126,28 @@ describe('createOaResolver — guards, cache, rate limit', () => {
   });
 });
 
+describe('per-call email + enabled overrides (1.4 follow-up — user email)', () => {
+  it("sends the caller's email to the provider (polite-pool identifier)", async () => {
+    const fetch = mockFetch({ 'api.unpaywall.org': { is_oa: true, best_oa_location: { url_for_pdf: 'https://oa.org/x.pdf' } } });
+    const r = await createOaResolver(baseCfg, { fetch, now: fixedNow }).resolve('10.1000/aaa', { email: 'reviewer@uni.edu' });
+    expect(r.status).toBe(OA_STATUS.FOUND);
+    expect(fetch.mock.calls[0][0]).toContain('email=reviewer%40uni.edu');
+  });
+
+  it('opts.enabled=false short-circuits even when cfg.enabled=true', async () => {
+    const fetch = mockFetch({});
+    const r = await createOaResolver(baseCfg, { fetch, now: fixedNow }).resolve('10.1000/aaa', { enabled: false });
+    expect(r.status).toBe(OA_STATUS.SKIPPED_FEATURE_DISABLED);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('opts.enabled=true proceeds even when cfg.enabled=false (controller gates)', async () => {
+    const fetch = mockFetch({ 'api.unpaywall.org': { is_oa: false }, 'api.openalex.org': { open_access: { is_oa: false } }, 'api.crossref.org': { message: {} } });
+    const r = await createOaResolver({ ...baseCfg, enabled: false }, { fetch, now: fixedNow }).resolve('10.1000/aaa', { email: 'u@x.org', enabled: true });
+    expect(r.status).toBe(OA_STATUS.NOT_FOUND);
+  });
+});
+
 describe('loadOaConfig', () => {
   it('defaults to disabled with no env/settings', () => {
     expect(loadOaConfig({}, {}).enabled).toBe(false);

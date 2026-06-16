@@ -30,11 +30,13 @@ export const META_SIFT_DEFAULTS = {
   minIncludeQuorum: 2,         // distinct includes required to reach 2nd review
   defaultBlindMode: false,     // applied to newly created projects
   // ── open-access PDF retrieval (roadmap 1.4) ────────────────────────
-  // Default OFF: no outbound provider calls happen until an admin enables it.
-  // Only legitimately open-access PDFs are fetched (Unpaywall/OpenAlex is_oa,
-  // CrossRef only with an explicit open licence). Emails/tuning come from env
-  // (UNPAYWALL_EMAIL, OPENALEX_EMAIL, OA_PDF_CACHE_TTL_HOURS, …).
-  autoPdfRetrieval: false,
+  // ENABLED: the endpoint only fires on an explicit user action (never auto),
+  // uses the REQUESTING USER's account email as the provider's polite-pool
+  // identifier, is rate-limited + cached, and fetches ONLY legitimately
+  // open-access PDFs (Unpaywall/OpenAlex is_oa; CrossRef only with an explicit
+  // open licence). Admins can disable it here. Tuning via env
+  // (OA_PDF_CACHE_TTL_HOURS, OA_PDF_RATE_LIMIT_PER_MINUTE, …).
+  autoPdfRetrieval: true,
   oaProviderPriority: ['unpaywall', 'openalex', 'crossref'],
   // ── limits ─────────────────────────────────────────────────────────
   maxPdfSizeMb: 25,

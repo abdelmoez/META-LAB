@@ -21,6 +21,12 @@ import { bestPdfMatch } from '../../src/research-engine/screening/pdfMatching.js
 const MAX_PER_CALL = 25;   // bound request time (no job queue); client paginates
 const MAX_MATCH = 200;
 
+// One shared resolver → its TTL cache + rate-limiter persist across requests
+// (a per-request resolver would never hit the cache). The DOI→OA-URL result does
+// not depend on the email (just a polite-pool identifier), so cross-user caching
+// is correct. The per-request flag + the user's email are passed to resolve().
+const resolver = createOaResolver(loadOaConfig());
+
 async function fetchOaPdf(url, fetchFn, maxBytes) {
   let res;
   try { res = await fetchFn(url, { redirect: 'follow' }); }
@@ -46,6 +52,13 @@ export async function oaRetrieve(req, res) {
     if (!cfg.enabled) {
       return res.status(403).json({ error: 'Open-access PDF retrieval is disabled by the administrator', oaStatus: OA_STATUS.SKIPPED_FEATURE_DISABLED });
     }
+    // The OA provider (Unpaywall) requires an email; we send the REQUESTING
+    // user's account email as the polite-pool identifier — the user's own
+    // account is what is "linked" to the lookup service. Env email is a fallback.
+    const userEmail = (req.user && req.user.email) || cfg.unpaywallEmail || '';
+    if (!userEmail) {
+      return res.status(400).json({ error: 'Your account has no email on file, which the open-access provider requires. Add an email to your account and try again.' });
+    }
 
     const projectId = access.project.id;
     const ids = Array.isArray(req.body?.recordIds) ? req.body.recordIds.slice(0, MAX_PER_CALL) : null;
@@ -61,14 +74,13 @@ export async function oaRetrieve(req, res) {
     });
     const hasManual = new Set(existing.filter(a => a.source === 'manual_upload').map(a => a.recordId));
 
-    const resolver = createOaResolver(cfg);
     const fetchFn = globalThis.fetch;
     const results = [];
     let attached = 0, notFound = 0, skipped = 0, failed = 0;
 
     for (const rec of records) {
       if (hasManual.has(rec.id)) { skipped++; results.push({ recordId: rec.id, status: 'skipped_manual' }); continue; }
-      const r = await resolver.resolve(rec.doi);
+      const r = await resolver.resolve(rec.doi, { email: userEmail, enabled: true });
       if (r.status !== OA_STATUS.FOUND) {
         if (r.status === OA_STATUS.NOT_FOUND) notFound++; else skipped++;
         results.push({ recordId: rec.id, status: r.status });

@@ -170,4 +170,10 @@ export const screeningApi = {
     if (!r.ok) throw Object.assign(new Error(data.error || `Upload failed (${r.status})`), { status: r.status, data });
     return data;
   },
+
+  // Open-access PDF retrieval + uploaded-PDF matching (roadmap 1.4). oaRetrieve
+  // uses the signed-in user's account email as the OA provider's polite-pool
+  // identifier (server-side). Pass recordIds to target specific records.
+  oaRetrieve: (pid, recordIds) => req('POST', `/projects/${pid}/oa-retrieve`, recordIds ? { recordIds } : {}),
+  matchPdfs:  (pid, pdfs)      => req('POST', `/projects/${pid}/match-pdfs`, { pdfs }),
 };

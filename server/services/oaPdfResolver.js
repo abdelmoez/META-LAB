@@ -120,10 +120,19 @@ export function createOaResolver(cfg, deps = {}) {
   const cache = new Map();
   const bucket = makeBucket(cfg.rateLimitPerMinute, now);
 
-  async function resolve(doiRaw) {
-    if (!cfg.enabled) return { status: OA_STATUS.SKIPPED_FEATURE_DISABLED };
+  async function resolve(doiRaw, opts = {}) {
+    const enabled = opts.enabled != null ? opts.enabled : cfg.enabled;
+    if (!enabled) return { status: OA_STATUS.SKIPPED_FEATURE_DISABLED };
     const doi = normalizeDoi(doiRaw);
     if (!doi) return { status: OA_STATUS.SKIPPED_NO_DOI };
+
+    // Per-call email (the requesting USER's account email) identifies us to the
+    // provider's polite pool. Unpaywall requires an email; OpenAlex/CrossRef use
+    // it as `mailto`. Falls back to the configured/env email when absent.
+    const email = opts.email || cfg.unpaywallEmail;
+    const callCfg = email
+      ? { ...cfg, unpaywallEmail: email, openalexEmail: email, crossrefMailto: email }
+      : cfg;
 
     const hit = cache.get(doi);
     if (hit && (now() - hit.at) < cfg.cacheTtlMs) return { ...hit.result, cached: true };
@@ -133,7 +142,7 @@ export function createOaResolver(cfg, deps = {}) {
     const order = cfg.providerPriority.filter(p => PROVIDER_FNS[p]);
     for (const provider of order) {
       try {
-        const found = await PROVIDER_FNS[provider](doi, cfg, fetch);
+        const found = await PROVIDER_FNS[provider](doi, callCfg, fetch);
         if (found && found.url) {
           const result = { status: OA_STATUS.FOUND, doi, ...found };
           cache.set(doi, { at: now(), result });

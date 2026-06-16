@@ -26,6 +26,7 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
   const [attachment, setAttachment] = useState(null);
   const [loading, setLoading]   = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [finding, setFinding]   = useState(false);
   const [open, setOpen]         = useState(defaultOpen);
   const [err, setErr]           = useState('');
   const [frameErr, setFrameErr] = useState(false);
@@ -61,6 +62,28 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
         : e2.status === 413 || /limit/i.test(e2.message || '') ? (e2.message || 'PDF is too large.')
         : (e2.message || 'Upload failed.'));
     } finally { setUploading(false); }
+  }
+
+  // Auto-find a legitimately open-access PDF for this record (roadmap 1.4). The
+  // server uses the signed-in user's account email as the OA provider identifier.
+  async function onFindOa() {
+    setFinding(true); setErr('');
+    try {
+      const res = await screeningApi.oaRetrieve(pid, [recordId]);
+      const r = (res.results || [])[0];
+      if (r && r.status === 'attached') { setFrameErr(false); await load(); setOpen(true); }
+      else {
+        setErr(
+          r?.status === 'skipped_no_doi' ? 'This record has no DOI, so no open-access lookup is possible.' :
+          r?.status === 'rate_limited'   ? 'Too many lookups right now — please try again shortly.' :
+          r?.status === 'failed'         ? 'Found a link but the download failed — try uploading the PDF manually.' :
+          'No open-access PDF was found for this record.');
+      }
+    } catch (e) {
+      setErr(e.status === 403 ? (e.message || 'Open-access retrieval is disabled by the administrator.')
+        : e.status === 400 ? (e.message || 'Your account needs an email to use open-access lookup.')
+        : (e.message || 'Open-access lookup failed.'));
+    } finally { setFinding(false); }
   }
 
   async function onRemove() {
@@ -111,7 +134,12 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
               </span>
               <input ref={fileRef} type="file" accept="application/pdf" onChange={onPick} disabled={uploading} style={{ display: 'none' }} />
             </label>
-            <span style={{ fontSize: 11, color: C.muted }}>Attach the full manuscript to preview it here.</span>
+            <button onClick={onFindOa} disabled={finding || uploading} style={{
+              fontSize: 12, color: C.teal, border: `1px dashed ${alpha(C.teal, '55')}`, borderRadius: 7,
+              padding: '6px 12px', background: alpha(C.teal, '12'), fontFamily: FONT,
+              cursor: finding || uploading ? 'default' : 'pointer', whiteSpace: 'nowrap',
+            }}>{finding ? 'Searching…' : '🔍 Find open-access PDF'}</button>
+            <span style={{ fontSize: 11, color: C.muted }}>Attach the manuscript, or auto-find a free open-access copy.</span>
           </>
         ) : (
           <span style={{ fontSize: 11.5, color: C.muted, fontStyle: 'italic' }}>No PDF attached.</span>
