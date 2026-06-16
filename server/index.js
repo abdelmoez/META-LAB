@@ -35,6 +35,7 @@ import eventsRouter       from './routes/events.js';
 import { initDefaultSettings } from './controllers/settingsController.js';
 import { seedAdmins } from './auth/seedAdmins.js';
 import { getVersion } from './version.js';
+import { resolveCorsOrigin } from './config/cors.js';
 
 const app = express();
 
@@ -84,7 +85,7 @@ const inviteLimiter = rateLimit({
 // CORS origin is env-driven for deployment (CORS_ORIGIN, then APP_BASE_URL),
 // falling back to the local Vite dev server. credentials:true is required so the
 // httpOnly session cookie is sent on cross-origin requests.
-const ORIGIN = process.env.CORS_ORIGIN || process.env.APP_BASE_URL || 'http://localhost:3000';
+const ORIGIN = resolveCorsOrigin();
 app.use(cors({ origin: ORIGIN, credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
