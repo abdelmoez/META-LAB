@@ -59,6 +59,15 @@ export {
   dedupeRecords,
 } from './import-export/parsers.js';
 
+// ── Screening: explainable deduplication (engine for roadmap 1.1) ────────────
+export {
+  normalizeTitle,
+  titleSimilarity,
+  scorePair,
+  findDuplicateGroups,
+  findDuplicateGroupsScored,
+} from './screening/deduplication.js';
+
 // ── Screening: inter-rater agreement + reproducible sampling (roadmap 1.3) ───
 export {
   cohenKappa,

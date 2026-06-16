@@ -51,7 +51,21 @@ Phases 1–5 contain items that are each multi-week projects (network meta-analy
 5. *0.2 is step 1 only:* dual-write into the live autosave path, switching reads to relational, and dropping the JSON column are the **explicit gated follow-ups** (kept off the hot path deliberately).
 6. *axe-core:* 0.4 locks contrast/palette via pure math (hermetic); a full axe-core pass needs a rendered DOM. **Recommend** an e2e axe check in the future browser-test harness.
 
-<!-- PHASE-1-ANALYSIS -->
+#### ◐ PHASE 1 — engine layer delivered; workflow/UI deferred (branch `roadmap/phase-1`)
+**Commits:** `789129d` 1.3 engine · barrel export for 1.1 engine.
+
+I scoped Phase 1 to the parts that meet the same bar as Phase 0 (pure engine + golden tests + gate-covered + zero production risk) and was explicit about what needs UI/integration work a hermetic session can't validate.
+
+- **1.3 — DONE (engine).** `screening/agreement.js`: Cohen's κ (2 raters, normal-approx CI) + Fleiss' κ (m raters, asymptotic SE under H0) + Landis–Koch bands, validated against **hand-computed** worked examples (Cohen κ=0.40/SE=0.1296; Fleiss κ=0.5500/SE=0.3333). `screening/sampling.js`: deterministic mulberry32 + `seededSample` for reproducible calibration subsets. 17 tests; contracts + `statistical-validation.md` §12 updated. *Deferred:* the calibration endpoints + view (consume relational records → land with 0.2 read-switch).
+- **1.1 — engine ALREADY EXISTED.** `deduplication.js` already had `scorePair` (`{score, reason, signals}`) and `findDuplicateGroupsScored` (scored groups + per-pair reasons) — exactly the "pairs with score + reason" the playbook asks for; 21 test refs cover them. I added the missing **barrel export** and the **`mergedIntoId` soft-merge column** (shipped in 0.2). *Deferred:* the Duplicates-tab queue UI + merge/undo endpoints + audit wiring.
+- **1.2 — deferred.** Screening ergonomics (virtualized list, shortcuts already have `screeningShortcuts`, bulk actions, saved facets) is frontend-heavy; needs a browser/e2e harness to validate, not hermetic units.
+- **1.4 — deferred.** OA PDF retrieval is a network service (mockable) + new parsers (CSV/TXT/CIW are pure and could be added next); scoped as a follow-up.
+
+**Tests:** gate suite **999 green**; build exit 0; zero regressions.
+
+**Recommendation for the human gate:** the remaining Phase-1 items (1.1 UI/endpoints, 1.2 ergonomics, 1.4 OA + parsers) are workflow/UI/network work that should be built once the 0.2 relational read-switch is enabled (so records have stable per-row identity + audit). The engine foundations they need are now in place and validated.
+
+<!-- PHASE-2-ANALYSIS -->
 
 ---
 
