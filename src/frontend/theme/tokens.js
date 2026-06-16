@@ -34,8 +34,8 @@ export const THEMES = {
     brd2:    '#d1d5db',   // gray-300
     txt:     '#1f2937',   // gray-800 — headings / primary
     txt2:    '#4b5563',   // gray-600 — secondary
-    muted:   '#6b7280',   // gray-500 — muted body
-    dim:     '#9ca3af',   // gray-400 — faint
+    muted:   '#676e77',   // muted body — WCAG AA (≥4.5:1) on bg/surf/card2 (roadmap 0.4; was gray-500 #6b7280 = 4.39:1 on card2)
+    dim:     '#9ca3af',   // gray-400 — faint (decorative only — not used for body text)
     acc:     '#4f46e5',   // indigo-600 — primary
     acc2:    '#4338ca',   // indigo-700 — hover / pressed
     accText: '#ffffff',
@@ -64,8 +64,8 @@ export const THEMES = {
     brd2:    '#384761',
     txt:     '#f1f5f9',
     txt2:    '#aab6cf',
-    muted:   '#6c7a99',
-    dim:     '#414e69',
+    muted:   '#8693b4',   // muted body — WCAG AA (≥4.5:1) on bg/surf/card2 (roadmap 0.4; was #6c7a99 = 4.12:1 on surf)
+    dim:     '#414e69',   // faint (decorative only — not used for body text)
     acc:     '#818cf8',   // indigo-400 — primary in dark
     acc2:    '#6366f1',   // indigo-500
     accText: '#0b1020',
@@ -85,6 +85,44 @@ export const THEMES = {
     tealBg:  '#0b2a27',
     shadow:  'rgba(2, 6, 16, 0.55)',
   },
+};
+
+/* ─── Color-blind-safe palette (roadmap 0.4) ──────────────────────────
+ * The Okabe–Ito 8-colour qualitative palette: maximally distinguishable
+ * under deuteranopia, protanopia and tritanopia. These are ABSOLUTE hex
+ * values (theme-independent) because they are consumed by forest/funnel
+ * plots and screening labels that export to SVG/PDF — never bake var(--t-*)
+ * into exports. Use these for *categorical series* (one colour per group),
+ * NOT as text-on-background: several (e.g. yellow) are light by design, so
+ * when used as text, pick an accessible foreground via contrast.js.
+ *
+ * Ref: Okabe & Ito (2008), "Color Universal Design".
+ */
+export const OKABE_ITO = {
+  orange:       '#e69f00',
+  skyBlue:      '#56b4e9',
+  bluishGreen:  '#009e73',
+  yellow:       '#f0e442',
+  blue:         '#0072b2',
+  vermillion:   '#d55e00',
+  reddishPurple:'#cc79a7',
+  black:        '#000000',
+};
+
+/** Ordered series for plots (skips near-white yellow so points/lines stay visible). */
+export const CB_SERIES = [
+  OKABE_ITO.blue, OKABE_ITO.vermillion, OKABE_ITO.bluishGreen,
+  OKABE_ITO.orange, OKABE_ITO.reddishPurple, OKABE_ITO.skyBlue, OKABE_ITO.black,
+];
+
+/* Screening-decision colours on the blue↔orange axis instead of green↔red,
+ * the canonical CVD-safe substitution. Each carries an accessible text `fg`
+ * (≥4.5:1 on a white chip) and a light `bg` tint for chips. Consumed by the
+ * screening labels in Phase 1. */
+export const SCREEN_STATUS_CB = {
+  include: { base: OKABE_ITO.blue,       fg: '#005b8f', bg: '#e7f1f8', label: 'Include' },
+  exclude: { base: OKABE_ITO.vermillion, fg: '#a8490a', bg: '#fcede3', label: 'Exclude' },
+  maybe:   { base: OKABE_ITO.orange,     fg: '#8a6300', bg: '#fdf3e0', label: 'Maybe' },
 };
 
 /* CSS variable name for a token key: acc → --t-acc, accBg → --t-acc-bg */
