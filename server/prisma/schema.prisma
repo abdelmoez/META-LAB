@@ -80,6 +80,57 @@ model Project {
   archived      Boolean   @default(false)  // prompt11 — user-facing archive (reversible hide)
   archivedAt    DateTime?                   // prompt11 — when archived
   lastSavedAt   DateTime?
+  // roadmap 0.2 — additive virtual back-relations (no column on Project). The
+  // Project.data JSON blob stays the source of truth until the
+  // relationalProjectStore feature flag is flipped at an evaluation gate.
+  reviewRecords ReviewRecord[]
+  reviewStudies ReviewStudy[]
+}
+
+// roadmap 0.2 — relational backing for META·LAB per-project screening records.
+// ADDITIVE + inert by default. Each row keeps indexed identity columns (for
+// dedup/query at scale) PLUS a `data` column holding the exact mkRecord object,
+// so rowsToProject(projectToRows(p)) deep-equals p (the JSON contract in
+// data-model.md is preserved). All non-key columns are nullable → `prisma db
+// push` stays additive-safe (no --accept-data-loss). Cascade-deletes with the
+// parent Project. `mergedIntoId` is the soft-merge target reserved for 1.1.
+model ReviewRecord {
+  id           String   @id @default(uuid())
+  projectId    String
+  project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  recordId     String   // the in-document record.id (8-char uid) — stable across saves
+  position     Int      // preserves the records[] array order
+  title        String?
+  doi          String?
+  pmid         String?
+  decision     String?
+  mergedIntoId String?  // 1.1 soft-merge target; null = not merged
+  data         String   @default("{}")  // full mkRecord object, JSON-serialised
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([projectId, doi])
+  @@index([projectId, pmid])
+}
+
+// roadmap 0.2 — relational backing for META·LAB per-project extracted studies.
+// Same additive/inert pattern as ReviewRecord; `data` preserves the exact
+// mkStudy object so the JSON contract round-trips.
+model ReviewStudy {
+  id        String   @id @default(uuid())
+  projectId String
+  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  studyId   String   // the in-document study.id (8-char uid)
+  position  Int      // preserves the studies[] array order
+  author    String?
+  year      String?
+  esType    String?
+  data      String   @default("{}")  // full mkStudy object, JSON-serialised
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectId])
 }
 
 model ContactMessage {

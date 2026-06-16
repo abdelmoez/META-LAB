@@ -298,3 +298,32 @@ A study is classified as non-primary if **any** of the following is true:
 
 Non-primary status affects poolability warnings when â‰¥ 50% of included
 studies are non-primary.
+
+---
+
+## Relational backing (roadmap 0.2)
+
+The project document above is the **canonical contract** and is unchanged.
+Underneath, `records[]` and `studies[]` are additionally mirrored into relational
+tables so large reviews get per-record updates, querying and per-row audit
+without rewriting the whole JSON blob.
+
+- **Tables** (`server/prisma/schema.prisma`): `ReviewRecord` and `ReviewStudy`,
+  each FK→`Project` (cascade delete). Every row carries indexed identity columns
+  for querying/dedup (`recordId`/`studyId`, `position`, `title`, `doi`, `pmid`,
+  `decision`, `mergedIntoId`; `author`, `year`, `esType`) **plus** a `data`
+  column holding the *exact* `mkRecord`/`mkStudy` object as JSON. The identity
+  columns are coerced to `string|null`; the `data` column preserves the original
+  value and type, so the JSON contract survives legacy drift (e.g. a numeric
+  `year`).
+- **Adapter** (`server/services/projectStore.js`): pure `projectToRows` /
+  `rowsToProject` satisfy `rowsToProject(projectToRows(p))` ⩵ `p` (proven in
+  `tests/unit/store/projectStore.roundtrip.test.js`, incl. a 5,000-record
+  project). Impure `writeRelationalRows` / `readRelationalRows` /
+  `loadProjectRelational` take an injected Prisma client.
+- **`record.dupOf`** (in-document) maps to the **`mergedIntoId`** column,
+  reserved for the 1.1 soft-merge workflow.
+- **Status:** additive + **inert by default**. The `relationalProjectStore`
+  feature flag (default **off**) gates dual-write and the read switch. While off,
+  `Project.data` JSON is the sole source of truth — current behaviour, unchanged.
+  Backfill: `scripts/backfill-relational-store.js` (idempotent).

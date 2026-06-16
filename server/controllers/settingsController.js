@@ -36,6 +36,11 @@ const DEFAULTS = {
     projectDuplication: true,
     advancedMetaAnalysis: true,
     exportTools: true,
+    // roadmap 0.2 — relational ReviewRecord/ReviewStudy backing for META·LAB
+    // projects. Default OFF: dual-write/read-switch only activate at the
+    // evaluation gate. With it off, the Project.data JSON blob is the sole
+    // source of truth (current behaviour, unchanged).
+    relationalProjectStore: false,
   }),
 };
 
