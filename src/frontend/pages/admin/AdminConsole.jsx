@@ -3382,6 +3382,8 @@ const APP_SETTING_KEYS = [
   'projectCreationEnabled', 'exportEnabled', 'maxProjectsPerUser', 'maxStudiesPerProject',
   'notificationsEnabled', 'emailInvitesEnabled', 'defaultTheme', 'maintenanceMessage',
   'exportFormats', 'projectDeletion',
+  // prompt26 — email verification (OFF by default; persisted additively).
+  'requireEmailVerification',
 ];
 
 function SettingsSection() {
@@ -3393,9 +3395,14 @@ function SettingsSection() {
     notificationsEnabled: true, emailInvitesEnabled: true,
     defaultTheme: 'night', maintenanceMessage: '',
     exportFormats: [...EXPORT_FORMATS], projectDeletion: 'soft',
+    // prompt26 — require email verification before login (OFF by default).
+    requireEmailVerification: false,
   });
   const [loading, setLoading] = useState(true);
   const [status,  setStatus]  = useState('idle');
+  // SMTP-config status (from /admin/console) so the verification toggle can warn
+  // when turning it on would lock users out. null = unknown (never warn on null).
+  const [emailConfigured, setEmailConfigured] = useState(null);
   // Wipe-safety: if the initial GET failed, the form holds client defaults
   // only — saving would overwrite stored values, so saving is blocked.
   const [loadFailed, setLoadFailed] = useState(false);
@@ -3413,6 +3420,11 @@ function SettingsSection() {
       .then(d => { mergeServer(d); setLoadFailed(false); })
       .catch(() => setLoadFailed(true))
       .finally(() => setLoading(false));
+    // Best-effort: learn whether SMTP is configured so the verification toggle
+    // can warn before it locks users out. Leave null (no warning) on any error.
+    adminApi.console()
+      .then(c => setEmailConfigured(!!c?.emailConfigured))
+      .catch(() => setEmailConfigured(null));
   }, []);
 
   async function save() {
@@ -3493,6 +3505,36 @@ function SettingsSection() {
         <Row label="Email Invites Enabled" note="Also send collaborator invites by email when SMTP is configured.">
           <Toggle checked={!!form.emailInvitesEnabled} onChange={v => setForm(f => ({ ...f, emailInvitesEnabled: v }))} />
         </Row>
+      </SectionCard>
+
+      {/* prompt26 — account email verification. Gated behind a clear SMTP +
+          grandfather warning because turning it on with no SMTP, or before
+          back-filling existing accounts, would lock real users out of login. */}
+      <SectionCard title="Account Verification" action={
+        emailConfigured === false
+          ? <span style={{ fontSize: 10, fontFamily: MONO, color: C.ylw, letterSpacing: '0.05em' }}>SMTP not configured</span>
+          : emailConfigured === true
+            ? <span style={{ fontSize: 10, fontFamily: MONO, color: C.grn, letterSpacing: '0.05em' }}>SMTP configured</span>
+            : null
+      }>
+        <Row
+          label="Require Email Verification"
+          note={form.requireEmailVerification
+            ? '⚠ New users must verify their email before they can sign in.'
+            : 'New users can sign in immediately; emails are not verified.'}
+        >
+          <Toggle checked={!!form.requireEmailVerification} onChange={v => setForm(f => ({ ...f, requireEmailVerification: v }))} />
+        </Row>
+        {form.requireEmailVerification && emailConfigured === false && (
+          <div style={{ padding: '12px 20px 4px' }}>
+            <NoticeBox color={C.red} msg="SMTP is not configured. With verification required, new users will never receive a verification email and cannot sign in. Configure SMTP (server/docs/email-setup.md) before enabling this." />
+          </div>
+        )}
+        {form.requireEmailVerification && (
+          <div style={{ padding: '12px 20px 4px' }}>
+            <NoticeBox color={C.ylw} msg={`Before enabling in production, grandfather existing users so they aren't locked out — run: UPDATE "User" SET "emailVerifiedAt" = "createdAt" WHERE "emailVerifiedAt" IS NULL.`} />
+          </div>
+        )}
       </SectionCard>
 
       <SectionCard title="Exports">

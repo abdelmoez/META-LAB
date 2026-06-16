@@ -18,6 +18,7 @@ import { prisma } from '../db/client.js';
 import { getProjectAccess, writeAudit } from '../screening/access.js';
 import { getMetaSiftSettings } from '../screening/settings.js';
 import { extractDoiFromPdfBuffer } from '../screening/pdfStorage.js';
+import { setInlinePdfFramingHeaders } from '../screening/pdfFraming.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STORAGE_ROOT = path.join(__dirname, '..', 'storage', 'screening-pdfs');
@@ -150,6 +151,8 @@ export async function downloadPdf(req, res) {
     res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
     res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+    // Allow the same-origin SPA to embed this PDF inline (see INLINE_PDF_CSP).
+    setInlinePdfFramingHeaders(res);
 
     const onErr = () => { if (!res.headersSent) res.status(500); try { res.end(); } catch {} };
 
