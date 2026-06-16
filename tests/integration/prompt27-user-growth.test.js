@@ -118,6 +118,8 @@ describe('GET /api/admin/user-growth — shape', () => {
     expect(d.insights).toHaveProperty('topCountry');
     expect(d.insights).toHaveProperty('topPrimaryRole');
     expect(d.stats).toHaveProperty('avgPerDayThisMonth');
+    expect(typeof d.stats.newInstitutionsThisMonth).toBe('number');
+    expect(typeof d.stats.totalInstitutions).toBe('number');
     expect(d.timezone).toBe('server-local');
     expect(d.weekStart).toBe('sunday');
   });

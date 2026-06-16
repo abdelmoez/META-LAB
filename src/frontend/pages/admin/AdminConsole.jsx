@@ -2454,11 +2454,13 @@ function UsersDirectory({ isAdmin = false }) {
   }, []);
 
   // Apply a server-side quick-filter change and reload from page 1. Mirrors the
-  // value into filtersRef synchronously so load() reads it immediately.
+  // value into filtersRef synchronously so load() reads it immediately. Fetches
+  // exactly once: when already on page 1 we load directly; otherwise resetting
+  // the page fires the [page] effect (which reads the updated ref).
   function applyServerFilter(next) {
     filtersRef.current = { ...filtersRef.current, ...next };
-    setPage(1);
-    load(search, filter, 1);
+    if (page === 1) load(search, filter, 1);
+    else setPage(1);
   }
   function pickRegWindow(v) { setRegWindow(v); applyServerFilter({ regWindow: v }); }
   function toggleQuick(k)   { const q = { ...quick, [k]: !quick[k] }; setQuick(q); applyServerFilter({ quick: q }); }
@@ -2806,6 +2808,12 @@ function NewUserGrowthSection() {
   const monthRows = byMonth.map(m => ({ label: m.label, value: m.count }));
   const quarterRows = byQuarter.map(q => ({ label: q.label, value: q.count }));
   const yearRows = byYear.map(y => ({ label: String(y.year), value: y.count }));
+  // Label the quarter card with the years actually present (e.g. "2026" or
+  // "2025–2026"), not an assumed two-year span.
+  const quarterYearsShown = [...new Set(byQuarter.map(q => q.year))].sort((a, b) => a - b);
+  const quarterLabel = quarterYearsShown.length
+    ? (quarterYearsShown.length === 1 ? String(quarterYearsShown[0]) : `${quarterYearsShown[0]}–${quarterYearsShown[quarterYearsShown.length - 1]}`)
+    : '';
 
   const dayRanges = [{ id: '7d', label: '7d' }, { id: '30d', label: '30d' }, { id: '90d', label: '90d' }];
 
@@ -2876,8 +2884,8 @@ function NewUserGrowthSection() {
         </SectionCard>
       </div>
 
-      {/* C. Quarterly (selected + previous year) */}
-      <SectionCard title="New users by quarter" action={<span style={{ fontSize: 10, fontFamily: MONO, color: C.muted }}>{year ? `${year - 1}–${year}` : ''}</span>}>
+      {/* C. Quarterly (selected + previous year when present) */}
+      <SectionCard title="New users by quarter" action={<span style={{ fontSize: 10, fontFamily: MONO, color: C.muted }}>{quarterLabel}</span>}>
         <div style={{ padding: '16px 18px' }}>
           <BarRow rows={quarterRows} color={C.purp} loading={loading} emptyLabel="no quarterly data yet" />
         </div>
@@ -2893,6 +2901,7 @@ function NewUserGrowthSection() {
             <StatTile label="Onboarded" value={(stats.onboardingCompletedThisMonth ?? 0).toLocaleString()} color={C.acc2} loading={loading} sub="completed profile" />
             <StatTile label="With institution" value={(stats.withInstitutionThisMonth ?? 0).toLocaleString()} color={C.purp} loading={loading} />
             <StatTile label="Countries" value={(stats.countriesThisMonth ?? 0).toLocaleString()} color={C.txt} loading={loading} sub="represented this month" />
+            <StatTile label="New institutions" value={(stats.newInstitutionsThisMonth ?? 0).toLocaleString()} color={C.acc} loading={loading} sub={`${(stats.totalInstitutions ?? 0).toLocaleString()} total`} />
           </div>
           <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, marginTop: 12, letterSpacing: '0.04em' }}>
             Demographic breakdowns by country / institution / field / role / use-case are in the <strong style={{ color: C.txt2 }}>Analytics</strong> tab (filterable by time window).

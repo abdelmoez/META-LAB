@@ -12,6 +12,7 @@ import * as Presence from '../realtime/presence.js';
 import {
   groupInstitutions,
   institutionSimilarity,
+  institutionKey,
   INST_REVIEW_THRESHOLD,
 } from '../../src/research-engine/index.js';
 import {
@@ -1419,6 +1420,25 @@ export async function getUserGrowth(req, res) {
         .map(u => (u.country || u.registrationCountryName || '').trim().toLowerCase())
         .filter(Boolean),
     ).size;
+
+    // New institutions first seen THIS month (Part E). Normalized with the SAME
+    // engine key the institution registry uses, so the count agrees with the
+    // Institutions tab. "New" = the institution's earliest linked-user createdAt
+    // falls in the current month.
+    const monthStartMs = startOfWindow('month', now).getTime();
+    const instFirstSeen = new Map(); // normalized key -> earliest createdAt (ms)
+    for (const usr of users) {
+      const orig = (usr.institutionOriginal || '').trim();
+      if (!orig) continue;
+      const key = institutionKey(orig);
+      if (!key) continue;
+      const ms = new Date(usr.createdAt).getTime();
+      const prev = instFirstSeen.get(key);
+      if (prev == null || ms < prev) instFirstSeen.set(key, ms);
+    }
+    let newInstitutionsThisMonth = 0;
+    for (const ms of instFirstSeen.values()) if (ms >= monthStartMs) newInstitutionsThisMonth += 1;
+
     const stats = {
       newUsersThisMonth: monthUsers.length,
       avgPerDayThisMonth: daysElapsed > 0 ? Math.round((monthUsers.length / daysElapsed) * 10) / 10 : 0,
@@ -1426,6 +1446,8 @@ export async function getUserGrowth(req, res) {
       onboardingCompletedThisMonth: monthUsers.filter(u => u.onboardingCompletedAt).length,
       withInstitutionThisMonth: monthUsers.filter(u => (u.institutionOriginal || '').trim()).length,
       countriesThisMonth,
+      newInstitutionsThisMonth,
+      totalInstitutions: instFirstSeen.size,
     };
 
     return res.json({
