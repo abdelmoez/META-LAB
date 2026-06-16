@@ -31,6 +31,7 @@ import screeningRouter    from './routes/screening.js';
 import notificationsRouter from './routes/notifications.js';
 import invitesRouter      from './routes/invites.js';
 import eventsRouter       from './routes/events.js';
+import robRouter          from './routes/rob.js';
 
 import { initDefaultSettings } from './controllers/settingsController.js';
 import { seedAdmins } from './auth/seedAdmins.js';
@@ -139,6 +140,11 @@ app.use('/api/admin', requireAuth, adminRouter);
 
 // ── META·SIFT Beta screening routes (requireAuth applied inside router) ────────
 app.use('/api/screening', screeningRouter);
+
+// ── META·LAB RoB (Risk of Bias) routes (rob.md). requireAuth at the mount;
+// each handler additionally gates on the rob_engine_v2 flag (default OFF → 404)
+// and enforces project ownership. ──────────────────────────────────────────────
+app.use('/api/rob', requireAuth, robRouter);
 
 // ── Realtime SSE stream (prompt6 Task 7) — own mount, NEVER under the
 // rate-limited /api/auth or /api/admin routers (requireAuth inside the router).

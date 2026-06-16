@@ -236,3 +236,27 @@ Network OA resolution + attachment live in the BACKEND (`server/services/oaPdfRe
 | `ES_TYPES` | `Record<string, ESTypeMeta>` | Metadata for SMD, MD, OR, RR, HR, COR, PROP — includes `log`, `nullVal`, `scale`, `family` |
 | `ROB2` | `{ id: string, label: string }[]` | Cochrane RoB 2 domain definitions (5 domains) |
 | `NOS` | `{ id: string, g: string, label: string }[]` | Newcastle–Ottawa Scale domain definitions (9 domains) |
+
+## RoB engine — Risk of Bias (`src/research-engine/rob/`, rob.md)
+
+Pure RoB 2 engine (effect-of-assignment / ITT variant). Validated against the
+official Cochrane RoB 2 tables — see `rob-validation.md`. Re-exported from the
+top barrel with a `rob`/`ROB_*` prefix (the full instrument is `ROB2_INSTRUMENT`
+there, to avoid colliding with the legacy `ROB2` domain-list constant).
+
+| Export (from `rob/index.js`) | Signature | Returns |
+|---|---|---|
+| `ROB2` | frozen object | RoB 2 instrument DATA (domains, signalling questions, options, guidance, declarative branching) — JSON-serialisable |
+| `judgeDomain(domainId, answers)` | `(string, {qid:resp}) → {judgment, reasons[]}` | algorithm-proposed domain judgement + why-trace |
+| `judgeOverall(domainJudgments)` | `({domainId:'low'|'some'|'high'}|[]) → {judgment, reasons[], multiSomeConcernsFlag}` | overall roll-up (Table 1) |
+| `getInstrument(id='RoB2')` | `(string) → Instrument` | frozen instrument |
+| `isReachable(question, answers)` | `→ boolean` | declarative branch evaluation |
+| `nextQuestions(instrument, domainId, answers)` | `→ Question[]` | currently-reachable questions |
+| `proposeDomain` / `proposeAllDomains` | see engine.js | `{domainId,judgment,reasons}` / map |
+| `proposeOverall(instrument, domainJudgments)` | `→ {judgment, reasons, multiSomeConcernsFlag}` | overall |
+| `completeness(instrument, {answersByDomain})` | `→ {perDomain, overall}` | answered/required/missing |
+| `summaryMatrix(assessments[], instrument)` | `→ {instrumentId, domains[], rows[]}` | traffic-light feed |
+| `RESPONSES` / `JUDGMENTS` (+ `*_LABELS`) | arrays / maps | `Y/PY/PN/N/NI/NA`, `low/some/high` |
+
+`synthesisHooks.js` (stubs): `annotateForestRows(effectRows, robByStudy)`,
+`gradeRiskOfBiasInput(assessments)` — extension points for forest annotation / GRADE.

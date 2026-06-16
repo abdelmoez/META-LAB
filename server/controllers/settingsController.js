@@ -45,6 +45,10 @@ const DEFAULTS = {
     // evaluation gate. With it off, the Project.data JSON blob is the sole
     // source of truth (current behaviour, unchanged).
     relationalProjectStore: false,
+    // rob.md — META·LAB RoB (Risk of Bias) engine v1 (RoB 2). Default OFF: the
+    // /api/rob endpoints 404 and the workspace UI is hidden until an admin
+    // enables this from Ops › Feature Flags after the evaluation gate passes.
+    rob_engine_v2: false,
   }),
 };
 

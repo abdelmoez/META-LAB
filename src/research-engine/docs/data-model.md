@@ -327,3 +327,29 @@ without rewriting the whole JSON blob.
   feature flag (default **off**) gates dual-write and the read switch. While off,
   `Project.data` JSON is the sole source of truth — current behaviour, unchanged.
   Backfill: `scripts/backfill-relational-store.js` (idempotent).
+
+## RoB assessments (relational, additive — rob.md)
+
+Outcome/RESULT-level Risk-of-Bias assessments. Additive + nullable so `prisma db
+push` stays safe. The legacy per-study `rob` field above is **left untouched**;
+`server/rob/legacyAdapter.js` surfaces a legacy view from it.
+
+- **RobAssessment** — `id`, `projectId` (FK → Project, cascade), `studyId`
+  (in-document 8-char study uid; not a DB FK), `outcomeId?`, `resultLabel?`,
+  `instrumentId` (`"RoB2"`), `instrumentVersion`, `variant` (`"assignment"`),
+  `reviewerId` (bare user-id string), `reviewerName`, `status`
+  (`draft|complete|consensus`), `deletedAt?` (soft delete), timestamps.
+- **RobAnswer** — `assessmentId` (FK, cascade), `domainId`, `questionId`,
+  `response` (`Y|PY|PN|N|NI|NA`), `rationale?`, `evidenceQuote?`,
+  `evidenceLocator?`, `aiSuggested?`/`aiModel?`/`aiModelVersion?`. `@@unique([assessmentId, questionId])`.
+- **RobDomainJudgment** — `assessmentId` (FK), `domainId`, `proposedJudgment`
+  (engine), `finalJudgment?`, `overridden`, `overrideJustification?`. `@@unique([assessmentId, domainId])`.
+- **RobOverall** — `assessmentId` (FK, `@unique`), `proposedOverall`,
+  `finalOverall?`, `overridden`, `overrideJustification?`, `multiSomeConcernsFlag`.
+- **RobAuditLog** — append-only (bare `projectId`/`assessmentId` strings, no FK —
+  audit-survival): `ROB_CREATE|ROB_ANSWER|ROB_OVERRIDE|ROB_FINALISE|ROB_REOPEN|ROB_DELETE`.
+
+The engine (`research-engine/rob`) is the single source of truth for judgements;
+proposals are recomputed server-side on every answer change. Access = META·LAB
+Project ownership (non-owner → 404). Gated behind `rob_engine_v2` (default off).
+API: `/api/rob/*` (see `server/routes/rob.js` / `server/controllers/robController.js`).

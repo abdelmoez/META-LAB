@@ -104,6 +104,9 @@ model Project {
   // relationalProjectStore feature flag is flipped at an evaluation gate.
   reviewRecords ReviewRecord[]
   reviewStudies ReviewStudy[]
+  // rob.md — META·LAB RoB: outcome/result-level Risk-of-Bias assessments.
+  // Additive back-relation only (no column on Project); cascades with the project.
+  robAssessments RobAssessment[]
 }
 
 // roadmap 0.2 — relational backing for META·LAB per-project screening records.
@@ -593,4 +596,119 @@ model ScreenAuditLog {
   entityId   String?
   details    String        @default("{}")  // JSON context
   createdAt  DateTime      @default(now())
+}
+
+// ─── META·LAB RoB — Risk-of-Bias assessments (rob.md, feature flag rob_engine_v2) ─
+//
+// Outcome/RESULT-level: RoB 2 assesses a specific result, not a whole study, so
+// each RobAssessment binds (project, study, outcome/result). All ADDITIVE and
+// nullable/defaulted → `prisma db push` stays safe (no --accept-data-loss). The
+// engine (src/research-engine/rob) is the single source of truth for judgements;
+// these tables persist answers + BOTH the algorithm-proposed AND the final
+// (possibly overridden) judgement, with a mandatory rationale on any override.
+//
+// studyId is the in-document study.id (8-char uid in Project.data.studies[]),
+// NOT a DB FK — mirrors ReviewStudy.studyId. reviewerId is a bare user-id string
+// (denormalised reviewerName) following the audit-survival precedent (ScreenAuditLog /
+// UsageEvent / Notification) so records outlive the users that produced them.
+// The legacy per-study `rob` field in Project.data.studies[] is left untouched;
+// an adapter (server/rob/legacyAdapter.js) can surface a legacy view from it.
+model RobAssessment {
+  id                String   @id @default(uuid())
+  projectId         String
+  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  studyId           String   // in-document study.id (8-char uid); not a DB FK
+  outcomeId         String?  // optional specific outcome/result identifier
+  resultLabel       String?  // human-readable result being assessed (e.g. "Mortality at 6 months")
+  instrumentId      String   @default("RoB2")
+  instrumentVersion String   @default("2019-08-22")
+  variant           String   @default("assignment")  // assignment | adherence (future)
+  reviewerId        String                            // user id (bare string; not a FK)
+  reviewerName      String   @default("")             // denormalised for display/audit
+  status            String   @default("draft")        // draft | complete | consensus
+  deletedAt         DateTime?                         // soft delete; never hard-delete
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  answers         RobAnswer[]
+  domainJudgments RobDomainJudgment[]
+  overall         RobOverall?
+
+  @@index([projectId])
+  @@index([projectId, studyId])
+}
+
+// One row per signalling-question answer. response ∈ Y|PY|PN|N|NI|NA. Optional
+// rationale + evidence quote/locator (PDF page/offset reserved for later). The
+// ai* columns reserve space for an AI-suggested answer (model + version) — never
+// auto-applied. @@unique([assessmentId, questionId]) enables a clean upsert and
+// is additive-safe on a brand-new table.
+model RobAnswer {
+  id              String        @id @default(uuid())
+  assessmentId    String
+  assessment      RobAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  domainId        String        // D1..D5
+  questionId      String        // e.g. "2.3"
+  response        String        @default("")  // Y|PY|PN|N|NI|NA
+  rationale       String?
+  evidenceQuote   String?
+  evidenceLocator String?       // PDF page/offset etc. (reserved)
+  aiSuggested     Boolean?      // was the response AI-suggested?
+  aiModel         String?
+  aiModelVersion  String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@unique([assessmentId, questionId])
+  @@index([assessmentId])
+}
+
+// Per-domain proposed + final judgement. proposed = engine output; final =
+// proposed unless overridden (overridden=true requires overrideJustification).
+model RobDomainJudgment {
+  id                   String        @id @default(uuid())
+  assessmentId         String
+  assessment           RobAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  domainId             String        // D1..D5
+  proposedJudgment     String        @default("")  // low|some|high
+  finalJudgment        String?       // low|some|high (null until resolved)
+  overridden           Boolean       @default(false)
+  overrideJustification String?
+  createdAt            DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+
+  @@unique([assessmentId, domainId])
+}
+
+// One overall judgement per assessment (proposed + final, override-aware).
+model RobOverall {
+  id                    String        @id @default(uuid())
+  assessmentId          String        @unique
+  assessment            RobAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  proposedOverall       String        @default("")  // low|some|high
+  finalOverall          String?
+  overridden            Boolean       @default(false)
+  overrideJustification String?
+  multiSomeConcernsFlag Boolean       @default(false)
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
+}
+
+// Append-only audit of every RoB create / answer / propose / override / finalise.
+// No FK on purpose (audit-survival precedent): bare projectId/assessmentId strings
+// so the trail outlives the assessment/project it describes.
+model RobAuditLog {
+  id           String   @id @default(uuid())
+  projectId    String
+  assessmentId String   @default("")
+  actorId      String
+  actorName    String   @default("")
+  action       String   // ROB_CREATE | ROB_ANSWER | ROB_OVERRIDE | ROB_FINALISE | ROB_DELETE
+  entityType   String?  // "RobAssessment" | "RobDomainJudgment" | "RobOverall"
+  entityId     String?
+  details      String   @default("{}")  // JSON context
+  createdAt    DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([assessmentId, createdAt])
 }

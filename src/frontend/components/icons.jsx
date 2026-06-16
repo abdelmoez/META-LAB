@@ -318,6 +318,27 @@ const ICON_PATHS = {
       <path d="M3.3 12h17.4M12 3.3c2.4 2.3 3.6 5.2 3.6 8.7s-1.2 6.4-3.6 8.7c-2.4-2.3-3.6-5.2-3.6-8.7s1.2-6.4 3.6-8.7Z" />
     </>
   ),
+  // rob.md — RoB judgement glyphs (low / some / high / NA). Paired with colour
+  // AND a text label everywhere (never colour alone) for color-blind safety.
+  circleCheck: (
+    <>
+      <circle cx="12" cy="12" r="8.7" />
+      <path d="m8.3 12 2.6 2.6 4.8-5" />
+    </>
+  ),
+  alertTriangle: (
+    <>
+      <path d="M12 3.6 21 19.4H3L12 3.6Z" />
+      <path d="M12 9.8v4.2M12 16.8h.02" />
+    </>
+  ),
+  alertOctagon: (
+    <>
+      <path d="M8.1 3.3h7.8l5.5 5.5v7.8l-5.5 5.5H8.1L2.6 16.6V8.8L8.1 3.3Z" />
+      <path d="M12 8v4.6M12 16.2h.02" />
+    </>
+  ),
+  minus: <path d="M5 12h14" />,
 };
 
 export const ICON_NAMES = Object.keys(ICON_PATHS);

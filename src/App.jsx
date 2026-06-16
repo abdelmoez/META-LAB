@@ -25,6 +25,7 @@ const InvitePage    = lazy(() => import('./frontend/pages/InvitePage.jsx'));
 const ResetPassword = lazy(() => import('./frontend/pages/ResetPassword.jsx'));
 const VerifyEmail   = lazy(() => import('./frontend/pages/VerifyEmail.jsx'));
 const Onboarding    = lazy(() => import('./frontend/pages/Onboarding.jsx'));
+const RobPage       = lazy(() => import('./frontend/rob/RobPage.jsx'));
 
 /* Minimal theme-token loading state shown while a route chunk downloads. */
 function RouteFallback() {
@@ -150,6 +151,10 @@ export default function App() {
         <Route path="/sift-beta"                      element={<ProtectedRoute><SiftDashboard /></ProtectedRoute>} />
         <Route path="/sift-beta/projects/:pid"        element={<ProtectedRoute><SiftProject /></ProtectedRoute>} />
         <Route path="/sift-beta/projects/:pid/import" element={<ProtectedRoute><SiftImport /></ProtectedRoute>} />
+
+        {/* META·LAB RoB — Risk-of-Bias workspace (rob.md; gated on rob_engine_v2) */}
+        <Route path="/rob"             element={<ProtectedRoute><RobPage /></ProtectedRoute>} />
+        <Route path="/rob/:projectId"  element={<ProtectedRoute><RobPage /></ProtectedRoute>} />
 
         {/* Fallback */}
         <Route path="*"         element={<Navigate to="/" replace />} />

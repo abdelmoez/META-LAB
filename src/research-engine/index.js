@@ -108,6 +108,28 @@ export {
   INST_REVIEW_THRESHOLD,
 } from './institutions/institutionMatch.js';
 
+// ── RoB: Risk-of-Bias engine (RoB 2 instrument + generic engine; rob.md) ──────
+// The full instrument is re-exported as ROB2_INSTRUMENT to avoid colliding with
+// the legacy ROB2 domain-list constant from project-model/constants.js above.
+// Import { ROB2 } directly from './rob/index.js' when you want the instrument.
+export {
+  ROB2 as ROB2_INSTRUMENT,
+  RESPONSES as ROB_RESPONSES,
+  RESPONSE_LABELS as ROB_RESPONSE_LABELS,
+  JUDGMENTS as ROB_JUDGMENTS,
+  JUDGMENT_LABELS as ROB_JUDGMENT_LABELS,
+  judgeDomain as robJudgeDomain,
+  judgeOverall as robJudgeOverall,
+  getInstrument as robGetInstrument,
+  isReachable as robIsReachable,
+  nextQuestions as robNextQuestions,
+  proposeDomain as robProposeDomain,
+  proposeAllDomains as robProposeAllDomains,
+  proposeOverall as robProposeOverall,
+  completeness as robCompleteness,
+  summaryMatrix as robSummaryMatrix,
+} from './rob/index.js';
+
 // ── Project model: factories & utilities ─────────────────────────────────────
 export { uid, now, fmtDate, mkProject, mkStudy } from './project-model/defaults.js';
 

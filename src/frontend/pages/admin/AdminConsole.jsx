@@ -4026,6 +4026,7 @@ const FLAG_META = [
   { key: 'projectDuplication',   label: 'Project Duplication',   desc: 'Allow users to clone existing projects.' },
   { key: 'advancedMetaAnalysis', label: 'Advanced Meta-Analysis',desc: "Enable trim-and-fill, Egger's test, and influence diagnostics." },
   { key: 'exportTools',          label: 'Export Tools',          desc: 'Allow project and data exports in various formats.' },
+  { key: 'rob_engine_v2',        label: 'Risk of Bias (RoB 2)',  desc: 'Enable the META·LAB RoB 2 assessment workspace (beta). Off by default until validated.' },
 ];
 
 function FlagsSection() {
