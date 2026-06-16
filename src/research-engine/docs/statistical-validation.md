@@ -414,3 +414,49 @@ from `agent-contract.md` — keeping the binding contract in sync with the code.
 golden suite + all pure units) as a `test` job that the `deploy` job `needs:`; a
 failing statistics test provably blocks the production deploy. The
 Egger/trim-fill side-rule caveat from §2 still applies (near-symmetric funnels).
+
+---
+
+## 12. Inter-rater agreement (`screening/agreement.js`, roadmap 1.3)
+
+### 12.1 Cohen's κ (two raters)
+```
+po = observed agreement (proportion of items both raters labelled the same)
+pe = Σ_k p1k · p2k          (chance agreement; p_·k = each rater's marginal)
+κ  = (po − pe) / (1 − pe)
+SE = √( po(1−po) / (n(1−pe)²) )      (normal approximation)
+95% CI: κ ± 1.959963984540054 · SE
+```
+
+### 12.2 Fleiss' κ (m raters, constant per subject)
+```
+P_i  = (Σ_j n_ij² − m) / (m(m−1))           per-subject agreement
+Pbar = mean_i P_i
+p_j  = (1/(N·m)) Σ_i n_ij                    category proportion
+Pe   = Σ_j p_j²
+κ    = (Pbar − Pe) / (1 − Pe)
+Asymptotic SE under H0:κ=0 (Fleiss, Levin & Paik 2003):
+  A = Σ_j p_j(1−p_j) ; B = Σ_j p_j(1−p_j)(1−2p_j)
+  SE = √(2(A² − B)) / (A · √(N·m·(m−1)))
+```
+
+### 12.3 Interpretation bands (Landis & Koch 1977, inclusive upper bounds)
+`<0` poor · `≤0.20` slight · `≤0.40` fair · `≤0.60` moderate · `≤0.80` substantial · else almost perfect.
+
+### 12.4 Validation method & tolerances
+Validated against **hand-computed** worked examples (the arithmetic is written
+out in `tests/unit/screening/agreement.test.js`), per roadmap A.3 ("hand-computed
+κ for agreement"):
+
+| Quantity | Example | Expected | Tolerance |
+|---|---|---|---|
+| Cohen κ, po, pe | 2×2: 20/15/5/10 (n=50) | κ=0.40, po=0.70, pe=0.50 | abs `1e-9` |
+| Cohen SE | same | 0.129615 | abs `1e-5` |
+| Fleiss κ, Pbar, Pe | [[3,0],[0,3],[2,1]] | κ=0.5500, Pbar=0.77778, Pe=0.50617 | abs `1e-4` |
+| Fleiss SE (H0) | same | 0.333348 | abs `1e-4` |
+
+### 12.5 Reproducible sampling (`screening/sampling.js`)
+`seededSample(items, n, seed)` draws a calibration subset deterministically from a
+stored integer seed (mulberry32 PRNG + seeded Fisher–Yates), so a pilot sample is
+re-derivable and auditable (PART A.5). The same seed always reproduces the same
+indices.

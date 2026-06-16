@@ -168,6 +168,28 @@ All exports are also available from the barrel:
 
 ---
 
+## screening/agreement.js (roadmap 1.3)
+
+| Export | Signature | Returns |
+|---|---|---|
+| `cohenKappa` | `(r1: any[], r2: any[]) → KappaResult\|null` | Cohen's κ for two raters with normal-approx CI; null if length mismatch / no paired items |
+| `fleissKappa` | `(matrix: number[][]) → FleissResult\|null` | Fleiss' κ for m raters (constant count) with asymptotic SE under H0; null if non-constant rater count |
+| `toFleissMatrix` | `(perSubject: any[][], categories?: string[]) → { matrix: number[][], categories: string[] }` | Build a Fleiss count matrix from per-subject rater labels |
+| `interpretKappa` | `(k: number) → string` | Landis & Koch band: "poor"\|"slight"\|"fair"\|"moderate"\|"substantial"\|"almost perfect" |
+
+`KappaResult` = `{ kappa, po, pe, se, lo, hi, n, categories, raters, interpretation }`.
+`FleissResult` = `{ kappa, Pbar, Pe, se, lo, hi, N, raters, categories, pj, interpretation }`.
+
+## screening/sampling.js (roadmap 1.3)
+
+| Export | Signature | Returns |
+|---|---|---|
+| `mulberry32` | `(seed: number) → () => number` | Deterministic 32-bit PRNG yielding values in [0,1) |
+| `seededPermutation` | `(len: number, seed: number) → number[]` | Reproducible Fisher–Yates permutation of [0..len) |
+| `seededSample` | `(items: any[], n: number, seed: number) → { sample, indices, seed, n, total }\|null` | Reproducible random subset of size n (clamped) from a stored seed |
+
+---
+
 ## project-model/defaults.js
 
 | Export | Signature | Returns |

@@ -59,6 +59,19 @@ export {
   dedupeRecords,
 } from './import-export/parsers.js';
 
+// ── Screening: inter-rater agreement + reproducible sampling (roadmap 1.3) ───
+export {
+  cohenKappa,
+  fleissKappa,
+  toFleissMatrix,
+  interpretKappa,
+} from './screening/agreement.js';
+export {
+  mulberry32,
+  seededPermutation,
+  seededSample,
+} from './screening/sampling.js';
+
 // ── Project model: factories & utilities ─────────────────────────────────────
 export { uid, now, fmtDate, mkProject, mkStudy } from './project-model/defaults.js';
 
