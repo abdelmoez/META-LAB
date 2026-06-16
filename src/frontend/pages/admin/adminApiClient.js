@@ -121,11 +121,22 @@ export const adminApi = {
   securityEvents: (p)        => req(`${BASE}/security-events?${new URLSearchParams(p || {})}`),
 
   // ── Ops Users analytics + institution management (admin only) ────────────────
-  // getUserAnalytics → { totalUsers, byResearchField:[{label,count}],
-  //   byPrimaryRole:[{label,count}], byCountry:[{label,count}],
-  //   topInstitutions:[{key,canonicalName,count}], onboarding:{completed,total},
-  //   verification:{verified,unverified,total} }.
-  getUserAnalytics: ()       => req(`${BASE}/user-analytics`),
+  // getUserAnalytics(window) → distributions filtered to accounts CREATED in the
+  // window ('today'|'week'|'month'|'quarter'|'year'|'all', default 'all'):
+  //   { window, totalUsers, byResearchField:[{label,count}],
+  //     byPrimaryRole, byMainUseCase, byCountry,
+  //     topInstitutions:[{key,canonicalName,count}], onboarding:{completed,total},
+  //     verification:{verified,unverified,total}, institution:{provided,missing,total} }.
+  getUserAnalytics: (window) =>
+    req(`${BASE}/user-analytics${window && window !== 'all' ? `?window=${encodeURIComponent(window)}` : ''}`),
+  // getUserGrowth(year?) → new-user registration analytics over time (prompt27):
+  //   { timezone, weekStart, now, windows:{today,week,month,quarter,year,total}
+  //     (each {count,prev,deltaPct}), byYear:[{year,count,growthPct}],
+  //     availableYears, selectedYear, byMonth, byQuarter, byDay (90), byMonth12,
+  //     insights:{topCountry,topInstitution,topResearchField,topPrimaryRole,
+  //     topMainUseCase}, stats:{...} }. Treat any error as "no data".
+  getUserGrowth: (year)      =>
+    req(`${BASE}/user-growth${year ? `?year=${encodeURIComponent(year)}` : ''}`),
   // getInstitutions → { institutions:[{ key, canonicalName, userCount,
   //   aliases:[string], possibleDuplicates:[{key,canonicalName,confidence}] }] }.
   getInstitutions:  ()       => req(`${BASE}/institutions`),

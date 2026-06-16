@@ -22,6 +22,19 @@ import {
   getRejectedPairs,
   setRejectedPairs,
 } from '../utils/institutionStore.js';
+import {
+  WINDOW_UNITS,
+  startOfWindow,
+  filterInRange,
+  windowSummary,
+  groupByYear,
+  groupByMonth,
+  groupByQuarter,
+  groupByDay,
+  groupByTrailingMonths,
+  tally,
+  topOf,
+} from '../utils/userGrowth.js';
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -446,7 +459,7 @@ export async function getMetricsTimeseries(req, res) {
 export async function getUsers(req, res) {
   try {
     const { page, limit, skip } = parsePage(req.query);
-    const { search, role, suspended } = req.query;
+    const { search, role, suspended, createdWithin, verified, onboarded, noInstitution, sort } = req.query;
 
     const where = {};
     if (search) {
@@ -457,6 +470,28 @@ export async function getUsers(req, res) {
     }
     if (role) where.role = role;
     if (suspended !== undefined) where.suspended = suspended === 'true';
+
+    // prompt27 — server-side quick filters (efficient, pagination-safe; applied
+    // across the WHOLE dataset, not just the loaded page). Registration time
+    // window uses the shared, unit-tested startOfWindow() so the boundaries match
+    // the analytics endpoints exactly.
+    if (createdWithin && WINDOW_UNITS.includes(createdWithin) && createdWithin !== 'all') {
+      const start = startOfWindow(createdWithin, new Date());
+      if (start) where.createdAt = { gte: start };
+    }
+    if (verified === 'true') where.emailVerifiedAt = { not: null };
+    else if (verified === 'false') where.emailVerifiedAt = null;
+    if (onboarded === 'true') where.onboardingCompletedAt = { not: null };
+    else if (onboarded === 'false') where.onboardingCompletedAt = null;
+    // "No institution provided" = never set (null) or an empty string.
+    if (noInstitution === 'true') {
+      where.AND = [
+        ...(where.AND || []),
+        { OR: [{ institutionOriginal: null }, { institutionOriginal: '' }] },
+      ];
+    }
+
+    const orderBy = sort === 'oldest' ? { createdAt: 'asc' } : { createdAt: 'desc' };
 
     const [total, users] = await Promise.all([
       prisma.user.count({ where }),
@@ -470,9 +505,16 @@ export async function getUsers(req, res) {
           suspended: true,
           createdAt: true,
           lastActive: true,
+          // prompt27 — surfaced as table columns; none are secrets.
+          emailVerifiedAt: true,
+          onboardingCompletedAt: true,
+          institutionOriginal: true,
+          researchField: true,
+          country: true,
+          registrationCountryName: true,
           _count: { select: { projects: true } },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy,
         skip,
         take: limit,
       }),
@@ -490,6 +532,13 @@ export async function getUsers(req, res) {
       lastActive: u.lastActive,
       projectCount: u._count.projects,
       isOnline: online.has(u.id),
+      // prompt27 — non-secret profile columns for the directory table (verified
+      // badge, institution, research field, country) without a per-row fetch.
+      emailVerified: !!u.emailVerifiedAt,
+      onboardingCompleted: !!u.onboardingCompletedAt,
+      institution: u.institutionOriginal || null,
+      researchField: u.researchField || null,
+      country: u.country || u.registrationCountryName || null,
     }));
 
     return res.json({ users: formatted, total, page, pages: Math.ceil(total / limit) });
@@ -1227,26 +1276,24 @@ export async function getSecurityEvents(req, res) {
 // to the pure research-engine (groupInstitutions / institutionSimilarity).
 
 // Profile columns the analytics aggregation needs — a strict subset of the safe
-// USER_DETAIL_SELECT (no secret ever selected).
+// USER_DETAIL_SELECT (no secret ever selected). createdAt is included so the
+// distributions can be filtered to a registration time window (prompt27).
 const USER_ANALYTICS_SELECT = {
+  createdAt: true,
   primaryRole: true, researchField: true, mainUseCase: true,
   institutionOriginal: true, institutionNormalized: true, country: true,
   registrationCountryName: true,
   emailVerifiedAt: true, onboardingCompletedAt: true,
 };
 
-/** Tally non-empty trimmed string values → [{ label, count }] desc by count. */
-function tally(values) {
-  const counts = new Map();
-  for (const raw of values) {
-    const label = String(raw == null ? '' : raw).trim();
-    if (!label) continue;
-    counts.set(label, (counts.get(label) || 0) + 1);
-  }
-  return [...counts.entries()]
-    .map(([label, count]) => ({ label, count }))
-    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
-}
+// Profile + createdAt columns the new-user-growth aggregation needs (prompt27).
+// Still a strict subset of the safe analytics select — no secret ever read.
+const USER_GROWTH_SELECT = {
+  createdAt: true,
+  primaryRole: true, researchField: true, mainUseCase: true,
+  institutionOriginal: true, country: true, registrationCountryName: true,
+  onboardingCompletedAt: true, emailVerifiedAt: true,
+};
 
 /**
  * Build the institution groups (engine groupInstitutions over non-empty
@@ -1265,13 +1312,21 @@ function buildInstitutionGroups(users, overrides) {
 }
 
 // ── GET /api/admin/user-analytics ─────────────────────────────────────────────
+// ?window=today|week|month|quarter|year|all (default 'all', prompt27) — filters
+// every distribution to accounts CREATED in that registration window. Default
+// 'all' preserves the original prompt26 behaviour (whole-database snapshot).
 export async function getUserAnalytics(req, res) {
   try {
-    const users = await prisma.user.findMany({ select: USER_ANALYTICS_SELECT });
+    const windowUnit = WINDOW_UNITS.includes(req.query.window) ? req.query.window : 'all';
+    const allUsers = await prisma.user.findMany({ select: USER_ANALYTICS_SELECT });
+    const users = windowUnit === 'all'
+      ? allUsers
+      : filterInRange(allUsers, startOfWindow(windowUnit, new Date()), null);
     const totalUsers = users.length;
 
     const byResearchField = tally(users.map(u => u.researchField));
     const byPrimaryRole = tally(users.map(u => u.primaryRole));
+    const byMainUseCase = tally(users.map(u => u.mainUseCase));
     // Prefer the stated profile country; fall back to the inferred registration
     // country name when the user never set one.
     const byCountry = tally(users.map(u => u.country || u.registrationCountryName));
@@ -1286,18 +1341,110 @@ export async function getUserAnalytics(req, res) {
 
     const onboardingCompleted = users.filter(u => u.onboardingCompletedAt).length;
     const verified = users.filter(u => u.emailVerifiedAt).length;
+    const withInstitution = users.filter(u => (u.institutionOriginal || '').trim()).length;
 
     return res.json({
+      window: windowUnit,
       totalUsers,
       byResearchField,
       byPrimaryRole,
+      byMainUseCase,
       byCountry,
       topInstitutions,
       onboarding: { completed: onboardingCompleted, total: totalUsers },
       verification: { verified, unverified: totalUsers - verified, total: totalUsers },
+      institution: { provided: withInstitution, missing: totalUsers - withInstitution, total: totalUsers },
     });
   } catch (err) {
     console.error('[admin] getUserAnalytics error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── GET /api/admin/user-growth ────────────────────────────────────────────────
+// New-user REGISTRATION analytics over time (prompt27). One read of the safe
+// profile columns → headline windows (today/week/month/quarter/year + all-time
+// total, each with previous-period delta), historical year/month/quarter/day
+// series, this-month profile insights, and site-growth stats. Admin only.
+//
+// SCALE NOTE: like getUserAnalytics / getUserCountries / getMetricsTimeseries
+// this reads all users once and aggregates in JS — fine at the current SQLite
+// scale and avoids raw-SQL coupling to SQLite date storage. Only a strict subset
+// of non-secret columns is selected (USER_GROWTH_SELECT). If the dataset grows
+// large, swap the headline COUNTS for cheap prisma.count({ where:{ createdAt }})
+// per window and keep the JS pass only for the chart series (documented).
+//
+// ?year=YYYY (optional) selects which year drives byMonth/byQuarter — defaults to
+// the most recent year that has any registrations.
+export async function getUserGrowth(req, res) {
+  try {
+    const now = new Date();
+    const users = await prisma.user.findMany({ select: USER_GROWTH_SELECT });
+
+    const windows = windowSummary(users, now);
+    const byYear = groupByYear(users);
+    const availableYears = byYear.map(y => y.year);
+    const rawYear = parseInt(req.query.year, 10);
+    const selectedYear = Number.isFinite(rawYear) && availableYears.includes(rawYear)
+      ? rawYear
+      : (availableYears.length ? availableYears[availableYears.length - 1] : now.getFullYear());
+
+    const byMonth = groupByMonth(users, selectedYear);
+    // Quarters for the selected year and the one before it (when present), so the
+    // operator can eyeball quarter-over-quarter across the year boundary.
+    const quarterYears = [...new Set(
+      [selectedYear - 1, selectedYear].filter(y => y === selectedYear || availableYears.includes(y)),
+    )];
+    const byQuarter = groupByQuarter(users, quarterYears);
+    const byDay = groupByDay(users, 90, now);          // last 90; client slices 7/30/90
+    const byMonth12 = groupByTrailingMonths(users, 12, now);
+
+    // This-month profile insights (top single value per field; null when absent).
+    const monthUsers = filterInRange(users, startOfWindow('month', now), null);
+    const insights = {
+      topCountry:       topOf(monthUsers.map(u => u.country || u.registrationCountryName)),
+      topInstitution:   topOf(monthUsers.map(u => u.institutionOriginal)),
+      topResearchField: topOf(monthUsers.map(u => u.researchField)),
+      topPrimaryRole:   topOf(monthUsers.map(u => u.primaryRole)),
+      topMainUseCase:   topOf(monthUsers.map(u => u.mainUseCase)),
+    };
+
+    // Site-growth stats for the current month.
+    const daysElapsed = now.getDate(); // 1..31 — days of the month so far
+    const monthDayBuckets = groupByDay(monthUsers, daysElapsed, now);
+    let bestDay = null;
+    for (const b of monthDayBuckets) if (!bestDay || b.count > bestDay.count) bestDay = b;
+    const countriesThisMonth = new Set(
+      monthUsers
+        .map(u => (u.country || u.registrationCountryName || '').trim().toLowerCase())
+        .filter(Boolean),
+    ).size;
+    const stats = {
+      newUsersThisMonth: monthUsers.length,
+      avgPerDayThisMonth: daysElapsed > 0 ? Math.round((monthUsers.length / daysElapsed) * 10) / 10 : 0,
+      bestDay: bestDay && bestDay.count > 0 ? bestDay : null,
+      onboardingCompletedThisMonth: monthUsers.filter(u => u.onboardingCompletedAt).length,
+      withInstitutionThisMonth: monthUsers.filter(u => (u.institutionOriginal || '').trim()).length,
+      countriesThisMonth,
+    };
+
+    return res.json({
+      timezone: 'server-local',
+      weekStart: 'sunday',
+      now: now.toISOString(),
+      windows,
+      byYear,
+      availableYears,
+      selectedYear,
+      byMonth,
+      byQuarter,
+      byDay,
+      byMonth12,
+      insights,
+      stats,
+    });
+  } catch (err) {
+    console.error('[admin] getUserGrowth error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

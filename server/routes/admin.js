@@ -28,6 +28,7 @@ import {
   getAuditLog,
   getSecurityEvents,
   getUserAnalytics,
+  getUserGrowth,
   getInstitutions,
   mergeInstitutions,
   renameInstitution,
@@ -145,6 +146,8 @@ router.get('/security-events', requireAdmin, getSecurityEvents);
 
 // ── Ops Users analytics + institution management (admin only) ──────────────────
 router.get('/user-analytics', requireAdmin, getUserAnalytics);
+// prompt27 — new-user registration analytics over time (Overview + Users).
+router.get('/user-growth', requireAdmin, getUserGrowth);
 router.get('/institutions', requireAdmin, getInstitutions);
 router.post('/institutions/merge', requireAdmin, mergeInstitutions);
 router.post('/institutions/rename', requireAdmin, renameInstitution);

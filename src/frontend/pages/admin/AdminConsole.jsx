@@ -703,6 +703,159 @@ function LivePulseDot({ live }) {
   );
 }
 
+/* ════════════════════════════════════════════════════════════════════════
+   NEW USER GROWTH (prompt27) — registration analytics. Shared between the
+   Overview (high-level summary + trend) and Users › Growth (detailed). All
+   windows use SERVER-LOCAL time, week starts Sunday (see server userGrowth.js).
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* Period-over-period change pill. null → neutral "no prior data"; >0 green ▲,
+   <0 red ▼, 0 muted →. */
+function DeltaBadge({ delta, title }) {
+  if (delta == null) return <span title={title} style={{ fontSize: 10, fontFamily: MONO, color: C.muted }}>—</span>;
+  const up = delta > 0, flat = delta === 0;
+  const color = flat ? C.muted : (up ? C.grn : C.red);
+  return (
+    <span title={title} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, fontSize: 10, fontFamily: MONO, fontWeight: 700, color }}>
+      <span>{flat ? '→' : (up ? '▲' : '▼')}</span>
+      <span style={{ fontVariantNumeric: 'tabular-nums' }}>{up ? '+' : ''}{delta}%</span>
+    </span>
+  );
+}
+
+/* One registration-window count + its delta vs the previous full period. */
+function GrowthSummaryCard({ label, win, accent = C.acc, loading, prevLabel }) {
+  const value = useCountUp(loading ? null : (win?.count ?? 0));
+  return (
+    <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: '14px 16px', minWidth: 0 }}>
+      <div style={{ fontSize: 26, fontWeight: 800, color: accent, fontFamily: MONO, letterSpacing: '-1px', lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>
+        {loading || value == null ? '—' : value.toLocaleString()}
+      </div>
+      <div style={{ fontSize: 10, color: C.muted, marginTop: 6, fontFamily: MONO, letterSpacing: '0.06em', textTransform: 'uppercase', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={label}>{label}</div>
+      <div style={{ marginTop: 5, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <DeltaBadge delta={win?.deltaPct} title={prevLabel ? `${win?.prev ?? 0} in the previous ${prevLabel}` : undefined} />
+        {!loading && win && <span style={{ fontSize: 9, fontFamily: MONO, color: C.muted }}>vs {(win.prev ?? 0).toLocaleString()} prior</span>}
+      </div>
+    </div>
+  );
+}
+
+/* Segmented range switch for the trend chart. */
+function RangeSwitch({ options, value, onChange }) {
+  return (
+    <div style={{ display: 'inline-flex', gap: 2, background: alpha(C.muted, 0.1), borderRadius: 7, padding: 2 }}>
+      {options.map(o => {
+        const on = o.id === value;
+        return (
+          <button key={o.id} onClick={() => onChange(o.id)} style={{
+            padding: '4px 10px', background: on ? C.card : 'transparent', border: 'none',
+            borderRadius: 5, color: on ? C.txt : C.txt2, fontSize: 11, fontFamily: MONO,
+            fontWeight: on ? 700 : 500, cursor: 'pointer',
+            boxShadow: on ? '0 1px 2px rgba(0,0,0,0.08)' : 'none',
+          }}>{o.label}</button>
+        );
+      })}
+    </div>
+  );
+}
+
+const GROWTH_RANGES = [
+  { id: '7d',     label: '7d' },
+  { id: '30d',    label: '30d' },
+  { id: '90d',    label: '90d' },
+  { id: '12mo',   label: '12 mo' },
+  { id: 'yearly', label: 'Yearly' },
+];
+
+/* Build {labels, values} for the new-users trend from a growth payload + range. */
+function growthTrend(data, range) {
+  if (!data) return { labels: [], values: [] };
+  if (range === '12mo') {
+    const m = Array.isArray(data.byMonth12) ? data.byMonth12 : [];
+    return { labels: m.map(x => x.label), values: m.map(x => x.count) };
+  }
+  if (range === 'yearly') {
+    const y = Array.isArray(data.byYear) ? data.byYear : [];
+    return { labels: y.map(x => String(x.year)), values: y.map(x => x.count) };
+  }
+  const n = range === '7d' ? 7 : range === '90d' ? 90 : 30;
+  const days = Array.isArray(data.byDay) ? data.byDay.slice(-n) : [];
+  return { labels: days.map(d => d.date), values: days.map(d => d.count) };
+}
+
+/* Overview's compact New-User-Growth card: window summary + trend + insights. */
+function NewUserGrowthOverview() {
+  const [data, setData]   = useState(null);  // null = loading, undefined = error
+  const [error, setError] = useState('');
+  const [range, setRange] = useState('30d');
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try { const d = await adminApi.getUserGrowth(); if (alive) setData(d); }
+      catch (e) { if (alive) { setError(e.message); setData(undefined); } }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const loading = data === null;
+  const w = data?.windows || {};
+  const ins = data?.insights || {};
+  const { labels, values } = growthTrend(data, range);
+  const series = [{ id: 'newUsers', label: 'New users', color: C.grn, values }];
+
+  const insightItems = [
+    { label: 'Top country',        v: ins.topCountry },
+    { label: 'Top institution',    v: ins.topInstitution },
+    { label: 'Top research field', v: ins.topResearchField },
+    { label: 'Top role',           v: ins.topPrimaryRole },
+  ];
+  const anyInsight = insightItems.some(i => i.v);
+
+  return (
+    <SectionCard title="New User Growth" action={
+      <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.05em' }}>registrations · server-local time</span>
+    }>
+      <div style={{ padding: '16px 18px' }}>
+        {error && <div style={{ marginBottom: 12 }}><ErrorBox msg={error} /></div>}
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(118px, 1fr))', gap: 10, marginBottom: 18 }}>
+          <GrowthSummaryCard label="Today"        win={w.today}   accent={C.acc}  loading={loading} prevLabel="day" />
+          <GrowthSummaryCard label="This week"    win={w.week}    accent={C.teal} loading={loading} prevLabel="week" />
+          <GrowthSummaryCard label="This month"   win={w.month}   accent={C.grn}  loading={loading} prevLabel="month" />
+          <GrowthSummaryCard label="This quarter" win={w.quarter} accent={C.purp} loading={loading} prevLabel="quarter" />
+          <GrowthSummaryCard label="This year"    win={w.year}    accent={C.acc2} loading={loading} prevLabel="year" />
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
+          <span style={{ fontSize: 11, fontFamily: MONO, color: C.txt2, letterSpacing: '0.04em', textTransform: 'uppercase' }}>New users over time</span>
+          <RangeSwitch options={GROWTH_RANGES} value={range} onChange={setRange} />
+        </div>
+        <AreaChart series={loading ? null : series} labels={labels} height={170} loading={loading} emptyLabel="Not enough registration data yet" />
+
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.brd}` }}>
+          <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 10 }}>This month's highlights</div>
+          {!anyInsight ? (
+            <div style={{ fontSize: 12, color: C.muted }}>{loading ? 'Loading…' : 'Not enough profile data yet.'}</div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(158px, 1fr))', gap: 10 }}>
+              {insightItems.map(i => (
+                <div key={i.label} style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 7, padding: '9px 11px', minWidth: 0 }}>
+                  <div style={{ fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase' }}>{i.label}</div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: C.txt, marginTop: 4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={i.v ? i.v.label : undefined}>
+                    {i.v ? i.v.label : <span style={{ color: C.muted, fontWeight: 400 }}>—</span>}
+                  </div>
+                  {i.v && <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, marginTop: 2 }}>{i.v.count.toLocaleString()} new</div>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
+
 function KpiCard({ label, value, sub, color = C.acc, spark, trendLoading, loading, onClick }) {
   const display = useCountUp(loading ? null : value);
   return (
@@ -888,6 +1041,11 @@ function OverviewSection({ onNavigate, isAdmin = true }) {
           spark={sparkOf('contactMessages')} trendLoading={trendLoading} loading={loading} onClick={() => onNavigate('messages')} />
         <KpiCard label="Failed Logins (7d)" value={failed7} sub="security posture" color={failed7 > 10 ? C.red : C.muted}
           spark={sparkOf('failedLogins')} trendLoading={trendLoading} loading={loading} onClick={() => onNavigate('security')} />
+      </div>
+
+      {/* ── New User Growth (prompt27) — registration analytics summary ── */}
+      <div style={{ marginBottom: 14 }}>
+        <NewUserGrowthOverview />
       </div>
 
       {/* ── Tier 2: 14-day activity + live system health ───────────────── */}
@@ -2216,6 +2374,7 @@ function UsersSection({ isAdmin = false }) {
   const subTabs = [
     { id: 'directory', icon: 'users', label: 'Directory' },
     ...(isAdmin ? [
+      { id: 'growth',       icon: 'barChart', label: 'Growth' },
       { id: 'analytics',    icon: 'activity', label: 'Analytics' },
       { id: 'institutions', icon: 'globe',    label: 'Institutions' },
     ] : []),
@@ -2226,6 +2385,7 @@ function UsersSection({ isAdmin = false }) {
       <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 16px' }}>Users</h2>
       <UsersSubTabs active={view} onSelect={setView} tabs={subTabs} />
       {view === 'directory'    && <UsersDirectory isAdmin={isAdmin} />}
+      {view === 'growth'       && isAdmin && <NewUserGrowthSection />}
       {view === 'analytics'    && isAdmin && <UserAnalyticsSection />}
       {view === 'institutions' && isAdmin && <InstitutionsManager />}
     </div>
@@ -2259,24 +2419,50 @@ function UsersDirectory({ isAdmin = false }) {
   const [adv, setAdv] = useState({ primaryRole: '', researchField: '', mainUseCase: '', country: '', verified: '', onboarded: '' });
   const [advOpen, setAdvOpen] = useState(false);
   const [profiles, setProfiles] = useState({});   // userId -> { primaryRole, researchField, ... } | 'loading'
+  // prompt27 — SERVER-SIDE quick filters: registration window + status toggles +
+  // sort. Applied across the whole dataset (not just the loaded page) and
+  // pagination-safe. The latest values live in a ref so load() — called right
+  // after a setState in a handler — never reads a stale value.
+  const [regWindow, setRegWindow] = useState('any');
+  const [quick, setQuick] = useState({ unverified: false, onboardingIncomplete: false, noInstitution: false });
+  const [sort, setSort] = useState('newest');
+  const filtersRef = useRef({ regWindow, quick, sort });
+  filtersRef.current = { regWindow, quick, sort };
   const searchTimer = useRef(null);
   const PER_PAGE = 25;
 
   const load = useCallback(async (s, f, p) => {
     setLoading(true); setError('');
     try {
+      const { regWindow: rw, quick: q, sort: so } = filtersRef.current;
       const params = { page: p, limit: PER_PAGE };
       if (s) params.search = s;
       if (f === 'suspended') params.suspended = true;
       if (f === 'active')    params.suspended = false;
       if (f === 'admins')    params.role = 'admin';
       if (f === 'mods')      params.role = 'mod';
+      if (rw && rw !== 'any') params.createdWithin = rw;
+      if (q.unverified) params.verified = 'false';
+      if (q.onboardingIncomplete) params.onboarded = 'false';
+      if (q.noInstitution) params.noInstitution = 'true';
+      if (so === 'oldest') params.sort = 'oldest';
       const data = await adminApi.users.list(params);
       setRows((data.users || []).map(u => ({ ...u, status: u.suspended ? 'suspended' : 'active' })));
       setTotal(data.total || 0);
     } catch (e) { setRows([]); setError(e.message); }
     finally { setLoading(false); }
   }, []);
+
+  // Apply a server-side quick-filter change and reload from page 1. Mirrors the
+  // value into filtersRef synchronously so load() reads it immediately.
+  function applyServerFilter(next) {
+    filtersRef.current = { ...filtersRef.current, ...next };
+    setPage(1);
+    load(search, filter, 1);
+  }
+  function pickRegWindow(v) { setRegWindow(v); applyServerFilter({ regWindow: v }); }
+  function toggleQuick(k)   { const q = { ...quick, [k]: !quick[k] }; setQuick(q); applyServerFilter({ quick: q }); }
+  function pickSort(v)      { setSort(v); applyServerFilter({ sort: v }); }
 
   // prompt25 — fetch global online/offline summary on mount (admin only).
   // Refreshes alongside the user list on page/filter changes.
@@ -2342,18 +2528,24 @@ function UsersDirectory({ isAdmin = false }) {
   const advFilteredOut = rows.length - visibleRows.length;
   const clearAdv = () => setAdv({ primaryRole: '', researchField: '', mainUseCase: '', country: '', verified: '', onboarded: '' });
 
+  const dash = <span style={{ color: C.muted }}>—</span>;
   const columns = [
-    { key: 'name',         label: 'Name',         render: (v, row) => <span title={v || undefined} style={{ color: C.txt, fontWeight: 600, display: 'block', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v || <span style={{ color: C.muted }}>—</span>}</span> },
+    { key: 'name',         label: 'Name',         render: (v, row) => <span title={v || undefined} style={{ color: C.txt, fontWeight: 600, display: 'block', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v || dash}</span> },
     { key: 'email',        label: 'Email',         render: v => <span title={v} style={{ fontFamily: MONO, fontSize: 11, overflowWrap: 'anywhere' }}>{v}</span> },
     { key: 'role',         label: 'Role',          render: v => <RoleBadge role={v} /> },
+    // prompt27 — non-secret profile columns from the list payload (no per-row fetch).
+    { key: 'institution',  label: 'Institution',   render: v => v ? <span title={v} style={{ display: 'block', maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span> : dash },
+    { key: 'researchField',label: 'Field',         render: v => v ? <span title={v} style={{ display: 'block', maxWidth: 130, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span> : dash },
+    { key: 'country',      label: 'Country',       render: v => v ? <span title={v} style={{ display: 'block', maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span> : dash },
     { key: 'status',       label: 'Status',        render: v => v === 'active' ? <Badge text="active" color={C.grn} /> : <Badge text="suspended" color={C.red} /> },
-    { key: 'projectCount', label: 'Projects',      render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
     { key: 'createdAt',    label: 'Joined',        render: v => fmtDate(v) },
     // Readable relative time ("3h ago"); em-dash when null (prompt6 Task 10).
-    { key: 'lastActive',   label: 'Last Active',   render: v => v ? fmtAgo(v) : <span style={{ color: C.muted }}>—</span> },
+    { key: 'lastActive',   label: 'Last Active',   render: v => v ? fmtAgo(v) : dash },
+    // prompt27 — email verification badge (no token/hash ever in the payload).
+    { key: 'emailVerified',label: 'Verified',      render: v => v ? <Badge text="verified" color={C.grn} /> : <span style={{ fontSize: 11, fontFamily: MONO, color: C.muted }}>—</span> },
     // prompt25 — live presence status (green pulsing dot = online, muted = offline).
     // Uses .ops-pulse keyframes now defined in the root AdminConsole <style>.
-    { key: 'isOnline', label: 'Status', render: v => (
+    { key: 'isOnline', label: 'Presence', render: v => (
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' }}>
         <LivePulseDot live={!!v} />
         <span style={{ fontSize: 11, fontFamily: MONO, color: v ? C.grn : C.muted }}>{v ? 'Online' : 'Offline'}</span>
@@ -2445,6 +2637,49 @@ function UsersDirectory({ isAdmin = false }) {
         )}
       </div>
 
+      {/* prompt27 — registration-window + status quick filters (SERVER-SIDE, whole
+          dataset) + sort. Admin only. */}
+      {isAdmin && (
+        <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Registered</span>
+          <FilterBar
+            filters={[
+              { id: 'any',     label: 'Any' },
+              { id: 'today',   label: 'Today' },
+              { id: 'week',    label: 'Week' },
+              { id: 'month',   label: 'Month' },
+              { id: 'quarter', label: 'Quarter' },
+              { id: 'year',    label: 'Year' },
+            ]}
+            active={regWindow}
+            onSelect={pickRegWindow}
+          />
+          <span style={{ width: 1, height: 18, background: C.brd2 }} />
+          {[
+            { k: 'unverified',          label: 'Unverified' },
+            { k: 'onboardingIncomplete', label: 'Onboarding incomplete' },
+            { k: 'noInstitution',       label: 'No institution' },
+          ].map(c => {
+            const on = quick[c.k];
+            return (
+              <button key={c.k} onClick={() => toggleQuick(c.k)} style={{
+                padding: '6px 12px', background: on ? alpha(C.ylw, '18') : 'transparent',
+                border: `1px solid ${on ? alpha(C.ylw, '55') : C.brd2}`, borderRadius: 6,
+                color: on ? C.ylw : C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT,
+              }}>{c.label}</button>
+            );
+          })}
+          <span style={{ flex: 1 }} />
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Sort</span>
+            <select value={sort} onChange={e => pickSort(e.target.value)} style={{ ...inputStyle, width: 'auto', padding: '5px 8px', fontSize: 12, cursor: 'pointer' }}>
+              <option value="newest">Newest first</option>
+              <option value="oldest">Oldest first</option>
+            </select>
+          </label>
+        </div>
+      )}
+
       {/* Advanced profile filters — applied CLIENT-SIDE to the loaded page */}
       {isAdmin && advOpen && (
         <SectionCard>
@@ -2508,45 +2743,227 @@ function UsersDirectory({ isAdmin = false }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+   SECTION: USERS · GROWTH (prompt27) — detailed new-user registration
+   analytics: window summary (today→year + all-time) with period deltas,
+   historical year/month/quarter/day trends, a year selector, and this-month
+   site-growth stats. One getUserGrowth fetch (re-fetched on year change).
+   Admin-only (the endpoint is requireAdmin).
+   ════════════════════════════════════════════════════════════════════════ */
+
+/* Small stat tile for the site-growth grid. */
+function StatTile({ label, value, sub, color = C.txt, loading }) {
+  return (
+    <div style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '12px 14px', minWidth: 0 }}>
+      <div style={{ fontSize: 9, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase' }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 800, fontFamily: MONO, color, marginTop: 5, fontVariantNumeric: 'tabular-nums', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+        {loading ? '—' : value}
+      </div>
+      {sub && <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sub}>{sub}</div>}
+    </div>
+  );
+}
+
+/* Format a 'YYYY-MM-DD' key as a local-readable short date. */
+function fmtDayKey(key) {
+  if (!key || typeof key !== 'string') return '—';
+  const [y, m, d] = key.split('-').map(Number);
+  if (!y || !m || !d) return key;
+  return new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+function NewUserGrowthSection() {
+  const [data, setData]   = useState(null);    // null = first-load, undefined = error
+  const [years, setYears] = useState([]);
+  const [year, setYear]   = useState(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy]   = useState(false);
+  const [dayRange, setDayRange] = useState('30d');
+
+  const load = useCallback(async (y) => {
+    setBusy(true);
+    try {
+      const d = await adminApi.getUserGrowth(y || undefined);
+      setData(d);
+      setYears(d.availableYears || []);
+      if (y == null) setYear(d.selectedYear);
+      setError('');
+    } catch (e) { setError(e.message); if (y == null) setData(undefined); }
+    finally { setBusy(false); }
+  }, []);
+
+  useEffect(() => { load(null); }, [load]);
+
+  function pickYear(y) { setYear(y); load(y); }
+
+  const loading = data === null;
+  const w = data?.windows || {};
+  const byYear = data?.byYear || [];
+  const byMonth = data?.byMonth || [];
+  const byQuarter = data?.byQuarter || [];
+  const stats = data?.stats || {};
+
+  const dayTrend = growthTrend(data, dayRange);
+  const monthRows = byMonth.map(m => ({ label: m.label, value: m.count }));
+  const quarterRows = byQuarter.map(q => ({ label: q.label, value: q.count }));
+  const yearRows = byYear.map(y => ({ label: String(y.year), value: y.count }));
+
+  const dayRanges = [{ id: '7d', label: '7d' }, { id: '30d', label: '30d' }, { id: '90d', label: '90d' }];
+
+  return (
+    <div>
+      {error && <ErrorBox msg={error} />}
+
+      {/* A. Window summary + all-time total */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(118px, 1fr))', gap: 10, marginBottom: 18 }}>
+        <GrowthSummaryCard label="Today"        win={w.today}   accent={C.acc}  loading={loading} prevLabel="day" />
+        <GrowthSummaryCard label="This week"    win={w.week}    accent={C.teal} loading={loading} prevLabel="week" />
+        <GrowthSummaryCard label="This month"   win={w.month}   accent={C.grn}  loading={loading} prevLabel="month" />
+        <GrowthSummaryCard label="This quarter" win={w.quarter} accent={C.purp} loading={loading} prevLabel="quarter" />
+        <GrowthSummaryCard label="This year"    win={w.year}    accent={C.acc2} loading={loading} prevLabel="year" />
+        <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: '14px 16px', minWidth: 0 }}>
+          <div style={{ fontSize: 26, fontWeight: 800, color: C.txt, fontFamily: MONO, letterSpacing: '-1px', lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>
+            {loading ? '—' : (w.total?.count ?? 0).toLocaleString()}
+          </div>
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 6, fontFamily: MONO, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Total · all time</div>
+          <div style={{ fontSize: 9, fontFamily: MONO, color: C.muted, marginTop: 5 }}>registered accounts</div>
+        </div>
+      </div>
+
+      {/* C. Daily trend (last 7/30/90) */}
+      <SectionCard title="New users by day" action={<RangeSwitch options={dayRanges} value={dayRange} onChange={setDayRange} />}>
+        <div style={{ padding: '16px 18px' }}>
+          <AreaChart series={loading ? null : [{ id: 'newUsers', label: 'New users', color: C.grn, values: dayTrend.values }]}
+            labels={dayTrend.labels} height={180} loading={loading} emptyLabel="Not enough registration data yet" />
+        </div>
+      </SectionCard>
+
+      {/* B. Historical totals — by year (with YoY) + year-driven month/quarter */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16, marginTop: 16 }}>
+        <SectionCard title="New users by year" action={<span style={{ fontSize: 10, fontFamily: MONO, color: C.muted }}>year-over-year</span>}>
+          <div style={{ padding: '16px 18px' }}>
+            <BarRow rows={yearRows} color={C.acc2} loading={loading} emptyLabel="no yearly data yet" />
+            {!loading && byYear.length > 0 && (
+              <div style={{ marginTop: 14, display: 'grid', gap: 6 }}>
+                {byYear.map(y => (
+                  <div key={y.year} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 11, fontFamily: MONO, color: C.txt2 }}>
+                    <span>{y.year}</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ color: C.txt, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{y.count.toLocaleString()}</span>
+                      <DeltaBadge delta={y.growthPct} title="vs previous year" />
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard title="New users by month" action={
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            {busy && <Spinner size={11} />}
+            {years.map(y => (
+              <button key={y} onClick={() => pickYear(y)} style={{
+                padding: '3px 9px', background: y === year ? C.acc2 : 'transparent',
+                border: `1px solid ${y === year ? C.acc2 : C.brd2}`, borderRadius: 6,
+                color: y === year ? C.accText : C.txt2, fontSize: 11, fontFamily: MONO, cursor: 'pointer',
+              }}>{y}</button>
+            ))}
+          </span>
+        }>
+          <div style={{ padding: '16px 18px' }}>
+            <BarRow rows={monthRows} color={C.grn} loading={loading} emptyLabel="no monthly data yet" />
+          </div>
+        </SectionCard>
+      </div>
+
+      {/* C. Quarterly (selected + previous year) */}
+      <SectionCard title="New users by quarter" action={<span style={{ fontSize: 10, fontFamily: MONO, color: C.muted }}>{year ? `${year - 1}–${year}` : ''}</span>}>
+        <div style={{ padding: '16px 18px' }}>
+          <BarRow rows={quarterRows} color={C.purp} loading={loading} emptyLabel="no quarterly data yet" />
+        </div>
+      </SectionCard>
+
+      {/* G. This-month site-growth stats */}
+      <SectionCard title="This month at a glance" action={<span style={{ fontSize: 10, fontFamily: MONO, color: C.muted }}>current calendar month</span>}>
+        <div style={{ padding: '16px 18px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+            <StatTile label="New users" value={(stats.newUsersThisMonth ?? 0).toLocaleString()} color={C.grn} loading={loading} />
+            <StatTile label="Avg / day" value={stats.avgPerDayThisMonth ?? 0} color={C.acc} loading={loading} sub="month-to-date" />
+            <StatTile label="Best day" value={stats.bestDay ? stats.bestDay.count.toLocaleString() : '—'} color={C.teal} loading={loading} sub={stats.bestDay ? fmtDayKey(stats.bestDay.date) : 'no registrations yet'} />
+            <StatTile label="Onboarded" value={(stats.onboardingCompletedThisMonth ?? 0).toLocaleString()} color={C.acc2} loading={loading} sub="completed profile" />
+            <StatTile label="With institution" value={(stats.withInstitutionThisMonth ?? 0).toLocaleString()} color={C.purp} loading={loading} />
+            <StatTile label="Countries" value={(stats.countriesThisMonth ?? 0).toLocaleString()} color={C.txt} loading={loading} sub="represented this month" />
+          </div>
+          <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, marginTop: 12, letterSpacing: '0.04em' }}>
+            Demographic breakdowns by country / institution / field / role / use-case are in the <strong style={{ color: C.txt2 }}>Analytics</strong> tab (filterable by time window).
+          </div>
+        </div>
+      </SectionCard>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
    SECTION: USERS · ANALYTICS (prompt26) — one getUserAnalytics fetch →
    distributions by research field / primary role / country, top institutions,
    onboarding completion %, and email-verification donut. Small, theme-driven,
    no chart library. Admin-only (the endpoint is requireAdmin).
+   prompt27 — adds a registration-window filter + use-case & institution-
+   provided breakdowns.
    ════════════════════════════════════════════════════════════════════════ */
+const ANALYTICS_WINDOWS = [
+  { id: 'all',     label: 'All time' },
+  { id: 'today',   label: 'Today' },
+  { id: 'week',    label: 'Week' },
+  { id: 'month',   label: 'Month' },
+  { id: 'quarter', label: 'Quarter' },
+  { id: 'year',    label: 'Year' },
+];
+
 function UserAnalyticsSection() {
   const [data, setData]       = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
+  const [window, setWindow]   = useState('all'); // registration-window filter (prompt27)
 
   useEffect(() => {
     let alive = true;
     (async () => {
       setLoading(true); setError('');
       try {
-        const d = await adminApi.getUserAnalytics();
+        const d = await adminApi.getUserAnalytics(window);
         if (alive) setData(d);
       } catch (e) { if (alive) setError(e.message); }
       finally { if (alive) setLoading(false); }
     })();
     return () => { alive = false; };
-  }, []);
+  }, [window]);
 
   const onb = data?.onboarding || { completed: 0, total: 0 };
   const ver = data?.verification || { verified: 0, unverified: 0, total: 0 };
+  const inst = data?.institution || { provided: 0, missing: 0, total: 0 };
   const topInst = (data?.topInstitutions || []).map(i => ({ label: i.canonicalName || i.key, count: i.count }));
+  const windowLabel = (ANALYTICS_WINDOWS.find(x => x.id === window) || {}).label || 'All time';
 
   return (
     <div>
       {error && <ErrorBox msg={error} />}
 
+      {/* Registration-window filter — distributions reflect accounts CREATED in
+          the selected window (prompt27). Default "All time". */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, fontFamily: MONO, color: C.muted, letterSpacing: '0.05em', textTransform: 'uppercase' }}>Registered in</span>
+        <FilterBar filters={ANALYTICS_WINDOWS} active={window} onSelect={setWindow} />
+      </div>
+
       {/* KPI row — total users + completion/verification headline cards */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: 18 }}>
-        <SectionCard title="Total users">
+        <SectionCard title={window === 'all' ? 'Total users' : 'New users'}>
           <div style={{ padding: '16px 18px' }}>
             <div style={{ fontSize: 34, fontWeight: 800, fontFamily: MONO, color: C.acc, letterSpacing: '-1.2px', fontVariantNumeric: 'tabular-nums' }}>
               {loading ? '—' : (data?.totalUsers ?? 0).toLocaleString()}
             </div>
-            <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 6 }}>registered accounts</div>
+            <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 6 }}>{window === 'all' ? 'registered accounts' : `${windowLabel.toLowerCase()} · new accounts`}</div>
           </div>
         </SectionCard>
         <SectionCard title="Onboarding completion">
@@ -2566,6 +2983,11 @@ function UserAnalyticsSection() {
               size={108} thickness={12} loading={loading} emptyLabel="no users yet" />
           </div>
         </SectionCard>
+        <SectionCard title="Institution provided">
+          <div style={{ padding: '16px 18px' }}>
+            <PercentCard value={inst.provided || 0} total={inst.total || 0} label="provided an institution" color={C.acc2} loading={loading} suffix="users" />
+          </div>
+        </SectionCard>
       </div>
 
       {/* Distributions */}
@@ -2578,6 +3000,11 @@ function UserAnalyticsSection() {
         <SectionCard title="By primary role">
           <div style={{ padding: '16px 18px' }}>
             <RankedBars items={data?.byPrimaryRole} color={C.teal} loading={loading} emptyLabel="no role data yet" />
+          </div>
+        </SectionCard>
+        <SectionCard title="By main use case">
+          <div style={{ padding: '16px 18px' }}>
+            <RankedBars items={data?.byMainUseCase} color={C.purp} loading={loading} emptyLabel="no use-case data yet" />
           </div>
         </SectionCard>
         <SectionCard title="By country">
