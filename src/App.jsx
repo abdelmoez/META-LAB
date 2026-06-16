@@ -24,6 +24,7 @@ const SiftImport    = lazy(() => import('./frontend/screening/pages/SiftImport.j
 const InvitePage    = lazy(() => import('./frontend/pages/InvitePage.jsx'));
 const ResetPassword = lazy(() => import('./frontend/pages/ResetPassword.jsx'));
 const VerifyEmail   = lazy(() => import('./frontend/pages/VerifyEmail.jsx'));
+const Onboarding    = lazy(() => import('./frontend/pages/Onboarding.jsx'));
 
 /* Minimal theme-token loading state shown while a route chunk downloads. */
 function RouteFallback() {
@@ -80,7 +81,7 @@ function RegisterRoute() {
   const { login } = useAuth();
   return (
     <RegisterPage
-      onSuccess={(u, redirectTo) => { login(u); navigate(redirectTo || '/app'); }}
+      onSuccess={(u, redirectTo) => { login(u); navigate(redirectTo || '/onboarding'); }}
       onBack={() => {
         const invite = inviteParam();
         navigate(invite ? `/login?invite=${encodeURIComponent(invite)}` : '/login');
@@ -131,6 +132,9 @@ export default function App() {
         <Route path="/verify-email" element={<VerifyEmail />} />
 
         {/* Protected post-login home — project command center (prompt11) */}
+        {/* prompt26 — optional, skippable onboarding (post-registration). */}
+        <Route path="/onboarding" element={<ProtectedRoute><Onboarding /></ProtectedRoute>} />
+
         <Route path="/app"      element={<ProtectedRoute><ProjectLanding /></ProtectedRoute>} />
 
         {/* Protected workspace — opens one project by id into the existing overview/workflow */}
