@@ -96,6 +96,18 @@ export {
   seededSample,
 } from './screening/sampling.js';
 
+// ── Institutions: normalization + fuzzy matching (prompt26) ──────────────────
+export {
+  normalizeInstitution,
+  institutionKey,
+  institutionSimilarity,
+  classifyInstitutionMatch,
+  matchInstitution,
+  groupInstitutions,
+  INST_AUTO_THRESHOLD,
+  INST_REVIEW_THRESHOLD,
+} from './institutions/institutionMatch.js';
+
 // ── Project model: factories & utilities ─────────────────────────────────────
 export { uid, now, fmtDate, mkProject, mkStudy } from './project-model/defaults.js';
 

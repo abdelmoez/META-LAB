@@ -5,8 +5,10 @@ import { signToken } from '../auth/jwt.js';
 import { notifyProjectInvite } from '../services/notificationService.js';
 import { isValidEmail } from '../utils/validators.js';
 import { recordUsage, USAGE } from '../utils/usage.js';
-import { sendEmail, renderPasswordResetEmail } from '../services/emailService.js';
+import { sendEmail, renderPasswordResetEmail, renderEmailVerificationEmail } from '../services/emailService.js';
 import { createResetToken, consumeResetToken } from '../services/passwordResetService.js';
+import { createVerificationToken, consumeVerificationToken } from '../services/emailVerificationService.js';
+import { normalizeInstitution } from '../../src/research-engine/institutions/institutionMatch.js';
 import { resolveCountry, getClientIp, hashIp } from '../utils/geo.js';
 
 const COOKIE_NAME = 'metalab_session';
@@ -103,12 +105,50 @@ function cookieOptions() {
 }
 
 /**
+ * Is email verification currently required? Reads appSettings.requireEmailVerification
+ * (prompt26). Default/missing = false (OFF). A settings-read failure is treated as
+ * OFF so verification can never block registration/login by accident.
+ */
+async function isEmailVerificationRequired() {
+  try {
+    const row = await prisma.siteSetting.findUnique({ where: { key: 'appSettings' } });
+    const appSettings = row ? JSON.parse(row.value || '{}') : {};
+    return appSettings.requireEmailVerification === true;
+  } catch { return false; }
+}
+
+/**
+ * Mint a verify token + send the verification email. Best-effort: never throws,
+ * never blocks the caller. Returns the sendEmail result (or a {sent:false} shape).
+ */
+async function sendVerificationEmail(req, user) {
+  try {
+    const { token, expiresAt } = await createVerificationToken(user.id);
+    const base = (process.env.APP_BASE_URL || '').replace(/\/+$/, '') || `${req.protocol}://${req.get('host')}`;
+    const link = `${base}/verify-email?token=${token}`;
+    const { html, text } = renderEmailVerificationEmail({ toName: user.name || '', link, expiresAt });
+    return await sendEmail({ to: user.email, subject: 'Verify your META·LAB email', html, text, context: 'email_verification' });
+  } catch (e) {
+    console.error('[auth] sendVerificationEmail issue:', e.message);
+    return { sent: false, reason: 'error' };
+  }
+}
+
+// prompt26 — accepted onboarding option values (server-side allow-list; unknown
+// values are stored as-is but trimmed/length-capped so the field can't be abused).
+function cleanProfileValue(v, max = 120) {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s ? s.slice(0, max) : null;
+}
+
+/**
  * POST /api/auth/register
  * Body: { email, password, name? }
  */
 export async function register(req, res) {
   try {
-    const { email, password, name } = req.body || {};
+    const { email, password, name, acceptedTerms } = req.body || {};
 
     if (!email || typeof email !== 'string' || !email.trim()) {
       return res.status(400).json({ error: 'email is required' });
@@ -135,6 +175,11 @@ export async function register(req, res) {
       return res.status(409).json({ error: 'An account with that email already exists' });
     }
 
+    // prompt26 — email verification gate (OFF by default). When ON, the account
+    // is created unverified and a verify email is sent; when OFF, the account is
+    // auto-verified so existing behaviour and ops stats stay clean.
+    const verifyRequired = await isEmailVerificationRequired();
+
     const hashed = await hashPassword(password);
     const user = await prisma.user.create({
       data: {
@@ -142,6 +187,8 @@ export async function register(req, res) {
         name: name?.trim() || null,
         password: hashed,
         role: 'user',
+        termsAcceptedAt: acceptedTerms ? new Date() : null,
+        emailVerifiedAt: verifyRequired ? null : new Date(),
       },
     });
 
@@ -153,11 +200,17 @@ export async function register(req, res) {
     // Fire-and-forget — geolocation must never block or 500 registration.
     captureRegistrationCountry(req, user).catch(() => {});
 
+    // Send the verification email when required (fire-and-forget; never 500s,
+    // and registration succeeds even if SMTP is unconfigured).
+    if (verifyRequired) sendVerificationEmail(req, user).catch(() => {});
+
     const token = signToken({ id: user.id, email: user.email, role: user.role });
     res.cookie(COOKIE_NAME, token, cookieOptions());
 
     return res.status(201).json({
       user: { id: user.id, email: user.email, name: user.name, role: user.role, createdAt: user.createdAt },
+      emailVerified: !verifyRequired,
+      requireEmailVerification: verifyRequired,
     });
   } catch (err) {
     console.error('[auth] register error:', err.message);
@@ -212,6 +265,15 @@ export async function login(req, res) {
       return res.status(401).json({ error: 'Your account has been suspended. Please contact support.' });
     }
 
+    // prompt26 — block unverified sign-in ONLY when verification is required.
+    // Default OFF → no effect on existing behaviour. code lets the UI offer resend.
+    if (!user.emailVerifiedAt && await isEmailVerificationRequired()) {
+      return res.status(403).json({
+        error: 'Please verify your email to sign in. Check your inbox, or request a new verification link.',
+        code: 'EMAIL_NOT_VERIFIED',
+      });
+    }
+
     // Login metrics + lastActive (prompt6 Tasks 9/10) â€” fire-and-forget, never
     // awaited: a metrics failure must never fail or slow the login response.
     recordLoginEvent(req, user, true);
@@ -246,12 +308,26 @@ export async function getMe(req, res) {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
-      select: { id: true, email: true, name: true, role: true, suspended: true, createdAt: true, themePreference: true, lastActive: true },
+      select: {
+        id: true, email: true, name: true, role: true, suspended: true, createdAt: true,
+        themePreference: true, lastActive: true,
+        emailVerifiedAt: true, onboardingCompletedAt: true,
+        primaryRole: true, researchField: true, mainUseCase: true,
+        institutionOriginal: true, country: true,
+      },
     });
     if (!user) {
       return res.status(401).json({ error: 'User not found' });
     }
-    return res.json({ user });
+    const requireEmailVerification = await isEmailVerificationRequired();
+    return res.json({
+      user: {
+        ...user,
+        emailVerified: !!user.emailVerifiedAt,
+        onboardingCompleted: !!user.onboardingCompletedAt,
+      },
+      requireEmailVerification,
+    });
   } catch (err) {
     console.error('[auth] getMe error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
@@ -360,6 +436,92 @@ export async function resetPassword(req, res) {
     return res.json({ ok: true });
   } catch (err) {
     console.error('[auth] resetPassword error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /api/auth/verify-email (public)  Body: { token }
+ * Consumes a single-use verify token and marks the user verified.
+ */
+export async function verifyEmail(req, res) {
+  try {
+    const { token } = req.body || {};
+    if (!token || typeof token !== 'string') {
+      return res.status(400).json({ error: 'Invalid or missing verification token' });
+    }
+    const result = await consumeVerificationToken(token);
+    if (!result.ok) {
+      return res.status(400).json({
+        error: result.reason === 'expired'
+          ? 'This verification link has expired. Request a new one.'
+          : 'This verification link is invalid or has already been used.',
+      });
+    }
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[auth] verifyEmail error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /api/auth/resend-verification (public; authLimiter)  Body: { email }
+ * No-enumeration: always returns the same generic 200. Sends a fresh verify
+ * email only for a real, unverified account when verification is enabled.
+ */
+export async function resendVerification(req, res) {
+  const GENERIC = { ok: true, message: 'If that account exists and needs verification, a new link has been sent.' };
+  try {
+    const { email } = req.body || {};
+    const normalizedEmail = (email || '').trim().toLowerCase();
+    (async () => {
+      try {
+        if (!normalizedEmail || !(await isEmailVerificationRequired())) return;
+        const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+        if (!user || user.suspended || user.emailVerifiedAt) return;
+        await sendVerificationEmail(req, user);
+      } catch (e) { console.error('[auth] resendVerification issue:', e.message); }
+    })();
+    return res.json(GENERIC);
+  } catch {
+    return res.json(GENERIC);
+  }
+}
+
+/**
+ * POST /api/auth/onboarding (requireAuth)
+ * Body: { primaryRole?, researchField?, mainUseCase?, institution?, country? }
+ * Saves the OPTIONAL onboarding profile. Never blocks; preserves the exact
+ * institution text and also stores a normalized matching key. Marks onboarding
+ * complete. Institution matching failure is non-fatal.
+ */
+export async function updateOnboarding(req, res) {
+  try {
+    const b = req.body || {};
+    const institutionOriginal = cleanProfileValue(b.institution, 200);
+    let institutionNormalized = null;
+    try { institutionNormalized = institutionOriginal ? normalizeInstitution(institutionOriginal) || null : null; } catch { institutionNormalized = null; }
+
+    const user = await prisma.user.update({
+      where: { id: req.user.id },
+      data: {
+        primaryRole: cleanProfileValue(b.primaryRole),
+        researchField: cleanProfileValue(b.researchField),
+        mainUseCase: cleanProfileValue(b.mainUseCase),
+        country: cleanProfileValue(b.country),
+        institutionOriginal,
+        institutionNormalized,
+        onboardingCompletedAt: new Date(),
+      },
+      select: {
+        id: true, primaryRole: true, researchField: true, mainUseCase: true,
+        institutionOriginal: true, country: true, onboardingCompletedAt: true,
+      },
+    });
+    return res.json({ ok: true, user: { ...user, onboardingCompleted: true } });
+  } catch (err) {
+    console.error('[auth] updateOnboarding error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

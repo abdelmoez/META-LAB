@@ -22,6 +22,11 @@ const USER_DETAIL_SELECT = {
   createdAt: true, updatedAt: true, lastActive: true, themePreference: true,
   registrationCountryCode: true, registrationCountryName: true,
   registrationIpCountrySource: true,
+  // prompt26 — verification + onboarding profile (NONE are sensitive; the token
+  // hash/expiry are deliberately NOT selected so no secret reaches the client).
+  emailVerifiedAt: true, onboardingCompletedAt: true,
+  primaryRole: true, researchField: true, mainUseCase: true,
+  institutionOriginal: true, institutionNormalized: true, country: true,
   _count: { select: { projects: true } },
 };
 function formatUserDetail(u) {

@@ -1,5 +1,8 @@
 import { Router } from 'express';
-import { register, login, logout, getMe, forgotPassword, resetPassword } from '../controllers/authController.js';
+import {
+  register, login, logout, getMe, forgotPassword, resetPassword,
+  verifyEmail, resendVerification, updateOnboarding,
+} from '../controllers/authController.js';
 import { requireAuth } from '../middleware/auth.js';
 
 const router = Router();
@@ -13,5 +16,10 @@ router.get('/me',        requireAuth, getMe);
 // authLimiter mounted in server/index.js (20 req / 15 min in production).
 router.post('/forgot-password', forgotPassword);
 router.post('/reset-password',  resetPassword);
+
+// prompt26 — email verification (public verify/resend) + optional onboarding (auth).
+router.post('/verify-email',         verifyEmail);
+router.post('/resend-verification',  resendVerification);
+router.post('/onboarding',           requireAuth, updateOnboarding);
 
 export default router;

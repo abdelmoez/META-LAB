@@ -87,6 +87,7 @@ export default function Register({ onSuccess, onBack }) {
   const [error, setError]             = useState(null);
   const [loading, setLoading]         = useState(false);
   // Read once on mount — the page is reached via /register?invite=<token>.
+  const [terms, setTerms] = useState(false);
   const [inviteToken] = useState(() => {
     try { return new URLSearchParams(window.location.search).get("invite") || ""; }
     catch { return ""; }
@@ -108,6 +109,14 @@ export default function Register({ onSuccess, onBack }) {
       setError("Passwords do not match.");
       return;
     }
+    if (!name.trim()) {
+      setError("Please enter your full name.");
+      return;
+    }
+    if (!terms) {
+      setError("Please agree to the Terms and Privacy Policy to continue.");
+      return;
+    }
 
     setLoading(true);
     try {
@@ -115,7 +124,8 @@ export default function Register({ onSuccess, onBack }) {
         email.trim(),
         password,
         name.trim() || undefined,
-        inviteToken || undefined
+        inviteToken || undefined,
+        terms
       );
       const user = data && data.user ? data.user : data;
 
@@ -194,8 +204,11 @@ export default function Register({ onSuccess, onBack }) {
           >
             META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>LAB
           </div>
-          <div style={{ fontSize: 14, color: C.muted, marginTop: 8, lineHeight: 1.5 }}>
-            Create your research account
+          <div style={{ fontSize: 18, fontWeight: 600, color: C.txt, marginTop: 10, lineHeight: 1.3 }}>
+            Create your research workspace
+          </div>
+          <div style={{ fontSize: 13.5, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+            Start screening, extracting, analyzing, and exporting evidence from one clean workspace.
           </div>
         </div>
 
@@ -225,7 +238,7 @@ export default function Register({ onSuccess, onBack }) {
         <form onSubmit={handleSubmit} noValidate>
           <Field
             id="reg-name"
-            label="Full name (optional)"
+            label="Full name"
             type="text"
             autoComplete="name"
             value={name}
@@ -262,6 +275,17 @@ export default function Register({ onSuccess, onBack }) {
             onChange={(e) => setConfirm(e.target.value)}
             placeholder="Repeat password"
           />
+
+          {/* Terms & Privacy agreement (prompt26) */}
+          <label style={{ display: "flex", gap: 10, alignItems: "flex-start", margin: "2px 0 18px", cursor: "pointer", fontSize: 13, color: C.txt2, lineHeight: 1.5 }}>
+            <input
+              type="checkbox"
+              checked={terms}
+              onChange={(e) => setTerms(e.target.checked)}
+              style={{ marginTop: 2, width: 16, height: 16, accentColor: C.acc, flexShrink: 0, cursor: "pointer" }}
+            />
+            <span>I agree to the <strong style={{ color: C.txt }}>Terms</strong> and <strong style={{ color: C.txt }}>Privacy Policy</strong>.</span>
+          </label>
 
           {error && (
             <div

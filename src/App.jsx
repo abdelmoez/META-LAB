@@ -23,6 +23,7 @@ const SiftProject   = lazy(() => import('./frontend/screening/pages/SiftProject.
 const SiftImport    = lazy(() => import('./frontend/screening/pages/SiftImport.jsx'));
 const InvitePage    = lazy(() => import('./frontend/pages/InvitePage.jsx'));
 const ResetPassword = lazy(() => import('./frontend/pages/ResetPassword.jsx'));
+const VerifyEmail   = lazy(() => import('./frontend/pages/VerifyEmail.jsx'));
 
 /* Minimal theme-token loading state shown while a route chunk downloads. */
 function RouteFallback() {
@@ -124,6 +125,10 @@ export default function App() {
         {/* Public password reset — unwrapped (must work signed-out AND signed-in).
             /reset = request a link; /reset?token=… = choose a new password. */}
         <Route path="/reset" element={<ResetPassword />} />
+
+        {/* prompt26 — public email-verification landing (only reached when an
+            admin has enabled requireEmailVerification). */}
+        <Route path="/verify-email" element={<VerifyEmail />} />
 
         {/* Protected post-login home — project command center (prompt11) */}
         <Route path="/app"      element={<ProtectedRoute><ProjectLanding /></ProtectedRoute>} />

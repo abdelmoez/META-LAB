@@ -14,6 +14,10 @@ const DEFAULTS = {
     // ── prompt9 ops controls ──────────────────────────────────────────
     notificationsEnabled: true,            // global notification kill-switch
     emailInvitesEnabled: true,             // outbound invite emails on/off
+    // prompt26 — email verification. OFF by default (SMTP not configured yet).
+    // When true: new users are created unverified, a hashed/expiring verify token
+    // is emailed, and login is blocked until verified. Admin toggles it in Ops.
+    requireEmailVerification: false,
     defaultTheme: 'night',                 // site-wide default theme for new visitors
     maintenanceMessage: 'META·LAB is temporarily down for maintenance. Please check back soon.',
     exportFormats: ['png', 'svg', 'csv', 'json', 'ris', 'xls'],

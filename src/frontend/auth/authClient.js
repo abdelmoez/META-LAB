@@ -41,13 +41,28 @@ async function authReq(path, opts = {}) {
  *   invite by token even when the registered email differs from the invite.
  * @returns {Promise<{ user: object }>}
  */
-export async function register(email, password, name, inviteToken) {
-  const payload = { email, password, name };
+export async function register(email, password, name, inviteToken, acceptedTerms) {
+  const payload = { email, password, name, acceptedTerms: !!acceptedTerms };
   if (inviteToken) payload.inviteToken = inviteToken;
   return authReq("/register", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+/** prompt26 — confirm an email-verification token (public). */
+export async function verifyEmail(token) {
+  return authReq("/verify-email", { method: "POST", body: JSON.stringify({ token }) });
+}
+
+/** prompt26 — resend a verification email (no-enumeration; always resolves ok). */
+export async function resendVerification(email) {
+  return authReq("/resend-verification", { method: "POST", body: JSON.stringify({ email }) });
+}
+
+/** prompt26 — save the optional onboarding profile (auth). */
+export async function saveOnboarding(profile) {
+  return authReq("/onboarding", { method: "POST", body: JSON.stringify(profile || {}) });
 }
 
 /**

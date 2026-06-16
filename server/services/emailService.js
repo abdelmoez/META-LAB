@@ -283,6 +283,54 @@ export function renderPasswordResetEmail({
 }
 
 /**
+ * renderEmailVerificationEmail — META·LAB-styled email-verification email (prompt26).
+ * The link carries the single-use verify token; every value is escaped.
+ * @param {{appName?:string, toName?:string, link:string, expiresAt?:Date|string|null}} opts
+ * @returns {{html:string, text:string}}
+ */
+export function renderEmailVerificationEmail({ appName = 'META·LAB', toName = '', link = '', expiresAt = null } = {}) {
+  const greeting = toName ? `Hi ${escapeHtml(toName)},` : 'Hello,';
+  const appBase = env('APP_BASE_URL');
+
+  let expiryText = '';
+  if (expiresAt) {
+    const d = expiresAt instanceof Date ? expiresAt : new Date(expiresAt);
+    if (!Number.isNaN(d.getTime())) {
+      expiryText = d.toLocaleString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    }
+  }
+  const expiryHtml = expiryText
+    ? `<div style="font-size:12px;color:#6b7280;margin-top:18px;">This link expires on ${escapeHtml(expiryText)}. After that, request a new one.</div>`
+    : '';
+
+  const bodyHtml = `          <div style="font-size:16px;font-weight:600;color:#111827;margin-bottom:14px;">Confirm your email</div>
+          <div style="font-size:14px;color:#1f2937;line-height:1.6;margin-bottom:8px;">${greeting}</div>
+          <div style="font-size:14px;color:#1f2937;line-height:1.7;margin-bottom:24px;">
+            Welcome to ${escapeHtml(appName)}. Confirm your email address to activate your research workspace.
+          </div>
+          ${ctaButton(link, 'Verify email')}
+          <div style="font-size:12px;color:#6b7280;margin-top:22px;line-height:1.6;">
+            If the button doesn&#39;t work, copy and paste this link into your browser:<br>
+            <a href="${escapeHtml(link)}" style="color:#6366f1;text-decoration:none;word-break:break-all;">${escapeHtml(link)}</a>
+          </div>
+          ${expiryHtml}
+          <div style="font-size:12px;color:#9ca3af;margin-top:18px;line-height:1.5;">
+            If you didn&#39;t create this account, you can safely ignore this email.
+          </div>`;
+
+  const html = renderBaseEmailLayout({ appName, bodyHtml });
+  const textParts = [
+    'Confirm your email', '', toName ? `Hi ${toName},` : 'Hello,', '',
+    `Welcome to ${appName}. Confirm your email to activate your workspace.`, '',
+    `Verify your email: ${link}`,
+  ];
+  if (expiryText) textParts.push('', `This link expires on ${expiryText}.`);
+  textParts.push('', `If you didn't create this account, you can safely ignore this email.`, '', '—', `Sent by the ${appName} team`);
+  if (appBase) textParts.push(appBase);
+  return { html, text: textParts.join('\n') };
+}
+
+/**
  * renderInviteEmail — build the META·LAB-styled project invite email (prompt9).
  * Same 600px white-card table layout as renderReplyEmail; inline hex styles are
  * the correct convention for email HTML (CSS variables don't work in clients).

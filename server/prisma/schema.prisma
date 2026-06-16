@@ -39,6 +39,25 @@ model User {
   registrationCountryName     String?  // human-readable country name, or null when unknown
   registrationIpCountrySource String?  // "header" | "geoip" | "local" | "none"
   registrationIpHash          String?  // optional salted SHA-256 of the IP — NEVER the raw IP
+  // prompt26 — email verification (OFF by default via appSettings.requireEmailVerification).
+  // Mirrors the PasswordResetToken ceremony but inline on User: only the SHA-256
+  // HASH of the verify token is stored (plaintext lives only in the email link),
+  // single-use (hash nulled on verify), short-lived (expiresAt). All nullable →
+  // `prisma db push` stays additive-safe. emailVerifiedAt=null ⇒ unverified.
+  emailVerifiedAt            DateTime?
+  emailVerificationTokenHash String?  // SHA-256 hex; nulled when consumed
+  emailVerificationExpiresAt DateTime?
+  termsAcceptedAt           DateTime? // prompt26 — when the user agreed to Terms & Privacy
+  // prompt26 — optional onboarding profile (skippable; never blocks app access).
+  // All nullable/additive. institutionOriginal preserves the EXACT user text;
+  // institutionNormalized is the matching key (see research-engine institutionMatch).
+  primaryRole           String?       // Student | Researcher | Faculty/PI | …
+  researchField         String?       // Health sciences | Psychology | …
+  mainUseCase           String?       // Systematic review | Meta-analysis | …
+  institutionOriginal   String?       // exact text the user typed
+  institutionNormalized String?       // normalized matching key
+  country               String?       // user-stated country/region (onboarding)
+  onboardingCompletedAt DateTime?     // null ⇒ onboarding not completed/skipped-not-done
   projects    Project[]
   auditLogs   AdminAuditLog[]
   screenProjects ScreenProject[] @relation("UserScreenProjects")

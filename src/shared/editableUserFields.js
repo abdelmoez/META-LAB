@@ -33,6 +33,20 @@ export const USER_THEME_OPTIONS = [
   { value: 'night', label: 'Night' },
 ];
 
+// prompt26 — onboarding option lists (also used by the onboarding UI).
+export const PRIMARY_ROLE_OPTIONS = [
+  'Student', 'Researcher', 'Faculty / PI', 'Librarian / information specialist',
+  'Statistician / methodologist', 'Industry researcher', 'Independent researcher', 'Other',
+];
+export const RESEARCH_FIELD_OPTIONS = [
+  'Health sciences', 'Psychology', 'Education', 'Social sciences', 'Economics / policy',
+  'Engineering', 'Computer science', 'Environmental science', 'Business / management', 'Humanities', 'Other',
+];
+export const MAIN_USE_CASE_OPTIONS = [
+  'Systematic review', 'Meta-analysis', 'Scoping review', 'Literature review', 'Evidence map',
+  'Guideline / policy review', 'Thesis / dissertation', 'Research team collaboration', 'Other',
+];
+
 const ok  = (value) => ({ ok: true, value });
 const bad = (error) => ({ ok: false, error });
 
@@ -104,6 +118,42 @@ export const EDITABLE_USER_FIELDS = [
       return ok(t || null);
     },
   },
+  // ── prompt26 — optional onboarding profile (visible + editable in Ops). All
+  // free-text or single-select; trimmed + length-capped; null clears the field.
+  ...[
+    ['primaryRole', 'Primary role', PRIMARY_ROLE_OPTIONS],
+    ['researchField', 'Research field', RESEARCH_FIELD_OPTIONS],
+    ['mainUseCase', 'Main use case', MAIN_USE_CASE_OPTIONS],
+  ].map(([key, label, options]) => ({
+    key, label, type: 'select',
+    options: [{ value: '', label: '— Unset —' }, ...options.map(o => ({ value: o, label: o }))],
+    editableByAdmin: true, editableByMod: false,
+    validate(v) {
+      if (v == null || v === '') return ok(null);
+      if (typeof v !== 'string') return bad(`${label} must be text`);
+      return ok(v.trim().slice(0, 120) || null);
+    },
+  })),
+  {
+    key: 'institutionOriginal', label: 'Institution', type: 'text', placeholder: 'University / organization',
+    editableByAdmin: true, editableByMod: false,
+    help: 'The institution name the user entered. Editing this does not re-run normalization.',
+    validate(v) {
+      if (v == null) return ok(null);
+      if (typeof v !== 'string') return bad('Institution must be text');
+      return ok(v.trim().slice(0, 200) || null);
+    },
+  },
+  {
+    key: 'country', label: 'Country / region (stated)', type: 'text', placeholder: 'e.g. United States',
+    editableByAdmin: true, editableByMod: false,
+    help: 'The country/region the user stated during onboarding (distinct from the IP-derived ops country above).',
+    validate(v) {
+      if (v == null) return ok(null);
+      if (typeof v !== 'string') return bad('Country must be text');
+      return ok(v.trim().slice(0, 120) || null);
+    },
+  },
   // ── High-impact fields: accepted by the schema for completeness, but kept on
   // their own confirmation-gated controls + endpoints (last-admin protection,
   // never-suspend-an-admin). dedicatedControl → skipped by the generic form/PATCH.
@@ -129,6 +179,10 @@ export const READONLY_USER_FIELDS = [
   { key: 'lastActive',                  label: 'Last active',    kind: 'ago' },
   { key: 'registrationIpCountrySource', label: 'Country source' },
   { key: 'projectCount',                label: 'Projects' },
+  // prompt26 — verification + onboarding status (display only; never editable).
+  { key: 'emailVerifiedAt',             label: 'Email verified', kind: 'date' },
+  { key: 'onboardingCompletedAt',       label: 'Onboarding done', kind: 'date' },
+  { key: 'institutionNormalized',       label: 'Institution (normalized)' },
 ];
 
 /** Denylist — never accepted from a request, never selected back to a client. */
