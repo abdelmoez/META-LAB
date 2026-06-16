@@ -346,6 +346,9 @@ export async function overrideJudgment(req, res) {
     if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
+    // A finalised assessment is locked — overriding must go through reopen first
+    // (mirrors upsertAnswers; without this the finalise lock is defeated).
+    if (a.status === 'complete') return res.status(409).json({ error: 'Assessment is finalised; re-open to edit' });
 
     const { target, domainId, finalJudgment, justification, clear } = req.body || {};
     const wantClear = clear === true || finalJudgment == null || finalJudgment === '';
@@ -360,7 +363,7 @@ export async function overrideJudgment(req, res) {
     }
 
     if (target === 'domain') {
-      if (!QUESTION_DOMAIN['1.1'] || !INSTRUMENT.domains.some(d => d.id === domainId)) {
+      if (!domainId || !INSTRUMENT.domains.some(d => d.id === domainId)) {
         return res.status(400).json({ error: `Unknown domainId: ${domainId}` });
       }
       await prisma.robDomainJudgment.upsert({
@@ -436,6 +439,10 @@ export async function reopenAssessment(req, res) {
     if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
+    // Returning to draft must release the finalise-locked finals on NON-overridden
+    // rows (genuine overrides are preserved) so the stored state matches "draft".
+    await prisma.robDomainJudgment.updateMany({ where: { assessmentId: a.id, overridden: false }, data: { finalJudgment: null } });
+    await prisma.robOverall.updateMany({ where: { assessmentId: a.id, overridden: false }, data: { finalOverall: null } });
     await prisma.robAssessment.update({ where: { id: a.id }, data: { status: 'draft' } });
     await audit(a.projectId, a.id, req.user, 'ROB_REOPEN', { entityType: 'RobAssessment', entityId: a.id });
     return res.json({ assessment: await buildView(a.id) });

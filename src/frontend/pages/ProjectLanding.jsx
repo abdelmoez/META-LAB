@@ -20,6 +20,7 @@ import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { api } from '../api-client/apiClient.js';
 import { screeningApi } from '../screening/api-client/screeningApi.js';
+import { robFlagEnabled } from '../rob/robApi.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import UserMenu from '../components/UserMenu.jsx';
 import NotificationsBell from '../components/NotificationsBell.jsx';
@@ -428,6 +429,11 @@ function buildActions(p, handlers) {
   // prompt18 — screening is an in-project stage, not a separate app. Always offer
   // it; opening it auto-creates the screening workspace if it doesn't exist yet.
   actions.push({ label: 'Screening', icon: 'filter', onClick: () => handlers.openSift(p) });
+  // rob.md — flag-gated Risk-of-Bias entry (owner-only, matching the API's
+  // owner-scoped access). Only present when rob_engine_v2 is enabled.
+  if (handlers.robEnabled && owner) {
+    actions.push({ label: 'Risk of Bias', icon: 'scale', onClick: () => handlers.openRob(p) });
+  }
   if (owner || canEdit) {
     actions.push({ label: 'Rename', icon: 'pencil', onClick: () => handlers.rename(p) });
   }
@@ -1097,6 +1103,9 @@ function SectionLabel({ children }) {
 export default function ProjectLanding() {
   const navigate = useNavigate();
   const { user } = useAuth();
+  // rob.md — gate the per-project "Risk of Bias" action on the public flag.
+  const [robEnabled, setRobEnabled] = useState(false);
+  useEffect(() => { robFlagEnabled().then(setRobEnabled).catch(() => {}); }, []);
   const reduced = usePrefersReducedMotion();
 
   const [projects, setProjects]   = useState([]);
@@ -1327,13 +1336,17 @@ export default function ProjectLanding() {
     // prompt18 — "Screening" opens the project's in-app Screening stage (deep
     // link ?tab=screening); the workspace is auto-created there if missing.
     openSift:  (p) => { if (p && p.id) navigate(`/app/project/${encodeURIComponent(p.id)}?tab=screening`); },
+    // rob.md — flag-gated "Risk of Bias" entry (the action is only built when
+    // robEnabled, so this never appears while rob_engine_v2 is off).
+    openRob:   (p) => { if (p && p.id) navigate(`/rob/${encodeURIComponent(p.id)}`); },
+    robEnabled,
     rename:    (p) => setModal({ type: 'rename', project: p }),
     archive:   (p) => setModal({ type: 'archive', project: p }),
     unarchive: async (p) => { try { await api.projects.unarchive(p.id); await reload(); } catch { setError('Could not unarchive the project.'); } },
     leave:     (p) => setModal({ type: 'leave', project: p }),
     transfer:  (p) => setModal({ type: 'transfer', project: p }),
     del:       (p) => setModal({ type: 'delete', project: p }),
-  }), [navigate, reload, recordRecent]);
+  }), [navigate, reload, recordRecent, robEnabled]);
 
   const closeModal  = () => setModal(null);
   const afterMutation = async () => { setModal(null); await reload(); };

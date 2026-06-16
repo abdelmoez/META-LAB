@@ -186,6 +186,20 @@ describe('/api/rob — full workflow (flag ON)', () => {
     expect(d1.finalJudgment).toBe('high');
   });
 
+  it('a finalised assessment rejects answers AND overrides (409) until re-opened', async () => {
+    if (!up || !adminCookie || !assessmentId) return;
+    const ans = await api(`/rob/assessments/${assessmentId}/answers`, { method: 'PUT', cookie: ownerCookie, body: { answers: [{ questionId: '1.1', response: 'N' }] } });
+    expect(ans.status).toBe(409);
+    const ovr = await api(`/rob/assessments/${assessmentId}/override`, { method: 'POST', cookie: ownerCookie, body: { target: 'domain', domainId: 'D2', finalJudgment: 'high', justification: 'x' } });
+    expect(ovr.status).toBe(409);
+    // re-open clears non-overridden finals and returns to draft
+    const re = await api(`/rob/assessments/${assessmentId}/reopen`, { method: 'POST', cookie: ownerCookie });
+    expect(re.status).toBe(200);
+    expect(re.data.assessment.status).toBe('draft');
+    const d2 = re.data.assessment.domains.find(d => d.domainId === 'D2');
+    expect(d2.finalJudgment).toBeNull(); // non-overridden final cleared on reopen
+  });
+
   it('blocks finalise on an incomplete assessment (400)', async () => {
     if (!up || !adminCookie || !projectId) return;
     const created = await api('/rob/assessments', { method: 'POST', cookie: ownerCookie, body: { projectId, studyId: 'study-002' } });

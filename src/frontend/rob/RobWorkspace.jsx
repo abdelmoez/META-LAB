@@ -92,7 +92,11 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
   const [showGuide, setShowGuide] = useState(false);
   const reduced = usePrefersReducedMotion();
   const saveTimer = useRef(null);
+  const savedTimer = useRef(null);
   const pending = useRef({ answers: {}, meta: {} });
+  const answersRef = useRef({});
+  answersRef.current = answers;        // always-fresh mirror so flush() never reads a stale closure
+  const mounted = useRef(true);
 
   const load = useCallback(async () => {
     setLoading(true); setError('');
@@ -132,6 +136,12 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
     return m;
   }, [view]);
   const resolvedDomain = (domainId) => overriddenByDomain[domainId] || liveProposals[domainId]?.judgment || 'na';
+  const domainComplete = (domainId) => (liveCompleteness.perDomain[domainId]?.missing.length || 0) === 0;
+  // Dot/cell judgement for the rail, summary list and traffic-light plot: a genuine
+  // override always shows; otherwise the proposed judgement is shown ONLY once the
+  // domain is complete, so a half-answered domain never displays a misleading
+  // favourable colour (it shows neutral "na" until its required questions are answered).
+  const dotJudgment = (domainId) => overriddenByDomain[domainId] || (domainComplete(domainId) ? (liveProposals[domainId]?.judgment || 'na') : 'na');
   const finalised = view?.status === 'complete';
 
   // ── Autosave (debounced) ──────────────────────────────────────────────────
@@ -143,30 +153,48 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
     const items = [];
     for (const qid of qids) {
       const domainId = ROB2.domains.find(d => d.questions.some(q => q.id === qid))?.id;
-      const response = batch.answers[qid] !== undefined ? batch.answers[qid] : (currentResponse(domainId, qid) || '');
+      // Meta-only (rationale/evidence) edits must NOT wipe the saved answer: read
+      // the CURRENT response from answersRef (always fresh — never a stale closure);
+      // default to 'NA' only when the question is genuinely unanswered.
+      const response = batch.answers[qid] !== undefined
+        ? batch.answers[qid]
+        : ((answersRef.current[domainId] || {})[qid] || '');
       const item = { questionId: qid, response: response || 'NA' };
       const mm = batch.meta[qid];
       if (mm) { item.rationale = mm.rationale ?? ''; item.evidenceQuote = mm.evidenceQuote ?? ''; }
       items.push(item);
     }
-    setSaveState('saving');
+    if (mounted.current) setSaveState('saving');
     try {
       const res = await robApi.saveAnswers(assessmentId, items);
-      setView(res.assessment);
-      setSaveState('saved');
+      if (mounted.current) {
+        setView(res.assessment);
+        setSaveState('saved');
+        clearTimeout(savedTimer.current);
+        savedTimer.current = setTimeout(() => setSaveState(s => (s === 'saved' ? 'idle' : s)), 1600);
+      }
       onChanged && onChanged();
-      setTimeout(() => setSaveState(s => (s === 'saved' ? 'idle' : s)), 1600);
-    } catch (e) { setSaveState('error'); setError(e.message); }
+    } catch (e) {
+      // Re-queue the un-saved batch (newer edits win) so the next change retries it
+      // instead of silently dropping the failed edits.
+      pending.current.answers = { ...batch.answers, ...pending.current.answers };
+      pending.current.meta = { ...batch.meta, ...pending.current.meta };
+      if (mounted.current) { setSaveState('error'); setError(e.message); }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [assessmentId, onChanged]);
 
-  function currentResponse(domainId, qid) {
-    return (answers[domainId] || {})[qid] || '';
-  }
   function queueSave() {
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(flush, 450);
   }
+  // On unmount: stop timers and fire a best-effort final flush so the last edits
+  // made within the debounce window are persisted (not silently dropped).
+  useEffect(() => () => {
+    clearTimeout(saveTimer.current); clearTimeout(savedTimer.current);
+    mounted.current = false;
+    flush();
+  }, [flush]);
   function setAnswer(domainId, qid, response) {
     setAnswers(prev => ({ ...prev, [domainId]: { ...(prev[domainId] || {}), [qid]: response } }));
     pending.current.answers[qid] = response;
@@ -183,6 +211,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
     function onKey(e) {
       const tag = (e.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (override) return; // the override modal owns the keyboard while open
       if (active === 'summary') {
         if (e.key === '[' || e.key === 'p') { setActive('D5'); e.preventDefault(); }
         if (e.key === '?') { setShowGuide(g => !g); e.preventDefault(); }
@@ -192,7 +221,10 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
       const reachable = ROB2.domains[di].questions.filter(q => isReachable(q, answers[active] || {}));
       const fi = reachable.findIndex(q => q.id === focusedQ);
       if (e.key >= '1' && e.key <= '5' && focusedQ) {
-        setAnswer(active, focusedQ, KEY_TO_RESPONSE[e.key]); e.preventDefault();
+        // Only answer when the focused question actually belongs to (and is reachable
+        // in) the active domain — guards against a stale focusedQ after a domain switch.
+        if (reachable.some(q => q.id === focusedQ)) setAnswer(active, focusedQ, KEY_TO_RESPONSE[e.key]);
+        e.preventDefault();
       } else if (e.key === 'n') {
         const next = reachable[Math.min(reachable.length - 1, (fi < 0 ? 0 : fi + 1))]; if (next) setFocusedQ(next.id); e.preventDefault();
       } else if (e.key === 'p') {
@@ -210,7 +242,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, focusedQ, answers, finalised]);
+  }, [active, focusedQ, answers, finalised, override]);
 
   async function doOverride({ finalJudgment, justification, clear }) {
     try {
@@ -232,11 +264,14 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
   async function exportAs(format) {
     try {
       const res = await robApi.exportAssessment(assessmentId, format);
+      if (res?.content == null) { setError('Export returned no content'); return; }
       const content = typeof res.content === 'string' ? res.content : JSON.stringify(res.content, null, 2);
       const blob = new Blob([content], { type: res.mime || 'text/plain' });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a'); a.href = url; a.download = res.filename || `rob2.${format}`;
-      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+      try {
+        const a = document.createElement('a'); a.href = url; a.download = res.filename || `rob2.${format}`;
+        document.body.appendChild(a); a.click(); a.remove();
+      } finally { URL.revokeObjectURL(url); }
     } catch (e) { setError(e.message); }
   }
 
@@ -244,7 +279,9 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
   if (error && !view) return <div style={shell}><div style={{ padding: 40 }}><ErrorBox msg={error} /><button onClick={onClose} style={ghostBtn}>Back</button></div></div>;
   if (!view) return null;
 
-  const single = { domains: ROB2.domains.map(d => ({ id: d.id, shortLabel: d.shortLabel })), rows: [{ id: view.id, label: view.resultLabel || view.studyId, cells: ROB2.domains.map(d => ({ domainId: d.id, judgment: resolvedDomain(d.id) })), overall: liveOverall.judgment }] };
+  const allComplete = liveCompleteness.overall.complete;
+  const summaryOverall = (allComplete || view.overall.overridden) ? (finalised ? view.overall.resolvedOverall : liveOverall.judgment) : 'na';
+  const single = { domains: ROB2.domains.map(d => ({ id: d.id, shortLabel: d.shortLabel })), rows: [{ id: view.id, label: view.resultLabel || view.studyId, cells: ROB2.domains.map(d => ({ domainId: d.id, judgment: dotJudgment(d.id) })), overall: summaryOverall }] };
 
   return (
     <div style={shell}>
@@ -260,7 +297,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
         </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Overall</span>
-          <JudgmentPill judgment={view.overall.resolvedOverall} size="md" provisional={!liveCompleteness.overall.complete && !finalised} />
+          <JudgmentPill judgment={finalised ? view.overall.resolvedOverall : liveOverall.judgment} size="md" provisional={!liveCompleteness.overall.complete && !finalised} />
         </div>
         <span aria-live="polite" style={{ fontSize: 11, fontFamily: MONO, color: saveState === 'error' ? C.red : C.muted, minWidth: 64 }}>
           {finalised ? 'finalised' : saveState === 'saving' ? 'saving…' : saveState === 'saved' ? '✓ saved' : saveState === 'error' ? 'save failed' : 'autosaves'}
@@ -277,7 +314,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
             const on = active === d.id;
             return (
               <button key={d.id} onClick={() => { setActive(d.id); setFocusedQ(null); }} aria-current={on} style={railItem(on)}>
-                <TrafficDot judgment={resolvedDomain(d.id)} />
+                <TrafficDot judgment={dotJudgment(d.id)} />
                 <span style={{ flex: 1, minWidth: 0 }}>
                   <span style={{ display: 'block', fontSize: 12.5, fontWeight: on ? 700 : 600, color: on ? C.txt : C.txt2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.id} · {d.shortLabel}</span>
                   <span style={{ display: 'block', fontSize: 10, fontFamily: MONO, color: comp.missing.length ? C.yel : C.grn, marginTop: 1 }}>{comp.missing.length ? `${comp.answered}/${comp.required}` : 'complete'}</span>
@@ -306,8 +343,8 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
         {/* ── Assessment pane / Summary ─────────────────────────────────── */}
         <main style={{ padding: '20px 24px', minHeight: 420 }}>
           {active === 'summary' ? (
-            <SummaryStep view={view} live={{ proposals: liveProposals, overall: liveOverall, completeness: liveCompleteness, resolvedDomain }}
-              single={single} finalised={finalised} onFinalise={doFinalise} onReopen={doReopen} onExport={exportAs}
+            <SummaryStep view={view} live={{ proposals: liveProposals, overall: liveOverall, completeness: liveCompleteness, resolvedDomain: dotJudgment }}
+              saving={saveState === 'saving'} single={single} finalised={finalised} onFinalise={doFinalise} onReopen={doReopen} onExport={exportAs}
               onOverrideOverall={() => setOverride({ target: 'overall', current: view.overall.resolvedOverall })} onJump={setActive} />
           ) : (
             <DomainPane
@@ -419,7 +456,7 @@ function DomainPane({ domain, answers, meta, proposal, resolved, overrideInfo, f
 }
 
 // ── Summary step ──────────────────────────────────────────────────────────────
-function SummaryStep({ view, live, single, finalised, onFinalise, onReopen, onExport, onOverrideOverall, onJump }) {
+function SummaryStep({ view, live, saving, single, finalised, onFinalise, onReopen, onExport, onOverrideOverall, onJump }) {
   const complete = live.completeness.overall.complete;
   return (
     <div>
@@ -469,7 +506,7 @@ function SummaryStep({ view, live, single, finalised, onFinalise, onReopen, onEx
         {finalised ? (
           <button onClick={onReopen} style={ghostBtn}><Icon name="refresh" size={13} /> Re-open</button>
         ) : (
-          <button onClick={onFinalise} disabled={!complete} style={primaryBtn(!complete)}><Icon name="check" size={14} /> Finalise</button>
+          <button onClick={onFinalise} disabled={!complete || saving} title={saving ? 'Saving…' : (!complete ? 'Answer all reachable questions first' : 'Finalise')} style={primaryBtn(!complete || saving)}><Icon name="check" size={14} /> {saving ? 'Saving…' : 'Finalise'}</button>
         )}
         <button onClick={() => onExport('csv')} style={ghostBtn}><Icon name="download" size={13} /> CSV</button>
         <button onClick={() => onExport('json')} style={ghostBtn}><Icon name="download" size={13} /> JSON</button>
@@ -484,6 +521,13 @@ function OverrideModal({ info, onCancel, onSubmit }) {
   const [judgment, setJudgment] = useState(info.current && info.current !== 'na' ? info.current : 'some');
   const [justification, setJustification] = useState('');
   const valid = justification.trim().length > 0;
+  // Escape closes; focus returns to the element that opened the modal on unmount.
+  useEffect(() => {
+    const opener = (typeof document !== 'undefined') ? document.activeElement : null;
+    function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); onCancel(); } }
+    document.addEventListener('keydown', onKey, true);
+    return () => { document.removeEventListener('keydown', onKey, true); try { opener && opener.focus && opener.focus(); } catch { /* ignore */ } };
+  }, [onCancel]);
   return (
     <div role="dialog" aria-modal="true" aria-label="Override judgement" style={{ position: 'fixed', inset: 0, background: alpha('#000', 0.45), display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }} onClick={onCancel}>
       <div onClick={e => e.stopPropagation()} style={{ background: C.card, borderRadius: 14, border: `1px solid ${C.brd}`, padding: 22, width: 460, maxWidth: '100%', boxShadow: C.shadow }}>

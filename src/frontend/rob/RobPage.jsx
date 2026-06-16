@@ -121,7 +121,7 @@ function ProjectRob({ projectId }) {
   if (openId) {
     return <RobWorkspace assessmentId={openId} onClose={() => { setOpenId(null); reload(); }} onChanged={reload} />;
   }
-  if (error) return <ErrorBox msg={error} />;
+  if (error && !project) return <ErrorBox msg={error} onRetry={reload} />;
   if (!project) return <Center>Loading…</Center>;
 
   const studies = Array.isArray(project.studies) ? project.studies : [];
@@ -130,6 +130,7 @@ function ProjectRob({ projectId }) {
 
   return (
     <div>
+      {error && <div style={{ marginBottom: 14 }}><ErrorBox msg={error} onRetry={reload} /></div>}
       <h2 style={{ fontSize: 18, fontWeight: 800, margin: '0 0 4px' }}>{project.name}</h2>
       <p style={{ fontSize: 13, color: C.txt2, margin: '0 0 18px' }}>{assessments.length} risk-of-bias assessment{assessments.length === 1 ? '' : 's'} · RoB 2 (effect of assignment)</p>
 
@@ -198,8 +199,13 @@ function CreateForm({ onCancel, onCreate }) {
   );
 }
 
-function ErrorBox({ msg }) {
-  return <div style={{ padding: '10px 14px', background: alpha(C.red, '12'), border: `1px solid ${alpha(C.red, '40')}`, borderRadius: 8, color: C.red, fontSize: 13 }}>{msg}</div>;
+function ErrorBox({ msg, onRetry }) {
+  return (
+    <div style={{ padding: '12px 14px', background: alpha(C.red, '12'), border: `1px solid ${alpha(C.red, '40')}`, borderRadius: 8, color: C.red, fontSize: 13, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+      <span>{msg}</span>
+      {onRetry && <button onClick={onRetry} style={{ ...ghost, color: C.txt2 }}><Icon name="refresh" size={13} /> Retry</button>}
+    </div>
+  );
 }
 
 const card = { background: C.card, border: `1px solid ${C.brd}`, borderRadius: 12, padding: '14px 16px' };
