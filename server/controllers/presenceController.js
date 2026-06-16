@@ -47,6 +47,27 @@ async function resolveUser(reqUser) {
   return { id: reqUser.id, name, email };
 }
 
+// prompt25 follow-up — drop a user's cached name so a rename shows immediately in
+// presence (called from profileController after a name change), instead of waiting
+// out the ≤60s TTL.
+export function invalidateUserName(userId) { nameCache.delete(userId); }
+
+// prompt25 follow-up — GLOBAL app-wide heartbeat (requireAuth only, NOT project-
+// scoped). Records the caller in the single global presence room with a coarse,
+// route-derived location, so a user who has no project open (dashboard, profile,
+// ops) still counts as "online now" in the Ops console. Never broadcasts SSE.
+export async function globalPing(req, res) {
+  try {
+    const location = clip(req.body?.location, LOCATION_MAX);
+    const user = await resolveUser(req.user);
+    P.heartbeat(P.GLOBAL_ROOM, user, location);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[presence] globalPing:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 export async function heartbeat(req, res) {
   try {
     const access = await gate(req, res); if (!access) return;

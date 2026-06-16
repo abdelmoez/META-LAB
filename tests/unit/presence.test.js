@@ -121,4 +121,15 @@ describe('prompt25 — global online snapshot for Ops (Tasks 1/2)', () => {
     expect(P.globalOnlineCount(1000 + P.ACTIVE_MS - 1)).toBe(1);
     expect(P.globalOnlineCount(1000 + P.ACTIVE_MS + 1)).toBe(0);
   });
+
+  it('global room adds dashboard-only users; a project location still wins', () => {
+    P.heartbeat('p1', A, 'PICO', 1000);                 // A inside a project
+    P.heartbeat(P.GLOBAL_ROOM, A, 'Dashboard', 2000);   // A also pings global (more recent)
+    P.heartbeat(P.GLOBAL_ROOM, B, 'Dashboard', 1000);   // B only on the dashboard
+    const snap = P.globalOnlineSnapshot(2000);
+    expect(snap.size).toBe(2);
+    expect(snap.get('u-a').location).toBe('PICO');       // specific project location wins
+    expect(snap.get('u-b').location).toBe('Dashboard');  // dashboard-only user IS online
+    expect(snap.get('u-b').projectId).toBe(null);
+  });
 });

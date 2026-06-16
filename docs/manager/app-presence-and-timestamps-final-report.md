@@ -218,3 +218,23 @@ dynamic owner name, integrated step nav, keyboard shortcuts, project import).
 6. **Remove the denormalised `Project.ownerName` column** once all downstream
    consumers (exports, legacy clients) have confirmed they use the live `_owner`
    path. Requires a migration with a safe-window deployment.
+
+---
+
+## Follow-up patch — limitations resolved (v3.7.1)
+
+Shipped right after v3.7.0; resolves recommended next steps 2 (limitation 2) and
+the rename-lag (limitation 6).
+
+| Item | Resolution |
+|------|------------|
+| Limitation 2 — dashboard-only users not "online" | **App-wide global presence heartbeat.** `presence.js` gained `GLOBAL_ROOM`; `globalOnlineSnapshot()` merges it as a fallback (a project room's specific location still wins, but dashboard-only users are added with a route-derived location like "Dashboard"). New `POST /api/presence/ping` (`requireAuth`, not project-gated) → `presenceController.globalPing`. Frontend `useGlobalPresence()` is mounted once in `App.jsx` as `<GlobalPresence/>` and pings every 30 s with a location derived from the route, paused while the tab is hidden. Every signed-in user now shows online with a location. |
+| Rename lag (≤60 s name-cache TTL) | `presenceController` exports `invalidateUserName(userId)`; `profileController.updateProfile` calls it whenever the name changes, so a rename shows in presence on the next heartbeat. |
+
+**Still deferred (architectural):** single-process in-memory presence (multi-instance
+needs a Redis pub/sub broker, recommended step 1); the 5-min `lastActive` throttle
+(the new global heartbeat makes "online now" accurate regardless — this now only
+affects the coarse 24 h figure).
+
+**Verification:** `vite build` green; `tests/unit/presence.test.js` 15 pass (+1
+global-room fallback test). Version `3.7.0` → `3.7.1`.

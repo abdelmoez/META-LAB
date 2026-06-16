@@ -1,6 +1,7 @@
 import { lazy, Suspense } from 'react';
-import { Routes, Route, Navigate, useNavigate } from 'react-router-dom';
+import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-dom';
 import { AuthProvider, useAuth } from './frontend/context/AuthContext.jsx';
+import { useGlobalPresence } from './frontend/hooks/useGlobalPresence.js';
 import { ThemeProvider } from './frontend/theme/ThemeContext.jsx';
 import ProtectedRoute from './frontend/components/ProtectedRoute.jsx';
 import PublicRoute    from './frontend/components/PublicRoute.jsx';
@@ -92,10 +93,21 @@ function RegisterRoute() {
 // It is NOT linked from any public page, navigation, footer, or profile.
 // Access is enforced by AdminRoute (frontend) + requireAdmin middleware (backend).
 
+// prompt25 follow-up — app-wide "online now" heartbeat. Renders nothing; pings
+// /api/presence/ping with a route-derived location whenever a user is signed in,
+// so users not inside a project still show online in the Ops console.
+function GlobalPresence() {
+  const { user } = useAuth();
+  const location = useLocation();
+  useGlobalPresence(user, location.pathname);
+  return null;
+}
+
 export default function App() {
   return (
     <ThemeProvider>
     <AuthProvider>
+      <GlobalPresence />
       <Suspense fallback={<RouteFallback />}>
       <Routes>
         {/* Public landing page */}

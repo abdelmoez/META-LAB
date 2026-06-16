@@ -23,6 +23,7 @@ import metaRouter        from './routes/meta.js';
 import validationRouter  from './routes/validation.js';
 import importExportRouter from './routes/importExport.js';
 import profileRouter     from './routes/profile.js';
+import presenceRouter    from './routes/presence.js';
 import contactRouter     from './routes/contact.js';
 import settingsRouter    from './routes/settings.js';
 import adminRouter       from './routes/admin.js';
@@ -113,6 +114,7 @@ app.use('/api/settings', settingsRouter);
 
 // ── Protected route mounting ───────────────────────────────────────────────────
 app.use('/api/profile',              profileRouter);
+app.use('/api/presence',             presenceRouter);
 app.use('/api/contact',              contactLimiter, contactRouter);
 app.use('/api/projects',             projectsRouter);
 app.use('/api/projects/:id/studies', studiesRouter);

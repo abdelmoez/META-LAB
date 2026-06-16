@@ -6,6 +6,7 @@
 
 import { prisma } from '../db/client.js';
 import { hashPassword, verifyPassword } from '../auth/password.js';
+import { invalidateUserName } from './presenceController.js';
 
 /**
  * GET /api/profile
@@ -84,6 +85,9 @@ export async function updateProfile(req, res) {
       },
       select: { id: true, email: true, name: true, createdAt: true, lastActive: true, themePreference: true, dashboardPreferences: true, screeningShortcuts: true },
     });
+    // prompt25 follow-up — a rename must show in presence immediately, not after
+    // the ≤60s name-cache TTL.
+    if (name !== undefined) invalidateUserName(req.user.id);
     res.json({ user });
   } catch (err) {
     console.error('[profile] updateProfile error:', err.message);

@@ -19,6 +19,14 @@
 export const ACTIVE_MS = 75_000;    // present if heartbeat within 75s
 export const LOCK_TTL_MS = 75_000;  // a lock auto-expires 75s after its last heartbeat
 
+// prompt25 follow-up — a SINGLE app-wide presence room, fed by a global heartbeat
+// from the app shell on EVERY authenticated page. This is what makes a user who is
+// only on the dashboard / profile / ops (no project open) still count as "online
+// now" in the Ops console. It is NOT a real project, never broadcasts over SSE, and
+// is treated as a fallback location by globalOnlineSnapshot (a project room's
+// specific location always wins).
+export const GLOBAL_ROOM = '__global__';
+
 const rooms = new Map(); // projectId -> { users: Map<userId,entry>, locks: Map<field,lock> }
 
 function room(projectId) {
@@ -132,7 +140,9 @@ export function releaseLock(projectId, userId, field, now = Date.now()) {
  */
 export function globalOnlineSnapshot(now = Date.now()) {
   const byUser = new Map();
+  // Pass 1 — real PROJECT rooms (specific location wins; most-recent beat).
   for (const [projectId, r] of rooms) {
+    if (projectId === GLOBAL_ROOM) continue;
     prune(r, now);
     for (const u of r.users.values()) {
       const prev = byUser.get(u.userId);
@@ -147,6 +157,23 @@ export function globalOnlineSnapshot(now = Date.now()) {
           prev.lastBeat = u.lastBeat; prev.location = u.location || null;
           prev.projectId = projectId; prev.name = u.name;
         }
+      }
+    }
+  }
+  // Pass 2 — the app-wide GLOBAL room: adds users who are online but NOT inside a
+  // project (dashboard/profile/ops), and refreshes the live name for everyone.
+  const g = rooms.get(GLOBAL_ROOM);
+  if (g) {
+    prune(g, now);
+    for (const u of g.users.values()) {
+      const prev = byUser.get(u.userId);
+      if (!prev) {
+        byUser.set(u.userId, {
+          userId: u.userId, name: u.name, location: u.location || null,
+          lastBeat: u.lastBeat, projectId: null, projectIds: [],
+        });
+      } else if (u.name) {
+        prev.name = u.name; // keep the specific project location, refresh the name
       }
     }
   }
