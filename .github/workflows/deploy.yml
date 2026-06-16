@@ -2,12 +2,46 @@ name: Deploy to VPS
 on:
   push:
     branches: [ main ]
+  pull_request:
+    branches: [ main ]
   workflow_dispatch: {}
 concurrency:
   group: production-deploy
   cancel-in-progress: false
 jobs:
+  # ── Test gate (roadmap 0.1) ────────────────────────────────────────────────
+  # Runs the hermetic, server-free suite (research-engine statistics golden
+  # tests + all pure unit/screening-unit tests) on every push and PR. The deploy
+  # job `needs:` this, so a failing statistics/unit test provably blocks a
+  # production deploy. Integration tests that require a live API on :3001 are NOT
+  # part of this gate (they need a running server + seeded DB); see roadmap
+  # Phase-0 analysis for the recommended follow-up to run them in CI too.
+  test:
+    name: Test gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install root dependencies
+        run: npm ci
+      - name: Install server dependencies
+        run: npm ci
+        working-directory: server
+      - name: Generate Prisma client
+        run: npx prisma generate
+        working-directory: server
+        env:
+          DATABASE_URL: "file:./dev.db"
+      - name: Run hermetic test gate
+        run: npm run test:ci
+
+  # ── Deploy (only on push to main / manual dispatch; never on PRs) ──────────
   deploy:
+    name: Deploy over SSH
+    needs: test
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Deploy over SSH

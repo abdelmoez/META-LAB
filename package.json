@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
-    "test:integration": "vitest run tests/integration"
+    "test:integration": "vitest run tests/integration",
+    "test:ci": "vitest run tests/unit tests/screening/unit"
   },
   "dependencies": {
     "framer-motion": "^12.40.0",

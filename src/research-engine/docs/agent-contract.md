@@ -32,7 +32,7 @@ All exports are also available from the barrel:
 | Export | Signature | Returns |
 |---|---|---|
 | `runMeta` | `(studies: Study[], method?: "fixed"\|"random") → MetaResult\|null` | Full pooled meta-analysis result (see shape below); null if < 2 valid studies |
-| `eggersTest` | `(studies: Study[]) → EggerResult\|null` | Weighted regression test for funnel asymmetry; null if k < 3 |
+| `eggersTest` | `(studies: Study[]) → EggerResult\|null` | Canonical UNWEIGHTED OLS regression test for funnel asymmetry (Egger 1997 / metafor::regtest(model="lm")); null if k < 3 |
 | `leaveOneOut` | `(studies: Study[], method?: string) → LOOEntry[]` | Array of per-study LOO results; empty if k < 3 |
 | `trimFill` | `(studies: Study[], method?: string) → TrimFillResult\|null` | Trim-and-fill result with imputed studies and adjusted pooled estimate |
 | `influenceDiagnostics` | `(studies: Study[], method?: string) → InfluenceEntry[]` | Per-study influence metrics (DFFIT, τ²-drop, I²-drop, influential flag) |

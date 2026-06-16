@@ -369,3 +369,48 @@ correction. Negative, non-integer and missing counts remain hard errors.
 | events_pct | % = events / n × 100 | — |
 | ratio_log | lnES = ln(est); SE = (ln(hi)-ln(lo))/(2×1.96) | — |
 | unit_scale | converted = value × factor | — |
+
+---
+
+## 11. Golden-test validation method & tolerances (roadmap 0.1)
+
+The statistics engine is locked by golden tests under `tests/unit/statistics/**`,
+backed by canonical datasets in `tests/fixtures/meta/canonical.js`. Because R is
+not available inside CI, two kinds of **external reference** are used (neither is
+read back from the engine under test):
+
+1. **Hand-computed fixtures** (`HC2`, `HC3`) — tiny datasets whose every pooled
+   quantity is worked out by hand from the formulae in §1–§3 (the arithmetic is
+   written out in the fixture comments). These give an absolute, auditable anchor
+   that is independent of the engine's code path.
+2. **metafor-pinned fixture** (`D14`, 14 Cohen's d studies) — pinned literals from
+   R `metafor` 4.x: `rma(method="DL")` pooled = **0.6137**;
+   `regtest(model="lm")` intercept **1.86** / t **1.01** / p **0.334**;
+   `trimfill` RE **k0=0** (no shift), FE **k0=4** / adjusted **0.2422** (side left).
+3. **Independent reimplementation cross-checks** — for derived quantities (fixed/
+   random pooled ES & SE, Q, I², τ²) the test recomputes the published formula
+   inline from raw inputs and asserts the engine matches it (two independent
+   implementations agreeing).
+
+| Quantity | Reference | Tolerance |
+|---|---|---|
+| Fixed/random pooled ES, pooled SE | hand-computed (HC2/HC3) | abs `1e-9` (`toBeCloseTo(.,9)`) |
+| Q, I², τ², τ | hand-computed (HC2/HC3) | abs `1e-9` |
+| Engine vs. independent reimplementation (ES, SE, Q, τ²) | inline reference | abs `1e-12` |
+| HKSJ SE / t / df | hand-computed (HC3) | abs `1e-9` / exact df |
+| z statistic | hand-computed (HC3) | abs `1e-9` |
+| Two-sided p (z-test) | Φ from §6 | abs `5e-4` (`toBeCloseTo(.,3)`) |
+| DL pooled (D14) | metafor `rma(DL)` | abs `5e-4` (`toBeCloseTo(.,3)`) |
+| Egger intercept / t | metafor `regtest(lm)` | abs `0.05` (`toBeCloseTo(.,1)`) |
+| Egger p | metafor `regtest(lm)` | abs `5e-3` (`toBeCloseTo(.,2)`) |
+| Trim-and-fill k0 | metafor `trimfill` | exact integer |
+| Trim-and-fill adjusted ES | metafor `trimfill` | abs `5e-4` (`toBeCloseTo(.,3)`) |
+
+**Guard test.** `tests/unit/statistics/contract-coverage.test.js` fails if any
+export of `statistics/meta-analysis.js` or `statistics/math-helpers.js` is missing
+from `agent-contract.md` — keeping the binding contract in sync with the code.
+
+**CI deploy gate.** `.github/workflows/deploy.yml` runs `npm run test:ci` (this
+golden suite + all pure units) as a `test` job that the `deploy` job `needs:`; a
+failing statistics test provably blocks the production deploy. The
+Egger/trim-fill side-rule caveat from §2 still applies (near-symmetric funnels).

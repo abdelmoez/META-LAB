@@ -17,6 +17,14 @@ import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
 
 let storage;           // window.storage set by the module
 let subscribeToSaveStatus;
+let flushStorage;      // forces the debounced save to run immediately
+
+// window.storage.set() debounces the actual save by 800ms (see serverStorage.js).
+// These tests assert on the side-effects of the save, so they must force the
+// pending debounce to flush before asserting. flushStorage() (exported for the
+// pre-logout flush path) cancels the timer and runs the save synchronously.
+// Previously these tests `await set()` and asserted immediately — before the
+// debounce fired — which is why the 6 set()/status tests were drifting red.
 
 // The module uses `window.storage = { ... }` at the top level.
 // We need window to exist in the Node environment before the import runs.
@@ -31,6 +39,7 @@ beforeAll(async () => {
   // Dynamic import so the stub is in place when the module executes
   const mod = await import('../../src/frontend/storage/serverStorage.js');
   subscribeToSaveStatus = mod.subscribeToSaveStatus;
+  flushStorage = mod.flushStorage;
   storage = win.storage;
 });
 
@@ -138,6 +147,7 @@ describe('window.storage.set', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await storage.set('meta:projects', JSON.stringify(projects));
+    await flushStorage();
 
     // Should have been called at least twice — once per project autosave
     const autosaveCalls = fetchMock.mock.calls.filter(
@@ -170,6 +180,7 @@ describe('window.storage.set', () => {
     vi.stubGlobal('fetch', fetchMock);
 
     await storage.set('meta:projects', JSON.stringify([{ id: 'x1', name: 'X1', studies: [] }]));
+    await flushStorage();
 
     const deleteCalls = fetchMock.mock.calls.filter(
       ([url, opts]) => typeof url === 'string' && url.includes('/api/projects/x2') && opts?.method === 'DELETE',
@@ -184,6 +195,7 @@ describe('window.storage.set', () => {
     vi.stubGlobal('fetch', vi.fn());
 
     await storage.set('meta:projects', 'not-valid-json{{{');
+    await flushStorage();
 
     unsub();
 
@@ -202,6 +214,7 @@ describe('window.storage.set', () => {
 
     // JSON is valid but not an array
     await storage.set('meta:projects', JSON.stringify({ id: 'p1' }));
+    await flushStorage();
 
     unsub();
 
@@ -216,6 +229,7 @@ describe('window.storage.set', () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({ ok: true })));
 
     await storage.set('meta:projects', JSON.stringify([{ id: 'q1', name: 'QA', studies: [] }]));
+    await flushStorage();
 
     unsub();
 
@@ -245,6 +259,7 @@ describe('subscribeToSaveStatus', () => {
     // Trigger one save so 'saving' is emitted
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse({ ok: true })));
     await storage.set('meta:projects', JSON.stringify([{ id: 'r1', name: 'R1', studies: [] }]));
+    await flushStorage();
 
     const countAfterFirst = statuses.length;
     expect(countAfterFirst).toBeGreaterThanOrEqual(2); // at least 'saving' + 'saved'
@@ -253,6 +268,7 @@ describe('subscribeToSaveStatus', () => {
 
     // Trigger another save
     await storage.set('meta:projects', JSON.stringify([{ id: 'r1', name: 'R1', studies: [] }]));
+    await flushStorage();
 
     // No new statuses should have been added
     expect(statuses.length).toBe(countAfterFirst);
