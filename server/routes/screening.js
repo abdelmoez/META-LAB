@@ -14,6 +14,7 @@ import * as RV from '../controllers/screeningReviewController.js';
 import * as CH from '../controllers/screeningChatController.js';
 import * as OV from '../controllers/screeningOverviewController.js';
 import * as PDF from '../controllers/screeningPdfController.js';
+import * as OA from '../controllers/screeningOaController.js';
 import * as PR from '../controllers/presenceController.js';
 
 const r = Router();
@@ -112,6 +113,10 @@ r.delete('/projects/:pid/records/:rid/pdf/:aid',         PDF.deletePdf);
 // Import / Export
 r.post('/projects/:pid/import',          S.importRecords);
 r.get('/projects/:pid/export',           S.exportRecords);
+
+// Open-access PDF retrieval + uploaded-PDF matching (roadmap 1.4)
+r.post('/projects/:pid/oa-retrieve',     OA.oaRetrieve);   // flag-gated (autoPdfRetrieval, default OFF)
+r.post('/projects/:pid/match-pdfs',      OA.matchPdfs);    // suggestion-only, no side effects
 
 // Decisions
 r.post('/projects/:pid/records/:rid/decision', S.saveDecision);

@@ -1,0 +1,28 @@
+FN Clarivate Analytics Web of Science
+VR 1.0
+PT J
+AU Smith, J
+   Jones, A
+AF Smith, John Q.
+   Jones, Alice B.
+TI Machine learning for systematic reviews
+   in clinical medicine
+SO JOURNAL OF EVIDENCE SYNTHESIS
+DE machine learning; screening
+   automation
+PY 2021
+DI 10.1234/jes.2021.001
+PM 99887766
+AB We present a method.
+   It works well.
+ER
+
+PT J
+AU Brown, K
+TI A second paper without keywords
+SO MED INFORMATICS
+PY 2018
+DI 10.5555/medinf.2018.42
+ER
+
+EF

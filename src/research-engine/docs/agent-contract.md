@@ -163,10 +163,27 @@ All exports are also available from the barrel:
 | `parseNBIB` | `(text: string) → CiteRecord[]` | Array of records parsed from PubMed NBIB / MEDLINE format |
 | `parseBibTeX` | `(text: string) → CiteRecord[]` | Array of records parsed from BibTeX format |
 | `parseEndNoteXML` | `(text: string) → CiteRecord[]` | Array of records parsed from EndNote XML; requires DOM |
-| `detectAndParse` | `(text: string, filename?: string) → { records: CiteRecord[], format: string }` | Auto-detect format and parse; `format` is "RIS"\|"BibTeX"\|"PubMed nbib"\|"EndNote XML"\|"MEDLINE"\|"unknown" |
+| `parseCSV` | `(text: string, delim?: string) → CiteRecord[]` | Delimited table (comma/tab/semicolon auto-detected); header maps to known fields; attaches `url`/`keywords` when present (roadmap 1.4) |
+| `parseTXT` | `(text: string) → CiteRecord[]` | Delimited-table TXT if a header is recognised, else one record per line (title) (roadmap 1.4) |
+| `parseCIW` | `(text: string) → CiteRecord[]` | Web of Science / Clarivate tagged export; PT…ER blocks, AF-preferred authors, keyword collection (roadmap 1.4) |
+| `detectAndParse` | `(text: string, filename?: string) → { records: CiteRecord[], format: string }` | Auto-detect format and parse; `format` is "RIS"\|"BibTeX"\|"PubMed nbib"\|"EndNote XML"\|"CIW (Web of Science)"\|"CSV"\|"TXT"\|"MEDLINE"\|"unknown" |
 | `dedupeRecords` | `(existing: CiteRecord[], incoming: CiteRecord[]) → { merged: CiteRecord[], dupCount: number, added: number }` | Merge incoming into existing, tagging duplicates by DOI, PMID, or normalised title+year |
 
 ---
+
+## screening/pdfMatching.js (roadmap 1.4)
+
+| Export | Signature | Returns |
+|---|---|---|
+| `extractIdentifiersFromFilename` | `(filename: string) → { doi, pmid, year, titleHint }` | Pull DOI/PMID/year/title hints from a PDF filename (incl. "/"→"_" DOI recovery) |
+| `normalizeDoi` | `(doi: string) → string` | Lower-case, strip URL prefix + trailing punctuation |
+| `classifyMatch` | `(confidence: number) → "auto"\|"review"\|"unmatched"` | Band a confidence (≥0.90 auto, ≥0.70 review) |
+| `matchPdfToRecords` | `(pdf, records) → Array<{recordId, confidence, matchedBy, disposition}>` | Ranked candidate matches (DOI/PMID/title[+year]) |
+| `bestPdfMatch` | `(pdf, records) → {recordId, confidence, matchedBy, disposition, candidates}\|null` | Top match (demotes near-tie title matches to review); null below the review floor |
+| `AUTO_ATTACH_THRESHOLD` / `REVIEW_THRESHOLD` | `number` | 0.90 / 0.70 |
+
+Network OA resolution + attachment live in the BACKEND (`server/services/oaPdfResolver.js`,
+`server/controllers/screeningOaController.js`) — never in the engine.
 
 ## screening/agreement.js (roadmap 1.3)
 

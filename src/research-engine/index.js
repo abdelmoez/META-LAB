@@ -55,6 +55,9 @@ export {
   parseNBIB,
   parseBibTeX,
   parseEndNoteXML,
+  parseCSV,
+  parseTXT,
+  parseCIW,
   detectAndParse,
   dedupeRecords,
 } from './import-export/parsers.js';
@@ -67,6 +70,17 @@ export {
   findDuplicateGroups,
   findDuplicateGroupsScored,
 } from './screening/deduplication.js';
+
+// ── Screening: PDF↔record matching (engine for roadmap 1.4) ──────────────────
+export {
+  extractIdentifiersFromFilename,
+  normalizeDoi,
+  classifyMatch,
+  matchPdfToRecords,
+  bestPdfMatch,
+  AUTO_ATTACH_THRESHOLD,
+  REVIEW_THRESHOLD,
+} from './screening/pdfMatching.js';
 
 // ── Screening: inter-rater agreement + reproducible sampling (roadmap 1.3) ───
 export {

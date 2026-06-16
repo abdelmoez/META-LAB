@@ -1,0 +1,4 @@
+Title,Authors,Year,Journal,DOI,PMID,Abstract,Keywords,URL
+"Effects of X on Y outcomes","Smith, J; Jones, A",2020,Journal of Things,10.1000/abc123,12345678,"We studied X, Y, and Z.","hypertension; cohort",https://example.org/a
+"A, B, and C: a comparative study","Brown, K",2019,Medical Journal,10.1000/def456,,Second abstract here.,,
+Minimal title only row,,,,,,,,

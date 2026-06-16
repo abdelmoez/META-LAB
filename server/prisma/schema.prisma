@@ -509,6 +509,19 @@ model ScreenPdfAttachment {
   mimeType   String       @default("application/pdf")
   uploadedBy String
   createdAt  DateTime     @default(now())
+  // roadmap 1.4 — provenance + auto-acquisition metadata. All ADDITIVE + nullable
+  // (or defaulted) so `prisma db push` stays safe and the existing PDF viewer is
+  // unaffected. source: manual_upload | oa_unpaywall | oa_openalex | oa_crossref
+  // | uploaded_matched. oaStatus mirrors OA_STATUS. matchedBy: doi|pmid|title|
+  // title+year|manual. matchConfidence in [0,1].
+  source             String   @default("manual_upload")
+  oaStatus           String?
+  sourceUrl          String?
+  resolvedDoi        String?
+  matchedBy          String?
+  matchConfidence    Float?
+  retrievalAttemptedAt DateTime?
+  retrievalError     String?
 }
 
 model ScreenRecordOpenState {

@@ -216,6 +216,221 @@ export function parseEndNoteXML(text) {
   return recs.filter(r => r.title || r.authors);
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+ * Broader import formats (roadmap 1.4): CSV, delimited TXT, and CIW
+ * (Web of Science / Clarivate tagged export). All PURE — text in, records out.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+// Canonical column synonyms → record field. Header matching is case-insensitive
+// and whitespace-trimmed.
+const CSV_FIELD_SYNONYMS = {
+  title:    ["title", "article title", "document title", "primary title", "ti"],
+  authors:  ["authors", "author", "author(s)", "author full names", "authors full name", "au", "af"],
+  year:     ["year", "publication year", "pub year", "pubyear", "py", "date", "pubdate"],
+  journal:  ["journal", "source", "source title", "journal/source", "publication", "journal title", "so", "journal name"],
+  doi:      ["doi", "di", "digital object identifier"],
+  pmid:     ["pmid", "pubmed id", "pubmedid", "pm", "pubmed"],
+  abstract: ["abstract", "ab", "summary"],
+  url:      ["url", "link", "fulltext url", "full text url", "full-text url"],
+  keywords: ["keywords", "keyword", "author keywords", "de", "index keywords", "id"],
+};
+
+/** Build a header-cell → canonical-field lookup from a header row. */
+function mapHeader(cells) {
+  const map = cells.map(raw => {
+    const h = String(raw || "").trim().toLowerCase();
+    for (const [field, syns] of Object.entries(CSV_FIELD_SYNONYMS)) {
+      if (syns.includes(h)) return field;
+    }
+    return null;
+  });
+  return map;
+}
+
+/**
+ * RFC-4180-ish tokenizer: splits delimited text into rows of cells, honouring
+ * quoted fields ("a,b"), escaped quotes ("" → "), and quoted newlines.
+ */
+function tokenizeDelimited(text, delim) {
+  const rows = [];
+  let row = [], field = "", inQuotes = false;
+  const s = text.replace(/\r\n?/g, "\n");
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (s[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += ch;
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === delim) {
+      row.push(field); field = "";
+    } else if (ch === "\n") {
+      row.push(field); rows.push(row); row = []; field = "";
+    } else field += ch;
+  }
+  if (field.length || row.length) { row.push(field); rows.push(row); }
+  // Drop fully-empty trailing rows.
+  return rows.filter(r => r.some(c => String(c).trim() !== ""));
+}
+
+/** Choose the delimiter that yields the most columns on the header line. */
+function sniffDelimiter(text) {
+  const firstLine = text.replace(/\r\n?/g, "\n").split("\n").find(l => l.trim()) || "";
+  const counts = [
+    [",", (firstLine.match(/,/g) || []).length],
+    ["\t", (firstLine.match(/\t/g) || []).length],
+    [";", (firstLine.match(/;/g) || []).length],
+  ];
+  counts.sort((a, b) => b[1] - a[1]);
+  return counts[0][1] > 0 ? counts[0][0] : ",";
+}
+
+/** Build a record from a header-mapped row; attaches url/keywords only if present. */
+function rowToRecord(map, cells, source) {
+  const get = field => {
+    const idx = map.indexOf(field);
+    return idx >= 0 ? String(cells[idx] ?? "").trim() : "";
+  };
+  // PMID often arrives as "12345" or "PMID:12345" — keep digits only.
+  const pmidRaw = get("pmid");
+  const pmid = (pmidRaw.match(/\d{4,}/) || [])[0] || "";
+  const yearRaw = get("year");
+  const year = (yearRaw.match(/\d{4}/) || [])[0] || "";
+  const rec = mkRecord({
+    title:    get("title"),
+    authors:  get("authors"),
+    year,
+    journal:  get("journal"),
+    doi:      get("doi"),
+    pmid,
+    abstract: get("abstract"),
+    source,
+  });
+  const url = get("url");
+  const keywords = get("keywords");
+  if (url) rec.url = url;
+  if (keywords) rec.keywords = keywords;
+  return rec;
+}
+
+/**
+ * parseCSV(text)
+ * Parse a delimited reference table (comma / tab / semicolon auto-detected).
+ * Requires a header row whose columns map to known reference fields.
+ *
+ * @param {string} text
+ * @param {string} [delim]  force a delimiter; auto-detected when omitted
+ * @returns {Array} canonical records
+ */
+export function parseCSV(text, delim) {
+  const d = delim || sniffDelimiter(text);
+  const rows = tokenizeDelimited(text, d);
+  if (rows.length < 2) return [];
+  const map = mapHeader(rows[0]);
+  if (!map.includes("title") && !map.includes("doi")) return []; // not a reference table
+  return rows.slice(1)
+    .map(cells => rowToRecord(map, cells, "CSV"))
+    .filter(r => r.title || r.doi || r.pmid);
+}
+
+/**
+ * parseTXT(text)
+ * Plain-text import. If the text is a delimited table with a recognisable
+ * header, it is parsed like CSV; otherwise each non-empty line is treated as a
+ * record title (a documented, safe fallback). Ambiguous fields are left empty
+ * rather than invented.
+ *
+ * @param {string} text
+ * @returns {Array} canonical records
+ */
+export function parseTXT(text) {
+  const firstLine = text.replace(/\r\n?/g, "\n").split("\n").find(l => l.trim()) || "";
+  const delim = sniffDelimiter(text);
+  if ((firstLine.match(new RegExp(delim === "\t" ? "\t" : "\\" + delim, "g")) || []).length >= 1) {
+    const map = mapHeader(tokenizeDelimited(firstLine, delim)[0] || []);
+    if (map.includes("title") || map.includes("doi")) return parseCSV(text, delim);
+  }
+  // Fallback: one record per non-empty line, title only.
+  return text.replace(/\r\n?/g, "\n").split("\n")
+    .map(l => l.trim())
+    .filter(Boolean)
+    .map(line => mkRecord({ title: line, source: "TXT" }));
+}
+
+/**
+ * parseCIW(text)
+ * Web of Science / Clarivate tagged export (.ciw). 2-letter field tags, one
+ * record per PT…ER block, 3-space-indented continuation lines. AU/AF list one
+ * author per line; TI/SO/AB continuations are joined with a space.
+ *
+ * @param {string} text
+ * @returns {Array} canonical records
+ */
+export function parseCIW(text) {
+  const recs = [];
+  let cur = null, tag = null;
+  // A record begins only at PT (publication type); AU = short author names,
+  // AF = full author names (parallel lists — prefer AF when present).
+  const startRec = () => { cur = { au: [], af: [], keywords: [] }; recs.push(cur); };
+
+  text.replace(/\r\n?/g, "\n").split("\n").forEach(line => {
+    if (/^\s{2,}\S/.test(line) && cur && tag) {       // continuation of the current tag
+      const val = line.trim();
+      if (tag === "AU") cur.au.push(val);
+      else if (tag === "AF") cur.af.push(val);
+      else if (tag === "DE" || tag === "ID") cur.keywords.push(val);
+      else if (tag === "TI") cur.title = (cur.title ? cur.title + " " : "") + val;
+      else if (tag === "AB") cur.abstract = (cur.abstract ? cur.abstract + " " : "") + val;
+      else if (tag === "SO") cur.journal = (cur.journal ? cur.journal + " " : "") + val;
+      return;
+    }
+    const m = line.match(/^([A-Z][A-Z0-9])\s(.*)$/);
+    if (!m) { if (/^(ER|EF)\b/.test(line)) { cur = null; tag = null; } return; }
+    tag = m[1];
+    const val = (m[2] || "").trim();
+    if (tag === "PT") { startRec(); return; }
+    if (!cur) return;   // ignore tags before the first PT (FN/VR file header, etc.)
+    switch (tag) {
+      case "AU": cur.au.push(val); break;
+      case "AF": cur.af.push(val); break;
+      case "TI": cur.title = val; break;
+      case "SO": case "J9": case "JI": if (!cur.journal) cur.journal = val; break;
+      case "AB": cur.abstract = val; break;
+      case "PY": { const y = (val.match(/\d{4}/) || [])[0]; if (y) cur.year = y; break; }
+      case "DI": cur.doi = val; break;
+      case "PM": if (/^\d+$/.test(val)) cur.pmid = val; break;
+      case "DE": case "ID": if (val) cur.keywords.push(val); break;
+      case "U1": case "URL": if (!cur.url) cur.url = val; break;
+      case "ER": case "EF": cur = null; tag = null; break;
+      default: break;
+    }
+  });
+
+  return recs
+    .filter(r => r.title || r.doi || r.pmid)
+    .map(r => {
+      const authors = (r.af.length ? r.af : r.au).join("; ");
+      const rec = mkRecord({
+        title: r.title, authors, year: r.year,
+        journal: r.journal, doi: r.doi, pmid: r.pmid, abstract: r.abstract, source: "CIW",
+      });
+      if (r.url) rec.url = r.url;
+      if (r.keywords && r.keywords.length) rec.keywords = r.keywords.join("; ");
+      return rec;
+    });
+}
+
+/** True when the first delimited line looks like a known reference-table header. */
+function looksLikeReferenceTable(head) {
+  const firstLine = head.split("\n").find(l => l.trim()) || "";
+  const delim = sniffDelimiter(firstLine);
+  if ((firstLine.match(new RegExp(delim === "\t" ? "\t" : "\\" + delim, "g")) || []).length < 1) return false;
+  const map = mapHeader((tokenizeDelimited(firstLine, delim)[0] || []));
+  return map.includes("title") || map.includes("doi");
+}
+
 /**
  * detectAndParse(text, filename)
  * Auto-detect format from content / filename extension and dispatch to the
@@ -235,13 +450,22 @@ export function detectAndParse(text, filename) {
     return { records: parseBibTeX(text), format: "BibTeX" };
   if (fn.endsWith(".nbib") || /^PMID\s*-/m.test(head))
     return { records: parseNBIB(text), format: "PubMed nbib" };
+  // CIW / Web of Science tagged export — header is "FN …\nVR …" or PT-led records.
+  if (fn.endsWith(".ciw") || (/^FN\s/m.test(head) && /^VR\s/m.test(head)) || /^PT\s[A-Z]/m.test(head))
+    return { records: parseCIW(text), format: "CIW (Web of Science)" };
   if (fn.endsWith(".ris") || /^TY\s{0,2}-/m.test(head))
     return { records: parseRIS(text), format: "RIS" };
+  // CSV / delimited table — only when a header row maps to known reference fields.
+  if (fn.endsWith(".csv") || (!fn.endsWith(".txt") && looksLikeReferenceTable(head)))
+    return { records: parseCSV(text), format: "CSV" };
+  if (fn.endsWith(".txt") || fn.endsWith(".tsv"))
+    return { records: parseTXT(text), format: "TXT" };
 
   // fallback: try each format in turn
   let r = parseRIS(text);   if (r.length) return { records: r, format: "RIS" };
   r = parseBibTeX(text);    if (r.length) return { records: r, format: "BibTeX" };
   r = parseNBIB(text);      if (r.length) return { records: r, format: "MEDLINE" };
+  r = parseCSV(text);       if (r.length) return { records: r, format: "CSV" };
   return { records: [], format: "unknown" };
 }
 
