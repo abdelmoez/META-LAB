@@ -7204,7 +7204,7 @@ function ProjectHeaderBar({project,tab,inScreening,focus,onToggleFocus,setTab,on
   // prompt30 Part 5 — compact status badges + actions shown near the title on
   // every NON-overview page (the full detailed header now lives on Overview only).
   const compact=tab!=="overview";
-  const badgeBtn=(color)=>({display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:11,fontSize:11,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",cursor:"pointer",background:themeAlpha(color,'18'),border:`1px solid ${themeAlpha(color,'55')}`,color,lineHeight:1.4});
+  const badgeBtn=(color)=>({display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:11,fontSize:11,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",cursor:"pointer",background:themeAlpha(color,'18'),border:`1px solid ${themeAlpha(color,'55')}`,color,lineHeight:1.4,flexShrink:0});
   const hdrIconBtn={...btnS("ghost"),padding:"5px 8px",borderRadius:7,display:"inline-flex",alignItems:"center"};
   return(
     <div style={{
@@ -7916,6 +7916,19 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   });
 
   const project=useMemo(()=>projects.find(p=>p.id===activeId)||null,[projects,activeId]);
+  // prompt30 Part 5 — compact header status (requirements-missing + high-severity
+  // audit items), memoised so auditProject() isn't recomputed on every header
+  // re-render (presence pings, autosave ticks). Recomputes only when the project
+  // object changes (i.e. on a real edit).
+  const headerStatus=useMemo(()=>{
+    if(!project) return {reqMissing:0,reqMissingList:[],missingItems:0};
+    const r=readinessCheck(project);
+    return {
+      reqMissing:r.ok?0:r.missing.length,
+      reqMissingList:r.ok?[]:r.missing,
+      missingItems:auditProject(project).filter(i=>i.sev==="high").length,
+    };
+  },[project]);
 
   // prompt23 Tasks 13/14/15 · prompt24 Tasks 2/8/9 — project presence across ALL
   // monolith stages (PICO, Data Extraction, Analysis, …) AND the Screening stage,
@@ -8568,9 +8581,9 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     <div style={{marginLeft:focus?0:256,flex:1,display:"flex",flexDirection:"column",height:"100vh",minHeight:0,overflow:"hidden",transition:"margin-left 0.25s ease"}}>
       {project&&!deepLinkMiss&&(
         <ProjectHeaderBar project={project} tab={tab} inScreening={inScreening} focus={focus} onToggleFocus={toggleNav} setTab={setTab} onBackToProjects={onBackToProjects} presenceUsers={presenceUsers} presenceLocks={presenceLocks} totalMembers={project?._memberCount} myUserId={authUser?.id} spId={spId}
-          reqMissing={(()=>{const r=readinessCheck(project);return r.ok?0:r.missing.length;})()}
-          reqMissingList={(()=>{const r=readinessCheck(project);return r.ok?[]:r.missing;})()}
-          missingItems={auditProject(project).filter(i=>i.sev==="high").length}
+          reqMissing={headerStatus.reqMissing}
+          reqMissingList={headerStatus.reqMissingList}
+          missingItems={headerStatus.missingItems}
           onShowAudit={()=>setShowAudit(true)}
           onReport={openReportExport} onExport={openProjectExport} onImport={()=>importRef.current&&importRef.current.click()}/>
       )}
