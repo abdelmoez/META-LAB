@@ -429,11 +429,9 @@ function buildActions(p, handlers) {
   // prompt18 — screening is an in-project stage, not a separate app. Always offer
   // it; opening it auto-creates the screening workspace if it doesn't exist yet.
   actions.push({ label: 'Screening', icon: 'filter', onClick: () => handlers.openSift(p) });
-  // rob.md — flag-gated Risk-of-Bias entry (owner-only, matching the API's
-  // owner-scoped access). Only present when rob_engine_v2 is enabled.
-  if (handlers.robEnabled && owner) {
-    actions.push({ label: 'Risk of Bias', icon: 'scale', onClick: () => handlers.openRob(p) });
-  }
+  // prompt31 Part 5 — Risk of Bias is no longer surfaced on the project card; it
+  // lives inside the project (the "Risk of Bias" workflow tab), and the RoB
+  // assessment permission is managed in project settings. Keeps cards clean.
   if (owner || canEdit) {
     actions.push({ label: 'Rename', icon: 'pencil', onClick: () => handlers.rename(p) });
   }
@@ -569,18 +567,7 @@ function ProjectCard({ p, handlers, reduced }) {
         >
           <Icon name="filter" size={14} /> Screening
         </Btn>
-        {/* rob.md — visible Risk-of-Bias entry (flag-gated, owner-only). Previously
-            only in the overflow "…" menu, which was not discoverable. */}
-        {handlers.robEnabled && owner && (
-          <Btn
-            variant="ghost"
-            onClick={() => handlers.openRob(p)}
-            title="Assess risk of bias (RoB 2)"
-            style={{ padding: '8px 12px' }}
-          >
-            <Icon name="scale" size={14} /> Risk of Bias
-          </Btn>
-        )}
+        {/* prompt31 Part 5 — RoB entry removed from the card (managed in-project). */}
       </div>
       {owner && p._archived && (
         <div style={{ marginTop: 8, fontSize: 10.5, color: C.muted, fontFamily: MONO }}>

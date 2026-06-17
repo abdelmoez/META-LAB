@@ -22,6 +22,14 @@ export default function Onboarding() {
     navigate('/app');
   }
 
+  // prompt31 Part 1 — "Skip for now" marks onboarding done (without saving any
+  // answers) so the user is not prompted again on later sign-ins, then enters.
+  async function onSkip() {
+    setSaving(true);
+    try { await saveOnboarding({ skipped: true }); } catch { /* never block entry */ }
+    navigate('/app');
+  }
+
   return (
     <div style={{ minHeight: '100vh', background: C.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: FONT, padding: '24px 16px' }}>
       <div style={{ width: '100%', maxWidth: 480, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 14, padding: '40px', boxShadow: `0 24px 48px ${C.shadow}` }}>
@@ -37,7 +45,7 @@ export default function Onboarding() {
         <Text   label="Country / region" value={v.country} onChange={set('country')} placeholder="e.g. United States" />
 
         <div style={{ display: 'flex', gap: 12, marginTop: 26 }}>
-          <button onClick={() => navigate('/app')} disabled={saving} style={btn(C.card2, C.txt2, C.brd2)}>Skip for now</button>
+          <button onClick={onSkip} disabled={saving} style={btn(C.card2, C.txt2, C.brd2)}>Skip for now</button>
           <button onClick={onContinue} disabled={saving} style={btn(C.acc, C.accText, C.acc)}>{saving ? 'Saving…' : 'Continue'}</button>
         </div>
       </div>

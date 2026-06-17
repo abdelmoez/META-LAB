@@ -487,6 +487,7 @@ model ScreenProjectMember {
   canManageExtraction Boolean       @default(false)
   canRunAnalysis      Boolean       @default(false)
   canExport           Boolean       @default(false)
+  canAssessRiskOfBias Boolean       @default(false)   // prompt31 Part 4 — edit RoB assessments
   readOnlyMetaLab     Boolean       @default(false)
   // Global
   canManageMembers    Boolean       @default(false)

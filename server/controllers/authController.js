@@ -283,7 +283,10 @@ export async function login(req, res) {
     res.cookie(COOKIE_NAME, token, cookieOptions());
 
     return res.json({
-      user: { id: user.id, email: user.email, name: user.name, role: user.role },
+      // prompt31 Part 1 — expose onboarding status so the client can send a user
+      // who has never completed/skipped onboarding there (incl. after verifying
+      // their email and signing in).
+      user: { id: user.id, email: user.email, name: user.name, role: user.role, onboardingCompleted: !!user.onboardingCompletedAt },
     });
   } catch (err) {
     console.error('[auth] login error:', err.message);
@@ -499,6 +502,16 @@ export async function resendVerification(req, res) {
 export async function updateOnboarding(req, res) {
   try {
     const b = req.body || {};
+    // prompt31 Part 1 — "Skip for now" just marks onboarding done (so the user is
+    // not re-prompted) WITHOUT overwriting any profile fields they may already have.
+    if (b.skipped === true) {
+      const u = await prisma.user.update({
+        where: { id: req.user.id },
+        data: { onboardingCompletedAt: new Date() },
+        select: { id: true, onboardingCompletedAt: true },
+      });
+      return res.json({ ok: true, user: { ...u, onboardingCompleted: true, skipped: true } });
+    }
     const institutionOriginal = cleanProfileValue(b.institution, 200);
     let institutionNormalized = null;
     try { institutionNormalized = institutionOriginal ? normalizeInstitution(institutionOriginal) || null : null; } catch { institutionNormalized = null; }

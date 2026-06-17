@@ -67,7 +67,13 @@ function LoginRoute() {
       onSuccess={u => {
         login(u);
         const invite = inviteParam();
-        navigate(invite ? `/invite/${encodeURIComponent(invite)}` : '/app');
+        // prompt31 Part 1 — central post-auth redirect: a user who has never
+        // completed/skipped onboarding lands there (works after email verification
+        // too, since they sign in afterwards). Invites take precedence.
+        const dest = invite ? `/invite/${encodeURIComponent(invite)}`
+          : (u && u.onboardingCompleted === false) ? '/onboarding'
+          : '/app';
+        navigate(dest);
       }}
       onRegister={() => {
         const invite = inviteParam();

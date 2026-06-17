@@ -1,6 +1,6 @@
 {
   "name": "meta-lab",
-  "version": "3.13.0",
+  "version": "3.14.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,7 +13,9 @@
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
-    "test:ci": "vitest run tests/unit tests/screening/unit"
+    "test:ci": "vitest run tests/unit tests/screening/unit",
+    "review:legal": "node scripts/review-legal.js",
+    "review:ops-impact": "node scripts/review-ops-impact.js"
   },
   "dependencies": {
     "framer-motion": "^12.40.0",

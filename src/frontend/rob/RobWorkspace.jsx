@@ -302,12 +302,12 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
     {/* ── Left section: PDF (prompt30 Part 3). Reuses the screening PDF panel;
         collapses on demand; stacks above the questions on narrow screens. ── */}
     {showPdf && (
-      <aside style={{ flex: '1 1 380px', minWidth: 300, maxWidth: 620, position: 'sticky', top: 0 }}>
+      <aside style={{ flex: '3 1 520px', minWidth: 340, maxWidth: 1100, position: 'sticky', top: 0 }}>
         <RobPdfPanel metaLabProjectId={view.projectId} studyId={view.studyId} canManage={editable} onClose={() => setShowPdf(false)} />
       </aside>
     )}
-    {/* ── Right section: the RoB assessment (unchanged style) ── */}
-    <div style={{ ...shell, flex: '2 1 520px', minWidth: 0 }}>
+    {/* ── Right section: the RoB assessment — narrower than the PDF (prompt31 Part 6) ── */}
+    <div style={{ ...shell, flex: '2 1 400px', minWidth: 360, maxWidth: 680 }}>
       {/* ── Context bar ─────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '14px 20px', borderBottom: `1px solid ${C.brd}`, background: C.card, flexWrap: 'wrap' }}>
         <button onClick={onClose} style={{ ...ghostBtn, padding: '6px 10px' }} aria-label="Back to assessments"><Icon name="arrowLeft" size={15} /></button>

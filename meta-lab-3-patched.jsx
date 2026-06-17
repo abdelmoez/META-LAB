@@ -6889,6 +6889,10 @@ const TABS=[
   {id:"methods",    icon:"bookOpen",    label:"Methods & Equations",  phase:null,  group:"reference"},
 ];
 const PHASES=["Plan","Search","Screen","Extract","Analyze","Report"];
+// prompt31 Part 7 — ultra-wide judgement: reading/form tabs keep a comfortable
+// centred max-width; data/workspace tabs (extraction, analysis, forest, RoB,
+// PRISMA…) use the full width. Screening renders its own full-bleed frame.
+const READING_TABS=new Set(["overview","pico","prospero","control","grade","manuscript","methods","report"]);
 /* Icon names (src/frontend/components/icons.jsx) — render via <Icon name={…}/> */
 const PHASE_ICON={Plan:"target",Search:"search",Screen:"filter",Extract:"table",Analyze:"sigma",Report:"fileText"};
 
@@ -8482,32 +8486,41 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
               color:doneCount===wfTabs.length?C.grn:C.muted,
             }}>{doneCount}/{wfTabs.length}</span>
           </div>
-          {PHASES.map(phase=>{
+          {PHASES.map((phase,pi)=>{
             const steps=TABS.filter(t=>t.phase===phase);
             const phaseDone=steps.filter(t=>status[t.id]==="done").length;
             const phaseActive=steps.some(t=>t.id===tab);
+            // prompt31 Part 8 — ONE continuous line: the phase header carries the
+            // gutter line connecting the previous phase's last step to this one.
+            const firstGi=wfTabs.findIndex(x=>x.id===steps[0]?.id);
+            const phaseLineGreen=firstGi>0&&status[wfTabs[firstGi-1].id]==="done";
             return(<div key={phase} style={{marginBottom:2}}>
-              <div style={{
-                display:"flex",alignItems:"center",gap:6,
-                padding:"5px 10px 3px",
-              }}>
-                <span style={{
-                  fontSize:9,fontWeight:700,letterSpacing:0.7,textTransform:"uppercase",flex:1,
-                  color:phaseActive?C.txt2:C.dim,
-                }}>{phase}</span>
-                <span style={{
-                  fontSize:8,fontFamily:"'IBM Plex Mono',monospace",
-                  color:phaseDone===steps.length?C.grn:C.dim,
-                }}>{phaseDone}/{steps.length}</span>
+              <div style={{display:"flex",alignItems:"stretch",gap:8}}>
+                <div style={{position:"relative",width:20,flexShrink:0}}>
+                  {pi>0&&<span style={{position:"absolute",top:0,bottom:0,left:"50%",transform:"translateX(-50%)",width:2,background:phaseLineGreen?C.grn:C.brd2}}/>}
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:6,flex:1,padding:"5px 6px 3px 0"}}>
+                  <span style={{
+                    fontSize:9,fontWeight:700,letterSpacing:0.7,textTransform:"uppercase",flex:1,
+                    color:phaseActive?C.txt2:C.dim,
+                  }}>{phase}</span>
+                  <span style={{
+                    fontSize:8,fontFamily:"'IBM Plex Mono',monospace",
+                    color:phaseDone===steps.length?C.grn:C.dim,
+                  }}>{phaseDone}/{steps.length}</span>
+                </div>
               </div>
               <div style={{marginBottom:4}}>
                 {/* prompt29 Part 10 — vertical stepper (pip + connector line) in
                     place of the old 5px dots; status drives the pip + line colour. */}
-                {steps.map((t,si)=>{
+                {steps.map((t)=>{
                   const st=status[t.id];
                   const on=tab===t.id;
-                  const isLast=si===steps.length-1;
-                  const prevDone=si>0&&status[steps[si-1].id]==="done";
+                  // Global position across ALL workflow steps → one connected line.
+                  const gi=wfTabs.findIndex(x=>x.id===t.id);
+                  const isGFirst=gi===0;
+                  const isGLast=gi===wfTabs.length-1;
+                  const prevDone=gi>0&&status[wfTabs[gi-1].id]==="done";
                   const pip=st==="done"?{ring:C.grn,fg:C.grn,bg:themeAlpha(C.grn,'22'),glyph:"check"}
                     :on?{ring:C.acc,fg:C.acc,bg:themeAlpha(C.acc,'22'),glyph:null}
                     :st==="partial"?{ring:C.yel,fg:C.yel,bg:themeAlpha(C.yel,'22'),glyph:null}
@@ -8521,8 +8534,8 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
                     }}>
                     {/* Stepper gutter: connector segments + status pip */}
                     <div style={{position:"relative",width:20,flexShrink:0,alignSelf:"stretch"}}>
-                      {si>0&&<span style={{position:"absolute",top:0,height:"50%",left:"50%",transform:"translateX(-50%)",width:2,background:prevDone?C.grn:C.brd2}}/>}
-                      {!isLast&&<span style={{position:"absolute",top:"50%",bottom:0,left:"50%",transform:"translateX(-50%)",width:2,background:st==="done"?C.grn:C.brd2}}/>}
+                      {!isGFirst&&<span style={{position:"absolute",top:0,height:"50%",left:"50%",transform:"translateX(-50%)",width:2,background:prevDone?C.grn:C.brd2}}/>}
+                      {!isGLast&&<span style={{position:"absolute",top:"50%",bottom:0,left:"50%",transform:"translateX(-50%)",width:2,background:st==="done"?C.grn:C.brd2}}/>}
                       <Tooltip content={`${t.label} — ${statusWord}`} wrapStyle={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",zIndex:1}}>
                         <span style={{width:16,height:16,borderRadius:"50%",border:`1.5px solid ${pip.ring}`,background:pip.bg,color:pip.fg,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:8.5,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",lineHeight:1}}>
                           {pip.glyph==="check"?<Icon name="check" size={9}/>:t.num}
@@ -8688,10 +8701,9 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
         {tab==="screening"?(
           <ScreeningWorkspaceFrame project={project} setTab={setTab}/>
         ):(
-        // prompt30 Part 2 — full-width workspace: the tab body uses the whole
-        // available width (page padding keeps it off the edges). Text-heavy tabs
-        // keep their own readable inner widths.
-        <div style={{maxWidth:"none",margin:0}} className="tab-content">
+        // prompt30/31 — workspace tabs go full width; reading/form tabs keep a
+        // comfortable centred max-width so prose/forms don't stretch on ultra-wide.
+        <div style={{maxWidth:READING_TABS.has(tab)?1100:"none",margin:READING_TABS.has(tab)?"0 auto":0}} className="tab-content">
           {/* prompt30 Part 5 — the DETAILED project status header lives ONLY on the
               Overview tab now. Other tabs show compact badges + Report/Export/Import
               in the universal ProjectHeaderBar (near the title). */}

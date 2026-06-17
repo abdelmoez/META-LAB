@@ -67,6 +67,7 @@ const PERM_GROUPS = [
     { key: 'canManageExtraction',label: 'Extraction' },
     { key: 'canRunAnalysis',     label: 'Analysis' },
     { key: 'canExport',          label: 'Export' },
+    { key: 'canAssessRiskOfBias',label: 'Risk of Bias', hint: 'Allows this member to complete and edit Risk of Bias assessments for this project.' },
     { key: 'readOnlyMetaLab',    label: 'Read-only' },
   ]},
   { title: 'Global', ownerOnly: true, keys: [

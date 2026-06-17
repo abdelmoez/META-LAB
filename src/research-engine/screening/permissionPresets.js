@@ -15,7 +15,7 @@ export const PERMISSION_KEYS = [
   'canViewMetaSift', 'canScreen', 'canSecondReview', 'canResolveConflicts',
   'canManageDuplicates', 'canImportRecords', 'canExportRecords', 'canChat', 'readOnlyMetaSift',
   // META·LAB
-  'canViewMetaLab', 'canEditMetaLab', 'canManageExtraction', 'canRunAnalysis', 'canExport', 'readOnlyMetaLab',
+  'canViewMetaLab', 'canEditMetaLab', 'canManageExtraction', 'canRunAnalysis', 'canExport', 'canAssessRiskOfBias', 'readOnlyMetaLab',
   // Global
   'canManageMembers', 'canManageSettings',
 ];
@@ -45,7 +45,7 @@ export const PERMISSION_PRESETS = {
   },
   data_extractor: {
     label: 'Data Extractor', role: 'reviewer', description: 'View screening; edit META·LAB Data Extraction and run/export analysis.',
-    perms: fill({ canViewMetaSift: true, canChat: true, canViewMetaLab: true, canEditMetaLab: true, canManageExtraction: true, canRunAnalysis: true, canExport: true }),
+    perms: fill({ canViewMetaSift: true, canChat: true, canViewMetaLab: true, canEditMetaLab: true, canManageExtraction: true, canRunAnalysis: true, canExport: true, canAssessRiskOfBias: true }),
   },
   viewer: {
     label: 'Viewer (read-only both)', role: 'viewer', description: 'View both modules read-only. Can chat.',

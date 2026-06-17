@@ -11,7 +11,7 @@ import { useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 
-const UPDATED = 'June 16, 2026';
+const UPDATED = 'June 17, 2026';
 
 export default function Terms() {
   // Honour the #terms / #privacy anchor on load (router doesn't auto-scroll).
@@ -69,7 +69,7 @@ export default function Terms() {
           <P>The Platform can help locate <em>legitimately open-access</em> full-text PDFs. You agree to respect publisher terms and copyright. The Platform does not, and you must not use it to, bypass paywalls, access controls, or publisher restrictions. Where automated retrieval is not possible, attach the PDF you are licensed to use manually.</P>
 
           <H>Collaboration, membership, permissions &amp; roles</H>
-          <P>Projects may be shared with collaborators under roles (e.g. owner, leader, reviewer, viewer) that determine what each member can see and change. Owners and leaders are responsible for whom they invite and what they grant. Treat other members’ contributions and any shared content responsibly.</P>
+          <P>Projects may be shared with collaborators under roles (e.g. owner, leader, reviewer, viewer) that determine what each member can see and change. Specific actions — such as completing risk-of-bias assessments — may be granted to individual members through per-project permissions. Owners and leaders are responsible for whom they invite and what they grant. Treat other members’ contributions and any shared content responsibly.</P>
 
           <H>User-generated content &amp; intellectual property</H>
           <P>You grant the operator a limited licence to host, process, display, and back up your content solely to provide and improve the Platform for you and your collaborators. The Platform’s own software, design, and trademarks remain the property of the operator and its licensors.</P>
