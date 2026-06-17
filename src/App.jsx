@@ -26,6 +26,7 @@ const ResetPassword = lazy(() => import('./frontend/pages/ResetPassword.jsx'));
 const VerifyEmail   = lazy(() => import('./frontend/pages/VerifyEmail.jsx'));
 const Onboarding    = lazy(() => import('./frontend/pages/Onboarding.jsx'));
 const RobPage       = lazy(() => import('./frontend/rob/RobPage.jsx'));
+const Terms         = lazy(() => import('./frontend/pages/Terms.jsx'));
 
 /* Minimal theme-token loading state shown while a route chunk downloads. */
 function RouteFallback() {
@@ -115,6 +116,10 @@ export default function App() {
       <Routes>
         {/* Public landing page */}
         <Route path="/"         element={<Landing />} />
+
+        {/* Public Terms of Service + Privacy Policy (prompt29) — works signed in or out */}
+        <Route path="/terms"    element={<Terms />} />
+        <Route path="/privacy"  element={<Navigate to="/terms#privacy" replace />} />
 
         {/* Auth pages — redirect to /app when already signed in */}
         <Route path="/login"    element={<PublicRoute><LoginRoute /></PublicRoute>} />

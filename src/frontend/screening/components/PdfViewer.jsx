@@ -29,6 +29,9 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
   const [finding, setFinding]   = useState(false);
   const [open, setOpen]         = useState(defaultOpen);
   const [err, setErr]           = useState('');
+  // prompt29 Part 3 — structured "found a link but download failed" state so we
+  // can offer retry / open-source-link / manual-upload instead of a dead message.
+  const [oaFail, setOaFail]     = useState(null); // { sourceUrl } | null
   const [frameErr, setFrameErr] = useState(false);
   const fileRef = useRef(null);
 
@@ -42,7 +45,7 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
   }, [pid, recordId]);
 
   // Reset + reload whenever the selected record changes.
-  useEffect(() => { setOpen(defaultOpen); setFrameErr(false); load(); }, [load, defaultOpen]);
+  useEffect(() => { setOpen(defaultOpen); setFrameErr(false); setOaFail(null); load(); }, [load, defaultOpen]);
 
   async function onPick(e) {
     const file = e.target.files?.[0];
@@ -54,7 +57,7 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
     setUploading(true); setErr('');
     try {
       await screeningApi.uploadPdf(pid, recordId, file);
-      setFrameErr(false);
+      setFrameErr(false); setOaFail(null);
       await load();
       setOpen(true);
     } catch (e2) {
@@ -67,16 +70,19 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
   // Auto-find a legitimately open-access PDF for this record (roadmap 1.4). The
   // server uses the signed-in user's account email as the OA provider identifier.
   async function onFindOa() {
-    setFinding(true); setErr('');
+    setFinding(true); setErr(''); setOaFail(null);
     try {
       const res = await screeningApi.oaRetrieve(pid, [recordId]);
       const r = (res.results || [])[0];
       if (r && r.status === 'attached') { setFrameErr(false); await load(); setOpen(true); }
-      else {
+      else if (r?.status === 'failed') {
+        // A link was found but the file could not be downloaded automatically.
+        // Offer next actions instead of a dead-end message; no attachment was made.
+        setOaFail({ sourceUrl: r.sourceUrl || null });
+      } else {
         setErr(
           r?.status === 'skipped_no_doi' ? 'This record has no DOI, so no open-access lookup is possible.' :
           r?.status === 'rate_limited'   ? 'Too many lookups right now — please try again shortly.' :
-          r?.status === 'failed'         ? 'Found a link but the download failed — try uploading the PDF manually.' :
           'No open-access PDF was found for this record.');
       }
     } catch (e) {
@@ -148,6 +154,26 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
 
       {err && <div style={{ padding: '0 14px 10px', fontSize: 11.5, color: C.red }}>{err}</div>}
 
+      {/* prompt29 Part 3 — "found a link but couldn't download" actionable state */}
+      {oaFail && (
+        <div style={{ margin: '0 14px 12px', padding: '10px 12px', background: alpha(C.gold, '12'), border: `1px solid ${alpha(C.gold, '45')}`, borderRadius: 8 }}>
+          <div style={{ fontSize: 12, color: C.txt2, lineHeight: 1.5, marginBottom: 8 }}>
+            We found a possible open-access PDF link, but the file could not be downloaded automatically. Some open-access hosts block automated downloads. You can retry, open the source link, or upload the PDF manually.
+          </div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {canManage && <TbBtn onClick={() => { setOaFail(null); onFindOa(); }} disabled={finding}>{finding ? 'Retrying…' : 'Retry'}</TbBtn>}
+            {oaFail.sourceUrl && <TbLink href={oaFail.sourceUrl}>Open source link ↗</TbLink>}
+            {canManage && (
+              <label style={{ cursor: uploading ? 'default' : 'pointer' }}>
+                <TbSpan>{uploading ? 'Uploading…' : 'Upload PDF manually'}</TbSpan>
+                <input ref={fileRef} type="file" accept="application/pdf" onChange={onPick} disabled={uploading} style={{ display: 'none' }} />
+              </label>
+            )}
+            <TbBtn onClick={() => setOaFail(null)}>Dismiss</TbBtn>
+          </div>
+        </div>
+      )}
+
       {/* Inline preview */}
       {attachment && open && (
         <div style={{ borderTop: `1px solid ${C.brd}`, background: C.surf }}>
@@ -170,11 +196,12 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
   );
 }
 
-function TbBtn({ children, onClick, danger }) {
+function TbBtn({ children, onClick, danger, disabled }) {
   return (
-    <button onClick={onClick} style={{
+    <button onClick={onClick} disabled={disabled} style={{
       background: 'none', border: `1px solid ${danger ? alpha(C.red, '55') : C.brd2}`, color: danger ? C.red : C.txt2,
-      fontSize: 11.5, fontFamily: FONT, padding: '5px 11px', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap',
+      fontSize: 11.5, fontFamily: FONT, padding: '5px 11px', borderRadius: 6,
+      cursor: disabled ? 'default' : 'pointer', opacity: disabled ? 0.5 : 1, whiteSpace: 'nowrap',
     }}>{children}</button>
   );
 }

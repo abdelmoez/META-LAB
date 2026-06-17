@@ -12,6 +12,7 @@ import { snapshotPico } from '../screening/picoSnapshot.js';
 import { scorePair, normalizeTitle } from '../../src/research-engine/screening/deduplication.js';
 import { DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS } from '../../src/research-engine/screening/defaultKeywords.js';
 import { effectiveKeywords } from '../../src/research-engine/screening/criteriaKeywords.js';
+import { isScreeningComplete } from '../utils/screeningCompletion.js';
 import { mkProject } from '../../src/research-engine/project-model/defaults.js';
 import { filterRecordsByKeywords, countArticlesByKeyword } from '../../src/research-engine/screening/keywordFilter.js';
 import { studyFromRecord } from './screeningReviewController.js';
@@ -653,6 +654,9 @@ export async function listRecords(req, res) {
           decision: d.decision,
           stage: d.stage,
           isMe: d.reviewerId === me,
+          // prompt29 Part 7 — surface the decision time for the reviewer tooltip
+          // (no identity leak: name stays anonymised under blind mode above).
+          decidedAt: d.updatedAt || d.createdAt || null,
         }));
       return {
         id: r.id, projectId: r.projectId,
@@ -1573,9 +1577,12 @@ export async function getMetaLabSummary(req, res) {
     }
     if (!sp) return res.json({ linked: false });
 
-    const records = await prisma.screenRecord.findMany({
-      where: { projectId: sp.id },
-    });
+    const [records, decisions, conflicts, dupGroups] = await Promise.all([
+      prisma.screenRecord.findMany({ where: { projectId: sp.id } }),
+      prisma.screenDecision.findMany({ where: { projectId: sp.id }, select: { recordId: true, reviewerId: true, decision: true, stage: true } }),
+      prisma.screenConflict.findMany({ where: { projectId: sp.id }, select: { resolvedAt: true } }),
+      prisma.screenDuplicateGroup.findMany({ where: { projectId: sp.id }, select: { resolvedAt: true } }),
+    ]);
     const total              = records.length;
     const duplicatesRemoved  = records.filter(r => r.isDuplicate).length;
     const screened           = Math.max(0, total - duplicatesRemoved);
@@ -1584,6 +1591,27 @@ export async function getMetaLabSummary(req, res) {
     const fullTextExcluded   = records.filter(r => r.finalStatus === 'rejected').length;
     const acceptedRecords    = records.filter(r => r.finalStatus === 'accepted');
     const includedFinal      = acceptedRecords.length;
+
+    // prompt29 Part 9 — true screening completeness for the main workflow stepper.
+    // The old rule ("any included study → done") flipped Screening green too early.
+    // Mirror the Screening module's own substep rules (see screeningOverviewController
+    // + ui/screeningSteps.js): every substep must be finished. Assumptions are
+    // documented in docs/manager/screening-completion-rule.md.
+    const effectiveRequired = Math.max(Number(sp.requiredScreeningReviewers) || 2, QUORUM);
+    const taReviewers = {};
+    for (const d of decisions) {
+      if (d.stage === 'title_abstract' && d.decision !== 'undecided') (taReviewers[d.recordId] ||= new Set()).add(d.reviewerId);
+    }
+    const titleAbstractPending      = records.filter(r => !r.isDuplicate && r.currentStage === 'title_abstract' && (taReviewers[r.id]?.size || 0) < effectiveRequired).length;
+    const unresolvedConflicts       = conflicts.filter(c => !c.resolvedAt).length;
+    const unresolvedDuplicateGroups = dupGroups.filter(g => !g.resolvedAt).length;
+    const eligibleSecondReview      = fullTextAssessed;
+    const secondReviewPending       = Math.max(0, eligibleSecondReview - includedFinal - fullTextExcluded);
+    const screeningStarted  = total > 0;
+    const screeningComplete = isScreeningComplete({
+      total, unresolvedDuplicateGroups, titleAbstractPending,
+      unresolvedConflicts, secondReviewPending, includedFinal,
+    });
 
     // Accepted studies, ready for the META·LAB Data Extraction pull-merge (BUG 5).
     // Idempotent on the client via screeningRecordId / doi / pmid / title.
@@ -1594,10 +1622,57 @@ export async function getMetaLabSummary(req, res) {
       screeningProjectId: sp.id,
       title: sp.title,
       prisma: { identified: total, duplicatesRemoved, screened, excludedTitleAbstract, fullTextAssessed, fullTextExcluded, included: includedFinal },
+      // prompt29 Part 9 — workflow-stepper completeness signals.
+      screeningStarted,
+      screeningComplete,
+      screeningPending: { titleAbstractPending, unresolvedConflicts, unresolvedDuplicateGroups, secondReviewPending },
       acceptedStudies,
     });
   } catch (err) {
     console.error('[screening] getMetaLabSummary:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * GET /metalab/:mlpid/study-record/:studyId  (prompt29 Part 2)
+ *
+ * Resolve the screening RECORD (if any) a META·LAB study was handed off from, so
+ * the RoB workspace can REUSE the screening PDF panel (same paper → same file,
+ * no duplicate PDF system). Mirrors getMetaLabSummary's workspace resolution
+ * (own workspace preferred, else active membership). recordId is null when the
+ * study was not created from a screening hand-off (e.g. a manually added study).
+ *
+ * Returns { linked, screenProjectId, recordId }. No access → { linked:false }.
+ */
+export async function getMetaLabStudyRecord(req, res) {
+  try {
+    const candidates = await prisma.screenProject.findMany({
+      where: { linkedMetaLabProjectId: req.params.mlpid, deletedAt: null },
+      orderBy: { updatedAt: 'desc' },
+    });
+    let sp = candidates.find(x => x.ownerId === req.user.id) || null;
+    if (!sp && candidates.length) {
+      const membership = await prisma.screenProjectMember.findFirst({
+        where: { projectId: { in: candidates.map(x => x.id) }, userId: req.user.id, status: 'active' },
+        select: { projectId: true },
+      });
+      if (membership) sp = candidates.find(x => x.id === membership.projectId) || null;
+    }
+    if (!sp) return res.json({ linked: false, screenProjectId: null, recordId: null });
+
+    const studyId = String(req.params.studyId || '');
+    let recordId = null;
+    if (studyId) {
+      const rec = await prisma.screenRecord.findFirst({
+        where: { projectId: sp.id, handoffStudyId: studyId },
+        select: { id: true },
+      });
+      recordId = rec?.id || null;
+    }
+    return res.json({ linked: true, screenProjectId: sp.id, recordId });
+  } catch (err) {
+    console.error('[screening] getMetaLabStudyRecord:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }

@@ -18,6 +18,7 @@ import Icon from '../components/icons.jsx';
 import { robApi } from './robApi.js';
 import { judgmentStyle, JUDGMENT_LEGEND } from './judgmentStyle.js';
 import RobTrafficLight from './RobTrafficLight.jsx';
+import RobPdfPanel from './RobPdfPanel.jsx';
 import {
   ROB2, isReachable, proposeDomain, proposeOverall, completeness,
 } from '../../research-engine/rob/index.js';
@@ -90,6 +91,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
   const [guidanceOpen, setGuidanceOpen] = useState({});
   const [override, setOverride] = useState(null); // { target, domainId, current }
   const [showGuide, setShowGuide] = useState(false);
+  const [showPdf, setShowPdf] = useState(false); // prompt29 Part 2 — side PDF panel
   const reduced = usePrefersReducedMotion();
   const saveTimer = useRef(null);
   const savedTimer = useRef(null);
@@ -288,7 +290,8 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
   const single = { domains: ROB2.domains.map(d => ({ id: d.id, shortLabel: d.shortLabel })), rows: [{ id: view.id, label: view.resultLabel || view.studyId, cells: ROB2.domains.map(d => ({ domainId: d.id, judgment: dotJudgment(d.id) })), overall: summaryOverall }] };
 
   return (
-    <div style={shell}>
+    <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+    <div style={{ ...shell, flex: 1, minWidth: 0 }}>
       {/* ── Context bar ─────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '14px 20px', borderBottom: `1px solid ${C.brd}`, background: C.card, flexWrap: 'wrap' }}>
         <button onClick={onClose} style={{ ...ghostBtn, padding: '6px 10px' }} aria-label="Back to assessments"><Icon name="arrowLeft" size={15} /></button>
@@ -296,6 +299,10 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
           <div style={{ fontSize: 15, fontWeight: 800, color: C.txt, fontFamily: FONT }}>{view.resultLabel || 'Risk-of-bias assessment'}</div>
           <div style={{ fontSize: 12, color: C.muted, fontFamily: MONO, marginTop: 2 }}>Study {view.studyId}{view.outcomeId ? ` · ${view.outcomeId}` : ''}</div>
         </div>
+        <button onClick={() => setShowPdf(p => !p)} aria-pressed={showPdf}
+          style={{ ...ghostBtn, padding: '6px 11px', background: showPdf ? alpha(C.acc, '14') : 'transparent', color: showPdf ? C.acc : C.txt2, borderColor: showPdf ? alpha(C.acc, '50') : C.brd2 }}>
+          <Icon name="fileText" size={14} /> PDF
+        </button>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 7, background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '38')}`, color: C.acc, fontSize: 11, fontFamily: MONO, fontWeight: 700 }}>
           <Icon name="scale" size={13} /> RoB 2
         </span>
@@ -366,12 +373,59 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
               onOverride={() => setOverride({ target: 'domain', domainId: active, current: resolvedDomain(active) })}
             />
           )}
+
+          {/* prompt29 Part 1 — explicit Previous / Next section navigation. The
+              domain rail + keyboard ([ ]) still work; this makes stepping through
+              domains obvious. Answers autosave, so navigating never loses them.
+              Moving on from an incomplete domain is allowed (its status is shown). */}
+          <SectionNav active={active} setActive={setActive} setFocusedQ={setFocusedQ} domainComplete={domainComplete} />
         </main>
       </div>
 
       {override && (
         <OverrideModal info={override} onCancel={() => setOverride(null)} onSubmit={doOverride} />
       )}
+    </div>
+    {showPdf && (
+      <aside style={{ width: 'min(46%, 560px)', flexShrink: 0, position: 'sticky', top: 0 }}>
+        <RobPdfPanel metaLabProjectId={view.projectId} studyId={view.studyId} canManage={editable} onClose={() => setShowPdf(false)} />
+      </aside>
+    )}
+    </div>
+  );
+}
+
+// ── Section navigation (Previous / Next across domains → Summary) ───────────────
+function SectionNav({ active, setActive, setFocusedQ, domainComplete }) {
+  const go = (target) => { setActive(target); setFocusedQ(null); };
+  if (active === 'summary') {
+    return (
+      <div style={{ marginTop: 24, paddingTop: 16, borderTop: `1px solid ${C.brd}`, display: 'flex' }}>
+        <button onClick={() => go('D5')} style={ghostBtn}><Icon name="arrowLeft" size={14} /> Back to {ROB2.domains[DOMAIN_IDS.length - 1].id}</button>
+      </div>
+    );
+  }
+  const di = DOMAIN_IDS.indexOf(active);
+  const prev = di > 0 ? DOMAIN_IDS[di - 1] : null;
+  const isLast = di >= DOMAIN_IDS.length - 1;
+  const next = isLast ? 'summary' : DOMAIN_IDS[di + 1];
+  const nextLabel = isLast ? 'Summary' : `${next} · ${ROB2.domains[di + 1].shortLabel}`;
+  const incomplete = !domainComplete(active);
+  return (
+    <div style={{ marginTop: 24, paddingTop: 16, borderTop: `1px solid ${C.brd}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+      <button onClick={() => prev && go(prev)} disabled={!prev} style={{ ...ghostBtn, opacity: prev ? 1 : 0.45, cursor: prev ? 'pointer' : 'not-allowed' }}>
+        <Icon name="arrowLeft" size={14} /> Previous
+      </button>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+        {incomplete && (
+          <span style={{ fontSize: 11.5, color: C.yel, display: 'inline-flex', alignItems: 'center', gap: 5 }} title="You can continue; some signalling questions in this domain are still unanswered.">
+            <Icon name="alertTriangle" size={13} /> Domain incomplete
+          </span>
+        )}
+        <button onClick={() => go(next)} style={primaryBtn(false)}>
+          Next: {nextLabel} <Icon name="arrowRight" size={14} />
+        </button>
+      </div>
     </div>
   );
 }

@@ -87,7 +87,12 @@ export async function oaRetrieve(req, res) {
         continue;
       }
       const dl = await fetchOaPdf(r.url, fetchFn, MAX_PDF_BYTES);
-      if (!dl.ok) { failed++; results.push({ recordId: rec.id, status: 'failed', error: dl.error }); continue; }
+      // prompt29 Part 3 — a link WAS found but the bytes could not be downloaded
+      // (paywalled CDN, hotlink protection, non-PDF, too large…). Surface the
+      // found source URL + provider so the UI can offer "open the source link"
+      // and a retry. NOTE: no attachment is created here — nothing is marked
+      // attached on a failed download.
+      if (!dl.ok) { failed++; results.push({ recordId: rec.id, status: 'failed', error: dl.error, sourceUrl: r.url || null, provider: r.provider || null }); continue; }
 
       // Replace any prior OA attachment for this record (manual ones were skipped above).
       const prev = await prisma.screenPdfAttachment.findMany({ where: { recordId: rec.id } });

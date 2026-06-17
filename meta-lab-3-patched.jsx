@@ -12,6 +12,7 @@ import { flushStorage, hasPendingSave } from "./src/frontend/storage/serverStora
 import { alpha as themeAlpha } from "./src/frontend/theme/tokens.js";
 import { useTheme } from "./src/frontend/theme/ThemeContext.jsx";
 import { Icon } from "./src/frontend/components/icons.jsx";
+import Tooltip from "./src/frontend/components/Tooltip.jsx";
 import MetaLabChatLauncher from "./src/frontend/components/chat/MetaLabChatLauncher.jsx";
 import NotificationsBell from "./src/frontend/components/NotificationsBell.jsx";
 import UserMenu from "./src/frontend/components/UserMenu.jsx";
@@ -6970,7 +6971,7 @@ function readinessCheck(project) {
 }
 
 /* Compute completion status for each workflow step (for sidebar progress dots) */
-function stepStatus(project){
+function stepStatus(project, screeningComplete){
   if(!project) return {};
   const p=project, pico=p.pico||{}, search=p.search||{}, prisma=p.prisma||{};
   const dbCount=Object.values(search.dbs||{}).filter(Boolean).length;
@@ -6983,9 +6984,13 @@ function stepStatus(project){
     pico: (pico.P&&pico.I&&pico.C&&pico.O&&timeframeComplete(pico))?"done":(pico.P||pico.I||pico.C||pico.O||pico.question)?"partial":"empty",
     prospero: (p.prospero&&p.prospero.fields&&Object.values(p.prospero.fields).filter(v=>v&&v.trim()).length>=15)?"done":(p.prospero&&p.prospero.fields&&Object.values(p.prospero.fields).filter(v=>v&&v.trim()).length>0)?"partial":"empty",
     search: (dbCount>=3&&search.string||(p.mesh&&p.mesh.results))?"done":(dbCount>0||search.string)?"partial":"empty",
-    // prompt18 — screening progress from the linked workspace rollup (record
-    // count) + PRISMA included count (set once studies reach Data Extraction).
-    screening: (()=>{ const lm=p._linkedMetaSift; const recs=(lm&&lm.recordCount)||0; const inc=prisma.included||0; return inc?"done":recs?"partial":"empty"; })(),
+    // prompt29 Part 9 — Screening is "done" ONLY when the linked workspace reports
+    // every substep complete (dedup, title/abstract to quorum, conflicts resolved,
+    // final review decided, included studies handed off). `screeningComplete` is
+    // the server's roll-up (GET /metalab/:id/summary). Until then it is at most
+    // "partial" while there are records / included studies in progress. (Old rule
+    // flipped to done as soon as any study was included — too early.)
+    screening: (()=>{ const lm=p._linkedMetaSift; const recs=(lm&&lm.recordCount)||0; const inc=prisma.included||0; if(screeningComplete) return "done"; return (inc||recs)?"partial":"empty"; })(),
     prisma: prisma.included?"done":(prisma.dbs||prisma.dedupe)?"partial":"empty",
     extraction: (()=>{
       if(p.studies.length===0) return "empty";
@@ -7320,7 +7325,7 @@ function OverviewTab({project,setTab}){
 
   const studies=project.studies||[];
   const withES=studies.filter(s=>s.es!=="").length;
-  const status=stepStatus(project);
+  const status=stepStatus(project, !!scr.data?.screeningComplete); // prompt29 Part 9
   const wfTabs=TABS.filter(t=>t.phase); // workflow steps only
   const doneCount=wfTabs.filter(t=>status[t.id]==="done").length;
   const nextStep=wfTabs.find(t=>status[t.id]!=="done")||null;
@@ -7706,6 +7711,22 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     _openExportDialog=setExpItem;
     return()=>{if(_openExportDialog===setExpItem)_openExportDialog=null;};
   },[]);
+
+  // prompt29 Part 9 — true Screening completeness for the workflow stepper. The
+  // linked-workspace roll-up (GET /metalab/:id/summary) reports whether every
+  // screening substep is finished; the stepper turns the Screening step green
+  // only when this is true. Refetched on project open and on tab changes (so it
+  // refreshes when the user leaves the Screening stage).
+  const[screeningComplete,setScreeningComplete]=useState(false);
+  useEffect(()=>{
+    if(!activeId){setScreeningComplete(false);return undefined;}
+    let dead=false;
+    fetch(`/api/screening/metalab/${activeId}/summary`,{credentials:"include"})
+      .then(r=>r.ok?r.json():null)
+      .then(d=>{if(!dead)setScreeningComplete(!!(d&&d.linked&&d.screeningComplete));})
+      .catch(()=>{});
+    return()=>{dead=true;};
+  },[activeId,tab]);
 
   // Sidebar footer version from the shared GET /api/version (prompt6) —
   // silent fallback: on any error the footer just shows the static label.
@@ -8407,7 +8428,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
 
       {/* Workflow steps */}
       {project&&(()=>{
-        const status=stepStatus(project);
+        const status=stepStatus(project, screeningComplete); // prompt29 Part 9
         const wfTabs=TABS.filter(t=>t.phase); // workflow steps only — phase:null reference tabs stay out of progress math
         const doneCount=Object.values(status).filter(s=>s==="done").length;
         return(<div style={{padding:"8px 8px",flex:1,overflowY:"auto"}}>
@@ -8437,27 +8458,39 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
                 }}>{phaseDone}/{steps.length}</span>
               </div>
               <div style={{marginBottom:4}}>
-                {steps.map(t=>{
+                {/* prompt29 Part 10 — vertical stepper (pip + connector line) in
+                    place of the old 5px dots; status drives the pip + line colour. */}
+                {steps.map((t,si)=>{
                   const st=status[t.id];
                   const on=tab===t.id;
-                  const dotColor=st==="done"?C.grn:st==="partial"?C.yel:C.brd2;
+                  const isLast=si===steps.length-1;
+                  const prevDone=si>0&&status[steps[si-1].id]==="done";
+                  const pip=st==="done"?{ring:C.grn,fg:C.grn,bg:themeAlpha(C.grn,'22'),glyph:"check"}
+                    :on?{ring:C.acc,fg:C.acc,bg:themeAlpha(C.acc,'22'),glyph:null}
+                    :st==="partial"?{ring:C.yel,fg:C.yel,bg:themeAlpha(C.yel,'22'),glyph:null}
+                    :{ring:C.brd2,fg:C.muted,bg:"transparent",glyph:null};
+                  const statusWord=st==="done"?"Complete":on?"Current step":st==="partial"?"In progress":"Not started";
                   return(<div key={t.id} onClick={()=>setTab(t.id)} className="nav-item"
                     style={{
-                      display:"flex",alignItems:"center",gap:8,
-                      padding:"6px 10px",borderRadius:7,cursor:"pointer",marginBottom:1,
+                      display:"flex",alignItems:"stretch",gap:8,
+                      borderRadius:7,cursor:"pointer",marginBottom:1,
                       background:on?`${themeAlpha(C.acc,'1a')}`:"transparent",
                     }}>
+                    {/* Stepper gutter: connector segments + status pip */}
+                    <div style={{position:"relative",width:20,flexShrink:0,alignSelf:"stretch"}}>
+                      {si>0&&<span style={{position:"absolute",top:0,height:"50%",left:"50%",transform:"translateX(-50%)",width:2,background:prevDone?C.grn:C.brd2}}/>}
+                      {!isLast&&<span style={{position:"absolute",top:"50%",bottom:0,left:"50%",transform:"translateX(-50%)",width:2,background:st==="done"?C.grn:C.brd2}}/>}
+                      <Tooltip content={`${t.label} — ${statusWord}`} wrapStyle={{position:"absolute",top:"50%",left:"50%",transform:"translate(-50%,-50%)",zIndex:1}}>
+                        <span style={{width:16,height:16,borderRadius:"50%",border:`1.5px solid ${pip.ring}`,background:pip.bg,color:pip.fg,display:"inline-flex",alignItems:"center",justifyContent:"center",fontSize:8.5,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",lineHeight:1}}>
+                          {pip.glyph==="check"?<Icon name="check" size={9}/>:t.num}
+                        </span>
+                      </Tooltip>
+                    </div>
                     <span style={{
-                      width:5,height:5,borderRadius:"50%",flexShrink:0,
-                      background:dotColor,
-                      boxShadow:st==="done"?`0 0 5px ${themeAlpha(C.grn,'70')}`:st==="partial"?`0 0 5px ${themeAlpha(C.yel,'50')}`:"none",
-                      transition:"all 0.2s",
-                    }}/>
-                    <span style={{
-                      fontSize:12,
+                      padding:"7px 10px 7px 0",fontSize:12,
                       color:on?C.acc:st==="empty"?C.muted:C.txt2,
                       fontWeight:on?600:400,
-                      flex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",
+                      flex:1,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",minWidth:0,
                     }}>{t.label}</span>
                   </div>);
                 })}

@@ -316,8 +316,8 @@ export default function ChatDrawer({
             <MessageRow
               key={m.id}
               m={m}
-              me={me}
-              canDelete={!!(m.isMe || (me != null && m.senderId === me) || isLeader)}
+              mine={!!(m.isMe || (me != null && m.senderId === me))}
+              isLeader={!!isLeader}
               onDelete={() => removeMessage(m.id)}
             />
           ))}
@@ -360,9 +360,25 @@ export default function ChatDrawer({
   );
 }
 
-function MessageRow({ m, canDelete, onDelete }) {
+// prompt29 Part 14 — own messages are deletable only within 2 minutes; the
+// trash control hides when the window closes. Leaders keep moderation ability.
+// The server re-checks against its own clock, so this is best-effort UX only.
+const CHAT_DELETE_WINDOW_MS = 2 * 60 * 1000;
+
+function MessageRow({ m, mine, isLeader, onDelete }) {
   const [hover, setHover] = useState(false);
-  const mine = !!m.isMe;
+  const createdMs = m.createdAt ? new Date(m.createdAt).getTime() : 0;
+  const [withinWindow, setWithinWindow] = useState(
+    () => !createdMs || (Date.now() - createdMs) <= CHAT_DELETE_WINDOW_MS,
+  );
+  useEffect(() => {
+    if (isLeader || !mine || !createdMs) return undefined; // leaders: no expiry
+    const remaining = CHAT_DELETE_WINDOW_MS - (Date.now() - createdMs);
+    if (remaining <= 0) { setWithinWindow(false); return undefined; }
+    const t = setTimeout(() => setWithinWindow(false), remaining + 50);
+    return () => clearTimeout(t);
+  }, [isLeader, mine, createdMs]);
+  const canDelete = isLeader || (mine && withinWindow);
   return (
     <div
       onMouseEnter={() => setHover(true)}

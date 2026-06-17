@@ -34,13 +34,23 @@ const cardVariants = {
     transition: { duration: 0.35, ease: [0.22, 1, 0.36, 1] } },
 };
 
+/* ── Required-field marker (prompt29 Part 12) ───────────────────────────── */
+function RequiredStar() {
+  // Red asterisk + a screen-reader-only "(required)" so the requirement is
+  // conveyed accessibly, not by colour alone.
+  return (
+    <span aria-hidden="true" style={{ color: C.red, marginLeft: 3, fontWeight: 700 }}>*</span>
+  );
+}
+
 /* ── Field component (focus-ring managed locally) ───────────────────────── */
-function Field({ id, label, type = "text", value, onChange, placeholder, autoComplete }) {
+function Field({ id, label, type = "text", value, onChange, placeholder, autoComplete, required = false }) {
   const [focused, setFocused] = useState(false);
   return (
     <div style={{ marginBottom: 16 }}>
       <label style={labelBase} htmlFor={id}>
-        {label}
+        {label}{required && <RequiredStar />}
+        {required && <span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}> (required)</span>}
       </label>
       <input
         id={id}
@@ -48,6 +58,8 @@ function Field({ id, label, type = "text", value, onChange, placeholder, autoCom
         autoComplete={autoComplete}
         value={value}
         onChange={onChange}
+        required={required}
+        aria-required={required || undefined}
         onFocus={() => setFocused(true)}
         onBlur={() => setFocused(false)}
         style={{
@@ -143,6 +155,11 @@ export default function Register({ onSuccess, onBack }) {
             redirectTo = `/sift-beta/projects/${body.projectId}`;
           }
         } catch { /* fall back to the invite page */ }
+      } else if (data && data.requireEmailVerification) {
+        // prompt29 Part 13 — when email verification is ON, send the new user to
+        // the verification page first. When it is OFF (default), redirectTo stays
+        // null and RegisterRoute lands them on the skippable /onboarding page.
+        redirectTo = "/verify-email";
       }
       onSuccess(user, redirectTo || undefined);
     } catch (err) {
@@ -244,6 +261,7 @@ export default function Register({ onSuccess, onBack }) {
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="Dr. Jane Smith"
+            required
           />
 
           <Field
@@ -254,6 +272,7 @@ export default function Register({ onSuccess, onBack }) {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             placeholder="you@institution.edu"
+            required
           />
 
           <Field
@@ -264,6 +283,7 @@ export default function Register({ onSuccess, onBack }) {
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             placeholder="At least 8 characters"
+            required
           />
 
           <Field
@@ -274,17 +294,26 @@ export default function Register({ onSuccess, onBack }) {
             value={confirm}
             onChange={(e) => setConfirm(e.target.value)}
             placeholder="Repeat password"
+            required
           />
 
-          {/* Terms & Privacy agreement (prompt26) */}
+          {/* Terms & Privacy agreement (prompt26; links added prompt29 Part 11) */}
           <label style={{ display: "flex", gap: 10, alignItems: "flex-start", margin: "2px 0 18px", cursor: "pointer", fontSize: 13, color: C.txt2, lineHeight: 1.5 }}>
             <input
               type="checkbox"
               checked={terms}
               onChange={(e) => setTerms(e.target.checked)}
+              required
+              aria-required="true"
               style={{ marginTop: 2, width: 16, height: 16, accentColor: C.acc, flexShrink: 0, cursor: "pointer" }}
             />
-            <span>I agree to the <strong style={{ color: C.txt }}>Terms</strong> and <strong style={{ color: C.txt }}>Privacy Policy</strong>.</span>
+            <span>
+              I agree to the{" "}
+              <a href="/terms#terms" target="_blank" rel="noopener noreferrer" style={{ color: C.acc, fontWeight: 600 }}>Terms</a>
+              {" "}and{" "}
+              <a href="/terms#privacy" target="_blank" rel="noopener noreferrer" style={{ color: C.acc, fontWeight: 600 }}>Privacy Policy</a>.
+              <RequiredStar />
+            </span>
           </label>
 
           {error && (

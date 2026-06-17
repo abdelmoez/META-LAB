@@ -162,15 +162,28 @@ async function setTypingStatusCore(access, req, res) {
   res.json({ ok: true });
 }
 
-/** Sender or leader may soft-delete a message. */
+// prompt29 Part 14 — a sender may delete their OWN message only within this
+// window (enforced on SERVER time). Leaders keep their existing moderation
+// ability for older messages, so the window does not apply to a leader.
+const CHAT_DELETE_WINDOW_MS = 2 * 60 * 1000;
+
+/** Sender (within 2 min) or leader (moderation) may soft-delete a message. */
 async function deleteMessageCore(access, req, res) {
   const messageId = req.params.cmid || req.params.messageId;
   const msg = await prisma.screenChatMessage.findFirst({
     where: { id: messageId, projectId: access.project.id, deletedAt: null },
   });
   if (!msg) return res.status(404).json({ error: 'Message not found' });
-  if (msg.senderId !== req.user.id && !access.isLeader) {
+  const isSender = msg.senderId === req.user.id;
+  if (!isSender && !access.isLeader) {
     return res.status(403).json({ error: 'You cannot delete this message' });
+  }
+  // A non-leader sender can only delete within 2 minutes of posting (server time).
+  if (isSender && !access.isLeader) {
+    const ageMs = Date.now() - new Date(msg.createdAt).getTime();
+    if (ageMs > CHAT_DELETE_WINDOW_MS) {
+      return res.status(403).json({ error: 'Messages can only be deleted within 2 minutes.' });
+    }
   }
   await prisma.screenChatMessage.update({ where: { id: msg.id }, data: { deletedAt: new Date() } });
   res.status(204).send();

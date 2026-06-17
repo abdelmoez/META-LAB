@@ -130,6 +130,9 @@ export const screeningApi = {
   // module for a META·LAB project. Returns { screenProjectId, created, repaired }.
   // Owner: creates it silently if missing. Member: resolves it. 404 = no access.
   getWorkspace: (mlpid)                => req('GET',  `/metalab/${mlpid}/workspace`),
+  // prompt29 Part 2 — resolve the screening record a META·LAB study came from, so
+  // the RoB workspace can reuse this project's PDF panel for the same paper.
+  metalabStudyRecord: (mlpid, studyId) => req('GET',  `/metalab/${mlpid}/study-record/${encodeURIComponent(studyId)}`),
 
   // Second Review / Final Review (Part 3; prompt21)
   listSecondReview: (pid)            => req('GET',  `/projects/${pid}/second-review`),

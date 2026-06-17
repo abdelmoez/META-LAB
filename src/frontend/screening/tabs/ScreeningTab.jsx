@@ -23,6 +23,22 @@ import { useRealtime } from '../../hooks/useRealtime.js';
 import { useScreeningShortcuts } from '../hooks/useScreeningShortcuts.js';
 import { parseScreeningShortcuts, DEFAULT_SCREENING_SHORTCUTS, keyLabel } from '../screeningShortcuts.js';
 import { api } from '../../api-client/apiClient.js';
+import Tooltip from '../../components/Tooltip.jsx';
+
+// prompt29 Parts 6/7 — plain-English explanations for the compact status labels.
+const STATUS_HELP = {
+  secondReview: 'This record moved to second / full-text review.',
+  quorum: 'Required reviewer agreement has been reached.',
+  sent: 'Sent to META·LAB for the downstream data-extraction workflow.',
+  disputed: 'Reviewers made conflicting decisions — this record needs resolution.',
+  duplicate: 'Detected as a duplicate of another record.',
+};
+const DECISION_LABEL = { include: 'Included', exclude: 'Excluded', maybe: 'Maybe', undecided: 'Undecided' };
+function fmtDecisionDate(iso) {
+  if (!iso) return '';
+  try { return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
+  catch { return ''; }
+}
 
 const LIMIT = 50;
 
@@ -117,6 +133,24 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     }).catch(() => { /* non-fatal; keep cached value */ });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
+
+  // ── Collapsible side panels (prompt29 Parts 4/5) — persisted per user so the
+  // reading area can be widened. Collapsing only swaps the rendered column for a
+  // thin rail; all screening state (selection, filters, keyword selection) lives
+  // here in the parent, so nothing is lost. ───────────────────────────────────
+  const uiPrefsKey = userId ? `metalab.screeningUI.${userId}` : null;
+  const [uiPrefs, setUiPrefs] = useState(() => {
+    if (!uiPrefsKey) return { leftCollapsed: false, rightCollapsed: false };
+    try { const v = JSON.parse(localStorage.getItem(uiPrefsKey) || '{}'); return { leftCollapsed: !!v.leftCollapsed, rightCollapsed: !!v.rightCollapsed }; }
+    catch { return { leftCollapsed: false, rightCollapsed: false }; }
+  });
+  const setPanel = useCallback((key, val) => {
+    setUiPrefs(prev => {
+      const next = { ...prev, [key]: val };
+      if (uiPrefsKey) { try { localStorage.setItem(uiPrefsKey, JSON.stringify(next)); } catch { /* storage full */ } }
+      return next;
+    });
+  }, [uiPrefsKey]);
 
   // ── Records & selection ──────────────────────────────────────────────────
   const [records, setRecords]       = useState([]);
@@ -389,16 +423,21 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         .sift-in:focus { border-color: ${C.acc} !important; }
       `}</style>
 
-      <LeftColumn
-        records={records} total={total} loading={loading} loadingMore={loadingMore}
-        listError={listError} onRetry={() => loadRecords({ reset: true })}
-        search={search} onSearchChange={onSearchChange}
-        filter={filter} onFilterChange={onFilterChange}
-        selectedId={selectedId} onSelect={selectRecord}
-        blindMode={blindMode}
-        hasMore={records.length < total} onLoadMore={loadMore}
-        shortcutPrefs={shortcutPrefs}
-      />
+      {uiPrefs.leftCollapsed ? (
+        <CollapsedRail side="left" label="Records" hint={`${total} record${total === 1 ? '' : 's'}`} onExpand={() => setPanel('leftCollapsed', false)} />
+      ) : (
+        <LeftColumn
+          records={records} total={total} loading={loading} loadingMore={loadingMore}
+          listError={listError} onRetry={() => loadRecords({ reset: true })}
+          search={search} onSearchChange={onSearchChange}
+          filter={filter} onFilterChange={onFilterChange}
+          selectedId={selectedId} onSelect={selectRecord}
+          blindMode={blindMode}
+          hasMore={records.length < total} onLoadMore={loadMore}
+          shortcutPrefs={shortcutPrefs}
+          onCollapse={() => setPanel('leftCollapsed', true)}
+        />
+      )}
 
       <MiddleColumn
         record={selected} loading={loading}
@@ -418,22 +457,45 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         shortcutPrefs={shortcutPrefs}
       />
 
-      <RightColumn
-        pid={pid} project={project} access={access} refreshProject={refreshProject}
-        isLeader={isLeader}
-        inclusion={inclusion} exclusion={exclusion} studyTypes={studyTypes}
-        inclSource={inclSource} exclSource={exclSource}
-        editInclusion={editInclusion} editExclusion={editExclusion}
-        showInclusion={showInclusion} setShowInclusion={setShowInclusion}
-        showExclusion={showExclusion} setShowExclusion={setShowExclusion}
-        labels={labels} setLabels={setLabels} reasons={reasons} setReasons={setReasons}
-        blindMode={blindMode}
-        kwStats={kwStats} loadKwStats={loadKwStats}
-        selectedIncl={selectedIncl} setSelectedIncl={setSelectedIncl}
-        selectedExcl={selectedExcl} setSelectedExcl={setSelectedExcl}
-        clearKeywordFilters={clearKeywordFilters}
-        shownCount={total} projectTotal={kwStats.total}
-      />
+      {uiPrefs.rightCollapsed ? (
+        <CollapsedRail side="right" label="Filters & keywords" hint={selectedKeywords.length ? `${selectedKeywords.length} active` : ''} onExpand={() => setPanel('rightCollapsed', false)} />
+      ) : (
+        <RightColumn
+          pid={pid} project={project} access={access} refreshProject={refreshProject}
+          isLeader={isLeader}
+          inclusion={inclusion} exclusion={exclusion} studyTypes={studyTypes}
+          inclSource={inclSource} exclSource={exclSource}
+          editInclusion={editInclusion} editExclusion={editExclusion}
+          showInclusion={showInclusion} setShowInclusion={setShowInclusion}
+          showExclusion={showExclusion} setShowExclusion={setShowExclusion}
+          labels={labels} setLabels={setLabels} reasons={reasons} setReasons={setReasons}
+          blindMode={blindMode}
+          kwStats={kwStats} loadKwStats={loadKwStats}
+          selectedIncl={selectedIncl} setSelectedIncl={setSelectedIncl}
+          selectedExcl={selectedExcl} setSelectedExcl={setSelectedExcl}
+          clearKeywordFilters={clearKeywordFilters}
+          shownCount={total} projectTotal={kwStats.total}
+          onCollapse={() => setPanel('rightCollapsed', true)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Thin vertical rail shown when a side panel is collapsed (prompt29 Parts 4/5).
+function CollapsedRail({ side, label, hint, onExpand }) {
+  const border = side === 'left' ? { borderRight: `1px solid ${C.brd}` } : { borderLeft: `1px solid ${C.brd}` };
+  return (
+    <div style={{ width: 38, flexShrink: 0, background: C.surf, ...border, display: 'flex', flexDirection: 'column', alignItems: 'center', paddingTop: 10, gap: 12 }}>
+      <button
+        onClick={onExpand}
+        title={`Show ${label} panel`}
+        aria-label={`Show ${label} panel`}
+        style={{ background: C.card, border: `1px solid ${C.brd2}`, color: C.txt2, cursor: 'pointer', borderRadius: 7, width: 26, height: 26, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, lineHeight: 1 }}
+      >{side === 'left' ? '›' : '‹'}</button>
+      <span style={{ writingMode: 'vertical-rl', transform: side === 'left' ? 'rotate(180deg)' : 'none', fontSize: 10, fontFamily: MONO, letterSpacing: '0.12em', textTransform: 'uppercase', color: C.muted, userSelect: 'none' }}>
+        {label}{hint ? ` · ${hint}` : ''}
+      </span>
     </div>
   );
 }
@@ -446,7 +508,7 @@ function LeftColumn({
   records, total, loading, loadingMore, listError, onRetry,
   search, onSearchChange, filter, onFilterChange,
   selectedId, onSelect, blindMode, hasMore, onLoadMore,
-  shortcutPrefs,
+  shortcutPrefs, onCollapse,
 }) {
   const k = shortcutPrefs?.keys ?? DEFAULT_SCREENING_SHORTCUTS.keys;
   return (
@@ -475,9 +537,15 @@ function LeftColumn({
         >
           {FILTERS.map(f => <option key={f.value} value={f.value}>{f.label}</option>)}
         </select>
-        <div style={{ marginTop: 8, fontSize: 10, color: C.muted, fontFamily: MONO, letterSpacing: '0.04em' }}>
-          {records.length} / {total} {total === 1 ? 'RECORD' : 'RECORDS'}
-          {(search || filter !== 'all') && ' · FILTERED'}
+        <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+          <span style={{ fontSize: 10, color: C.muted, fontFamily: MONO, letterSpacing: '0.04em' }}>
+            {records.length} / {total} {total === 1 ? 'RECORD' : 'RECORDS'}
+            {(search || filter !== 'all') && ' · FILTERED'}
+          </span>
+          {onCollapse && (
+            <button onClick={onCollapse} title="Collapse records panel" aria-label="Collapse records panel"
+              style={{ background: 'none', border: `1px solid ${C.brd2}`, color: C.txt2, cursor: 'pointer', borderRadius: 6, width: 22, height: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, lineHeight: 1, flexShrink: 0 }}>‹</button>
+          )}
         </div>
       </div>
 
@@ -581,31 +649,39 @@ function RecordRow({ record, selected, onClick, blindMode }) {
           <span style={{ display: 'inline-flex', gap: 3 }}>
             {reviewers.map((rv, i) => {
               const dc = DECISION_COLORS[rv.decision] || DECISION_COLORS.undecided;
+              const decLabel = DECISION_LABEL[rv.decision] || rv.decision;
+              const dateStr = fmtDecisionDate(rv.decidedAt);
+              // Respect blind mode: never reveal (even anonymised) identity as a name.
+              const tip = blindMode
+                ? { title: 'Reviewer decision hidden', description: 'Reviewer identity is hidden during blind review.' }
+                : { title: `${rv.reviewerName} — ${decLabel}`, description: dateStr ? `Reviewed ${dateStr}` : undefined };
               return (
-                <span
-                  key={i}
-                  title={`${rv.reviewerName}: ${rv.decision}`}
-                  style={{
-                    fontSize: 9.5, fontFamily: MONO, fontWeight: 700, color: dc.txt,
-                    width: 15, height: 15, borderRadius: '50%',
-                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-                    background: alpha(dc.bg, 'aa'),
-                    border: rv.isMe ? `1.5px solid ${dc.border}` : `1px solid ${alpha(dc.border, '55')}`,
-                    boxShadow: rv.isMe ? `0 0 0 1px ${C.surf}` : 'none',
-                  }}
-                >
-                  {DECISION_GLYPH[rv.decision] || '·'}
-                </span>
+                <Tooltip key={i} title={tip.title} description={tip.description}>
+                  <span
+                    tabIndex={0}
+                    aria-label={blindMode ? 'Reviewer decision (identity hidden during blind review)' : `${rv.reviewerName}: ${decLabel}${dateStr ? `, reviewed ${dateStr}` : ''}`}
+                    style={{
+                      fontSize: 9.5, fontFamily: MONO, fontWeight: 700, color: dc.txt,
+                      width: 15, height: 15, borderRadius: '50%',
+                      display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                      background: alpha(dc.bg, 'aa'),
+                      border: rv.isMe ? `1.5px solid ${dc.border}` : `1px solid ${alpha(dc.border, '55')}`,
+                      boxShadow: rv.isMe ? `0 0 0 1px ${C.surf}` : 'none', cursor: 'default',
+                    }}
+                  >
+                    {DECISION_GLYPH[rv.decision] || '·'}
+                  </span>
+                </Tooltip>
               );
             })}
           </span>
         )}
         {record.currentStage === 'full_text'
-          ? <Badge color={C.grn}>2nd review</Badge>
-          : record.quorumMet && <Badge color={C.teal}>Quorum</Badge>}
-        {record.handoffStatus === 'sent' && <Badge color={C.acc}>Sent</Badge>}
-        {record.disputed && <Badge color={C.gold}>Disputed</Badge>}
-        {record.isDuplicate && <Badge color={C.gold}>Dup</Badge>}
+          ? <Tooltip content={STATUS_HELP.secondReview}><Badge color={C.grn}>2nd review</Badge></Tooltip>
+          : record.quorumMet && <Tooltip content={STATUS_HELP.quorum}><Badge color={C.teal}>Quorum</Badge></Tooltip>}
+        {record.handoffStatus === 'sent' && <Tooltip content={STATUS_HELP.sent}><Badge color={C.acc}>Sent</Badge></Tooltip>}
+        {record.disputed && <Tooltip content={STATUS_HELP.disputed}><Badge color={C.gold}>Disputed</Badge></Tooltip>}
+        {record.isDuplicate && <Tooltip content={STATUS_HELP.duplicate}><Badge color={C.gold}>Dup</Badge></Tooltip>}
       </div>
     </div>
   );
@@ -973,7 +1049,7 @@ function RightColumn({
   showInclusion, setShowInclusion, showExclusion, setShowExclusion,
   labels, setLabels, reasons, setReasons, blindMode,
   kwStats, loadKwStats, selectedIncl, setSelectedIncl, selectedExcl, setSelectedExcl,
-  clearKeywordFilters, shownCount, projectTotal,
+  clearKeywordFilters, shownCount, projectTotal, onCollapse,
 }) {
   const [open, setOpen] = useState({
     pico: true, keywords: true,
@@ -983,6 +1059,14 @@ function RightColumn({
 
   return (
     <div className="sift-rt" style={{ width: 320, flexShrink: 0, borderLeft: `1px solid ${C.brd}`, background: C.surf, overflowY: 'auto', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      {/* Collapse control (prompt29 Part 4) */}
+      {onCollapse && (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '8px 12px 8px 16px', borderBottom: `1px solid ${C.brd}` }}>
+          <span style={{ fontSize: 9.5, fontFamily: MONO, letterSpacing: '0.1em', textTransform: 'uppercase', color: C.muted }}>Filters & keywords</span>
+          <button onClick={onCollapse} title="Collapse panel" aria-label="Collapse filters panel"
+            style={{ background: 'none', border: `1px solid ${C.brd2}`, color: C.txt2, cursor: 'pointer', borderRadius: 6, width: 22, height: 22, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, lineHeight: 1, flexShrink: 0 }}>›</button>
+        </div>
+      )}
       {/* Blind-mode banner */}
       {blindMode && (
         <div style={{ padding: '10px 16px', borderBottom: `1px solid ${C.brd}`, display: 'flex', alignItems: 'center', gap: 8 }}>
