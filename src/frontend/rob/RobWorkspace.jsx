@@ -290,8 +290,8 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
   const single = { domains: ROB2.domains.map(d => ({ id: d.id, shortLabel: d.shortLabel })), rows: [{ id: view.id, label: view.resultLabel || view.studyId, cells: ROB2.domains.map(d => ({ domainId: d.id, judgment: dotJudgment(d.id) })), overall: summaryOverall }] };
 
   return (
-    <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
-    <div style={{ ...shell, flex: 1, minWidth: 0 }}>
+    <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+    <div style={{ ...shell, flex: '1 1 460px', minWidth: 0 }}>
       {/* ── Context bar ─────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '14px 20px', borderBottom: `1px solid ${C.brd}`, background: C.card, flexWrap: 'wrap' }}>
         <button onClick={onClose} style={{ ...ghostBtn, padding: '6px 10px' }} aria-label="Back to assessments"><Icon name="arrowLeft" size={15} /></button>
@@ -387,7 +387,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
       )}
     </div>
     {showPdf && (
-      <aside style={{ width: 'min(46%, 560px)', flexShrink: 0, position: 'sticky', top: 0 }}>
+      <aside style={{ flex: '1 1 340px', minWidth: 300, maxWidth: 560, position: 'sticky', top: 0 }}>
         <RobPdfPanel metaLabProjectId={view.projectId} studyId={view.studyId} canManage={editable} onClose={() => setShowPdf(false)} />
       </aside>
     )}

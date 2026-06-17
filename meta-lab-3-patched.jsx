@@ -7715,18 +7715,27 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   // prompt29 Part 9 — true Screening completeness for the workflow stepper. The
   // linked-workspace roll-up (GET /metalab/:id/summary) reports whether every
   // screening substep is finished; the stepper turns the Screening step green
-  // only when this is true. Refetched on project open and on tab changes (so it
-  // refreshes when the user leaves the Screening stage).
+  // only when this is true. Fetched on project open and refreshed live on
+  // screening realtime pokes (decisions / conflicts / handoff) so the stepper is
+  // accurate without refetching on every tab change.
   const[screeningComplete,setScreeningComplete]=useState(false);
-  useEffect(()=>{
-    if(!activeId){setScreeningComplete(false);return undefined;}
-    let dead=false;
+  const refreshScreeningComplete=useCallback(()=>{
+    if(!activeId)return;
     fetch(`/api/screening/metalab/${activeId}/summary`,{credentials:"include"})
       .then(r=>r.ok?r.json():null)
-      .then(d=>{if(!dead)setScreeningComplete(!!(d&&d.linked&&d.screeningComplete));})
+      .then(d=>setScreeningComplete(!!(d&&d.linked&&d.screeningComplete)))
       .catch(()=>{});
-    return()=>{dead=true;};
-  },[activeId,tab]);
+  },[activeId]);
+  useEffect(()=>{
+    if(!activeId){setScreeningComplete(false);return undefined;}
+    refreshScreeningComplete();
+    return undefined;
+  },[activeId,refreshScreeningComplete]);
+  useRealtime({
+    "decision.saved": refreshScreeningComplete,
+    "status.changed": refreshScreeningComplete,
+    "handoff.updated": refreshScreeningComplete,
+  });
 
   // Sidebar footer version from the shared GET /api/version (prompt6) —
   // silent fallback: on any error the footer just shows the static label.
