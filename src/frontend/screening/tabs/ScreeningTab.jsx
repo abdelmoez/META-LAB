@@ -10,12 +10,13 @@
  * Restructures the logic of pages/SiftWorkbench.jsx into three columns and the
  * shared design system (ui/theme.js + ui/components.jsx). Inline styles only.
  */
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { C, FONT, MONO, alpha, DECISION_COLORS, DECISION_GLYPH } from '../ui/theme.js';
 import { Loading, ErrorBanner, Button, Badge, DecisionChip, Card, SectionLabel, EmptyState, Toggle } from '../ui/components.jsx';
 import { renderHighlighted } from '../ui/highlightRender.jsx';
 import { extractKeywords } from '../../../research-engine/screening/keywords.js';
 import { DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS } from '../../../research-engine/screening/defaultKeywords.js';
+import { effectiveKeywords, KEYWORD_SOURCE } from '../../../research-engine/screening/criteriaKeywords.js';
 import PdfViewer from '../components/PdfViewer.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 import { useRealtime } from '../../hooks/useRealtime.js';
@@ -72,9 +73,30 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   // empty (Task 8 — "default keyword sets to every project").
   const storedIncl = parseList(project?.inclusionKeywords);
   const storedExcl = parseList(project?.exclusionKeywords);
-  const inclusion = storedIncl.length ? storedIncl : DEFAULT_INCLUDE_KEYWORDS;
-  const exclusion = storedExcl.length ? storedExcl : DEFAULT_EXCLUDE_KEYWORDS;
   const studyTypes = parseList(project?.studyTypeFilter);
+
+  // prompt28 Part 1 — layer this project's inclusion/exclusion CRITERIA on top of
+  // the stored (default/manual) keywords. The criteria are derived from the linked
+  // META·LAB project's eligibility criteria, cached per-screening-project in
+  // `picoSnapshot` (refreshed server-side on every load), so the keywords stay
+  // project-specific and update when the criteria change — WITHOUT persisting or
+  // duplicating anything. Each term carries a source so the panel can badge the
+  // criteria-derived ones.
+  const effKw = useMemo(() => effectiveKeywords({
+    storedInclude: storedIncl,
+    storedExclude: storedExcl,
+    defaultInclude: DEFAULT_INCLUDE_KEYWORDS,
+    defaultExclude: DEFAULT_EXCLUDE_KEYWORDS,
+    picoSnapshot: project?.picoSnapshot,
+  }), [storedIncl.join('|'), storedExcl.join('|'), project?.picoSnapshot]); // eslint-disable-line react-hooks/exhaustive-deps
+  const inclusion = effKw.include.terms;
+  const exclusion = effKw.exclude.terms;
+  const inclSource = effKw.include.sourceByTerm;
+  const exclSource = effKw.exclude.sourceByTerm;
+  // The leader's keyword editor manages ONLY the stored (default/manual) list —
+  // the criteria-derived layer is read-only here (edit it in PICO & Question).
+  const editInclusion = storedIncl.length ? storedIncl : DEFAULT_INCLUDE_KEYWORDS;
+  const editExclusion = storedExcl.length ? storedExcl : DEFAULT_EXCLUDE_KEYWORDS;
 
   // ── Keyboard shortcut prefs (per-user, persisted to /api/profile) ────────
   const lsKey = userId ? `metalab.screeningShortcuts.${userId}` : null;
@@ -400,6 +422,8 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         pid={pid} project={project} access={access} refreshProject={refreshProject}
         isLeader={isLeader}
         inclusion={inclusion} exclusion={exclusion} studyTypes={studyTypes}
+        inclSource={inclSource} exclSource={exclSource}
+        editInclusion={editInclusion} editExclusion={editExclusion}
         showInclusion={showInclusion} setShowInclusion={setShowInclusion}
         showExclusion={showExclusion} setShowExclusion={setShowExclusion}
         labels={labels} setLabels={setLabels} reasons={reasons} setReasons={setReasons}
@@ -945,7 +969,7 @@ function StarRating({ value, onChange, disabled }) {
 
 function RightColumn({
   pid, project, access, refreshProject, isLeader,
-  inclusion, exclusion, studyTypes,
+  inclusion, exclusion, studyTypes, inclSource, exclSource, editInclusion, editExclusion,
   showInclusion, setShowInclusion, showExclusion, setShowExclusion,
   labels, setLabels, reasons, setReasons, blindMode,
   kwStats, loadKwStats, selectedIncl, setSelectedIncl, selectedExcl, setSelectedExcl,
@@ -979,6 +1003,8 @@ function RightColumn({
         <KeywordPanel
           pid={pid} project={project} refreshProject={refreshProject} isLeader={isLeader}
           inclusion={inclusion} exclusion={exclusion}
+          inclSource={inclSource} exclSource={exclSource}
+          editInclusion={editInclusion} editExclusion={editExclusion}
           kwStats={kwStats} loadKwStats={loadKwStats}
           selectedIncl={selectedIncl} setSelectedIncl={setSelectedIncl}
           selectedExcl={selectedExcl} setSelectedExcl={setSelectedExcl}
@@ -1064,13 +1090,15 @@ const KW_PREVIEW = 8; // collapsed list length
 
 function KeywordPanel({
   pid, project, refreshProject, isLeader,
-  inclusion, exclusion, kwStats, loadKwStats,
+  inclusion, exclusion, inclSource, exclSource, editInclusion, editExclusion, kwStats, loadKwStats,
   selectedIncl, setSelectedIncl, selectedExcl, setSelectedExcl, clearKeywordFilters,
   shownCount, projectTotal,
   showInclusion, setShowInclusion, showExclusion, setShowExclusion,
 }) {
   const [editing, setEditing] = useState(false);
   const anySelected = selectedIncl.length + selectedExcl.length > 0;
+  const criteriaCount = [...Object.values(inclSource || {}), ...Object.values(exclSource || {})]
+    .filter(s => s === KEYWORD_SOURCE.CRITERIA).length;
 
   return (
     <div>
@@ -1091,15 +1119,23 @@ function KeywordPanel({
 
       <KeywordGroup
         title="Include keywords" accent={C.grn}
-        terms={inclusion} counts={kwStats.include || {}}
+        terms={inclusion} counts={kwStats.include || {}} sourceByTerm={inclSource}
         selected={selectedIncl} setSelected={setSelectedIncl}
       />
       <div style={{ height: 14 }} />
       <KeywordGroup
         title="Exclude keywords" accent={C.red}
-        terms={exclusion} counts={kwStats.exclude || {}}
+        terms={exclusion} counts={kwStats.exclude || {}} sourceByTerm={exclSource}
         selected={selectedExcl} setSelected={setSelectedExcl}
       />
+
+      {/* prompt28 Part 1 — explain the criteria-derived layer when present. */}
+      {criteriaCount > 0 && (
+        <div style={{ marginTop: 10, fontSize: 10.5, color: C.muted, lineHeight: 1.5, display: 'flex', alignItems: 'center', gap: 6 }}>
+          <CriteriaBadge />
+          <span>Keywords drawn from this project&apos;s eligibility criteria. Edit them in PICO &amp; Question.</span>
+        </div>
+      )}
 
       {/* Highlight toggles (independent of filters) */}
       <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.brd}`, display: 'flex', flexDirection: 'column', gap: 11 }}>
@@ -1129,7 +1165,7 @@ function KeywordPanel({
             <div style={{ marginTop: 12 }}>
               <KeywordEditor
                 pid={pid} project={project} isLeader={isLeader}
-                inclusion={inclusion} exclusion={exclusion}
+                inclusion={editInclusion} exclusion={editExclusion}
                 refreshProject={() => { refreshProject?.(); loadKwStats?.(); }}
               />
             </div>
@@ -1140,7 +1176,22 @@ function KeywordPanel({
   );
 }
 
-function KeywordGroup({ title, accent, terms, counts, selected, setSelected }) {
+// Subtle "Project criteria" provenance badge (prompt28 Part 1).
+function CriteriaBadge({ compact }) {
+  return (
+    <span
+      title="Derived from this project's inclusion/exclusion criteria"
+      style={{
+        display: 'inline-flex', alignItems: 'center', flexShrink: 0,
+        fontSize: 8.5, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.03em',
+        color: C.acc, background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '38')}`,
+        borderRadius: 5, padding: compact ? '0px 4px' : '1px 5px', textTransform: 'uppercase', whiteSpace: 'nowrap',
+      }}
+    >criteria</span>
+  );
+}
+
+function KeywordGroup({ title, accent, terms, counts, selected, setSelected, sourceByTerm }) {
   const [expanded, setExpanded] = useState(false);
   const list = expanded ? terms : terms.slice(0, KW_PREVIEW);
   const allSelected = terms.length > 0 && selected.length === terms.length;
@@ -1169,11 +1220,13 @@ function KeywordGroup({ title, accent, terms, counts, selected, setSelected }) {
           {list.map(t => {
             const on = selected.includes(t);
             const n = counts[t] || 0;
+            const isCriteria = (sourceByTerm || {})[t] === KEYWORD_SOURCE.CRITERIA;
             return (
               <label key={t} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', padding: '2px 0' }}>
                 <input type="checkbox" checked={on} onChange={() => toggleTerm(t)}
                   style={{ accentColor: accent, cursor: 'pointer', flexShrink: 0 }} />
-                <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: on ? C.txt : C.txt2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t}</span>
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12, color: on ? C.txt : C.txt2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={isCriteria ? `${t} · from project criteria` : t}>{t}</span>
+                {isCriteria && <CriteriaBadge compact />}
                 <span style={{ fontSize: 10, fontFamily: MONO, color: n ? accent : C.muted, background: n ? alpha(accent, '14') : 'transparent', borderRadius: 4, padding: '1px 6px', flexShrink: 0, minWidth: 22, textAlign: 'center' }}>{n}</span>
               </label>
             );

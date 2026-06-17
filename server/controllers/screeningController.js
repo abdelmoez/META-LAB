@@ -11,6 +11,7 @@ import { getMetaSiftSettings, getEffectiveQuorum } from '../screening/settings.j
 import { snapshotPico } from '../screening/picoSnapshot.js';
 import { scorePair, normalizeTitle } from '../../src/research-engine/screening/deduplication.js';
 import { DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS } from '../../src/research-engine/screening/defaultKeywords.js';
+import { effectiveKeywords } from '../../src/research-engine/screening/criteriaKeywords.js';
 import { mkProject } from '../../src/research-engine/project-model/defaults.js';
 import { filterRecordsByKeywords, countArticlesByKeyword } from '../../src/research-engine/screening/keywordFilter.js';
 import { studyFromRecord } from './screeningReviewController.js';
@@ -777,15 +778,43 @@ export async function getKeywordStats(req, res) {
       where: { projectId: access.project.id },
       select: { id: true, title: true, abstract: true, keywords: true },
     });
+    // prompt28 Part 1 — count the EFFECTIVE keyword lists: stored (default/manual)
+    // PLUS this project's criteria-derived terms, so the criteria badges in the
+    // panel also show article counts. Refresh the cached picoSnapshot from the
+    // linked META·LAB project first (same lazy pattern as getProject) so the
+    // server's effective list matches the freshly-derived one on the client.
+    let picoSnapshot = access.project.picoSnapshot;
+    if (access.project.linkedMetaLabProjectId) {
+      try {
+        const ml = await prisma.project.findFirst({
+          where: { id: access.project.linkedMetaLabProjectId, deletedAt: null },
+          select: { data: true },
+        });
+        if (ml) {
+          const snap = snapshotPico(ml.data);
+          if (snap !== '{}') {
+            if (snap !== access.project.picoSnapshot) {
+              prisma.screenProject.update({ where: { id: access.project.id }, data: { picoSnapshot: snap } }).catch(() => {});
+            }
+            picoSnapshot = snap;
+          }
+        }
+      } catch { /* best-effort — keep the cached snapshot */ }
+    }
     // Fall back to the shared defaults for projects created before keyword seeding.
     const storedIncl = parseJsonList(access.project.inclusionKeywords);
     const storedExcl = parseJsonList(access.project.exclusionKeywords);
-    const inclusion = storedIncl.length ? storedIncl : DEFAULT_INCLUDE_KEYWORDS;
-    const exclusion = storedExcl.length ? storedExcl : DEFAULT_EXCLUDE_KEYWORDS;
+    const eff = effectiveKeywords({
+      storedInclude: storedIncl,
+      storedExclude: storedExcl,
+      defaultInclude: DEFAULT_INCLUDE_KEYWORDS,
+      defaultExclude: DEFAULT_EXCLUDE_KEYWORDS,
+      picoSnapshot,
+    });
     res.json({
       total: records.length,
-      include: countArticlesByKeyword(records, inclusion),
-      exclude: countArticlesByKeyword(records, exclusion),
+      include: countArticlesByKeyword(records, eff.include.terms),
+      exclude: countArticlesByKeyword(records, eff.exclude.terms),
     });
   } catch (err) {
     console.error('[screening] getKeywordStats:', err.message);

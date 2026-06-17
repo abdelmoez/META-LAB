@@ -78,7 +78,7 @@ function SegmentedControl({ qid, value, onChange }) {
 }
 
 // ── Workspace ─────────────────────────────────────────────────────────────────
-export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
+export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnly = false }) {
   const [view, setView] = useState(null);       // server assessment view
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -143,6 +143,9 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
   // favourable colour (it shows neutral "na" until its required questions are answered).
   const dotJudgment = (domainId) => overriddenByDomain[domainId] || (domainComplete(domainId) ? (liveProposals[domainId]?.judgment || 'na') : 'na');
   const finalised = view?.status === 'complete';
+  // A view-only viewer (e.g. a read-only/shared project, or insufficient
+  // permission) can navigate + read everything but cannot change anything.
+  const editable = !finalised && !readOnly;
 
   // ── Autosave (debounced) ──────────────────────────────────────────────────
   const flush = useCallback(async () => {
@@ -220,9 +223,10 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
       const di = DOMAIN_IDS.indexOf(active);
       const reachable = ROB2.domains[di].questions.filter(q => isReachable(q, answers[active] || {}));
       const fi = reachable.findIndex(q => q.id === focusedQ);
-      if (e.key >= '1' && e.key <= '5' && focusedQ) {
+      if (e.key >= '1' && e.key <= '5' && focusedQ && editable) {
         // Only answer when the focused question actually belongs to (and is reachable
         // in) the active domain — guards against a stale focusedQ after a domain switch.
+        // `editable` also blocks the read-only/finalised number-key bypass.
         if (reachable.some(q => q.id === focusedQ)) setAnswer(active, focusedQ, KEY_TO_RESPONSE[e.key]);
         e.preventDefault();
       } else if (e.key === 'n') {
@@ -233,7 +237,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
         setActive(di < DOMAIN_IDS.length - 1 ? DOMAIN_IDS[di + 1] : 'summary'); setFocusedQ(null); e.preventDefault();
       } else if (e.key === '[') {
         if (di > 0) { setActive(DOMAIN_IDS[di - 1]); setFocusedQ(null); } e.preventDefault();
-      } else if (e.key === 'o' && !finalised) {
+      } else if (e.key === 'o' && editable) {
         setOverride({ target: 'domain', domainId: active, current: resolvedDomain(active) }); e.preventDefault();
       } else if (e.key === '?') {
         if (focusedQ) setGuidanceOpen(g => ({ ...g, [focusedQ]: !g[focusedQ] })); else setShowGuide(s => !s); e.preventDefault();
@@ -300,7 +304,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
           <JudgmentPill judgment={finalised ? view.overall.resolvedOverall : liveOverall.judgment} size="md" provisional={!liveCompleteness.overall.complete && !finalised} />
         </div>
         <span aria-live="polite" style={{ fontSize: 11, fontFamily: MONO, color: saveState === 'error' ? C.red : C.muted, minWidth: 64 }}>
-          {finalised ? 'finalised' : saveState === 'saving' ? 'saving…' : saveState === 'saved' ? '✓ saved' : saveState === 'error' ? 'save failed' : 'autosaves'}
+          {readOnly ? 'view only' : finalised ? 'finalised' : saveState === 'saving' ? 'saving…' : saveState === 'saved' ? '✓ saved' : saveState === 'error' ? 'save failed' : 'autosaves'}
         </span>
       </div>
 
@@ -344,7 +348,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
         <main style={{ padding: '20px 24px', minHeight: 420 }}>
           {active === 'summary' ? (
             <SummaryStep view={view} live={{ proposals: liveProposals, overall: liveOverall, completeness: liveCompleteness, resolvedDomain: dotJudgment }}
-              saving={saveState === 'saving'} single={single} finalised={finalised} onFinalise={doFinalise} onReopen={doReopen} onExport={exportAs}
+              saving={saveState === 'saving'} single={single} finalised={finalised} editable={editable} readOnly={readOnly} onFinalise={doFinalise} onReopen={doReopen} onExport={exportAs}
               onOverrideOverall={() => setOverride({ target: 'overall', current: view.overall.resolvedOverall })} onJump={setActive} />
           ) : (
             <DomainPane
@@ -356,7 +360,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
               overrideInfo={(view.domains || []).find(x => x.domainId === active)}
               focusedQ={focusedQ} setFocusedQ={setFocusedQ}
               guidanceOpen={guidanceOpen} setGuidanceOpen={setGuidanceOpen}
-              reduced={reduced} finalised={finalised}
+              reduced={reduced} finalised={finalised} editable={editable}
               onAnswer={(qid, r) => setAnswer(active, qid, r)}
               onMeta={setQMeta}
               onOverride={() => setOverride({ target: 'domain', domainId: active, current: resolvedDomain(active) })}
@@ -373,7 +377,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged }) {
 }
 
 // ── Domain pane ───────────────────────────────────────────────────────────────
-function DomainPane({ domain, answers, meta, proposal, resolved, overrideInfo, focusedQ, setFocusedQ, guidanceOpen, setGuidanceOpen, reduced, finalised, onAnswer, onMeta, onOverride }) {
+function DomainPane({ domain, answers, meta, proposal, resolved, overrideInfo, focusedQ, setFocusedQ, guidanceOpen, setGuidanceOpen, reduced, finalised, editable, onAnswer, onMeta, onOverride }) {
   const reachable = domain.questions.filter(q => isReachable(q, answers));
   return (
     <div>
@@ -396,7 +400,7 @@ function DomainPane({ domain, answers, meta, proposal, resolved, overrideInfo, f
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14, color: C.txt, lineHeight: 1.5, fontWeight: 500 }}>{q.text}</div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 11, flexWrap: 'wrap' }}>
-                    <SegmentedControl qid={q.id} value={answers[q.id] || ''} onChange={r => !finalised && onAnswer(q.id, r)} />
+                    <SegmentedControl qid={q.id} value={answers[q.id] || ''} onChange={r => editable && onAnswer(q.id, r)} />
                     <button onClick={() => setGuidanceOpen(g => ({ ...g, [q.id]: !g[q.id] }))} style={linkBtn} aria-expanded={!!gOpen}>
                       <Icon name="info" size={13} /> {gOpen ? 'Hide guidance' : 'Guidance'}
                     </button>
@@ -404,7 +408,7 @@ function DomainPane({ domain, answers, meta, proposal, resolved, overrideInfo, f
                   {gOpen && (
                     <div style={{ marginTop: 11, padding: '10px 12px', background: C.surf, borderRadius: 8, fontSize: 12.5, color: C.txt2, lineHeight: 1.6, borderLeft: `3px solid ${alpha(C.acc, '50')}` }}>{q.guidance}</div>
                   )}
-                  {focused && !finalised && (
+                  {focused && editable && (
                     <div style={{ marginTop: 11, display: 'grid', gap: 8 }}>
                       <textarea placeholder="Rationale (optional)" value={m.rationale || ''} onChange={e => onMeta(q.id, { rationale: e.target.value })}
                         rows={2} style={taStyle} />
@@ -438,7 +442,7 @@ function DomainPane({ domain, answers, meta, proposal, resolved, overrideInfo, f
               </>
             )}
           </div>
-          {!finalised && (
+          {editable && (
             <button onClick={onOverride} style={overrideBtn}><Icon name="pencil" size={12} /> Override (o)</button>
           )}
         </div>
@@ -456,7 +460,7 @@ function DomainPane({ domain, answers, meta, proposal, resolved, overrideInfo, f
 }
 
 // ── Summary step ──────────────────────────────────────────────────────────────
-function SummaryStep({ view, live, saving, single, finalised, onFinalise, onReopen, onExport, onOverrideOverall, onJump }) {
+function SummaryStep({ view, live, saving, single, finalised, editable, readOnly, onFinalise, onReopen, onExport, onOverrideOverall, onJump }) {
   const complete = live.completeness.overall.complete;
   return (
     <div>
@@ -471,7 +475,7 @@ function SummaryStep({ view, live, saving, single, finalised, onFinalise, onReop
             <Icon name="alertTriangle" size={14} /> Multiple domains raise Some concerns — consider escalating to High.
           </span>
         )}
-        {!finalised && <button onClick={onOverrideOverall} style={overrideBtn}><Icon name="pencil" size={12} /> Override overall</button>}
+        {editable && <button onClick={onOverrideOverall} style={overrideBtn}><Icon name="pencil" size={12} /> Override overall</button>}
       </div>
 
       <div style={{ marginBottom: 20 }}>
@@ -496,14 +500,14 @@ function SummaryStep({ view, live, saving, single, finalised, onFinalise, onReop
         })}
       </div>
 
-      {!complete && !finalised && (
+      {!complete && editable && (
         <div style={{ padding: '10px 14px', borderRadius: 9, background: alpha(C.yel, '14'), border: `1px solid ${alpha(C.yel, '40')}`, color: C.txt2, fontSize: 12.5, marginBottom: 16 }}>
           <Icon name="info" size={13} /> Answer all reachable signalling questions to enable finalising ({live.completeness.overall.answered}/{live.completeness.overall.required} answered).
         </div>
       )}
 
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        {finalised ? (
+        {readOnly ? null : finalised ? (
           <button onClick={onReopen} style={ghostBtn}><Icon name="refresh" size={13} /> Re-open</button>
         ) : (
           <button onClick={onFinalise} disabled={!complete || saving} title={saving ? 'Saving…' : (!complete ? 'Answer all reachable questions first' : 'Finalise')} style={primaryBtn(!complete || saving)}><Icon name="check" size={14} /> {saving ? 'Saving…' : 'Finalise'}</button>

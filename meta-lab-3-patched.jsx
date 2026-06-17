@@ -20,6 +20,11 @@ import ExportDialog from "./src/frontend/components/ExportDialog.jsx";
 import { rasterizeSvg, downloadBlob, downloadText } from "./src/frontend/components/exportCore.js";
 import { fmtNum, fmtES, fmtCI, fmtEstCI, fmtP, fmtPct, fmtI2, fmtWeight, fmtInt, normalizePrecision, DECIMAL_OPTIONS } from "./src/research-engine/format/precision.js";
 import { orderStudies, EXTRACTION_SORTS, DEFAULT_EXTRACTION_SORT } from "./src/frontend/pages/extractionOrder.js";
+// prompt28 Part 2 — the standalone RoB 2 engine, embedded natively into the
+// "Risk of Bias" workspace tab when the rob_engine_v2 flag is on.
+import ProjectRobPanel from "./src/frontend/rob/ProjectRobPanel.jsx";
+import { robFlagEnabled } from "./src/frontend/rob/robApi.js";
+import { normalizeRobTool } from "./src/research-engine/rob/tools.js";
 
 /* ════════════ UTILS ════════════ */
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -3908,7 +3913,31 @@ ${paperText.slice(0,15000)}`;
 }
 
 /* ════════════ TAB: RISK OF BIAS ════════════ */
+/* prompt28 Part 2 — dispatcher. When the rob_engine_v2 flag is ON, the project's
+   Risk of Bias tab IS the new standalone RoB 2 engine, scoped to the currently
+   open project (no project selector, no leaving the workspace). When the flag is
+   OFF, the original lightweight per-study table (LegacyRoBTab) is preserved so
+   nothing breaks for projects/orgs that have not enabled the engine. */
 function RoBTab({project,updateProject,activeId}){
+  const[flag,setFlag]=useState(null); // null=checking
+  useEffect(()=>{let dead=false;robFlagEnabled().then(v=>{if(!dead)setFlag(!!v);}).catch(()=>{if(!dead)setFlag(false);});return()=>{dead=true;};},[]);
+  if(flag===null) return <div style={{padding:40,textAlign:"center",color:C.muted,fontSize:13}}>Loading Risk of Bias…</div>;
+  if(!flag) return <LegacyRoBTab project={project} updateProject={updateProject} activeId={activeId}/>;
+  const perms=projectPerms(project);
+  const canEdit=!!perms.canEdit&&!project._readOnly;
+  return(<div>
+    <SectionHeader icon="scale" title="Risk of Bias" desc="Outcome-level RoB 2 for this project — the engine proposes a judgement; you decide."/>
+    <ProjectRobPanel
+      projectId={activeId}
+      embedded
+      canEdit={canEdit}
+      robTool={normalizeRobTool(project.robTool)}
+      onSelectTool={id=>updateProject(activeId,p=>({...p,robTool:normalizeRobTool(id)}))}
+    />
+  </div>);
+}
+
+function LegacyRoBTab({project,updateProject,activeId}){
   const{studies,robMethod}=project;
   const setMethod=m=>updateProject(activeId,p=>({...p,robMethod:m}));
   const updRob=(sid,domain,val)=>updateProject(activeId,p=>({...p,studies:p.studies.map(s=>s.id===sid?{...s,rob:{...s.rob,[domain]:val}}:s)}));

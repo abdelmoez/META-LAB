@@ -7,15 +7,13 @@
  * with their assessments, lets the owner start an assessment, and opens the
  * keyboard-first RobWorkspace inline.
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import Icon from '../components/icons.jsx';
 import { api } from '../api-client/apiClient.js';
-import { robApi, robFlagEnabled } from './robApi.js';
-import RobWorkspace from './RobWorkspace.jsx';
-import RobTrafficLight from './RobTrafficLight.jsx';
-import { judgmentStyle } from './judgmentStyle.js';
+import { robFlagEnabled } from './robApi.js';
+import ProjectRobPanel from './ProjectRobPanel.jsx';
 
 export default function RobPage() {
   const { projectId } = useParams();
@@ -83,120 +81,11 @@ function ProjectPicker() {
   );
 }
 
+// The per-project view now delegates to the shared, embeddable ProjectRobPanel
+// (also used natively inside the META·LAB workspace "Risk of Bias" tab, prompt28
+// Part 2). Standalone here: read-only tool selector, full owner editing.
 function ProjectRob({ projectId }) {
-  const [project, setProject] = useState(null);
-  const [assessments, setAssessments] = useState([]);
-  const [matrix, setMatrix] = useState(null);
-  const [error, setError] = useState('');
-  const [openId, setOpenId] = useState(null);     // open assessment in the workspace
-  const [creatingFor, setCreatingFor] = useState(null); // study being created-for
-
-  const reload = useCallback(async () => {
-    try {
-      const [proj, list] = await Promise.all([
-        api.projects.get(projectId),
-        robApi.listAssessments(projectId),
-      ]);
-      setProject(proj);
-      setAssessments(list.assessments || []);
-      setMatrix(list.matrix || null);
-      setError('');
-    } catch (e) { setError(e.message); }
-  }, [projectId]);
-
-  useEffect(() => { reload(); }, [reload]);
-
-  async function createFor(study, resultLabel) {
-    try {
-      const res = await robApi.createAssessment({ projectId, studyId: study.id, resultLabel: resultLabel || '' });
-      setCreatingFor(null);
-      await reload();
-      setOpenId(res.assessment.id);
-    } catch (e) { setError(e.message); }
-  }
-  async function removeAssessment(id) {
-    try { await robApi.remove(id); await reload(); } catch (e) { setError(e.message); }
-  }
-
-  if (openId) {
-    return <RobWorkspace assessmentId={openId} onClose={() => { setOpenId(null); reload(); }} onChanged={reload} />;
-  }
-  if (error && !project) return <ErrorBox msg={error} onRetry={reload} />;
-  if (!project) return <Center>Loading…</Center>;
-
-  const studies = Array.isArray(project.studies) ? project.studies : [];
-  const byStudy = {};
-  for (const a of assessments) { (byStudy[a.studyId] = byStudy[a.studyId] || []).push(a); }
-
-  return (
-    <div>
-      {error && <div style={{ marginBottom: 14 }}><ErrorBox msg={error} onRetry={reload} /></div>}
-      <h2 style={{ fontSize: 18, fontWeight: 800, margin: '0 0 4px' }}>{project.name}</h2>
-      <p style={{ fontSize: 13, color: C.txt2, margin: '0 0 18px' }}>{assessments.length} risk-of-bias assessment{assessments.length === 1 ? '' : 's'} · RoB 2 (effect of assignment)</p>
-
-      {assessments.length > 0 && (
-        <div style={{ ...card, marginBottom: 22 }}>
-          <div style={{ fontSize: 12, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>Summary (traffic light)</div>
-          <RobTrafficLight matrix={matrix} title={`${project.name} — Risk of bias (RoB 2)`} />
-        </div>
-      )}
-
-      {studies.length === 0 ? (
-        <Center>This project has no studies yet. Add studies in the workspace, then assess their risk of bias here.</Center>
-      ) : (
-        <div style={{ display: 'grid', gap: 10 }}>
-          {studies.map(s => {
-            const list = byStudy[s.id] || [];
-            const label = `${s.author || ''} ${s.year ? `(${s.year})` : ''}`.trim() || (s.title || s.id);
-            return (
-              <div key={s.id} style={card}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 700, fontSize: 14 }}>{label}</div>
-                    {s.title && <div style={{ fontSize: 12, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title}</div>}
-                  </div>
-                  <button onClick={() => setCreatingFor(creatingFor === s.id ? null : s.id)} style={ghost}><Icon name="plus" size={13} /> Assess a result</button>
-                </div>
-
-                {creatingFor === s.id && <CreateForm onCancel={() => setCreatingFor(null)} onCreate={label2 => createFor(s, label2)} />}
-
-                {list.length > 0 && (
-                  <div style={{ marginTop: 10, display: 'grid', gap: 6 }}>
-                    {list.map(a => {
-                      const st = judgmentStyle(a.overall);
-                      return (
-                        <div key={a.id} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 11px', borderRadius: 8, background: C.surf, border: `1px solid ${C.brd}` }}>
-                          <span style={{ width: 11, height: 11, borderRadius: '50%', background: st.hex, flexShrink: 0 }} />
-                          <button onClick={() => setOpenId(a.id)} style={{ flex: 1, textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', fontFamily: FONT, color: C.txt, fontSize: 13, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                            {a.resultLabel || 'Result'} — <span style={{ color: st.fg, fontWeight: 700 }}>{st.label}</span> {a.status === 'complete' ? '· finalised' : '· draft'}
-                          </button>
-                          <button onClick={() => setOpenId(a.id)} style={miniBtn}>Open</button>
-                          <button onClick={() => removeAssessment(a.id)} style={{ ...miniBtn, color: C.muted }} title="Delete"><Icon name="trash" size={12} /></button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function CreateForm({ onCancel, onCreate }) {
-  const [label, setLabel] = useState('');
-  return (
-    <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-      <input autoFocus value={label} onChange={e => setLabel(e.target.value)} placeholder="Result / outcome being assessed (e.g. Mortality at 6 months)"
-        onKeyDown={e => { if (e.key === 'Enter') onCreate(label); if (e.key === 'Escape') onCancel(); }}
-        style={{ flex: 1, minWidth: 240, padding: '8px 11px', background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 8, color: C.txt, fontSize: 13, fontFamily: FONT }} />
-      <button onClick={() => onCreate(label)} style={{ ...ghost, background: C.acc, color: C.accText, border: `1px solid ${C.acc}` }}>Start assessment</button>
-      <button onClick={onCancel} style={ghost}>Cancel</button>
-    </div>
-  );
+  return <ProjectRobPanel projectId={projectId} />;
 }
 
 function ErrorBox({ msg, onRetry }) {
