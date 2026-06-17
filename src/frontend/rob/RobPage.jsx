@@ -37,7 +37,7 @@ function Frame({ children }) {
           <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '34')}`, borderRadius: 6, padding: '2px 7px' }}>RoB 2 · beta</span>
         </span>
       </header>
-      <div style={{ maxWidth: 1100, margin: '0 auto', padding: '24px 22px 60px' }}>{children}</div>
+      <div style={{ maxWidth: 'none', margin: 0, padding: '24px 28px 60px' }}>{children}</div>
     </div>
   );
 }

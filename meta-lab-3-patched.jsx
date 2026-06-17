@@ -7199,8 +7199,13 @@ function ProjectTitle({project,canRename,onRename}){
    non-shrinking right cluster, so the buttons are never overlapped (Task 4). The
    one PresenceIndicator here replaces the old floating chip + the screening-only
    one (Task 8); its popover is portaled so it can't be clipped (Task 3). */
-function ProjectHeaderBar({project,tab,inScreening,focus,onToggleFocus,setTab,onBackToProjects,presenceUsers,presenceLocks,totalMembers,myUserId,spId}){
+function ProjectHeaderBar({project,tab,inScreening,focus,onToggleFocus,setTab,onBackToProjects,presenceUsers,presenceLocks,totalMembers,myUserId,spId,reqMissing=0,reqMissingList,missingItems=0,onShowAudit,onReport,onExport,onImport}){
   const sectionLabel=(TABS.find(t=>t.id===tab)?.label)||"Overview";
+  // prompt30 Part 5 — compact status badges + actions shown near the title on
+  // every NON-overview page (the full detailed header now lives on Overview only).
+  const compact=tab!=="overview";
+  const badgeBtn=(color)=>({display:"inline-flex",alignItems:"center",gap:4,padding:"2px 8px",borderRadius:11,fontSize:11,fontWeight:700,fontFamily:"'IBM Plex Mono',monospace",cursor:"pointer",background:themeAlpha(color,'18'),border:`1px solid ${themeAlpha(color,'55')}`,color,lineHeight:1.4});
+  const hdrIconBtn={...btnS("ghost"),padding:"5px 8px",borderRadius:7,display:"inline-flex",alignItems:"center"};
   return(
     <div style={{
       display:"flex",alignItems:"center",gap:10,
@@ -7215,9 +7220,25 @@ function ProjectHeaderBar({project,tab,inScreening,focus,onToggleFocus,setTab,on
           style={{background:"none",border:"none",color:C.txt,fontWeight:600,cursor:"pointer",fontFamily:"inherit",fontSize:13,padding:0,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{project?.name||"Project"}</button>
         <span style={{color:C.dim,flexShrink:0}}>▸</span>
         <span style={{fontWeight:700,color:C.txt2,flexShrink:0,whiteSpace:"nowrap"}}>{sectionLabel}</span>
+        {/* Compact status badges near the title (non-overview only) */}
+        {compact&&reqMissing>0&&(
+          <Tooltip title="Requirements missing" description={(reqMissingList&&reqMissingList.length)?reqMissingList.slice(0,6).join(' · '):`${reqMissing} requirement${reqMissing===1?'':'s'} still needed before proceeding`}>
+            <button onClick={onShowAudit} aria-label={`${reqMissing} requirement${reqMissing===1?'':'s'} missing — open audit`} style={badgeBtn(C.yel)}><Icon name="alertTriangle" size={11}/>{reqMissing}</button>
+          </Tooltip>
+        )}
+        {compact&&missingItems>0&&(
+          <Tooltip title="Missing items" description={`${missingItems} item${missingItems===1?'':'s'} need attention — open the audit to review`}>
+            <button onClick={onShowAudit} aria-label={`${missingItems} missing item${missingItems===1?'':'s'} — open audit`} style={badgeBtn(C.red)}><span style={{width:6,height:6,borderRadius:"50%",background:C.red,display:"inline-block",flexShrink:0}}/>{missingItems}</button>
+          </Tooltip>
+        )}
       </div>
-      {/* Middle — section nav (collapses to icons on narrow widths via the wrapper) */}
+      {/* Middle — section nav + compact actions (report/export/import on non-overview) */}
       <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
+        {compact&&onReport&&<>
+          <Tooltip content="Export a full report (PDF / HTML)"><button onClick={onReport} aria-label="Export report" style={hdrIconBtn}><Icon name="fileText" size={13}/></button></Tooltip>
+          <Tooltip content="Export project as JSON"><button onClick={onExport} aria-label="Export project" style={hdrIconBtn}><Icon name="download" size={13}/></button></Tooltip>
+          <Tooltip content="Import project JSON"><button onClick={onImport} aria-label="Import project" style={hdrIconBtn}><Icon name="upload" size={13}/></button></Tooltip>
+        </>}
         {tab!=="overview"&&<button onClick={()=>setTab("overview")} title="Project overview" style={{...btnS("ghost"),fontSize:11.5,display:"inline-flex",alignItems:"center",gap:5}}><Icon name="arrowLeft" size={12}/><span className="uh-navlabel">Project overview</span></button>}
         {onBackToProjects&&<button onClick={onBackToProjects} title="Back to all projects" style={{...btnS("ghost"),fontSize:11.5,display:"inline-flex",alignItems:"center",gap:5}}><Icon name="grid" size={12}/><span className="uh-navlabel">Projects</span></button>}
       </div>
@@ -8546,9 +8567,17 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
         and scrolls internally (full-bleed + hidden for the Screening workspace). */}
     <div style={{marginLeft:focus?0:256,flex:1,display:"flex",flexDirection:"column",height:"100vh",minHeight:0,overflow:"hidden",transition:"margin-left 0.25s ease"}}>
       {project&&!deepLinkMiss&&(
-        <ProjectHeaderBar project={project} tab={tab} inScreening={inScreening} focus={focus} onToggleFocus={toggleNav} setTab={setTab} onBackToProjects={onBackToProjects} presenceUsers={presenceUsers} presenceLocks={presenceLocks} totalMembers={project?._memberCount} myUserId={authUser?.id} spId={spId}/>
+        <ProjectHeaderBar project={project} tab={tab} inScreening={inScreening} focus={focus} onToggleFocus={toggleNav} setTab={setTab} onBackToProjects={onBackToProjects} presenceUsers={presenceUsers} presenceLocks={presenceLocks} totalMembers={project?._memberCount} myUserId={authUser?.id} spId={spId}
+          reqMissing={(()=>{const r=readinessCheck(project);return r.ok?0:r.missing.length;})()}
+          reqMissingList={(()=>{const r=readinessCheck(project);return r.ok?[]:r.missing;})()}
+          missingItems={auditProject(project).filter(i=>i.sev==="high").length}
+          onShowAudit={()=>setShowAudit(true)}
+          onReport={openReportExport} onExport={openProjectExport} onImport={()=>importRef.current&&importRef.current.click()}/>
       )}
       <div style={{flex:1,minHeight:0,overflowY:inScreening?"hidden":"auto",padding:inScreening?0:"28px 36px 56px"}}>
+      {/* Hidden project-import input — always mounted so Import works from the
+          compact header on every tab AND from the welcome screen (prompt30 Part 5). */}
+      <input ref={importRef} type="file" accept=".json" onChange={onImport} style={{display:"none"}}/>
       {/* Non-fatal create warning (prompt6 Task 2) — e.g. linked SIFT creation failed */}
       {createWarning&&(
         <div style={{maxWidth:960,margin:"0 auto 18px",padding:"10px 14px",borderRadius:8,fontSize:12.5,display:"flex",alignItems:"flex-start",gap:9,
@@ -8646,8 +8675,14 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
         {tab==="screening"?(
           <ScreeningWorkspaceFrame project={project} setTab={setTab}/>
         ):(
-        <div style={{maxWidth:960,margin:"0 auto"}} className="tab-content">
-          {/* Project header */}
+        // prompt30 Part 2 — full-width workspace: the tab body uses the whole
+        // available width (page padding keeps it off the edges). Text-heavy tabs
+        // keep their own readable inner widths.
+        <div style={{maxWidth:"none",margin:0}} className="tab-content">
+          {/* prompt30 Part 5 — the DETAILED project status header lives ONLY on the
+              Overview tab now. Other tabs show compact badges + Report/Export/Import
+              in the universal ProjectHeaderBar (near the title). */}
+          {tab==="overview"&&(
           <div style={{marginBottom:32,paddingBottom:22,borderBottom:`1px solid ${C.brd}`}}>
             <div style={{display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:16,flexWrap:"wrap"}}>
               <div style={{minWidth:0}}>
@@ -8673,7 +8708,6 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
                         onClick={()=>setShowAudit(true)}
                       >⚠ {r.missing.length} requirement{r.missing.length!==1?"s":""} missing</span>;
                 })()}
-                <input ref={importRef} type="file" accept=".json" onChange={onImport} style={{display:"none"}}/>
                 <button onClick={openReportExport} style={{...btnS("ghost"),fontSize:11,borderRadius:7}} title="Export a full report — PDF (print dialog) or self-contained HTML file"><Icon name="fileText" size={12}/>Report</button>
                 <button onClick={openProjectExport} style={{...btnS("ghost"),fontSize:11,borderRadius:7}} title="Export project as JSON"><Icon name="download" size={12}/>Export</button>
                 <button onClick={()=>importRef.current&&importRef.current.click()} style={{...btnS("ghost"),fontSize:11,borderRadius:7}} title="Import project JSON"><Icon name="upload" size={12}/>Import</button>
@@ -8689,6 +8723,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
               </div>
             </div>
           </div>
+          )}
           {/* Shared (linked Review Workspace) project banner — owner + read-only state (prompt5 Task 1/4) */}
           {project._shared&&(
             <div style={{marginBottom:22,padding:"10px 14px",borderRadius:8,fontSize:12.5,display:"flex",alignItems:"center",gap:9,

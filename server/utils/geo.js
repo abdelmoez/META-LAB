@@ -16,8 +16,15 @@
  *      already installed. We never npm-install it and never add it as a dep; the
  *      try/catch silently skips this step when the package is absent. source = 'geoip'.
  *   3. Private / loopback / empty IP (127.*, ::1, 10.*, 192.168.*, 172.16-31.*,
- *      localhost) → code '', name 'Local', source 'local'.
+ *      localhost) → code '', name '' (persisted as 'Unknown' — never the
+ *      misleading literal 'Local'), source 'local'.
  *   4. Otherwise → code '', name 'Unknown', source 'none'.
+ *
+ * Production note: real country detection requires the client IP to reach this
+ * process. Configure `trust proxy` (server/index.js, default on) so req.ip is the
+ * true client IP, and front the app with a proxy that sets a country header
+ * (CF-IPCountry / x-vercel-ip-country) OR install the optional offline `geoip-lite`
+ * package — this module uses either automatically when present.
  */
 
 import crypto from 'crypto';
@@ -54,17 +61,26 @@ async function loadGeoip() {
 
 /**
  * Extract the best-guess client IP without trusting anything blindly.
- * Order: req.ip → first hop of x-forwarded-for → socket.remoteAddress.
- * Returns '' when nothing usable is present.
+ *
+ * With 'trust proxy' configured (server/index.js), Express has already resolved
+ * the real client IP into req.ip from X-Forwarded-For — trust that first. If req.ip
+ * is still a private address (e.g. trust proxy not set, or a private upstream),
+ * defensively pick the FIRST PUBLIC IP from the X-Forwarded-For chain rather than
+ * the left-most value. Falls back to the socket address. Returns '' when nothing
+ * usable is present.
  */
 export function getClientIp(req) {
   if (!req) return '';
-  if (req.ip) return String(req.ip).trim();
+  const direct = req.ip ? String(req.ip).trim() : '';
+  if (direct && !isPrivateIp(direct)) return direct;        // trusted public client IP
+
   const xff = req.headers?.['x-forwarded-for'];
   if (xff) {
-    const first = String(xff).split(',')[0].trim();
-    if (first) return first;
+    const parts = String(xff).split(',').map(s => s.trim()).filter(Boolean);
+    const firstPublic = parts.find(ip => !isPrivateIp(ip));
+    if (firstPublic) return firstPublic;                    // first non-private hop
   }
+  if (direct) return direct;                                // genuine local/private (dev)
   const sock = req.socket?.remoteAddress || req.connection?.remoteAddress;
   return sock ? String(sock).trim() : '';
 }
@@ -151,10 +167,13 @@ export async function resolveCountry(req) {
 
     const ip = getClientIp(req);
 
-    // 3 (checked before the optional geoip step): private/loopback/empty → Local.
-    // A private IP can never be geolocated, so short-circuit cleanly.
+    // 3 (checked before the optional geoip step): private/loopback/empty IP.
+    // A private IP can never be geolocated. We do NOT save the misleading literal
+    // "Local" as the user's country (prompt30 Part 1) — return an empty name (the
+    // caller persists it as 'Unknown') while still tagging source 'local' so
+    // analytics can tell a local/private registration apart from a failed lookup.
     if (isPrivateIp(ip)) {
-      return { code: '', name: 'Local', source: 'local' };
+      return { code: '', name: '', source: 'local' };
     }
 
     // 2. OPTIONAL offline lookup — only if geoip-lite happens to be installed.

@@ -288,7 +288,7 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
                 </div>
               : isFullBleed
                 ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} presence={presence} userId={user?.id} embedded /></div>
-                : <div style={{ maxWidth: 1180, margin: '0 auto', padding: '20px 20px 48px' }}>
+                : <div style={{ maxWidth: 1680, margin: '0 auto', padding: '20px 20px 48px' }}>
                     <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} presence={presence} userId={user?.id} embedded />
                   </div>
           )}
@@ -374,7 +374,7 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
         {!loading && !error && !disabled && project && (
           isFullBleed
             ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} presence={presence} userId={user?.id} /></div>
-            : <div style={{ maxWidth: 1180, margin: '0 auto', padding: '24px 24px 56px' }}>
+            : <div style={{ maxWidth: 1680, margin: '0 auto', padding: '24px 24px 56px' }}>
                 <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} presence={presence} userId={user?.id} />
               </div>
         )}

@@ -5166,7 +5166,7 @@ export default function AdminConsole() {
 
       {/* ── Main content ─────────────────────────────────────────────── */}
       <div style={{ marginLeft: SIDEBAR_W, paddingTop: TOPBAR_H, minHeight: '100vh' }}>
-        <div style={{ padding: '28px 32px', maxWidth: 1200 }}>
+        <div style={{ padding: '28px 32px', maxWidth: 1680 }}>
           {renderActive()}
         </div>
       </div>

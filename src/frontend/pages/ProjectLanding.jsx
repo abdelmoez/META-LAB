@@ -1382,7 +1382,7 @@ export default function ProjectLanding() {
       <NotificationsBell fixed right={56} />
       <UserMenu context="metalab" fixed />
 
-      <div style={{ maxWidth: 1200, margin: '0 auto', padding: '48px 32px 80px' }}>
+      <div style={{ maxWidth: 1680, margin: '0 auto', padding: '48px 32px 80px' }}>
 
         {/* ── Welcome header ──────────────────────────────────────── */}
         <motion.div

@@ -25,6 +25,9 @@ import {
 
 const RESPONSE_KEYS = ['Y', 'PY', 'PN', 'N', 'NI'];
 const KEY_TO_RESPONSE = { 1: 'Y', 2: 'PY', 3: 'PN', 4: 'N', 5: 'NI' };
+// prompt30 Part 4 — full RoB 2 answer wording shown in the UI; the short codes
+// (Y/PY/PN/N/NI) remain the stored/scoring values and are shown as a subtle hint.
+const RESPONSE_LABELS = { Y: 'Yes', PY: 'Probably yes', PN: 'Probably no', N: 'No', NI: 'No information' };
 const DOMAIN_IDS = ROB2.domains.map(d => d.id);
 
 function usePrefersReducedMotion() {
@@ -63,15 +66,18 @@ function TrafficDot({ judgment, size = 13 }) {
 
 function SegmentedControl({ qid, value, onChange }) {
   return (
-    <div role="radiogroup" aria-label={`Response for question ${qid}`} style={{ display: 'inline-flex', gap: 4, flexWrap: 'wrap' }}>
+    <div role="radiogroup" aria-label={`Response for question ${qid}`} style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
       {RESPONSE_KEYS.map((r, i) => {
         const on = value === r;
         return (
-          <button key={r} role="radio" aria-checked={on} onClick={() => onChange(on ? '' : r)} title={`${r} (press ${i + 1})`} style={{
-            minWidth: 42, padding: '7px 11px', borderRadius: 8, cursor: 'pointer', fontFamily: MONO, fontSize: 12.5, fontWeight: 700,
+          <button key={r} role="radio" aria-checked={on} aria-label={RESPONSE_LABELS[r]} onClick={() => onChange(on ? '' : r)} title={`${RESPONSE_LABELS[r]} (${r} · press ${i + 1})`} style={{
+            display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 8, cursor: 'pointer', fontFamily: FONT, fontSize: 12.5, fontWeight: 600,
             background: on ? C.acc : C.surf, color: on ? C.accText : C.txt2,
-            border: `1px solid ${on ? C.acc : C.brd2}`, transition: 'background 0.12s, border-color 0.12s',
-          }}>{r}</button>
+            border: `1px solid ${on ? C.acc : C.brd2}`, transition: 'background 0.12s, border-color 0.12s', whiteSpace: 'nowrap',
+          }}>
+            {RESPONSE_LABELS[r]}
+            <span style={{ fontFamily: MONO, fontSize: 10, fontWeight: 700, opacity: on ? 0.85 : 0.5 }}>{r}</span>
+          </button>
         );
       })}
     </div>
@@ -91,7 +97,9 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
   const [guidanceOpen, setGuidanceOpen] = useState({});
   const [override, setOverride] = useState(null); // { target, domainId, current }
   const [showGuide, setShowGuide] = useState(false);
-  const [showPdf, setShowPdf] = useState(false); // prompt29 Part 2 — side PDF panel
+  // prompt30 Part 3 — the assessment opens as a two-section split: PDF (left) +
+  // RoB questions (right). The PDF panel can be collapsed for more answering room.
+  const [showPdf, setShowPdf] = useState(true);
   const reduced = usePrefersReducedMotion();
   const saveTimer = useRef(null);
   const savedTimer = useRef(null);
@@ -291,7 +299,15 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
 
   return (
     <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-    <div style={{ ...shell, flex: '1 1 460px', minWidth: 0 }}>
+    {/* ── Left section: PDF (prompt30 Part 3). Reuses the screening PDF panel;
+        collapses on demand; stacks above the questions on narrow screens. ── */}
+    {showPdf && (
+      <aside style={{ flex: '1 1 380px', minWidth: 300, maxWidth: 620, position: 'sticky', top: 0 }}>
+        <RobPdfPanel metaLabProjectId={view.projectId} studyId={view.studyId} canManage={editable} onClose={() => setShowPdf(false)} />
+      </aside>
+    )}
+    {/* ── Right section: the RoB assessment (unchanged style) ── */}
+    <div style={{ ...shell, flex: '2 1 520px', minWidth: 0 }}>
       {/* ── Context bar ─────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '14px 20px', borderBottom: `1px solid ${C.brd}`, background: C.card, flexWrap: 'wrap' }}>
         <button onClick={onClose} style={{ ...ghostBtn, padding: '6px 10px' }} aria-label="Back to assessments"><Icon name="arrowLeft" size={15} /></button>
@@ -386,11 +402,6 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
         <OverrideModal info={override} onCancel={() => setOverride(null)} onSubmit={doOverride} />
       )}
     </div>
-    {showPdf && (
-      <aside style={{ flex: '1 1 340px', minWidth: 300, maxWidth: 560, position: 'sticky', top: 0 }}>
-        <RobPdfPanel metaLabProjectId={view.projectId} studyId={view.studyId} canManage={editable} onClose={() => setShowPdf(false)} />
-      </aside>
-    )}
     </div>
   );
 }

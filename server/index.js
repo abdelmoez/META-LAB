@@ -40,6 +40,25 @@ import { resolveCorsOrigin } from './config/cors.js';
 
 const app = express();
 
+// ── Trust proxy (prompt30 Part 1) ────────────────────────────────────────────────
+// Behind a reverse proxy / load balancer (nginx, Cloudflare, a cloud LB) the real
+// client IP arrives in X-Forwarded-For. Express only derives req.ip from it when
+// 'trust proxy' is configured — otherwise req.ip is the PROXY's (private) IP, which
+// made registration geolocation save "Local" and weakened IP-based rate limits.
+// Default trusts only LOCAL/PRIVATE upstream proxies (the common nginx / CF-tunnel /
+// LB-on-private-net setup) so a public client can never spoof X-Forwarded-For.
+// Override with TRUST_PROXY: 'true'/'false', a hop count (e.g. '1'), or a CSV of
+// subnets ('loopback, linklocal, uniquelocal').
+function resolveTrustProxy(raw) {
+  if (raw == null || String(raw).trim() === '') return 'loopback, linklocal, uniquelocal';
+  const v = String(raw).trim();
+  if (v.toLowerCase() === 'true') return true;
+  if (v.toLowerCase() === 'false') return false;
+  if (/^\d+$/.test(v)) return parseInt(v, 10); // hop count
+  return v;                                     // subnet list / 'loopback' etc.
+}
+app.set('trust proxy', resolveTrustProxy(process.env.TRUST_PROXY));
+
 // ── Security headers ───────────────────────────────────────────────────────────
 // The API serves JSON only, so its CSP can be maximally strict (default-src 'none').
 // The SPA's own CSP lives in index.html (<meta http-equiv>) because the frontend
