@@ -569,6 +569,18 @@ function ProjectCard({ p, handlers, reduced }) {
         >
           <Icon name="filter" size={14} /> Screening
         </Btn>
+        {/* rob.md — visible Risk-of-Bias entry (flag-gated, owner-only). Previously
+            only in the overflow "…" menu, which was not discoverable. */}
+        {handlers.robEnabled && owner && (
+          <Btn
+            variant="ghost"
+            onClick={() => handlers.openRob(p)}
+            title="Assess risk of bias (RoB 2)"
+            style={{ padding: '8px 12px' }}
+          >
+            <Icon name="scale" size={14} /> Risk of Bias
+          </Btn>
+        )}
       </div>
       {owner && p._archived && (
         <div style={{ marginTop: 8, fontSize: 10.5, color: C.muted, fontFamily: MONO }}>
