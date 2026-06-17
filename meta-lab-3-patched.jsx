@@ -3920,7 +3920,17 @@ ${paperText.slice(0,15000)}`;
    nothing breaks for projects/orgs that have not enabled the engine. */
 function RoBTab({project,updateProject,activeId}){
   const[flag,setFlag]=useState(null); // null=checking
-  useEffect(()=>{let dead=false;robFlagEnabled().then(v=>{if(!dead)setFlag(!!v);}).catch(()=>{if(!dead)setFlag(false);});return()=>{dead=true;};},[]);
+  useEffect(()=>{let dead=false;
+    (async()=>{
+      // Persist any pending autosave first so the owner-scoped RoB engine reads
+      // the LATEST studies/criteria for this project (a study just added in Data
+      // Extraction is server-validated on assess, so it must be saved by then).
+      try{ await flushStorage(); }catch{ /* best-effort */ }
+      let v=false; try{ v=await robFlagEnabled(); }catch{ v=false; }
+      if(!dead) setFlag(!!v);
+    })();
+    return()=>{dead=true;};
+  },[]);
   if(flag===null) return <div style={{padding:40,textAlign:"center",color:C.muted,fontSize:13}}>Loading Risk of Bias…</div>;
   if(!flag) return <LegacyRoBTab project={project} updateProject={updateProject} activeId={activeId}/>;
   const perms=projectPerms(project);

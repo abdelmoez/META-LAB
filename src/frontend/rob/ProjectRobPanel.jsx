@@ -177,7 +177,7 @@ function ToolSelector({ selected, canEdit, onSelect }) {
               key={t.id}
               type="button"
               disabled={!clickable}
-              onClick={clickable ? () => onSelect(t.id) : undefined}
+              onClick={clickable ? () => { if (t.id !== selected) onSelect(t.id); } : undefined}
               title={active ? t.description : `${t.label} — under development`}
               aria-pressed={on}
               style={{
