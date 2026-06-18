@@ -80,7 +80,10 @@ function OnboardingGate({ children }) {
 
 function LoginRoute() {
   const navigate = useNavigate();
-  const { login, pendingOnboarding } = useAuth();
+  // pendingOnboarding is intentionally NOT read here: post-login routing uses the
+  // one-shot onboardingCompleted flag for an immediate redirect, and OnboardingGate
+  // handles the live pending check on the destination route.
+  const { login } = useAuth();
   return (
     <LoginPage
       onSuccess={u => {

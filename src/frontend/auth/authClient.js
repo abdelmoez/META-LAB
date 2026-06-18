@@ -75,7 +75,10 @@ export async function getPendingOnboarding() {
     const res = await fetch("/api/onboarding/pending", { credentials: "include" });
     if (!res.ok) return { questions: [], intro: null };
     const data = await res.json();
-    return { questions: data.questions || [], intro: data.intro || null };
+    // Treat an all-empty intro ({title:'',body:''}) as null so the UI shows its
+    // friendly default rather than a blank heading.
+    const intro = data.intro && (data.intro.title || data.intro.body) ? data.intro : null;
+    return { questions: data.questions || [], intro };
   } catch {
     return { questions: [], intro: null };
   }

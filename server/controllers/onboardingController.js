@@ -21,6 +21,15 @@ import {
 
 const QUESTION_TYPES = new Set(['text', 'single_select', 'multi_select', 'boolean', 'number', 'date']);
 
+// Master onboarding behaviour + intro copy (a single SiteSetting row). Defaults are
+// used when no admin row exists yet, so the onboarding screen always has friendly
+// intro copy out of the box (prompt32 review follow-up — never a blank heading).
+const ONBOARDING_SETTINGS_DEFAULTS = {
+  enabled: true,
+  introTitle: 'Welcome to META·LAB',
+  introBody: 'Answer a few quick questions so we can tailor your workspace. You can skip any optional question.',
+};
+
 // Known canonical question keys → legacy User column, so answering a seeded
 // question keeps feeding the existing Ops Users analytics (byPrimaryRole, …).
 const LEGACY_FIELD_MAP = {
@@ -153,12 +162,17 @@ async function computePending(userId) {
 export async function getPending(req, res) {
   try {
     const questions = await computePending(req.user.id);
-    let intro = { title: '', body: '' };
+    // Always return friendly intro copy (admin override, else the defaults) so the
+    // onboarding screen never shows a blank heading.
+    let intro = { title: ONBOARDING_SETTINGS_DEFAULTS.introTitle, body: ONBOARDING_SETTINGS_DEFAULTS.introBody };
     try {
       const row = await prisma.siteSetting.findUnique({ where: { key: 'onboardingSettings' } });
       if (row) {
         const s = JSON.parse(row.value || '{}');
-        intro = { title: s.introTitle || '', body: s.introBody || '' };
+        intro = {
+          title: s.introTitle != null && s.introTitle !== '' ? s.introTitle : ONBOARDING_SETTINGS_DEFAULTS.introTitle,
+          body: s.introBody != null && s.introBody !== '' ? s.introBody : ONBOARDING_SETTINGS_DEFAULTS.introBody,
+        };
       }
     } catch { /* keep defaults */ }
     return res.json({ questions, intro });
@@ -433,12 +447,6 @@ export async function adminDeleteQuestion(req, res) {
     return res.status(500).json({ error: 'Internal server error' });
   }
 }
-
-const ONBOARDING_SETTINGS_DEFAULTS = {
-  enabled: true,
-  introTitle: 'Welcome to META·LAB',
-  introBody: 'Answer a few quick questions so we can tailor your workspace. You can skip any optional question.',
-};
 
 // ── GET /api/admin/onboarding-settings ─────────────────────────────────────────
 export async function adminGetSettings(req, res) {
