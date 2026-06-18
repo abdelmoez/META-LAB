@@ -99,7 +99,8 @@ export default function Terms() {
           <P>To create an account we collect your name, email address, and a hashed password. Passwords are stored only as a secure hash — never in plain text.</P>
 
           <H>Optional profile / onboarding data</H>
-          <P>You may optionally provide profile and onboarding details (e.g. role, institution, areas of interest). Onboarding is skippable and these fields are not required to use the Platform.</P>
+          <P>You may optionally provide profile and onboarding details (e.g. role, institution/organization, areas of interest). Onboarding is skippable and these fields are not required to use the Platform. Institution/organization data, when provided, is used for your profile, collaboration, and aggregate analytics and administrative reporting.</P>
+          <P>When you search for your institution, the Platform may query third-party public organization registries (such as the Research Organization Registry, ROR, and — where enabled — OpenAlex) to suggest a canonical institution. Only the text you type is sent to these public registries; we never share your password, account tokens, email, or other personal identifiers with them. Your originally typed institution name is always preserved, and you can keep a custom name if no match is found.</P>
 
           <H>Project &amp; research data</H>
           <P>We store the project content you create: PICO/protocol, eligibility criteria, imported citations, screening decisions, extracted data, risk-of-bias assessments, analysis configurations and outputs, and related notes.</P>

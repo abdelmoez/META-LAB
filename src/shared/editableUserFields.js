@@ -183,6 +183,11 @@ export const READONLY_USER_FIELDS = [
   { key: 'emailVerifiedAt',             label: 'Email verified', kind: 'date' },
   { key: 'onboardingCompletedAt',       label: 'Onboarding done', kind: 'date' },
   { key: 'institutionNormalized',       label: 'Institution (normalized)' },
+  // prompt35 — canonical institution linkage (display-only).
+  { key: 'institutionCanonicalName',    label: 'Institution (canonical)' },
+  { key: 'institutionRorId',            label: 'ROR id', mono: true },
+  { key: 'institutionSource',           label: 'Institution source' },
+  { key: 'institutionNeedsReview',      label: 'Institution needs review', kind: 'bool' },
 ];
 
 /** Denylist — never accepted from a request, never selected back to a client. */

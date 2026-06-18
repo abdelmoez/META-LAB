@@ -57,6 +57,19 @@ model User {
   mainUseCase           String?       // Systematic review | Meta-analysis | …
   institutionOriginal   String?       // exact text the user typed
   institutionNormalized String?       // normalized matching key
+  // prompt35 — canonical institution linkage (ROR registry or a matched local
+  // canonical). ADDITIVE + nullable so `prisma db push` stays safe; the typed text
+  // above is always preserved. institutionRorId is the ROR id URL when a canonical
+  // ROR record was selected; institutionNeedsReview flags an uncertain custom match
+  // for Ops (never silently merged).
+  institutionRorId           String?  // e.g. https://ror.org/03vek6s52 (null = custom/local)
+  institutionCanonicalName   String?  // canonical display name (ROR or matched local)
+  institutionCity            String?
+  institutionCountryName     String?  // canonical institution country (distinct from user-stated `country`)
+  institutionCountryCode     String?  // ISO-3166 alpha-2
+  institutionSource          String?  // "ror" | "local" | "custom"
+  institutionMatchConfidence Float?   // 0..1 confidence of the canonical link
+  institutionNeedsReview     Boolean  @default(false) // uncertain custom match → Ops review
   country               String?       // user-stated country/region (onboarding)
   onboardingCompletedAt DateTime?     // null ⇒ onboarding not completed/skipped-not-done
   projects    Project[]

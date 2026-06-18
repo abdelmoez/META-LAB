@@ -54,6 +54,9 @@ const USER_DETAIL_SELECT = {
   emailVerifiedAt: true, onboardingCompletedAt: true,
   primaryRole: true, researchField: true, mainUseCase: true,
   institutionOriginal: true, institutionNormalized: true, country: true,
+  // prompt35 — canonical institution linkage (display-only in Ops; never secret).
+  institutionCanonicalName: true, institutionRorId: true, institutionCountryName: true,
+  institutionSource: true, institutionNeedsReview: true,
   _count: { select: { projects: true } },
 };
 function formatUserDetail(u) {
@@ -1475,12 +1478,29 @@ export async function getUserGrowth(req, res) {
 export async function getInstitutions(req, res) {
   try {
     const users = await prisma.user.findMany({
-      select: { institutionOriginal: true },
+      select: {
+        institutionOriginal: true,
+        // prompt35 — canonical linkage + uncertain-match flag for the Ops summary.
+        institutionCanonicalName: true, institutionRorId: true,
+        institutionSource: true, institutionNeedsReview: true,
+      },
     });
     const [overrides, rejected] = await Promise.all([
       getCanonicalOverrides(),
       getRejectedPairSet(),
     ]);
+
+    // prompt35 — institution coverage summary for Ops (top institutions live in the
+    // groups below; these surface needs-review + unmatched + missing institutions).
+    const summary = {
+      totalUsers: users.length,
+      withInstitution: users.filter(u => (u.institutionOriginal || '').trim()).length,
+      withoutInstitution: users.filter(u => !(u.institutionOriginal || '').trim()).length,
+      canonicalLinked: users.filter(u => u.institutionRorId || u.institutionCanonicalName).length,
+      rorLinked: users.filter(u => u.institutionRorId).length,
+      customUnmatched: users.filter(u => (u.institutionOriginal || '').trim() && u.institutionSource === 'custom' && !u.institutionCanonicalName).length,
+      needsReview: users.filter(u => u.institutionNeedsReview).length,
+    };
 
     const groups = buildInstitutionGroups(users, overrides);
 
@@ -1512,7 +1532,7 @@ export async function getInstitutions(req, res) {
       };
     });
 
-    return res.json({ institutions });
+    return res.json({ institutions, summary });
   } catch (err) {
     console.error('[admin] getInstitutions error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });

@@ -10,6 +10,14 @@ import { useNavigate } from 'react-router-dom';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import { getPendingOnboarding, submitOnboardingResponses, skipOnboarding } from '../auth/authClient.js';
 import { useAuth } from '../context/AuthContext.jsx';
+import InstitutionAutocomplete from '../components/InstitutionAutocomplete.jsx';
+
+// True when an institution answer (string or selection object) has a usable name.
+function institutionAnswered(a) {
+  if (!a) return false;
+  if (typeof a === 'string') return a.trim().length > 0;
+  return !!(a.name || a.canonicalName);
+}
 
 export default function Onboarding() {
   const navigate = useNavigate();
@@ -63,6 +71,7 @@ export default function Onboarding() {
     if (!q) return false;
     if (q.type === 'multi_select') return Array.isArray(answer) && answer.length > 0;
     if (q.type === 'boolean') return answer === true || answer === false;
+    if (q.type === 'institution') return institutionAnswered(answer);
     return answer !== '' && answer !== null && answer !== undefined;
   }
 
@@ -138,6 +147,7 @@ export default function Onboarding() {
     if (q.type === 'number') return answer === '' ? null : Number(answer);
     if (q.type === 'boolean') return answer; // already true/false
     if (q.type === 'multi_select') return Array.isArray(answer) ? answer : [];
+    if (q.type === 'institution') return institutionAnswered(answer) ? answer : null; // string|object
     return answer; // text, single_select, date → string
   }
 
@@ -246,6 +256,14 @@ export default function Onboarding() {
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
+          )}
+
+          {q.type === 'institution' && (
+            <InstitutionAutocomplete
+              value={answer || null}
+              onChange={val => setAnswer(val)}
+              autoFocus
+            />
           )}
 
           {q.type === 'multi_select' && (

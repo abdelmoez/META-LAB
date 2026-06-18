@@ -33,6 +33,7 @@ import invitesRouter      from './routes/invites.js';
 import eventsRouter       from './routes/events.js';
 import robRouter          from './routes/rob.js';
 import onboardingRouter   from './routes/onboarding.js';
+import institutionsRouter from './routes/institutions.js';
 
 import { initDefaultSettings } from './controllers/settingsController.js';
 import { seedOnboardingQuestions } from './controllers/onboardingController.js';
@@ -98,6 +99,16 @@ const contactLimiter = rateLimit({
 const inviteLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: process.env.NODE_ENV === 'production' ? 30 : 1000,
+  message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ── Rate limiter for institution autocomplete (prompt35) — typeahead fires often,
+// so a generous-but-bounded budget (120 req / 15 min in prod) per IP. ───────────
+const institutionLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 120 : 1000,
   message: { error: 'Too many requests, please try again later' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -171,6 +182,10 @@ app.use('/api/rob', requireAuth, robRouter);
 // Per-user pending computation so newly-added active questions interrupt
 // already-registered users on their next login.
 app.use('/api/onboarding', onboardingRouter);
+
+// ── Institution autocomplete (prompt35) — own mount with a dedicated limiter;
+// requireAuth applied inside the router. Backend-only ROR/local search.
+app.use('/api/institutions', institutionLimiter, institutionsRouter);
 
 // ── Realtime SSE stream (prompt6 Task 7) — own mount, NEVER under the
 // rate-limited /api/auth or /api/admin routers (requireAuth inside the router).

@@ -11,11 +11,10 @@ Changed files touch areas that may affect the Terms of Service / Privacy Policy.
 
 | Area | Changed files | Terms/Privacy sections to revisit |
 | --- | --- | --- |
-| auth/registration | server/controllers/authController.js<br>src/research-engine/screening/permissionPresets.js | ⚠ missing? User accounts<br>✓ Eligibility<br>✓ Information collected at registration<br>⚠ missing? Email notifications & verification |
-| onboarding/profile | src/frontend/pages/Onboarding.jsx | ✓ Optional profile / onboarding data |
-| sharing/collaboration | src/frontend/screening/tabs/MembersTab.jsx | ⚠ missing? Collaboration, membership, permissions & roles<br>⚠ missing? How information is shared & visibility |
-| permissions/roles | src/research-engine/screening/permissionPresets.js | ⚠ missing? Permissions and roles<br>⚠ missing? Collaboration, membership, permissions & roles |
+| onboarding/profile | server/controllers/onboardingController.js<br>server/controllers/profileController.js<br>src/frontend/pages/Onboarding.jsx<br>src/frontend/pages/Profile.jsx | ✓ Optional profile / onboarding data |
+| sharing/collaboration | src/shared/editableUserFields.js | ⚠ missing? Collaboration, membership, permissions & roles<br>⚠ missing? How information is shared & visibility |
 | exports/reports | server/prisma/schema.prisma | ⚠ missing? Research/project content<br>✓ How we use information |
+| ops/admin | server/controllers/adminController.js | ⚠ missing? Admin/Ops access<br>⚠ missing? How information is shared & visibility |
 
 ### Suggested next steps
 - Open `src/frontend/pages/Terms.jsx` and confirm each listed section still matches behaviour.

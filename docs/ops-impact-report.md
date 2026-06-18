@@ -1,15 +1,14 @@
 # Ops impact report (developer prompt)
 
-Changed files inspected: **10**
+Changed files inspected: **11**
 
 ## ⚠️ Ops update RECOMMENDED
 
 | Area | Changed files | Where in Ops/Settings | Suggestion |
 | --- | --- | --- | --- |
 | new user fields | server/prisma/schema.prisma | Ops › Users (directory columns / filters) | Surface the new User column in the user detail panel + add a filter if useful. |
-| profile/onboarding fields | src/frontend/pages/Onboarding.jsx | Ops › Users / Analytics | Show onboarding completion + institution distribution. |
-| project permissions | src/research-engine/screening/permissionPresets.js | Project settings (members) + Ops awareness | Add/show the permission in the member permission editor. |
-| RoB permissions/settings | src/frontend/rob/RobWorkspace.jsx | Project settings (members) | Expose the RoB assessment permission per member. |
+| profile/onboarding fields | server/controllers/onboardingController.js<br>server/controllers/profileController.js<br>src/frontend/pages/Onboarding.jsx<br>src/frontend/pages/Profile.jsx | Ops › Users / Analytics | Show onboarding completion + institution distribution. |
+| export/report settings | docs/legal-review-report.md | Ops (usage) — optional | Optionally track export usage. |
 | new database models | server/prisma/schema.prisma | Ops (data visibility) | Decide if admins should see/manage rows of the new model. |
 
 Keep Ops clean: prefer one clear setting/metric over a cluttered dashboard, respect admin/mod boundaries, never expose secrets.

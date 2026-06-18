@@ -14,6 +14,7 @@ import Icon from '../components/icons.jsx';
 // alpha(C.x, '40') instead of hex+alpha concatenation.
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import { DEFAULT_SCREENING_SHORTCUTS, parseScreeningShortcuts, keyLabel } from '../screening/screeningShortcuts.js';
+import InstitutionAutocomplete from '../components/InstitutionAutocomplete.jsx';
 
 function fmtDate(iso) {
   if (!iso) return '—';
@@ -107,12 +108,110 @@ function PrimaryBtn({ onClick, disabled, children, style = {} }) {
 }
 
 const NAV_ITEMS = [
-  { id: 'account',   label: 'Account Info' },
-  { id: 'name',      label: 'Edit Name' },
-  { id: 'shortcuts', label: 'Screening Shortcuts' },
-  { id: 'password',  label: 'Change Password' },
-  { id: 'danger',    label: 'Danger Zone' },
+  { id: 'account',     label: 'Account Info' },
+  { id: 'name',        label: 'Edit Name' },
+  { id: 'institution', label: 'Institution' },
+  { id: 'shortcuts',   label: 'Screening Shortcuts' },
+  { id: 'password',    label: 'Change Password' },
+  { id: 'danger',      label: 'Danger Zone' },
 ];
+
+// prompt35 — derive the InstitutionAutocomplete value from the saved profile.
+function institutionValueFromUser(u) {
+  if (!u) return null;
+  if (u.institutionRorId || u.institutionCanonicalName) {
+    return {
+      name: u.institutionOriginal || u.institutionCanonicalName,
+      canonicalName: u.institutionCanonicalName || u.institutionOriginal,
+      rorId: u.institutionRorId || undefined,
+      city: u.institutionCity || undefined,
+      countryName: u.institutionCountryName || undefined,
+      countryCode: u.institutionCountryCode || undefined,
+      source: u.institutionSource || (u.institutionRorId ? 'ror' : 'local'),
+    };
+  }
+  return u.institutionOriginal || null; // custom string (or null)
+}
+
+// prompt35 — self-service Institution editor (mirrors ScreeningShortcutsSection):
+// loads the profile, edits institution (autocomplete, canonical ROR/local or
+// custom) + the user-stated country, and saves via api.profile.update.
+function InstitutionSection() {
+  const [value, setValue]   = useState(null);
+  const [country, setCountry] = useState('');
+  const [needsReview, setNeedsReview] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState(null); // null | 'saved' | 'error'
+  const [errMsg, setErrMsg] = useState('');
+
+  useEffect(() => {
+    api.profile.get()
+      .then(r => {
+        const u = r?.user;
+        setValue(institutionValueFromUser(u));
+        setCountry(u?.country || '');
+        setNeedsReview(!!u?.institutionNeedsReview);
+      })
+      .catch(() => { /* keep empty */ })
+      .finally(() => setLoaded(true));
+  }, []);
+
+  async function save() {
+    if (saving) return;
+    setSaving(true); setStatus(null); setErrMsg('');
+    try {
+      const r = await api.profile.update({ institution: value ?? null, country: country.trim() || null });
+      setNeedsReview(!!r?.user?.institutionNeedsReview);
+      // Reflect any server-side canonical linkage back into the field.
+      setValue(institutionValueFromUser(r?.user));
+      setStatus('saved');
+    } catch (err) {
+      setStatus('error'); setErrMsg(err.message || 'Failed to save institution.');
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <SectionCard title="Institution & organization">
+      <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.6, marginBottom: 16 }}>
+        Add your institution or organization so it appears on your profile and in
+        team analytics. Start typing to find a verified institution, or keep your
+        own typed name. This is optional.
+      </div>
+
+      <label style={{ display: 'block', fontSize: 11, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
+        Institution / organization
+      </label>
+      <InstitutionAutocomplete value={value} onChange={setValue} disabled={!loaded} />
+
+      {needsReview && (
+        <div style={{ fontSize: 11.5, color: C.gold || C.yel, marginTop: 8 }}>
+          Your institution looks similar to an existing one — an administrator will review it. Your typed name is kept.
+        </div>
+      )}
+
+      <label style={{ display: 'block', fontSize: 11, fontFamily: MONO, color: C.muted, letterSpacing: '0.08em', textTransform: 'uppercase', margin: '18px 0 8px' }}>
+        Country / region (optional)
+      </label>
+      <input
+        type="text"
+        value={country}
+        onChange={e => { setCountry(e.target.value); setStatus(null); }}
+        placeholder="e.g. United States"
+        style={{ width: '100%', boxSizing: 'border-box', padding: '10px 12px', background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 9, color: C.txt, fontSize: 14, fontFamily: FONT, outline: 'none' }}
+      />
+
+      {status === 'saved' && <div style={{ fontSize: 12, color: C.grn, marginTop: 10 }}>Institution updated.</div>}
+      {status === 'error' && <div style={{ fontSize: 12, color: C.red, marginTop: 10 }}>{errMsg}</div>}
+
+      <div style={{ marginTop: 14, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <PrimaryBtn onClick={save} disabled={saving || !loaded}>
+          {saving ? 'Saving…' : status === 'saved' ? 'Saved ✓' : 'Save institution'}
+        </PrimaryBtn>
+      </div>
+    </SectionCard>
+  );
+}
 
 // prompt25 Task 7 — per-user Screening keyboard-shortcut editor. Loads from
 // /api/profile, captures a key per action (with duplicate-key validation), and
@@ -570,6 +669,11 @@ export default function Profile() {
                 </div>
               </form>
             </SectionCard>
+          </div>
+
+          {/* ── Institution & organization (prompt35) ────────────────── */}
+          <div id="section-institution">
+            <InstitutionSection />
           </div>
 
           {/* ── Screening Shortcuts (prompt25 Task 7) ────────────────── */}

@@ -18,8 +18,13 @@ import {
   RESEARCH_FIELD_OPTIONS,
   MAIN_USE_CASE_OPTIONS,
 } from '../../src/shared/editableUserFields.js';
+// prompt35 — the 'institution' question type saves through the institution service
+// (canonical ROR/local linkage + uncertain-match review), preserving typed text.
+import { resolveInstitutionInput } from '../services/institutionService.js';
 
-const QUESTION_TYPES = new Set(['text', 'single_select', 'multi_select', 'boolean', 'number', 'date']);
+// 'institution' (prompt35) is rendered as the autocomplete; its answer is an object
+// { name, rorId?, canonicalName?, city?, countryName?, countryCode?, source?, confidence? }.
+const QUESTION_TYPES = new Set(['text', 'single_select', 'multi_select', 'boolean', 'number', 'date', 'institution']);
 
 // Master onboarding behaviour + intro copy (a single SiteSetting row). Defaults are
 // used when no admin row exists yet, so the onboarding screen always has friendly
@@ -74,6 +79,18 @@ const SEED_QUESTIONS = [
     isRequired: false,
     allowSkip: true,
     displayOrder: 30,
+  },
+  // prompt35 — optional, skippable institution question rendered as the
+  // InstitutionAutocomplete (universities, hospitals, companies, institutes, …).
+  {
+    key: 'institution',
+    prompt: 'What is your institution or organization?',
+    description: 'Start typing to find your university, hospital, company, or research center. You can also keep your own typed name.',
+    type: 'institution',
+    options: null,
+    isRequired: false,
+    allowSkip: true,
+    displayOrder: 35,
   },
 ];
 
@@ -192,10 +209,40 @@ export function pendingFromQuestions(activeQuestions, respondedIds) {
     .map(publicQuestion);
 }
 
+// Coerce an institution answer (string or selection object) into the stored shape
+// { name, rorId?, canonicalName?, city?, countryName?, countryCode?, source, confidence? }.
+// Returns null when empty. Pure + exported for tests (prompt35).
+export function coerceInstitutionAnswer(raw) {
+  if (raw == null) return null;
+  if (typeof raw === 'string') {
+    const s = raw.trim().slice(0, 200);
+    return s ? { name: s, source: 'custom' } : null;
+  }
+  if (typeof raw === 'object') {
+    const name = String(raw.name || raw.original || raw.canonicalName || '').trim().slice(0, 200);
+    if (!name) return null;
+    const out = { name };
+    if (raw.rorId) out.rorId = String(raw.rorId).slice(0, 120);
+    if (raw.canonicalName) out.canonicalName = String(raw.canonicalName).trim().slice(0, 200);
+    if (raw.city) out.city = String(raw.city).trim().slice(0, 120);
+    if (raw.countryName) out.countryName = String(raw.countryName).trim().slice(0, 120);
+    if (raw.countryCode) out.countryCode = String(raw.countryCode).trim().slice(0, 8);
+    out.source = raw.rorId ? 'ror' : (raw.source === 'local' ? 'local' : 'custom');
+    if (Number.isFinite(Number(raw.confidence))) out.confidence = Number(raw.confidence);
+    return out;
+  }
+  return null;
+}
+
 // Validate + normalize an answer against its question. Returns { ok, value, error }.
 export function validateAnswer(question, raw) {
   const opts = parseOptions(question.options).map(o => String(o.value));
   switch (question.type) {
+    case 'institution': {
+      const v = coerceInstitutionAnswer(raw);
+      if (question.isRequired && !v) return { ok: false, error: 'required' };
+      return { ok: true, value: v };
+    }
     case 'text': {
       const s = raw == null ? '' : String(raw).trim().slice(0, 2000);
       if (question.isRequired && !s) return { ok: false, error: 'required' };
@@ -239,6 +286,17 @@ async function mirrorLegacy(userId, question, value) {
   } catch { /* best-effort — analytics mirror must never fail the response */ }
 }
 
+// prompt35 — persist an institution answer into the canonical User columns via the
+// institution service. Best-effort: a matching/DB hiccup never fails the response.
+async function saveInstitutionResponse(userId, value) {
+  try {
+    const patch = await resolveInstitutionInput(value, prisma);
+    await prisma.user.update({ where: { id: userId }, data: patch });
+  } catch (err) {
+    console.error('[onboarding] saveInstitutionResponse error:', err.message);
+  }
+}
+
 // After any response, if no pending questions remain, mark legacy onboarding done.
 async function maybeMarkComplete(userId) {
   try {
@@ -269,7 +327,13 @@ export async function submitResponses(req, res) {
         update: { answer: JSON.stringify(value), status: 'answered', answeredAt: now, skippedAt: null },
         create: { userId: req.user.id, questionId: q.id, answer: JSON.stringify(value), status: 'answered', answeredAt: now },
       });
-      await mirrorLegacy(req.user.id, q, value);
+      if (q.type === 'institution' || q.key === 'institution') {
+        // prompt35 — write the canonical institution columns (preserves typed text;
+        // ROR/local picks linked, uncertain custom matches flagged needsReview).
+        await saveInstitutionResponse(req.user.id, value);
+      } else {
+        await mirrorLegacy(req.user.id, q, value);
+      }
     }
     const pending = await maybeMarkComplete(req.user.id);
     return res.json({ ok: true, pending });

@@ -382,6 +382,17 @@ export const api = {
 
   /* ── Auth ────────────────────────────────────────────────────────── */
 
+  /* ── Institutions (prompt35) ─────────────────────────────────────────── */
+  institutions: {
+    /**
+     * GET /api/institutions/search?q=… — backend institution autocomplete
+     * (local DB first, then ROR). Returns { results: [{ canonicalName, rorId,
+     * city, countryName, countryCode, aliases, source, usersCount, confidence }] }.
+     * @param {string} q
+     */
+    search: (q) => req(`${BASE}/institutions/search?q=${encodeURIComponent(q || "")}`),
+  },
+
   auth: {
     /**
      * POST /api/auth/register

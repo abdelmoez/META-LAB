@@ -7,6 +7,18 @@
 import { prisma } from '../db/client.js';
 import { hashPassword, verifyPassword } from '../auth/password.js';
 import { invalidateUserName } from './presenceController.js';
+import { resolveInstitutionInput } from '../services/institutionService.js';
+
+// prompt35 — institution + onboarding-profile fields exposed/editable on the
+// self-service profile (in addition to the legacy onboarding write path).
+const PROFILE_SELECT = {
+  id: true, email: true, name: true, createdAt: true, lastActive: true,
+  themePreference: true, dashboardPreferences: true, screeningShortcuts: true,
+  primaryRole: true, researchField: true, mainUseCase: true, country: true,
+  institutionOriginal: true, institutionCanonicalName: true, institutionRorId: true,
+  institutionCity: true, institutionCountryName: true, institutionCountryCode: true,
+  institutionSource: true, institutionNeedsReview: true,
+};
 
 /**
  * GET /api/profile
@@ -17,7 +29,7 @@ export async function getProfile(req, res) {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
-      select: { id: true, email: true, name: true, createdAt: true, lastActive: true, themePreference: true, dashboardPreferences: true, screeningShortcuts: true },
+      select: PROFILE_SELECT,
     });
     if (!user) return res.status(404).json({ error: 'User not found' });
     res.json({ user });
@@ -34,7 +46,7 @@ export async function getProfile(req, res) {
  */
 export async function updateProfile(req, res) {
   try {
-    const { name, themePreference, dashboardPreferences, screeningShortcuts } = req.body || {};
+    const { name, themePreference, dashboardPreferences, screeningShortcuts, institution, country } = req.body || {};
     if (name !== undefined && typeof name !== 'string') {
       return res.status(400).json({ error: 'name must be a string' });
     }
@@ -74,6 +86,19 @@ export async function updateProfile(req, res) {
         return res.status(400).json({ error: 'screeningShortcuts must be an object' });
       }
     }
+    // prompt35 — institution: accepts a canonical selection object (ROR/local) or a
+    // custom string; the service preserves the typed text and links/flags as needed.
+    // `country` is the free-text onboarding-stated country (≠ IP-derived registration).
+    let instPatch = {};
+    if (institution !== undefined) {
+      try { instPatch = await resolveInstitutionInput(institution, prisma); }
+      catch (e) { console.error('[profile] institution resolve error:', e.message); instPatch = {}; }
+    }
+    let countryPatch = {};
+    if (country !== undefined) {
+      if (country !== null && typeof country !== 'string') return res.status(400).json({ error: 'country must be a string' });
+      countryPatch = { country: country ? String(country).trim().slice(0, 120) || null : null };
+    }
     const user = await prisma.user.update({
       where: { id: req.user.id },
       data: {
@@ -81,9 +106,11 @@ export async function updateProfile(req, res) {
         ...(themePreference !== undefined ? { themePreference } : {}),
         ...dashPatch,
         ...shortcutPatch,
+        ...instPatch,
+        ...countryPatch,
         lastActive: new Date(),
       },
-      select: { id: true, email: true, name: true, createdAt: true, lastActive: true, themePreference: true, dashboardPreferences: true, screeningShortcuts: true },
+      select: PROFILE_SELECT,
     });
     // prompt25 follow-up — a rename must show in presence immediately, not after
     // the ≤60s name-cache TTL.
