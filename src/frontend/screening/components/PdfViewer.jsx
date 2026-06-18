@@ -22,6 +22,15 @@ function fmtSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+// prompt34 Task 1 — fit the PDF to the viewer width by default. The browser's
+// native PDF renderer honours the URL fragment, so #zoom=page-width scales each
+// page to the iframe width on load (and FitH as a fallback hint). Pure + exported
+// so the default-fit behaviour is unit-testable. Preserves an existing fragment.
+export function pdfFitWidthSrc(url) {
+  if (!url) return null;
+  return url.includes('#') ? url : `${url}#zoom=page-width&view=FitH`;
+}
+
 export default function PdfViewer({ pid, recordId, canManage, defaultOpen = false, previewHeight = 520 }) {
   const [attachment, setAttachment] = useState(null);
   const [loading, setLoading]   = useState(true);
@@ -115,7 +124,7 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
   // container resizes; a manual zoom by the user persists for that session (we
   // never remount on resize). The "Open in new tab" link stays plain.
   const previewUrl = attachment ? screeningApi.pdfDownloadUrl(pid, recordId, attachment.id) : null;
-  const fitUrl = previewUrl ? `${previewUrl}#zoom=page-width&view=FitH` : null;
+  const fitUrl = pdfFitWidthSrc(previewUrl);
 
   return (
     <div style={{ border: `1px solid ${C.brd}`, borderRadius: 10, background: C.card, overflow: 'hidden' }}>

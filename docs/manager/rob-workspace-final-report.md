@@ -109,12 +109,13 @@ None. `grade.robSync` lives inside the existing `Project.data` JSON blob (no new
 
 ## Tests added
 
-`tests/unit/rob-grade-sync.test.js` — 14 cases covering `summariseRobForGrade` (pending/empty, not_serious/serious/very_serious thresholds, some-concerns majority, minority high, `consensus` treated as completed, draft-as-pending reason) and `robGradeSignature` (order-independence, change on judgement/status/added-assessment, stability for identical input).
+- `tests/unit/rob-grade-sync.test.js` — 14 cases covering `summariseRobForGrade` (pending/empty, not_serious/serious/very_serious thresholds, some-concerns majority, minority high, `consensus` treated as completed, draft-as-pending reason) and `robGradeSignature` (order-independence, change on judgement/status/added-assessment, stability for identical input).
+- `tests/unit/rob-workspace-ui.test.jsx` — 12 SSR cases (follow-up): `WorkspaceFooter` shows Finalise while drafting, Re-open + "Continue to GRADE" once finalised (hidden when no `onContinue`), nothing editable for a read-only viewer, "Back to D5" on the summary step; `ArticleHeaderBar` renders the article identity/links with NO "Article Information" tab and a collapsed-by-default abstract disclosure; `pdfFitWidthSrc` appends the page-width fragment (and preserves an existing fragment). To make these testable, `WorkspaceFooter`/`ArticleHeaderBar` are exported and the fit-width fragment is a pure exported helper.
 
 ## Build & test results
 
 - vite build: green.
-- `tests/unit`: 1113 green.
+- `tests/unit`: 1125 green (was 1113; +12 follow-up UI tests).
 - `tests/screening/unit`: 164 green.
 
 ## Product decisions / deviations
@@ -124,7 +125,7 @@ None. `grade.robSync` lives inside the existing `Project.data` JSON blob (no new
 
 ## Known limitations & recommended next steps
 
-- **UI-level automated coverage is limited.** The app's test infra is SSR-only (no DOM-interaction harness), so the new GRADE-tab interactions, the RoB layout/footer, the PDF toolbar toggle, and the Project Control settings card are validated by the pure `gradeSync` unit tests plus build + manual QA rather than by interaction tests. A DOM/E2E harness would let these be regression-tested directly.
+- **UI-level automated coverage is partial.** A follow-up commit added SSR render tests (`rob-workspace-ui.test.jsx`) for the new `WorkspaceFooter` / `ArticleHeaderBar` and the `pdfFitWidthSrc` helper, on top of the pure `gradeSync` unit tests. The app's test infra is SSR-only (no DOM-interaction harness), so click-driven flows (toolbar toggle, GRADE accept/re-sync, settings save, menu collapse persistence) are still validated by build + manual QA. A DOM/E2E harness (jsdom + Testing Library or Playwright) would let those interactions be regression-tested directly.
 - **Collapse preference is per-browser, not per-user.** `navCollapsed` (and `pdfToolsHidden`) are stored in `localStorage`, so the choice does not follow a user across devices. Promoting it to a user preference (as was done for dashboard preferences) would make it cross-device.
 - **RoB API is still owner-scoped.** `robApi.listAssessments` is owner-scoped, so a non-owner viewing GRADE gets a 404 and the Risk-of-Bias domain falls back to the legacy data-based suggestion. Broadening RoB read access to project members would let the auto-suggestion appear for non-owners.
 - **Native-PDF zoom is not app-controlled.** Fit-width is requested via the `#zoom=page-width&view=FitH` URL fragment, which the browser's built-in PDF viewer honours; the app cannot programmatically read or set the zoom afterwards, and exact rendering depends on the browser's PDF engine.

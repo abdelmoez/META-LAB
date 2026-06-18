@@ -556,7 +556,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
 }
 
 // ── Sticky action footer (Task 2/7) — domain nav + primary action, always visible.
-function WorkspaceFooter({ active, setActive, setFocusedQ, allComplete, finalised, readOnly, saving, saveState, onFinalise, onReopen, onContinue }) {
+export function WorkspaceFooter({ active, setActive, setFocusedQ, allComplete, finalised, readOnly, saving, saveState, onFinalise, onReopen, onContinue }) {
   const go = (target) => { setActive(target); setFocusedQ(null); };
   const onSummary = active === 'summary';
   const di = DOMAIN_IDS.indexOf(active);
@@ -613,7 +613,7 @@ function RobBadge({ children, color = C.txt2 }) {
 // shows the article identity (title, authors, journal·year, DOI/PMID links) plus
 // compact metadata chips, and offers the fuller detail (abstract + keywords) as an
 // expandable disclosure so the header stays compact and is never overloaded.
-function ArticleHeaderBar({ record, loading, view, showDetails }) {
+export function ArticleHeaderBar({ record, loading, view, showDetails }) {
   const [open, setOpen] = useState(false);
   const title = record?.title || view?.resultLabel || `Study ${view?.studyId || ''}`.trim() || 'Study';
   const authors = record?.authors;
