@@ -78,9 +78,18 @@ flagged `needsReview` for Ops (never silently merged).
 - `ROR_API_BASE` (default `https://api.ror.org/v2/organizations`), `ROR_TIMEOUT_MS`
   (default 3500). No API key required (ROR is open data).
 
+## Follow-up fixes (second commit)
+- Local-search candidate scan is now memoized with a 30 s TTL (+ a 5000-row cap)
+  and invalidated on any institution save, so rapid typeahead doesn't re-scan the
+  user table per keystroke (perf/scale) while a just-saved institution still
+  suggests immediately.
+- Added SSR render tests for `InstitutionAutocomplete`.
+
 ## Tests
 - `tests/unit/institutions/institutionService.test.js` (7) — `buildInstitutionPatch`
-  + `mapRorOrganization`. Existing `institutionMatch.test.js` (12) still green.
+  + `mapRorOrganization`; `tests/unit/institution-autocomplete.test.jsx` (3) —
+  component render + canonical-link indicator. Existing `institutionMatch.test.js`
+  (12) still green.
 - Verified live: server boots; `/api/institutions/search` is auth-gated (401
   unauth, 200 authed) and returns merged local + ROR results; profile save
   round-trips the canonical fields (typed text preserved). 1296 unit/screening

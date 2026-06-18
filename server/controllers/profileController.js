@@ -7,7 +7,7 @@
 import { prisma } from '../db/client.js';
 import { hashPassword, verifyPassword } from '../auth/password.js';
 import { invalidateUserName } from './presenceController.js';
-import { resolveInstitutionInput } from '../services/institutionService.js';
+import { resolveInstitutionInput, invalidateInstitutionCandidates } from '../services/institutionService.js';
 
 // prompt35 — institution + onboarding-profile fields exposed/editable on the
 // self-service profile (in addition to the legacy onboarding write path).
@@ -115,6 +115,7 @@ export async function updateProfile(req, res) {
     // prompt25 follow-up — a rename must show in presence immediately, not after
     // the ≤60s name-cache TTL.
     if (name !== undefined) invalidateUserName(req.user.id);
+    if (institution !== undefined) invalidateInstitutionCandidates(); // suggest a newly-saved institution immediately
     res.json({ user });
   } catch (err) {
     console.error('[profile] updateProfile error:', err.message);

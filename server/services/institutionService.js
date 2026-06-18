@@ -108,14 +108,23 @@ export function buildInstitutionPatch(selection) {
   return buildInstitutionPatch(typed);
 }
 
+// Short-TTL cache so a typeahead burst doesn't re-scan the user table per keystroke.
+// Staleness ≤ TTL is fine for suggestions; cleared on any institution save.
+const CAND_TTL_MS = 30 * 1000;
+const CAND_MAX_ROWS = 5000;
+let _candCache = { at: 0, data: null };
+export function invalidateInstitutionCandidates() { _candCache = { at: 0, data: null }; }
+
 /**
  * Distinct existing institutions in the local DB (canonical name preferred, else
  * the user's original text), with any ROR/location detail we already have.
  */
 export async function existingInstitutionCandidates(prisma) {
+  if (_candCache.data && (Date.now() - _candCache.at) < CAND_TTL_MS) return _candCache.data;
   const rows = await prisma.user.findMany({
     where: { OR: [{ institutionCanonicalName: { not: null } }, { institutionOriginal: { not: null } }] },
     select: { ...INSTITUTION_SELECT },
+    take: CAND_MAX_ROWS,
   });
   const byKey = new Map();
   for (const r of rows) {
@@ -126,7 +135,9 @@ export async function existingInstitutionCandidates(prisma) {
     if (prev) { prev.count += 1; if (!prev.rorId && r.institutionRorId) Object.assign(prev, locFrom(r)); continue; }
     byKey.set(key, { canonicalName: name, count: 1, ...locFrom(r) });
   }
-  return [...byKey.values()];
+  const data = [...byKey.values()];
+  _candCache = { at: Date.now(), data };
+  return data;
 }
 
 function locFrom(r) {

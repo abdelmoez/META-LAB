@@ -20,7 +20,7 @@ import {
 } from '../../src/shared/editableUserFields.js';
 // prompt35 — the 'institution' question type saves through the institution service
 // (canonical ROR/local linkage + uncertain-match review), preserving typed text.
-import { resolveInstitutionInput } from '../services/institutionService.js';
+import { resolveInstitutionInput, invalidateInstitutionCandidates } from '../services/institutionService.js';
 
 // 'institution' (prompt35) is rendered as the autocomplete; its answer is an object
 // { name, rorId?, canonicalName?, city?, countryName?, countryCode?, source?, confidence? }.
@@ -292,6 +292,7 @@ async function saveInstitutionResponse(userId, value) {
   try {
     const patch = await resolveInstitutionInput(value, prisma);
     await prisma.user.update({ where: { id: userId }, data: patch });
+    invalidateInstitutionCandidates(); // a new institution should suggest immediately
   } catch (err) {
     console.error('[onboarding] saveInstitutionResponse error:', err.message);
   }
