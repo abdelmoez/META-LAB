@@ -11,6 +11,7 @@
 import { prisma } from '../db/client.js';
 import { localInstitutionSuggestions } from '../services/institutionService.js';
 import { searchRor } from '../services/rorClient.js';
+import { searchOpenAlex } from '../services/openAlexClient.js';
 import { normalizeInstitution } from '../../src/research-engine/institutions/institutionMatch.js';
 
 const MIN_QUERY = 2;
@@ -25,15 +26,24 @@ export async function search(req, res) {
   try { local = await localInstitutionSuggestions(q, prisma, 6); }
   catch (e) { console.error('[institutions] local search error:', e.message); local = []; }
 
-  let ror = [];
-  try { ror = await searchRor(q, { limit: 6 }); }   // already swallows its own errors
-  catch { ror = []; }
+  // ROR (canonical) + OpenAlex (secondary) run in parallel; both swallow their own
+  // errors and return [] on failure, so neither can break search.
+  let ror = [], openalex = [];
+  try { [ror, openalex] = await Promise.all([searchRor(q, { limit: 6 }), searchOpenAlex(q, { limit: 6 })]); }
+  catch { ror = []; openalex = []; }
 
-  // Merge: ROR canonical identities first, then local-only ones not covered by ROR.
+  // Merge: ROR canonical identities first, then OpenAlex hits ROR didn't already
+  // cover (deduped by ROR id or normalized name), then local-only ones.
   const byKey = new Map();
   const keyOf = (r) => (r.rorId ? `ror:${r.rorId}` : `name:${normalizeInstitution(r.canonicalName)}`);
   for (const r of ror) {
     byKey.set(keyOf(r), { ...r, confidence: r.confidence ?? (normalizeInstitution(r.canonicalName) === normalizeInstitution(q) ? 1 : 0.9) });
+  }
+  for (const r of openalex) {
+    const k = keyOf(r);
+    const nameKey = `name:${normalizeInstitution(r.canonicalName)}`;
+    if (byKey.has(k) || byKey.has(nameKey)) continue; // ROR already covers it
+    byKey.set(k, { ...r, confidence: r.confidence ?? (normalizeInstitution(r.canonicalName) === normalizeInstitution(q) ? 1 : 0.85) });
   }
   for (const r of local) {
     const nameKey = `name:${normalizeInstitution(r.canonicalName)}`;

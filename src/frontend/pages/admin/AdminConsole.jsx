@@ -3045,6 +3045,7 @@ function ConfidenceBadge({ confidence }) {
 
 function InstitutionsManager() {
   const [institutions, setInstitutions] = useState([]);
+  const [summary, setSummary] = useState(null); // prompt35 follow-up — coverage rollup
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
   const [busy, setBusy]       = useState('');          // key currently mutating
@@ -3058,7 +3059,8 @@ function InstitutionsManager() {
     try {
       const d = await adminApi.getInstitutions();
       setInstitutions(d.institutions || []);
-    } catch (e) { setError(e.message); setInstitutions([]); }
+      setSummary(d.summary || null);
+    } catch (e) { setError(e.message); setInstitutions([]); setSummary(null); }
     finally { setLoading(false); }
   }, []);
 
@@ -3103,6 +3105,19 @@ function InstitutionsManager() {
   return (
     <div>
       {error && <ErrorBox msg={error} />}
+
+      {/* prompt35 follow-up — institution coverage rollup (ROR/local linkage,
+          custom/unmatched, uncertain matches needing Ops review, users with none). */}
+      {summary && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 14 }}>
+          <Chip label="Users with institution" value={summary.withInstitution} />
+          <Chip label="Canonical-linked" value={summary.canonicalLinked} color={C.grn} />
+          <Chip label="ROR-linked" value={summary.rorLinked} color={C.teal} />
+          <Chip label="Custom / unmatched" value={summary.customUnmatched} color={C.muted} />
+          <Chip label="Needs review" value={summary.needsReview} color={summary.needsReview > 0 ? (C.ylw || C.yel) : C.muted} />
+          <Chip label="Without institution" value={summary.withoutInstitution} color={C.muted} />
+        </div>
+      )}
 
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 14, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 12, color: C.txt2 }}>

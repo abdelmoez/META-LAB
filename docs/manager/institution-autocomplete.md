@@ -74,9 +74,12 @@ custom name is kept verbatim and only auto-linked when ≥0.95-confident, otherw
 flagged `needsReview` for Ops (never silently merged).
 
 ## Configuration
-- `ROR_ENABLED` (default `true`; set `false` to disable ROR and use local-only).
-- `ROR_API_BASE` (default `https://api.ror.org/v2/organizations`), `ROR_TIMEOUT_MS`
-  (default 3500). No API key required (ROR is open data).
+- `ROR_ENABLED` (default `true`), `ROR_API_BASE` (default
+  `https://api.ror.org/v2/organizations`), `ROR_TIMEOUT_MS` (default 3500).
+- `OPENALEX_ENABLED` (default `true`), `OPENALEX_API_BASE` (default
+  `https://api.openalex.org/institutions`), `OPENALEX_TIMEOUT_MS` (default 3500),
+  `OPENALEX_MAILTO` (optional — joins OpenAlex's polite pool).
+- No API keys required (ROR + OpenAlex are open data).
 
 ## Follow-up fixes (second commit)
 - Local-search candidate scan is now memoized with a 30 s TTL (+ a 5000-row cap)
@@ -95,15 +98,22 @@ flagged `needsReview` for Ops (never silently merged).
   round-trips the canonical fields (typed text preserved). 1296 unit/screening
   tests green; vite build green.
 
+## Resolved follow-ups (third commit)
+- **OpenAlex secondary source is now wired** (`server/services/openAlexClient.js`):
+  the search controller runs ROR + OpenAlex in parallel and adds OpenAlex hits ROR
+  didn't already cover (deduped by ROR id / normalized name). ROR stays canonical;
+  OpenAlex only adds coverage and fails gracefully. Live-verified.
+- **Ops coverage summary is now surfaced** in the AdminConsole Institutions panel
+  (chip strip: with-institution, canonical-/ROR-linked, custom/unmatched,
+  needs-review, without-institution) fed by `GET /api/admin/institutions.summary`.
+
 ## Known limitations / follow-ups
-- **OpenAlex** secondary source is not yet wired (architecture supports adding it in
-  `rorClient`/the controller merge). ROR is the canonical source today.
 - No dedicated relational `Institution` table — canonical detail is denormalized on
-  the User row + the existing JSON grouping; a relational table would enable
-  institution-level pages and faster “users linked” rollups.
-- Ops UI surfacing of the new `summary` counts / per-user `needsReview` filter is
-  backend-ready; the AdminConsole widgets for them are a follow-up.
-- The seeded `institution` onboarding question will re-interrupt existing users on
+  the User row + the existing JSON grouping. Deliberately deferred (architecture
+  evolution, not a defect; the current model meets all acceptance criteria); a
+  relational table would enable institution-level pages and faster rollups.
+- The seeded `institution` onboarding question re-interrupts existing users once on
   next login (by design — skippable).
-- ROR results are not yet persisted to a local cache table beyond the in-memory TTL
-  cache; selected institutions are cached on the user row.
+- External results are cached in-memory (TTL), not persisted to a local table
+  (overlaps the relational-table follow-up); selected institutions are saved on the
+  user row.

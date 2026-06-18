@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildInstitutionPatch, clearInstitutionPatch } from '../../../server/services/institutionService.js';
 import { mapRorOrganization } from '../../../server/services/rorClient.js';
+import { mapOpenAlexInstitution } from '../../../server/services/openAlexClient.js';
 
 describe('buildInstitutionPatch — canonical institution save (prompt35)', () => {
   it('treats a plain string as a custom institution, preserving the typed text', () => {
@@ -79,5 +80,27 @@ describe('mapRorOrganization — ROR v2 record normalization (prompt35)', () => 
   it('returns null for an unusable record', () => {
     expect(mapRorOrganization(null)).toBe(null);
     expect(mapRorOrganization({ names: [] })).toBe(null);
+  });
+});
+
+describe('mapOpenAlexInstitution — OpenAlex record normalization (prompt35 follow-up)', () => {
+  it('maps display name, ROR id, location, aliases, and website', () => {
+    const m = mapOpenAlexInstitution({
+      id: 'https://openalex.org/I136199984', ror: 'https://ror.org/03vek6s52',
+      display_name: 'Harvard University', display_name_alternatives: ['Harvard'],
+      country_code: 'US', geo: { city: 'Cambridge', country: 'United States' },
+      homepage_url: 'https://www.harvard.edu',
+    });
+    expect(m.canonicalName).toBe('Harvard University');
+    expect(m.rorId).toBe('https://ror.org/03vek6s52'); // carries ROR id → dedupes vs ROR
+    expect(m.city).toBe('Cambridge');
+    expect(m.countryCode).toBe('US');
+    expect(m.aliases).toContain('Harvard');
+    expect(m.source).toBe('openalex');
+  });
+
+  it('returns null without a display name', () => {
+    expect(mapOpenAlexInstitution(null)).toBe(null);
+    expect(mapOpenAlexInstitution({ ror: 'x' })).toBe(null);
   });
 });
