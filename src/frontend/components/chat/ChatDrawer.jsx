@@ -330,8 +330,14 @@ export default function ChatDrawer({
             {typingLabel || ' '}
           </div>
           {blocked ? (
-            <div style={{ fontSize: 12, color: C.muted, background: C.card, border: `1px dashed ${C.brd2}`, borderRadius: 8, padding: '10px 12px', lineHeight: 1.5 }}>
-              The project leader has restricted chat — you have read-only access.
+            <div>
+              <input type="text" value="" disabled readOnly
+                placeholder="You do not have permission to post in this chat."
+                aria-label="You do not have permission to post in this chat."
+                style={{ width: '100%', background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 8, padding: '9px 12px', color: C.muted, fontSize: 13, fontFamily: FONT, outline: 'none', opacity: 0.6, cursor: 'not-allowed', boxSizing: 'border-box' }} />
+              <div style={{ fontSize: 11.5, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+                You do not have permission to post in this chat. Chat is restricted to members with the Chat permission.
+              </div>
             </div>
           ) : (
             <>

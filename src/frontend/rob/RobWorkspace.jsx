@@ -65,6 +65,46 @@ function useViewportNarrow(breakpoint = STACK_BELOW) {
 
 const ROB_SETTINGS_FALLBACK = { showPdfPanel: true, showArticleInfoTab: true, defaultLeftTab: 'pdf', compactAssessmentCards: false };
 
+// prompt34 Task 2 — the assessment workspace fills the viewport down from wherever
+// it is mounted (it sits below the app header + the "Risk of Bias" section header),
+// so the PDF + questions + the action footer are visible WITHOUT page scrolling.
+// We measure the element's distance from the viewport top and size it to fill the
+// rest, leaving a small bottom gap. Robust to whatever chrome sits above it.
+function useFillViewportHeight(ref, bottomGap = 24, minHeight = 460) {
+  const [height, setHeight] = useState(null);
+  useEffect(() => {
+    let raf = 0;
+    const recompute = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const el = ref.current; if (!el) return;
+        try {
+          const top = el.getBoundingClientRect().top;
+          const h = Math.max(minHeight, window.innerHeight - top - bottomGap);
+          setHeight(h);
+        } catch { /* ignore */ }
+      });
+    };
+    recompute();
+    window.addEventListener('resize', recompute);
+    return () => { cancelAnimationFrame(raf); window.removeEventListener('resize', recompute); };
+  }, [ref, bottomGap, minHeight]);
+  return height;
+}
+
+// Measure an element's pixel height (for the PDF iframe to fill its column). The
+// native PDF viewer then scrolls long documents internally — no page scroll.
+function useMeasuredHeight(ref) {
+  const [h, setH] = useState(0);
+  useEffect(() => {
+    const el = ref.current; if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    const ro = new ResizeObserver(entries => { for (const e of entries) setH(e.contentRect.height); });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [ref]);
+  return h;
+}
+
 // ── Small presentational pieces ───────────────────────────────────────────────
 function JudgmentPill({ judgment, size = 'md', provisional }) {
   const st = judgmentStyle(judgment);
@@ -107,7 +147,7 @@ function SegmentedControl({ qid, value, onChange }) {
 }
 
 // ── Workspace ─────────────────────────────────────────────────────────────────
-export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnly = false }) {
+export default function RobWorkspace({ assessmentId, onClose, onChanged, onContinue, readOnly = false }) {
   const [view, setView] = useState(null);       // server assessment view
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -118,20 +158,23 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
   const [focusedQ, setFocusedQ] = useState(null);
   const [guidanceOpen, setGuidanceOpen] = useState({});
   const [override, setOverride] = useState(null); // { target, domainId, current }
-  const [showGuide, setShowGuide] = useState(false);
   // prompt30 Part 3 — the assessment opens as a two-section split: PDF (left) +
   // RoB questions (right). The PDF panel can be collapsed for more answering room.
   const [showPdf, setShowPdf] = useState(true);
-  // prompt32 Task 2 — the left column now has two tabs (Study PDF / Article
-  // Information) over a persistent article header. RobWorkspace owns the single
-  // study-record fetch so BOTH the header/article tab and the PDF tab share it
-  // even when the PDF tab is admin-hidden. robSettings tunes which tabs appear +
-  // the initial tab; `leftTab` is set once settings arrive.
+  // prompt34 Task 4/5 — RobWorkspace owns the single study-record fetch; it feeds
+  // BOTH the persistent article header (spanning both columns) and the PDF panel.
+  // The standalone "Article Information" tab was removed — its details now live in
+  // the header's expandable disclosure (gated by robSettings.showArticleInfoTab).
   const [studyRecord, setStudyRecord] = useState({ loading: true, error: '', record: null, screenProjectId: null, recordId: null });
-  const [leftTab, setLeftTab] = useState('pdf');     // 'pdf' | 'article'
   const [robSettings, setRobSettings] = useState(ROB_SETTINGS_FALLBACK);
   const reduced = usePrefersReducedMotion();
   const narrow = useViewportNarrow();
+  // prompt34 Task 2/5 — the workspace fills the viewport; the two-column row is
+  // measured so the PDF iframe fills its column and the assessment scrolls inside.
+  const rootRef = useRef(null);
+  const rowRef = useRef(null);
+  const fillHeight = useFillViewportHeight(rootRef);
+  const rowHeight = useMeasuredHeight(rowRef);
   const saveTimer = useRef(null);
   const savedTimer = useRef(null);
   const pending = useRef({ answers: {}, meta: {} });
@@ -155,21 +198,13 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
 
   useEffect(() => { load(); }, [load]);
 
-  // prompt32 Task 2 — read the admin RoB presentation settings once, then honour
-  // the configured default tab. If the PDF tab is hidden, open Article instead
-  // (and vice-versa); falls back to safe defaults if the fetch fails.
+  // prompt34 Task 4 — read the admin RoB presentation settings once. The separate
+  // "Article Information" tab was removed; showArticleInfoTab now controls whether
+  // the full article details (abstract/keywords/badges) are offered as an
+  // expandable disclosure inside the persistent header that spans both columns.
   useEffect(() => {
     let alive = true;
-    getRobSettings().then(s => {
-      if (!alive) return;
-      setRobSettings(s);
-      const pdfOk = s.showPdfPanel !== false;
-      const artOk = s.showArticleInfoTab !== false;
-      let initial = s.defaultLeftTab === 'article' ? 'article' : 'pdf';
-      if (initial === 'pdf' && !pdfOk) initial = 'article';
-      if (initial === 'article' && !artOk) initial = 'pdf';
-      setLeftTab(initial);
-    }).catch(() => { /* fallback already set */ });
+    getRobSettings().then(s => { if (alive) setRobSettings(s); }).catch(() => { /* fallback already set */ });
     return () => { alive = false; };
   }, []);
 
@@ -295,7 +330,6 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
       if (override) return; // the override modal owns the keyboard while open
       if (active === 'summary') {
         if (e.key === '[' || e.key === 'p') { setActive('D5'); e.preventDefault(); }
-        if (e.key === '?') { setShowGuide(g => !g); e.preventDefault(); }
         return;
       }
       const di = DOMAIN_IDS.indexOf(active);
@@ -318,13 +352,17 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
       } else if (e.key === 'o' && editable) {
         setOverride({ target: 'domain', domainId: active, current: resolvedDomain(active) }); e.preventDefault();
       } else if (e.key === '?') {
-        if (focusedQ) setGuidanceOpen(g => ({ ...g, [focusedQ]: !g[focusedQ] })); else setShowGuide(s => !s); e.preventDefault();
+        // Toggle guidance for the focused question, or the first reachable one so
+        // '?' always does something useful on a domain (matches the rail legend).
+        const target = focusedQ || reachable[0]?.id;
+        if (target) setGuidanceOpen(g => ({ ...g, [target]: !g[target] }));
+        e.preventDefault();
       }
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, focusedQ, answers, finalised, override]);
+  }, [active, focusedQ, answers, finalised, readOnly, override]);
 
   async function doOverride({ finalJudgment, justification, clear }) {
     try {
@@ -364,90 +402,86 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
   const allComplete = liveCompleteness.overall.complete;
   const summaryOverall = (allComplete || view.overall.overridden) ? (finalised ? view.overall.resolvedOverall : liveOverall.judgment) : 'na';
   const single = { domains: ROB2.domains.map(d => ({ id: d.id, shortLabel: d.shortLabel })), rows: [{ id: view.id, label: view.resultLabel || view.studyId, cells: ROB2.domains.map(d => ({ domainId: d.id, judgment: dotJudgment(d.id) })), overall: summaryOverall }] };
+  const completedDomains = ROB2.domains.filter(d => domainComplete(d.id)).length;
 
-  // prompt32 Task 2 — which left-pane tabs are available (admin-tunable). The
-  // "source" toggle (showPdf) collapses the WHOLE left column so the assessment
-  // can use the full width — same intent as the old PDF toggle.
+  // prompt34 Task 4 — the PDF column is shown when admin-enabled AND not collapsed
+  // by the "Hide source" toggle. The Article Information TAB was removed; full
+  // article details live in the persistent header (Task 5). showArticleInfoTab now
+  // gates the header's expandable abstract/keywords disclosure.
   const pdfTabOn = robSettings.showPdfPanel !== false;
-  const articleTabOn = robSettings.showArticleInfoTab !== false;
-  const hasLeftColumn = showPdf && (pdfTabOn || articleTabOn);
-  // Keep the active tab valid if settings hid the currently-selected one.
-  const effectiveLeftTab = (leftTab === 'pdf' && !pdfTabOn) ? 'article'
-    : (leftTab === 'article' && !articleTabOn) ? 'pdf'
-    : leftTab;
-  // The PDF should fill the column down to the workspace bottom (Task 4); the
-  // header row + panel chrome consume a fixed slice, so subtract it from the vh.
-  const pdfPreviewHeight = 'calc(100vh - 260px)';
+  const articleDetailsOn = robSettings.showArticleInfoTab !== false;
+  const hasLeftColumn = showPdf && pdfTabOn;
+  // prompt34 Task 1/2 — the PDF iframe fills its column (measured); the native
+  // viewer scrolls long PDFs internally so the page itself never scrolls. On narrow
+  // (stacked) screens the page is allowed to scroll, so a viewport-relative height
+  // is used instead of the measured (and then unbounded) row height.
+  const pdfPreviewHeight = narrow ? 'calc(100vh - 300px)' : (rowHeight > 0 ? `${Math.max(320, Math.round(rowHeight - 78))}px` : 'calc(100vh - 320px)');
 
   return (
-    <div style={{ paddingInline: 'clamp(24px, 6vw, 96px)' }}>
-    {/* ── Task 3 — study-workspace header ABOVE both columns. The labelled Back
-        button works after refresh / deep-link because onClose owns the routing. ── */}
-    <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '4px 0 16px', flexWrap: 'wrap' }}>
+    <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', minWidth: 0, ...(narrow ? { minHeight: 'auto' } : { height: fillHeight ? `${fillHeight}px` : 'calc(100vh - 200px)', minHeight: 460 }) }}>
+    {/* ── Task 5 — Back + tool badge ABOVE both columns. onClose owns routing so
+        the labelled Back works after refresh / deep-link. ── */}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '2px 0 12px', flexWrap: 'wrap', flexShrink: 0 }}>
       <button onClick={onClose} style={{ ...ghostBtn, fontWeight: 700, color: C.txt }} aria-label="Back to Risk of Bias">
         <Icon name="arrowLeft" size={15} /> Back to Risk of Bias
       </button>
       <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 7, background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '38')}`, color: C.acc, fontSize: 11, fontFamily: MONO, fontWeight: 700 }}>
-        <Icon name="scale" size={13} /> RoB 2
+        <Icon name="scale" size={13} /> RoB 2 · effect of assignment
       </span>
       <div style={{ flex: 1 }} />
-      {(pdfTabOn || articleTabOn) && (
+      {pdfTabOn && (
         <button onClick={() => setShowPdf(p => !p)} aria-pressed={showPdf}
-          style={{ ...ghostBtn, padding: '6px 11px', background: showPdf ? alpha(C.acc, '14') : 'transparent', color: showPdf ? C.acc : C.txt2, borderColor: showPdf ? alpha(C.acc, '50') : C.brd2 }}>
+          style={{ ...ghostBtn, padding: '6px 11px', background: showPdf ? alpha(C.acc, '14') : 'transparent', color: showPdf ? C.acc : C.txt2, borderColor: showPdf ? alpha(C.acc, '50') : C.brd2 }}
+          title={showPdf ? 'Hide the PDF and give the assessment the full width' : 'Show the study PDF beside the assessment'}>
           <Icon name="fileText" size={14} /> {showPdf ? 'Hide source' : 'Show source'}
         </button>
       )}
     </div>
 
-    {/* ── Task 4 — two-column grid: left source pane fills, right assessment is a
-        clamped width pinned to the right boundary. Stacks under STACK_BELOW. ── */}
-    <div style={{
-      display: 'grid',
-      gridTemplateColumns: (hasLeftColumn && !narrow) ? 'minmax(0, 1fr) clamp(380px, 32vw, 560px)' : '1fr',
-      gap: 16, alignItems: 'stretch',
+    {/* ── Task 4 + 5 — persistent article header spanning BOTH columns. ── */}
+    <ArticleHeaderBar record={studyRecord.record} loading={studyRecord.loading} view={view} showDetails={articleDetailsOn} />
+
+    {/* ── Task 2/6 — two-column workspace fills the remaining height. PDF ~60%
+        (left), assessment ~40% (right, min 440px). Stacks under STACK_BELOW. ── */}
+    <div ref={rowRef} style={{
+      marginTop: 12, gap: 16,
+      ...(narrow
+        ? { display: 'flex', flexDirection: 'column' }
+        : { flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: hasLeftColumn ? 'minmax(0, 1.25fr) minmax(440px, 0.85fr)' : '1fr' }),
     }}>
-    {/* ── Left section: source (PDF tab + Article Information tab) over a
-        persistent article header (Task 2). Omitted entirely with no record. ── */}
+    {/* ── Left section: the study PDF, filling the column (Task 1). ── */}
     {hasLeftColumn && (
-      <aside style={{ display: 'flex', flexDirection: 'column', minWidth: 0, ...(narrow ? {} : { position: 'sticky', top: 0, alignSelf: 'start' }) }}>
-        <ArticleHeader record={studyRecord.record} fallbackLabel={view.resultLabel || `Study ${view.studyId}`} studyId={view.studyId} outcomeId={view.outcomeId} />
-        <div role="tablist" aria-label="Study source" style={{ display: 'flex', gap: 6, margin: '12px 0 10px' }}>
-          {pdfTabOn && <SourceTab on={effectiveLeftTab === 'pdf'} icon="fileText" label="Study PDF" onClick={() => setLeftTab('pdf')} />}
-          {articleTabOn && <SourceTab on={effectiveLeftTab === 'article'} icon="info" label="Article Information" onClick={() => setLeftTab('article')} />}
-        </div>
-        <div role="tabpanel" aria-label={effectiveLeftTab === 'pdf' ? 'Study PDF' : 'Article Information'} style={{ flex: 1, minHeight: 0 }}>
-          {effectiveLeftTab === 'pdf' && pdfTabOn ? (
-            <RobPdfPanel loading={studyRecord.loading} error={studyRecord.error} screenProjectId={studyRecord.screenProjectId} recordId={studyRecord.recordId}
-              canManage={editable} onRetry={resolveStudyRecord} previewHeight={pdfPreviewHeight} />
-          ) : (
-            <ArticleInfoPane record={studyRecord.record} loading={studyRecord.loading} fallbackLabel={view.resultLabel || `Study ${view.studyId}`} />
-          )}
-        </div>
+      <aside style={{ display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
+        <RobPdfPanel loading={studyRecord.loading} error={studyRecord.error} screenProjectId={studyRecord.screenProjectId} recordId={studyRecord.recordId}
+          canManage={editable} onRetry={resolveStudyRecord} previewHeight={pdfPreviewHeight} />
       </aside>
     )}
-    {/* ── Right section: the RoB assessment, a clamped column pinned right (Task 4) ── */}
-    <div style={{ ...shell, minWidth: 0 }}>
-      {/* ── Context bar ─────────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '14px 20px', borderBottom: `1px solid ${C.brd}`, background: C.card, flexWrap: 'wrap' }}>
-        <div style={{ flex: 1, minWidth: 160 }}>
-          <div style={{ fontSize: 15, fontWeight: 800, color: C.txt, fontFamily: FONT }}>{view.resultLabel || 'Risk-of-bias assessment'}</div>
-          <div style={{ fontSize: 12, color: C.muted, fontFamily: MONO, marginTop: 2 }}>Study {view.studyId}{view.outcomeId ? ` · ${view.outcomeId}` : ''}</div>
+    {/* ── Right section: the RoB assessment engine — context bar, scrolling body,
+        and a sticky action footer that stays visible (Task 2/7). ── */}
+    <section style={{ ...shell, minWidth: 0, display: 'flex', flexDirection: 'column', ...(narrow ? { minHeight: 520, marginBottom: 16 } : { minHeight: 0 }) }}>
+      {/* ── Context bar with live progress (Task 7) ─────────────────────── */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '12px 20px', borderBottom: `1px solid ${C.brd}`, background: C.card, flexWrap: 'wrap', flexShrink: 0 }}>
+        <div style={{ flex: 1, minWidth: 150 }}>
+          <div style={{ fontSize: 14.5, fontWeight: 800, color: C.txt, fontFamily: FONT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{view.resultLabel || 'Risk-of-bias assessment'}</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 5 }}>
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, whiteSpace: 'nowrap' }}>{completedDomains}/{ROB2.domains.length} domains</span>
+            <span aria-hidden style={{ flex: 1, maxWidth: 140, height: 4, borderRadius: 4, background: C.brd, overflow: 'hidden' }}>
+              <span style={{ display: 'block', height: '100%', width: `${(completedDomains / ROB2.domains.length) * 100}%`, background: allComplete ? C.grn : C.acc, transition: reduced ? 'none' : 'width 0.3s ease' }} />
+            </span>
+          </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Overall</span>
           <JudgmentPill judgment={finalised ? view.overall.resolvedOverall : liveOverall.judgment} size="md" provisional={!liveCompleteness.overall.complete && !finalised} />
         </div>
-        <span aria-live="polite" style={{ fontSize: 11, fontFamily: MONO, color: saveState === 'error' ? C.red : C.muted, minWidth: 64 }}>
-          {readOnly ? 'view only' : finalised ? 'finalised' : saveState === 'saving' ? 'saving…' : saveState === 'saved' ? '✓ saved' : saveState === 'error' ? 'save failed' : 'autosaves'}
-        </span>
       </div>
 
-      {error && <div style={{ padding: '8px 20px 0' }}><ErrorBox msg={error} /></div>}
+      {error && <div style={{ padding: '8px 20px 0', flexShrink: 0 }}><ErrorBox msg={error} /></div>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '232px minmax(0, 1fr)', gap: 0, alignItems: 'stretch' }}>
-        {/* ── Domain rail ───────────────────────────────────────────────── */}
-        <nav aria-label="RoB domains" style={{ borderRight: `1px solid ${C.brd}`, padding: '14px 10px', background: C.surf }}>
-          {ROB2.domains.map((d, i) => {
+      {/* ── Scrolling body: domain rail (own scroll) + questions (own scroll) ── */}
+      <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: '212px minmax(0, 1fr)', gap: 0 }}>
+        <nav aria-label="RoB domains" style={{ borderRight: `1px solid ${C.brd}`, padding: '14px 10px', background: C.surf, overflowY: 'auto', minHeight: 0 }}>
+          {ROB2.domains.map((d) => {
             const comp = liveCompleteness.perDomain[d.id];
             const on = active === d.id;
             return (
@@ -478,11 +512,11 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
           </div>
         </nav>
 
-        {/* ── Assessment pane / Summary ─────────────────────────────────── */}
-        <main style={{ padding: '20px 24px', minHeight: 420 }}>
+        {/* ── Assessment pane / Summary (scrolls internally) ─────────────── */}
+        <main style={{ padding: '20px 24px', overflowY: 'auto', minHeight: 0 }}>
           {active === 'summary' ? (
             <SummaryStep view={view} live={{ proposals: liveProposals, overall: liveOverall, completeness: liveCompleteness, resolvedDomain: dotJudgment }}
-              saving={saveState === 'saving'} single={single} finalised={finalised} editable={editable} readOnly={readOnly} onFinalise={doFinalise} onReopen={doReopen} onExport={exportAs}
+              single={single} finalised={finalised} editable={editable} onExport={exportAs}
               onOverrideOverall={() => setOverride({ target: 'overall', current: view.overall.resolvedOverall })} onJump={setActive} />
           ) : (
             <DomainPane
@@ -500,15 +534,18 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
               onOverride={() => setOverride({ target: 'domain', domainId: active, current: resolvedDomain(active) })}
             />
           )}
-
-          {/* prompt29 Part 1 — explicit Previous / Next section navigation. The
-              domain rail + keyboard ([ ]) still work; this makes stepping through
-              domains obvious. Answers autosave, so navigating never loses them.
-              Moving on from an incomplete domain is allowed (its status is shown). */}
-          <SectionNav active={active} setActive={setActive} setFocusedQ={setFocusedQ} domainComplete={domainComplete} />
         </main>
       </div>
-    </div>
+
+      {/* ── Sticky action footer (Task 2/7) — always visible without page scroll.
+          Carries autosave state, domain nav, and the primary next action. ── */}
+      <WorkspaceFooter
+        active={active} setActive={setActive} setFocusedQ={setFocusedQ}
+        allComplete={allComplete} finalised={finalised} readOnly={readOnly}
+        saving={saveState === 'saving'} saveState={saveState}
+        onFinalise={doFinalise} onReopen={doReopen} onContinue={onContinue}
+      />
+    </section>
     </div>
 
     {override && (
@@ -518,36 +555,41 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
   );
 }
 
-// ── Section navigation (Previous / Next across domains → Summary) ───────────────
-function SectionNav({ active, setActive, setFocusedQ, domainComplete }) {
+// ── Sticky action footer (Task 2/7) — domain nav + primary action, always visible.
+function WorkspaceFooter({ active, setActive, setFocusedQ, allComplete, finalised, readOnly, saving, saveState, onFinalise, onReopen, onContinue }) {
   const go = (target) => { setActive(target); setFocusedQ(null); };
-  if (active === 'summary') {
-    return (
-      <div style={{ marginTop: 24, paddingTop: 16, borderTop: `1px solid ${C.brd}`, display: 'flex' }}>
-        <button onClick={() => go('D5')} style={ghostBtn}><Icon name="arrowLeft" size={14} /> Back to {ROB2.domains[DOMAIN_IDS.length - 1].id}</button>
-      </div>
-    );
-  }
+  const onSummary = active === 'summary';
   const di = DOMAIN_IDS.indexOf(active);
-  const prev = di > 0 ? DOMAIN_IDS[di - 1] : null;
+  const lastDomain = DOMAIN_IDS[DOMAIN_IDS.length - 1];
+  const prevTarget = onSummary ? lastDomain : (di > 0 ? DOMAIN_IDS[di - 1] : null);
   const isLast = di >= DOMAIN_IDS.length - 1;
-  const next = isLast ? 'summary' : DOMAIN_IDS[di + 1];
-  const nextLabel = isLast ? 'Summary' : `${next} · ${ROB2.domains[di + 1].shortLabel}`;
-  const incomplete = !domainComplete(active);
+  const nextTarget = onSummary ? null : (isLast ? 'summary' : DOMAIN_IDS[di + 1]);
+  const nextLabel = onSummary ? '' : (isLast ? 'Summary' : `${DOMAIN_IDS[di + 1]}`);
+  const saveText = readOnly ? 'view only' : finalised ? '✓ finalised' : saving ? 'saving…' : saveState === 'saved' ? '✓ saved' : saveState === 'error' ? 'save failed' : 'autosaves';
   return (
-    <div style={{ marginTop: 24, paddingTop: 16, borderTop: `1px solid ${C.brd}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
-      <button onClick={() => prev && go(prev)} disabled={!prev} style={{ ...ghostBtn, opacity: prev ? 1 : 0.45, cursor: prev ? 'pointer' : 'not-allowed' }}>
-        <Icon name="arrowLeft" size={14} /> Previous
-      </button>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-        {incomplete && (
-          <span style={{ fontSize: 11.5, color: C.yel, display: 'inline-flex', alignItems: 'center', gap: 5 }} title="You can continue; some signalling questions in this domain are still unanswered.">
-            <Icon name="alertTriangle" size={13} /> Domain incomplete
-          </span>
-        )}
-        <button onClick={() => go(next)} style={primaryBtn(false)}>
-          Next: {nextLabel} <Icon name="arrowRight" size={14} />
+    <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', padding: '11px 18px', borderTop: `1px solid ${C.brd}`, background: C.card }}>
+      <span aria-live="polite" style={{ fontSize: 11, fontFamily: MONO, color: saveState === 'error' ? C.red : C.muted, minWidth: 70 }}>{saveText}</span>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+        <button onClick={() => prevTarget && go(prevTarget)} disabled={!prevTarget} style={{ ...ghostBtn, opacity: prevTarget ? 1 : 0.45, cursor: prevTarget ? 'pointer' : 'not-allowed' }}>
+          <Icon name="arrowLeft" size={14} /> {onSummary ? `Back to ${lastDomain}` : 'Previous'}
         </button>
+        {nextTarget && (
+          <button onClick={() => go(nextTarget)} style={ghostBtn}>
+            Next: {nextLabel} <Icon name="arrowRight" size={14} />
+          </button>
+        )}
+        {!readOnly && (finalised ? (
+          <>
+            <button onClick={onReopen} style={ghostBtn}><Icon name="refresh" size={13} /> Re-open</button>
+            {onContinue && <button onClick={() => onContinue('grade')} style={primaryBtn(false)}>Continue to GRADE <Icon name="arrowRight" size={14} /></button>}
+          </>
+        ) : (
+          <button onClick={onFinalise} disabled={!allComplete || saving}
+            title={saving ? 'Saving…' : (!allComplete ? 'Answer all reachable signalling questions first' : 'Finalise this assessment')}
+            style={primaryBtn(!allComplete || saving)}>
+            <Icon name="check" size={14} /> {saving ? 'Saving…' : 'Finalise'}
+          </button>
+        ))}
       </div>
     </div>
   );
@@ -566,129 +608,68 @@ function RobBadge({ children, color = C.txt2 }) {
   );
 }
 
-// Compact, always-visible header at the top of the left column.
-function ArticleHeader({ record, fallbackLabel, studyId, outcomeId }) {
-  const title = record?.title || fallbackLabel || 'Study';
+// prompt34 Task 4/5 — the persistent article header now SPANS both columns at the
+// top of the workspace (the separate "Article Information" tab was removed). It
+// shows the article identity (title, authors, journal·year, DOI/PMID links) plus
+// compact metadata chips, and offers the fuller detail (abstract + keywords) as an
+// expandable disclosure so the header stays compact and is never overloaded.
+function ArticleHeaderBar({ record, loading, view, showDetails }) {
+  const [open, setOpen] = useState(false);
+  const title = record?.title || view?.resultLabel || `Study ${view?.studyId || ''}`.trim() || 'Study';
   const authors = record?.authors;
   const journal = record?.journal;
   const year = record?.year;
   const hasMeta = authors || journal || year;
+  const decision = record ? articleDecisionBadge(record) : null;
+  const keywords = (record?.keywords || '').split(/[;,]/).map(s => s.trim()).filter(Boolean);
+  const hasDetail = showDetails && record && (record.abstract || keywords.length > 0);
   return (
-    <div style={{ padding: '14px 16px', border: `1px solid ${C.brd}`, borderRadius: 12, background: C.card }}>
-      <div style={{ fontSize: 14.5, fontWeight: 800, color: C.txt, fontFamily: FONT, lineHeight: 1.4, overflowWrap: 'anywhere' }}>{title}</div>
-      {hasMeta ? (
-        <div style={{ fontSize: 12, color: C.txt2, marginTop: 5, lineHeight: 1.5, overflowWrap: 'anywhere' }}>
-          {authors && <span>{authors}</span>}
-          {journal && <span style={{ fontStyle: 'italic', color: C.muted }}>{authors ? ' · ' : ''}{journal}</span>}
-          {year && <span style={{ color: C.muted }}>{(authors || journal) ? ' · ' : ''}{year}</span>}
+    <div style={{ flexShrink: 0, padding: '13px 18px', border: `1px solid ${C.brd}`, borderRadius: 12, background: C.card }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap' }}>
+        <div style={{ flex: 1, minWidth: 240 }}>
+          <div style={{ fontSize: 15.5, fontWeight: 800, color: C.txt, fontFamily: FONT, lineHeight: 1.38, overflowWrap: 'anywhere' }}>{title}</div>
+          {hasMeta ? (
+            <div style={{ fontSize: 12, color: C.txt2, marginTop: 4, lineHeight: 1.5, overflowWrap: 'anywhere' }}>
+              {authors && <span>{authors}</span>}
+              {journal && <span style={{ fontStyle: 'italic', color: C.muted }}>{authors ? ' · ' : ''}{journal}</span>}
+              {year && <span style={{ color: C.muted }}>{(authors || journal) ? ' · ' : ''}{year}</span>}
+            </div>
+          ) : loading ? (
+            <div style={{ fontSize: 11.5, color: C.muted, fontFamily: MONO, marginTop: 4 }}>Loading article…</div>
+          ) : (
+            <div style={{ fontSize: 11.5, color: C.muted, fontFamily: MONO, marginTop: 4 }}>Study {view?.studyId}{view?.outcomeId ? ` · ${view.outcomeId}` : ''}</div>
+          )}
         </div>
-      ) : (
-        <div style={{ fontSize: 11.5, color: C.muted, fontFamily: MONO, marginTop: 5 }}>Study {studyId}{outcomeId ? ` · ${outcomeId}` : ''}</div>
-      )}
-      {(record?.doi || record?.pmid) && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginTop: 8 }}>
-          {record.doi && <a href={`https://doi.org/${record.doi}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none', overflowWrap: 'anywhere', wordBreak: 'break-all' }}>DOI: {record.doi}</a>}
-          {record.pmid && <a href={`https://pubmed.ncbi.nlm.nih.gov/${record.pmid}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none' }}>PMID: {record.pmid}</a>}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          {record?.doi && <a href={`https://doi.org/${record.doi}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none', overflowWrap: 'anywhere', wordBreak: 'break-all' }}>DOI: {record.doi}</a>}
+          {record?.pmid && <a href={`https://pubmed.ncbi.nlm.nih.gov/${record.pmid}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none' }}>PMID: {record.pmid}</a>}
+          {record?.sourceDb && <RobBadge>{record.sourceDb}</RobBadge>}
+          {record?.isDuplicate && <RobBadge color={C.gold}>Duplicate</RobBadge>}
+          {decision && <RobBadge color={decision.color}>{decision.label}</RobBadge>}
+          {hasDetail && (
+            <button onClick={() => setOpen(o => !o)} aria-expanded={open} style={{ ...linkBtn, fontFamily: FONT, fontSize: 11.5 }}>
+              <Icon name="info" size={13} /> {open ? 'Hide details' : 'Abstract & keywords'}
+            </button>
+          )}
+        </div>
+      </div>
+      {hasDetail && open && (
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.brd}` }}>
+          {record.abstract ? (
+            <p style={{ fontSize: 13, color: C.txt2, lineHeight: 1.65, margin: 0, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap', maxHeight: 200, overflowY: 'auto' }}>{record.abstract}</p>
+          ) : (
+            <p style={{ fontSize: 12.5, color: C.muted, fontStyle: 'italic', margin: 0 }}>No abstract provided.</p>
+          )}
+          {keywords.length > 0 && (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 10 }}>
+              <span style={{ fontSize: 9.5, color: C.muted, fontFamily: MONO, alignSelf: 'center', letterSpacing: '0.08em' }}>KEYWORDS</span>
+              {keywords.map((kw, i) => <span key={i} style={{ fontSize: 10.5, background: alpha(C.brd, '70'), border: `1px solid ${C.brd}`, color: C.txt2, borderRadius: 10, padding: '2px 9px' }}>{kw}</span>)}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
-}
-
-function SourceTab({ on, icon, label, onClick }) {
-  return (
-    <button role="tab" aria-selected={on} onClick={onClick} style={{
-      display: 'inline-flex', alignItems: 'center', gap: 7, padding: '8px 14px', borderRadius: 9, cursor: 'pointer', fontFamily: FONT, fontSize: 12.5, fontWeight: 700,
-      background: on ? alpha(C.acc, '14') : C.surf, color: on ? C.acc : C.txt2,
-      border: `1px solid ${on ? alpha(C.acc, '50') : C.brd2}`, transition: 'background 0.12s, border-color 0.12s',
-    }}>
-      <Icon name={icon} size={14} /> {label}
-    </button>
-  );
-}
-
-// Mirrors Final Review's article display. Blind mode does not apply here (the
-// study is already accepted), so the full metadata is shown.
-function ArticleInfoPane({ record, loading, fallbackLabel }) {
-  if (loading) {
-    return <div style={{ ...shell, padding: 26, textAlign: 'center', color: C.muted, fontSize: 12.5, fontFamily: MONO }}>Loading article…</div>;
-  }
-  if (!record) {
-    return (
-      <div style={{ ...shell, padding: '26px 20px', textAlign: 'center', color: C.txt2, fontSize: 12.5, lineHeight: 1.6 }}>
-        <div style={{ display: 'inline-flex', padding: 12, borderRadius: '50%', background: alpha(C.acc, '12'), marginBottom: 12 }}><Icon name="info" size={20} /></div>
-        <div style={{ fontWeight: 700, color: C.txt, marginBottom: 4 }}>{fallbackLabel || 'No article information'}</div>
-        <p style={{ margin: 0 }}>This study isn&apos;t linked to a screening record, so there is no imported article metadata. It may have been added manually in Data Extraction.</p>
-      </div>
-    );
-  }
-  const keywords = (record.keywords || '').split(/[;,]/).map(s => s.trim()).filter(Boolean);
-  const decision = articleDecisionBadge(record);
-  return (
-    <div style={{ ...shell, padding: '18px 20px', overflowY: 'auto', maxHeight: 'calc(100vh - 230px)' }}>
-      <h2 style={{ fontSize: 16, fontWeight: 800, color: C.txt, margin: '0 0 8px', fontFamily: FONT, lineHeight: 1.42, overflowWrap: 'anywhere' }}>{record.title || 'Untitled record'}</h2>
-      {(record.authors || record.journal || record.year) && (
-        <div style={{ fontSize: 12.5, color: C.txt2, marginBottom: 10, lineHeight: 1.5, overflowWrap: 'anywhere' }}>
-          {record.authors && <span>{record.authors}</span>}
-          {record.journal && <span style={{ fontStyle: 'italic', color: C.muted }}>{record.authors ? ' · ' : ''}{record.journal}</span>}
-          {record.year && <span style={{ color: C.muted }}>{(record.authors || record.journal) ? ' · ' : ''}{record.year}</span>}
-        </div>
-      )}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
-        {record.doi && <a href={`https://doi.org/${record.doi}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none', overflowWrap: 'anywhere', wordBreak: 'break-all' }}>DOI: {record.doi}</a>}
-        {record.pmid && <a href={`https://pubmed.ncbi.nlm.nih.gov/${record.pmid}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none' }}>PMID: {record.pmid}</a>}
-        {record.sourceDb && <RobBadge>{record.sourceDb}</RobBadge>}
-        {record.isDuplicate && <RobBadge color={C.gold}>Duplicate</RobBadge>}
-        {decision && <RobBadge color={decision.color}>{decision.label}</RobBadge>}
-      </div>
-
-      <div style={{ marginBottom: 14, padding: '14px 16px', border: `1px solid ${C.brd}`, borderRadius: 10, background: C.card }}>
-        <div style={{ fontSize: 9.5, color: C.muted, fontFamily: MONO, letterSpacing: '0.08em', marginBottom: 8 }}>ABSTRACT</div>
-        {record.abstract ? (
-          <p style={{ fontSize: 13.5, color: C.txt, lineHeight: 1.7, margin: 0, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>{record.abstract}</p>
-        ) : (
-          <p style={{ fontSize: 13, color: C.muted, fontStyle: 'italic', margin: 0 }}>No abstract provided.</p>
-        )}
-        {keywords.length > 0 && (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.brd}` }}>
-            <span style={{ fontSize: 9.5, color: C.muted, fontFamily: MONO, alignSelf: 'center', letterSpacing: '0.08em' }}>KEYWORDS</span>
-            {keywords.map((kw, i) => <span key={i} style={{ fontSize: 10.5, background: alpha(C.brd, '70'), border: `1px solid ${C.brd}`, color: C.txt2, borderRadius: 10, padding: '2px 9px' }}>{kw}</span>)}
-          </div>
-        )}
-      </div>
-
-      <div style={{ display: 'grid', gap: 6 }}>
-        <InfoRow label="Source database" value={record.sourceDb} />
-        <InfoRow label="Current stage" value={humanizeEnum('stage', record.currentStage)} />
-        <InfoRow label="Final-review status" value={humanizeEnum('final', record.finalStatus)} />
-        <InfoRow label="Accepted" value={record.acceptedAt ? new Date(record.acceptedAt).toLocaleDateString() : null} />
-        <InfoRow label="Handoff" value={humanizeEnum('handoff', record.handoffStatus)} />
-        {record.rejectedReason && <InfoRow label="Rejected reason" value={record.rejectedReason} />}
-      </div>
-    </div>
-  );
-}
-
-function InfoRow({ label, value }) {
-  return (
-    <div style={{ display: 'flex', gap: 12, fontSize: 12, lineHeight: 1.5 }}>
-      <span style={{ flex: '0 0 130px', color: C.muted, fontFamily: MONO, fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '0.06em', paddingTop: 1 }}>{label}</span>
-      <span style={{ flex: 1, minWidth: 0, color: C.txt2, overflowWrap: 'anywhere' }}>{value || '—'}</span>
-    </div>
-  );
-}
-
-// Humanize the screening record's snake_case enum fields for display (prompt32
-// review follow-up — never show raw "title_abstract"/"already_exists" to the user).
-const ENUM_LABELS = {
-  stage: { title_abstract: 'Title & abstract', full_text: 'Full text' },
-  final: { accepted: 'Accepted', rejected: 'Rejected' },
-  handoff: { pending: 'Pending', sent: 'Sent', failed: 'Failed', already_exists: 'Already exists' },
-};
-function humanizeEnum(kind, value) {
-  const v = (value || '').trim();
-  if (!v) return null;
-  return (ENUM_LABELS[kind] && ENUM_LABELS[kind][v]) || v.replace(/_/g, ' ');
 }
 
 // Translate the screening record's final-review fields into a single badge.
@@ -783,7 +764,7 @@ function DomainPane({ domain, answers, meta, proposal, resolved, overrideInfo, f
 }
 
 // ── Summary step ──────────────────────────────────────────────────────────────
-function SummaryStep({ view, live, saving, single, finalised, editable, readOnly, onFinalise, onReopen, onExport, onOverrideOverall, onJump }) {
+function SummaryStep({ view, live, single, finalised, editable, onExport, onOverrideOverall, onJump }) {
   const complete = live.completeness.overall.complete;
   return (
     <div>
@@ -823,18 +804,16 @@ function SummaryStep({ view, live, saving, single, finalised, editable, readOnly
         })}
       </div>
 
-      {!complete && editable && (
+      {!complete && editable && !finalised && (
         <div style={{ padding: '10px 14px', borderRadius: 9, background: alpha(C.yel, '14'), border: `1px solid ${alpha(C.yel, '40')}`, color: C.txt2, fontSize: 12.5, marginBottom: 16 }}>
-          <Icon name="info" size={13} /> Answer all reachable signalling questions to enable finalising ({live.completeness.overall.answered}/{live.completeness.overall.required} answered).
+          <Icon name="info" size={13} /> Answer all reachable signalling questions to enable finalising ({live.completeness.overall.answered}/{live.completeness.overall.required} answered). The <strong>Finalise</strong> button is in the action bar below.
         </div>
       )}
 
+      {/* Finalise / Re-open live in the always-visible action footer (Task 2); the
+          summary keeps only the exports for this assessment. */}
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-        {readOnly ? null : finalised ? (
-          <button onClick={onReopen} style={ghostBtn}><Icon name="refresh" size={13} /> Re-open</button>
-        ) : (
-          <button onClick={onFinalise} disabled={!complete || saving} title={saving ? 'Saving…' : (!complete ? 'Answer all reachable questions first' : 'Finalise')} style={primaryBtn(!complete || saving)}><Icon name="check" size={14} /> {saving ? 'Saving…' : 'Finalise'}</button>
-        )}
+        <span style={{ fontSize: 11, fontFamily: MONO, color: C.muted, alignSelf: 'center', textTransform: 'uppercase', letterSpacing: '0.06em' }}>Export</span>
         <button onClick={() => onExport('csv')} style={ghostBtn}><Icon name="download" size={13} /> CSV</button>
         <button onClick={() => onExport('json')} style={ghostBtn}><Icon name="download" size={13} /> JSON</button>
         <button onClick={() => onExport('robvis')} style={ghostBtn}><Icon name="download" size={13} /> robvis</button>

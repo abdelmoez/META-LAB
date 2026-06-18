@@ -94,7 +94,7 @@ async function postMessageCore(access, req, res) {
   if (settings.allowChat === false) return res.status(403).json({ error: 'Chat is currently disabled by the administrator' });
   if (!access.active) return res.status(403).json({ error: 'Inactive members cannot post' });
   if (access.project.chatRestricted && !access.canChat && !access.isLeader) {
-    return res.status(403).json({ error: 'You do not have permission to send messages in this project' });
+    return res.status(403).json({ error: 'You do not have permission to post in this chat.' });
   }
   const message = sanitize(req.body?.message);
   if (!message) return res.status(400).json({ error: 'message is required' });

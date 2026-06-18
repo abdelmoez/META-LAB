@@ -29,6 +29,12 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
   const [finding, setFinding]   = useState(false);
   const [open, setOpen]         = useState(defaultOpen);
   const [err, setErr]           = useState('');
+  // prompt34 Task 3 — the action toolbar (Open / Replace / Remove …) can be hidden
+  // to give the PDF more room; the preference is remembered per browser. A small
+  // toggle always stays visible so the bar can be brought back. Hiding only the
+  // ACTIONS keeps the "Full-text PDF" label + filename + the toggle visible.
+  const [toolsHidden, setToolsHidden] = useState(() => { try { return localStorage.getItem('metalab.pdfToolsHidden') === '1'; } catch { return false; } });
+  useEffect(() => { try { localStorage.setItem('metalab.pdfToolsHidden', toolsHidden ? '1' : '0'); } catch { /* best-effort */ } }, [toolsHidden]);
   // prompt29 Part 3 — structured "found a link but download failed" state so we
   // can offer retry / open-source-link / manual-upload instead of a dead message.
   const [oaFail, setOaFail]     = useState(null); // { sourceUrl } | null
@@ -103,7 +109,13 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
     }
   }
 
+  // prompt34 Task 1 — default the in-browser viewer to "fit width": the native
+  // PDF renderer reads the URL fragment, so #zoom=page-width scales each page to
+  // the iframe width on load. The iframe is width:100%, so it re-fits when the
+  // container resizes; a manual zoom by the user persists for that session (we
+  // never remount on resize). The "Open in new tab" link stays plain.
   const previewUrl = attachment ? screeningApi.pdfDownloadUrl(pid, recordId, attachment.id) : null;
+  const fitUrl = previewUrl ? `${previewUrl}#zoom=page-width&view=FitH` : null;
 
   return (
     <div style={{ border: `1px solid ${C.brd}`, borderRadius: 10, background: C.card, overflow: 'hidden' }}>
@@ -122,15 +134,22 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
             </span>
             {attachment.fileSize ? <span style={{ fontSize: 10.5, color: C.muted, fontFamily: MONO }}>{fmtSize(attachment.fileSize)}</span> : null}
             <div style={{ flex: 1 }} />
-            <TbBtn onClick={() => { setFrameErr(false); setOpen(o => !o); }}>{open ? 'Hide preview' : 'Preview'}</TbBtn>
-            <TbLink href={previewUrl}>Open in new tab</TbLink>
-            {canManage && (
-              <label style={{ cursor: uploading ? 'default' : 'pointer' }}>
-                <TbSpan>{uploading ? 'Replacing…' : 'Replace'}</TbSpan>
-                <input ref={fileRef} type="file" accept="application/pdf" onChange={onPick} disabled={uploading} style={{ display: 'none' }} />
-              </label>
-            )}
-            {canManage && <TbBtn danger onClick={onRemove}>Remove</TbBtn>}
+            {!toolsHidden && <>
+              <TbBtn onClick={() => { setFrameErr(false); setOpen(o => !o); }}>{open ? 'Hide preview' : 'Preview'}</TbBtn>
+              <TbLink href={previewUrl}>Open in new tab</TbLink>
+              {canManage && (
+                <label style={{ cursor: uploading ? 'default' : 'pointer' }}>
+                  <TbSpan>{uploading ? 'Replacing…' : 'Replace'}</TbSpan>
+                  <input ref={fileRef} type="file" accept="application/pdf" onChange={onPick} disabled={uploading} style={{ display: 'none' }} />
+                </label>
+              )}
+              {canManage && <TbBtn danger onClick={onRemove}>Remove</TbBtn>}
+            </>}
+            <button onClick={() => setToolsHidden(h => !h)} title={toolsHidden ? 'Show PDF tools' : 'Hide PDF tools'}
+              aria-label={toolsHidden ? 'Show PDF tools' : 'Hide PDF tools'} aria-pressed={!toolsHidden}
+              style={{ background: 'none', border: `1px solid ${C.brd2}`, color: C.muted, fontSize: 12, fontFamily: FONT, lineHeight: 1, padding: '5px 9px', borderRadius: 6, cursor: 'pointer', flexShrink: 0 }}>
+              {toolsHidden ? '⋯' : '✕'}
+            </button>
           </>
         ) : canManage ? (
           <>
@@ -185,7 +204,7 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
           ) : (
             <iframe
               title="PDF preview"
-              src={previewUrl}
+              src={fitUrl}
               onError={() => setFrameErr(true)}
               style={{ width: '100%', height: previewHeight, border: 'none', display: 'block', background: C.card2 }}
             />

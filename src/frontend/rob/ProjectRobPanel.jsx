@@ -20,7 +20,7 @@ import RobTrafficLight from './RobTrafficLight.jsx';
 import { judgmentStyle } from './judgmentStyle.js';
 import { ROB_TOOLS, normalizeRobTool, isRobToolActive } from '../../research-engine/rob/tools.js';
 
-export default function ProjectRobPanel({ projectId, embedded = false, canEdit = true, robTool, onSelectTool }) {
+export default function ProjectRobPanel({ projectId, embedded = false, canEdit = true, robTool, onSelectTool, onContinue }) {
   const [project, setProject] = useState(null);
   const [assessments, setAssessments] = useState([]);
   const [matrix, setMatrix] = useState(null);
@@ -67,7 +67,7 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
   }
 
   if (openId) {
-    return <RobWorkspace assessmentId={openId} readOnly={!canEdit} onClose={() => { setOpenId(null); reload(); }} onChanged={reload} />;
+    return <RobWorkspace assessmentId={openId} readOnly={!canEdit} onContinue={onContinue} onClose={() => { setOpenId(null); reload(); }} onChanged={reload} />;
   }
   if (accessDenied) return <OwnerOnlyNotice />;
   if (error && !project) return <ErrorBox msg={error} onRetry={reload} />;

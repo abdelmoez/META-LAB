@@ -24,8 +24,10 @@ import { orderStudies, EXTRACTION_SORTS, DEFAULT_EXTRACTION_SORT } from "./src/f
 // prompt28 Part 2 — the standalone RoB 2 engine, embedded natively into the
 // "Risk of Bias" workspace tab when the rob_engine_v2 flag is on.
 import ProjectRobPanel from "./src/frontend/rob/ProjectRobPanel.jsx";
-import { robFlagEnabled } from "./src/frontend/rob/robApi.js";
+import { robFlagEnabled, robApi } from "./src/frontend/rob/robApi.js";
 import { normalizeRobTool } from "./src/research-engine/rob/tools.js";
+// prompt34 Task 10 — completed RoB 2 assessments auto-suggest the GRADE Risk-of-Bias domain.
+import { summariseRobForGrade, ROB_GRADE_SOURCE } from "./src/research-engine/rob/gradeSync.js";
 import { api } from "./src/frontend/api-client/apiClient.js"; // prompt32 Task 10 — owner project delete from Project Control
 
 /* ════════════ UTILS ════════════ */
@@ -3922,7 +3924,7 @@ ${paperText.slice(0,15000)}`;
    open project (no project selector, no leaving the workspace). When the flag is
    OFF, the original lightweight per-study table (LegacyRoBTab) is preserved so
    nothing breaks for projects/orgs that have not enabled the engine. */
-function RoBTab({project,updateProject,activeId}){
+function RoBTab({project,updateProject,activeId,setTab}){
   const[flag,setFlag]=useState(null); // null=checking
   useEffect(()=>{let dead=false;
     (async()=>{
@@ -3947,6 +3949,7 @@ function RoBTab({project,updateProject,activeId}){
       canEdit={canEdit}
       robTool={normalizeRobTool(project.robTool)}
       onSelectTool={id=>updateProject(activeId,p=>({...p,robTool:normalizeRobTool(id)}))}
+      onContinue={setTab?(t=>setTab(t||"grade")):undefined}
     />
   </div>);
 }
@@ -6576,14 +6579,52 @@ function gradeSuggestions(project){
 function GRADETab({project,upd}){
   const grade=project.grade||{};
   const prec=project?.analysisPrecision;
-  const setRating=(domain,val)=>upd("grade",{...grade,[domain]:val});
+  const robSync=grade.robSync||null;
+  // prompt34 Task 10 — pull completed RoB 2 assessments to auto-suggest the GRADE
+  // Risk-of-Bias domain. Owner-scoped + flag-gated: a 404 / flag-off / error simply
+  // leaves robList null and GRADE falls back to the legacy data-based suggestion.
+  const[robList,setRobList]=useState(null);
+  useEffect(()=>{let dead=false;(async()=>{
+    try{ if(!(await robFlagEnabled())){ if(!dead)setRobList(null); return; }
+      const r=await robApi.listAssessments(project.id);
+      if(!dead) setRobList(Array.isArray(r?.assessments)?r.assessments:[]);
+    }catch{ if(!dead) setRobList(null); }
+  })();return()=>{dead=true;};},[project.id]);
+  const robSummary=useMemo(()=>robList?summariseRobForGrade(robList):null,[robList]);
+  const robReady=!!(robSummary&&robSummary.assessed>0);
+  // "Stale" = RoB assessments changed since GRADE's Risk-of-Bias judgement was last
+  // reviewed/synced (protects a manual override from being silently overwritten).
+  const robStale=!!(robReady&&robSync&&robSync.signature&&robSync.signature!==robSummary.signature);
+
+  // setRating: a manual click on the Risk-of-Bias domain records it as a manual
+  // choice (so later RoB changes are flagged stale, not auto-applied). Others as-is.
+  const setRating=(domain,val)=>{
+    if(domain==="rob"){
+      upd("grade",{...grade,rob:val,robSync:{source:ROB_GRADE_SOURCE.MANUAL,signature:robSummary?robSummary.signature:(robSync?.signature||""),syncedAt:new Date().toISOString(),rating:val}});
+    } else upd("grade",{...grade,[domain]:val});
+  };
+  // Accept the RoB-derived suggestion for the Risk-of-Bias domain (auditable).
+  const acceptRobSuggestion=()=>{
+    if(!robReady||!robSummary.suggestedRating)return;
+    upd("grade",{...grade,rob:robSummary.suggestedRating,robSync:{source:ROB_GRADE_SOURCE.AUTO,signature:robSummary.signature,syncedAt:new Date().toISOString(),rating:robSummary.suggestedRating,counts:robSummary.counts,concern:robSummary.concern,completed:robSummary.completed}});
+  };
+  // Acknowledge a stale RoB change while KEEPING the current manual rating.
+  const dismissRobStale=()=>{
+    if(!robSummary)return;
+    upd("grade",{...grade,robSync:{...(robSync||{source:ROB_GRADE_SOURCE.MANUAL,rating:grade.rob||""}),signature:robSummary.signature,syncedAt:new Date().toISOString()}});
+  };
   const suggestions=useMemo(()=>gradeSuggestions(project),[project.studies,project.robMethod]);
   const applyAll=()=>{
     const next={...grade};
-    Object.keys(suggestions).forEach(id=>{ if(suggestions[id].suggest) next[id]=suggestions[id].suggest; });
+    Object.keys(suggestions).forEach(id=>{ if(id!=="rob"&&suggestions[id].suggest) next[id]=suggestions[id].suggest; });
+    // Prefer the RoB-assessment suggestion for Risk of Bias when present (auditable).
+    if(robReady&&robSummary.suggestedRating){
+      next.rob=robSummary.suggestedRating;
+      next.robSync={source:ROB_GRADE_SOURCE.AUTO,signature:robSummary.signature,syncedAt:new Date().toISOString(),rating:robSummary.suggestedRating,counts:robSummary.counts,concern:robSummary.concern,completed:robSummary.completed};
+    } else if(suggestions.rob&&suggestions.rob.suggest){ next.rob=suggestions.rob.suggest; }
     upd("grade",next);
   };
-  const anySuggest=Object.values(suggestions).some(s=>s.suggest);
+  const anySuggest=Object.values(suggestions).some(s=>s.suggest)||(robReady&&!!robSummary.suggestedRating);
 
   // Compute certainty: start at "High" for RCTs, downgrade by serious/very serious
   const totalModifier=GRADE_DOMAINS.reduce((sum,d)=>{
@@ -6632,7 +6673,33 @@ function GRADETab({project,upd}){
                 }}>{o.label} {o.modifier!==0?`(${o.modifier})`:""}</button>);
               })}
             </div>
-            {sg&&(
+            {/* prompt34 Task 10 — the Risk-of-Bias domain is auto-suggested from the
+                completed RoB 2 assessments (auditable: accept / manual override /
+                stale re-sync). Falls back to the legacy data-based suggestion when
+                the RoB engine is off or unavailable. */}
+            {d.id==="rob"&&robReady?(()=>{
+              const robSuggOpt=GRADE_OPTIONS.find(o=>o.v===robSummary.suggestedRating);
+              const robMatches=grade.rob===robSummary.suggestedRating;
+              return(<div style={{marginTop:7,display:"grid",gap:6}}>
+                <div style={{display:"flex",alignItems:"flex-start",gap:8,fontSize:11,lineHeight:1.5,flexWrap:"wrap"}}>
+                  <span style={{flexShrink:0,color:robSuggOpt?robSuggOpt.color:C.dim,fontWeight:700}}>From RoB: {robSuggOpt?robSuggOpt.label:"—"}</span>
+                  <span style={{flex:1,minWidth:160,color:C.muted}}>Suggested from {robSummary.completed} finalised RoB assessment{robSummary.completed===1?"":"s"} ({robSummary.counts.low} low · {robSummary.counts.some} some · {robSummary.counts.high} high).{robSummary.pending>0?` ${robSummary.pending} not finalised.`:""}</span>
+                  {robMatches
+                    ?<span style={{...tagS("green"),flexShrink:0}}>{robSync?.source===ROB_GRADE_SOURCE.AUTO?"auto-synced":"applied"}</span>
+                    :<button onClick={acceptRobSuggestion} style={{...btnS("ghost"),fontSize:10,padding:"2px 8px",flexShrink:0}}>Use RoB suggestion</button>}
+                </div>
+                {robSync?.source===ROB_GRADE_SOURCE.MANUAL&&!robStale&&grade.rob&&!robMatches&&<div style={{fontSize:10.5,color:C.dim}}>Manually set — kept even though it differs from the RoB suggestion.</div>}
+                {robStale&&(
+                  <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",fontSize:11,color:C.yel,background:themeAlpha(C.yel,'12'),border:`1px solid ${themeAlpha(C.yel,'40')}`,borderRadius:6,padding:"6px 10px"}}>
+                    <span style={{flex:1,minWidth:160}}>⚠ Risk of Bias assessments changed since this GRADE judgement was last reviewed.</span>
+                    <button onClick={acceptRobSuggestion} style={{...btnS("ghost"),fontSize:10,padding:"2px 8px"}}>Re-sync</button>
+                    <button onClick={dismissRobStale} style={{...btnS("ghost"),fontSize:10,padding:"2px 8px"}}>Keep mine</button>
+                  </div>
+                )}
+              </div>);
+            })():d.id==="rob"&&robList?(
+              <div style={{marginTop:7,fontSize:11,color:C.muted,lineHeight:1.5}}><Icon name="info" size={11}/> {robSummary?robSummary.reason:"No finalised RoB assessments yet."}</div>
+            ):sg&&(
               <div style={{marginTop:7,display:"flex",alignItems:"flex-start",gap:8,fontSize:11,color:C.muted,lineHeight:1.5}}>
                 <span style={{flexShrink:0,color:sgOpt?sgOpt.color:C.dim,fontWeight:700}}>
                   {sgOpt?`Suggest: ${sgOpt.label}`:"Your call"}
@@ -7594,6 +7661,11 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
   const[spErr,setSpErr]=useState("");
   const[statusBusy,setStatusBusy]=useState(false);
   const[statusFlash,setStatusFlash]=useState(false);
+  // prompt34 Task 9 — Screening & collaboration settings (blind mode / restrict
+  // chat / required reviewers) edited here against the linked ScreenProject, which
+  // is the SINGLE source of truth (Screening Settings shows the same values).
+  const[spBusy,setSpBusy]=useState(false);
+  const[spFlash,setSpFlash]=useState(false);
   const[linkBusy,setLinkBusy]=useState(false);
   const[linkErr,setLinkErr]=useState("");
 
@@ -7637,6 +7709,23 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
     }
     setStatusBusy(false);
   };
+  // prompt34 Task 9 — optimistic save of a Screening setting onto the linked
+  // ScreenProject (blindMode / chatRestricted / requiredScreeningReviewers). The
+  // server re-validates owner/leader authority; we revert on failure.
+  const saveSpSetting=async(patch)=>{
+    if(!lid||!sp)return;
+    const prev=sp;
+    setSpBusy(true);setSpErr("");
+    setSp(s=>({...s,...patch}));
+    try{
+      await screeningApi.updateProject(lid,patch);
+      setSpFlash(true);setTimeout(()=>setSpFlash(false),1400);
+    }catch(e){
+      setSp(prev);
+      setSpErr(e.message||"Could not save the setting.");
+    }
+    setSpBusy(false);
+  };
   // "Create & link META·SIFT" (owner only — the server validates ownership).
   const createLink=async()=>{
     setLinkBusy(true);setLinkErr("");
@@ -7650,6 +7739,8 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
 
   const card={background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:14};
   const secLbl={fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:0.8,textTransform:"uppercase",marginBottom:9};
+  // prompt34 Task 9 — compact on/off pill for the Screening settings.
+  const ctrlToggle=(on,busy)=>({display:"inline-flex",alignItems:"center",gap:6,padding:"5px 14px",borderRadius:20,border:`1px solid ${on?themeAlpha(C.acc,'55'):C.brd2}`,background:on?themeAlpha(C.acc,'18'):"transparent",color:on?C.acc:C.muted,cursor:busy?"default":"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit",opacity:busy?0.6:1});
   const spStatus=(sp&&sp.progressStatus)||"not_started";
   const statusMeta=CTRL_STATUS_OPTIONS.find(o=>o.value===spStatus);
 
@@ -7722,6 +7813,52 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
           workspace — including its members and permissions — is set up automatically the first time the owner opens it. No manual linking needed.
         </div>
         {setTab&&<button onClick={()=>setTab("screening")} style={btnS("primary")}>Go to Screening →</button>}
+      </div>
+    )}
+
+    {/* prompt34 Task 9 — Screening & collaboration settings (blind mode, restrict
+        chat, required reviewers) live HERE in Project Control as the main place to
+        edit them; they write to the linked ScreenProject (single source of truth),
+        so the Screening "Settings" tab shows the same synchronized values. */}
+    {lid&&(
+      <div style={card}>
+        <div style={secLbl}>Screening &amp; collaboration{spFlash&&<span style={{marginLeft:8,color:C.grn,textTransform:"none",letterSpacing:0,fontFamily:"'IBM Plex Mono',monospace"}}>✓ saved</span>}</div>
+        {!canManageStatus&&<div style={{fontSize:11.5,color:C.muted,marginBottom:10,lineHeight:1.5}}>You can view these settings. Only the owner or a leader can change them.</div>}
+        {spErr&&<div style={{fontSize:11.5,color:C.red,marginBottom:8}}>{spErr}</div>}
+        {/* Blind mode */}
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+          <div style={{minWidth:0,flex:1}}>
+            <div style={{fontSize:12.5,color:C.txt,fontWeight:600}}>Blind mode</div>
+            <div style={{fontSize:11,color:C.muted,marginTop:2,lineHeight:1.45}}>Hide author / journal info from reviewers during screening.</div>
+          </div>
+          {canManageStatus
+            ? <button disabled={spBusy} onClick={()=>saveSpSetting({blindMode:!sp?.blindMode})} aria-pressed={!!sp?.blindMode} aria-label={`Blind mode ${sp?.blindMode?"on":"off"} — toggle`} style={ctrlToggle(!!sp?.blindMode,spBusy)}>{sp?.blindMode?"On":"Off"}</button>
+            : <span style={tagS(sp?.blindMode?"gold":"")}>{sp?.blindMode?"On":"Off"}</span>}
+        </div>
+        {/* Restrict chat */}
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",borderTop:`1px solid ${C.brd}`,marginTop:12,paddingTop:12}}>
+          <div style={{minWidth:0,flex:1}}>
+            <div style={{fontSize:12.5,color:C.txt,fontWeight:600}}>Restrict chat</div>
+            <div style={{fontSize:11,color:C.muted,marginTop:2,lineHeight:1.45}}>When on, only members with the Chat permission can post.</div>
+          </div>
+          {canManageStatus
+            ? <button disabled={spBusy} onClick={()=>saveSpSetting({chatRestricted:!sp?.chatRestricted})} aria-pressed={!!sp?.chatRestricted} aria-label={`Restrict chat ${sp?.chatRestricted?"on":"off"} — toggle`} style={ctrlToggle(!!sp?.chatRestricted,spBusy)}>{sp?.chatRestricted?"Restricted":"Open"}</button>
+            : <span style={tagS(sp?.chatRestricted?"gold":"")}>{sp?.chatRestricted?"Restricted":"Open"}</span>}
+        </div>
+        {/* Required reviewers */}
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",borderTop:`1px solid ${C.brd}`,marginTop:12,paddingTop:12}}>
+          <div style={{minWidth:0,flex:1}}>
+            <div style={{fontSize:12.5,color:C.txt,fontWeight:600}}>Required reviewers</div>
+            <div style={{fontSize:11,color:C.muted,marginTop:2,lineHeight:1.45}}>Independent title &amp; abstract decisions needed before a record can advance to Final Review. The research standard is 2; only the owner or a leader can change it.</div>
+          </div>
+          {canManageStatus
+            ? <select value={sp?.requiredScreeningReviewers??2} disabled={spBusy} aria-label="Required reviewers"
+                onChange={e=>saveSpSetting({requiredScreeningReviewers:parseInt(e.target.value,10)})}
+                style={{...inp,width:"auto",fontSize:12,padding:"6px 10px",opacity:spBusy?0.6:1}}>
+                {[2,3,4,5,6,7,8,9,10].map(n=><option key={n} value={n}>{n} reviewers</option>)}
+              </select>
+            : <span style={tagS("blue")}>{sp?.requiredScreeningReviewers??2} reviewers</span>}
+        </div>
       </div>
     )}
 
@@ -7809,14 +7946,14 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   const[projects,setProjects]=useState([]);
   const[activeId,setActiveId]=useState(null);
   const[tab,setTab]=useState(initialTab||"overview"); // Overview is the landing tab (prompt6 Task 15); a ?tab= deep-link (e.g. screening) overrides on first open
-  // prompt19 — Screening focus mode: when ON (default), the left sidebar slides
-  // away and the Screening workspace takes the full width so the workbench can
-  // breathe. The ☰ button in the Screening top bar toggles it; the user is never
-  // trapped (Back to overview / Projects stay in the Screening header).
-  const[screeningFocus,setScreeningFocus]=useState(true);
-  // prompt24 Task 4/7 — the universal header's ☰ toggles the sidebar on EVERY
-  // tab. Screening keeps its own full-bleed focus state; other tabs use this one.
-  // prompt24 follow-up — persist the collapse choice across sessions (per browser).
+  // prompt34 Task 8 — ONE unified workflow-menu collapse for EVERY project tab
+  // (Overview … Project Control AND Screening). The universal header's ☰ toggles
+  // it; the sidebar slides away and the workspace gains the full width. The choice
+  // persists across sessions + tabs (per browser) so it never resets when moving
+  // between tabs — this replaces the old split screeningFocus/navCollapsed pair so
+  // the collapse stays consistent across the whole app (prompt19's Screening-only
+  // focus mode is now just this shared collapse). Screening's full-bleed CONTENT
+  // layout is still driven separately by `inScreening` (padding/overflow).
   const[navCollapsed,setNavCollapsed]=useState(()=>{try{return localStorage.getItem("metalab.navCollapsed")==="1";}catch(_){return false;}});
   useEffect(()=>{try{localStorage.setItem("metalab.navCollapsed",navCollapsed?"1":"0");}catch(_){/* best-effort */}},[navCollapsed]);
   const[loading,setLoading]=useState(true);
@@ -8296,10 +8433,10 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   // prompt19 — Screening workspace gets a full-bleed, focus layout (escapes the
   // 960px content clamp + the project header). `focus` also slides the sidebar away.
   const inScreening=!!project&&tab==="screening";
-  // prompt24 — sidebar collapse. Screening keeps its bespoke focus toggle; other
-  // tabs collapse via the universal header's ☰ (navCollapsed).
-  const focus=inScreening?screeningFocus:navCollapsed;
-  const toggleNav=()=>{ if(inScreening) setScreeningFocus(f=>!f); else setNavCollapsed(c=>!c); };
+  // prompt34 Task 8 — one shared collapse across every tab (no Screening-only
+  // special case); the ☰ button in the universal header toggles it everywhere.
+  const focus=navCollapsed;
+  const toggleNav=()=>setNavCollapsed(c=>!c);
   return(<div style={{display:"flex",minHeight:"100vh",background:C.bg,fontFamily:"'IBM Plex Sans',sans-serif",color:C.txt}}>
     <style>{`
       @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;700&display=swap');
@@ -8878,7 +9015,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           {tab==="search"&&<SearchTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="prisma"&&<PRISMATab project={project} updNested={updNested} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
           {tab==="extraction"&&<ExtractionTab project={project} updateProject={updateProject} activeId={activeId}/>}
-          {tab==="rob"&&<RoBTab project={project} updateProject={updateProject} activeId={activeId}/>}
+          {tab==="rob"&&<RoBTab project={project} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
           {tab==="analysis"&&<AnalysisTab project={project} updateProject={fn=>updateProject(activeId,fn)} onApplyPrecisionToAll={prec=>projects.forEach(p=>updateProject(p.id,x=>({...x,analysisPrecision:prec})))}/>}
           {tab==="forest"&&<ForestTab project={project}/>}
           {tab==="sensitivity"&&<SensitivityTab project={project}/>}
