@@ -99,6 +99,9 @@ export const screeningApi = {
 
   // Members (Part 4)
   listMembers:  (pid)            => req('GET',    `/projects/${pid}/members`),
+  // prompt33 Task 2 — look up a registered user by email before add-vs-invite.
+  // Returns { found, alreadyMember?, currentRole?, user? }. canManageMembers-gated.
+  lookupMember: (pid, email)     => req('GET',    `/projects/${pid}/members/lookup?email=${encodeURIComponent(email)}`),
   // body: { email, preset, modules?: 'metalab'|'metasift'|'both' } — modules
   // narrows which apps the member participates in (prompt6 Task 6; default both).
   addMember:    (pid, body)      => req('POST',   `/projects/${pid}/members`, body),

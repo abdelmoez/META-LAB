@@ -6,7 +6,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
-import { GlobalStyle, BetaBadge, Badge, Loading, ErrorBanner, Modal, Button } from '../ui/components.jsx';
+import { GlobalStyle, BetaBadge, Badge, Loading, ErrorBanner, Modal, Button, ScreeningContentShell } from '../ui/components.jsx';
 import { Icon } from '../../components/icons.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 import { useRealtime } from '../../hooks/useRealtime.js';
@@ -288,9 +288,9 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
                 </div>
               : isFullBleed
                 ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} presence={presence} userId={user?.id} embedded /></div>
-                : <div style={{ maxWidth: 1680, margin: '0 auto', padding: '20px 20px 48px' }}>
+                : <ScreeningContentShell>
                     <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} setTab={setTab} onGoToExtraction={onGoToExtraction} presence={presence} userId={user?.id} embedded />
-                  </div>
+                  </ScreeningContentShell>
           )}
         </div>
       </div>
@@ -374,9 +374,9 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
         {!loading && !error && !disabled && project && (
           isFullBleed
             ? <div style={{ height: '100%' }}><ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} presence={presence} userId={user?.id} /></div>
-            : <div style={{ maxWidth: 1680, margin: '0 auto', padding: '24px 24px 56px' }}>
+            : <ScreeningContentShell>
                 <ActiveComp pid={pid} project={project} access={access} refreshProject={refreshProject} presence={presence} userId={user?.id} />
-              </div>
+              </ScreeningContentShell>
         )}
       </div>
     </div>

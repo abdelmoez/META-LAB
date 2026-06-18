@@ -67,6 +67,9 @@ r.post('/projects/:pid/locks/release',      PR.releaseLock);
 
 // Members (Part 4) — leader-gated mutations enforced in the controller
 r.get('/projects/:pid/members',           M.listMembers);
+// prompt33 Task 2 — registered-user lookup by email (canManageMembers-gated).
+// Declared BEFORE the ':mid' routes so "lookup" is never parsed as a member id.
+r.get('/projects/:pid/members/lookup',    M.lookupUser);
 r.post('/projects/:pid/members',          M.addMember);
 r.patch('/projects/:pid/members/:mid',    M.updateMember);
 r.delete('/projects/:pid/members/:mid',   M.removeMember);

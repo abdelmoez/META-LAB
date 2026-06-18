@@ -145,8 +145,21 @@ export default function MembersTab({ pid, project, access, refreshProject, prese
   const [error, setError] = useState(null);
 
   // per-member transient state
-  const [busy, setBusy] = useState({});     // { [mid]: bool }
-  const [rowErr, setRowErr] = useState({}); // { [mid]: string }
+  const [busy, setBusy] = useState({});       // { [mid]: bool } — a save is in flight
+  const [rowErr, setRowErr] = useState({});   // { [mid]: string }
+  const [savedFlash, setSavedFlash] = useState({}); // { [mid]: bool } — "Saved ✓" pulse
+  // prompt33 Task 1 — expanded "Advanced permissions" panels are tracked HERE (by
+  // member id) so a permission change (which no longer reloads the roster) never
+  // collapses the open panel; even a full reload preserves which rows were open.
+  const [expandedIds, setExpandedIds] = useState(() => new Set());
+  const toggleExpanded = useCallback((mid) => {
+    setExpandedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(mid)) next.delete(mid); else next.add(mid);
+      return next;
+    });
+  }, []);
+  const savedTimers = useRef({});
 
   // modals
   const [showAdd, setShowAdd] = useState(false);
@@ -179,19 +192,42 @@ export default function MembersTab({ pid, project, access, refreshProject, prese
   // Whether the current user is the OWNER (only the owner may touch leader rows).
   const amOwner = isOwner || access?.myRole === 'owner';
 
-  // Generic per-member patch helper.
+  // Generic per-member patch helper — OPTIMISTIC, no full reload (prompt33 Task 1).
+  // The root cause of the "panel closes + page jumps to top" bug was `await load()`
+  // here: load() flips `loading` true → the whole roster unmounts to a spinner,
+  // destroying expanded panels and resetting scroll. Instead we update only the one
+  // member in place (instant), reconcile from the server's returned member (so a
+  // preset change applies all its flags), and revert on error. The roster never
+  // unmounts, keys are stable (m.id), so scroll + open panels are preserved. The
+  // backend still fully enforces every permission.
   const patchMember = useCallback(async (mid, body) => {
+    let prevMember = null;
+    setMembers(list => list.map(m => {
+      if (m.id !== mid) return m;
+      prevMember = m;             // captured synchronously for revert-on-error
+      return { ...m, ...body };   // optimistic
+    }));
     setBusy(b => ({ ...b, [mid]: true }));
     setRowErr(e => ({ ...e, [mid]: '' }));
     try {
-      await screeningApi.updateMember(pid, mid, body);
-      await load();
+      const res = await screeningApi.updateMember(pid, mid, body);
+      if (res && res.member) {
+        // Reconcile in place (preserves any live name not echoed by the server).
+        setMembers(list => list.map(m => (m.id === mid ? { ...m, ...res.member } : m)));
+      }
+      setSavedFlash(s => ({ ...s, [mid]: true }));
+      clearTimeout(savedTimers.current[mid]);
+      savedTimers.current[mid] = setTimeout(() => setSavedFlash(s => ({ ...s, [mid]: false })), 1600);
+      // NOTE: deliberately NOT calling refreshProject here — a permission toggle
+      // changes neither membership count nor owner/status, so parent churn (which
+      // could disturb this panel) is unwarranted.
     } catch (e) {
+      if (prevMember) setMembers(list => list.map(m => (m.id === mid ? prevMember : m)));
       setRowErr(prev => ({ ...prev, [mid]: e.message || 'Update failed.' }));
     } finally {
       setBusy(b => ({ ...b, [mid]: false }));
     }
-  }, [pid, load]);
+  }, [pid]);
 
   async function handleRemove(member) {
     setBusy(b => ({ ...b, [member.id]: true }));
@@ -285,6 +321,9 @@ export default function MembersTab({ pid, project, access, refreshProject, prese
                       canManage={canManage}
                       amOwner={amOwner}
                       busy={!!busy[m.id]}
+                      saved={!!savedFlash[m.id]}
+                      expanded={expandedIds.has(m.id)}
+                      onToggleExpand={() => toggleExpanded(m.id)}
                       rowErr={rowErr[m.id]}
                       activity={m.userId ? { presence: presenceByUser[m.userId], lock: (locksByUser[m.userId] || [])[0] } : null}
                       onPatch={(body) => patchMember(m.id, body)}
@@ -383,7 +422,7 @@ function LockNote({ children }) {
   );
 }
 
-function MemberRow({ member, canManage, amOwner, busy, rowErr, activity, onPatch, onRemove, onLeave }) {
+function MemberRow({ member, canManage, amOwner, busy, saved, expanded, onToggleExpand, rowErr, activity, onPatch, onRemove, onLeave }) {
   const m = member;
   // prompt23 Task 14 — live activity: green dot + current location (+ field being edited).
   const pres = activity?.presence || null;
@@ -391,7 +430,9 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, activity, onPatch
   const activityText = pres
     ? (lock ? `Active now · editing ${String(lock.field || '').split('.').pop()}` : `Active now${pres.location ? ` · ${pres.location}` : ''}`)
     : null;
-  const [showAllPerms, setShowAllPerms] = useState(false);
+  // prompt33 Task 1 — expanded state is owned by the parent (by member id) so it
+  // survives permission saves (which no longer reload the roster).
+  const showAllPerms = !!expanded;
   const display = m.name || m.email || 'Unknown';
   const isOwnerRow  = !!m.isOwner || m.role === 'owner';
   const isLeaderRow = !isOwnerRow && (m.isLeader || m.role === 'leader');
@@ -534,7 +575,7 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, activity, onPatch
 
         {editable && (
           <button
-            onClick={() => setShowAllPerms(s => !s)}
+            onClick={onToggleExpand}
             style={{
               background: 'none', border: 'none', cursor: 'pointer', padding: 0,
               fontSize: 11, fontFamily: FONT, color: C.acc,
@@ -545,8 +586,16 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, activity, onPatch
           </button>
         )}
 
-        <span style={{ marginLeft: 'auto', fontSize: 11, fontFamily: MONO, color: C.muted }}>
-          joined {fmtDate(m.joinedAt)}
+        {/* prompt33 Task 1 — per-member save feedback (saving… / Saved ✓) */}
+        <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+          {busy ? (
+            <span style={{ fontSize: 11, fontFamily: MONO, color: C.muted }}>saving…</span>
+          ) : saved ? (
+            <span style={{ fontSize: 11, fontFamily: MONO, color: C.grn, transition: 'opacity 0.2s' }}>✓ Saved</span>
+          ) : null}
+          <span style={{ fontSize: 11, fontFamily: MONO, color: C.muted }}>
+            joined {fmtDate(m.joinedAt)}
+          </span>
         </span>
       </div>
 
@@ -709,11 +758,46 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
   const [copied, setCopied] = useState(false);
   const linkInputRef = useRef(null);
 
+  // prompt33 Task 2 — live registered-user lookup as the leader types the email, so
+  // the flow is "find existing user first, invite only if none". Debounced; the
+  // latest-request guard drops stale responses. Lookup is purely informational —
+  // it never blocks add/invite (the backend addMember still does the real branch).
+  const emailTrimmed = email.trim();
+  const emailValid = EMAIL_RE.test(emailTrimmed);
+  const [lookup, setLookup] = useState({ status: 'idle', user: null, alreadyMember: false, currentRole: null });
+  const lookupSeq = useRef(0);
+  useEffect(() => {
+    if (!emailTrimmed || !emailValid) {
+      setLookup({ status: 'idle', user: null, alreadyMember: false, currentRole: null });
+      return;
+    }
+    const seq = ++lookupSeq.current;
+    setLookup(l => ({ ...l, status: 'searching' }));
+    const t = setTimeout(async () => {
+      try {
+        const res = await screeningApi.lookupMember(pid, emailTrimmed);
+        if (seq !== lookupSeq.current) return; // a newer keystroke superseded this
+        if (res?.found) {
+          setLookup({ status: 'found', user: res.user || null, alreadyMember: !!res.alreadyMember, currentRole: res.currentRole || null });
+        } else {
+          setLookup({ status: 'notfound', user: null, alreadyMember: false, currentRole: null });
+        }
+      } catch {
+        if (seq !== lookupSeq.current) return;
+        setLookup({ status: 'idle', user: null, alreadyMember: false, currentRole: null });
+      }
+    }, 350);
+    return () => clearTimeout(t);
+  }, [emailTrimmed, emailValid, pid]);
+
+  const alreadyMember = lookup.status === 'found' && lookup.alreadyMember;
+
   async function submit(e) {
     e?.preventDefault();
     const trimmed = email.trim();
     if (!trimmed) { setErr('Email is required.'); return; }
     if (!EMAIL_RE.test(trimmed)) { setErr('Enter a valid email address.'); return; }
+    if (alreadyMember) { setErr('This person is already a member of the project.'); return; }
     setSubmitting(true);
     setErr('');
     setPendingNote(false);
@@ -775,6 +859,47 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
             style={fieldInput}
           />
         </Field>
+
+        {/* prompt33 Task 2 — live lookup result: found user / already-member / not-found */}
+        {emailTrimmed && !emailValid && (
+          <div style={{ fontSize: 11.5, color: C.muted, marginTop: -4, marginBottom: 4 }}>
+            Enter a complete email address to search.
+          </div>
+        )}
+        {emailValid && lookup.status === 'searching' && (
+          <div style={{ fontSize: 12, color: C.muted, marginTop: 2, marginBottom: 4, fontFamily: MONO }}>Searching…</div>
+        )}
+        {emailValid && lookup.status === 'found' && lookup.user && (
+          <div style={{
+            display: 'flex', alignItems: 'center', gap: 10, marginTop: 8, marginBottom: 2,
+            background: alpha(lookup.alreadyMember ? C.ylw : C.grn, '12'),
+            border: `1px solid ${alpha(lookup.alreadyMember ? C.ylw : C.grn, '40')}`,
+            borderRadius: 8, padding: '9px 12px',
+          }}>
+            <Avatar name={lookup.user.name || lookup.user.email} size={30} />
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: C.txt, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {lookup.user.name || lookup.user.email}
+              </div>
+              <div style={{ fontSize: 11.5, color: C.txt2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {lookup.alreadyMember
+                  ? `Already a member${lookup.currentRole ? ` · ${ROLE_LABEL[lookup.currentRole] || lookup.currentRole}` : ''}`
+                  : `Registered user · ${lookup.user.email}`}
+              </div>
+            </div>
+            <Badge color={lookup.alreadyMember ? C.ylw : C.grn}>
+              {lookup.alreadyMember ? 'Already a member' : 'Found'}
+            </Badge>
+          </div>
+        )}
+        {emailValid && lookup.status === 'notfound' && (
+          <div style={{
+            marginTop: 8, marginBottom: 2, fontSize: 12, color: C.txt2, lineHeight: 1.5,
+            background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '9px 12px',
+          }}>
+            No registered user found for this email. They’ll get a pending invite to join.
+          </div>
+        )}
 
         <div>
           <label style={fieldLabel}>Role</label>
@@ -873,8 +998,15 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
           <Button variant="ghost" type="button" onClick={onClose} disabled={submitting}>
             {pendingNote ? 'Done' : 'Cancel'}
           </Button>
-          <Button variant="primary" type="submit" disabled={submitting}>
-            {submitting ? 'Adding…' : 'Add member'}
+          <Button
+            variant="primary"
+            type="submit"
+            disabled={submitting || !emailValid || lookup.status === 'searching' || alreadyMember}
+          >
+            {submitting ? 'Working…'
+              : alreadyMember ? 'Already a member'
+              : lookup.status === 'notfound' ? 'Send invite'
+              : 'Add to project'}
           </Button>
         </div>
       </form>

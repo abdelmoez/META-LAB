@@ -89,6 +89,44 @@ export async function listMembers(req, res) {
   }
 }
 
+/**
+ * GET /projects/:pid/members/lookup?email=  (prompt33 Task 2)
+ * Project-scoped lookup so Add Member can show whether the email belongs to a
+ * registered user (and their name) BEFORE deciding add-vs-invite. Permission-gated
+ * (canManageMembers) so it never becomes an open user-enumeration endpoint, and it
+ * returns only minimal safe fields (id, name, email). Never leaks all users.
+ * Responses: { found:false } | { found:true, alreadyMember:false, user } |
+ *            { found:true, alreadyMember:true, currentRole, user }.
+ */
+export async function lookupUser(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    if (!access.canManageMembers) return res.status(403).json({ error: 'You do not have permission to look up users' });
+
+    const email = String(req.query.email || '').trim();
+    if (!email || !isValidEmail(email)) return res.status(400).json({ error: 'Invalid email address' });
+    const normEmail = email.toLowerCase();
+
+    const user = await findUserByEmail(normEmail);
+    if (!user) return res.json({ found: false });
+
+    // Already a member? Match by linked user id OR email (pending invites have no userId).
+    const existing = await prisma.screenProjectMember.findFirst({
+      where: { projectId: req.params.pid, OR: [{ userId: user.id }, { email: normEmail }] },
+      select: { role: true, status: true },
+    });
+    const safeUser = { id: user.id, name: user.name || '', email: user.email };
+    if (existing) {
+      return res.json({ found: true, alreadyMember: true, currentRole: existing.role, status: existing.status, user: safeUser });
+    }
+    return res.json({ found: true, alreadyMember: false, user: safeUser });
+  } catch (err) {
+    console.error('[screening] lookupUser:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 export async function addMember(req, res) {
   try {
     const access = await getProjectAccess(req.params.pid, req.user);
