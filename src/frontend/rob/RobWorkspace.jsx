@@ -415,10 +415,10 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
           {pdfTabOn && <SourceTab on={effectiveLeftTab === 'pdf'} icon="fileText" label="Study PDF" onClick={() => setLeftTab('pdf')} />}
           {articleTabOn && <SourceTab on={effectiveLeftTab === 'article'} icon="info" label="Article Information" onClick={() => setLeftTab('article')} />}
         </div>
-        <div style={{ flex: 1, minHeight: 0 }}>
+        <div role="tabpanel" aria-label={effectiveLeftTab === 'pdf' ? 'Study PDF' : 'Article Information'} style={{ flex: 1, minHeight: 0 }}>
           {effectiveLeftTab === 'pdf' && pdfTabOn ? (
             <RobPdfPanel loading={studyRecord.loading} error={studyRecord.error} screenProjectId={studyRecord.screenProjectId} recordId={studyRecord.recordId}
-              canManage={editable} onRetry={resolveStudyRecord} previewHeight={pdfPreviewHeight} showHeader={false} />
+              canManage={editable} onRetry={resolveStudyRecord} previewHeight={pdfPreviewHeight} />
           ) : (
             <ArticleInfoPane record={studyRecord.record} loading={studyRecord.loading} fallbackLabel={view.resultLabel || `Study ${view.studyId}`} />
           )}
@@ -659,10 +659,10 @@ function ArticleInfoPane({ record, loading, fallbackLabel }) {
 
       <div style={{ display: 'grid', gap: 6 }}>
         <InfoRow label="Source database" value={record.sourceDb} />
-        <InfoRow label="Current stage" value={record.currentStage} />
-        <InfoRow label="Final-review status" value={record.finalStatus} />
+        <InfoRow label="Current stage" value={humanizeEnum('stage', record.currentStage)} />
+        <InfoRow label="Final-review status" value={humanizeEnum('final', record.finalStatus)} />
         <InfoRow label="Accepted" value={record.acceptedAt ? new Date(record.acceptedAt).toLocaleDateString() : null} />
-        <InfoRow label="Handoff" value={record.handoffStatus} />
+        <InfoRow label="Handoff" value={humanizeEnum('handoff', record.handoffStatus)} />
         {record.rejectedReason && <InfoRow label="Rejected reason" value={record.rejectedReason} />}
       </div>
     </div>
@@ -676,6 +676,19 @@ function InfoRow({ label, value }) {
       <span style={{ flex: 1, minWidth: 0, color: C.txt2, overflowWrap: 'anywhere' }}>{value || '—'}</span>
     </div>
   );
+}
+
+// Humanize the screening record's snake_case enum fields for display (prompt32
+// review follow-up — never show raw "title_abstract"/"already_exists" to the user).
+const ENUM_LABELS = {
+  stage: { title_abstract: 'Title & abstract', full_text: 'Full text' },
+  final: { accepted: 'Accepted', rejected: 'Rejected' },
+  handoff: { pending: 'Pending', sent: 'Sent', failed: 'Failed', already_exists: 'Already exists' },
+};
+function humanizeEnum(kind, value) {
+  const v = (value || '').trim();
+  if (!v) return null;
+  return (ENUM_LABELS[kind] && ENUM_LABELS[kind][v]) || v.replace(/_/g, ' ');
 }
 
 // Translate the screening record's final-review fields into a single badge.

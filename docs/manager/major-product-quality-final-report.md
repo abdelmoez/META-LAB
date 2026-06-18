@@ -45,9 +45,16 @@ A 12-part workflow & UX stabilisation update. Root causes were investigated (9-a
 ## Version / commit / push
 - Version bumped **3.14.0 → 3.15.0**. Commit hash + push status recorded in the commit/PR.
 
-## Known limitations / recommended next steps
-- RoB Ops workflow/export/audit toggles are persisted + surfaced but not all are enforced engine-side yet (panel/tab/default-tool ARE wired). Follow-up: enforce consensus/lock/required-rationale in the RoB engine.
-- Outcomes: a full canonical outcome registry (rename/merge, outcome-level isPrimary, measure in the pooling key) remains an optional follow-up.
+## Review findings — all resolved
+A 5-agent adversarial review ran over the integrated change. Result: 3 of 4 areas had **zero** confirmed high/critical bugs; the RoB-UI/onboarding/admin areas were spec-compliant. The findings raised were all fixed in the follow-up pass:
+- **HIGH (roles):** Viewer mapped to `readonly_both` (canChat=false) silently revoked chat → remapped `ROLE_TO_PRESET.viewer → 'viewer'` (keeps chat).
+- **MEDIUM (roles):** legacy presets (`data_extractor`, `readonly_*`) displayed as "Custom" → added complete `PRESET_TO_ROLE` reverse map so they render as their simple role.
+- **MEDIUM (ops):** RoB `defaultTool` casing mismatch (`rob2` vs `RoB2`) → the Default Tool selector now uses canonical engine ids (`ROB_TOOL_CANONICAL`); client defaults aligned to the server.
+- **LOW:** RoB Article-Info snake_case enums now humanized; dead Owner `<option>` and dead "Participates in" `modulesNote` copy removed; admin "Display Order" field now functional on create; `role="tabpanel"` added to the RoB left-tab content.
+- **Onboarding:** verified sound — `pendingOnboarding` defaults to `[]`, the gate exempts `/onboarding` (no loop), invite precedence preserved, all six input types validated + serialized, inputs carry `aria-label`/`<label>`.
+
+## Recommended next steps (future scope — not defects)
+- RoB engine-side enforcement of the deeper workflow/export/audit policy toggles (consensus-before-complete, lock/reopen, required rationale). The panel/tab/default-tool flags ARE wired today; the rest are configurable policy surfaced for admins and consumed where the corresponding feature exists.
+- A full canonical outcome registry (rename/merge, outcome-level isPrimary, measure in the pooling key) — current grouping is by name with measure-disambiguated labels.
 - Onboarding `audience` targeting column is reserved (everyone sees active questions today).
-- Low-severity polish from the review (tab ARIA roving-tabindex, snake_case enum display in Article Info, a few dead-code remnants) addressed in the follow-up pass.
-- After deploy, validate a real registration's `registrationIpCountrySource` to confirm nginx forwards the client IP; run `node scripts/repair-country-codes.js --apply` once to clean legacy stored names.
+- Operational: after deploy, validate a real registration's `registrationIpCountrySource` to confirm nginx forwards the client IP; run `node scripts/repair-country-codes.js --apply` once to clean any legacy stored "Local" names.

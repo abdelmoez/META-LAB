@@ -20,23 +20,11 @@ import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import Icon from '../components/icons.jsx';
 import PdfViewer from '../screening/components/PdfViewer.jsx';
 
-export default function RobPdfPanel({ loading, error, screenProjectId, recordId, canManage, onClose, onRetry, previewHeight, showHeader = true }) {
+export default function RobPdfPanel({ loading, error, screenProjectId, recordId, canManage, onRetry, previewHeight }) {
+  // The "Study PDF" label + the back affordance live in RobWorkspace's tab bar /
+  // top-level header (prompt32), so this panel is header-less — a pure renderer.
   return (
     <div style={{ border: `1px solid ${C.brd}`, borderRadius: 14, background: C.card, overflow: 'hidden', display: 'flex', flexDirection: 'column', height: '100%' }}>
-      {showHeader && (
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 14px', borderBottom: `1px solid ${C.brd}` }}>
-        <Icon name="fileText" size={15} />
-        <span style={{ fontWeight: 800, fontSize: 13.5 }}>Study PDF</span>
-        <div style={{ flex: 1 }} />
-        {onClose && (
-          <button onClick={onClose} title="Hide PDF panel" aria-label="Hide PDF panel"
-            style={{ background: 'none', border: 'none', color: C.txt2, cursor: 'pointer', display: 'inline-flex', padding: 4 }}>
-            <Icon name="x" size={15} />
-          </button>
-        )}
-      </div>
-      )}
-
       <div style={{ padding: 14, flex: 1, minHeight: 0 }}>
         {loading ? (
           <div style={{ padding: 24, textAlign: 'center', color: C.muted, fontSize: 12.5, fontFamily: MONO }}>Loading…</div>

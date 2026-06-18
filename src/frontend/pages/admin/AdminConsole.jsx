@@ -5328,7 +5328,8 @@ function OnboardingSection() {
     if (!form.prompt.trim()) { setError('A prompt is required.'); return; }
     setCreateBusy(true); setError('');
     try {
-      await adminApi.onboarding.create({ ...cleanPayload(form), isActive: true, displayOrder: questions.length });
+      // Honor an explicit Display Order from the form; default (0) appends to the end.
+      await adminApi.onboarding.create({ ...cleanPayload(form), isActive: true, displayOrder: form.displayOrder || questions.length });
       setForm(blankOnbForm()); setCreating(false);
       await loadQuestions();
     } catch (e) { setError(e.message); }

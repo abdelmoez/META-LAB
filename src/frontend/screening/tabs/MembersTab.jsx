@@ -462,7 +462,6 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, activity, onPatch
               style={{ ...selectStyle, opacity: busy ? 0.6 : 1 }}
               title="Set this member's role (applies the matching permission preset)"
             >
-              {isOwnerRow && <option value="owner" disabled>Owner</option>}
               {!currentPreset && !isOwnerRow && <option value="">Custom · {ROLE_LABEL[m.role] || m.role}</option>}
               {roleOptions.map(r => (
                 <option key={r.value} value={r.value}>{r.label}</option>
@@ -684,16 +683,9 @@ function presetBlurb(presetKey, modules) {
     capSentence = `They can ${joined}.`;
   }
 
-  // ── module override note ─────────────────────────────────────────────────
-  // Remind inviter that "Participates in" can further narrow access.
-  let modulesNote = '';
-  if (modules === 'metasift' && labAccess) {
-    modulesNote = ' "Participates in Screening only" will hide the rest of the project for this user.';
-  } else if (modules === 'metalab' && siftAccess) {
-    modulesNote = ' "Participates in project only" will hide Screening for this user.';
-  }
-
-  return [accessSentence, capSentence, modulesNote].filter(Boolean).join(' ');
+  // prompt32 — the confusing "Participates in <module>" note is removed; the role
+  // + advanced-permission matrix is the single source of truth for access.
+  return [accessSentence, capSentence].filter(Boolean).join(' ');
 }
 
 // User-facing role choices shown when adding a member (prompt32 Task 11).
