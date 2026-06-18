@@ -38,6 +38,14 @@ None. Additive read-only endpoint; no schema change.
 ## Version / commit / push
 Version **3.15.0 → 3.15.1** (patch). Commit hash + push status recorded in the commit/PR.
 
+## Review findings — all resolved
+A 3-agent adversarial review (centering area: CLEAN, no findings) surfaced 1 medium + 4 low items, all fixed in the follow-up pass:
+- **MEDIUM (perm-ux):** `patchMember` had no request-sequence guard → rapid toggles on the same member could reconcile out of order. Added a per-member `patchSeq` ref; every post-await mutation (reconcile / saved / busy / revert) is gated on the latest seq.
+- **LOW (perm-ux):** `updateMember` returned `shapeMember` without `liveById`, so the in-place reconcile could overwrite a fresh self-renamed name with the denormalized one. Fixed server-side: `updateMember` now resolves the live user and passes `liveById` (mirrors `listMembers`).
+- **LOW (perm-ux):** `expandedIds` is now pruned when a member is removed (no stale-id growth).
+- **LOW (perm-ux):** `savedTimers` are cleared on unmount (no dangling timers).
+- **LOW (lookup):** an unregistered email that already had a pending invite returned `found:false` → the modal offered "Send invite" only to 409 on submit. `lookupUser` now returns `{ found:false, pendingInvite:true, currentRole }`, and the modal shows "This email already has a pending invite" + an "Already invited" disabled button. Covered by a new integration test (8 total, all green).
+
 ## Known limitations
 - No DOM-interaction unit tests for the optimistic roster / shell (infra is SSR-only); backend behavior is integration-tested.
 - The lookup matches a single user by exact normalized email (no fuzzy/partial search) — by design, to avoid user enumeration.

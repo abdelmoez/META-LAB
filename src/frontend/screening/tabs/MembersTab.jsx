@@ -186,6 +186,8 @@ export default function MembersTab({ pid, project, access, refreshProject, prese
   }, [pid]);
 
   useEffect(() => { load(); }, [load]);
+  // Clear any pending "Saved ✓" timers on unmount (no dangling timers).
+  useEffect(() => () => { Object.values(savedTimers.current).forEach(clearTimeout); }, []);
 
   // Who can manage members: owner, leader, or a member granted canManageMembers.
   const canManage = canManageMembers || isLeader || !!access?.isLeader;
@@ -200,7 +202,11 @@ export default function MembersTab({ pid, project, access, refreshProject, prese
   // preset change applies all its flags), and revert on error. The roster never
   // unmounts, keys are stable (m.id), so scroll + open panels are preserved. The
   // backend still fully enforces every permission.
+  const patchSeq = useRef({}); // per-member in-flight counter (drops out-of-order responses)
   const patchMember = useCallback(async (mid, body) => {
+    // Sequence guard: on rapid toggles of the SAME member, only the latest request
+    // may mutate state, so a slow earlier response can never clobber a newer value.
+    const seq = (patchSeq.current[mid] = (patchSeq.current[mid] || 0) + 1);
     let prevMember = null;
     setMembers(list => list.map(m => {
       if (m.id !== mid) return m;
@@ -211,8 +217,10 @@ export default function MembersTab({ pid, project, access, refreshProject, prese
     setRowErr(e => ({ ...e, [mid]: '' }));
     try {
       const res = await screeningApi.updateMember(pid, mid, body);
+      if (seq !== patchSeq.current[mid]) return; // superseded by a newer toggle
       if (res && res.member) {
-        // Reconcile in place (preserves any live name not echoed by the server).
+        // Reconcile in place. The server now echoes the LIVE user name/email, so a
+        // self-rename is reflected too; the spread keeps any local-only fields.
         setMembers(list => list.map(m => (m.id === mid ? { ...m, ...res.member } : m)));
       }
       setSavedFlash(s => ({ ...s, [mid]: true }));
@@ -222,10 +230,11 @@ export default function MembersTab({ pid, project, access, refreshProject, prese
       // changes neither membership count nor owner/status, so parent churn (which
       // could disturb this panel) is unwarranted.
     } catch (e) {
+      if (seq !== patchSeq.current[mid]) return; // stale failure — don't revert a newer value
       if (prevMember) setMembers(list => list.map(m => (m.id === mid ? prevMember : m)));
       setRowErr(prev => ({ ...prev, [mid]: e.message || 'Update failed.' }));
     } finally {
-      setBusy(b => ({ ...b, [mid]: false }));
+      if (seq === patchSeq.current[mid]) setBusy(b => ({ ...b, [mid]: false }));
     }
   }, [pid]);
 
@@ -235,6 +244,8 @@ export default function MembersTab({ pid, project, access, refreshProject, prese
     try {
       await screeningApi.removeMember(pid, member.id);
       setConfirmRemove(null);
+      // Drop the removed member's expanded entry so the Set never accumulates stale ids.
+      setExpandedIds(prev => { if (!prev.has(member.id)) return prev; const next = new Set(prev); next.delete(member.id); return next; });
       await load();
       refreshProject?.();
     } catch (e) {
@@ -779,6 +790,10 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
         if (seq !== lookupSeq.current) return; // a newer keystroke superseded this
         if (res?.found) {
           setLookup({ status: 'found', user: res.user || null, alreadyMember: !!res.alreadyMember, currentRole: res.currentRole || null });
+        } else if (res?.pendingInvite) {
+          // Unregistered email that already has an outstanding invite (server tells us
+          // so we don't offer "Send invite" only to 409 on submit).
+          setLookup({ status: 'pending_invite', user: null, alreadyMember: false, currentRole: res.currentRole || null });
         } else {
           setLookup({ status: 'notfound', user: null, alreadyMember: false, currentRole: null });
         }
@@ -791,6 +806,7 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
   }, [emailTrimmed, emailValid, pid]);
 
   const alreadyMember = lookup.status === 'found' && lookup.alreadyMember;
+  const alreadyInvited = lookup.status === 'pending_invite';
 
   async function submit(e) {
     e?.preventDefault();
@@ -798,6 +814,7 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
     if (!trimmed) { setErr('Email is required.'); return; }
     if (!EMAIL_RE.test(trimmed)) { setErr('Enter a valid email address.'); return; }
     if (alreadyMember) { setErr('This person is already a member of the project.'); return; }
+    if (alreadyInvited) { setErr('This email already has a pending invite to this project.'); return; }
     setSubmitting(true);
     setErr('');
     setPendingNote(false);
@@ -898,6 +915,14 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
             background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '9px 12px',
           }}>
             No registered user found for this email. They’ll get a pending invite to join.
+          </div>
+        )}
+        {emailValid && lookup.status === 'pending_invite' && (
+          <div style={{
+            marginTop: 8, marginBottom: 2, fontSize: 12, color: C.txt2, lineHeight: 1.5,
+            background: alpha(C.ylw, '12'), border: `1px solid ${alpha(C.ylw, '40')}`, borderRadius: 8, padding: '9px 12px',
+          }}>
+            This email already has a pending invite to this project.
           </div>
         )}
 
@@ -1001,10 +1026,11 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
           <Button
             variant="primary"
             type="submit"
-            disabled={submitting || !emailValid || lookup.status === 'searching' || alreadyMember}
+            disabled={submitting || !emailValid || lookup.status === 'searching' || alreadyMember || alreadyInvited}
           >
             {submitting ? 'Working…'
               : alreadyMember ? 'Already a member'
+              : alreadyInvited ? 'Already invited'
               : lookup.status === 'notfound' ? 'Send invite'
               : 'Add to project'}
           </Button>

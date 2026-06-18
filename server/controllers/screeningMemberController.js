@@ -109,13 +109,20 @@ export async function lookupUser(req, res) {
     const normEmail = email.toLowerCase();
 
     const user = await findUserByEmail(normEmail);
-    if (!user) return res.json({ found: false });
-
-    // Already a member? Match by linked user id OR email (pending invites have no userId).
+    // Existing membership? Match by linked user id (registered) OR email (covers a
+    // PENDING invite for an email that is not yet a registered account → userId null).
     const existing = await prisma.screenProjectMember.findFirst({
-      where: { projectId: req.params.pid, OR: [{ userId: user.id }, { email: normEmail }] },
+      where: { projectId: req.params.pid, OR: [...(user ? [{ userId: user.id }] : []), { email: normEmail }] },
       select: { role: true, status: true },
     });
+
+    if (!user) {
+      // Unregistered email. If it already has an outstanding invite/member row, say
+      // so (so the modal disables "Send invite" instead of 409-ing on submit).
+      if (existing) return res.json({ found: false, pendingInvite: true, currentRole: existing.role, status: existing.status });
+      return res.json({ found: false });
+    }
+
     const safeUser = { id: user.id, name: user.name || '', email: user.email };
     if (existing) {
       return res.json({ found: true, alreadyMember: true, currentRole: existing.role, status: existing.status, user: safeUser });
@@ -387,7 +394,15 @@ export async function updateMember(req, res) {
     if (updated.userId && updated.userId !== req.user.id && Object.keys(data).length) {
       emitToUsers([updated.userId], { type: 'permissions.changed', projectId: req.params.pid });
     }
-    res.json({ member: shapeMember(updated, access.project.ownerId) });
+    // prompt33 review fix — resolve the LIVE user name/email (mirrors listMembers) so
+    // the client's in-place reconcile never overwrites a fresh self-renamed name with
+    // the denormalized member-row value.
+    let liveById = null;
+    if (updated.userId) {
+      const lu = await prisma.user.findUnique({ where: { id: updated.userId }, select: { id: true, name: true, email: true } });
+      if (lu) liveById = new Map([[lu.id, lu]]);
+    }
+    res.json({ member: shapeMember(updated, access.project.ownerId, liveById) });
   } catch (err) {
     console.error('[screening] updateMember:', err.message);
     res.status(500).json({ error: 'Internal server error' });

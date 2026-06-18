@@ -91,6 +91,19 @@ describe('prompt33 — Add Member email lookup', () => {
     expect(r.data.currentRole).toBe('reviewer');
   });
 
+  it('unregistered email with an outstanding invite → { found:false, pendingInvite:true }', async () => {
+    if (!up) return;
+    const owner = await register(`own_${rnd()}@ex.com`);
+    const inviteEmail = `invitee_${rnd()}@nowhere.com`; // never registered
+    const pid = await newProject(owner.cookie, 'Lookup H');
+    await api(`/screening/projects/${pid}/members`, { method: 'POST', cookie: owner.cookie, body: { email: inviteEmail, preset: 'reviewer' } });
+    const r = await lookup(owner.cookie, pid, inviteEmail);
+    expect(r.status).toBe(200);
+    expect(r.data.found).toBe(false);
+    expect(r.data.pendingInvite).toBe(true);
+    expect(r.data.currentRole).toBe('reviewer');
+  });
+
   it('invalid email → 400, no lookup', async () => {
     if (!up) return;
     const owner = await register(`own_${rnd()}@ex.com`);
