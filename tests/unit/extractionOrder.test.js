@@ -25,8 +25,20 @@ const ids = arr => arr.map(s => s.id);
 describe('catalogue', () => {
   it('exposes the required sort options', () => {
     const keys = EXTRACTION_SORTS.map(s => s.key);
-    expect(keys).toEqual(['manual', 'title_az', 'year_asc', 'year_desc', 'author_az', 'recent_added', 'recent_modified']);
+    // prompt32 Task 9 — 'outcome_az' groups the extraction list by outcome name.
+    expect(keys).toEqual(['manual', 'outcome_az', 'title_az', 'year_asc', 'year_desc', 'author_az', 'recent_added', 'recent_modified']);
     expect(DEFAULT_EXTRACTION_SORT).toBe('manual');
+  });
+  it('outcome_az groups by outcome name then timepoint (prompt32 Task 9)', () => {
+    const rows = [
+      { id: 'A', outcome: 'Mortality', timepoint: '12m' },
+      { id: 'B', outcome: 'Adverse events', timepoint: '' },
+      { id: 'C', outcome: 'Mortality', timepoint: '6m' },
+      { id: 'D', outcome: 'adverse events', timepoint: '' }, // case-insensitive groups with B
+    ];
+    // "adverse events" (B,D by insertion) before "mortality"; within mortality the
+    // timepoint string-sorts "12m" < "6m" → A before C.
+    expect(orderStudies(rows, 'outcome_az').map(s => s.id)).toEqual(['B', 'D', 'A', 'C']);
   });
 });
 

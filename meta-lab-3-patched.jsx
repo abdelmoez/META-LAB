@@ -26,6 +26,7 @@ import { orderStudies, EXTRACTION_SORTS, DEFAULT_EXTRACTION_SORT } from "./src/f
 import ProjectRobPanel from "./src/frontend/rob/ProjectRobPanel.jsx";
 import { robFlagEnabled } from "./src/frontend/rob/robApi.js";
 import { normalizeRobTool } from "./src/research-engine/rob/tools.js";
+import { api } from "./src/frontend/api-client/apiClient.js"; // prompt32 Task 10 — owner project delete from Project Control
 
 /* ════════════ UTILS ════════════ */
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -1398,9 +1399,11 @@ function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",showCount
       <text x={xS(nullLine)+6} y={yFavours} textAnchor="start" fontSize={9} fill={FC.dim}>favours →</text>
       {/* effect-measure label — centered under the plot, on its own row */}
       <text x={LM+plotW/2} y={yEsLabel} textAnchor="middle" fontSize={11} fill={FC.txt}>{esLabel}</text>
-      {/* heterogeneity line */}
+      {/* heterogeneity line — prompt32 Task 8: route every number through the
+          precision helpers so the LIVE plot matches the exported figure (export
+          path uses the same fmtI2/fmtNum). I²/weights stay 1dp by convention. */}
       <text x={padL} y={yHetero} fontSize={10} fill={FC.dim}>
-        Heterogeneity: I² = {I2}%  ·  τ² = {tau2}  ·  Q = {Q} (p {Qpval<0.001?"< 0.001":"= "+Qpval})  ·  overall p {pval<0.001?"< 0.001":"= "+pval}
+        Heterogeneity: I² = {fmtI2(I2,prec)}%  ·  τ² = {fmtNum(tau2,prec)}  ·  Q = {fmtNum(Q,prec)} (p {Qpval<0.001?"< 0.001":"= "+fmtNum(Qpval,prec)})  ·  overall p {pval<0.001?"< 0.001":"= "+fmtNum(pval,prec)}
       </text>
     </svg>
   </div>);
@@ -4071,7 +4074,17 @@ function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
     studies.filter(s=>s.es!==""&&!isNaN(+s.es)).forEach(s=>{
       const oc=(s.outcome||"").trim(), tp=(s.timepoint||"").trim();
       const key=`${oc}|||${tp}`;
-      if(!seen.has(key)){ seen.add(key); pairs.push({outcome:oc,timepoint:tp,key}); }
+      if(!seen.has(key)){ seen.add(key); pairs.push({outcome:oc,timepoint:tp,esType:(s.esType||"").trim(),key}); }
+    });
+    // prompt32 Task 9 — outcomes are organised by NAME. Append the timepoint, and
+    // the effect MEASURE only to disambiguate when the same name appears twice, so
+    // duplicate-named outcomes never read as one entry.
+    const nameCount={};
+    pairs.forEach(p=>{const n=(p.outcome||"(unnamed)").toLowerCase();nameCount[n]=(nameCount[n]||0)+1;});
+    pairs.forEach(p=>{
+      const base=p.outcome||"(unnamed)";
+      const dup=nameCount[base.toLowerCase()]>1;
+      p.label=base+(p.timepoint?` @ ${p.timepoint}`:"")+(dup&&p.esType?` · ${p.esType}`:"");
     });
     return pairs;
   },[studies]);
@@ -4120,14 +4133,14 @@ function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
         {outcomePairs.length===0?(
           <span style={{fontSize:12,color:C.dim}}>No studies with an effect size yet — add them in Data Extraction.</span>
         ):outcomePairs.length===1?(
-          <span style={{fontSize:12,color:C.grn}}>✓ {activeOutcome?.outcome||"(unnamed)"}{activeOutcome?.timepoint?` @ ${activeOutcome.timepoint}`:""}</span>
+          <span style={{fontSize:12,color:C.grn}}>✓ {activeOutcome?.label||activeOutcome?.outcome||"(unnamed)"}</span>
         ):(
           <select value={selectedKey} onChange={e=>setSelectedKey(e.target.value)}
             style={{...inp,width:"auto",fontSize:12,padding:"5px 10px",flex:1,maxWidth:400}}>
             <option value="">— select an outcome to analyse —</option>
             {outcomePairs.map(p=>(
               <option key={p.key} value={p.key}>
-                {p.outcome||"(unnamed)"}{p.timepoint?` @ ${p.timepoint}`:""}
+                {p.label||p.outcome||"(unnamed)"}
               </option>
             ))}
           </select>
@@ -4186,7 +4199,7 @@ function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
               <tbody>
                 {rows.map(({pr,r,et,dv,k})=>(
                   <tr key={pr.key} style={{borderBottom:`1px solid ${C.brd}`,cursor:"pointer",background:pr.key===effectiveKey?`${themeAlpha(C.acc,'10')}`:"transparent"}} onClick={()=>setSelectedKey(pr.key)}>
-                    <td style={{padding:"6px 10px",fontWeight:pr.key===effectiveKey?700:400}}>{pr.outcome||"(unnamed)"}{pr.timepoint?` @ ${pr.timepoint}`:""}</td>
+                    <td style={{padding:"6px 10px",fontWeight:pr.key===effectiveKey?700:400}}>{pr.label||pr.outcome||"(unnamed)"}</td>
                     <td style={{padding:"6px 10px",color:C.muted}}>{et?ES_TYPES[et].scale:"—"}</td>
                     <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace"}}>{k}</td>
                     <td style={{padding:"6px 10px",textAlign:"right",fontFamily:"'IBM Plex Mono',monospace",fontWeight:700,color:r?C.grn:C.dim}}>{r?dv(r.pES):"—"}</td>
@@ -4666,13 +4679,16 @@ function ResearchExport({result,esType,method,studies,prec}){
           sizing:true,
           defaults:{format:"png",presetId:"journal-1col"},
           run:async(choice)=>{
+            // prompt32 Task 8 — the export dialog's decimal selector (choice.precision)
+            // must drive the exported figure, not the render-time project precision.
+            const ep=choice.precision||prec;
             if(choice.format==="svg"){
-              const built=buildPubForestSVG(result,pubOpts);
+              const built=buildPubForestSVG(result,{...pubOpts,prec:ep});
               if(!built) throw new Error("Not enough studies to draw the figure.");
               downloadText(SVG_XML_HEADER+built.svg,"forest_publication.svg","image/svg+xml;charset=utf-8");
               return;
             }
-            const built=buildPubForestSVG(result,{...pubOpts,noBg:!!choice.transparent});
+            const built=buildPubForestSVG(result,{...pubOpts,prec:ep,noBg:!!choice.transparent});
             if(!built) throw new Error("Not enough studies to draw the figure.");
             const blob=await rasterizeSvg(built.svg,built.W,built.H,
               {targetWidthPx:choice.widthPx,transparent:choice.transparent,background:"#ffffff"});
@@ -4965,8 +4981,8 @@ function buildPubForestSVG(result,opts){
     svg+=`<rect x="${(xc-sq/2).toFixed(1)}" y="${(cy-sq/2).toFixed(1)}" width="${sq.toFixed(1)}" height="${sq.toFixed(1)}" fill="${BOX}"/>`;
     svg+=txt(xEff+cEff, y, `${fmt(s._es)} ${fmtCI(s._lo,s._hi)}`, 10, {anchor:"end"});
     if(showWeights){
-      svg+=txt(xW+cW-4, y, (s._wFixedPct||0).toFixed(1)+"%", 9.5, {anchor:"end",fill:GREY});
-      svg+=txt(xW2+cW2-4, y, (s._wRandomPct||0).toFixed(1)+"%", 9.5, {anchor:"end",fill:GREY});
+      svg+=txt(xW+cW-4, y, fmtWeight(s._wFixedPct||0,prec)+"%", 9.5, {anchor:"end",fill:GREY});
+      svg+=txt(xW2+cW2-4, y, fmtWeight(s._wRandomPct||0,prec)+"%", 9.5, {anchor:"end",fill:GREY});
     }
   });
 
@@ -5018,7 +5034,7 @@ function buildPubForestSVG(result,opts){
   // ---- heterogeneity + model line (well spaced) ----
   const Qp=result.Qpval<0.001?"< 0.001":"= "+fmtNum(result.Qpval,prec);
   const op=result.pval<0.001?"< 0.001":"= "+fmtNum(result.pval,prec);
-  const het=`Heterogeneity: I² = ${result.I2}%,  τ² = ${fmtNum(result.tau2,prec)},  Q = ${fmtNum(result.Q,prec)} (df = ${result.k-1}),  p ${Qp}`;
+  const het=`Heterogeneity: I² = ${fmtI2(result.I2,prec)}%,  τ² = ${fmtNum(result.tau2,prec)},  Q = ${fmtNum(result.Q,prec)} (df = ${result.k-1}),  p ${Qp}`;
   svg+=txt(MLEFT,hetY,het,9.5,{italic:true});
   let line2=`Test for overall effect: p ${op}  ·  Filled diamond: ${method==="random"?"random effects":"common / fixed effect"}`;
   if(result.hksj) line2+=`  ·  HKSJ 95% CI: ${fmt(result.hksj.lo)} to ${fmt(result.hksj.hi)} (t-based)`;
@@ -5046,7 +5062,15 @@ function ForestTab({project}){
     studies.filter(s=>s.es!==""&&!isNaN(+s.es)).forEach(s=>{
       const oc=(s.outcome||"").trim(), tp=(s.timepoint||"").trim();
       const key=`${oc}|||${tp}`;
-      if(!seen.has(key)){ seen.add(key); pairs.push({outcome:oc,timepoint:tp,key}); }
+      if(!seen.has(key)){ seen.add(key); pairs.push({outcome:oc,timepoint:tp,esType:(s.esType||"").trim(),key}); }
+    });
+    // prompt32 Task 9 — label by outcome NAME; disambiguate by measure on collision.
+    const nameCount={};
+    pairs.forEach(p=>{const n=(p.outcome||"(unnamed)").toLowerCase();nameCount[n]=(nameCount[n]||0)+1;});
+    pairs.forEach(p=>{
+      const base=p.outcome||"(unnamed)";
+      const dup=nameCount[base.toLowerCase()]>1;
+      p.label=base+(p.timepoint?` @ ${p.timepoint}`:"")+(dup&&p.esType?` · ${p.esType}`:"");
     });
     return pairs;
   },[studies]);
@@ -5088,14 +5112,14 @@ function ForestTab({project}){
       {outcomePairs.length===0?(
         <span style={{fontSize:12,color:C.dim}}>No studies with an effect size yet.</span>
       ):outcomePairs.length===1?(
-        <span style={{fontSize:12,color:C.grn}}>✓ {activeOutcome?.outcome||"(unnamed)"}{activeOutcome?.timepoint?` @ ${activeOutcome.timepoint}`:""}</span>
+        <span style={{fontSize:12,color:C.grn}}>✓ {activeOutcome?.label||activeOutcome?.outcome||"(unnamed)"}</span>
       ):(
         <select value={selectedKey} onChange={e=>setSelectedKey(e.target.value)}
           style={{...inp,width:"auto",fontSize:12,padding:"5px 10px",flex:1,maxWidth:420}}>
           <option value="">— select an outcome —</option>
           {outcomePairs.map(p=>(
             <option key={p.key} value={p.key}>
-              {p.outcome||"(unnamed)"}{p.timepoint?` @ ${p.timepoint}`:""}
+              {p.label||p.outcome||"(unnamed)"}
             </option>
           ))}
         </select>
@@ -5173,13 +5197,15 @@ function ForestTab({project}){
                 downloadBlob(blob,`${darkName}${presetTag(choice)}.png`);
                 return;
               }
+              // prompt32 Task 8 — honor the dialog's decimal selector for the export.
+              const ep=choice.precision||prec;
               if(choice.format==="svg"){
-                const built=buildPubForestSVG(result,pubOpts);
+                const built=buildPubForestSVG(result,{...pubOpts,prec:ep});
                 if(!built) throw new Error("Not enough studies to draw the figure.");
                 downloadText(SVG_XML_HEADER+built.svg,exportName+".svg","image/svg+xml;charset=utf-8");
                 return;
               }
-              const built=buildPubForestSVG(result,{...pubOpts,noBg:!!choice.transparent});
+              const built=buildPubForestSVG(result,{...pubOpts,prec:ep,noBg:!!choice.transparent});
               if(!built) throw new Error("Not enough studies to draw the figure.");
               const blob=await rasterizeSvg(built.svg,built.W,built.H,
                 {targetWidthPx:choice.widthPx,transparent:choice.transparent,background:"#ffffff"});
@@ -7530,10 +7556,38 @@ const CTRL_STATUS_OPTIONS=[
   {value:"in_progress",label:"In progress"},
   {value:"done",label:"Done"},
 ];
-function ControlTab({project,onAnnotate,setTab,presence}){
+function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
   const lid=linkedSiftId(project);
   const perms=projectPerms(project);
   const amProjectOwner=!project._shared;
+  // prompt32 Task 10 — owner-only Danger Zone (archive / delete) state.
+  const[archiveBusy,setArchiveBusy]=useState(false);
+  const[archiveErr,setArchiveErr]=useState("");
+  const[delOpen,setDelOpen]=useState(false);
+  const[delConfirm,setDelConfirm]=useState("");
+  const[delBusy,setDelBusy]=useState(false);
+  const[delErr,setDelErr]=useState("");
+  const isArchived=!!project._archived;
+  const toggleArchive=async()=>{
+    setArchiveBusy(true);setArchiveErr("");
+    try{
+      if(isArchived) await api.projects.unarchive(project.id);
+      else await api.projects.archive(project.id);
+      onAnnotate(project.id,{_archived:!isArchived,_archivedAt:isArchived?null:new Date().toISOString()});
+    }catch(e){setArchiveErr(e.message||"Could not change the archive state.");}
+    setArchiveBusy(false);
+  };
+  const doDelete=async()=>{
+    if(delConfirm.trim()!==String(project.name||"").trim()){setDelErr("The name you typed does not match.");return;}
+    setDelBusy(true);setDelErr("");
+    try{
+      // Owner-confirmed soft delete: server enforces owner-only, writes an audit
+      // row, and (cascadeLinked) soft-deletes the linked screening workspace + its
+      // RoB assessments. Then leave the workspace and let the dashboard reload.
+      await api.projects.confirmDelete(project.id,{confirmName:delConfirm.trim(),cascadeLinked:true});
+      if(onDeleted) onDeleted(project.id);
+    }catch(e){setDelErr(e.message||"Could not delete the project.");setDelBusy(false);}
+  };
   // Workspace membership payload — also resolves OUR authority in the workspace.
   const[data,setData]=useState({loading:!!lid,members:[],isOwner:false,isLeader:false,canManageMembers:false,myRole:null,error:null});
   const[sp,setSp]=useState(null);   // linked ScreenProject row (status, flags)
@@ -7695,6 +7749,55 @@ function ControlTab({project,onAnnotate,setTab,presence}){
     </div>
 
     <InfoBox>💡 This is the project's shared team — the source of truth for owner, leaders, members, roles, and permissions. Changes here apply across the whole project immediately. Leaders can manage members but cannot edit the owner or assign the Leader preset.</InfoBox>
+
+    {/* prompt32 Task 10 — Danger Zone (OWNER ONLY). Archive is reversible; Delete
+        is an owner-confirmed soft delete (server-enforced owner-only + audit log)
+        that also removes the linked screening workspace and its RoB assessments. */}
+    {amProjectOwner&&(
+      <div style={{...card,border:`1px solid ${themeAlpha(C.red,'50')}`,background:themeAlpha(C.red,'08')}}>
+        <div style={{...secLbl,color:C.red}}>Danger zone</div>
+        {/* Archive / Unarchive */}
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",paddingBottom:12,borderBottom:`1px solid ${C.brd}`}}>
+          <div style={{minWidth:0}}>
+            <div style={{fontSize:12.5,color:C.txt,fontWeight:600}}>{isArchived?"Unarchive project":"Archive project"}</div>
+            <div style={{fontSize:11,color:C.muted,marginTop:2}}>{isArchived?"Restore this project to your active dashboard.":"Hide this project from the active dashboard. Reversible — nothing is deleted."}</div>
+          </div>
+          <button onClick={toggleArchive} disabled={archiveBusy} style={{...btnS("ghost"),fontSize:11.5,opacity:archiveBusy?0.6:1}}>
+            <Icon name="folder" size={12}/> {archiveBusy?"Working…":(isArchived?"Unarchive":"Archive")}
+          </button>
+        </div>
+        {archiveErr&&<div style={{fontSize:11.5,color:C.red,marginTop:8}}>{archiveErr}</div>}
+        {/* Delete */}
+        <div style={{paddingTop:12}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
+            <div style={{minWidth:0}}>
+              <div style={{fontSize:12.5,color:C.txt,fontWeight:600}}>Delete project</div>
+              <div style={{fontSize:11,color:C.muted,marginTop:2,lineHeight:1.5}}>
+                Permanently remove this project from your dashboard, including its Data Extraction studies, linked Screening records, and Risk-of-Bias assessments. This cannot be undone from here.
+              </div>
+            </div>
+            {!delOpen&&<button onClick={()=>{setDelOpen(true);setDelErr("");setDelConfirm("");}} style={{...btnS("ghost"),fontSize:11.5,color:C.red,borderColor:themeAlpha(C.red,'50')}}><Icon name="trash" size={12}/> Delete project</button>}
+          </div>
+          {delOpen&&(
+            <div style={{marginTop:12,padding:12,borderRadius:8,background:C.bg,border:`1px solid ${themeAlpha(C.red,'40')}`}}>
+              <div style={{fontSize:12,color:C.txt2,marginBottom:8,lineHeight:1.5}}>
+                Type the project name <b style={{color:C.txt}}>{project.name}</b> to confirm deletion.
+              </div>
+              <input value={delConfirm} onChange={e=>setDelConfirm(e.target.value)} placeholder={project.name||"Project name"} disabled={delBusy}
+                style={{...inp,width:"100%",marginBottom:10}}/>
+              {delErr&&<div style={{fontSize:11.5,color:C.red,marginBottom:8}}>{delErr}</div>}
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <button onClick={doDelete} disabled={delBusy||delConfirm.trim()!==String(project.name||"").trim()}
+                  style={{...btnS("primary"),fontSize:11.5,background:C.red,borderColor:C.red,opacity:(delBusy||delConfirm.trim()!==String(project.name||"").trim())?0.5:1}}>
+                  {delBusy?"Deleting…":"Permanently delete"}
+                </button>
+                <button onClick={()=>{setDelOpen(false);setDelErr("");setDelConfirm("");}} disabled={delBusy} style={{...btnS("ghost"),fontSize:11.5}}>Cancel</button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    )}
   </div>);
 }
 
@@ -8071,14 +8174,14 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
 
   // Self-contained report HTML (print CSS + embedded figures). The export
   // dialog offers PDF (print window) or HTML file — user chooses explicitly.
-  const buildReportHTML=()=>{
+  const buildReportHTML=(precOverride)=>{
     if(!project) return null;
     const p=project, pico=p.pico||{}, pr=p.prisma||{};
     const res=runMeta(p.studies||[],"random");
     const esType=(p.studies||[]).map(s=>s.esType).filter(Boolean)[0]||"";
     const t=ES_TYPES[esType]||{}; const isLog=!!t.log, isProp=esType==="PROP";
     const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
-    const prec=p.analysisPrecision;
+    const prec=precOverride||p.analysisPrecision; // prompt32 Task 8 — honor export-dialog precision
     const dv=x=>x==null?"—":isProp?fmtPct(bt(x),prec)+"%":isLog?fmtES(bt(x),prec):fmtES(+x,prec);
     const esc=s=>String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
     const forest=res?buildPubForestSVG(res,{esType,esLabel:t.scale||"Effect",nullLine:0,showCounts:true,showWeights:true,title:"",prec}):null;
@@ -8146,7 +8249,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
       sizing:false,
       defaults:{format:"pdf"},
       run:async(choice)=>{
-        const html=buildReportHTML();
+        const html=buildReportHTML(choice.precision);
         if(!html) throw new Error("No project selected.");
         if(choice.format==="pdf"){
           // Existing print-window path; if pop-ups are blocked the user can
@@ -8600,7 +8703,13 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           onShowAudit={()=>setShowAudit(true)}
           onReport={openReportExport} onExport={openProjectExport} onImport={()=>importRef.current&&importRef.current.click()}/>
       )}
-      <div style={{flex:1,minHeight:0,overflowY:inScreening?"hidden":"auto",padding:inScreening?0:"28px 36px 56px"}}>
+      {/* prompt32 Task 5 — responsive global workspace gutter. The horizontal pad
+          scales 20px → 5vw → 88px (≈5–10% on wide screens) so content never glues
+          to the borders nor wastes space on ultra-wide; vertical pad unchanged.
+          Screening keeps its full-bleed 0 escape hatch. Reading tabs still centre
+          at maxWidth:1100 below; data tabs (extraction/rob/analysis/forest) fill
+          the now responsively-padded column. */}
+      <div style={{flex:1,minHeight:0,overflowY:inScreening?"hidden":"auto",padding:inScreening?0:"28px clamp(20px, 5vw, 88px) 56px"}}>
       {/* Hidden project-import input — always mounted so Import works from the
           compact header on every tab AND from the welcome screen (prompt30 Part 5). */}
       <input ref={importRef} type="file" accept=".json" onChange={onImport} style={{display:"none"}}/>
@@ -8762,7 +8871,8 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
             </div>
           )}
           {tab==="overview"&&<OverviewTab project={project} setTab={setTab}/>}
-          {tab==="control"&&<ControlTab project={project} onAnnotate={patchAnnotations} setTab={setTab} presence={{users:presenceUsers,locks:presenceLocks}}/>}
+          {tab==="control"&&<ControlTab project={project} onAnnotate={patchAnnotations} setTab={setTab} presence={{users:presenceUsers,locks:presenceLocks}}
+            onDeleted={(delId)=>{setProjects(prev=>prev.filter(p=>p.id!==delId));if(onBackToProjects)onBackToProjects();else setActiveId(null);}}/>}
           {tab==="pico"&&<PICOTab project={project} updNested={updNested} upd={upd} lockCtx={{pid:spId,myUserId:authUser?.id,locks:presenceLocks}}/>}
           {tab==="prospero"&&<PROSPEROTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="search"&&<SearchTab project={project} updNested={updNested} upd={upd}/>}

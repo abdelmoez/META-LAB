@@ -117,6 +117,38 @@ export const adminApi = {
     restore:      (id)       => req(`${BASE}/screening/projects/${id}/restore`, { method: 'PATCH' }),
   },
 
+  // ── Onboarding (prompt32 Task 7, admin only) ─────────────────────────────────
+  // Behaviour settings: getSettings → { enabled, introTitle, introBody };
+  // saveSettings(body) PUTs the same shape. Questions manager:
+  //   list → { questions:[{ id, key, prompt, description, type, options:[{value,
+  //     label}], isRequired, allowSkip, isActive, displayOrder, counts:{answered,
+  //     skipped,pending}, createdAt, updatedAt }], totalUsers };
+  //   create(body) → { ok, question }; update(id, body) → { ok, question };
+  //   reorder(order:[id,...]) → { ok }; reset(id, userId?) (omit userId ⇒ ALL
+  //   users) → { ok, cleared }; remove(id) → { ok }.
+  onboarding: {
+    getSettings:  ()         => req(`${BASE}/onboarding-settings`),
+    saveSettings: (body)     => req(`${BASE}/onboarding-settings`, { method: 'PUT', ...json(body) }),
+    list:         ()         => req(`${BASE}/onboarding-questions`),
+    create:       (body)     => req(`${BASE}/onboarding-questions`, { method: 'POST', ...json(body) }),
+    update:       (id, body) => req(`${BASE}/onboarding-questions/${id}`, { method: 'PATCH', ...json(body) }),
+    reorder:      (order)    => req(`${BASE}/onboarding-questions/reorder`, { method: 'POST', ...json({ order }) }),
+    reset:        (id, userId) => req(`${BASE}/onboarding-questions/${id}/reset`, { method: 'POST', ...json(userId ? { userId } : {}) }),
+    remove:       (id)       => req(`${BASE}/onboarding-questions/${id}`, { method: 'DELETE' }),
+  },
+
+  // ── Risk of Bias engine controls (prompt32 Task 12, admin only) ──────────────
+  // getSettings → { settings:{...robSettings}, engineEnabled:boolean } (the
+  //   engineEnabled mirrors the rob_engine_v2 feature flag — read-only here);
+  // saveSettings(settings) PUTs the settings object → { ok, settings };
+  // getMetrics → { projectsUsingRoB, totalAssessments, completedAssessments,
+  //   pendingAssessments, overall:{low,some,high}, reviewerConflicts }.
+  rob: {
+    getSettings:  ()         => req(`${BASE}/rob/settings`),
+    saveSettings: (body)     => req(`${BASE}/rob/settings`, { method: 'PUT', ...json(body) }),
+    getMetrics:   ()         => req(`${BASE}/rob/metrics`),
+  },
+
   auditLog:       (p)        => req(`${BASE}/audit-log?${new URLSearchParams(p || {})}`),
   securityEvents: (p)        => req(`${BASE}/security-events?${new URLSearchParams(p || {})}`),
 

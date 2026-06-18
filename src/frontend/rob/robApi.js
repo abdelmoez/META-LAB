@@ -45,3 +45,26 @@ export async function robFlagEnabled() {
     return false;
   }
 }
+
+// prompt32 — admin-tunable presentation defaults for the RoB study workspace
+// (whether the PDF / Article-Info tabs are shown, which one opens first, etc.).
+// The documented defaults are merged client-side so the workspace renders the
+// intended layout even if the fetch fails or the server omits the block.
+const ROB_SETTINGS_DEFAULTS = {
+  showPdfPanel: true,
+  showArticleInfoTab: true,
+  defaultLeftTab: 'pdf',         // 'pdf' | 'article'
+  compactAssessmentCards: false,
+};
+
+/** Read the public RoB presentation settings, merged over documented defaults. */
+export async function getRobSettings() {
+  try {
+    const res = await fetch('/api/settings/public', { credentials: 'include' });
+    if (!res.ok) return { ...ROB_SETTINGS_DEFAULTS };
+    const data = await res.json();
+    return { ...ROB_SETTINGS_DEFAULTS, ...(data && data.robSettings ? data.robSettings : {}) };
+  } catch {
+    return { ...ROB_SETTINGS_DEFAULTS };
+  }
+}

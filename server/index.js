@@ -32,8 +32,10 @@ import notificationsRouter from './routes/notifications.js';
 import invitesRouter      from './routes/invites.js';
 import eventsRouter       from './routes/events.js';
 import robRouter          from './routes/rob.js';
+import onboardingRouter   from './routes/onboarding.js';
 
 import { initDefaultSettings } from './controllers/settingsController.js';
+import { seedOnboardingQuestions } from './controllers/onboardingController.js';
 import { seedAdmins } from './auth/seedAdmins.js';
 import { getVersion } from './version.js';
 import { resolveCorsOrigin } from './config/cors.js';
@@ -165,6 +167,11 @@ app.use('/api/screening', screeningRouter);
 // and enforces project ownership. ──────────────────────────────────────────────
 app.use('/api/rob', requireAuth, robRouter);
 
+// ── Onboarding questions (prompt32 Task 6) — requireAuth inside the router.
+// Per-user pending computation so newly-added active questions interrupt
+// already-registered users on their next login.
+app.use('/api/onboarding', onboardingRouter);
+
 // ── Realtime SSE stream (prompt6 Task 7) — own mount, NEVER under the
 // rate-limited /api/auth or /api/admin routers (requireAuth inside the router).
 app.use('/api/events', eventsRouter);
@@ -184,6 +191,7 @@ const server = app.listen(PORT, () => {
   console.log(`META·LAB API on :${PORT} (v${version} · ${commit})`);
   // Initialize default settings + ensure admin accounts exist (non-blocking)
   initDefaultSettings().catch(console.error);
+  seedOnboardingQuestions().catch(err => console.error('[seed] onboarding seed failed:', err.message));
   seedAdmins().catch(err => console.error('[seed] admin seed failed:', err.message));
 });
 

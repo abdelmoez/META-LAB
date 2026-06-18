@@ -28,6 +28,7 @@ async function main() {
   });
 
   const fixes = [];
+  const relabels = []; // prompt32 — legacy no-code rows still labelled "Local" → "Unknown"
   for (const u of users) {
     const oldCode = (u.registrationCountryCode || '').trim().toUpperCase();
     const newCode = reconcileCountryCode(u.registrationCountryCode, u.registrationCountryName);
@@ -40,13 +41,22 @@ async function main() {
         newCode,
         newName: countryNameForCode(newCode),
       });
+      continue;
+    }
+    // No valid ISO code recoverable, but the stored name is the misleading legacy
+    // literal "Local" (pre-prompt30). Collapse it into the honest "Unknown" bucket
+    // so the Ops user detail never shows "Local". (The Ops map already does this.)
+    const nm = (u.registrationCountryName || '').trim().toLowerCase();
+    if (!newCode && (nm === 'local' || nm === 'development' || nm === 'local (dev)')) {
+      relabels.push({ id: u.id, email: u.email, from: u.registrationCountryName });
     }
   }
 
-  console.log(`Scanned ${users.length} users — ${fixes.length} need repair.`);
+  console.log(`Scanned ${users.length} users — ${fixes.length} code repair(s), ${relabels.length} "Local"→"Unknown" relabel(s).`);
   for (const f of fixes) console.log(`  ${f.email}: ${f.from}  ->  ${f.to}`);
+  for (const r of relabels) console.log(`  ${r.email}: ${r.from}  ->  Unknown`);
 
-  if (!fixes.length) { console.log('Nothing to repair.'); return; }
+  if (!fixes.length && !relabels.length) { console.log('Nothing to repair.'); return; }
 
   if (!APPLY) {
     console.log('\nDRY RUN — no changes written. Re-run with --apply to persist.');
@@ -61,7 +71,12 @@ async function main() {
     });
     done += 1;
   }
-  console.log(`\nApplied ${done} repair(s).`);
+  let relabelled = 0;
+  for (const r of relabels) {
+    await prisma.user.update({ where: { id: r.id }, data: { registrationCountryName: 'Unknown' } });
+    relabelled += 1;
+  }
+  console.log(`\nApplied ${done} code repair(s) + ${relabelled} relabel(s).`);
 }
 
 main()

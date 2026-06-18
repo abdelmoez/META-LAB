@@ -1663,14 +1663,27 @@ export async function getMetaLabStudyRecord(req, res) {
 
     const studyId = String(req.params.studyId || '');
     let recordId = null;
+    let record = null;
     if (studyId) {
+      // prompt32 Task 2 — additively return the article fields so the RoB workspace
+      // can render an "Article Information" tab + a real header WITHOUT a second
+      // round-trip. All columns already exist on ScreenRecord (no schema change).
       const rec = await prisma.screenRecord.findFirst({
         where: { projectId: sp.id, handoffStudyId: studyId },
-        select: { id: true },
+        select: {
+          id: true, title: true, authors: true, year: true, journal: true,
+          doi: true, pmid: true, abstract: true, keywords: true, sourceDb: true,
+          isDuplicate: true, currentStage: true, finalStatus: true, acceptedAt: true,
+          rejectedReason: true, handoffStatus: true,
+        },
       });
       recordId = rec?.id || null;
+      if (rec) {
+        const { id, ...fields } = rec;
+        record = { id, ...fields };
+      }
     }
-    return res.json({ linked: true, screenProjectId: sp.id, recordId });
+    return res.json({ linked: true, screenProjectId: sp.id, recordId, record });
   } catch (err) {
     console.error('[screening] getMetaLabStudyRecord:', err.message);
     res.status(500).json({ error: 'Internal server error' });

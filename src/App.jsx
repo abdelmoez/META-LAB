@@ -59,17 +59,38 @@ function inviteParam() {
   catch { return ''; }
 }
 
+// prompt32 — paths that must never be redirected to /onboarding by the gate.
+const ONBOARDING_GATE_EXEMPT = ['/onboarding', '/invite', '/verify-email', '/terms', '/reset'];
+
+/**
+ * prompt32 — OnboardingGate wraps protected content and redirects any
+ * authenticated user with pending onboarding questions to /onboarding,
+ * except on exempt paths. This fires on every session bootstrap (including
+ * returning cookie sessions), so admin-added questions interrupt existing users.
+ */
+function OnboardingGate({ children }) {
+  const { pendingOnboarding } = useAuth();
+  const location = useLocation();
+  const isExempt = ONBOARDING_GATE_EXEMPT.some(p => location.pathname.startsWith(p));
+  if (!isExempt && pendingOnboarding.length > 0) {
+    return <Navigate to="/onboarding" replace />;
+  }
+  return children;
+}
+
 function LoginRoute() {
   const navigate = useNavigate();
-  const { login } = useAuth();
+  const { login, pendingOnboarding } = useAuth();
   return (
     <LoginPage
       onSuccess={u => {
         login(u);
         const invite = inviteParam();
-        // prompt31 Part 1 — central post-auth redirect: a user who has never
-        // completed/skipped onboarding lands there (works after email verification
-        // too, since they sign in afterwards). Invites take precedence.
+        // prompt32 — after login the gate in OnboardingGate will handle
+        // redirecting to /onboarding when there are pending questions (including
+        // for existing users whose admin has added new questions). Invites still
+        // take precedence. Fall back to the one-shot flag for immediate redirect
+        // on first login before AuthContext has a chance to re-fetch pending.
         const dest = invite ? `/invite/${encodeURIComponent(invite)}`
           : (u && u.onboardingCompleted === false) ? '/onboarding'
           : '/app';
@@ -86,10 +107,17 @@ function LoginRoute() {
 
 function RegisterRoute() {
   const navigate = useNavigate();
-  const { login } = useAuth();
+  const { login, pendingOnboarding } = useAuth();
   return (
     <RegisterPage
-      onSuccess={(u, redirectTo) => { login(u); navigate(redirectTo || '/onboarding'); }}
+      onSuccess={(u, redirectTo) => {
+        login(u);
+        // prompt32 — route to /onboarding when there are pending questions
+        // (pendingOnboarding is populated by login() → fetchPending() in AuthContext);
+        // fall back to /app when there are none. Explicit redirectTo still wins.
+        const dest = redirectTo || (pendingOnboarding.length > 0 ? '/onboarding' : '/app');
+        navigate(dest);
+      }}
       onBack={() => {
         const invite = inviteParam();
         navigate(invite ? `/login?invite=${encodeURIComponent(invite)}` : '/login');
@@ -144,28 +172,30 @@ export default function App() {
         <Route path="/verify-email" element={<VerifyEmail />} />
 
         {/* Protected post-login home — project command center (prompt11) */}
-        {/* prompt26 — optional, skippable onboarding (post-registration). */}
+        {/* prompt26/32 — dynamic server-driven onboarding (post-registration and
+            on any sign-in when admin has added new questions). OnboardingGate on
+            protected routes redirects here; /onboarding itself is gate-exempt. */}
         <Route path="/onboarding" element={<ProtectedRoute><Onboarding /></ProtectedRoute>} />
 
-        <Route path="/app"      element={<ProtectedRoute><ProjectLanding /></ProtectedRoute>} />
+        <Route path="/app"      element={<ProtectedRoute><OnboardingGate><ProjectLanding /></OnboardingGate></ProtectedRoute>} />
 
         {/* Protected workspace — opens one project by id into the existing overview/workflow */}
-        <Route path="/app/project/:projectId" element={<ProtectedRoute><AppWorkspace /></ProtectedRoute>} />
+        <Route path="/app/project/:projectId" element={<ProtectedRoute><OnboardingGate><AppWorkspace /></OnboardingGate></ProtectedRoute>} />
 
         {/* Protected profile */}
-        <Route path="/profile"  element={<ProtectedRoute><Profile /></ProtectedRoute>} />
+        <Route path="/profile"  element={<ProtectedRoute><OnboardingGate><Profile /></OnboardingGate></ProtectedRoute>} />
 
         {/* Internal admin console — not linked from anywhere in the normal UI */}
-        <Route path="/ops"      element={<AdminRoute><AdminConsole /></AdminRoute>} />
+        <Route path="/ops"      element={<AdminRoute><OnboardingGate><AdminConsole /></OnboardingGate></AdminRoute>} />
 
         {/* META·SIFT Beta — Screening workspace (tabbed project shell) */}
-        <Route path="/sift-beta"                      element={<ProtectedRoute><SiftDashboard /></ProtectedRoute>} />
-        <Route path="/sift-beta/projects/:pid"        element={<ProtectedRoute><SiftProject /></ProtectedRoute>} />
-        <Route path="/sift-beta/projects/:pid/import" element={<ProtectedRoute><SiftImport /></ProtectedRoute>} />
+        <Route path="/sift-beta"                      element={<ProtectedRoute><OnboardingGate><SiftDashboard /></OnboardingGate></ProtectedRoute>} />
+        <Route path="/sift-beta/projects/:pid"        element={<ProtectedRoute><OnboardingGate><SiftProject /></OnboardingGate></ProtectedRoute>} />
+        <Route path="/sift-beta/projects/:pid/import" element={<ProtectedRoute><OnboardingGate><SiftImport /></OnboardingGate></ProtectedRoute>} />
 
         {/* META·LAB RoB — Risk-of-Bias workspace (rob.md; gated on rob_engine_v2) */}
-        <Route path="/rob"             element={<ProtectedRoute><RobPage /></ProtectedRoute>} />
-        <Route path="/rob/:projectId"  element={<ProtectedRoute><RobPage /></ProtectedRoute>} />
+        <Route path="/rob"             element={<ProtectedRoute><OnboardingGate><RobPage /></OnboardingGate></ProtectedRoute>} />
+        <Route path="/rob/:projectId"  element={<ProtectedRoute><OnboardingGate><RobPage /></OnboardingGate></ProtectedRoute>} />
 
         {/* Fallback */}
         <Route path="*"         element={<Navigate to="/" replace />} />

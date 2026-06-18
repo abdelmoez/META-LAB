@@ -19,5 +19,8 @@
   },
   "devDependencies": {
     "prisma": "^5.22.0"
+  },
+  "optionalDependencies": {
+    "geoip-lite": "^1.4.10"
   }
 }

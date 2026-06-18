@@ -59,6 +59,23 @@ import {
   repairWorkspaces,
 } from '../controllers/screeningAdminController.js';
 
+import {
+  adminListQuestions,
+  adminCreateQuestion,
+  adminUpdateQuestion,
+  adminReorderQuestions,
+  adminResetQuestion,
+  adminDeleteQuestion,
+  adminGetSettings as getOnboardingSettings,
+  adminUpdateSettings as updateOnboardingSettings,
+} from '../controllers/onboardingController.js';
+
+import {
+  getRobSettings,
+  updateRobSettings,
+  getRobMetrics,
+} from '../controllers/robAdminController.js';
+
 const router = Router();
 
 // Admin-specific rate limiter (prompt6 Task 14): the two cheap, high-frequency
@@ -171,5 +188,20 @@ router.get('/screening/projects/:id/members',  requireAdmin, getScreeningProject
 router.patch('/screening/projects/:id/status', requireAdmin, updateScreeningProjectStatus);
 // prompt9 — revive an owner-deleted ScreenProject (clears deletedAt + deletedSource).
 router.patch('/screening/projects/:id/restore', requireAdmin, restoreScreeningProject);
+
+// ── Onboarding questions (prompt32 Task 7) — admin only ─────────────────────────
+router.get('/onboarding-settings',              requireAdmin, getOnboardingSettings);
+router.put('/onboarding-settings',              requireAdmin, updateOnboardingSettings);
+router.get('/onboarding-questions',             requireAdmin, adminListQuestions);
+router.post('/onboarding-questions',            requireAdmin, adminCreateQuestion);
+router.post('/onboarding-questions/reorder',    requireAdmin, adminReorderQuestions);
+router.patch('/onboarding-questions/:id',       requireAdmin, adminUpdateQuestion);
+router.post('/onboarding-questions/:id/reset',  requireAdmin, adminResetQuestion);
+router.delete('/onboarding-questions/:id',      requireAdmin, adminDeleteQuestion);
+
+// ── Risk of Bias engine (prompt32 Task 12) — admin only ─────────────────────────
+router.get('/rob/settings',  requireAdmin, getRobSettings);
+router.put('/rob/settings',  requireAdmin, updateRobSettings);
+router.get('/rob/metrics',   requireAdmin, getRobMetrics);
 
 export default router;

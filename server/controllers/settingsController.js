@@ -1,4 +1,5 @@
 import { prisma } from '../db/client.js';
+import { ROB_DEFAULTS } from './robAdminController.js';
 
 // Default settings keys and their initial JSON-serialised values
 const DEFAULTS = {
@@ -75,7 +76,7 @@ export async function initDefaultSettings() {
 export async function getPublicSettings(req, res) {
   try {
     const rows = await prisma.siteSetting.findMany({
-      where: { key: { in: ['appSettings', 'landingContent', 'featureFlags'] } },
+      where: { key: { in: ['appSettings', 'landingContent', 'featureFlags', 'onboardingSettings', 'robSettings'] } },
     });
 
     const result = {};
@@ -97,6 +98,11 @@ export async function getPublicSettings(req, res) {
         }
       }
     }
+
+    // prompt32 — non-sensitive onboarding + RoB display config (the master kill
+    // switches are still enforced server-side; this only drives UI defaults).
+    result.onboardingSettings = { enabled: true, ...(result.onboardingSettings || {}) };
+    result.robSettings = { ...ROB_DEFAULTS, ...(result.robSettings || {}) };
 
     // prompt9 — merge appSettings defaults so NEW keys (defaultTheme,
     // maintenanceMessage, …) are always present even when the stored row

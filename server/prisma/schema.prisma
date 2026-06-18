@@ -39,6 +39,7 @@ model User {
   registrationCountryName     String?  // human-readable country name, or null when unknown
   registrationIpCountrySource String?  // "header" | "geoip" | "local" | "none"
   registrationIpHash          String?  // optional salted SHA-256 of the IP — NEVER the raw IP
+  registrationCountryDetectedAt DateTime? // prompt32 — when country was resolved at registration
   // prompt26 — email verification (OFF by default via appSettings.requireEmailVerification).
   // Mirrors the PasswordResetToken ceremony but inline on User: only the SHA-256
   // HASH of the verify token is stored (plaintext lives only in the email link),
@@ -63,6 +64,46 @@ model User {
   screenProjects ScreenProject[] @relation("UserScreenProjects")
   screenMemberships ScreenProjectMember[] @relation("UserScreenMemberships")
   passwordResetTokens PasswordResetToken[]
+  onboardingResponses UserOnboardingResponse[] // prompt32 — per-question onboarding state
+}
+
+// prompt32 Task 6 — generic, ops-managed onboarding questions. The legacy
+// User.onboardingCompletedAt + 5 fixed profile columns stay for analytics/back-compat;
+// these two tables add a PER-QUESTION layer so newly-added questions can re-interrupt
+// already-registered users on their next login, and answered/skipped state is tracked
+// per (user, question). Brand-new tables → `prisma db push` stays additive-safe.
+model OnboardingQuestion {
+  id         String   @id @default(uuid())
+  key        String   @unique          // stable slug, e.g. "primary_role"
+  prompt     String                     // question text shown to the user
+  description String?                   // optional helper text
+  type       String   @default("single_select") // text|single_select|multi_select|boolean|number|date
+  options    String?                    // JSON array of { value, label } for *_select types
+  isActive   Boolean  @default(true)    // ops on/off without delete (soft)
+  isRequired Boolean  @default(false)   // when true, the question cannot be skipped
+  allowSkip  Boolean  @default(true)    // when false (and not required), still no skip
+  displayOrder Int    @default(0)
+  audience   String?                    // optional JSON rule (reserved; null = everyone)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  responses  UserOnboardingResponse[]
+  @@index([isActive, displayOrder])
+}
+
+model UserOnboardingResponse {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  questionId String
+  question   OnboardingQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
+  answer     String?            // JSON-encoded answer value; null when skipped
+  status     String   @default("answered") // "answered" | "skipped"
+  answeredAt DateTime?
+  skippedAt  DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  @@unique([userId, questionId]) // one row per (user, question)
+  @@index([userId])
 }
 
 // Single-use, time-limited password-reset token (prompt14 Task 4).

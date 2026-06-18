@@ -13,6 +13,10 @@ export const DEFAULT_EXTRACTION_SORT = 'manual';
 
 export const EXTRACTION_SORTS = [
   { key: 'manual',          label: 'Custom order' },
+  // prompt32 Task 9 — group the extraction list by OUTCOME NAME (then timepoint),
+  // so multiple-outcome reviews are organised by the actual outcome rather than by
+  // the primary/secondary "data nature" metadata.
+  { key: 'outcome_az',      label: 'Outcome (A–Z)' },
   { key: 'title_az',        label: 'Title (A–Z)' },
   { key: 'year_asc',        label: 'Year (oldest first)' },
   { key: 'year_desc',       label: 'Year (newest first)' },
@@ -65,6 +69,9 @@ export function orderStudies(studies, sortKey = DEFAULT_EXTRACTION_SORT) {
   };
 
   const comparators = {
+    // Group by outcome NAME, then timepoint, then original order — the user-facing
+    // organising axis for multi-outcome reviews (prompt32 Task 9).
+    outcome_az:      (a, b) => lc(a.outcome).localeCompare(lc(b.outcome)) || lc(a.timepoint).localeCompare(lc(b.timepoint)) || fwd(a, b),
     title_az:        (a, b) => lc(a.title || a.author).localeCompare(lc(b.title || b.author)) || fwd(a, b),
     author_az:       (a, b) => lc(a.author || a.authors).localeCompare(lc(b.author || b.authors)) || fwd(a, b),
     year_asc:        yearCmp('asc'),

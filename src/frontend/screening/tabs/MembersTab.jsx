@@ -24,7 +24,7 @@ import {
 } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 import { useAuth } from '../../context/AuthContext.jsx';
-import { PERMISSION_PRESETS, ASSIGNABLE_PRESETS } from '../../../research-engine/screening/permissionPresets.js';
+import { PERMISSION_PRESETS, USER_ROLES, ROLE_TO_PRESET, PRESET_TO_ROLE } from '../../../research-engine/screening/permissionPresets.js';
 import { groupMembers } from './memberOrder.js';
 
 // Client-side email format gate (the server validates too) — prompt9 Task 2.
@@ -408,13 +408,15 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, activity, onPatch
     ? 'Owner permissions cannot be changed here.'
     : 'Only the owner can change leader permissions.';
   const editable = canManage && !locked;
-  // Every preset the caller's authority allows (prompt6 Task 6) — owner: all
-  // assignable presets (a second owner is never assignable); leader/manager:
-  // all except Leader (minting leaders is owner-only, server-enforced).
-  const presetOptions = amOwner ? ASSIGNABLE_PRESETS : ASSIGNABLE_PRESETS.filter(p => p !== 'leader');
-  // Current value: the stored preset when it's still assignable here; otherwise
-  // a "Custom" placeholder (e.g. per-flag tweaks since the last preset).
-  const currentPreset = m.permissionPreset && presetOptions.includes(m.permissionPreset) ? m.permissionPreset : '';
+  // User-facing role options: Owner can assign Leader/Reviewer/Viewer; leaders
+  // can only assign Reviewer/Viewer (minting leaders is owner-only, server-enforced).
+  const roleOptions = amOwner ? USER_ROLES : USER_ROLES.filter(r => r.value !== 'leader');
+  // Map the stored preset back to one of the 4 role values for display, covering
+  // ALL legacy/advanced presets (data_extractor, readonly_*) → their simple role.
+  // Only a truly unknown preset falls through to "Custom".
+  const currentRole = m.permissionPreset && PRESET_TO_ROLE[m.permissionPreset] ? PRESET_TO_ROLE[m.permissionPreset] : '';
+  // Keep legacy currentPreset for the existing Custom branch used in the select.
+  const currentPreset = currentRole;
 
   return (
     <Card style={{
@@ -453,13 +455,17 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, activity, onPatch
             <select
               value={currentPreset}
               disabled={busy}
-              onChange={e => { if (e.target.value) onPatch({ preset: e.target.value }); }}
+              onChange={e => {
+                const role = e.target.value;
+                if (role && ROLE_TO_PRESET[role]) onPatch({ preset: ROLE_TO_PRESET[role] });
+              }}
               style={{ ...selectStyle, opacity: busy ? 0.6 : 1 }}
-              title="Apply a role/permission preset (resets per-member toggles to the preset)"
+              title="Set this member's role (applies the matching permission preset)"
             >
-              {!currentPreset && <option value="">Custom · {ROLE_LABEL[m.role] || m.role}</option>}
-              {presetOptions.map(p => (
-                <option key={p} value={p}>{PERMISSION_PRESETS[p]?.label || p}</option>
+              {isOwnerRow && <option value="owner" disabled>Owner</option>}
+              {!currentPreset && !isOwnerRow && <option value="">Custom · {ROLE_LABEL[m.role] || m.role}</option>}
+              {roleOptions.map(r => (
+                <option key={r.value} value={r.value}>{r.label}</option>
               ))}
             </select>
 
@@ -534,8 +540,9 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, activity, onPatch
               background: 'none', border: 'none', cursor: 'pointer', padding: 0,
               fontSize: 11, fontFamily: FONT, color: C.acc,
             }}
+            title="Customize what this member can view or edit."
           >
-            {showAllPerms ? '▾ Fewer permissions' : '▸ All permissions'}
+            {showAllPerms ? '▾ Advanced permissions' : '▸ Advanced permissions'}
           </button>
         )}
 
@@ -545,12 +552,16 @@ function MemberRow({ member, canManage, amOwner, busy, rowErr, activity, onPatch
       </div>
 
       {/* Full per-flag matrix (prompt6 Task 6) — module flags grouped by app;
-          global management flags shown to the owner only (server-enforced). */}
+          global management flags shown to the owner only (server-enforced).
+          Opened via "Advanced permissions" expandable — prompt32 Task 11. */}
       {editable && showAllPerms && (
         <div style={{
           marginTop: 12, background: C.surf, border: `1px solid ${C.brd}`,
           borderRadius: 8, padding: '12px 14px', display: 'flex', flexDirection: 'column', gap: 12,
         }}>
+          <div style={{ fontSize: 11, color: C.txt2, lineHeight: 1.5 }}>
+            Customize what this member can view or edit.
+          </div>
           {PERM_GROUPS.filter(g => !g.ownerOnly || amOwner).map(g => (
             <div key={g.title}>
               <div style={{
@@ -685,31 +696,18 @@ function presetBlurb(presetKey, modules) {
   return [accessSentence, capSentence, modulesNote].filter(Boolean).join(' ');
 }
 
-// Permission presets shown when adding a member (Task 9).
-const ADD_PRESETS = [
-  { value: 'reviewer',          label: 'Reviewer — screen + second review + chat' },
-  { value: 'data_extractor',    label: 'Data Extractor — extraction + analysis' },
-  { value: 'leader',            label: 'Leader — full control (except owner)' },
-  { value: 'readonly_metasift', label: 'Read-only Screening' },
-  { value: 'readonly_metalab',  label: 'Read-only project' },
-  { value: 'readonly_both',     label: 'Read-only (both modules)' },
-  { value: 'viewer',            label: 'Viewer — read-only both, can chat' },
-];
-
-// Which apps the new member participates in (prompt6 Task 6) — sent as
-// modules:'metalab'|'metasift'|'both'; the server maps it onto the canView* flags.
-const MODULE_OPTIONS = [
-  { value: 'both',     label: 'Whole project (incl. Screening)' },
-  { value: 'metalab',  label: 'Project only' },
-  { value: 'metasift', label: 'Screening only' },
-];
+// User-facing role choices shown when adding a member (prompt32 Task 11).
+// Maps to internal presets via ROLE_TO_PRESET — keeps the network payload shape.
+// Owner is never offered here (it is implicit). Fine-grained flags are available
+// via "Advanced permissions" on the member row after adding.
+const ADD_ROLE_OPTIONS = USER_ROLES; // [leader, reviewer, viewer]
 
 function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
-  // Only the owner can add a Leader (Task 2) — hide that preset for non-owners.
-  const presets = amOwner ? ADD_PRESETS : ADD_PRESETS.filter(p => p.value !== 'leader');
+  // Only the owner can add a Leader — hide that role for non-owners.
+  const roleOptions = amOwner ? ADD_ROLE_OPTIONS : ADD_ROLE_OPTIONS.filter(r => r.value !== 'leader');
   const [email, setEmail] = useState('');
-  const [preset, setPreset] = useState('reviewer');
-  const [modules, setModules] = useState('both');
+  // role stores the user-facing role value; preset is derived via ROLE_TO_PRESET.
+  const [role, setRole] = useState('reviewer');
   const [submitting, setSubmitting] = useState(false);
   const [err, setErr] = useState('');
   const [pendingNote, setPendingNote] = useState(false);
@@ -730,7 +728,10 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
     setInvite(null);
     setCopied(false);
     try {
-      const res = await screeningApi.addMember(pid, { email: trimmed, preset, modules });
+      // Resolve the user-facing role to the internal preset key; default 'reviewer'.
+      // modules:'both' keeps the backend field intact (server maps it onto canView* flags).
+      const preset = ROLE_TO_PRESET[role] || 'reviewer';
+      const res = await screeningApi.addMember(pid, { email: trimmed, preset, modules: 'both' });
       await onAdded();
       if (res?.pending) {
         // User not yet registered — show the invite panel, keep the modal open
@@ -784,37 +785,23 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
         </Field>
 
         <div>
-          <label style={fieldLabel}>Permission preset</label>
+          <label style={fieldLabel}>Role</label>
           <select
-            value={preset}
-            onChange={e => setPreset(e.target.value)}
+            value={role}
+            onChange={e => setRole(e.target.value)}
             disabled={submitting}
             style={{ ...fieldInput, cursor: 'pointer' }}
           >
-            {presets.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
+            {roleOptions.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
           </select>
           <div style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 1.5 }}>
-            Presets set permissions across the whole project, including Screening. Fine-tune per-member toggles after adding.
+            {USER_ROLES.find(r => r.value === role)?.desc || ''}
+            {' '}Fine-tune individual permissions after adding via Advanced permissions.
           </div>
         </div>
 
-        <div>
-          <label style={fieldLabel}>Participates in</label>
-          <select
-            value={modules}
-            onChange={e => setModules(e.target.value)}
-            disabled={submitting}
-            style={{ ...fieldInput, cursor: 'pointer' }}
-          >
-            {MODULE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-          <div style={{ fontSize: 11, color: C.muted, marginTop: 5, lineHeight: 1.5 }}>
-            Limits which app(s) the member can open; combined with the preset&apos;s permissions.
-          </div>
-        </div>
-
-        {/* Plain-English summary — derived from both dropdowns so updates live */}
-        {presetBlurb(preset, modules) && (
+        {/* Plain-English access summary derived from the selected role's preset */}
+        {presetBlurb(ROLE_TO_PRESET[role] || 'reviewer', 'both') && (
           <div style={{
             marginTop: 14,
             background: alpha(C.acc, '14'),
@@ -825,7 +812,7 @@ function AddMemberModal({ pid, amOwner, onClose, onAdded }) {
             color: C.txt2,
             lineHeight: 1.65,
           }}>
-            {presetBlurb(preset, modules)}
+            {presetBlurb(ROLE_TO_PRESET[role] || 'reviewer', 'both')}
           </div>
         )}
 

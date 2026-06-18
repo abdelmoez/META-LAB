@@ -46,18 +46,17 @@ export function buildCountryDistribution(users) {
       b = {
         countryCode: isKnown ? rawCode : '',
         // KNOWN: canonical name from the code (authoritative — ignores any stale
-        // stored name). UNKNOWN: the stored label ("Local") when present, else "Unknown".
-        countryName: isKnown ? canonicalName : (u.registrationCountryName || 'Unknown'),
+        // stored name). UNKNOWN: ALWAYS the literal "Unknown" (prompt32). We never
+        // surface the misleading legacy "Local" label here: every user whose IP
+        // could not be resolved to a real ISO country collapses into one honest
+        // "Unknown" bucket, regardless of any stale stored registrationCountryName.
+        countryName: isKnown ? canonicalName : 'Unknown',
         userCount: 0,
         latestRegistrationAt: null,
       };
       buckets.set(key, b);
     }
     b.userCount += 1;
-    // Keep a sensible Unknown-bucket label: "Local" beats a bare "Unknown".
-    if (!isKnown && u.registrationCountryName && b.countryName === 'Unknown') {
-      b.countryName = u.registrationCountryName;
-    }
     if (u.createdAt) b.latestRegistrationAt = laterTimestamp(b.latestRegistrationAt, u.createdAt);
   }
 

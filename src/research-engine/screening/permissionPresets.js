@@ -68,6 +68,50 @@ export const PERMISSION_PRESETS = {
 // Presets a leader/owner can assign in the UI (owner is implicit, not assignable).
 export const ASSIGNABLE_PRESETS = ['leader', 'reviewer', 'data_extractor', 'readonly_metasift', 'readonly_metalab', 'readonly_both', 'viewer'];
 
+// ── User-facing role layer (prompt32 Task 11) ────────────────────────────────
+// The UI surfaces EXACTLY four roles: Owner (implicit, never assignable),
+// Leader, Reviewer, Viewer. Each role maps to an existing internal preset key.
+// Advanced users can still fine-tune individual flags via the permission matrix.
+//
+// Old preset → new role mapping:
+//   leader              → Leader
+//   reviewer            → Reviewer
+//   data_extractor      → Reviewer (then enable extraction/RoB via advanced matrix)
+//   readonly_metalab    → Viewer
+//   readonly_metasift   → Viewer
+//   readonly_both       → Viewer
+//   viewer              → Viewer
+//
+// Owner is shown in the roster but is never assignable (handled as isOwner flag).
+export const USER_ROLES = [
+  { value: 'leader',   label: 'Leader',   desc: 'Manage workflow, members, settings, and both modules.' },
+  { value: 'reviewer', label: 'Reviewer', desc: 'Screen, second review, and chat. View the rest of the project.' },
+  { value: 'viewer',   label: 'Viewer',   desc: 'View both modules read-only. Can chat.' },
+];
+
+// Maps a user-facing role value to the internal preset key used for the save call.
+// viewer → 'viewer' (NOT 'readonly_both'): the canonical Viewer preset keeps chat,
+// matching the Viewer role description; 'readonly_both' has canChat=false and would
+// silently revoke chat when the full preset template is applied server-side.
+export const ROLE_TO_PRESET = {
+  leader:   'leader',
+  reviewer: 'reviewer',
+  viewer:   'viewer',
+};
+
+// Reverse map: any stored internal preset → the user-facing role it should display
+// as (so legacy/advanced presets render as their simple role, not "Custom"). Presets
+// not listed here (none currently) fall through to "Custom" in the UI.
+export const PRESET_TO_ROLE = {
+  leader: 'leader',
+  reviewer: 'reviewer',
+  data_extractor: 'reviewer',     // Reviewer with extraction/RoB enabled via the matrix
+  viewer: 'viewer',
+  readonly_both: 'viewer',
+  readonly_metalab: 'viewer',
+  readonly_metasift: 'viewer',
+};
+
 // Leader-level GLOBAL management flags. Granting these confers leader-equivalent
 // authority, so they are OWNER-ONLY to grant/revoke (enforced in the member
 // controller). Kept here so the controller and access resolver stay in sync.

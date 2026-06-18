@@ -90,6 +90,7 @@ async function captureRegistrationCountry(req, user) {
         registrationCountryName: name || 'Unknown',
         registrationIpCountrySource: source || 'none',
         registrationIpHash: hashIp(getClientIp(req)),
+        registrationCountryDetectedAt: new Date(),
       },
     });
   } catch { /* best-effort side-effect — swallow, never affect the response */ }

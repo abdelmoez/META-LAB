@@ -15,10 +15,11 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import Icon from '../components/icons.jsx';
-import { robApi } from './robApi.js';
+import { robApi, getRobSettings } from './robApi.js';
 import { judgmentStyle, JUDGMENT_LEGEND } from './judgmentStyle.js';
 import RobTrafficLight from './RobTrafficLight.jsx';
 import RobPdfPanel from './RobPdfPanel.jsx';
+import { screeningApi } from '../screening/api-client/screeningApi.js';
 import {
   ROB2, isReachable, proposeDomain, proposeOverall, completeness,
 } from '../../research-engine/rob/index.js';
@@ -42,6 +43,27 @@ function usePrefersReducedMotion() {
   }, []);
   return reduced;
 }
+
+// prompt32 Task 4 — below this width the two-column workspace stacks to one column
+// (the assessment then sits under the PDF/article) so neither pane is squeezed.
+const STACK_BELOW = 900;
+function useViewportNarrow(breakpoint = STACK_BELOW) {
+  const [narrow, setNarrow] = useState(() => {
+    try { return window.innerWidth < breakpoint; } catch { return false; }
+  });
+  useEffect(() => {
+    let raf = 0;
+    const onResize = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => { try { setNarrow(window.innerWidth < breakpoint); } catch { /* ignore */ } });
+    };
+    window.addEventListener('resize', onResize);
+    return () => { cancelAnimationFrame(raf); window.removeEventListener('resize', onResize); };
+  }, [breakpoint]);
+  return narrow;
+}
+
+const ROB_SETTINGS_FALLBACK = { showPdfPanel: true, showArticleInfoTab: true, defaultLeftTab: 'pdf', compactAssessmentCards: false };
 
 // ── Small presentational pieces ───────────────────────────────────────────────
 function JudgmentPill({ judgment, size = 'md', provisional }) {
@@ -100,7 +122,16 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
   // prompt30 Part 3 — the assessment opens as a two-section split: PDF (left) +
   // RoB questions (right). The PDF panel can be collapsed for more answering room.
   const [showPdf, setShowPdf] = useState(true);
+  // prompt32 Task 2 — the left column now has two tabs (Study PDF / Article
+  // Information) over a persistent article header. RobWorkspace owns the single
+  // study-record fetch so BOTH the header/article tab and the PDF tab share it
+  // even when the PDF tab is admin-hidden. robSettings tunes which tabs appear +
+  // the initial tab; `leftTab` is set once settings arrive.
+  const [studyRecord, setStudyRecord] = useState({ loading: true, error: '', record: null, screenProjectId: null, recordId: null });
+  const [leftTab, setLeftTab] = useState('pdf');     // 'pdf' | 'article'
+  const [robSettings, setRobSettings] = useState(ROB_SETTINGS_FALLBACK);
   const reduced = usePrefersReducedMotion();
+  const narrow = useViewportNarrow();
   const saveTimer = useRef(null);
   const savedTimer = useRef(null);
   const pending = useRef({ answers: {}, meta: {} });
@@ -123,6 +154,43 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
   }, [assessmentId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // prompt32 Task 2 — read the admin RoB presentation settings once, then honour
+  // the configured default tab. If the PDF tab is hidden, open Article instead
+  // (and vice-versa); falls back to safe defaults if the fetch fails.
+  useEffect(() => {
+    let alive = true;
+    getRobSettings().then(s => {
+      if (!alive) return;
+      setRobSettings(s);
+      const pdfOk = s.showPdfPanel !== false;
+      const artOk = s.showArticleInfoTab !== false;
+      let initial = s.defaultLeftTab === 'article' ? 'article' : 'pdf';
+      if (initial === 'pdf' && !pdfOk) initial = 'article';
+      if (initial === 'article' && !artOk) initial = 'pdf';
+      setLeftTab(initial);
+    }).catch(() => { /* fallback already set */ });
+    return () => { alive = false; };
+  }, []);
+
+  // prompt32 Task 2 — single study-record resolution (one network call). Runs once
+  // the assessment is loaded (it needs view.projectId + view.studyId). The result
+  // drives the persistent article header, the Article Information tab, and the PDF
+  // panel (screenProjectId/recordId). `record` is null for manual, non-handoff
+  // studies. Exposed via resolveStudyRecord for the PDF panel's Retry button.
+  const studyKey = view ? `${view.projectId}::${view.studyId}` : null;
+  const resolveStudyRecord = useCallback(async () => {
+    if (!view) return;
+    setStudyRecord(s => ({ ...s, loading: true, error: '' }));
+    try {
+      const r = await screeningApi.metalabStudyRecord(view.projectId, view.studyId);
+      setStudyRecord({ loading: false, error: '', record: r.record || null, screenProjectId: r.screenProjectId || null, recordId: r.recordId || null });
+    } catch (e) {
+      setStudyRecord({ loading: false, error: e?.message || 'Could not load the study PDF.', record: null, screenProjectId: null, recordId: null });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [studyKey]);
+  useEffect(() => { resolveStudyRecord(); }, [resolveStudyRecord]);
 
   // ── Live (client-side) reachability + proposals from the SAME engine module ──
   const liveProposals = useMemo(() => {
@@ -297,31 +365,74 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
   const summaryOverall = (allComplete || view.overall.overridden) ? (finalised ? view.overall.resolvedOverall : liveOverall.judgment) : 'na';
   const single = { domains: ROB2.domains.map(d => ({ id: d.id, shortLabel: d.shortLabel })), rows: [{ id: view.id, label: view.resultLabel || view.studyId, cells: ROB2.domains.map(d => ({ domainId: d.id, judgment: dotJudgment(d.id) })), overall: summaryOverall }] };
 
+  // prompt32 Task 2 — which left-pane tabs are available (admin-tunable). The
+  // "source" toggle (showPdf) collapses the WHOLE left column so the assessment
+  // can use the full width — same intent as the old PDF toggle.
+  const pdfTabOn = robSettings.showPdfPanel !== false;
+  const articleTabOn = robSettings.showArticleInfoTab !== false;
+  const hasLeftColumn = showPdf && (pdfTabOn || articleTabOn);
+  // Keep the active tab valid if settings hid the currently-selected one.
+  const effectiveLeftTab = (leftTab === 'pdf' && !pdfTabOn) ? 'article'
+    : (leftTab === 'article' && !articleTabOn) ? 'pdf'
+    : leftTab;
+  // The PDF should fill the column down to the workspace bottom (Task 4); the
+  // header row + panel chrome consume a fixed slice, so subtract it from the vh.
+  const pdfPreviewHeight = 'calc(100vh - 260px)';
+
   return (
-    <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-    {/* ── Left section: PDF (prompt30 Part 3). Reuses the screening PDF panel;
-        collapses on demand; stacks above the questions on narrow screens. ── */}
-    {showPdf && (
-      <aside style={{ flex: '3 1 520px', minWidth: 340, maxWidth: 1100, position: 'sticky', top: 0 }}>
-        <RobPdfPanel metaLabProjectId={view.projectId} studyId={view.studyId} canManage={editable} onClose={() => setShowPdf(false)} />
+    <div style={{ paddingInline: 'clamp(24px, 6vw, 96px)' }}>
+    {/* ── Task 3 — study-workspace header ABOVE both columns. The labelled Back
+        button works after refresh / deep-link because onClose owns the routing. ── */}
+    <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '4px 0 16px', flexWrap: 'wrap' }}>
+      <button onClick={onClose} style={{ ...ghostBtn, fontWeight: 700, color: C.txt }} aria-label="Back to Risk of Bias">
+        <Icon name="arrowLeft" size={15} /> Back to Risk of Bias
+      </button>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 7, background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '38')}`, color: C.acc, fontSize: 11, fontFamily: MONO, fontWeight: 700 }}>
+        <Icon name="scale" size={13} /> RoB 2
+      </span>
+      <div style={{ flex: 1 }} />
+      {(pdfTabOn || articleTabOn) && (
+        <button onClick={() => setShowPdf(p => !p)} aria-pressed={showPdf}
+          style={{ ...ghostBtn, padding: '6px 11px', background: showPdf ? alpha(C.acc, '14') : 'transparent', color: showPdf ? C.acc : C.txt2, borderColor: showPdf ? alpha(C.acc, '50') : C.brd2 }}>
+          <Icon name="fileText" size={14} /> {showPdf ? 'Hide source' : 'Show source'}
+        </button>
+      )}
+    </div>
+
+    {/* ── Task 4 — two-column grid: left source pane fills, right assessment is a
+        clamped width pinned to the right boundary. Stacks under STACK_BELOW. ── */}
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: (hasLeftColumn && !narrow) ? 'minmax(0, 1fr) clamp(380px, 32vw, 560px)' : '1fr',
+      gap: 16, alignItems: 'stretch',
+    }}>
+    {/* ── Left section: source (PDF tab + Article Information tab) over a
+        persistent article header (Task 2). Omitted entirely with no record. ── */}
+    {hasLeftColumn && (
+      <aside style={{ display: 'flex', flexDirection: 'column', minWidth: 0, ...(narrow ? {} : { position: 'sticky', top: 0, alignSelf: 'start' }) }}>
+        <ArticleHeader record={studyRecord.record} fallbackLabel={view.resultLabel || `Study ${view.studyId}`} studyId={view.studyId} outcomeId={view.outcomeId} />
+        <div role="tablist" aria-label="Study source" style={{ display: 'flex', gap: 6, margin: '12px 0 10px' }}>
+          {pdfTabOn && <SourceTab on={effectiveLeftTab === 'pdf'} icon="fileText" label="Study PDF" onClick={() => setLeftTab('pdf')} />}
+          {articleTabOn && <SourceTab on={effectiveLeftTab === 'article'} icon="info" label="Article Information" onClick={() => setLeftTab('article')} />}
+        </div>
+        <div style={{ flex: 1, minHeight: 0 }}>
+          {effectiveLeftTab === 'pdf' && pdfTabOn ? (
+            <RobPdfPanel loading={studyRecord.loading} error={studyRecord.error} screenProjectId={studyRecord.screenProjectId} recordId={studyRecord.recordId}
+              canManage={editable} onRetry={resolveStudyRecord} previewHeight={pdfPreviewHeight} showHeader={false} />
+          ) : (
+            <ArticleInfoPane record={studyRecord.record} loading={studyRecord.loading} fallbackLabel={view.resultLabel || `Study ${view.studyId}`} />
+          )}
+        </div>
       </aside>
     )}
-    {/* ── Right section: the RoB assessment — narrower than the PDF (prompt31 Part 6) ── */}
-    <div style={{ ...shell, flex: '2 1 400px', minWidth: 360, maxWidth: 680 }}>
+    {/* ── Right section: the RoB assessment, a clamped column pinned right (Task 4) ── */}
+    <div style={{ ...shell, minWidth: 0 }}>
       {/* ── Context bar ─────────────────────────────────────────────────── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '14px 20px', borderBottom: `1px solid ${C.brd}`, background: C.card, flexWrap: 'wrap' }}>
-        <button onClick={onClose} style={{ ...ghostBtn, padding: '6px 10px' }} aria-label="Back to assessments"><Icon name="arrowLeft" size={15} /></button>
-        <div style={{ flex: 1, minWidth: 200 }}>
+        <div style={{ flex: 1, minWidth: 160 }}>
           <div style={{ fontSize: 15, fontWeight: 800, color: C.txt, fontFamily: FONT }}>{view.resultLabel || 'Risk-of-bias assessment'}</div>
           <div style={{ fontSize: 12, color: C.muted, fontFamily: MONO, marginTop: 2 }}>Study {view.studyId}{view.outcomeId ? ` · ${view.outcomeId}` : ''}</div>
         </div>
-        <button onClick={() => setShowPdf(p => !p)} aria-pressed={showPdf}
-          style={{ ...ghostBtn, padding: '6px 11px', background: showPdf ? alpha(C.acc, '14') : 'transparent', color: showPdf ? C.acc : C.txt2, borderColor: showPdf ? alpha(C.acc, '50') : C.brd2 }}>
-          <Icon name="fileText" size={14} /> PDF
-        </button>
-        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 7, background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '38')}`, color: C.acc, fontSize: 11, fontFamily: MONO, fontWeight: 700 }}>
-          <Icon name="scale" size={13} /> RoB 2
-        </span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Overall</span>
           <JudgmentPill judgment={finalised ? view.overall.resolvedOverall : liveOverall.judgment} size="md" provisional={!liveCompleteness.overall.complete && !finalised} />
@@ -397,11 +508,12 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, readOnl
           <SectionNav active={active} setActive={setActive} setFocusedQ={setFocusedQ} domainComplete={domainComplete} />
         </main>
       </div>
-
-      {override && (
-        <OverrideModal info={override} onCancel={() => setOverride(null)} onSubmit={doOverride} />
-      )}
     </div>
+    </div>
+
+    {override && (
+      <OverrideModal info={override} onCancel={() => setOverride(null)} onSubmit={doOverride} />
+    )}
     </div>
   );
 }
@@ -439,6 +551,139 @@ function SectionNav({ active, setActive, setFocusedQ, domainComplete }) {
       </div>
     </div>
   );
+}
+
+// ── Left-pane source: persistent article header + tabs + article info ──────────
+// (prompt32 Task 2). The header never changes when switching tabs; the Article
+// Information pane mirrors Final Review's article display (title, meta, badges,
+// abstract, keywords, decision) using plain text (no PICO highlighting).
+
+function RobBadge({ children, color = C.txt2 }) {
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4, padding: '2px 9px', borderRadius: 10, fontSize: 10.5, fontWeight: 700, fontFamily: FONT, color, background: alpha(color, '14'), border: `1px solid ${alpha(color, '40')}`, whiteSpace: 'nowrap' }}>
+      {children}
+    </span>
+  );
+}
+
+// Compact, always-visible header at the top of the left column.
+function ArticleHeader({ record, fallbackLabel, studyId, outcomeId }) {
+  const title = record?.title || fallbackLabel || 'Study';
+  const authors = record?.authors;
+  const journal = record?.journal;
+  const year = record?.year;
+  const hasMeta = authors || journal || year;
+  return (
+    <div style={{ padding: '14px 16px', border: `1px solid ${C.brd}`, borderRadius: 12, background: C.card }}>
+      <div style={{ fontSize: 14.5, fontWeight: 800, color: C.txt, fontFamily: FONT, lineHeight: 1.4, overflowWrap: 'anywhere' }}>{title}</div>
+      {hasMeta ? (
+        <div style={{ fontSize: 12, color: C.txt2, marginTop: 5, lineHeight: 1.5, overflowWrap: 'anywhere' }}>
+          {authors && <span>{authors}</span>}
+          {journal && <span style={{ fontStyle: 'italic', color: C.muted }}>{authors ? ' · ' : ''}{journal}</span>}
+          {year && <span style={{ color: C.muted }}>{(authors || journal) ? ' · ' : ''}{year}</span>}
+        </div>
+      ) : (
+        <div style={{ fontSize: 11.5, color: C.muted, fontFamily: MONO, marginTop: 5 }}>Study {studyId}{outcomeId ? ` · ${outcomeId}` : ''}</div>
+      )}
+      {(record?.doi || record?.pmid) && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', marginTop: 8 }}>
+          {record.doi && <a href={`https://doi.org/${record.doi}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none', overflowWrap: 'anywhere', wordBreak: 'break-all' }}>DOI: {record.doi}</a>}
+          {record.pmid && <a href={`https://pubmed.ncbi.nlm.nih.gov/${record.pmid}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none' }}>PMID: {record.pmid}</a>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SourceTab({ on, icon, label, onClick }) {
+  return (
+    <button role="tab" aria-selected={on} onClick={onClick} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 7, padding: '8px 14px', borderRadius: 9, cursor: 'pointer', fontFamily: FONT, fontSize: 12.5, fontWeight: 700,
+      background: on ? alpha(C.acc, '14') : C.surf, color: on ? C.acc : C.txt2,
+      border: `1px solid ${on ? alpha(C.acc, '50') : C.brd2}`, transition: 'background 0.12s, border-color 0.12s',
+    }}>
+      <Icon name={icon} size={14} /> {label}
+    </button>
+  );
+}
+
+// Mirrors Final Review's article display. Blind mode does not apply here (the
+// study is already accepted), so the full metadata is shown.
+function ArticleInfoPane({ record, loading, fallbackLabel }) {
+  if (loading) {
+    return <div style={{ ...shell, padding: 26, textAlign: 'center', color: C.muted, fontSize: 12.5, fontFamily: MONO }}>Loading article…</div>;
+  }
+  if (!record) {
+    return (
+      <div style={{ ...shell, padding: '26px 20px', textAlign: 'center', color: C.txt2, fontSize: 12.5, lineHeight: 1.6 }}>
+        <div style={{ display: 'inline-flex', padding: 12, borderRadius: '50%', background: alpha(C.acc, '12'), marginBottom: 12 }}><Icon name="info" size={20} /></div>
+        <div style={{ fontWeight: 700, color: C.txt, marginBottom: 4 }}>{fallbackLabel || 'No article information'}</div>
+        <p style={{ margin: 0 }}>This study isn&apos;t linked to a screening record, so there is no imported article metadata. It may have been added manually in Data Extraction.</p>
+      </div>
+    );
+  }
+  const keywords = (record.keywords || '').split(/[;,]/).map(s => s.trim()).filter(Boolean);
+  const decision = articleDecisionBadge(record);
+  return (
+    <div style={{ ...shell, padding: '18px 20px', overflowY: 'auto', maxHeight: 'calc(100vh - 230px)' }}>
+      <h2 style={{ fontSize: 16, fontWeight: 800, color: C.txt, margin: '0 0 8px', fontFamily: FONT, lineHeight: 1.42, overflowWrap: 'anywhere' }}>{record.title || 'Untitled record'}</h2>
+      {(record.authors || record.journal || record.year) && (
+        <div style={{ fontSize: 12.5, color: C.txt2, marginBottom: 10, lineHeight: 1.5, overflowWrap: 'anywhere' }}>
+          {record.authors && <span>{record.authors}</span>}
+          {record.journal && <span style={{ fontStyle: 'italic', color: C.muted }}>{record.authors ? ' · ' : ''}{record.journal}</span>}
+          {record.year && <span style={{ color: C.muted }}>{(record.authors || record.journal) ? ' · ' : ''}{record.year}</span>}
+        </div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
+        {record.doi && <a href={`https://doi.org/${record.doi}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none', overflowWrap: 'anywhere', wordBreak: 'break-all' }}>DOI: {record.doi}</a>}
+        {record.pmid && <a href={`https://pubmed.ncbi.nlm.nih.gov/${record.pmid}`} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: C.acc, fontFamily: MONO, textDecoration: 'none' }}>PMID: {record.pmid}</a>}
+        {record.sourceDb && <RobBadge>{record.sourceDb}</RobBadge>}
+        {record.isDuplicate && <RobBadge color={C.gold}>Duplicate</RobBadge>}
+        {decision && <RobBadge color={decision.color}>{decision.label}</RobBadge>}
+      </div>
+
+      <div style={{ marginBottom: 14, padding: '14px 16px', border: `1px solid ${C.brd}`, borderRadius: 10, background: C.card }}>
+        <div style={{ fontSize: 9.5, color: C.muted, fontFamily: MONO, letterSpacing: '0.08em', marginBottom: 8 }}>ABSTRACT</div>
+        {record.abstract ? (
+          <p style={{ fontSize: 13.5, color: C.txt, lineHeight: 1.7, margin: 0, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>{record.abstract}</p>
+        ) : (
+          <p style={{ fontSize: 13, color: C.muted, fontStyle: 'italic', margin: 0 }}>No abstract provided.</p>
+        )}
+        {keywords.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 14, paddingTop: 14, borderTop: `1px solid ${C.brd}` }}>
+            <span style={{ fontSize: 9.5, color: C.muted, fontFamily: MONO, alignSelf: 'center', letterSpacing: '0.08em' }}>KEYWORDS</span>
+            {keywords.map((kw, i) => <span key={i} style={{ fontSize: 10.5, background: alpha(C.brd, '70'), border: `1px solid ${C.brd}`, color: C.txt2, borderRadius: 10, padding: '2px 9px' }}>{kw}</span>)}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: 'grid', gap: 6 }}>
+        <InfoRow label="Source database" value={record.sourceDb} />
+        <InfoRow label="Current stage" value={record.currentStage} />
+        <InfoRow label="Final-review status" value={record.finalStatus} />
+        <InfoRow label="Accepted" value={record.acceptedAt ? new Date(record.acceptedAt).toLocaleDateString() : null} />
+        <InfoRow label="Handoff" value={record.handoffStatus} />
+        {record.rejectedReason && <InfoRow label="Rejected reason" value={record.rejectedReason} />}
+      </div>
+    </div>
+  );
+}
+
+function InfoRow({ label, value }) {
+  return (
+    <div style={{ display: 'flex', gap: 12, fontSize: 12, lineHeight: 1.5 }}>
+      <span style={{ flex: '0 0 130px', color: C.muted, fontFamily: MONO, fontSize: 10.5, textTransform: 'uppercase', letterSpacing: '0.06em', paddingTop: 1 }}>{label}</span>
+      <span style={{ flex: 1, minWidth: 0, color: C.txt2, overflowWrap: 'anywhere' }}>{value || '—'}</span>
+    </div>
+  );
+}
+
+// Translate the screening record's final-review fields into a single badge.
+function articleDecisionBadge(record) {
+  if (record.handoffStatus === 'sent') return { label: '↗ Sent to Data Extraction', color: C.acc };
+  if (record.finalStatus === 'accepted' || record.currentStage === 'full_text') return { label: '✓ Accepted in Final Review', color: C.grn };
+  if (record.finalStatus === 'rejected') return { label: '✗ Rejected in Final Review', color: C.red };
+  return null;
 }
 
 // ── Domain pane ───────────────────────────────────────────────────────────────

@@ -42,6 +42,13 @@ const PLACEHOLDER_CODES = new Set(['XX', 'T1']);
 
 let geoipModule;      // cached resolved module (or null once we know it's absent)
 let geoipAttempted = false;
+let warnedNoGeoSource = false; // throttle the "no country source" misconfig warning to once
+
+function warnNoGeoSourceOnce() {
+  if (warnedNoGeoSource) return;
+  warnedNoGeoSource = true;
+  console.warn('[geo] No country source for a public client IP: neither a proxy country header (CF-IPCountry / x-vercel-ip-country) nor the offline geoip-lite DB resolved it. Country will be saved as "Unknown". Install geoip-lite (an optionalDependency) and/or front the app with a proxy that sets a country header.');
+}
 
 /**
  * Best-effort dynamic import of geoip-lite. Returns the module or null.
@@ -188,7 +195,11 @@ export async function resolveCountry(req) {
       } catch { /* lookup failed — fall through to unknown */ }
     }
 
-    // 4. Public IP we could not resolve → Unknown.
+    // 4. Public IP we could not resolve → Unknown. This means BOTH a proxy country
+    // header AND the offline geoip DB were unavailable for a real public client —
+    // the production misconfiguration that makes "everyone Unknown". Warn ONCE so it
+    // is visible in logs without spamming (prompt32 observability).
+    warnNoGeoSourceOnce();
     return { code: '', name: 'Unknown', source: 'none' };
   } catch {
     // Absolute backstop — geolocation must never break registration.

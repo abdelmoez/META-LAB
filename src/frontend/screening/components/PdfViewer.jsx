@@ -22,7 +22,7 @@ function fmtSize(bytes) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export default function PdfViewer({ pid, recordId, canManage, defaultOpen = false }) {
+export default function PdfViewer({ pid, recordId, canManage, defaultOpen = false, previewHeight = 520 }) {
   const [attachment, setAttachment] = useState(null);
   const [loading, setLoading]   = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -187,7 +187,7 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
               title="PDF preview"
               src={previewUrl}
               onError={() => setFrameErr(true)}
-              style={{ width: '100%', height: 520, border: 'none', display: 'block', background: C.card2 }}
+              style={{ width: '100%', height: previewHeight, border: 'none', display: 'block', background: C.card2 }}
             />
           )}
         </div>

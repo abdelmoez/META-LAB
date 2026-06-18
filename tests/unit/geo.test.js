@@ -65,6 +65,29 @@ describe('resolveCountry', () => {
     expect(['none', 'geoip']).toContain(r.source); // geoip only if the optional pkg is installed
     expect(r.name).toBeTruthy();
   });
+  it('resolves a REAL public IP to its country via the offline geoip DB (prompt32)', async () => {
+    // The permanent fix: geoip-lite is now an installed optionalDependency, so a
+    // public client IP resolves server-side WITHOUT any proxy country header. When
+    // the package is present 8.8.8.8 → US; if a CI env skipped the optional install
+    // we degrade gracefully to source 'none' (still never throws, never "Local").
+    const r = await resolveCountry({ headers: {}, ip: '8.8.8.8' });
+    if (r.source === 'geoip') {
+      expect(r.code).toBe('US');
+      expect(r.name).toMatch(/United States/);
+    } else {
+      expect(r.source).toBe('none');
+    }
+    expect(r.name).toBeTruthy();
+  });
+  it('UAE public IP resolves to AE when the offline geoip DB is present (prompt32)', async () => {
+    const r = await resolveCountry({ headers: {}, ip: '2.50.0.0' });
+    if (r.source === 'geoip') {
+      expect(r.code).toBe('AE');
+      expect(r.name).toMatch(/United Arab Emirates/);
+    } else {
+      expect(r.source).toBe('none');
+    }
+  });
   it('never throws on a garbage request', async () => {
     await expect(resolveCountry(null)).resolves.toBeTruthy();
     await expect(resolveCountry({})).resolves.toBeTruthy();

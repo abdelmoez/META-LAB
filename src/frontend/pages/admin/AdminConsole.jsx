@@ -4982,20 +4982,602 @@ function SiftAdminSection() {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+   SECTION: RISK OF BIAS (prompt32 Task 12) — engine controls + metrics
+   ════════════════════════════════════════════════════════════════════════ */
+
+// Default robSettings shape — merged under whatever the server returns so the UI
+// never reads `undefined` for a toggle (server stays the source of truth on save).
+const ROB_DEFAULTS = {
+  showPdfPanel: true,
+  showArticleInfoTab: true,
+  defaultLeftTab: 'pdf',          // 'pdf' | 'article'
+  compactAssessmentCards: false,
+  tools: { rob2: true, robinsI: false, quadas2: false, nos: false, custom: false },
+  defaultTool: 'RoB2',            // canonical engine tool id (matches server ROB_DEFAULTS)
+  defaultRequiredReviewers: 1,    // 1–5 (matches server ROB_DEFAULTS)
+  allowLeaderChangeReviewers: true,
+  requireConsensusBeforeComplete: false,
+  allowConflictResolutionByLeader: true,
+  allowOwnerOverride: true,
+  requireNotesForHighOrUnclear: false,
+  requireDomainJustifications: false,
+  requireFinalJudgment: true,
+  includeInReport: true,
+  includeSummaryFigure: true,
+  includeDomainTable: true,
+  includeReviewerNotes: true,
+  allowCsvXlsxPdfExport: true,
+  logChanges: true,
+  requireReasonWhenChangingCompleted: true,
+  lockCompletedAssessments: false,
+  allowReopenCompleted: true,
+};
+
+const ROB_TOOL_LABELS = {
+  rob2: 'RoB 2 (randomised trials)',
+  robinsI: 'ROBINS-I (non-randomised interventions)',
+  quadas2: 'QUADAS-2 (diagnostic accuracy)',
+  nos: 'Newcastle–Ottawa Scale',
+  custom: 'Custom tool',
+};
+// The `tools` enable-flags use lowercase keys (above). `defaultTool` must store a
+// CANONICAL engine tool id (the same ids in src/research-engine/rob/tools.js) so
+// the engine's normalizeRobTool recognises it — hence this flag-key → canonical-id
+// map for the Default Tool selector. (prompt32 follow-up: fixes a controlled-select
+// mismatch where the option values were lowercase but the stored default was "RoB2".)
+const ROB_TOOL_CANONICAL = { rob2: 'RoB2', robinsI: 'ROBINS-I', quadas2: 'QUADAS-2', nos: 'NOS', custom: 'custom' };
+
+// One labelled toggle row reused across the grouped RoB settings cards.
+function RobToggleRow({ label, note, checked, onChange, last = false }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '11px 0', borderBottom: last ? 'none' : `1px solid ${C.brd}` }}>
+      <div>
+        <div style={{ fontSize: 12, color: C.txt, fontWeight: 500 }}>{label}</div>
+        {note && <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>{note}</div>}
+      </div>
+      <Toggle checked={!!checked} onChange={onChange} />
+    </div>
+  );
+}
+
+function RobAdminSection() {
+  const [settings, setSettings] = useState(ROB_DEFAULTS);
+  const [engineEnabled, setEngineEnabled] = useState(false);
+  const [metrics,  setMetrics]  = useState(null);   // null = loading/none
+  const [loading,  setLoading]  = useState(true);
+  const [status,   setStatus]   = useState('idle');
+  const [error,    setError]    = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    adminApi.rob.getSettings()
+      .then(d => {
+        if (!alive) return;
+        setSettings({ ...ROB_DEFAULTS, ...(d?.settings || {}), tools: { ...ROB_DEFAULTS.tools, ...(d?.settings?.tools || {}) } });
+        setEngineEnabled(!!d?.engineEnabled);
+      })
+      .catch(e => { if (alive) setError(e.message); })
+      .finally(() => { if (alive) setLoading(false); });
+    // Metrics are best-effort — never block the settings UI or crash on absence.
+    adminApi.rob.getMetrics().then(m => { if (alive) setMetrics(m || {}); }).catch(() => { if (alive) setMetrics({}); });
+    return () => { alive = false; };
+  }, []);
+
+  async function save() {
+    setStatus('saving'); setError('');
+    try {
+      const d = await adminApi.rob.saveSettings(settings);
+      setSettings({ ...ROB_DEFAULTS, ...(d?.settings || {}), tools: { ...ROB_DEFAULTS.tools, ...(d?.settings?.tools || {}) } });
+      setStatus('saved');
+    } catch (e) { setStatus('error'); setError(e.message); }
+    finally { setTimeout(() => setStatus('idle'), 2500); }
+  }
+
+  const upd     = (k, v) => setSettings(s => ({ ...s, [k]: v }));
+  const updTool = (k, v) => setSettings(s => ({ ...s, tools: { ...s.tools, [k]: v } }));
+
+  if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={20} /></div>;
+
+  const m = metrics || {};
+  const overall = m.overall || {};
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: 0 }}>Risk of Bias</h2>
+        <SaveButton onClick={save} status={status} />
+      </div>
+      {error && status === 'error' && <ErrorBox msg={error} />}
+
+      {/* Engine status — mirrors the rob_engine_v2 feature flag (read-only here) */}
+      <NoticeBox
+        color={engineEnabled ? C.grn : C.ylw}
+        msg={engineEnabled
+          ? 'RoB engine is ON. The Risk of Bias workspace is available inside projects. Turn it off by disabling the rob_engine_v2 flag in Feature Flags.'
+          : 'RoB engine is OFF. Enable the rob_engine_v2 flag in Feature Flags to expose the Risk of Bias workspace. These settings still apply once it is enabled.'}
+      />
+
+      {/* Metrics — best-effort; renders zeros gracefully if absent */}
+      <SectionCard title="Usage">
+        <div style={{ padding: '14px 18px', display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: 12 }}>
+          <StatTile label="Projects Using RoB" value={m.projectsUsingRoB ?? 0} />
+          <StatTile label="Total Assessments" value={m.totalAssessments ?? 0} />
+          <StatTile label="Completed" value={m.completedAssessments ?? 0} color={C.grn} />
+          <StatTile label="Pending" value={m.pendingAssessments ?? 0} color={C.ylw} />
+          <StatTile label="Reviewer Conflicts" value={m.reviewerConflicts ?? 0} color={(m.reviewerConflicts ?? 0) > 0 ? C.red : C.txt} />
+        </div>
+        <div style={{ padding: '0 18px 16px', display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
+          <StatTile label="Overall — Low" value={overall.low ?? 0} color={C.grn} />
+          <StatTile label="Overall — Some Concerns" value={overall.some ?? 0} color={C.ylw} />
+          <StatTile label="Overall — High" value={overall.high ?? 0} color={C.red} />
+        </div>
+      </SectionCard>
+
+      {/* Panels / UI */}
+      <SectionCard title="Workspace & UI">
+        <div style={{ padding: '8px 18px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+          <RobToggleRow label="Show PDF Panel" note="Display the study PDF beside the assessment" checked={settings.showPdfPanel} onChange={v => upd('showPdfPanel', v)} />
+          <RobToggleRow label="Show Article Info Tab" note="Expose the structured article-information tab" checked={settings.showArticleInfoTab} onChange={v => upd('showArticleInfoTab', v)} />
+          <RobToggleRow label="Compact Assessment Cards" note="Denser domain cards in the workspace" checked={settings.compactAssessmentCards} onChange={v => upd('compactAssessmentCards', v)} last />
+          <Field label="Default Left Tab" note="Which panel opens first per study">
+            <select value={settings.defaultLeftTab} onChange={e => upd('defaultLeftTab', e.target.value)} style={{ ...inputStyle, width: 200 }}>
+              <option value="pdf">Study PDF</option>
+              <option value="article">Article Information</option>
+            </select>
+          </Field>
+        </div>
+      </SectionCard>
+
+      {/* Tools */}
+      <SectionCard title="Tools">
+        <div style={{ padding: '8px 18px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+          {Object.keys(ROB_TOOL_LABELS).map((k, i, arr) => (
+            <RobToggleRow key={k} label={ROB_TOOL_LABELS[k]} checked={settings.tools?.[k]} onChange={v => updTool(k, v)} last={i >= arr.length - 2} />
+          ))}
+        </div>
+        <div style={{ padding: '6px 18px 16px' }}>
+          <Field label="Default Tool" note="Pre-selected when an assessment is created">
+            <select value={settings.defaultTool} onChange={e => upd('defaultTool', e.target.value)} style={{ ...inputStyle, width: 280 }}>
+              {Object.keys(ROB_TOOL_LABELS).map(k => <option key={k} value={ROB_TOOL_CANONICAL[k]}>{ROB_TOOL_LABELS[k]}</option>)}
+            </select>
+          </Field>
+        </div>
+      </SectionCard>
+
+      {/* Workflow */}
+      <SectionCard title="Workflow">
+        <div style={{ padding: '6px 18px 0' }}>
+          <Field label="Default Required Reviewers" note="Per outcome (1–5)">
+            <input type="number" min="1" max="5" value={settings.defaultRequiredReviewers ?? 2}
+              onChange={e => upd('defaultRequiredReviewers', Math.min(5, Math.max(1, parseInt(e.target.value) || 1)))}
+              style={{ ...inputStyle, width: 120 }} />
+          </Field>
+        </div>
+        <div style={{ padding: '0 18px 8px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+          <RobToggleRow label="Leaders Can Change Reviewer Count" checked={settings.allowLeaderChangeReviewers} onChange={v => upd('allowLeaderChangeReviewers', v)} />
+          <RobToggleRow label="Require Consensus Before Complete" checked={settings.requireConsensusBeforeComplete} onChange={v => upd('requireConsensusBeforeComplete', v)} />
+          <RobToggleRow label="Leaders Resolve Conflicts" checked={settings.allowConflictResolutionByLeader} onChange={v => upd('allowConflictResolutionByLeader', v)} />
+          <RobToggleRow label="Owner Override" note="Owner may override domain & overall judgements" checked={settings.allowOwnerOverride} onChange={v => upd('allowOwnerOverride', v)} />
+          <RobToggleRow label="Require Notes for High / Unclear" checked={settings.requireNotesForHighOrUnclear} onChange={v => upd('requireNotesForHighOrUnclear', v)} />
+          <RobToggleRow label="Require Domain Justifications" checked={settings.requireDomainJustifications} onChange={v => upd('requireDomainJustifications', v)} />
+          <RobToggleRow label="Require Final Judgment" note="Overall judgement must be set to complete" checked={settings.requireFinalJudgment} onChange={v => upd('requireFinalJudgment', v)} last />
+        </div>
+      </SectionCard>
+
+      {/* Export / Report */}
+      <SectionCard title="Report & Export">
+        <div style={{ padding: '8px 18px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+          <RobToggleRow label="Include RoB in Report" checked={settings.includeInReport} onChange={v => upd('includeInReport', v)} />
+          <RobToggleRow label="Include Summary Figure" note="Traffic-light / robvis plot" checked={settings.includeSummaryFigure} onChange={v => upd('includeSummaryFigure', v)} />
+          <RobToggleRow label="Include Domain Table" checked={settings.includeDomainTable} onChange={v => upd('includeDomainTable', v)} />
+          <RobToggleRow label="Include Reviewer Notes" checked={settings.includeReviewerNotes} onChange={v => upd('includeReviewerNotes', v)} />
+          <RobToggleRow label="Allow CSV / XLSX / PDF Export" checked={settings.allowCsvXlsxPdfExport} onChange={v => upd('allowCsvXlsxPdfExport', v)} last />
+        </div>
+      </SectionCard>
+
+      {/* Audit / Safety */}
+      <SectionCard title="Audit & Safety">
+        <div style={{ padding: '8px 18px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0 24px' }}>
+          <RobToggleRow label="Log Changes" note="Record an audit entry on every edit" checked={settings.logChanges} onChange={v => upd('logChanges', v)} />
+          <RobToggleRow label="Require Reason When Changing Completed" checked={settings.requireReasonWhenChangingCompleted} onChange={v => upd('requireReasonWhenChangingCompleted', v)} />
+          <RobToggleRow label="Lock Completed Assessments" note="Completed assessments become read-only" checked={settings.lockCompletedAssessments} onChange={v => upd('lockCompletedAssessments', v)} />
+          <RobToggleRow label="Allow Reopen Completed" checked={settings.allowReopenCompleted} onChange={v => upd('allowReopenCompleted', v)} last />
+        </div>
+      </SectionCard>
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}><SaveButton onClick={save} status={status} /></div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   SECTION: ONBOARDING (prompt32 Task 7) — behaviour + questions manager
+   ════════════════════════════════════════════════════════════════════════ */
+
+const ONBOARDING_TYPES = [
+  { value: 'text',          label: 'Text' },
+  { value: 'single_select', label: 'Single select' },
+  { value: 'multi_select',  label: 'Multi select' },
+  { value: 'boolean',       label: 'Yes / No' },
+  { value: 'number',        label: 'Number' },
+  { value: 'date',          label: 'Date' },
+];
+const ONBOARDING_TYPE_LABEL = t => (ONBOARDING_TYPES.find(o => o.value === t)?.label || t);
+const ONBOARDING_NEEDS_OPTIONS = t => t === 'single_select' || t === 'multi_select';
+
+const blankOnbForm = () => ({
+  prompt: '', description: '', type: 'text',
+  options: [{ value: '', label: '' }],
+  isRequired: false, allowSkip: true, displayOrder: 0,
+});
+
+// Renders how a question would appear to a user — used by both the create form
+// preview and each row's "Preview" expander. Read-only / inert.
+function OnboardingPreview({ q }) {
+  const opts = (q.options || []).filter(o => o && (o.value || o.label));
+  return (
+    <div style={{ background: C.surf, border: `1px dashed ${C.brd2}`, borderRadius: 8, padding: '12px 14px' }}>
+      <div style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>
+        {q.prompt || <span style={{ color: C.muted }}>Question prompt…</span>}
+        {q.isRequired && <span style={{ color: C.red, marginLeft: 4 }}>*</span>}
+      </div>
+      {q.description && <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>{q.description}</div>}
+      <div style={{ marginTop: 8 }}>
+        {q.type === 'text' && <input disabled placeholder="Free text answer" style={{ ...inputStyle, opacity: 0.7 }} />}
+        {q.type === 'number' && <input disabled type="number" placeholder="0" style={{ ...inputStyle, width: 160, opacity: 0.7 }} />}
+        {q.type === 'date' && <input disabled type="date" style={{ ...inputStyle, width: 200, opacity: 0.7 }} />}
+        {q.type === 'boolean' && (
+          <div style={{ display: 'flex', gap: 8 }}>
+            {['Yes', 'No'].map(b => <span key={b} style={{ padding: '6px 16px', border: `1px solid ${C.brd2}`, borderRadius: 7, fontSize: 12, color: C.txt2 }}>{b}</span>)}
+          </div>
+        )}
+        {ONBOARDING_NEEDS_OPTIONS(q.type) && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {opts.length ? opts.map((o, i) => (
+              <span key={i} style={{ padding: '6px 14px', border: `1px solid ${C.brd2}`, borderRadius: q.type === 'multi_select' ? 6 : 16, fontSize: 12, color: C.txt2 }}>
+                {o.label || o.value}
+              </span>
+            )) : <span style={{ fontSize: 12, color: C.muted }}>No options defined.</span>}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Value/label option-row editor for *_select question types (create + edit).
+function OnboardingOptionsEditor({ options, onChange }) {
+  const rows = options && options.length ? options : [{ value: '', label: '' }];
+  const set = (i, k, v) => onChange(rows.map((r, j) => (j === i ? { ...r, [k]: v } : r)));
+  const add = () => onChange([...rows, { value: '', label: '' }]);
+  const del = i => onChange(rows.filter((_, j) => j !== i).length ? rows.filter((_, j) => j !== i) : [{ value: '', label: '' }]);
+  return (
+    <div>
+      {rows.map((r, i) => (
+        <div key={i} style={{ display: 'flex', gap: 8, marginBottom: 6 }}>
+          <input value={r.value} onChange={e => set(i, 'value', e.target.value)} placeholder="value" style={{ ...inputStyle, flex: 1 }} />
+          <input value={r.label} onChange={e => set(i, 'label', e.target.value)} placeholder="label" style={{ ...inputStyle, flex: 1 }} />
+          <button onClick={() => del(i)} title="Remove option" style={{ background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.muted, cursor: 'pointer', padding: '0 10px', fontFamily: FONT }}>
+            <Icon name="x" size={12} />
+          </button>
+        </div>
+      ))}
+      <button onClick={add} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'transparent', border: `1px dashed ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 12, cursor: 'pointer', padding: '6px 12px', fontFamily: FONT, marginTop: 2 }}>
+        <Icon name="plus" size={12} /> Add option
+      </button>
+    </div>
+  );
+}
+
+function OnboardingSection() {
+  // Behaviour settings
+  const [beh,        setBeh]        = useState({ enabled: false, introTitle: '', introBody: '' });
+  const [behStatus,  setBehStatus]  = useState('idle');
+  // Questions
+  const [questions,  setQuestions]  = useState([]);
+  const [totalUsers, setTotalUsers] = useState(0);
+  const [loading,    setLoading]    = useState(true);
+  const [error,      setError]      = useState('');
+  // Create form
+  const [creating,   setCreating]   = useState(false);
+  const [form,       setForm]       = useState(blankOnbForm());
+  const [createBusy, setCreateBusy] = useState(false);
+  // Per-row UI state
+  const [editId,     setEditId]     = useState(null);
+  const [editForm,   setEditForm]   = useState(null);
+  const [editBusy,   setEditBusy]   = useState(false);
+  const [previewId,  setPreviewId]  = useState(null);
+  const [confirm,    setConfirm]    = useState(null);   // { kind:'reset'|'delete', q }
+
+  const loadQuestions = useCallback(async () => {
+    try {
+      const d = await adminApi.onboarding.list();
+      setQuestions((d?.questions || []).slice().sort((a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0)));
+      setTotalUsers(d?.totalUsers ?? 0);
+    } catch (e) { setError(e.message); }
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    Promise.all([
+      adminApi.onboarding.getSettings().then(s => { if (alive) setBeh({ enabled: !!s?.enabled, introTitle: s?.introTitle || '', introBody: s?.introBody || '' }); }).catch(e => { if (alive) setError(e.message); }),
+      loadQuestions(),
+    ]).finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [loadQuestions]);
+
+  async function saveBehaviour() {
+    setBehStatus('saving'); setError('');
+    try { await adminApi.onboarding.saveSettings(beh); setBehStatus('saved'); }
+    catch (e) { setBehStatus('error'); setError(e.message); }
+    finally { setTimeout(() => setBehStatus('idle'), 2500); }
+  }
+
+  // Normalise a form payload for create/update — strip empty option rows.
+  const cleanPayload = f => ({
+    prompt: f.prompt,
+    description: f.description,
+    type: f.type,
+    options: ONBOARDING_NEEDS_OPTIONS(f.type) ? (f.options || []).filter(o => o.value || o.label) : [],
+    isRequired: !!f.isRequired,
+    allowSkip: !!f.allowSkip,
+    displayOrder: Number.isFinite(f.displayOrder) ? f.displayOrder : 0,
+  });
+
+  async function createQuestion() {
+    if (!form.prompt.trim()) { setError('A prompt is required.'); return; }
+    setCreateBusy(true); setError('');
+    try {
+      await adminApi.onboarding.create({ ...cleanPayload(form), isActive: true, displayOrder: questions.length });
+      setForm(blankOnbForm()); setCreating(false);
+      await loadQuestions();
+    } catch (e) { setError(e.message); }
+    finally { setCreateBusy(false); }
+  }
+
+  async function patchQuestion(id, body) {
+    setError('');
+    try { await adminApi.onboarding.update(id, body); await loadQuestions(); }
+    catch (e) { setError(e.message); }
+  }
+
+  function startEdit(q) {
+    setEditId(q.id);
+    setEditForm({
+      prompt: q.prompt || '', description: q.description || '', type: q.type,
+      options: (q.options && q.options.length ? q.options : [{ value: '', label: '' }]),
+      isRequired: !!q.isRequired, allowSkip: !!q.allowSkip,
+      displayOrder: q.displayOrder ?? 0,
+    });
+  }
+  async function saveEdit() {
+    if (!editForm.prompt.trim()) { setError('A prompt is required.'); return; }
+    setEditBusy(true); setError('');
+    try { await adminApi.onboarding.update(editId, cleanPayload(editForm)); setEditId(null); setEditForm(null); await loadQuestions(); }
+    catch (e) { setError(e.message); }
+    finally { setEditBusy(false); }
+  }
+
+  // Move a question up/down — POST the full reordered id list.
+  async function move(idx, dir) {
+    const next = idx + dir;
+    if (next < 0 || next >= questions.length) return;
+    const order = questions.map(q => q.id);
+    [order[idx], order[next]] = [order[next], order[idx]];
+    // Optimistic local reorder for snappy UX; reload confirms server truth.
+    setQuestions(qs => { const c = qs.slice(); [c[idx], c[next]] = [c[next], c[idx]]; return c; });
+    try { await adminApi.onboarding.reorder(order); await loadQuestions(); }
+    catch (e) { setError(e.message); await loadQuestions(); }
+  }
+
+  async function doConfirm() {
+    const { kind, q } = confirm;
+    setConfirm(null); setError('');
+    try {
+      if (kind === 'reset') await adminApi.onboarding.reset(q.id);    // no userId ⇒ ALL users
+      else if (kind === 'delete') await adminApi.onboarding.remove(q.id);
+      await loadQuestions();
+    } catch (e) { setError(e.message); }
+  }
+
+  if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={20} /></div>;
+
+  const iconBtn = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, cursor: 'pointer', fontFamily: FONT };
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 20px' }}>Onboarding</h2>
+      {error && <ErrorBox msg={error} />}
+
+      {/* Behaviour */}
+      <SectionCard title="Behaviour" action={<SaveButton onClick={saveBehaviour} status={behStatus} />}>
+        <div style={{ padding: '14px 18px' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, paddingBottom: 14, marginBottom: 14, borderBottom: `1px solid ${C.brd}` }}>
+            <div>
+              <div style={{ fontSize: 12, color: C.txt, fontWeight: 500 }}>Onboarding Enabled</div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 2 }}>When on, users who have not completed onboarding are prompted at login.</div>
+            </div>
+            <Toggle checked={beh.enabled} onChange={v => setBeh(b => ({ ...b, enabled: v }))} />
+          </div>
+          <Field label="Intro Title" note="Heading shown at the top of the onboarding flow">
+            <input value={beh.introTitle} onChange={e => setBeh(b => ({ ...b, introTitle: e.target.value }))} style={inputStyle} placeholder="Welcome to META·LAB" />
+          </Field>
+          <Field label="Intro Body" note="Short description shown under the title">
+            <textarea value={beh.introBody} onChange={e => setBeh(b => ({ ...b, introBody: e.target.value }))} rows={3} style={{ ...inputStyle, resize: 'vertical' }} placeholder="Tell us a little about your work so we can tailor your experience." />
+          </Field>
+        </div>
+      </SectionCard>
+
+      {/* Questions */}
+      <SectionCard
+        title={`Questions (${questions.length})`}
+        action={
+          <button onClick={() => { setCreating(c => !c); setForm(blankOnbForm()); }} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 14px', background: creating ? 'transparent' : C.acc2, border: creating ? `1px solid ${C.brd2}` : 'none', borderRadius: 7, color: creating ? C.txt2 : C.accText, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: FONT }}>
+            {creating ? 'Cancel' : <><Icon name="plus" size={12} /> New Question</>}
+          </button>
+        }
+      >
+        {/* Create form */}
+        {creating && (
+          <div style={{ padding: '16px 18px', borderBottom: `1px solid ${C.brd}`, background: alpha(C.acc, '06') }}>
+            <Field label="Prompt">
+              <input value={form.prompt} onChange={e => setForm(f => ({ ...f, prompt: e.target.value }))} style={inputStyle} placeholder="What is your primary research field?" />
+            </Field>
+            <Field label="Description" note="Optional helper text">
+              <input value={form.description} onChange={e => setForm(f => ({ ...f, description: e.target.value }))} style={inputStyle} />
+            </Field>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '0 24px' }}>
+              <Field label="Type">
+                <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))} style={inputStyle}>
+                  {ONBOARDING_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </Field>
+              <Field label="Display Order">
+                <input type="number" value={form.displayOrder} onChange={e => setForm(f => ({ ...f, displayOrder: parseInt(e.target.value) || 0 }))} style={inputStyle} />
+              </Field>
+            </div>
+            {ONBOARDING_NEEDS_OPTIONS(form.type) && (
+              <Field label="Options">
+                <OnboardingOptionsEditor options={form.options} onChange={o => setForm(f => ({ ...f, options: o }))} />
+              </Field>
+            )}
+            <div style={{ display: 'flex', gap: 24, margin: '4px 0 16px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: C.txt, cursor: 'pointer' }}>
+                <Toggle checked={form.isRequired} onChange={v => setForm(f => ({ ...f, isRequired: v }))} /> Required
+              </label>
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: C.txt, cursor: 'pointer' }}>
+                <Toggle checked={form.allowSkip} onChange={v => setForm(f => ({ ...f, allowSkip: v }))} /> Allow skip
+              </label>
+            </div>
+            <Field label="Preview"><OnboardingPreview q={form} /></Field>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button onClick={() => { setCreating(false); setForm(blankOnbForm()); }} style={{ padding: '8px 16px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 13, cursor: 'pointer', fontFamily: FONT }}>Cancel</button>
+              <button onClick={createQuestion} disabled={createBusy} style={{ padding: '8px 18px', background: C.acc2, border: 'none', borderRadius: 7, color: C.accText, fontSize: 13, fontWeight: 600, cursor: createBusy ? 'not-allowed' : 'pointer', fontFamily: FONT, opacity: createBusy ? 0.6 : 1 }}>
+                {createBusy ? 'Creating…' : 'Create Question'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Question list */}
+        {questions.length === 0 && !creating ? (
+          <div style={{ padding: '32px 18px', textAlign: 'center', color: C.muted, fontSize: 13 }}>No onboarding questions yet.</div>
+        ) : questions.map((q, idx) => {
+          const c = q.counts || {};
+          const isEditing = editId === q.id;
+          return (
+            <div key={q.id} style={{ padding: '14px 18px', borderBottom: idx < questions.length - 1 ? `1px solid ${C.brd}` : 'none', opacity: q.isActive ? 1 : 0.62 }}>
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                {/* Reorder */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flexShrink: 0 }}>
+                  <button onClick={() => move(idx, -1)} disabled={idx === 0} title="Move up" style={{ ...iconBtn, width: 24, height: 22, opacity: idx === 0 ? 0.35 : 1 }}>
+                    <span style={{ display: 'inline-flex', transform: 'rotate(180deg)' }}><Icon name="chevronDown" size={12} /></span>
+                  </button>
+                  <button onClick={() => move(idx, 1)} disabled={idx === questions.length - 1} title="Move down" style={{ ...iconBtn, width: 24, height: 22, opacity: idx === questions.length - 1 ? 0.35 : 1 }}>
+                    <Icon name="chevronDown" size={12} />
+                  </button>
+                </div>
+                {/* Body */}
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>{q.prompt}</span>
+                    <Badge text={ONBOARDING_TYPE_LABEL(q.type)} color={C.acc} />
+                    {q.isRequired && <Badge text="Required" color={C.red} />}
+                    {q.allowSkip && <Badge text="Skippable" color={C.muted} />}
+                    {!q.isActive && <Badge text="Inactive" color={C.ylw} />}
+                  </div>
+                  {q.description && <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>{q.description}</div>}
+                  <div style={{ fontSize: 11, fontFamily: MONO, color: C.muted, marginTop: 6, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+                    <span>key: {q.key || '—'}</span>
+                    <span style={{ color: C.grn }}>answered {c.answered ?? 0}</span>
+                    <span style={{ color: C.ylw }}>skipped {c.skipped ?? 0}</span>
+                    <span>pending {c.pending ?? 0}</span>
+                    <span>of {totalUsers} users</span>
+                  </div>
+                </div>
+                {/* Quick toggles + actions */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: C.muted, cursor: 'pointer' }} title="Active">
+                    <Toggle checked={q.isActive} onChange={v => patchQuestion(q.id, { isActive: v })} />
+                  </label>
+                  <button onClick={() => setPreviewId(p => (p === q.id ? null : q.id))} title="Preview" style={iconBtn}><Icon name="eye" size={14} /></button>
+                  <button onClick={() => startEdit(q)} title="Edit" style={iconBtn}><Icon name="pencil" size={13} /></button>
+                  <button onClick={() => setConfirm({ kind: 'reset', q })} title="Reset all responses" style={iconBtn}><Icon name="refresh" size={13} /></button>
+                  <button onClick={() => setConfirm({ kind: 'delete', q })} title="Delete" style={{ ...iconBtn, color: C.red, borderColor: alpha(C.red, '40') }}><Icon name="trash" size={13} /></button>
+                </div>
+              </div>
+
+              {/* Preview expander */}
+              {previewId === q.id && !isEditing && (
+                <div style={{ marginTop: 12, marginLeft: 36 }}><OnboardingPreview q={q} /></div>
+              )}
+
+              {/* Inline edit */}
+              {isEditing && editForm && (
+                <div style={{ marginTop: 12, marginLeft: 36, padding: '14px 16px', background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 8 }}>
+                  <Field label="Prompt"><input value={editForm.prompt} onChange={e => setEditForm(f => ({ ...f, prompt: e.target.value }))} style={inputStyle} /></Field>
+                  <Field label="Description"><input value={editForm.description} onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))} style={inputStyle} /></Field>
+                  <Field label="Type">
+                    <select value={editForm.type} onChange={e => setEditForm(f => ({ ...f, type: e.target.value }))} style={{ ...inputStyle, width: 240 }}>
+                      {ONBOARDING_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                    </select>
+                  </Field>
+                  {ONBOARDING_NEEDS_OPTIONS(editForm.type) && (
+                    <Field label="Options"><OnboardingOptionsEditor options={editForm.options} onChange={o => setEditForm(f => ({ ...f, options: o }))} /></Field>
+                  )}
+                  <div style={{ display: 'flex', gap: 24, margin: '4px 0 16px' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: C.txt, cursor: 'pointer' }}>
+                      <Toggle checked={editForm.isRequired} onChange={v => setEditForm(f => ({ ...f, isRequired: v }))} /> Required
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: C.txt, cursor: 'pointer' }}>
+                      <Toggle checked={editForm.allowSkip} onChange={v => setEditForm(f => ({ ...f, allowSkip: v }))} /> Allow skip
+                    </label>
+                  </div>
+                  <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+                    <button onClick={() => { setEditId(null); setEditForm(null); }} style={{ padding: '8px 16px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 13, cursor: 'pointer', fontFamily: FONT }}>Cancel</button>
+                    <button onClick={saveEdit} disabled={editBusy} style={{ padding: '8px 18px', background: C.acc2, border: 'none', borderRadius: 7, color: C.accText, fontSize: 13, fontWeight: 600, cursor: editBusy ? 'not-allowed' : 'pointer', fontFamily: FONT, opacity: editBusy ? 0.6 : 1 }}>
+                      {editBusy ? 'Saving…' : 'Save'}
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </SectionCard>
+
+      <ConfirmModal
+        open={!!confirm}
+        title={confirm?.kind === 'delete' ? 'Delete question?' : 'Reset responses?'}
+        message={confirm?.kind === 'delete'
+          ? `Permanently delete “${confirm?.q?.prompt}” and all its responses. This cannot be undone.`
+          : `Clear ALL user responses to “${confirm?.q?.prompt}”. Users will be asked this question again. This cannot be undone.`}
+        confirmLabel={confirm?.kind === 'delete' ? 'Delete' : 'Reset'}
+        danger
+        onConfirm={doConfirm}
+        onCancel={() => setConfirm(null)}
+      />
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
    ROOT COMPONENT
    ════════════════════════════════════════════════════════════════════════ */
 
 const NAV_SECTIONS = [
-  { id: 'overview', icon: 'grid',     label: 'Overview'  },
-  { id: 'users',    icon: 'users',    label: 'Users'     },
-  { id: 'projects', icon: 'folders',  label: 'Projects'  },
-  { id: 'sift',     icon: 'hexagon',  label: 'META·SIFT' },
-  { id: 'content',  icon: 'fileText', label: 'Content'   },
-  { id: 'settings', icon: 'settings', label: 'Settings'  },
-  { id: 'flags',    icon: 'sliders',  label: 'Flags'     },
-  { id: 'messages', icon: 'mail',     label: 'Messages'  },
-  { id: 'security', icon: 'shield',   label: 'Security'  },
-  { id: 'health',   icon: 'activity', label: 'Health'    },
+  { id: 'overview',   icon: 'grid',      label: 'Overview'      },
+  { id: 'users',      icon: 'users',     label: 'Users'         },
+  { id: 'onboarding', icon: 'clipboard', label: 'Onboarding'    },
+  { id: 'projects',   icon: 'folders',   label: 'Projects'      },
+  { id: 'sift',       icon: 'hexagon',   label: 'META·SIFT'     },
+  { id: 'rob',        icon: 'scale',     label: 'Risk of Bias'  },
+  { id: 'content',    icon: 'fileText',  label: 'Content'       },
+  { id: 'settings',   icon: 'settings',  label: 'Settings'      },
+  { id: 'flags',      icon: 'sliders',   label: 'Flags'         },
+  { id: 'messages',   icon: 'mail',      label: 'Messages'      },
+  { id: 'security',   icon: 'shield',    label: 'Security'      },
+  { id: 'health',     icon: 'activity',  label: 'Health'        },
 ];
 
 // Role-derived section sets — mirror of server getConsole (the server descriptor
@@ -5055,16 +5637,18 @@ export default function AdminConsole() {
   const sections = {
     // Overview is admin-only (MOD_SECTIONS unchanged): renderActive() never
     // mounts it for mods; isAdmin additionally gates its fetches + EventSource.
-    overview: <OverviewSection onNavigate={setActive} isAdmin={isAdmin} />,
-    users:    <UsersSection isAdmin={isAdmin} />,
-    projects: <ProjectsSection />,
-    sift:     <SiftAdminSection />,
-    content:  <ContentSection />,
-    settings: <SettingsSection />,
-    flags:    <FlagsSection />,
-    messages: <MessagesSection onUnreadChange={setUnread} />,
-    security: <SecuritySection />,
-    health:   <HealthSection />,
+    overview:   <OverviewSection onNavigate={setActive} isAdmin={isAdmin} />,
+    users:      <UsersSection isAdmin={isAdmin} />,
+    onboarding: <OnboardingSection />,
+    projects:   <ProjectsSection />,
+    sift:       <SiftAdminSection />,
+    rob:        <RobAdminSection />,
+    content:    <ContentSection />,
+    settings:   <SettingsSection />,
+    flags:      <FlagsSection />,
+    messages:   <MessagesSection onUnreadChange={setUnread} />,
+    security:   <SecuritySection />,
+    health:     <HealthSection />,
   };
 
   // Section labels for the access-denied message.

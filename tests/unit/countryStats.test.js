@@ -56,6 +56,12 @@ describe('buildCountryDistribution', () => {
     expect(summary.totalKnown).toBe(0);
     expect(summary.unknown).toBe(3);
     expect(summary.countriesRepresented).toBe(0);
+    // prompt32 — the merged no-code bucket is ALWAYS "Unknown", never the legacy
+    // "Local" label, even though one input carried registrationCountryName "Local".
+    const unknownBucket = countries.find(c => !c.countryCode);
+    expect(unknownBucket).toBeTruthy();
+    expect(unknownBucket.countryName).toBe('Unknown');
+    expect(unknownBucket.userCount).toBe(3);
   });
 
   it('totals reconcile and rows sort by userCount desc', () => {
