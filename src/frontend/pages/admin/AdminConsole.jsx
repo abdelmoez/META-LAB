@@ -3,7 +3,7 @@
  * v2.2 — inbox messages, user+projects panel, redesigned overview, full content editor
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, Component } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { adminApi, fetchVersion } from './adminApiClient.js';
@@ -157,6 +157,43 @@ function Pagination({ page, total, perPage, onPage }) {
       <span style={{ fontSize: 11, color: C.muted }}>Page {page} of {totalPages} ({total} total)</span>
       <button onClick={() => onPage(page - 1)} disabled={page <= 1} style={{ padding: '4px 10px', background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 5, color: C.txt2, fontSize: 12, cursor: page <= 1 ? 'not-allowed' : 'pointer', opacity: page <= 1 ? 0.4 : 1, fontFamily: FONT }}>‹</button>
       <button onClick={() => onPage(page + 1)} disabled={page >= totalPages} style={{ padding: '4px 10px', background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 5, color: C.txt2, fontSize: 12, cursor: page >= totalPages ? 'not-allowed' : 'pointer', opacity: page >= totalPages ? 0.4 : 1, fontFamily: FONT }}>›</button>
+    </div>
+  );
+}
+
+// prompt36 — Ops sub-view error boundary: a render crash in one section shows a
+// recoverable message instead of white-screening the whole console. The thrown
+// error is logged (not silently swallowed) so the real bug stays diagnosable.
+class OpsErrorBoundary extends Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error('[Ops] render error in', this.props.label || 'a section', error, info); }
+  render() {
+    if (this.state.error) {
+      return (
+        <SectionCard>
+          <div style={{ padding: '28px 20px', textAlign: 'center' }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, marginBottom: 6 }}>This section couldn’t be displayed</div>
+            <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.6, maxWidth: 440, margin: '0 auto' }}>
+              Something went wrong rendering {this.props.label || 'this view'}. The rest of the Ops Console is unaffected.
+              <span style={{ display: 'block', marginTop: 8, fontFamily: MONO, fontSize: 11, color: C.dim, overflowWrap: 'anywhere' }}>{String(this.state.error?.message || this.state.error)}</span>
+            </div>
+            <button onClick={() => this.setState({ error: null })} style={{ marginTop: 16, padding: '7px 16px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>Try again</button>
+          </div>
+        </SectionCard>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+// prompt36 — module-level stat chip (was a country-panel-local const, which made
+// it crash the Institutions tab when referenced there). Shared by both panels.
+function Chip({ label, value, color = C.acc }) {
+  return (
+    <div style={{ flex: '1 1 120px', minWidth: 0, background: alpha(color, '10'), border: `1px solid ${alpha(color, '30')}`, borderRadius: 9, padding: '10px 14px' }}>
+      <div style={{ fontSize: 20, fontWeight: 700, color: C.txt, fontFamily: MONO, lineHeight: 1.1 }}>{value}</div>
+      <div style={{ fontSize: 10, color: C.muted, fontFamily: MONO, letterSpacing: '0.08em', textTransform: 'uppercase', marginTop: 3 }}>{label}</div>
     </div>
   );
 }
@@ -2193,13 +2230,6 @@ function UsersByCountryCard() {
     if (r) { mapWidthRef.current = r.width; setMouse({ x: e.clientX - r.left, y: e.clientY - r.top }); }
   };
 
-  const Chip = ({ label, value, color = C.acc }) => (
-    <div style={{ flex: '1 1 120px', minWidth: 0, background: alpha(color, '10'), border: `1px solid ${alpha(color, '30')}`, borderRadius: 9, padding: '10px 14px' }}>
-      <div style={{ fontSize: 20, fontWeight: 700, color: C.txt, fontFamily: MONO, lineHeight: 1.1 }}>{value}</div>
-      <div style={{ fontSize: 10, color: C.muted, fontFamily: MONO, letterSpacing: '0.08em', textTransform: 'uppercase', marginTop: 3 }}>{label}</div>
-    </div>
-  );
-
   const ViewTab = ({ id, label }) => {
     const on = view === id;
     return (
@@ -2384,10 +2414,15 @@ function UsersSection({ isAdmin = false }) {
     <div>
       <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 16px' }}>Users</h2>
       <UsersSubTabs active={view} onSelect={setView} tabs={subTabs} />
-      {view === 'directory'    && <UsersDirectory isAdmin={isAdmin} />}
-      {view === 'growth'       && isAdmin && <NewUserGrowthSection />}
-      {view === 'analytics'    && isAdmin && <UserAnalyticsSection />}
-      {view === 'institutions' && isAdmin && <InstitutionsManager />}
+      {/* prompt36 — an error boundary per sub-view so a render crash shows a
+          message instead of white-screening the whole Ops Console. Keyed by view
+          so switching tabs clears a prior error. */}
+      <OpsErrorBoundary key={view} label={`the ${view} view`}>
+        {view === 'directory'    && <UsersDirectory isAdmin={isAdmin} />}
+        {view === 'growth'       && isAdmin && <NewUserGrowthSection />}
+        {view === 'analytics'    && isAdmin && <UserAnalyticsSection />}
+        {view === 'institutions' && isAdmin && <InstitutionsManager />}
+      </OpsErrorBoundary>
     </div>
   );
 }
