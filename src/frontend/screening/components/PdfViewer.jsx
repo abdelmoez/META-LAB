@@ -14,6 +14,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { screeningApi } from '../api-client/screeningApi.js';
+import AppPdfViewer from '../../components/AppPdfViewer.jsx';
 
 function fmtSize(bytes) {
   if (!bytes) return '';
@@ -129,7 +130,6 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
   // container resizes; a manual zoom by the user persists for that session (we
   // never remount on resize). The "Open in new tab" link stays plain.
   const previewUrl = attachment ? screeningApi.pdfDownloadUrl(pid, recordId, attachment.id) : null;
-  const fitUrl = pdfFitWidthSrc(previewUrl);
 
   return (
     <div style={flush
@@ -209,28 +209,22 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
         </div>
       )}
 
-      {/* Inline preview — in flush mode it fills the remaining height so the PDF
-          area is flush with the host container's inner (rounded) border. */}
+      {/* Inline preview — prompt39 Task 1: the universal app-native PDF viewer
+          (pdf.js single-page canvas + toolbar) replaces the old browser <iframe>.
+          It inherits the same authenticated same-origin download URL (cookies ride
+          along via withCredentials) and the server's Range support. In flush mode it
+          fills the remaining height so the PDF area sits flush with the host's
+          inner rounded border; otherwise it uses the fixed previewHeight. */}
       {attachment && open && (
         <div style={flush
           ? { borderTop: `1px solid ${C.brd}`, background: C.surf, flex: 1, minHeight: 0, display: 'flex' }
           : { borderTop: `1px solid ${C.brd}`, background: C.surf }}>
-          {frameErr ? (
-            <div style={{ padding: '24px 16px', textAlign: 'center', fontSize: 12.5, color: C.txt2 }}>
-              Preview unavailable in this browser.{' '}
-              <a href={previewUrl} target="_blank" rel="noopener noreferrer" style={{ color: C.acc }}>Open the PDF in a new tab →</a>
-            </div>
-          ) : (
-            <iframe
-              title="PDF preview"
-              src={fitUrl}
-              onError={() => setFrameErr(true)}
-              // flush mode fills its container; minHeight is a floor so the iframe
-              // can never collapse to its ~150px intrinsic size if an ancestor lacks
-              // a definite height (prompt36 review fix).
-              style={{ width: '100%', height: flush ? '100%' : previewHeight, minHeight: flush ? 240 : undefined, border: 'none', display: 'block', background: C.card2 }}
-            />
-          )}
+          <AppPdfViewer
+            url={previewUrl}
+            externalUrl={previewUrl}
+            flush={flush}
+            previewHeight={previewHeight}
+          />
         </div>
       )}
     </div>

@@ -20,7 +20,7 @@ import RobTrafficLight from './RobTrafficLight.jsx';
 import { judgmentStyle } from './judgmentStyle.js';
 import { ROB_TOOLS, normalizeRobTool, isRobToolActive } from '../../research-engine/rob/tools.js';
 
-export default function ProjectRobPanel({ projectId, embedded = false, canEdit = true, robTool, onSelectTool, onContinue }) {
+export default function ProjectRobPanel({ projectId, embedded = false, canEdit = true, robTool, onSelectTool, onContinue, onWorkspaceChange }) {
   const [project, setProject] = useState(null);
   const [assessments, setAssessments] = useState([]);
   const [matrix, setMatrix] = useState(null);
@@ -28,6 +28,10 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
   const [accessDenied, setAccessDenied] = useState(false);
   const [openId, setOpenId] = useState(null);          // open assessment in the workspace
   const [creatingFor, setCreatingFor] = useState(null); // study being created-for
+
+  // prompt39 Task 3 — tell the host when the per-study assessment workspace is open
+  // so it can hide the RoB overview intro header (focus mode inside the tool).
+  useEffect(() => { if (typeof onWorkspaceChange === 'function') onWorkspaceChange(openId != null); }, [openId, onWorkspaceChange]);
 
   const reload = useCallback(async () => {
     setAccessDenied(false);

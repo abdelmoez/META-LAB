@@ -36,6 +36,7 @@ import { api } from "./src/frontend/api-client/apiClient.js"; // prompt32 Task 1
 // flag is ON, else it renders the legacy in-blob PICOTab below.
 import { ProtocolModulePanel, TIMEFRAME_OPTIONS, timeframeComplete, STUDY_DESIGNS } from "./src/features/protocol/index.js";
 import { workflowStateFlagEnabled } from "./src/services/workflowState/api.js";
+import { makeWorkflowMenuRules } from "./src/frontend/pages/workflowMenu.js"; // prompt39 Task 6
 // SearchEngine — separated concept→multi-database Search Builder. The Search tab
 // delegates to SearchBuilderTab when the `searchEngine` flag is ON, else the
 // legacy in-blob SearchTab below.
@@ -1375,7 +1376,10 @@ function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",showCount
   return(<div style={{overflowX:"auto",width:"100%"}}>
     <svg id={svgId} width={live?"100%":W} height={H} viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet"
       style={{fontFamily:"'IBM Plex Mono',monospace",background:BG,borderRadius:8,display:"block",
-        ...(live?{width:"100%",height:"auto",maxWidth:Math.round(W*1.5),border:`1px solid ${dayLive?"#e2e8f0":"#1f2640"}`}:{})}}>
+        // prompt39 Task 4 — the live plot caps at its natural width; margin-inline
+        // auto CENTERS that capped block in the (wider) container instead of
+        // left-aligning it. Export render (live=false) is unaffected.
+        ...(live?{width:"100%",height:"auto",maxWidth:Math.round(W*1.5),margin:"0 auto",border:`1px solid ${dayLive?"#e2e8f0":"#1f2640"}`}:{})}}>
       <rect x={0} y={0} width={W} height={H} fill={BG}/>
       {/* Header row */}
       <text x={padL} y={26} fontSize={11} fill={FC.txt} fontWeight={700}>Study</text>
@@ -3992,6 +3996,9 @@ ${paperText.slice(0,15000)}`;
    nothing breaks for projects/orgs that have not enabled the engine. */
 function RoBTab({project,updateProject,activeId,setTab}){
   const[flag,setFlag]=useState(null); // null=checking
+  // prompt39 Task 3 — hide the overview intro header while a per-study assessment
+  // workspace is open, so the user focuses on the assessment tool itself.
+  const[inWorkspace,setInWorkspace]=useState(false);
   useEffect(()=>{let dead=false;
     (async()=>{
       // Persist any pending autosave first so the owner-scoped RoB engine reads
@@ -4008,11 +4015,12 @@ function RoBTab({project,updateProject,activeId,setTab}){
   const perms=projectPerms(project);
   const canEdit=!!perms.canEdit&&!project._readOnly;
   return(<div>
-    <SectionHeader icon="scale" title="Risk of Bias" desc="Outcome-level RoB 2 for this project — the engine proposes a judgement; you decide."/>
+    {!inWorkspace&&<SectionHeader icon="scale" title="Risk of Bias" desc="Outcome-level RoB 2 for this project — the engine proposes a judgement; you decide."/>}
     <ProjectRobPanel
       projectId={activeId}
       embedded
       canEdit={canEdit}
+      onWorkspaceChange={setInWorkspace}
       robTool={normalizeRobTool(project.robTool)}
       onSelectTool={id=>updateProject(activeId,p=>({...p,robTool:normalizeRobTool(id)}))}
       onContinue={setTab?(t=>setTab(t||"grade")):undefined}
@@ -7051,7 +7059,9 @@ const PHASES=["Plan","Search","Screen","Extract","Analyze","Report"];
 // prompt36 Task 3 — the MAIN workflow steps are every tab WITH a phase (Overview &
 // Project Control have phase:null). Navigating TO one of these auto-collapses the
 // left workflow menu into focus mode; Overview / Project Control never collapse.
-const WORKFLOW_TAB_IDS=new Set(TABS.filter(t=>t.phase).map(t=>t.id));
+// prompt39 Task 6 — CENTRALIZED workflow-menu collapse rules live in the pure,
+// unit-tested helper module; the monolith just binds them to its TABS config.
+const { workflowTabIds: WORKFLOW_TAB_IDS, shouldAutoCollapseWorkflowMenu } = makeWorkflowMenuRules(TABS);
 // prompt31 Part 7 — ultra-wide judgement: reading/form tabs keep a comfortable
 // centred max-width; data/workspace tabs (extraction, analysis, forest, RoB,
 // PRISMA…) use the full width. Screening renders its own full-bleed frame.
@@ -8233,7 +8243,14 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   // On the Screening tab the header runs LISTEN-ONLY (heartbeat:false) so the
   // embedded SiftProject keeps owning the fine-grained "Screening · …" location
   // without a double heartbeat; everywhere else the header heartbeats the tab.
-  const { user: authUser } = useAuth();
+  const { user: authUser, setUser } = useAuth();
+  // prompt39 Task 5 — per-user workflow-menu mode (server-backed, cross-device,
+  // mirrors themePreference). null/anything-else ⇒ "auto" (current default).
+  const workflowMenuMode = authUser?.workflowMenuMode === "pinned" ? "pinned" : "auto";
+  // prompt39 Task 5 — when the saved mode is "pinned" (incl. after async auth load),
+  // keep the menu open. "auto" respects the user's manual collapse choice. Placed
+  // here (above any conditional return) to keep hook order stable.
+  useEffect(()=>{ if(workflowMenuMode==="pinned") setNavCollapsed(false); },[workflowMenuMode]);
   const linkedSp = linkedSiftId(project);
   // prompt24 follow-up (limitation #1) — presence is scoped to the linked
   // ScreenProject. A project that has none yet would show NO presence anywhere
@@ -8489,10 +8506,20 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   // special case); the ☰ button in the universal header toggles it everywhere.
   const focus=navCollapsed;
   const toggleNav=()=>setNavCollapsed(c=>!c);
-  // prompt36 Task 3 — navigating TO a main workflow step (via a left-menu workflow
-  // item or the "Next" button) auto-collapses the menu into focus mode. Project
-  // Overview / Project Control (phase:null) navigate WITHOUT collapsing.
-  const goTab=(id)=>{ setTab(id); if(WORKFLOW_TAB_IDS.has(id)) setNavCollapsed(true); };
+  // prompt36/39 — navigating TO a main workflow step (via a left-menu workflow item
+  // or the "Next" button) auto-collapses the menu into focus mode, but ONLY when the
+  // user's menu mode is "auto" (not pinned). Overview / Project Control never
+  // collapse. The rule is centralized in shouldAutoCollapseWorkflowMenu (Task 6).
+  const goTab=(id)=>{ setTab(id); if(shouldAutoCollapseWorkflowMenu({toId:id,mode:workflowMenuMode})) setNavCollapsed(true); };
+  // prompt39 Task 5 — pin/auto toggle. Persists per-user (best-effort) and updates
+  // the cached auth user so the choice survives refresh/relogin cross-device.
+  // Pinning also expands the menu immediately ("stays open").
+  const setWorkflowMenuMode=(mode)=>{
+    const next=mode==="pinned"?"pinned":"auto";
+    if(typeof setUser==="function") setUser(u=>u?{...u,workflowMenuMode:next}:u);
+    if(next==="pinned") setNavCollapsed(false);
+    try{ api.profile.update({workflowMenuMode:next}); }catch{ /* best-effort persist */ }
+  };
   return(<div style={{display:"flex",minHeight:"100vh",background:C.bg,fontFamily:"'IBM Plex Sans',sans-serif",color:C.txt}}>
     <style>{`
       @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;700&display=swap');
@@ -8785,10 +8812,28 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
         return(<div style={{padding:"8px 8px",flex:1,overflowY:"auto"}}>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"2px 8px",marginBottom:8}}>
             <span style={{fontSize:9,fontWeight:700,color:C.muted,letterSpacing:0.8,textTransform:"uppercase"}}>Workflow</span>
-            <span style={{
-              fontSize:9,fontWeight:600,fontFamily:"'IBM Plex Mono',monospace",
-              color:doneCount===wfTabs.length?C.grn:C.muted,
-            }}>{doneCount}/{wfTabs.length}</span>
+            <div style={{display:"flex",alignItems:"center",gap:6}}>
+              {/* prompt39 Tasks 5/7 — pin/auto-collapse toggle. SEPARATE from the
+                  header arrow (which collapses/expands NOW): pinned keeps the menu
+                  open during workflow navigation; auto lets it collapse. Saved
+                  per-user automatically. */}
+              <Tooltip content={workflowMenuMode==="pinned"?"Allow auto-collapse during workflow":"Pin workflow menu open"} wrapStyle={{display:"inline-flex"}}>
+                <button onClick={()=>setWorkflowMenuMode(workflowMenuMode==="pinned"?"auto":"pinned")}
+                  aria-label={workflowMenuMode==="pinned"?"Allow auto-collapse during workflow navigation":"Pin workflow menu open"}
+                  aria-pressed={workflowMenuMode==="pinned"}
+                  style={{display:"inline-flex",alignItems:"center",justifyContent:"center",width:21,height:21,borderRadius:5,
+                    background:workflowMenuMode==="pinned"?themeAlpha(C.acc,'1a'):"none",
+                    border:`1px solid ${workflowMenuMode==="pinned"?themeAlpha(C.acc,'45'):"transparent"}`,
+                    color:workflowMenuMode==="pinned"?C.acc:C.muted,cursor:"pointer",padding:0,
+                    transform:workflowMenuMode==="pinned"?"none":"rotate(45deg)",transition:"color 0.15s ease,background 0.15s ease"}}>
+                  <Icon name="pin" size={12}/>
+                </button>
+              </Tooltip>
+              <span style={{
+                fontSize:9,fontWeight:600,fontFamily:"'IBM Plex Mono',monospace",
+                color:doneCount===wfTabs.length?C.grn:C.muted,
+              }}>{doneCount}/{wfTabs.length}</span>
+            </div>
           </div>
           {PHASES.map((phase,pi)=>{
             const steps=TABS.filter(t=>t.phase===phase);

@@ -31,6 +31,11 @@ model User {
   // Nullable → `prisma db push` stays additive-safe. Mirrors dashboardPreferences;
   // cross-device, server-backed.
   screeningShortcuts String?
+  // prompt39 Task 5 — per-user left workflow-menu mode: "pinned" (stay open, never
+  // auto-collapse on workflow navigation) | "auto" (auto-collapse on workflow
+  // steps). null ⇒ "auto" (current default). Nullable → `prisma db push` stays
+  // additive-safe. Mirrors themePreference; cross-device, server-backed.
+  workflowMenuMode String?
   // prompt19 — aggregate ops analytics only. COUNTRY-LEVEL ONLY; no city/coords.
   // Captured best-effort at registration from a proxy country header (e.g.
   // CF-IPCountry) or an offline lookup; raw IP is never stored (only an optional

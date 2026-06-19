@@ -129,6 +129,13 @@ const ICON_PATHS = {
       <path d="M8.2 10.5V7.3a3.8 3.8 0 0 1 7.6 0v3.2" />
     </>
   ),
+  // prompt39 Task 5 — pin/thumbtack for the workflow-menu pin toggle.
+  pin: (
+    <>
+      <path d="M9 4h6l-1 5 3 3v2H7v-2l3-3-1-5Z" />
+      <path d="M12 14v6" />
+    </>
+  ),
   search: (
     <>
       <circle cx="11" cy="11" r="6.8" />

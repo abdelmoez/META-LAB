@@ -13,7 +13,7 @@ import { resolveInstitutionInput, invalidateInstitutionCandidates } from '../ser
 // self-service profile (in addition to the legacy onboarding write path).
 const PROFILE_SELECT = {
   id: true, email: true, name: true, createdAt: true, lastActive: true,
-  themePreference: true, dashboardPreferences: true, screeningShortcuts: true,
+  themePreference: true, workflowMenuMode: true, dashboardPreferences: true, screeningShortcuts: true,
   primaryRole: true, researchField: true, mainUseCase: true, country: true,
   institutionOriginal: true, institutionCanonicalName: true, institutionRorId: true,
   institutionCity: true, institutionCountryName: true, institutionCountryCode: true,
@@ -46,12 +46,16 @@ export async function getProfile(req, res) {
  */
 export async function updateProfile(req, res) {
   try {
-    const { name, themePreference, dashboardPreferences, screeningShortcuts, institution, country } = req.body || {};
+    const { name, themePreference, workflowMenuMode, dashboardPreferences, screeningShortcuts, institution, country } = req.body || {};
     if (name !== undefined && typeof name !== 'string') {
       return res.status(400).json({ error: 'name must be a string' });
     }
     if (themePreference !== undefined && !['night', 'day'].includes(themePreference)) {
       return res.status(400).json({ error: 'themePreference must be "night" or "day"' });
+    }
+    // prompt39 Task 5 — workflow-menu mode: "pinned" | "auto", or null to clear.
+    if (workflowMenuMode !== undefined && workflowMenuMode !== null && !['pinned', 'auto'].includes(workflowMenuMode)) {
+      return res.status(400).json({ error: 'workflowMenuMode must be "pinned" or "auto"' });
     }
     // prompt23 Task 2 (follow-up) — dashboard view prefs, stored as a small JSON
     // string. Accepts an object or a JSON string; null clears it. Capped to keep
@@ -104,6 +108,7 @@ export async function updateProfile(req, res) {
       data: {
         ...(name !== undefined ? { name: name.trim() || null } : {}),
         ...(themePreference !== undefined ? { themePreference } : {}),
+        ...(workflowMenuMode !== undefined ? { workflowMenuMode } : {}),
         ...dashPatch,
         ...shortcutPatch,
         ...instPatch,
