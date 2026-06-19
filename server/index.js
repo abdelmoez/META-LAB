@@ -36,6 +36,7 @@ import robRouter          from './routes/rob.js';
 import onboardingRouter   from './routes/onboarding.js';
 import institutionsRouter from './routes/institutions.js';
 import workflowStateRouter from './routes/workflowState.js';
+import searchEngineRouter  from './routes/searchEngine.js';
 
 import { initDefaultSettings } from './controllers/settingsController.js';
 import { seedOnboardingQuestions } from './controllers/onboardingController.js';
@@ -111,6 +112,16 @@ const inviteLimiter = rateLimit({
 const institutionLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: process.env.NODE_ENV === 'production' ? 120 : 1000,
+  message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ── Rate limiter for the Search Engine (prompt: SearchEngine) — mesh/count fire
+// on debounced typing and proxy NLM with the server-side key, so cap per IP. ─────
+const searchEngineLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 600 : 2000,
   message: { error: 'Too many requests, please try again later' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -198,6 +209,12 @@ app.use('/api/events', eventsRouter);
 // (default OFF → 404) and the caller's META·LAB project access. :projectId is the
 // META·LAB Project id (the "review workspace").
 app.use('/api/workspaces', requireAuth, workflowStateRouter);
+
+// ── Separated Search Engine (BACKEND_CONTRACT.md) — requireAuth + dedicated
+// limiter at the mount; each handler gates on the `searchEngine` flag (default
+// OFF → 404). NLM proxies (mesh/count) keep the NCBI key server-side; per-project
+// load/save reuse the per-module workflow-state infra (moduleKey 'search').
+app.use('/api/search-builder', requireAuth, searchEngineLimiter, searchEngineRouter);
 
 // ── SPA serving with server-injected theme (prompt37 follow-up) ────────────────
 // When a production build exists (or SERVE_SPA=true), serve dist/ assets and the

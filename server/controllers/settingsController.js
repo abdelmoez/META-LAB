@@ -61,6 +61,11 @@ const DEFAULTS = {
     // using the whole-project blob autosave. When ON, migrated modules (protocol)
     // load/save per-module with revision-based conflict detection.
     serverBackedWorkflowState: false,
+    // SearchEngine — the separated concept→multi-database Search Builder engine.
+    // Default OFF: /api/search-builder/* endpoints 404 and the monolith keeps the
+    // legacy SearchTab. When ON, the new SearchBuilderTab renders (NLM-backed MeSH
+    // lookup + live PubMed counts) and persists per project (module 'search').
+    searchEngine: false,
   }),
 };
 

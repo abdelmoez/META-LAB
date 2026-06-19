@@ -36,6 +36,10 @@ import { api } from "./src/frontend/api-client/apiClient.js"; // prompt32 Task 1
 // flag is ON, else it renders the legacy in-blob PICOTab below.
 import { ProtocolModulePanel, TIMEFRAME_OPTIONS, timeframeComplete, STUDY_DESIGNS } from "./src/features/protocol/index.js";
 import { workflowStateFlagEnabled } from "./src/services/workflowState/api.js";
+// SearchEngine — separated concept→multi-database Search Builder. The Search tab
+// delegates to SearchBuilderTab when the `searchEngine` flag is ON, else the
+// legacy in-blob SearchTab below.
+import { SearchBuilderTab, searchBuilderApi, loadSearch as sbLoad, saveSearch as sbSave, searchEngineFlagEnabled } from "./src/features/searchBuilder/index.js";
 
 /* ════════════ UTILS ════════════ */
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -2084,6 +2088,21 @@ function PICODispatcher({project,updNested,upd,lockCtx,activeId}){
   if(!flag) return <PICOTab project={project} updNested={updNested} upd={upd} lockCtx={lockCtx}/>;
   return <ProtocolModulePanel projectId={activeId} project={project} lockCtx={lockCtx}
     onMirror={(patch)=>Object.entries(patch).forEach(([k,v])=>updNested("pico",k,v))}/>;
+}
+
+/* SearchEngine — dispatcher. When the searchEngine flag is ON, the Search tab IS
+   the new separated Search Builder engine (NLM-backed MeSH lookup + live PubMed
+   counts, persisted per project via /api/search-builder). When OFF (default), the
+   legacy in-blob SearchTab below is preserved unchanged so nothing breaks. */
+function SearchDispatcher({project,activeId,updNested,upd}){
+  const[flag,setFlag]=useState(null); // null=checking
+  useEffect(()=>{let dead=false;
+    (async()=>{ let v=false; try{ v=await searchEngineFlagEnabled(); }catch{ v=false; } if(!dead) setFlag(!!v); })();
+    return()=>{dead=true;};
+  },[]);
+  if(flag===null) return <div style={{padding:40,textAlign:"center",color:C.muted,fontSize:13}}>Loading Search…</div>;
+  if(!flag) return <SearchTab project={project} updNested={updNested} upd={upd}/>;
+  return <SearchBuilderTab projectId={activeId} pico={project.pico} api={searchBuilderApi} loadSearch={sbLoad} saveSearch={sbSave}/>;
 }
 
 /* ════════════ TAB: SEARCH ════════════ */
@@ -9057,7 +9076,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
             onDeleted={(delId)=>{setProjects(prev=>prev.filter(p=>p.id!==delId));if(onBackToProjects)onBackToProjects();else setActiveId(null);}}/>}
           {tab==="pico"&&<PICODispatcher project={project} activeId={activeId} updNested={updNested} upd={upd} lockCtx={{pid:spId,myUserId:authUser?.id,locks:presenceLocks}}/>}
           {tab==="prospero"&&<PROSPEROTab project={project} updNested={updNested} upd={upd}/>}
-          {tab==="search"&&<SearchTab project={project} updNested={updNested} upd={upd}/>}
+          {tab==="search"&&<SearchDispatcher project={project} activeId={activeId} updNested={updNested} upd={upd}/>}
           {tab==="prisma"&&<PRISMATab project={project} updNested={updNested} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
           {tab==="extraction"&&<ExtractionTab project={project} updateProject={updateProject} activeId={activeId}/>}
           {tab==="rob"&&<RoBTab project={project} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}

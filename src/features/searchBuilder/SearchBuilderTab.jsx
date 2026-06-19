@@ -1,0 +1,766 @@
+import { useState, useMemo, useEffect, useRef, useCallback } from "react";
+import { C, FONT, MONO, alpha } from "../../frontend/theme/tokens.js";  // SearchEngine: adapt to app theme (day/night + brand)
+
+/* ════════════════════════════════════════════════════════════════════════════
+   SEARCH BUILDER TAB  ·  production component for the META·LAB SaaS app
+   ----------------------------------------------------------------------------
+   This is the deterministic concept → multi-database query engine as a single
+   embeddable tab. It is designed to be dropped into the app and wired to a
+   backend by another developer/agent.
+
+   ┌─ INTEGRATION POINTS (search this file for "INTEGRATION:") ────────────────┐
+   │ 1. PICO source      — props.pico  (read the app's existing PICO)          │
+   │ 2. Backend API      — props.api   (mesh lookup, pubmed count)            │
+   │ 3. Persistence      — props.loadSearch / props.saveSearch (per project)   │
+   │ 4. Project identity — props.projectId                                     │
+   └──────────────────────────────────────────────────────────────────────────┘
+
+   Everything below the ENGINE banner is pure logic with no app dependencies.
+   See BACKEND_CONTRACT.md for the exact API shapes and INTEGRATION_README.md
+   for wiring steps. Nothing here calls NLM directly — all network goes through
+   props.api so the API key stays server-side.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+
+/* ════════════════════════════════════════════════════════════════════════════
+   THEME  (matches META·LAB; safe to replace with the app's design tokens)
+   ════════════════════════════════════════════════════════════════════════════ */
+// Theme adapted to the app design tokens (C/FONT/MONO/alpha imported above) so
+// the Search Builder follows day/night + the global brand color.
+const SANS=FONT;
+const CONCEPT_COLORS=["#2dd4bf","#818cf8","#f0abfc","#5eead4","#c4b5fd","#67e8f9","#a5b4fc","#6ee7b7"];
+const uid=()=>Math.random().toString(36).slice(2,9);
+
+
+/* ════════════════════════════════════════════════════════════════════════════
+   ENGINE — pure functions, no app/network dependencies
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/* ---- offline fallback vocabulary (used only if the backend/NLM is down) ----
+   This is intentionally small. The live MeSH data comes from the backend
+   (props.api.meshLookup). When the backend is unreachable we degrade to this
+   so the tab keeps working in "limited mode" instead of dying. */
+const CORE_VOCAB={
+  "type 2 diabetes":{mesh:"Diabetes Mellitus, Type 2",meshUI:"D003924",tree:"C18.452.394.750.149, C19.246.300",
+    emtree:"non insulin dependent diabetes mellitus",
+    synonyms:["NIDDM","Type 2 Diabetes Mellitus","T2DM","Diabetes Mellitus, Noninsulin-Dependent","Maturity-Onset Diabetes","MODY"],
+    scope:"A subclass of diabetes mellitus not insulin-responsive or dependent (NIDDM).",children:["Diabetes Mellitus, Lipoatrophic","Prediabetic State"]},
+  "sglt2 inhibitors":{mesh:"Sodium-Glucose Transporter 2 Inhibitors",meshUI:"D000077203",tree:"D27.505.519.389.745",
+    emtree:"sodium glucose cotransporter 2 inhibitor",
+    synonyms:["SGLT2 inhibitor","gliflozin","empagliflozin","dapagliflozin","canagliflozin"],
+    scope:"Compounds that inhibit sodium-glucose transporter 2.",children:[]},
+  "heart failure":{mesh:"Heart Failure",meshUI:"D006333",tree:"C14.280.434",emtree:"heart failure",
+    synonyms:["cardiac failure","congestive heart failure","CHF","HFrEF","HFpEF"],
+    scope:"Inability of the heart to pump enough blood to meet metabolic needs.",children:["Heart Failure, Systolic","Heart Failure, Diastolic"]},
+  "hypertension":{mesh:"Hypertension",meshUI:"D006973",tree:"C14.907.489",emtree:"hypertension",
+    synonyms:["high blood pressure","HTN"],scope:"Persistently high systemic arterial blood pressure.",children:["Hypertension, Malignant","Hypertension, Renal"]},
+  "stroke":{mesh:"Stroke",meshUI:"D020521",tree:"C10.228.140.300.775",emtree:"cerebrovascular accident",
+    synonyms:["cerebrovascular accident","CVA","brain attack"],scope:"Sudden neurological deficit from ischemia or hemorrhage.",children:["Ischemic Stroke","Hemorrhagic Stroke"]},
+  "mortality":{mesh:"Mortality",meshUI:"D009026",tree:"E05.318.308.985.550.475",emtree:"mortality",
+    synonyms:["death","survival","all-cause mortality"],scope:"All deaths in a given population.",children:["Hospital Mortality","Infant Mortality"]},
+};
+
+const DBS=[
+  {id:"pubmed",label:"PubMed",color:"#3b82f6",live:true},
+  {id:"embase",label:"Embase",color:"#8b5cf6",live:false},
+  {id:"cochrane",label:"Cochrane CENTRAL",color:"#ec4899",live:false},
+];
+
+/* ---- syntax renderers (verified against library guides; see BACKEND_CONTRACT) ---- */
+function renderControlled(term,dbId){
+  const v=term.vocab, t=(term.text||"").trim();
+  if(dbId==="pubmed"){ const d=v?.mesh||t; return `"${d}"[Mesh${term.noExplode?":NoExp":""}]`; }
+  if(dbId==="cochrane"){ const d=v?.mesh||t; return `[mh ${term.noExplode?"^":""}"${d}"]`; }
+  if(dbId==="embase"){ const d=v?.emtree||t.toLowerCase(); return `'${d}'/${term.noExplode?"de":"exp"}`; }
+  return t;
+}
+function freeTextToken(term){
+  let t=(term.text||"").trim();
+  const trunc=term.truncate&&!t.includes(" ");
+  if(trunc) t=t.replace(/\*+$/,"")+"*";
+  const phrase=(t.includes(" ")||term.phrase)&&!trunc;
+  return { token: phrase?`"${t}"`:t, field: term.field||"tiab" };
+}
+function pubmedFree(term){
+  const {token,field}=freeTextToken(term);
+  const f=field==="ti"?"[ti]":field==="all"?"[all]":"[tiab]";
+  return `${token}${f}`;
+}
+function fieldSuffix(dbId,field){
+  if(dbId==="cochrane") return field==="ti"?":ti":":ti,ab,kw";
+  if(dbId==="embase")   return field==="ti"?":ti":field==="all"?":ab,ti,kw":":ab,ti";
+  return "";
+}
+function renderTerm(term,dbId){
+  if(!((term.text||"").trim())) return "";
+  if(term.type==="controlled") return renderControlled(term,dbId);
+  if(dbId==="pubmed") return pubmedFree(term);
+  const {token,field}=freeTextToken(term);
+  return `${token}${fieldSuffix(dbId,field)}`;
+}
+function renderConcept(concept,dbId){
+  const live=concept.terms.filter(t=>(t.text||"").trim());
+  if(!live.length) return "";
+  if(dbId==="pubmed"){
+    const parts=live.map(t=>t.type==="controlled"?renderControlled(t,dbId):pubmedFree(t));
+    return parts.length===1?parts[0]:"("+parts.join(" OR ")+")";
+  }
+  const controlled=live.filter(t=>t.type==="controlled").map(t=>renderControlled(t,dbId));
+  const freeByField={};
+  live.filter(t=>t.type==="freetext").forEach(t=>{
+    const {token,field}=freeTextToken(t);
+    (freeByField[field]=freeByField[field]||[]).push(token);
+  });
+  const freeGroups=Object.entries(freeByField).map(([field,tokens])=>{
+    const inner=tokens.length===1?tokens[0]:"("+tokens.join(" OR ")+")";
+    return `${inner}${fieldSuffix(dbId,field)}`;
+  });
+  const all=[...controlled,...freeGroups];
+  return all.length===1?all[0]:"("+all.join(" OR ")+")";
+}
+function renderSearch(concepts,dbId){
+  const blocks=concepts.map(c=>({label:c.label,q:renderConcept(c,dbId),op:c.op||"AND"})).filter(b=>b.q);
+  if(!blocks.length) return {full:"",lines:[]};
+  const lines=blocks.map((b,i)=>({n:i+1,label:b.label,q:b.q,op:i<blocks.length-1?b.op:null}));
+  let full="";
+  blocks.forEach((b,i)=>{ full+=(i>0?` ${blocks[i-1].op||"AND"} `:"")+b.q; });
+  return {full,lines};
+}
+
+/* ---- plain-English mirror ---- */
+function plainTerm(term){
+  const t=(term.text||"").trim(); if(!t) return "";
+  if(term.type==="controlled"){
+    const exp=term.noExplode?"":" (and narrower topics under it)";
+    return `articles officially tagged with the subject “${term.vocab?.mesh||t}”${exp}`;
+  }
+  const where=term.field==="ti"?"the title":term.field==="all"?"anywhere in the record":"the title or abstract";
+  const how=term.truncate&&!t.includes(" ")?`words starting with “${t.replace(/\*+$/,"")}”`:`“${t}”`;
+  return `articles mentioning ${how} in ${where}`;
+}
+function plainConcept(concept){
+  const parts=concept.terms.filter(t=>t.text.trim()).map(plainTerm);
+  if(!parts.length) return "";
+  return parts.length===1?parts[0]:parts.join(", OR ");
+}
+function plainSearch(concepts){
+  const blocks=concepts.map(c=>({label:c.label,p:plainConcept(c),op:c.op||"AND"})).filter(b=>b.p);
+  if(!blocks.length) return "";
+  return blocks.map((b,i)=>{
+    const joiner=i===0?"":(blocks[i-1].op==="OR"?"OR — ":"AND also — ");
+    return `${joiner}${b.label?b.label+": ":""}${b.p}`;
+  }).join("\n");
+}
+
+/* ---- breadth signal (no fabricated numbers anywhere) ---- */
+function termBreadth(term){
+  if(term.type==="controlled") return term.noExplode?2:4;
+  let b=3;
+  if(term.field==="ti") b-=1; if(term.field==="all") b+=1;
+  if(term.truncate&&!term.text.includes(" ")) b+=1;
+  if((term.text||"").includes(" ")||term.phrase) b-=1;
+  return Math.max(1,Math.min(5,b));
+}
+function searchStats(concepts){
+  let controlled=0,free=0;
+  concepts.forEach(c=>c.terms.forEach(t=>{ if(t.text.trim()){ t.type==="controlled"?controlled++:free++; }}));
+  return {concepts:concepts.filter(c=>c.terms.some(t=>t.text.trim())).length,controlled,free};
+}
+function fmtCount(n){
+  if(n==null) return "—";
+  if(n>=1000000) return (n/1000000).toFixed(1)+"M";
+  if(n>=1000) return (n/1000).toFixed(n>=100000?0:1)+"k";
+  return String(n);
+}
+
+
+/* ════════════════════════════════════════════════════════════════════════════
+   DEFAULT API ADAPTER
+   INTEGRATION: the app passes a real `api` prop. This default is a safe stub
+   that (a) uses the offline CORE_VOCAB for mesh lookup, and (b) returns null
+   for counts (so the UI shows "—"). Replace by passing props.api — see
+   BACKEND_CONTRACT.md. Do NOT call NLM from here; the real adapter calls the
+   app's backend, which proxies NLM with the server-side API key.
+   ════════════════════════════════════════════════════════════════════════════ */
+const defaultApi={
+  // returns { mesh, meshUI, tree, emtree, synonyms[], scope, children[], source } | null
+  async meshLookup(text){
+    const key=(text||"").trim().toLowerCase();
+    if(CORE_VOCAB[key]) return {...CORE_VOCAB[key],source:"core"};
+    for(const k of Object.keys(CORE_VOCAB)){
+      if(k.includes(key)||key.includes(k)) return {...CORE_VOCAB[k],source:"core"};
+      if(CORE_VOCAB[k].synonyms.some(s=>s.toLowerCase()===key)) return {...CORE_VOCAB[k],source:"core"};
+    }
+    return null;
+  },
+  // returns an integer count, or null if counts are unavailable (offline mode)
+  async pubmedCount(_queryString){ return null; },
+};
+
+
+/* ════════════════════════════════════════════════════════════════════════════
+   SMALL UI
+   ════════════════════════════════════════════════════════════════════════════ */
+function btn(variant="ghost"){
+  const base={padding:"7px 14px",borderRadius:8,border:"none",cursor:"pointer",fontSize:12,fontWeight:600,fontFamily:SANS,transition:"all .15s",display:"inline-flex",alignItems:"center",gap:6};
+  if(variant==="primary") return {...base,background:`linear-gradient(135deg,${C.acc},${C.acc2})`,color:C.accText};
+  if(variant==="danger") return {...base,background:"transparent",color:C.red,border:`1px solid ${alpha(C.red,"44")}`};
+  if(variant==="solid") return {...base,background:C.card2,color:C.txt,border:`1px solid ${C.brd2}`};
+  return {...base,background:"transparent",color:C.muted,border:`1px solid ${C.brd2}`};
+}
+const inputStyle={background:C.surf,border:`1px solid ${C.brd}`,borderRadius:7,padding:"7px 10px",color:C.txt,fontFamily:SANS,fontSize:12,outline:"none",width:"100%",boxSizing:"border-box"};
+
+function Help({text}){
+  const [open,setOpen]=useState(false);
+  return(
+    <span style={{position:"relative",display:"inline-block"}}>
+      <button onClick={()=>setOpen(o=>!o)} title="What's this?"
+        style={{width:16,height:16,borderRadius:"50%",border:`1px solid ${C.brd2}`,background:open?C.acc:"transparent",
+          color:open?C.accText:C.muted,fontSize:10,fontWeight:700,cursor:"pointer",lineHeight:1,padding:0}}>?</button>
+      {open&&(
+        <span style={{position:"absolute",zIndex:80,top:"calc(100% + 6px)",left:0,width:280,background:C.card,
+          border:`1px solid ${alpha(C.acc,"55")}`,borderRadius:9,padding:"10px 12px",fontSize:11,lineHeight:1.55,color:C.txt2,
+          boxShadow:"0 14px 40px #000a",fontWeight:400,whiteSpace:"normal"}}>
+          {text}
+          <button onClick={()=>setOpen(false)} style={{display:"block",marginTop:8,...btn("ghost"),fontSize:10,padding:"2px 8px"}}>Got it</button>
+        </span>
+      )}
+    </span>
+  );
+}
+function Lbl({plain,jargon}){
+  return(<span style={{display:"inline-flex",alignItems:"baseline",gap:5}}>
+    <span>{plain}</span>{jargon&&<span style={{fontFamily:MONO,fontSize:9,color:C.dim,opacity:.8}}>{jargon}</span>}
+  </span>);
+}
+function BreadthDots({term}){
+  const b=termBreadth(term);
+  return(<span title={`Relative breadth: ${["narrowest","narrow","medium","broad","broadest"][b-1]}`}
+    style={{display:"inline-flex",alignItems:"center",gap:2}}>
+    {[1,2,3,4,5].map(i=><span key={i} style={{width:4,height:4,borderRadius:"50%",background:i<=b?C.acc:C.brd2}}/>)}
+  </span>);
+}
+
+/* MeSH detail panel (entry terms + narrower terms + scope) */
+function MeSHDetail({vocab,term,pinned,onClose}){
+  if(!vocab) return null;
+  return(
+    <div style={{background:C.card,border:`1px solid ${alpha(C.acc,"55")}`,borderRadius:10,padding:13,width:320,boxShadow:"0 16px 48px #000a",fontSize:11,lineHeight:1.55}}>
+      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
+        <span style={{fontWeight:700,fontSize:12,color:C.acc,fontFamily:MONO}}>{vocab.mesh}</span>
+        {pinned&&<button onClick={onClose} style={{marginLeft:"auto",background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:14}}>×</button>}
+      </div>
+      {vocab.scope&&<div style={{color:C.muted,marginBottom:9,fontStyle:"italic"}}>{vocab.scope}</div>}
+      <div style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase",marginBottom:4}}>
+        Free-text covered (entry terms){vocab.synonyms?` · ${vocab.synonyms.length}`:""}
+      </div>
+      <div style={{marginBottom:9}}>
+        {(vocab.synonyms||[]).map((s,i)=>(
+          <span key={i} style={{display:"inline-block",background:C.surf,border:`1px solid ${C.brd2}`,borderRadius:5,padding:"1px 7px",margin:"0 4px 4px 0",fontFamily:MONO,fontSize:10,color:C.txt2}}>{s}</span>
+        ))}
+      </div>
+      <div style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase",marginBottom:4}}>
+        {term?.noExplode?"Narrower terms (NOT included — explode off)":"Narrower terms added by explode"}
+      </div>
+      {vocab.children&&vocab.children.length?(
+        <div style={{opacity:term?.noExplode?0.45:1}}>
+          {vocab.children.map((c,i)=>(
+            <div key={i} style={{display:"flex",gap:6,padding:"1px 0",color:C.txt2}}>
+              <span style={{color:term?.noExplode?C.dim:C.grn}}>{term?.noExplode?"✕":"└"}</span>
+              <span style={{fontFamily:MONO,fontSize:10}}>{c}</span>
+            </div>
+          ))}
+        </div>
+      ):<div style={{color:C.dim,fontStyle:"italic"}}>No narrower terms.</div>}
+      <div style={{marginTop:9,paddingTop:8,borderTop:`1px solid ${C.brd}`,fontSize:9.5,color:C.dim,display:"flex",justifyContent:"space-between"}}>
+        <span>Tree: {vocab.tree||"—"} · UI: {vocab.meshUI||"—"}</span>
+        <span style={{color:vocab.source==="live"||vocab.source==="live-nlm"?C.grn:C.yel}}>
+          {vocab.source==="live"||vocab.source==="live-nlm"?"● live NLM":"● core (limited)"}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/* term chip */
+function TermChip({term,dbId,color,onEdit,onRemove}){
+  const rendered=renderTerm(term,dbId);
+  const isControlled=term.type==="controlled";
+  const matched=isControlled&&term.vocab;
+  const [hover,setHover]=useState(false);
+  const [pinned,setPinned]=useState(false);
+  const showPanel=(hover||pinned)&&matched;
+  const live=DBS.find(d=>d.id===dbId)?.live;
+  const chipStyle=isControlled
+    ? {background:matched?`${alpha(color,"1a")}`:`${alpha(C.yel,"14")}`,border:`1px solid ${matched?alpha(color,"88"):alpha(C.yel,"66")}`}
+    : {background:"transparent",border:`1px dashed ${C.brd2}`};
+  return(
+    <span style={{position:"relative",display:"inline-block",marginRight:6,marginBottom:6}}
+      onMouseEnter={()=>matched&&setHover(true)} onMouseLeave={()=>setHover(false)}>
+      <span style={{display:"inline-flex",alignItems:"center",gap:6,borderRadius:7,padding:"4px 8px",cursor:matched?"pointer":"default",...chipStyle}}
+        onClick={()=>matched&&setPinned(p=>!p)}>
+        {isControlled
+          ? <span style={{width:8,height:8,borderRadius:2,background:matched?color:C.yel,flexShrink:0}}/>
+          : <span style={{width:8,height:8,borderRadius:"50%",border:`1.5px solid ${C.muted}`,flexShrink:0}}/>}
+        <span style={{fontFamily:MONO,fontSize:11,color:isControlled?C.txt:C.txt2}}>{rendered||term.text}</span>
+        {isControlled&&<span style={{fontSize:8,fontWeight:700,letterSpacing:.5,color:matched?color:C.yel,textTransform:"uppercase",opacity:.85}}>{matched?"MeSH":"MeSH?"}</span>}
+        {!isControlled&&<span style={{fontSize:8,fontWeight:700,letterSpacing:.5,color:C.muted,textTransform:"uppercase",opacity:.7}}>text</span>}
+        <BreadthDots term={term}/>
+        <button onClick={e=>{e.stopPropagation();onEdit();}} style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:11,padding:0}}>✎</button>
+        <button onClick={e=>{e.stopPropagation();onRemove();}} style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:13,padding:0,lineHeight:1}}>×</button>
+      </span>
+      {showPanel&&(
+        <span style={{position:"absolute",zIndex:60,top:"100%",left:0,paddingTop:4}}>
+          <MeSHDetail vocab={term.vocab} term={term} pinned={pinned} onClose={()=>{setPinned(false);setHover(false);}}/>
+        </span>
+      )}
+    </span>
+  );
+}
+
+/* term editor */
+function TermEditor({term,onChange,onClose,onConvert,onLookup}){
+  const lk=term.vocab;
+  const baseBreadth=termBreadth(term);
+  const Lever=({label,sub,active,onClick,nextTerm})=>{
+    let dir=null;
+    if(nextTerm&&!active){
+      const nb=termBreadth(nextTerm);
+      dir=nb>baseBreadth?"broader":nb<baseBreadth?"narrower":"similar";
+    }
+    return(
+      <button onClick={onClick} style={{...btn(active?"primary":"ghost"),fontSize:10,flex:1,flexDirection:"column",alignItems:"center",gap:1,padding:"6px 4px"}}>
+        <span style={{display:"inline-flex",alignItems:"baseline",gap:3}}>{label}{sub&&<span style={{fontFamily:MONO,fontSize:8,opacity:.6}}>{sub}</span>}</span>
+        {dir&&<span style={{fontSize:8,opacity:.85,color:dir==="broader"?C.grn:dir==="narrower"?C.yel:C.muted}}>{dir==="broader"?"↑ broader":dir==="narrower"?"↓ narrower":"≈ similar"}</span>}
+        {active&&<span style={{fontSize:8,opacity:.6,color:C.acc}}>current</span>}
+      </button>
+    );
+  };
+  return(
+    <div style={{position:"absolute",zIndex:70,marginTop:6,background:C.card,border:`1px solid ${C.brd2}`,borderRadius:10,padding:14,width:360,boxShadow:"0 16px 48px #000a"}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
+        <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase"}}>Edit term</span>
+        <BreadthDots term={term}/>
+      </div>
+      <input autoFocus value={term.text}
+        onChange={e=>onChange({...term,text:e.target.value})}
+        onBlur={e=>onLookup&&onLookup(e.target.value)}
+        style={{...inputStyle,marginBottom:10}} placeholder="term or phrase"/>
+      <div style={{display:"flex",gap:6,marginBottom:10}}>
+        <button onClick={()=>onChange({...term,type:"freetext"})} style={{...btn(term.type==="freetext"?"primary":"ghost"),fontSize:11,flex:1}}><Lbl plain="Plain words" jargon="free-text"/></button>
+        <button onClick={()=>onLookup&&onLookup(term.text,true)} style={{...btn(term.type==="controlled"?"primary":"ghost"),fontSize:11,flex:1}}><Lbl plain="Subject term" jargon="MeSH"/></button>
+        <Help text="Two ways to search the same idea. “Subject term” (MeSH) finds articles a librarian tagged with this topic — precise, but misses very recent papers. “Plain words” finds your exact wording — catches new papers and author phrasing. Good searches use both."/>
+      </div>
+      {term.type==="controlled"&&(lk?(
+        <div style={{background:C.surf,border:`1px solid ${C.brd}`,borderRadius:7,padding:10,marginBottom:10,fontSize:11}}>
+          <div style={{color:C.grn,fontWeight:600,marginBottom:4}}>✓ Matched subject: {lk.mesh}</div>
+          <div style={{display:"flex",alignItems:"center",gap:6,margin:"6px 0 4px"}}>
+            <span style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase"}}>Include narrower topics?</span>
+            <span style={{fontFamily:MONO,fontSize:9,color:C.dim}}>explode</span>
+            <Help text="A subject term sits in a tree with more specific topics beneath it. “Include narrower” (explode) also searches everything underneath — broader. “Just this topic” searches only the exact term — narrower."/>
+          </div>
+          <div style={{display:"flex",gap:6}}>
+            <Lever label="Include narrower" active={!term.noExplode} onClick={()=>onChange({...term,noExplode:false})} nextTerm={{...term,noExplode:false}}/>
+            <Lever label="Just this topic" active={!!term.noExplode} onClick={()=>onChange({...term,noExplode:true})} nextTerm={{...term,noExplode:true}}/>
+          </div>
+          <div style={{fontSize:10,color:C.muted,marginTop:7,lineHeight:1.5}}>
+            {term.noExplode?`Searches only "${lk.mesh}" — excludes ${(lk.children||[]).length} narrower topic(s).`:`Also includes ${(lk.children||[]).length} narrower topic(s).`}
+          </div>
+        </div>
+      ):(
+        <div style={{background:C.surf,border:`1px solid ${C.brd}`,borderRadius:7,padding:10,marginBottom:10,fontSize:11,color:C.yel}}>
+          No matching subject term found. It will search as plain words until a match is found.
+        </div>
+      ))}
+      {term.type==="freetext"&&(
+        <div style={{background:C.surf,border:`1px solid ${C.brd}`,borderRadius:7,padding:10,marginBottom:10}}>
+          <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+            <span style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase"}}>Where to look</span>
+            <Help text="Where in each article to search. “Title only” is strictest, “Title & abstract” is the usual choice, “Everywhere” is broadest and noisiest."/>
+          </div>
+          <div style={{display:"flex",gap:6,marginBottom:9}}>
+            <Lever label="Title" sub="ti" active={term.field==="ti"} onClick={()=>onChange({...term,field:"ti"})} nextTerm={{...term,field:"ti"}}/>
+            <Lever label="Title & abstract" sub="tiab" active={!term.field||term.field==="tiab"} onClick={()=>onChange({...term,field:"tiab"})} nextTerm={{...term,field:"tiab"}}/>
+            <Lever label="Everywhere" sub="all" active={term.field==="all"} onClick={()=>onChange({...term,field:"all"})} nextTerm={{...term,field:"all"}}/>
+          </div>
+          {!term.text.includes(" ")&&(<>
+            <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+              <span style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase"}}>Word endings</span>
+              <Help text="“Match endings” (truncation) catches different endings from one stem — diabet* finds diabetes, diabetic, diabetics. Broadens the search."/>
+            </div>
+            <div style={{display:"flex",gap:6}}>
+              <Lever label="Exact word" active={!term.truncate} onClick={()=>onChange({...term,truncate:false})} nextTerm={{...term,truncate:false}}/>
+              <Lever label={`Match endings (${term.text.replace(/\*+$/,"")}*)`} active={!!term.truncate} onClick={()=>onChange({...term,truncate:true})} nextTerm={{...term,truncate:true}}/>
+            </div>
+          </>)}
+          {term.text.includes(" ")&&(
+            <label style={{display:"flex",alignItems:"center",gap:7,marginTop:4,cursor:"pointer",color:C.txt2,fontSize:11}}>
+              <input type="checkbox" checked={term.phrase!==false} onChange={e=>onChange({...term,phrase:e.target.checked})}/>
+              Search as exact phrase (recommended for multi-word terms)
+            </label>
+          )}
+        </div>
+      )}
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+        {lk&&term.type==="freetext"&&<button onClick={onConvert} style={{...btn("ghost"),fontSize:10,color:C.acc}}>+ add {(lk.synonyms||[]).length} synonyms</button>}
+        <button onClick={onClose} style={{...btn("primary"),fontSize:11,marginLeft:"auto"}}>Done</button>
+      </div>
+    </div>
+  );
+}
+
+/* query output with live count (PubMed only) + edit override + plain English */
+function QueryOutput({dbId,concepts,override,setOverride,beginner,liveCount,countState}){
+  const db=DBS.find(d=>d.id===dbId);
+  const {full,lines}=useMemo(()=>renderSearch(concepts,dbId),[concepts,dbId]);
+  const plain=useMemo(()=>plainSearch(concepts),[concepts]);
+  const [copied,setCopied]=useState(false);
+  const [editing,setEditing]=useState(false);
+  const [draft,setDraft]=useState("");
+  const [showPlain,setShowPlain]=useState(false);
+
+  const edited=override!=null&&override!==full;
+  const shown=override!=null?override:full;
+  const copy=()=>{navigator.clipboard?.writeText(shown);setCopied(true);setTimeout(()=>setCopied(false),1500);};
+  const startEdit=()=>{setDraft(shown);setEditing(true);};
+  const saveEdit=()=>{setOverride&&setOverride(draft===full?null:draft);setEditing(false);};
+  const revert=()=>{setOverride&&setOverride(null);setEditing(false);};
+
+  if(!full) return <div style={{color:C.dim,fontSize:12,padding:14,fontStyle:"italic"}}>Add terms to see the {db.label} query…</div>;
+  return(
+    <div>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+        <span style={{width:9,height:9,borderRadius:3,background:db.color}}/>
+        <span style={{fontWeight:700,fontSize:13,color:C.txt}}>{db.label}</span>
+        {db.live
+          ? <span style={{fontSize:9,fontWeight:700,letterSpacing:.4,color:C.grn,background:`${alpha(C.grn,"18")}`,border:`1px solid ${alpha(C.grn,"55")}`,borderRadius:5,padding:"1px 6px"}}>● LIVE</span>
+          : <span style={{fontSize:9,fontWeight:700,letterSpacing:.4,color:C.muted,background:C.card2,border:`1px solid ${C.brd2}`,borderRadius:5,padding:"1px 6px"}}>MANUAL</span>}
+        {edited&&<span style={{fontSize:9.5,fontWeight:700,letterSpacing:.4,color:C.yel,background:`${alpha(C.yel,"1a")}`,border:`1px solid ${alpha(C.yel,"55")}`,borderRadius:5,padding:"1px 7px"}} title="Manually edited — no longer matches the concept builder">✎ EDITED</span>}
+        <span style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
+          {!edited&&db.live&&(
+            countState==="loading"
+              ? <span style={{fontFamily:MONO,fontSize:11,color:C.muted}}>counting…</span>
+              : liveCount!=null
+                ? <span style={{fontFamily:MONO,fontSize:12,color:C.acc,fontWeight:700}}>{fmtCount(liveCount)} <span style={{color:C.muted,fontWeight:400,fontSize:10}}>hits</span></span>
+                : null
+          )}
+          {!editing&&setOverride&&<button onClick={startEdit} style={{...btn("ghost"),fontSize:10,padding:"3px 9px"}}>✎ Edit query</button>}
+          <button onClick={copy} style={{...btn("ghost"),fontSize:10,padding:"3px 9px"}}>{copied?"✓ Copied":"Copy"}</button>
+        </span>
+      </div>
+
+      {edited&&!editing&&(
+        <div style={{background:`${alpha(C.yel,"10")}`,border:`1px solid ${alpha(C.yel,"40")}`,borderRadius:7,padding:"7px 10px",marginBottom:8,fontSize:11,color:C.txt2,display:"flex",alignItems:"center",gap:10}}>
+          <span style={{flex:1}}>This query was hand-edited and no longer reflects the concept builder. Concept changes won't appear here until you revert.</span>
+          <button onClick={()=>{setDraft(shown);setEditing(true);}} style={{...btn("ghost"),fontSize:10}}>Re-edit</button>
+          <button onClick={revert} style={{...btn("solid"),fontSize:10}}>↺ Revert</button>
+        </div>
+      )}
+
+      {!editing&&!edited&&(
+        <div style={{marginBottom:8}}>
+          {lines.map(l=>(
+            <div key={l.n} style={{display:"flex",gap:8,fontFamily:MONO,fontSize:11,lineHeight:1.7,color:C.txt2,padding:"2px 0"}}>
+              <span style={{color:C.dim,minWidth:24}}>#{l.n}</span>
+              <span style={{flex:1,wordBreak:"break-word"}}>{l.q}{l.op&&<span style={{color:C.acc,fontWeight:700}}>  {l.op}</span>}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {editing?(
+        <div>
+          <textarea autoFocus value={draft} onChange={e=>setDraft(e.target.value)}
+            style={{width:"100%",minHeight:120,background:C.bg,border:`1px solid ${alpha(C.acc,"66")}`,borderRadius:8,padding:12,fontFamily:MONO,fontSize:11,lineHeight:1.7,color:C.txt,boxSizing:"border-box",outline:"none",resize:"vertical"}}/>
+          <div style={{display:"flex",gap:8,marginTop:8}}>
+            <button onClick={saveEdit} style={{...btn("primary"),fontSize:11}}>Save edited query</button>
+            <button onClick={()=>setEditing(false)} style={{...btn("ghost"),fontSize:11}}>Cancel</button>
+            <button onClick={()=>setDraft(full)} style={{...btn("ghost"),fontSize:11,marginLeft:"auto"}}>Reset to generated</button>
+          </div>
+        </div>
+      ):(
+        <pre style={{background:C.bg,border:`1px solid ${edited?alpha(C.yel,"44"):C.brd}`,borderRadius:8,padding:12,fontFamily:MONO,fontSize:11,lineHeight:1.7,color:C.txt,whiteSpace:"pre-wrap",wordBreak:"break-word",margin:0,maxHeight:280,overflowY:"auto"}}>{shown}</pre>
+      )}
+
+      {!editing&&!edited&&plain&&(
+        <div style={{marginTop:8}}>
+          {!beginner&&<button onClick={()=>setShowPlain(s=>!s)} style={{...btn("ghost"),fontSize:10,padding:"3px 9px"}}>{showPlain?"Hide plain English":"Show in plain English"}</button>}
+          {(beginner||showPlain)&&(
+            <div style={{marginTop:6,background:`${alpha(C.grn,"0c")}`,border:`1px solid ${alpha(C.grn,"33")}`,borderRadius:8,padding:"10px 12px"}}>
+              <div style={{fontSize:9.5,fontWeight:700,color:C.grn,letterSpacing:.5,textTransform:"uppercase",marginBottom:6}}>In plain English, this finds:</div>
+              {plain.split("\n").map((line,i)=><div key={i} style={{fontSize:11.5,color:C.txt2,lineHeight:1.6,padding:"1px 0"}}>{line}</div>)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/* ════════════════════════════════════════════════════════════════════════════
+   MAIN EXPORT — SearchBuilderTab
+   PROPS (all optional except where noted; see INTEGRATION_README.md):
+     projectId   string   — INTEGRATION: which project this search belongs to
+     pico        object   — INTEGRATION: app's existing PICO {P,I,C,O}
+     api         object   — INTEGRATION: { meshLookup(text), pubmedCount(query) }
+     loadSearch  func     — INTEGRATION: async (projectId) => savedState|null
+     saveSearch  func     — INTEGRATION: async (projectId, state) => void
+   ════════════════════════════════════════════════════════════════════════════ */
+export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSearch}){
+  const A=api||defaultApi;
+  const [concepts,setConcepts]=useState([]);
+  const [overrides,setOverrides]=useState({});
+  const [activeDB,setActiveDB]=useState("pubmed");
+  const [beginner,setBeginner]=useState(false);
+  const [editing,setEditing]=useState(null);
+  const [adding,setAdding]=useState(null);
+  const [draft,setDraft]=useState("");
+  const [loaded,setLoaded]=useState(false);
+  const [limitedMode,setLimitedMode]=useState(false); // backend/NLM unreachable
+  const [counts,setCounts]=useState({});              // {dbId: number|null}
+  const [countState,setCountState]=useState("idle");  // idle|loading
+  const [picoDirty,setPicoDirty]=useState(false);
+
+  /* ── INTEGRATION: load saved search for this project on mount ───────────── */
+  useEffect(()=>{(async()=>{
+    if(loadSearch&&projectId){
+      try{
+        const saved=await loadSearch(projectId);
+        if(saved&&saved.concepts){ setConcepts(saved.concepts); setOverrides(saved.overrides||{}); }
+        else seedFromPICO(true);
+      }catch(e){ console.error("loadSearch failed",e); seedFromPICO(true); }
+    } else {
+      seedFromPICO(true);
+    }
+    setLoaded(true);
+  })();},[projectId]); // eslint-disable-line
+
+  /* ── INTEGRATION: autosave whenever the search changes (debounced) ──────── */
+  const saveTimer=useRef(null);
+  useEffect(()=>{
+    if(!loaded||!saveSearch||!projectId) return;
+    clearTimeout(saveTimer.current);
+    saveTimer.current=setTimeout(()=>{
+      saveSearch(projectId,{concepts,overrides}).catch(e=>console.error("saveSearch failed",e));
+    },800);
+    return ()=>clearTimeout(saveTimer.current);
+  },[concepts,overrides,loaded]); // eslint-disable-line
+
+  /* ── PICO change detection (for the Re-sync button) ────────────────────── */
+  const picoKey=[pico?.P,pico?.I,pico?.C,pico?.O].join("|");
+  const picoSnapshot=useRef(picoKey);
+  useEffect(()=>{ if(loaded&&picoKey!==picoSnapshot.current) setPicoDirty(true); },[picoKey,loaded]);
+
+  /* seed concepts from the app's existing PICO */
+  function seedFromPICO(silent){
+    const fields=[["P","Population"],["I","Intervention"],["C","Comparator"],["O","Outcome"]];
+    const seeded=[];
+    for(const [k,label] of fields){
+      const val=(pico&&pico[k]||"").trim();
+      if(!val) continue;
+      seeded.push({id:uid(),label,op:"AND",terms:[{id:uid(),text:val,type:"freetext",field:"tiab"}]});
+    }
+    setConcepts(seeded);
+    setOverrides({});
+    setPicoDirty(false);
+    picoSnapshot.current=picoKey;
+    // try to upgrade seeded terms to MeSH via the API (async, best-effort)
+    seeded.forEach(c=>c.terms.forEach(t=>tryLookup(c.id,t.id,t.text)));
+  }
+
+  /* ── MeSH lookup via API with offline fallback ─────────────────────────── */
+  const tryLookup=useCallback(async (cid,tid,text,forceControlled)=>{
+    try{
+      const v=await A.meshLookup(text);
+      if(v){
+        if(v.source!=="live"&&v.source!=="live-nlm") setLimitedMode(true);
+        setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:c.terms.map(t=>t.id===tid?{...t,vocab:v,type:forceControlled?"controlled":(t.type==="controlled"?"controlled":t.type)}:t)}:c));
+      } else if(forceControlled){
+        setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:c.terms.map(t=>t.id===tid?{...t,type:"controlled",vocab:null}:t)}:c));
+      }
+    }catch(e){
+      setLimitedMode(true);
+      // fall back to offline core
+      const v=await defaultApi.meshLookup(text);
+      if(v) setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:c.terms.map(t=>t.id===tid?{...t,vocab:v}:t)}:c));
+    }
+  },[A]);
+
+  /* ── live PubMed count, debounced + cached ─────────────────────────────── */
+  const countCache=useRef({});
+  const countTimer=useRef(null);
+  const pubmedQuery=useMemo(()=>{
+    const o=overrides.pubmed; const gen=renderSearch(concepts,"pubmed").full;
+    return o!=null?o:gen;
+  },[concepts,overrides]);
+  useEffect(()=>{
+    if(!pubmedQuery){ setCounts(c=>({...c,pubmed:null})); return; }
+    if(countCache.current[pubmedQuery]!=null){ setCounts(c=>({...c,pubmed:countCache.current[pubmedQuery]})); return; }
+    clearTimeout(countTimer.current);
+    setCountState("loading");
+    countTimer.current=setTimeout(async()=>{
+      try{
+        const n=await A.pubmedCount(pubmedQuery);
+        countCache.current[pubmedQuery]=n;
+        setCounts(c=>({...c,pubmed:n}));
+      }catch(e){ setCounts(c=>({...c,pubmed:null})); setLimitedMode(true); }
+      setCountState("idle");
+    },600); // INTEGRATION: debounce window — see BACKEND_CONTRACT for tradeoffs
+    return ()=>clearTimeout(countTimer.current);
+  },[pubmedQuery,A]);
+
+  /* ── concept/term mutators ─────────────────────────────────────────────── */
+  const updateConcept=(id,patch)=>setConcepts(cs=>cs.map(c=>c.id===id?{...c,...patch}:c));
+  const updateTerm=(cid,tid,patch)=>setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:c.terms.map(t=>t.id===tid?{...t,...patch}:t)}:c));
+  const removeTerm=(cid,tid)=>setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:c.terms.filter(t=>t.id!==tid)}:c));
+  const addConcept=()=>setConcepts(cs=>[...cs,{id:uid(),label:`Concept ${cs.length+1}`,op:"AND",terms:[]}]);
+  const removeConcept=id=>setConcepts(cs=>cs.filter(c=>c.id!==id));
+  const commitAdd=cid=>{
+    if(!draft.trim()){setAdding(null);return;}
+    const tid=uid();
+    setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:[...c.terms,{id:tid,text:draft.trim(),type:"freetext",field:"tiab"}]}:c));
+    tryLookup(cid,tid,draft.trim());
+    setDraft("");
+  };
+  const addSynonyms=(cid,tid)=>{
+    const c=concepts.find(x=>x.id===cid),t=c?.terms.find(x=>x.id===tid);
+    if(!t?.vocab) return;
+    const existing=new Set(c.terms.map(x=>x.text.toLowerCase()));
+    const newTerms=(t.vocab.synonyms||[]).filter(s=>!existing.has(s.toLowerCase())).map(s=>({id:uid(),text:s,type:"freetext",field:"tiab"}));
+    setConcepts(cs=>cs.map(x=>x.id===cid?{...x,terms:[...x.terms,...newTerms]}:x));
+  };
+
+  const stats=searchStats(concepts);
+
+  if(!loaded) return <div style={{padding:40,color:C.muted,fontFamily:SANS,background:C.bg,minHeight:"100%"}}>Loading search…</div>;
+
+  return(
+    <div style={{background:C.bg,color:C.txt,fontFamily:SANS,minHeight:"100%",padding:"4px 2px"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap');`}</style>
+
+      {/* header row */}
+      <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14}}>
+        <div>
+          <div style={{fontWeight:800,fontSize:16,letterSpacing:-.3}}>Search Builder</div>
+          <div style={{fontSize:11,color:C.muted}}>Build once · render for PubMed, Embase &amp; Cochrane</div>
+        </div>
+        <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:14}}>
+          {picoDirty&&(
+            <button onClick={()=>{ if(confirm("Re-seed concepts from the current PICO? This replaces the concepts below."))seedFromPICO(); }}
+              style={{...btn("solid"),fontSize:11,color:C.yel,borderColor:alpha(C.yel,"55")}}>↻ Re-sync from PICO</button>
+          )}
+          <button onClick={()=>setBeginner(b=>!b)} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 12px",borderRadius:20,cursor:"pointer",border:`1px solid ${beginner?C.grn:C.brd2}`,background:beginner?`${alpha(C.grn,"18")}`:"transparent",fontFamily:SANS}}>
+            <span style={{width:30,height:16,borderRadius:10,background:beginner?C.grn:C.brd2,position:"relative",flexShrink:0}}>
+              <span style={{position:"absolute",top:2,left:beginner?16:2,width:12,height:12,borderRadius:"50%",background:"#fff",transition:"all .15s"}}/>
+            </span>
+            <span style={{fontSize:11,fontWeight:600,color:beginner?C.grn:C.muted}}>Beginner mode</span>
+          </button>
+          <div style={{display:"flex",gap:14,fontSize:11,color:C.muted,fontFamily:MONO}}>
+            <span>{stats.concepts} concepts</span><span style={{color:C.acc}}>{stats.controlled} MeSH</span><span style={{color:C.grn}}>{stats.free} free-text</span>
+          </div>
+        </div>
+      </div>
+
+      {limitedMode&&(
+        <div style={{background:`${alpha(C.yel,"10")}`,border:`1px solid ${alpha(C.yel,"44")}`,borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:C.txt2}}>
+          <strong style={{color:C.yel}}>Limited mode.</strong> Live subject-term lookup and PubMed counts are temporarily unavailable, so the builder is using a small offline vocabulary and hit counts are hidden. Your query syntax is still correct and fully usable.
+        </div>
+      )}
+
+      {beginner&&(
+        <div style={{background:`${alpha(C.grn,"0e")}`,border:`1px solid ${alpha(C.grn,"33")}`,borderRadius:8,padding:"10px 12px",marginBottom:12,fontSize:12,color:C.txt2,lineHeight:1.6}}>
+          <strong style={{color:C.grn}}>Beginner mode is on.</strong> For each idea in your question, list the different ways authors might phrase it. The tool turns that into a correct search for each database. You don't need to know the technical terms — the defaults are already the recommended choice.
+        </div>
+      )}
+
+      {/* two-column */}
+      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:18}}>
+        {/* LEFT */}
+        <div>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+            <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Concepts</span>
+            <Help text="A concept is one idea in your question (a disease, a treatment). Under each concept, list the ways authors might phrase that idea. Concepts join with AND (all must appear); terms inside a concept join with OR (any one counts)."/>
+            {concepts.length===0&&pico&&<span style={{fontSize:11,color:C.muted}}>No concepts yet — they seed from your PICO automatically.</span>}
+          </div>
+
+          {concepts.map((c,ci)=>{
+            const color=CONCEPT_COLORS[ci%CONCEPT_COLORS.length];
+            const meshN=c.terms.filter(t=>t.type==="controlled").length, freeN=c.terms.filter(t=>t.type==="freetext").length;
+            return(
+              <div key={c.id} style={{marginBottom:10}}>
+                <div style={{background:C.card,border:`1px solid ${C.brd}`,borderLeft:`3px solid ${color}`,borderRadius:10,padding:12}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+                    <span style={{width:9,height:9,borderRadius:3,background:color}}/>
+                    <input value={c.label} onChange={e=>updateConcept(c.id,{label:e.target.value})}
+                      style={{...inputStyle,fontWeight:600,width:"auto",flex:1,background:"transparent",border:"none",padding:"2px 0",fontSize:13}}/>
+                    <span style={{fontSize:9.5,color:C.dim,fontFamily:MONO}}>{meshN} mesh · {freeN} text</span>
+                    <button onClick={()=>removeConcept(c.id)} style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:15}}>×</button>
+                  </div>
+                  <div style={{position:"relative"}}>
+                    {c.terms.map(t=>(
+                      <span key={t.id} style={{position:"relative",display:"inline-block"}}>
+                        <TermChip term={t} dbId={activeDB} color={color}
+                          onEdit={()=>setEditing(editing?.termId===t.id?null:{conceptId:c.id,termId:t.id})}
+                          onRemove={()=>removeTerm(c.id,t.id)}/>
+                        {editing?.termId===t.id&&(
+                          <TermEditor term={t}
+                            onChange={patch=>updateTerm(c.id,t.id,patch)}
+                            onClose={()=>setEditing(null)}
+                            onConvert={()=>{addSynonyms(c.id,t.id);setEditing(null);}}
+                            onLookup={(text,forceControlled)=>tryLookup(c.id,t.id,text,forceControlled)}/>
+                        )}
+                      </span>
+                    ))}
+                    {adding===c.id?(
+                      <input autoFocus value={draft} onChange={e=>setDraft(e.target.value)}
+                        onKeyDown={e=>{if(e.key==="Enter")commitAdd(c.id);if(e.key==="Escape"){setAdding(null);setDraft("");}}}
+                        onBlur={()=>{commitAdd(c.id);setAdding(null);}}
+                        placeholder="type a term, Enter to add"
+                        style={{...inputStyle,width:200,display:"inline-block",fontSize:11,fontFamily:MONO}}/>
+                    ):(
+                      <button onClick={()=>setAdding(c.id)} style={{...btn("ghost"),fontSize:11,padding:"4px 10px"}}>+ term</button>
+                    )}
+                  </div>
+                </div>
+                {ci<concepts.length-1&&(
+                  <div style={{display:"flex",justifyContent:"center",margin:"4px 0"}}>
+                    <button onClick={()=>updateConcept(c.id,{op:c.op==="AND"?"OR":"AND"})}
+                      style={{...btn("solid"),fontSize:10,padding:"2px 14px",fontFamily:MONO,letterSpacing:1,color:c.op==="AND"?C.acc:C.yel,borderColor:alpha(c.op==="AND"?C.acc:C.yel,"55")}}>{c.op||"AND"}</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <button onClick={addConcept} style={{...btn("ghost"),width:"100%",justifyContent:"center",borderStyle:"dashed",marginTop:4}}>+ Add concept</button>
+
+          <div style={{display:"flex",gap:16,marginTop:14,fontSize:10.5,color:C.muted}}>
+            <span style={{display:"inline-flex",alignItems:"center",gap:6}}><span style={{width:9,height:9,borderRadius:2,background:CONCEPT_COLORS[0]}}/> filled square = MeSH</span>
+            <span style={{display:"inline-flex",alignItems:"center",gap:6}}><span style={{width:9,height:9,borderRadius:"50%",border:`1.5px solid ${C.muted}`}}/> hollow circle = free-text</span>
+          </div>
+        </div>
+
+        {/* RIGHT */}
+        <div>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+            <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Live output</span>
+            <div style={{display:"flex",gap:4,marginLeft:"auto"}}>
+              {DBS.map(d=>(
+                <button key={d.id} onClick={()=>setActiveDB(d.id)}
+                  style={{...btn(activeDB===d.id?"solid":"ghost"),fontSize:10,padding:"3px 9px",borderColor:activeDB===d.id?d.color:C.brd2,color:activeDB===d.id?d.color:C.muted}}>
+                  {d.label}{overrides[d.id]!=null?" ✎":""}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:14,position:"sticky",top:14}}>
+            <QueryOutput dbId={activeDB} concepts={concepts} beginner={beginner}
+              override={overrides[activeDB]??null}
+              setOverride={val=>setOverrides(o=>({...o,[activeDB]:val}))}
+              liveCount={counts[activeDB]} countState={activeDB==="pubmed"?countState:"idle"}/>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
