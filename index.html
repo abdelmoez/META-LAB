@@ -24,27 +24,33 @@
     />
     <script>
       // Theme bootstrap — set data-theme before first paint to avoid a flash.
-      // Day (Nextly bright) is the default; "night" only when the user chose it.
+      // Priority: explicit per-user choice (localStorage) > the site default the
+      // Node server injects (window.__METALAB_DEFAULT_THEME__) > day.
       try {
         var t = localStorage.getItem('metalab_theme');
+        if (t !== 'night' && t !== 'day') {
+          var sd = window.__METALAB_DEFAULT_THEME__;
+          t = (sd === 'night' || sd === 'day') ? sd : 'day';
+        }
         document.documentElement.dataset.theme = t === 'night' ? 'night' : 'day';
       } catch (e) { document.documentElement.dataset.theme = 'day'; }
-      // Brand-color bootstrap (prompt37) — apply the cached global accent palette
-      // as inline custom properties BEFORE first paint so a custom brand never
-      // flashes the default indigo. The four tokens re-skin the whole app; they
-      // are theme-specific, so pick the side matching the data-theme set above.
+      // Brand-color bootstrap (prompt37) — apply the global accent palette as
+      // inline custom properties BEFORE first paint so a custom brand never
+      // flashes the default indigo, even for first-time visitors. The four tokens
+      // re-skin the whole app and are theme-specific (pick the side matching the
+      // data-theme set above). Priority: the server-injected CURRENT brand
+      // (window.__METALAB_BRAND__ — freshest, set when the Node server serves
+      // index.html) > the localStorage cache (returning visitors) > none.
       try {
         var bRaw = localStorage.getItem('metalab_brand');
-        if (bRaw) {
-          var b = JSON.parse(bRaw);
-          var side = b && b.palette && b.palette[document.documentElement.dataset.theme];
-          if (side) {
-            var map = { acc: '--t-acc', acc2: '--t-acc2', accText: '--t-acc-text', accBg: '--t-acc-bg' };
-            var HEX = /^#[0-9a-fA-F]{6}$/;
-            for (var k in map) if (HEX.test(side[k] || '')) document.documentElement.style.setProperty(map[k], side[k]);
-          }
+        var b = window.__METALAB_BRAND__ || (bRaw ? JSON.parse(bRaw) : null);
+        var side = b && b.palette && b.palette[document.documentElement.dataset.theme];
+        if (side) {
+          var map = { acc: '--t-acc', acc2: '--t-acc2', accText: '--t-acc-text', accBg: '--t-acc-bg' };
+          var HEX = /^#[0-9a-fA-F]{6}$/;
+          for (var k in map) if (HEX.test(side[k] || '')) document.documentElement.style.setProperty(map[k], side[k]);
         }
-      } catch (e) { /* no cached brand → stylesheet default indigo */ }
+      } catch (e) { /* no brand info → stylesheet default indigo */ }
     </script>
     <style>
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

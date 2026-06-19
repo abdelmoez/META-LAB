@@ -56,6 +56,13 @@ function applyBrandVars(palette, theme) {
 }
 
 function readCachedBrand() {
+  // Prefer the server-injected current brand (freshest; present when the Node
+  // server serves index.html), then the localStorage cache — matching the
+  // index.html bootstrap priority so React state seeds to the same color.
+  try {
+    const g = typeof window !== 'undefined' ? window.__METALAB_BRAND__ : null;
+    if (g && typeof g === 'object' && g.brandColor) return g;
+  } catch { /* ignore */ }
   try {
     const raw = localStorage.getItem(BRAND_CACHE_KEY);
     if (!raw) return null;

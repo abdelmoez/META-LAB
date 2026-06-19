@@ -84,7 +84,9 @@ brand side; day stays the product default.
 `GET/PATCH /api/admin/settings/theme` with strict validation + `APP_THEME_UPDATED`
 audit (old→new preset/color); `themeSettings` merged into `/api/settings/public`;
 maintenance gate exempts `/api/settings/theme`; `style` added to admin console
-sections.
+sections. **(v3.19.2)** `server/middleware/spaTheme.js` serves `dist/` + injects
+the live brand into `index.html` pre-paint (cache-busted on theme save), wired in
+`server/index.js` after the API routes.
 
 ## 14. Frontend changes
 
@@ -149,14 +151,21 @@ choices, not defects. Verdicts:
    (scientific, exported) and **RoB risk levels** (semantic low/some/high), which
    must stay color-blind-safe and meaningful. A brand-harmonized generator would
    have **no appropriate consumer** (it would be dead code). No change made.
-2. **First-ever paint for brand-new visitors — inherent (kept).** The SPA is
-   served statically by the VPS (the Node server does not serve `index.html`), so
-   there is no SSR seam to inject the brand into the first HTML. The localStorage
-   cache + pre-paint bootstrap already cover **every returning visitor**; a
-   genuinely-first-time visitor briefly sees the default indigo until
-   `/api/settings/public` resolves — identical, accepted behavior to the existing
-   non-blocking `defaultTheme`. Not fixable from app code without changing the VPS
-   serving layer.
+2. **First-ever paint for brand-new visitors — SOLVED (v3.19.2).** The Node server
+   now optionally serves the built SPA (`dist/`) and injects the LIVE brand palette
+   + default mode into `index.html`'s `<head>` as `window.__METALAB_BRAND__` /
+   `window.__METALAB_DEFAULT_THEME__`, which the pre-paint bootstrap reads (server
+   value > localStorage cache > built-in default). So the admin's chosen color is
+   correct on the very first paint for **everyone**, including first-time visitors —
+   no flash, no confusion. Enabled automatically when a build exists
+   (`dist/index.html`) or `SERVE_SPA=true`; the theme cache busts on save so changes
+   apply immediately. Degrades gracefully when a static host/CDN serves instead
+   (globals absent → prior cache/default behavior). See
+   `server/middleware/spaTheme.js`.
+
+   **Deployment note:** to use this, point the reverse proxy's non-API traffic at
+   the Node server (it serves `dist/` assets + the injected `index.html` and falls
+   through to `/api/*`). Set `SERVE_SPA=false` to keep serving the SPA elsewhere.
 3. **Forest-plot data colors — deliberate (kept).** `FC.acc` colors the per-study
    CI lines, point-estimate squares and the pooled diamond — core scientific data.
    Brand-tinting these would alter scientific presentation per brand and risks the

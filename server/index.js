@@ -14,6 +14,7 @@ import { requestLogger } from './middleware/requestLogger.js';
 import { errorHandler }  from './middleware/errorHandler.js';
 import { requireAuth }   from './middleware/auth.js';
 import { maintenanceGate } from './middleware/maintenance.js';
+import { spaEnabled, serveSpa, distDir } from './middleware/spaTheme.js';
 
 import authRouter        from './routes/auth.js';
 import projectsRouter    from './routes/projects.js';
@@ -190,6 +191,17 @@ app.use('/api/institutions', institutionLimiter, institutionsRouter);
 // ── Realtime SSE stream (prompt6 Task 7) — own mount, NEVER under the
 // rate-limited /api/auth or /api/admin routers (requireAuth inside the router).
 app.use('/api/events', eventsRouter);
+
+// ── SPA serving with server-injected theme (prompt37 follow-up) ────────────────
+// When a production build exists (or SERVE_SPA=true), serve dist/ assets and the
+// index.html with the live brand palette injected pre-paint, so the admin's
+// chosen color is correct on the very first paint for first-time visitors too.
+// Mounted AFTER every /api route so matched API routes always win; serveSpa
+// skips /api/* (those fall through to the JSON 404 below).
+if (spaEnabled()) {
+  app.use(express.static(distDir, { index: false, maxAge: '1h' }));
+  app.use(serveSpa);
+}
 
 // ── 404 fallback ───────────────────────────────────────────────────────────────
 app.use((_req, res) => {

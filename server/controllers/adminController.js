@@ -1,6 +1,7 @@
 import { prisma } from '../db/client.js';
 import { logAdminAction } from '../utils/audit.js';
 import { validateThemePatch, defaultThemeSettings } from '../utils/themeValidate.js';
+import { bustThemeCache } from '../middleware/spaTheme.js';
 import { hashPassword } from '../auth/password.js';
 import { isEmailConfigured, sendEmail, renderReplyEmail, renderPasswordResetEmail, emailStatus } from '../services/emailService.js';
 import { createResetToken } from '../services/passwordResetService.js';
@@ -1242,6 +1243,7 @@ export async function updateThemeSettings(req, res) {
 
     const value = { ...result.value, updatedAt: new Date().toISOString() };
     await upsertSetting('themeSettings', value, req.user.id);
+    bustThemeCache(); // SPA index.html injection picks up the new brand immediately
 
     await logAdminAction(req, 'APP_THEME_UPDATED', 'SiteSetting', 'themeSettings', {
       oldPreset: before.preset, oldColor: before.brandColor,
