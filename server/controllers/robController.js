@@ -13,6 +13,7 @@
  */
 import { prisma } from '../db/client.js';
 import { getById as getOwnedProject } from '../store.js';
+import { getRobMemberAccess } from '../screening/metalabAccess.js';
 import {
   getInstrument,
   proposeDomain,
@@ -65,16 +66,35 @@ async function audit(projectId, assessmentId, actor, action, { entityType = null
   } catch { /* audit is best-effort */ }
 }
 
+// ── Authorization (prompt41 Task 5) ───────────────────────────────────────────
+// RoB access = the META·LAB project OWNER, OR a linked-workspace MEMBER granted the
+// `canAssessRiskOfBias` permission. Previously ALL handlers were owner-only, so a
+// member who was granted RoB access still got 404. The project store is owner-scoped,
+// so for the member path the project is loaded via its (verified) owner id.
+// Returns { project, canEdit } or null (→ 404, existence hidden).
+async function resolveRobAccess(projectId, userId) {
+  const owned = await getOwnedProject(projectId, userId);
+  if (owned) return { project: owned, canEdit: true };
+  const m = await getRobMemberAccess(projectId, userId);
+  if (m) {
+    const project = await getOwnedProject(projectId, m.ownerId);
+    if (project) return { project, canEdit: m.canEdit };
+  }
+  return null;
+}
+
 // ── Loaders ───────────────────────────────────────────────────────────────────
+// Returns { a, project, canEdit } when the caller may at least VIEW the assessment,
+// else null (404). Edit handlers additionally require `canEdit` (else 403).
 async function loadAssessment(assessmentId, userId) {
   const a = await prisma.robAssessment.findFirst({
     where: { id: assessmentId, deletedAt: null },
     include: { answers: true, domainJudgments: true, overall: true },
   });
   if (!a) return null;
-  // Owner-only: the caller must own the parent META·LAB project (404 hides existence).
-  const project = await getOwnedProject(a.projectId, userId);
-  if (!project) return null;
+  const access = await resolveRobAccess(a.projectId, userId);
+  if (!access) return null;
+  a._canEdit = access.canEdit; // edit handlers gate on this (else 403); read handlers ignore it
   return a;
 }
 
@@ -212,8 +232,10 @@ export async function createAssessment(req, res) {
     if (!projectId || !studyId) {
       return res.status(400).json({ error: 'projectId and studyId are required' });
     }
-    const project = await getOwnedProject(projectId, req.user.id);
-    if (!project) return res.status(404).json({ error: 'Not found' });
+    const access = await resolveRobAccess(projectId, req.user.id);
+    if (!access) return res.status(404).json({ error: 'Not found' });
+    if (!access.canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
+    const project = access.project;
     // Soft validation: if the project exposes studies, the studyId must exist.
     const studies = Array.isArray(project.studies) ? project.studies : [];
     if (studies.length && !studies.some(s => s && s.id === studyId)) {
@@ -260,8 +282,9 @@ export async function getAssessment(req, res) {
 export async function listProjectAssessments(req, res) {
   try {
     if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
-    const project = await getOwnedProject(req.params.projectId, req.user.id);
-    if (!project) return res.status(404).json({ error: 'Not found' });
+    const access = await resolveRobAccess(req.params.projectId, req.user.id);
+    if (!access) return res.status(404).json({ error: 'Not found' });
+    const project = access.project;
 
     const rows = await prisma.robAssessment.findMany({
       where: { projectId: req.params.projectId, deletedAt: null },
@@ -301,6 +324,7 @@ export async function upsertAnswers(req, res) {
     if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
+    if (!a._canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
     if (a.status === 'complete') return res.status(409).json({ error: 'Assessment is finalised; re-open to edit' });
 
     const list = Array.isArray(req.body?.answers) ? req.body.answers : null;
@@ -346,6 +370,7 @@ export async function overrideJudgment(req, res) {
     if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
+    if (!a._canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
     // A finalised assessment is locked — overriding must go through reopen first
     // (mirrors upsertAnswers; without this the finalise lock is defeated).
     if (a.status === 'complete') return res.status(409).json({ error: 'Assessment is finalised; re-open to edit' });
@@ -408,6 +433,7 @@ export async function finaliseAssessment(req, res) {
     if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
+    if (!a._canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
 
     const view = await buildView(a.id);
     if (!view.completeness.overall.complete) {
@@ -439,6 +465,7 @@ export async function reopenAssessment(req, res) {
     if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
+    if (!a._canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
     // Returning to draft must release the finalise-locked finals on NON-overridden
     // rows (genuine overrides are preserved) so the stored state matches "draft".
     await prisma.robDomainJudgment.updateMany({ where: { assessmentId: a.id, overridden: false }, data: { finalJudgment: null } });
@@ -458,6 +485,7 @@ export async function deleteAssessment(req, res) {
     if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
+    if (!a._canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
     await prisma.robAssessment.update({ where: { id: a.id }, data: { deletedAt: new Date() } });
     await audit(a.projectId, a.id, req.user, 'ROB_DELETE', { entityType: 'RobAssessment', entityId: a.id });
     return res.json({ ok: true });

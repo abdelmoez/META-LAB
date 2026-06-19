@@ -4013,7 +4013,9 @@ function RoBTab({project,updateProject,activeId,setTab}){
   if(flag===null) return <div style={{padding:40,textAlign:"center",color:C.muted,fontSize:13}}>Loading Risk of Bias…</div>;
   if(!flag) return <LegacyRoBTab project={project} updateProject={updateProject} activeId={activeId}/>;
   const perms=projectPerms(project);
-  const canEdit=!!perms.canEdit&&!project._readOnly;
+  // prompt41 Task 5 — a member granted canAssessRiskOfBias can EDIT RoB even without
+  // broad canEditMetaLab; read-only members stay view-only. Owner always edits.
+  const canEdit=(!!perms.canEdit||!!perms.canAssessRiskOfBias)&&!project._readOnly;
   return(<div>
     {!inWorkspace&&<SectionHeader icon="scale" title="Risk of Bias" desc="Outcome-level RoB 2 for this project — the engine proposes a judgement; you decide."/>}
     <ProjectRobPanel

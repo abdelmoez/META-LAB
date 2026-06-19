@@ -22,12 +22,29 @@
  */
 import { useEffect, useRef, useState, useCallback } from 'react';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.min.mjs';
-import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
+import PdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?worker';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import { pageTextFromContent, collectMatchingPages } from './pdfSearch.js';
 
-// Point pdf.js at the worker emitted by Vite (a hashed, same-origin asset URL).
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+// prompt41 Task 2 — load the pdf.js worker via Vite's `?worker` (a real bundled Web
+// Worker) instead of `workerSrc` pointing at the emitted `.mjs` asset. The `.mjs`
+// extension was served by the production static host (express.static / nginx) with a
+// non-JavaScript MIME type, so the browser refused to instantiate the module worker
+// → getDocument() rejected → "Could not load PDF" (it worked in Vite dev, which
+// serves .mjs correctly). `?worker` emits a `.js` worker that Vite wires up itself,
+// removing the MIME dependency entirely. Guard for non-browser (SSR/test) contexts.
+if (typeof window !== 'undefined' && typeof Worker !== 'undefined') {
+  try { pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker(); } catch { /* falls back to fake worker */ }
+}
+
+// First bytes of a PDF are "%PDF-" — used to detect an HTML/JSON error body that a
+// (mis)configured route returned with a 200 instead of the actual file.
+function isPdfBytes(buf) {
+  try {
+    const a = new Uint8Array(buf.slice(0, 5));
+    return a[0] === 0x25 && a[1] === 0x50 && a[2] === 0x44 && a[3] === 0x46 && a[4] === 0x2d;
+  } catch { return false; }
+}
 
 const GUTTER = 16;   // breathing room so the page never touches the scroll edge
 const ZOOM_MIN = 0.4, ZOOM_MAX = 5, ZOOM_STEP = 0.2;
@@ -74,19 +91,51 @@ export default function AppPdfViewer({
   useEffect(() => {
     if (!url) { setLoading(false); return undefined; }
     let cancelled = false;
+    let task = null;
     setLoading(true); setError(''); setDoc(null); setNum(0); setProgress(0);
     setMatches(null); setTerm(''); setSearching(false); textCache.current = new Map();
     searchToken.current++; // abort any in-flight search from the previous document
-    const task = pdfjsLib.getDocument({ url, withCredentials, isEvalSupported: false });
-    task.onProgress = (p) => { if (!cancelled && p && p.total) setProgress(Math.min(1, p.loaded / p.total)); };
-    task.promise.then((d) => {
-      if (cancelled) { try { d.destroy(); } catch { /* noop */ } return; }
-      docRef.current = d; setDoc(d); setNum(d.numPages);
-      setPageNum(1); setZoom(1); setRot(0); setLoading(false);
-    }).catch(() => { if (!cancelled) { setError('Could not load PDF'); setLoading(false); } });
+    (async () => {
+      // prompt41 Task 2 — fetch the PDF bytes OURSELVES with the session cookie and
+      // validate the response, so auth / wrong-Content-Type / HTML-redirect problems
+      // surface as a SPECIFIC, useful error instead of a generic pdf.js failure — and
+      // pass the bytes to pdf.js as {data} (no dependency on pdf.js's own fetch,
+      // credentials or HTTP-range handling).
+      let buf;
+      try {
+        const res = await fetch(url, { credentials: withCredentials ? 'include' : 'same-origin', headers: { Accept: 'application/pdf' } });
+        if (cancelled) return;
+        if (!res.ok) {
+          setError(res.status === 401 || res.status === 403
+            ? 'You are not signed in, or you do not have access to this PDF.'
+            : `The PDF could not be fetched (HTTP ${res.status}).`);
+          setLoading(false); return;
+        }
+        buf = await res.arrayBuffer();
+        if (cancelled) return;
+        const ct = (res.headers.get('content-type') || '').toLowerCase();
+        if (!ct.includes('application/pdf') && !isPdfBytes(buf)) {
+          // A login page / JSON error / redirect body — not the file.
+          setError('The server did not return a PDF (your session may have expired). Try "Open in new tab".');
+          setLoading(false); return;
+        }
+      } catch {
+        if (!cancelled) { setError('Could not reach the PDF (network error). Check your connection and retry.'); setLoading(false); }
+        return;
+      }
+      task = pdfjsLib.getDocument({ data: new Uint8Array(buf), isEvalSupported: false });
+      try {
+        const d = await task.promise;
+        if (cancelled) { try { d.destroy(); } catch { /* noop */ } return; }
+        docRef.current = d; setDoc(d); setNum(d.numPages);
+        setPageNum(1); setZoom(1); setRot(0); setLoading(false);
+      } catch {
+        if (!cancelled) { setError('Could not load PDF — the file may be corrupted or not a valid PDF.'); setLoading(false); }
+      }
+    })();
     return () => {
       cancelled = true;
-      try { task.destroy(); } catch { /* noop */ }
+      try { task && task.destroy(); } catch { /* noop */ }
       try { docRef.current?.destroy(); } catch { /* noop */ }
       docRef.current = null;
     };
@@ -301,5 +350,8 @@ const PathPlus = () => (<svg {...sv}><path d="M12 5v14M5 12h14" /></svg>);
 const PathMinus = () => (<svg {...sv}><path d="M5 12h14" /></svg>);
 const PathChevronLeft = () => (<svg {...sv}><path d="m15 5-7 7 7 7" /></svg>);
 const PathChevronRight = () => (<svg {...sv}><path d="m9 5 7 7-7 7" /></svg>);
-const PathRotateLeft = () => (<svg {...sv}><path d="M3 8a9 9 0 1 1-2 5.6" /><path d="M3 3v5h5" /></svg>);
-const PathRotateRight = () => (<svg {...sv}><path d="M21 8a9 9 0 1 0 2 5.6" transform="scale(-1,1) translate(-24,0)" /><path d="M21 3v5h-5" /></svg>);
+// prompt41 Task 1 — clean, intuitive rotate icons (counter-clockwise / clockwise),
+// mirror-correct without any transform hack. Arrowhead at the top points the way the
+// page turns: top-left = rotate left (CCW), top-right = rotate right (CW).
+const PathRotateLeft = () => (<svg {...sv}><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>);
+const PathRotateRight = () => (<svg {...sv}><path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /></svg>);

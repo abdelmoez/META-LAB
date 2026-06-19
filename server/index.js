@@ -223,7 +223,17 @@ app.use('/api/search-builder', requireAuth, searchEngineLimiter, searchEngineRou
 // Mounted AFTER every /api route so matched API routes always win; serveSpa
 // skips /api/* (those fall through to the JSON 404 below).
 if (spaEnabled()) {
-  app.use(express.static(distDir, { index: false, maxAge: '1h' }));
+  app.use(express.static(distDir, {
+    index: false,
+    maxAge: '1h',
+    // prompt41 Task 2 (defense-in-depth) — ensure ES-module assets (e.g. a pdf.js
+    // worker emitted as .mjs) are served with a JavaScript MIME type, so the browser
+    // will instantiate them as module workers/scripts. `send`'s default mime db may
+    // otherwise label .mjs as application/octet-stream and the worker fails to load.
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.mjs')) res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+    },
+  }));
   app.use(serveSpa);
 }
 

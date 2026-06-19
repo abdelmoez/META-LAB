@@ -112,8 +112,12 @@ function useMeasuredHeight(ref) {
 // straight to the row element (one requestAnimationFrame per frame) instead of
 // re-rendering React on every pointer move — React state is touched only once,
 // on pointer-up, to commit + persist the final ratio.
-const SPLIT_MIN_PDF = 0.45;   // PDF panel never narrower than 45%
-const SPLIT_MAX_PDF = 0.72;   // assessment never narrower than ~28%
+// prompt41 Task 4 — the split is draggable BOTH ways. The previous bounds
+// (0.45–0.72) let the assessment GROW but barely SHRINK (PDF capped at 72%). Widen
+// to 0.20–0.82 so either pane can shrink to a usable minimum (assessment 18%–80%,
+// PDF 20%–82%) while neither becomes unusable. Default stays 70/30.
+const SPLIT_MIN_PDF = 0.20;   // PDF panel never narrower than 20% (assessment up to 80%)
+const SPLIT_MAX_PDF = 0.82;   // PDF panel never wider than 82% (assessment down to ~18%)
 const SPLIT_DEFAULT = 0.70;   // 70 / 30 default
 const SPLIT_STORAGE_KEY = 'metalab.rob.splitRatio';
 export function clampSplit(v) { return Math.min(SPLIT_MAX_PDF, Math.max(SPLIT_MIN_PDF, v)); }
@@ -537,27 +541,48 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
 
   return (
     <div ref={rootRef} style={{ display: 'flex', flexDirection: 'column', minWidth: 0, ...(narrow ? { minHeight: 'auto' } : { height: fillHeight ? `${fillHeight}px` : 'calc(100vh - 200px)', minHeight: 460 }) }}>
-    {/* ── Task 5 — Back + tool badge ABOVE both columns. onClose owns routing so
-        the labelled Back works after refresh / deep-link. ── */}
-    <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '2px 0 12px', flexWrap: 'wrap', flexShrink: 0 }}>
-      <button onClick={onClose} style={{ ...ghostBtn, fontWeight: 700, color: C.txt }} aria-label="Back to Risk of Bias">
-        <Icon name="arrowLeft" size={15} /> Back to Risk of Bias
-      </button>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 7, background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '38')}`, color: C.acc, fontSize: 11, fontFamily: MONO, fontWeight: 700 }}>
-        <Icon name="scale" size={13} /> RoB 2 · effect of assignment
-      </span>
-      <div style={{ flex: 1 }} />
-      {pdfTabOn && (
-        <button onClick={() => setShowPdf(p => !p)} aria-pressed={showPdf}
-          style={{ ...ghostBtn, padding: '6px 11px', background: showPdf ? alpha(C.acc, '14') : 'transparent', color: showPdf ? C.acc : C.txt2, borderColor: showPdf ? alpha(C.acc, '50') : C.brd2 }}
-          title={showPdf ? 'Hide the PDF and give the assessment the full width' : 'Show the study PDF beside the assessment'}>
-          <Icon name="fileText" size={14} /> {showPdf ? 'Hide source' : 'Show source'}
-        </button>
-      )}
-    </div>
-
-    {/* ── Task 4 + 5 — persistent article header spanning BOTH columns. ── */}
-    <ArticleHeaderBar record={studyRecord.record} loading={studyRecord.loading} view={view} showDetails={articleDetailsOn} />
+    {/* ── prompt41 Task 3 — ONE compact, focused header bar spanning the workspace:
+        Back · "RoB 2 · effect of assignment" · study title · a single "Open study"
+        external-link icon. Author/DOI/PMID/PubMed clutter is removed so the user
+        stays focused on the assessment tool. ── */}
+    {(() => {
+      const rec = studyRecord.record;
+      const studyTitle = rec?.title || view?.resultLabel || `Study ${view?.studyId || ''}`.trim() || 'Study';
+      const studyLink = rec?.doi ? `https://doi.org/${rec.doi}` : rec?.pmid ? `https://pubmed.ncbi.nlm.nih.gov/${rec.pmid}` : null;
+      return (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '2px 0 12px', flexWrap: 'wrap', flexShrink: 0 }}>
+          <button onClick={onClose} style={{ ...ghostBtn, fontWeight: 700, color: C.txt }} aria-label="Back to Risk of Bias">
+            <Icon name="arrowLeft" size={15} /> Back to Risk of Bias
+          </button>
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 7, background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '38')}`, color: C.acc, fontSize: 11, fontFamily: MONO, fontWeight: 700, flexShrink: 0 }}>
+            <Icon name="scale" size={13} /> RoB 2 · effect of assignment
+          </span>
+          {/* Study title + single open-study link (the only metadata kept). */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '1 1 220px', minWidth: 0 }}>
+            <span aria-hidden style={{ width: 1, height: 18, background: C.brd, flexShrink: 0 }} />
+            <span title={studyTitle} style={{ fontSize: 13.5, fontWeight: 700, color: C.txt, fontFamily: FONT, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{studyTitle}</span>
+            {studyLink ? (
+              <a href={studyLink} target="_blank" rel="noopener noreferrer" title="Open study" aria-label="Open study link"
+                style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 26, flexShrink: 0, borderRadius: 6, border: `1px solid ${C.brd2}`, color: C.txt2, textDecoration: 'none' }}>
+                <Icon name="externalLink" size={14} />
+              </a>
+            ) : (
+              <span title="No study link available" aria-label="No study link available"
+                style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 26, flexShrink: 0, borderRadius: 6, border: `1px solid ${C.brd}`, color: C.dim, opacity: 0.45 }}>
+                <Icon name="externalLink" size={14} />
+              </span>
+            )}
+          </div>
+          {pdfTabOn && (
+            <button onClick={() => setShowPdf(p => !p)} aria-pressed={showPdf}
+              style={{ ...ghostBtn, padding: '6px 11px', flexShrink: 0, background: showPdf ? alpha(C.acc, '14') : 'transparent', color: showPdf ? C.acc : C.txt2, borderColor: showPdf ? alpha(C.acc, '50') : C.brd2 }}
+              title={showPdf ? 'Hide the PDF and give the assessment the full width' : 'Show the study PDF beside the assessment'}>
+              <Icon name="fileText" size={14} /> {showPdf ? 'Hide source' : 'Show source'}
+            </button>
+          )}
+        </div>
+      );
+    })()}
 
     {/* ── prompt36 Task 1 — two-column workspace fills the remaining height. PDF
         70% (left, draggable), assessment 30% (right). The PDF track width is a CSS

@@ -107,11 +107,13 @@ describe('pdfFitWidthSrc — fit-width default (Task 1)', () => {
 
 /* ── prompt36 Task 1 — resizable 70/30 split ──────────────────────────────── */
 describe('clampSplit — keeps the PDF fraction within usable bounds', () => {
-  it('clamps a too-wide PDF down to the 72% max (≈28% assessment floor)', () => {
-    expect(clampSplit(0.95)).toBe(0.72);
+  // prompt41 Task 4 — bounds widened (0.20–0.82) so the assessment can shrink, not
+  // only grow; PDF is capped at 82% (assessment floor ≈18%) and floored at 20%.
+  it('clamps a too-wide PDF down to the 82% max (≈18% assessment floor)', () => {
+    expect(clampSplit(0.95)).toBe(0.82);
   });
-  it('clamps a too-narrow PDF up to the 45% min', () => {
-    expect(clampSplit(0.10)).toBe(0.45);
+  it('clamps a too-narrow PDF up to the 20% min', () => {
+    expect(clampSplit(0.10)).toBe(0.20);
   });
   it('passes through an in-range ratio unchanged (e.g. the 70/30 default)', () => {
     expect(clampSplit(0.70)).toBe(0.70);
@@ -126,8 +128,8 @@ describe('ResizeDivider — accessible drag handle (Task 1)', () => {
     expect(html).toContain('role="separator"');
     expect(html).toContain('aria-orientation="vertical"');
     expect(html).toContain('aria-valuenow="70"');
-    expect(html).toContain('aria-valuemin="45"');
-    expect(html).toContain('aria-valuemax="72"');
+    expect(html).toContain('aria-valuemin="20"');
+    expect(html).toContain('aria-valuemax="82"');
     expect(html).toContain('tabindex="0"'); // keyboard reachable
   });
 });

@@ -25,7 +25,41 @@ export function mlAccessFromMember(m) {
   const canEdit = (full || !!m.canEditMetaLab) && !m.readOnlyMetaLab;
   const readOnly = canView && !canEdit;
   const canExport = full || !!m.canExport;
-  return { canView, canEdit, readOnly, canExport };
+  // prompt41 Task 5 — the Risk-of-Bias grant. Owner/leader always; otherwise the
+  // explicit per-member flag (it was computed but never surfaced, so granting it had
+  // no effect on RoB access).
+  const canAssessRiskOfBias = full || !!m.canAssessRiskOfBias;
+  return { canView, canEdit, readOnly, canExport, canAssessRiskOfBias };
+}
+
+/**
+ * prompt41 Task 5 — resolve a user's RISK-OF-BIAS access to a META·LAB project.
+ * Owner/leader get full access; a linked-workspace member needs the explicit
+ * `canAssessRiskOfBias` permission. RoB is a DISTINCT grant, so it is NOT gated on
+ * canViewMetaLab (a member may be allowed to do RoB without broader ML edit). Edit
+ * additionally requires the member not be project read-only. Same security
+ * invariant as getMetaLabMemberAccess (linked project must be the owner's + live).
+ * Returns { ownerId, role, canView, canEdit } or null (no access → caller 404s).
+ */
+export async function getRobMemberAccess(metaLabProjectId, userId) {
+  if (!metaLabProjectId || !userId) return null;
+  const screenProjects = await prisma.screenProject.findMany({
+    where: { linkedMetaLabProjectId: metaLabProjectId, deletedAt: null },
+    select: { id: true, ownerId: true },
+  });
+  if (!screenProjects.length) return null;
+  const member = await prisma.screenProjectMember.findFirst({
+    where: { projectId: { in: screenProjects.map(s => s.id) }, userId, status: 'active' },
+  });
+  if (!member) return null;
+  const sp = screenProjects.find(s => s.id === member.projectId);
+  if (!sp || sp.ownerId === userId) return null; // owner reaches RoB via the owned path
+  const full = member.role === 'owner' || member.role === 'leader';
+  if (!(full || member.canAssessRiskOfBias)) return null;
+  // Defense in depth: the linked project must exist, be live, and be the owner's.
+  const proj = await prisma.project.findFirst({ where: { id: metaLabProjectId, deletedAt: null }, select: { userId: true } });
+  if (!proj || proj.userId !== sp.ownerId) return null;
+  return { ownerId: sp.ownerId, role: member.role, canView: true, canEdit: !member.readOnlyMetaLab };
 }
 
 /**

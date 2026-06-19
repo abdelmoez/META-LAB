@@ -76,6 +76,7 @@ function annotateShared(projectObj, acc, owner, meta = {}) {
       canEdit: !!acc.canEdit,
       readOnly: !!acc.readOnly,
       canExport: !!acc.canExport,
+      canAssessRiskOfBias: !!acc.canAssessRiskOfBias, // prompt41 Task 5 — surface RoB grant to the UI
     },
   };
 }
@@ -92,7 +93,7 @@ function annotateOwned(projectObj, linked, meta = {}) {
     _archivedAt: meta.archivedAt ? new Date(meta.archivedAt).toISOString() : null,
     ...countsFromBlob(projectObj),
     _linkedMetaSift: linkedSiftSummary(linked),
-    _permissions: { role: 'owner', isOwner: true, canView: true, canEdit: true, readOnly: false, canExport: true },
+    _permissions: { role: 'owner', isOwner: true, canView: true, canEdit: true, readOnly: false, canExport: true, canAssessRiskOfBias: true },
   };
 }
 

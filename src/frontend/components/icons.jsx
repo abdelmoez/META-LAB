@@ -177,6 +177,14 @@ const ICON_PATHS = {
       <path d="M13.8 10.2a4.5 4.5 0 0 0-6.6-.3l-2.8 2.8a4.5 4.5 0 0 0 6.3 6.3l1.5-1.5" />
     </>
   ),
+  // prompt41 Task 3 — "open study link" external-link glyph.
+  externalLink: (
+    <>
+      <path d="M15 3h6v6" />
+      <path d="M10 14 21 3" />
+      <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+    </>
+  ),
   refresh: (
     <>
       <path d="M20.5 11.5A8.5 8.5 0 1 0 18 17.6" />
