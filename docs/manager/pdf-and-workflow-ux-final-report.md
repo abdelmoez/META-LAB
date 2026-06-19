@@ -111,18 +111,36 @@ resize stays centered, export correct.
 ## 22. Commit hash / 23. Push status
 See the commit that lands this report (pushed to `main`).
 
-## 24. Known limitations
-- pdf.js worker chunk ~1.4 MB (lazy; not on the start-up path). Acceptable for a
-  research app where PDF reading is core.
-- Search = page-level jump (no in-page highlight); single-page (no continuous scroll
-  by default); exotic image codecs rely on the WASM CSP token (text always renders).
+## 24. Known limitations (after the follow-up round — see §26)
+- pdf.js worker chunk ~1.4 MB (lazy; not on the start-up path). Accepted trade-off.
+- Search highlights at the **page** level (no in-page overlay); single-page (no
+  continuous scroll); exotic image codecs rely on the WASM CSP token (text always
+  renders). These are deliberate deferrals (the overlay can't be pixel-verified
+  without a browser, so it isn't shipped unverified).
 - Menu open/collapsed STATE stays per-browser localStorage; only the pin/auto MODE is
   cross-device (intentional).
-- PDF rendering is verified by build + code review here; **visual** rendering is a
-  manual-QA item (no headless browser in CI).
+- The canvas **draw** is browser-only and remains a manual-QA item; the load/parse/
+  text engine is now verified (see §26).
 
 ## 25. Recommended next steps
 - Optional in-page search highlighting via a text-layer overlay (opt-in).
-- Optional continuous-scroll mode toggle.
-- Consider a small thumbnail rail for long PDFs.
-- A Playwright/headless smoke test for actual pdf.js canvas rendering in CI.
+- Optional continuous-scroll mode toggle; optional thumbnail rail for long PDFs.
+- A Playwright/headless smoke test for actual pdf.js **canvas** rendering in CI.
+
+## 26. Follow-up round — limitations addressed (same v3.22.0 line)
+After the initial commit, the documented limitations/recommendations were reviewed
+and the safe, verifiable ones were solved:
+- **pdf.js verified working** — load → page → `getTextContent` confirmed against a
+  real manuscript PDF with the installed `pdfjs-dist@4.10.38` legacy build + worker
+  (1 page, 2669 chars). The "verified by build only" gap is closed for the
+  load/parse/text path; only the canvas draw remains browser-only.
+- **Search hardened + tested** — the scan logic moved to a pure module
+  (`src/frontend/components/pdfSearch.js`): now **abortable** (a new search / document
+  change discards the in-flight scan — no stale results), **resilient** (a failed page
+  → empty text, scan continues), with per-page **progress** ("Searching… NN%") and
+  per-page text caching. Covered by `tests/unit/pdfSearch.test.js` (9 cases).
+- **Deliberately deferred** (with rationale): in-page highlight overlay (needs visual
+  QA), continuous scroll + thumbnail rail (weight vs. the lightweight goal), and the
+  Playwright canvas test (no headless-browser infra). Documented, not silently
+  dropped.
+Total tests now **1410** green; build green.

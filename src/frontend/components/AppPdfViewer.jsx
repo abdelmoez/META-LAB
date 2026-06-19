@@ -24,6 +24,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.min.mjs';
 import pdfWorkerUrl from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?url';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
+import { pageTextFromContent, collectMatchingPages } from './pdfSearch.js';
 
 // Point pdf.js at the worker emitted by Vite (a hashed, same-origin asset URL).
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
@@ -53,7 +54,9 @@ export default function AppPdfViewer({
   const [matches, setMatches] = useState(null);   // number[] of 1-based page indices | null
   const [matchIdx, setMatchIdx] = useState(0);
   const [searching, setSearching] = useState(false);
+  const [searchProg, setSearchProg] = useState(0); // 0..1 page-scan progress
   const textCache = useRef(new Map());            // pageNum -> lowercased text
+  const searchToken = useRef(0);                  // bumped to abort an in-flight scan
 
   const wrapRef   = useRef(null);
   const canvasRef = useRef(null);
@@ -72,7 +75,8 @@ export default function AppPdfViewer({
     if (!url) { setLoading(false); return undefined; }
     let cancelled = false;
     setLoading(true); setError(''); setDoc(null); setNum(0); setProgress(0);
-    setMatches(null); setTerm(''); textCache.current = new Map();
+    setMatches(null); setTerm(''); setSearching(false); textCache.current = new Map();
+    searchToken.current++; // abort any in-flight search from the previous document
     const task = pdfjsLib.getDocument({ url, withCredentials, isEvalSupported: false });
     task.onProgress = (p) => { if (!cancelled && p && p.total) setProgress(Math.min(1, p.loaded / p.total)); };
     task.promise.then((d) => {
@@ -147,28 +151,36 @@ export default function AppPdfViewer({
     else if (e.key === 'ArrowRight' || e.key === 'PageDown') { next(); e.preventDefault(); }
   }
 
-  /* ── Lazy search: scan page text on submit, collect matching pages ───────── */
+  /* ── Lazy search: scan page text on submit, collect matching pages.
+   *    Abortable (a new search / url change bumps searchToken) and resilient (a
+   *    failed page → empty text, never aborts the whole scan); shows progress. ── */
   async function runSearch(e) {
     e?.preventDefault?.();
-    const q = term.trim().toLowerCase();
-    if (!q || !docRef.current) { setMatches(null); return; }
-    setSearching(true);
+    const q = term.trim();
+    const d = docRef.current;
+    if (!q || !d) { setMatches(null); return; }
+    const token = ++searchToken.current;
+    setSearching(true); setSearchProg(0);
+    const getPageText = async (i) => {
+      const cached = textCache.current.get(i);
+      if (cached != null) return cached;
+      const page = await d.getPage(i);
+      const txt = pageTextFromContent(await page.getTextContent());
+      textCache.current.set(i, txt);
+      return txt;
+    };
     try {
-      const hits = [];
-      const d = docRef.current;
-      for (let i = 1; i <= d.numPages; i++) {
-        let txt = textCache.current.get(i);
-        if (txt == null) {
-          const page = await d.getPage(i);
-          const content = await page.getTextContent();
-          txt = content.items.map((it) => (it.str || '')).join(' ').toLowerCase();
-          textCache.current.set(i, txt);
-        }
-        if (txt.includes(q)) hits.push(i);
-      }
+      const hits = await collectMatchingPages({
+        numPages: d.numPages, getPageText, term: q,
+        isAborted: () => token !== searchToken.current,
+        onProgress: (done, total) => { if (token === searchToken.current) setSearchProg(done / total); },
+      });
+      if (hits == null || token !== searchToken.current) return; // aborted — discard
       setMatches(hits); setMatchIdx(0);
       if (hits.length) goPage(hits[0]);
-    } finally { setSearching(false); }
+    } finally {
+      if (token === searchToken.current) setSearching(false);
+    }
   }
   function cycleMatch(dir) {
     if (!matches || !matches.length) return;
@@ -214,7 +226,7 @@ export default function AppPdfViewer({
             aria-label="Find in document"
             style={{ flex: 1, minWidth: 120, padding: '6px 10px', background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt, fontSize: 12.5, fontFamily: FONT }}
           />
-          <button type="submit" disabled={searching || !term.trim()} style={tbTextBtn(C, searching || !term.trim())}>{searching ? 'Searching…' : 'Find'}</button>
+          <button type="submit" disabled={searching || !term.trim()} style={tbTextBtn(C, searching || !term.trim())}>{searching ? `Searching… ${Math.round(searchProg * 100)}%` : 'Find'}</button>
           {matches != null && !searching && (
             <span style={{ fontSize: 11, fontFamily: MONO, color: matches.length ? C.txt2 : C.muted, whiteSpace: 'nowrap' }}>
               {matches.length ? `${matchIdx + 1} / ${matches.length} page${matches.length === 1 ? '' : 's'}` : 'No matches'}

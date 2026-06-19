@@ -54,6 +54,13 @@ to the first, and shows `i / N pages` with ◂ ▸ to cycle. This avoids any
 initial-load cost. It locates matches at the **page** level (jump-to-page), not
 in-page highlight overlays (a deliberate weight trade-off — see limitations).
 
+The scan logic lives in a pure, unit-tested module (`pdfSearch.js`): it is
+**abortable** (a new search or a document change bumps a token so the in-flight scan
+is discarded — no stale results, no setState churn), **resilient** (a page whose text
+fails to extract is treated as empty and never aborts the whole scan), shows
+per-page **progress** ("Searching… NN%"), and caches each page's text so repeat
+searches are instant. Covered by `tests/unit/pdfSearch.test.js`.
+
 ## Auth & security (unchanged)
 pdf.js fetches the **same authenticated same-origin URL** the old iframe used
 (`/api/screening/projects/:pid/records/:rid/pdf/:aid/download`); `withCredentials`
@@ -64,9 +71,23 @@ server's existing access control (`canScreen` OR `isLeader`) and HTTP-Range stre
 `worker-src 'self' blob:`; the worker + PDF fetch are same-origin under
 `default-src/connect-src 'self'`.
 
-## Limitations / future
-- In-page match **highlighting** is not implemented (jump-to-page only) to keep the
-  text layer out of the hot path; a future opt-in text-layer overlay could add it.
-- Continuous scroll is off by default (single-page = fastest); could be an option.
-- Exotic image codecs (JPEG2000/JBIG2) decode via WASM — covered by the CSP token
-  above; text always renders even if an exotic image cannot.
+## Verification
+- The pdf.js engine itself (load → page → `getTextContent`) was verified against a
+  **real manuscript PDF** with the installed `pdfjs-dist@4.10.38` legacy build +
+  worker (1 page, 2669 chars extracted). So the load/parse/text path the viewer and
+  search rely on is confirmed working; only the **canvas draw** is browser-only and
+  remains a manual-QA item (no headless browser in CI).
+- Pure logic is unit-tested: `tests/unit/pdfSearch.test.js` (search) and the
+  page-scan abort/resilience/progress behavior.
+
+## Limitations / future (deliberate deferrals)
+- In-page match **highlighting** is not implemented (jump-to-page only). A text-layer
+  overlay would add it but its pixel alignment cannot be verified without a browser,
+  so it is deferred rather than shipped unverified.
+- **Continuous scroll** is off by default (single-page = fastest, lightest); could be
+  an opt-in mode. A **thumbnail rail** is likewise deferred (weight vs. the
+  lightweight goal).
+- Exotic image codecs (JPEG2000/JBIG2) decode via WASM — covered by the CSP
+  `'wasm-unsafe-eval'` token; text always renders even if an exotic image cannot.
+- The worker chunk is ~1.4 MB but **lazy** (loaded only when a PDF opens, never on
+  app start) — an accepted trade-off for a research app where PDF reading is core.
