@@ -135,25 +135,45 @@ all fixed before commit:
 
 See git log for the prompt37 commit on `main`.
 
-## 22. Known limitations
+## 22. Known limitations — reviewed & reclassified
 
-1. **Brand chart series** beyond the primary accent aren't auto-generated into a
-   multi-hue harmonized palette — multi-series charts still use the CVD-safe
-   Okabe–Ito set (a deliberate accessibility choice). The brand drives single-
-   series/primary chart elements + the Ops choropleth.
-2. **First-ever paint after a brand change** shows the previously-cached brand for
-   ~1 frame until the settings fetch resolves (standard SSR-less behavior). First-
-   ever visitors see the default indigo (which is the default) — no wrong-color flash.
-3. Forest-plot diamonds keep the fixed scientific accent (intended, for export
-   fidelity) — they do not follow the brand.
-4. The generator targets fixed night-lightness (L≈0.70); extremely desaturated
-   custom inputs yield a near-gray accent (correctly flagged by diagnostics).
+A follow-up investigation re-examined every documented limitation against the
+actual code. Most were over-cautious: they are deliberate, correct design
+choices, not defects. Verdicts:
 
-## 23. Future recommendations
+1. **Multi-series chart palette — NOT a gap (resolved by existing design).**
+   The Ops trend chart (`AreaChart`) already uses the brand for its primary series
+   (`logins → C.acc`) and distinct, theme-aware categorical hues for the others
+   (`C.grn / C.purp / C.teal`) — exactly the recommended pattern. The only places
+   that use the fixed Okabe–Ito / CVD-safe set are the **forest/funnel plots**
+   (scientific, exported) and **RoB risk levels** (semantic low/some/high), which
+   must stay color-blind-safe and meaningful. A brand-harmonized generator would
+   have **no appropriate consumer** (it would be dead code). No change made.
+2. **First-ever paint for brand-new visitors — inherent (kept).** The SPA is
+   served statically by the VPS (the Node server does not serve `index.html`), so
+   there is no SSR seam to inject the brand into the first HTML. The localStorage
+   cache + pre-paint bootstrap already cover **every returning visitor**; a
+   genuinely-first-time visitor briefly sees the default indigo until
+   `/api/settings/public` resolves — identical, accepted behavior to the existing
+   non-blocking `defaultTheme`. Not fixable from app code without changing the VPS
+   serving layer.
+3. **Forest-plot data colors — deliberate (kept).** `FC.acc` colors the per-study
+   CI lines, point-estimate squares and the pooled diamond — core scientific data.
+   Brand-tinting these would alter scientific presentation per brand and risks the
+   "ugly/misleading plots" the spec warns against; exports must also stay fixed.
+   Plot *UI controls* already follow the brand. No change made.
+4. **Desaturated custom inputs** yield a near-gray night accent (L≈0.70) — this is
+   correctly surfaced by the contrast diagnostics, so it is self-flagging, not a
+   silent failure. Acceptable.
 
-- Optional **multi-series brand-harmonized chart palette** (hue-rotated from brand,
-  contrast-checked) behind a toggle, while keeping CVD-safe as the default.
-- Optional secondary accent / gradient-end control.
-- Per-scope theming (separate landing vs app accent) if ever desired — the storage
-  already isolates `themeSettings`, so this is additive.
-- Surface the active brand in the Ops Overview header as a tiny swatch.
+## 23. Recommendations — actioned
+
+- ✅ **Active-brand swatch in the Ops Overview header** — implemented: a pill shows
+  the current brand color + preset name and links straight to Ops › Appearance.
+- ⏭️ **Per-scope theming (separate landing vs app accent)** — deliberately deferred.
+  The original spec set "apply globally" as the default and treated per-scope as
+  optional-only; the storage (`themeSettings`) already isolates this, so it remains
+  a clean additive follow-up if ever requested.
+- ⏭️ **Secondary accent / gradient-end control** — deferred. The gradient end
+  (`--t-acc2`) is auto-derived and reads well across all presets; a separate
+  control adds UI surface for marginal benefit.

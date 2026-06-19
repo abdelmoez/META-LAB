@@ -922,6 +922,7 @@ function KpiCard({ label, value, sub, color = C.acc, spark, trendLoading, loadin
 }
 
 function OverviewSection({ onNavigate, isAdmin = true }) {
+  const { brand } = useTheme(); // prompt37 — surface the active brand swatch
   const [metrics, setMetrics] = useState(null);
   const [health,  setHealth]  = useState(null);
   const [siftM,   setSiftM]   = useState(null);      // screening metrics (funnel / donut / KPI sub-stat)
@@ -1062,9 +1063,19 @@ function OverviewSection({ onNavigate, isAdmin = true }) {
       {/* opsPulse keyframes are now in the AdminConsole root <style> tag so
           UsersSection / UserDetailPanel can use them too. */}
 
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18, gap: 12, flexWrap: 'wrap' }}>
         <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: 0 }}>Platform Overview</h2>
-        <button onClick={load} style={{ padding: '6px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>↻ Refresh</button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/* prompt37 — active brand swatch + quick link to Ops › Appearance */}
+          <button onClick={() => onNavigate('style')} title="Open Appearance"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '5px 11px', background: alpha(C.acc, 0.08), border: `1px solid ${alpha(C.acc, 0.3)}`, borderRadius: 999, cursor: 'pointer', fontFamily: FONT }}>
+            <span style={{ width: 13, height: 13, borderRadius: 4, background: brand.brandColor || C.acc, border: `1px solid ${alpha('#000000', 0.15)}` }} />
+            <span style={{ fontSize: 11.5, fontWeight: 600, color: C.acc }}>
+              {PRESETS.find(p => p.id === brand.preset)?.name || 'Custom theme'}
+            </span>
+          </button>
+          <button onClick={load} style={{ padding: '6px 14px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>↻ Refresh</button>
+        </div>
       </div>
 
       {error && <ErrorBox msg={error} />}
