@@ -70,6 +70,18 @@ const DEFAULTS = {
 };
 
 /**
+ * The default featureFlags object (parsed). Exported so the admin + public
+ * settings endpoints can MERGE these defaults under the stored row: flags added
+ * to DEFAULTS *after* the featureFlags row was first created never reach the row
+ * (initDefaultSettings never overwrites existing rows), so without this merge a
+ * newly-added flag (e.g. `searchEngine`) is invisible in Ops and reads as absent.
+ * Stored values always win; this only fills in keys the stored row is missing.
+ */
+export function defaultFeatureFlags() {
+  try { return JSON.parse(DEFAULTS.featureFlags); } catch { return {}; }
+}
+
+/**
  * Initialize default SiteSettings on startup.
  * Only inserts rows that don't already exist (upsert with skipDuplicates-equivalent).
  * Non-blocking — call with .catch(console.error) from index.js.
@@ -132,6 +144,11 @@ export async function getPublicSettings(req, res) {
     if (result.appSettings && typeof result.appSettings === 'object') {
       result.appSettings = { ...appDefaults, ...result.appSettings };
     }
+
+    // Merge per-flag defaults so flags ADDED after the stored row was first
+    // created still surface (with their default value) to the frontend — same
+    // reasoning as appSettings above. Stored flags win.
+    result.featureFlags = { ...defaultFeatureFlags(), ...(result.featureFlags || {}) };
 
     // prompt9 — additive top-level conveniences for the frontend ThemeContext
     // and maintenance banner (existing consumers of the nested keys unaffected).

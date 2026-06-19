@@ -65,14 +65,36 @@ Works without a key at the lower rate. Add the key later as a one-line env chang
 
 Unit: +5 (`mapMeshSummary`, `createTtlCache`). Gate: 1387 green. Build green.
 
-## Known limitations (from the handoff + this integration)
-1. **Emtree term** is a lowercased MeSH fallback (NLM has no Emtree data) — verify
-   the Embase *subject term* against a real Embase session or add a MeSH→Emtree
-   crosswalk before relying on Embase output. Query *syntax* for all three DBs is
-   correct.
-2. **Narrower terms (`children`)** are left empty (optional in the contract) — the
-   hover panel simply shows none; a follow-up can fetch them via the MeSH RDF API.
-3. **Per-concept live counts** are not enabled (only the whole-query total) — the
-   safe default; switch on only with an API key + short-TTL cache.
-4. The NLM throttle is a single-process in-memory spacer — fine for one server;
-   multi-instance deployments would want a shared limiter.
+## v3.21.1 follow-up — flag visibility + limitation fixes
+- **Ops flag was invisible (fixed).** The Feature-Flags UI is driven by a hardcoded
+  `FLAG_META` list in `AdminConsole.jsx` that omitted `searchEngine` (and
+  `serverBackedWorkflowState`), so neither could be toggled. Both are now listed.
+  Root cause beneath that: `getFeatureFlags` (admin) and `getPublicSettings`
+  returned the stored row **verbatim**, and `initDefaultSettings` never overwrites
+  an existing row — so flags added after the row's creation never appeared. Both
+  endpoints now **merge `defaultFeatureFlags()`** under the stored values (stored
+  wins), so any future flag surfaces automatically with its correct default.
+- **Emtree fallback improved (L1).** `emtreeFallback()` now de-inverts
+  comma-inverted MeSH headings into natural Embase word order
+  (`"Diabetes Mellitus, Type 2"` → `"type 2 diabetes mellitus"`) instead of a flat
+  lowercase. Still a derived heuristic — verify in Embase before publishing.
+- **Narrower terms now populated (L2).** `meshNarrower(meshUI)` fetches direct
+  narrower descriptors from the **MeSH RDF SPARQL endpoint**
+  (`id.nlm.nih.gov/mesh/sparql`, `meshv:broaderDescriptor`); `meshLookup` attaches
+  them as `children`. Best-effort (failure → `[]`, never fatal), throttled through
+  the same NLM spacer, cached 30d. The existing hover panel + "includes N narrower
+  topic(s)" line light up with real data. Live-verified: Hypertension → 9, Type 2
+  Diabetes → 1.
+
+## Known limitations (remaining)
+1. **Emtree** is still a *derived* term (NLM has no Emtree data) — the de-inversion
+   gets natural word order but a true MeSH→Emtree crosswalk needs UMLS (licensed).
+   Verify the Embase subject term before relying on Embase output. Query *syntax*
+   for all three DBs is correct.
+2. **Per-concept live counts** are not enabled (only the whole-query total) —
+   enabling them means editing the frozen handoff engine component, which is out
+   of scope; the count seam already supports any query the frontend sends.
+3. The NLM throttle is a single-process in-memory spacer — adequate for the
+   single-instance VPS deploy; a multi-instance deployment would want a shared
+   limiter. `meshLookup` now makes up to 3 NLM calls (esearch → esummary → SPARQL),
+   all throttled + 30d-cached, so steady-state cost stays low.

@@ -4,7 +4,9 @@
  * suite + live verification.
  */
 import { describe, it, expect } from 'vitest';
-import { mapMeshSummary } from '../../server/searchEngine/nlmClient.js';
+import {
+  mapMeshSummary, emtreeFallback, parseSparqlLabels,
+} from '../../server/searchEngine/nlmClient.js';
 import { createTtlCache } from '../../server/searchEngine/ttlCache.js';
 
 describe('mapMeshSummary', () => {
@@ -18,7 +20,7 @@ describe('mapMeshSummary', () => {
     expect(m.mesh).toBe('Diabetes Mellitus, Type 2');
     expect(m.meshUI).toBe('D003924');
     expect(m.synonyms).toContain('NIDDM');
-    expect(m.emtree).toBe('diabetes mellitus, type 2'); // lowercased fallback
+    expect(m.emtree).toBe('type 2 diabetes mellitus'); // de-inverted, lowercased fallback
     expect(m.scope).toMatch(/insulin/);
     expect(m.source).toBe('live');
     expect(Array.isArray(m.children)).toBe(true);
@@ -37,6 +39,41 @@ describe('mapMeshSummary', () => {
     expect(m.synonyms.length).toBe(40);
     expect(m.meshUI).toBe('');
     expect(m.scope).toBe('');
+  });
+});
+
+describe('emtreeFallback', () => {
+  it('de-inverts comma-inverted MeSH headings into natural Embase order', () => {
+    expect(emtreeFallback('Diabetes Mellitus, Type 2')).toBe('type 2 diabetes mellitus');
+    expect(emtreeFallback('Heart Failure, Systolic')).toBe('systolic heart failure');
+    expect(emtreeFallback('Hypertension, Malignant')).toBe('malignant hypertension');
+  });
+
+  it('lowercases non-inverted headings unchanged and tolerates empties', () => {
+    expect(emtreeFallback('Hypertension')).toBe('hypertension');
+    expect(emtreeFallback('')).toBe('');
+    expect(emtreeFallback(null)).toBe('');
+  });
+});
+
+describe('parseSparqlLabels', () => {
+  it('extracts ordered de-duped ?label values from a SPARQL JSON result', () => {
+    const json = {
+      head: { vars: ['label'] },
+      results: { bindings: [
+        { label: { value: 'Heart Failure, Systolic' } },
+        { label: { value: 'Heart Failure, Diastolic' } },
+        { label: { value: 'Heart Failure, Systolic' } }, // dupe dropped
+      ] },
+    };
+    expect(parseSparqlLabels(json)).toEqual(['Heart Failure, Systolic', 'Heart Failure, Diastolic']);
+  });
+
+  it('returns [] for missing / malformed results', () => {
+    expect(parseSparqlLabels(null)).toEqual([]);
+    expect(parseSparqlLabels({})).toEqual([]);
+    expect(parseSparqlLabels({ results: {} })).toEqual([]);
+    expect(parseSparqlLabels({ results: { bindings: [{}, { label: {} }] } })).toEqual([]);
   });
 });
 

@@ -7,6 +7,7 @@ import { isEmailConfigured, sendEmail, renderReplyEmail, renderPasswordResetEmai
 import { createResetToken } from '../services/passwordResetService.js';
 import { getVersion } from '../version.js';
 import { bustMaintenanceCache } from '../middleware/maintenance.js';
+import { defaultFeatureFlags } from './settingsController.js';
 import { USAGE, recordUsage } from '../utils/usage.js';
 import { buildUserUpdate } from '../../src/shared/editableUserFields.js';
 import { buildCountryDistribution } from '../utils/countryStats.js';
@@ -1184,12 +1185,14 @@ export async function updateLandingContent(req, res) {
 export async function getFeatureFlags(req, res) {
   try {
     const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
-    if (!row) return res.json({});
-    try {
-      return res.json(JSON.parse(row.value));
-    } catch {
-      return res.json(row.value);
+    let stored = {};
+    if (row) {
+      try { stored = JSON.parse(row.value); } catch { stored = {}; }
     }
+    // Merge in defaults so the Ops UI always shows every known flag — including
+    // any added after the stored row was created (the row is never overwritten
+    // on startup). Stored values win; this only backfills missing keys.
+    return res.json({ ...defaultFeatureFlags(), ...(stored && typeof stored === 'object' ? stored : {}) });
   } catch (err) {
     console.error('[admin] getFeatureFlags error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });

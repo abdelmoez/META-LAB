@@ -15,6 +15,7 @@
 import { createTtlCache } from './ttlCache.js';
 
 const EUTILS = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils';
+const MESH_SPARQL = 'https://id.nlm.nih.gov/mesh/sparql';
 
 const apiKey = () => process.env.NCBI_API_KEY || '';
 const tool = () => process.env.NCBI_TOOL || 'metalab';
@@ -25,6 +26,7 @@ const minIntervalMs = () => (apiKey() ? 110 : 350);
 
 const meshCache = createTtlCache({ ttlMs: 30 * 24 * 60 * 60 * 1000, max: 5000 }); // 30 days
 const countCache = createTtlCache({ ttlMs: 60 * 60 * 1000, max: 5000 });          // 1 hour
+const narrowerCache = createTtlCache({ ttlMs: 30 * 24 * 60 * 60 * 1000, max: 5000 }); // 30 days (MeSH tree is near-static)
 
 /* ── Rate throttle: serialize the SLOT (start spacing) only, not the fetch, so a
  *    slow response never head-of-line-blocks the next call's spacing. ─────────── */
@@ -66,9 +68,42 @@ function commonParams() {
 }
 
 /**
+ * Best-effort Emtree term derived from a MeSH heading. NLM publishes NO Emtree
+ * data (Emtree is Elsevier/Embase proprietary), so this is only a heuristic the
+ * searcher must still confirm in Embase before publishing. It improves on a plain
+ * lowercase by DE-INVERTING comma-inverted MeSH headings into natural Embase word
+ * order: "Diabetes Mellitus, Type 2" → "type 2 diabetes mellitus",
+ * "Heart Failure, Systolic" → "systolic heart failure". PURE + exported for tests.
+ */
+export function emtreeFallback(mesh) {
+  const s = String(mesh || '').trim();
+  if (!s) return '';
+  const parts = s.split(/,\s+/).map((p) => p.trim()).filter(Boolean);
+  const natural = parts.length > 1 ? `${parts.slice(1).join(' ')} ${parts[0]}` : s;
+  return natural.toLowerCase();
+}
+
+/**
+ * Pure: MeSH SPARQL `application/sparql-results+json` → ordered, de-duped label
+ * strings (the `?label` binding). Exported for tests. Tolerates a missing/empty
+ * result set (returns []).
+ */
+export function parseSparqlLabels(json) {
+  const rows = json && json.results && Array.isArray(json.results.bindings) ? json.results.bindings : [];
+  const out = [];
+  const seen = new Set();
+  for (const row of rows) {
+    const v = row && row.label && typeof row.label.value === 'string' ? row.label.value.trim() : '';
+    if (v && !seen.has(v)) { seen.add(v); out.push(v); }
+  }
+  return out;
+}
+
+/**
  * Map one MeSH esummary record → the Search Builder contract shape. PURE +
  * exported so it is unit-testable without network. Returns null when there is no
- * usable descriptor.
+ * usable descriptor. `children` (narrower terms) is filled separately by
+ * meshLookup via the MeSH RDF endpoint — left [] here so the mapper stays pure.
  */
 export function mapMeshSummary(rec) {
   if (!rec || typeof rec !== 'object') return null;
@@ -79,12 +114,41 @@ export function mapMeshSummary(rec) {
     mesh,
     meshUI: rec.ds_meshui || rec.DS_MeSHUI || '',
     tree: '', // esummary mesh tree numbers are not reliably present (optional in contract)
-    emtree: mesh.toLowerCase(), // NLM has no Emtree data — lowercased fallback (flagged to team)
+    emtree: emtreeFallback(mesh), // derived heuristic — NLM has no Emtree (verify in Embase)
     synonyms: terms.slice(0, 40), // entry terms (capped)
     scope: rec.ds_scopenote || '',
-    children: [], // narrower terms optional (RDF API) — left empty; documented follow-up
+    children: [], // filled by meshLookup() from the MeSH RDF narrower relation
     source: 'live',
   };
+}
+
+/** SPARQL for the DIRECT narrower descriptors of a MeSH descriptor UI. */
+function narrowerQuery(ui) {
+  return [
+    'PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>',
+    'PREFIX meshv: <http://id.nlm.nih.gov/mesh/vocab#>',
+    'PREFIX mesh: <http://id.nlm.nih.gov/mesh/>',
+    `SELECT DISTINCT ?label WHERE { ?d meshv:broaderDescriptor mesh:${ui} . ?d rdfs:label ?label . } ORDER BY ?label LIMIT 40`,
+  ].join('\n');
+}
+
+/**
+ * Narrower (child) MeSH descriptors for a descriptor UI (e.g. "D006333") via the
+ * MeSH RDF SPARQL endpoint. Best-effort: any failure returns [] so meshLookup
+ * still succeeds. Cached 30d (the MeSH tree is near-static between annual
+ * releases). A genuine empty result IS cached; a failed fetch is NOT (retried).
+ */
+export async function meshNarrower(meshUI) {
+  const ui = String(meshUI || '').trim();
+  if (!/^D\d{6,}$/.test(ui)) return []; // only real descriptor UIs
+  const cached = narrowerCache.get(ui);
+  if (cached !== undefined) return cached;
+  const url = `${MESH_SPARQL}?query=${encodeURIComponent(narrowerQuery(ui))}&format=JSON&inference=false`;
+  const json = await nlmFetch(url);
+  if (json === null) return []; // transient failure — don't poison the cache
+  const labels = parseSparqlLabels(json);
+  narrowerCache.set(ui, labels);
+  return labels;
 }
 
 /**
@@ -108,6 +172,11 @@ export async function meshLookup(term) {
   const sum = await nlmFetch(`${EUTILS}/esummary.fcgi?${p2.toString()}`);
   const rec = sum && sum.result ? sum.result[uid] : null;
   const mapped = mapMeshSummary(rec);
+  // Best-effort narrower terms (the frontend shows these as "includes N narrower
+  // topic(s)" / lists them on hover). Failure leaves children = [] — never fatal.
+  if (mapped && mapped.meshUI) {
+    mapped.children = await meshNarrower(mapped.meshUI);
+  }
   meshCache.set(key, mapped);
   return mapped;
 }

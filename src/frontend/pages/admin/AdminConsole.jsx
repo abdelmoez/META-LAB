@@ -4328,6 +4328,8 @@ const FLAG_META = [
   { key: 'advancedMetaAnalysis', label: 'Advanced Meta-Analysis',desc: "Enable trim-and-fill, Egger's test, and influence diagnostics." },
   { key: 'exportTools',          label: 'Export Tools',          desc: 'Allow project and data exports in various formats.' },
   { key: 'rob_engine_v2',        label: 'Risk of Bias (RoB 2)',  desc: 'Enable the META·LAB RoB 2 assessment workspace (beta). Off by default until validated.' },
+  { key: 'serverBackedWorkflowState', label: 'Server-Backed Workflow State', desc: 'Persist migrated workflow modules (Protocol, Search Builder) server-side with revision-based conflict detection. Off keeps the legacy whole-project autosave.' },
+  { key: 'searchEngine',         label: 'Search Builder Engine', desc: 'Enable the new concept→multi-database Search Builder (MeSH lookup + live PubMed counts via the NLM proxy). Off keeps the legacy in-app search builder.' },
 ];
 
 function FlagsSection() {
