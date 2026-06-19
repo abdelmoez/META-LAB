@@ -308,9 +308,14 @@ function TermChip({term,dbId,color,onEdit,onRemove}){
         <span style={{fontFamily:MONO,fontSize:11,color:isControlled?C.txt:C.txt2}}>{rendered||term.text}</span>
         {isControlled&&<span style={{fontSize:8,fontWeight:700,letterSpacing:.5,color:matched?color:C.yel,textTransform:"uppercase",opacity:.85}}>{matched?"MeSH":"MeSH?"}</span>}
         {!isControlled&&<span style={{fontSize:8,fontWeight:700,letterSpacing:.5,color:C.muted,textTransform:"uppercase",opacity:.7}}>text</span>}
+        {/* prompt40 Task 4 — provenance badge: auto-suggested vs manually added vs synonym. */}
+        {term.source&&(()=>{
+          const m={pico_auto:["auto",C.muted],user_added:["added",C.grn],synonym:["syn",C.acc2||C.acc]}[term.source];
+          return m?<span title={m[0]==="auto"?"Auto-suggested from PICO":m[0]==="added"?"Added by you":"Synonym"} style={{fontSize:8,fontWeight:700,letterSpacing:.4,color:m[1],textTransform:"uppercase",opacity:.85}}>{m[0]}</span>:null;
+        })()}
         <BreadthDots term={term}/>
-        <button onClick={e=>{e.stopPropagation();onEdit();}} style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:11,padding:0}}>✎</button>
-        <button onClick={e=>{e.stopPropagation();onRemove();}} style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:13,padding:0,lineHeight:1}}>×</button>
+        <button onClick={e=>{e.stopPropagation();onEdit();}} title="Edit term" aria-label="Edit term" style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:11,padding:0}}>✎</button>
+        <button onClick={e=>{e.stopPropagation();onRemove();}} title="Remove term" aria-label="Remove term" style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:13,padding:0,lineHeight:1}}>×</button>
       </span>
       {showPanel&&(
         <span style={{position:"absolute",zIndex:60,top:"100%",left:0,paddingTop:4}}>

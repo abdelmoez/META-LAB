@@ -86,7 +86,13 @@ See the landing commit (pushed to `main`).
   concepts when PICO text is reworded (avoids overwriting edits) — Reset re-seeds.
 - Search Builder + Protocol visual rendering verified by build + code review; no
   headless-browser visual QA in CI.
-- Per-term source badges not yet rendered on chips (data model carries `source`).
+
+## 21. Follow-up round (limitations addressed)
+- **Per-term provenance badges shipped** — each chip now shows AUTO / ADDED / SYN
+  (tooltip) so auto-generated vs manual vs synonym terms are clear at a glance
+  (Task 4); edit/remove buttons gained `aria-label`/`title` (Task 5 accessibility).
+- The soft-connector ("in"/"among") over-split of fixed phrases ("carcinoma in situ")
+  found in adversarial review was fixed before the first commit (regression-tested).
 
 ## 20. Recommendations (future)
 - Render `source` badges + a per-database date filter from the Time Frame field.

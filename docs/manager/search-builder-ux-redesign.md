@@ -28,11 +28,15 @@ Each database tab shows an **editable** query with **Copy** and inline **Edit /
 Revert**. Manual edits set an override (a `✎` badge on the tab) and are never
 silently destroyed by regeneration — Revert restores the generated query.
 
+## Provenance badges (Task 4 — "auto-generated vs manual clearly")
+Each term chip now shows a small uppercase source badge — **AUTO** (suggested from
+PICO), **ADDED** (typed by you), or **SYN** (synonym from a MeSH lookup) — alongside
+the existing MeSH/text type badge, with a tooltip. The edit/remove buttons carry
+`aria-label`/`title` ("Edit term" / "Remove term").
+
 ## Deliberate scope notes
 - The redesign kept the proven two-column builder rather than the alternative
   four-section mock in the prompt — it already groups concepts, explains the logic,
   and exposes per-database strategies, with less chrome. The substantive gains were
-  in extraction intelligence + non-destructive PICO sync + ignore-tracking.
-- Per-term source **badges** on each chip are a small, low-risk follow-up (the data
-  model already carries `source`); deferred to avoid shipping unverified visual
-  detail (no headless-browser QA here).
+  in extraction intelligence + non-destructive PICO sync + ignore-tracking + the
+  provenance badges above.
