@@ -46,6 +46,7 @@ function isExempt(path) {
     path === '/api/health' ||
     path === '/api/version' ||
     path === '/api/settings/public' ||
+    path === '/api/settings/theme' ||
     path.startsWith('/api/auth') ||
     path.startsWith('/api/admin') ||
     path.startsWith('/api/events')

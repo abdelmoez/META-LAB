@@ -1,5 +1,6 @@
 import { prisma } from '../db/client.js';
 import { logAdminAction } from '../utils/audit.js';
+import { validateThemePatch, defaultThemeSettings } from '../utils/themeValidate.js';
 import { hashPassword } from '../auth/password.js';
 import { isEmailConfigured, sendEmail, renderReplyEmail, renderPasswordResetEmail, emailStatus } from '../services/emailService.js';
 import { createResetToken } from '../services/passwordResetService.js';
@@ -1209,6 +1210,51 @@ export async function updateFeatureFlags(req, res) {
   }
 }
 
+// ── GET /api/admin/settings/theme ─────────────────────────────────────────────
+// prompt37 — the global brand theme. GET mirrors the public endpoint (admin
+// convenience); PATCH validates + persists + audits.
+
+export async function getAdminThemeSettings(req, res) {
+  try {
+    const row = await prisma.siteSetting.findUnique({ where: { key: 'themeSettings' } });
+    let stored = {};
+    if (row) { try { stored = JSON.parse(row.value); } catch { stored = {}; } }
+    return res.json({ ...defaultThemeSettings(), ...stored });
+  } catch (err) {
+    console.error('[admin] getAdminThemeSettings error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── PATCH /api/admin/settings/theme ───────────────────────────────────────────
+
+export async function updateThemeSettings(req, res) {
+  try {
+    const result = validateThemePatch(req.body);
+    if (!result.ok) return res.status(422).json({ error: result.error });
+
+    // Read the previous record for the audit trail (old → new).
+    let before = defaultThemeSettings();
+    try {
+      const row = await prisma.siteSetting.findUnique({ where: { key: 'themeSettings' } });
+      if (row) before = { ...before, ...JSON.parse(row.value) };
+    } catch { /* keep default */ }
+
+    const value = { ...result.value, updatedAt: new Date().toISOString() };
+    await upsertSetting('themeSettings', value, req.user.id);
+
+    await logAdminAction(req, 'APP_THEME_UPDATED', 'SiteSetting', 'themeSettings', {
+      oldPreset: before.preset, oldColor: before.brandColor,
+      newPreset: value.preset, newColor: value.brandColor,
+    });
+
+    return res.json(value);
+  } catch (err) {
+    console.error('[admin] updateThemeSettings error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 // ── GET /api/admin/audit-log ──────────────────────────────────────────────────
 
 export async function getAuditLog(req, res) {
@@ -1922,7 +1968,7 @@ export async function restoreProject(req, res) {
 export async function getConsole(req, res) {
   const role = req.user?.role || 'user';
   const sections = role === 'admin'
-    ? ['overview', 'users', 'projects', 'sift', 'rob', 'onboarding', 'content', 'settings', 'flags', 'messages', 'security', 'health']
+    ? ['overview', 'users', 'projects', 'sift', 'rob', 'onboarding', 'content', 'settings', 'style', 'flags', 'messages', 'security', 'health']
     : role === 'mod'
       ? ['users', 'messages']
       : [];

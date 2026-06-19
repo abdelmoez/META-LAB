@@ -454,6 +454,9 @@ function HeroCanvas({ reduced, speed = 1 }) {
 
     document.addEventListener('visibilitychange', onVis);
     window.addEventListener('metalab:theme-change', onTheme);
+    // prompt37 — repaint on a live brand-color change (Ops Appearance), not just
+    // a day/night flip; onTheme re-reads --t-acc from the computed styles.
+    window.addEventListener('metalab:brand-change', onTheme);
     window.addEventListener('resize', onResize);
 
     if (reduced) draw(0, true);
@@ -465,6 +468,7 @@ function HeroCanvas({ reduced, speed = 1 }) {
       if (io) io.disconnect();
       document.removeEventListener('visibilitychange', onVis);
       window.removeEventListener('metalab:theme-change', onTheme);
+      window.removeEventListener('metalab:brand-change', onTheme);
       window.removeEventListener('resize', onResize);
     };
   }, [reduced, speed]);

@@ -16,6 +16,13 @@ import Icon from '../../components/icons.jsx';
 // data-theme on <html>. Hex+alpha concatenation does not work on vars — use
 // `alpha(C.x, '40')` instead.
 import { C, FONT, MONO, alpha } from '../../theme/tokens.js';
+// prompt37 — global brand theme. useTheme exposes live preview/commit/reset of
+// the accent palette; themeEngine is the pure generator + presets + diagnostics.
+import { useTheme } from '../../theme/ThemeContext.jsx';
+import {
+  PRESETS, generateThemeFromHex, normalizeHex, isValidHex,
+  diagnosePalette, buildThemeRecord, defaultThemeRecord, DEFAULT_BRAND,
+} from '../../theme/themeEngine.js';
 // Central editable-user-field schema (shared with the server) — the Ops edit
 // form is rendered + validated from this single source of truth (prompt20 Task 5).
 import { editableFieldsForRole, PRIMARY_ROLE_OPTIONS, RESEARCH_FIELD_OPTIONS, MAIN_USE_CASE_OPTIONS } from '../../../shared/editableUserFields.js';
@@ -4067,6 +4074,239 @@ function SettingsSection() {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+   SECTION: APPEARANCE — global brand color / style engine (prompt37)
+   ════════════════════════════════════════════════════════════════════════ */
+
+// A scoped light/dark mini-preview: sets the four brand CSS vars (which inherit
+// down to every var(--t-acc*) inside) plus neutral chrome for the chosen mode,
+// so the admin sees the palette on real UI samples without flipping the app.
+const PREVIEW_NEUTRALS = {
+  day:   { bg: '#ffffff', card: '#f3f4f6', txt: '#1f2937', txt2: '#4b5563', brd: '#e5e7eb' },
+  night: { bg: '#151e30', card: '#1d2840', txt: '#f1f5f9', txt2: '#aab6cf', brd: '#283449' },
+};
+
+function ThemePreviewCard({ palette, mode }) {
+  const side = palette[mode];
+  const n = PREVIEW_NEUTRALS[mode];
+  const vars = {
+    '--t-acc': side.acc, '--t-acc2': side.acc2,
+    '--t-acc-text': side.accText, '--t-acc-bg': side.accBg,
+  };
+  return (
+    <div style={{
+      ...vars, flex: 1, minWidth: 220, background: n.bg, color: n.txt,
+      border: `1px solid ${n.brd}`, borderRadius: 12, padding: 16,
+      display: 'flex', flexDirection: 'column', gap: 12,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: n.txt2 }}>
+          {mode === 'day' ? 'Light mode' : 'Dark mode'}
+        </span>
+        <span style={{ fontSize: 10, fontFamily: MONO, color: n.txt2 }}>{side.acc}</span>
+      </div>
+      {/* Sample tabs */}
+      <div style={{ display: 'flex', gap: 4, borderBottom: `1px solid ${n.brd}` }}>
+        <span style={{ padding: '6px 10px', fontSize: 12, fontWeight: 700, color: 'var(--t-acc)', borderBottom: '2px solid var(--t-acc)' }}>Active</span>
+        <span style={{ padding: '6px 10px', fontSize: 12, color: n.txt2 }}>Inactive</span>
+      </div>
+      {/* Sample button + badge + link */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <button style={{ padding: '7px 14px', borderRadius: 8, border: 'none', background: 'var(--t-acc)', color: 'var(--t-acc-text)', fontSize: 12, fontWeight: 600, fontFamily: FONT, cursor: 'default' }}>Primary</button>
+        <span style={{ padding: '4px 10px', borderRadius: 999, background: 'var(--t-acc-bg)', color: 'var(--t-acc)', fontSize: 11, fontWeight: 600 }}>Badge</span>
+        <a style={{ color: 'var(--t-acc)', fontSize: 12, fontWeight: 500, textDecoration: 'underline' }}>Link</a>
+      </div>
+      {/* Sample card + focus ring */}
+      <div style={{ background: n.card, border: `1px solid ${n.brd}`, borderRadius: 8, padding: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <div style={{ width: 26, height: 26, borderRadius: 6, background: 'var(--t-acc)' }} />
+        <div style={{ flex: 1 }}>
+          <div style={{ height: 6, width: '70%', borderRadius: 4, background: 'var(--t-acc-bg)' }} />
+          <div style={{ height: 6, width: '45%', borderRadius: 4, background: n.brd, marginTop: 5 }} />
+        </div>
+        <div style={{ width: 30, height: 18, borderRadius: 999, background: 'var(--t-acc)', boxShadow: `0 0 0 3px color-mix(in srgb, var(--t-acc) 28%, transparent)` }} />
+      </div>
+    </div>
+  );
+}
+
+function SwatchButton({ hex, name, note, active, onClick }) {
+  return (
+    <button onClick={onClick} title={note} style={{
+      display: 'flex', alignItems: 'center', gap: 10, padding: '8px 10px',
+      borderRadius: 10, cursor: 'pointer', textAlign: 'left', width: '100%',
+      background: active ? alpha(C.acc, 0.1) : C.card,
+      border: `1.5px solid ${active ? C.acc : C.brd}`, fontFamily: FONT,
+    }}>
+      <span style={{ width: 22, height: 22, borderRadius: 6, background: hex, flexShrink: 0, border: `1px solid ${alpha('#000000', 0.12)}` }} />
+      <span style={{ minWidth: 0 }}>
+        <span style={{ display: 'block', fontSize: 12, fontWeight: 600, color: C.txt, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{name}</span>
+        <span style={{ display: 'block', fontSize: 10, fontFamily: MONO, color: C.muted }}>{hex}</span>
+      </span>
+    </button>
+  );
+}
+
+function StyleSection() {
+  const { brand, previewBrand, clearBrandPreview, commitBrand } = useTheme();
+  // Seed from the ALREADY-APPLIED context brand so `dirty` starts false — never
+  // push the placeholder default as a global preview before the server loads
+  // (which would flash the whole app to indigo on mount under a custom brand).
+  const [hexInput, setHexInput] = useState(() => normalizeHex(brand?.brandColor) || DEFAULT_BRAND);
+  const [preset, setPreset]     = useState('default');
+  const [status, setStatus]     = useState('idle');
+  const [loading, setLoading]   = useState(true);
+  const [updatedAt, setUpdatedAt] = useState(null);
+
+  // Initialize from the server record (falls back to the live context brand).
+  useEffect(() => {
+    let alive = true;
+    adminApi.theme.get()
+      .then(d => {
+        if (!alive || !d) return;
+        setHexInput(d.brandColor || DEFAULT_BRAND);
+        setPreset(d.preset || 'custom');
+        setUpdatedAt(d.updatedAt || null);
+      })
+      .catch(() => { setHexInput(brand.brandColor || DEFAULT_BRAND); setPreset(brand.preset || 'custom'); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const normalized = normalizeHex(hexInput);
+  const valid = !!normalized;
+  const palette = valid ? generateThemeFromHex(normalized) : null;
+  const diag = palette ? diagnosePalette(palette) : null;
+  const savedColor = normalizeHex(brand.brandColor) || DEFAULT_BRAND;
+  const dirty = valid && normalized !== savedColor;
+
+  // Live global preview: whenever the (valid) draft differs from saved, theme
+  // the whole console; revert to saved on cleanup (tab switch / unmount).
+  useEffect(() => {
+    // Gate on `loading` too: never preview the placeholder color before the
+    // authoritative server value has resolved.
+    if (!loading && palette && dirty) previewBrand(palette);
+    else clearBrandPreview();
+    return () => clearBrandPreview();
+  }, [normalized, dirty, loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function pickPreset(p) { setHexInput(p.hex); setPreset(p.id); }
+  function pickHex(v) {
+    setHexInput(v);
+    const nh = normalizeHex(v);
+    const match = nh && PRESETS.find(p => p.hex === nh);
+    setPreset(match ? match.id : 'custom');
+  }
+
+  async function save() {
+    if (!valid) return;
+    setStatus('saving');
+    try {
+      const record = buildThemeRecord({ presetId: preset !== 'custom' ? preset : null, hex: normalized });
+      const saved = await adminApi.theme.save({
+        brandColor: record.brandColor, preset: record.preset, palette: record.palette,
+      });
+      commitBrand({ brandColor: saved.brandColor, preset: saved.preset, palette: saved.palette || record.palette });
+      setUpdatedAt(saved.updatedAt || null);
+      setStatus('saved'); setTimeout(() => setStatus('idle'), 3000);
+    } catch { setStatus('error'); setTimeout(() => setStatus('idle'), 3000); }
+  }
+
+  async function resetDefault() {
+    setStatus('saving');
+    try {
+      const saved = await adminApi.theme.save({ reset: true });
+      const rec = defaultThemeRecord();
+      commitBrand({ brandColor: rec.brandColor, preset: 'default', palette: null });
+      setHexInput(DEFAULT_BRAND); setPreset('default');
+      setUpdatedAt(saved.updatedAt || null);
+      setStatus('saved'); setTimeout(() => setStatus('idle'), 3000);
+    } catch { setStatus('error'); setTimeout(() => setStatus('idle'), 3000); }
+  }
+
+  if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={20} /></div>;
+
+  const diagColor = lvl => (lvl === 'good' ? C.grn : lvl === 'warn' ? C.yel : C.red);
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 6px' }}>Appearance</h2>
+      <p style={{ fontSize: 12.5, color: C.muted, margin: '0 0 20px', maxWidth: 720, lineHeight: 1.6 }}>
+        Set the platform-wide <strong style={{ color: C.txt2 }}>brand color</strong>. One accent drives a balanced palette
+        (primary, hover, soft tint, accessible text) across landing, dashboard, screening, RoB, GRADE, analysis,
+        ops, buttons, tabs, badges, charts and maps — in both light and dark mode. Semantic colors
+        (success / warning / danger) stay meaningful.
+      </p>
+
+      {dirty && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px', marginBottom: 16, borderRadius: 10, background: alpha(C.acc, 0.1), border: `1px solid ${alpha(C.acc, 0.4)}` }}>
+          <span style={{ fontSize: 12.5, color: C.txt, fontWeight: 500 }}>Live preview active — not yet saved.</span>
+          <button onClick={() => { setHexInput(savedColor); setPreset(brand.preset || 'custom'); }} style={{ marginLeft: 'auto', padding: '5px 12px', borderRadius: 7, border: `1px solid ${C.brd2}`, background: 'transparent', color: C.txt2, fontSize: 12, fontFamily: FONT, cursor: 'pointer' }}>Revert preview</button>
+        </div>
+      )}
+
+      <SectionCard title="Live preview">
+        <div style={{ padding: 16, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+          {palette
+            ? (<><ThemePreviewCard palette={palette} mode="day" /><ThemePreviewCard palette={palette} mode="night" /></>)
+            : <div style={{ fontSize: 12, color: C.red, padding: 10 }}>Enter a valid hex color to preview.</div>}
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Preset colors">
+        <div style={{ padding: 16, display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 10 }}>
+          {PRESETS.map(p => (
+            <SwatchButton key={p.id} hex={p.hex} name={p.name} note={p.note} active={preset === p.id} onClick={() => pickPreset(p)} />
+          ))}
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Custom color">
+        <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+          <input type="color" value={normalized || '#000000'} onChange={e => pickHex(e.target.value)}
+            style={{ width: 44, height: 38, padding: 0, border: `1px solid ${C.brd2}`, borderRadius: 8, background: 'transparent', cursor: 'pointer' }} aria-label="Pick a brand color" />
+          <input type="text" value={hexInput} onChange={e => pickHex(e.target.value)} placeholder="#4f46e5" spellCheck={false}
+            style={{ ...inputStyle, maxWidth: 160, fontFamily: MONO, textTransform: 'lowercase' }} aria-label="Brand color hex" />
+          {!valid && <span style={{ fontSize: 12, color: C.red, fontWeight: 500 }}>Invalid hex — use #RRGGBB.</span>}
+          {valid && <span style={{ fontSize: 12, color: C.muted }}>{preset === 'custom' ? 'Custom color' : PRESETS.find(p => p.id === preset)?.name}</span>}
+        </div>
+      </SectionCard>
+
+      <SectionCard title="Accessibility diagnostics" action={
+        diag && (diag.hasWarnings
+          ? <span style={{ fontSize: 10, fontFamily: MONO, color: diag.ok ? C.yel : C.red, letterSpacing: '0.05em' }}>{diag.ok ? 'WARNINGS' : 'POOR CONTRAST'}</span>
+          : <span style={{ fontSize: 10, fontFamily: MONO, color: C.grn, letterSpacing: '0.05em' }}>WCAG AA OK</span>)
+      }>
+        {diag && (
+          <div style={{ padding: '6px 0' }}>
+            {diag.checks.map((c, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '9px 20px', borderBottom: i < diag.checks.length - 1 ? `1px solid ${C.brd}` : 'none' }}>
+                <span style={{ fontSize: 12.5, color: C.txt2 }}>{c.label}</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 11, fontFamily: MONO, color: C.muted }}>{c.ratio}:1 (min {c.min})</span>
+                  <span style={{ width: 9, height: 9, borderRadius: '50%', background: diagColor(c.level) }} />
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        {diag && diag.warnings.length > 0 && (
+          <div style={{ padding: '12px 20px 4px' }}>
+            <NoticeBox color={diag.ok ? C.yel : C.red} msg={diag.warnings.join(' ')} />
+          </div>
+        )}
+      </SectionCard>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 4 }}>
+        <button onClick={resetDefault} style={{ padding: '9px 16px', borderRadius: 8, border: `1px solid ${C.brd2}`, background: 'transparent', color: C.txt2, fontSize: 13, fontWeight: 500, fontFamily: FONT, cursor: 'pointer' }}>Reset to default</button>
+        {updatedAt && <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>Last changed {fmtDate(updatedAt)}</span>}
+        <div style={{ marginLeft: 'auto' }}>
+          <SaveButton onClick={save} status={status} label={diag && diag.hasWarnings ? 'Save anyway' : 'Save theme'} disabled={!valid || !dirty} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
    SECTION: FEATURE FLAGS (unchanged)
    ════════════════════════════════════════════════════════════════════════ */
 
@@ -5932,6 +6172,7 @@ const NAV_SECTIONS = [
   { id: 'rob',        icon: 'scale',     label: 'Risk of Bias'  },
   { id: 'content',    icon: 'fileText',  label: 'Content'       },
   { id: 'settings',   icon: 'settings',  label: 'Settings'      },
+  { id: 'style',      icon: 'eye',       label: 'Appearance'    },
   { id: 'flags',      icon: 'sliders',   label: 'Flags'         },
   { id: 'messages',   icon: 'mail',      label: 'Messages'      },
   { id: 'security',   icon: 'shield',    label: 'Security'      },
@@ -6003,6 +6244,7 @@ export default function AdminConsole() {
     rob:        <RobAdminSection />,
     content:    <ContentSection />,
     settings:   <SettingsSection />,
+    style:      <StyleSection />,
     flags:      <FlagsSection />,
     messages:   <MessagesSection onUnreadChange={setUnread} />,
     security:   <SecuritySection />,

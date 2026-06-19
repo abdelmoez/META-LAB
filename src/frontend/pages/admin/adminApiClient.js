@@ -82,6 +82,15 @@ export const adminApi = {
     save:         (body)     => req(`${BASE}/settings`, { method: 'PUT', ...json(body) }),
   },
 
+  // ── Global brand theme (prompt37, admin only) ────────────────────────────────
+  // get → { brandColor, preset, palette:{day,night}|null, updatedAt };
+  // save(body) PATCHes { brandColor, preset, palette } (or { reset:true }) →
+  // the stored record. Every color is strictly hex-validated server-side.
+  theme: {
+    get:          ()         => req(`${BASE}/settings/theme`),
+    save:         (body)     => req(`${BASE}/settings/theme`, { method: 'PATCH', ...json(body) }),
+  },
+
   landingContent: {
     get:          ()         => req(`${BASE}/landing-content`),
     save:         (body)     => req(`${BASE}/landing-content`, { method: 'PUT', ...json(body) }),

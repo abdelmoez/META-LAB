@@ -21,6 +21,8 @@ import {
   restoreProject,
   getAdminSettings,
   updateAdminSettings,
+  getAdminThemeSettings,
+  updateThemeSettings,
   getLandingContent,
   updateLandingContent,
   getFeatureFlags,
@@ -154,6 +156,11 @@ router.patch('/projects/:id/restore', requireAdmin, restoreProject);
 
 router.get('/settings', requireAdmin, getAdminSettings);
 router.put('/settings', requireAdmin, updateAdminSettings);
+
+// prompt37 — global brand theme (admin only). Specific path BEFORE any generic
+// settings handling; PATCH validates strictly + audits APP_THEME_UPDATED.
+router.get('/settings/theme', requireAdmin, getAdminThemeSettings);
+router.patch('/settings/theme', requireAdmin, updateThemeSettings);
 
 router.get('/landing-content', requireAdmin, getLandingContent);
 router.put('/landing-content', requireAdmin, updateLandingContent);

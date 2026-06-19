@@ -29,6 +29,22 @@
         var t = localStorage.getItem('metalab_theme');
         document.documentElement.dataset.theme = t === 'night' ? 'night' : 'day';
       } catch (e) { document.documentElement.dataset.theme = 'day'; }
+      // Brand-color bootstrap (prompt37) — apply the cached global accent palette
+      // as inline custom properties BEFORE first paint so a custom brand never
+      // flashes the default indigo. The four tokens re-skin the whole app; they
+      // are theme-specific, so pick the side matching the data-theme set above.
+      try {
+        var bRaw = localStorage.getItem('metalab_brand');
+        if (bRaw) {
+          var b = JSON.parse(bRaw);
+          var side = b && b.palette && b.palette[document.documentElement.dataset.theme];
+          if (side) {
+            var map = { acc: '--t-acc', acc2: '--t-acc2', accText: '--t-acc-text', accBg: '--t-acc-bg' };
+            var HEX = /^#[0-9a-fA-F]{6}$/;
+            for (var k in map) if (HEX.test(side[k] || '')) document.documentElement.style.setProperty(map[k], side[k]);
+          }
+        }
+      } catch (e) { /* no cached brand → stylesheet default indigo */ }
     </script>
     <style>
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

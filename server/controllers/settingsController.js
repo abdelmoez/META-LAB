@@ -1,8 +1,14 @@
 import { prisma } from '../db/client.js';
 import { ROB_DEFAULTS } from './robAdminController.js';
+import { defaultThemeSettings } from '../utils/themeValidate.js';
 
 // Default settings keys and their initial JSON-serialised values
 const DEFAULTS = {
+  // prompt37 — global brand/theme. brandColor drives the whole UI accent; the
+  // generated `palette` (day/night × acc/acc2/accText/accBg) is produced by the
+  // admin client and stored verbatim (every value strictly validated as hex).
+  // Default = the original indigo, palette null (frontend uses stylesheet base).
+  themeSettings: JSON.stringify(defaultThemeSettings()),
   appSettings: JSON.stringify({
     appName: 'META·LAB',
     registrationOpen: true,
@@ -76,7 +82,7 @@ export async function initDefaultSettings() {
 export async function getPublicSettings(req, res) {
   try {
     const rows = await prisma.siteSetting.findMany({
-      where: { key: { in: ['appSettings', 'landingContent', 'featureFlags', 'onboardingSettings', 'robSettings'] } },
+      where: { key: { in: ['appSettings', 'landingContent', 'featureFlags', 'onboardingSettings', 'robSettings', 'themeSettings'] } },
     });
 
     const result = {};
@@ -104,6 +110,10 @@ export async function getPublicSettings(req, res) {
     result.onboardingSettings = { enabled: true, ...(result.onboardingSettings || {}) };
     result.robSettings = { ...ROB_DEFAULTS, ...(result.robSettings || {}) };
 
+    // prompt37 — global brand theme for the public ThemeProvider (applies to the
+    // logged-out landing page too). Defaults to the original indigo when unset.
+    result.themeSettings = { ...defaultThemeSettings(), ...(result.themeSettings || {}) };
+
     // prompt9 — merge appSettings defaults so NEW keys (defaultTheme,
     // maintenanceMessage, …) are always present even when the stored row
     // predates them (initDefaultSettings never overwrites existing rows).
@@ -123,5 +133,28 @@ export async function getPublicSettings(req, res) {
   } catch (err) {
     console.error('[settings] getPublicSettings error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * GET /api/settings/theme
+ * Public, no auth — the global brand theme as a standalone record. The app's
+ * ThemeProvider reads the brand via GET /api/settings/public (data.themeSettings)
+ * and the index.html bootstrap applies the localStorage-cached palette pre-paint;
+ * this dedicated endpoint exists for clarity/tooling and returns the same record.
+ * Always returns a valid record (falls back to the default indigo).
+ */
+export async function getThemeSettings(req, res) {
+  try {
+    const row = await prisma.siteSetting.findUnique({ where: { key: 'themeSettings' } });
+    let stored = {};
+    if (row) {
+      try { stored = JSON.parse(row.value); } catch { stored = {}; }
+    }
+    return res.json({ ...defaultThemeSettings(), ...stored });
+  } catch (err) {
+    console.error('[settings] getThemeSettings error:', err.message);
+    // Never break theming — degrade to the default rather than 500.
+    return res.json(defaultThemeSettings());
   }
 }
