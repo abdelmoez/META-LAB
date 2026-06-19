@@ -31,7 +31,12 @@ export function pdfFitWidthSrc(url) {
   return url.includes('#') ? url : `${url}#zoom=page-width&view=FitH`;
 }
 
-export default function PdfViewer({ pid, recordId, canManage, defaultOpen = false, previewHeight = 520 }) {
+// prompt36 Task 2 — `flush` lets a host (the RoB panel) own the rounded, bordered
+// container so the PDF display area sits flush with that inner border instead of
+// nesting a second bordered card. In flush mode the viewer drops its own
+// border/radius/background and fills its parent's height, and the preview iframe
+// grows to fill the remaining space (re-fitting width when panels are resized).
+export default function PdfViewer({ pid, recordId, canManage, defaultOpen = false, previewHeight = 520, flush = false }) {
   const [attachment, setAttachment] = useState(null);
   const [loading, setLoading]   = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -127,9 +132,11 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
   const fitUrl = pdfFitWidthSrc(previewUrl);
 
   return (
-    <div style={{ border: `1px solid ${C.brd}`, borderRadius: 10, background: C.card, overflow: 'hidden' }}>
+    <div style={flush
+      ? { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: 'transparent' }
+      : { border: `1px solid ${C.brd}`, borderRadius: 10, background: C.card, overflow: 'hidden' }}>
       {/* Toolbar */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', flexWrap: 'wrap', flexShrink: 0 }}>
         <span style={{ fontSize: 10, fontFamily: MONO, fontWeight: 600, letterSpacing: '0.12em', textTransform: 'uppercase', color: C.muted }}>
           Full-text PDF
         </span>
@@ -202,9 +209,12 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
         </div>
       )}
 
-      {/* Inline preview */}
+      {/* Inline preview — in flush mode it fills the remaining height so the PDF
+          area is flush with the host container's inner (rounded) border. */}
       {attachment && open && (
-        <div style={{ borderTop: `1px solid ${C.brd}`, background: C.surf }}>
+        <div style={flush
+          ? { borderTop: `1px solid ${C.brd}`, background: C.surf, flex: 1, minHeight: 0, display: 'flex' }
+          : { borderTop: `1px solid ${C.brd}`, background: C.surf }}>
           {frameErr ? (
             <div style={{ padding: '24px 16px', textAlign: 'center', fontSize: 12.5, color: C.txt2 }}>
               Preview unavailable in this browser.{' '}
@@ -215,7 +225,10 @@ export default function PdfViewer({ pid, recordId, canManage, defaultOpen = fals
               title="PDF preview"
               src={fitUrl}
               onError={() => setFrameErr(true)}
-              style={{ width: '100%', height: previewHeight, border: 'none', display: 'block', background: C.card2 }}
+              // flush mode fills its container; minHeight is a floor so the iframe
+              // can never collapse to its ~150px intrinsic size if an ancestor lacks
+              // a definite height (prompt36 review fix).
+              style={{ width: '100%', height: flush ? '100%' : previewHeight, minHeight: flush ? 240 : undefined, border: 'none', display: 'block', background: C.card2 }}
             />
           )}
         </div>

@@ -5319,6 +5319,299 @@ function OnboardingOptionsEditor({ options, onChange }) {
   );
 }
 
+/* prompt36 Task 6 — onboarding ANALYTICS view. Aggregate counts + percentages are
+   shown by default; individual answer VALUES live only in the drill-down modal and
+   stay hidden until an admin explicitly clicks "Show answers" (privacy). */
+function onbFmtTs(ts) {
+  if (!ts) return '—';
+  try { return new Date(ts).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); }
+  catch { return '—'; }
+}
+function OnbStackBar({ answered, skipped, pending }) {
+  const total = Math.max(1, (answered || 0) + (skipped || 0) + (pending || 0));
+  const seg = (n, color, title) => (n > 0
+    ? <div title={`${title}: ${n}`} style={{ width: `${(n / total) * 100}%`, background: color, height: '100%' }} />
+    : null);
+  return (
+    <div style={{ display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', background: alpha(C.muted, 0.14), minWidth: 90 }}>
+      {seg(answered, C.grn, 'Answered')}
+      {seg(skipped, C.ylw, 'Skipped')}
+      {seg(pending, alpha(C.muted, 0.45), 'Pending')}
+    </div>
+  );
+}
+function OnbLegend() {
+  const dot = (c) => <span style={{ width: 9, height: 9, borderRadius: 2, background: c, display: 'inline-block' }} />;
+  return (
+    <div style={{ display: 'flex', gap: 14, alignItems: 'center', fontSize: 10.5, fontFamily: MONO, color: C.muted }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>{dot(C.grn)} answered</span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>{dot(C.ylw)} skipped</span>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>{dot(alpha(C.muted, 0.45))} pending</span>
+    </div>
+  );
+}
+
+function OnboardingAnalytics() {
+  const [data, setData]       = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState('');
+  const [drill, setDrill]     = useState(null); // { kind:'question'|'user', id, label }
+
+  const load = useCallback(async () => {
+    setLoading(true); setError('');
+    try { setData(await adminApi.onboarding.analytics()); }
+    catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={20} /></div>;
+  if (error) return <ErrorBox msg={error} />;
+  if (!data) return null;
+  const o = data.overview || {};
+  const questions = data.questions || [];
+  const users = data.users || [];
+  const n = (v) => (v ?? 0).toLocaleString();
+
+  const exportCsv = () => {
+    const head = ['key', 'prompt', 'active', 'required', 'answered', 'skipped', 'pending', 'answered_pct', 'skipped_pct', 'pending_pct', 'last_answered', 'last_skipped'];
+    const rows = questions.map(q => [q.key, q.prompt, q.isActive, q.isRequired, q.answered, q.skipped, q.pending, q.answeredPct, q.skippedPct, q.pendingPct, q.lastAnsweredAt || '', q.lastSkippedAt || '']);
+    const csv = [head, ...rows].map(r => r.map(c => `"${String(c == null ? '' : c).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+    try {
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'onboarding-analytics.csv';
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    } catch { /* best-effort */ }
+  };
+
+  const smallBtn = { display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 11.5, fontWeight: 600, cursor: 'pointer', fontFamily: FONT };
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+      {/* Overview */}
+      <SectionCard title="Overview" action={<button onClick={load} style={smallBtn}><Icon name="refresh" size={12} /> Refresh</button>}>
+        <div style={{ padding: '16px 18px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(150px, 1fr))', gap: 12 }}>
+          <StatTile label="Questions" value={n(o.totalQuestions)} sub={`${n(o.activeQuestions)} active`} />
+          <StatTile label="Users" value={n(o.totalUsers)} sub="registered" color={C.acc2} />
+          <StatTile label="Assigned" value={n(o.totalAssignedResponses)} sub="active × users" />
+          <StatTile label="Answered" value={n(o.answered)} color={C.grn} />
+          <StatTile label="Skipped" value={n(o.skipped)} color={C.ylw} />
+          <StatTile label="Pending" value={n(o.pending)} color={C.muted} />
+          <StatTile label="Completed users" value={n(o.completedUsers)} color={C.acc} sub={`${o.completedUserRate ?? 0}% of users`} />
+        </div>
+        <div style={{ padding: '4px 18px 18px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(210px, 1fr))', gap: 22 }}>
+          <PercentCard value={o.answered || 0} total={o.totalAssignedResponses || 0} label="completion rate" color={C.grn} suffix="responses" />
+          <PercentCard value={o.skipped || 0} total={o.totalAssignedResponses || 0} label="skip rate" color={C.ylw} />
+          <PercentCard value={o.pending || 0} total={o.totalAssignedResponses || 0} label="pending rate" color={C.muted} />
+        </div>
+        {data.denominatorNote && (
+          <div style={{ padding: '0 18px 16px', fontSize: 11, color: C.muted, fontFamily: MONO, lineHeight: 1.55 }}>
+            <Icon name="info" size={11} /> {data.denominatorNote}
+          </div>
+        )}
+      </SectionCard>
+
+      {/* Per-question */}
+      <SectionCard
+        title={`Per-question (${questions.length})`}
+        action={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+            <OnbLegend />
+            <button onClick={exportCsv} style={smallBtn}><Icon name="download" size={12} /> Export CSV</button>
+          </div>
+        }
+      >
+        {questions.length === 0 ? (
+          <div style={{ padding: '32px 18px', textAlign: 'center', color: C.muted, fontSize: 13 }}>No onboarding questions yet.</div>
+        ) : questions.map((q, idx) => (
+          <div key={q.id} style={{ padding: '14px 18px', borderBottom: idx < questions.length - 1 ? `1px solid ${C.brd}` : 'none', opacity: q.isActive ? 1 : 0.62 }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, flexWrap: 'wrap' }}>
+              <div style={{ flex: 1, minWidth: 220 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>{q.prompt}</span>
+                  {q.isRequired && <Badge text="Required" color={C.red} />}
+                  {!q.isActive && <Badge text="Inactive" color={C.ylw} />}
+                  {q.allowSkip && q.isActive && <Badge text="Skippable" color={C.muted} />}
+                </div>
+                <div style={{ fontSize: 10.5, fontFamily: MONO, color: C.muted, marginTop: 5, display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+                  <span>key: {q.key || '—'}</span>
+                  <span>last answered: {onbFmtTs(q.lastAnsweredAt)}</span>
+                  <span>last skipped: {onbFmtTs(q.lastSkippedAt)}</span>
+                </div>
+              </div>
+              <div style={{ width: 200, maxWidth: '100%' }}>
+                <OnbStackBar answered={q.answered} skipped={q.skipped} pending={q.pending} />
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, fontFamily: MONO, marginTop: 6 }}>
+                  <span style={{ color: C.grn }}>{q.answered} · {q.answeredPct}%</span>
+                  <span style={{ color: C.ylw }}>{q.skipped} · {q.skippedPct}%</span>
+                  <span style={{ color: C.muted }}>{q.pending} · {q.pendingPct}%</span>
+                </div>
+              </div>
+              <button onClick={() => setDrill({ kind: 'question', id: q.id, label: q.prompt })} style={smallBtn}>Details</button>
+            </div>
+          </div>
+        ))}
+      </SectionCard>
+
+      {/* User-level */}
+      <SectionCard title={`Users with onboarding activity${data.usersTruncated ? ` (showing ${users.length})` : ` (${users.length})`}`}>
+        {users.length === 0 ? (
+          <div style={{ padding: '28px 18px', textAlign: 'center', color: C.muted, fontSize: 13 }}>No users have answered or skipped a question yet.</div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr>
+                  {['User', 'Answered', 'Skipped', 'Pending', 'Completion', ''].map((h, i) => (
+                    <th key={i} style={{ textAlign: i === 0 ? 'left' : i === 5 ? 'right' : 'center', padding: '9px 14px', fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em', borderBottom: `1px solid ${C.brd}`, whiteSpace: 'nowrap' }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {users.map(u => (
+                  <tr key={u.id} style={{ borderBottom: `1px solid ${alpha(C.brd, 0.6)}` }}>
+                    <td style={{ padding: '9px 14px', minWidth: 0 }}>
+                      <div style={{ color: C.txt, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 }}>{u.name || '—'}</div>
+                      <div style={{ color: C.muted, fontFamily: MONO, fontSize: 10.5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 }}>{u.email || '—'}</div>
+                    </td>
+                    <td style={{ padding: '9px 14px', textAlign: 'center', color: C.grn, fontFamily: MONO }}>{u.answered}</td>
+                    <td style={{ padding: '9px 14px', textAlign: 'center', color: C.ylw, fontFamily: MONO }}>{u.skipped}</td>
+                    <td style={{ padding: '9px 14px', textAlign: 'center', color: C.muted, fontFamily: MONO }}>{u.pending}</td>
+                    <td style={{ padding: '9px 14px', textAlign: 'center', fontFamily: MONO, color: u.complete ? C.grn : C.txt2 }}>{u.completionPct}%{u.complete ? ' ✓' : ''}</td>
+                    <td style={{ padding: '9px 14px', textAlign: 'right' }}>
+                      <button onClick={() => setDrill({ kind: 'user', id: u.id, label: u.name || u.email })} style={smallBtn}>View</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {data.usersTruncated && (
+          <div style={{ padding: '10px 18px', fontSize: 11, color: C.muted, fontFamily: MONO }}>
+            Showing the {users.length} users with the most pending questions. Use a per-question drill-down for the full picture.
+          </div>
+        )}
+      </SectionCard>
+
+      {drill && <OnboardingDrillModal drill={drill} onClose={() => setDrill(null)} />}
+    </div>
+  );
+}
+
+function OnboardingDrillModal({ drill, onClose }) {
+  const [data, setData]       = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState('');
+  const [showAnswers, setShowAnswers] = useState(false);
+  const [tab, setTab]         = useState('answered'); // question kind: answered|skipped|pending
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true); setError('');
+    const p = drill.kind === 'question' ? adminApi.onboarding.questionAnalytics(drill.id) : adminApi.onboarding.userStatus(drill.id);
+    p.then(d => { if (alive) setData(d); }).catch(e => { if (alive) setError(e.message); }).finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [drill]);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onKey, true);
+    return () => document.removeEventListener('keydown', onKey, true);
+  }, [onClose]);
+
+  const smallBtn = { display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 11.5, fontWeight: 600, cursor: 'pointer', fontFamily: FONT };
+  const userRow = (u, right) => (
+    <div key={u.userId} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '8px 0', borderBottom: `1px solid ${alpha(C.brd, 0.5)}` }}>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 12.5, color: C.txt, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.name || '—'}</div>
+        <div style={{ fontSize: 10.5, color: C.muted, fontFamily: MONO, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.email || '—'}</div>
+      </div>
+      <div style={{ fontSize: 11, color: C.txt2, fontFamily: MONO, flexShrink: 0, textAlign: 'right' }}>{right}</div>
+    </div>
+  );
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Onboarding drill-down" onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: alpha('#000', 0.5), display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000, padding: 20 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 12, width: 620, maxWidth: '100%', maxHeight: '85vh', display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${C.brd}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{drill.kind === 'question' ? 'Question drill-down' : 'User onboarding status'}</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: C.txt, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{drill.label}</div>
+          </div>
+          <button onClick={onClose} aria-label="Close" style={{ ...smallBtn, padding: '6px 10px' }}>✕</button>
+        </div>
+
+        <div style={{ padding: 18, overflowY: 'auto' }}>
+          {loading ? <div style={{ padding: 30, textAlign: 'center' }}><Spinner size={18} /></div>
+            : error ? <ErrorBox msg={error} />
+            : !data ? null
+            : drill.kind === 'question' ? (() => {
+              const lists = { answered: data.answeredUsers || [], skipped: data.skippedUsers || [], pending: data.pendingUsers || [] };
+              const q = data.question || {};
+              return (
+                <>
+                  <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+                    {[['answered', `Answered (${q.answered ?? lists.answered.length})`, C.grn], ['skipped', `Skipped (${q.skipped ?? lists.skipped.length})`, C.ylw], ['pending', `Pending (${data.pendingCount ?? lists.pending.length})`, C.muted]].map(([k, label, color]) => (
+                      <button key={k} onClick={() => setTab(k)} style={{ ...smallBtn, background: tab === k ? alpha(color, 0.14) : 'transparent', borderColor: tab === k ? alpha(color, 0.5) : C.brd2, color: tab === k ? color : C.txt2 }}>{label}</button>
+                    ))}
+                    <div style={{ flex: 1 }} />
+                    {tab === 'answered' && lists.answered.some(u => u.answer != null) && (
+                      <button onClick={() => setShowAnswers(s => !s)} style={smallBtn}>{showAnswers ? 'Hide answers' : 'Show answers'}</button>
+                    )}
+                  </div>
+                  {tab === 'answered' && !showAnswers && lists.answered.some(u => u.answer != null) && (
+                    <div style={{ fontSize: 11, color: C.muted, marginBottom: 10, fontStyle: 'italic' }}>Answer values are hidden. Click “Show answers” to reveal them.</div>
+                  )}
+                  {lists[tab].length === 0 ? (
+                    <div style={{ padding: '24px 0', textAlign: 'center', color: C.muted, fontSize: 12.5 }}>No users in this group.</div>
+                  ) : lists[tab].map(u => userRow(u,
+                    tab === 'answered' ? (showAnswers ? (u.answer ?? '—') : onbFmtTs(u.answeredAt))
+                      : tab === 'skipped' ? onbFmtTs(u.skippedAt) : 'pending'))}
+                  {tab === 'pending' && data.pendingTruncated && (
+                    <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, marginTop: 8 }}>Showing the first {lists.pending.length} of {data.pendingCount} pending users.</div>
+                  )}
+                </>
+              );
+            })() : (() => {
+              const items = data.items || [];
+              const c = data.counts || {};
+              const statusColor = { answered: C.grn, skipped: C.ylw, pending: C.muted, not_assigned: C.dim };
+              const anyAnswers = items.some(i => i.answer != null);
+              return (
+                <>
+                  <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: 14, fontSize: 11.5, fontFamily: MONO }}>
+                    <span style={{ color: C.grn }}>answered {c.answered ?? 0}</span>
+                    <span style={{ color: C.ylw }}>skipped {c.skipped ?? 0}</span>
+                    <span style={{ color: C.muted }}>pending {c.pending ?? 0}</span>
+                    <span style={{ color: C.txt2 }}>completion {c.completionPct ?? 0}%</span>
+                    <div style={{ flex: 1 }} />
+                    {anyAnswers && <button onClick={() => setShowAnswers(s => !s)} style={smallBtn}>{showAnswers ? 'Hide answers' : 'Show answers'}</button>}
+                  </div>
+                  {items.length === 0 ? (
+                    <div style={{ padding: '24px 0', textAlign: 'center', color: C.muted, fontSize: 12.5 }}>No questions.</div>
+                  ) : items.map(it => (
+                    <div key={it.id} style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10, padding: '9px 0', borderBottom: `1px solid ${alpha(C.brd, 0.5)}` }}>
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontSize: 12.5, color: C.txt, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.prompt}</div>
+                        {it.status === 'answered' && it.answer != null && (
+                          <div style={{ fontSize: 11, color: C.txt2, fontFamily: MONO, marginTop: 3 }}>{showAnswers ? `↳ ${it.answer}` : '↳ (answer hidden)'}</div>
+                        )}
+                      </div>
+                      <span style={{ fontSize: 10.5, fontFamily: MONO, fontWeight: 700, color: statusColor[it.status] || C.muted, flexShrink: 0, textTransform: 'uppercase' }}>{it.status.replace('_', ' ')}</span>
+                    </div>
+                  ))}
+                </>
+              );
+            })()}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function OnboardingSection() {
   // Behaviour settings
   const [beh,        setBeh]        = useState({ enabled: false, introTitle: '', introBody: '' });
@@ -5338,6 +5631,7 @@ function OnboardingSection() {
   const [editBusy,   setEditBusy]   = useState(false);
   const [previewId,  setPreviewId]  = useState(null);
   const [confirm,    setConfirm]    = useState(null);   // { kind:'reset'|'delete', q }
+  const [view,       setView]       = useState('manage'); // prompt36 Task 6 — 'manage' | 'analytics'
 
   const loadQuestions = useCallback(async () => {
     try {
@@ -5437,9 +5731,21 @@ function OnboardingSection() {
 
   return (
     <div>
-      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 20px' }}>Onboarding</h2>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', margin: '0 0 18px' }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: 0 }}>Onboarding</h2>
+        {/* prompt36 Task 6 — Manage (questions/behaviour) vs Analytics segmented toggle */}
+        <div style={{ display: 'inline-flex', background: C.bg, border: `1px solid ${C.brd2}`, borderRadius: 8, padding: 3, gap: 3 }}>
+          {[['manage', 'Manage'], ['analytics', 'Analytics']].map(([v, label]) => (
+            <button key={v} onClick={() => setView(v)} style={{
+              padding: '6px 14px', borderRadius: 6, border: 'none', cursor: 'pointer', fontFamily: FONT, fontSize: 12, fontWeight: 600,
+              background: view === v ? C.acc2 : 'transparent', color: view === v ? C.accText : C.txt2,
+            }}>{label}</button>
+          ))}
+        </div>
+      </div>
       {error && <ErrorBox msg={error} />}
 
+      {view === 'analytics' ? <OnboardingAnalytics /> : (<>
       {/* Behaviour */}
       <SectionCard title="Behaviour" action={<SaveButton onClick={saveBehaviour} status={behStatus} />}>
         <div style={{ padding: '14px 18px' }}>
@@ -5596,6 +5902,7 @@ function OnboardingSection() {
           );
         })}
       </SectionCard>
+      </>)}
 
       <ConfirmModal
         open={!!confirm}

@@ -105,6 +105,123 @@ function useMeasuredHeight(ref) {
   return h;
 }
 
+// prompt36 Task 1 — the RoB workspace opens 70% PDF / 30% assessment and the
+// divider between the panes is draggable. The ratio (PDF fraction) is clamped so
+// neither pane becomes unusable and is persisted per browser. It is smooth and
+// lag-free even on weak machines because a drag writes a CSS custom property
+// straight to the row element (one requestAnimationFrame per frame) instead of
+// re-rendering React on every pointer move — React state is touched only once,
+// on pointer-up, to commit + persist the final ratio.
+const SPLIT_MIN_PDF = 0.45;   // PDF panel never narrower than 45%
+const SPLIT_MAX_PDF = 0.72;   // assessment never narrower than ~28%
+const SPLIT_DEFAULT = 0.70;   // 70 / 30 default
+const SPLIT_STORAGE_KEY = 'metalab.rob.splitRatio';
+export function clampSplit(v) { return Math.min(SPLIT_MAX_PDF, Math.max(SPLIT_MIN_PDF, v)); }
+function readSplitRatio() {
+  try { const v = parseFloat(localStorage.getItem(SPLIT_STORAGE_KEY)); return (v >= SPLIT_MIN_PDF && v <= SPLIT_MAX_PDF) ? v : SPLIT_DEFAULT; } catch { return SPLIT_DEFAULT; }
+}
+
+// Divider track width (px); the handle is centred in it, so the drag math offsets
+// the cursor by half this to keep the handle directly under the pointer.
+const SPLIT_DIVIDER_PX = 16;
+function useResizableSplit(rowRef) {
+  const [ratio, setRatio] = useState(readSplitRatio);
+  const [dragging, setDragging] = useState(false);
+  const rafRef = useRef(0);
+  const teardownRef = useRef(null); // active-drag teardown, so an unmount mid-drag can clean up
+  const applyVar = useCallback((v) => { const el = rowRef.current; if (el) el.style.setProperty('--rob-pdf-pct', `${(v * 100).toFixed(3)}%`); }, [rowRef]);
+  useEffect(() => { applyVar(ratio); }, [ratio, applyVar]);
+  const persist = (v) => { try { localStorage.setItem(SPLIT_STORAGE_KEY, String(v)); } catch { /* best-effort */ } };
+
+  const onPointerDown = useCallback((e) => {
+    const el = rowRef.current; if (!el) return;
+    e.preventDefault();
+    // preventDefault on pointerdown suppresses the default focus, so focus the
+    // handle explicitly — otherwise the keyboard nudge won't work after a drag.
+    try { e.currentTarget && e.currentTarget.focus && e.currentTarget.focus(); } catch { /* ignore */ }
+    const rect = el.getBoundingClientRect();
+    let last = ratio;
+    setDragging(true);
+    const move = (ev) => {
+      // Offset by half the divider track so the handle sits under the cursor.
+      last = clampSplit((ev.clientX - rect.left - SPLIT_DIVIDER_PX / 2) / Math.max(1, rect.width));
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = requestAnimationFrame(() => applyVar(last));
+    };
+    // Single teardown bound to BOTH pointerup AND pointercancel — the browser/OS
+    // fires pointercancel (not pointerup) on a gesture/scroll takeover, so without
+    // this the listeners + frozen body cursor/userSelect would leak for the session.
+    const end = () => {
+      cancelAnimationFrame(rafRef.current);
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', end);
+      document.removeEventListener('pointercancel', end);
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+      teardownRef.current = null;
+      setDragging(false);
+      setRatio(last); persist(last);
+    };
+    // A non-committing variant for unmount cleanup (never setState after unmount).
+    teardownRef.current = () => {
+      cancelAnimationFrame(rafRef.current);
+      document.removeEventListener('pointermove', move);
+      document.removeEventListener('pointerup', end);
+      document.removeEventListener('pointercancel', end);
+      document.body.style.userSelect = '';
+      document.body.style.cursor = '';
+    };
+    document.addEventListener('pointermove', move);
+    document.addEventListener('pointerup', end);
+    document.addEventListener('pointercancel', end);
+    document.body.style.userSelect = 'none';
+    document.body.style.cursor = 'col-resize';
+  }, [ratio, applyVar, rowRef]);
+
+  // If the component unmounts mid-drag, restore global cursor/selection + drop the
+  // document listeners so a cancelled drag never strands the whole app.
+  useEffect(() => () => { if (teardownRef.current) teardownRef.current(); }, []);
+
+  const reset = useCallback(() => { setRatio(SPLIT_DEFAULT); persist(SPLIT_DEFAULT); }, []);
+  const nudge = useCallback((delta) => { setRatio(r => { const v = clampSplit(r + delta); persist(v); return v; }); }, []);
+  return { ratio, dragging, onPointerDown, reset, nudge };
+}
+
+// The draggable gutter between the PDF and the assessment (Task 1). Subtle by
+// default, brightens on hover/drag, exposes the resize cursor, and is fully
+// keyboard-operable (←/→ nudge, Home resets). Double-click restores 70/30.
+export function ResizeDivider({ split, reduced }) {
+  const [hover, setHover] = useState(false);
+  const [focused, setFocused] = useState(false);
+  // Focus + hover + drag all brighten the handle; since outline is suppressed, the
+  // brightened handle IS the keyboard-focus cue (so the ←/→/Home controls are
+  // discoverable after a mouse grab, which now focuses the handle).
+  const active = hover || focused || split.dragging;
+  return (
+    <div role="separator" aria-orientation="vertical" tabIndex={0}
+      aria-label="Resize the PDF and assessment panels"
+      aria-valuemin={Math.round(SPLIT_MIN_PDF * 100)} aria-valuemax={Math.round(SPLIT_MAX_PDF * 100)} aria-valuenow={Math.round(split.ratio * 100)}
+      onPointerDown={split.onPointerDown}
+      onDoubleClick={split.reset}
+      onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+      onKeyDown={(e) => {
+        if (e.key === 'ArrowLeft') { split.nudge(-0.02); e.preventDefault(); }
+        else if (e.key === 'ArrowRight') { split.nudge(0.02); e.preventDefault(); }
+        else if (e.key === 'Home') { split.reset(); e.preventDefault(); }
+      }}
+      title="Drag to resize panels · double-click to reset"
+      style={{ alignSelf: 'stretch', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'col-resize', touchAction: 'none', outline: 'none' }}>
+      <span style={{
+        width: active ? 5 : 3, height: active ? 64 : 44, borderRadius: 5,
+        background: split.dragging ? C.acc : active ? alpha(C.acc, '80') : C.brd2,
+        boxShadow: (split.dragging || focused) ? `0 0 0 3px ${alpha(C.acc, '22')}` : 'none',
+        transition: reduced ? 'none' : 'all 0.15s ease',
+      }} />
+    </div>
+  );
+}
+
 // ── Small presentational pieces ───────────────────────────────────────────────
 function JudgmentPill({ judgment, size = 'md', provisional }) {
   const st = judgmentStyle(judgment);
@@ -175,6 +292,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
   const rowRef = useRef(null);
   const fillHeight = useFillViewportHeight(rootRef);
   const rowHeight = useMeasuredHeight(rowRef);
+  const split = useResizableSplit(rowRef); // prompt36 Task 1 — 70/30 default, draggable
   const saveTimer = useRef(null);
   const savedTimer = useRef(null);
   const pending = useRef({ answers: {}, meta: {} });
@@ -441,21 +559,32 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
     {/* ── Task 4 + 5 — persistent article header spanning BOTH columns. ── */}
     <ArticleHeaderBar record={studyRecord.record} loading={studyRecord.loading} view={view} showDetails={articleDetailsOn} />
 
-    {/* ── Task 2/6 — two-column workspace fills the remaining height. PDF ~60%
-        (left), assessment ~40% (right, min 440px). Stacks under STACK_BELOW. ── */}
+    {/* ── prompt36 Task 1 — two-column workspace fills the remaining height. PDF
+        70% (left, draggable), assessment 30% (right). The PDF track width is a CSS
+        custom property mutated directly during a drag (no React re-render); a 16px
+        divider track carries the drag handle. Stacks to one column under
+        STACK_BELOW (no divider). ── */}
     <div ref={rowRef} style={{
-      marginTop: 12, gap: 16,
+      marginTop: 12,
       ...(narrow
-        ? { display: 'flex', flexDirection: 'column' }
-        : { flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: hasLeftColumn ? 'minmax(0, 1.25fr) minmax(440px, 0.85fr)' : '1fr' }),
+        ? { display: 'flex', flexDirection: 'column', gap: 16 }
+        : { flex: 1, minHeight: 0, display: 'grid', gap: 0,
+            gridTemplateColumns: hasLeftColumn
+              ? `var(--rob-pdf-pct, ${(split.ratio * 100).toFixed(3)}%) 16px minmax(0, 1fr)`
+              : '1fr' }),
     }}>
-    {/* ── Left section: the study PDF, filling the column (Task 1). ── */}
+    {/* ── Left section: the study PDF, filling the column (Task 1). On stacked
+        (narrow) screens the column has no grid height to stretch into, so it is
+        given an explicit height — otherwise the flush PDF iframe's height:100%
+        chain would resolve to ~150px (prompt36 review fix). ── */}
     {hasLeftColumn && (
-      <aside style={{ display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0 }}>
+      <aside style={{ display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, ...(narrow ? { height: pdfPreviewHeight } : null) }}>
         <RobPdfPanel loading={studyRecord.loading} error={studyRecord.error} screenProjectId={studyRecord.screenProjectId} recordId={studyRecord.recordId}
           canManage={editable} onRetry={resolveStudyRecord} previewHeight={pdfPreviewHeight} />
       </aside>
     )}
+    {/* ── Draggable divider (Task 1) — only in the side-by-side grid layout. ── */}
+    {hasLeftColumn && !narrow && <ResizeDivider split={split} reduced={reduced} />}
     {/* ── Right section: the RoB assessment engine — context bar, scrolling body,
         and a sticky action footer that stays visible (Task 2/7). ── */}
     <section style={{ ...shell, minWidth: 0, display: 'flex', flexDirection: 'column', ...(narrow ? { minHeight: 520, marginBottom: 16 } : { minHeight: 0 }) }}>

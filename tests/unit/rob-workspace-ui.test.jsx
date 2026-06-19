@@ -8,8 +8,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { WorkspaceFooter, ArticleHeaderBar } from '../../src/frontend/rob/RobWorkspace.jsx';
-import { pdfFitWidthSrc } from '../../src/frontend/screening/components/PdfViewer.jsx';
+import { WorkspaceFooter, ArticleHeaderBar, ResizeDivider, clampSplit } from '../../src/frontend/rob/RobWorkspace.jsx';
+import PdfViewer, { pdfFitWidthSrc } from '../../src/frontend/screening/components/PdfViewer.jsx';
+import RobPdfPanel from '../../src/frontend/rob/RobPdfPanel.jsx';
 
 const noop = () => {};
 const footerProps = (over = {}) => ({
@@ -101,5 +102,57 @@ describe('pdfFitWidthSrc — fit-width default (Task 1)', () => {
   });
   it('preserves an existing fragment rather than double-appending', () => {
     expect(pdfFitWidthSrc('/api/x#page=2')).toBe('/api/x#page=2');
+  });
+});
+
+/* ── prompt36 Task 1 — resizable 70/30 split ──────────────────────────────── */
+describe('clampSplit — keeps the PDF fraction within usable bounds', () => {
+  it('clamps a too-wide PDF down to the 72% max (≈28% assessment floor)', () => {
+    expect(clampSplit(0.95)).toBe(0.72);
+  });
+  it('clamps a too-narrow PDF up to the 45% min', () => {
+    expect(clampSplit(0.10)).toBe(0.45);
+  });
+  it('passes through an in-range ratio unchanged (e.g. the 70/30 default)', () => {
+    expect(clampSplit(0.70)).toBe(0.70);
+    expect(clampSplit(0.55)).toBe(0.55);
+  });
+});
+
+describe('ResizeDivider — accessible drag handle (Task 1)', () => {
+  const split = { ratio: 0.70, dragging: false, onPointerDown: () => {}, reset: () => {}, nudge: () => {} };
+  it('renders a vertical separator exposing the current ratio for assistive tech', () => {
+    const html = renderToStaticMarkup(<ResizeDivider split={split} reduced={false} />);
+    expect(html).toContain('role="separator"');
+    expect(html).toContain('aria-orientation="vertical"');
+    expect(html).toContain('aria-valuenow="70"');
+    expect(html).toContain('aria-valuemin="45"');
+    expect(html).toContain('aria-valuemax="72"');
+    expect(html).toContain('tabindex="0"'); // keyboard reachable
+  });
+});
+
+/* ── prompt36 Task 2 — PDF viewer flush full-width ────────────────────────── */
+describe('PdfViewer flush mode (Task 2)', () => {
+  it('drops its own card border/radius in flush mode so the host owns the frame', () => {
+    const flush = renderToStaticMarkup(<PdfViewer pid="p" recordId="r" canManage={false} flush />);
+    expect(flush).toContain('Full-text PDF');      // toolbar still present
+    expect(flush).not.toContain('border-radius:10px'); // no nested rounded card
+  });
+  it('keeps its own bordered, rounded card when NOT flush (standalone use)', () => {
+    const normal = renderToStaticMarkup(<PdfViewer pid="p" recordId="r" canManage={false} />);
+    expect(normal).toContain('border-radius:10px');
+  });
+});
+
+describe('RobPdfPanel — empty state when no screening record (Task 2)', () => {
+  it('shows a safe empty state instead of mounting the viewer', () => {
+    const html = renderToStaticMarkup(<RobPdfPanel loading={false} error="" screenProjectId={null} recordId={null} canManage={false} />);
+    expect(html).toContain('No PDF for this study yet');
+  });
+  it('shows the error + retry affordance when resolution failed', () => {
+    const html = renderToStaticMarkup(<RobPdfPanel loading={false} error="Could not load the study PDF." screenProjectId={null} recordId={null} canManage onRetry={() => {}} />);
+    expect(html).toContain('Could not load the study PDF.');
+    expect(html).toContain('Retry');
   });
 });

@@ -135,6 +135,13 @@ export const adminApi = {
     reorder:      (order)    => req(`${BASE}/onboarding-questions/reorder`, { method: 'POST', ...json({ order }) }),
     reset:        (id, userId) => req(`${BASE}/onboarding-questions/${id}/reset`, { method: 'POST', ...json(userId ? { userId } : {}) }),
     remove:       (id)       => req(`${BASE}/onboarding-questions/${id}`, { method: 'DELETE' }),
+    // prompt36 Task 6 — analytics. analytics() → { overview, questions:[…],
+    //   users:[…], usersTruncated, denominatorNote }; questionAnalytics(id) →
+    //   { question, answeredUsers, skippedUsers, pendingUsers, pendingCount, … };
+    //   userStatus(id) → { user, counts, items:[{ status, answer, … }] }.
+    analytics:         ()   => req(`${BASE}/onboarding-analytics`),
+    questionAnalytics: (id) => req(`${BASE}/onboarding-questions/${id}/analytics`),
+    userStatus:        (id) => req(`${BASE}/onboarding-users/${id}/status`),
   },
 
   // ── Risk of Bias engine controls (prompt32 Task 12, admin only) ──────────────

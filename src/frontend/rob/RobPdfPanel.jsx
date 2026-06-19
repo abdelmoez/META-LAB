@@ -23,28 +23,34 @@ import PdfViewer from '../screening/components/PdfViewer.jsx';
 export default function RobPdfPanel({ loading, error, screenProjectId, recordId, canManage, onRetry, previewHeight }) {
   // The "Study PDF" label + the back affordance live in RobWorkspace's tab bar /
   // top-level header (prompt32), so this panel is header-less — a pure renderer.
+  // prompt36 Task 2 — when a real PDF is shown, the embedded viewer runs in `flush`
+  // mode and fills this rounded, bordered card edge-to-edge (no inner padding gap);
+  // the transient loading / error / empty states keep comfortable padding.
+  const showViewer = recordId && screenProjectId;
   return (
     <div style={{ border: `1px solid ${C.brd}`, borderRadius: 14, background: C.card, overflow: 'hidden', display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ padding: 14, flex: 1, minHeight: 0 }}>
-        {loading ? (
-          <div style={{ padding: 24, textAlign: 'center', color: C.muted, fontSize: 12.5, fontFamily: MONO }}>Loading…</div>
-        ) : error ? (
-          <div style={{ padding: '12px 14px', background: alpha(C.red, '12'), border: `1px solid ${alpha(C.red, '40')}`, borderRadius: 8, color: C.red, fontSize: 12.5, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
-            <span>{error}</span>
-            {onRetry && <button onClick={onRetry} style={ghost}><Icon name="refresh" size={13} /> Retry</button>}
-          </div>
-        ) : recordId && screenProjectId ? (
-          <PdfViewer pid={screenProjectId} recordId={recordId} canManage={!!canManage} defaultOpen previewHeight={previewHeight} />
-        ) : (
-          <div style={{ padding: '22px 16px', textAlign: 'center', color: C.txt2, fontSize: 12.5, lineHeight: 1.6 }}>
-            <div style={{ display: 'inline-flex', padding: 12, borderRadius: '50%', background: alpha(C.acc, '12'), marginBottom: 12 }}><Icon name="fileText" size={20} /></div>
-            <div style={{ fontWeight: 700, color: C.txt, marginBottom: 4 }}>No PDF for this study yet</div>
-            <p style={{ margin: 0 }}>
-              PDF upload &amp; open-access lookup are available for studies brought in through <strong>Screening</strong>. This study isn&apos;t linked to a screening record — attach its full text from the Screening workspace, or it may have been added manually.
-            </p>
-          </div>
-        )}
-      </div>
+      {showViewer ? (
+        <PdfViewer pid={screenProjectId} recordId={recordId} canManage={!!canManage} defaultOpen previewHeight={previewHeight} flush />
+      ) : (
+        <div style={{ padding: 14, flex: 1, minHeight: 0 }}>
+          {loading ? (
+            <div style={{ padding: 24, textAlign: 'center', color: C.muted, fontSize: 12.5, fontFamily: MONO }}>Loading…</div>
+          ) : error ? (
+            <div style={{ padding: '12px 14px', background: alpha(C.red, '12'), border: `1px solid ${alpha(C.red, '40')}`, borderRadius: 8, color: C.red, fontSize: 12.5, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' }}>
+              <span>{error}</span>
+              {onRetry && <button onClick={onRetry} style={ghost}><Icon name="refresh" size={13} /> Retry</button>}
+            </div>
+          ) : (
+            <div style={{ padding: '22px 16px', textAlign: 'center', color: C.txt2, fontSize: 12.5, lineHeight: 1.6 }}>
+              <div style={{ display: 'inline-flex', padding: 12, borderRadius: '50%', background: alpha(C.acc, '12'), marginBottom: 12 }}><Icon name="fileText" size={20} /></div>
+              <div style={{ fontWeight: 700, color: C.txt, marginBottom: 4 }}>No PDF for this study yet</div>
+              <p style={{ margin: 0 }}>
+                PDF upload &amp; open-access lookup are available for studies brought in through <strong>Screening</strong>. This study isn&apos;t linked to a screening record — attach its full text from the Screening workspace, or it may have been added manually.
+              </p>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -68,6 +68,9 @@ import {
   adminDeleteQuestion,
   adminGetSettings as getOnboardingSettings,
   adminUpdateSettings as updateOnboardingSettings,
+  adminOnboardingAnalytics,
+  adminOnboardingQuestionAnalytics,
+  adminOnboardingUserStatus,
 } from '../controllers/onboardingController.js';
 
 import {
@@ -192,6 +195,12 @@ router.patch('/screening/projects/:id/restore', requireAdmin, restoreScreeningPr
 // ── Onboarding questions (prompt32 Task 7) — admin only ─────────────────────────
 router.get('/onboarding-settings',              requireAdmin, getOnboardingSettings);
 router.put('/onboarding-settings',              requireAdmin, updateOnboardingSettings);
+// prompt36 Task 6 — onboarding analytics (overview + per-question + per-user
+// drill-down). Specific analytics paths are declared BEFORE the generic :id
+// mutation routes so they are never shadowed.
+router.get('/onboarding-analytics',                 requireAdmin, adminOnboardingAnalytics);
+router.get('/onboarding-questions/:id/analytics',   requireAdmin, adminOnboardingQuestionAnalytics);
+router.get('/onboarding-users/:id/status',          requireAdmin, adminOnboardingUserStatus);
 router.get('/onboarding-questions',             requireAdmin, adminListQuestions);
 router.post('/onboarding-questions',            requireAdmin, adminCreateQuestion);
 router.post('/onboarding-questions/reorder',    requireAdmin, adminReorderQuestions);

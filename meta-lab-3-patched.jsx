@@ -1202,6 +1202,22 @@ const tagS=(c)=>({
 });
 
 /* ════════════ SHARED COMPONENTS ════════════ */
+/* prompt36 Task 5 — the app-standard on/off SWITCH (sliding pill + knob), matching
+   the screening Toggle. Used for Project Control's Blind mode / Restrict chat so
+   they read as real switches, not ambiguous text pills. Accessible (role="switch",
+   aria-checked, real <button> ⇒ keyboard-activatable); the knob/track transitions
+   are disabled under prefers-reduced-motion via the .ml-switch-knob CSS rule. */
+function SwitchToggle({on,busy,onClick,onLabel="On",offLabel="Off",ariaLabel}){
+  return(
+    <button type="button" role="switch" aria-checked={!!on} aria-label={ariaLabel} disabled={busy} onClick={onClick}
+      style={{display:"inline-flex",alignItems:"center",gap:10,background:"none",border:"none",padding:0,cursor:busy?"default":"pointer",opacity:busy?0.6:1,fontFamily:"inherit"}}>
+      <span aria-hidden="true" style={{width:38,height:22,borderRadius:11,position:"relative",flexShrink:0,boxSizing:"border-box",background:on?C.acc2:C.dim,border:`1px solid ${on?C.acc2:C.brd2}`,transition:"background 0.2s ease,border-color 0.2s ease"}}>
+        <span className="ml-switch-knob" style={{position:"absolute",top:1,left:on?17:1,width:18,height:18,borderRadius:"50%",background:"#fff",boxShadow:"0 1px 3px rgba(0,0,0,0.35)",transition:"left 0.2s var(--ease-out)"}}/>
+      </span>
+      <span style={{fontSize:12,fontWeight:700,color:on?C.acc:C.muted,minWidth:62,textAlign:"left"}}>{on?onLabel:offLabel}</span>
+    </button>
+  );
+}
 function SectionHeader({icon,title,desc,badge}){
   return(<div style={{marginBottom:28}}>
     <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:7}}>
@@ -6982,6 +6998,10 @@ const TABS=[
   {id:"methods",    icon:"bookOpen",    label:"Methods & Equations",  phase:null,  group:"reference"},
 ];
 const PHASES=["Plan","Search","Screen","Extract","Analyze","Report"];
+// prompt36 Task 3 — the MAIN workflow steps are every tab WITH a phase (Overview &
+// Project Control have phase:null). Navigating TO one of these auto-collapses the
+// left workflow menu into focus mode; Overview / Project Control never collapse.
+const WORKFLOW_TAB_IDS=new Set(TABS.filter(t=>t.phase).map(t=>t.id));
 // prompt31 Part 7 — ultra-wide judgement: reading/form tabs keep a comfortable
 // centred max-width; data/workspace tabs (extraction, analysis, forest, RoB,
 // PRISMA…) use the full width. Screening renders its own full-bleed frame.
@@ -7309,9 +7329,17 @@ function ProjectHeaderBar({project,tab,inScreening,focus,onToggleFocus,setTab,on
       padding:"8px 16px",borderBottom:`1px solid ${C.brd}`,background:C.surf,
       flexShrink:0,minHeight:50,
     }}>
-      {/* Left — ☰ toggle + truncating breadcrumb (min-width:0 so the title yields first) */}
-      <button onClick={onToggleFocus} title={focus?"Show menu":"Hide menu"}
-        style={{background:focus?themeAlpha(C.acc,'14'):"none",border:`1px solid ${focus?themeAlpha(C.acc,'40'):C.brd2}`,color:focus?C.acc:C.txt2,cursor:"pointer",borderRadius:7,padding:"4px 9px",fontSize:15,lineHeight:1,flexShrink:0}}>☰</button>
+      {/* Left — prompt36 Task 4: directional ARROW toggle (left=collapse when open,
+          right=expand when collapsed) + tooltip + state-aware aria-label, replacing
+          the old ☰ hamburger. The chevron rotates 180° to swap direction smoothly
+          (disabled under prefers-reduced-motion). Then the truncating breadcrumb. */}
+      <Tooltip content={focus?"Expand workflow menu":"Collapse workflow menu"} wrapStyle={{flexShrink:0}}>
+        <button onClick={onToggleFocus}
+          aria-label={focus?"Expand workflow menu":"Collapse workflow menu"} aria-expanded={!focus}
+          style={{background:focus?themeAlpha(C.acc,'14'):"none",border:`1px solid ${focus?themeAlpha(C.acc,'40'):C.brd2}`,color:focus?C.acc:C.txt2,cursor:"pointer",borderRadius:7,padding:"5px 9px",lineHeight:1,flexShrink:0,display:"inline-flex",alignItems:"center"}}>
+          <span className="ml-menu-arrow" style={{display:"inline-flex",transition:"transform 0.2s var(--ease-out)",transform:focus?"rotate(180deg)":"none"}}><Icon name="chevronLeft" size={16}/></span>
+        </button>
+      </Tooltip>
       <div style={{display:"flex",alignItems:"center",gap:7,fontSize:12.5,minWidth:0,flex:"1 1 auto"}}>
         <button onClick={()=>setTab("overview")} title={project?.name||""}
           style={{background:"none",border:"none",color:C.txt,fontWeight:600,cursor:"pointer",fontFamily:"inherit",fontSize:13,padding:0,minWidth:0,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{project?.name||"Project"}</button>
@@ -7739,8 +7767,6 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
 
   const card={background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:16,marginBottom:14};
   const secLbl={fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:0.8,textTransform:"uppercase",marginBottom:9};
-  // prompt34 Task 9 — compact on/off pill for the Screening settings.
-  const ctrlToggle=(on,busy)=>({display:"inline-flex",alignItems:"center",gap:6,padding:"5px 14px",borderRadius:20,border:`1px solid ${on?themeAlpha(C.acc,'55'):C.brd2}`,background:on?themeAlpha(C.acc,'18'):"transparent",color:on?C.acc:C.muted,cursor:busy?"default":"pointer",fontSize:12,fontWeight:700,fontFamily:"inherit",opacity:busy?0.6:1});
   const spStatus=(sp&&sp.progressStatus)||"not_started";
   const statusMeta=CTRL_STATUS_OPTIONS.find(o=>o.value===spStatus);
 
@@ -7832,7 +7858,7 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
             <div style={{fontSize:11,color:C.muted,marginTop:2,lineHeight:1.45}}>Hide author / journal info from reviewers during screening.</div>
           </div>
           {canManageStatus
-            ? <button disabled={spBusy} onClick={()=>saveSpSetting({blindMode:!sp?.blindMode})} aria-pressed={!!sp?.blindMode} aria-label={`Blind mode ${sp?.blindMode?"on":"off"} — toggle`} style={ctrlToggle(!!sp?.blindMode,spBusy)}>{sp?.blindMode?"On":"Off"}</button>
+            ? <SwitchToggle on={!!sp?.blindMode} busy={spBusy} onClick={()=>saveSpSetting({blindMode:!sp?.blindMode})} ariaLabel={`Blind mode — currently ${sp?.blindMode?"on":"off"}`} onLabel="On" offLabel="Off"/>
             : <span style={tagS(sp?.blindMode?"gold":"")}>{sp?.blindMode?"On":"Off"}</span>}
         </div>
         {/* Restrict chat */}
@@ -7842,7 +7868,7 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
             <div style={{fontSize:11,color:C.muted,marginTop:2,lineHeight:1.45}}>When on, only members with the Chat permission can post.</div>
           </div>
           {canManageStatus
-            ? <button disabled={spBusy} onClick={()=>saveSpSetting({chatRestricted:!sp?.chatRestricted})} aria-pressed={!!sp?.chatRestricted} aria-label={`Restrict chat ${sp?.chatRestricted?"on":"off"} — toggle`} style={ctrlToggle(!!sp?.chatRestricted,spBusy)}>{sp?.chatRestricted?"Restricted":"Open"}</button>
+            ? <SwitchToggle on={!!sp?.chatRestricted} busy={spBusy} onClick={()=>saveSpSetting({chatRestricted:!sp?.chatRestricted})} ariaLabel={`Restrict chat — currently ${sp?.chatRestricted?"on":"off"}`} onLabel="Restricted" offLabel="Open"/>
             : <span style={tagS(sp?.chatRestricted?"gold":"")}>{sp?.chatRestricted?"Restricted":"Open"}</span>}
         </div>
         {/* Required reviewers */}
@@ -8437,6 +8463,10 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   // special case); the ☰ button in the universal header toggles it everywhere.
   const focus=navCollapsed;
   const toggleNav=()=>setNavCollapsed(c=>!c);
+  // prompt36 Task 3 — navigating TO a main workflow step (via a left-menu workflow
+  // item or the "Next" button) auto-collapses the menu into focus mode. Project
+  // Overview / Project Control (phase:null) navigate WITHOUT collapsing.
+  const goTab=(id)=>{ setTab(id); if(WORKFLOW_TAB_IDS.has(id)) setNavCollapsed(true); };
   return(<div style={{display:"flex",minHeight:"100vh",background:C.bg,fontFamily:"'IBM Plex Sans',sans-serif",color:C.txt}}>
     <style>{`
       @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500;700&display=swap');
@@ -8451,6 +8481,13 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
       *{box-sizing:border-box;margin:0;padding:0;}
       html{scroll-behavior:smooth;-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;}
       body{background:${C.bg};color:${C.txt};}
+
+      /* prompt36 Tasks 3/4/5 — honour the user's reduced-motion preference: the
+         workflow-menu slide, the collapse-arrow rotation and the settings switch
+         knob all snap instantly instead of animating. */
+      @media (prefers-reduced-motion: reduce){
+        .ml-sidebar,.ml-main,.ml-menu-arrow,.ml-switch-knob{transition:none!important;}
+      }
 
       /* Scrollbars */
       ::-webkit-scrollbar{width:3px;height:3px;}
@@ -8649,9 +8686,10 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
       </div>);
     })()}
 
-    {/* Sidebar — slides away in Screening focus mode (prompt19) so the workbench
-        gets the full viewport width. Toggled by the ☰ button in the Screening bar. */}
-    <div style={{
+    {/* Sidebar — slides away when the workflow menu is collapsed (prompt19/34/36)
+        so the workbench gets the full viewport width. Toggled by the arrow button
+        in the universal header, and auto-collapsed when entering a workflow step. */}
+    <div className="ml-sidebar" style={{
       width:256,background:C.surf,
       borderRight:`1px solid ${C.brd}`,
       display:"flex",flexDirection:"column",
@@ -8766,7 +8804,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
                     :st==="partial"?{ring:C.yel,fg:C.yel,bg:themeAlpha(C.yel,'22'),glyph:null}
                     :{ring:C.brd2,fg:C.muted,bg:"transparent",glyph:null};
                   const statusWord=st==="done"?"Complete":on?"Current step":st==="partial"?"In progress":"Not started";
-                  return(<div key={t.id} onClick={()=>setTab(t.id)} className="nav-item"
+                  return(<div key={t.id} onClick={()=>goTab(t.id)} className="nav-item"
                     style={{
                       display:"flex",alignItems:"stretch",gap:8,
                       borderRadius:7,cursor:"pointer",marginBottom:1,
@@ -8831,7 +8869,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     {/* Main content — universal project header (prompt24) on top, scrolling body
         below. The header is shown on every project page; the body fills the rest
         and scrolls internally (full-bleed + hidden for the Screening workspace). */}
-    <div style={{marginLeft:focus?0:256,flex:1,display:"flex",flexDirection:"column",height:"100vh",minHeight:0,overflow:"hidden",transition:"margin-left 0.25s ease"}}>
+    <div className="ml-main" style={{marginLeft:focus?0:256,flex:1,display:"flex",flexDirection:"column",height:"100vh",minHeight:0,overflow:"hidden",transition:"margin-left 0.25s ease"}}>
       {project&&!deepLinkMiss&&(
         <ProjectHeaderBar project={project} tab={tab} inScreening={inScreening} focus={focus} onToggleFocus={toggleNav} setTab={setTab} onBackToProjects={onBackToProjects} presenceUsers={presenceUsers} presenceLocks={presenceLocks} totalMembers={project?._memberCount} myUserId={authUser?.id} spId={spId}
           reqMissing={headerStatus.reqMissing}
@@ -9034,7 +9072,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
             return(
               <div style={{marginTop:32,paddingTop:20,borderTop:`1px solid ${C.brd}`,display:"flex",justifyContent:"flex-end"}}>
                 <button
-                  onClick={()=>setTab(next.id)}
+                  onClick={()=>goTab(next.id)}
                   style={{...btnS("primary"),padding:"10px 24px",fontSize:13,display:"flex",alignItems:"center",gap:8}}
                 >
                   <Icon name={next.icon} size={14}/>{next.label} <span style={{fontSize:16}}>→</span>

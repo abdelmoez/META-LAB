@@ -546,3 +546,241 @@ export async function adminUpdateSettings(req, res) {
     return res.status(500).json({ error: 'Internal server error' });
   }
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Onboarding ANALYTICS (prompt36 Task 6) — admin only.
+//
+// Denominator contract (documented + returned to the client):
+//   • Every registered user is "assigned" every ACTIVE question. So for an active
+//     question:  answered + skipped + pending = totalUsers, and the percentage
+//     denominator is totalUsers.
+//   • pending = users with no response row (neither answered nor skipped) yet.
+//   • An INACTIVE question is no longer assigned (pending = 0) but keeps its
+//     historical answered/skipped; its percentage denominator is the number of
+//     users who actually responded to it (answered + skipped).
+//   • Overview totals span ACTIVE questions only, over the (activeQuestions ×
+//     totalUsers) assignment universe, so the three rates sum to ~100%.
+// Privacy: aggregate counts are returned freely; individual answer VALUES are only
+// returned by the per-question / per-user drill-down endpoints (and the UI gates
+// them behind an explicit "Show answers" control).
+// ════════════════════════════════════════════════════════════════════════════
+
+// One-decimal percentage helper (pure, exported for tests).
+export function onbPct(n, d) { return d > 0 ? Math.round((n / d) * 1000) / 10 : 0; }
+
+// Per-question analytics row from a question + its {answered,skipped,last*} counts.
+export function questionAnalyticsRow(q, counts, totalUsers) {
+  const answered = counts?.answered || 0;
+  const skipped = counts?.skipped || 0;
+  const responded = answered + skipped;
+  const pending = q.isActive ? Math.max(0, totalUsers - responded) : 0;
+  const denom = q.isActive ? totalUsers : responded; // active ⇒ all users; inactive ⇒ responders
+  return {
+    id: q.id, key: q.key, prompt: q.prompt, type: q.type,
+    isActive: q.isActive, isRequired: q.isRequired, allowSkip: q.allowSkip && !q.isRequired,
+    answered, skipped, pending,
+    answeredPct: onbPct(answered, denom), skippedPct: onbPct(skipped, denom), pendingPct: onbPct(pending, denom),
+    lastAnsweredAt: counts?.lastAnsweredAt || null, lastSkippedAt: counts?.lastSkippedAt || null,
+    denomBasis: q.isActive ? 'all_users' : 'responders',
+  };
+}
+
+// Overview totals across ACTIVE questions (consistent denominator). Pure/exported.
+export function onboardingOverview({ totalQuestions, activeQuestions, totalUsers, answeredActive, skippedActive, completedUsers }) {
+  const assigned = activeQuestions * totalUsers;          // (active question × user) universe
+  const responded = answeredActive + skippedActive;
+  const pending = Math.max(0, assigned - responded);
+  return {
+    totalQuestions, activeQuestions, totalUsers,
+    totalAssignedResponses: assigned,
+    answered: answeredActive, skipped: skippedActive, pending,
+    completionRate: onbPct(answeredActive, assigned),
+    skipRate: onbPct(skippedActive, assigned),
+    pendingRate: onbPct(pending, assigned),
+    completedUsers, completedUserRate: onbPct(completedUsers, totalUsers),
+  };
+}
+
+// Per-user analytics row (counts are over ACTIVE questions). Pure/exported.
+export function userAnalyticsRow(user, agg, activeQuestions) {
+  const answered = agg?.answered || 0;
+  const skipped = agg?.skipped || 0;
+  const responded = answered + skipped;
+  const pending = Math.max(0, activeQuestions - responded);
+  return {
+    id: user.id, name: user.name || null, email: user.email || null,
+    answered, skipped, pending,
+    completionPct: onbPct(answered, activeQuestions),
+    lastActivity: user.lastActivity || null,
+    complete: activeQuestions > 0 && pending === 0,
+  };
+}
+
+// Render a stored answer for an admin drill-down. Answers are JSON-encoded; the
+// 'institution' type surfaces only its human-readable name (not the raw object).
+export function safeAnswerDisplay(question, rawJson) {
+  if (rawJson == null) return null;
+  let v; try { v = JSON.parse(rawJson); } catch { v = rawJson; }
+  if (v == null || v === '') return null;
+  if ((question?.type === 'institution') && typeof v === 'object') return v.canonicalName || v.name || null;
+  if (Array.isArray(v)) return v.join(', ');
+  if (typeof v === 'object') return JSON.stringify(v);
+  return String(v);
+}
+
+// ── GET /api/admin/onboarding-analytics ────────────────────────────────────────
+export async function adminOnboardingAnalytics(req, res) {
+  try {
+    const [questions, totalUsers] = await Promise.all([
+      prisma.onboardingQuestion.findMany({ orderBy: { displayOrder: 'asc' } }),
+      prisma.user.count(),
+    ]);
+    const activeIds = questions.filter(q => q.isActive).map(q => q.id);
+    const activeQuestions = activeIds.length;
+
+    // Per-question answered/skipped counts + last-response timestamps.
+    const [answeredAgg, skippedAgg] = await Promise.all([
+      prisma.userOnboardingResponse.groupBy({ by: ['questionId'], where: { status: 'answered' }, _count: { _all: true }, _max: { answeredAt: true } }),
+      prisma.userOnboardingResponse.groupBy({ by: ['questionId'], where: { status: 'skipped' }, _count: { _all: true }, _max: { skippedAt: true } }),
+    ]);
+    const counts = {};
+    for (const a of answeredAgg) counts[a.questionId] = { ...(counts[a.questionId] || {}), answered: a._count._all, lastAnsweredAt: a._max.answeredAt };
+    for (const s of skippedAgg) counts[s.questionId] = { ...(counts[s.questionId] || {}), skipped: s._count._all, lastSkippedAt: s._max.skippedAt };
+
+    const questionRows = questions.map(q => questionAnalyticsRow(q, counts[q.id], totalUsers));
+
+    let answeredActive = 0, skippedActive = 0;
+    for (const q of questions) if (q.isActive) { answeredActive += counts[q.id]?.answered || 0; skippedActive += counts[q.id]?.skipped || 0; }
+
+    // Per-user response counts over ACTIVE questions (drives user rows + completed).
+    const userAgg = activeIds.length
+      ? await prisma.userOnboardingResponse.groupBy({ by: ['userId', 'status'], where: { questionId: { in: activeIds } }, _count: { _all: true } })
+      : [];
+    const perUser = {};
+    for (const g of userAgg) { perUser[g.userId] = perUser[g.userId] || { answered: 0, skipped: 0 }; perUser[g.userId][g.status] = g._count._all; }
+
+    let completedUsers = 0;
+    if (activeQuestions > 0) for (const uid of Object.keys(perUser)) { const r = perUser[uid]; if ((r.answered + r.skipped) >= activeQuestions) completedUsers++; }
+
+    const overview = onboardingOverview({ totalQuestions: questions.length, activeQuestions, totalUsers, answeredActive, skippedActive, completedUsers });
+
+    // User-level table (bounded). Users with at least one onboarding response are
+    // resolved to identities; the rest are trivially "all pending" and omitted to
+    // keep the payload small (their count is implied by overview.totalUsers).
+    const USER_CAP = 500;
+    const respUserIds = Object.keys(perUser);
+    let userRows = [];
+    let usersTruncated = false;
+    if (respUserIds.length) {
+      const users = await prisma.user.findMany({ where: { id: { in: respUserIds } }, select: { id: true, name: true, email: true, lastActive: true } });
+      userRows = users
+        .map(u => userAnalyticsRow({ ...u, lastActivity: u.lastActive }, perUser[u.id], activeQuestions))
+        .sort((a, b) => (b.pending - a.pending) || (Number(a.complete) - Number(b.complete)) || ((a.name || a.email || '').localeCompare(b.name || b.email || '')));
+      if (userRows.length > USER_CAP) { usersTruncated = true; userRows = userRows.slice(0, USER_CAP); }
+    }
+
+    return res.json({
+      overview, questions: questionRows, users: userRows, usersTruncated,
+      usersWithActivity: respUserIds.length,
+      denominatorNote: 'Active question: answered + skipped + pending = total users (denominator = total users). Inactive question percentages use the number of users who responded as the denominator.',
+    });
+  } catch (err) {
+    console.error('[onboarding] adminOnboardingAnalytics error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── GET /api/admin/onboarding-questions/:id/analytics ──────────────────────────
+export async function adminOnboardingQuestionAnalytics(req, res) {
+  try {
+    const { id } = req.params;
+    const q = await prisma.onboardingQuestion.findUnique({ where: { id } });
+    if (!q) return res.status(404).json({ error: 'Question not found' });
+
+    const SAMPLE_CAP = 1000;
+    const PENDING_CAP = 200;
+    // Authoritative answered/skipped counts come from groupBy (NOT the capped
+    // sample) so this drill-down stays consistent with the overview/list endpoints
+    // even when a question has more than SAMPLE_CAP responses; the capped fetch is
+    // used ONLY to populate the displayed sample lists.
+    const [totalUsers, statusAgg, sample] = await Promise.all([
+      prisma.user.count(),
+      prisma.userOnboardingResponse.groupBy({ by: ['status'], where: { questionId: id }, _count: { _all: true } }),
+      prisma.userOnboardingResponse.findMany({
+        where: { questionId: id },
+        include: { user: { select: { id: true, name: true, email: true } } },
+        orderBy: [{ answeredAt: 'desc' }, { skippedAt: 'desc' }],
+        take: SAMPLE_CAP,
+      }),
+    ]);
+    const totals = { answered: 0, skipped: 0 };
+    for (const g of statusAgg) if (g.status === 'answered' || g.status === 'skipped') totals[g.status] = g._count._all;
+    const row = questionAnalyticsRow(q, totals, totalUsers);
+
+    const answeredUsers = [], skippedUsers = [];
+    for (const r of sample) {
+      const base = { userId: r.userId, name: r.user?.name || null, email: r.user?.email || null };
+      if (r.status === 'answered') answeredUsers.push({ ...base, answeredAt: r.answeredAt, answer: safeAnswerDisplay(q, r.answer) });
+      else if (r.status === 'skipped') skippedUsers.push({ ...base, skippedAt: r.skippedAt });
+    }
+    const answeredTruncated = totals.answered > answeredUsers.length;
+    const skippedTruncated = totals.skipped > skippedUsers.length;
+
+    // Pending users (only while active): users with NO response row for this
+    // question — computed via relation-negation so it is correct regardless of the
+    // sample cap (the old notIn:[sampledIds] mislabeled responders beyond the cap).
+    let pendingUsers = [], pendingTruncated = false;
+    if (q.isActive && row.pending > 0) {
+      const users = await prisma.user.findMany({
+        where: { onboardingResponses: { none: { questionId: id } } },
+        select: { id: true, name: true, email: true },
+        take: PENDING_CAP, orderBy: { createdAt: 'desc' },
+      });
+      pendingUsers = users.map(u => ({ userId: u.id, name: u.name || null, email: u.email || null }));
+      pendingTruncated = row.pending > pendingUsers.length;
+    }
+    return res.json({ question: row, answeredUsers, skippedUsers, answeredTruncated, skippedTruncated, pendingUsers, pendingCount: row.pending, pendingTruncated, totalUsers });
+  } catch (err) {
+    console.error('[onboarding] adminOnboardingQuestionAnalytics error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── GET /api/admin/onboarding-users/:id/status ─────────────────────────────────
+export async function adminOnboardingUserStatus(req, res) {
+  try {
+    const { id } = req.params;
+    const user = await prisma.user.findUnique({ where: { id }, select: { id: true, name: true, email: true, onboardingCompletedAt: true, lastActive: true } });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const [questions, responses] = await Promise.all([
+      prisma.onboardingQuestion.findMany({ orderBy: { displayOrder: 'asc' } }),
+      prisma.userOnboardingResponse.findMany({ where: { userId: id } }),
+    ]);
+    const byQ = {};
+    for (const r of responses) byQ[r.questionId] = r;
+    let answered = 0, skipped = 0, pending = 0;
+    const items = questions.map(q => {
+      const r = byQ[q.id];
+      let status;
+      if (r?.status === 'answered') { status = 'answered'; answered++; }
+      else if (r?.status === 'skipped') { status = 'skipped'; skipped++; }
+      else if (q.isActive) { status = 'pending'; pending++; }
+      else status = 'not_assigned';
+      return {
+        id: q.id, key: q.key, prompt: q.prompt, type: q.type, isActive: q.isActive, isRequired: q.isRequired,
+        status, answeredAt: r?.answeredAt || null, skippedAt: r?.skippedAt || null,
+        answer: r?.status === 'answered' ? safeAnswerDisplay(q, r.answer) : null,
+      };
+    });
+    const activeQuestions = questions.filter(q => q.isActive).length;
+    return res.json({
+      user,
+      counts: { answered, skipped, pending, activeQuestions, completionPct: onbPct(answered, activeQuestions) },
+      items,
+    });
+  } catch (err) {
+    console.error('[onboarding] adminOnboardingUserStatus error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
