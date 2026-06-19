@@ -55,11 +55,31 @@ Reuses the exact project access resolvers (`store.getById` owner,
 whitelisted; client `userId` never trusted (taken from the session).
 
 ## 14–16. Tests / QA / results
-+18 unit (concurrency core + protocol mappers) + a skip-aware integration suite.
-**Gate: 1380 tests green** (75 files). **Build green.** Backend **live-verified**
++20 unit (concurrency core + protocol mappers) + a skip-aware integration suite.
+**Gate: 1382 tests green** (75 files). **Build green.** Backend **live-verified**
 end-to-end against the dev DB (flag gate, revision increment, shallow merge, 409
 conflict, whitelist 400, non-member 404, summary) — matrix in
 `architecture-rescue-testing-strategy.md`.
+
+### Post-review hardening (v3.20.1)
+A 4-dimension adversarial review (concurrency / data-loss / security / integration)
+confirmed 7 issues in the new flag-gated code — all fixed (no production impact;
+flag OFF by default):
+- **`useModuleState` robustness:** serialized in-flight sends (no overlapping
+  flush → no spurious self-409); pending fields cleared only after a successful
+  response (overlap/failure never drops edits); the server echo is re-merged with
+  still-pending edits (no dropped keystrokes mid-round-trip); a 409's rejected
+  fields are kept + surfaced (`yourEdit`) and re-send on the next edit/flush
+  against the refreshed revision; a pending debounced patch is flushed on unmount.
+- **Backend:** the create catch is narrowed to Prisma `P2002` (unique race) and
+  rethrows real errors (no more phantom revision-0 "conflict" loop on a transient
+  DB error); `baseRevision` rejects non-integer types (400); `isStale` compares
+  strictly (no coercion).
+- **Extraction:** `STUDY_DESIGNS` is now a true extraction matching the legacy
+  PICOTab option set (shared by both editors → no unselectable/rewritten design).
+- Re-verified live: 409→retry recovery (re-send with refreshed base → 200, both
+  edits preserved), 400 on bogus `baseRevision`, and prototype-pollution safety
+  (`{__proto__:…}` patch applies as an own property; global Object not polluted).
 
 ## 17–18. Remaining risks
 - **localStorage:** low — only UI prefs/theme remain; no canonical data there.

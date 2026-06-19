@@ -76,9 +76,11 @@ export function mergePatch(current, patch) {
 /**
  * Decide whether a write is a stale-revision conflict.
  * baseRevision null/undefined → caller opts out of the check (always applies).
+ * A non-null baseRevision is compared STRICTLY (the controller guarantees it is an
+ * integer), so a bogus type can never coincidentally pass the conflict check.
  */
 export function isStale(baseRevision, currentRevision) {
-  return baseRevision != null && Number(baseRevision) !== currentRevision;
+  return baseRevision != null && baseRevision !== currentRevision;
 }
 
 /* ─── State shape helpers ─────────────────────────────────────────────── */
@@ -143,10 +145,14 @@ export async function patchModuleState({ projectId, moduleKey, patch, baseRevisi
         data: { projectId, moduleKey, stateJson, revision: 1, updatedById: user.id, updatedByName },
       });
       return { ok: true, result: rowToState(row) };
-    } catch {
-      // A concurrent create won the @@unique race → surface as a conflict.
+    } catch (e) {
+      // ONLY a unique-constraint race (P2002) is a concurrent-create conflict;
+      // rethrow every other error so the controller answers a real 500 instead of
+      // a phantom revision-0 "conflict" that the client would retry forever.
+      if (!e || e.code !== 'P2002') throw e;
       const fresh = await prisma.workflowModuleState.findUnique({ where: { projectId_moduleKey: { projectId, moduleKey } } });
-      return { conflict: true, current: fresh ? rowToState(fresh) : emptyState(moduleKey) };
+      if (!fresh) throw e; // impossible-state guard: a P2002 with no row → real error
+      return { conflict: true, current: rowToState(fresh) };
     }
   }
 

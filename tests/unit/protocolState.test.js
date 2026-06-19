@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest';
 import {
   pickProtocol, applyProtocol, isBlankProtocol, PROTOCOL_FIELDS,
 } from '../../src/features/protocol/protocolState.js';
-import { timeframeComplete, TIMEFRAME_OPTIONS } from '../../src/features/protocol/constants.js';
+import { timeframeComplete, TIMEFRAME_OPTIONS, STUDY_DESIGNS } from '../../src/features/protocol/constants.js';
 
 describe('pickProtocol', () => {
   it('extracts known protocol fields from a project blob, ignoring others', () => {
@@ -69,5 +69,11 @@ describe('timeframeComplete (extracted from monolith, unchanged)', () => {
     expect(vals).toContain('custom');
     expect(vals).toContain('inception');
     expect(TIMEFRAME_OPTIONS.length).toBe(8);
+  });
+});
+
+describe('STUDY_DESIGNS (extracted; must match the legacy PICOTab option set)', () => {
+  it('is the exact legacy list (stored value = option text)', () => {
+    expect(STUDY_DESIGNS).toEqual(['RCT', 'Quasi-RCT', 'Cohort Study', 'Case-Control', 'Cross-Sectional', 'Case Series', 'Mixed']);
   });
 });

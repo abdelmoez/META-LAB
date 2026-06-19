@@ -37,5 +37,8 @@ export function timeframeComplete(pico) {
   return !!(p.timeframe && p.timeframe.trim()); // legacy free-text fallback
 }
 
-/** Study-design options for the protocol editor (matches the monolith select). */
-export const STUDY_DESIGNS = ['RCT', 'Cohort', 'Case-control', 'Cross-sectional', 'Diagnostic', 'Mixed', 'Other'];
+/** Study-design options — EXTRACTED from the legacy PICOTab select (prompt38) so
+ *  both editors share ONE option set. The stored `pico.studyDesign` is the option
+ *  text itself, so these values must match the legacy list exactly or a migrated
+ *  design would become unselectable / silently rewritten. */
+export const STUDY_DESIGNS = ['RCT', 'Quasi-RCT', 'Cohort Study', 'Case-Control', 'Cross-Sectional', 'Case Series', 'Mixed'];

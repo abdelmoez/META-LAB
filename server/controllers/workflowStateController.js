@@ -71,7 +71,9 @@ export async function patchWorkspaceModuleState(req, res) {
     if (patch == null || typeof patch !== 'object' || Array.isArray(patch)) {
       return res.status(400).json({ error: 'patch must be an object' });
     }
-    if (baseRevision != null && !Number.isInteger(Number(baseRevision))) {
+    // Reject non-number primitives (true/[]/"  ") that could otherwise coerce
+    // and weaken the conflict check — baseRevision must be a real integer or absent.
+    if (baseRevision != null && (typeof baseRevision !== 'number' || !Number.isInteger(baseRevision))) {
       return res.status(400).json({ error: 'baseRevision must be an integer' });
     }
 

@@ -34,7 +34,7 @@ import { api } from "./src/frontend/api-client/apiClient.js"; // prompt32 Task 1
 // in the feature module (re-imported here so the legacy PICOTab keeps working);
 // the PICO tab delegates to ProtocolModulePanel when the serverBackedWorkflowState
 // flag is ON, else it renders the legacy in-blob PICOTab below.
-import { ProtocolModulePanel, TIMEFRAME_OPTIONS, timeframeComplete } from "./src/features/protocol/index.js";
+import { ProtocolModulePanel, TIMEFRAME_OPTIONS, timeframeComplete, STUDY_DESIGNS } from "./src/features/protocol/index.js";
 import { workflowStateFlagEnabled } from "./src/services/workflowState/api.js";
 
 /* ════════════ UTILS ════════════ */
@@ -2003,7 +2003,7 @@ function PICOTab({project,updNested,upd,lockCtx}){
     <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:14}}>
       <div><label style={lbl}>Primary Study Design <HelpTip text="RCTs give the strongest evidence for interventions. Use cohort/case-control for exposures or harms, cross-sectional for prevalence."/></label>
         <select value={pico.studyDesign||"RCT"} onChange={e=>ch("studyDesign",e.target.value)} style={inp}>
-          {["RCT","Quasi-RCT","Cohort Study","Case-Control","Cross-Sectional","Case Series","Mixed"].map(d=><option key={d}>{d}</option>)}
+          {STUDY_DESIGNS.map(d=><option key={d}>{d}</option>)}
         </select></div>
       <div><label style={lbl}>Time Frame <span style={{color:C.red}}>*</span></label>
         <select value={pico.timeframeMode||""} onChange={e=>ch("timeframeMode",e.target.value)} style={inp}>

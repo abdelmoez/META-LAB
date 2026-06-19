@@ -29,9 +29,14 @@ describe('isStale (optimistic concurrency)', () => {
   });
   it('matching revision is fresh; mismatch is stale', () => {
     expect(isStale(5, 5)).toBe(false);
-    expect(isStale('5', 5)).toBe(false); // coerced
     expect(isStale(4, 5)).toBe(true);
     expect(isStale(6, 5)).toBe(true);
+  });
+  it('compares strictly — a bogus non-integer type is treated as stale (defense in depth)', () => {
+    // The controller already rejects non-integers; isStale never coerces, so a
+    // bad type can never coincidentally pass the conflict check.
+    expect(isStale('5', 5)).toBe(true);
+    expect(isStale(true, 5)).toBe(true);
   });
 });
 
