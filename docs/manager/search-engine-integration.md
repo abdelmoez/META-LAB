@@ -81,10 +81,17 @@ Unit: +5 (`mapMeshSummary`, `createTtlCache`). Gate: 1387 green. Build green.
 - **Narrower terms now populated (L2).** `meshNarrower(meshUI)` fetches direct
   narrower descriptors from the **MeSH RDF SPARQL endpoint**
   (`id.nlm.nih.gov/mesh/sparql`, `meshv:broaderDescriptor`); `meshLookup` attaches
-  them as `children`. Best-effort (failure → `[]`, never fatal), throttled through
-  the same NLM spacer, cached 30d. The existing hover panel + "includes N narrower
-  topic(s)" line light up with real data. Live-verified: Hypertension → 9, Type 2
-  Diabetes → 1.
+  them as `children`. UID-guarded (`/^D\d{6,}$/`, blocks SPARQL injection),
+  best-effort and never fatal, cached 30d. The existing hover panel + "includes N
+  narrower topic(s)" line light up with real data. Live-verified: Hypertension UID
+  → 9, Type 2 Diabetes → 1.
+- **Cache/throttle hardening (review follow-up).** `meshNarrower` now returns
+  `null` on a *transient* fetch failure vs `[]` for a *genuine* no-children
+  result, and `meshLookup` does NOT write a transient-empty record into the 30-day
+  `meshCache` (returns it uncached so the next lookup retries) — a failed SPARQL
+  call can no longer freeze `children=[]` for 30 days. The NLM throttle is now
+  **per-host** (`eutilsSlot` for E-utilities, `meshRdfSlot` for the SPARQL host),
+  so the narrower call doesn't consume the eutils spacing budget.
 
 ## Known limitations (remaining)
 1. **Emtree** is still a *derived* term (NLM has no Emtree data) — the de-inversion
@@ -94,7 +101,14 @@ Unit: +5 (`mapMeshSummary`, `createTtlCache`). Gate: 1387 green. Build green.
 2. **Per-concept live counts** are not enabled (only the whole-query total) —
    enabling them means editing the frozen handoff engine component, which is out
    of scope; the count seam already supports any query the frontend sends.
-3. The NLM throttle is a single-process in-memory spacer — adequate for the
-   single-instance VPS deploy; a multi-instance deployment would want a shared
-   limiter. `meshLookup` now makes up to 3 NLM calls (esearch → esummary → SPARQL),
-   all throttled + 30d-cached, so steady-state cost stays low.
+3. The NLM throttle is a single-process in-memory spacer (now per-host) — adequate
+   for the single-instance VPS deploy; a multi-instance deployment would want a
+   shared limiter. `meshLookup` makes up to 3 NLM calls on a cold lookup (esearch →
+   esummary → SPARQL, ~0.6s), all throttled + 30d-cached, so steady-state cost
+   stays low; the response still blocks on the narrower call because the frozen
+   handoff component expects `children` inline (lazy-fill would need a component
+   change).
+4. NLM `esearch` ranks a bare term's "best match", which is often a *specific*
+   narrower descriptor (e.g. "hypertension" → "Familial Primary Pulmonary
+   Hypertension") rather than the broad heading — so `children` is legitimately
+   empty for those. Pre-existing handoff behavior; the searcher can refine the term.

@@ -5,7 +5,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  mapMeshSummary, emtreeFallback, parseSparqlLabels,
+  mapMeshSummary, emtreeFallback, parseSparqlLabels, meshNarrower,
 } from '../../server/searchEngine/nlmClient.js';
 import { createTtlCache } from '../../server/searchEngine/ttlCache.js';
 
@@ -74,6 +74,17 @@ describe('parseSparqlLabels', () => {
     expect(parseSparqlLabels({})).toEqual([]);
     expect(parseSparqlLabels({ results: {} })).toEqual([]);
     expect(parseSparqlLabels({ results: { bindings: [{}, { label: {} }] } })).toEqual([]);
+  });
+});
+
+describe('meshNarrower guard', () => {
+  it('returns [] (no network) for anything that is not a real descriptor UI', async () => {
+    // /^D\d{6,}$/ guard — blocks SPARQL injection and avoids pointless fetches.
+    expect(await meshNarrower('')).toEqual([]);
+    expect(await meshNarrower(null)).toEqual([]);
+    expect(await meshNarrower('Diabetes')).toEqual([]);
+    expect(await meshNarrower('D123')).toEqual([]);          // too short
+    expect(await meshNarrower('D006333 } INJECT')).toEqual([]); // not a bare UID
   });
 });
 

@@ -29,22 +29,29 @@ const countCache = createTtlCache({ ttlMs: 60 * 60 * 1000, max: 5000 });        
 const narrowerCache = createTtlCache({ ttlMs: 30 * 24 * 60 * 60 * 1000, max: 5000 }); // 30 days (MeSH tree is near-static)
 
 /* ── Rate throttle: serialize the SLOT (start spacing) only, not the fetch, so a
- *    slow response never head-of-line-blocks the next call's spacing. ─────────── */
-let gate = Promise.resolve();
-let lastAt = 0;
-function nextSlot() {
-  const p = gate.then(async () => {
-    const wait = Math.max(0, minIntervalMs() - (Date.now() - lastAt));
-    if (wait) await new Promise((r) => setTimeout(r, wait));
-    lastAt = Date.now();
-  });
-  gate = p.catch(() => {}); // keep the chain alive on error
-  return p;
+ *    slow response never head-of-line-blocks the next call's spacing. One throttle
+ *    PER HOST — eutils and the MeSH RDF/SPARQL service are separate endpoints with
+ *    independent limits, so a SPARQL call must not consume the eutils spacing
+ *    budget (and vice-versa). ───────────────────────────────────────────────── */
+function makeThrottle(intervalFn) {
+  let gate = Promise.resolve();
+  let lastAt = 0;
+  return function next() {
+    const p = gate.then(async () => {
+      const wait = Math.max(0, intervalFn() - (Date.now() - lastAt));
+      if (wait) await new Promise((r) => setTimeout(r, wait));
+      lastAt = Date.now();
+    });
+    gate = p.catch(() => {}); // keep the chain alive on error
+    return p;
+  };
 }
+const eutilsSlot = makeThrottle(minIntervalMs);     // E-utilities (key-aware spacing)
+const meshRdfSlot = makeThrottle(() => 350);        // id.nlm.nih.gov SPARQL — conservative fixed spacing
 
-async function nlmFetch(url) {
+async function nlmFetch(url, slot = eutilsSlot) {
   if (typeof fetch !== 'function') return null; // Node < 18 without global fetch
-  await nextSlot();
+  await slot();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs());
   try {
@@ -134,18 +141,20 @@ function narrowerQuery(ui) {
 
 /**
  * Narrower (child) MeSH descriptors for a descriptor UI (e.g. "D006333") via the
- * MeSH RDF SPARQL endpoint. Best-effort: any failure returns [] so meshLookup
- * still succeeds. Cached 30d (the MeSH tree is near-static between annual
- * releases). A genuine empty result IS cached; a failed fetch is NOT (retried).
+ * MeSH RDF SPARQL endpoint. Cached 30d (the MeSH tree is near-static between
+ * annual releases). Distinguishes the two empty cases so callers don't freeze a
+ * transient miss:
+ *   - genuine "no children" → returns [] (and is cached).
+ *   - transient fetch failure → returns null (NOT cached → retried next time).
  */
 export async function meshNarrower(meshUI) {
   const ui = String(meshUI || '').trim();
-  if (!/^D\d{6,}$/.test(ui)) return []; // only real descriptor UIs
+  if (!/^D\d{6,}$/.test(ui)) return []; // not a real descriptor UI → deterministically no children
   const cached = narrowerCache.get(ui);
   if (cached !== undefined) return cached;
   const url = `${MESH_SPARQL}?query=${encodeURIComponent(narrowerQuery(ui))}&format=JSON&inference=false`;
-  const json = await nlmFetch(url);
-  if (json === null) return []; // transient failure — don't poison the cache
+  const json = await nlmFetch(url, meshRdfSlot);
+  if (json === null) return null; // transient failure — signal caller, don't cache
   const labels = parseSparqlLabels(json);
   narrowerCache.set(ui, labels);
   return labels;
@@ -175,7 +184,12 @@ export async function meshLookup(term) {
   // Best-effort narrower terms (the frontend shows these as "includes N narrower
   // topic(s)" / lists them on hover). Failure leaves children = [] — never fatal.
   if (mapped && mapped.meshUI) {
-    mapped.children = await meshNarrower(mapped.meshUI);
+    const narrower = await meshNarrower(mapped.meshUI);
+    mapped.children = Array.isArray(narrower) ? narrower : [];
+    // If the narrower enrichment transiently FAILED (null), don't freeze this
+    // empty children list in the 30-day meshCache — return uncached so the next
+    // lookup retries the SPARQL step. The descriptor itself is still returned.
+    if (narrower === null) return mapped;
   }
   meshCache.set(key, mapped);
   return mapped;
