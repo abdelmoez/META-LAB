@@ -56,6 +56,11 @@ const DEFAULTS = {
     // /api/rob endpoints 404 and the workspace UI is hidden until an admin
     // enables this from Ops › Feature Flags after the evaluation gate passes.
     rob_engine_v2: false,
+    // prompt38 — server-backed per-module workflow state. Default OFF: the
+    // /api/workspaces/:id/modules/:key/state endpoints 404 and the monolith keeps
+    // using the whole-project blob autosave. When ON, migrated modules (protocol)
+    // load/save per-module with revision-based conflict detection.
+    serverBackedWorkflowState: false,
   }),
 };
 

@@ -35,6 +35,7 @@ import eventsRouter       from './routes/events.js';
 import robRouter          from './routes/rob.js';
 import onboardingRouter   from './routes/onboarding.js';
 import institutionsRouter from './routes/institutions.js';
+import workflowStateRouter from './routes/workflowState.js';
 
 import { initDefaultSettings } from './controllers/settingsController.js';
 import { seedOnboardingQuestions } from './controllers/onboardingController.js';
@@ -191,6 +192,12 @@ app.use('/api/institutions', institutionLimiter, institutionsRouter);
 // ── Realtime SSE stream (prompt6 Task 7) — own mount, NEVER under the
 // rate-limited /api/auth or /api/admin routers (requireAuth inside the router).
 app.use('/api/events', eventsRouter);
+
+// ── Server-backed per-module workflow state (prompt38) — requireAuth at the
+// mount; each handler additionally gates on the serverBackedWorkflowState flag
+// (default OFF → 404) and the caller's META·LAB project access. :projectId is the
+// META·LAB Project id (the "review workspace").
+app.use('/api/workspaces', requireAuth, workflowStateRouter);
 
 // ── SPA serving with server-injected theme (prompt37 follow-up) ────────────────
 // When a production build exists (or SERVE_SPA=true), serve dist/ assets and the

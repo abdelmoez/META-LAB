@@ -189,6 +189,8 @@ model Project {
   // rob.md — META·LAB RoB: outcome/result-level Risk-of-Bias assessments.
   // Additive back-relation only (no column on Project); cascades with the project.
   robAssessments RobAssessment[]
+  // prompt38 — server-backed per-module workflow state (additive back-relation).
+  workflowModuleStates WorkflowModuleState[]
 }
 
 // roadmap 0.2 — relational backing for META·LAB per-project screening records.
@@ -794,4 +796,30 @@ model RobAuditLog {
 
   @@index([projectId, createdAt])
   @@index([assessmentId, createdAt])
+}
+
+// prompt38 — server-backed per-module workflow state (de-monolithization +
+// concurrency-safe architecture). Replaces whole-project blob saves for MIGRATED
+// modules: one row per (project, moduleKey) holding that module's stateJson with
+// an optimistic-concurrency `revision`. Reads/writes are gated behind the
+// `serverBackedWorkflowState` feature flag (default OFF) and authorized by the
+// same META·LAB project access as the project itself (owner or linked-workspace
+// member with canEdit). `updatedById` is a bare string (no FK to User), matching
+// the established convention for additive collaboration tables. The composite
+// `@@unique([projectId, moduleKey])` is on a NEW table, so `prisma db push`
+// creates it cleanly (no --accept-data-loss).
+model WorkflowModuleState {
+  id            String   @id @default(uuid())
+  projectId     String
+  project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  moduleKey     String   // whitelisted module key (see server/services/workflowState.js)
+  stateJson     String   @default("{}")  // the module's state, JSON-serialised
+  revision      Int      @default(0)     // optimistic-concurrency counter, incremented per accepted patch
+  updatedById   String?                  // user id (bare string; not a FK)
+  updatedByName String   @default("")    // denormalised for display/audit
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([projectId, moduleKey])
+  @@index([projectId])
 }

@@ -29,6 +29,13 @@ import { normalizeRobTool } from "./src/research-engine/rob/tools.js";
 // prompt34 Task 10 — completed RoB 2 assessments auto-suggest the GRADE Risk-of-Bias domain.
 import { summariseRobForGrade, ROB_GRADE_SOURCE } from "./src/research-engine/rob/gradeSync.js";
 import { api } from "./src/frontend/api-client/apiClient.js"; // prompt32 Task 10 — owner project delete from Project Control
+// prompt38 — Protocol/PICO extracted into a feature module (strangler-fig) +
+// server-backed per-module state. TIMEFRAME_OPTIONS / timeframeComplete now live
+// in the feature module (re-imported here so the legacy PICOTab keeps working);
+// the PICO tab delegates to ProtocolModulePanel when the serverBackedWorkflowState
+// flag is ON, else it renders the legacy in-blob PICOTab below.
+import { ProtocolModulePanel, TIMEFRAME_OPTIONS, timeframeComplete } from "./src/features/protocol/index.js";
+import { workflowStateFlagEnabled } from "./src/services/workflowState/api.js";
 
 /* ════════════ UTILS ════════════ */
 const uid = () => Math.random().toString(36).slice(2, 10);
@@ -2053,6 +2060,30 @@ function PICOTab({project,updNested,upd,lockCtx}){
 
     <InfoBox>💡 <strong style={{color:C.txt}}>Next step:</strong> Once your PICO and eligibility are set, register your protocol on <a href="https://www.crd.york.ac.uk/prospero/" target="_blank" rel="noreferrer" style={{color:C.acc}}>PROSPERO</a>{AI_FEATURES_ENABLED?" (use the Protocol tab to auto-draft all fields)":" (use the Protocol tab to organise every field)"}, then move to Search Strategy. Required fields are marked <span style={{color:C.red}}>*</span>.</InfoBox>
   </div>);
+}
+
+/* prompt38 — dispatcher. When the serverBackedWorkflowState flag is ON, the PICO
+   tab IS the new server-backed Protocol module (per-module state + revision +
+   conflict detection + legacy blob→module migration). When OFF (default), the
+   original in-blob PICOTab is preserved unchanged so nothing breaks. The module
+   is the conflict-authority; onMirror keeps project.pico in sync so other (not-
+   yet-migrated) tabs that read pico stay consistent during the transition. */
+function PICODispatcher({project,updNested,upd,lockCtx,activeId}){
+  const[flag,setFlag]=useState(null); // null=checking
+  useEffect(()=>{let dead=false;
+    (async()=>{
+      // Persist any pending whole-project autosave first so the server-backed
+      // module migration seeds from the LATEST protocol fields.
+      try{ await flushStorage(); }catch{ /* best-effort */ }
+      let v=false; try{ v=await workflowStateFlagEnabled(); }catch{ v=false; }
+      if(!dead) setFlag(!!v);
+    })();
+    return()=>{dead=true;};
+  },[]);
+  if(flag===null) return <div style={{padding:40,textAlign:"center",color:C.muted,fontSize:13}}>Loading Protocol…</div>;
+  if(!flag) return <PICOTab project={project} updNested={updNested} upd={upd} lockCtx={lockCtx}/>;
+  return <ProtocolModulePanel projectId={activeId} project={project}
+    onMirror={(patch)=>Object.entries(patch).forEach(([k,v])=>updNested("pico",k,v))}/>;
 }
 
 /* ════════════ TAB: SEARCH ════════════ */
@@ -7009,34 +7040,10 @@ const READING_TABS=new Set(["overview","pico","prospero","control","grade","manu
 /* Icon names (src/frontend/components/icons.jsx) — render via <Icon name={…}/> */
 const PHASE_ICON={Plan:"target",Search:"search",Screen:"filter",Extract:"table",Analyze:"sigma",Report:"fileText"};
 
-/* PICO Time Frame — controlled options (prompt23 Task 8A). The value lives in
-   pico.timeframeMode; "custom" reveals pico.tfStart / pico.tfEnd (years). Legacy
-   free-text pico.timeframe is still honoured for older projects. */
-const TIMEFRAME_OPTIONS = [
-  { value: "any",       label: "No time restriction" },
-  { value: "last1",     label: "Last 1 year" },
-  { value: "last3",     label: "Last 3 years" },
-  { value: "last5",     label: "Last 5 years" },
-  { value: "last10",    label: "Last 10 years" },
-  { value: "since2000", label: "Since 2000" },
-  { value: "inception", label: "Since inception" },
-  { value: "custom",    label: "Custom date range" },
-];
-
-/* True once the Time Frame is validly specified — a preset selection, a valid
-   custom range (start year present, end ≥ start when given), or legacy text. */
-function timeframeComplete(pico) {
-  const p = pico || {};
-  if (p.timeframeMode === "custom") {
-    const s = parseInt(p.tfStart, 10);
-    if (!Number.isFinite(s)) return false;
-    const e = p.tfEnd ? parseInt(p.tfEnd, 10) : null;
-    if (Number.isFinite(e) && e < s) return false;
-    return true;
-  }
-  if (p.timeframeMode) return true;          // a preset is selected
-  return !!(p.timeframe && p.timeframe.trim()); // legacy free-text fallback
-}
+/* PICO Time Frame — TIMEFRAME_OPTIONS + timeframeComplete were EXTRACTED to
+   src/features/protocol/constants.js (prompt38, strangler-fig) and re-imported at
+   the top of this file, so the legacy PICOTab + the new ProtocolModulePanel share
+   one source of truth. Behaviour is unchanged. */
 
 /* CriteriaList — structured inclusion/exclusion editor (prompt23 Task 8C). Each
    criterion is its own add/removable row instead of one opaque blob, but it
@@ -9048,7 +9055,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           {tab==="overview"&&<OverviewTab project={project} setTab={setTab}/>}
           {tab==="control"&&<ControlTab project={project} onAnnotate={patchAnnotations} setTab={setTab} presence={{users:presenceUsers,locks:presenceLocks}}
             onDeleted={(delId)=>{setProjects(prev=>prev.filter(p=>p.id!==delId));if(onBackToProjects)onBackToProjects();else setActiveId(null);}}/>}
-          {tab==="pico"&&<PICOTab project={project} updNested={updNested} upd={upd} lockCtx={{pid:spId,myUserId:authUser?.id,locks:presenceLocks}}/>}
+          {tab==="pico"&&<PICODispatcher project={project} activeId={activeId} updNested={updNested} upd={upd} lockCtx={{pid:spId,myUserId:authUser?.id,locks:presenceLocks}}/>}
           {tab==="prospero"&&<PROSPEROTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="search"&&<SearchTab project={project} updNested={updNested} upd={upd}/>}
           {tab==="prisma"&&<PRISMATab project={project} updNested={updNested} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
