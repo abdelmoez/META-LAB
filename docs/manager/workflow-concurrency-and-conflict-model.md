@@ -45,12 +45,14 @@ unexpected stale write regardless of locks. The phase-1 server-backed panel does
 not yet wire the per-field locks (legacy editor keeps them) — sequenced for a later
 wave; the revision conflict model protects correctness in the meantime.
 
-## Audit
-- **Implemented:** each row records `updatedById`/`updatedByName`/`revision`/
-  `updatedAt` (who last changed each module + how many revisions); the server logs
-  structured `PROTOCOL_UPDATED` (per `MODULE_AUDIT_ACTION`) and
-  `WORKFLOW_STATE_CONFLICT` lines.
-- **Follow-up (Wave):** a dedicated `WorkflowStateAudit` history table for the full
-  event list (`PROTOCOL_UPDATED`, `…_UPDATED`, `WORKFLOW_STATE_CONFLICT`, migration
-  events). Not in phase 1 to keep the schema change minimal; the row metadata + logs
-  cover the essential trail.
+## Audit (implemented — dedicated table)
+A `WorkflowStateAudit` append-only table (same no-FK audit-survival precedent as
+`RobAuditLog`) records every mutation + conflict, best-effort (never blocks the
+write):
+- on a successful PATCH → `PROTOCOL_UPDATED` (per `MODULE_AUDIT_ACTION`) with the
+  resulting `revision` + `details.changedKeys`;
+- on a 409 → `WORKFLOW_STATE_CONFLICT` with `details.{baseRevision, currentRevision}`.
+Readable by project members at `GET /api/workspaces/:id/audit` (flag-gated, newest
+first, capped). Each module-state row still also carries `updatedBy*`/`revision` as
+the per-module "last writer" trail. Live-verified (2 updates + 1 conflict recorded
++ returned, newest-first).

@@ -14,6 +14,7 @@
 import {
   workflowStateEnabled, resolveProjectAccess, isValidModuleKey,
   getModuleState, getStateSummary, patchModuleState, MODULE_AUDIT_ACTION,
+  recordWorkflowAudit, getWorkflowAudit,
 } from '../services/workflowState.js';
 
 /**
@@ -57,6 +58,18 @@ export async function getWorkspaceModuleState(req, res) {
   }
 }
 
+export async function getWorkspaceAudit(req, res) {
+  try {
+    const access = await gate(req, res);
+    if (!access) return;
+    const entries = await getWorkflowAudit(req.params.projectId, { limit: req.query.limit });
+    return res.json({ entries });
+  } catch (err) {
+    console.error('[workflowState] getWorkspaceAudit error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 export async function patchWorkspaceModuleState(req, res) {
   try {
     const access = await gate(req, res);
@@ -83,6 +96,11 @@ export async function patchWorkspaceModuleState(req, res) {
 
     if (out.conflict) {
       console.warn(`[workflowState] WORKFLOW_STATE_CONFLICT project=${req.params.projectId} module=${moduleKey} user=${req.user.id} base=${baseRevision} current=${out.current.revision}`);
+      await recordWorkflowAudit({
+        projectId: req.params.projectId, moduleKey, action: 'WORKFLOW_STATE_CONFLICT',
+        revision: out.current.revision, user: req.user,
+        details: { baseRevision: baseRevision ?? null, currentRevision: out.current.revision },
+      });
       return res.status(409).json({
         error: 'STATE_CONFLICT',
         currentState: out.current.state,
@@ -92,7 +110,12 @@ export async function patchWorkspaceModuleState(req, res) {
       });
     }
 
-    console.log(`[workflowState] ${MODULE_AUDIT_ACTION[moduleKey] || 'MODULE_UPDATED'} project=${req.params.projectId} rev=${out.result.revision} user=${req.user.id}`);
+    await recordWorkflowAudit({
+      projectId: req.params.projectId, moduleKey,
+      action: MODULE_AUDIT_ACTION[moduleKey] || 'MODULE_UPDATED',
+      revision: out.result.revision, user: req.user,
+      details: { changedKeys: Object.keys(patch) },
+    });
     return res.json({
       state: out.result.state,
       revision: out.result.revision,

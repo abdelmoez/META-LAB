@@ -8,12 +8,14 @@ import { Router } from 'express';
 import {
   getWorkspaceState,
   getWorkspaceModuleState,
+  getWorkspaceAudit,
   patchWorkspaceModuleState,
 } from '../controllers/workflowStateController.js';
 
 const router = Router();
 
 router.get('/:projectId/state', getWorkspaceState);
+router.get('/:projectId/audit', getWorkspaceAudit);
 router.get('/:projectId/modules/:moduleKey/state', getWorkspaceModuleState);
 router.patch('/:projectId/modules/:moduleKey/state', patchWorkspaceModuleState);
 

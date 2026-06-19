@@ -823,3 +823,23 @@ model WorkflowModuleState {
   @@unique([projectId, moduleKey])
   @@index([projectId])
 }
+
+// prompt38 (limitations round) — append-only audit of workflow-module-state
+// mutations + conflicts. Same no-FK audit-survival precedent as RobAuditLog: bare
+// projectId/userId strings so the trail outlives the project/module it describes.
+// Written best-effort (never blocks the main operation). Readable by project
+// members via GET /api/workspaces/:id/audit (flag-gated).
+model WorkflowStateAudit {
+  id        String   @id @default(uuid())
+  projectId String
+  moduleKey String   @default("")
+  action    String   // PROTOCOL_UPDATED | …_UPDATED | WORKFLOW_STATE_CONFLICT
+  revision  Int?     // resulting revision (updates) / current revision (conflicts)
+  userId    String?
+  userName  String   @default("")
+  details   String   @default("{}")  // JSON: changed keys, baseRevision, etc.
+  createdAt DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([projectId, moduleKey])
+}

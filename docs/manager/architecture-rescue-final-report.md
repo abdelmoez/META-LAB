@@ -104,16 +104,24 @@ when OFF (no data loss). See `architecture-rescue-safety-baseline.md`.
 3.19.2 → **3.20.0** (minor — significant additive infrastructure, no breaking
 change). Commit + push to `main` (see git log).
 
-## 24. Known limitations
-1. **One module migrated** (protocol); the rest still use the blob. By design — this
-   is phase 1.
+## 24. Known limitations (+ limitations round)
+1. **One module migrated** (protocol); the rest still use the blob. **By design —
+   the deliberate phased roadmap (§19), not a defect.** The foundation was deepened
+   this round (locks + audit) so the next waves are smaller, lower-risk increments.
 2. **Protocol is dual-write** while the flag is ON (module-canonical + blob mirror)
    so legacy readers stay consistent; the mirror still triggers blob autosave until
-   readers migrate.
-3. **Phase-1 panel** omits the legacy AI helpers + per-field presence locks (kept in
-   the legacy editor); sequenced for Wave 1. Revision conflict protects correctness
-   meanwhile.
-4. **Audit** is row-metadata + structured logs, not a dedicated history table yet.
+   readers migrate. **Intentional transition** — eliminated once a module's last
+   blob reader is migrated (a later wave), not forced now (it would mean migrating
+   every `project.pico` reader at once = the big-bang we are avoiding).
+3. **Field-locks — RESOLVED (v3.20.2).** The server-backed panel now wires the same
+   per-field presence locks for P/I/C/O (lock keys `pico.P…`, shared with the legacy
+   editor → consistent locking against the linked workspace; fail-open). AI helpers
+   stay deferred — AI is globally OFF (`AI_FEATURES_ENABLED=false`), so they are
+   low-value to port; revision conflict + locks cover correctness/collaboration.
+4. **Audit — RESOLVED (v3.20.2).** Dedicated append-only `WorkflowStateAudit` table
+   records `*_UPDATED` (with changed keys + revision) and `WORKFLOW_STATE_CONFLICT`
+   (with base/current revision), best-effort; readable at
+   `GET /api/workspaces/:id/audit`. Live-verified.
 
 ## 25. Honest engineering recommendation
 This is the right foundation: a generic, conflict-safe, permission-enforced,

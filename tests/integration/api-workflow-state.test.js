@@ -12,8 +12,12 @@
  *   flag ON, base=0       → revision 1
  *   flag ON, base=1 merge → revision 2 (P preserved + O added)
  *   flag ON, stale base   → 409 STATE_CONFLICT (current state returned, NO overwrite)
+ *   flag ON, stale→retry  → re-send with refreshed base → 200 (both edits kept)
  *   unknown moduleKey     → 400
+ *   bad baseRevision type → 400
  *   non-member            → 404 (existence hidden)
+ *   GET …/audit           → records 2× PROTOCOL_UPDATED + 1× WORKFLOW_STATE_CONFLICT
+ *                           (newest first, with changedKeys + base/current revision)
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 

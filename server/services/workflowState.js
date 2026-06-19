@@ -168,3 +168,42 @@ export async function patchModuleState({ projectId, moduleKey, patch, baseRevisi
   const row = await prisma.workflowModuleState.findUnique({ where: { projectId_moduleKey: { projectId, moduleKey } } });
   return { ok: true, result: rowToState(row) };
 }
+
+/* ─── Audit (append-only; best-effort — never blocks the mutation) ────────── */
+
+export async function recordWorkflowAudit({ projectId, moduleKey, action, revision, user, details }) {
+  try {
+    await prisma.workflowStateAudit.create({
+      data: {
+        projectId,
+        moduleKey: moduleKey || '',
+        action,
+        revision: revision == null ? null : revision,
+        userId: (user && user.id) || null,
+        userName: (user && user.name) || '',
+        details: JSON.stringify(details || {}),
+      },
+    });
+  } catch (e) {
+    console.error('[workflowState] audit write failed:', e.message); // never throw
+  }
+}
+
+/** Recent audit rows for a project (most recent first; capped). */
+export async function getWorkflowAudit(projectId, { limit = 50 } = {}) {
+  const take = Math.min(Math.max(1, Number(limit) || 50), 200);
+  const rows = await prisma.workflowStateAudit.findMany({
+    where: { projectId },
+    orderBy: { createdAt: 'desc' },
+    take,
+  });
+  return rows.map((r) => ({
+    id: r.id,
+    moduleKey: r.moduleKey,
+    action: r.action,
+    revision: r.revision,
+    user: r.userId ? { id: r.userId, name: r.userName || '' } : null,
+    details: safeParse(r.details),
+    createdAt: r.createdAt,
+  }));
+}

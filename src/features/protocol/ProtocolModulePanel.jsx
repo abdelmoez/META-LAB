@@ -11,6 +11,7 @@
  * remain in the legacy editor and are sequenced for a later migration wave.
  */
 import { C, FONT, alpha } from '../../frontend/theme/tokens.js';
+import { useFieldLock } from '../../frontend/screening/hooks/usePresence.js';
 import { TIMEFRAME_OPTIONS, STUDY_DESIGNS } from './constants.js';
 import { useProtocolState } from './useProtocolState.js';
 
@@ -43,9 +44,20 @@ function Field({ label, children }) {
   return <div style={{ marginBottom: 14 }}><label style={lbl}>{label}</label>{children}</div>;
 }
 
-export default function ProtocolModulePanel({ projectId, project, readOnly = false, onMirror }) {
+export default function ProtocolModulePanel({ projectId, project, readOnly = false, onMirror, lockCtx }) {
   const ro = readOnly || !!(project && (project._readOnly || (project._permissions && project._permissions.readOnly)));
   const { value, status, conflict, update, flush, dismissConflict } = useProtocolState(projectId, { project, enabled: !!projectId });
+
+  // Per-field presence locks for P/I/C/O (prompt38 — ported from the legacy
+  // editor). Same lock field keys ("pico.P"…) so the new + legacy editors lock
+  // consistently against the linked workspace. Fail-open: no workspace / lock
+  // error → editing is never blocked. Revision conflict is the backstop.
+  const lc = lockCtx || {};
+  const lockP = useFieldLock({ pid: lc.pid, field: 'pico.P', myUserId: lc.myUserId, locks: lc.locks, enabled: !!lc.pid });
+  const lockI = useFieldLock({ pid: lc.pid, field: 'pico.I', myUserId: lc.myUserId, locks: lc.locks, enabled: !!lc.pid });
+  const lockC = useFieldLock({ pid: lc.pid, field: 'pico.C', myUserId: lc.myUserId, locks: lc.locks, enabled: !!lc.pid });
+  const lockO = useFieldLock({ pid: lc.pid, field: 'pico.O', myUserId: lc.myUserId, locks: lc.locks, enabled: !!lc.pid });
+  const fieldLocks = { P: lockP, I: lockI, C: lockC, O: lockO };
 
   // The module state is the conflict-authority; `onMirror` keeps the legacy
   // project.pico blob in sync so other (not-yet-migrated) tabs read fresh data.
@@ -88,11 +100,23 @@ export default function ProtocolModulePanel({ projectId, project, readOnly = fal
       </Field>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 14, marginBottom: 4 }}>
-        {[['P', 'Population / Problem'], ['I', 'Intervention / Exposure'], ['C', 'Comparator / Control'], ['O', 'Outcome(s)']].map(([k, label]) => (
-          <Field key={k} label={label}>
-            <textarea value={value[k]} onChange={set(k)} disabled={dis} rows={3} style={{ ...inp, resize: 'vertical' }} />
-          </Field>
-        ))}
+        {[['P', 'Population / Problem'], ['I', 'Intervention / Exposure'], ['C', 'Comparator / Control'], ['O', 'Outcome(s)']].map(([k, label]) => {
+          const fl = fieldLocks[k] || {};
+          const lockedBy = fl.lockedByOther;
+          return (
+            <Field key={k} label={label}>
+              <textarea value={value[k]} onChange={set(k)} disabled={dis || !!lockedBy} rows={3}
+                onFocus={() => fl.acquire && fl.acquire()}
+                onBlur={() => { if (fl.release) fl.release(); }}
+                style={{ ...inp, resize: 'vertical', opacity: lockedBy ? 0.6 : 1, cursor: lockedBy ? 'not-allowed' : 'text' }} />
+              {lockedBy && (
+                <div style={{ fontSize: 10.5, color: C.yel, marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                  <span>🔒</span>{lockedBy.name} is editing
+                </div>
+              )}
+            </Field>
+          );
+        })}
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>

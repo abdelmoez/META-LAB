@@ -2082,7 +2082,7 @@ function PICODispatcher({project,updNested,upd,lockCtx,activeId}){
   },[]);
   if(flag===null) return <div style={{padding:40,textAlign:"center",color:C.muted,fontSize:13}}>Loading Protocol…</div>;
   if(!flag) return <PICOTab project={project} updNested={updNested} upd={upd} lockCtx={lockCtx}/>;
-  return <ProtocolModulePanel projectId={activeId} project={project}
+  return <ProtocolModulePanel projectId={activeId} project={project} lockCtx={lockCtx}
     onMirror={(patch)=>Object.entries(patch).forEach(([k,v])=>updNested("pico",k,v))}/>;
 }
 

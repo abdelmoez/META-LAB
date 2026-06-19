@@ -14,6 +14,17 @@ Module summaries + revisions.
   "updatedAt":"…", "updatedBy": { "id":"…", "name":"" } } } }
 ```
 
+## GET `/api/workspaces/:projectId/audit`
+Append-only audit for the project (project members; flag-gated). `?limit=` (≤200).
+```json
+{ "entries": [
+  { "action":"WORKFLOW_STATE_CONFLICT", "moduleKey":"protocol", "revision":2,
+    "user": {"id":"…","name":""}, "details": {"baseRevision":1,"currentRevision":2},
+    "createdAt":"…" },
+  { "action":"PROTOCOL_UPDATED", "moduleKey":"protocol", "revision":2,
+    "details": {"changedKeys":["O"]}, "createdAt":"…" } ] }
+```
+
 ## GET `/api/workspaces/:projectId/modules/:moduleKey/state`
 One module's full state (empty default when never written).
 ```json
