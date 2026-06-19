@@ -188,39 +188,78 @@ export async function localInstitutionSuggestions(q, prisma, limit = 6) {
  * Never silently merges an uncertain match.
  */
 export async function resolveInstitutionInput(input, prisma) {
-  if (input == null || input === '') return clearInstitutionPatch();
-  // Trusted canonical selection (ROR id or an explicit local pick).
-  if (typeof input === 'object' && (input.rorId || input.source === 'local')) {
-    return buildInstitutionPatch(input);
+  let patch;
+  if (input == null || input === '') {
+    patch = clearInstitutionPatch();
+  } else if (typeof input === 'object' && (input.rorId || input.source === 'local')) {
+    // Trusted canonical selection (ROR id or an explicit local pick).
+    patch = buildInstitutionPatch(input);
+  } else {
+    const text = typeof input === 'object' ? (str(input.name) || str(input.original) || str(input.canonicalName)) : str(input);
+    if (!text) {
+      patch = clearInstitutionPatch();
+    } else {
+      patch = buildInstitutionPatch(text); // custom baseline (preserves typed text)
+      try {
+        const candidates = await existingInstitutionCandidates(prisma);
+        const match = matchInstitution(text, candidates);
+        if (match.bestMatch && match.confidence >= INST_AUTO_THRESHOLD) {
+          // High-confidence: link to the existing canonical (still preserve typed text).
+          const m = match.bestMatch;
+          patch = {
+            ...patch,
+            institutionCanonicalName: m.canonicalName,
+            institutionRorId: m.rorId || null,
+            institutionCity: m.city || null,
+            institutionCountryName: m.countryName || null,
+            institutionCountryCode: m.countryCode || null,
+            institutionSource: m.rorId ? 'ror' : 'local',
+            institutionMatchConfidence: match.confidence,
+            institutionNeedsReview: false,
+          };
+        } else if (match.bestMatch && match.confidence >= INST_REVIEW_THRESHOLD) {
+          // Uncertain: keep the user's own custom entry, flag for Ops review. No merge.
+          patch = { ...patch, institutionMatchConfidence: match.confidence, institutionNeedsReview: true };
+        }
+      } catch { /* matching is best-effort; fall back to the plain custom baseline */ }
+    }
   }
-  const text = typeof input === 'object' ? (str(input.name) || str(input.original) || str(input.canonicalName)) : str(input);
-  if (!text) return clearInstitutionPatch();
+  // prompt36 — upsert/link the canonical Institution cache row (institutionId).
+  return linkCanonicalInstitution(prisma, patch);
+}
 
-  const base = buildInstitutionPatch(text); // custom baseline (preserves typed text)
+/**
+ * Augment a resolved patch with `institutionId` — upserting a shared canonical
+ * Institution row for ROR/local canonicals (cache), or null for custom/cleared.
+ * Best-effort: a failure leaves institutionId null and never breaks the save.
+ */
+async function linkCanonicalInstitution(prisma, patch) {
+  const canonical = patch && patch.institutionCanonicalName
+    && (patch.institutionRorId || patch.institutionSource === 'ror' || patch.institutionSource === 'local');
+  if (!canonical) return { ...patch, institutionId: null };
   try {
-    const candidates = await existingInstitutionCandidates(prisma);
-    const match = matchInstitution(text, candidates);
-    if (match.bestMatch && match.confidence >= INST_AUTO_THRESHOLD) {
-      // High-confidence: link to the existing canonical (still preserve typed text).
-      const m = match.bestMatch;
-      return {
-        ...base,
-        institutionCanonicalName: m.canonicalName,
-        institutionRorId: m.rorId || null,
-        institutionCity: m.city || null,
-        institutionCountryName: m.countryName || null,
-        institutionCountryCode: m.countryCode || null,
-        institutionSource: m.rorId ? 'ror' : 'local',
-        institutionMatchConfidence: match.confidence,
-        institutionNeedsReview: false,
-      };
+    const normalizedName = normalizeInstitution(patch.institutionCanonicalName) || patch.institutionNormalized || '';
+    const detail = {
+      canonicalName: patch.institutionCanonicalName,
+      normalizedName,
+      city: patch.institutionCity || null,
+      countryName: patch.institutionCountryName || null,
+      countryCode: patch.institutionCountryCode || null,
+      source: patch.institutionSource || (patch.institutionRorId ? 'ror' : 'local'),
+    };
+    let inst;
+    if (patch.institutionRorId) {
+      inst = await prisma.institution.upsert({
+        where: { rorId: patch.institutionRorId },
+        update: detail,
+        create: { ...detail, rorId: patch.institutionRorId },
+      });
+    } else {
+      inst = await prisma.institution.findFirst({ where: { normalizedName, rorId: null } })
+        || await prisma.institution.create({ data: detail });
     }
-    if (match.bestMatch && match.confidence >= INST_REVIEW_THRESHOLD) {
-      // Uncertain: keep the user's own custom entry, flag for Ops review. No merge.
-      return { ...base, institutionMatchConfidence: match.confidence, institutionNeedsReview: true };
-    }
+    return { ...patch, institutionId: inst ? inst.id : null };
   } catch {
-    // Matching is best-effort; fall back to the plain custom baseline.
+    return { ...patch, institutionId: null };
   }
-  return base;
 }

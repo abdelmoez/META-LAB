@@ -17,7 +17,7 @@ const PROFILE_SELECT = {
   primaryRole: true, researchField: true, mainUseCase: true, country: true,
   institutionOriginal: true, institutionCanonicalName: true, institutionRorId: true,
   institutionCity: true, institutionCountryName: true, institutionCountryCode: true,
-  institutionSource: true, institutionNeedsReview: true,
+  institutionSource: true, institutionNeedsReview: true, institutionId: true,
 };
 
 /**

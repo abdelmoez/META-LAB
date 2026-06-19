@@ -1500,6 +1500,7 @@ export async function getInstitutions(req, res) {
       rorLinked: users.filter(u => u.institutionRorId).length,
       customUnmatched: users.filter(u => (u.institutionOriginal || '').trim() && u.institutionSource === 'custom' && !u.institutionCanonicalName).length,
       needsReview: users.filter(u => u.institutionNeedsReview).length,
+      cachedInstitutions: await prisma.institution.count().catch(() => 0), // prompt36 — canonical cache size
     };
 
     const groups = buildInstitutionGroups(users, overrides);

@@ -107,11 +107,17 @@ flagged `needsReview` for Ops (never silently merged).
   (chip strip: with-institution, canonical-/ROR-linked, custom/unmatched,
   needs-review, without-institution) fed by `GET /api/admin/institutions.summary`.
 
+## Resolved follow-ups (fourth commit)
+- **Relational `Institution` table added** (`server/prisma/schema.prisma`): a shared
+  canonical cache (`canonicalName`, `normalizedName`, `rorId @unique`, `openAlexId`,
+  city/country, `website`, `aliases`, `source`, `needsReview`) with `User.institutionId`
+  (nullable FK). On a ROR/local canonical save, `institutionService.linkCanonicalInstitution`
+  upserts the Institution (by `rorId`, else by `normalizedName`) and links the user;
+  custom/cleared saves leave `institutionId` null. Additive (`prisma db push`-safe).
+  Ops `summary.cachedInstitutions` reports the cache size. Live-verified: a ROR
+  profile save creates the row and links `institutionId`.
+
 ## Known limitations / follow-ups
-- No dedicated relational `Institution` table — canonical detail is denormalized on
-  the User row + the existing JSON grouping. Deliberately deferred (architecture
-  evolution, not a defect; the current model meets all acceptance criteria); a
-  relational table would enable institution-level pages and faster rollups.
 - The seeded `institution` onboarding question re-interrupts existing users once on
   next login (by design — skippable).
 - External results are cached in-memory (TTL), not persisted to a local table

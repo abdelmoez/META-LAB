@@ -70,6 +70,10 @@ model User {
   institutionSource          String?  // "ror" | "local" | "custom"
   institutionMatchConfidence Float?   // 0..1 confidence of the canonical link
   institutionNeedsReview     Boolean  @default(false) // uncertain custom match → Ops review
+  // prompt36 follow-up — link to the canonical Institution cache row (nullable;
+  // null for custom/unmatched). Additive FK → `prisma db push` stays safe.
+  institutionId         String?
+  institution           Institution? @relation(fields: [institutionId], references: [id])
   country               String?       // user-stated country/region (onboarding)
   onboardingCompletedAt DateTime?     // null ⇒ onboarding not completed/skipped-not-done
   projects    Project[]
@@ -78,6 +82,30 @@ model User {
   screenMemberships ScreenProjectMember[] @relation("UserScreenMemberships")
   passwordResetTokens PasswordResetToken[]
   onboardingResponses UserOnboardingResponse[] // prompt32 — per-question onboarding state
+}
+
+// prompt36 follow-up — canonical institution cache (ROR/local). Populated when a
+// user selects/links a canonical institution; brand-new table → `prisma db push`
+// stays additive-safe (rorId @unique is safe on an empty table). The denormalized
+// institution* columns on User are kept; this adds a shared canonical row users
+// link to (institutionId) for institution-level rollups.
+model Institution {
+  id             String   @id @default(uuid())
+  canonicalName  String
+  normalizedName String                        // institutionMatch.normalizeInstitution key
+  rorId          String?  @unique               // ROR id URL (null for local-only canonicals)
+  openAlexId     String?
+  countryName    String?
+  countryCode    String?
+  city           String?
+  website        String?
+  aliases        String?                        // JSON array of alternative spellings
+  source         String   @default("local")    // "ror" | "openalex" | "local"
+  needsReview    Boolean  @default(false)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  users          User[]
+  @@index([normalizedName])
 }
 
 // prompt32 Task 6 — generic, ops-managed onboarding questions. The legacy
