@@ -3,7 +3,9 @@
  *
  * requireAuth is applied at the mount point in server/index.js. Every handler
  * additionally gates on the `rob_engine_v2` feature flag (default OFF → 404) and
- * enforces META·LAB project OWNERSHIP (non-owner → 404, existence hidden).
+ * authorizes the META·LAB project OWNER, OR a linked-workspace member granted the
+ * `canAssessRiskOfBias` permission (no access → 404, existence hidden). Write
+ * actions further require edit rights (read-only RoB members → 403). (prompt41 T5)
  */
 import { Router } from 'express';
 import {

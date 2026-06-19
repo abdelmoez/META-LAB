@@ -6,9 +6,10 @@
  * answers + BOTH the engine-PROPOSED and the (possibly overridden) FINAL
  * judgement, recomputing proposals server-side on every answer change.
  *
- * Access: META·LAB Project OWNERSHIP (store.getById(projectId, userId)). Same
- * isolation invariants as projects/studies — a non-owner gets 404 (existence is
- * hidden). Gated behind feature flag `rob_engine_v2` (default OFF → 404).
+ * Access (prompt41 Task 5): the META·LAB project OWNER, OR a linked-workspace member
+ * granted `canAssessRiskOfBias` (see resolveRobAccess). No access → 404 (existence
+ * hidden); write actions further require edit rights (read-only RoB members → 403).
+ * Gated behind feature flag `rob_engine_v2` (default OFF → 404).
  * Every create / answer / override / finalise / delete writes a RobAuditLog row.
  */
 import { prisma } from '../db/client.js';

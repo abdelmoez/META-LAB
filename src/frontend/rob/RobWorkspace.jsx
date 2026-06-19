@@ -527,11 +527,10 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
   const completedDomains = ROB2.domains.filter(d => domainComplete(d.id)).length;
 
   // prompt34 Task 4 — the PDF column is shown when admin-enabled AND not collapsed
-  // by the "Hide source" toggle. The Article Information TAB was removed; full
-  // article details live in the persistent header (Task 5). showArticleInfoTab now
-  // gates the header's expandable abstract/keywords disclosure.
+  // by the "Hide source" toggle. (prompt41 Task 3 — the cluttered article header was
+  // replaced by one compact title bar, so the old article-details disclosure flag is
+  // no longer read here.)
   const pdfTabOn = robSettings.showPdfPanel !== false;
-  const articleDetailsOn = robSettings.showArticleInfoTab !== false;
   const hasLeftColumn = showPdf && pdfTabOn;
   // prompt34 Task 1/2 — the PDF iframe fills its column (measured); the native
   // viewer scrolls long PDFs internally so the page itself never scrolls. On narrow
