@@ -89,6 +89,9 @@ export async function putSearch(req, res) {
     const value = {
       concepts: Array.isArray(body.concepts) ? body.concepts : [],
       overrides: body.overrides && typeof body.overrides === 'object' ? body.overrides : {},
+      // prompt40 Task 2/5 — normalized texts of auto-suggestions the user deleted,
+      // so a PICO re-sync never re-adds them (capped to keep the row small).
+      ignored: Array.isArray(body.ignored) ? body.ignored.filter((x) => typeof x === 'string').slice(0, 500) : [],
     };
     // baseRevision null = overwrite (the contract's PUT is a full upsert; the
     // search builder is single-strategy-per-project so last-write-wins is fine).

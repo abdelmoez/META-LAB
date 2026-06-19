@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { C, FONT, MONO, alpha } from "../../frontend/theme/tokens.js";  // SearchEngine: adapt to app theme (day/night + brand)
+import { picoToConcepts } from "../../research-engine/searchBuilder/conceptExtraction.js"; // prompt40 Task 3
 
 /* ════════════════════════════════════════════════════════════════════════════
    SEARCH BUILDER TAB  ·  production component for the META·LAB SaaS app
@@ -30,6 +31,8 @@ import { C, FONT, MONO, alpha } from "../../frontend/theme/tokens.js";  // Searc
 const SANS=FONT;
 const CONCEPT_COLORS=["#2dd4bf","#818cf8","#f0abfc","#5eead4","#c4b5fd","#67e8f9","#a5b4fc","#6ee7b7"];
 const uid=()=>Math.random().toString(36).slice(2,9);
+// prompt40 Task 3 — multi-concept extraction from PICO (deterministic, no network).
+const cnorm=(s)=>String(s||"").toLowerCase().replace(/[“”"'’.()[\]{}:!?]/g," ").replace(/\s+/g," ").trim();
 
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -521,13 +524,16 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const [counts,setCounts]=useState({});              // {dbId: number|null}
   const [countState,setCountState]=useState("idle");  // idle|loading
   const [picoDirty,setPicoDirty]=useState(false);
+  // prompt40 Task 2/5 — normalized texts of auto-suggested terms the user deleted.
+  // Persisted so a PICO re-sync never re-adds them (until "Reset suggestions").
+  const [ignored,setIgnored]=useState([]);
 
   /* ── INTEGRATION: load saved search for this project on mount ───────────── */
   useEffect(()=>{(async()=>{
     if(loadSearch&&projectId){
       try{
         const saved=await loadSearch(projectId);
-        if(saved&&saved.concepts){ setConcepts(saved.concepts); setOverrides(saved.overrides||{}); }
+        if(saved&&saved.concepts){ setConcepts(saved.concepts); setOverrides(saved.overrides||{}); setIgnored(Array.isArray(saved.ignored)?saved.ignored:[]); }
         else seedFromPICO(true);
       }catch(e){ console.error("loadSearch failed",e); seedFromPICO(true); }
     } else {
@@ -542,32 +548,63 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     if(!loaded||!saveSearch||!projectId) return;
     clearTimeout(saveTimer.current);
     saveTimer.current=setTimeout(()=>{
-      saveSearch(projectId,{concepts,overrides}).catch(e=>console.error("saveSearch failed",e));
+      saveSearch(projectId,{concepts,overrides,ignored}).catch(e=>console.error("saveSearch failed",e));
     },800);
     return ()=>clearTimeout(saveTimer.current);
-  },[concepts,overrides,loaded]); // eslint-disable-line
+  },[concepts,overrides,ignored,loaded]); // eslint-disable-line
 
   /* ── PICO change detection (for the Re-sync button) ────────────────────── */
   const picoKey=[pico?.P,pico?.I,pico?.C,pico?.O].join("|");
   const picoSnapshot=useRef(picoKey);
   useEffect(()=>{ if(loaded&&picoKey!==picoSnapshot.current) setPicoDirty(true); },[picoKey,loaded]);
 
-  /* seed concepts from the app's existing PICO */
-  function seedFromPICO(silent){
-    const fields=[["P","Population"],["I","Intervention"],["C","Comparator"],["O","Outcome"]];
-    const seeded=[];
-    for(const [k,label] of fields){
-      const val=(pico&&pico[k]||"").trim();
-      if(!val) continue;
-      seeded.push({id:uid(),label,op:"AND",terms:[{id:uid(),text:val,type:"freetext",field:"tiab"}]});
+  /* prompt40 Task 3 — extract MULTIPLE concepts from each PICO field (not just the
+     first word), filtering out any auto-terms the user previously deleted. */
+  function buildExtracted(ignoredList){
+    const ig=new Set((ignoredList||[]).map(cnorm));
+    return picoToConcepts(pico)
+      .map(c=>({...c,id:uid(),terms:c.terms.filter(t=>!ig.has(cnorm(t.text))).map(t=>({...t,id:uid()}))}))
+      .filter(c=>c.terms.length);
+  }
+  const presentPrimaries=(cs)=>new Set(cs.flatMap(c=>c.terms.map(t=>cnorm(t.text))));
+
+  /* Seed concepts from the app's existing PICO.
+     initial=true  → first seed (no saved state): set the extracted concepts.
+     initial=false → NON-DESTRUCTIVE merge: only ADD newly-suggested concepts whose
+     primary term isn't already present (manual/edited work is never overwritten). */
+  function seedFromPICO(initial){
+    const extracted=buildExtracted(ignored);
+    if(initial){
+      setConcepts(extracted);
+      extracted.forEach(c=>c.terms.forEach(t=>tryLookup(c.id,t.id,t.text)));
+    } else {
+      const have=presentPrimaries(concepts);
+      const additions=extracted.filter(c=>!have.has(cnorm(c.terms[0].text)));
+      if(additions.length) setConcepts(cur=>[...cur,...additions]);
+      additions.forEach(c=>c.terms.forEach(t=>tryLookup(c.id,t.id,t.text)));
     }
-    setConcepts(seeded);
-    setOverrides({});
     setPicoDirty(false);
     picoSnapshot.current=picoKey;
-    // try to upgrade seeded terms to MeSH via the API (async, best-effort)
-    seeded.forEach(c=>c.terms.forEach(t=>tryLookup(c.id,t.id,t.text)));
   }
+
+  /* Reset suggestions — forget all deleted auto-terms and re-seed the PICO concepts,
+     PRESERVING any concepts the user added manually. */
+  function resetSuggestions(){
+    setIgnored([]);
+    const fresh=buildExtracted([]);
+    setConcepts(cur=>[...cur.filter(c=>c.source!=="pico_auto"),...fresh]);
+    fresh.forEach(c=>c.terms.forEach(t=>tryLookup(c.id,t.id,t.text)));
+    setPicoDirty(false);
+    picoSnapshot.current=picoKey;
+  }
+
+  /* How many genuinely-new PICO suggestions are available (drives the banner). */
+  const newSuggestionCount=useMemo(()=>{
+    if(!picoDirty) return 0;
+    const have=presentPrimaries(concepts);
+    const ig=new Set(ignored.map(cnorm));
+    return picoToConcepts(pico).filter(c=>{ const p=cnorm(c.terms[0]?.text); return p&&!have.has(p)&&!ig.has(p); }).length;
+  },[picoDirty,concepts,ignored,pico]); // eslint-disable-line
 
   /* ── MeSH lookup via API with offline fallback ─────────────────────────── */
   const tryLookup=useCallback(async (cid,tid,text,forceControlled)=>{
@@ -613,13 +650,25 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   /* ── concept/term mutators ─────────────────────────────────────────────── */
   const updateConcept=(id,patch)=>setConcepts(cs=>cs.map(c=>c.id===id?{...c,...patch}:c));
   const updateTerm=(cid,tid,patch)=>setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:c.terms.map(t=>t.id===tid?{...t,...patch}:t)}:c));
-  const removeTerm=(cid,tid)=>setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:c.terms.filter(t=>t.id!==tid)}:c));
-  const addConcept=()=>setConcepts(cs=>[...cs,{id:uid(),label:`Concept ${cs.length+1}`,op:"AND",terms:[]}]);
-  const removeConcept=id=>setConcepts(cs=>cs.filter(c=>c.id!==id));
+  // prompt40 Task 5 — deleting an AUTO-suggested term records it as ignored so a
+  // PICO re-sync won't re-add it (until Reset suggestions). User-added terms are
+  // simply removed (nothing to remember).
+  const removeTerm=(cid,tid)=>{
+    const t=concepts.find(x=>x.id===cid)?.terms.find(x=>x.id===tid);
+    if(t&&t.source==="pico_auto"){ const n=cnorm(t.text); setIgnored(ig=>ig.includes(n)?ig:[...ig,n]); }
+    setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:c.terms.filter(t2=>t2.id!==tid)}:c));
+  };
+  const addConcept=()=>setConcepts(cs=>[...cs,{id:uid(),label:`Concept ${cs.length+1}`,op:"AND",source:"user_added",terms:[]}]);
+  const removeConcept=id=>{
+    const c=concepts.find(x=>x.id===id);
+    const auto=(c?.terms||[]).filter(t=>t.source==="pico_auto").map(t=>cnorm(t.text));
+    if(auto.length) setIgnored(ig=>[...new Set([...ig,...auto])]);
+    setConcepts(cs=>cs.filter(c2=>c2.id!==id));
+  };
   const commitAdd=cid=>{
     if(!draft.trim()){setAdding(null);return;}
     const tid=uid();
-    setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:[...c.terms,{id:tid,text:draft.trim(),type:"freetext",field:"tiab"}]}:c));
+    setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:[...c.terms,{id:tid,text:draft.trim(),type:"freetext",field:"tiab",source:"user_added"}]}:c));
     tryLookup(cid,tid,draft.trim());
     setDraft("");
   };
@@ -627,7 +676,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     const c=concepts.find(x=>x.id===cid),t=c?.terms.find(x=>x.id===tid);
     if(!t?.vocab) return;
     const existing=new Set(c.terms.map(x=>x.text.toLowerCase()));
-    const newTerms=(t.vocab.synonyms||[]).filter(s=>!existing.has(s.toLowerCase())).map(s=>({id:uid(),text:s,type:"freetext",field:"tiab"}));
+    const newTerms=(t.vocab.synonyms||[]).filter(s=>!existing.has(s.toLowerCase())).map(s=>({id:uid(),text:s,type:"freetext",field:"tiab",source:"synonym"}));
     setConcepts(cs=>cs.map(x=>x.id===cid?{...x,terms:[...x.terms,...newTerms]}:x));
   };
 
@@ -646,9 +695,9 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
           <div style={{fontSize:11,color:C.muted}}>Build once · render for PubMed, Embase &amp; Cochrane</div>
         </div>
         <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:14}}>
-          {picoDirty&&(
-            <button onClick={()=>{ if(confirm("Re-seed concepts from the current PICO? This replaces the concepts below."))seedFromPICO(); }}
-              style={{...btn("solid"),fontSize:11,color:C.yel,borderColor:alpha(C.yel,"55")}}>↻ Re-sync from PICO</button>
+          {picoDirty&&newSuggestionCount>0&&(
+            <button onClick={()=>seedFromPICO(false)} title="Add the new PICO suggestions without touching your existing terms"
+              style={{...btn("solid"),fontSize:11,color:C.acc,borderColor:alpha(C.acc,"55")}}>+ {newSuggestionCount} new suggestion{newSuggestionCount===1?"":"s"} from PICO</button>
           )}
           <button onClick={()=>setBeginner(b=>!b)} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 12px",borderRadius:20,cursor:"pointer",border:`1px solid ${beginner?C.grn:C.brd2}`,background:beginner?`${alpha(C.grn,"18")}`:"transparent",fontFamily:SANS}}>
             <span style={{width:30,height:16,borderRadius:10,background:beginner?C.grn:C.brd2,position:"relative",flexShrink:0}}>
@@ -682,6 +731,11 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
             <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Concepts</span>
             <Help text="A concept is one idea in your question (a disease, a treatment). Under each concept, list the ways authors might phrase that idea. Concepts join with AND (all must appear); terms inside a concept join with OR (any one counts)."/>
             {concepts.length===0&&pico&&<span style={{fontSize:11,color:C.muted}}>No concepts yet — they seed from your PICO automatically.</span>}
+            {/* prompt40 Task 5 — restore deleted auto-suggestions + re-seed from PICO (keeps your manual concepts). */}
+            {pico&&ignored.length>0&&(
+              <button onClick={resetSuggestions} title={`Restore ${ignored.length} removed suggestion${ignored.length===1?"":"s"} and re-seed from PICO`}
+                style={{marginLeft:"auto",background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:10.5,fontFamily:MONO,textDecoration:"underline"}}>↺ Reset suggestions ({ignored.length})</button>
+            )}
           </div>
 
           {concepts.map((c,ci)=>{
