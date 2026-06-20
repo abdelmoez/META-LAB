@@ -168,7 +168,7 @@ export async function createProject(req, res) {
         where: { id: linkedMetaLabProjectId, userId: req.user.id, deletedAt: null },
         select: { id: true, name: true, data: true },
       });
-      if (!ml) return res.status(400).json({ error: 'That META·LAB project was not found in your account' });
+      if (!ml) return res.status(400).json({ error: 'That PecanRev project was not found in your account' });
       linkedId = ml.id;
       linkedTitle = ml.name;
       const snap = snapshotPico(ml.data);
@@ -222,7 +222,7 @@ export async function createProject(req, res) {
         });
       } catch (mlErr) {
         console.error('[screening] createProject alsoCreateMetaLab:', mlErr.message);
-        warning = 'The screening project was created, but the linked META·LAB project could not be created';
+        warning = 'The screening project was created, but the linked PecanRev project could not be created';
       }
     }
 
@@ -342,7 +342,7 @@ export async function updateProject(req, res) {
           where: { id: linkedMetaLabProjectId, userId: p.ownerId, deletedAt: null },
           select: { id: true },
         });
-        if (!ml) return res.status(400).json({ error: 'That META·LAB project was not found in this workspace' });
+        if (!ml) return res.status(400).json({ error: 'That PecanRev project was not found in this workspace' });
         data.linkedMetaLabProjectId = ml.id;
       } else {
         data.linkedMetaLabProjectId = null;
@@ -578,7 +578,7 @@ export async function linkMetaLab(req, res) {
       where: { id: metaLabProjectId, userId: sp.ownerId, deletedAt: null },
       select: { id: true, name: true, data: true },
     });
-    if (!ml) return res.status(400).json({ error: 'That META·LAB project was not found in this workspace' });
+    if (!ml) return res.status(400).json({ error: 'That PecanRev project was not found in this workspace' });
 
     // Snapshot the linked project's PICO/criteria for standalone-safe highlighting
     // (shared helper — same JSON shape everywhere; '{}' means "nothing to snapshot").

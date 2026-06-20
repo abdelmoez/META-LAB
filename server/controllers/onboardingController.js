@@ -31,7 +31,7 @@ const QUESTION_TYPES = new Set(['text', 'single_select', 'multi_select', 'boolea
 // intro copy out of the box (prompt32 review follow-up — never a blank heading).
 const ONBOARDING_SETTINGS_DEFAULTS = {
   enabled: true,
-  introTitle: 'Welcome to META·LAB',
+  introTitle: 'Welcome to PecanRev',
   introBody: 'Answer a few quick questions so we can tailor your workspace. You can skip any optional question.',
 };
 
@@ -72,7 +72,7 @@ const SEED_QUESTIONS = [
   },
   {
     key: 'main_use_case',
-    prompt: 'What will you mainly use META·LAB for?',
+    prompt: 'What will you mainly use PecanRev for?',
     description: null,
     type: 'single_select',
     options: toOptionObjects(MAIN_USE_CASE_OPTIONS),

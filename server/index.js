@@ -249,7 +249,7 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 3001;
 const server = app.listen(PORT, () => {
   const { version, commit } = getVersion();
-  console.log(`META·LAB API on :${PORT} (v${version} · ${commit})`);
+  console.log(`PecanRev API on :${PORT} (v${version} · ${commit})`);
   // Initialize default settings + ensure admin accounts exist (non-blocking)
   initDefaultSettings().catch(console.error);
   seedOnboardingQuestions().catch(err => console.error('[seed] onboarding seed failed:', err.message));

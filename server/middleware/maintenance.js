@@ -18,7 +18,7 @@ import { verifyToken } from '../auth/jwt.js';
 
 const COOKIE_NAME = 'metalab_session';
 const CACHE_TTL_MS = 10 * 1000;
-const FALLBACK_MESSAGE = 'META·LAB is temporarily down for maintenance. Please check back soon.';
+const FALLBACK_MESSAGE = 'PecanRev is temporarily down for maintenance. Please check back soon.';
 
 let cache = { at: 0, settings: null };
 

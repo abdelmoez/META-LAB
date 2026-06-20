@@ -22,21 +22,21 @@ const normTitle = s => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 function mapHandoff(handoff) {
   if (handoff.handed) {
     return { handoffStatus: 'sent', handoffStudyId: handoff.studyId || '', handoffError: '',
-      message: 'Sent to META·LAB Data Extraction.' };
+      message: 'Sent to PecanRev Data Extraction.' };
   }
   switch (handoff.reason) {
     case 'duplicate':
       return { handoffStatus: 'already_exists', handoffStudyId: '', handoffError: '',
-        message: 'Already present in META·LAB Data Extraction (no duplicate created).' };
+        message: 'Already present in PecanRev Data Extraction (no duplicate created).' };
     case 'no_link':
-      return { handoffStatus: 'pending', handoffStudyId: '', handoffError: 'No linked META·LAB project',
-        message: 'Accepted, but no META·LAB project is linked — link one to send it to Data Extraction.' };
+      return { handoffStatus: 'pending', handoffStudyId: '', handoffError: 'No linked PecanRev project',
+        message: 'Accepted, but no PecanRev project is linked — link one to send it to Data Extraction.' };
     case 'link_missing':
-      return { handoffStatus: 'failed', handoffStudyId: '', handoffError: 'Linked META·LAB project not found',
-        message: 'Accepted, but the linked META·LAB project could not be found.' };
+      return { handoffStatus: 'failed', handoffStudyId: '', handoffError: 'Linked PecanRev project not found',
+        message: 'Accepted, but the linked PecanRev project could not be found.' };
     default:
       return { handoffStatus: 'failed', handoffStudyId: '', handoffError: handoff.reason || 'unknown',
-        message: 'Accepted, but the handoff to META·LAB failed.' };
+        message: 'Accepted, but the handoff to PecanRev failed.' };
   }
 }
 
@@ -56,9 +56,9 @@ export function studyFromRecord(record, actor) {
   // so provenance goes on a dedicated flag instead of overloading `source`.
   s.siftOrigin = true;
   s.needsReview = true;                 // surfaces as "review" status in extraction
-  s.extractedBy = actor?.email || 'META·SIFT';
+  s.extractedBy = actor?.email || 'Screening';
   s.extractedAt = new Date().toISOString();
-  s.notes    = 'Accepted in META·SIFT second review';
+  s.notes    = 'Accepted in Screening second review';
   // Provenance for idempotent pull-merge / dedupe (BUG 5).
   s.screeningRecordId  = record.id || '';
   s.screeningProjectId = record.projectId || '';

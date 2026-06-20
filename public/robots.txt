@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+Host: https://pecanrev.com
+Sitemap: https://pecanrev.com/sitemap.xml

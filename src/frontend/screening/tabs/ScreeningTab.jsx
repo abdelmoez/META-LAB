@@ -29,7 +29,7 @@ import Tooltip from '../../components/Tooltip.jsx';
 const STATUS_HELP = {
   secondReview: 'This record moved to second / full-text review.',
   quorum: 'Required reviewer agreement has been reached.',
-  sent: 'Sent to META·LAB for the downstream data-extraction workflow.',
+  sent: 'Sent to PecanRev for the downstream data-extraction workflow.',
   disputed: 'Reviewers made conflicting decisions — this record needs resolution.',
   duplicate: 'Detected as a duplicate of another record.',
 };

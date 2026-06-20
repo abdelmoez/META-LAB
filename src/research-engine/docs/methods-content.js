@@ -278,7 +278,7 @@ export const METHODS_CONTENT = [
     implementedIn: 'trimFill() (centres/re-pools via the selected model) — ' + ENGINE_META,
     references: [REF.DUVAL_TWEEDIE_2000],
     limitations:
-      'Assumes asymmetry is caused purely by publication bias; heterogeneity or chance in small meta-analyses produces false-positive k₀. Trim-and-fill is implementation-sensitive — META·LAB matches metafor::trimfill under the same model for clearly asymmetric funnels; the over-represented side is chosen by a signed-rank rule, which can differ from metafor’s regression-based side detection on near-symmetric funnels (where trim-and-fill is least reliable for any method). The adjusted estimate is a sensitivity analysis, not a corrected truth.',
+      'Assumes asymmetry is caused purely by publication bias; heterogeneity or chance in small meta-analyses produces false-positive k₀. Trim-and-fill is implementation-sensitive — PecanRev matches metafor::trimfill under the same model for clearly asymmetric funnels; the over-represented side is chosen by a signed-rank rule, which can differ from metafor’s regression-based side detection on near-symmetric funnels (where trim-and-fill is least reliable for any method). The adjusted estimate is a sensitivity analysis, not a corrected truth.',
     verified: true,
   },
 
@@ -637,11 +637,11 @@ export const METHODS_CONTENT = [
     ],
     plainEnglish:
       'An explainable 0–100 duplicate-likelihood score between two screening records. Exact DOI or PMID matches win outright; otherwise the score blends title edit-distance similarity (dominant), author-surname overlap and year agreement. Grouping uses a 3-pass strategy (exact DOI → exact PMID → fuzzy title, threshold 0.92 for boolean grouping and 0.85 for scored grouping); a group’s score is its strongest pair.',
-    usedIn: 'META·SIFT Duplicates tab (duplicate detection, group scores and per-pair explanations).',
+    usedIn: 'Screening Duplicates tab (duplicate detection, group scores and per-pair explanations).',
     implementedIn: 'scorePair(), findDuplicateGroups(), findDuplicateGroupsScored() — src/research-engine/screening/deduplication.js',
     references: [REF.LEVENSHTEIN_1966, REF.JACCARD_1912],
     limitations:
-      'META·LAB in-house heuristic: the weights (0.7/0.15/0.15) and title thresholds (0.92/0.85) are internal choices with no external citation or published calibration — needs verification. Levenshtein and Jaccard are cited for the underlying string/set metrics only. Titles shorter than 10 normalized characters and records with conflicting years are skipped in fuzzy grouping.',
+      'PecanRev in-house heuristic: the weights (0.7/0.15/0.15) and title thresholds (0.92/0.85) are internal choices with no external citation or published calibration — needs verification. Levenshtein and Jaccard are cited for the underlying string/set metrics only. Titles shorter than 10 normalized characters and records with conflicting years are skipped in fuzzy grouping.',
     verified: false,
   },
 

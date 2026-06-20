@@ -1,6 +1,6 @@
-# META·LAB Frontend
+# PecanRev Frontend
 
-React components and API client for META·LAB — a professional, research-grade
+React components and API client for PecanRev — a professional, research-grade
 systematic review and meta-analysis application.
 
 ---
@@ -202,7 +202,7 @@ The project list / welcome screen. This is the primary API integration point.
 **Behaviour:**
 - Fetches `GET /api/projects` on mount; shows a spinner during load and an error
   retry panel on failure.
-- When the project list is empty, renders the META·LAB welcome card grid.
+- When the project list is empty, renders the PecanRev welcome card grid.
 - When projects exist, renders a card list with "Open" and "Delete" actions.
 - "Create Project" opens a modal that calls `POST /api/projects`.
 - "Delete" opens a confirmation modal that calls `DELETE /api/projects/:id`.
@@ -242,7 +242,7 @@ The project list / welcome screen. This is the primary API integration point.
 | `onExportProject()` | function | User clicked the footer export icon |
 | `onDownloadDoc(doc)` | function | User clicked a Downloads item |
 
-The sidebar shows the META·LAB branding, a scrollable project list, the full
+The sidebar shows the PecanRev branding, a scrollable project list, the full
 workflow step tree (when a project is active), a Downloads section, and a
 footer version note.  It is purely presentational — all state is managed by
 the parent.

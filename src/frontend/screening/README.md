@@ -1,6 +1,6 @@
-# META·SIFT Beta — Frontend Screening Module
+# Screening — Frontend Screening Module
 
-Systematic review title/abstract screening workspace, integrated into META·LAB.
+Systematic review title/abstract screening workspace, integrated into PecanRev.
 
 ## Routes
 

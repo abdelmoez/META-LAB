@@ -1,4 +1,4 @@
-# META·LAB Research Engine
+# PecanRev Research Engine
 
 Pure-JavaScript ES-module library extracted from `meta-lab-3-patched.jsx`.
 Contains all statistical, validation, conversion, and data-model logic with

@@ -185,7 +185,7 @@ export default function Onboarding() {
           <div style={{ marginBottom: 24 }}>
             <div style={{ fontSize: 22, fontWeight: 700, color: C.txt, marginBottom: 6 }}>A few quick questions</div>
             <div style={{ fontSize: 13.5, color: C.muted, lineHeight: 1.5 }}>
-              Help us tailor META·LAB to you. You can update answers later in your profile.
+              Help us tailor PecanRev to you. You can update answers later in your profile.
             </div>
           </div>
         )}

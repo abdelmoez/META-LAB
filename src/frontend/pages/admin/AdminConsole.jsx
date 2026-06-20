@@ -1085,7 +1085,7 @@ function OverviewSection({ onNavigate, isAdmin = true }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14, marginBottom: 14 }}>
         <KpiCard label="Total Users" value={m.users?.total} sub={`+${m.users?.thisMonth ?? 0} this month`} color={C.acc}
           spark={sparkOf('newUsers')} trendLoading={trendLoading} loading={loading} onClick={() => onNavigate('users')} />
-        <KpiCard label="Total Projects (LAB)" value={m.projects?.total} sub={`META·SIFT: ${sift ? (sift.totalProjects ?? 0).toLocaleString() : '—'}`} color={C.grn}
+        <KpiCard label="Total Projects (Workspace)" value={m.projects?.total} sub={`Screening: ${sift ? (sift.totalProjects ?? 0).toLocaleString() : '—'}`} color={C.grn}
           spark={sparkOf('newProjects')} trendLoading={trendLoading} loading={loading} onClick={() => onNavigate('projects')} />
         {/* prompt25 — online/offline counts from live presence heartbeats (~75s window) */}
         <KpiCard label="Online Users" value={m.users?.online} sub="live presence" color={C.grn}
@@ -1134,7 +1134,7 @@ function OverviewSection({ onNavigate, isAdmin = true }) {
             <FunnelBar stages={funnelStages} loading={loading} emptyLabel="No screening data yet" />
           </div>
         </SectionCard>
-        <SectionCard title="Completion (SIFT)">
+        <SectionCard title="Completion (Screening)">
           <div style={{ padding: '16px 18px' }}>
             <DonutGauge
               loading={loading}
@@ -1225,8 +1225,8 @@ function OverviewSection({ onNavigate, isAdmin = true }) {
               { label: 'Emails Sent',       value: m.emailStats?.sent,                 color: C.grn },
               { label: 'Emails Failed',     value: m.emailStats?.failed,               color: C.red },
               { label: 'Linked Workspaces', value: m.linking?.linkedWorkspaces,        color: C.acc },
-              { label: 'Unlinked SIFT',     value: m.linking?.unlinkedSiftProjects,    color: C.muted },
-              { label: 'Unlinked LAB',      value: m.linking?.unlinkedMetaLabProjects, color: C.muted },
+              { label: 'Unlinked Screening', value: m.linking?.unlinkedSiftProjects,    color: C.muted },
+              { label: 'Unlinked Workspace', value: m.linking?.unlinkedMetaLabProjects, color: C.muted },
             ].map(t => (
               <div key={t.label} style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 7, padding: '9px 11px', minWidth: 0 }}>
                 {loading ? <Spinner size={12} /> : (
@@ -1506,11 +1506,11 @@ function ReplyComposer({ msg, emailConfigured, onSent }) {
 
       {preview ? (
         <div style={{ background: '#ffffff', borderRadius: 7, border: `1px solid ${C.brd2}`, padding: 16, marginBottom: 12, color: '#1f2937' }}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: '#111827', letterSpacing: '0.04em', borderBottom: '1px solid #e5e7eb', paddingBottom: 12, marginBottom: 14 }}>META·LAB</div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: '#111827', letterSpacing: '0.04em', borderBottom: '1px solid #e5e7eb', paddingBottom: 12, marginBottom: 14 }}>PecanRev</div>
           {msg.subject && <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 12 }}>In reply to: {msg.subject}</div>}
           <div style={{ fontSize: 13, marginBottom: 12 }}>{msg.name ? `Hi ${msg.name},` : 'Hello,'}</div>
           <div style={{ fontSize: 13, lineHeight: 1.7, whiteSpace: 'pre-wrap' }}>{body || <span style={{ color: '#9ca3af' }}>(empty)</span>}</div>
-          <div style={{ fontSize: 11, color: '#9ca3af', borderTop: '1px solid #e5e7eb', marginTop: 16, paddingTop: 12 }}>Sent by the META·LAB team</div>
+          <div style={{ fontSize: 11, color: '#9ca3af', borderTop: '1px solid #e5e7eb', marginTop: 16, paddingTop: 12 }}>Sent by the PecanRev team</div>
         </div>
       ) : (
         <textarea value={body} onChange={e => setBody(e.target.value)} placeholder="Type your reply…" style={{ ...inputStyle, fontSize: 13, minHeight: 130, resize: 'vertical', lineHeight: 1.6, marginBottom: 12 }} />
@@ -3328,7 +3328,7 @@ function ProjectDetailPanel({ project, onClose, onAction }) {
         {[
           { label: 'Owner',    value: <span style={{ fontFamily: MONO, fontSize: 11 }}>{project.owner?.name || project.ownerEmail || project.userEmail || '—'}</span> },
           // Linked Review Workspace (prompt6 Task 11) — workspaceId == linked ScreenProject id.
-          { label: 'Linked SIFT', value: project.linkedMetaSift?.id
+          { label: 'Linked Screening', value: project.linkedMetaSift?.id
               ? <span style={{ fontSize: 11 }}>{project.linkedMetaSift.title || '(untitled)'}</span>
               : <span style={{ color: C.muted }}>not linked</span> },
           { label: 'Workspace', value: project.linkedMetaSift?.id
@@ -3405,7 +3405,7 @@ function ProjectsSection() {
     { key: 'name',       label: 'Name',    render: v => <span title={v} style={{ color: C.txt, fontWeight: 600, display: 'block', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span> },
     // Linked META·SIFT screening project (prompt6 Task 11). linkedMetaSift = { id, title } | null;
     // its id IS the shared Review Workspace id (shown in the detail panel).
-    { key: 'linkedMetaSift', label: 'Linked META·SIFT',
+    { key: 'linkedMetaSift', label: 'Linked Screening',
       render: v => v?.id
         ? <span title={v.title || '(linked, untitled)'} style={{ fontSize: 11, display: 'block', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.title || '(linked, untitled)'}</span>
         : <span style={{ fontSize: 11, color: C.muted }}>— not linked</span> },
@@ -3467,7 +3467,7 @@ function ProjectsSection() {
    ════════════════════════════════════════════════════════════════════════ */
 
 const DEFAULT_CONTENT = {
-  logoText: 'META·LAB',
+  logoText: 'PecanRev',
   navLinks: [
     { label: 'Features', href: '#features' },
     { label: 'Workflow', href: '#workflow' },
@@ -3485,10 +3485,10 @@ const DEFAULT_CONTENT = {
     { icon: '⬡', label: 'Single workspace', desc: 'From research question to manuscript draft — all in one structured tool.' },
   ],
   workflowTitle:    '14 steps from question to manuscript',
-  workflowSubtitle: 'Every systematic review follows the same evidence-based process. META·LAB walks you through each stage without letting you skip ahead.',
+  workflowSubtitle: 'Every systematic review follows the same evidence-based process. PecanRev walks you through each stage without letting you skip ahead.',
   whyTitle:  'For researchers who care about rigor',
   whyBody1:  'Systematic reviews demand a level of methodological transparency that general research tools cannot provide.',
-  whyBody2:  'META·LAB enforces a structured workflow aligned with Cochrane Handbook principles and international reporting standards.',
+  whyBody2:  'PecanRev enforces a structured workflow aligned with Cochrane Handbook principles and international reporting standards.',
   whyBody3:  'Every decision — from inclusion criteria to subgroup definitions — is documented in a tamper-evident audit trail, so peer reviewers and editors can retrace your entire process.',
   whyStandards: [
     'PRISMA 2020 — flow diagram generation',
@@ -3496,19 +3496,19 @@ const DEFAULT_CONTENT = {
     'GRADE certainty-of-evidence framework',
     'Full audit trail — every decision timestamped',
   ],
-  aboutHeadline: 'What is META·LAB?',
-  aboutText1: 'META·LAB is a structured, multi-user platform for conducting systematic reviews and meta-analyses. It covers the complete research cycle — from PICO definition and search strategy through screening, data extraction, statistical analysis, and manuscript preparation.',
+  aboutHeadline: 'What is PecanRev?',
+  aboutText1: 'PecanRev is a structured, multi-user platform for conducting systematic reviews and meta-analyses. It covers the complete research cycle — from PICO definition and search strategy through screening, data extraction, statistical analysis, and manuscript preparation.',
   aboutText2: 'Built for academic researchers, clinical teams, and evidence synthesis groups who need a single, auditable workspace rather than a collection of disconnected tools.',
   contactTitle:    'Get in touch',
-  contactSubtitle: 'Questions about META·LAB, research collaborations, or institutional access.',
-  footerText:  `© ${new Date().getFullYear()} META·LAB · Systematic review platform`,
+  contactSubtitle: 'Questions about PecanRev, research collaborations, or institutional access.',
+  footerText:  `© ${new Date().getFullYear()} PecanRev · Systematic review platform`,
   footerLinks: [
     { label: 'Register', path: '/register' },
     { label: 'Sign In',  path: '/login' },
   ],
   announcementBanner: '',
   maintenanceBanner:  '',
-  seoTitle:       'META·LAB — Systematic Review Platform',
+  seoTitle:       'PecanRev — Systematic Review Platform',
   seoDescription: 'A structured, multi-user platform for conducting systematic reviews and meta-analyses.',
   // prompt9: landing animation speed. CRITICAL — this default must exist
   // client-side: saveAll() PUTs the WHOLE content object, so if the initial
@@ -3892,7 +3892,7 @@ const APP_SETTING_KEYS = [
 
 function SettingsSection() {
   const [form, setForm] = useState({
-    appName: 'META·LAB', registrationOpen: true, maintenanceMode: false,
+    appName: 'PecanRev', registrationOpen: true, maintenanceMode: false,
     contactFormEnabled: true, projectCreationEnabled: true, exportEnabled: true,
     maxProjectsPerUser: '', maxStudiesPerProject: '',
     // prompt9 additions — defaults mirror the frozen Wave B2 spec.
@@ -4327,7 +4327,7 @@ const FLAG_META = [
   { key: 'projectDuplication',   label: 'Project Duplication',   desc: 'Allow users to clone existing projects.' },
   { key: 'advancedMetaAnalysis', label: 'Advanced Meta-Analysis',desc: "Enable trim-and-fill, Egger's test, and influence diagnostics." },
   { key: 'exportTools',          label: 'Export Tools',          desc: 'Allow project and data exports in various formats.' },
-  { key: 'rob_engine_v2',        label: 'Risk of Bias (RoB 2)',  desc: 'Enable the META·LAB RoB 2 assessment workspace (beta). Off by default until validated.' },
+  { key: 'rob_engine_v2',        label: 'Risk of Bias (RoB 2)',  desc: 'Enable the PecanRev RoB 2 assessment workspace (beta). Off by default until validated.' },
   { key: 'serverBackedWorkflowState', label: 'Server-Backed Workflow State', desc: 'Persist migrated workflow modules (Protocol, Search Builder) server-side with revision-based conflict detection. Off keeps the legacy whole-project autosave.' },
   { key: 'searchEngine',         label: 'Search Builder Engine', desc: 'Enable the new concept→multi-database Search Builder (MeSH lookup + live PubMed counts via the NLM proxy). Off keeps the legacy in-app search builder.' },
 ];
@@ -4512,7 +4512,7 @@ const SIFT_DEFAULTS = {
   // coerceSettings; until then the server may drop it and this default
   // keeps the round-trip intact).
   inviteExpiryDays: 14,
-  maintenanceMessage: 'META·SIFT Beta is currently undergoing maintenance. Please try again later.',
+  maintenanceMessage: 'Screening is currently undergoing maintenance. Please try again later.',
 };
 
 const SIFT_TABS = [
@@ -4598,7 +4598,7 @@ function SiftWorkspaceHealth() {
           {msg && <span style={{ fontSize: 12, color: C.grn }}>{msg}</span>}
         </div>
         <div style={{ fontSize: 10.5, color: C.muted, marginTop: 10, lineHeight: 1.5 }}>
-          Every review project carries an internal META·SIFT screening module, created automatically on project creation and on first open of the Screening stage. Repair backfills any older project that predates that. <b>Standalone</b> = screening projects with no linked META·LAB project (legacy/admin-only).
+          Every review project carries an internal screening module, created automatically on project creation and on first open of the Screening stage. Repair backfills any older project that predates that. <b>Standalone</b> = screening projects with no linked PecanRev project (legacy/admin-only).
         </div>
       </div>
     </SectionCard>
@@ -4797,7 +4797,7 @@ function SiftProjectDetailPanel({ projectId, onClose }) {
 
   const infoRows = detail ? [
     { label: 'Owner', value: <span style={{ fontFamily: MONO, fontSize: 11 }}>{detail.owner?.name || detail.owner?.email || '—'}</span> },
-    { label: 'Linked LAB', value: detail.linkedMetaLabProjectId
+    { label: 'Linked Workspace', value: detail.linkedMetaLabProjectId
         ? <span style={{ fontSize: 11 }}>{detail.linkedMetaLabProjectTitle || '(linked, untitled)'}</span>
         : <span style={{ color: C.muted }}>not linked</span> },
     // The ScreenProject IS the shared Review Workspace — its id is the workspaceId.
@@ -4909,7 +4909,7 @@ function SiftProjects() {
 
   const cols = [
     { key: 'title',  label: 'Title', width: '17%', render: v => <span title={v || undefined} style={{ color: C.txt, fontWeight: 600, display: 'block', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v || '—'}</span> },
-    { key: 'linkedMetaLabProjectTitle', label: 'Linked META·LAB', width: '14%',
+    { key: 'linkedMetaLabProjectTitle', label: 'Linked Workspace', width: '14%',
       render: (v, row) => v
         ? <span title={v} style={{ fontSize: 11, display: 'block', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span>
         : <span style={{ fontSize: 11, color: C.muted }}>{row.linkedMetaLabProjectId ? '(linked, untitled)' : '— not linked'}</span> },
@@ -5071,7 +5071,7 @@ function SiftSettings() {
   if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={20} /></div>;
 
   const toggles = [
-    { key: 'enabled',                 label: 'META·SIFT Enabled',        note: 'Disabling shows maintenance page and blocks /sift-beta' },
+    { key: 'enabled',                 label: 'Screening Enabled',        note: 'Disabling shows maintenance page and blocks /sift-beta' },
     { key: 'allowNewProjects',        label: 'New Project Creation',     note: 'Allow users to create new screening projects' },
     { key: 'allowImport',             label: 'Import (RIS/BibTeX/NBIB)', note: 'Allow reference imports' },
     { key: 'allowExport',             label: 'Export (CSV/JSON)',        note: 'Allow record exports' },
@@ -5129,11 +5129,11 @@ function SiftSettings() {
               style={{ ...inputStyle, width: 140 }} />
           </Field>
           <div style={{ gridColumn: '1 / -1' }}>
-            <Field label="Badge Text" note="Shown next to META·SIFT in the nav (e.g. BETA, PREVIEW, GA)">
+            <Field label="Badge Text" note="Shown next to Screening in the nav (e.g. BETA, PREVIEW, GA)">
               <input value={settings.badgeText || ''} onChange={e => upd('badgeText', e.target.value)}
                 style={{ ...inputStyle, width: 200 }} />
             </Field>
-            <Field label="Maintenance Message" note="Shown to users when META·SIFT is disabled">
+            <Field label="Maintenance Message" note="Shown to users when Screening is disabled">
               <textarea value={settings.maintenanceMessage || ''} onChange={e => upd('maintenanceMessage', e.target.value)}
                 rows={2} style={{ ...inputStyle, resize: 'vertical', width: '100%' }} />
             </Field>
@@ -5256,7 +5256,7 @@ function SiftAdminSection() {
     <div>
       <div style={{ marginBottom: 18 }}>
         <h2 style={{ fontSize: 18, fontWeight: 700, color: C.txt, margin: 0, letterSpacing: '-0.02em' }}>
-          META·SIFT Beta
+          Screening
           <span style={{ fontSize: 9, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', background: alpha(C.teal, '18'), border: `1px solid ${alpha(C.teal, '50')}`, color: C.teal, borderRadius: 4, padding: '2px 7px', marginLeft: 10 }}>BETA</span>
         </h2>
         <p style={{ fontSize: 13, color: C.txt2, marginTop: 6, marginBottom: 0 }}>
@@ -6010,7 +6010,7 @@ function OnboardingSection() {
             <Toggle checked={beh.enabled} onChange={v => setBeh(b => ({ ...b, enabled: v }))} />
           </div>
           <Field label="Intro Title" note="Heading shown at the top of the onboarding flow">
-            <input value={beh.introTitle} onChange={e => setBeh(b => ({ ...b, introTitle: e.target.value }))} style={inputStyle} placeholder="Welcome to META·LAB" />
+            <input value={beh.introTitle} onChange={e => setBeh(b => ({ ...b, introTitle: e.target.value }))} style={inputStyle} placeholder="Welcome to PecanRev" />
           </Field>
           <Field label="Intro Body" note="Short description shown under the title">
             <textarea value={beh.introBody} onChange={e => setBeh(b => ({ ...b, introBody: e.target.value }))} rows={3} style={{ ...inputStyle, resize: 'vertical' }} placeholder="Tell us a little about your work so we can tailor your experience." />
@@ -6181,7 +6181,7 @@ const NAV_SECTIONS = [
   { id: 'users',      icon: 'users',     label: 'Users'         },
   { id: 'onboarding', icon: 'clipboard', label: 'Onboarding'    },
   { id: 'projects',   icon: 'folders',   label: 'Projects'      },
-  { id: 'sift',       icon: 'hexagon',   label: 'META·SIFT'     },
+  { id: 'sift',       icon: 'hexagon',   label: 'Screening'     },
   { id: 'rob',        icon: 'scale',     label: 'Risk of Bias'  },
   { id: 'content',    icon: 'fileText',  label: 'Content'       },
   { id: 'settings',   icon: 'settings',  label: 'Settings'      },
@@ -6295,7 +6295,7 @@ export default function AdminConsole() {
       <div style={{ position: 'fixed', top: 0, left: 0, right: 0, height: TOPBAR_H, background: C.surf, borderBottom: `1px solid ${C.brd}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0 24px 0 16px', zIndex: 300 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ display: 'inline-flex', color: C.acc }}><Icon name="hexagon" size={16} /></span>
-          <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.04em', color: C.txt }}>META·LAB</span>
+          <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.04em', color: C.txt }}>PecanRev</span>
           {/* Mods see the limited console labeled as such (prompt6 Task 14) —
               matches the "Mod Console" wording of the UserMenu /ops link. */}
           {isAdmin ? (

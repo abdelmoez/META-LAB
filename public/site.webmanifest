@@ -1,0 +1,17 @@
+{
+  "name": "PecanRev",
+  "short_name": "PecanRev",
+  "description": "PecanRev is a systematic review and meta-analysis platform with screening, data extraction, risk of bias, search building, project collaboration, and a complete review workflow.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b1120",
+  "theme_color": "#4f46e5",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "type": "image/svg+xml",
+      "sizes": "any",
+      "purpose": "any maskable"
+    }
+  ]
+}

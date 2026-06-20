@@ -281,7 +281,7 @@ export async function createProject(req, res) {
       return res.status(201).json({
         project: annotateOwned(saved, null),
         linkedScreenProject: null,
-        warning: 'Project created, but the linked META·SIFT screening project could not be created. You can create or link one later from META·SIFT.',
+        warning: 'Project created, but the linked Screening project could not be created. You can create or link one later from Screening.',
       });
     }
   } catch (err) {

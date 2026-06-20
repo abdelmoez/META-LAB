@@ -1,9 +1,9 @@
 /**
- * Landing.jsx — public home page for META·LAB.
+ * Landing.jsx — public home page for PecanRev.
  *
  * v7 "Nextly faithful" redesign (prompt17):
  * Strict 10-section structure: Navbar · Hero · Credibility strip ·
- * Features · Workflow · META·SIFT · META·LAB · Benefits · CTA · Footer.
+ * Features · Workflow · Screening · Analysis · Benefits · CTA · Footer.
  *
  * Changes from v6:
  * - Removed KPI strip ("14 review stages" tiles) from hero.
@@ -11,9 +11,9 @@
  * - Removed AppPreview + stat-card section.
  * - Removed EvidenceClimax / MiniForest (PRISMA count-up with fake numeric
  *   tiles). ForestPlotClimax retained as illustrative visual inside
- *   META·LAB section (labelled "Illustrative data").
- * - Added: Credibility strip (text-only, real standards), META·SIFT section,
- *   META·LAB section, Benefits section — all new.
+ *   Analysis section (labelled "Illustrative data").
+ * - Added: Credibility strip (text-only, real standards), Screening section,
+ *   Analysis section, Benefits section — all new.
  * - All removed helper components (InstitutionSpecs, AppPreview, MiniForest,
  *   EvidenceClimax, PrismaStageRow, useCountUp) also removed.
  * - Section anchors #features #workflow #about #contact preserved.
@@ -76,7 +76,7 @@ function resolveCardIcon(icon) {
 
 /* ─── Default settings ───────────────────────────────────────────────── */
 const DEFAULTS = {
-  logoText:          'META·LAB',
+  logoText:          'PecanRev',
   navLinks:          [
     { label: 'Features', href: '#features' },
     { label: 'Workflow', href: '#workflow' },
@@ -90,10 +90,10 @@ const DEFAULTS = {
   featureTitle:      'Everything a rigorous review needs',
   featureCards:      VALUE_PROPS,
   workflowTitle:     'The evidence-synthesis pipeline',
-  workflowSubtitle:  'Eight stages, one continuous workspace. META·LAB walks every step from project setup to final export without letting you skip the method.',
+  workflowSubtitle:  'Eight stages, one continuous workspace. PecanRev walks every step from project setup to final export without letting you skip the method.',
   whyTitle:          'For researchers who care about rigor',
   whyBody1:          'Systematic reviews demand a level of methodological transparency that general research tools cannot provide.',
-  whyBody2:          'META·LAB enforces a structured workflow aligned with Cochrane Handbook principles and international reporting standards.',
+  whyBody2:          'PecanRev enforces a structured workflow aligned with Cochrane Handbook principles and international reporting standards.',
   whyBody3:          'Every decision — from inclusion criteria to subgroup definitions — is documented in a tamper-evident audit trail, so peer reviewers and editors can retrace your entire process.',
   whyStandards:      [
     'PRISMA 2020 — flow diagram generation',
@@ -101,11 +101,11 @@ const DEFAULTS = {
     'GRADE certainty-of-evidence framework',
     'Full audit trail — every decision timestamped',
   ],
-  aboutHeadline:     'What is META·LAB?',
-  aboutText1:        'META·LAB is a structured, multi-user platform for conducting systematic reviews and meta-analyses. It covers the complete research cycle — from PICO definition and search strategy through screening, data extraction, statistical analysis, and manuscript preparation.',
+  aboutHeadline:     'What is PecanRev?',
+  aboutText1:        'PecanRev is a structured, multi-user platform for conducting systematic reviews and meta-analyses. It covers the complete research cycle — from PICO definition and search strategy through screening, data extraction, statistical analysis, and manuscript preparation.',
   aboutText2:        'Built for academic researchers, clinical teams, and evidence synthesis groups who need a single, auditable workspace rather than a collection of disconnected tools.',
   contactTitle:      'Get in touch',
-  contactSubtitle:   'Questions about META·LAB, research collaborations, or institutional access.',
+  contactSubtitle:   'Questions about PecanRev, research collaborations, or institutional access.',
   footerText:        '',
   footerLinks:       [{ label: 'Register', path: '/register' }, { label: 'Sign In', path: '/login' }],
   announcementBanner:'',
@@ -203,11 +203,11 @@ function readCanvasColors() {
 
 const rgba = (rgb, a) => `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`;
 
-/* ─── Wordmark: META·LAB ─────────────────────────────────────────────── */
+/* ─── Wordmark: PecanRev ─────────────────────────────────────────────── */
 function Wordmark({ size = 13, weight = 700, spacing = '0.08em' }) {
   return (
     <span style={{ fontSize: size, fontWeight: weight, letterSpacing: spacing, color: C.txt, whiteSpace: 'nowrap' }}>
-      META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>LAB
+      Pecan<span style={{ color: C.acc }}>Rev</span>
     </span>
   );
 }
@@ -483,7 +483,7 @@ function HeroCanvas({ reduced, speed = 1 }) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   FOREST PLOT — illustrative product visual (META·LAB section)
+   FOREST PLOT — illustrative product visual (Analysis section)
    ════════════════════════════════════════════════════════════════════════ */
 const FP_STUDIES = [
   { label: 'Smith et al., 2021',  n: 142, es: 0.62, lo: 0.36, hi: 0.88, w: '22.4%' },
@@ -639,7 +639,7 @@ export default function Landing() {
   const [contactStatus, setContactStatus] = useState(null);
   const [contactErr,    setContactErr]    = useState('');
 
-  // Forest plot in-view trigger (META·LAB section)
+  // Forest plot in-view trigger (Analysis section)
   const [fpRef, fpInView] = useInView(0.2, '0px 0px -5% 0px');
 
   function dismissBanner() {
@@ -737,7 +737,7 @@ export default function Landing() {
         .lp-step-node { transition: border-color 0.15s, background 0.15s; }
         .lp-step-node:focus-visible { border-color: ${C.acc} !important; outline: none; box-shadow: 0 0 0 3px ${alpha(C.acc, 0.2)}; }
 
-        /* ── META·SIFT / META·LAB benefit rows ───────────────────────── */
+        /* ── Screening / Analysis benefit rows ───────────────────────── */
         .lp-prod-bullet { transition: color 0.12s; }
 
         /* ── Footer links ────────────────────────────────────────────── */
@@ -839,7 +839,7 @@ export default function Landing() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, cursor: 'default', userSelect: 'none', flexShrink: 0 }}>
           <HexLogo size={20} />
           <span style={{ fontSize: 14, fontWeight: 700, letterSpacing: '0.08em', color: C.txt }}>
-            {settings.logoText || 'META·LAB'}
+            {settings.logoText || 'PecanRev'}
           </span>
         </div>
 
@@ -1223,12 +1223,12 @@ export default function Landing() {
       </section>
 
       {/* ══════════════════════════════════════════════════════════════
-          6. META·SIFT SECTION — screening, conflicts, reviewer flow
+          6. SCREENING SECTION — screening, conflicts, reviewer flow
           ══════════════════════════════════════════════════════════════ */}
       <section style={{ background: C.bg, borderBottom: `1px solid ${C.brd}` }}>
         <div className="lp-sect-inner" style={sectionPad}>
           <Reveal reduced={motionOff} style={{ marginBottom: 52 }}>
-            <SectionTitle pretitle="META·SIFT" title="Screening built for systematic reviews.">
+            <SectionTitle pretitle="Screening" title="Screening built for systematic reviews.">
               Citation triage with dual-reviewer support, conflict detection, and PRISMA-ready counts — all in a single module.
             </SectionTitle>
           </Reveal>
@@ -1287,12 +1287,12 @@ export default function Landing() {
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 20 }}>
                   <HexLogo size={16} />
                   <span style={{ fontSize: 15, fontWeight: 700, letterSpacing: '0.06em', color: C.txt }}>
-                    META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>SIFT
+                    Screening
                   </span>
                   <span style={{ marginLeft: 'auto', fontSize: 9.5, fontFamily: MONO, color: C.muted, letterSpacing: '0.12em', textTransform: 'uppercase' }}>Screening module</span>
                 </div>
                 <p style={{ fontSize: 14, color: C.txt2, lineHeight: 1.8, margin: '0 0 24px' }}>
-                  META·SIFT is the screening half of the review workspace. Pair it with a META·LAB project and the PRISMA counts fill automatically from real decisions — no manual tracking.
+                  Screening is the screening half of the review workspace. Pair it with a PecanRev project and the PRISMA counts fill automatically from real decisions — no manual tracking.
                 </p>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
                   {[
@@ -1316,12 +1316,12 @@ export default function Landing() {
       </section>
 
       {/* ══════════════════════════════════════════════════════════════
-          7. META·LAB SECTION — extraction, analysis, forest plot
+          7. ANALYSIS SECTION — extraction, analysis, forest plot
           ══════════════════════════════════════════════════════════════ */}
       <section style={{ background: C.surf, borderBottom: `1px solid ${C.brd}` }}>
         <div className="lp-sect-inner" style={sectionPad}>
           <Reveal reduced={motionOff} style={{ marginBottom: 52 }}>
-            <SectionTitle pretitle="META·LAB" title="From extracted data to pooled estimate.">
+            <SectionTitle pretitle="Analysis" title="From extracted data to pooled estimate.">
               Structured extraction tables, effect-size calculations, meta-analysis engine, and publication-ready plots — all driven by your own data.
             </SectionTitle>
           </Reveal>
@@ -1388,7 +1388,7 @@ export default function Landing() {
       <section id="about" style={{ background: C.bg, borderBottom: `1px solid ${C.brd}` }}>
         <div className="lp-sect-inner" style={sectionPad}>
           <Reveal reduced={motionOff} style={{ marginBottom: 56 }}>
-            <SectionTitle pretitle="Why META·LAB" title={settings.whyTitle || DEFAULTS.whyTitle}>
+            <SectionTitle pretitle="Why PecanRev" title={settings.whyTitle || DEFAULTS.whyTitle}>
               A dedicated workspace built around the methods — not a general tool adapted for reviews.
             </SectionTitle>
           </Reveal>
@@ -1632,7 +1632,7 @@ export default function Landing() {
           {/* Bottom bar */}
           <div className="lp-footer-bottom" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: `1px solid ${C.brd}`, paddingTop: 24, flexWrap: 'wrap', gap: 12 }}>
             <span style={{ fontSize: 12, color: C.muted, fontFamily: MONO }}>
-              {settings.footerText || `© ${new Date().getFullYear()} META·LAB · Systematic review platform`}
+              {settings.footerText || `© ${new Date().getFullYear()} PecanRev · Systematic review platform`}
             </span>
             <a href="#contact" className="lp-footer-link" style={{ fontSize: 12, color: C.muted, fontFamily: FONT, textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
               <Icon name="mail" size={12} />

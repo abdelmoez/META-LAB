@@ -168,7 +168,7 @@ export default function InvitePage() {
             transition={{ type: 'spring', stiffness: 400, damping: 20 }}
             style={{ ...btnBase, background: 'none', border: `1.5px solid ${C.brd2}`, color: C.txt2 }}
           >
-            Go to META·LAB
+            Go to PecanRev
           </motion.button>
         </StateCard>
       </Shell>
@@ -189,7 +189,7 @@ export default function InvitePage() {
             transition={{ type: 'spring', stiffness: 400, damping: 20 }}
             style={{ ...btnBase, background: 'none', border: `1.5px solid ${C.brd2}`, color: C.txt2 }}
           >
-            Go to META·LAB
+            Go to PecanRev
           </motion.button>
         </StateCard>
       </Shell>

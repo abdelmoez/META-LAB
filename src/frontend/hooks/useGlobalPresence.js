@@ -18,7 +18,7 @@ function labelFor(pathname) {
   if (pathname === '/ops') return 'Ops console';
   if (pathname.startsWith('/sift-beta/projects/')) return 'Screening';
   if (pathname.startsWith('/sift-beta')) return 'Screening dashboard';
-  return 'META·LAB';
+  return 'PecanRev';
 }
 
 export function useGlobalPresence(user, pathname) {

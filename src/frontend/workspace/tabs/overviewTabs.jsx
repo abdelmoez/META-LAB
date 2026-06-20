@@ -488,7 +488,7 @@ function OverviewTab({project,setTab,onJournalZip,onRValidate}){
           </div>
         )}
       </div>
-      <div style={{fontSize:10.5,color:C.muted,marginTop:11,lineHeight:1.5}}>The R script is generated locally and runs in your own R environment — META·LAB never executes R code.</div>
+      <div style={{fontSize:10.5,color:C.muted,marginTop:11,lineHeight:1.5}}>The R script is generated locally and runs in your own R environment — PecanRev never executes R code.</div>
     </div>
     )}
   </div>);

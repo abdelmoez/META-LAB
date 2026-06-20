@@ -23,7 +23,7 @@ const prisma = new PrismaClient();
 r.use(requireAuth);
 
 // Health — always available (lets frontend detect the module is up)
-r.get('/health', (req, res) => res.json({ status: 'ok', module: 'META·SIFT Beta' }));
+r.get('/health', (req, res) => res.json({ status: 'ok', module: 'Screening' }));
 
 // Feature-flag guard — returns 503 with maintenance message if disabled
 async function checkEnabled(req, res, next) {
@@ -33,7 +33,7 @@ async function checkEnabled(req, res, next) {
       const s = JSON.parse(row.value || '{}');
       if (s.enabled === false) {
         return res.status(503).json({
-          error: s.maintenanceMessage || 'META·SIFT Beta is currently unavailable.',
+          error: s.maintenanceMessage || 'Screening is currently unavailable.',
           disabled: true,
         });
       }

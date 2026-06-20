@@ -45,8 +45,8 @@ const HEALTHY_POLL_MS = 120000;
 
 // app field → chip presentation (META·LAB accent / META·SIFT teal / Workspace gold).
 const APP_META = {
-  metalab:   { label: 'META·LAB',  color: C.acc },
-  metasift:  { label: 'META·SIFT', color: C.teal },
+  metalab:   { label: 'Workspace', color: C.acc },
+  metasift:  { label: 'Screening', color: C.teal },
   workspace: { label: 'Workspace', color: C.gold },
 };
 

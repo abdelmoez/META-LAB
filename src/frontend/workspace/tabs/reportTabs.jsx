@@ -405,7 +405,7 @@ Output ONLY the section text — no labels, no preamble, no markdown headers. Us
 export function MethodsTab(){
   return(<div>
     <SectionHeader icon="bookOpen" title="Methods & Equations"
-      desc="Every statistical method implemented in META·LAB, documented as computed: the equation, what it means in plain English, where it runs in the app, and verified references. Methods not listed here are not implemented."/>
+      desc="Every statistical method implemented in PecanRev, documented as computed: the equation, what it means in plain English, where it runs in the app, and verified references. Methods not listed here are not implemented."/>
     {METHODS_CONTENT.map(m=>(
       <div key={m.id} style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"16px 18px",marginBottom:14}}>
         <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:10}}>
@@ -439,7 +439,7 @@ export function MethodsTab(){
       </div>
     ))}
     <InfoBox color={C.yel}>
-      <strong style={{color:C.txt}}>Not implemented:</strong> {NOT_IMPLEMENTED.join(" · ")}. This catalogue documents only methods that actually run in the app — if a method is not listed above, META·LAB does not compute it.
+      <strong style={{color:C.txt}}>Not implemented:</strong> {NOT_IMPLEMENTED.join(" · ")}. This catalogue documents only methods that actually run in the app — if a method is not listed above, PecanRev does not compute it.
     </InfoBox>
   </div>);
 }

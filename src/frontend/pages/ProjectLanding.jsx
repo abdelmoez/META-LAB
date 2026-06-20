@@ -810,7 +810,7 @@ function DeleteModal({ project, onClose, onDone }) {
     } catch (e) { setErr(e.message || 'Could not delete the project.'); setBusy(false); }
   };
   const consequences = [
-    'This META·LAB project and its analysis data',
+    'This PecanRev project and its analysis data',
     linked ? 'The project\'s Screening stage and all screening records' : null,
     'Extraction, PRISMA, analysis and screening data',
     'Access for all project members',
@@ -1387,7 +1387,7 @@ export default function ProjectLanding() {
               fontSize: 11, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase',
               color: C.acc, marginBottom: 6,
             }}>
-              META·LAB Workspace
+              PecanRev Workspace
             </div>
             <h1 style={{
               margin: '0 0 6px', fontSize: 28, fontWeight: 800,
@@ -1657,7 +1657,7 @@ export default function ProjectLanding() {
           <EmptyState
             icon="folders"
             title="No projects yet"
-            body="META·LAB is your evidence-synthesis workspace, with collaborative citation Screening built into every project. Create your first project to get started."
+            body="PecanRev is your evidence-synthesis workspace, with collaborative citation Screening built into every project. Create your first project to get started."
             cta={
               <Btn variant="primary" onClick={() => setModal({ type: 'create' })} style={{ margin: '0 auto' }}>
                 <Icon name="plus" size={15} /> Create your first project

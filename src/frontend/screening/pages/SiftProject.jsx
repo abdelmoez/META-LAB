@@ -417,7 +417,7 @@ function LinkBadge({ pid, isLeader, navigate, onChanged }) {
     <>
       <button
         onClick={() => setOpen(true)}
-        title={linked ? `Linked to META·LAB project: ${linked.name}` : 'Not linked to a META·LAB project'}
+        title={linked ? `Linked to PecanRev project: ${linked.name}` : 'Not linked to a PecanRev project'}
         style={{
           display: 'inline-flex', alignItems: 'center', gap: 6,
           background: linked && !linked.missing ? alpha(C.grn, '14') : C.card,
@@ -427,15 +427,15 @@ function LinkBadge({ pid, isLeader, navigate, onChanged }) {
         }}>
         <span>🔗</span>
         <span style={{ minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {linked ? (linked.missing ? 'Linked project missing' : linked.name) : 'Link META·LAB'}
+          {linked ? (linked.missing ? 'Linked project missing' : linked.name) : 'Link PecanRev'}
         </span>
       </button>
 
       {open && (
         <Modal onClose={() => setOpen(false)} width={460}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: C.txt, marginBottom: 4 }}>META·LAB project link</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: C.txt, marginBottom: 4 }}>PecanRev project link</div>
           <div style={{ fontSize: 12.5, color: C.txt2, marginBottom: 16, lineHeight: 1.5 }}>
-            Accepted second-review studies hand off to the linked META·LAB project’s Data Extraction, and its PRISMA diagram updates from this screening project.
+            Accepted second-review studies hand off to the linked PecanRev project’s Data Extraction, and its PRISMA diagram updates from this screening project.
           </div>
 
           {linked && (
@@ -460,7 +460,7 @@ function LinkBadge({ pid, isLeader, navigate, onChanged }) {
 
           {isLeader ? (
             <>
-              <label style={{ fontSize: 11, fontWeight: 600, color: C.txt2, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Link to a META·LAB project</label>
+              <label style={{ fontSize: 11, fontWeight: 600, color: C.txt2, textTransform: 'uppercase', letterSpacing: '0.04em' }}>Link to a PecanRev project</label>
               <select value={pick} onChange={e => setPick(e.target.value)}
                 style={{ width: '100%', background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 6, padding: '8px 10px', color: C.txt, fontSize: 13, fontFamily: FONT, outline: 'none', marginTop: 6, marginBottom: 12 }}>
                 <option value="">— Select a project —</option>

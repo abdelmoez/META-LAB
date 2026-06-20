@@ -2,10 +2,10 @@
  * rValidation.js — R validation engine (prompt44 item 2). Pure functions, no I/O,
  * NO code execution.
  *
- * Purpose: let a statistician INDEPENDENTLY validate META·LAB's meta-analysis in
+ * Purpose: let a statistician INDEPENDENTLY validate PecanRev's meta-analysis in
  * R/RStudio. We generate a single, self-contained `metafor` script that reproduces,
  * from the same per-study inputs, the pooled effect, its 95% CI, heterogeneity
- * (I² / τ² / Q) and the prediction interval — then prints META·LAB's own reported
+ * (I² / τ² / Q) and the prediction interval — then prints PecanRev's own reported
  * values alongside so the two can be compared line by line.
  *
  * Why a generated script (not in-app execution): the app runs in the browser /
@@ -84,7 +84,7 @@ export function rmaCall(model, hksj) {
  * Build the R block for a single outcome.
  * @param {object} outcome
  *   { label, esType, esTypeLabel, isLog, model, hksj, studies, app }
- *   `app` (optional) = META·LAB's reported values for the comparison footer:
+ *   `app` (optional) = PecanRev's reported values for the comparison footer:
  *     { k, pooled, lo, hi, I2, tau2, Q, Qdf, Qp, predLo, predHi }  (analysis scale)
  * @param {number} index 1-based outcome index (for unique R object names)
  * @returns {{ block:string, k:number, skipped?:string }}
@@ -123,9 +123,9 @@ export function buildOutcomeBlock(outcome, index) {
     lines.push(`${id}_bt <- predict(${id}_res, transf = exp)`);
     lines.push(`cat(sprintf("Pooled (back-transformed): %.4f  95%% CI %.4f to %.4f\\n", ${id}_bt$pred, ${id}_bt$ci.lb, ${id}_bt$ci.ub))`);
   }
-  // META·LAB comparison footer (analysis scale; the script's own values print above).
+  // PecanRev comparison footer (analysis scale; the script's own values print above).
   lines.push('');
-  lines.push('# --- META·LAB reported values for this outcome (compare with the output above) ---');
+  lines.push('# --- PecanRev reported values for this outcome (compare with the output above) ---');
   if (Number.isFinite(Number(app.k))) lines.push(`#   studies (k)            ${rNum(app.k, 0)}`);
   if (Number.isFinite(Number(app.pooled))) lines.push(appLine('pooled (analysis)', app.pooled));
   if (Number.isFinite(Number(app.lo)) && Number.isFinite(Number(app.hi))) lines.push(`#   95% CI (analysis)      ${rNum(app.lo, 4)} to ${rNum(app.hi, 4)}`);
@@ -155,17 +155,17 @@ export function buildMetaValidationR({ projectName, generatedAt, appVersion, out
 
   const header = [
     '# ============================================================================',
-    `# META·LAB — R validation script${appVersion ? ` (app ${appVersion})` : ''}`,
+    `# PecanRev — R validation script${appVersion ? ` (app ${appVersion})` : ''}`,
     `# Project: ${rString(projectName || 'Untitled project')}`,
     generatedAt ? `# Generated: ${rString(generatedAt)}` : null,
     `# Outcomes: ${list.length} (${ran} with enough data to pool)`,
     '#',
-    '# WHAT THIS IS: an INDEPENDENT reproduction of META·LAB\'s meta-analysis using the',
+    '# WHAT THIS IS: an INDEPENDENT reproduction of PecanRev\'s meta-analysis using the',
     '# `metafor` package. Run it in R / RStudio and compare each outcome\'s output with',
-    '# the "META·LAB reported values" printed beneath it. They should match within',
+    '# the "PecanRev reported values" printed beneath it. They should match within',
     '# rounding. This script does NOT run inside the app — it is yours to run + audit.',
     '#',
-    '# Estimators (matched to META·LAB): random effects = DerSimonian–Laird (method "DL"),',
+    '# Estimators (matched to PecanRev): random effects = DerSimonian–Laird (method "DL"),',
     '# optional Hartung–Knapp (test "knha"); fixed effect = inverse-variance (method "FE").',
     '# For ratio measures (OR/RR/HR) inputs are on the log scale and back-transformed',
     '# with exp() for the human-readable summary.',

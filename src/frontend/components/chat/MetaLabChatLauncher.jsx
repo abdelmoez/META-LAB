@@ -77,7 +77,7 @@ export default function MetaLabChatLauncher({ metaLabProjectId, projectName = ''
         type="button"
         onClick={() => { if (!disabled) setOpen(true); }}
         title={status === 'unlinked'
-          ? 'Link a META·SIFT project to enable project chat'
+          ? 'Link a Screening project to enable project chat'
           : (projectName ? `Project chat — ${projectName}` : 'Project chat')}
         aria-label="Project chat"
         aria-disabled={disabled}

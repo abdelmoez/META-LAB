@@ -10,7 +10,7 @@ const DEFAULTS = {
   // Default = the original indigo, palette null (frontend uses stylesheet base).
   themeSettings: JSON.stringify(defaultThemeSettings()),
   appSettings: JSON.stringify({
-    appName: 'META·LAB',
+    appName: 'PecanRev',
     registrationOpen: true,
     maintenanceMode: false,
     contactEnabled: true,
@@ -26,7 +26,7 @@ const DEFAULTS = {
     // is emailed, and login is blocked until verified. Admin toggles it in Ops.
     requireEmailVerification: false,
     defaultTheme: 'night',                 // site-wide default theme for new visitors
-    maintenanceMessage: 'META·LAB is temporarily down for maintenance. Please check back soon.',
+    maintenanceMessage: 'PecanRev is temporarily down for maintenance. Please check back soon.',
     exportFormats: ['png', 'svg', 'csv', 'json', 'ris', 'xls'],
     projectDeletion: 'soft',               // deletion policy (read-mostly; hard delete disabled)
   }),
@@ -36,7 +36,7 @@ const DEFAULTS = {
       'Organize evidence, extract data, run pooled analyses, and export research-ready reports — all in one secure platform.',
     ctaText: 'Start Your Review',
     aboutText:
-      'META·LAB is built for researchers who take systematic evidence synthesis seriously.',
+      'PecanRev is built for researchers who take systematic evidence synthesis seriously.',
     footerText: 'Systematic review platform · Research use only',
     announcementBanner: null,
     maintenanceBanner: null,

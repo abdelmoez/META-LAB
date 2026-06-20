@@ -180,12 +180,12 @@ export default function SiftDashboard() {
             onMouseEnter={e => e.currentTarget.style.color = C.txt}
             onMouseLeave={e => e.currentTarget.style.color = C.txt2}
           >
-            ← Back to META·LAB
+            ← Back to PecanRev
           </button>
           <span style={{ color: C.brd2, fontSize: 14 }}>|</span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 15, fontWeight: 600, color: C.txt, letterSpacing: '-0.01em' }}>
-              META·SIFT
+              Screening
             </span>
             <BetaBadge />
           </div>
@@ -238,7 +238,7 @@ export default function SiftDashboard() {
           }}>
             <div style={{ fontSize: 32, marginBottom: 16 }}>🔧</div>
             <div style={{ fontSize: 15, fontWeight: 600, color: C.gold, marginBottom: 8 }}>
-              META·SIFT is temporarily unavailable
+              Screening is temporarily unavailable
             </div>
             <div style={{ fontSize: 13, color: C.txt2, maxWidth: 440, margin: '0 auto' }}>
               {disabledMsg}
@@ -404,7 +404,7 @@ export default function SiftDashboard() {
                 disabled={creating}
                 style={{ width: 14, height: 14, accentColor: C.acc }}
               />
-              <span>Also create &amp; link a META·LAB project <span style={{ color: C.muted, fontWeight: 400 }}>(same title, linked workspace)</span></span>
+              <span>Also create &amp; link a PecanRev project <span style={{ color: C.muted, fontWeight: 400 }}>(same title, linked workspace)</span></span>
             </label>
 
             {createError && (
@@ -459,8 +459,8 @@ export default function SiftDashboard() {
               </ul>
             </div>
             <p style={{ fontSize: 12, color: C.muted, marginTop: 0, marginBottom: 16, lineHeight: 1.6 }}>
-              The linked META·LAB project (if any) is <strong style={{ color: C.txt2 }}>not</strong> deleted
-              from this side — it stays available in META·LAB.
+              The linked PecanRev project (if any) is <strong style={{ color: C.txt2 }}>not</strong> deleted
+              from this side — it stays available in PecanRev.
             </p>
             <label style={labelStyle}>Type the project name to confirm</label>
             <input
@@ -620,7 +620,7 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
             {project.linkedMetaLabProjectId ? (
               <button
                 onClick={onOpenLinked}
-                title="Open the linked META·LAB project"
+                title="Open the linked PecanRev project"
                 style={{
                   background: 'none', border: 'none', padding: 0, cursor: 'pointer',
                   color: C.grn, fontSize: 11.5, fontFamily: FONT,
@@ -630,11 +630,11 @@ function ProjectCard({ project, stats, total, screened, pct, progressColor, form
                 onMouseLeave={e => e.currentTarget.style.textDecoration = 'none'}
               >
                 <span>🔗</span>
-                <span style={{ minWidth: 0 }}>Linked to META·LAB: <strong title={project.linkedMetaLabProjectTitle || 'project'} style={{ color: C.txt, display: 'inline-block', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}>{project.linkedMetaLabProjectTitle || 'project'}</strong> →</span>
+                <span style={{ minWidth: 0 }}>Linked to PecanRev: <strong title={project.linkedMetaLabProjectTitle || 'project'} style={{ color: C.txt, display: 'inline-block', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' }}>{project.linkedMetaLabProjectTitle || 'project'}</strong> →</span>
               </button>
             ) : (
               <span style={{ color: C.muted, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
-                <span style={{ opacity: 0.6 }}>⛓️‍💥</span> Not linked to META·LAB
+                <span style={{ opacity: 0.6 }}>⛓️‍💥</span> Not linked to PecanRev
               </span>
             )}
           </div>

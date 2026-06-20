@@ -914,7 +914,7 @@ export async function sendPasswordReset(req, res) {
       });
       const result = await sendEmail({
         to: target.email,
-        subject: 'Reset your META·LAB password',
+        subject: 'Reset your PecanRev password',
         html,
         text,
         context: 'password_reset',
@@ -1857,7 +1857,7 @@ export async function replyToMessage(req, res) {
       : `Re: ${msg.subject || '(no subject)'}`;
 
     const { html, text } = renderReplyEmail({
-      appName: 'META·LAB',
+      appName: 'PecanRev',
       toName: msg.name || '',
       bodyText: body,
       originalSubject: msg.subject || '',

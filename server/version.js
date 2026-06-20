@@ -70,7 +70,7 @@ const datePart = buildDate ? String(buildDate).slice(0, 10) : '';
 const full = `v${version}${commit && commit !== 'dev' ? ' · ' + commit : ''}${datePart ? ' · ' + datePart : ''}`;
 
 const META = Object.freeze({
-  name: 'META·LAB',
+  name: 'PecanRev',
   version,
   commit,
   commitDate,

@@ -12,7 +12,7 @@
  *   SMTP_PORT       — SMTP port (default 587).
  *   SMTP_USER       — SMTP auth username. Optional (some relays allow unauthenticated).
  *   SMTP_PASS       — SMTP auth password. Optional.
- *   EMAIL_FROM      — From header, e.g. "META·LAB <no-reply@metalab.app>". Required to send.
+ *   EMAIL_FROM      — From header, e.g. "PecanRev <no-reply@pecanrev.com>". Required to send.
  *   APP_BASE_URL    — public base URL, used in email footer links. Optional.
  */
 
@@ -127,7 +127,7 @@ function escapeHtml(s) {
  * @param {{appName?:string, bodyHtml:string}} opts
  * @returns {string} full HTML document
  */
-export function renderBaseEmailLayout({ appName = 'META·LAB', bodyHtml = '' } = {}) {
+export function renderBaseEmailLayout({ appName = 'PecanRev', bodyHtml = '' } = {}) {
   const appBase = env('APP_BASE_URL');
   const year = new Date().getFullYear();
   const footerLink = appBase
@@ -143,7 +143,7 @@ export function renderBaseEmailLayout({ appName = 'META·LAB', bodyHtml = '' } =
       <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
         <!-- Header -->
         <tr><td style="padding:22px 32px;border-bottom:1px solid #e5e7eb;">
-          <span style="font-size:18px;font-weight:700;letter-spacing:0.04em;color:#111827;">META&#183;LAB</span>
+          <span style="font-size:18px;font-weight:700;letter-spacing:0.04em;color:#111827;">PecanRev</span>
         </td></tr>
         <!-- Body -->
         <tr><td style="padding:28px 32px;">
@@ -179,7 +179,7 @@ function ctaButton(href, label) {
  * @param {{appName?:string, toName?:string, bodyText:string, originalSubject?:string}} opts
  * @returns {{html:string, text:string}}
  */
-export function renderReplyEmail({ appName = 'META·LAB', toName = '', bodyText = '', originalSubject = '' } = {}) {
+export function renderReplyEmail({ appName = 'PecanRev', toName = '', bodyText = '', originalSubject = '' } = {}) {
   const greeting = toName ? `Hi ${escapeHtml(toName)},` : 'Hello,';
   const safeBodyHtml = escapeHtml(bodyText).replace(/\n/g, '<br>');
   const appBase = env('APP_BASE_URL');
@@ -220,7 +220,7 @@ export const renderContactReplyEmail = renderReplyEmail;
  * @returns {{html:string, text:string}}
  */
 export function renderPasswordResetEmail({
-  appName = 'META·LAB',
+  appName = 'PecanRev',
   toName = '',
   link = '',
   expiresAt = null,
@@ -288,7 +288,7 @@ export function renderPasswordResetEmail({
  * @param {{appName?:string, toName?:string, link:string, expiresAt?:Date|string|null}} opts
  * @returns {{html:string, text:string}}
  */
-export function renderEmailVerificationEmail({ appName = 'META·LAB', toName = '', link = '', expiresAt = null } = {}) {
+export function renderEmailVerificationEmail({ appName = 'PecanRev', toName = '', link = '', expiresAt = null } = {}) {
   const greeting = toName ? `Hi ${escapeHtml(toName)},` : 'Hello,';
   const appBase = env('APP_BASE_URL');
 
@@ -343,7 +343,7 @@ export function renderEmailVerificationEmail({ appName = 'META·LAB', toName = '
  * @returns {{html:string, text:string}}
  */
 export function renderInviteEmail({
-  appName = 'META·LAB',
+  appName = 'PecanRev',
   projectName = '',
   inviterName = '',
   roleLabel = '',
@@ -381,7 +381,7 @@ export function renderInviteEmail({
       <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;">
         <!-- Header -->
         <tr><td style="padding:22px 32px;border-bottom:1px solid #e5e7eb;">
-          <span style="font-size:18px;font-weight:700;letter-spacing:0.04em;color:#111827;">META&#183;LAB</span>
+          <span style="font-size:18px;font-weight:700;letter-spacing:0.04em;color:#111827;">PecanRev</span>
         </td></tr>
         <!-- Body -->
         <tr><td style="padding:28px 32px;">

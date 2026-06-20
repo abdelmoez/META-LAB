@@ -40,11 +40,11 @@ export const PERMISSION_PRESETS = {
     perms: { ...FULL, canManageMembers: true, canManageSettings: true },
   },
   reviewer: {
-    label: 'Reviewer', role: 'reviewer', description: 'Screen, second review, and chat. View META·LAB.',
+    label: 'Reviewer', role: 'reviewer', description: 'Screen, second review, and chat. View the workspace.',
     perms: fill({ canViewMetaSift: true, canScreen: true, canSecondReview: true, canResolveConflicts: false, canChat: true, canViewMetaLab: true }),
   },
   data_extractor: {
-    label: 'Data Extractor', role: 'reviewer', description: 'View screening; edit META·LAB Data Extraction and run/export analysis.',
+    label: 'Data Extractor', role: 'reviewer', description: 'View screening; edit Data Extraction and run/export analysis.',
     perms: fill({ canViewMetaSift: true, canChat: true, canViewMetaLab: true, canEditMetaLab: true, canManageExtraction: true, canRunAnalysis: true, canExport: true, canAssessRiskOfBias: true }),
   },
   viewer: {
@@ -52,11 +52,11 @@ export const PERMISSION_PRESETS = {
     perms: fill({ canViewMetaSift: true, readOnlyMetaSift: true, canViewMetaLab: true, readOnlyMetaLab: true, canChat: true }),
   },
   readonly_metalab: {
-    label: 'Read-only META·LAB', role: 'viewer', description: 'View META·LAB only, read-only.',
+    label: 'Read-only Workspace', role: 'viewer', description: 'View the workspace only, read-only.',
     perms: fill({ canViewMetaLab: true, readOnlyMetaLab: true }),
   },
   readonly_metasift: {
-    label: 'Read-only META·SIFT', role: 'viewer', description: 'View META·SIFT only, read-only. Can chat.',
+    label: 'Read-only Screening', role: 'viewer', description: 'View Screening only, read-only. Can chat.',
     perms: fill({ canViewMetaSift: true, readOnlyMetaSift: true, canChat: true }),
   },
   readonly_both: {

@@ -1,4 +1,4 @@
-# META·SIFT Beta — Screening Engine
+# Screening Engine
 
 Pure JavaScript functions for systematic review title/abstract screening logic.
 No database, no Express, no React — these are computation-only modules safe to
@@ -121,7 +121,7 @@ npx vitest run tests/screening/
 npx vitest tests/screening/unit/
 ```
 
-Integration tests in `tests/screening/integration/` require the META·LAB
+Integration tests in `tests/screening/integration/` require the PecanRev
 server to be running on `http://localhost:3001`. They are automatically skipped
 when the server is not available.
 

@@ -283,7 +283,7 @@ export const DEFAULT_BRAND = '#4f46e5'; // indigo-600 — the platform's origina
 // Hexes are chosen so the accent keeps usable contrast on white (active tabs,
 // links) and lightens cleanly for dark mode.
 export const PRESETS = [
-  { id: 'default',  name: 'Default Indigo',     hex: '#4f46e5', note: 'The original META·LAB accent.' },
+  { id: 'default',  name: 'Default Indigo',     hex: '#4f46e5', note: 'The original PecanRev accent.' },
   { id: 'clinical', name: 'Clinical Blue',      hex: '#2563eb', note: 'Calm, trustworthy medical blue.' },
   { id: 'navy',     name: 'Academic Navy',      hex: '#1e40af', note: 'Deep, formal journal navy.' },
   { id: 'royal',    name: 'Royal Indigo',       hex: '#4338ca', note: 'Richer, deeper indigo.' },

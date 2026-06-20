@@ -196,7 +196,7 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject,
           IS already in the META·LAB project, so a "linked project" card is noise. */}
       {!embedded && (
         <section style={{ marginBottom: 20 }}>
-          <SectionLabel>Linked META·LAB Project</SectionLabel>
+          <SectionLabel>Linked PecanRev Project</SectionLabel>
           <LinkedMetaLabCard
             linkedMetaLab={data.linkedMetaLab}
             legacyId={proj.linkedMetaLabProjectId}
@@ -356,7 +356,7 @@ function LinkedMetaLabCard({ linkedMetaLab, legacyId, legacyTitle, canManageSett
           background: C.yelBg, border: `1px solid ${alpha(C.ylw, '50')}`, borderRadius: 8,
           padding: '10px 14px', fontSize: 12.5, color: C.ylw, lineHeight: 1.5,
         }}>
-          ⚠ Linked META·LAB project is unavailable — it is missing or was deleted.
+          ⚠ Linked PecanRev project is unavailable — it is missing or was deleted.
           {canManageSettings ? ' Re-link or unlink it in the Project Control tab.' : ' Ask the owner or a leader to fix the link.'}
         </div>
         {canManageSettings && (
@@ -379,7 +379,7 @@ function LinkedMetaLabCard({ linkedMetaLab, legacyId, legacyTitle, canManageSett
               fontSize: 14, fontWeight: 600, color: C.txt, minWidth: 0,
               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
             }}>
-              🔗 {lm.title || 'META·LAB project'}
+              🔗 {lm.title || 'PecanRev project'}
             </div>
             <div style={{ fontSize: 11.5, color: C.txt2, marginTop: 3 }}>
               Accepted second-review studies hand off to this project&rsquo;s Data Extraction.
@@ -389,14 +389,14 @@ function LinkedMetaLabCard({ linkedMetaLab, legacyId, legacyTitle, canManageSett
             variant="primary"
             disabled={!canOpen}
             onClick={() => canOpen && onOpen(lm.id)}
-            title={canOpen ? `Open the linked META·LAB project: ${lm.title || ''}` : 'No access to the linked META·LAB project'}
+            title={canOpen ? `Open the linked PecanRev project: ${lm.title || ''}` : 'No access to the linked PecanRev project'}
           >
-            Open linked META·LAB project →
+            Open linked PecanRev project →
           </Button>
         </div>
         {!canOpen && (
           <div style={{ fontSize: 11.5, color: C.muted, marginTop: 9 }}>
-            You don&rsquo;t have access to the linked META·LAB project. Ask the owner or a leader to grant META·LAB access.
+            You don&rsquo;t have access to the linked PecanRev project. Ask the owner or a leader to grant access.
           </div>
         )}
       </Card>
@@ -419,8 +419,8 @@ function LinkedMetaLabCard({ linkedMetaLab, legacyId, legacyTitle, canManageSett
               Accepted second-review studies hand off to this project&rsquo;s Data Extraction.
             </div>
           </div>
-          <Button variant="primary" onClick={() => onOpen(legacyId)} title="Open the linked META·LAB project">
-            Open linked META·LAB project →
+          <Button variant="primary" onClick={() => onOpen(legacyId)} title="Open the linked PecanRev project">
+            Open linked PecanRev project →
           </Button>
         </div>
       </Card>
@@ -432,13 +432,13 @@ function LinkedMetaLabCard({ linkedMetaLab, legacyId, legacyTitle, canManageSett
     <Card style={{ borderStyle: 'dashed' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
         <div style={{ minWidth: 0, flex: '1 1 240px' }}>
-          <div style={{ fontSize: 13.5, fontWeight: 600, color: C.txt2 }}>No linked META·LAB project</div>
+          <div style={{ fontSize: 13.5, fontWeight: 600, color: C.txt2 }}>No linked PecanRev project</div>
           <div style={{ fontSize: 11.5, color: C.muted, marginTop: 3 }}>
             Link one to hand accepted studies off to Data Extraction and feed the PRISMA diagram.
           </div>
         </div>
         {canManageSettings && (
-          <Button variant="ghost" onClick={onGoLink} title="Open Project Control to link a META·LAB project">
+          <Button variant="ghost" onClick={onGoLink} title="Open Project Control to link a PecanRev project">
             Link a project →
           </Button>
         )}

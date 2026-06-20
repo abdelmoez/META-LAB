@@ -33,7 +33,7 @@ export default function Terms() {
         {/* Disclaimer */}
         <div style={{ padding: '12px 15px', background: alpha(C.acc, '10'), border: `1px solid ${alpha(C.acc, '34')}`, borderRadius: 10, fontSize: 13, marginBottom: 24 }}>
           <strong style={{ color: C.txt }}>Plain-language summary &amp; notice.</strong> This page explains, in plain English, how
-          META·LAB and META·SIFT (“the Platform”) may be used and how your data is handled. It is provided as a clear,
+          PecanRev (“the Platform”) may be used and how your data is handled. It is provided as a clear,
           good-faith placeholder and is <strong>not a substitute for formal legal review</strong>. The operator may publish a
           legally reviewed version; where that version differs, it governs.
         </div>
@@ -51,7 +51,7 @@ export default function Terms() {
           <P>By creating an account or using the Platform, you agree to these terms. If you do not agree, do not use the Platform.</P>
 
           <H>Description of service</H>
-          <P>The Platform is a collaborative toolkit for planning, screening, extracting, and analysing evidence for systematic reviews and meta-analyses — including PICO/protocol tools, citation screening (META·SIFT), data extraction, risk-of-bias assessment, statistical synthesis, PRISMA support, and exports. Some features are experimental (see “Beta features”).</P>
+          <P>The Platform is a collaborative toolkit for planning, screening, extracting, and analysing evidence for systematic reviews and meta-analyses — including PICO/protocol tools, citation screening, data extraction, risk-of-bias assessment, statistical synthesis, PRISMA support, and exports. Some features are experimental (see “Beta features”).</P>
 
           <H>Eligibility &amp; accounts</H>
           <P>You must be able to form a binding agreement to use the Platform and provide accurate registration details (name, email, password). You are responsible for keeping your credentials secure and for activity under your account. Tell the operator promptly about any unauthorised use.</P>

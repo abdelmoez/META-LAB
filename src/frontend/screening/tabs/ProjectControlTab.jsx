@@ -291,12 +291,12 @@ function LinkSection({ pid, canManage }) {
 
   return (
     <div>
-      <SectionLabel>META·LAB link</SectionLabel>
+      <SectionLabel>PecanRev link</SectionLabel>
       <Card>
         {loading ? <Loading label="Loading link…" /> : (
           <>
             <div style={{ fontSize: 12.5, color: C.txt2, marginBottom: 14, lineHeight: 1.5 }}>
-              Accepted second-review studies hand off to the linked META·LAB project’s Data Extraction, and its PRISMA
+              Accepted second-review studies hand off to the linked PecanRev project’s Data Extraction, and its PRISMA
               diagram updates from this screening project. Members of this workspace can reach the linked project per
               their permissions.
             </div>
@@ -309,7 +309,7 @@ function LinkSection({ pid, canManage }) {
                 background: C.yelBg, border: `1px solid ${alpha(C.ylw, '50')}`, borderRadius: 8,
                 padding: '10px 14px', marginBottom: 14, fontSize: 12.5, color: C.ylw, lineHeight: 1.5,
               }}>
-                ⚠ Link broken — the linked META·LAB project is missing or was deleted.
+                ⚠ Link broken — the linked PecanRev project is missing or was deleted.
                 {canManage ? ' Re-link to another project below, or unlink.' : ' Ask the owner or a leader to fix the link.'}
               </div>
             ) : (
@@ -320,14 +320,14 @@ function LinkSection({ pid, canManage }) {
                       <Badge color={C.grn}>{`🔗 ${linked.name}`}</Badge>
                       <button
                         onClick={() => navigate(`/app/project/${linked.id}`)}
-                        title={`Open the linked META·LAB project: ${linked.name}`}
+                        title={`Open the linked PecanRev project: ${linked.name}`}
                         style={{
                           background: 'none', border: `1px solid ${C.brd2}`, color: C.acc,
                           fontSize: 11.5, fontFamily: FONT, fontWeight: 600,
                           padding: '4px 12px', borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap',
                         }}
                       >
-                        Open META·LAB project →
+                        Open PecanRev project →
                       </button>
                     </>
                   )
@@ -350,7 +350,7 @@ function LinkSection({ pid, canManage }) {
               <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
                 <select value={pick} onChange={e => setPick(e.target.value)} disabled={busy}
                   style={{ ...selectStyle, minWidth: 220 }}>
-                  <option value="">— Select a META·LAB project —</option>
+                  <option value="">— Select a PecanRev project —</option>
                   {(info?.available || []).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
                 <Button onClick={() => apply(pick)} disabled={busy || !pick}>

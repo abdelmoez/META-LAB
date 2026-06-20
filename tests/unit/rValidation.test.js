@@ -58,7 +58,7 @@ describe('buildOutcomeBlock', () => {
     { label: 'S2', es: 0.20, lo: 0.00, hi: 0.40 },
     { label: 'S3', es: 0.15, lo: -0.05, hi: 0.35 },
   ];
-  it('emits an rma call + summary + heterogeneity and the META·LAB comparison footer', () => {
+  it('emits an rma call + summary + heterogeneity and the PecanRev comparison footer', () => {
     const { block, k } = buildOutcomeBlock({
       label: 'HbA1c', esType: 'MD', esTypeLabel: 'Mean Difference', isLog: false,
       model: 'random', hksj: false, studies,
@@ -67,7 +67,7 @@ describe('buildOutcomeBlock', () => {
     expect(k).toBe(3);
     expect(block).toContain('method = "DL"');
     expect(block).toContain('predict(o1_res)');
-    expect(block).toContain('META·LAB reported values');
+    expect(block).toContain('PecanRev reported values');
     expect(block).toContain('I^2');
   });
   it('back-transforms ratio measures with exp()', () => {

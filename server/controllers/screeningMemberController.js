@@ -248,7 +248,7 @@ export async function addMember(req, res) {
           // itself (prompt9, single chokepoint) — do NOT double-record here.
           const result = await sendEmail({
             to: normEmail,
-            subject: `You're invited to join "${access.project.title || 'a project'}" on META·LAB`,
+            subject: `You're invited to join "${access.project.title || 'a project'}" on PecanRev`,
             html,
             text,
             context: 'invite',

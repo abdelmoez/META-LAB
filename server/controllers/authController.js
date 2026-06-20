@@ -128,7 +128,7 @@ async function sendVerificationEmail(req, user) {
     const base = (process.env.APP_BASE_URL || '').replace(/\/+$/, '') || `${req.protocol}://${req.get('host')}`;
     const link = `${base}/verify-email?token=${token}`;
     const { html, text } = renderEmailVerificationEmail({ toName: user.name || '', link, expiresAt });
-    return await sendEmail({ to: user.email, subject: 'Verify your META·LAB email', html, text, context: 'email_verification' });
+    return await sendEmail({ to: user.email, subject: 'Verify your PecanRev email', html, text, context: 'email_verification' });
   } catch (e) {
     console.error('[auth] sendVerificationEmail issue:', e.message);
     return { sent: false, reason: 'error' };
@@ -373,7 +373,7 @@ export async function forgotPassword(req, res) {
         const { html, text } = renderPasswordResetEmail({ toName: user.name || '', link, expiresAt });
         const result = await sendEmail({
           to: user.email,
-          subject: 'Reset your META·LAB password',
+          subject: 'Reset your PecanRev password',
           html,
           text,
           context: 'password_reset',
