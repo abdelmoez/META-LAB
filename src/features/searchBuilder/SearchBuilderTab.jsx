@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { C, FONT, MONO, alpha } from "../../frontend/theme/tokens.js";  // SearchEngine: adapt to app theme (day/night + brand)
 import { picoToConcepts } from "../../research-engine/searchBuilder/conceptExtraction.js"; // prompt40 Task 3
 import { localMeshSuggestions } from "../../research-engine/searchBuilder/meshSuggest.js"; // prompt42 Task 3
-import { extractActiveConcepts, serializeSearchState, pickPersisted, remoteAdoptDecision } from "../../research-engine/searchBuilder/searchState.js"; // SE1 Task 5
+import { serializeSearchState, pickPersisted, remoteAdoptDecision, syncSearchBuilderFromPico } from "../../research-engine/searchBuilder/searchState.js"; // SE1 + SE2
 import { useRealtime } from "../../frontend/hooks/useRealtime.js"; // SE1 Task 5 — live collaborator sync (shared SSE poke channel)
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -708,24 +708,50 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   // user makes their own edit). Drives the "updated by …" attribution chip.
   const [remoteUpdatedBy,setRemoteUpdatedBy]=useState(null);
 
-  /* ── INTEGRATION: load saved search for this project on mount ───────────── */
+  /* ── SE2: PICO key + refs (used by mount, autosave guard, and auto-sync) ───
+     The key includes the Time Frame fields so a Time-Frame edit also re-syncs. */
+  const picoKey=[pico?.P,pico?.I,pico?.C,pico?.O,pico?.timeframe,pico?.timeframeMode,pico?.tfStart,pico?.tfEnd].join("|");
+  const picoSnapshot=useRef(picoKey);
+  const conceptsRef=useRef(concepts); conceptsRef.current=concepts;
+  const ignoredRef=useRef(ignored); ignoredRef.current=ignored;
+  const lookedRef=useRef(new Set()); // texts already MeSH-looked-up (dedupe lookups)
+
+  /* SE2 core — idempotent PICO → five-group sync. Guarantees the five PICO concept
+     groups (Population, Intervention/Exposure, Comparator/Control, Outcomes, Time
+     Frame) always exist and mirror their PICO field, while preserving manual
+     concepts/terms, hidden terms, and MeSH conversions. Assigns render ids to any
+     new concept/term, then fetches per-field MeSH. Safe to call repeatedly. */
+  function syncFromPico(baseConcepts,ignoredList){
+    const synced=syncSearchBuilderFromPico(pico,baseConcepts,ignoredList)
+      .map(c=>({...c,id:c.id||uid(),terms:c.terms.map(t=>({...t,id:t.id||uid()}))}));
+    setConcepts(synced); lookupAuto(synced); return synced;
+  }
+  // Run MeSH lookup for auto terms lacking vocab (once per text). MeSH lands under the
+  // term's own PICO field group (SE2 Task 4). tryLookup is defined below (hoist-safe).
+  function lookupAuto(cs){
+    cs.forEach(c=>(c.terms||[]).forEach(t=>{
+      if(t.source!=="pico_auto"||t.type==="controlled"||t.vocab) return;
+      const n=cnorm(t.text); if(!n||lookedRef.current.has(n)) return;
+      lookedRef.current.add(n); tryLookup(c.id,t.id,t.text);
+    }));
+  }
+
+  /* ── INTEGRATION: load saved search, then ENSURE the five PICO groups exist ──
+     Root-cause fix (SE2): never adopt a blank/legacy saved state as-is — always run
+     the idempotent sync so the five field groups are present and populated. */
   useEffect(()=>{(async()=>{
-    if(loadSearch&&projectId){
-      try{
-        const saved=await loadSearch(projectId);
-        if(saved&&saved.concepts){
-          const persisted=pickPersisted(saved);
-          setConcepts(persisted.concepts); setOverrides(persisted.overrides); setIgnored(persisted.ignored);
-          // The server already holds exactly this → record its signature so the first
-          // autosave is a no-op and a same-revision poke never re-applies.
-          lastSavedRef.current=serializeSearchState(saved);
-          revisionRef.current=typeof saved.revision==="number"?saved.revision:0;
-        }
-        else seedFromPICO(true);
-      }catch(e){ console.error("loadSearch failed",e); seedFromPICO(true); }
-    } else {
-      seedFromPICO(true);
-    }
+    let saved=null;
+    if(loadSearch&&projectId){ try{ saved=await loadSearch(projectId); }catch(e){ console.error("loadSearch failed",e); } }
+    const base=saved&&Array.isArray(saved.concepts)?saved.concepts:[];
+    const ig=saved&&Array.isArray(saved.ignored)?saved.ignored:[];
+    const ov=saved&&saved.overrides&&typeof saved.overrides==="object"?saved.overrides:{};
+    setOverrides(ov); setIgnored(ig);
+    // Record what the server actually holds BEFORE syncing, so autosave persists the
+    // synced structure once when it differs (legacy/blank) and is a no-op when stable.
+    lastSavedRef.current=saved&&saved.concepts?serializeSearchState(saved):"";
+    revisionRef.current=saved&&typeof saved.revision==="number"?saved.revision:0;
+    picoSnapshot.current=picoKey;
+    syncFromPico(base,ig);
     setLoaded(true);
   })();},[projectId]); // eslint-disable-line
 
@@ -747,10 +773,15 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     return ()=>clearTimeout(saveTimer.current);
   },[concepts,overrides,ignored,loaded]); // eslint-disable-line
 
-  /* ── PICO change detection (for the Re-sync button) ────────────────────── */
-  const picoKey=[pico?.P,pico?.I,pico?.C,pico?.O].join("|");
-  const picoSnapshot=useRef(picoKey);
-  useEffect(()=>{ if(loaded&&picoKey!==picoSnapshot.current) setPicoDirty(true); },[picoKey,loaded]);
+  /* ── SE2: auto-sync the five groups whenever PICO changes — no manual button.
+     Updates the editor's UI immediately; collaborators converge via the realtime
+     poke below (their monolith refetches the project → their `pico` prop changes →
+     this same effect runs for them). Idempotent, so concurrent syncs agree. */
+  useEffect(()=>{
+    if(!loaded||picoKey===picoSnapshot.current) return;
+    picoSnapshot.current=picoKey;
+    syncFromPico(conceptsRef.current,ignoredRef.current);
+  },[picoKey,loaded]); // eslint-disable-line
 
   /* ── SE1 Task 5: live collaborator sync over the shared SSE poke channel ──
      A peer's save emits a thin `search.updated` poke; we refetch the authorized
@@ -790,44 +821,14 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     if(!editing&&!adding&&!(draft&&draft.trim())&&pendingRemoteRef.current) applyRemote(pendingRemoteRef.current);
   },[editing,adding,draft]); // eslint-disable-line
 
-  /* prompt40 Task 3 — extract MULTIPLE concepts from each PICO field (not just the
-     first word), filtering out any auto-terms the user previously deleted. The pure
-     extract+filter core lives in searchState.extractActiveConcepts (unit-tested); the
-     component only attaches local render ids. */
-  function buildExtracted(ignoredList){
-    return extractActiveConcepts(pico,ignoredList)
-      .map(c=>({...c,id:uid(),terms:c.terms.map(t=>({...t,id:uid()}))}));
-  }
-  const presentPrimaries=(cs)=>new Set(cs.flatMap(c=>c.terms.map(t=>cnorm(t.text))));
-
-  /* Seed concepts from the app's existing PICO.
-     initial=true  → first seed (no saved state): set the extracted concepts.
-     initial=false → NON-DESTRUCTIVE merge: only ADD newly-suggested concepts whose
-     primary term isn't already present (manual/edited work is never overwritten). */
-  function seedFromPICO(initial){
-    const extracted=buildExtracted(ignored);
-    if(initial){
-      setConcepts(extracted);
-      extracted.forEach(c=>c.terms.forEach(t=>tryLookup(c.id,t.id,t.text)));
-    } else {
-      const have=presentPrimaries(concepts);
-      const additions=extracted.filter(c=>!have.has(cnorm(c.terms[0].text)));
-      if(additions.length) setConcepts(cur=>[...cur,...additions]);
-      additions.forEach(c=>c.terms.forEach(t=>tryLookup(c.id,t.id,t.text)));
-    }
-    setPicoDirty(false);
-    picoSnapshot.current=picoKey;
-  }
-
-  /* Reset suggestions — forget all deleted auto-terms and re-seed the PICO concepts,
-     PRESERVING any concepts the user added manually. */
+  /* Restore hidden terms — forget every deleted auto term and re-run the idempotent
+     sync. Manual concepts and manual terms are preserved; the five PICO groups are
+     repopulated from PICO. (This is the "restore action" SE2 requires before a hidden
+     term may reappear.) */
   function resetSuggestions(){
+    lookedRef.current=new Set();
     setIgnored([]);
-    const fresh=buildExtracted([]);
-    setConcepts(cur=>[...cur.filter(c=>c.source!=="pico_auto"),...fresh]);
-    fresh.forEach(c=>c.terms.forEach(t=>tryLookup(c.id,t.id,t.text)));
-    setPicoDirty(false);
-    picoSnapshot.current=picoKey;
+    syncFromPico(conceptsRef.current,[]);
   }
 
   /* prompt42 Task 2 — re-add ONE removed PICO term as source:'pico_auto' into the
@@ -1036,10 +1037,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
           <div style={{fontSize:11,color:C.muted}}>Build once · render for PubMed, Embase &amp; Cochrane</div>
         </div>
         <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:14}}>
-          {picoDirty&&newSuggestionCount>0&&(
-            <button onClick={()=>seedFromPICO(false)} title="Add the new PICO suggestions without touching your existing terms"
-              style={{...btn("solid"),fontSize:11,color:C.acc,borderColor:alpha(C.acc,"55")}}>+ {newSuggestionCount} new suggestion{newSuggestionCount===1?"":"s"} from PICO</button>
-          )}
+          {/* SE2 — PICO concepts auto-sync; no manual "+N suggestions" button needed. */}
           <button onClick={()=>setBeginner(b=>!b)} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 12px",borderRadius:20,cursor:"pointer",border:`1px solid ${beginner?C.grn:C.brd2}`,background:beginner?`${alpha(C.grn,"18")}`:"transparent",fontFamily:SANS}}>
             <span style={{width:30,height:16,borderRadius:10,background:beginner?C.grn:C.brd2,position:"relative",flexShrink:0}}>
               <span style={{position:"absolute",top:2,left:beginner?16:2,width:12,height:12,borderRadius:"50%",background:"#fff",transition:"all .15s"}}/>
@@ -1137,13 +1135,21 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
                     <span style={{width:9,height:9,borderRadius:3,background:color}}/>
                     <input value={c.label} onChange={e=>updateConcept(c.id,{label:e.target.value})}
                       style={{...inputStyle,fontWeight:600,width:"auto",flex:1,background:"transparent",border:"none",padding:"2px 0",fontSize:13}}/>
-                    {/* SE1 Task 4/6 — show which PICO field this concept group was auto-generated from. */}
-                    {c.source==="pico_auto"&&c.field&&(
-                      <span title={`Auto-generated from your ${c.field} (PICO)`} style={{fontSize:8.5,fontWeight:700,letterSpacing:.4,color:C.muted,textTransform:"uppercase",background:C.card2,border:`1px solid ${C.brd2}`,borderRadius:5,padding:"1px 6px"}}>{c.field}</span>
+                    {/* SE2 — mark the five PICO-derived groups (vs user-added manual concepts). */}
+                    {c.picoField&&(
+                      <span title="Auto-generated from your PICO — updates when PICO changes" style={{fontSize:8.5,fontWeight:700,letterSpacing:.4,color:C.acc,textTransform:"uppercase",background:`${alpha(C.acc,"14")}`,border:`1px solid ${alpha(C.acc,"44")}`,borderRadius:5,padding:"1px 6px"}}>PICO</span>
                     )}
                     <span style={{fontSize:9.5,color:C.dim,fontFamily:MONO}}>{meshN} mesh · {freeN} text</span>
-                    <button onClick={()=>removeConcept(c.id)} style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:15}}>×</button>
+                    {/* SE2 — the five PICO groups always exist (not deletable); only manual concepts can be removed. */}
+                    {!c.picoField&&<button onClick={()=>removeConcept(c.id)} title="Remove this concept" style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:15}}>×</button>}
                   </div>
+                  {/* SE2 — Time Frame group shows the selected restriction (no keyword search term). */}
+                  {c.picoField==="T"&&(
+                    <div style={{marginBottom:8,fontSize:11.5,color:c.note?C.txt2:C.dim}}>
+                      {c.note?<span><span style={{color:C.muted}}>⏱ Time restriction: </span><span style={{fontWeight:600}}>{c.note}</span></span>
+                        :<span style={{fontStyle:"italic"}}>No time restriction set — choose one in Protocol → PICO → Time Frame.</span>}
+                    </div>
+                  )}
                   <div style={{position:"relative"}}>
                     {c.terms.map(t=>(
                       <span key={t.id} style={{position:"relative",display:"inline-block"}}>

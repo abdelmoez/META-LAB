@@ -14,7 +14,155 @@
  * Deterministic and dependency-light (only the extraction engine). No timestamps,
  * no randomness — id assignment stays in the component.
  */
-import { picoToConcepts, norm } from './conceptExtraction.js';
+import { picoToConcepts, extractConcepts, norm } from './conceptExtraction.js';
+
+/* ── SE2: the five canonical PICO concept groups ──────────────────────────────
+   The Search Builder ALWAYS shows these five, in this order, each keyed by a
+   stable `picoField` (independent of the user-editable label). */
+export const PICO_FIELD_DEFS = [
+  { key: 'P', label: 'Population' },
+  { key: 'I', label: 'Intervention / Exposure' },
+  { key: 'C', label: 'Comparator / Control' },
+  { key: 'O', label: 'Outcomes' },
+  { key: 'T', label: 'Time Frame' },
+];
+
+// Map an SE1-era pico_auto concept's PICO-field label → the new canonical key, so a
+// saved search migrates its terms (incl. user MeSH conversions) into the five groups
+// instead of being orphaned. Keyed on the concept's `field` first, then its `label`.
+const LEGACY_FIELD_TO_KEY = {
+  population: 'P',
+  intervention: 'I', exposure: 'I', 'intervention / exposure': 'I', 'intervention/exposure': 'I',
+  comparator: 'C', control: 'C', 'comparator / control': 'C', 'comparator/control': 'C',
+  outcome: 'O', outcomes: 'O',
+  'time frame': 'T', timeframe: 'T',
+};
+
+// Mirrors features/protocol/constants.js TIMEFRAME_OPTIONS labels. Duplicated (not
+// imported) to keep this engine module free of a features/* dependency; update both
+// if the presets change.
+const TIMEFRAME_LABELS = {
+  any: 'No time restriction', last1: 'Last 1 year', last3: 'Last 3 years',
+  last5: 'Last 5 years', last10: 'Last 10 years', since2000: 'Since 2000',
+  inception: 'Since inception',
+};
+
+/** The canonical PICO key a concept belongs to ('P'/'I'/'C'/'O'/'T'), or null if it
+ *  is a user-created (manual) concept. */
+export function conceptFieldKey(c) {
+  if (!c) return null;
+  if (c.picoField) return c.picoField;
+  if (c.source === 'pico_auto') return LEGACY_FIELD_TO_KEY[norm(c.field)] || LEGACY_FIELD_TO_KEY[norm(c.label)] || null;
+  return null;
+}
+
+/** Human-readable time restriction from the PICO object (preset, custom range, or
+ *  legacy free-text), or '' when none is set. Pure. */
+export function timeframeLabel(pico) {
+  const p = pico || {};
+  if (p.timeframeMode === 'custom') {
+    const s = String(p.tfStart || '').trim();
+    const e = String(p.tfEnd || '').trim();
+    if (s && e) return `${s}–${e}`;
+    if (s) return `${s}–present`;
+    return '';
+  }
+  if (p.timeframeMode && TIMEFRAME_LABELS[p.timeframeMode]) return TIMEFRAME_LABELS[p.timeframeMode];
+  if (p.timeframe && String(p.timeframe).trim()) return String(p.timeframe).trim();
+  return '';
+}
+
+/** One PICO field's text → a FLAT, deduped, ordered list of search terms (all the
+ *  family ladders + synonyms for that field merged into a single concept group). */
+export function extractFieldTerms(text) {
+  const terms = []; const seen = new Set();
+  for (const c of extractConcepts(text, '')) {
+    for (const t of c.terms) {
+      const n = norm(t.text);
+      if (n && !seen.has(n)) { seen.add(n); terms.push({ ...t }); }
+    }
+  }
+  return terms;
+}
+
+/**
+ * Idempotent PICO → Search Builder sync (SE2 core). Always returns the five PICO
+ * concept groups (in canonical order) followed by the user's manual concepts.
+ *
+ * Guarantees:
+ *  - the five field groups always exist and each mirrors its PICO field;
+ *  - hidden/deleted auto terms (in `ignoredList`) are not re-added;
+ *  - manual concepts, manual terms, and auto terms converted to MeSH are preserved;
+ *  - existing term/concept objects are reused (ids + MeSH `vocab` survive);
+ *  - no duplicate terms; same PICO + same existing ⇒ same result.
+ *
+ * Pure: assigns no ids and performs no I/O. The caller fills ids for any new
+ * (id-less) concept/term and runs MeSH lookups.
+ */
+export function syncSearchBuilderFromPico(pico, existingConcepts, ignoredList) {
+  const existing = Array.isArray(existingConcepts) ? existingConcepts : [];
+  const ig = new Set((ignoredList || []).map(norm));
+
+  // Bucket existing terms by PICO key; everything else is a manual concept (kept as-is).
+  const termsByKey = { P: [], I: [], C: [], O: [], T: [] };
+  const conceptByKey = {};
+  const manualConcepts = [];
+  for (const c of existing) {
+    const key = conceptFieldKey(c);
+    if (key && termsByKey[key]) {
+      for (const t of (c.terms || [])) termsByKey[key].push(t);
+      if (!conceptByKey[key]) conceptByKey[key] = c; // first wins (for id/label reuse)
+    } else {
+      manualConcepts.push(c);
+    }
+  }
+
+  const fieldText = { P: pico && pico.P, I: pico && pico.I, C: pico && pico.C, O: pico && pico.O };
+
+  const groups = PICO_FIELD_DEFS.map(({ key, label }) => {
+    const prior = termsByKey[key];
+    const manualTerms = prior.filter((t) => t.source !== 'pico_auto');     // user-added / user synonyms: always kept
+    const priorAuto = prior.filter((t) => t.source === 'pico_auto');
+    const priorAutoByNorm = new Map(priorAuto.map((t) => [norm(t.text), t]));
+
+    const autoTerms = [];
+    if (key !== 'T') {
+      const used = new Set();
+      for (const t of extractFieldTerms(fieldText[key] || '')) {
+        const n = norm(t.text);
+        if (ig.has(n) || used.has(n)) continue;                            // hidden term, or already added
+        used.add(n);
+        const reuse = priorAutoByNorm.get(n);                              // keep id + vocab if we had it
+        autoTerms.push(reuse || { ...t, sourceField: label });
+      }
+      // Keep an auto term the user converted to MeSH even if it is no longer extracted.
+      for (const t of priorAuto) {
+        const n = norm(t.text);
+        if (!used.has(n) && !ig.has(n) && (t.type === 'controlled' || t.vocab)) { used.add(n); autoTerms.push(t); }
+      }
+    }
+
+    const priorConcept = conceptByKey[key];
+    const group = {
+      id: priorConcept && priorConcept.id ? priorConcept.id : undefined,
+      // Keep a user-renamed label only once the concept already carries a picoField
+      // (i.e. it was created by this new model); legacy/family concepts reset to canonical.
+      label: priorConcept && priorConcept.picoField && priorConcept.label ? priorConcept.label : label,
+      picoField: key,
+      field: label,
+      source: 'pico_auto',
+      op: 'AND',
+      terms: [...autoTerms, ...manualTerms],
+    };
+    if (key === 'T') {
+      const tf = timeframeLabel(pico);
+      if (tf) group.note = tf;
+    }
+    return group;
+  });
+
+  return [...groups, ...manualConcepts];
+}
 
 /** Deterministic JSON: object keys sorted, undefined keys omitted (as JSON does),
  *  array order preserved (it is semantically the display order). */

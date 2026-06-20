@@ -7,7 +7,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   stableStringify, serializeSearchState, searchStatesEqual, pickPersisted, extractActiveConcepts,
-  remoteAdoptDecision,
+  remoteAdoptDecision, syncSearchBuilderFromPico, timeframeLabel, extractFieldTerms,
+  conceptFieldKey, PICO_FIELD_DEFS,
 } from '../../src/research-engine/searchBuilder/searchState.js';
 import { norm, picoToConcepts } from '../../src/research-engine/searchBuilder/conceptExtraction.js';
 
@@ -73,6 +74,116 @@ describe('remoteAdoptDecision (conflict-safe live sync core)', () => {
   it('degrades gracefully when the server omits a revision (relies on the signature)', () => {
     expect(remoteAdoptDecision({ remoteSig: 'B', lastSavedSig: 'A', remoteRevision: undefined, knownRevision: 3, busy: false })).toBe('adopt');
     expect(remoteAdoptDecision({ remoteSig: 'A', lastSavedSig: 'A', remoteRevision: undefined, knownRevision: 3, busy: false })).toBe('skip');
+  });
+});
+
+describe('timeframeLabel / conceptFieldKey', () => {
+  it('renders presets, custom ranges, and legacy free-text', () => {
+    expect(timeframeLabel({ timeframeMode: 'last5' })).toBe('Last 5 years');
+    expect(timeframeLabel({ timeframeMode: 'inception' })).toBe('Since inception');
+    expect(timeframeLabel({ timeframeMode: 'custom', tfStart: '2010', tfEnd: '2020' })).toBe('2010–2020');
+    expect(timeframeLabel({ timeframeMode: 'custom', tfStart: '2010' })).toBe('2010–present');
+    expect(timeframeLabel({ timeframe: '2015 to 2020' })).toBe('2015 to 2020');
+    expect(timeframeLabel({})).toBe('');
+  });
+  it('maps concepts to their canonical PICO key (incl. SE1-era field labels)', () => {
+    expect(conceptFieldKey({ picoField: 'I' })).toBe('I');
+    expect(conceptFieldKey({ source: 'pico_auto', field: 'Outcome' })).toBe('O');
+    expect(conceptFieldKey({ source: 'pico_auto', field: 'Comparator' })).toBe('C');
+    expect(conceptFieldKey({ source: 'user_added' })).toBe(null);
+    expect(conceptFieldKey(null)).toBe(null);
+  });
+});
+
+describe('syncSearchBuilderFromPico (SE2 — five PICO concept groups)', () => {
+  const pico = { P: 'type 2 diabetes mellitus with HFrEF', I: 'SGLT2 inhibitor', C: 'placebo', O: 'all-cause mortality', timeframeMode: 'last5' };
+  const termsOf = (groups, key) => groups.find((g) => g.picoField === key).terms.map((t) => norm(t.text));
+  const flat = (groups) => groups.flatMap((g) => g.terms.map((t) => norm(t.text)));
+
+  it('always emits the five canonical groups in order — even for empty PICO', () => {
+    const groups = syncSearchBuilderFromPico({}, [], []);
+    expect(groups.map((g) => g.label)).toEqual(['Population', 'Intervention / Exposure', 'Comparator / Control', 'Outcomes', 'Time Frame']);
+    expect(groups.map((g) => g.picoField)).toEqual(['P', 'I', 'C', 'O', 'T']);
+    expect(PICO_FIELD_DEFS.map((d) => d.key)).toEqual(['P', 'I', 'C', 'O', 'T']);
+  });
+
+  it('maps each PICO field to its own group with extracted keywords', () => {
+    const groups = syncSearchBuilderFromPico(pico, [], []);
+    expect(termsOf(groups, 'P')).toEqual(expect.arrayContaining(['type 2 diabetes mellitus', 'diabetes', 't2dm', 'heart failure', 'hfref']));
+    expect(termsOf(groups, 'I')).toEqual(expect.arrayContaining(['sglt2 inhibitor']));
+    expect(termsOf(groups, 'C')).toEqual(expect.arrayContaining(['placebo']));
+    expect(termsOf(groups, 'O')).toEqual(expect.arrayContaining(['mortality']));
+    // no connector/filler junk terms leak in
+    expect(flat(groups)).not.toContain('with');
+    expect(flat(groups)).not.toContain('type');
+  });
+
+  it('Time Frame group carries the restriction as a note, with no search term', () => {
+    const groups = syncSearchBuilderFromPico(pico, [], []);
+    const tf = groups.find((g) => g.picoField === 'T');
+    expect(tf.note).toBe('Last 5 years');
+    expect(tf.terms).toEqual([]);
+  });
+
+  it('is idempotent — repeated sync produces no duplicate terms', () => {
+    const once = syncSearchBuilderFromPico(pico, [], []);
+    const twice = syncSearchBuilderFromPico(pico, once, []);
+    expect(flat(twice)).toEqual(flat(once));
+    expect(new Set(termsOf(twice, 'P')).size).toBe(termsOf(twice, 'P').length);
+  });
+
+  it('does not re-add a hidden/deleted PICO term', () => {
+    const groups = syncSearchBuilderFromPico(pico, [], ['T2DM']);
+    expect(termsOf(groups, 'P')).not.toContain('t2dm');
+    expect(termsOf(groups, 'P')).toEqual(expect.arrayContaining(['diabetes'])); // siblings stay
+  });
+
+  it('preserves manual concepts (appended after the five groups)', () => {
+    const manual = { id: 'm1', label: 'My idea', source: 'user_added', op: 'AND', terms: [{ text: 'foo', source: 'user_added' }] };
+    const out = syncSearchBuilderFromPico(pico, [manual], []);
+    expect(out.length).toBe(6);
+    expect(out[5]).toMatchObject({ id: 'm1', label: 'My idea' });
+  });
+
+  it('preserves manual terms added inside a PICO group', () => {
+    const existing = [{ picoField: 'P', source: 'pico_auto', field: 'Population', label: 'Population', op: 'AND', terms: [{ text: 'elderly cohort', source: 'user_added' }] }];
+    const out = syncSearchBuilderFromPico(pico, existing, []);
+    expect(termsOf(out, 'P')).toContain('elderly cohort');
+  });
+
+  it('keeps an auto term the user converted to MeSH even if no longer extracted', () => {
+    const existing = [{ picoField: 'O', source: 'pico_auto', field: 'Outcomes', label: 'Outcomes', op: 'AND', terms: [{ text: 'legacy outcome', source: 'pico_auto', type: 'controlled', vocab: { mesh: 'X' } }] }];
+    const out = syncSearchBuilderFromPico({ O: 'mortality' }, existing, []);
+    expect(termsOf(out, 'O')).toEqual(expect.arrayContaining(['mortality', 'legacy outcome']));
+  });
+
+  it('migrates an SE1-era family concept into its PICO group (no orphan)', () => {
+    const legacy = [{ id: 'l1', label: 'type 2 diabetes', field: 'Population', source: 'pico_auto', op: 'AND',
+      terms: [{ text: 'diabetes', source: 'pico_auto', type: 'controlled', vocab: { mesh: 'Diabetes Mellitus, Type 2' } }] }];
+    const out = syncSearchBuilderFromPico({ P: 'type 2 diabetes' }, legacy, []);
+    expect(out.length).toBe(5); // absorbed, not kept as a separate concept
+    const pop = out.find((g) => g.picoField === 'P');
+    expect(pop.terms.some((t) => norm(t.text) === 'diabetes' && t.vocab)).toBe(true); // user's MeSH survives
+  });
+
+  it('a PICO edit updates only that field group and drops the stale auto term', () => {
+    const a = syncSearchBuilderFromPico({ P: 'asthma' }, [], []);
+    const a2 = a.map((c) => ({ ...c, picoField: c.picoField })); // simulate persisted (picoField present)
+    const b = syncSearchBuilderFromPico({ P: 'COPD' }, a2, []);
+    expect(termsOf(b, 'P')).toEqual(expect.arrayContaining(['copd', 'chronic obstructive pulmonary disease']));
+    expect(termsOf(b, 'P')).not.toContain('asthma'); // stale, untouched auto term removed
+  });
+});
+
+describe('extractFieldTerms', () => {
+  it('flattens a field into one deduped ordered term list', () => {
+    const terms = extractFieldTerms('type 2 diabetes mellitus with HFrEF').map((t) => norm(t.text));
+    expect(terms).toEqual(expect.arrayContaining(['type 2 diabetes mellitus', 'diabetes', 't2dm', 'hfref', 'heart failure']));
+    expect(new Set(terms).size).toBe(terms.length); // no dupes
+  });
+  it('returns [] for empty text', () => {
+    expect(extractFieldTerms('')).toEqual([]);
+    expect(extractFieldTerms(null)).toEqual([]);
   });
 });
 
