@@ -74,6 +74,7 @@ function useFillViewportHeight(ref, bottomGap = 24, minHeight = 460) {
   const [height, setHeight] = useState(null);
   useEffect(() => {
     let raf = 0;
+    const timers = [];
     const recompute = () => {
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
@@ -81,13 +82,25 @@ function useFillViewportHeight(ref, bottomGap = 24, minHeight = 460) {
         try {
           const top = el.getBoundingClientRect().top;
           const h = Math.max(minHeight, window.innerHeight - top - bottomGap);
-          setHeight(h);
+          setHeight((prev) => (prev != null && Math.abs(prev - h) < 1 ? prev : h));
         } catch { /* ignore */ }
       });
     };
     recompute();
+    // prompt42 Task 7 — the embedding shell removes its page padding ONE render AFTER
+    // this workspace mounts (its full-bleed flag commits next), which shifts our
+    // rect.top. The hook used to recompute only on window resize, so the first measure
+    // was taken with the old padding → a stale (short) height + a blank gap. Re-measure
+    // on the next frames + a short timeout so we settle on the true post-layout height.
+    timers.push(requestAnimationFrame(() => requestAnimationFrame(recompute)));
+    timers.push(setTimeout(recompute, 90));
+    timers.push(setTimeout(recompute, 250));
     window.addEventListener('resize', recompute);
-    return () => { cancelAnimationFrame(raf); window.removeEventListener('resize', recompute); };
+    return () => {
+      cancelAnimationFrame(raf);
+      timers.forEach((t) => { cancelAnimationFrame(t); clearTimeout(t); });
+      window.removeEventListener('resize', recompute);
+    };
   }, [ref, bottomGap, minHeight]);
   return height;
 }

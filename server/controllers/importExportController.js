@@ -9,6 +9,7 @@ import { getById, save, getByIdUnscoped, saveAsMember } from '../store.js';
 import { getMetaLabMemberAccess } from '../screening/metalabAccess.js';
 import { prisma } from '../db/client.js';
 import { recordUsage, USAGE } from '../utils/usage.js';
+import { getVersion } from '../version.js';
 
 /** Read the featureFlags SiteSetting — best-effort, defaults to {} (= all on). */
 async function getFeatureFlags() {
@@ -118,6 +119,58 @@ export async function exportProject(req, res) {
     res.json(project);
   } catch (err) {
     console.error('[importExport] exportProject error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /api/export/journal-submission/:id  (prompt42 Task 8)
+ *
+ * Authorizes + AUDITS the one-click journal-submission package. The figures
+ * (PRISMA/forest SVGs) are rendered in the browser from the live project, so the
+ * ZIP itself is assembled client-side; this endpoint is the SERVER authority that
+ * (a) enforces the export permission (owner/leader or member with canExport),
+ * (b) enforces the exportTools feature flag, (c) records the export usage event for
+ * analytics/audit, and (d) returns the canonical appVersion + server timestamp +
+ * title for the package manifest. Same access/existence-hiding contract as
+ * exportProject (404 outsiders, 403 no-export, default flag = enabled).
+ */
+export async function authorizeJournalSubmission(req, res) {
+  try {
+    let project = await getById(req.params.id, req.user.id);
+    if (!project) {
+      const acc = await getMetaLabMemberAccess(req.params.id, req.user.id);
+      if (!acc) return res.status(404).json({ error: 'Project not found' });
+      if (!acc.canExport) {
+        return res.status(403).json({ error: 'You do not have permission to export this project' });
+      }
+      project = await getByIdUnscoped(req.params.id);
+      if (!project) return res.status(404).json({ error: 'Project not found' });
+    }
+
+    const flags = await getFeatureFlags();
+    if (flags.exportTools === false) {
+      return res.status(403).json({ error: 'Export tools are disabled' });
+    }
+
+    recordUsage({
+      type: USAGE.EXPORT,
+      userId: req.user.id,
+      metaLabProjectId: req.params.id,
+      format: 'zip',
+      meta: { source: 'metalab-journal-submission' },
+    });
+
+    const v = getVersion();
+    res.json({
+      ok: true,
+      projectId: req.params.id,
+      projectTitle: project.name || '',
+      appVersion: v && v.version ? v.version : '',
+      generatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[importExport] authorizeJournalSubmission error:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }

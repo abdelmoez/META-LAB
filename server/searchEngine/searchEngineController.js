@@ -14,12 +14,41 @@
  * backend module.
  */
 import { prisma } from '../db/client.js';
-import { meshLookup, pubmedCount } from './nlmClient.js';
+import { meshLookup, meshSuggest, pubmedCount } from './nlmClient.js';
 import {
   resolveProjectAccess, getModuleState, patchModuleState, recordWorkflowAudit,
 } from '../services/workflowState.js';
 
 const SEARCH_MODULE = 'search';
+
+/**
+ * Normalize the persisted `ignored` list. Accepts the legacy string[] form OR the
+ * richer object[] form {text, field, label}. Legacy strings become
+ * {text, field:'', label:''}; objects keep their fields (coerced to strings).
+ * Entries without usable text are dropped; the result is capped at 500.
+ * Exported for unit tests.
+ */
+export function sanitizeIgnored(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const e of raw) {
+    if (typeof e === 'string') {
+      const text = e.trim();
+      if (text) out.push({ text, field: '', label: '' });
+    } else if (e && typeof e === 'object' && typeof e.text === 'string') {
+      const text = e.text.trim();
+      if (text) {
+        out.push({
+          text,
+          field: typeof e.field === 'string' ? e.field : '',
+          label: typeof e.label === 'string' ? e.label : '',
+        });
+      }
+    }
+    if (out.length >= 500) break;
+  }
+  return out;
+}
 
 async function searchEngineEnabled() {
   try {
@@ -42,6 +71,18 @@ export async function postMesh(req, res) {
   } catch (err) {
     console.error('[searchEngine] postMesh error:', err.message);
     return res.json(null); // degrade rather than 500 (frontend handles null)
+  }
+}
+
+export async function postMeshSuggest(req, res) {
+  try {
+    if (!(await searchEngineEnabled())) return res.status(404).json({ error: 'Not found' });
+    const term = req.body && typeof req.body.term === 'string' ? req.body.term : '';
+    if (!term.trim()) return res.json([]);
+    return res.json(await meshSuggest(term)); // array of mesh records (possibly [])
+  } catch (err) {
+    console.error('[searchEngine] postMeshSuggest error:', err.message);
+    return res.json([]); // degrade rather than 500 (frontend falls back to local seed)
   }
 }
 
@@ -89,9 +130,12 @@ export async function putSearch(req, res) {
     const value = {
       concepts: Array.isArray(body.concepts) ? body.concepts : [],
       overrides: body.overrides && typeof body.overrides === 'object' ? body.overrides : {},
-      // prompt40 Task 2/5 — normalized texts of auto-suggestions the user deleted,
-      // so a PICO re-sync never re-adds them (capped to keep the row small).
-      ignored: Array.isArray(body.ignored) ? body.ignored.filter((x) => typeof x === 'string').slice(0, 500) : [],
+      // prompt40 Task 2/5 + prompt42 Task 2 — auto-suggestions the user deleted, so
+      // a PICO re-sync never re-adds them. Accept BOTH the legacy string[] form and
+      // the richer object[] form {text, field, label} (which preserves the PICO
+      // field for granular per-field restore). Normalized + capped to keep the row
+      // small; new fields are kept (not dropped).
+      ignored: sanitizeIgnored(body.ignored),
     };
     // baseRevision null = overwrite (the contract's PUT is a full upsert; the
     // search builder is single-strategy-per-project so last-write-wins is fine).

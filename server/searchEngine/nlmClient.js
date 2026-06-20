@@ -27,6 +27,7 @@ const minIntervalMs = () => (apiKey() ? 110 : 350);
 const meshCache = createTtlCache({ ttlMs: 30 * 24 * 60 * 60 * 1000, max: 5000 }); // 30 days
 const countCache = createTtlCache({ ttlMs: 60 * 60 * 1000, max: 5000 });          // 1 hour
 const narrowerCache = createTtlCache({ ttlMs: 30 * 24 * 60 * 60 * 1000, max: 5000 }); // 30 days (MeSH tree is near-static)
+const suggestCache = createTtlCache({ ttlMs: 30 * 24 * 60 * 60 * 1000, max: 5000 }); // 30 days (as-you-type MeSH suggestions)
 
 /* ── Rate throttle: serialize the SLOT (start spacing) only, not the fetch, so a
  *    slow response never head-of-line-blocks the next call's spacing. One throttle
@@ -196,6 +197,60 @@ export async function meshLookup(term) {
 }
 
 /**
+ * PURE: an esummary `result` object (db=mesh) + an ordered uid list → an array of
+ * Search Builder MeSH records, in uid order, de-duped by heading, capped. Each
+ * record is `mapMeshSummary(...)` with children=[] (suggestions don't enrich
+ * narrower terms — that happens only when a term is actually added via meshLookup).
+ * Exported so the array-mapping shape is unit-testable without the network.
+ */
+export function mapMeshSummaryList(result, uids, cap = 6) {
+  const ids = Array.isArray(uids) ? uids : [];
+  const res = result && typeof result === 'object' ? result : {};
+  const out = [];
+  const seen = new Set();
+  for (const uid of ids) {
+    const mapped = mapMeshSummary(res[uid]);
+    if (!mapped) continue;
+    const key = mapped.mesh.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(mapped);
+    if (out.length >= cap) break;
+  }
+  return out;
+}
+
+/**
+ * As-you-type MeSH suggestions for a (possibly partial) term → an array of up to
+ * `cap` MeSH descriptor records (the same contract shape as meshLookup, children
+ * left []). Two NLM steps (esearch db=mesh retmax → esummary on the uid list),
+ * cached 30d by normalized term. Graceful: returns [] on ANY failure (never
+ * throws) so the frontend falls back to its local seed.
+ */
+export async function meshSuggest(term, cap = 6) {
+  const q = String(term || '').trim();
+  if (!q) return [];
+  const key = q.toLowerCase();
+  const cached = suggestCache.get(key);
+  if (cached !== undefined) return cached;
+
+  try {
+    const p1 = commonParams(); p1.set('db', 'mesh'); p1.set('term', q); p1.set('retmax', String(cap));
+    const s = await nlmFetch(`${EUTILS}/esearch.fcgi?${p1.toString()}`);
+    const uids = s && s.esearchresult && Array.isArray(s.esearchresult.idlist) ? s.esearchresult.idlist : [];
+    if (!uids.length) { suggestCache.set(key, []); return []; }
+
+    const p2 = commonParams(); p2.set('db', 'mesh'); p2.set('id', uids.join(','));
+    const sum = await nlmFetch(`${EUTILS}/esummary.fcgi?${p2.toString()}`);
+    const list = sum && sum.result ? mapMeshSummaryList(sum.result, uids, cap) : [];
+    suggestCache.set(key, list);
+    return list;
+  } catch {
+    return []; // never throw — degrade to local-only suggestions
+  }
+}
+
+/**
  * Exact PubMed record count for a fully-rendered query string (or null when
  * unavailable). Cached by query string.
  */
@@ -214,4 +269,4 @@ export async function pubmedCount(query) {
 }
 
 /** For diagnostics/tests. */
-export function _caches() { return { meshCache, countCache }; }
+export function _caches() { return { meshCache, countCache, suggestCache }; }

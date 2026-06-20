@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { C, FONT, MONO, alpha } from "../../frontend/theme/tokens.js";  // SearchEngine: adapt to app theme (day/night + brand)
 import { picoToConcepts } from "../../research-engine/searchBuilder/conceptExtraction.js"; // prompt40 Task 3
+import { localMeshSuggestions } from "../../research-engine/searchBuilder/meshSuggest.js"; // prompt42 Task 3
 
 /* ════════════════════════════════════════════════════════════════════════════
    SEARCH BUILDER TAB  ·  production component for the META·LAB SaaS app
@@ -33,6 +34,49 @@ const CONCEPT_COLORS=["#2dd4bf","#818cf8","#f0abfc","#5eead4","#c4b5fd","#67e8f9
 const uid=()=>Math.random().toString(36).slice(2,9);
 // prompt40 Task 3 — multi-concept extraction from PICO (deterministic, no network).
 const cnorm=(s)=>String(s||"").toLowerCase().replace(/[“”"'’.()[\]{}:!?]/g," ").replace(/\s+/g," ").trim();
+
+/* prompt42 Task 1 — short, stable FNV-1a/djb2-style hash of a strategy string, so
+   we can tell when the PubMed query actually changed (drives the hit lifecycle:
+   stale → updating → updated/failed). Pure + exported for tests. */
+export function strategyHash(str){
+  const s=String(str||"");
+  let h=2166136261; // FNV-1a 32-bit
+  for(let i=0;i<s.length;i++){ h^=s.charCodeAt(i); h=Math.imul(h,16777619); }
+  return (h>>>0).toString(36);
+}
+
+/* prompt42 Task 1 — pure, deterministic "x ago" formatter for the hit timestamp.
+   Buckets: just now / Ns ago / Nm ago / Nh ago / Nd ago. Exported for tests.
+   nowMs is injectable so tests are deterministic. */
+export function relativeTime(ts,nowMs){
+  if(ts==null) return "";
+  const now=typeof nowMs==="number"?nowMs:Date.now();
+  const sec=Math.max(0,Math.floor((now-ts)/1000));
+  if(sec<5) return "just now";
+  if(sec<60) return `${sec}s ago`;
+  const min=Math.floor(sec/60);
+  if(min<60) return `${min}m ago`;
+  const hr=Math.floor(min/60);
+  if(hr<24) return `${hr}h ago`;
+  return `${Math.floor(hr/24)}d ago`;
+}
+
+/* prompt42 Task 2 — normalize one persisted `ignored` entry into the rich object
+   form {text, field, label}. Accepts the legacy string form (→ field/label '') OR
+   an object. Returns null when there's no usable text. Pure + exported for tests. */
+export function normalizeIgnoredEntry(e){
+  if(typeof e==="string"){ const text=e.trim(); return text?{text,field:"",label:""}:null; }
+  if(e&&typeof e==="object"&&typeof e.text==="string"){
+    const text=e.text.trim();
+    if(!text) return null;
+    return {text,field:typeof e.field==="string"?e.field:"",label:typeof e.label==="string"?e.label:""};
+  }
+  return null;
+}
+/* Normalize a whole persisted `ignored` array (string[] legacy OR object[]) → object[]. */
+export function normalizeIgnored(list){
+  return (Array.isArray(list)?list:[]).map(normalizeIgnoredEntry).filter(Boolean);
+}
 
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -417,8 +461,103 @@ function TermEditor({term,onChange,onClose,onConvert,onLookup}){
   );
 }
 
+/* prompt42 Task 3 — as-you-type MeSH/keyword/synonym suggestion box.
+   Merges the instant local seed (localMeshSuggestions) with a debounced (>=300ms)
+   remote lookup (api.meshSuggest). Remote failure → local-only (try/catch). The
+   typed term is always addable on Enter (existing behavior preserved); ArrowUp/Down
+   move the highlight, Enter adds the highlighted suggestion (or the typed term when
+   none highlighted), Escape closes. Suggestions carry a MeSH/keyword/synonym badge. */
+const SUGG_BADGE={
+  mesh:["MeSH",C.acc],
+  keyword:["text",C.muted],
+  synonym:["syn",C.acc2||C.acc],
+};
+function mergeSuggestions(local,remote){
+  const out=[]; const seen=new Set();
+  const push=(s)=>{ const k=`${s.type}:${(s.label||"").toLowerCase()}`; if(!s.label||seen.has(k)) return; seen.add(k); out.push(s); };
+  // Remote MeSH headings first (authoritative), then local seed fills the rest.
+  remote.forEach(push); local.forEach(push);
+  return out.slice(0,8);
+}
+function SuggestBox({api,value,onChange,onPick,onCommitTyped,onEscape,onBlur,placeholder,style,inputStyle:istyle,autoFocus}){
+  const picking=useRef(false); // set during a suggestion click so blur doesn't double-commit
+  const [remote,setRemote]=useState([]);
+  const [open,setOpen]=useState(false);
+  const [hi,setHi]=useState(-1);
+  const timer=useRef(null);
+  const boxRef=useRef(null);
+  const local=useMemo(()=>localMeshSuggestions(value),[value]);
+
+  // Debounced remote lookup (>=300ms). Failure → local-only. Stale results dropped:
+  // a `live` token gates the commit so an in-flight request whose `value` has since
+  // changed (and clearTimeout can't cancel) never overwrites the newer suggestions.
+  useEffect(()=>{
+    let live=true;
+    const q=(value||"").trim();
+    clearTimeout(timer.current);
+    if(q.length<2){ setRemote([]); return ()=>{ live=false; }; }
+    timer.current=setTimeout(async()=>{
+      if(!api||typeof api.meshSuggest!=="function"){ if(live) setRemote([]); return; }
+      try{
+        const recs=await api.meshSuggest(q);
+        const mapped=(Array.isArray(recs)?recs:[]).map(r=>({label:r.mesh,type:"mesh",mesh:r.mesh,vocab:r,source:"remote"})).filter(x=>x.label);
+        if(live) setRemote(mapped);
+      }catch{ if(live) setRemote([]); } // graceful — keep local-only
+    },320);
+    return ()=>{ live=false; clearTimeout(timer.current); };
+  },[value,api]);
+
+  const items=useMemo(()=>mergeSuggestions(local,remote),[local,remote]);
+  useEffect(()=>{ setOpen(items.length>0); setHi(-1); },[items.length,value]);
+
+  const pick=(s)=>{ picking.current=true; onPick&&onPick(s); setOpen(false); setHi(-1); };
+  const onKey=(e)=>{
+    if(e.key==="ArrowDown"){ if(open&&items.length){ e.preventDefault(); setHi(h=>(h+1)%items.length); } }
+    else if(e.key==="ArrowUp"){ if(open&&items.length){ e.preventDefault(); setHi(h=>(h<=0?items.length-1:h-1)); } }
+    else if(e.key==="Enter"){
+      if(open&&hi>=0&&items[hi]){ e.preventDefault(); pick(items[hi]); }
+      else { onCommitTyped&&onCommitTyped(); }    // preserve Enter-to-add-typed-term
+    }
+    else if(e.key==="Escape"){ if(open){ e.preventDefault(); setOpen(false); setHi(-1); } else { onEscape&&onEscape(); } }
+  };
+  return(
+    <span ref={boxRef} style={{position:"relative",display:"inline-block",...style}}>
+      <input autoFocus={autoFocus} value={value}
+        onChange={e=>onChange&&onChange(e.target.value)}
+        onKeyDown={onKey}
+        onFocus={()=>setOpen(items.length>0)}
+        onBlur={()=>{ setTimeout(()=>{ setOpen(false); if(picking.current){ picking.current=false; } else { onBlur&&onBlur(); } },140); }}  // allow click on a suggestion; commit typed term only on a real blur
+        placeholder={placeholder} style={istyle}
+        role="combobox" aria-expanded={open} aria-autocomplete="list"/>
+      {open&&items.length>0&&(
+        <div role="listbox" style={{position:"absolute",zIndex:90,top:"calc(100% + 3px)",left:0,minWidth:240,maxWidth:340,background:C.card,border:`1px solid ${alpha(C.acc,"55")}`,borderRadius:8,boxShadow:"0 14px 40px #000a",overflow:"hidden"}}>
+          {items.map((s,i)=>{
+            const badge=SUGG_BADGE[s.type]||SUGG_BADGE.keyword;
+            return(
+              <div key={`${s.type}:${s.label}`} role="option" aria-selected={i===hi}
+                onMouseDown={e=>{e.preventDefault();pick(s);}} onMouseEnter={()=>setHi(i)}
+                style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",cursor:"pointer",background:i===hi?alpha(C.acc,"1a"):"transparent"}}>
+                <span style={{flex:1,fontFamily:s.type==="mesh"?MONO:SANS,fontSize:11.5,color:C.txt2,wordBreak:"break-word"}}>{s.label}</span>
+                <span style={{fontSize:8,fontWeight:700,letterSpacing:.4,color:badge[1],textTransform:"uppercase",opacity:.85,flexShrink:0,border:`1px solid ${alpha(badge[1],"55")}`,borderRadius:4,padding:"0 4px"}}>{badge[0]}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </span>
+  );
+}
+
 /* query output with live count (PubMed only) + edit override + plain English */
-function QueryOutput({dbId,concepts,override,setOverride,beginner,liveCount,countState}){
+function QueryOutput({dbId,concepts,override,setOverride,beginner,liveCount,countState,hitState}){
+  // prompt42 Task 1 — re-render the relative timestamp ("updated 2m ago") on a slow
+  // tick so it stays fresh without a fetch. Tick only matters once we have a time.
+  const [,setTick]=useState(0);
+  useEffect(()=>{
+    if(!hitState||hitState.status!=="updated"||hitState.lastUpdatedAt==null) return;
+    const id=setInterval(()=>setTick(t=>t+1),15000);
+    return ()=>clearInterval(id);
+  },[hitState&&hitState.status,hitState&&hitState.lastUpdatedAt]);
   const db=DBS.find(d=>d.id===dbId);
   const {full,lines}=useMemo(()=>renderSearch(concepts,dbId),[concepts,dbId]);
   const plain=useMemo(()=>plainSearch(concepts),[concepts]);
@@ -445,7 +584,22 @@ function QueryOutput({dbId,concepts,override,setOverride,beginner,liveCount,coun
           : <span style={{fontSize:9,fontWeight:700,letterSpacing:.4,color:C.muted,background:C.card2,border:`1px solid ${C.brd2}`,borderRadius:5,padding:"1px 6px"}}>MANUAL</span>}
         {edited&&<span style={{fontSize:9.5,fontWeight:700,letterSpacing:.4,color:C.yel,background:`${alpha(C.yel,"1a")}`,border:`1px solid ${alpha(C.yel,"55")}`,borderRadius:5,padding:"1px 7px"}} title="Manually edited — no longer matches the concept builder">✎ EDITED</span>}
         <span style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
-          {!edited&&db.live&&(
+          {/* prompt42 Task 1 — live hit status lifecycle (PubMed). Non-blocking;
+              a failure shows a small inline message and never throws. */}
+          {!edited&&db.live&&hitState&&(()=>{
+            const st=hitState.status;
+            if(st==="updating"||st==="stale") return <span style={{fontFamily:MONO,fontSize:11,color:C.muted}} title="Refreshing PubMed hit count">Updating hits…</span>;
+            if(st==="failed") return <span style={{fontFamily:MONO,fontSize:10.5,color:C.yel,maxWidth:200,whiteSpace:"normal",lineHeight:1.3}} title={hitState.errorMessage||"Hit count unavailable"}>⚠ hits unavailable</span>;
+            if(st==="updated"&&hitState.hitCount!=null) return (
+              <span style={{display:"inline-flex",alignItems:"baseline",gap:6}}>
+                <span style={{fontFamily:MONO,fontSize:12,color:C.acc,fontWeight:700}}>{fmtCount(hitState.hitCount)} <span style={{color:C.muted,fontWeight:400,fontSize:10}}>hits</span></span>
+                {hitState.lastUpdatedAt!=null&&<span style={{fontSize:9,color:C.dim}} title={new Date(hitState.lastUpdatedAt).toLocaleString()}>updated {relativeTime(hitState.lastUpdatedAt)}</span>}
+              </span>
+            );
+            return null;
+          })()}
+          {/* Fallback for any future live db without a hitState (keeps old behavior). */}
+          {!edited&&db.live&&!hitState&&(
             countState==="loading"
               ? <span style={{fontFamily:MONO,fontSize:11,color:C.muted}}>counting…</span>
               : liveCount!=null
@@ -526,11 +680,18 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const [draft,setDraft]=useState("");
   const [loaded,setLoaded]=useState(false);
   const [limitedMode,setLimitedMode]=useState(false); // backend/NLM unreachable
+  const [showHidden,setShowHidden]=useState(false);   // prompt42 Task 2 — "Hidden PICO terms" panel
   const [counts,setCounts]=useState({});              // {dbId: number|null}
   const [countState,setCountState]=useState("idle");  // idle|loading
+  // prompt42 Task 1 — PubMed hit lifecycle (the only LIVE db; embase/cochrane are
+  // manual). { strategyHash, hitCount, status, lastUpdatedAt, errorMessage }.
+  // status: idle | stale | updating | updated | failed.
+  const [hitState,setHitState]=useState({strategyHash:null,hitCount:null,status:"idle",lastUpdatedAt:null,errorMessage:null});
   const [picoDirty,setPicoDirty]=useState(false);
-  // prompt40 Task 2/5 — normalized texts of auto-suggested terms the user deleted.
-  // Persisted so a PICO re-sync never re-adds them (until "Reset suggestions").
+  // prompt40 Task 2/5 + prompt42 Task 2 — auto-suggested terms the user deleted,
+  // each as {text, field, label} (field/label = the PICO field the term came from,
+  // so restore is granular per-field). Persisted so a PICO re-sync never re-adds
+  // them (until restored). Legacy persisted string[] is normalized on load.
   const [ignored,setIgnored]=useState([]);
 
   /* ── INTEGRATION: load saved search for this project on mount ───────────── */
@@ -538,7 +699,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     if(loadSearch&&projectId){
       try{
         const saved=await loadSearch(projectId);
-        if(saved&&saved.concepts){ setConcepts(saved.concepts); setOverrides(saved.overrides||{}); setIgnored(Array.isArray(saved.ignored)?saved.ignored:[]); }
+        if(saved&&saved.concepts){ setConcepts(saved.concepts); setOverrides(saved.overrides||{}); setIgnored(normalizeIgnored(saved.ignored)); }
         else seedFromPICO(true);
       }catch(e){ console.error("loadSearch failed",e); seedFromPICO(true); }
     } else {
@@ -565,8 +726,9 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
 
   /* prompt40 Task 3 — extract MULTIPLE concepts from each PICO field (not just the
      first word), filtering out any auto-terms the user previously deleted. */
+  // prompt42 Task 2 — `ignoredList` is now {text,field,label}[]; filter on .text.
   function buildExtracted(ignoredList){
-    const ig=new Set((ignoredList||[]).map(cnorm));
+    const ig=new Set((ignoredList||[]).map(e=>cnorm(e&&e.text)));
     return picoToConcepts(pico)
       .map(c=>({...c,id:uid(),terms:c.terms.filter(t=>!ig.has(cnorm(t.text))).map(t=>({...t,id:uid()}))}))
       .filter(c=>c.terms.length);
@@ -603,11 +765,64 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     picoSnapshot.current=picoKey;
   }
 
+  /* prompt42 Task 2 — re-add ONE removed PICO term as source:'pico_auto' into the
+     concept that owns it (matched by field+label, else label, else recreated) and
+     remove it from `ignored`. Returns the {cid,tid} so the caller can lookup. */
+  function restoreTermInto(cs,entry){
+    const wantField=entry.field||"", wantLabel=cnorm(entry.label);
+    let target=cs.find(c=>(c.field||"")===wantField&&cnorm(c.label)===wantLabel&&wantLabel);
+    if(!target) target=cs.find(c=>cnorm(c.label)===wantLabel&&wantLabel);
+    const tid=uid();
+    const newTerm={id:tid,text:entry.text,type:"freetext",field:"tiab",source:"pico_auto"};
+    let cid;
+    let next;
+    if(target){
+      cid=target.id;
+      // no-op if a term with this text already lives in the concept (dedupe)
+      if(target.terms.some(t=>cnorm(t.text)===cnorm(entry.text))) return {cs,cid:null,tid:null};
+      next=cs.map(c=>c.id===cid?{...c,terms:[...c.terms,newTerm]}:c);
+    } else {
+      cid=uid();
+      next=[...cs,{id:cid,label:entry.label||entry.text,field:wantField,source:"pico_auto",op:"AND",terms:[newTerm]}];
+    }
+    return {cs:next,cid,tid};
+  }
+
+  /* Restore a single hidden term (↩ on one entry). */
+  function restoreTerm(entry){
+    let res;
+    setConcepts(cs=>{ res=restoreTermInto(cs,entry); return res.cs; });
+    setIgnored(ig=>ig.filter(e=>cnorm(e.text)!==cnorm(entry.text)));
+    if(res&&res.cid) tryLookup(res.cid,res.tid,entry.text);
+  }
+
+  /* Restore every hidden term from one PICO field ("Restore all from <field>"). */
+  function restoreField(field){
+    const entries=ignored.filter(e=>(e.field||"")===(field||""));
+    if(!entries.length) return;
+    const looked=[];
+    setConcepts(cs=>{
+      let cur=cs;
+      for(const e of entries){ const r=restoreTermInto(cur,e); cur=r.cs; if(r.cid) looked.push([r.cid,r.tid,e.text]); }
+      return cur;
+    });
+    const drop=new Set(entries.map(e=>cnorm(e.text)));
+    setIgnored(ig=>ig.filter(e=>!drop.has(cnorm(e.text))));
+    looked.forEach(([cid,tid,text])=>tryLookup(cid,tid,text));
+  }
+
+  /* Hidden terms grouped by PICO field for the "Hidden PICO terms" UI block. */
+  const ignoredByField=useMemo(()=>{
+    const m=new Map();
+    for(const e of ignored){ const k=e.field||""; if(!m.has(k)) m.set(k,[]); m.get(k).push(e); }
+    return [...m.entries()].map(([field,items])=>({field,label:items.find(i=>i.label)?.label||"",items}));
+  },[ignored]);
+
   /* How many genuinely-new PICO suggestions are available (drives the banner). */
   const newSuggestionCount=useMemo(()=>{
     if(!picoDirty) return 0;
     const have=presentPrimaries(concepts);
-    const ig=new Set(ignored.map(cnorm));
+    const ig=new Set(ignored.map(e=>cnorm(e&&e.text)));
     return picoToConcepts(pico).filter(c=>{ const p=cnorm(c.terms[0]?.text); return p&&!have.has(p)&&!ig.has(p); }).length;
   },[picoDirty,concepts,ignored,pico]); // eslint-disable-line
 
@@ -629,45 +844,85 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     }
   },[A]);
 
-  /* ── live PubMed count, debounced + cached ─────────────────────────────── */
-  const countCache=useRef({});
+  /* ── live PubMed HIT lifecycle (prompt42 Task 1) ──────────────────────────
+     The PubMed query drives a status machine: any change to the strategy hash
+     immediately marks the hits 'stale', then a single debounced (600ms) refresh
+     runs 'updating' → 'updated' (count + timestamp) or 'failed' (errorMessage).
+     Cached queries resolve instantly to 'updated'. A race guard discards any
+     result whose hash no longer matches the current strategy. Drives the hash off
+     `pubmedQuery`, which already prefers a user-edited override over the generated
+     query, so hand-edited strategies stay safe. */
+  const countCache=useRef({});        // query string -> count (number|null)
   const countTimer=useRef(null);
   const pubmedQuery=useMemo(()=>{
     const o=overrides.pubmed; const gen=renderSearch(concepts,"pubmed").full;
     return o!=null?o:gen;
   },[concepts,overrides]);
+  const pubHash=useMemo(()=>strategyHash(pubmedQuery),[pubmedQuery]);
+
   useEffect(()=>{
-    if(!pubmedQuery){ setCounts(c=>({...c,pubmed:null})); return; }
-    if(countCache.current[pubmedQuery]!=null){ setCounts(c=>({...c,pubmed:countCache.current[pubmedQuery]})); return; }
-    clearTimeout(countTimer.current);
+    // No query → reset to idle (nothing to count).
+    if(!pubmedQuery){
+      setHitState({strategyHash:pubHash,hitCount:null,status:"idle",lastUpdatedAt:null,errorMessage:null});
+      setCounts(c=>({...c,pubmed:null})); setCountState("idle");
+      return;
+    }
+    // Cached → resolve immediately to 'updated' (no fetch, no flicker). Keep the
+    // existing timestamp if this is still the same strategy; stamp fresh when the
+    // strategy changed (the cached count is newly shown for this strategy).
+    if(countCache.current[pubmedQuery]!==undefined){
+      const n=countCache.current[pubmedQuery];
+      setHitState(s=>({strategyHash:pubHash,hitCount:n,status:"updated",
+        lastUpdatedAt:(s.strategyHash===pubHash&&s.lastUpdatedAt)?s.lastUpdatedAt:Date.now(),errorMessage:null}));
+      setCounts(c=>({...c,pubmed:n})); setCountState("idle");
+      return;
+    }
+    // New strategy → mark stale right away, then debounce a single refresh.
+    setHitState(s=>({...s,strategyHash:pubHash,status:"stale",errorMessage:null}));
     setCountState("loading");
+    clearTimeout(countTimer.current);
     countTimer.current=setTimeout(async()=>{
+      setHitState(s=>s.strategyHash===pubHash?{...s,status:"updating"}:s);
       try{
         const n=await A.pubmedCount(pubmedQuery);
         countCache.current[pubmedQuery]=n;
         setCounts(c=>({...c,pubmed:n}));
-      }catch(e){ setCounts(c=>({...c,pubmed:null})); setLimitedMode(true); }
+        // Race guard: only commit if this is still the current strategy.
+        setHitState(s=>s.strategyHash===pubHash
+          ?{strategyHash:pubHash,hitCount:n,status:"updated",lastUpdatedAt:Date.now(),errorMessage:null}:s);
+      }catch(e){
+        setCounts(c=>({...c,pubmed:null})); setLimitedMode(true);
+        setHitState(s=>s.strategyHash===pubHash
+          ?{...s,strategyHash:pubHash,status:"failed",errorMessage:(e&&e.message)||"Hit count unavailable"}:s);
+      }
       setCountState("idle");
     },600); // INTEGRATION: debounce window — see BACKEND_CONTRACT for tradeoffs
     return ()=>clearTimeout(countTimer.current);
-  },[pubmedQuery,A]);
+  },[pubHash,pubmedQuery,A]); // eslint-disable-line
 
   /* ── concept/term mutators ─────────────────────────────────────────────── */
   const updateConcept=(id,patch)=>setConcepts(cs=>cs.map(c=>c.id===id?{...c,...patch}:c));
   const updateTerm=(cid,tid,patch)=>setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:c.terms.map(t=>t.id===tid?{...t,...patch}:t)}:c));
-  // prompt40 Task 5 — deleting an AUTO-suggested term records it as ignored so a
-  // PICO re-sync won't re-add it (until Reset suggestions). User-added terms are
-  // simply removed (nothing to remember).
+  // prompt42 Task 2 — add an ignored entry only when its text isn't already there.
+  const addIgnored=(entry)=>setIgnored(ig=>ig.some(e=>cnorm(e.text)===cnorm(entry.text))?ig:[...ig,entry]);
+  // prompt40 Task 5 + prompt42 Task 2 — deleting an AUTO-suggested term records it
+  // (with the owning concept's PICO field + label) as ignored so a PICO re-sync
+  // won't re-add it, and so it can be restored back into the right field. User-added
+  // terms are simply removed (nothing to remember).
   const removeTerm=(cid,tid)=>{
-    const t=concepts.find(x=>x.id===cid)?.terms.find(x=>x.id===tid);
-    if(t&&t.source==="pico_auto"){ const n=cnorm(t.text); setIgnored(ig=>ig.includes(n)?ig:[...ig,n]); }
-    setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:c.terms.filter(t2=>t2.id!==tid)}:c));
+    const c=concepts.find(x=>x.id===cid);
+    const t=c?.terms.find(x=>x.id===tid);
+    if(t&&t.source==="pico_auto"){ addIgnored({text:t.text,field:c?.field||"",label:c?.label||""}); }
+    setConcepts(cs=>cs.map(c2=>c2.id===cid?{...c2,terms:c2.terms.filter(t2=>t2.id!==tid)}:c2));
   };
   const addConcept=()=>setConcepts(cs=>[...cs,{id:uid(),label:`Concept ${cs.length+1}`,op:"AND",source:"user_added",terms:[]}]);
   const removeConcept=id=>{
     const c=concepts.find(x=>x.id===id);
-    const auto=(c?.terms||[]).filter(t=>t.source==="pico_auto").map(t=>cnorm(t.text));
-    if(auto.length) setIgnored(ig=>[...new Set([...ig,...auto])]);
+    const auto=(c?.terms||[]).filter(t=>t.source==="pico_auto").map(t=>({text:t.text,field:c?.field||"",label:c?.label||""}));
+    if(auto.length) setIgnored(ig=>{
+      const have=new Set(ig.map(e=>cnorm(e.text)));
+      return [...ig,...auto.filter(e=>!have.has(cnorm(e.text)))];
+    });
     setConcepts(cs=>cs.filter(c2=>c2.id!==id));
   };
   const commitAdd=cid=>{
@@ -676,6 +931,22 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:[...c.terms,{id:tid,text:draft.trim(),type:"freetext",field:"tiab",source:"user_added"}]}:c));
     tryLookup(cid,tid,draft.trim());
     setDraft("");
+  };
+  /* prompt42 Task 3 — add a picked suggestion as a term. MeSH → controlled (with a
+     lookup to attach the descriptor); keyword/synonym → freetext. Deduped against
+     the concept's existing terms (mirrors addSynonyms). Triggers a hit refresh. */
+  const addSuggestion=(cid,sugg)=>{
+    const c=concepts.find(x=>x.id===cid); if(!c||!sugg) return;
+    const text=String(sugg.label||"").trim(); if(!text) return;
+    if(c.terms.some(t=>t.text.toLowerCase()===text.toLowerCase())) return; // dedupe
+    const tid=uid();
+    const isMesh=sugg.type==="mesh";
+    const newTerm=isMesh
+      ? {id:tid,text:(sugg.mesh||text),type:"controlled",field:"tiab",source:"user_added",vocab:sugg.vocab||null}
+      : {id:tid,text,type:"freetext",field:"tiab",source:sugg.type==="synonym"?"synonym":"user_added"};
+    setConcepts(cs=>cs.map(x=>x.id===cid?{...x,terms:[...x.terms,newTerm]}:x));
+    // Attach/confirm the descriptor: force controlled for MeSH, best-effort otherwise.
+    tryLookup(cid,tid,newTerm.text,isMesh);
   };
   const addSynonyms=(cid,tid)=>{
     const c=concepts.find(x=>x.id===cid),t=c?.terms.find(x=>x.id===tid);
@@ -736,12 +1007,43 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
             <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Concepts</span>
             <Help text="A concept is one idea in your question (a disease, a treatment). Under each concept, list the ways authors might phrase that idea. Concepts join with AND (all must appear); terms inside a concept join with OR (any one counts)."/>
             {concepts.length===0&&pico&&<span style={{fontSize:11,color:C.muted}}>No concepts yet — they seed from your PICO automatically.</span>}
-            {/* prompt40 Task 5 — restore deleted auto-suggestions + re-seed from PICO (keeps your manual concepts). */}
+            {/* prompt42 Task 2 — toggle the granular "Hidden PICO terms" panel. */}
             {pico&&ignored.length>0&&(
-              <button onClick={resetSuggestions} title={`Restore ${ignored.length} removed suggestion${ignored.length===1?"":"s"} and re-seed from PICO`}
-                style={{marginLeft:"auto",background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:10.5,fontFamily:MONO,textDecoration:"underline"}}>↺ Reset suggestions ({ignored.length})</button>
+              <button onClick={()=>setShowHidden(s=>!s)} aria-expanded={showHidden} title="Show terms you removed from the PICO suggestions, grouped by field, to restore them"
+                style={{marginLeft:"auto",background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:10.5,fontFamily:MONO,textDecoration:"underline"}}>{showHidden?"▾":"▸"} Hidden PICO terms ({ignored.length})</button>
             )}
           </div>
+
+          {/* prompt42 Task 2 — Hidden PICO terms: per-term ↩ restore, per-field
+              "Restore all from <field>", and restore-all (= legacy Reset suggestions). */}
+          {pico&&ignored.length>0&&showHidden&&(
+            <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:12,marginBottom:10}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+                <span style={{fontSize:10.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase"}}>Hidden PICO terms</span>
+                <span style={{fontSize:10,color:C.dim}}>removed auto-suggestions — won't return on re-sync until restored</span>
+                <button onClick={resetSuggestions} title={`Restore all ${ignored.length} removed suggestion${ignored.length===1?"":"s"} and re-seed from PICO`}
+                  style={{marginLeft:"auto",...btn("ghost"),fontSize:10,padding:"3px 9px"}}>↺ Restore all ({ignored.length})</button>
+              </div>
+              {ignoredByField.map((grp,gi)=>(
+                <div key={gi} style={{marginBottom:gi<ignoredByField.length-1?8:0}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:5}}>
+                    <span style={{fontSize:9.5,fontWeight:700,color:C.dim,letterSpacing:.5,textTransform:"uppercase"}}>{grp.field||grp.label||"Other"}</span>
+                    <button onClick={()=>restoreField(grp.field)} title={`Restore all from ${grp.field||"this field"}`}
+                      style={{background:"none",border:"none",color:C.acc,cursor:"pointer",fontSize:9.5,fontFamily:MONO,textDecoration:"underline"}}>restore all from {grp.field||"field"} ({grp.items.length})</button>
+                  </div>
+                  <div style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                    {grp.items.map((e,ei)=>(
+                      <span key={ei} style={{display:"inline-flex",alignItems:"center",gap:5,background:C.surf,border:`1px dashed ${C.brd2}`,borderRadius:6,padding:"2px 7px"}}>
+                        <span style={{fontFamily:MONO,fontSize:10.5,color:C.txt2}}>{e.text}</span>
+                        <button onClick={()=>restoreTerm(e)} title={`Restore "${e.text}"`} aria-label={`Restore ${e.text}`}
+                          style={{background:"none",border:"none",color:C.acc,cursor:"pointer",fontSize:11,padding:0,lineHeight:1}}>↩</button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
           {concepts.map((c,ci)=>{
             const color=CONCEPT_COLORS[ci%CONCEPT_COLORS.length];
@@ -772,11 +1074,15 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
                       </span>
                     ))}
                     {adding===c.id?(
-                      <input autoFocus value={draft} onChange={e=>setDraft(e.target.value)}
-                        onKeyDown={e=>{if(e.key==="Enter")commitAdd(c.id);if(e.key==="Escape"){setAdding(null);setDraft("");}}}
-                        onBlur={()=>{commitAdd(c.id);setAdding(null);}}
-                        placeholder="type a term, Enter to add"
-                        style={{...inputStyle,width:200,display:"inline-block",fontSize:11,fontFamily:MONO}}/>
+                      <SuggestBox api={A} value={draft} autoFocus
+                        onChange={setDraft}
+                        onPick={s=>{ addSuggestion(c.id,s); setDraft(""); }}     // add picked suggestion; stay open to add more
+                        onCommitTyped={()=>commitAdd(c.id)}
+                        onEscape={()=>{ setAdding(null); setDraft(""); }}
+                        onBlur={()=>{ commitAdd(c.id); setAdding(null); }}
+                        placeholder="type a term — MeSH suggestions appear"
+                        style={{verticalAlign:"top"}}
+                        inputStyle={{...inputStyle,width:220,display:"inline-block",fontSize:11,fontFamily:MONO}}/>
                     ):(
                       <button onClick={()=>setAdding(c.id)} style={{...btn("ghost"),fontSize:11,padding:"4px 10px"}}>+ term</button>
                     )}
@@ -816,7 +1122,8 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
             <QueryOutput dbId={activeDB} concepts={concepts} beginner={beginner}
               override={overrides[activeDB]??null}
               setOverride={val=>setOverrides(o=>({...o,[activeDB]:val}))}
-              liveCount={counts[activeDB]} countState={activeDB==="pubmed"?countState:"idle"}/>
+              liveCount={counts[activeDB]} countState={activeDB==="pubmed"?countState:"idle"}
+              hitState={activeDB==="pubmed"?hitState:null}/>
           </div>
         </div>
       </div>

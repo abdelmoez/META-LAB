@@ -70,6 +70,7 @@ export default function ExportDialog({ open, onClose, item, precision }) {
   const [transparent, setTransparent] = useState(false);
   const [variantId, setVariantId]     = useState(null);
   const [running, setRunning]         = useState(false);
+  const [progress, setProgress]       = useState('');   // prompt42 — live step text from run()
   const [error, setError]             = useState(null);
   // Precision selector: default from the project-level precision prop.
   // 'full' means raw unrounded values (overrides decimals for report formats).
@@ -88,6 +89,7 @@ export default function ExportDialog({ open, onClose, item, precision }) {
     setCustomPx('1600');
     setTransparent(false);
     setRunning(false);
+    setProgress('');
     setError(null);
     setDecimals(precision?.decimals ?? DEFAULT_DECIMALS);
     setFullPrec(false);
@@ -106,7 +108,9 @@ export default function ExportDialog({ open, onClose, item, precision }) {
 
   if (!open || !item) return null;
 
-  const showSizing = !!item.sizing && format === 'png';
+  // PNG figures and the journal ZIP (which contains figure PNGs) both offer the
+  // size selector; prompt42 Task 8.
+  const showSizing = !!item.sizing && (format === 'png' || format === 'zip');
   const custom = presetId === 'custom' ? validateCustomSize(customPx) : null;
   const sizeInvalid = showSizing && presetId === 'custom' && !(custom && custom.ok);
 
@@ -140,8 +144,9 @@ export default function ExportDialog({ open, onClose, item, precision }) {
         widthPx = PRESETS.find(p => p.id === presetId)?.px;
       }
     }
-    setRunning(true); setError(null);
+    setRunning(true); setError(null); setProgress('');
     try {
+      // 2nd arg = progress reporter (optional; older run() functions ignore it).
       await item.run({
         format,
         presetId: showSizing ? presetId : undefined,
@@ -149,12 +154,13 @@ export default function ExportDialog({ open, onClose, item, precision }) {
         transparent: showSizing ? transparent : false,
         variantId: item.variants?.length ? variantId : undefined,
         precision: chosenPrecision,
-      });
+      }, (msg) => setProgress(String(msg || '')));
       onClose?.();
     } catch (e) {
       setError(e?.message || 'Export failed. Please try again.');
     } finally {
       setRunning(false);
+      setProgress('');
     }
   };
 
@@ -339,7 +345,7 @@ export default function ExportDialog({ open, onClose, item, precision }) {
               cursor: running || !format || sizeInvalid ? 'not-allowed' : 'pointer',
               opacity: running || !format || sizeInvalid ? 0.55 : 1,
             }}>
-            {running ? <><Spinner /> Exporting…</> : 'Export'}
+            {running ? <><Spinner /> {progress || 'Exporting…'}</> : 'Export'}
           </button>
         </div>
       </div>

@@ -5,8 +5,9 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  mapMeshSummary, emtreeFallback, parseSparqlLabels, meshNarrower,
+  mapMeshSummary, mapMeshSummaryList, emtreeFallback, parseSparqlLabels, meshNarrower, meshSuggest,
 } from '../../server/searchEngine/nlmClient.js';
+import { sanitizeIgnored } from '../../server/searchEngine/searchEngineController.js';
 import { createTtlCache } from '../../server/searchEngine/ttlCache.js';
 
 describe('mapMeshSummary', () => {
@@ -39,6 +40,63 @@ describe('mapMeshSummary', () => {
     expect(m.synonyms.length).toBe(40);
     expect(m.meshUI).toBe('');
     expect(m.scope).toBe('');
+  });
+});
+
+describe('mapMeshSummaryList (meshSuggest mapper, prompt42)', () => {
+  const result = {
+    '1': { ds_meshterms: ['Diabetes Mellitus, Type 2', 'NIDDM'], ds_meshui: 'D003924' },
+    '2': { ds_meshterms: ['Diabetes Mellitus, Type 1'], ds_meshui: 'D003922' },
+    '3': { ds_meshterms: [] },                  // unusable → skipped
+    '4': { ds_meshterms: ['Diabetes Mellitus, Type 2'], ds_meshui: 'Dxxxx' }, // dupe heading → skipped
+  };
+  it('maps each uid in order via mapMeshSummary, dropping unusable + duplicate headings', () => {
+    const list = mapMeshSummaryList(result, ['1', '2', '3', '4']);
+    expect(list.map((m) => m.mesh)).toEqual(['Diabetes Mellitus, Type 2', 'Diabetes Mellitus, Type 1']);
+    expect(list[0].meshUI).toBe('D003924');
+    expect(list[0].source).toBe('live');
+    expect(list[0].children).toEqual([]); // suggestions don't enrich narrower terms
+    expect(list[0].emtree).toBe('type 2 diabetes mellitus'); // de-inverted fallback
+  });
+  it('respects the cap', () => {
+    expect(mapMeshSummaryList(result, ['1', '2'], 1).map((m) => m.mesh)).toEqual(['Diabetes Mellitus, Type 2']);
+  });
+  it('tolerates empty / malformed args', () => {
+    expect(mapMeshSummaryList(null, null)).toEqual([]);
+    expect(mapMeshSummaryList({}, ['9'])).toEqual([]); // uid not present
+    expect(mapMeshSummaryList(result, [])).toEqual([]);
+  });
+});
+
+describe('meshSuggest (network-free paths)', () => {
+  it('returns [] for an empty term without touching the network', async () => {
+    expect(await meshSuggest('')).toEqual([]);
+    expect(await meshSuggest('   ')).toEqual([]);
+    expect(await meshSuggest(null)).toEqual([]);
+  });
+});
+
+describe('sanitizeIgnored — backend back-compat (prompt42 Task 2)', () => {
+  it('accepts the legacy string[] form, normalizing to objects', () => {
+    expect(sanitizeIgnored(['diabetes', 'mortality'])).toEqual([
+      { text: 'diabetes', field: '', label: '' },
+      { text: 'mortality', field: '', label: '' },
+    ]);
+  });
+  it('accepts the rich object[] form, preserving field + label', () => {
+    expect(sanitizeIgnored([{ text: 'HFrEF', field: 'Population', label: 'heart failure (HFrEF)' }]))
+      .toEqual([{ text: 'HFrEF', field: 'Population', label: 'heart failure (HFrEF)' }]);
+  });
+  it('accepts a MIXED array and drops empty / non-string-text entries', () => {
+    expect(sanitizeIgnored(['x', { text: 'y', field: 'Outcome' }, '', { foo: 1 }, { text: '' }])).toEqual([
+      { text: 'x', field: '', label: '' },
+      { text: 'y', field: 'Outcome', label: '' },
+    ]);
+  });
+  it('caps at 500 and tolerates a non-array', () => {
+    expect(sanitizeIgnored(Array.from({ length: 600 }, (_, i) => `t${i}`)).length).toBe(500);
+    expect(sanitizeIgnored(null)).toEqual([]);
+    expect(sanitizeIgnored('nope')).toEqual([]);
   });
 });
 

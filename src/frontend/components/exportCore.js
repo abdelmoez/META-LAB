@@ -108,6 +108,96 @@ export function downloadText(text, filename, mime = 'text/plain;charset=utf-8') 
   downloadBlob(new Blob([text], { type: mime }), filename);
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   prompt42 Task 8 — zero-dependency ZIP writer (STORE / no compression).
+   The repo deliberately keeps a tiny dependency footprint (the PDF viewer and the
+   world map are hand-rolled rather than pulling a library), so the journal-
+   submission package is assembled with a small, dependency-free ZIP writer instead
+   of adding jszip + a lockfile entry + bundle weight. STORE is a valid ZIP that
+   every OS/tool opens; our entries (SVG/PNG/CSV/MD/HTML/JSON) are small enough that
+   skipping DEFLATE costs little. Pure + unit-testable (uses only TextEncoder/Blob/
+   DataView, all available in the test runtime).
+   ════════════════════════════════════════════════════════════════════════════ */
+
+// CRC-32 (IEEE) with a cached lookup table — required by the ZIP spec per entry.
+let _crcTable = null;
+function crcTable() {
+  if (_crcTable) return _crcTable;
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  _crcTable = t;
+  return t;
+}
+export function crc32(bytes) {
+  const t = crcTable();
+  let crc = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) crc = (crc >>> 8) ^ t[(crc ^ bytes[i]) & 0xff];
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function dosDateTime(d) {
+  const date = ((Math.max(1980, d.getFullYear()) - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (Math.floor(d.getSeconds() / 2));
+  return { dosDate: date & 0xffff, dosTime: time & 0xffff };
+}
+
+/**
+ * Build a ZIP Blob from entries (STORE, no compression).
+ * @param {Array<{name:string, text?:string, blob?:Blob}>} entries
+ * @param {{date?:Date}} [opts]
+ * @returns {Promise<Blob>} application/zip
+ */
+export async function zipFiles(entries, { date } = {}) {
+  const enc = new TextEncoder();
+  const files = [];
+  for (const e of entries || []) {
+    if (!e || !e.name) continue;
+    let data;
+    if (e.blob) data = new Uint8Array(await e.blob.arrayBuffer());
+    else data = enc.encode(e.text != null ? String(e.text) : '');
+    files.push({ nameBytes: enc.encode(e.name), data, crc: crc32(data) });
+  }
+  const { dosDate, dosTime } = dosDateTime(date || new Date());
+  const localChunks = [];
+  const centralChunks = [];
+  let offset = 0;
+  let centralSize = 0;
+  for (const f of files) {
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true);
+    lh.setUint16(8, 0, true); lh.setUint16(10, dosTime, true); lh.setUint16(12, dosDate, true);
+    lh.setUint32(14, f.crc, true); lh.setUint32(18, f.data.length, true); lh.setUint32(22, f.data.length, true);
+    lh.setUint16(26, f.nameBytes.length, true); lh.setUint16(28, 0, true);
+    localChunks.push(new Uint8Array(lh.buffer), f.nameBytes, f.data);
+
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true);
+    ch.setUint16(10, 0, true); ch.setUint16(12, dosTime, true); ch.setUint16(14, dosDate, true);
+    ch.setUint32(16, f.crc, true); ch.setUint32(20, f.data.length, true); ch.setUint32(24, f.data.length, true);
+    ch.setUint16(28, f.nameBytes.length, true); ch.setUint16(30, 0, true); ch.setUint16(32, 0, true);
+    ch.setUint16(34, 0, true); ch.setUint16(36, 0, true); ch.setUint32(38, 0, true); ch.setUint32(42, offset, true);
+    centralChunks.push(new Uint8Array(ch.buffer), f.nameBytes);
+    centralSize += 46 + f.nameBytes.length;
+    offset += 30 + f.nameBytes.length + f.data.length;
+  }
+  const eocd = new DataView(new ArrayBuffer(22));
+  eocd.setUint32(0, 0x06054b50, true); eocd.setUint16(4, 0, true); eocd.setUint16(6, 0, true);
+  eocd.setUint16(8, files.length, true); eocd.setUint16(10, files.length, true);
+  eocd.setUint32(12, centralSize, true); eocd.setUint32(16, offset, true); eocd.setUint16(20, 0, true);
+  return new Blob([...localChunks, ...centralChunks, new Uint8Array(eocd.buffer)], { type: 'application/zip' });
+}
+
+/** Filesystem-safe slug for filenames inside the ZIP (and the ZIP name itself). */
+export function safeFilePart(s, fallback = 'file') {
+  const t = String(s == null ? '' : s).trim().toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60);
+  return t || fallback;
+}
+
 /**
  * Validate a user-typed custom export width.
  * @param {string|number} px

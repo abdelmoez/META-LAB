@@ -1,44 +1,43 @@
 /**
- * AppPdfViewer.jsx — the universal lightweight in-app PDF viewer (prompt39 Task 1).
+ * AppPdfViewer.jsx — the universal in-app PDF viewer.
  *
- * Renders ONE page at a time to a <canvas> via pdf.js (single-page = fast + light),
- * fit-width by default, with a compact toolbar: search · zoom ± · rotate ↺ ↻ ·
- * prev / next page + a "N / total" indicator. It REPLACES the old browser <iframe>
- * preview inside PdfViewer.jsx, so it inherits the authenticated same-origin
- * download URL and the server's HTTP-Range support (pdf.js streams partial
- * content). The auth model is unchanged: pdf.js fetches with credentials so the
- * session cookie rides along — no public/unauthenticated URL is ever exposed.
+ * prompt42 rewrite (Tasks 4-6): a CONTINUOUS, virtualized, browser-quality viewer.
+ *  - Task 4 — CONTINUOUS SCROLL: every page lives in a vertical scroll column; you
+ *    scroll naturally. Pages are lazily rendered only when near the viewport
+ *    (IntersectionObserver) and unrendered when far away, so even a 500-page PDF
+ *    stays light on weak machines. Prev/Next + the page indicator are driven by the
+ *    most-visible page; the buttons SCROLL to the target page.
+ *  - Task 5 — SHARP FIT-WIDTH ON OPEN: the first page renders fit-to-width and crisp
+ *    immediately. Root cause of the old "small/fuzzy until zoomed" bug was the first
+ *    canvas painting at a stale/too-small container width and then being CSS-stretched
+ *    by `maxWidth:100%`. Fixed by (a) a skeleton until the container width is really
+ *    measured, (b) rendering each page at the correct HiDPI backing-store scale, and
+ *    (c) removing the CSS stretch entirely. Re-fits (and re-renders) on container
+ *    resize (RoB panel drag, menu collapse, window resize) via a ResizeObserver.
+ *  - Task 6 — CHROME-LIKE LIVE SEARCH: typing finds matches as you type (no Enter
+ *    needed), highlights every occurrence in a real pdf.js text layer, shows
+ *    "n / total", up/down (Enter / Shift+Enter) navigate and scroll to the selected
+ *    match, with Match-case and Whole-words toggles. Escape closes and clears.
  *
- * Performance choices (prompt39 Task 1B):
- *  - The pdf worker runs off the main thread, in a SEPARATE chunk that is loaded
- *    only when a PDF actually opens (so it never weighs down app start-up).
- *  - Only the CURRENT page is rendered; other pages render lazily on navigation.
- *  - The document + worker are torn down on unmount / url change (no leaks).
- *  - Re-fits to width on container resize (ResizeObserver), crisp on HiDPI.
- *  - isEvalSupported:false — no eval; the SPA CSP stays strict.
+ * Auth/loading is unchanged from prompt41: we fetch the PDF bytes ourselves with the
+ * session cookie, validate them, and hand pdf.js {data}. The worker runs off-thread
+ * via Vite's `?worker` (a real bundled .js worker — fixes the prod .mjs MIME bug).
  *
- * Theme-aware (day/night) via the app design tokens. The legacy pdf.js build is
- * used for broader compatibility on older / weaker machines.
+ * Theme-aware (day/night) via the app design tokens. SSR/test-safe: all browser-only
+ * APIs (ResizeObserver, IntersectionObserver, devicePixelRatio, TextLayer) are used
+ * only inside effects (which never run during renderToStaticMarkup) and guarded.
  */
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.min.mjs';
 import PdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?worker';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
-import { pageTextFromContent, collectMatchingPages } from './pdfSearch.js';
+import { findMatchesInText } from './pdfSearch.js';
 
-// prompt41 Task 2 — load the pdf.js worker via Vite's `?worker` (a real bundled Web
-// Worker) instead of `workerSrc` pointing at the emitted `.mjs` asset. The `.mjs`
-// extension was served by the production static host (express.static / nginx) with a
-// non-JavaScript MIME type, so the browser refused to instantiate the module worker
-// → getDocument() rejected → "Could not load PDF" (it worked in Vite dev, which
-// serves .mjs correctly). `?worker` emits a `.js` worker that Vite wires up itself,
-// removing the MIME dependency entirely. Guard for non-browser (SSR/test) contexts.
 if (typeof window !== 'undefined' && typeof Worker !== 'undefined') {
   try { pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker(); } catch { /* falls back to fake worker */ }
 }
 
-// First bytes of a PDF are "%PDF-" — used to detect an HTML/JSON error body that a
-// (mis)configured route returned with a 200 instead of the actual file.
+// First bytes of a PDF are "%PDF-" — detects an HTML/JSON error body returned 200.
 function isPdfBytes(buf) {
   try {
     const a = new Uint8Array(buf.slice(0, 5));
@@ -46,8 +45,38 @@ function isPdfBytes(buf) {
   } catch { return false; }
 }
 
-const GUTTER = 16;   // breathing room so the page never touches the scroll edge
+const GUTTER = 16;          // breathing room so a page never touches the scroll edge
+const PAGE_GAP = 14;        // vertical gap between continuous pages
 const ZOOM_MIN = 0.4, ZOOM_MAX = 5, ZOOM_STEP = 0.2;
+const RENDER_BUFFER = 1;    // also render this many pages above/below the visible ones
+const FALLBACK_DIMS = { w: 612, h: 792 }; // US-Letter @72dpi until a page's real dims load
+
+// Highlight colors are intentionally fixed (PDF canvases are white): they read well
+// on both themes and never leak a CSS var into a canvas-rasterized context.
+const HL = 'rgba(255,213,0,0.42)';
+const HL_CURRENT = 'rgba(255,138,0,0.75)';
+
+// Minimal, SCOPED text-layer CSS (mirrors pdfjs-dist/web/pdf_viewer.css, class-scoped
+// to avoid leaking global `.textLayer` rules into the token theme). Injected once.
+const TEXTLAYER_STYLE_ID = 'mlpdf-textlayer-style';
+const TEXTLAYER_CSS = `
+.mlpdf-tl{position:absolute;inset:0;overflow:clip;line-height:1;text-align:initial;
+  transform-origin:0 0;forced-color-adjust:none;z-index:2;text-size-adjust:none;}
+.mlpdf-tl :is(span,br){color:transparent;position:absolute;white-space:pre;transform-origin:0% 0%;}
+.mlpdf-tl[data-main-rotation="90"]{transform:rotate(90deg) translateY(-100%);}
+.mlpdf-tl[data-main-rotation="180"]{transform:rotate(180deg) translate(-100%,-100%);}
+.mlpdf-tl[data-main-rotation="270"]{transform:rotate(270deg) translateX(-100%);}
+.mlpdf-tl mark{color:transparent;background:${HL};border-radius:2px;padding:0;margin:0;}
+.mlpdf-tl mark.cur{background:${HL_CURRENT};box-shadow:0 0 0 1px rgba(255,120,0,0.95);}
+`;
+function ensureTextLayerStyle() {
+  if (typeof document === 'undefined') return;
+  if (document.getElementById(TEXTLAYER_STYLE_ID)) return;
+  const el = document.createElement('style');
+  el.id = TEXTLAYER_STYLE_ID;
+  el.textContent = TEXTLAYER_CSS;
+  document.head.appendChild(el);
+}
 
 export default function AppPdfViewer({
   url,
@@ -58,33 +87,43 @@ export default function AppPdfViewer({
 }) {
   const [doc, setDoc]         = useState(null);
   const [numPages, setNum]    = useState(0);
-  const [pageNum, setPageNum] = useState(1);
-  const [zoom, setZoom]       = useState(1);      // 1 = fit-width
-  const [rotation, setRot]    = useState(0);      // 0 | 90 | 180 | 270
+  const [pageNum, setPageNum] = useState(1);   // most-visible page (the indicator)
+  const [zoom, setZoom]       = useState(1);   // 1 = fit-width
+  const [rotation, setRot]    = useState(0);   // 0 | 90 | 180 | 270
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
-  const [progress, setProgress] = useState(0);    // 0..1 download progress
 
-  // Lazy full-text search — scans page text only on submit (never on load).
+  // Per-page intrinsic (unrotated, scale-1) dimensions, discovered lazily.
+  const [dims, setDims] = useState({});        // { [pageNum]: {w,h} }
+  const dimsRef = useRef({});
+  dimsRef.current = dims;
+
+  // Which pages are currently mounted as canvases (virtualization window).
+  const [renderSet, setRenderSet] = useState(() => new Set([1]));
+  const ratiosRef = useRef(new Map());         // page -> intersectionRatio (for the indicator)
+
+  // Search state (Task 6).
   const [searchOpen, setSearchOpen] = useState(false);
-  const [term, setTerm]       = useState('');
-  const [matches, setMatches] = useState(null);   // number[] of 1-based page indices | null
+  const [term, setTerm]         = useState('');
+  const [matchCase, setMatchCase] = useState(false);
+  const [wholeWord, setWholeWord] = useState(false);
+  const [matches, setMatches]   = useState([]); // flat ordered [{page, local}]
   const [matchIdx, setMatchIdx] = useState(0);
-  const [searching, setSearching] = useState(false);
-  const [searchProg, setSearchProg] = useState(0); // 0..1 page-scan progress
-  const textCache = useRef(new Map());            // pageNum -> lowercased text
-  const searchToken = useRef(0);                  // bumped to abort an in-flight scan
+  const [scanning, setScanning] = useState(false);
+  const textCache = useRef(new Map());          // page -> pdf.js textContent object
+  const scanToken = useRef(0);
 
   const wrapRef   = useRef(null);
-  const canvasRef = useRef(null);
   const docRef    = useRef(null);
-  const renderRef = useRef(null);
+  const pageEls   = useRef(new Map());          // page -> wrapper DOM node
   const [wrapW, setWrapW] = useState(0);
+  const programmaticScroll = useRef(0);         // timestamp guard: ignore indicator updates right after a programmatic scroll
 
   const openExternal = externalUrl || url;
+  const dpr = useMemo(() => (typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 2) : 1), []);
+  useEffect(() => { ensureTextLayerStyle(); }, []);
 
-  /* ── Load the document whenever the url changes (Retry bumps reloadKey so the
-   *    retry goes through the SAME effect → proper cancellation + teardown) ──── */
+  /* ── Load the document whenever the url changes (Retry bumps reloadKey) ───── */
   const [reloadKey, setReloadKey] = useState(0);
   const reload = useCallback(() => setReloadKey((k) => k + 1), []);
 
@@ -92,15 +131,11 @@ export default function AppPdfViewer({
     if (!url) { setLoading(false); return undefined; }
     let cancelled = false;
     let task = null;
-    setLoading(true); setError(''); setDoc(null); setNum(0); setProgress(0);
-    setMatches(null); setTerm(''); setSearching(false); textCache.current = new Map();
-    searchToken.current++; // abort any in-flight search from the previous document
+    setLoading(true); setError(''); setDoc(null); setNum(0);
+    setDims({}); setRenderSet(new Set([1])); setPageNum(1); setZoom(1); setRot(0);
+    setMatches([]); setTerm(''); setScanning(false);
+    textCache.current = new Map(); scanToken.current++;
     (async () => {
-      // prompt41 Task 2 — fetch the PDF bytes OURSELVES with the session cookie and
-      // validate the response, so auth / wrong-Content-Type / HTML-redirect problems
-      // surface as a SPECIFIC, useful error instead of a generic pdf.js failure — and
-      // pass the bytes to pdf.js as {data} (no dependency on pdf.js's own fetch,
-      // credentials or HTTP-range handling).
       let buf;
       try {
         const res = await fetch(url, { credentials: withCredentials ? 'include' : 'same-origin', headers: { Accept: 'application/pdf' } });
@@ -115,7 +150,6 @@ export default function AppPdfViewer({
         if (cancelled) return;
         const ct = (res.headers.get('content-type') || '').toLowerCase();
         if (!ct.includes('application/pdf') && !isPdfBytes(buf)) {
-          // A login page / JSON error / redirect body — not the file.
           setError('The server did not return a PDF (your session may have expired). Try "Open in new tab".');
           setLoading(false); return;
         }
@@ -128,7 +162,15 @@ export default function AppPdfViewer({
         const d = await task.promise;
         if (cancelled) { try { d.destroy(); } catch { /* noop */ } return; }
         docRef.current = d; setDoc(d); setNum(d.numPages);
-        setPageNum(1); setZoom(1); setRot(0); setLoading(false);
+        // Seed page-1 dims up-front so the first wrapper is correctly sized → sharp first paint.
+        try {
+          const p1 = await d.getPage(1);
+          if (!cancelled) {
+            const vp = p1.getViewport({ scale: 1, rotation: 0 });
+            setDims({ 1: { w: vp.width, h: vp.height } });
+          }
+        } catch { /* fall back to FALLBACK_DIMS */ }
+        if (!cancelled) setLoading(false);
       } catch {
         if (!cancelled) { setError('Could not load PDF — the file may be corrupted or not a valid PDF.'); setLoading(false); }
       }
@@ -141,54 +183,92 @@ export default function AppPdfViewer({
     };
   }, [url, withCredentials, reloadKey]);
 
-  /* ── Track container width so the page fits-to-width and re-fits on resize ── */
+  /* ── Track the scroll-container width so pages fit-to-width and re-fit on resize ─ */
   useEffect(() => {
     const el = wrapRef.current;
-    if (!el || typeof ResizeObserver === 'undefined') { if (el) setWrapW(el.clientWidth); return undefined; }
+    if (!el) return undefined;
+    if (typeof ResizeObserver === 'undefined') { setWrapW(el.clientWidth); return undefined; }
+    let raf = 0;
     const ro = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect?.width;
-      if (w) setWrapW(Math.round(w));
+      if (!w) return;
+      cancelAnimationFrame(raf);                       // coalesce rapid resizes (RoB drag) → 1 update/frame
+      raf = requestAnimationFrame(() => setWrapW((prev) => (Math.abs(prev - w) >= 1 ? Math.round(w) : prev)));
     });
     ro.observe(el);
     setWrapW(el.clientWidth);
-    return () => ro.disconnect();
-  }, [doc]);
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
+  }, [doc, error, loading]);
 
-  /* ── Render the current page (cancels any in-flight render) ──────────────── */
+  /* ── Per-page display geometry (fit-width × zoom, rotation-aware) ─────────── */
+  const dimsFor = useCallback((p) => dimsRef.current[p] || dimsRef.current[1] || FALLBACK_DIMS, []);
+  const pageScale = useCallback((p) => {
+    const base = dimsFor(p);
+    const displayW = rotation % 180 === 0 ? base.w : base.h;
+    const fit = Math.max(0.1, (wrapW - GUTTER) / displayW);
+    return fit * zoom;
+  }, [dimsFor, rotation, wrapW, zoom]);
+  const pageBox = useCallback((p) => {
+    const base = dimsFor(p);
+    const s = pageScale(p);
+    const displayW = rotation % 180 === 0 ? base.w : base.h;
+    const displayH = rotation % 180 === 0 ? base.h : base.w;
+    return { w: Math.max(1, Math.round(displayW * s)), h: Math.max(1, Math.round(displayH * s)), scale: s };
+  }, [dimsFor, pageScale, rotation]);
+
+  const onPageDims = useCallback((p, d) => {
+    setDims((prev) => (prev[p] && Math.abs(prev[p].w - d.w) < 0.5 ? prev : { ...prev, [p]: d }));
+  }, []);
+
+  /* ── Virtualization + page indicator: observe each page wrapper ──────────── */
   useEffect(() => {
-    if (!doc || !wrapW || !canvasRef.current) return undefined;
-    let cancelled = false;
-    (async () => {
-      try {
-        const page = await doc.getPage(pageNum);
-        if (cancelled) return;
-        const base = page.getViewport({ scale: 1, rotation });
-        const fit = Math.max(0.1, (wrapW - GUTTER) / base.width);
-        const dpr = Math.min(window.devicePixelRatio || 1, 2); // cap DPR — memory-light on weak machines
-        const scale = fit * zoom;
-        const viewport = page.getViewport({ scale: scale * dpr, rotation });
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d', { alpha: false });
-        canvas.width = Math.floor(viewport.width);
-        canvas.height = Math.floor(viewport.height);
-        canvas.style.width = `${Math.floor(viewport.width / dpr)}px`;
-        canvas.style.height = `${Math.floor(viewport.height / dpr)}px`;
-        if (renderRef.current) { try { renderRef.current.cancel(); } catch { /* noop */ } }
-        const rt = page.render({ canvasContext: ctx, viewport });
-        renderRef.current = rt;
-        await rt.promise;
-      } catch (e) {
-        if (!cancelled && e && e.name !== 'RenderingCancelledException') { /* keep last frame; non-fatal */ }
+    const root = wrapRef.current;
+    if (!doc || !root || typeof IntersectionObserver === 'undefined') return undefined;
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        const p = Number(e.target.getAttribute('data-page'));
+        if (!p) continue;
+        if (e.isIntersecting) ratiosRef.current.set(p, e.intersectionRatio);
+        else ratiosRef.current.delete(p);
       }
-    })();
-    return () => { cancelled = true; };
-  }, [doc, pageNum, zoom, rotation, wrapW]);
+      const visible = [...ratiosRef.current.keys()];
+      if (visible.length) {
+        const lo = Math.max(1, Math.min(...visible) - RENDER_BUFFER);
+        const hi = Math.min(numPages || 1, Math.max(...visible) + RENDER_BUFFER);
+        const next = new Set();
+        for (let i = lo; i <= hi; i++) next.add(i);
+        setRenderSet((cur) => (sameSet(cur, next) ? cur : next));
+        // Most-visible page → indicator (unless we just programmatically scrolled).
+        if (Date.now() - programmaticScroll.current > 350) {
+          let best = visible[0], bestR = -1;
+          for (const p of visible) { const r = ratiosRef.current.get(p) || 0; if (r > bestR) { bestR = r; best = p; } }
+          setPageNum((cur) => (cur === best ? cur : best));
+        }
+      }
+    }, { root, rootMargin: '200px 0px', threshold: [0, 0.1, 0.25, 0.5, 0.75, 1] });
+    for (const el of pageEls.current.values()) if (el) io.observe(el);
+    return () => io.disconnect();
+    // `wrapW > 0` (a one-shot flip) re-runs this AFTER the page wrappers actually mount
+    // — they render only once the width is known, which is a later commit than doc-load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc, numPages, wrapW > 0]);
 
-  /* ── Navigation + transform helpers ──────────────────────────────────────── */
-  const goPage = useCallback((n) => setPageNum((p) => Math.min(numPages || 1, Math.max(1, n || p))), [numPages]);
-  const prev = () => goPage(pageNum - 1);
-  const next = () => goPage(pageNum + 1);
+  const registerPageEl = useCallback((p, el) => {
+    if (el) pageEls.current.set(p, el); else pageEls.current.delete(p);
+  }, []);
+
+  /* ── Navigation: scroll the container to a page ──────────────────────────── */
+  const scrollToPage = useCallback((n) => {
+    const target = Math.min(numPages || 1, Math.max(1, n));
+    const el = pageEls.current.get(target);
+    if (el && wrapRef.current) {
+      programmaticScroll.current = Date.now();
+      setPageNum(target);
+      el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    }
+  }, [numPages]);
+  const prev = () => scrollToPage(pageNum - 1);
+  const next = () => scrollToPage(pageNum + 1);
   const zoomIn  = () => setZoom((z) => Math.min(ZOOM_MAX, +(z + ZOOM_STEP).toFixed(2)));
   const zoomOut = () => setZoom((z) => Math.max(ZOOM_MIN, +(z - ZOOM_STEP).toFixed(2)));
   const rotateLeft  = () => setRot((r) => (r + 270) % 360);
@@ -200,47 +280,72 @@ export default function AppPdfViewer({
     else if (e.key === 'ArrowRight' || e.key === 'PageDown') { next(); e.preventDefault(); }
   }
 
-  /* ── Lazy search: scan page text on submit, collect matching pages.
-   *    Abortable (a new search / url change bumps searchToken) and resilient (a
-   *    failed page → empty text, never aborts the whole scan); shows progress. ── */
-  async function runSearch(e) {
-    e?.preventDefault?.();
+  /* ── Live search scan: find every match across ALL pages (rendered or not) ── */
+  const getPageItems = useCallback(async (p) => {
+    const cached = textCache.current.get(p);
+    if (cached) return cached;
+    const d = docRef.current; if (!d) return { items: [] };
+    const page = await d.getPage(p);
+    const content = await page.getTextContent();
+    textCache.current.set(p, content);
+    return content;
+  }, []);
+
+  const searchOptions = useMemo(() => ({ matchCase, wholeWord }), [matchCase, wholeWord]);
+
+  useEffect(() => {
+    if (!doc || !searchOpen) return undefined;
     const q = term.trim();
-    const d = docRef.current;
-    if (!q || !d) { setMatches(null); return; }
-    const token = ++searchToken.current;
-    setSearching(true); setSearchProg(0);
-    const getPageText = async (i) => {
-      const cached = textCache.current.get(i);
-      if (cached != null) return cached;
-      const page = await d.getPage(i);
-      const txt = pageTextFromContent(await page.getTextContent());
-      textCache.current.set(i, txt);
-      return txt;
-    };
-    try {
-      const hits = await collectMatchingPages({
-        numPages: d.numPages, getPageText, term: q,
-        isAborted: () => token !== searchToken.current,
-        onProgress: (done, total) => { if (token === searchToken.current) setSearchProg(done / total); },
-      });
-      if (hits == null || token !== searchToken.current) return; // aborted — discard
-      setMatches(hits); setMatchIdx(0);
-      if (hits.length) goPage(hits[0]);
-    } finally {
-      if (token === searchToken.current) setSearching(false);
-    }
+    if (!q) { setMatches([]); setMatchIdx(0); setScanning(false); return undefined; }
+    const token = ++scanToken.current;
+    setScanning(true);
+    const handle = setTimeout(async () => {
+      const flat = [];
+      for (let p = 1; p <= (numPages || 0); p++) {
+        if (token !== scanToken.current) return;           // superseded — discard
+        let content;
+        try { content = await getPageItems(p); } catch { content = { items: [] }; }
+        const items = (content && content.items) || [];
+        let local = 0;
+        for (const it of items) {
+          const found = findMatchesInText((it && it.str) || '', q, searchOptions);
+          for (let k = 0; k < found.length; k++) { flat.push({ page: p, local }); local++; }
+        }
+      }
+      if (token !== scanToken.current) return;
+      setMatches(flat); setMatchIdx(0); setScanning(false);
+      if (flat.length) scrollToPage(flat[0].page);
+    }, 160); // light debounce so it feels immediate without a request/keystroke storm
+    return () => clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [term, searchOptions, doc, searchOpen, numPages]);
+
+  const current = matches[matchIdx] || null;
+  const cycleMatch = useCallback((dir) => {
+    setMatchIdx((i) => {
+      if (!matches.length) return 0;
+      const n = (i + dir + matches.length) % matches.length;
+      const m = matches[n];
+      if (m) scrollToPage(m.page);
+      return n;
+    });
+  }, [matches, scrollToPage]);
+
+  function onSearchKey(e) {
+    if (e.key === 'Enter') { e.preventDefault(); cycleMatch(e.shiftKey ? -1 : 1); }
+    else if (e.key === 'Escape') { e.preventDefault(); closeSearch(); }
   }
-  function cycleMatch(dir) {
-    if (!matches || !matches.length) return;
-    const i = (matchIdx + dir + matches.length) % matches.length;
-    setMatchIdx(i); goPage(matches[i]);
-  }
+  const openSearch = () => setSearchOpen(true);
+  const closeSearch = () => { setSearchOpen(false); setTerm(''); setMatches([]); setMatchIdx(0); scanToken.current++; };
 
   /* ── Render ──────────────────────────────────────────────────────────────── */
   const shellStyle = flush
     ? { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: C.card2 }
     : { display: 'flex', flexDirection: 'column', height: previewHeight, background: C.card2 };
+
+  const ready = !loading && !error && doc;
+  const widthKnown = wrapW > 0;
+  const pages = ready ? Array.from({ length: numPages }, (_, i) => i + 1) : [];
 
   return (
     <div style={shellStyle} role="group" aria-label="PDF viewer" onKeyDown={onKeyDown} tabIndex={0}>
@@ -249,7 +354,7 @@ export default function AppPdfViewer({
         display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', flexWrap: 'wrap',
         borderBottom: `1px solid ${C.brd}`, background: C.surf, flexShrink: 0,
       }}>
-        <TbIcon label={searchOpen ? 'Hide search' : 'Search in document'} active={searchOpen} onClick={() => setSearchOpen((s) => !s)}>
+        <TbIcon label={searchOpen ? 'Hide search' : 'Search in document'} active={searchOpen} onClick={() => (searchOpen ? closeSearch() : openSearch())}>
           <PathSearch />
         </TbIcon>
         <Sep />
@@ -260,40 +365,39 @@ export default function AppPdfViewer({
         <TbIcon label="Rotate left" onClick={rotateLeft} disabled={loading || !!error}><PathRotateLeft /></TbIcon>
         <TbIcon label="Rotate right" onClick={rotateRight} disabled={loading || !!error}><PathRotateRight /></TbIcon>
         <div style={{ flex: 1 }} />
-        <TbIcon label="Previous page" onClick={prev} disabled={loading || !!error || pageNum <= 1}><PathChevronLeft /></TbIcon>
+        <TbIcon label="Previous page" onClick={prev} disabled={loading || !!error || pageNum <= 1}><PathChevronUp /></TbIcon>
         <span style={{ fontSize: 11, fontFamily: MONO, color: C.txt2, minWidth: 56, textAlign: 'center' }}>
           {loading || !numPages ? '— / —' : `${pageNum} / ${numPages}`}
         </span>
-        <TbIcon label="Next page" onClick={next} disabled={loading || !!error || pageNum >= numPages}><PathChevronRight /></TbIcon>
+        <TbIcon label="Next page" onClick={next} disabled={loading || !!error || pageNum >= numPages}><PathChevronDown /></TbIcon>
       </div>
 
-      {/* Search panel (lazy) */}
+      {/* Live search panel (Task 6) */}
       {searchOpen && (
-        <form onSubmit={runSearch} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', borderBottom: `1px solid ${C.brd}`, background: C.card, flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '7px 10px', borderBottom: `1px solid ${C.brd}`, background: C.card, flexShrink: 0, flexWrap: 'wrap' }}>
           <input
-            autoFocus value={term} onChange={(e) => setTerm(e.target.value)} placeholder="Find in document…"
-            aria-label="Find in document"
+            autoFocus value={term} onChange={(e) => setTerm(e.target.value)} onKeyDown={onSearchKey}
+            placeholder="Find in document…" aria-label="Find in document"
             style={{ flex: 1, minWidth: 120, padding: '6px 10px', background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt, fontSize: 12.5, fontFamily: FONT }}
           />
-          <button type="submit" disabled={searching || !term.trim()} style={tbTextBtn(C, searching || !term.trim())}>{searching ? `Searching… ${Math.round(searchProg * 100)}%` : 'Find'}</button>
-          {matches != null && !searching && (
-            <span style={{ fontSize: 11, fontFamily: MONO, color: matches.length ? C.txt2 : C.muted, whiteSpace: 'nowrap' }}>
-              {matches.length ? `${matchIdx + 1} / ${matches.length} page${matches.length === 1 ? '' : 's'}` : 'No matches'}
-            </span>
-          )}
-          {matches && matches.length > 0 && (
-            <span style={{ display: 'inline-flex', gap: 4 }}>
-              <TbIcon label="Previous match" onClick={() => cycleMatch(-1)}><PathChevronLeft /></TbIcon>
-              <TbIcon label="Next match" onClick={() => cycleMatch(1)}><PathChevronRight /></TbIcon>
-            </span>
-          )}
-        </form>
+          <span style={{ fontSize: 11, fontFamily: MONO, color: matches.length ? C.txt2 : C.muted, whiteSpace: 'nowrap', minWidth: 56, textAlign: 'center' }} aria-live="polite">
+            {scanning && !matches.length ? 'Searching…' : term.trim() ? (matches.length ? `${matchIdx + 1} / ${matches.length}` : 'No results') : ''}
+          </span>
+          <span style={{ display: 'inline-flex', gap: 4 }}>
+            <TbIcon label="Previous match" onClick={() => cycleMatch(-1)} disabled={!matches.length}><PathChevronUp /></TbIcon>
+            <TbIcon label="Next match" onClick={() => cycleMatch(1)} disabled={!matches.length}><PathChevronDown /></TbIcon>
+          </span>
+          <Sep />
+          <TbIcon label="Match case" active={matchCase} onClick={() => setMatchCase((v) => !v)}><TextAa /></TbIcon>
+          <TbIcon label="Whole words" active={wholeWord} onClick={() => setWholeWord((v) => !v)}><TextWord /></TbIcon>
+          <TbIcon label="Close search" onClick={closeSearch}><PathClose /></TbIcon>
+        </div>
       )}
 
-      {/* Canvas / state area */}
-      <div ref={wrapRef} style={{ flex: 1, minHeight: flush ? 0 : undefined, overflow: 'auto', display: 'flex', justifyContent: 'center', alignItems: 'flex-start', padding: GUTTER / 2, background: C.card2 }}>
+      {/* Scroll area: continuous pages / state */}
+      <div ref={wrapRef} style={{ flex: 1, minHeight: flush ? 0 : undefined, overflow: 'auto', background: C.card2 }}>
         {error ? (
-          <div style={{ margin: 'auto', textAlign: 'center', padding: '28px 18px', fontSize: 12.5, color: C.txt2 }}>
+          <div style={{ margin: 'auto', maxWidth: 360, textAlign: 'center', padding: '28px 18px', fontSize: 12.5, color: C.txt2 }}>
             <div style={{ fontSize: 26, marginBottom: 8 }}>📄</div>
             <div style={{ fontWeight: 600, color: C.txt, marginBottom: 4 }}>Could not load PDF</div>
             <div style={{ marginBottom: 12, color: C.muted }}>The document could not be displayed here.</div>
@@ -302,17 +406,153 @@ export default function AppPdfViewer({
               {openExternal && <a href={openExternal} target="_blank" rel="noopener noreferrer" style={{ ...tbTextBtn(C, false), color: C.acc, textDecoration: 'none' }}>Open in new tab ↗</a>}
             </div>
           </div>
-        ) : loading ? (
-          <div style={{ margin: 'auto', textAlign: 'center', color: C.muted }}>
+        ) : loading || !widthKnown ? (
+          <div style={{ margin: 'auto', textAlign: 'center', color: C.muted, paddingTop: 60 }}>
             <Spinner />
-            <div style={{ fontSize: 11.5, fontFamily: MONO, marginTop: 10 }}>{progress > 0 ? `Loading ${Math.round(progress * 100)}%` : 'Loading PDF…'}</div>
+            <div style={{ fontSize: 11.5, fontFamily: MONO, marginTop: 10 }}>Loading PDF…</div>
           </div>
         ) : (
-          <canvas ref={canvasRef} style={{ display: 'block', borderRadius: 4, boxShadow: `0 1px 8px ${C.shadow}`, maxWidth: '100%' }} />
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: PAGE_GAP, padding: GUTTER / 2, minHeight: '100%' }}>
+            {pages.map((p) => {
+              const box = pageBox(p);
+              return (
+                <div
+                  key={p}
+                  data-page={p}
+                  ref={(el) => registerPageEl(p, el)}
+                  style={{ position: 'relative', width: box.w, height: box.h, background: '#fff', borderRadius: 4, boxShadow: `0 1px 8px ${C.shadow}`, flexShrink: 0 }}
+                >
+                  {renderSet.has(p) ? (
+                    <PdfPageView
+                      doc={doc}
+                      pageNumber={p}
+                      scale={box.scale}
+                      rotation={rotation}
+                      dpr={dpr}
+                      term={searchOpen ? term.trim() : ''}
+                      searchOptions={searchOptions}
+                      currentLocal={current && current.page === p ? current.local : null}
+                      onDims={onPageDims}
+                    />
+                  ) : (
+                    <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.dim, fontFamily: MONO, fontSize: 11 }}>
+                      {p}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
       </div>
     </div>
   );
+}
+
+/* ── A single continuous page: canvas + real text layer + match highlighting ─── */
+function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOptions, currentLocal, onDims }) {
+  const canvasRef = useRef(null);
+  const textRef   = useRef(null);
+  const renderRef = useRef(null);
+  const lastScrolledRef = useRef(null);          // last currentLocal we scrolled to (avoid per-keystroke jitter)
+  const [textReady, setTextReady] = useState(0); // bumps after each text-layer (re)build
+
+  // Render the canvas + build the text layer at the current scale/rotation.
+  useEffect(() => {
+    if (!doc) return undefined;
+    let cancelled = false;
+    (async () => {
+      let page;
+      try { page = await doc.getPage(pageNumber); } catch { return; }
+      if (cancelled) return;
+      // Report intrinsic (unrotated) dims so the parent sizes the wrapper precisely.
+      try { const v0 = page.getViewport({ scale: 1, rotation: 0 }); onDims && onDims(pageNumber, { w: v0.width, h: v0.height }); } catch { /* noop */ }
+
+      const viewport = page.getViewport({ scale, rotation }); // CSS-px geometry
+      const canvas = canvasRef.current; if (!canvas) return;
+      const ctx = canvas.getContext('2d', { alpha: false });
+      canvas.width = Math.floor(viewport.width * dpr);        // HiDPI backing store
+      canvas.height = Math.floor(viewport.height * dpr);
+      canvas.style.width = `${Math.floor(viewport.width)}px`; // CSS size (no stretch → sharp)
+      canvas.style.height = `${Math.floor(viewport.height)}px`;
+      if (renderRef.current) { try { renderRef.current.cancel(); } catch { /* noop */ } }
+      const rt = page.render({ canvasContext: ctx, viewport, transform: dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null });
+      renderRef.current = rt;
+      try { await rt.promise; } catch (e) { if (e && e.name !== 'RenderingCancelledException') return; }
+      if (cancelled) return;
+
+      // Real pdf.js text layer (transparent, positioned over the canvas) for search.
+      const tl = textRef.current;
+      if (tl) {
+        try {
+          tl.innerHTML = '';
+          tl.style.setProperty('--scale-factor', String(scale));
+          tl.setAttribute('data-main-rotation', String(rotation));
+          const content = await page.getTextContent();
+          if (cancelled) return;
+          const textLayer = new pdfjsLib.TextLayer({ textContentSource: content, container: tl, viewport: page.getViewport({ scale, rotation }) });
+          await textLayer.render();
+          if (cancelled) return;
+          // Snapshot each span's original text so highlight passes are idempotent.
+          tl.querySelectorAll(':scope > span').forEach((s) => { s.dataset.t = s.textContent; });
+          setTextReady((n) => n + 1);
+        } catch { /* text layer is best-effort; canvas still shows */ }
+      }
+    })();
+    return () => { cancelled = true; try { renderRef.current && renderRef.current.cancel(); } catch { /* noop */ } };
+  }, [doc, pageNumber, scale, rotation, dpr, onDims]);
+
+  // (Re)apply highlights when the term/options/current-match change or text rebuilds.
+  useEffect(() => {
+    const tl = textRef.current;
+    if (!tl) return;
+    const spans = tl.querySelectorAll(':scope > span');
+    let occ = 0; let curEl = null;
+    spans.forEach((span) => {
+      const orig = span.dataset.t != null ? span.dataset.t : span.textContent;
+      if (!term) { if (span.dataset.t != null && span.innerHTML !== orig) span.textContent = orig; return; }
+      const found = findMatchesInText(orig, term, searchOptions);
+      if (!found.length) { if (span.textContent !== orig) span.textContent = orig; return; }
+      const frag = document.createDocumentFragment();
+      let pos = 0;
+      for (const m of found) {
+        if (m.index > pos) frag.appendChild(document.createTextNode(orig.slice(pos, m.index)));
+        const mark = document.createElement('mark');
+        mark.textContent = orig.slice(m.index, m.index + m.length);
+        if (occ === currentLocal) { mark.className = 'cur'; curEl = mark; }
+        frag.appendChild(mark);
+        pos = m.index + m.length;
+        occ++;
+      }
+      if (pos < orig.length) frag.appendChild(document.createTextNode(orig.slice(pos)));
+      span.textContent = '';
+      span.appendChild(frag);
+    });
+    // Scroll to the current match ONLY when it actually changed (a navigation), not on
+    // every keystroke/text-rebuild — otherwise refining an existing search self-scrolls
+    // on each character. `currentLocal` only changes via match navigation / scan settle.
+    if (currentLocal == null) { lastScrolledRef.current = null; }
+    else if (curEl && lastScrolledRef.current !== currentLocal) {
+      lastScrolledRef.current = currentLocal;
+      try { curEl.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch { /* noop */ }
+    }
+  }, [term, searchOptions, currentLocal, textReady]);
+
+  return (
+    <>
+      {/* Canvas size is set in px by the render effect (= the CSS-px viewport), so it
+          aligns exactly with the text layer (which setLayerDimensions sizes the same way). */}
+      <canvas ref={canvasRef} style={{ position: 'absolute', top: 0, left: 0, display: 'block' }} />
+      <div ref={textRef} className="mlpdf-tl" aria-hidden="true" />
+    </>
+  );
+}
+
+/* ── helpers ─────────────────────────────────────────────────────────────────── */
+function sameSet(a, b) {
+  if (a.size !== b.size) return false;
+  for (const x of a) if (!b.has(x)) return false;
+  return true;
 }
 
 /* ── Compact toolbar primitives ─────────────────────────────────────────────── */
@@ -348,10 +588,11 @@ const sv = { width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none', stroke: 
 const PathSearch = () => (<svg {...sv}><circle cx="11" cy="11" r="7" /><path d="m20 20-3.2-3.2" /></svg>);
 const PathPlus = () => (<svg {...sv}><path d="M12 5v14M5 12h14" /></svg>);
 const PathMinus = () => (<svg {...sv}><path d="M5 12h14" /></svg>);
-const PathChevronLeft = () => (<svg {...sv}><path d="m15 5-7 7 7 7" /></svg>);
-const PathChevronRight = () => (<svg {...sv}><path d="m9 5 7 7-7 7" /></svg>);
-// prompt41 Task 1 — clean, intuitive rotate icons (counter-clockwise / clockwise),
-// mirror-correct without any transform hack. Arrowhead at the top points the way the
-// page turns: top-left = rotate left (CCW), top-right = rotate right (CW).
+const PathChevronUp = () => (<svg {...sv}><path d="m5 15 7-7 7 7" /></svg>);
+const PathChevronDown = () => (<svg {...sv}><path d="m5 9 7 7 7-7" /></svg>);
+const PathClose = () => (<svg {...sv}><path d="M6 6l12 12M18 6 6 18" /></svg>);
 const PathRotateLeft = () => (<svg {...sv}><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>);
 const PathRotateRight = () => (<svg {...sv}><path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /></svg>);
+// "Aa" = match case, "ab|" = whole words — compact text glyphs rendered as SVG text.
+const TextAa = () => (<svg {...sv} viewBox="0 0 24 24"><text x="12" y="16" textAnchor="middle" fontSize="12" fontFamily="sans-serif" fill="currentColor" stroke="none" fontWeight="700">Aa</text></svg>);
+const TextWord = () => (<svg {...sv} viewBox="0 0 24 24"><text x="10" y="16" textAnchor="middle" fontSize="11" fontFamily="sans-serif" fill="currentColor" stroke="none" fontWeight="700">ab</text><path d="M20 6v12" /></svg>);

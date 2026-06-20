@@ -20,6 +20,12 @@ export const searchBuilderApi = {
   async meshLookup(term) {
     return jpost(`${BASE}/mesh`, { term });
   },
+  // partial text -> array of mesh records (possibly []).  throw = backend down, so
+  // the dropdown falls back to its local seed suggestions only.
+  async meshSuggest(term) {
+    const d = await jpost(`${BASE}/mesh-suggest`, { term });
+    return Array.isArray(d) ? d : [];
+  },
   // query -> integer | null
   async pubmedCount(query) {
     const d = await jpost(`${BASE}/count`, { query });

@@ -18,7 +18,10 @@ import NotificationsBell from "./src/frontend/components/NotificationsBell.jsx";
 import UserMenu from "./src/frontend/components/UserMenu.jsx";
 import ProjectMembersPanel from "./src/frontend/screening/tabs/ProjectMembersPanel.jsx";
 import ExportDialog from "./src/frontend/components/ExportDialog.jsx";
-import { rasterizeSvg, downloadBlob, downloadText } from "./src/frontend/components/exportCore.js";
+import { rasterizeSvg, downloadBlob, downloadText, zipFiles } from "./src/frontend/components/exportCore.js";
+// prompt42 Task 8 — one-click journal-submission ZIP (pure helpers + methods text).
+import { getOutcomePairs as jsOutcomePairs, filterStudiesForOutcome as jsFilterStudies, buildStudyTableCSV as jsStudyTableCSV, buildReadmeMarkdown as jsReadme, buildManifest as jsManifest, buildWarningsText as jsWarnings, safeName as jsSafeName } from "./src/research-engine/import-export/journalSubmission.js";
+import { buildMethodsMarkdown as jsMethodsMarkdown } from "./src/research-engine/docs/methodsText.js";
 import { fmtNum, fmtES, fmtCI, fmtEstCI, fmtP, fmtPct, fmtI2, fmtWeight, fmtInt, normalizePrecision, DECIMAL_OPTIONS } from "./src/research-engine/format/precision.js";
 import { orderStudies, EXTRACTION_SORTS, DEFAULT_EXTRACTION_SORT } from "./src/frontend/pages/extractionOrder.js";
 // prompt28 Part 2 — the standalone RoB 2 engine, embedded natively into the
@@ -3994,11 +3997,14 @@ ${paperText.slice(0,15000)}`;
    open project (no project selector, no leaving the workspace). When the flag is
    OFF, the original lightweight per-study table (LegacyRoBTab) is preserved so
    nothing breaks for projects/orgs that have not enabled the engine. */
-function RoBTab({project,updateProject,activeId,setTab}){
+function RoBTab({project,updateProject,activeId,setTab,onWorkspaceChange}){
   const[flag,setFlag]=useState(null); // null=checking
   // prompt39 Task 3 — hide the overview intro header while a per-study assessment
   // workspace is open, so the user focuses on the assessment tool itself.
   const[inWorkspace,setInWorkspace]=useState(false);
+  // prompt42 Task 7 — also lift the workspace-open signal to the monolith shell so it
+  // can drop page-level scroll (the assessment then owns all scrolling internally).
+  const handleWorkspaceChange=useCallback((v)=>{ setInWorkspace(v); onWorkspaceChange&&onWorkspaceChange(v); },[onWorkspaceChange]);
   useEffect(()=>{let dead=false;
     (async()=>{
       // Persist any pending autosave first so the owner-scoped RoB engine reads
@@ -4016,13 +4022,16 @@ function RoBTab({project,updateProject,activeId,setTab}){
   // prompt41 Task 5 — a member granted canAssessRiskOfBias can EDIT RoB even without
   // broad canEditMetaLab; read-only members stay view-only. Owner always edits.
   const canEdit=(!!perms.canEdit||!!perms.canAssessRiskOfBias)&&!project._readOnly;
-  return(<div>
+  // prompt42 Task 7 — when the per-study workspace is open, this wrapper must give the
+  // RobWorkspace flex chain a bounded height to fill (no page scroll); the RoB overview
+  // list keeps its normal in-flow height + page scroll.
+  return(<div style={inWorkspace?{height:"100%",display:"flex",flexDirection:"column",minHeight:0}:undefined}>
     {!inWorkspace&&<SectionHeader icon="scale" title="Risk of Bias" desc="Outcome-level RoB 2 for this project — the engine proposes a judgement; you decide."/>}
     <ProjectRobPanel
       projectId={activeId}
       embedded
       canEdit={canEdit}
-      onWorkspaceChange={setInWorkspace}
+      onWorkspaceChange={handleWorkspaceChange}
       robTool={normalizeRobTool(project.robTool)}
       onSelectTool={id=>updateProject(activeId,p=>({...p,robTool:normalizeRobTool(id)}))}
       onContinue={setTab?(t=>setTab(t||"grade")):undefined}
@@ -7354,7 +7363,7 @@ function ProjectTitle({project,canRename,onRename}){
    non-shrinking right cluster, so the buttons are never overlapped (Task 4). The
    one PresenceIndicator here replaces the old floating chip + the screening-only
    one (Task 8); its popover is portaled so it can't be clipped (Task 3). */
-function ProjectHeaderBar({project,tab,inScreening,focus,onToggleFocus,setTab,onBackToProjects,presenceUsers,presenceLocks,totalMembers,myUserId,spId,reqMissing=0,reqMissingList,missingItems=0,onShowAudit,onReport,onExport,onImport}){
+function ProjectHeaderBar({project,tab,inScreening,focus,onToggleFocus,setTab,onBackToProjects,presenceUsers,presenceLocks,totalMembers,myUserId,spId,reqMissing=0,reqMissingList,missingItems=0,onShowAudit,onReport,onExport,onJournalZip,onImport}){
   const sectionLabel=(TABS.find(t=>t.id===tab)?.label)||"Overview";
   // prompt30 Part 5 — compact status badges + actions shown near the title on
   // every NON-overview page (the full detailed header now lives on Overview only).
@@ -7399,6 +7408,7 @@ function ProjectHeaderBar({project,tab,inScreening,focus,onToggleFocus,setTab,on
       <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
         {compact&&onReport&&<>
           <Tooltip content="Export a full report (PDF / HTML)"><button onClick={onReport} aria-label="Export report" style={hdrIconBtn}><Icon name="fileText" size={13}/></button></Tooltip>
+          {onJournalZip&&<Tooltip content="Journal submission package (ZIP): PRISMA, forest plots, methods text & study table"><button onClick={onJournalZip} aria-label="Export journal submission package" style={hdrIconBtn}><Icon name="layers" size={13}/></button></Tooltip>}
           <Tooltip content="Export project as JSON"><button onClick={onExport} aria-label="Export project" style={hdrIconBtn}><Icon name="download" size={13}/></button></Tooltip>
           <Tooltip content="Import project JSON"><button onClick={onImport} aria-label="Import project" style={hdrIconBtn}><Icon name="upload" size={13}/></button></Tooltip>
         </>}
@@ -8026,6 +8036,16 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   const[creatingProject,setCreatingProject]=useState(false);
   const[createWarning,setCreateWarning]=useState("");   // Task 2 — non-fatal SIFT-create warning
   const[deepLinkMiss,setDeepLinkMiss]=useState(null);   // Task 3 — ?project= id we couldn't open
+  // prompt42 Task 7 — lifted from RoBTab: true while the per-study RoB assessment
+  // workspace is open, so the shell drops page-level scroll (the assessment's PDF +
+  // questions panels own all scrolling, mirroring the Screening full-bleed layout).
+  const[robInWorkspace,setRobInWorkspace]=useState(false);
+  // prompt42 Task 7 (review fix) — the no-page-scroll full-bleed applies ONLY on wide
+  // (>=900px) screens. Below that RobWorkspace stacks the PDF + assessment and lays out
+  // TALLER than the viewport, relying on page scroll; forcing overflow:hidden there would
+  // clip the assessment + the Finalise/Continue footer (matches RobWorkspace STACK_BELOW).
+  const[robNarrow,setRobNarrow]=useState(()=>{try{return window.innerWidth<900;}catch(_){return false;}});
+  useEffect(()=>{let raf=0;const onR=()=>{cancelAnimationFrame(raf);raf=requestAnimationFrame(()=>{try{setRobNarrow(window.innerWidth<900);}catch(_){/* ignore */}});};window.addEventListener("resize",onR);return()=>{cancelAnimationFrame(raf);window.removeEventListener("resize",onR);};},[]);
   const[showModal,setShowModal]=useState(false);
   const[confirmDel,setConfirmDel]=useState(null);
   const[delName,setDelName]=useState("");          // typed-name confirmation (prompt9 Task 7)
@@ -8446,6 +8466,143 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     return html;
   };
 
+  // prompt42 Task 8 — assemble the one-click journal-submission ZIP. Orchestrates
+  // the EXISTING pure builders (PRISMA + per-outcome forest SVGs, study table CSV,
+  // methods text, full report HTML) into a single ZIP, never re-implementing them.
+  // Server authorizes + audits first (export permission); figures are client-rendered
+  // (they are live SVGs), so the ZIP is assembled in the browser. Missing pieces become
+  // warnings, never a hard failure. `onProgress` feeds the dialog's step text.
+  const buildJournalSubmissionZip=async(choice,onProgress)=>{
+    if(!project) throw new Error("No project selected.");
+    const report=(m)=>{ try{ onProgress&&onProgress(m); }catch(_){/* ignore */} };
+    const prec=choice?.precision;
+    const widthPx=choice?.widthPx||1063;
+    const transparent=!!choice?.transparent;
+    const studies=Array.isArray(project.studies)?project.studies:[];
+    const pr=project.prisma||{};
+    const warnings=[]; const files=[]; const entries=[];
+
+    // 0) Server authorize + audit (enforces export permission; supplies manifest meta).
+    report("Authorizing…");
+    let authInfo={ appVersion:"", generatedAt:new Date().toISOString(), projectTitle:project.name||"" };
+    {
+      let r;
+      try{ r=await fetch(`/api/export/journal-submission/${activeId}`,{method:"POST",credentials:"include",headers:{"Content-Type":"application/json"},body:"{}"}); }
+      catch(_){ throw new Error("Could not reach the server to authorize the export. Check your connection and retry."); }
+      if(r.status===403) throw new Error("You do not have permission to export this project.");
+      if(r.status===404) throw new Error("Project not found, or export is unavailable.");
+      if(!r.ok) throw new Error(`Export could not be authorized (HTTP ${r.status}).`);
+      try{ const d=await r.json(); if(d&&d.ok) authInfo={...authInfo,...d}; }catch(_){/* keep defaults */}
+    }
+
+    // 1) PRISMA diagram — SVG + high-res PNG.
+    report("Preparing PRISMA diagram…");
+    try{
+      const built=buildPrismaSVG(pr,{title:""});
+      if(built&&built.svg){
+        entries.push({name:"figures/prisma-diagram.svg",text:SVG_XML_HEADER+built.svg});
+        files.push({name:"figures/prisma-diagram.svg",note:"PRISMA 2020 flow (vector)"});
+        try{
+          const png=await rasterizeSvg(built.svg,built.W,built.H,{targetWidthPx:widthPx,transparent,background:"#ffffff"});
+          entries.push({name:"figures/prisma-diagram.png",blob:png});
+          files.push({name:"figures/prisma-diagram.png",note:"PRISMA 2020 flow (raster)"});
+        }catch(_){ warnings.push("PRISMA PNG could not be rasterized — the SVG is included."); }
+      } else warnings.push("PRISMA diagram could not be generated.");
+    }catch(_){ warnings.push("PRISMA diagram could not be generated."); }
+
+    // 2) Forest plots — one per outcome (same enumeration as ForestTab).
+    report("Preparing forest plots…");
+    const pairs=jsOutcomePairs(studies);
+    if(!pairs.length) warnings.push("No outcomes with effect sizes — no forest plots were generated.");
+    let forestN=0;
+    const usedForestSlugs=new Set(); // guard duplicate ZIP entry names (distinct labels can slugify the same)
+    for(const pair of pairs){
+      const fs=jsFilterStudies(studies,pair);
+      const result=runMeta(fs,"random");
+      if(!result){ warnings.push(`Forest plot for "${pair.label}" skipped (not enough data).`); continue; }
+      const esType=(fs.map(s=>s.esType).filter(Boolean)[0])||pair.esType||"";
+      const t=ES_TYPES[esType]||{};
+      const esLabel=(t.scale||"Effect size")+(t.log?" (back-transformed)":esType==="PROP"?" (%)":"");
+      const built=buildPubForestSVG(result,{esType,esLabel,nullLine:0,showCounts:true,showWeights:true,title:pair.label||"",prec,noBg:transparent});
+      if(!built){ warnings.push(`Forest plot for "${pair.label}" skipped (not enough studies to draw).`); continue; }
+      let slug=jsSafeName(pair.label,`outcome-${forestN+1}`);
+      if(usedForestSlugs.has(slug)) slug=`${slug}-${forestN+1}`; // distinct labels can slugify identically → keep unique
+      usedForestSlugs.add(slug);
+      const base=`figures/forest-plot-${slug}`;
+      entries.push({name:`${base}.svg`,text:SVG_XML_HEADER+built.svg});
+      files.push({name:`${base}.svg`,note:`Forest plot — ${pair.label}`});
+      try{
+        const png=await rasterizeSvg(built.svg,built.W,built.H,{targetWidthPx:widthPx,transparent,background:"#ffffff"});
+        entries.push({name:`${base}.png`,blob:png});
+        files.push({name:`${base}.png`,note:`Forest plot (raster) — ${pair.label}`});
+      }catch(_){ warnings.push(`Forest PNG for "${pair.label}" could not be rasterized — the SVG is included.`); }
+      forestN++;
+    }
+
+    // 3) Methods text (markdown) — drafted from the project's actual settings + primary result.
+    report("Preparing methods text…");
+    try{
+      const primary=pairs.length?runMeta(jsFilterStudies(studies,pairs[0]),"random"):null;
+      const esType0=pairs.length?((jsFilterStudies(studies,pairs[0]).map(s=>s.esType).filter(Boolean)[0])||pairs[0].esType||""):"";
+      const idTotal=(+pr.dbs||0)+(+pr.reg||0)+(+pr.other||0);
+      const md=jsMethodsMarkdown({
+        projectName:project.name,
+        generatedAt:new Date(authInfo.generatedAt).toLocaleDateString(),
+        software:authInfo.appVersion?`META·LAB ${authInfo.appVersion}`:"META·LAB",
+        pico:project.pico||{},
+        registration:(project.pico&&project.pico.prosperoId)||"",
+        prisma:{identified:idTotal||null,deduped:(+pr.dedupe||null),included:(+pr.included||null)},
+        screening:{},
+        measure:(ES_TYPES[esType0]&&ES_TYPES[esType0].label)||"",
+        model:"random",
+        hksj:!!(primary&&primary.hksj),
+        k:primary?primary.k:undefined,
+        heterogeneity:primary?{I2:primary.I2,tau2:fmtNum(primary.tau2,prec),Q:fmtNum(primary.Q,prec),Qdf:primary.k-1,Qp:primary.Qpval}:{},
+        predInterval:!!(primary&&primary.predInt),
+        outcomes:pairs.map(p=>p.label),
+        robTool:"Cochrane RoB 2 (effect of assignment)",
+        grade:!!(project.grade&&Object.keys(project.grade).length),
+      });
+      entries.push({name:"methods-text.md",text:md});
+      files.push({name:"methods-text.md",note:"Auto-drafted Methods section (review before use)"});
+    }catch(_){ warnings.push("Methods text could not be generated."); }
+
+    // 4) Study table (CSV) + full report (HTML).
+    report("Preparing study table…");
+    try{
+      entries.push({name:"study-table.csv",text:jsStudyTableCSV(studies)});
+      files.push({name:"study-table.csv",note:"Included-studies characteristics table"});
+      if(!studies.length) warnings.push("No studies in the project — the study table is empty.");
+    }catch(_){ warnings.push("Study table could not be generated."); }
+    report("Preparing report…");
+    try{
+      const html=buildReportHTML(prec);
+      if(html){ entries.push({name:"report.html",text:html}); files.push({name:"report.html",note:"Full self-contained report (open in a browser)"}); }
+    }catch(_){ warnings.push("Report HTML could not be generated."); }
+
+    // 5) README / manifest / warnings, then ZIP + download.
+    report("Creating ZIP…");
+    const readme=jsReadme({projectName:project.name,generatedAt:new Date(authInfo.generatedAt).toLocaleString(),appVersion:authInfo.appVersion,files,warnings});
+    entries.push({name:"README.md",text:readme});
+    entries.push({name:"manifest.json",text:JSON.stringify(jsManifest({projectId:activeId,projectTitle:project.name,generatedAt:authInfo.generatedAt,generatedBy:(authUser&&(authUser.email||authUser.name))||"",appVersion:authInfo.appVersion,includedFiles:files,warnings}),null,2)});
+    entries.push({name:"warnings.txt",text:jsWarnings(warnings)});
+
+    const zipBlob=await zipFiles(entries);
+    const datePart=new Date(authInfo.generatedAt).toISOString().slice(0,10);
+    downloadBlob(zipBlob,`${jsSafeName(project.name,"project")}-journal-submission-${datePart}.zip`);
+  };
+  const openJournalSubmissionExport=()=>{
+    if(!project)return;
+    setExpItem({
+      id:"journal-submission",
+      title:`Journal submission package — ${project.name||"project"}`,
+      formats:[{id:"zip",label:"ZIP package — PRISMA · forest plots · methods · study table · report"}],
+      sizing:true,
+      defaults:{format:"zip",presetId:"journal-1col"},
+      run:async(choice,onProgress)=>{ await buildJournalSubmissionZip(choice,onProgress); },
+    });
+  };
+
   // prompt9 Task 6 — report + project-JSON exports open the shared dialog.
   const openReportExport=()=>{
     if(!project)return;
@@ -8504,6 +8661,11 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   // prompt19 — Screening workspace gets a full-bleed, focus layout (escapes the
   // 960px content clamp + the project header). `focus` also slides the sidebar away.
   const inScreening=!!project&&tab==="screening";
+  // prompt42 Task 7 — the OPEN RoB assessment workspace is full-bleed + no page scroll
+  // (gated strictly on the per-study workspace being open, so the RoB OVERVIEW list
+  // still scrolls normally). noPageScroll drives the body container's overflow/padding.
+  const robFullbleed=!!project&&tab==="rob"&&robInWorkspace&&!robNarrow;
+  const noPageScroll=inScreening||robFullbleed;
   // prompt34 Task 8 — one shared collapse across every tab (no Screening-only
   // special case); the ☰ button in the universal header toggles it everywhere.
   const focus=navCollapsed;
@@ -8949,7 +9111,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           reqMissingList={headerStatus.reqMissingList}
           missingItems={headerStatus.missingItems}
           onShowAudit={()=>setShowAudit(true)}
-          onReport={openReportExport} onExport={openProjectExport} onImport={()=>importRef.current&&importRef.current.click()}/>
+          onReport={openReportExport} onExport={openProjectExport} onJournalZip={openJournalSubmissionExport} onImport={()=>importRef.current&&importRef.current.click()}/>
       )}
       {/* prompt32 Task 5 — responsive global workspace gutter. The horizontal pad
           scales 20px → 5vw → 88px (≈5–10% on wide screens) so content never glues
@@ -8957,7 +9119,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           Screening keeps its full-bleed 0 escape hatch. Reading tabs still centre
           at maxWidth:1100 below; data tabs (extraction/rob/analysis/forest) fill
           the now responsively-padded column. */}
-      <div style={{flex:1,minHeight:0,overflowY:inScreening?"hidden":"auto",padding:inScreening?0:"28px clamp(20px, 5vw, 88px) 56px"}}>
+      <div style={{flex:1,minHeight:0,overflowY:noPageScroll?"hidden":"auto",padding:noPageScroll?0:"28px clamp(20px, 5vw, 88px) 56px"}}>
       {/* Hidden project-import input — always mounted so Import works from the
           compact header on every tab AND from the welcome screen (prompt30 Part 5). */}
       <input ref={importRef} type="file" accept=".json" onChange={onImport} style={{display:"none"}}/>
@@ -9060,7 +9222,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
         ):(
         // prompt30/31 — workspace tabs go full width; reading/form tabs keep a
         // comfortable centred max-width so prose/forms don't stretch on ultra-wide.
-        <div style={{maxWidth:READING_TABS.has(tab)?1100:"none",margin:READING_TABS.has(tab)?"0 auto":0}} className="tab-content">
+        <div style={{maxWidth:READING_TABS.has(tab)?1100:"none",margin:READING_TABS.has(tab)?"0 auto":0,...(robFullbleed?{height:"100%",display:"flex",flexDirection:"column",minHeight:0}:null)}} className="tab-content">
           {/* prompt30 Part 5 — the DETAILED project status header lives ONLY on the
               Overview tab now. Other tabs show compact badges + Report/Export/Import
               in the universal ProjectHeaderBar (near the title). */}
@@ -9126,7 +9288,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           {tab==="search"&&<SearchDispatcher project={project} activeId={activeId} updNested={updNested} upd={upd}/>}
           {tab==="prisma"&&<PRISMATab project={project} updNested={updNested} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
           {tab==="extraction"&&<ExtractionTab project={project} updateProject={updateProject} activeId={activeId}/>}
-          {tab==="rob"&&<RoBTab project={project} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
+          {tab==="rob"&&<RoBTab project={project} updateProject={updateProject} activeId={activeId} setTab={setTab} onWorkspaceChange={setRobInWorkspace}/>}
           {tab==="analysis"&&<AnalysisTab project={project} updateProject={fn=>updateProject(activeId,fn)} onApplyPrecisionToAll={prec=>projects.forEach(p=>updateProject(p.id,x=>({...x,analysisPrecision:prec})))}/>}
           {tab==="forest"&&<ForestTab project={project}/>}
           {tab==="sensitivity"&&<SensitivityTab project={project}/>}

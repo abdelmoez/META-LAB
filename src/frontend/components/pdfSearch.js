@@ -40,3 +40,57 @@ export async function collectMatchingPages({ numPages, getPageText, term, isAbor
   }
   return hits;
 }
+
+/* ════════════════════════════════════════════════════════════════════════════
+   prompt42 Task 6 — Chrome-like LIVE search with per-occurrence highlighting.
+   These pure helpers find EVERY occurrence (with offset + length) so the viewer
+   can wrap each one in the text layer, count them, and navigate between them with
+   match-case / whole-word options. Kept pure + browser-free so they are unit-
+   tested without pdf.js. The legacy page-level helpers above are unchanged.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/** Escape a user string so it can be embedded literally inside a RegExp. */
+export function escapeRegExp(s) {
+  return String(s == null ? '' : s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Find every occurrence of `term` in `text`, returning ordered, NON-OVERLAPPING
+ * matches as { index, length } (character offsets into `text`). Pure + safe:
+ *  - empty term / text  → []
+ *  - matchCase=false (default) → case-insensitive
+ *  - wholeWord=true → the term must sit on word boundaries (\b), so "diabetes"
+ *    does NOT match inside "diabetess"; punctuation/space count as boundaries.
+ * Used BOTH for the cross-page match index (over pdf.js text items) and for
+ * wrapping matches in the rendered text-layer spans, so counts always agree.
+ */
+export function findMatchesInText(text, term, { matchCase = false, wholeWord = false } = {}) {
+  const hay = String(text == null ? '' : text);
+  const needle = String(term == null ? '' : term);
+  if (!hay || !needle) return [];
+  const flags = matchCase ? 'g' : 'gi';
+  const core = escapeRegExp(needle);
+  // \b is unreliable next to non-word chars in the term; anchor with explicit
+  // non-word lookarounds so a term that starts/ends with a word char is bounded
+  // and a term that doesn't (e.g. "≥") still matches.
+  const pattern = wholeWord ? `(?<![\\p{L}\\p{N}_])${core}(?![\\p{L}\\p{N}_])` : core;
+  let re;
+  try { re = new RegExp(pattern, flags + 'u'); }
+  catch { re = new RegExp(core, flags); } // very old engines without lookbehind/unicode
+  const out = [];
+  let m;
+  while ((m = re.exec(hay)) !== null) {
+    out.push({ index: m.index, length: m[0].length });
+    if (m.index === re.lastIndex) re.lastIndex++; // guard zero-width (defensive)
+    if (out.length > 5000) break;                 // sanity cap per page
+  }
+  return out;
+}
+
+/** Total occurrences of `term` across an array of pdf.js text items (item.str). */
+export function countMatchesInItems(items, term, options) {
+  if (!Array.isArray(items)) return 0;
+  let n = 0;
+  for (const it of items) n += findMatchesInText((it && it.str) || '', term, options).length;
+  return n;
+}

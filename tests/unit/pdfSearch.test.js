@@ -3,7 +3,7 @@
  * helpers (matching + the resilient page scan).
  */
 import { describe, it, expect } from 'vitest';
-import { pageTextFromContent, pageMatches, collectMatchingPages } from '../../src/frontend/components/pdfSearch.js';
+import { pageTextFromContent, pageMatches, collectMatchingPages, findMatchesInText, escapeRegExp, countMatchesInItems } from '../../src/frontend/components/pdfSearch.js';
 
 describe('pageTextFromContent', () => {
   it('flattens pdf.js text items into one lowercased string', () => {
@@ -60,5 +60,46 @@ describe('collectMatchingPages', () => {
   });
   it('empty term yields no matches', async () => {
     expect(await collectMatchingPages({ numPages: 4, getPageText, term: '' })).toEqual([]);
+  });
+});
+
+describe('escapeRegExp', () => {
+  it('escapes regex metacharacters so the term matches literally', () => {
+    expect(escapeRegExp('a.b*c?')).toBe('a\\.b\\*c\\?');
+    expect(escapeRegExp('(x)[y]{z}')).toBe('\\(x\\)\\[y\\]\\{z\\}');
+  });
+});
+
+describe('findMatchesInText (prompt42 Task 6)', () => {
+  it('finds every occurrence with index + length (case-insensitive by default)', () => {
+    const r = findMatchesInText('Diabetes and diabetes and DIABETES', 'diabetes');
+    expect(r).toEqual([{ index: 0, length: 8 }, { index: 13, length: 8 }, { index: 26, length: 8 }]);
+  });
+  it('match-case only matches exact case', () => {
+    const r = findMatchesInText('Diabetes diabetes', 'diabetes', { matchCase: true });
+    expect(r).toEqual([{ index: 9, length: 8 }]);
+  });
+  it('whole-word does not match inside a larger word', () => {
+    expect(findMatchesInText('diabetess diabetes-x', 'diabetes', { wholeWord: true }))
+      .toEqual([{ index: 10, length: 8 }]); // "diabetess" is rejected; the hyphen is a boundary
+    expect(findMatchesInText('the diabetes test', 'diabetes', { wholeWord: true }))
+      .toEqual([{ index: 4, length: 8 }]);
+  });
+  it('treats the term literally (regex metachars do not run)', () => {
+    expect(findMatchesInText('a.b a.b axb', 'a.b')).toEqual([{ index: 0, length: 3 }, { index: 4, length: 3 }]);
+  });
+  it('empty term / text → []', () => {
+    expect(findMatchesInText('anything', '')).toEqual([]);
+    expect(findMatchesInText('', 'x')).toEqual([]);
+    expect(findMatchesInText(null, null)).toEqual([]);
+  });
+});
+
+describe('countMatchesInItems', () => {
+  it('sums matches across pdf.js text items', () => {
+    const items = [{ str: 'heart failure' }, { str: 'HEART rate' }, {}, { str: 'no match' }];
+    expect(countMatchesInItems(items, 'heart')).toBe(2);
+    expect(countMatchesInItems(items, 'heart', { matchCase: true })).toBe(1);
+    expect(countMatchesInItems(null, 'x')).toBe(0);
   });
 });

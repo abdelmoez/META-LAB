@@ -6,13 +6,14 @@
  */
 import { Router } from 'express';
 import {
-  postMesh, postCount, getSearch, putSearch,
+  postMesh, postMeshSuggest, postCount, getSearch, putSearch,
 } from '../searchEngine/searchEngineController.js';
 
 const router = Router();
 
 // NLM proxies (auth + flag only).
 router.post('/mesh', postMesh);
+router.post('/mesh-suggest', postMeshSuggest);
 router.post('/count', postCount);
 
 // Per-project persistence (project access).

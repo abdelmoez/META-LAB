@@ -18,26 +18,38 @@ import ProjectRobPanel from './ProjectRobPanel.jsx';
 export default function RobPage() {
   const { projectId } = useParams();
   const [flag, setFlag] = useState(null); // null=loading
+  // prompt42 Task 7 — no page-level scroll while the per-study assessment workspace
+  // is open on the standalone route too (mirrors the embedded monolith behaviour).
+  // Gated to wide (>=900px) screens: below that the workspace stacks and intentionally
+  // page-scrolls, so forcing overflow:hidden would clip the assessment + footer.
+  const [workspaceOpen, setWorkspaceOpen] = useState(false);
+  const [wide, setWide] = useState(() => { try { return window.innerWidth >= 900; } catch { return true; } });
   useEffect(() => { robFlagEnabled().then(setFlag).catch(() => setFlag(false)); }, []);
+  useEffect(() => {
+    let raf = 0;
+    const onR = () => { cancelAnimationFrame(raf); raf = requestAnimationFrame(() => { try { setWide(window.innerWidth >= 900); } catch { /* ignore */ } }); };
+    window.addEventListener('resize', onR);
+    return () => { cancelAnimationFrame(raf); window.removeEventListener('resize', onR); };
+  }, []);
 
   if (flag === null) return <Frame><Center>Checking availability…</Center></Frame>;
   if (flag === false) return <Frame><NotEnabled /></Frame>;
   if (!projectId) return <Frame><ProjectPicker /></Frame>;
-  return <Frame><ProjectRob projectId={projectId} /></Frame>;
+  return <Frame noScroll={workspaceOpen && wide}><ProjectRob projectId={projectId} onWorkspaceChange={setWorkspaceOpen} /></Frame>;
 }
 
-function Frame({ children }) {
+function Frame({ children, noScroll = false }) {
   const navigate = useNavigate();
   return (
-    <div style={{ minHeight: '100vh', background: C.bg, color: C.txt, fontFamily: FONT }}>
-      <header style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 22px', borderBottom: `1px solid ${C.brd}`, background: C.card }}>
+    <div style={{ height: noScroll ? '100vh' : undefined, minHeight: '100vh', background: C.bg, color: C.txt, fontFamily: FONT, display: 'flex', flexDirection: 'column' }}>
+      <header style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 22px', borderBottom: `1px solid ${C.brd}`, background: C.card, flexShrink: 0 }}>
         <button onClick={() => navigate('/app')} style={ghost}><Icon name="arrowLeft" size={15} /> Workspace</button>
         <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontWeight: 800, fontSize: 16 }}>
           <Icon name="scale" size={18} /> Risk of Bias
           <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '34')}`, borderRadius: 6, padding: '2px 7px' }}>RoB 2 · beta</span>
         </span>
       </header>
-      <div style={{ maxWidth: 'none', margin: 0, padding: '24px 28px 60px' }}>{children}</div>
+      <div style={{ flex: 1, minHeight: 0, maxWidth: 'none', margin: 0, padding: noScroll ? '16px 20px' : '24px 28px 60px', overflow: noScroll ? 'hidden' : 'visible', display: noScroll ? 'flex' : 'block', flexDirection: 'column' }}>{children}</div>
     </div>
   );
 }
@@ -84,8 +96,8 @@ function ProjectPicker() {
 // The per-project view now delegates to the shared, embeddable ProjectRobPanel
 // (also used natively inside the META·LAB workspace "Risk of Bias" tab, prompt28
 // Part 2). Standalone here: read-only tool selector, full owner editing.
-function ProjectRob({ projectId }) {
-  return <ProjectRobPanel projectId={projectId} />;
+function ProjectRob({ projectId, onWorkspaceChange }) {
+  return <ProjectRobPanel projectId={projectId} onWorkspaceChange={onWorkspaceChange} />;
 }
 
 function ErrorBox({ msg, onRetry }) {
