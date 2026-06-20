@@ -48,13 +48,19 @@ function isPdfBytes(buf) {
 const GUTTER = 16;          // breathing room so a page never touches the scroll edge
 const PAGE_GAP = 14;        // vertical gap between continuous pages
 const COL_PAD = GUTTER / 2; // padding around the page column (must match the render)
-// prompt43 Area 2 — zoom is a MULTIPLE of fit-width (1.0 = the page exactly fits the
-// viewport width). Bounds + step are gentle so a click is a small, predictable change
-// and the page can never explode (extreme zoom) or vanish (sub-pixel scale).
-const ZOOM_MIN = 0.5, ZOOM_MAX = 4, ZOOM_STEP = 0.25;
+// prompt44 item 7 — the viewer has two modes: FIT-WIDTH (userScale === null → each
+// page exactly fits the container width, recomputed on resize) and CUSTOM-SCALE
+// (userScale is an ABSOLUTE scale where 1.0 = 100% of the PDF's native size). The
+// toolbar shows "Fit width" in fit mode and the real percentage in custom mode — so
+// "100%" never lies. A fixed ladder makes zoom in/out predictable; the bounds stop the
+// page exploding (over-zoom) or vanishing (sub-pixel), which were the reported bugs.
+const SCALE_MIN = 0.25, SCALE_MAX = 5;
+const ZOOM_LADDER = [0.25, 0.5, 0.67, 0.8, 1.0, 1.25, 1.5, 1.75, 2, 2.5, 3, 4, 5];
+const clampScale = (s) => Math.min(SCALE_MAX, Math.max(SCALE_MIN, Number(s) || SCALE_MIN));
+const ladderUp = (s) => ZOOM_LADDER.find((v) => v > s + 1e-4) ?? SCALE_MAX;
+const ladderDown = (s) => [...ZOOM_LADDER].reverse().find((v) => v < s - 1e-4) ?? SCALE_MIN;
 const RENDER_BUFFER_PX = 900; // render pages within this many px above/below the viewport
 const FALLBACK_DIMS = { w: 612, h: 792 }; // US-Letter @72dpi until a page's real dims load
-const clampZoom = (z) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, +Number(z).toFixed(2)));
 
 // Highlight colors are intentionally fixed (PDF canvases are white): they read well
 // on both themes and never leak a CSS var into a canvas-rasterized context.
@@ -93,7 +99,7 @@ export default function AppPdfViewer({
   const [doc, setDoc]         = useState(null);
   const [numPages, setNum]    = useState(0);
   const [pageNum, setPageNum] = useState(1);   // most-visible page (the indicator)
-  const [zoom, setZoom]       = useState(1);   // 1 = fit-width
+  const [userScale, setUserScale] = useState(null); // null = fit-width mode; else absolute scale
   const [rotation, setRot]    = useState(0);   // 0 | 90 | 180 | 270
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState('');
@@ -110,8 +116,10 @@ export default function AppPdfViewer({
   const [renderRange, setRenderRange] = useState({ lo: 1, hi: 1 });
   const anchorRef = useRef(null);              // { page, frac, y } captured before a zoom → keeps scroll stable
   const scrollRaf = useRef(0);
-  const zoomRef = useRef(1);                   // always-fresh mirror of `zoom` for event-time reads
-  zoomRef.current = zoom;
+  // Always-fresh mirrors so the zoom/anchor helpers stay referentially stable.
+  const userScaleRef = useRef(null); userScaleRef.current = userScale;
+  const rotationRef = useRef(0);     rotationRef.current = rotation;
+  const pageNumRef = useRef(1);      pageNumRef.current = pageNum;
 
   // Search state (Task 6).
   const [searchOpen, setSearchOpen] = useState(false);
@@ -127,6 +135,7 @@ export default function AppPdfViewer({
   const wrapRef   = useRef(null);
   const docRef    = useRef(null);
   const [wrapW, setWrapW] = useState(0);
+  const wrapWRef = useRef(0); wrapWRef.current = wrapW;
   const programmaticScroll = useRef(0);         // timestamp guard: ignore indicator updates right after a programmatic scroll
 
   const openExternal = externalUrl || url;
@@ -142,7 +151,7 @@ export default function AppPdfViewer({
     let cancelled = false;
     let task = null;
     setLoading(true); setError(''); setDoc(null); setNum(0);
-    setDims({}); setRenderRange({ lo: 1, hi: 1 }); setPageNum(1); setZoom(1); setRot(0);
+    setDims({}); setRenderRange({ lo: 1, hi: 1 }); setPageNum(1); setUserScale(null); setRot(0);
     setMatches([]); setTerm(''); setScanning(false);
     textCache.current = new Map(); scanToken.current++;
     (async () => {
@@ -217,11 +226,15 @@ export default function AppPdfViewer({
     const base = dimsRef.current[p] || dimsRef.current[1] || FALLBACK_DIMS;
     return rotation % 180 === 0 ? { w: base.w, h: base.h } : { w: base.h, h: base.w };
   }, [rotation]);
-  const scaleFor = useCallback((p) => {
+  // Fit-to-width scale for a page (guarded against a zero/negative measured width).
+  const fitScaleFor = useCallback((p) => {
     const { w } = displayDims(p);
-    const fit = Math.max(0.05, (wrapW - GUTTER) / Math.max(1, w)); // fit-to-width, guarded
-    return fit * zoom;
-  }, [displayDims, wrapW, zoom]);
+    return Math.max(0.05, (wrapW - GUTTER) / Math.max(1, w));
+  }, [displayDims, wrapW]);
+  // Effective render scale: the absolute userScale when set, else fit-to-width.
+  const scaleFor = useCallback((p) => (
+    userScale == null ? fitScaleFor(p) : userScale
+  ), [fitScaleFor, userScale]);
   const boxFor = useCallback((p) => {
     const { w, h } = displayDims(p);
     const s = scaleFor(p);
@@ -300,7 +313,7 @@ export default function AppPdfViewer({
     const h = Math.max(1, boxFor(a.page).h);
     el.scrollTop = Math.max(0, (top + a.frac * h) - a.y);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [zoom, rotation, wrapW]);
+  }, [userScale, rotation, wrapW]);
 
   /* ── Navigation: scroll the container to a page ──────────────────────────── */
   const scrollToPage = useCallback((n) => {
@@ -331,30 +344,45 @@ export default function AppPdfViewer({
     const y = anchorClientY == null ? rect.height / 2 : (anchorClientY - rect.top);
     anchorRef.current = { ...pageAtOffsetRef.current(el.scrollTop + y), y };
   }, []);
+  // The current effective ABSOLUTE scale, whether in fit-width or custom mode. Reads
+  // refs so it (and applyZoom) stay stable. In fit mode it derives the fit scale from
+  // page-1's dims + the measured width — the same number the pages actually render at.
+  const effScaleNow = () => {
+    if (userScaleRef.current != null) return userScaleRef.current;
+    // Fit scale of the page currently in view (so a zoom click starts from what the
+    // user sees — matters only for mixed-size PDFs; identical for uniform ones).
+    const base = dimsRef.current[pageNumRef.current] || dimsRef.current[1] || FALLBACK_DIMS;
+    const w = rotationRef.current % 180 === 0 ? base.w : base.h;
+    return Math.max(0.05, (wrapWRef.current - GUTTER) / Math.max(1, w));
+  };
   const applyZoom = useCallback((compute, anchorClientY) => {
-    const z = zoomRef.current;
-    const next = clampZoom(typeof compute === 'function' ? compute(z) : compute);
-    if (next === z) return;
+    const cur = effScaleNow();
+    const next = clampScale(typeof compute === 'function' ? compute(cur) : compute);
+    // No-op only when already at this exact custom scale (in fit mode we always commit,
+    // so the first zoom click leaves fit mode even if the numbers coincide).
+    if (Math.abs(next - cur) < 1e-4 && userScaleRef.current != null) return;
     captureAnchor(anchorClientY);
-    setZoom(next);
+    setUserScale(next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [captureAnchor]);
-  const zoomIn  = () => applyZoom((z) => z + ZOOM_STEP);
-  const zoomOut = () => applyZoom((z) => z - ZOOM_STEP);
-  const fitWidth = () => applyZoom(1);
+  const zoomIn  = () => applyZoom((s) => ladderUp(s));
+  const zoomOut = () => applyZoom((s) => ladderDown(s));
+  // Reset to fit-width mode (the toolbar's "Fit width" control).
+  const fitWidth = () => { captureAnchor(null); setUserScale(null); };
   // Rotate keeps the centred page in view by capturing the same anchor first.
   const rotateLeft  = () => { captureAnchor(null); setRot((r) => (r + 270) % 360); };
   const rotateRight = () => { captureAnchor(null); setRot((r) => (r + 90) % 360); };
 
-  // Ctrl/⌘ + wheel zooms around the cursor; a plain wheel scrolls normally. Bound as
-  // a non-passive native listener so preventDefault actually suppresses the browser zoom.
-  // applyZoom is stable, so this binds once per document (no per-scroll rebind churn).
+  // Ctrl/⌘ + wheel zooms smoothly around the cursor; a plain wheel scrolls normally.
+  // Bound as a non-passive native listener so preventDefault suppresses the browser
+  // zoom. applyZoom is stable, so this binds once per document (no per-scroll churn).
   useEffect(() => {
     const el = wrapRef.current;
     if (!el) return undefined;
     const handler = (e) => {
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
-      applyZoom((z) => z + (e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP), e.clientY);
+      applyZoom((s) => s * (e.deltaY < 0 ? 1.1 : 1 / 1.1), e.clientY);
     };
     el.addEventListener('wheel', handler, { passive: false });
     return () => el.removeEventListener('wheel', handler);
@@ -433,6 +461,15 @@ export default function AppPdfViewer({
   const widthKnown = wrapW > 0;
   const pages = ready ? Array.from({ length: numPages }, (_, i) => i + 1) : [];
 
+  // prompt44 item 7 — the toolbar shows "Fit width" in fit mode and the REAL percentage
+  // in custom mode; effScale is the absolute scale the pages actually render at, so the
+  // in/out buttons disable correctly at the scale bounds (not a phantom multiplier).
+  const inFit = userScale == null;
+  const effScale = inFit ? fitScaleFor(pageNum) : userScale;
+  const zoomLabel = inFit ? 'Fit width' : `${Math.round(effScale * 100)}%`;
+  const canZoomOut = !loading && !error && effScale > SCALE_MIN + 1e-3;
+  const canZoomIn  = !loading && !error && effScale < SCALE_MAX - 1e-3;
+
   return (
     <div style={shellStyle} role="group" aria-label="PDF viewer" onKeyDown={onKeyDown} tabIndex={0}>
       {/* Toolbar */}
@@ -444,18 +481,18 @@ export default function AppPdfViewer({
           <PathSearch />
         </TbIcon>
         <Sep />
-        <TbIcon label="Zoom out" onClick={zoomOut} disabled={loading || !!error || zoom <= ZOOM_MIN}><PathMinus /></TbIcon>
+        <TbIcon label="Zoom out" onClick={zoomOut} disabled={!canZoomOut}><PathMinus /></TbIcon>
         <button type="button" onClick={fitWidth} disabled={loading || !!error}
-          title="Fit width (reset zoom)" aria-label="Fit width — reset zoom to 100%"
+          title={inFit ? 'Pages fit the width' : 'Reset to fit width'}
+          aria-label={inFit ? 'Fit width (current)' : 'Reset to fit width'} aria-pressed={inFit}
           style={{
-            minWidth: 44, height: 26, padding: '0 6px', fontSize: 10.5, fontFamily: MONO, fontWeight: 700,
-            background: Math.round(zoom * 100) === 100 ? alpha(C.acc, '18') : 'none',
-            border: `1px solid ${Math.round(zoom * 100) === 100 ? alpha(C.acc, '45') : C.brd2}`, borderRadius: 6,
-            color: Math.round(zoom * 100) === 100 ? C.acc : C.txt2, cursor: (loading || error) ? 'default' : 'pointer',
-            opacity: (loading || error) ? 0.4 : 1, flexShrink: 0,
-          }}>{Math.round(zoom * 100)}%</button>
-        <TbIcon label="Zoom in" onClick={zoomIn} disabled={loading || !!error || zoom >= ZOOM_MAX}><PathPlus /></TbIcon>
-        <TbIcon label="Fit width" onClick={fitWidth} disabled={loading || !!error}><PathFitWidth /></TbIcon>
+            minWidth: 62, height: 26, padding: '0 8px', fontSize: 10.5, fontFamily: MONO, fontWeight: 700,
+            background: inFit ? alpha(C.acc, '18') : 'none',
+            border: `1px solid ${inFit ? alpha(C.acc, '45') : C.brd2}`, borderRadius: 6,
+            color: inFit ? C.acc : C.txt2, cursor: (loading || error) ? 'default' : 'pointer',
+            opacity: (loading || error) ? 0.4 : 1, flexShrink: 0, whiteSpace: 'nowrap',
+          }}>{zoomLabel}</button>
+        <TbIcon label="Zoom in" onClick={zoomIn} disabled={!canZoomIn}><PathPlus /></TbIcon>
         <Sep />
         <TbIcon label="Rotate left" onClick={rotateLeft} disabled={loading || !!error}><PathRotateLeft /></TbIcon>
         <TbIcon label="Rotate right" onClick={rotateRight} disabled={loading || !!error}><PathRotateRight /></TbIcon>
@@ -507,7 +544,15 @@ export default function AppPdfViewer({
             <div style={{ fontSize: 11.5, fontFamily: MONO, marginTop: 10 }}>Loading PDF…</div>
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: PAGE_GAP, padding: COL_PAD, minHeight: '100%' }}>
+          <div style={{
+            display: 'flex', flexDirection: 'column', alignItems: 'center', gap: PAGE_GAP, padding: COL_PAD, minHeight: '100%',
+            // prompt44 item 7 — the column is at LEAST the container width (so narrow pages
+            // sit centred) but grows to fit a zoomed-in page (`fit-content`) and centres via
+            // auto margins. Without this, a page wider than the container overflowed to the
+            // LEFT under `align-items:center` and the left edge became unreachable — that was
+            // the "cramped to the left" symptom on zoom-in.
+            width: 'fit-content', minWidth: '100%', margin: '0 auto', boxSizing: 'border-box',
+          }}>
             {pages.map((p) => {
               const box = boxFor(p);
               return (
@@ -678,8 +723,6 @@ const PathMinus = () => (<svg {...sv}><path d="M5 12h14" /></svg>);
 const PathChevronUp = () => (<svg {...sv}><path d="m5 15 7-7 7 7" /></svg>);
 const PathChevronDown = () => (<svg {...sv}><path d="m5 9 7 7 7-7" /></svg>);
 const PathClose = () => (<svg {...sv}><path d="M6 6l12 12M18 6 6 18" /></svg>);
-// Fit-width: a centred box with left/right arrows hitting its edges.
-const PathFitWidth = () => (<svg {...sv}><rect x="4" y="6" width="16" height="12" rx="1.5" /><path d="M8 12H6m0 0 1.6-1.6M6 12l1.6 1.6M16 12h2m0 0-1.6-1.6M18 12l-1.6 1.6" /></svg>);
 const PathRotateLeft = () => (<svg {...sv}><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>);
 const PathRotateRight = () => (<svg {...sv}><path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /></svg>);
 // "Aa" = match case, "ab|" = whole words — compact text glyphs rendered as SVG text.

@@ -22,6 +22,8 @@ import { rasterizeSvg, downloadBlob, downloadText, zipFiles } from "./src/fronte
 // prompt42 Task 8 — one-click journal-submission ZIP (pure helpers + methods text).
 import { getOutcomePairs as jsOutcomePairs, filterStudiesForOutcome as jsFilterStudies, buildStudyTableCSV as jsStudyTableCSV, buildReadmeMarkdown as jsReadme, buildManifest as jsManifest, buildWarningsText as jsWarnings, safeName as jsSafeName } from "./src/research-engine/import-export/journalSubmission.js";
 import { buildMethodsMarkdown as jsMethodsMarkdown } from "./src/research-engine/docs/methodsText.js";
+// prompt44 item 2 — R validation engine (pure metafor-script generator; no execution).
+import { buildMetaValidationR } from "./src/research-engine/r-validation/rValidation.js";
 import { fmtNum, fmtES, fmtCI, fmtEstCI, fmtP, fmtPct, fmtI2, fmtWeight, fmtInt, normalizePrecision, DECIMAL_OPTIONS } from "./src/research-engine/format/precision.js";
 import { orderStudies, EXTRACTION_SORTS, DEFAULT_EXTRACTION_SORT } from "./src/frontend/pages/extractionOrder.js";
 // prompt28 Part 2 — the standalone RoB 2 engine, embedded natively into the
@@ -2064,10 +2066,8 @@ function PICOTab({project,updNested,upd,lockCtx}){
         placeholder='type 2 diabetes, T2DM, NIDDM | SGLT2 inhibitor, dapagliflozin, empagliflozin | cardiovascular, MACE'
         style={{...inp,height:56,resize:"vertical",fontFamily:"'IBM Plex Mono',monospace",fontSize:11}}/>
     </div>
-    <div style={{marginBottom:14}}><label style={lbl}>Additional Protocol Notes</label>
-      <textarea value={pico.notes||""} onChange={e=>ch("notes",e.target.value)}
-        placeholder="Pre-specified subgroups, sensitivity analyses planned, funding, anything else for your protocol…"
-        style={{...inp,height:56,resize:"vertical"}}/></div>
+    {/* prompt44 item 1 — "Additional Protocol Notes" removed from the editor UI to
+        declutter (the `notes` data field is KEPT in the model for back-compat). */}
 
     <InfoBox>💡 <strong style={{color:C.txt}}>Next step:</strong> Once your PICO and eligibility are set, register your protocol on <a href="https://www.crd.york.ac.uk/prospero/" target="_blank" rel="noreferrer" style={{color:C.acc}}>PROSPERO</a>{AI_FEATURES_ENABLED?" (use the Protocol tab to auto-draft all fields)":" (use the Protocol tab to organise every field)"}, then move to Search Strategy. Required fields are marked <span style={{color:C.red}}>*</span>.</InfoBox>
   </div>);
@@ -7477,7 +7477,7 @@ function EmbeddedScreening({project,onGoToExtraction}){
 /* ════════════ TAB: OVERVIEW (prompt6 Task 15) ════════════ */
 /* Project landing page — every project-enter path lands here: identity, team,
    linked screening workspace, PICO, progress, readiness, and the next step. */
-function OverviewTab({project,setTab}){
+function OverviewTab({project,setTab,onJournalZip,onRValidate}){
   const lid=linkedSiftId(project);
   const linkedTitle=(project._linkedMetaSift&&project._linkedMetaSift.title)||"";
   const perms=projectPerms(project);
@@ -7519,6 +7519,10 @@ function OverviewTab({project,setTab}){
 
   const studies=project.studies||[];
   const withES=studies.filter(s=>s.es!=="").length;
+  // prompt44 item 2 — a study is POOLABLE (and thus usable by the R validation script)
+  // only with a complete effect size AND 95% CI; gate the .R download on this, not on
+  // withES (which counts a bare es), so the button never offers an empty script.
+  const poolable=studies.filter(s=>s.es!==""&&s.lo!==""&&s.hi!=="").length;
   const status=stepStatus(project, !!scr.data?.screeningComplete); // prompt29 Part 9
   const wfTabs=TABS.filter(t=>t.phase); // workflow steps only
   const doneCount=wfTabs.filter(t=>status[t.id]==="done").length;
@@ -7684,6 +7688,36 @@ function OverviewTab({project,setTab}){
         )}
       </div>
     </div>
+
+    {/* prompt44 items 4 + 2 — Export & validation surfaced on the Overview: the
+        one-click journal submission ZIP (reuses the existing export engine) and the
+        R (metafor) validation script. Both are quick to reach without leaving Overview. */}
+    {(onJournalZip||onRValidate)&&(
+    <div style={{...card,marginTop:14}}>
+      <div style={secLbl}>Export &amp; validation</div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(240px,1fr))",gap:14}}>
+        {onJournalZip&&(
+          <div style={{display:"flex",flexDirection:"column",gap:8,minWidth:0}}>
+            <div style={{fontSize:12.5,fontWeight:700,color:C.txt}}>Journal submission package</div>
+            <div style={{fontSize:11.5,color:C.muted,lineHeight:1.55,flex:1}}>One ZIP with the PRISMA diagram, per-outcome forest plots, methods text, study table, and a full report.</div>
+            <button onClick={()=>onJournalZip()} style={{...btnS("primary"),fontSize:12,alignSelf:"flex-start"}}><Icon name="layers" size={13}/> Build ZIP package</button>
+          </div>
+        )}
+        {onRValidate&&(
+          <div style={{display:"flex",flexDirection:"column",gap:8,minWidth:0}}>
+            <div style={{fontSize:12.5,fontWeight:700,color:C.txt}}>R validation script</div>
+            <div style={{fontSize:11.5,color:C.muted,lineHeight:1.55,flex:1}}>A <code style={{fontFamily:"'IBM Plex Mono',monospace",fontSize:10.5}}>metafor</code> script that independently reproduces every outcome's pooled estimate, CI, and heterogeneity — run it in R/RStudio to validate the numbers.</div>
+            <button onClick={()=>onRValidate()} disabled={poolable<2}
+              title={poolable<2?"Add an effect size and 95% CI to at least 2 studies first":"Download the R validation script"}
+              style={{...btnS("ghost"),fontSize:12,alignSelf:"flex-start",opacity:poolable<2?0.5:1,cursor:poolable<2?"not-allowed":"pointer"}}>
+              <Icon name="download" size={13}/> Download .R script
+            </button>
+          </div>
+        )}
+      </div>
+      <div style={{fontSize:10.5,color:C.muted,marginTop:11,lineHeight:1.5}}>The R script is generated locally and runs in your own R environment — META·LAB never executes R code.</div>
+    </div>
+    )}
   </div>);
 }
 
@@ -8267,8 +8301,11 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   // without a double heartbeat; everywhere else the header heartbeats the tab.
   const { user: authUser, setUser } = useAuth();
   // prompt39 Task 5 — per-user workflow-menu mode (server-backed, cross-device,
-  // mirrors themePreference). null/anything-else ⇒ "auto" (current default).
-  const workflowMenuMode = authUser?.workflowMenuMode === "pinned" ? "pinned" : "auto";
+  // mirrors themePreference). prompt44 item 3 — the workflow menu is now PINNED by
+  // DEFAULT: only an explicit "auto" choice opts into auto-collapse, so new users
+  // (null) and everyone who hasn't toggled it keep the menu fixed/open. Unpinning
+  // (the pin control) sets "auto" and persists it.
+  const workflowMenuMode = authUser?.workflowMenuMode === "auto" ? "auto" : "pinned";
   // prompt39 Task 5 — when the saved mode is "pinned" (incl. after async auth load),
   // keep the menu open. "auto" respects the user's manual collapse choice. Placed
   // here (above any conditional return) to keep hook order stable.
@@ -8613,6 +8650,36 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
       defaults:{format:"zip",presetId:"journal-1col"},
       run:async(choice,onProgress)=>{ await buildJournalSubmissionZip(choice,onProgress); },
     });
+  };
+
+  // prompt44 item 2 — generate + download an R (metafor) validation script for every
+  // poolable outcome, so the pooled estimate / CI / heterogeneity / prediction interval
+  // can be INDEPENDENTLY reproduced in R/RStudio. Pure generator + a text download; no
+  // in-app execution and no extra permission (it only re-states data the user can see).
+  const downloadRValidationScript=()=>{
+    if(!project) return;
+    const studies=Array.isArray(project.studies)?project.studies:[];
+    const pairs=jsOutcomePairs(studies);
+    const outcomes=[];
+    for(const pair of pairs){
+      const fs=jsFilterStudies(studies,pair);
+      const result=runMeta(fs,"random");
+      if(!result) continue;
+      const esType=(fs.map(s=>s.esType).filter(Boolean)[0])||pair.esType||"";
+      const t=ES_TYPES[esType]||{};
+      outcomes.push({
+        label:pair.label||"Outcome",
+        esType, esTypeLabel:t.label||esType, isLog:!!t.log,
+        // The app's HEADLINE pooled CI (lo95/hi95) is the normal-theory (Z-based) DL CI,
+        // NOT the Hartung–Knapp variant, so the validation script must reproduce THAT —
+        // rma(method="DL") without test="knha" — for an apples-to-apples comparison.
+        model:"random", hksj:false,
+        studies:fs.map((s,i)=>({label:(s.author||s.study||s.name||s.label||`Study ${i+1}`),es:s.es,lo:s.lo,hi:s.hi})),
+        app:{ k:result.k, pooled:result.pES, lo:result.lo95, hi:result.hi95, I2:result.I2, tau2:result.tau2, Q:result.Q, Qp:result.Qpval, predLo:result.predInt&&result.predInt.lo, predHi:result.predInt&&result.predInt.hi },
+      });
+    }
+    const script=buildMetaValidationR({ projectName:project.name, generatedAt:new Date().toISOString(), outcomes });
+    downloadText(script,`${jsSafeName(project.name,"project")}-r-validation.R`,"text/plain;charset=utf-8");
   };
 
   // prompt9 Task 6 — report + project-JSON exports open the shared dialog.
@@ -9292,7 +9359,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
               </span>
             </div>
           )}
-          {tab==="overview"&&<OverviewTab project={project} setTab={setTab}/>}
+          {tab==="overview"&&<OverviewTab project={project} setTab={setTab} onJournalZip={openJournalSubmissionExport} onRValidate={downloadRValidationScript}/>}
           {tab==="control"&&<ControlTab project={project} onAnnotate={patchAnnotations} setTab={setTab} presence={{users:presenceUsers,locks:presenceLocks}}
             onDeleted={(delId)=>{setProjects(prev=>prev.filter(p=>p.id!==delId));if(onBackToProjects)onBackToProjects();else setActiveId(null);}}/>}
           {tab==="pico"&&<PICODispatcher project={project} activeId={activeId} updNested={updNested} upd={upd} lockCtx={{pid:spId,myUserId:authUser?.id,locks:presenceLocks}}/>}

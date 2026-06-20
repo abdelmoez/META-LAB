@@ -17,7 +17,7 @@
  * (AI_FEATURES_ENABLED is false in the monolith, so AIButton renders nothing).
  */
 import { C, FONT, alpha } from '../../frontend/theme/tokens.js';
-import { useFieldLock } from '../../frontend/screening/hooks/usePresence.js';
+import { useFieldEditing } from '../../frontend/screening/hooks/usePresence.js';
 import { TIMEFRAME_OPTIONS, STUDY_DESIGNS } from './constants.js';
 import { useProtocolState } from './useProtocolState.js';
 import { SectionHeader, InfoBox, HelpTip, CriteriaList, RequiredPicoCard, PURPLE, inp, lbl } from './picoUi.jsx';
@@ -44,20 +44,39 @@ export default function ProtocolModulePanel({ projectId, project, readOnly = fal
   const ro = readOnly || !!(project && (project._readOnly || (project._permissions && project._permissions.readOnly)));
   const { value, status, conflict, update, flush, dismissConflict } = useProtocolState(projectId, { project, enabled: !!projectId });
 
-  // Per-field presence locks for P/I/C/O (same "pico.X" keys as the legacy editor
-  // so both lock consistently). Fail-open: no workspace / lock error never blocks.
+  // prompt44 item 5 — chat-style live field editing for the server-backed state:
+  // claim a field on focus (teammates instantly see "X is editing"), hold the lock
+  // WHILE typing, and auto-release on blur / 5s idle / unmount (server TTL covers a
+  // hard disconnect). Same "pico.X" lock keys as the legacy editor. Fail-open: no
+  // workspace / lock error never blocks editing. Fixed hook count → stable order.
   const lc = lockCtx || {};
-  const lockP = useFieldLock({ pid: lc.pid, field: 'pico.P', myUserId: lc.myUserId, locks: lc.locks, enabled: !!lc.pid });
-  const lockI = useFieldLock({ pid: lc.pid, field: 'pico.I', myUserId: lc.myUserId, locks: lc.locks, enabled: !!lc.pid });
-  const lockC = useFieldLock({ pid: lc.pid, field: 'pico.C', myUserId: lc.myUserId, locks: lc.locks, enabled: !!lc.pid });
-  const lockO = useFieldLock({ pid: lc.pid, field: 'pico.O', myUserId: lc.myUserId, locks: lc.locks, enabled: !!lc.pid });
-  const fieldLocks = { P: lockP, I: lockI, C: lockC, O: lockO };
+  const lockEnabled = !!lc.pid;
+  const edQuestion = useFieldEditing({ pid: lc.pid, field: 'pico.question', myUserId: lc.myUserId, locks: lc.locks, enabled: lockEnabled });
+  const edP = useFieldEditing({ pid: lc.pid, field: 'pico.P', myUserId: lc.myUserId, locks: lc.locks, enabled: lockEnabled });
+  const edI = useFieldEditing({ pid: lc.pid, field: 'pico.I', myUserId: lc.myUserId, locks: lc.locks, enabled: lockEnabled });
+  const edC = useFieldEditing({ pid: lc.pid, field: 'pico.C', myUserId: lc.myUserId, locks: lc.locks, enabled: lockEnabled });
+  const edO = useFieldEditing({ pid: lc.pid, field: 'pico.O', myUserId: lc.myUserId, locks: lc.locks, enabled: lockEnabled });
+  const edKeywords = useFieldEditing({ pid: lc.pid, field: 'pico.keywords', myUserId: lc.myUserId, locks: lc.locks, enabled: lockEnabled });
+  const fieldEd = { P: edP, I: edI, C: edC, O: edO };
 
   // The module state is the conflict-authority; `onMirror` keeps the legacy
   // project.pico blob in sync so other (not-yet-migrated) tabs read fresh data.
   const setVal = (k, v) => { const patch = { [k]: v }; update(patch); if (onMirror) onMirror(patch); };
+  // A change handler that also keeps the field's edit lock alive while typing. If the
+  // field is already held by someone else (snapshot just landed), drop the keystroke
+  // rather than write into their field (the textarea is also disabled, but this closes
+  // the brief propagation window).
+  const setLive = (k, ed) => (e) => { if (ed && ed.lockedByOther) return; setVal(k, e.target.value); if (ed) ed.onActivity(); };
   const set = (k) => (e) => setVal(k, e.target.value);
   const dis = ro || status === 'loading';
+  // "<name> is editing…" indicator for a locked-by-other field (render helper, not a
+  // nested component, so it never remounts).
+  const editingBadge = (ed) => (ed && ed.lockedByOther ? (
+    <div style={{ fontSize: 10.5, color: C.yel, marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+      <span style={{ width: 6, height: 6, borderRadius: '50%', background: C.yel, display: 'inline-block' }} />
+      {ed.lockedByOther.name} is editing…
+    </div>
+  ) : null);
 
   const reqFilled = ['P', 'I', 'C', 'O'].filter((k) => !!(value[k] && String(value[k]).trim())).length;
 
@@ -98,9 +117,11 @@ export default function ProtocolModulePanel({ projectId, project, readOnly = fal
           <label style={{ ...lbl, marginBottom: 0 }}>① Research Question</label>
           <HelpTip text="A good SR question is focused and answerable. Example: 'In adults with type 2 diabetes, does metformin compared with placebo reduce HbA1c?'" />
         </div>
-        <textarea value={value.question || ''} onChange={set('question')} disabled={dis}
+        <textarea value={value.question || ''} onChange={setLive('question', edQuestion)}
+          disabled={dis || !!edQuestion.lockedByOther} onFocus={edQuestion.onFocus} onBlur={edQuestion.onBlur}
           placeholder="e.g. In adults with type 2 diabetes, does adding an SGLT2 inhibitor to metformin, compared with metformin alone, reduce cardiovascular events?"
-          style={{ ...inp, height: 60, resize: 'vertical', fontSize: 13, lineHeight: 1.55 }} />
+          style={{ ...inp, height: 60, resize: 'vertical', fontSize: 13, lineHeight: 1.55, opacity: edQuestion.lockedByOther ? 0.6 : 1, cursor: edQuestion.lockedByOther ? 'not-allowed' : 'text' }} />
+        {editingBadge(edQuestion)}
       </div>
 
       {/* ② PICO components */}
@@ -110,17 +131,16 @@ export default function ProtocolModulePanel({ projectId, project, readOnly = fal
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, marginBottom: 14 }}>
         {PICO.map(({ k, label, ph, color }) => {
-          const fl = fieldLocks[k] || {};
-          const lockedBy = fl.lockedByOther;
+          const ed = fieldEd[k];
+          const lockedBy = ed.lockedByOther;
           return (
             <div key={k} style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: 14, borderLeft: `3px solid ${color}` }}>
               <label style={{ ...lbl, color }}>{k} — {label} <span style={{ color: C.red }}>*</span></label>
-              <textarea value={value[k] || ''} onChange={set(k)} placeholder={ph}
+              <textarea value={value[k] || ''} onChange={setLive(k, ed)} placeholder={ph}
                 disabled={dis || !!lockedBy}
-                onFocus={() => fl.acquire && fl.acquire()}
-                onBlur={() => fl.release && fl.release()}
+                onFocus={ed.onFocus} onBlur={ed.onBlur}
                 style={{ ...inp, height: 68, resize: 'vertical', fontSize: 12, lineHeight: 1.5, opacity: lockedBy ? 0.6 : 1, cursor: lockedBy ? 'not-allowed' : 'text' }} />
-              {lockedBy && <div style={{ fontSize: 10.5, color: C.yel, marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 4 }}><span>🔒</span>{lockedBy.name} is editing</div>}
+              {editingBadge(ed)}
             </div>
           );
         })}
@@ -182,16 +202,14 @@ export default function ProtocolModulePanel({ projectId, project, readOnly = fal
       {/* Keywords (monospace) + notes */}
       <div style={{ marginBottom: 14 }}>
         <label style={lbl}>Key Terms &amp; Synonyms <HelpTip text="List the main concepts and their synonyms — they become the building blocks of your database-specific queries." /></label>
-        <textarea value={value.keywords || ''} onChange={set('keywords')} disabled={dis}
+        <textarea value={value.keywords || ''} onChange={setLive('keywords', edKeywords)}
+          disabled={dis || !!edKeywords.lockedByOther} onFocus={edKeywords.onFocus} onBlur={edKeywords.onBlur}
           placeholder="type 2 diabetes, T2DM, NIDDM | SGLT2 inhibitor, dapagliflozin, empagliflozin | cardiovascular, MACE"
-          style={{ ...inp, height: 56, resize: 'vertical', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }} />
+          style={{ ...inp, height: 56, resize: 'vertical', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11, opacity: edKeywords.lockedByOther ? 0.6 : 1, cursor: edKeywords.lockedByOther ? 'not-allowed' : 'text' }} />
+        {editingBadge(edKeywords)}
       </div>
-      <div style={{ marginBottom: 14 }}>
-        <label style={lbl}>Additional Protocol Notes</label>
-        <textarea value={value.notes || ''} onChange={set('notes')} disabled={dis}
-          placeholder="Pre-specified subgroups, sensitivity analyses planned, funding, anything else for your protocol…"
-          style={{ ...inp, height: 56, resize: 'vertical' }} />
-      </div>
+      {/* prompt44 item 1 — "Additional Protocol Notes" removed from the editor UI to
+          declutter (the `notes` data field is KEPT in the module state for back-compat). */}
 
       <InfoBox>💡 <strong style={{ color: C.txt }}>Next step:</strong> Once your PICO and eligibility are set, register your protocol on <a href="https://www.crd.york.ac.uk/prospero/" target="_blank" rel="noreferrer" style={{ color: C.acc }}>PROSPERO</a>, then move to the Search Builder. Required fields are marked <span style={{ color: C.red }}>*</span>.</InfoBox>
 

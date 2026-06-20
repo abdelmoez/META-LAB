@@ -677,7 +677,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
         // never scrolls so it is fixed by construction; in narrow (stacked) mode the
         // page DOES scroll, so `sticky` keeps Back + study title + Show/Hide source
         // visible at all times instead of scrolling away.
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0 12px', flexWrap: 'wrap', flexShrink: 0, position: 'sticky', top: 0, zIndex: 6, background: C.bg }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 2px 12px', flexWrap: 'wrap', flexShrink: 0, position: 'sticky', top: 0, zIndex: 6, background: C.bg, borderBottom: `1px solid ${C.brd}`, boxShadow: `0 4px 12px -8px ${C.shadow}` }}>
           <button onClick={onClose} style={{ ...ghostBtn, fontWeight: 700, color: C.txt }} aria-label="Back to Risk of Bias">
             <Icon name="arrowLeft" size={15} /> Back to Risk of Bias
           </button>

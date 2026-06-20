@@ -65,11 +65,11 @@ describe('shouldAutoCollapseWorkflowMenu — pin/auto rule', () => {
 });
 
 describe('normalizeWorkflowMenuMode', () => {
-  it('maps only "pinned" to pinned; everything else (incl null/legacy) to auto', () => {
-    expect(normalizeWorkflowMenuMode('pinned')).toBe('pinned');
+  it('maps only explicit "auto" to auto; everything else (incl null/legacy) to pinned (prompt44 item 3 default)', () => {
     expect(normalizeWorkflowMenuMode('auto')).toBe('auto');
-    expect(normalizeWorkflowMenuMode(null)).toBe('auto');
-    expect(normalizeWorkflowMenuMode(undefined)).toBe('auto');
-    expect(normalizeWorkflowMenuMode('garbage')).toBe('auto');
+    expect(normalizeWorkflowMenuMode('pinned')).toBe('pinned');
+    expect(normalizeWorkflowMenuMode(null)).toBe('pinned');
+    expect(normalizeWorkflowMenuMode(undefined)).toBe('pinned');
+    expect(normalizeWorkflowMenuMode('garbage')).toBe('pinned');
   });
 });

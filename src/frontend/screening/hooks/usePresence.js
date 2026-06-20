@@ -99,25 +99,88 @@ export function useProjectPresence(pid, location, { enabled = true, heartbeat = 
  */
 export function useFieldLock({ pid, field, myUserId, locks, enabled = true }) {
   const mineRef = useRef(false);
+  const acquiringRef = useRef(false);        // an acquire() round-trip is in flight
+  const pendingReleaseRef = useRef(false);   // release() was requested mid-acquire
   const held = (locks || []).find(l => l.field === field) || null;
   const lockedByOther = held && held.userId !== myUserId ? held : null;
 
+  const release = useCallback(async () => {
+    if (!pid || !field) return;
+    // If an acquire is still in flight, we don't yet know if we hold the lock — defer:
+    // the resolving acquire will release as soon as it learns it succeeded. This closes
+    // the focus→blur-before-acquire race that used to ORPHAN a server lock for the session.
+    if (acquiringRef.current) { pendingReleaseRef.current = true; return; }
+    if (!mineRef.current) return;
+    mineRef.current = false;
+    try { await screeningApi.releaseLock(pid, { field }); } catch { /* non-fatal */ }
+  }, [pid, field]);
+
   const acquire = useCallback(async () => {
     if (!pid || !field || !enabled) return true;
+    acquiringRef.current = true;
+    pendingReleaseRef.current = false;
     try {
       const r = await screeningApi.acquireLock(pid, { field });
       mineRef.current = !!r?.ok;
       return !!r?.ok;
     } catch {
-      return true; // fail-open
+      mineRef.current = false; // fail-open for editing, but we hold no server lock
+      return true;
+    } finally {
+      acquiringRef.current = false;
+      // A blur/idle happened during the round-trip → release the lock we just learned we hold.
+      if (pendingReleaseRef.current) { pendingReleaseRef.current = false; release(); }
     }
-  }, [pid, field, enabled]);
-
-  const release = useCallback(async () => {
-    if (!pid || !field || !mineRef.current) return;
-    mineRef.current = false;
-    try { await screeningApi.releaseLock(pid, { field }); } catch { /* non-fatal */ }
-  }, [pid, field]);
+  }, [pid, field, enabled, release]);
 
   return { lockedByOther, acquire, release };
+}
+
+// How long a field stays locked after the LAST keystroke before it auto-releases.
+// prompt44 item 5 — "the lock should only remain while the user is actively typing":
+// short enough to feel live, long enough to bridge normal typing pauses.
+const FIELD_IDLE_MS = 5000;
+
+/**
+ * useFieldEditing — the active-typing lifecycle on top of useFieldLock (prompt44
+ * item 5). Returns input handlers that make a field behave like chat-style live
+ * editing for the server-backed workflow state:
+ *
+ *   - onFocus    → claim the field immediately (teammates instantly see "X is editing")
+ *                   and arm the idle timer;
+ *   - onActivity → call on every keystroke: re-claim if a prior idle released it, and
+ *                   re-arm the idle timer (so the lock is held WHILE typing). The
+ *                   30s presence heartbeat refreshes the server lock during long typing,
+ *                   so we never spam the server per keystroke;
+ *   - onBlur     → release immediately;
+ *   - idle       → after FIELD_IDLE_MS with no keystroke the lock auto-releases even if
+ *                   the field keeps focus, so a parked cursor never traps the field;
+ *   - unmount    → release (tab close / hard disconnect is also covered by the server TTL).
+ *
+ * Everything is fail-open: a lock error never blocks the user from typing.
+ */
+export function useFieldEditing({ pid, field, myUserId, locks, enabled = true, idleMs = FIELD_IDLE_MS }) {
+  const { lockedByOther, acquire, release } = useFieldLock({ pid, field, myUserId, locks, enabled });
+  const idleRef = useRef(null);
+  const heldRef = useRef(false);
+
+  const clearIdle = useCallback(() => {
+    if (idleRef.current) { clearTimeout(idleRef.current); idleRef.current = null; }
+  }, []);
+  const releaseNow = useCallback(() => {
+    clearIdle();
+    if (heldRef.current) { heldRef.current = false; release(); }
+  }, [clearIdle, release]);
+  // Claim (if not already mine) + (re)arm the idle auto-release. Used for both focus
+  // and keystrokes — claiming is idempotent server-side.
+  const touch = useCallback(() => {
+    if (!enabled || !pid || !field) return;
+    if (!heldRef.current) { heldRef.current = true; acquire(); }
+    clearIdle();
+    idleRef.current = setTimeout(() => { releaseNow(); }, idleMs);
+  }, [enabled, pid, field, acquire, clearIdle, releaseNow, idleMs]);
+
+  useEffect(() => releaseNow, [releaseNow]); // release on unmount
+
+  return { lockedByOther, onFocus: touch, onActivity: touch, onBlur: releaseNow, releaseNow };
 }

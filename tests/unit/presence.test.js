@@ -80,6 +80,38 @@ describe('field locking', () => {
   });
 });
 
+// prompt44 item 5 — the active-typing field-edit lifecycle, at the lock-authority
+// (server) level. The client useFieldEditing hook drives these calls: claim on
+// focus, keep alive via the 30s presence heartbeat WHILE typing, release on blur/idle,
+// and rely on the TTL when a tab closes mid-edit. These assert the server behaviours
+// those map onto (acquisition, name shown, keep-alive, release, no-stale-on-disconnect).
+describe('prompt44 — active-typing field-edit lifecycle', () => {
+  it('A claims a field on focus; B is blocked and sees "A is editing"', () => {
+    const claim = P.acquireLock(PID, A, 'pico.question', 'PICO', 1000);
+    expect(claim.ok).toBe(true);
+    const blocked = P.acquireLock(PID, B, 'pico.question', 'PICO', 1000);
+    expect(blocked.ok).toBe(false);
+    expect(blocked.lock.name).toBe('Abdulmoiz'); // "<name> is editing…"
+  });
+
+  it('heartbeats keep the lock alive across a long typing session, then blur frees it for B', () => {
+    P.acquireLock(PID, A, 'pico.P', 'PICO', 1000);
+    // typing for ~2 minutes: a heartbeat every 30s refreshes the lock.
+    for (let t = 30000; t <= 120000; t += 30000) P.heartbeat(PID, A, 'PICO', 1000 + t);
+    expect(P.snapshot(PID, 121000).locks).toHaveLength(1); // never expired while active
+    // blur → explicit release; the field is immediately free for B.
+    P.releaseLock(PID, 'u-a', 'pico.P', 121500);
+    expect(P.acquireLock(PID, B, 'pico.P', 'PICO', 121500).ok).toBe(true);
+  });
+
+  it('a hard disconnect mid-edit never traps the field (TTL frees it)', () => {
+    P.acquireLock(PID, A, 'pico.O', 'PICO', 1000);
+    // A's tab crashes — no blur, no heartbeat. After the TTL the field is free.
+    expect(P.snapshot(PID, 1000 + P.LOCK_TTL_MS + 1).locks).toHaveLength(0);
+    expect(P.acquireLock(PID, B, 'pico.O', 'PICO', 1000 + P.LOCK_TTL_MS + 1).ok).toBe(true);
+  });
+});
+
 describe('prompt25 — display-name fallback (Task 3)', () => {
   it('prefers the real name', () => {
     P.heartbeat(PID, { id: 'u-d', name: 'Abdulmoiz', email: 'a@b.com' }, 'Overview', 1000);

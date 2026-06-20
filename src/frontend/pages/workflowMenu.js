@@ -35,7 +35,9 @@ export function makeWorkflowMenuRules(tabs) {
   };
 }
 
-// Normalize any stored value to the two valid modes (null/legacy ⇒ "auto").
+// Normalize any stored value to the two valid modes. prompt44 item 3 — the menu is
+// PINNED by default, so null/legacy/garbage ⇒ "pinned"; only an explicit "auto" opts
+// out. Mirrors the monolith's inline default so this stays the single source of truth.
 export function normalizeWorkflowMenuMode(mode) {
-  return mode === 'pinned' ? 'pinned' : 'auto';
+  return mode === 'auto' ? 'auto' : 'pinned';
 }
