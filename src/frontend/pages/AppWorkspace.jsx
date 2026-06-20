@@ -9,7 +9,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { subscribeToSaveStatus } from '../storage/serverStorage.js';
-import MetaLab from '../../../meta-lab-3-patched.jsx';
+import MetaLab from '../workspace/Workspace.jsx';
 import { C, MONO } from '../theme/tokens.js';
 
 const SAVE_LABEL = { saving: 'Saving…', saved: 'Saved', failed: 'Save failed', idle: '' };
