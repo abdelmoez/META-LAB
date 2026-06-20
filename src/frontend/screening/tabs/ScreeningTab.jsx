@@ -1213,11 +1213,16 @@ function KeywordPanel({
         selected={selectedExcl} setSelected={setSelectedExcl}
       />
 
-      {/* prompt28 Part 1 — explain the criteria-derived layer when present. */}
+      {/* prompt28 Part 1 / prompt43 Area 1 — explain the criteria-derived layer.
+          These are SUGGESTED screening keywords intelligently extracted from the
+          project's PICO & eligibility criteria (clinical concepts + common
+          synonyms), not the raw criteria sentences. They are read-only here and
+          editable at the source (PICO & Question); the leader's own keyword list
+          below is never overwritten by them. */}
       {criteriaCount > 0 && (
-        <div style={{ marginTop: 10, fontSize: 10.5, color: C.muted, lineHeight: 1.5, display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ marginTop: 10, fontSize: 10.5, color: C.muted, lineHeight: 1.5, display: 'flex', alignItems: 'flex-start', gap: 6 }}>
           <CriteriaBadge />
-          <span>Keywords drawn from this project&apos;s eligibility criteria. Edit them in PICO &amp; Question.</span>
+          <span>Suggested screening keywords — auto-extracted from this project&apos;s PICO &amp; eligibility criteria (concepts &amp; common synonyms). Edit them in PICO &amp; Question.</span>
         </div>
       )}
 

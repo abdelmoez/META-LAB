@@ -12,7 +12,7 @@
  * uses, so there is no drift; the server persists the authoritative copy on each
  * debounced autosave.
  */
-import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import Icon from '../components/icons.jsx';
 import { robApi, getRobSettings } from './robApi.js';
@@ -118,6 +118,37 @@ function useMeasuredHeight(ref) {
   return h;
 }
 
+// prompt43 Area 3 — measure the assessment pane's own width (NOT the viewport) so the
+// domain navigation can adapt to the available room: a vertical side-rail when the
+// pane is comfortably wide, or a compact horizontal strip (freeing the full width for
+// the questions) when the PDF is taking most of the space. Container-query in spirit.
+function useMeasuredWidth(ref) {
+  const [w, setW] = useState(0);
+  // Seed the width synchronously BEFORE the first paint so the rail picks its correct
+  // (side/top) layout on the first committed frame — no visible side→top reflow flash.
+  useLayoutEffect(() => {
+    const el = ref.current; if (!el) return;
+    try { const cw = el.getBoundingClientRect().width; if (cw) setW(Math.round(cw)); } catch { /* ignore */ }
+  }, [ref]);
+  useEffect(() => {
+    const el = ref.current; if (!el || typeof ResizeObserver === 'undefined') return undefined;
+    let raf = 0;
+    const ro = new ResizeObserver(entries => {
+      const cw = entries[0]?.contentRect?.width;
+      if (cw == null) return;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => setW(prev => (Math.abs(prev - cw) >= 1 ? Math.round(cw) : prev)));
+    });
+    ro.observe(el);
+    return () => { cancelAnimationFrame(raf); ro.disconnect(); };
+  }, [ref]);
+  return w;
+}
+
+// Below this assessment-pane width the domain rail moves to a horizontal strip above
+// the questions, so the questions are never squeezed into a sliver beside the rail.
+const RAIL_TOP_BELOW = 640;
+
 // prompt36 Task 1 — the RoB workspace opens 70% PDF / 30% assessment and the
 // divider between the panes is draggable. The ratio (PDF fraction) is clamped so
 // neither pane becomes unusable and is persisted per browser. It is smooth and
@@ -131,7 +162,9 @@ function useMeasuredHeight(ref) {
 // PDF 20%–82%) while neither becomes unusable. Default stays 70/30.
 const SPLIT_MIN_PDF = 0.20;   // PDF panel never narrower than 20% (assessment up to 80%)
 const SPLIT_MAX_PDF = 0.82;   // PDF panel never wider than 82% (assessment down to ~18%)
-const SPLIT_DEFAULT = 0.70;   // 70 / 30 default
+// prompt43 Area 3 — the assessment is the primary work surface, so the default now
+// gives it real width (PDF 58% / assessment 42%) instead of the old cramped 70/30.
+const SPLIT_DEFAULT = 0.58;
 const SPLIT_STORAGE_KEY = 'metalab.rob.splitRatio';
 export function clampSplit(v) { return Math.min(SPLIT_MAX_PDF, Math.max(SPLIT_MIN_PDF, v)); }
 function readSplitRatio() {
@@ -262,12 +295,12 @@ function TrafficDot({ judgment, size = 13 }) {
 
 function SegmentedControl({ qid, value, onChange }) {
   return (
-    <div role="radiogroup" aria-label={`Response for question ${qid}`} style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
+    <div role="radiogroup" aria-label={`Response for question ${qid}`} style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
       {RESPONSE_KEYS.map((r, i) => {
         const on = value === r;
         return (
           <button key={r} role="radio" aria-checked={on} aria-label={RESPONSE_LABELS[r]} onClick={() => onChange(on ? '' : r)} title={`${RESPONSE_LABELS[r]} (${r} · press ${i + 1})`} style={{
-            display: 'inline-flex', alignItems: 'center', gap: 6, padding: '7px 12px', borderRadius: 8, cursor: 'pointer', fontFamily: FONT, fontSize: 12.5, fontWeight: 600,
+            display: 'inline-flex', alignItems: 'center', gap: 6, padding: '8px 14px', borderRadius: 8, cursor: 'pointer', fontFamily: FONT, fontSize: 12.5, fontWeight: 600,
             background: on ? C.acc : C.surf, color: on ? C.accText : C.txt2,
             border: `1px solid ${on ? C.acc : C.brd2}`, transition: 'background 0.12s, border-color 0.12s', whiteSpace: 'nowrap',
           }}>
@@ -277,6 +310,81 @@ function SegmentedControl({ qid, value, onChange }) {
         );
       })}
     </div>
+  );
+}
+
+// ── Domain navigation (prompt43 Area 3) ───────────────────────────────────────
+// Renders the D1–D5 + Summary navigator either as a vertical side-rail (wide pane)
+// or a compact horizontal strip (narrow pane). Same data + handlers; only the
+// arrangement changes so the questions always get a comfortable, readable width.
+function DomainNav({ mode, active, setActive, setFocusedQ, completeness, dotJudgment, overriddenByDomain }) {
+  const go = (id) => { setActive(id); setFocusedQ(null); };
+
+  if (mode === 'top') {
+    return (
+      <nav aria-label="RoB domains" style={{ borderBottom: `1px solid ${C.brd}`, background: C.surf, padding: '10px 16px', minHeight: 0, display: 'flex', flexDirection: 'column', gap: 9 }}>
+        <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 2 }}>
+          {ROB2.domains.map((d) => {
+            const comp = completeness.perDomain[d.id]; const on = active === d.id;
+            return (
+              <button key={d.id} onClick={() => go(d.id)} aria-current={on} title={`${d.id} · ${d.shortLabel}`} style={navChip(on)}>
+                <TrafficDot judgment={dotJudgment(d.id)} size={11} />
+                <span style={{ fontSize: 12.5, fontWeight: on ? 700 : 600, color: on ? C.txt : C.txt2, whiteSpace: 'nowrap' }}>{d.id}</span>
+                <span style={{ fontSize: 9.5, fontFamily: MONO, color: comp.missing.length ? C.yel : C.grn }}>{comp.missing.length ? `${comp.answered}/${comp.required}` : '✓'}</span>
+                {overriddenByDomain[d.id] && <Icon name="pencil" size={10} title="Overridden" />}
+              </button>
+            );
+          })}
+          <button onClick={() => go('summary')} aria-current={active === 'summary'} style={navChip(active === 'summary')}>
+            <Icon name="barChart" size={13} />
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: active === 'summary' ? C.txt : C.txt2, whiteSpace: 'nowrap' }}>Summary</span>
+          </button>
+        </div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 14px', alignItems: 'center' }}>
+          {JUDGMENT_LEGEND.map(l => (
+            <span key={l.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <span style={{ width: 10, height: 10, borderRadius: '50%', background: l.hex }} />
+              <span style={{ fontSize: 10, color: C.txt2 }}>{l.label}</span>
+            </span>
+          ))}
+        </div>
+      </nav>
+    );
+  }
+
+  // Side rail (wide pane) — more padding than before for breathing room.
+  return (
+    <nav aria-label="RoB domains" style={{ borderRight: `1px solid ${C.brd}`, padding: '16px 12px', background: C.surf, overflowY: 'auto', minHeight: 0 }}>
+      {ROB2.domains.map((d) => {
+        const comp = completeness.perDomain[d.id];
+        const on = active === d.id;
+        return (
+          <button key={d.id} onClick={() => go(d.id)} aria-current={on} style={railItem(on)}>
+            <TrafficDot judgment={dotJudgment(d.id)} />
+            <span style={{ flex: 1, minWidth: 0 }}>
+              <span style={{ display: 'block', fontSize: 12.5, fontWeight: on ? 700 : 600, color: on ? C.txt : C.txt2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.id} · {d.shortLabel}</span>
+              <span style={{ display: 'block', fontSize: 10, fontFamily: MONO, color: comp.missing.length ? C.yel : C.grn, marginTop: 1 }}>{comp.missing.length ? `${comp.answered}/${comp.required}` : 'complete'}</span>
+            </span>
+            {overriddenByDomain[d.id] && <Icon name="pencil" size={11} title="Overridden" />}
+          </button>
+        );
+      })}
+      <button onClick={() => go('summary')} aria-current={active === 'summary'} style={{ ...railItem(active === 'summary'), marginTop: 8, borderTop: `1px solid ${C.brd}`, borderRadius: 0, paddingTop: 14 }}>
+        <Icon name="barChart" size={14} />
+        <span style={{ flex: 1, fontSize: 12.5, fontWeight: 700, color: active === 'summary' ? C.txt : C.txt2 }}>Summary</span>
+      </button>
+      <div style={{ marginTop: 16, padding: '0 6px' }}>
+        <div style={{ fontSize: 9, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Legend</div>
+        {JUDGMENT_LEGEND.map(l => (
+          <div key={l.key} style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 5 }}>
+            <span style={{ width: 11, height: 11, borderRadius: '50%', background: l.hex }} />
+            <Icon name={l.icon} size={12} />
+            <span style={{ fontSize: 10.5, color: C.txt2 }}>{l.label}</span>
+          </div>
+        ))}
+        <div style={{ fontSize: 9.5, fontFamily: MONO, color: C.muted, marginTop: 10, lineHeight: 1.6 }}>1–5 answer · n/p question · [ ] domain · o override · ? guidance</div>
+      </div>
+    </nav>
   );
 }
 
@@ -307,9 +415,12 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
   // measured so the PDF iframe fills its column and the assessment scrolls inside.
   const rootRef = useRef(null);
   const rowRef = useRef(null);
+  const paneRef = useRef(null);            // the assessment <section>, measured for the responsive rail
   const fillHeight = useFillViewportHeight(rootRef);
   const rowHeight = useMeasuredHeight(rowRef);
-  const split = useResizableSplit(rowRef); // prompt36 Task 1 — 70/30 default, draggable
+  const paneWidth = useMeasuredWidth(paneRef);
+  const railTop = paneWidth > 0 && paneWidth < RAIL_TOP_BELOW; // rail on top vs side
+  const split = useResizableSplit(rowRef); // prompt36 Task 1 — default split, draggable
   const saveTimer = useRef(null);
   const savedTimer = useRef(null);
   const pending = useRef({ answers: {}, meta: {} });
@@ -562,7 +673,11 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
       const studyTitle = rec?.title || view?.resultLabel || `Study ${view?.studyId || ''}`.trim() || 'Study';
       const studyLink = rec?.doi ? `https://doi.org/${rec.doi}` : rec?.pmid ? `https://pubmed.ncbi.nlm.nih.gov/${rec.pmid}` : null;
       return (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '2px 0 12px', flexWrap: 'wrap', flexShrink: 0 }}>
+        // prompt43 Area 3 — the workspace top bar stays put. In wide mode the page
+        // never scrolls so it is fixed by construction; in narrow (stacked) mode the
+        // page DOES scroll, so `sticky` keeps Back + study title + Show/Hide source
+        // visible at all times instead of scrolling away.
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0 12px', flexWrap: 'wrap', flexShrink: 0, position: 'sticky', top: 0, zIndex: 6, background: C.bg }}>
           <button onClick={onClose} style={{ ...ghostBtn, fontWeight: 700, color: C.txt }} aria-label="Back to Risk of Bias">
             <Icon name="arrowLeft" size={15} /> Back to Risk of Bias
           </button>
@@ -624,7 +739,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
     {hasLeftColumn && !narrow && <ResizeDivider split={split} reduced={reduced} />}
     {/* ── Right section: the RoB assessment engine — context bar, scrolling body,
         and a sticky action footer that stays visible (Task 2/7). ── */}
-    <section style={{ ...shell, minWidth: 0, display: 'flex', flexDirection: 'column', ...(narrow ? { minHeight: 520, marginBottom: 16 } : { minHeight: 0 }) }}>
+    <section ref={paneRef} style={{ ...shell, minWidth: 0, display: 'flex', flexDirection: 'column', ...(narrow ? { minHeight: 520, marginBottom: 16 } : { minHeight: 0 }) }}>
       {/* ── Context bar with live progress (Task 7) ─────────────────────── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '12px 20px', borderBottom: `1px solid ${C.brd}`, background: C.card, flexWrap: 'wrap', flexShrink: 0 }}>
         <div style={{ flex: 1, minWidth: 150 }}>
@@ -644,42 +759,22 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
 
       {error && <div style={{ padding: '8px 20px 0', flexShrink: 0 }}><ErrorBox msg={error} /></div>}
 
-      {/* ── Scrolling body: domain rail (own scroll) + questions (own scroll) ── */}
-      <div style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: '212px minmax(0, 1fr)', gap: 0 }}>
-        <nav aria-label="RoB domains" style={{ borderRight: `1px solid ${C.brd}`, padding: '14px 10px', background: C.surf, overflowY: 'auto', minHeight: 0 }}>
-          {ROB2.domains.map((d) => {
-            const comp = liveCompleteness.perDomain[d.id];
-            const on = active === d.id;
-            return (
-              <button key={d.id} onClick={() => { setActive(d.id); setFocusedQ(null); }} aria-current={on} style={railItem(on)}>
-                <TrafficDot judgment={dotJudgment(d.id)} />
-                <span style={{ flex: 1, minWidth: 0 }}>
-                  <span style={{ display: 'block', fontSize: 12.5, fontWeight: on ? 700 : 600, color: on ? C.txt : C.txt2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{d.id} · {d.shortLabel}</span>
-                  <span style={{ display: 'block', fontSize: 10, fontFamily: MONO, color: comp.missing.length ? C.yel : C.grn, marginTop: 1 }}>{comp.missing.length ? `${comp.answered}/${comp.required}` : 'complete'}</span>
-                </span>
-                {overriddenByDomain[d.id] && <Icon name="pencil" size={11} title="Overridden" />}
-              </button>
-            );
-          })}
-          <button onClick={() => setActive('summary')} aria-current={active === 'summary'} style={{ ...railItem(active === 'summary'), marginTop: 8, borderTop: `1px solid ${C.brd}`, borderRadius: 0, paddingTop: 14 }}>
-            <Icon name="barChart" size={14} />
-            <span style={{ flex: 1, fontSize: 12.5, fontWeight: 700, color: active === 'summary' ? C.txt : C.txt2 }}>Summary</span>
-          </button>
-          <div style={{ marginTop: 14, padding: '0 6px' }}>
-            <div style={{ fontSize: 9, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Legend</div>
-            {JUDGMENT_LEGEND.map(l => (
-              <div key={l.key} style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 4 }}>
-                <span style={{ width: 11, height: 11, borderRadius: '50%', background: l.hex }} />
-                <Icon name={l.icon} size={12} />
-                <span style={{ fontSize: 10.5, color: C.txt2 }}>{l.label}</span>
-              </div>
-            ))}
-            <div style={{ fontSize: 9.5, fontFamily: MONO, color: C.muted, marginTop: 8, lineHeight: 1.5 }}>1–5 answer · n/p question · [ ] domain · o override · ? guidance</div>
-          </div>
-        </nav>
+      {/* ── Scrolling body: domain rail + questions. prompt43 Area 3 — the rail is a
+          vertical side-rail when the pane is wide, and a compact horizontal strip
+          (freeing the full width for the questions) when the PDF squeezes the pane,
+          so the questions are never crushed into a sliver. ── */}
+      <div style={{ flex: 1, minHeight: 0, display: 'grid', gap: 0,
+        ...(railTop
+          ? { gridTemplateColumns: '1fr', gridTemplateRows: 'auto minmax(0, 1fr)' }
+          : { gridTemplateColumns: '216px minmax(0, 1fr)' }) }}>
+        <DomainNav
+          mode={railTop ? 'top' : 'side'}
+          active={active} setActive={setActive} setFocusedQ={setFocusedQ}
+          completeness={liveCompleteness} dotJudgment={dotJudgment} overriddenByDomain={overriddenByDomain}
+        />
 
         {/* ── Assessment pane / Summary (scrolls internally) ─────────────── */}
-        <main style={{ padding: '20px 24px', overflowY: 'auto', minHeight: 0 }}>
+        <main style={{ padding: railTop ? '20px clamp(16px, 4vw, 40px)' : '22px clamp(20px, 2.4vw, 36px)', overflowY: 'auto', minHeight: 0 }}>
           {active === 'summary' ? (
             <SummaryStep view={view} live={{ proposals: liveProposals, overall: liveOverall, completeness: liveCompleteness, resolvedDomain: dotJudgment }}
               single={single} finalised={finalised} editable={editable} onExport={exportAs}
@@ -855,31 +950,34 @@ function DomainPane({ domain, answers, meta, proposal, resolved, overrideInfo, f
       <h2 style={{ fontSize: 18, fontWeight: 800, color: C.txt, margin: '0 0 4px', fontFamily: FONT }}>{domain.name}</h2>
       <p style={{ fontSize: 13, color: C.txt2, margin: '0 0 18px', lineHeight: 1.55, maxWidth: 720 }}>{domain.description}</p>
 
-      <div style={{ display: 'grid', gap: 12 }}>
+      <div style={{ display: 'grid', gap: 16 }}>
         {reachable.map(q => {
           const focused = focusedQ === q.id;
           const gOpen = guidanceOpen[q.id];
           const m = meta[q.id] || {};
           return (
             <div key={q.id} onClick={() => setFocusedQ(q.id)} style={{
-              border: `1px solid ${focused ? alpha(C.acc, '55') : C.brd}`, borderRadius: 12, padding: '14px 16px', background: C.card,
+              border: `1px solid ${focused ? alpha(C.acc, '55') : C.brd}`, borderRadius: 12, padding: '18px 20px', background: C.card,
               boxShadow: focused ? `0 0 0 3px ${alpha(C.acc, '14')}` : 'none', transition: reduced ? 'none' : 'box-shadow 0.15s, border-color 0.15s, opacity 0.25s', cursor: 'default',
             }}>
-              <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-                <span style={{ fontFamily: MONO, fontSize: 13, fontWeight: 800, color: C.acc, flexShrink: 0, marginTop: 1 }}>{q.id}</span>
+              <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
+                <span style={{ fontFamily: MONO, fontSize: 13, fontWeight: 800, color: C.acc, flexShrink: 0, marginTop: 2 }}>{q.id}</span>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 14, color: C.txt, lineHeight: 1.5, fontWeight: 500 }}>{q.text}</div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 11, flexWrap: 'wrap' }}>
+                  <div style={{ fontSize: 14, color: C.txt, lineHeight: 1.55, fontWeight: 500 }}>{q.text}</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginTop: 14, flexWrap: 'wrap' }}>
                     <SegmentedControl qid={q.id} value={answers[q.id] || ''} onChange={r => editable && onAnswer(q.id, r)} />
                     <button onClick={() => setGuidanceOpen(g => ({ ...g, [q.id]: !g[q.id] }))} style={linkBtn} aria-expanded={!!gOpen}>
                       <Icon name="info" size={13} /> {gOpen ? 'Hide guidance' : 'Guidance'}
                     </button>
                   </div>
                   {gOpen && (
-                    <div style={{ marginTop: 11, padding: '10px 12px', background: C.surf, borderRadius: 8, fontSize: 12.5, color: C.txt2, lineHeight: 1.6, borderLeft: `3px solid ${alpha(C.acc, '50')}` }}>{q.guidance}</div>
+                    <div style={{ marginTop: 13, padding: '12px 14px', background: C.surf, borderRadius: 8, fontSize: 12.5, color: C.txt2, lineHeight: 1.65, borderLeft: `3px solid ${alpha(C.acc, '50')}` }}>{q.guidance}</div>
                   )}
                   {focused && editable && (
-                    <div style={{ marginTop: 11, display: 'grid', gap: 8 }}>
+                    // prompt43 Area 3 — rationale + evidence sit side-by-side on a wide
+                    // pane (auto-fit) and stack only when there isn't room, using
+                    // horizontal space instead of always stacking into a tall column.
+                    <div style={{ marginTop: 14, display: 'grid', gap: 10, gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 240px), 1fr))' }}>
                       <textarea placeholder="Rationale (optional)" value={m.rationale || ''} onChange={e => onMeta(q.id, { rationale: e.target.value })}
                         rows={2} style={taStyle} />
                       <textarea placeholder="Evidence quote from the paper (optional)" value={m.evidenceQuote || ''} onChange={e => onMeta(q.id, { evidenceQuote: e.target.value })}
@@ -1044,5 +1142,9 @@ function primaryBtn(disabled) {
   return { display: 'inline-flex', alignItems: 'center', gap: 7, padding: '9px 18px', background: disabled ? C.surf : C.acc, border: `1px solid ${disabled ? C.brd2 : C.acc}`, borderRadius: 9, color: disabled ? C.muted : C.accText, fontSize: 13, fontWeight: 700, cursor: disabled ? 'not-allowed' : 'pointer', fontFamily: FONT };
 }
 function railItem(on) {
-  return { display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '10px 10px', marginBottom: 2, borderRadius: 9, background: on ? C.card : 'transparent', border: `1px solid ${on ? C.brd : 'transparent'}`, cursor: 'pointer', textAlign: 'left', fontFamily: FONT };
+  return { display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '11px 11px', marginBottom: 3, borderRadius: 9, background: on ? C.card : 'transparent', border: `1px solid ${on ? C.brd : 'transparent'}`, cursor: 'pointer', textAlign: 'left', fontFamily: FONT };
+}
+// Horizontal domain chip (top-rail mode).
+function navChip(on) {
+  return { display: 'inline-flex', alignItems: 'center', gap: 7, flexShrink: 0, padding: '7px 12px', borderRadius: 9, background: on ? C.card : 'transparent', border: `1px solid ${on ? alpha(C.acc, '55') : C.brd2}`, cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap' };
 }

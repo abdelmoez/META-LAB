@@ -21,12 +21,16 @@ describe('normalizeKeyword', () => {
 });
 
 describe('criteriaKeywordsFromSnapshot', () => {
-  it('derives inclusion from incl and exclusion from excl criteria', () => {
+  it('digests criteria into concepts (not whole sentences) for each side', () => {
     const snap = { incl: '• randomized controlled trial\n• adults with diabetes', excl: '• animal study\n• case report' };
     const { inclusion, exclusion } = criteriaKeywordsFromSnapshot(snap);
     expect(inclusion).toContain('randomized controlled trial');
-    expect(inclusion).toContain('adults with diabetes');
-    expect(exclusion).toContain('animal study');
+    expect(inclusion).toContain('RCT'); // conservative abbreviation added
+    // "adults with diabetes" is split into concepts — not copied verbatim
+    expect(inclusion).toContain('adults');
+    expect(inclusion).toContain('diabetes');
+    expect(inclusion).not.toContain('adults with diabetes');
+    expect(exclusion).toContain('animal study'); // meaningful trailing "study" preserved
     expect(exclusion).toContain('case report');
     // criteria layer must NOT cross sides
     expect(exclusion).not.toContain('randomized controlled trial');
@@ -43,7 +47,7 @@ describe('criteriaKeywordsFromSnapshot', () => {
 
   it('does NOT fold the whole PICO into the criteria layer', () => {
     const out = criteriaKeywordsFromSnapshot({ P: 'elderly population', I: 'aspirin', incl: 'rct only' });
-    expect(out.inclusion).toContain('rct only');
+    expect(out.inclusion).toContain('rct'); // "only" is filler, trimmed off
     expect(out.inclusion).not.toContain('elderly population');
     expect(out.inclusion).not.toContain('aspirin');
   });
@@ -110,10 +114,11 @@ describe('effectiveKeywords', () => {
     const base = { storedInclude: ['RCT'], storedExclude: [], defaultInclude: defaults.inc, defaultExclude: defaults.exc };
     const a = effectiveKeywords({ ...base, picoSnapshot: { incl: 'paediatric population' } });
     const b = effectiveKeywords({ ...base, picoSnapshot: { incl: 'geriatric population' } });
-    expect(a.include.terms).toContain('paediatric population');
-    expect(a.include.terms).not.toContain('geriatric population');
-    expect(b.include.terms).toContain('geriatric population');
-    expect(b.include.terms).not.toContain('paediatric population');
+    // "population" is a population-filler word, trimmed off; the concept remains.
+    expect(a.include.terms).toContain('paediatric');
+    expect(a.include.terms).not.toContain('geriatric');
+    expect(b.include.terms).toContain('geriatric');
+    expect(b.include.terms).not.toContain('paediatric');
   });
 
   it('removing criteria removes the derived keyword (nothing persisted)', () => {

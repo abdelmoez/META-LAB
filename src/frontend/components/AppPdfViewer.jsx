@@ -27,7 +27,7 @@
  * APIs (ResizeObserver, IntersectionObserver, devicePixelRatio, TextLayer) are used
  * only inside effects (which never run during renderToStaticMarkup) and guarded.
  */
-import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo } from 'react';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.min.mjs';
 import PdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?worker';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
@@ -47,9 +47,14 @@ function isPdfBytes(buf) {
 
 const GUTTER = 16;          // breathing room so a page never touches the scroll edge
 const PAGE_GAP = 14;        // vertical gap between continuous pages
-const ZOOM_MIN = 0.4, ZOOM_MAX = 5, ZOOM_STEP = 0.2;
-const RENDER_BUFFER = 1;    // also render this many pages above/below the visible ones
+const COL_PAD = GUTTER / 2; // padding around the page column (must match the render)
+// prompt43 Area 2 — zoom is a MULTIPLE of fit-width (1.0 = the page exactly fits the
+// viewport width). Bounds + step are gentle so a click is a small, predictable change
+// and the page can never explode (extreme zoom) or vanish (sub-pixel scale).
+const ZOOM_MIN = 0.5, ZOOM_MAX = 4, ZOOM_STEP = 0.25;
+const RENDER_BUFFER_PX = 900; // render pages within this many px above/below the viewport
 const FALLBACK_DIMS = { w: 612, h: 792 }; // US-Letter @72dpi until a page's real dims load
+const clampZoom = (z) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, +Number(z).toFixed(2)));
 
 // Highlight colors are intentionally fixed (PDF canvases are white): they read well
 // on both themes and never leak a CSS var into a canvas-rasterized context.
@@ -98,9 +103,15 @@ export default function AppPdfViewer({
   const dimsRef = useRef({});
   dimsRef.current = dims;
 
-  // Which pages are currently mounted as canvases (virtualization window).
-  const [renderSet, setRenderSet] = useState(() => new Set([1]));
-  const ratiosRef = useRef(new Map());         // page -> intersectionRatio (for the indicator)
+  // Continuous-scroll virtualization window: the inclusive page range currently
+  // mounted as canvases. Driven DETERMINISTICALLY by scroll position + measured page
+  // offsets (not an IntersectionObserver), so pages never stay blank and search/nav
+  // never lands on an unrendered page.
+  const [renderRange, setRenderRange] = useState({ lo: 1, hi: 1 });
+  const anchorRef = useRef(null);              // { page, frac, y } captured before a zoom → keeps scroll stable
+  const scrollRaf = useRef(0);
+  const zoomRef = useRef(1);                   // always-fresh mirror of `zoom` for event-time reads
+  zoomRef.current = zoom;
 
   // Search state (Task 6).
   const [searchOpen, setSearchOpen] = useState(false);
@@ -115,7 +126,6 @@ export default function AppPdfViewer({
 
   const wrapRef   = useRef(null);
   const docRef    = useRef(null);
-  const pageEls   = useRef(new Map());          // page -> wrapper DOM node
   const [wrapW, setWrapW] = useState(0);
   const programmaticScroll = useRef(0);         // timestamp guard: ignore indicator updates right after a programmatic scroll
 
@@ -132,7 +142,7 @@ export default function AppPdfViewer({
     let cancelled = false;
     let task = null;
     setLoading(true); setError(''); setDoc(null); setNum(0);
-    setDims({}); setRenderSet(new Set([1])); setPageNum(1); setZoom(1); setRot(0);
+    setDims({}); setRenderRange({ lo: 1, hi: 1 }); setPageNum(1); setZoom(1); setRot(0);
     setMatches([]); setTerm(''); setScanning(false);
     textCache.current = new Map(); scanToken.current++;
     (async () => {
@@ -201,78 +211,154 @@ export default function AppPdfViewer({
   }, [doc, error, loading]);
 
   /* ── Per-page display geometry (fit-width × zoom, rotation-aware) ─────────── */
-  const dimsFor = useCallback((p) => dimsRef.current[p] || dimsRef.current[1] || FALLBACK_DIMS, []);
-  const pageScale = useCallback((p) => {
-    const base = dimsFor(p);
-    const displayW = rotation % 180 === 0 ? base.w : base.h;
-    const fit = Math.max(0.1, (wrapW - GUTTER) / displayW);
+  // Intrinsic (rotation-applied) dims; a page falls back to page-1's dims until its
+  // own are discovered, so the column has a sensible height before every page renders.
+  const displayDims = useCallback((p) => {
+    const base = dimsRef.current[p] || dimsRef.current[1] || FALLBACK_DIMS;
+    return rotation % 180 === 0 ? { w: base.w, h: base.h } : { w: base.h, h: base.w };
+  }, [rotation]);
+  const scaleFor = useCallback((p) => {
+    const { w } = displayDims(p);
+    const fit = Math.max(0.05, (wrapW - GUTTER) / Math.max(1, w)); // fit-to-width, guarded
     return fit * zoom;
-  }, [dimsFor, rotation, wrapW, zoom]);
-  const pageBox = useCallback((p) => {
-    const base = dimsFor(p);
-    const s = pageScale(p);
-    const displayW = rotation % 180 === 0 ? base.w : base.h;
-    const displayH = rotation % 180 === 0 ? base.h : base.w;
-    return { w: Math.max(1, Math.round(displayW * s)), h: Math.max(1, Math.round(displayH * s)), scale: s };
-  }, [dimsFor, pageScale, rotation]);
+  }, [displayDims, wrapW, zoom]);
+  const boxFor = useCallback((p) => {
+    const { w, h } = displayDims(p);
+    const s = scaleFor(p);
+    return { w: Math.max(1, Math.round(w * s)), h: Math.max(1, Math.round(h * s)), scale: s };
+  }, [displayDims, scaleFor]);
+
+  // Cumulative page tops (px from the scroll-content origin), recomputed whenever the
+  // scale/rotation/dims change. This is the single source of truth for both the
+  // virtualization window and scroll-to-page — no DOM measurement, no IO timing races.
+  const pageTops = useMemo(() => {
+    const tops = new Array((numPages || 0) + 2).fill(COL_PAD);
+    let y = COL_PAD;
+    for (let p = 1; p <= (numPages || 0); p++) { tops[p] = y; y += boxFor(p).h + PAGE_GAP; }
+    if (numPages) tops[numPages + 1] = y;
+    return tops;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [numPages, boxFor, dims]);
+
+  // Which page (and the fractional offset within it) sits at a given content Y.
+  const pageAtOffset = useCallback((contentY) => {
+    let p = 1;
+    for (let i = 1; i <= (numPages || 0); i++) { if (pageTops[i] <= contentY) p = i; else break; }
+    const top = pageTops[p] || 0;
+    const h = Math.max(1, boxFor(p).h);
+    return { page: p, frac: Math.min(1, Math.max(0, (contentY - top) / h)) };
+  }, [numPages, pageTops, boxFor]);
 
   const onPageDims = useCallback((p, d) => {
     setDims((prev) => (prev[p] && Math.abs(prev[p].w - d.w) < 0.5 ? prev : { ...prev, [p]: d }));
   }, []);
 
-  /* ── Virtualization + page indicator: observe each page wrapper ──────────── */
-  useEffect(() => {
-    const root = wrapRef.current;
-    if (!doc || !root || typeof IntersectionObserver === 'undefined') return undefined;
-    const io = new IntersectionObserver((entries) => {
-      for (const e of entries) {
-        const p = Number(e.target.getAttribute('data-page'));
-        if (!p) continue;
-        if (e.isIntersecting) ratiosRef.current.set(p, e.intersectionRatio);
-        else ratiosRef.current.delete(p);
-      }
-      const visible = [...ratiosRef.current.keys()];
-      if (visible.length) {
-        const lo = Math.max(1, Math.min(...visible) - RENDER_BUFFER);
-        const hi = Math.min(numPages || 1, Math.max(...visible) + RENDER_BUFFER);
-        const next = new Set();
-        for (let i = lo; i <= hi; i++) next.add(i);
-        setRenderSet((cur) => (sameSet(cur, next) ? cur : next));
-        // Most-visible page → indicator (unless we just programmatically scrolled).
-        if (Date.now() - programmaticScroll.current > 350) {
-          let best = visible[0], bestR = -1;
-          for (const p of visible) { const r = ratiosRef.current.get(p) || 0; if (r > bestR) { bestR = r; best = p; } }
-          setPageNum((cur) => (cur === best ? cur : best));
-        }
-      }
-    }, { root, rootMargin: '200px 0px', threshold: [0, 0.1, 0.25, 0.5, 0.75, 1] });
-    for (const el of pageEls.current.values()) if (el) io.observe(el);
-    return () => io.disconnect();
-    // `wrapW > 0` (a one-shot flip) re-runs this AFTER the page wrappers actually mount
-    // — they render only once the width is known, which is a later commit than doc-load.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc, numPages, wrapW > 0]);
+  // Always-fresh mirrors so the zoom/anchor helpers can stay referentially STABLE
+  // (no re-creation as pages report dims) — this keeps the native wheel listener
+  // bound once instead of re-binding on every scroll-driven layout change.
+  const numPagesRef = useRef(0);       numPagesRef.current = numPages;
+  const pageAtOffsetRef = useRef(null); pageAtOffsetRef.current = pageAtOffset;
 
-  const registerPageEl = useCallback((p, el) => {
-    if (el) pageEls.current.set(p, el); else pageEls.current.delete(p);
-  }, []);
+  /* ── Scroll-driven virtualization window + page indicator ────────────────── */
+  // Compute the inclusive page range whose boxes fall within the viewport (± a px
+  // buffer) and update the indicator to the page nearest the viewport centre.
+  const recomputeWindow = useCallback(() => {
+    const el = wrapRef.current;
+    if (!el || !numPages) return;
+    const top = el.scrollTop;
+    const vh = el.clientHeight || 0;
+    const lo = top - RENDER_BUFFER_PX;
+    const hi = top + vh + RENDER_BUFFER_PX;
+    let a = numPages;
+    for (let p = 1; p <= numPages; p++) { if (pageTops[p] + boxFor(p).h >= lo) { a = p; break; } }
+    let b = a;
+    for (let p = a; p <= numPages; p++) { if (pageTops[p] <= hi) b = p; else break; }
+    setRenderRange((cur) => (cur.lo === a && cur.hi === b ? cur : { lo: a, hi: b }));
+    if (Date.now() - programmaticScroll.current > 250) {
+      const { page } = pageAtOffset(top + vh / 2);
+      setPageNum((cur) => (cur === page ? cur : page));
+    }
+  }, [numPages, pageTops, boxFor, pageAtOffset]);
+
+  const onScroll = useCallback(() => {
+    cancelAnimationFrame(scrollRaf.current);
+    scrollRaf.current = requestAnimationFrame(recomputeWindow);
+  }, [recomputeWindow]);
+
+  // Recompute the window after the document loads and after any layout change
+  // (zoom, rotation, width, page-dims) shifts the page offsets.
+  useEffect(() => { recomputeWindow(); }, [recomputeWindow]);
+  useEffect(() => () => cancelAnimationFrame(scrollRaf.current), []);
+
+  // Keep the scroll position stable across a zoom: restore the content point that
+  // was under the zoom anchor (viewport centre for buttons, the cursor for wheel).
+  useLayoutEffect(() => {
+    const a = anchorRef.current; anchorRef.current = null;
+    const el = wrapRef.current;
+    if (!a || !el) return;
+    const top = pageTops[a.page] || 0;
+    const h = Math.max(1, boxFor(a.page).h);
+    el.scrollTop = Math.max(0, (top + a.frac * h) - a.y);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [zoom, rotation, wrapW]);
 
   /* ── Navigation: scroll the container to a page ──────────────────────────── */
   const scrollToPage = useCallback((n) => {
-    const target = Math.min(numPages || 1, Math.max(1, n));
-    const el = pageEls.current.get(target);
-    if (el && wrapRef.current) {
-      programmaticScroll.current = Date.now();
-      setPageNum(target);
-      el.scrollIntoView({ block: 'start', behavior: 'smooth' });
-    }
-  }, [numPages]);
+    const el = wrapRef.current;
+    if (!el || !numPages) return;
+    const target = Math.min(numPages, Math.max(1, n));
+    programmaticScroll.current = Date.now();
+    setPageNum(target);
+    // Mount the target (± a neighbour) immediately so it is never blank on arrival,
+    // even before the scroll handler fires.
+    setRenderRange((cur) => {
+      const lo = Math.max(1, target - 1), hi = Math.min(numPages, target + 1);
+      return (cur.lo <= lo && cur.hi >= hi) ? cur : { lo: Math.min(cur.lo, lo), hi: Math.max(cur.hi, hi) };
+    });
+    el.scrollTo({ top: Math.max(0, (pageTops[target] || 0) - COL_PAD), behavior: 'smooth' });
+  }, [numPages, pageTops]);
   const prev = () => scrollToPage(pageNum - 1);
   const next = () => scrollToPage(pageNum + 1);
-  const zoomIn  = () => setZoom((z) => Math.min(ZOOM_MAX, +(z + ZOOM_STEP).toFixed(2)));
-  const zoomOut = () => setZoom((z) => Math.max(ZOOM_MIN, +(z - ZOOM_STEP).toFixed(2)));
-  const rotateLeft  = () => setRot((r) => (r + 270) % 360);
-  const rotateRight = () => setRot((r) => (r + 90) % 360);
+
+  // Capture the content point under `anchorClientY` (or the viewport centre) so the
+  // scroll-anchor layout effect can keep it visually pinned across a scale/rotation
+  // change. Reads DOM + state via refs at EVENT time (not inside a reducer), so it is
+  // referentially stable and StrictMode-safe.
+  const captureAnchor = useCallback((anchorClientY) => {
+    const el = wrapRef.current;
+    if (!el || !numPagesRef.current || !pageAtOffsetRef.current) return;
+    const rect = el.getBoundingClientRect();
+    const y = anchorClientY == null ? rect.height / 2 : (anchorClientY - rect.top);
+    anchorRef.current = { ...pageAtOffsetRef.current(el.scrollTop + y), y };
+  }, []);
+  const applyZoom = useCallback((compute, anchorClientY) => {
+    const z = zoomRef.current;
+    const next = clampZoom(typeof compute === 'function' ? compute(z) : compute);
+    if (next === z) return;
+    captureAnchor(anchorClientY);
+    setZoom(next);
+  }, [captureAnchor]);
+  const zoomIn  = () => applyZoom((z) => z + ZOOM_STEP);
+  const zoomOut = () => applyZoom((z) => z - ZOOM_STEP);
+  const fitWidth = () => applyZoom(1);
+  // Rotate keeps the centred page in view by capturing the same anchor first.
+  const rotateLeft  = () => { captureAnchor(null); setRot((r) => (r + 270) % 360); };
+  const rotateRight = () => { captureAnchor(null); setRot((r) => (r + 90) % 360); };
+
+  // Ctrl/⌘ + wheel zooms around the cursor; a plain wheel scrolls normally. Bound as
+  // a non-passive native listener so preventDefault actually suppresses the browser zoom.
+  // applyZoom is stable, so this binds once per document (no per-scroll rebind churn).
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return undefined;
+    const handler = (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      applyZoom((z) => z + (e.deltaY < 0 ? ZOOM_STEP : -ZOOM_STEP), e.clientY);
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+  }, [applyZoom, doc]);
 
   function onKeyDown(e) {
     if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
@@ -359,8 +445,17 @@ export default function AppPdfViewer({
         </TbIcon>
         <Sep />
         <TbIcon label="Zoom out" onClick={zoomOut} disabled={loading || !!error || zoom <= ZOOM_MIN}><PathMinus /></TbIcon>
-        <span style={{ fontSize: 10.5, fontFamily: MONO, color: C.muted, minWidth: 38, textAlign: 'center' }} aria-live="off">{Math.round(zoom * 100)}%</span>
+        <button type="button" onClick={fitWidth} disabled={loading || !!error}
+          title="Fit width (reset zoom)" aria-label="Fit width — reset zoom to 100%"
+          style={{
+            minWidth: 44, height: 26, padding: '0 6px', fontSize: 10.5, fontFamily: MONO, fontWeight: 700,
+            background: Math.round(zoom * 100) === 100 ? alpha(C.acc, '18') : 'none',
+            border: `1px solid ${Math.round(zoom * 100) === 100 ? alpha(C.acc, '45') : C.brd2}`, borderRadius: 6,
+            color: Math.round(zoom * 100) === 100 ? C.acc : C.txt2, cursor: (loading || error) ? 'default' : 'pointer',
+            opacity: (loading || error) ? 0.4 : 1, flexShrink: 0,
+          }}>{Math.round(zoom * 100)}%</button>
         <TbIcon label="Zoom in" onClick={zoomIn} disabled={loading || !!error || zoom >= ZOOM_MAX}><PathPlus /></TbIcon>
+        <TbIcon label="Fit width" onClick={fitWidth} disabled={loading || !!error}><PathFitWidth /></TbIcon>
         <Sep />
         <TbIcon label="Rotate left" onClick={rotateLeft} disabled={loading || !!error}><PathRotateLeft /></TbIcon>
         <TbIcon label="Rotate right" onClick={rotateRight} disabled={loading || !!error}><PathRotateRight /></TbIcon>
@@ -395,7 +490,7 @@ export default function AppPdfViewer({
       )}
 
       {/* Scroll area: continuous pages / state */}
-      <div ref={wrapRef} style={{ flex: 1, minHeight: flush ? 0 : undefined, overflow: 'auto', background: C.card2 }}>
+      <div ref={wrapRef} onScroll={onScroll} style={{ flex: 1, minHeight: flush ? 0 : undefined, overflow: 'auto', background: C.card2 }}>
         {error ? (
           <div style={{ margin: 'auto', maxWidth: 360, textAlign: 'center', padding: '28px 18px', fontSize: 12.5, color: C.txt2 }}>
             <div style={{ fontSize: 26, marginBottom: 8 }}>📄</div>
@@ -412,17 +507,16 @@ export default function AppPdfViewer({
             <div style={{ fontSize: 11.5, fontFamily: MONO, marginTop: 10 }}>Loading PDF…</div>
           </div>
         ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: PAGE_GAP, padding: GUTTER / 2, minHeight: '100%' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: PAGE_GAP, padding: COL_PAD, minHeight: '100%' }}>
             {pages.map((p) => {
-              const box = pageBox(p);
+              const box = boxFor(p);
               return (
                 <div
                   key={p}
                   data-page={p}
-                  ref={(el) => registerPageEl(p, el)}
                   style={{ position: 'relative', width: box.w, height: box.h, background: '#fff', borderRadius: 4, boxShadow: `0 1px 8px ${C.shadow}`, flexShrink: 0 }}
                 >
-                  {renderSet.has(p) ? (
+                  {(p >= renderRange.lo && p <= renderRange.hi) ? (
                     <PdfPageView
                       doc={doc}
                       pageNumber={p}
@@ -548,13 +642,6 @@ function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOption
   );
 }
 
-/* ── helpers ─────────────────────────────────────────────────────────────────── */
-function sameSet(a, b) {
-  if (a.size !== b.size) return false;
-  for (const x of a) if (!b.has(x)) return false;
-  return true;
-}
-
 /* ── Compact toolbar primitives ─────────────────────────────────────────────── */
 function TbIcon({ children, label, onClick, disabled, active }) {
   return (
@@ -591,6 +678,8 @@ const PathMinus = () => (<svg {...sv}><path d="M5 12h14" /></svg>);
 const PathChevronUp = () => (<svg {...sv}><path d="m5 15 7-7 7 7" /></svg>);
 const PathChevronDown = () => (<svg {...sv}><path d="m5 9 7 7 7-7" /></svg>);
 const PathClose = () => (<svg {...sv}><path d="M6 6l12 12M18 6 6 18" /></svg>);
+// Fit-width: a centred box with left/right arrows hitting its edges.
+const PathFitWidth = () => (<svg {...sv}><rect x="4" y="6" width="16" height="12" rx="1.5" /><path d="M8 12H6m0 0 1.6-1.6M6 12l1.6 1.6M16 12h2m0 0-1.6-1.6M18 12l-1.6 1.6" /></svg>);
 const PathRotateLeft = () => (<svg {...sv}><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" /></svg>);
 const PathRotateRight = () => (<svg {...sv}><path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" /><path d="M21 3v5h-5" /></svg>);
 // "Aa" = match case, "ab|" = whole words — compact text glyphs rendered as SVG text.

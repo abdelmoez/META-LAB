@@ -13,7 +13,7 @@
  * Project-specificity is structural: the input is ONE project's picoSnapshot, so
  * the derived terms can never leak into another project's panel.
  */
-import { extractKeywords } from './keywords.js';
+import { extractConceptKeywords } from './conceptKeywords.js';
 
 /** Keyword sources, most-specific last (criteria wins the badge). */
 export const KEYWORD_SOURCE = Object.freeze({
@@ -39,6 +39,10 @@ export function normalizeKeyword(s) {
  * NOT fold in P/I/C/O/question here — the "Project criteria" layer should reflect
  * the explicit inclusion/exclusion criteria, not the whole PICO.
  *
+ * prompt43 Area 1 — the criteria text is now DIGESTED into clinically meaningful
+ * concepts + conservative synonyms (see conceptKeywords.js) instead of copying the
+ * whole criteria sentence verbatim, so the derived terms actually match abstracts.
+ *
  * @param {object|string|null} picoSnapshot
  * @returns {{ inclusion: string[], exclusion: string[] }}
  */
@@ -48,11 +52,10 @@ export function criteriaKeywordsFromSnapshot(picoSnapshot) {
     try { pico = JSON.parse(pico || '{}'); } catch { pico = {}; }
   }
   if (!pico || typeof pico !== 'object') pico = {};
-  const { inclusion, exclusion } = extractKeywords({
-    incl: typeof pico.incl === 'string' ? pico.incl : '',
-    excl: typeof pico.excl === 'string' ? pico.excl : '',
-  });
-  return { inclusion, exclusion };
+  return {
+    inclusion: extractConceptKeywords(typeof pico.incl === 'string' ? pico.incl : ''),
+    exclusion: extractConceptKeywords(typeof pico.excl === 'string' ? pico.excl : ''),
+  };
 }
 
 /**
