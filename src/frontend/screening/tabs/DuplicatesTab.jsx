@@ -159,7 +159,7 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
   }
 
   return (
-    <div style={{ fontFamily: FONT, color: C.txt, animation: 'sift-fade 0.3s ease', maxWidth: 940 }}>
+    <div style={{ fontFamily: FONT, color: C.txt, animation: 'sift-fade 0.3s ease', maxWidth: 1400 }}>
 
       {/* ───────── Header ───────── */}
       <div style={{

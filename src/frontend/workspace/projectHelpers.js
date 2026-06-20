@@ -230,6 +230,11 @@ export const PHASES=["Plan","Search","Screen","Extract","Analyze","Report"];
 export const READING_TABS=new Set(["overview","pico","prospero","control","grade","manuscript","methods","report"]);
 /* Icon names (src/frontend/components/icons.jsx) — render via <Icon name={…}/> */
 export const PHASE_ICON={Plan:"target",Search:"search",Screen:"filter",Extract:"table",Analyze:"sigma",Report:"fileText"};
+/* prompt46 #1 — display labels for phases. The PHASES strings stay the stable
+   grouping KEYS (t.phase, phaseTab, PHASE_ICON are all keyed by them); this map is
+   render-only, so "Plan" groups the PICO + Protocol tabs but shows "Plan & Protocol". */
+export const PHASE_LABEL={Plan:"Plan & Protocol"};
+export const phaseLabel=(p)=>PHASE_LABEL[p]||p;
 
 /* Green-light readiness check — returns { ok, missing[] } */
 export function readinessCheck(project) {

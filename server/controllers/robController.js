@@ -15,6 +15,8 @@
 import { prisma } from '../db/client.js';
 import { getById as getOwnedProject } from '../store.js';
 import { getRobMemberAccess } from '../screening/metalabAccess.js';
+import { canMutateAssessment, normaliseScreeningStudy, normaliseManualStudy } from './robAccess.js';
+import { getRobTool } from '../../src/research-engine/rob/tools.js';
 import {
   getInstrument,
   proposeDomain,
@@ -75,13 +77,35 @@ async function audit(projectId, assessmentId, actor, action, { entityType = null
 // Returns { project, canEdit } or null (→ 404, existence hidden).
 async function resolveRobAccess(projectId, userId) {
   const owned = await getOwnedProject(projectId, userId);
-  if (owned) return { project: owned, canEdit: true };
+  // prompt46 #3 — expose isOwner + role so per-assessment mutation can be scoped to
+  // creator/owner/leader (canMutateAssessment). Owner path is always full owner.
+  if (owned) return { project: owned, canEdit: true, isOwner: true, role: 'owner' };
   const m = await getRobMemberAccess(projectId, userId);
   if (m) {
     const project = await getOwnedProject(projectId, m.ownerId);
-    if (project) return { project, canEdit: m.canEdit };
+    if (project) return { project, canEdit: m.canEdit, isOwner: false, role: m.role };
   }
   return null;
+}
+
+// prompt46 #3 — the access flags a loaded assessment carries, for canMutateAssessment.
+function permsFor(a) {
+  return { canEdit: a._canEdit, isOwner: a._isOwner, role: a._role };
+}
+
+// prompt46 #4 — the merged RoB "study universe": screening/extraction-derived
+// studies (project.studies blob, source:'screening', NOT deletable from RoB) +
+// RoB-local manual studies (RobManualStudy, source:'manual'). One list keyed by id.
+async function loadStudyUniverse(project) {
+  const screening = (Array.isArray(project.studies) ? project.studies : [])
+    .filter((s) => s && s.id)
+    .map(normaliseScreeningStudy);
+  const manualRows = await prisma.robManualStudy.findMany({
+    where: { projectId: project.id, deletedAt: null },
+    orderBy: { createdAt: 'asc' },
+  });
+  const manual = manualRows.map(normaliseManualStudy);
+  return [...screening, ...manual];
 }
 
 // ── Loaders ───────────────────────────────────────────────────────────────────
@@ -95,7 +119,9 @@ async function loadAssessment(assessmentId, userId) {
   if (!a) return null;
   const access = await resolveRobAccess(a.projectId, userId);
   if (!access) return null;
-  a._canEdit = access.canEdit; // edit handlers gate on this (else 403); read handlers ignore it
+  a._canEdit = access.canEdit;   // project-level edit right (read-only members → false)
+  a._isOwner = access.isOwner;   // prompt46 #3 — owner/leader bypass the creator check
+  a._role = access.role;
   return a;
 }
 
@@ -202,6 +228,8 @@ async function buildView(assessmentId) {
     resultLabel: a.resultLabel,
     instrumentId: a.instrumentId,
     instrumentVersion: a.instrumentVersion,
+    instrumentLabel: getRobTool(a.instrumentId)?.label || a.instrumentId || 'Tool unknown', // prompt46 #5 — human tool label (e.g. "RoB 2")
+    instrumentName: INSTRUMENT.name,
     variant: a.variant,
     reviewerId: a.reviewerId,
     reviewerName: a.reviewerName,
@@ -237,9 +265,11 @@ export async function createAssessment(req, res) {
     if (!access) return res.status(404).json({ error: 'Not found' });
     if (!access.canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
     const project = access.project;
-    // Soft validation: if the project exposes studies, the studyId must exist.
-    const studies = Array.isArray(project.studies) ? project.studies : [];
-    if (studies.length && !studies.some(s => s && s.id === studyId)) {
+    // prompt46 #4 — validate against the merged study UNIVERSE (screening-derived +
+    // RoB-local manual). Empty universe → accept any studyId (preserves the prior
+    // behaviour the integration suite relies on for study-less projects).
+    const universe = await loadStudyUniverse(project);
+    if (universe.length && !universe.some(s => s.id === studyId)) {
       return res.status(404).json({ error: 'Study not found in project' });
     }
 
@@ -272,7 +302,11 @@ export async function getAssessment(req, res) {
     if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
-    return res.json({ assessment: await buildView(a.id), instrument: INSTRUMENT });
+    // prompt46 #3 — surface per-assessment mutate permission so the UI disables
+    // edit/delete for non-creators (the server still enforces it on every write).
+    const view = await buildView(a.id);
+    view.canMutate = canMutateAssessment(a, permsFor(a), req.user.id);
+    return res.json({ assessment: view, instrument: INSTRUMENT });
   } catch (err) {
     console.error('[rob] getAssessment error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
@@ -292,8 +326,11 @@ export async function listProjectAssessments(req, res) {
       include: { domainJudgments: true, overall: true },
       orderBy: { createdAt: 'asc' },
     });
+    // prompt46 #4 — resolve labels/source against the merged study universe so
+    // manual studies get correct labels and a source badge.
+    const universe = await loadStudyUniverse(project);
     const studiesById = {};
-    for (const s of (Array.isArray(project.studies) ? project.studies : [])) studiesById[s.id] = s;
+    for (const s of universe) studiesById[s.id] = s;
 
     const assessments = rows.map(a => {
       const dj = {};
@@ -304,7 +341,17 @@ export async function listProjectAssessments(req, res) {
       const label = a.resultLabel
         ? `${st ? `${st.author || ''} ${st.year || ''}`.trim() || a.studyId : a.studyId} — ${a.resultLabel}`
         : (st ? `${st.author || ''} ${st.year || ''}`.trim() || a.studyId : a.studyId);
-      return { id: a.id, studyId: a.studyId, resultLabel: a.resultLabel, status: a.status, label, domainJudgments: dj, overall };
+      return {
+        id: a.id, studyId: a.studyId, resultLabel: a.resultLabel, status: a.status, label, domainJudgments: dj, overall,
+        // prompt46 #3/#5 — creator + tool surfaced to the list UI.
+        reviewerId: a.reviewerId, reviewerName: a.reviewerName,
+        instrumentId: a.instrumentId,
+        instrumentLabel: getRobTool(a.instrumentId)?.label || a.instrumentId || 'Tool unknown',
+        // prompt46 #4 — study source ('manual' studies are visually distinct).
+        source: st ? st.source : 'screening',
+        // prompt46 #3 — per-row mutate permission for disabling edit/delete in the UI.
+        canMutate: canMutateAssessment(a, { canEdit: access.canEdit, isOwner: access.isOwner, role: access.role }, req.user.id),
+      };
     });
 
     const matrix = summaryMatrix(
@@ -325,7 +372,7 @@ export async function upsertAnswers(req, res) {
     if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
-    if (!a._canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
+    if (!canMutateAssessment(a, permsFor(a), req.user.id)) return res.status(403).json({ error: 'Only the assessment creator, a project leader, or the owner can modify or delete this assessment.' });
     if (a.status === 'complete') return res.status(409).json({ error: 'Assessment is finalised; re-open to edit' });
 
     const list = Array.isArray(req.body?.answers) ? req.body.answers : null;
@@ -371,7 +418,7 @@ export async function overrideJudgment(req, res) {
     if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
-    if (!a._canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
+    if (!canMutateAssessment(a, permsFor(a), req.user.id)) return res.status(403).json({ error: 'Only the assessment creator, a project leader, or the owner can modify or delete this assessment.' });
     // A finalised assessment is locked — overriding must go through reopen first
     // (mirrors upsertAnswers; without this the finalise lock is defeated).
     if (a.status === 'complete') return res.status(409).json({ error: 'Assessment is finalised; re-open to edit' });
@@ -434,7 +481,7 @@ export async function finaliseAssessment(req, res) {
     if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
-    if (!a._canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
+    if (!canMutateAssessment(a, permsFor(a), req.user.id)) return res.status(403).json({ error: 'Only the assessment creator, a project leader, or the owner can modify or delete this assessment.' });
 
     const view = await buildView(a.id);
     if (!view.completeness.overall.complete) {
@@ -466,7 +513,7 @@ export async function reopenAssessment(req, res) {
     if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
-    if (!a._canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
+    if (!canMutateAssessment(a, permsFor(a), req.user.id)) return res.status(403).json({ error: 'Only the assessment creator, a project leader, or the owner can modify or delete this assessment.' });
     // Returning to draft must release the finalise-locked finals on NON-overridden
     // rows (genuine overrides are preserved) so the stored state matches "draft".
     await prisma.robDomainJudgment.updateMany({ where: { assessmentId: a.id, overridden: false }, data: { finalJudgment: null } });
@@ -486,7 +533,7 @@ export async function deleteAssessment(req, res) {
     if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
-    if (!a._canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
+    if (!canMutateAssessment(a, permsFor(a), req.user.id)) return res.status(403).json({ error: 'Only the assessment creator, a project leader, or the owner can modify or delete this assessment.' });
     await prisma.robAssessment.update({ where: { id: a.id }, data: { deletedAt: new Date() } });
     await audit(a.projectId, a.id, req.user, 'ROB_DELETE', { entityType: 'RobAssessment', entityId: a.id });
     return res.json({ ok: true });
@@ -539,6 +586,94 @@ export async function exportAssessment(req, res) {
     return res.status(400).json({ error: "format must be 'json', 'csv', or 'robvis'" });
   } catch (err) {
     console.error('[rob] exportAssessment error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── GET /api/rob/projects/:projectId/studies (merged study universe) ───────────
+// prompt46 #4 — screening/extraction-derived studies + RoB-local manual studies,
+// each tagged with `source` ('screening' | 'manual'). View access is enough.
+export async function listStudyUniverse(req, res) {
+  try {
+    if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
+    const access = await resolveRobAccess(req.params.projectId, req.user.id);
+    if (!access) return res.status(404).json({ error: 'Not found' });
+    return res.json({ studies: await loadStudyUniverse(access.project) });
+  } catch (err) {
+    console.error('[rob] listStudyUniverse error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── POST /api/rob/projects/:projectId/manual-studies ──────────────────────────
+// Body: { title, authors?, year?, doi?, pmid?, notes? }. Requires RoB edit access.
+export async function createManualStudy(req, res) {
+  try {
+    if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
+    const access = await resolveRobAccess(req.params.projectId, req.user.id);
+    if (!access) return res.status(404).json({ error: 'Not found' });
+    if (!access.canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
+
+    const { title, authors, year, doi, pmid, notes } = req.body || {};
+    if (!String(title || '').trim() && !String(authors || '').trim()) {
+      return res.status(400).json({ error: 'A study title (or authors) is required' });
+    }
+    const me = await prisma.user.findUnique({ where: { id: req.user.id }, select: { name: true, email: true } });
+    const row = await prisma.robManualStudy.create({
+      data: {
+        projectId: req.params.projectId,
+        title: String(title || '').slice(0, 500),
+        authors: String(authors || '').slice(0, 300),
+        year: String(year || '').slice(0, 12),
+        doi: doi ? String(doi).slice(0, 200) : null,
+        pmid: pmid ? String(pmid).slice(0, 40) : null,
+        notes: notes ? String(notes).slice(0, 4000) : null,
+        createdById: req.user.id,
+        createdByName: me?.name || me?.email || '',
+      },
+    });
+    await audit(req.params.projectId, '', { ...req.user, name: me?.name }, 'ROB_MANUAL_STUDY_ADD', {
+      entityType: 'RobManualStudy', entityId: row.id, details: { title: row.title },
+    });
+    return res.status(201).json({ study: normaliseManualStudy(row) });
+  } catch (err) {
+    console.error('[rob] createManualStudy error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── DELETE /api/rob/projects/:projectId/manual-studies/:studyId ────────────────
+// Soft-delete a MANUAL study (creator/owner/leader only). Screening-derived studies
+// have no RobManualStudy row → 404 (they are NOT deletable from RoB). If the study
+// has assessments, require ?force=true (the assessments are kept, not deleted).
+export async function deleteManualStudy(req, res) {
+  try {
+    if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
+    const access = await resolveRobAccess(req.params.projectId, req.user.id);
+    if (!access) return res.status(404).json({ error: 'Not found' });
+
+    const row = await prisma.robManualStudy.findFirst({
+      where: { id: req.params.studyId, projectId: req.params.projectId, deletedAt: null },
+    });
+    if (!row) return res.status(404).json({ error: 'Manual study not found' });
+
+    // Creator OR owner OR leader, AND must have edit rights (mirrors canMutateAssessment:
+    // a read-only leader cannot mutate). Owner always has canEdit via resolveRobAccess.
+    const allowed = access.canEdit && (access.isOwner || access.role === 'leader' || row.createdById === req.user.id);
+    if (!allowed) return res.status(403).json({ error: 'Only the study creator, a project leader, or the owner can delete this manual study.' });
+
+    const n = await prisma.robAssessment.count({ where: { projectId: req.params.projectId, studyId: req.params.studyId, deletedAt: null } });
+    if (n > 0 && String(req.query.force) !== 'true') {
+      return res.status(409).json({ error: 'This study has risk-of-bias assessments. Confirm to remove the manual study (its assessments are kept).', assessmentCount: n });
+    }
+    await prisma.robManualStudy.update({ where: { id: row.id }, data: { deletedAt: new Date() } });
+    const me = await prisma.user.findUnique({ where: { id: req.user.id }, select: { name: true, email: true } });
+    await audit(req.params.projectId, '', { ...req.user, name: me?.name || me?.email }, 'ROB_MANUAL_STUDY_DELETE', {
+      entityType: 'RobManualStudy', entityId: row.id, details: { keptAssessments: n },
+    });
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error('[rob] deleteManualStudy error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

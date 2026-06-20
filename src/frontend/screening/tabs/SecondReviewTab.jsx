@@ -241,7 +241,7 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
   ];
 
   return (
-    <div style={{ fontFamily: FONT, color: C.txt, animation: 'sift-fade 0.3s ease', maxWidth: 1000, position: 'relative' }}>
+    <div style={{ fontFamily: FONT, color: C.txt, animation: 'sift-fade 0.3s ease', maxWidth: 1400, position: 'relative' }}>
 
       {toast && <Toast toast={toast} onClose={() => setToast(null)} />}
 

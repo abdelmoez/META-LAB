@@ -163,8 +163,11 @@ const RAIL_TOP_BELOW = 640;
 const SPLIT_MIN_PDF = 0.20;   // PDF panel never narrower than 20% (assessment up to 80%)
 const SPLIT_MAX_PDF = 0.82;   // PDF panel never wider than 82% (assessment down to ~18%)
 // prompt43 Area 3 — the assessment is the primary work surface, so the default now
-// gives it real width (PDF 58% / assessment 42%) instead of the old cramped 70/30.
-const SPLIT_DEFAULT = 0.58;
+// gives it real width instead of the old cramped 70/30.
+// prompt46 #6 — split evenly (PDF 50% / assessment 50%) so the assessment pane is wide
+// enough for the 2-column signalling-question grid below, removing the internal scroll
+// in the common case WITHOUT compressing any padding.
+const SPLIT_DEFAULT = 0.50;
 const SPLIT_STORAGE_KEY = 'metalab.rob.splitRatio';
 export function clampSplit(v) { return Math.min(SPLIT_MAX_PDF, Math.max(SPLIT_MIN_PDF, v)); }
 function readSplitRatio() {
@@ -504,7 +507,10 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
   const finalised = view?.status === 'complete';
   // A view-only viewer (e.g. a read-only/shared project, or insufficient
   // permission) can navigate + read everything but cannot change anything.
-  const editable = !finalised && !readOnly;
+  // prompt46 #3 — a non-creator (who isn't owner/leader) gets canMutate:false from the
+  // API, so the whole assessment is read-only for them (server enforces it too).
+  // Default-allow when the field is absent so nothing regresses.
+  const editable = !finalised && !readOnly && (view?.canMutate !== false);
 
   // ── Autosave (debounced) ──────────────────────────────────────────────────
   const flush = useCallback(async () => {
@@ -681,8 +687,8 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
           <button onClick={onClose} style={{ ...ghostBtn, fontWeight: 700, color: C.txt }} aria-label="Back to Risk of Bias">
             <Icon name="arrowLeft" size={15} /> Back to Risk of Bias
           </button>
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 7, background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '38')}`, color: C.acc, fontSize: 11, fontFamily: MONO, fontWeight: 700, flexShrink: 0 }}>
-            <Icon name="scale" size={13} /> RoB 2 · effect of assignment
+          <span title="Assessment tool" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 7, background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '38')}`, color: C.acc, fontSize: 11, fontFamily: MONO, fontWeight: 700, flexShrink: 0 }}>
+            <Icon name="scale" size={13} /> {view?.instrumentLabel || 'RoB 2'} · {view?.variant === 'adherence' ? 'effect of adherence' : 'effect of assignment'}
           </span>
           {/* Study title + single open-study link (the only metadata kept). */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '1 1 220px', minWidth: 0 }}>
@@ -744,11 +750,13 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
       <div style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '12px 20px', borderBottom: `1px solid ${C.brd}`, background: C.card, flexWrap: 'wrap', flexShrink: 0 }}>
         <div style={{ flex: 1, minWidth: 150 }}>
           <div style={{ fontSize: 14.5, fontWeight: 800, color: C.txt, fontFamily: FONT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{view.resultLabel || 'Risk-of-bias assessment'}</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 5 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 5, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, whiteSpace: 'nowrap' }}>{completedDomains}/{ROB2.domains.length} domains</span>
             <span aria-hidden style={{ flex: 1, maxWidth: 140, height: 4, borderRadius: 4, background: C.brd, overflow: 'hidden' }}>
               <span style={{ display: 'block', height: '100%', width: `${(completedDomains / ROB2.domains.length) * 100}%`, background: allComplete ? C.grn : C.acc, transition: reduced ? 'none' : 'width 0.3s ease' }} />
             </span>
+            {/* prompt46 #3 — who started this assessment (creator visibility). */}
+            {view.reviewerName && <span style={{ fontSize: 10, color: C.muted, whiteSpace: 'nowrap' }}>· Started by {view.reviewerName}</span>}
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -802,7 +810,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
           Carries autosave state, domain nav, and the primary next action. ── */}
       <WorkspaceFooter
         active={active} setActive={setActive} setFocusedQ={setFocusedQ}
-        allComplete={allComplete} finalised={finalised} readOnly={readOnly}
+        allComplete={allComplete} finalised={finalised} readOnly={readOnly} editable={editable}
         saving={saveState === 'saving'} saveState={saveState}
         onFinalise={doFinalise} onReopen={doReopen} onContinue={onContinue}
       />
@@ -817,7 +825,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
 }
 
 // ── Sticky action footer (Task 2/7) — domain nav + primary action, always visible.
-export function WorkspaceFooter({ active, setActive, setFocusedQ, allComplete, finalised, readOnly, saving, saveState, onFinalise, onReopen, onContinue }) {
+export function WorkspaceFooter({ active, setActive, setFocusedQ, allComplete, finalised, readOnly, editable = true, saving, saveState, onFinalise, onReopen, onContinue }) {
   const go = (target) => { setActive(target); setFocusedQ(null); };
   const onSummary = active === 'summary';
   const di = DOMAIN_IDS.indexOf(active);
@@ -839,7 +847,10 @@ export function WorkspaceFooter({ active, setActive, setFocusedQ, allComplete, f
             Next: {nextLabel} <Icon name="arrowRight" size={14} />
           </button>
         )}
-        {!readOnly && (finalised ? (
+        {/* prompt46 #3 — Finalise / Re-open are mutations, so gate them on `editable`
+            (which folds in per-assessment canMutate), not just project-level readOnly.
+            A non-creator project-editor sees a hint instead of a button that 403s. */}
+        {!readOnly && editable && (finalised ? (
           <>
             <button onClick={onReopen} style={ghostBtn}><Icon name="refresh" size={13} /> Re-open</button>
             {onContinue && <button onClick={() => onContinue('grade')} style={primaryBtn(false)}>Continue to GRADE <Icon name="arrowRight" size={14} /></button>}
@@ -851,6 +862,12 @@ export function WorkspaceFooter({ active, setActive, setFocusedQ, allComplete, f
             <Icon name="check" size={14} /> {saving ? 'Saving…' : 'Finalise'}
           </button>
         ))}
+        {!readOnly && !editable && !finalised && (
+          <span style={{ fontSize: 11, fontFamily: MONO, color: C.muted }}>Only the creator, a leader, or the owner can edit this assessment</span>
+        )}
+        {!readOnly && !editable && finalised && onContinue && (
+          <button onClick={() => onContinue('grade')} style={ghostBtn}>Continue to GRADE <Icon name="arrowRight" size={14} /></button>
+        )}
       </div>
     </div>
   );
@@ -950,7 +967,14 @@ function DomainPane({ domain, answers, meta, proposal, resolved, overrideInfo, f
       <h2 style={{ fontSize: 18, fontWeight: 800, color: C.txt, margin: '0 0 4px', fontFamily: FONT }}>{domain.name}</h2>
       <p style={{ fontSize: 13, color: C.txt2, margin: '0 0 18px', lineHeight: 1.55, maxWidth: 720 }}>{domain.description}</p>
 
-      <div style={{ display: 'grid', gap: 16 }}>
+      {/* prompt46 #6 — signalling questions flow into newspaper COLUMNS when the pane is
+          wide (PDF hidden / even split), so a domain's cards no longer stack into one
+          tall column that overflows. CSS multi-column fills top-to-bottom then over, so
+          the numbered/branching question order (1.1→1.2→…) is preserved (a row-major grid
+          would read 1.1,1.2 across — wrong for a sequential instrument). Collapses to ONE
+          column automatically when narrow (column-width 360px). Padding/spacing unchanged —
+          width is rebalanced, not compressed. */}
+      <div style={{ columns: '360px', columnGap: 16 }}>
         {reachable.map(q => {
           const focused = focusedQ === q.id;
           const gOpen = guidanceOpen[q.id];
@@ -959,6 +983,9 @@ function DomainPane({ domain, answers, meta, proposal, resolved, overrideInfo, f
             <div key={q.id} onClick={() => setFocusedQ(q.id)} style={{
               border: `1px solid ${focused ? alpha(C.acc, '55') : C.brd}`, borderRadius: 12, padding: '18px 20px', background: C.card,
               boxShadow: focused ? `0 0 0 3px ${alpha(C.acc, '14')}` : 'none', transition: reduced ? 'none' : 'box-shadow 0.15s, border-color 0.15s, opacity 0.25s', cursor: 'default',
+              // prompt46 #6 — keep each card whole within a column + provide the vertical
+              // rhythm (CSS multi-column uses margin, not grid gap).
+              breakInside: 'avoid', WebkitColumnBreakInside: 'avoid', marginBottom: 16,
             }}>
               <div style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
                 <span style={{ fontFamily: MONO, fontSize: 13, fontWeight: 800, color: C.acc, flexShrink: 0, marginTop: 2 }}>{q.id}</span>

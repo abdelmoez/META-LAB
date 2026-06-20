@@ -19,6 +19,9 @@ import {
   reopenAssessment,
   deleteAssessment,
   exportAssessment,
+  listStudyUniverse,
+  createManualStudy,
+  deleteManualStudy,
 } from '../controllers/robController.js';
 
 const router = Router();
@@ -28,6 +31,11 @@ router.get('/instruments/rob2', getRobInstrument);
 
 // Project-scoped list (for the summary plot). Declared before /assessments/:id.
 router.get('/projects/:projectId/assessments', listProjectAssessments);
+
+// prompt46 #4 — RoB study universe (screening-derived + manual) + manual-study CRUD.
+router.get('/projects/:projectId/studies', listStudyUniverse);
+router.post('/projects/:projectId/manual-studies', createManualStudy);
+router.delete('/projects/:projectId/manual-studies/:studyId', deleteManualStudy);
 
 // Assessment CRUD + workflow.
 router.post('/assessments', createAssessment);

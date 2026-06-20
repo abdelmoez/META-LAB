@@ -76,13 +76,19 @@ import { ForestPlot, FunnelPlot } from "./charts/charts.jsx";
 import { Z975, normalCDF, runMeta, eggersTest, leaveOneOut, trimFill, influenceDiagnostics, subgroupAnalysis, gammp, chiSquareCDF, betacf, lgamma, ibeta, tCDF, tCrit, invNormAbs, calcES, analysisTypeWarnings, invNorm, CONVERSIONS, validateStudy, findDuplicates, checkPoolability } from "../../research-engine/statistics/monolithStats.js";
 
 /* ════════════ SHARED PROJECT HELPERS / CONFIG (extracted prompt46 Phase 6a — verbatim) ════════════ */
-import { mkProject, mkStudy, interpretResult, GRADE_OPTIONS, gradeSuggestions, TABS, PHASES, READING_TABS, PHASE_ICON, readinessCheck, stepStatus, auditProject, projectPerms, linkedSiftId, CTRL_STATUS_OPTIONS } from "./projectHelpers.js";
+import { mkProject, mkStudy, interpretResult, GRADE_OPTIONS, gradeSuggestions, TABS, PHASES, READING_TABS, PHASE_ICON, phaseLabel, readinessCheck, stepStatus, auditProject, projectPerms, linkedSiftId, CTRL_STATUS_OPTIONS } from "./projectHelpers.js";
+
+/* ════════════ PLAN & PROTOCOL ENGINE (prompt46 #1) — server-backed planProtocol
+   module + deterministic protocol-draft generator; replaces the legacy PROSPEROTab
+   wiring for the "prospero" tab (the legacy tab is preserved as the flag-OFF path
+   INSIDE the dispatcher's blob fallback). ════════════ */
+import { PlanProtocolDispatcher } from "../../features/planProtocol/index.js";
 
 /* ════════════ OVERVIEW / HEADER / CONTROL TABS (extracted prompt46 Phase 6b — verbatim) ════════════ */
 import { AuditPanel, ProjectTitle, ProjectHeaderBar, ScreeningWorkspaceFrame, EmbeddedScreening, OverviewTab, ControlTab } from "./tabs/overviewTabs.jsx";
 
 /* ════════════ PROTOCOL / SEARCH / MeSH / PROSPERO TABS (extracted prompt46 Phase 6c — verbatim) ════════════ */
-import { PICOTab, PICODispatcher, SearchDispatcher, SearchTab, MeSHTab, PROSPEROTab } from "./tabs/protocolTabs.jsx";
+import { PICOTab, PICODispatcher, SearchDispatcher, SearchTab, MeSHTab } from "./tabs/protocolTabs.jsx";
 
 /* ════════════ DATA-EXTRACTION TAB + STUDY EDITORS (extracted prompt46 Phase 6e — verbatim) ════════════ */
 import { ESCalcInline, ConversionPanel, AddStudyModal, StudyCard, ExtractionTab } from "./tabs/extractionTabs.jsx";
@@ -1264,7 +1270,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
                   <span style={{
                     fontSize:9,fontWeight:700,letterSpacing:0.7,textTransform:"uppercase",flex:1,
                     color:phaseActive?C.txt2:C.dim,
-                  }}>{phase}</span>
+                  }}>{phaseLabel(phase)}</span>
                   <span style={{
                     fontSize:8,fontFamily:"'IBM Plex Mono',monospace",
                     color:phaseDone===steps.length?C.grn:C.dim,
@@ -1537,7 +1543,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           {tab==="control"&&<ControlTab project={project} onAnnotate={patchAnnotations} setTab={setTab} presence={{users:presenceUsers,locks:presenceLocks}}
             onDeleted={(delId)=>{setProjects(prev=>prev.filter(p=>p.id!==delId));if(onBackToProjects)onBackToProjects();else setActiveId(null);}}/>}
           {tab==="pico"&&<PICODispatcher project={project} activeId={activeId} updNested={updNested} upd={upd} lockCtx={{pid:spId,myUserId:authUser?.id,locks:presenceLocks}}/>}
-          {tab==="prospero"&&<PROSPEROTab project={project} updNested={updNested} upd={upd}/>}
+          {tab==="prospero"&&<PlanProtocolDispatcher project={project} activeId={activeId} upd={upd}/>}
           {tab==="search"&&<SearchDispatcher project={project} activeId={activeId} updNested={updNested} upd={upd}/>}
           {tab==="prisma"&&<PRISMATab project={project} updNested={updNested} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
           {tab==="extraction"&&<ExtractionTab project={project} updateProject={updateProject} activeId={activeId}/>}

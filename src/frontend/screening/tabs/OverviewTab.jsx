@@ -124,7 +124,7 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject,
   const totalArticles = n(pp.totalArticles ?? ds.totalArticles);
 
   return (
-    <div style={{ fontFamily: FONT, color: C.txt, animation: 'sift-fade 0.3s ease', maxWidth: 1080 }}>
+    <div style={{ fontFamily: FONT, color: C.txt, animation: 'sift-fade 0.3s ease', maxWidth: 1400 }}>
 
       {/* ───────── A) Top bar ───────── */}
       <Card style={{ padding: '18px 20px', marginBottom: 18 }}>

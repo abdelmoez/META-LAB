@@ -20,7 +20,10 @@ import { getMetaLabMemberAccess } from '../screening/metalabAccess.js';
 
 // Whitelist of writable module keys (Phase 13 #8 — no arbitrary moduleKey writes).
 // Add a key here as each module is migrated off the whole-project blob.
-export const MODULE_KEYS = ['protocol', 'project_control', 'analysis_config', 'prisma', 'report'];
+// `planProtocol` (prompt46 #1) — the Plan & Protocol engine's PROSPERO-style
+// protocol fields + the generated protocol draft (kept separate from the
+// `protocol`/PICO module so the PICO→screening-keyword chain is never touched).
+export const MODULE_KEYS = ['protocol', 'project_control', 'analysis_config', 'prisma', 'report', 'planProtocol'];
 export const isValidModuleKey = (k) => MODULE_KEYS.includes(k);
 
 // Audit action name per module (Phase 4). Used for structured logging; a
@@ -31,6 +34,7 @@ export const MODULE_AUDIT_ACTION = {
   analysis_config: 'ANALYSIS_CONFIG_UPDATED',
   prisma: 'PRISMA_UPDATED',
   report: 'REPORT_UPDATED',
+  planProtocol: 'PLAN_PROTOCOL_UPDATED',
 };
 
 const FLAG_KEY = 'serverBackedWorkflowState';

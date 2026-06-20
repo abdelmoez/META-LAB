@@ -53,6 +53,7 @@ describe('module key whitelist', () => {
   it('accepts whitelisted keys, rejects arbitrary ones', () => {
     expect(isValidModuleKey('protocol')).toBe(true);
     expect(isValidModuleKey('project_control')).toBe(true);
+    expect(isValidModuleKey('planProtocol')).toBe(true); // prompt46 #1 — Plan & Protocol engine
     expect(isValidModuleKey('__proto__')).toBe(false);
     expect(isValidModuleKey('arbitrary')).toBe(false);
     expect(isValidModuleKey('')).toBe(false);

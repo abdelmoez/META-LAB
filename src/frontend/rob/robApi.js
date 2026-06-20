@@ -23,6 +23,10 @@ const BASE = '/api/rob';
 export const robApi = {
   instrument:        ()                 => req(`${BASE}/instruments/rob2`),
   listAssessments:   (projectId)        => req(`${BASE}/projects/${projectId}/assessments`),
+  // prompt46 #4 — merged study universe (screening-derived + manual) + manual-study CRUD.
+  listStudies:       (projectId)        => req(`${BASE}/projects/${projectId}/studies`),
+  createManualStudy: (projectId, body)  => req(`${BASE}/projects/${projectId}/manual-studies`, { method: 'POST', ...json(body) }),
+  removeManualStudy: (projectId, studyId, { force = false } = {}) => req(`${BASE}/projects/${projectId}/manual-studies/${studyId}${force ? '?force=true' : ''}`, { method: 'DELETE' }),
   createAssessment:  (body)             => req(`${BASE}/assessments`, { method: 'POST', ...json(body) }),
   getAssessment:     (id)               => req(`${BASE}/assessments/${id}`),
   saveAnswers:       (id, answers)      => req(`${BASE}/assessments/${id}/answers`, { method: 'PUT', ...json({ answers }) }),

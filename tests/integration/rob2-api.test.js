@@ -247,3 +247,85 @@ describe('/api/rob — permission invariants', () => {
     expect(res.status).toBe(404);
   });
 });
+
+// ── 4. prompt46 #5 — assessment tool label ────────────────────────────────────
+describe('/api/rob — tool label (prompt46 #5)', () => {
+  it('getAssessment + list expose a human tool label ("RoB 2")', async () => {
+    if (!up || !adminCookie || !projectId) return;
+    expect(await setRobFlag(true)).toBe(true);
+    const created = await api('/rob/assessments', { method: 'POST', cookie: ownerCookie, body: { projectId, studyId: 'study-tool' } });
+    expect(created.status).toBe(201);
+    const id = created.data.assessment.id;
+    const got = await api(`/rob/assessments/${id}`, { cookie: ownerCookie });
+    expect(got.status).toBe(200);
+    expect(got.data.assessment.instrumentLabel).toBe('RoB 2');
+    expect(got.data.assessment.instrumentName).toBeTruthy();
+    const list = await api(`/rob/projects/${projectId}/assessments`, { cookie: ownerCookie });
+    expect(list.data.assessments.every(a => a.instrumentLabel === 'RoB 2')).toBe(true);
+  });
+});
+
+// ── 5. prompt46 #4 — manual studies ───────────────────────────────────────────
+describe('/api/rob — manual studies (prompt46 #4)', () => {
+  it('creates a manual study (source:manual) and lists it in the study universe', async () => {
+    if (!up || !adminCookie || !projectId) return;
+    expect(await setRobFlag(true)).toBe(true);
+    const res = await api(`/rob/projects/${projectId}/manual-studies`, { method: 'POST', cookie: ownerCookie, body: { title: 'Manual Trial', authors: 'Doe', year: '2024' } });
+    expect(res.status).toBe(201);
+    expect(res.data.study.source).toBe('manual');
+    const list = await api(`/rob/projects/${projectId}/studies`, { cookie: ownerCookie });
+    expect(list.status).toBe(200);
+    expect(list.data.studies.some(s => s.id === res.data.study.id && s.source === 'manual')).toBe(true);
+  });
+
+  it('allows an assessment on a manual study id', async () => {
+    if (!up || !adminCookie || !projectId) return;
+    const m = await api(`/rob/projects/${projectId}/manual-studies`, { method: 'POST', cookie: ownerCookie, body: { title: 'Assessable Manual' } });
+    const a = await api('/rob/assessments', { method: 'POST', cookie: ownerCookie, body: { projectId, studyId: m.data.study.id } });
+    expect(a.status).toBe(201);
+  });
+
+  it('soft-deletes a manual study with no assessments (200); 404 for a screening/unknown id', async () => {
+    if (!up || !adminCookie || !projectId) return;
+    const m = await api(`/rob/projects/${projectId}/manual-studies`, { method: 'POST', cookie: ownerCookie, body: { title: 'Deletable Manual' } });
+    const del = await api(`/rob/projects/${projectId}/manual-studies/${m.data.study.id}`, { method: 'DELETE', cookie: ownerCookie });
+    expect(del.status).toBe(200);
+    // A screening-derived / unknown study id has no RobManualStudy row → 404 (NOT deletable from RoB).
+    const del2 = await api(`/rob/projects/${projectId}/manual-studies/study-001`, { method: 'DELETE', cookie: ownerCookie });
+    expect(del2.status).toBe(404);
+  });
+
+  it('requires ?force=true to delete a manual study that has assessments (409 → 200)', async () => {
+    if (!up || !adminCookie || !projectId) return;
+    const m = await api(`/rob/projects/${projectId}/manual-studies`, { method: 'POST', cookie: ownerCookie, body: { title: 'Manual With Assessment' } });
+    await api('/rob/assessments', { method: 'POST', cookie: ownerCookie, body: { projectId, studyId: m.data.study.id } });
+    const blocked = await api(`/rob/projects/${projectId}/manual-studies/${m.data.study.id}`, { method: 'DELETE', cookie: ownerCookie });
+    expect(blocked.status).toBe(409);
+    expect(blocked.data.assessmentCount).toBeGreaterThan(0);
+    const forced = await api(`/rob/projects/${projectId}/manual-studies/${m.data.study.id}?force=true`, { method: 'DELETE', cookie: ownerCookie });
+    expect(forced.status).toBe(200);
+  });
+
+  it('hides manual-study endpoints from a non-owner (404)', async () => {
+    if (!up || !adminCookie || !projectId) return;
+    const post = await api(`/rob/projects/${projectId}/manual-studies`, { method: 'POST', cookie: intruderCookie, body: { title: 'x' } });
+    expect(post.status).toBe(404);
+    const list = await api(`/rob/projects/${projectId}/studies`, { cookie: intruderCookie });
+    expect(list.status).toBe(404);
+  });
+});
+
+// ── 6. prompt46 #3 — creator/owner mutate permission surfaced on the view ──────
+describe('/api/rob — creator mutate flag (prompt46 #3)', () => {
+  it('the owner (also the creator here) gets canMutate:true on their assessment', async () => {
+    if (!up || !adminCookie || !projectId) return;
+    expect(await setRobFlag(true)).toBe(true);
+    // Use a manual study id: once manual studies exist the universe is non-empty, so
+    // an arbitrary studyId is (correctly) rejected by createAssessment validation.
+    const m = await api(`/rob/projects/${projectId}/manual-studies`, { method: 'POST', cookie: ownerCookie, body: { title: 'Mutate Study' } });
+    const created = await api('/rob/assessments', { method: 'POST', cookie: ownerCookie, body: { projectId, studyId: m.data.study.id } });
+    expect(created.status).toBe(201);
+    const got = await api(`/rob/assessments/${created.data.assessment.id}`, { cookie: ownerCookie });
+    expect(got.data.assessment.canMutate).toBe(true);
+  });
+});

@@ -174,13 +174,16 @@ export function Card({ children, style, hover, onClick }) {
  * consistent, centered column at a comfortable reading width with a responsive
  * gutter, instead of each subpage filling an ultra-wide container and reading as
  * "off-center". Title & Abstract opts out (it uses a bespoke full-bleed layout).
- *   width 100% · max-width 1280 · margin-inline auto · padding-inline clamp(24,4vw,64)
+ *   width 100% · max-width 1560 · margin-inline auto · padding-inline clamp(24,5vw,96)
+ * prompt46 #2 — widened from 1280→1560 and the gutter grows faster (5vw, ceiling
+ * 96px) so large screens feel less cramped without over-stretching line length;
+ * box-sizing:border-box + the 24px floor keep small screens free of horizontal scroll.
  */
-export function ScreeningContentShell({ children, maxWidth = 1280, style }) {
+export function ScreeningContentShell({ children, maxWidth = 1560, style }) {
   return (
     <div style={{
       width: '100%', maxWidth, margin: '0 auto', boxSizing: 'border-box',
-      padding: '24px clamp(24px, 4vw, 64px) 56px', ...style,
+      padding: '24px clamp(24px, 5vw, 96px) 56px', ...style,
     }}>
       {children}
     </div>
