@@ -43,13 +43,16 @@ export async function loadSearch(projectId) {
   }
 }
 
+// Returns the server ack { ok, revision } on success (so the tab can track the
+// server revision for conflict-safe live sync), or null on any failure.
 export async function saveSearch(projectId, state) {
   try {
-    await fetch(`${BASE}/${projectId}`, {
+    const r = await fetch(`${BASE}/${projectId}`, {
       method: 'PUT', credentials: 'include',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(state),
     });
-  } catch { /* best-effort — autosave retries on the next change */ }
+    return r.ok ? r.json() : null;
+  } catch { return null; /* best-effort — autosave retries on the next change */ }
 }
 
 /** Gate the new tab client-side (mirrors robFlagEnabled). Default OFF on error. */

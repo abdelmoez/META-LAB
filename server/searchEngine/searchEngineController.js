@@ -3,8 +3,11 @@
  * (BACKEND_CONTRACT.md). Four capabilities:
  *   POST /api/search-builder/mesh    { term }  → mesh record | null   (NLM proxy)
  *   POST /api/search-builder/count   { query } → { count }            (NLM proxy)
- *   GET  /api/search-builder/:pid              → { concepts, overrides } | null
- *   PUT  /api/search-builder/:pid    { concepts, overrides } → { ok:true }
+ *   GET  /api/search-builder/:pid              → { concepts, overrides, ignored, revision, updatedAt } | null
+ *   PUT  /api/search-builder/:pid    { concepts, overrides, ignored } → { ok:true, revision }
+ *
+ * On a successful PUT the controller emits a thin `search.updated` realtime poke to
+ * the workspace's other online collaborators (SE1 Task 5 — live sync without refresh).
  *
  * Gated on the `searchEngine` feature flag (default OFF → 404). The NLM proxies
  * require only auth + flag (generic vocab lookups). The per-project load/save are
@@ -18,6 +21,7 @@ import { meshLookup, meshSuggest, pubmedCount } from './nlmClient.js';
 import {
   resolveProjectAccess, getModuleState, patchModuleState, recordWorkflowAudit,
 } from '../services/workflowState.js';
+import { emitToMetaLabProject } from '../realtime/bus.js';
 
 const SEARCH_MODULE = 'search';
 
@@ -113,7 +117,11 @@ export async function getSearch(req, res) {
     if (!access) return;
     const mod = await getModuleState(req.params.projectId, SEARCH_MODULE);
     // revision 0 = never saved → null so the tab seeds fresh from the project's PICO.
-    return res.json(mod.revision > 0 ? mod.state : null);
+    // `revision`/`updatedAt` ride alongside the saved state so the tab can tell a
+    // genuinely-newer server document (from a collaborator) from its own last write
+    // and reconcile on a realtime poke without clobbering in-progress edits.
+    if (mod.revision <= 0) return res.json(null);
+    return res.json({ ...mod.state, revision: mod.revision, updatedAt: mod.updatedAt });
   } catch (err) {
     console.error('[searchEngine] getSearch error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
@@ -148,8 +156,17 @@ export async function putSearch(req, res) {
         revision: out.result.revision, user: req.user,
         details: { concepts: value.concepts.length },
       });
+      // Live sync (SE1 Task 5): poke the workspace's other online collaborators so
+      // their Search Builder refetches without a manual refresh. Thin "poke, don't
+      // payload" event (no content); the editor is excluded (their UI already
+      // reflects the change). Fire-and-forget — never fails or slows this request.
+      emitToMetaLabProject(
+        req.params.projectId, access.ownerId,
+        { type: 'search.updated', revision: out.result.revision },
+        { exclude: req.user.id },
+      );
     }
-    return res.json({ ok: true });
+    return res.json({ ok: true, revision: out.ok ? out.result.revision : undefined });
   } catch (err) {
     console.error('[searchEngine] putSearch error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });

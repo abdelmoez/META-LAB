@@ -57,10 +57,13 @@ export async function workflowStateEnabled() {
  */
 export async function resolveProjectAccess(projectId, userId) {
   const owned = await getById(projectId, userId);
-  if (owned) return { canView: true, canEdit: true, readOnly: false, isOwner: true, role: 'owner' };
+  // `ownerId` is the META·LAB project owner's userId (== ScreenProject.ownerId per
+  // the link invariant). Surfaced so callers can address realtime pokes to the
+  // workspace via emitToMetaLabProject without re-resolving the owner.
+  if (owned) return { canView: true, canEdit: true, readOnly: false, isOwner: true, role: 'owner', ownerId: userId };
   const acc = await getMetaLabMemberAccess(projectId, userId);
   if (!acc) return null;
-  return { canView: !!acc.canView, canEdit: !!acc.canEdit, readOnly: !!acc.readOnly, isOwner: false, role: acc.role };
+  return { canView: !!acc.canView, canEdit: !!acc.canEdit, readOnly: !!acc.readOnly, isOwner: false, role: acc.role, ownerId: acc.ownerId };
 }
 
 /* ─── Pure concurrency core (unit-tested) ─────────────────────────────── */

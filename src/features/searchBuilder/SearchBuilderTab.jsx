@@ -2,6 +2,8 @@ import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { C, FONT, MONO, alpha } from "../../frontend/theme/tokens.js";  // SearchEngine: adapt to app theme (day/night + brand)
 import { picoToConcepts } from "../../research-engine/searchBuilder/conceptExtraction.js"; // prompt40 Task 3
 import { localMeshSuggestions } from "../../research-engine/searchBuilder/meshSuggest.js"; // prompt42 Task 3
+import { extractActiveConcepts, serializeSearchState, pickPersisted } from "../../research-engine/searchBuilder/searchState.js"; // SE1 Task 5
+import { useRealtime } from "../../frontend/hooks/useRealtime.js"; // SE1 Task 5 — live collaborator sync (shared SSE poke channel)
 
 /* ════════════════════════════════════════════════════════════════════════════
    SEARCH BUILDER TAB  ·  production component for the META·LAB SaaS app
@@ -693,13 +695,29 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   // so restore is granular per-field). Persisted so a PICO re-sync never re-adds
   // them (until restored). Legacy persisted string[] is normalized on load.
   const [ignored,setIgnored]=useState([]);
+  // SE1 Task 5 — live collaborator sync. lastSavedRef holds the signature of the
+  // state the server currently has (or we last sent); it makes BOTH autosave and
+  // remote-apply idempotent (no redundant PUTs, no save↔poke ping-pong). revisionRef
+  // tracks the server revision so we only adopt genuinely-newer remote documents.
+  // pendingRemoteRef parks a remote update that arrived while the user was mid-edit.
+  const lastSavedRef=useRef("");
+  const revisionRef=useRef(0);
+  const pendingRemoteRef=useRef(null);
+  const [remotePending,setRemotePending]=useState(false);
 
   /* ── INTEGRATION: load saved search for this project on mount ───────────── */
   useEffect(()=>{(async()=>{
     if(loadSearch&&projectId){
       try{
         const saved=await loadSearch(projectId);
-        if(saved&&saved.concepts){ setConcepts(saved.concepts); setOverrides(saved.overrides||{}); setIgnored(normalizeIgnored(saved.ignored)); }
+        if(saved&&saved.concepts){
+          const persisted=pickPersisted(saved);
+          setConcepts(persisted.concepts); setOverrides(persisted.overrides); setIgnored(persisted.ignored);
+          // The server already holds exactly this → record its signature so the first
+          // autosave is a no-op and a same-revision poke never re-applies.
+          lastSavedRef.current=serializeSearchState(saved);
+          revisionRef.current=typeof saved.revision==="number"?saved.revision:0;
+        }
         else seedFromPICO(true);
       }catch(e){ console.error("loadSearch failed",e); seedFromPICO(true); }
     } else {
@@ -712,9 +730,15 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const saveTimer=useRef(null);
   useEffect(()=>{
     if(!loaded||!saveSearch||!projectId) return;
+    const sig=serializeSearchState({concepts,overrides,ignored});
+    if(sig===lastSavedRef.current) return; // unchanged vs the server (e.g. just loaded/applied) → no PUT, no ping-pong
     clearTimeout(saveTimer.current);
-    saveTimer.current=setTimeout(()=>{
-      saveSearch(projectId,{concepts,overrides,ignored}).catch(e=>console.error("saveSearch failed",e));
+    saveTimer.current=setTimeout(async()=>{
+      try{
+        const res=await saveSearch(projectId,{concepts,overrides,ignored});
+        lastSavedRef.current=sig;
+        if(res&&typeof res.revision==="number") revisionRef.current=res.revision;
+      }catch(e){ console.error("saveSearch failed",e); }
     },800);
     return ()=>clearTimeout(saveTimer.current);
   },[concepts,overrides,ignored,loaded]); // eslint-disable-line
@@ -724,14 +748,46 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const picoSnapshot=useRef(picoKey);
   useEffect(()=>{ if(loaded&&picoKey!==picoSnapshot.current) setPicoDirty(true); },[picoKey,loaded]);
 
+  /* ── SE1 Task 5: live collaborator sync over the shared SSE poke channel ──
+     A peer's save emits a thin `search.updated` poke; we refetch the authorized
+     document and adopt it ONLY when it is genuinely newer AND the user is not
+     mid-edit (so an open editor / unsaved chip is never clobbered). The acting
+     user already sees their own change locally — the poke excludes them. */
+  function applyRemote(saved){
+    const persisted=pickPersisted(saved);
+    lastSavedRef.current=serializeSearchState(saved); // set BEFORE state writes so autosave sees no diff (no echo PUT)
+    if(typeof saved.revision==="number") revisionRef.current=saved.revision;
+    setConcepts(persisted.concepts); setOverrides(persisted.overrides); setIgnored(persisted.ignored);
+    pendingRemoteRef.current=null; setRemotePending(false);
+  }
+  async function pullRemote(){
+    if(!loadSearch||!projectId) return;
+    let saved; try{ saved=await loadSearch(projectId); }catch{ return; }
+    if(!saved||!saved.concepts) return;
+    if(serializeSearchState(saved)===lastSavedRef.current) return;                 // our own echo / already applied
+    if(typeof saved.revision==="number"&&saved.revision<=revisionRef.current) return; // not newer than what we have
+    if(editing||adding||(draft&&draft.trim())){ pendingRemoteRef.current=saved; setRemotePending(true); return; }
+    applyRemote(saved);
+  }
+  // ONE shared EventSource per browser tab (module-level manager). The handler reads
+  // fresh state through the hook's internal ref, so this closure always sees the
+  // latest editing/draft. `healthy` false ⇒ pokes aren't flowing; load-on-mount +
+  // autosave remain the correctness fallback.
+  const { healthy:rtHealthy }=useRealtime({
+    "search.updated":(ev)=>{ if(ev&&ev.metaLabProjectId===projectId) pullRemote(); },
+  });
+  // When the user finishes editing, flush any remote update parked during the edit.
+  useEffect(()=>{
+    if(!editing&&!adding&&!(draft&&draft.trim())&&pendingRemoteRef.current) applyRemote(pendingRemoteRef.current);
+  },[editing,adding,draft]); // eslint-disable-line
+
   /* prompt40 Task 3 — extract MULTIPLE concepts from each PICO field (not just the
-     first word), filtering out any auto-terms the user previously deleted. */
-  // prompt42 Task 2 — `ignoredList` is now {text,field,label}[]; filter on .text.
+     first word), filtering out any auto-terms the user previously deleted. The pure
+     extract+filter core lives in searchState.extractActiveConcepts (unit-tested); the
+     component only attaches local render ids. */
   function buildExtracted(ignoredList){
-    const ig=new Set((ignoredList||[]).map(e=>cnorm(e&&e.text)));
-    return picoToConcepts(pico)
-      .map(c=>({...c,id:uid(),terms:c.terms.filter(t=>!ig.has(cnorm(t.text))).map(t=>({...t,id:uid()}))}))
-      .filter(c=>c.terms.length);
+    return extractActiveConcepts(pico,ignoredList)
+      .map(c=>({...c,id:uid(),terms:c.terms.map(t=>({...t,id:uid()}))}));
   }
   const presentPrimaries=(cs)=>new Set(cs.flatMap(c=>c.terms.map(t=>cnorm(t.text))));
 
@@ -981,7 +1037,12 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
             </span>
             <span style={{fontSize:11,fontWeight:600,color:beginner?C.grn:C.muted}}>Beginner mode</span>
           </button>
-          <div style={{display:"flex",gap:14,fontSize:11,color:C.muted,fontFamily:MONO}}>
+          <div style={{display:"flex",alignItems:"center",gap:14,fontSize:11,color:C.muted,fontFamily:MONO}}>
+            {/* SE1 Task 5 — live-sync status: green dot = collaborators see changes instantly. */}
+            <span title={rtHealthy?"Live — collaborators see your changes without refreshing":"Reconnecting — your changes still save and will sync"}
+              style={{display:"inline-flex",alignItems:"center",gap:4,color:rtHealthy?C.grn:C.muted}}>
+              <span style={{width:6,height:6,borderRadius:"50%",background:rtHealthy?C.grn:C.yel}}/>{rtHealthy?"live":"sync"}
+            </span>
             <span>{stats.concepts} concepts</span><span style={{color:C.acc}}>{stats.controlled} MeSH</span><span style={{color:C.grn}}>{stats.free} free-text</span>
           </div>
         </div>
@@ -990,6 +1051,14 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
       {limitedMode&&(
         <div style={{background:`${alpha(C.yel,"10")}`,border:`1px solid ${alpha(C.yel,"44")}`,borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:C.txt2}}>
           <strong style={{color:C.yel}}>Limited mode.</strong> Live subject-term lookup and PubMed counts are temporarily unavailable, so the builder is using a small offline vocabulary and hit counts are hidden. Your query syntax is still correct and fully usable.
+        </div>
+      )}
+
+      {/* SE1 Task 5 — a collaborator's update arrived while this user was mid-edit. */}
+      {remotePending&&(
+        <div style={{background:`${alpha(C.acc,"10")}`,border:`1px solid ${alpha(C.acc,"44")}`,borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:C.txt2,display:"flex",alignItems:"center",gap:10}}>
+          <span style={{flex:1}}><strong style={{color:C.acc}}>A collaborator updated this search.</strong> Your view will refresh automatically when you finish your current edit.</span>
+          <button onClick={()=>{setEditing(null);setAdding(null);setDraft("");if(pendingRemoteRef.current)applyRemote(pendingRemoteRef.current);}} style={{...btn("solid"),fontSize:10}}>Apply now</button>
         </div>
       )}
 
@@ -1055,6 +1124,10 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
                     <span style={{width:9,height:9,borderRadius:3,background:color}}/>
                     <input value={c.label} onChange={e=>updateConcept(c.id,{label:e.target.value})}
                       style={{...inputStyle,fontWeight:600,width:"auto",flex:1,background:"transparent",border:"none",padding:"2px 0",fontSize:13}}/>
+                    {/* SE1 Task 4/6 — show which PICO field this concept group was auto-generated from. */}
+                    {c.source==="pico_auto"&&c.field&&(
+                      <span title={`Auto-generated from your ${c.field} (PICO)`} style={{fontSize:8.5,fontWeight:700,letterSpacing:.4,color:C.muted,textTransform:"uppercase",background:C.card2,border:`1px solid ${C.brd2}`,borderRadius:5,padding:"1px 6px"}}>{c.field}</span>
+                    )}
                     <span style={{fontSize:9.5,color:C.dim,fontFamily:MONO}}>{meshN} mesh · {freeN} text</span>
                     <button onClick={()=>removeConcept(c.id)} style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:15}}>×</button>
                   </div>

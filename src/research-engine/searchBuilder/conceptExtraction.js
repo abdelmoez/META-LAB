@@ -101,13 +101,26 @@ export function expandAbbreviation(token) {
   return ABBREVIATIONS[norm(token)] || null;
 }
 
-function mkTerm(text, isSyn) {
-  return { text, type: 'freetext', field: 'tiab', source: 'pico_auto', synonym: !!isSyn };
+// `field` is the SEARCH field (title/abstract); `sourceField` is the PICO field the
+// term was extracted FROM (Population/Intervention/…) so each chip can show its
+// provenance (SE1 Task 2 — "mark generated terms with their source field"). The
+// original PICO text is never mutated — this is derived metadata only.
+function mkTerm(text, isSyn, fieldLabel) {
+  return {
+    text,
+    normalizedLabel: norm(text),
+    type: 'freetext',
+    field: 'tiab',
+    sourceField: fieldLabel || '',
+    source: 'pico_auto',
+    synonym: !!isSyn,
+  };
 }
 
 /**
  * Extract concepts from ONE PICO field's text.
- * @returns Array<{ label, field, source:'pico_auto', op:'AND', terms:[{text,type,field,source,synonym}] }>
+ * @returns Array<{ label, normalizedLabel, field, source:'pico_auto', op:'AND',
+ *   terms:[{text, normalizedLabel, type, field, sourceField, source, synonym}] }>
  */
 export function extractConcepts(text, fieldLabel = '') {
   const concepts = [];
@@ -129,13 +142,13 @@ export function extractConcepts(text, fieldLabel = '') {
     const seen = new Set(); const terms = [];
     for (const t of termTexts) {
       const n = norm(t);
-      if (n && !seen.has(n)) { seen.add(n); terms.push(mkTerm(t, terms.length > 0)); }
+      if (n && !seen.has(n)) { seen.add(n); terms.push(mkTerm(t, terms.length > 0, fieldLabel)); }
     }
     if (!terms.length) continue;
     const primaryNorm = norm(terms[0].text);
     if (seenPrimary.has(primaryNorm)) continue; // dedupe concept across the field
     seenPrimary.add(primaryNorm);
-    concepts.push({ label, field: fieldLabel, source: 'pico_auto', op: 'AND', terms });
+    concepts.push({ label, normalizedLabel: norm(label), field: fieldLabel, source: 'pico_auto', op: 'AND', terms });
   }
   return concepts;
 }

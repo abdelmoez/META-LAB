@@ -116,3 +116,37 @@ describe('expandAbbreviation', () => {
     expect(expandAbbreviation('zzz')).toBeNull();
   });
 });
+
+// SE1 Task 2 — each emitted term/concept carries provenance metadata so chips can
+// show their source PICO field and type, WITHOUT mutating the original PICO text.
+describe('term/concept metadata (SE1 Task 2)', () => {
+  it('tags every term with its source PICO field and a normalizedLabel', () => {
+    const cs = extractConcepts('type 2 diabetes mellitus with HFrEF', 'Population');
+    expect(cs.length).toBeGreaterThan(0);
+    for (const c of cs) {
+      expect(c.field).toBe('Population');
+      expect(c.normalizedLabel).toBe(norm(c.label));
+      for (const t of c.terms) {
+        expect(t.sourceField).toBe('Population');
+        expect(t.normalizedLabel).toBe(norm(t.text));
+        expect(t.source).toBe('pico_auto');
+      }
+    }
+  });
+
+  it('carries the correct source field per PICO field across the whole object', () => {
+    const cs = picoToConcepts({ P: 'type 2 diabetes', I: 'SGLT2 inhibitor', C: '', O: 'all-cause mortality' });
+    const fieldOf = (primary) => cs.find((c) => norm(c.terms[0].text) === primary)?.terms[0].sourceField;
+    expect(fieldOf('mortality')).toBe('Outcome');
+    expect(cs.find((c) => c.field === 'Population')).toBeTruthy();
+  });
+
+  it('re-extraction is idempotent — same PICO yields the same concepts (no duplicates)', () => {
+    const pico = { P: 'type 2 diabetes mellitus with HFrEF', I: 'SGLT2 inhibitor', C: 'placebo', O: 'all-cause mortality' };
+    const a = picoToConcepts(pico);
+    const b = picoToConcepts(pico);
+    expect(primaries(a)).toEqual(primaries(b));
+    // No duplicate primary concepts within a single extraction.
+    expect(new Set(primaries(a)).size).toBe(primaries(a).length);
+  });
+});
