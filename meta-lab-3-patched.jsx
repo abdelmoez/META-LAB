@@ -8569,8 +8569,20 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
 
     // 4) Study table (CSV) + full report (HTML).
     report("Preparing study table…");
+    // Best-effort RoB summary per study for the table's "Risk of bias" column — owner-
+    // scoped + flag-gated, so it degrades to blank when unavailable. When a study has
+    // several outcome-level assessments, the WORST judgement is shown (conservative).
+    let robByStudy={};
     try{
-      entries.push({name:"study-table.csv",text:jsStudyTableCSV(studies)});
+      const rr=await fetch(`/api/rob/projects/${activeId}/assessments`,{credentials:"include",headers:{Accept:"application/json"}});
+      if(rr.ok){
+        const rd=await rr.json(); const rank={low:1,some:2,high:3}; const lbl={low:"Low",some:"Some concerns",high:"High"}; const tmp={};
+        for(const a of ((rd&&rd.assessments)||[])){ const r=rank[a&&a.overall]; if(!a||!a.studyId||!r) continue; if(!tmp[a.studyId]||r>tmp[a.studyId].r) tmp[a.studyId]={r,label:lbl[a.overall]}; }
+        for(const k in tmp) robByStudy[k]=tmp[k].label;
+      }
+    }catch(_){ /* RoB unavailable / not owner / flag off — leave the column blank */ }
+    try{
+      entries.push({name:"study-table.csv",text:jsStudyTableCSV(studies,robByStudy)});
       files.push({name:"study-table.csv",note:"Included-studies characteristics table"});
       if(!studies.length) warnings.push("No studies in the project — the study table is empty.");
     }catch(_){ warnings.push("Study table could not be generated."); }

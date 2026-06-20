@@ -108,9 +108,10 @@ table, README/manifest/warnings, methods text), `tests/unit/searchBuilderHits.te
 - Hit counts are live for **PubMed only** (other databases have no contract count source yet).
 - Cross-text-item PDF search matches aren't highlighted (rare); rotation-0 highlighting is pixel-exact.
 - Journal package ships **Methods as `.md`** and the **study table as `.csv`** (no docx/xlsx lib by
-  design); the report is self-contained HTML (print to PDF). RoB-per-study column is included but only
-  filled when a mapping is supplied. STORE (uncompressed) ZIP → slightly larger but universally openable.
-- Per-study RoB summary in the study table is not auto-joined from `/api/rob` yet.
+  design); the report is self-contained HTML (print to PDF). The study table's **Risk of bias** column
+  is auto-joined (best-effort, worst-case per study) from `/api/rob`, blank when unavailable. STORE
+  (uncompressed) ZIP → slightly larger but universally openable.
+- Hit counts are live for PubMed only; cross-text-item PDF search matches aren't highlighted (rare).
 
 ## 23. Claude's additional engineering recommendations
 
@@ -124,4 +125,5 @@ table, README/manifest/warnings, methods text), `tests/unit/searchBuilderHits.te
   wrapper so future focus-mode tabs inherit it without per-tab wiring.
 - **Journal export:** an "export readiness checklist" (PRISMA complete? ≥1 outcome? GRADE done?) shown
   before generation; pluggable journal templates (target-journal cover letter + title page); optional
-  DEFLATE in the ZIP writer if package sizes grow; join RoB summaries into the study table.
+  DEFLATE in the ZIP writer if package sizes grow. (Per-study RoB summaries are now auto-joined into the
+  study table.)

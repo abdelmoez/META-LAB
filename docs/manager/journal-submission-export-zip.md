@@ -71,6 +71,7 @@ decimal precision. PNGs are rasterized from the builders' hex-colour SVGs via `e
 
 - DOCX/XLSX are not produced (the app ships no docx/xlsx lib) — Methods is `.md`, the study table is
   `.csv` (the prompt's documented fallbacks). The report is self-contained HTML (print to PDF).
-- RoB summary per study is included as a column but only filled when a mapping is supplied; the
-  authoritative RoB data lives behind `/api/rob`.
+- The per-study **Risk of bias** column is auto-populated (best-effort) from `/api/rob` — the worst
+  outcome-level judgement per study; it is blank when RoB is unavailable (not the owner / engine flag
+  off / no assessments).
 - STORE (no compression) ZIP — slightly larger files, but universally openable and dependency-free.
