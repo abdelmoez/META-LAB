@@ -45,6 +45,22 @@ export function searchStatesEqual(a, b) {
 }
 
 /**
+ * Decide whether a freshly-refetched remote document should replace local state.
+ * Pure so the conflict-safe sync core is unit-testable without a DOM.
+ *   - 'skip'  : identical to what we hold/sent, or not newer than our revision
+ *   - 'defer' : genuinely newer, but the user is mid-edit — park and apply on idle
+ *   - 'adopt' : genuinely newer and the user is idle — apply now
+ * @param {{remoteSig:string, lastSavedSig:string, remoteRevision?:number,
+ *          knownRevision?:number, busy:boolean}} p
+ */
+export function remoteAdoptDecision({ remoteSig, lastSavedSig, remoteRevision, knownRevision, busy }) {
+  if (remoteSig === lastSavedSig) return 'skip';                       // our own echo / already applied
+  if (typeof remoteRevision === 'number' && typeof knownRevision === 'number'
+      && remoteRevision <= knownRevision) return 'skip';              // not newer than what we have
+  return busy ? 'defer' : 'adopt';
+}
+
+/**
  * PICO → auto-extracted concepts, with any hidden/deleted auto term removed.
  * @param {object} pico   {P,I,C,O}
  * @param {string[]} ignoredList  normalized texts of terms the user removed

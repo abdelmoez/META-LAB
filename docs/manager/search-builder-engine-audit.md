@@ -72,10 +72,12 @@ PICO ({P,I,C,O})  ──prop──►  SearchBuilderTab
   delivery would need a broker; the load-on-mount path remains the correctness fallback.
 - **Engine purity:** extraction must stay deterministic and network-free (CI must never
   hit NLM). Preserved — MeSH stays behind the mocked `props.api`/backend proxy.
-- **Not-yet-mounted tab:** `SearchBuilderTab` is a complete, flag-gated module but is not
-  yet rendered in `AppWorkspace`. Live-sync is implemented at the engine/tab/server level
-  so it works the moment the tab is mounted; wiring the tab into the workspace is tracked
-  separately and is out of SE1's "engine only" scope.
+- **Mounting (verified):** `SearchBuilderTab` IS already mounted in the app — the monolith
+  `meta-lab-3-patched.jsx` renders it for the Search stage via `SearchDispatcher`
+  (`projectId={activeId}`, `pico={project.pico}`), gated by the `searchEngine` flag (OFF →
+  the legacy in-blob `SearchTab`). The monolith already subscribes to `project.updated` and
+  refetches the project on a poke, so collaborator PICO edits reach the builder's `pico`
+  prop live — the new `search.updated` subscription rides the same shared EventSource.
 
 ## 5. Proposed minimal implementation plan
 

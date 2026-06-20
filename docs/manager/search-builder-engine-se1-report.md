@@ -32,8 +32,8 @@ SE1 asks for, with a conflict-safe sync core that is unit-tested.
 
 **Backend**
 - `server/searchEngine/searchEngineController.js` — `getSearch` returns `{…state, revision,
-  updatedAt}`; `putSearch` emits `search.updated` after a successful save and returns
-  `{ok, revision}`.
+  updatedAt, updatedBy}`; `putSearch` emits `search.updated` after a successful save and
+  returns `{ok, revision}`.
 - `server/services/workflowState.js` — `resolveProjectAccess` now also returns `ownerId`
   (owner path → caller; member path → `acc.ownerId`) so the controller can address the
   poke to the workspace via `emitToMetaLabProject` without re-resolving the owner.
@@ -42,8 +42,8 @@ SE1 asks for, with a conflict-safe sync core that is unit-tested.
 - `src/research-engine/searchBuilder/conceptExtraction.js` — additive term/concept metadata
   (`sourceField`, `normalizedLabel`).
 - `src/research-engine/searchBuilder/searchState.js` _(new)_ — pure sync core:
-  `serializeSearchState`/`searchStatesEqual` (stable signature) and `extractActiveConcepts`
-  (PICO→concepts minus hidden/deleted terms).
+  `serializeSearchState`/`searchStatesEqual` (stable signature), `remoteAdoptDecision`
+  (adopt/defer/skip), and `extractActiveConcepts` (PICO→concepts minus hidden/deleted terms).
 - `src/features/searchBuilder/SearchBuilderTab.jsx` — `useRealtime('search.updated')`
   subscription; `applyRemote`/`pullRemote` with the lastSaved + revision + idle guards;
   signature-guarded autosave; remote-update banner + a live-sync status dot; PICO-field tag
@@ -87,17 +87,18 @@ Reuses the existing in-process SSE "poke, don't payload" bus (`server/realtime/b
 - `tests/unit/conceptExtraction.test.js` — +3 tests: term/concept metadata
   (`sourceField`/`normalizedLabel`), correct source field per PICO field, idempotent
   re-extraction (no duplicate concepts).
-- `tests/unit/searchState.test.js` _(new)_ — 11 tests: stable signature (key-order
+- `tests/unit/searchState.test.js` _(new)_ — 16 tests: stable signature (key-order
   independent, undefined-omitting, nested vocab), content-change detection, defensive
-  `pickPersisted`, and `extractActiveConcepts` (hidden/deleted terms stay hidden, empty
-  concept dropped, idempotent under ignore, tolerant of empty PICO).
+  `pickPersisted`, `remoteAdoptDecision` (skip-echo / not-newer / adopt-when-idle /
+  defer-when-busy / graceful no-revision), and `extractActiveConcepts` (hidden/deleted
+  terms stay hidden, empty concept dropped, idempotent under ignore, tolerant of empty PICO).
 - No live external MeSH/NLM calls in CI (extraction is pure; MeSH stays behind the mocked
   `props.api`/server proxy).
 
 ## Build / test results
 
-- `npm run test:unit`: **1228 passed / 1 failed** (75 files). Search-relevant suites
-  `conceptExtraction` (18) + `searchState` (11) + `searchEngine` (10) all green.
+- `npm run test:unit`: **1233 passed / 1 failed** (75 files). Search-relevant suites
+  `conceptExtraction` (18) + `searchState` (16) + `searchEngine` (10) all green.
 - `npm run build` (vite): **success** (chunk-size warning is pre-existing and unrelated).
 - Edited frontend files transform-checked with esbuild (SearchBuilderTab.jsx isn't yet in
   the app import graph, so the build alone wouldn't catch a syntax error there).
@@ -116,24 +117,41 @@ None touch Search Builder code; all are environment/setup issues.
 3.24.0 → **3.25.0** (minor — adds the live-sync feature, consistent with the repo's
 feat→minor convention used for the prior Search Builder releases v3.21–v3.23).
 
-## Known limitations
+## Mounting (corrected) & collaborator attribution
 
-- **Tab not yet mounted in the workspace.** `SearchBuilderTab` is a complete, flag-gated
-  module but is not yet rendered in `AppWorkspace`. Live sync is implemented end-to-end so
-  it works the instant the tab is wired in; wiring it is outside SE1's "engine only" scope.
-- **Single-process SSE bus.** Cross-instance delivery would need a pub/sub broker; the
-  load-on-mount path is the correctness fallback in a clustered deployment.
-- **Last-write-wins** on concurrent saves of the whole search document (no field-level merge).
+An earlier draft of this report wrongly listed "tab not mounted" as a limitation. It is
+**not** a limitation: the tab is already wired into the app. The monolith
+`meta-lab-3-patched.jsx` renders it for the **Search** stage through `SearchDispatcher`
+(`projectId={activeId}`, `pico={project.pico}`), gated by the `searchEngine` flag (OFF →
+the legacy in-blob `SearchTab`, so nothing breaks for users on the default). The monolith
+already subscribes to `project.updated` and refetches the project on a poke, so collaborator
+PICO edits reach the builder's `pico` prop live; the new `search.updated` subscription rides
+the **same shared EventSource** (no extra connection).
+
+Follow-up improvements in this release (rec #2/#3 below, now done):
+- **Collaborator attribution.** `getSearch` returns `updatedBy` (identity-only); on a live
+  apply the tab shows "↻ {name}" until this user makes their own edit.
+- **Testable sync core.** The adopt/defer/skip decision is now a pure
+  `remoteAdoptDecision(...)` in `searchState.js` with its own unit tests (no DOM needed).
+
+## Known limitations (inherent — documented, not fixed here)
+
+- **Single-process SSE bus.** The realtime bus lives in process memory (single Node +
+  SQLite — no Redis/broker). A multi-instance deployment would split the registry;
+  cross-instance delivery needs a pub/sub broker. The load-on-mount + autosave path remains
+  the correctness fallback, so no data is lost — only the *instant* cross-instance poke is.
+- **Last-write-wins** on concurrent saves of the whole search document. The document is a
+  single per-project strategy, and revision + the lastSaved guard prevent self-inflicted
+  clobbering and ping-pong; true field-level merge (OT/CRDT) is a larger effort, out of scope.
 - **MeSH heuristic mapping** remains a documented service boundary (no pretense of a
   complete MeSH API); live NLM lookups stay server-side and are never called from CI.
 
 ## Recommended next steps
 
-1. Mount `SearchBuilderTab` in `AppWorkspace` (pass `projectId`, `pico`, `api`,
-   `loadSearch`, `saveSearch`) so live sync is exercised in the real app.
-2. Add a lightweight component/integration test once mounted (jsdom + a fake EventSource)
-   to cover the remote-apply state machine end-to-end.
-3. Consider surfacing `updatedBy`/`updatedAt` in the tab (a "last edited by …" line) using
-   the data already returned by `getModuleState`.
-4. When clustering, back the SSE bus with a broker (Redis pub/sub) to preserve instant
+1. Add a component/integration test for the remote-apply state machine end-to-end
+   (needs jsdom + `@testing-library/react` + a fake `EventSource` — test-infra additions
+   not currently in `devDependencies`). The pure decision core is already covered by
+   `remoteAdoptDecision` tests.
+2. When clustering, back the SSE bus with a broker (Redis pub/sub) to preserve instant
    cross-instance sync.
+3. Optionally show `updatedAt` as a relative "last updated …" line alongside the attribution.

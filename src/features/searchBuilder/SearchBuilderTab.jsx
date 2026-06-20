@@ -2,7 +2,7 @@ import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { C, FONT, MONO, alpha } from "../../frontend/theme/tokens.js";  // SearchEngine: adapt to app theme (day/night + brand)
 import { picoToConcepts } from "../../research-engine/searchBuilder/conceptExtraction.js"; // prompt40 Task 3
 import { localMeshSuggestions } from "../../research-engine/searchBuilder/meshSuggest.js"; // prompt42 Task 3
-import { extractActiveConcepts, serializeSearchState, pickPersisted } from "../../research-engine/searchBuilder/searchState.js"; // SE1 Task 5
+import { extractActiveConcepts, serializeSearchState, pickPersisted, remoteAdoptDecision } from "../../research-engine/searchBuilder/searchState.js"; // SE1 Task 5
 import { useRealtime } from "../../frontend/hooks/useRealtime.js"; // SE1 Task 5 — live collaborator sync (shared SSE poke channel)
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -704,6 +704,9 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const revisionRef=useRef(0);
   const pendingRemoteRef=useRef(null);
   const [remotePending,setRemotePending]=useState(false);
+  // Name of the collaborator whose live update we last applied (cleared once this
+  // user makes their own edit). Drives the "updated by …" attribution chip.
+  const [remoteUpdatedBy,setRemoteUpdatedBy]=useState(null);
 
   /* ── INTEGRATION: load saved search for this project on mount ───────────── */
   useEffect(()=>{(async()=>{
@@ -732,6 +735,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     if(!loaded||!saveSearch||!projectId) return;
     const sig=serializeSearchState({concepts,overrides,ignored});
     if(sig===lastSavedRef.current) return; // unchanged vs the server (e.g. just loaded/applied) → no PUT, no ping-pong
+    setRemoteUpdatedBy(null); // this user is now editing → drop the "updated by collaborator" attribution
     clearTimeout(saveTimer.current);
     saveTimer.current=setTimeout(async()=>{
       try{
@@ -758,15 +762,20 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     lastSavedRef.current=serializeSearchState(saved); // set BEFORE state writes so autosave sees no diff (no echo PUT)
     if(typeof saved.revision==="number") revisionRef.current=saved.revision;
     setConcepts(persisted.concepts); setOverrides(persisted.overrides); setIgnored(persisted.ignored);
+    setRemoteUpdatedBy(saved.updatedBy&&saved.updatedBy.name?saved.updatedBy.name:"a collaborator");
     pendingRemoteRef.current=null; setRemotePending(false);
   }
   async function pullRemote(){
     if(!loadSearch||!projectId) return;
     let saved; try{ saved=await loadSearch(projectId); }catch{ return; }
     if(!saved||!saved.concepts) return;
-    if(serializeSearchState(saved)===lastSavedRef.current) return;                 // our own echo / already applied
-    if(typeof saved.revision==="number"&&saved.revision<=revisionRef.current) return; // not newer than what we have
-    if(editing||adding||(draft&&draft.trim())){ pendingRemoteRef.current=saved; setRemotePending(true); return; }
+    const decision=remoteAdoptDecision({
+      remoteSig:serializeSearchState(saved), lastSavedSig:lastSavedRef.current,
+      remoteRevision:saved.revision, knownRevision:revisionRef.current,
+      busy:!!(editing||adding||(draft&&draft.trim())),
+    });
+    if(decision==="skip") return;
+    if(decision==="defer"){ pendingRemoteRef.current=saved; setRemotePending(true); return; }
     applyRemote(saved);
   }
   // ONE shared EventSource per browser tab (module-level manager). The handler reads
@@ -1043,6 +1052,10 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
               style={{display:"inline-flex",alignItems:"center",gap:4,color:rtHealthy?C.grn:C.muted}}>
               <span style={{width:6,height:6,borderRadius:"50%",background:rtHealthy?C.grn:C.yel}}/>{rtHealthy?"live":"sync"}
             </span>
+            {/* SE1 Task 5 — attribute the most recent live update to the collaborator who made it. */}
+            {remoteUpdatedBy&&(
+              <span title={`This search was just updated by ${remoteUpdatedBy}`} style={{display:"inline-flex",alignItems:"center",gap:4,color:C.acc}}>↻ {remoteUpdatedBy}</span>
+            )}
             <span>{stats.concepts} concepts</span><span style={{color:C.acc}}>{stats.controlled} MeSH</span><span style={{color:C.grn}}>{stats.free} free-text</span>
           </div>
         </div>

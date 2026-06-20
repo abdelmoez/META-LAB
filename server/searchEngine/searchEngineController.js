@@ -121,7 +121,9 @@ export async function getSearch(req, res) {
     // genuinely-newer server document (from a collaborator) from its own last write
     // and reconcile on a realtime poke without clobbering in-progress edits.
     if (mod.revision <= 0) return res.json(null);
-    return res.json({ ...mod.state, revision: mod.revision, updatedAt: mod.updatedAt });
+    // `updatedBy` lets the tab attribute a live update to the collaborator who made
+    // it ("updated by …"); it is identity-only (id + name), no project content.
+    return res.json({ ...mod.state, revision: mod.revision, updatedAt: mod.updatedAt, updatedBy: mod.updatedBy });
   } catch (err) {
     console.error('[searchEngine] getSearch error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });

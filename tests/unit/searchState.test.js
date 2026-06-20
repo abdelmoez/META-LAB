@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   stableStringify, serializeSearchState, searchStatesEqual, pickPersisted, extractActiveConcepts,
+  remoteAdoptDecision,
 } from '../../src/research-engine/searchBuilder/searchState.js';
 import { norm, picoToConcepts } from '../../src/research-engine/searchBuilder/conceptExtraction.js';
 
@@ -52,6 +53,26 @@ describe('serializeSearchState / searchStatesEqual', () => {
   it('pickPersisted coerces shape defensively', () => {
     expect(pickPersisted(null)).toEqual({ concepts: [], overrides: {}, ignored: [] });
     expect(pickPersisted({ concepts: 'bad', overrides: 7, ignored: {} })).toEqual({ concepts: [], overrides: {}, ignored: [] });
+  });
+});
+
+describe('remoteAdoptDecision (conflict-safe live sync core)', () => {
+  it('skips an echo of our own last-saved state (identical signature)', () => {
+    expect(remoteAdoptDecision({ remoteSig: 'X', lastSavedSig: 'X', remoteRevision: 9, knownRevision: 2, busy: false })).toBe('skip');
+  });
+  it('skips a document that is not newer than what we already hold', () => {
+    expect(remoteAdoptDecision({ remoteSig: 'B', lastSavedSig: 'A', remoteRevision: 3, knownRevision: 3, busy: false })).toBe('skip');
+    expect(remoteAdoptDecision({ remoteSig: 'B', lastSavedSig: 'A', remoteRevision: 2, knownRevision: 3, busy: false })).toBe('skip');
+  });
+  it('adopts a genuinely-newer document when the user is idle', () => {
+    expect(remoteAdoptDecision({ remoteSig: 'B', lastSavedSig: 'A', remoteRevision: 4, knownRevision: 3, busy: false })).toBe('adopt');
+  });
+  it('defers a genuinely-newer document while the user is mid-edit', () => {
+    expect(remoteAdoptDecision({ remoteSig: 'B', lastSavedSig: 'A', remoteRevision: 4, knownRevision: 3, busy: true })).toBe('defer');
+  });
+  it('degrades gracefully when the server omits a revision (relies on the signature)', () => {
+    expect(remoteAdoptDecision({ remoteSig: 'B', lastSavedSig: 'A', remoteRevision: undefined, knownRevision: 3, busy: false })).toBe('adopt');
+    expect(remoteAdoptDecision({ remoteSig: 'A', lastSavedSig: 'A', remoteRevision: undefined, knownRevision: 3, busy: false })).toBe('skip');
   });
 });
 
