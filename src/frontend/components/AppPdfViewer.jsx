@@ -453,9 +453,15 @@ export default function AppPdfViewer({
   const closeSearch = () => { setSearchOpen(false); setTerm(''); setMatches([]); setMatchIdx(0); scanToken.current++; };
 
   /* ── Render ──────────────────────────────────────────────────────────────── */
+  // prompt45 — the shell MUST fill its parent's width. In flush mode the host wraps it
+  // in a `display:flex` ROW, where a child with no width/flex shrinks to its content —
+  // that made the viewer (and `wrapW`) collapse to a tiny page hugging the left with
+  // dead space on the right, and the toolbar appeared to "move" because the whole
+  // viewer resized with the page on zoom. `flex:1 1 0% + width:100% + minWidth:0` makes
+  // it grow to the full panel in a flex parent and stay full-width in a block parent.
   const shellStyle = flush
-    ? { display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0, background: C.card2 }
-    : { display: 'flex', flexDirection: 'column', height: previewHeight, background: C.card2 };
+    ? { display: 'flex', flexDirection: 'column', height: '100%', width: '100%', minWidth: 0, flex: '1 1 0%', minHeight: 0, background: C.card2 }
+    : { display: 'flex', flexDirection: 'column', height: previewHeight, width: '100%', minWidth: 0, background: C.card2 };
 
   const ready = !loading && !error && doc;
   const widthKnown = wrapW > 0;
@@ -472,10 +478,14 @@ export default function AppPdfViewer({
 
   return (
     <div style={shellStyle} role="group" aria-label="PDF viewer" onKeyDown={onKeyDown} tabIndex={0}>
-      {/* Toolbar */}
+      {/* Toolbar — prompt45: a FIXED bar separate from the scrolling/zoomable document
+          area. flexShrink:0 keeps it out of the scroll area; zIndex + shadow make it sit
+          above the content; it never resizes on zoom because the viewer is now full-width
+          and the zoom label has a fixed width. */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', flexWrap: 'wrap',
         borderBottom: `1px solid ${C.brd}`, background: C.surf, flexShrink: 0,
+        position: 'relative', zIndex: 2, boxShadow: `0 1px 4px -2px ${C.shadow}`,
       }}>
         <TbIcon label={searchOpen ? 'Hide search' : 'Search in document'} active={searchOpen} onClick={() => (searchOpen ? closeSearch() : openSearch())}>
           <PathSearch />
@@ -486,7 +496,7 @@ export default function AppPdfViewer({
           title={inFit ? 'Pages fit the width' : 'Reset to fit width'}
           aria-label={inFit ? 'Fit width (current)' : 'Reset to fit width'} aria-pressed={inFit}
           style={{
-            minWidth: 62, height: 26, padding: '0 8px', fontSize: 10.5, fontFamily: MONO, fontWeight: 700,
+            width: 76, height: 26, padding: '0 8px', fontSize: 10.5, fontFamily: MONO, fontWeight: 700, textAlign: 'center',
             background: inFit ? alpha(C.acc, '18') : 'none',
             border: `1px solid ${inFit ? alpha(C.acc, '45') : C.brd2}`, borderRadius: 6,
             color: inFit ? C.acc : C.txt2, cursor: (loading || error) ? 'default' : 'pointer',
@@ -649,9 +659,13 @@ function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOption
     let occ = 0; let curEl = null;
     spans.forEach((span) => {
       const orig = span.dataset.t != null ? span.dataset.t : span.textContent;
-      if (!term) { if (span.dataset.t != null && span.innerHTML !== orig) span.textContent = orig; return; }
+      // prompt45 — detect a previously-highlighted span by its <mark> child ELEMENTS, not
+      // by comparing textContent to orig: a highlighted span's textContent ALREADY equals
+      // orig (tags stripped), so the old check never cleared stale marks when the query
+      // changed to one with no match here — leaving highlights from the previous search.
+      if (!term) { if (span.firstElementChild) span.textContent = orig; return; }
       const found = findMatchesInText(orig, term, searchOptions);
-      if (!found.length) { if (span.textContent !== orig) span.textContent = orig; return; }
+      if (!found.length) { if (span.firstElementChild) span.textContent = orig; return; }
       const frag = document.createDocumentFragment();
       let pos = 0;
       for (const m of found) {

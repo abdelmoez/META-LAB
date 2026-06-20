@@ -9198,7 +9198,12 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           Screening keeps its full-bleed 0 escape hatch. Reading tabs still centre
           at maxWidth:1100 below; data tabs (extraction/rob/analysis/forest) fill
           the now responsively-padded column. */}
-      <div style={{flex:1,minHeight:0,overflowY:noPageScroll?"hidden":"auto",padding:noPageScroll?0:"28px clamp(20px, 5vw, 88px) 56px"}}>
+      {/* prompt45 — the RoB full-bleed workspace gets a small inset so it doesn't glue to
+          the viewport edges (the purple-arrow padding fix), WITHOUT adding page scroll:
+          box-sizing is border-box so the inner content area shrinks, and the workspace's
+          useFillViewportHeight (24px bottom gap > the 14px bottom pad) re-fits inside it.
+          Screening keeps its own full-bleed 0 escape hatch. */}
+      <div style={{flex:1,minHeight:0,overflowY:noPageScroll?"hidden":"auto",padding:robFullbleed?"14px clamp(12px, 2vw, 26px)":(noPageScroll?0:"28px clamp(20px, 5vw, 88px) 56px")}}>
       {/* Hidden project-import input — always mounted so Import works from the
           compact header on every tab AND from the welcome screen (prompt30 Part 5). */}
       <input ref={importRef} type="file" accept=".json" onChange={onImport} style={{display:"none"}}/>
