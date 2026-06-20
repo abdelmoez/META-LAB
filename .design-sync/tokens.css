@@ -1,0 +1,26 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap');
+
+/* PecanRev design tokens — generated from src/frontend/theme/tokens.js buildThemeCss(). Defines the --t-* CSS variables every component consumes (day default + night). */
+
+:root, :root[data-theme="day"] { --t-bg: #f6f7f9; --t-surf: #ffffff; --t-card: #ffffff; --t-card2: #f3f4f6; --t-brd: #e5e7eb; --t-brd2: #d1d5db; --t-txt: #1f2937; --t-txt2: #4b5563; --t-muted: #676e77; --t-dim: #9ca3af; --t-acc: #4f46e5; --t-acc2: #4338ca; --t-acc-text: #ffffff; --t-gold: #b45309; --t-teal: #0d9488; --t-grn: #059669; --t-grn2: #047857; --t-red: #dc2626; --t-yel: #d97706; --t-purp: #7c3aed; --t-acc-bg: #eef2ff; --t-grn-bg: #ecfdf5; --t-red-bg: #fef2f2; --t-yel-bg: #fffbeb; --t-purp-bg: #f5f3ff; --t-gold-bg: #fffbeb; --t-teal-bg: #f0fdfa; --t-shadow: rgba(17, 24, 39, 0.08); color-scheme: light; }
+:root[data-theme="night"] { --t-bg: #0b1120; --t-surf: #111827; --t-card: #151e30; --t-card2: #1d2840; --t-brd: #283449; --t-brd2: #384761; --t-txt: #f1f5f9; --t-txt2: #aab6cf; --t-muted: #8693b4; --t-dim: #414e69; --t-acc: #818cf8; --t-acc2: #6366f1; --t-acc-text: #0b1020; --t-gold: #d8ab6e; --t-teal: #37cdbb; --t-grn: #48d597; --t-grn2: #1fa36b; --t-red: #f37e7e; --t-yel: #ecbb4e; --t-purp: #a98ef7; --t-acc-bg: #1e2547; --t-grn-bg: #0b2b20; --t-red-bg: #331316; --t-yel-bg: #2e2310; --t-purp-bg: #1e1538; --t-gold-bg: #2c2113; --t-teal-bg: #0b2a27; --t-shadow: rgba(2, 6, 16, 0.55); color-scheme: dark; }
+body { background: var(--t-bg); color: var(--t-txt); font-family: 'Inter', 'IBM Plex Sans', system-ui, sans-serif; }
+html { transition: background 0.2s ease; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--t-brd); border-radius: 99px; }
+::-webkit-scrollbar-thumb:hover { background: var(--t-dim); }
+input, textarea, select { transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+input:focus, textarea:focus, select:focus {
+  outline: none;
+  border-color: var(--t-acc) !important;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--t-acc) 12%, transparent) !important;
+}
+button:focus-visible, [role="button"]:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--t-acc) 28%, transparent);
+}
+.t-min0 { min-width: 0; }
+.t-truncate { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.t-wrap { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+

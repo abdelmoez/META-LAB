@@ -1,0 +1,12 @@
+{
+  "projectId": "eb851df9-37ab-4972-bf5f-408dd2f08a03",
+  "shape": "package",
+  "pkg": "meta-lab",
+  "globalName": "PecanRev",
+  "componentSrcMap": {
+    "Button": "src/frontend/components/Button.jsx",
+    "Icon": "src/frontend/components/icons.jsx",
+    "Tooltip": "src/frontend/components/Tooltip.jsx"
+  },
+  "cssEntry": ".design-sync/tokens.css"
+}
