@@ -41,19 +41,44 @@ export function buildEmbedFn(env = process.env, deps = {}) {
   if (!endpoint || !apiKey) return null;
   const fetchFn = deps.fetch || globalThis.fetch;
   if (typeof fetchFn !== 'function') return null;
+  const timeoutMs = parseInt(env.AI_EMBEDDING_TIMEOUT_MS, 10) || 15000;
+  const maxRetries = 1;  // one transient retry; failures degrade to lexical fallback
 
-  async function embedChunk(texts) {
-    const res = await fetchFn(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model, input: texts }),
+  // se2.md §7 — one request with a hard timeout + dimension validation. Every returned
+  // vector must be a finite, uniform-length array; a malformed batch throws so the engine
+  // falls back to the lexical signal rather than scoring on a poisoned vector.
+  async function postOnce(texts) {
+    const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+    let timer;
+    // Race the request against the timeout so a fetch that ignores AbortSignal still bails.
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => { if (ctrl) ctrl.abort(); reject(new Error(`Embedding request timed out after ${timeoutMs}ms`)); }, timeoutMs);
     });
-    if (!res.ok) throw new Error(`Embedding endpoint returned ${res.status}`);
-    const data = await res.json();
-    const rows = (data && data.data) || [];
-    const out = rows.map(d => d && d.embedding).filter(Array.isArray);
-    if (out.length !== texts.length) throw new Error('Embedding count mismatch');
-    return out;
+    try {
+      const res = await Promise.race([
+        fetchFn(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({ model, input: texts }),
+          ...(ctrl ? { signal: ctrl.signal } : {}),
+        }),
+        timeout,
+      ]);
+      if (!res.ok) throw new Error(`Embedding endpoint returned ${res.status}`);
+      const data = await res.json();
+      const out = ((data && data.data) || []).map(d => d && d.embedding);
+      if (out.length !== texts.length || out.some(v => !Array.isArray(v) || !v.length)) throw new Error('Embedding count mismatch');
+      const dim = out[0].length;
+      if (out.some(v => v.length !== dim || v.some(x => !Number.isFinite(x)))) throw new Error('Embedding dimension validation failed');
+      return out;
+    } finally { if (timer) clearTimeout(timer); }
+  }
+  async function embedChunk(texts) {
+    let lastErr;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try { return await postOnce(texts); } catch (e) { lastErr = e; }
+    }
+    throw lastErr;
   }
 
   return async function embed(texts) {
@@ -80,3 +105,25 @@ export function buildEmbedFn(env = process.env, deps = {}) {
 
 /** Test-only: clear the in-memory embedding cache. */
 export function _clearEmbeddingCache() { cache.clear(); }
+
+/** Secret-free embedding config snapshot for Ops/health (se2.md §7/§17). */
+export function embeddingModelInfo(env = process.env) {
+  return {
+    configured: !!(env.AI_EMBEDDING_ENDPOINT && env.AI_EMBEDDING_API_KEY),
+    model: env.AI_EMBEDDING_MODEL || 'text-embedding-3-small',
+    timeoutMs: parseInt(env.AI_EMBEDDING_TIMEOUT_MS, 10) || 15000,
+    endpointConfigured: !!env.AI_EMBEDDING_ENDPOINT,
+  };
+}
+
+/** Live health probe (se2.md §7): embeds a tiny text and reports dim/ok. Never throws. */
+export async function embeddingHealth(env = process.env, deps = {}) {
+  const fn = buildEmbedFn(env, deps);
+  if (!fn) return { ok: false, configured: false, reason: 'not_configured' };
+  const model = env.AI_EMBEDDING_MODEL || 'text-embedding-3-small';
+  try {
+    const [v] = await fn(['health check']);
+    return { ok: Array.isArray(v) && v.length > 0, configured: true, dim: Array.isArray(v) ? v.length : 0 };
+  } catch (e) { return { ok: false, configured: true, error: e.message }; }
+  finally { cache.delete(cacheKey(model, 'health check')); } // don't pollute the shared LRU
+}

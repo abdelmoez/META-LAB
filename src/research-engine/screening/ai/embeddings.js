@@ -14,6 +14,10 @@
  * degrades to lexical fallback — exactly the "graceful fallback" the spec wants.
  */
 import { recordText, tokenize, ngrams } from './text.js';
+import { buildEmbeddingText } from './embeddingText.js';
+
+/** Biomedical document text for an embedding (title+abstract dominant; se2.md §7). */
+function embedText(r) { return buildEmbeddingText(r).text || recordText(r); }
 
 /** Deterministic 32-bit string hash (FNV-1a). */
 function fnv1a(str) {
@@ -83,7 +87,7 @@ export function createEmbeddingProvider(cfg = {}, deps = {}) {
       name,
       available: true,
       async embedRecords(records) {
-        return records.map(r => hashingEmbed(recordText(r), dims));
+        return records.map(r => hashingEmbed(embedText(r), dims));
       },
     };
   }
@@ -94,7 +98,7 @@ export function createEmbeddingProvider(cfg = {}, deps = {}) {
       available: true,
       async embedRecords(records) {
         try {
-          const out = await deps.embed(records.map(r => recordText(r)));
+          const out = await deps.embed(records.map(r => embedText(r)));
           return Array.isArray(out) && out.length === records.length ? out : null;
         } catch {
           return null; // graceful fallback to lexical
