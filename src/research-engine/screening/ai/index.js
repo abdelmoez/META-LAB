@@ -14,6 +14,7 @@ export { trainLogReg, predictProba, sigmoid, topWeightedFeatures } from './logre
 export { coldStartScore, detectStudyDesign, picoConcepts } from './coldStart.js';
 export { createEmbeddingProvider, hashingEmbed, cosineDense } from './embeddings.js';
 export { buildEmbeddingText, normalizeForEmbedding, embeddingTextHash, EMBEDDING_TEXT_DEFAULTS } from './embeddingText.js';
+export { chunk, progressFraction } from './batch.js';
 export { hybridScore } from './hybrid.js';
 export { uncertainty, confidence, predictionLabel, rankItems, scoreBand, QUEUE_MODES } from './ranking.js';
 export { buildExplanation, termContributions } from './explain.js';

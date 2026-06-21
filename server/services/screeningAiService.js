@@ -26,10 +26,12 @@ import {
   scoreHistogram,
   runDriftSnapshot,
   computeDrift,
+  chunk,
 } from '../../src/research-engine/screening/ai/index.js';
 import { buildEmbedFn } from './aiEmbeddingClient.js';
 
 const FEATURE_VERSION = 'feat-1.0';
+const PERSIST_CHUNK = 500;   // se2.md §12 — score upserts per DB transaction (bounded write batch)
 
 /** Deterministic hash of the training inputs (sorted labelled record→label pairs) + the
  *  model-defining config, so a run's model version is reproducible/comparable (se2.md §11). */
@@ -456,32 +458,30 @@ async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger
       },
     });
 
-    // Persist: upsert the latest score per (project, record, stage), stamped with run.id.
-    for (const s of result.scores) {
-      const data = {
-        runId: run.id,
-        stage,
-        score: s.score,
-        proba: s.proba,
-        calibratedProba: s.calibratedProba ?? null,
-        coldStartScore: s.coldStartScore,
-        uncertainty: s.uncertainty,
-        confidence: s.confidence,
-        prediction: s.prediction,
-        band: s.band,
-        mode: s.mode,
-        lowConfidence: !!s.lowConfidence,
-        missingAbstract: !!s.missingAbstract,
-        picoMean: s.picoMean ?? null,
-        subScoresJson: JSON.stringify(s.subScores || {}),
-        signalsJson: JSON.stringify(s.signals || {}),
-        explanationJson: JSON.stringify(s.explanation || {}),
-      };
-      await prisma.screenAiScore.upsert({
-        where: { projectId_recordId_stage: { projectId, recordId: s.recordId, stage } },
-        create: { projectId, recordId: s.recordId, ...data },
-        update: data,
-      });
+    // Persist the latest score per (project, record, stage), stamped with run.id — in
+    // CHUNKED TRANSACTIONS (se2.md §12) so a large review commits in bounded batches
+    // (fewer round-trips, bounded write set) instead of N sequential upserts. Scores
+    // become visible progressively as each chunk commits.
+    const toData = (s) => ({
+      runId: run.id, stage,
+      score: s.score, proba: s.proba, calibratedProba: s.calibratedProba ?? null,
+      coldStartScore: s.coldStartScore, uncertainty: s.uncertainty, confidence: s.confidence,
+      prediction: s.prediction, band: s.band, mode: s.mode,
+      lowConfidence: !!s.lowConfidence, missingAbstract: !!s.missingAbstract,
+      picoMean: s.picoMean ?? null,
+      subScoresJson: JSON.stringify(s.subScores || {}),
+      signalsJson: JSON.stringify(s.signals || {}),
+      explanationJson: JSON.stringify(s.explanation || {}),
+    });
+    for (const part of chunk(result.scores, PERSIST_CHUNK)) {
+      await prisma.$transaction(part.map(s => {
+        const data = toData(s);
+        return prisma.screenAiScore.upsert({
+          where: { projectId_recordId_stage: { projectId, recordId: s.recordId, stage } },
+          create: { projectId, recordId: s.recordId, ...data },
+          update: data,
+        });
+      }));
     }
 
     // Demote the previous active version(s) now that the new version's scores are live
