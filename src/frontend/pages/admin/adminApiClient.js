@@ -215,6 +215,8 @@ export const adminApi = {
     delete:       (id)       => req(`${BASE}/contact-messages/${id}`, { method: 'DELETE' }),
     // Reply by email. Returns { reply, emailConfigured, sent }. Saved as draft if not configured.
     reply:        (id, b)    => req(`${BASE}/contact-messages/${id}/reply`, { method: 'POST', ...json(b) }),
+    // Compose & send a NEW email to any recipient (staff-initiated). b = { to, subject, body, toName? }.
+    compose:      (b)        => req(`${BASE}/emails`, { method: 'POST', ...json(b) }),
     replies:      (id)       => req(`${BASE}/contact-messages/${id}/replies`),
     // Per-staff read state (prompt5 Task 9). unreadCount → { unread }; markRead → { ok, read, unread }.
     unreadCount:  ()         => req(`${BASE}/contact-messages/unread-count`),

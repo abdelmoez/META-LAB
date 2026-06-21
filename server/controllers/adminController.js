@@ -1858,11 +1858,17 @@ export async function replyToMessage(req, res) {
       ? subject.trim()
       : `Re: ${msg.subject || '(no subject)'}`;
 
+    // The recipient sees the NAME of the staff member who replied (not the shared
+    // no-reply address). req.user may lack `name`, so resolve it from the DB.
+    const staff = await prisma.user.findUnique({ where: { id: req.user.id }, select: { name: true, email: true } });
+    const staffName = (staff?.name || '').trim();
+
     const { html, text } = renderReplyEmail({
       appName: 'PecanRev',
       toName: msg.name || '',
       bodyText: body,
       originalSubject: msg.subject || '',
+      fromName: staffName,
     });
 
     // sendEmail never throws — { sent:false, reason } when not configured / on failure.
@@ -1874,7 +1880,7 @@ export async function replyToMessage(req, res) {
       data: {
         messageId: msg.id,
         repliedById: req.user.id,
-        repliedByName: req.user.email || '',
+        repliedByName: staffName || staff?.email || '',
         toEmail: msg.email,
         subject: finalSubject,
         body,
@@ -1905,6 +1911,42 @@ export async function replyToMessage(req, res) {
     return res.json({ reply, emailConfigured: isEmailConfigured(), sent });
   } catch (err) {
     console.error('[admin] replyToMessage error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── POST /api/admin/emails — compose & send a NEW email to any recipient ───────
+// Staff-initiated outbound email; the recipient need NOT have messaged first. Creates a
+// 'staff'-origin ContactMessage (so the conversation shows in Messages) + a ContactReply
+// for the sent email. The recipient sees the staff member's NAME, not their email. (admin + mod)
+export async function composeEmail(req, res) {
+  try {
+    const { to, subject, body, toName } = req.body || {};
+    const email = typeof to === 'string' ? to.trim() : '';
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return res.status(400).json({ error: 'A valid recipient `to` email is required' });
+    if (typeof body !== 'string' || !body.trim()) return res.status(400).json({ error: '`body` is required' });
+    const finalSubject = (typeof subject === 'string' && subject.trim()) ? subject.trim() : '(no subject)';
+
+    const staff = await prisma.user.findUnique({ where: { id: req.user.id }, select: { name: true, email: true } });
+    const staffName = (staff?.name || '').trim();
+    const recipientName = (typeof toName === 'string' ? toName.trim() : '');
+
+    const msg = await prisma.contactMessage.create({
+      data: { email, name: recipientName || null, subject: finalSubject, message: body, origin: 'staff', read: true, replied: true, repliedAt: new Date() },
+    });
+
+    const { html, text } = renderReplyEmail({ appName: 'PecanRev', toName: recipientName, bodyText: body, fromName: staffName });
+    const result = await sendEmail({ to: email, subject: finalSubject, html, text, context: 'staff_compose' });
+    const sent = result.sent === true;
+
+    const reply = await prisma.contactReply.create({
+      data: { messageId: msg.id, repliedById: req.user.id, repliedByName: staffName || staff?.email || '', toEmail: email, subject: finalSubject, body, status: sent ? 'sent' : 'draft', error: result.error || '' },
+    });
+
+    await logAdminAction(req, 'COMPOSE_EMAIL', 'ContactMessage', msg.id, { to: email, subject: finalSubject, sent, reason: result.reason || null });
+    return res.json({ ok: true, message: msg, reply, emailConfigured: isEmailConfigured(), sent });
+  } catch (err) {
+    console.error('[admin] composeEmail error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

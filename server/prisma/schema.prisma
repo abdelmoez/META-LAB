@@ -254,6 +254,7 @@ model ContactMessage {
   message   String
   read      Boolean  @default(false)   // legacy global read flag (kept for back-compat)
   archived  Boolean  @default(false)
+  origin    String   @default("contact_form") // contact_form | staff (Ops-composed) | inbound_email
   replied   Boolean  @default(false)   // prompt4 Task 4
   repliedAt DateTime?
   createdAt DateTime @default(now())

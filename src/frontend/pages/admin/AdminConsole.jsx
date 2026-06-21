@@ -1625,6 +1625,9 @@ function MessagesSection({ onUnreadChange }) {
   const [confirm,  setConfirm]  = useState(null);
   const [emailConfigured, setEmailConfigured] = useState(false);
   const [serverUnread, setServerUnread] = useState(0); // authoritative per-staff count (not page-scoped)
+  const [compose, setCompose] = useState(null);          // null | { to, subject, body, toName } — new outbound email
+  const [composeStatus, setComposeStatus] = useState('idle'); // idle | sending | sent | error
+  const [composeErr, setComposeErr] = useState('');
   const searchTimer = useRef(null);
   const PER_PAGE = 30;
 
@@ -1715,6 +1718,16 @@ function MessagesSection({ onUnreadChange }) {
     setConfirm(null);
   }
 
+  async function doCompose() {
+    if (!compose?.to?.trim() || !compose?.body?.trim()) { setComposeErr('Recipient email and message are required.'); return; }
+    setComposeStatus('sending'); setComposeErr('');
+    try {
+      const res = await adminApi.messages.compose({ to: compose.to.trim(), subject: compose.subject || '', body: compose.body, toName: compose.toName || '' });
+      if (res.sent) { setComposeStatus('sent'); setTimeout(() => { setCompose(null); setComposeStatus('idle'); }, 1100); load(filter, search, sort, 1); refreshUnread(); }
+      else { setComposeStatus('error'); setComposeErr(res.emailConfigured ? 'Could not send — saved as a draft.' : 'Email is not configured on the server.'); }
+    } catch (e) { setComposeStatus('error'); setComposeErr(e.message || 'Failed to send.'); }
+  }
+
   // Authoritative per-staff count from the server (not the loaded page slice).
   const unreadCount = serverUnread;
 
@@ -1730,7 +1743,11 @@ function MessagesSection({ onUnreadChange }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
         <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: 0 }}>Contact Messages</h2>
         {unreadCount > 0 && <Badge text={`${unreadCount} unread`} color={C.ylw} />}
-        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <button onClick={() => { setCompose({ to: '', subject: '', body: '', toName: '' }); setComposeStatus('idle'); setComposeErr(''); }}
+            style={{ padding: '6px 13px', background: C.acc, color: C.accText, border: 'none', borderRadius: 6, fontWeight: 600, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
+            ✉ Compose
+          </button>
           <span style={{ fontSize: 11, color: C.muted }}>Sort:</span>
           <select value={sort} onChange={e => { setSort(e.target.value); setPage(1); load(filter, search, e.target.value, 1); }}
             style={{ ...inputStyle, width: 'auto', padding: '5px 8px', fontSize: 12 }}>
@@ -1741,6 +1758,40 @@ function MessagesSection({ onUnreadChange }) {
       </div>
 
       {error && <ErrorBox msg={error} />}
+
+      {compose && (
+        <div onClick={() => composeStatus !== 'sending' && setCompose(null)}
+          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+          <div onClick={e => e.stopPropagation()}
+            style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 12, padding: 20, width: 560, maxWidth: '100%', maxHeight: '90vh', overflow: 'auto', fontFamily: FONT }}>
+            <div style={{ display: 'flex', alignItems: 'center', marginBottom: 14 }}>
+              <h3 style={{ fontSize: 15, fontWeight: 700, color: C.txt, margin: 0 }}>New email</h3>
+              <span style={{ flex: 1 }} />
+              <button onClick={() => setCompose(null)} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 20, lineHeight: 1 }}>×</button>
+            </div>
+            {!emailConfigured && <div style={{ fontSize: 11.5, color: C.ylw, marginBottom: 10 }}>Email is not configured on the server — this will be saved as a draft.</div>}
+            {[['To (email)', 'to', 'person@example.com', 'email'], ['Recipient name (optional)', 'toName', 'Jane Doe', 'text'], ['Subject', 'subject', 'Subject', 'text']].map(([label, key, ph, type]) => (
+              <div key={key} style={{ marginBottom: 10 }}>
+                <label style={{ display: 'block', fontSize: 11, color: C.muted, marginBottom: 3 }}>{label}</label>
+                <input type={type} value={compose[key]} onChange={e => setCompose(c => ({ ...c, [key]: e.target.value }))} placeholder={ph} style={{ ...inputStyle, fontSize: 13 }} />
+              </div>
+            ))}
+            <div style={{ marginBottom: 8 }}>
+              <label style={{ display: 'block', fontSize: 11, color: C.muted, marginBottom: 3 }}>Message</label>
+              <textarea value={compose.body} onChange={e => setCompose(c => ({ ...c, body: e.target.value }))} rows={8} placeholder="Write your message…"
+                style={{ ...inputStyle, fontSize: 13, resize: 'vertical', minHeight: 120 }} />
+            </div>
+            {composeErr && <div style={{ fontSize: 11.5, color: C.red, marginBottom: 8 }}>{composeErr}</div>}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, justifyContent: 'flex-end' }}>
+              <span style={{ fontSize: 11, color: C.muted, marginRight: 'auto' }}>The recipient sees your name, not your email.</span>
+              <button onClick={doCompose} disabled={composeStatus === 'sending'}
+                style={{ padding: '8px 18px', background: composeStatus === 'sent' ? C.grn : C.acc, color: C.accText, border: 'none', borderRadius: 7, fontWeight: 600, fontSize: 13, cursor: composeStatus === 'sending' ? 'default' : 'pointer', fontFamily: FONT, opacity: composeStatus === 'sending' ? 0.6 : 1 }}>
+                {composeStatus === 'sending' ? 'Sending…' : composeStatus === 'sent' ? 'Sent ✓' : 'Send email'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: 'flex', height: 620, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, overflow: 'hidden' }}>
         {/* Left panel — list */}

@@ -41,6 +41,7 @@ import {
   updateContactMessage,
   deleteContactMessage,
   replyToMessage,
+  composeEmail,
   getMessageReplies,
   getConsole,
   getHealth,
@@ -149,6 +150,8 @@ router.post('/contact-messages/:id/mark-read', requireAdminOrMod, markMessageRea
 router.patch('/contact-messages/:id', requireAdminOrMod, updateContactMessage);
 router.get('/contact-messages/:id/replies', requireAdminOrMod, getMessageReplies);
 router.post('/contact-messages/:id/reply', requireAdminOrMod, replyToMessage);
+// Compose & send a NEW email to any recipient (staff-initiated; admin + mod).
+router.post('/emails', requireAdminOrMod, composeEmail);
 // Deleting a message is ADMIN ONLY.
 router.delete('/contact-messages/:id', requireAdmin, deleteContactMessage);
 

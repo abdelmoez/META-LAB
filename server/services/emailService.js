@@ -179,7 +179,7 @@ function ctaButton(href, label) {
  * @param {{appName?:string, toName?:string, bodyText:string, originalSubject?:string}} opts
  * @returns {{html:string, text:string}}
  */
-export function renderReplyEmail({ appName = 'PecanRev', toName = '', bodyText = '', originalSubject = '' } = {}) {
+export function renderReplyEmail({ appName = 'PecanRev', toName = '', bodyText = '', originalSubject = '', fromName = '' } = {}) {
   const greeting = toName ? `Hi ${escapeHtml(toName)},` : 'Hello,';
   const safeBodyHtml = escapeHtml(bodyText).replace(/\n/g, '<br>');
   const appBase = env('APP_BASE_URL');
@@ -188,15 +188,22 @@ export function renderReplyEmail({ appName = 'PecanRev', toName = '', bodyText =
     ? `<div style="font-size:12px;color:#6b7280;margin-bottom:18px;">In reply to: ${escapeHtml(originalSubject)}</div>`
     : '';
 
+  // The signature shows the NAME of the staff member who wrote this — never their email
+  // address (which is the shared no-reply mailbox). Falls back to the team name.
+  const signoff = fromName
+    ? `<div style="font-size:14px;color:#1f2937;line-height:1.6;margin-top:22px;">Best regards,<br><strong>${escapeHtml(fromName)}</strong><br><span style="color:#6b7280;">${escapeHtml(appName)} team</span></div>`
+    : `<div style="font-size:14px;color:#6b7280;line-height:1.6;margin-top:22px;">— The ${escapeHtml(appName)} team</div>`;
+
   const bodyHtml = `          ${refLine}
           <div style="font-size:14px;color:#1f2937;line-height:1.6;margin-bottom:16px;">${greeting}</div>
-          <div style="font-size:14px;color:#1f2937;line-height:1.7;">${safeBodyHtml}</div>`;
+          <div style="font-size:14px;color:#1f2937;line-height:1.7;">${safeBodyHtml}</div>
+          ${signoff}`;
 
   const html = renderBaseEmailLayout({ appName, bodyHtml });
 
   const textParts = [];
   if (originalSubject) textParts.push(`In reply to: ${originalSubject}`, '');
-  textParts.push(toName ? `Hi ${toName},` : 'Hello,', '', bodyText, '', '—', `Sent by the ${appName} team`);
+  textParts.push(toName ? `Hi ${toName},` : 'Hello,', '', bodyText, '', fromName ? `Best regards,\n${fromName}\n${appName} team` : `— The ${appName} team`);
   if (appBase) textParts.push(appBase);
   const text = textParts.join('\n');
 
