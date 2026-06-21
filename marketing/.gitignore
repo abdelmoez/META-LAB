@@ -1,0 +1,4 @@
+# Generated marketing screenshots — regenerate on demand via `npm run marketing:screenshots`.
+screenshots/**/*.png
+screenshots/**/*.jpg
+screenshots/**/*.webp

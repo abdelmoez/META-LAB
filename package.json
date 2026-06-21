@@ -1,6 +1,6 @@
 {
   "name": "meta-lab",
-  "version": "3.39.0",
+  "version": "3.39.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -15,7 +15,10 @@
     "test:integration": "vitest run tests/integration",
     "test:ci": "vitest run tests/unit tests/screening/unit",
     "review:legal": "node scripts/review-legal.js",
-    "review:ops-impact": "node scripts/review-ops-impact.js"
+    "review:ops-impact": "node scripts/review-ops-impact.js",
+    "marketing:seed": "node scripts/seed-marketing-demo.mjs",
+    "marketing:seed:remove": "node scripts/seed-marketing-demo.mjs --remove",
+    "marketing:screenshots": "node scripts/capture-marketing-screenshots.mjs"
   },
   "dependencies": {
     "framer-motion": "^12.40.0",
@@ -27,6 +30,7 @@
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.1",
     "concurrently": "^9.1.0",
+    "playwright": "^1.49.0",
     "vite": "^5.4.11",
     "vitest": "^2.1.8"
   }
