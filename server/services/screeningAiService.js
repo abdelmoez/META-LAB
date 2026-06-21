@@ -12,6 +12,7 @@
  */
 import { prisma } from '../db/client.js';
 import { writeAudit } from '../screening/access.js';
+import crypto from 'node:crypto';
 import {
   trainAndScore,
   crossValidate,
@@ -22,8 +23,21 @@ import {
   applyCalibrator,
   evaluateStopping,
   retrospectiveStopping,
+  scoreHistogram,
+  runDriftSnapshot,
+  computeDrift,
 } from '../../src/research-engine/screening/ai/index.js';
 import { buildEmbedFn } from './aiEmbeddingClient.js';
+
+const FEATURE_VERSION = 'feat-1.0';
+
+/** Deterministic hash of the training inputs (sorted labelled record→label pairs) + the
+ *  model-defining config, so a run's model version is reproducible/comparable (se2.md §11). */
+function snapshotHash(labelByRecordId, configKeys) {
+  const labels = Object.keys(labelByRecordId || {}).sort().map(id => `${id}:${labelByRecordId[id]}`).join('|');
+  const cfg = JSON.stringify(configKeys || {});
+  return crypto.createHash('sha1').update(`${FEATURE_VERSION}\n${cfg}\n${labels}`).digest('hex').slice(0, 16);
+}
 
 export const AI_SETTINGS_KEY = 'aiScreeningSettings';
 export const AI_FLAG_KEY = 'aiScreening';
@@ -211,10 +225,34 @@ export async function loadEngineInput(projectId, stage = 'title_abstract') {
  * @param {string} args.projectId
  * @param {string} [args.stage]
  * @param {{id:string,name?:string,email?:string}} args.actor
- * @param {string} [args.trigger] 'manual' | 'auto'
+ * @param {string} [args.trigger] 'manual' | 'auto' | 'rollback'
+ * @param {object} [args.pinnedConfig] — se2.md §11: pin the model config (e.g. embedding
+ *   provider) from a prior version, for rollback. Falls back to the global setting.
+ * @param {string} [args.rollbackFromRunId] — stamp the new run as a rollback of this run.
  * @returns {Promise<{run:object, scoredCount:number}>}
  */
-export async function runScoring({ projectId, stage = 'title_abstract', actor, trigger = 'manual' }) {
+// se2.md §11 — in-process per-(project,stage) mutex so ALL runScoring entry points
+// (manual run, rollback, AND the background rescore job) serialize. Two interleaving runs
+// would race the active-version lineage + per-record run attribution and could leave two
+// active versions. The chain never rejects, so one failed run can't wedge the queue; the
+// map self-cleans at the tail. (Single-process scope; a multi-process deploy would need a
+// DB advisory lock — documented.)
+const _runLocks = new Map();
+function withRunLock(key, fn) {
+  const prev = _runLocks.get(key) || Promise.resolve();
+  const run = prev.then(() => fn(), () => fn());
+  const tail = run.then(() => {}, () => {});
+  _runLocks.set(key, tail);
+  tail.then(() => { if (_runLocks.get(key) === tail) _runLocks.delete(key); });
+  return run;
+}
+
+export async function runScoring(opts = {}) {
+  const stage = opts.stage || 'title_abstract';
+  return withRunLock(`${opts.projectId}::${stage}`, () => _runScoring({ ...opts, stage }));
+}
+
+async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger = 'manual', pinnedConfig = null, rollbackFromRunId = null }) {
   const global = await getGlobalAiSettings();
   const input = await loadEngineInput(projectId, stage);
   if (!input) throw Object.assign(new Error('Project not found'), { status: 404 });
@@ -236,7 +274,9 @@ export async function runScoring({ projectId, stage = 'title_abstract', actor, t
   }
 
   const config = {
-    provider: { embedding: global.embeddingProvider || 'lexical' },
+    // se2.md §11 — a rollback pins the prior version's embedding provider; otherwise the
+    // current global setting governs.
+    provider: { embedding: (pinnedConfig && pinnedConfig.provider && pinnedConfig.provider.embedding) || global.embeddingProvider || 'lexical' },
     hybrid: {},
   };
 
@@ -365,59 +405,163 @@ export async function runScoring({ projectId, stage = 'title_abstract', actor, t
     } catch { /* stopping is best-effort; the scoring run still persists */ }
   }
 
-  // Create the run row FIRST so every score can be stamped with the real run id
-  // directly (no broad post-hoc updateMany that could mis-attribute scores across
-  // concurrent/over-cap runs on the same project+stage).
-  const run = await prisma.screenAiRun.create({
-    data: {
-      projectId, stage, status: 'completed', mode: result.meta.mode, trigger,
-      nRecords: result.meta.nRecords,
-      nScored: result.scores.length,
-      nFeatures: result.meta.nFeatures,
-      labelCountsJson: JSON.stringify(result.meta.labelCounts || {}),
-      modelInfoJson: JSON.stringify(result.meta.modelInfo || {}),
-      configJson: JSON.stringify({ provider: config.provider, embeddingProviderUsed, includeThreshold: aiProject.includeThreshold }),
-      metricsJson: JSON.stringify(metrics),
-      triggeredById: actor?.id || null,
-      triggeredByName: actor?.name || actor?.email || '',
-      startedAt, completedAt: new Date(),
-    },
+  // ── Model version lifecycle + drift (se2.md §11) ─────────────────────────────
+  // This run is a new model version. Compare it to the previously ACTIVE version and
+  // record drift warnings; stamp a reproducible snapshot hash + lineage. Best-effort —
+  // a drift-comparison failure must never block the run.
+  // prevActive is the lineage parent (parentRunId), so fetch it OUTSIDE the best-effort
+  // drift block — a drift-math failure must never null the lineage. Only the pure drift
+  // computation below is best-effort.
+  const prevActive = await prisma.screenAiRun.findFirst({
+    where: { projectId, stage, isActive: true, status: 'completed' },
+    orderBy: { createdAt: 'desc' },
   });
+  let driftSnap = null, drift = { baseline: true, warnings: [] }, snapHash = '';
+  try {
+    const dist = scoreHistogram(result.scores.map(s => s.score));
+    driftSnap = runDriftSnapshot(metrics, dist);
+    let prevSnap = null;
+    if (prevActive) { try { prevSnap = JSON.parse(prevActive.driftJson || '{}').snapshot || null; } catch { prevSnap = null; } }
+    drift = computeDrift(prevSnap, driftSnap, cfg.drift);
+    metrics.drift = drift;
+    snapHash = snapshotHash(input.labelByRecordId, { provider: config.provider, includeThreshold: aiProject.includeThreshold, calibration: calibration.method });
+  } catch (e) { console.error('[ai] drift/version computation failed:', e.message); }
 
-  // Persist: upsert the latest score per (project, record, stage), stamped with run.id.
-  for (const s of result.scores) {
-    const data = {
-      runId: run.id,
-      stage,
-      score: s.score,
-      proba: s.proba,
-      calibratedProba: s.calibratedProba ?? null,
-      coldStartScore: s.coldStartScore,
-      uncertainty: s.uncertainty,
-      confidence: s.confidence,
-      prediction: s.prediction,
-      band: s.band,
-      mode: s.mode,
-      lowConfidence: !!s.lowConfidence,
-      missingAbstract: !!s.missingAbstract,
-      picoMean: s.picoMean ?? null,
-      subScoresJson: JSON.stringify(s.subScores || {}),
-      signalsJson: JSON.stringify(s.signals || {}),
-      explanationJson: JSON.stringify(s.explanation || {}),
-    };
-    await prisma.screenAiScore.upsert({
-      where: { projectId_recordId_stage: { projectId, recordId: s.recordId, stage } },
-      create: { projectId, recordId: s.recordId, ...data },
-      update: data,
+  // Create the run (ACTIVE) FIRST so every score is stamped with the real run id, persist
+  // its scores, then demote the previous active version — all GUARDED so a mid-persist
+  // failure can never leave TWO active versions (§11 invariant). On failure the just-
+  // created run is flipped inactive/failed, so the previous active version stays sole-
+  // active. (Concurrent runs for the same project+stage are serialized by withRunLock.)
+  let run;
+  try {
+    run = await prisma.screenAiRun.create({
+      data: {
+        projectId, stage, status: 'completed', mode: result.meta.mode, trigger,
+        nRecords: result.meta.nRecords,
+        nScored: result.scores.length,
+        nFeatures: result.meta.nFeatures,
+        labelCountsJson: JSON.stringify(result.meta.labelCounts || {}),
+        modelInfoJson: JSON.stringify(result.meta.modelInfo || {}),
+        configJson: JSON.stringify({ provider: config.provider, embeddingProviderUsed, includeThreshold: aiProject.includeThreshold }),
+        metricsJson: JSON.stringify(metrics),
+        triggeredById: actor?.id || null,
+        triggeredByName: actor?.name || actor?.email || '',
+        isActive: true,
+        parentRunId: prevActive?.id || null,
+        rollbackFromRunId: rollbackFromRunId || null,
+        snapshotHash: snapHash,
+        featureVersion: FEATURE_VERSION,
+        driftJson: JSON.stringify({ snapshot: driftSnap, drift }),
+        startedAt, completedAt: new Date(),
+      },
     });
+
+    // Persist: upsert the latest score per (project, record, stage), stamped with run.id.
+    for (const s of result.scores) {
+      const data = {
+        runId: run.id,
+        stage,
+        score: s.score,
+        proba: s.proba,
+        calibratedProba: s.calibratedProba ?? null,
+        coldStartScore: s.coldStartScore,
+        uncertainty: s.uncertainty,
+        confidence: s.confidence,
+        prediction: s.prediction,
+        band: s.band,
+        mode: s.mode,
+        lowConfidence: !!s.lowConfidence,
+        missingAbstract: !!s.missingAbstract,
+        picoMean: s.picoMean ?? null,
+        subScoresJson: JSON.stringify(s.subScores || {}),
+        signalsJson: JSON.stringify(s.signals || {}),
+        explanationJson: JSON.stringify(s.explanation || {}),
+      };
+      await prisma.screenAiScore.upsert({
+        where: { projectId_recordId_stage: { projectId, recordId: s.recordId, stage } },
+        create: { projectId, recordId: s.recordId, ...data },
+        update: data,
+      });
+    }
+
+    // Demote the previous active version(s) now that the new version's scores are live
+    // (se2.md §11). Decisions, scores and the old run rows are all preserved — only the
+    // ACTIVE pointer moves.
+    await prisma.screenAiRun.updateMany({
+      where: { projectId, stage, isActive: true, id: { not: run.id } },
+      data: { isActive: false, supersededAt: new Date() },
+    });
+  } catch (persistErr) {
+    // Keep "exactly one active": flip the half-written new run out of the active slot so
+    // the previous active version (whose demote was skipped) remains the sole active one.
+    if (run?.id) {
+      await prisma.screenAiRun.update({
+        where: { id: run.id },
+        data: { isActive: false, status: 'failed', failureReason: String(persistErr?.message || persistErr).slice(0, 500) },
+      }).catch(() => {});
+    }
+    throw persistErr;
   }
 
-  writeAudit(projectId, actor, 'AI_RUN_COMPLETED', {
+  writeAudit(projectId, actor, trigger === 'rollback' ? 'AI_MODEL_ROLLED_BACK' : 'AI_RUN_COMPLETED', {
     entityType: 'ScreenAiRun', entityId: run.id,
-    details: { mode: result.meta.mode, scored: result.scores.length, labels: result.meta.labelCounts, auc: metrics.auc ?? null },
+    details: { mode: result.meta.mode, scored: result.scores.length, labels: result.meta.labelCounts, auc: metrics.auc ?? null, driftWarnings: drift.warnings || [], rollbackFromRunId: rollbackFromRunId || null },
   });
 
   return { run, scoredCount: result.scores.length, meta: result.meta, metrics };
+}
+
+/**
+ * rollbackToRun — revert to a previous model version (se2.md §11). The deterministic
+ * engine re-scores using the TARGET run's pinned configuration (embedding provider +
+ * threshold), producing a new ACTIVE version stamped as a rollback. Human decisions, all
+ * prior runs, and their scores are preserved; only the active pointer and config change.
+ * NOTE: this reverts the model CONFIGURATION and re-scores current data — it is not a
+ * byte-identical restore of old scores (the deterministic engine reflects current
+ * decisions). Documented honestly.
+ *
+ * @returns {Promise<{run:object, scoredCount:number, rolledBackFrom:string}>}
+ */
+export async function rollbackToRun({ projectId, runId, actor, stage = 'title_abstract' }) {
+  const target = await prisma.screenAiRun.findFirst({ where: { id: runId, projectId, stage } });
+  if (!target) throw Object.assign(new Error('Model version not found'), { status: 404 });
+  if (target.status !== 'completed') throw Object.assign(new Error('Can only roll back to a completed model version'), { status: 400 });
+  const cfg = safeParse(target.configJson, {});
+  const out = await runScoring({
+    projectId, stage, actor, trigger: 'rollback',
+    pinnedConfig: { provider: cfg.provider || { embedding: 'lexical' } },
+    rollbackFromRunId: runId,
+  });
+  return { ...out, rolledBackFrom: runId };
+}
+
+/**
+ * listModelVersions — recent model versions for a project/stage (se2.md §11), newest
+ * first, with the lifecycle + drift summary the UI needs to show history + offer rollback.
+ */
+export async function listModelVersions(projectId, stage = 'title_abstract', limit = 20) {
+  const runs = await prisma.screenAiRun.findMany({
+    where: { projectId, stage }, orderBy: { createdAt: 'desc' }, take: Math.min(50, Math.max(1, limit)),
+    select: {
+      id: true, status: true, mode: true, isActive: true, supersededAt: true, parentRunId: true,
+      rollbackFromRunId: true, snapshotHash: true, nScored: true, trigger: true,
+      triggeredByName: true, metricsJson: true, driftJson: true, createdAt: true,
+    },
+  });
+  return runs.map(r => {
+    const drift = safeParse(r.driftJson, {});
+    const metrics = safeParse(r.metricsJson, {});
+    const cv = metrics.crossVal && metrics.crossVal.heldOut ? metrics.crossVal : metrics;
+    return {
+      id: r.id, status: r.status, mode: r.mode, isActive: r.isActive,
+      supersededAt: r.supersededAt, parentRunId: r.parentRunId, rollbackFromRunId: r.rollbackFromRunId,
+      snapshotHash: r.snapshotHash, nScored: r.nScored, trigger: r.trigger, by: r.triggeredByName,
+      auc: typeof cv.auc === 'number' ? cv.auc : null,
+      wss95: typeof cv.wss95 === 'number' ? cv.wss95 : null,
+      driftWarnings: drift.drift?.warnings || [],
+      createdAt: r.createdAt,
+    };
+  });
 }
 
 /** Latest scores for a project/stage, keyed by recordId. */

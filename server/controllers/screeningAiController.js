@@ -16,6 +16,7 @@ import { prisma } from '../db/client.js';
 import {
   aiFlagEnabled, getGlobalAiSettings, getProjectAiSettings,
   runScoring, getScoresMap, getRecordExplanation, getStatus, getValidation, recordFeedback,
+  rollbackToRun, listModelVersions,
 } from '../services/screeningAiService.js';
 import { getJobStatus } from '../services/screeningAiJobs.js';
 
@@ -141,6 +142,37 @@ export async function getAiValidation(req, res) {
   } catch (e) {
     console.error('getAiValidation', e);
     res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/** GET /projects/:pid/ai/versions — model version history (leader-only; se2.md §11). */
+export async function getAiModelVersions(req, res) {
+  const access = await gate(req, res); if (!access) return;
+  try {
+    if (!access.isLeader && !access.canManageSettings) return res.status(403).json({ error: 'Model history is not permitted' });
+    const versions = await listModelVersions(req.params.pid, stageOf(req));
+    res.json({ versions });
+  } catch (e) {
+    console.error('getAiModelVersions', e);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/** POST /projects/:pid/ai/rollback — revert to a prior model version (leader/settings). */
+export async function postAiRollback(req, res) {
+  const access = await gate(req, res); if (!access) return;
+  try {
+    if (!access.isLeader && !access.canManageSettings) return res.status(403).json({ error: 'Rolling back models is not permitted' });
+    const global = await getGlobalAiSettings();
+    if (!global.enabled) return res.status(403).json({ error: 'AI screening is disabled by the administrator' });
+    const runId = String(req.body?.runId || '');
+    if (!runId) return res.status(400).json({ error: 'runId is required' });
+    const out = await rollbackToRun({ projectId: req.params.pid, runId, actor: req.user, stage: stageOf(req) });
+    emitToProjectMembers(req.params.pid, { type: 'ai.updated' });
+    res.json({ ok: true, run: { id: out.run.id, mode: out.run.mode, nScored: out.scoredCount, rolledBackFrom: out.rolledBackFrom } });
+  } catch (e) {
+    console.error('postAiRollback', e);
+    res.status(e.status || 500).json({ error: e.message || 'Rollback failed' });
   }
 }
 

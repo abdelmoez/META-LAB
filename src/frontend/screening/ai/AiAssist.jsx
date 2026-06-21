@@ -7,7 +7,7 @@
  * validation status panel. All AI output is ASSISTIVE — the human decision
  * controls are untouched. Components degrade gracefully when AI is unavailable.
  */
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { QUEUE_MODES } from '../../../research-engine/screening/ai/ranking.js';
 
@@ -386,6 +386,60 @@ function StoppingBlock({ stop }) {
   );
 }
 
+/** Model drift warnings vs the previous version (se2.md §11). */
+function DriftWarnings({ drift }) {
+  const w = drift?.warnings || [];
+  if (!w.length) return null;
+  return (
+    <div style={{ border: `1px solid ${alpha(C.gold, '55')}`, background: alpha(C.gold, '10'), borderRadius: 8, padding: '8px 11px' }}>
+      <div style={{ fontSize: 10.5, color: C.gold, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>⚠ Model drift vs previous version</div>
+      {w.map((x, i) => <div key={i} style={{ fontSize: 11.5, color: C.txt2, lineHeight: 1.45 }}>• {x}</div>)}
+    </div>
+  );
+}
+
+/** Model version history + rollback (leader; se2.md §11). */
+function ModelHistory({ ai }) {
+  const [versions, setVersions] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [err, setErr] = useState('');
+  const load = useCallback(() => { ai.getVersions().then(d => setVersions(d?.versions || [])).catch(() => setVersions([])); }, [ai]);
+  // Re-fetch only when the active run changes — NOT on every render (load's identity
+  // changes each render; including it here would loop via setVersions → re-render).
+  useEffect(() => { load(); }, [ai.status?.latestRun?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const doRollback = async (id) => {
+    if (busy) return;
+    setBusy(id); setErr('');
+    try { await ai.rollback(id); load(); } catch (e) { setErr(e.message || 'Rollback failed'); } finally { setBusy(''); }
+  };
+  if (!versions || versions.length < 2) return null; // nothing to compare/roll back to yet
+  return (
+    <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 8 }}>
+      <SubHeader>Model versions</SubHeader>
+      {err && <div style={{ fontSize: 11, color: C.red, marginBottom: 4 }}>{err}</div>}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {versions.slice(0, 8).map(v => (
+          <div key={v.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11.5 }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: v.isActive ? C.grn : C.brd2, flexShrink: 0 }} />
+            <span style={{ fontFamily: MONO, color: v.isActive ? C.grn : C.muted, width: 52 }}>{v.isActive ? 'active' : v.status}</span>
+            <span style={{ color: C.muted, fontFamily: MONO, fontSize: 10 }}>{(v.snapshotHash || v.id).slice(0, 8)}</span>
+            <span style={{ color: C.txt2 }}>{v.mode === 'supervised' ? 'trained' : 'cold'}{v.auc != null ? ` · AUC ${v.auc.toFixed(2)}` : ''}</span>
+            {v.trigger === 'rollback' && <Chip color={C.teal}>rollback</Chip>}
+            {v.driftWarnings?.length > 0 && <span title={v.driftWarnings.join('\n')} style={{ color: C.gold }}>⚠{v.driftWarnings.length}</span>}
+            <span style={{ flex: 1 }} />
+            {!v.isActive && v.status === 'completed' && (
+              <MiniBtn color={C.teal} disabled={!!busy} onClick={() => doRollback(v.id)}>{busy === v.id ? '…' : 'Roll back'}</MiniBtn>
+            )}
+          </div>
+        ))}
+      </div>
+      <div style={{ fontSize: 10, color: C.muted, marginTop: 5, lineHeight: 1.4 }}>
+        Rollback re-scores current records with the selected version's configuration — it reverts the model config, not the exact past scores (the engine reflects current decisions). Human decisions and prior versions are preserved.
+      </div>
+    </div>
+  );
+}
+
 /** RightColumn section: model status, training summary, validation, policy. */
 export function AiStatusPanel({ ai }) {
   const [val, setVal] = useState(null);
@@ -456,8 +510,10 @@ export function AiStatusPanel({ ai }) {
         );
       })()}
 
+      {s?.canConfigure && m.drift?.warnings?.length > 0 && <DriftWarnings drift={m.drift} />}
       {s?.canConfigure && m.calibration && <CalibrationBlock cal={m.calibration} />}
       {s?.canConfigure && m.stopping && <StoppingBlock stop={m.stopping} />}
+      {s?.canConfigure && <ModelHistory ai={ai} />}
 
       {s?.canConfigure && <AiPolicyControls ai={ai} />}
 

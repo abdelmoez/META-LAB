@@ -93,6 +93,23 @@ export function useScreeningAi(pid, stage = 'title_abstract') {
 
   const getValidation = useCallback(() => aiApi.validation(pid, stage).catch(() => null), [pid, stage]);
 
+  // se2.md §11 — model version history + rollback.
+  const getVersions = useCallback(() => aiApi.versions(pid, stage).catch(() => null), [pid, stage]);
+  const rollback = useCallback(async (runId) => {
+    setRunning(true); setError('');
+    try {
+      const out = await aiApi.rollback(pid, runId, stage);
+      explCache.current.clear();
+      await Promise.all([loadStatus(), loadScores()]);
+      return out;
+    } catch (e) {
+      if (mounted.current) setError(e.message || 'Rollback failed');
+      throw e;
+    } finally {
+      if (mounted.current) setRunning(false);
+    }
+  }, [pid, stage, loadStatus, loadScores]);
+
   // se2.md §6 — live rescoring state. jobStatus drives the "Scores updating" UI;
   // rankingsAvailable prompts a (position-preserving) queue refresh.
   const [jobStatus, setJobStatus] = useState({ state: 'idle', running: false, queued: false, pending: 0 });
@@ -130,6 +147,7 @@ export function useScreeningAi(pid, stage = 'title_abstract') {
   return {
     enabled, ready, status, scores, running, error,
     run, getExplanation, refreshExplanation, sendFeedback, updateSettings, getValidation,
+    getVersions, rollback,
     refresh: loadScores,
     jobStatus, loadJobStatus, onScoresUpdated, rankingsAvailable, clearRankingsAvailable,
   };

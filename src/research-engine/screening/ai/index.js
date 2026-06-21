@@ -30,3 +30,7 @@ export {
   evaluateStopping, estimateRecall, recentInclusionYield, stoppingPreconditions,
   retrospectiveStopping, STOPPING_LANGUAGE,
 } from './stopping.js';
+export {
+  scoreHistogram, populationStabilityIndex, detectClassCollapse,
+  runDriftSnapshot, computeDrift, DRIFT_DEFAULTS,
+} from './drift.js';

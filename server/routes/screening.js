@@ -132,6 +132,8 @@ r.get('/projects/:pid/ai/job-status',                   AI.getAiJobStatus);
 r.post('/projects/:pid/ai/run',                         AI.postAiRun);
 r.get('/projects/:pid/ai/scores',                       AI.getAiScores);
 r.get('/projects/:pid/ai/validation',                   AI.getAiValidation);
+r.get('/projects/:pid/ai/versions',                     AI.getAiModelVersions);
+r.post('/projects/:pid/ai/rollback',                    AI.postAiRollback);
 r.put('/projects/:pid/ai/settings',                     AI.putAiSettings);
 r.get('/projects/:pid/records/:rid/ai/explanation',     AI.getAiExplanation);
 r.post('/projects/:pid/records/:rid/ai/feedback',       AI.postAiFeedback);

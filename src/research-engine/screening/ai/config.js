@@ -82,6 +82,19 @@ export const DEFAULT_AI_CONFIG = Object.freeze({
     recentWindow: 50,
   },
 
+  // ── Model drift tracking (se2.md §11) ───────────────────────────────
+  // Each run is a model version; drift compares a new run vs the previous active one
+  // and warns when quality/behaviour shifts enough that a human should review.
+  drift: {
+    aucDrop: 0.05,
+    wssFall: 0.05,
+    brierRise: 0.03,
+    eceRise: 0.05,
+    prevalenceShift: 0.1,
+    psiLarge: 0.25,
+    collapseFraction: 0.9,
+  },
+
   // ── Provider abstraction (resolved server-side; pure layer only knows the shape) ─
   provider: {
     embedding: 'lexical',    // 'lexical' (default, in-process) | 'hashing' | 'hosted'

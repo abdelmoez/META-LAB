@@ -932,12 +932,22 @@ model ScreenAiRun {
   failureReason   String    @default("")
   triggeredById   String?                          // bare user id
   triggeredByName String    @default("")           // denormalised
+  // se2.md §11 — model version lifecycle, lineage + drift. A completed run is a model
+  // version; exactly one per (project,stage) is the ACTIVE version whose scores are live.
+  isActive        Boolean   @default(false)
+  supersededAt    DateTime?                         // set when a newer version takes over
+  parentRunId     String?                           // lineage: the version this one superseded
+  rollbackFromRunId String?                         // set when this run was produced by a rollback
+  snapshotHash    String    @default("")            // hash of training labels + config (reproducibility)
+  featureVersion  String    @default("")            // feature/preprocessing version tag
+  driftJson       String    @default("{}")          // { snapshot, drift:{warnings,deltas,psi,collapse} }
   startedAt       DateTime  @default(now())
   completedAt     DateTime?
   createdAt       DateTime  @default(now())
 
   @@index([projectId, createdAt])
   @@index([projectId, status])
+  @@index([projectId, stage, isActive])
 }
 
 // Latest relevance score per (project, record, stage). Upserted each run so the
