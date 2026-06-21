@@ -1,6 +1,6 @@
 {
   "name": "meta-lab",
-  "version": "3.40.0",
+  "version": "3.40.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -18,7 +18,8 @@
     "review:ops-impact": "node scripts/review-ops-impact.js",
     "marketing:seed": "node scripts/seed-marketing-demo.mjs",
     "marketing:seed:remove": "node scripts/seed-marketing-demo.mjs --remove",
-    "marketing:screenshots": "node scripts/capture-marketing-screenshots.mjs"
+    "marketing:screenshots": "node scripts/capture-marketing-screenshots.mjs",
+    "marketing:curate": "node scripts/curate-marketing-screenshots.mjs"
   },
   "dependencies": {
     "framer-motion": "^12.40.0",

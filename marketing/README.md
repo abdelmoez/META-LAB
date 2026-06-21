@@ -14,10 +14,22 @@ npx playwright install chromium     # browser engine (or system Chrome is used a
 npm run dev                 # terminal A — starts the app (client :3000, server :3001)
 npm run marketing:seed      # terminal B — additive demo data (GLP-1 demo review project)
 npm run marketing:screenshots   # captures into marketing/screenshots/<YYYY-MM-DD>/
+npm run marketing:curate        # optional: AI picks the best shots (needs ANTHROPIC_API_KEY)
 ```
 
 Output: `01-dashboard.png … 18-ops-console.png` at **1440×1000 @2x**, plus a few
 `hero-*.png` at **1600×1000**.
+
+**Navigation:** the capture opens the demo project **once** and then clicks the
+workflow menu to switch tabs (in-app/SPA navigation, no reload). A cold deep-link
+(`/app/project/:id?tab=…`) hits a load race and bounces to the project list, which
+is why an earlier version captured the dashboard for every shot — fixed.
+
+**Marketing curator (the AI selection agent).** `npm run marketing:curate` sends the
+captured shots to Claude (vision) with a marketing rubric. It **chooses** the best
+ones — scoring each, writing captions + alt text, and flagging empty/blurry/clipped
+or PII-bearing shots for retake — and writes `manifest.json` + `SELECTION.md` next to
+the screenshots. Needs `ANTHROPIC_API_KEY`; without it the step no-ops with a note.
 
 ## Demo login (fake, safe)
 - **Email:** `demo.curator@pecanrev.example` · **Password:** `PecanRevDemo2026!`
