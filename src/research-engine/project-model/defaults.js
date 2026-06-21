@@ -99,7 +99,7 @@ export const mkProject = name => ({
  */
 export const mkStudy = () => ({
   id:     uid(),
-  author: "", year: "", country: "", design: "RCT", n: "", outcome: "",
+  author: "", year: "", country: "", design: "RCT", n: "", outcome: "", drugClass: "",
 
   // citation metadata (auto-fillable from PMID/DOI)
   title: "", authors: "", journal: "", doi: "", pmid: "", abstract: "",

@@ -60,6 +60,7 @@ async function cleanup(curatorId) {
   const blobs = await prisma.project.findMany({ where: { userId: curatorId, name: PROJECT_TITLE }, select: { id: true } });
   for (const b of blobs) {
     await prisma.screenProject.deleteMany({ where: { linkedMetaLabProjectId: b.id } });
+    try { await prisma.robAssessment.deleteMany({ where: { projectId: b.id } }); } catch { /* RoB rows cascade on project delete anyway */ }
     try { await removeProject(b.id, curatorId); } catch { /* fall through to hard delete */ }
     await prisma.project.deleteMany({ where: { id: b.id } });
   }
@@ -73,12 +74,13 @@ async function enableFlags() {
   try { flags = JSON.parse(row?.value || '{}'); } catch { flags = {}; }
   flags.searchEngine = true;             // render the new concept→DB Search Builder
   flags.serverBackedWorkflowState = true; // server-backed module persistence
+  flags.rob_engine_v2 = true;             // render the RoB 2 assessment workspace (latest)
   await prisma.siteSetting.upsert({
     where: { key: 'featureFlags' },
     update: { value: JSON.stringify(flags) },
     create: { key: 'featureFlags', value: JSON.stringify(flags) },
   });
-  log('feature flags enabled (additive): searchEngine, serverBackedWorkflowState');
+  log('feature flags enabled (additive): searchEngine, serverBackedWorkflowState, rob_engine_v2');
 }
 
 /* ── Demo citations (fake-but-plausible; safe for marketing) ─────────────────── */
@@ -97,6 +99,17 @@ const CITATIONS = [
   ['Lincoff AM, Brown-Frandsen K, Colhoun HM', '2023', 'New England Journal of Medicine', 'Semaglutide and Cardiovascular Outcomes in Obesity without Diabetes (SELECT)', '10.1056/NEJMoa2307563', '37952131'],
   ['Smith J, Doe A, Roe B', '2019', 'Diabetes Care', 'A pilot study of GLP-1 receptor agonists for weight management in primary care', '10.2337/dc19-0001', '30000001'],
   ['Smith J, Doe A, Roe B', '2019', 'Diabetes Care', 'A pilot study of GLP-1 receptor agonists for weight management in primary care', '10.2337/dc19-0001', '30000001'], // intentional duplicate → Duplicates tab
+];
+
+// Realistic (fake-but-plausible) abstracts so the Title & Abstract screening view reads
+// like a real review. Assigned to records round-robin. No real patient data.
+const ABSTRACTS = [
+  'Background: Obesity is a chronic disease with limited pharmacologic options. We assessed once-weekly subcutaneous semaglutide 2.4 mg as an adjunct to lifestyle intervention in adults with overweight or obesity. Methods: In this 68-week, double-blind, randomized, placebo-controlled trial, 1,961 adults without diabetes (mean BMI 37.9) were assigned 2:1 to semaglutide or placebo. Results: Mean change in body weight was −14.9% with semaglutide versus −2.4% with placebo (P<0.001); 86.4% achieved ≥5% weight loss. Gastrointestinal adverse events were more common with semaglutide. Conclusions: Once-weekly semaglutide plus lifestyle intervention produced clinically meaningful, sustained weight loss.',
+  'Background: Liraglutide, a GLP-1 receptor agonist, reduces body weight at the 3.0 mg dose. Methods: We randomized 3,731 adults with a BMI ≥30 (or ≥27 with a weight-related comorbidity) and without diabetes to liraglutide 3.0 mg or placebo, both with diet and exercise counseling, for 56 weeks. Results: The liraglutide group lost a mean of 8.4 kg versus 2.8 kg with placebo (difference −5.6 kg; 95% CI −6.0 to −5.1); more participants achieved ≥5% (63.2% vs 27.1%) and >10% (33.1% vs 10.6%) weight loss. Nausea and gallbladder events were more frequent. Conclusions: Liraglutide 3.0 mg led to significant weight loss and improved metabolic risk factors.',
+  'Background: Tirzepatide is a once-weekly dual GIP/GLP-1 receptor agonist. Methods: In this 72-week, phase 3, double-blind trial, 2,539 adults with obesity and without diabetes were randomized to tirzepatide (5, 10, or 15 mg) or placebo. Results: Mean percentage weight change was −15.0%, −19.5%, and −20.9% across tirzepatide doses versus −3.1% with placebo (P<0.001 for all comparisons); up to 57% achieved ≥20% weight reduction. The most common adverse events were gastrointestinal and mostly mild to moderate. Conclusions: Tirzepatide produced substantial, dose-dependent weight reduction in adults with obesity.',
+  'Background: Intensive behavioral therapy (IBT) for obesity typically yields modest weight loss. Methods: 611 adults with overweight or obesity were randomized to once-weekly semaglutide 2.4 mg or placebo, both with IBT and an initial low-calorie diet, over 68 weeks. Results: Mean body-weight change was −16.0% with semaglutide versus −5.7% with placebo (P<0.001); 75.3% achieved ≥10% weight loss versus 27.0%. Gastrointestinal events were more frequent with semaglutide. Conclusions: Semaglutide plus IBT resulted in significantly greater weight loss than IBT alone.',
+  'Background: Whether continued GLP-1 treatment maintains weight loss is uncertain. Methods: After a 20-week run-in on semaglutide 2.4 mg, 803 adults were randomized to continue semaglutide or switch to placebo for 48 weeks. Results: Participants continuing semaglutide lost a further −7.9%, whereas those switched to placebo regained +6.9% (estimated difference −14.8 percentage points; P<0.001). Adverse events were consistent with the known profile. Conclusions: Maintaining semaglutide sustained and augmented weight loss, whereas withdrawal led to regain.',
+  'Background: GLP-1 receptor agonists reduce weight, but cardiovascular effects in obesity without diabetes were unknown. Methods: 17,604 adults ≥45 years with established cardiovascular disease and a BMI ≥27, without diabetes, were randomized to semaglutide 2.4 mg or placebo and followed for a mean of 39.8 months. Results: A primary cardiovascular event occurred in 6.5% with semaglutide versus 8.0% with placebo (HR 0.80; 95% CI 0.72–0.90; P<0.001); mean weight reduction was 9.4%. Conclusions: In patients with obesity and cardiovascular disease, semaglutide reduced major adverse cardiovascular events.',
 ];
 
 function buildBlob() {
@@ -137,29 +150,33 @@ function buildBlob() {
     included: '36', qual: '36', quant: '28',
   };
   // Screening records (blob copy — the screening workspace mirrors these into Screen* rows).
-  p.records = CITATIONS.slice(0, 13).map(([authors, year, journal, title, doi, pmid]) => ({
+  p.records = CITATIONS.slice(0, 13).map(([authors, year, journal, title, doi, pmid], i) => ({
     id: uid(), title, authors, year, journal, doi, pmid,
-    abstract: 'Randomised controlled trial evaluating a GLP-1 receptor agonist versus comparator for weight reduction in adults with obesity or overweight. (Demo abstract.)',
+    abstract: ABSTRACTS[i % ABSTRACTS.length],
     source: 'PubMed',
   }));
-  // Extracted studies with consistent MD weight-loss effect sizes (drives the forest plot).
+  // Extracted studies with consistent mean-difference (kg) weight-loss effect sizes — clean
+  // author/year labels + a drug-class field so Forest, Sensitivity, and Subgroup all read well.
+  // RAW = [author, year, country, drugClass, nE, mE, sE, nC, mC, sC]
   const RAW = [
-    ['Wilding', '2021', 'United Kingdom', 200, -9.6, 6.5, 200, -3.4, 6.0],
-    ['Davies', '2021', 'Denmark', 180, -6.1, 5.8, 180, -1.9, 5.4],
-    ['Jastreboff', '2022', 'United States', 210, -12.4, 7.1, 210, -2.1, 5.9],
-    ['Rubino', '2021', 'United States', 150, -8.9, 6.2, 150, -3.1, 5.7],
-    ['Pi-Sunyer', '2015', 'United States', 240, -5.4, 5.5, 240, -2.0, 5.1],
-    ['Wadden', '2021', 'United States', 130, -10.3, 6.8, 130, -3.0, 6.1],
-    ['Garvey', '2023', 'United States', 170, -11.1, 7.0, 170, -2.4, 5.8],
-    ["O'Neil", '2018', 'United States', 110, -7.8, 6.0, 110, -2.6, 5.6],
+    ['Wilding', '2021', 'United Kingdom', 'Semaglutide', 200, -9.6, 6.5, 200, -3.4, 6.0],
+    ['Davies', '2021', 'Denmark', 'Semaglutide', 180, -6.1, 5.8, 180, -1.9, 5.4],
+    ['Rubino', '2021', 'United States', 'Semaglutide', 150, -8.9, 6.2, 150, -3.1, 5.7],
+    ['Wadden', '2021', 'United States', 'Semaglutide', 130, -10.3, 6.8, 130, -3.0, 6.1],
+    ['Kushner', '2020', 'United States', 'Semaglutide', 140, -8.2, 6.1, 140, -2.5, 5.5],
+    ['Jastreboff', '2022', 'United States', 'Tirzepatide', 210, -12.4, 7.1, 210, -2.1, 5.9],
+    ['Garvey', '2023', 'United States', 'Tirzepatide', 170, -11.1, 7.0, 170, -2.4, 5.8],
+    ['Aronne', '2024', 'United States', 'Tirzepatide', 160, -10.6, 6.9, 160, -2.8, 5.9],
+    ['Pi-Sunyer', '2015', 'United States', 'Liraglutide', 240, -5.4, 5.5, 240, -2.0, 5.1],
+    ["O'Neil", '2018', 'United States', 'Liraglutide', 110, -7.8, 6.0, 110, -2.6, 5.6],
   ];
-  p.studies = RAW.map(([author, year, country, nE, mE, sE, nC, mC, sC]) => {
+  p.studies = RAW.map(([author, year, country, drugClass, nE, mE, sE, nC, mC, sC]) => {
     const s = mkStudy();
     const { es, lo, hi } = md(nE, mE, sE, nC, mC, sC);
     return {
-      ...s, author, year, country, design: 'RCT', n: String(nE + nC),
+      ...s, author, year, country, drugClass, design: 'RCT', n: String(nE + nC),
       outcome: 'Body-weight change (kg) at 52 weeks',
-      title: `${author} et al. (${year}) — GLP-1 RA vs comparator`,
+      title: `${author} et al. (${year}) — ${drugClass} vs comparator`,
       authors: `${author} et al.`, journal: 'Demo Journal of Obesity', esType: 'MD',
       timepoint: '52 weeks', adjusted: 'unadjusted', dataNature: 'primary',
       nExp: String(nE), meanExp: String(mE), sdExp: String(sE),
@@ -199,7 +216,7 @@ async function seedScreening(blobId, curator, reviewer) {
     const rec = await prisma.screenRecord.create({
       data: {
         projectId: sp.id, title, authors, year, journal, doi, pmid,
-        abstract: 'Demo abstract — GLP-1 receptor agonist vs comparator for weight reduction.',
+        abstract: ABSTRACTS[i % ABSTRACTS.length],
         sourceDb: 'PubMed',
         duplicateGroupId: (isDup || isPrimaryDup) ? dupGroup.id : null,
         isDuplicate: isDup, isPrimary: isPrimaryDup,
@@ -258,6 +275,38 @@ async function seedScreening(blobId, curator, reviewer) {
   return sp;
 }
 
+async function seedRob(projectId, studies, curator) {
+  // RoB 2 demo (rob_engine_v2): one COMPLETE assessment per study with D1–D5 domain
+  // judgments + overall, so the workspace shows a populated traffic-light. D1 signalling
+  // questions are answered too (populated domain view if opened). Best-effort.
+  const DOMAINS = ['D1', 'D2', 'D3', 'D4', 'D5'];
+  const PROFILES = [
+    { D1: 'low', D2: 'low', D3: 'low', D4: 'low', D5: 'some', overall: 'some' },
+    { D1: 'low', D2: 'some', D3: 'low', D4: 'low', D5: 'low', overall: 'some' },
+    { D1: 'low', D2: 'low', D3: 'low', D4: 'low', D5: 'low', overall: 'low' },
+    { D1: 'some', D2: 'high', D3: 'low', D4: 'some', D5: 'low', overall: 'high' },
+    { D1: 'low', D2: 'low', D3: 'some', D4: 'low', D5: 'low', overall: 'some' },
+  ];
+  const targets = (studies || []).slice(0, 5);
+  for (let i = 0; i < targets.length; i++) {
+    const st = targets[i]; const prof = PROFILES[i % PROFILES.length];
+    const a = await prisma.robAssessment.create({ data: {
+      projectId, studyId: st.id, resultLabel: 'Body-weight change at 52 weeks',
+      instrumentId: 'RoB2', reviewerId: curator.id, reviewerName: curator.name, status: 'complete',
+    } });
+    for (const d of DOMAINS) {
+      await prisma.robDomainJudgment.create({ data: { assessmentId: a.id, domainId: d, proposedJudgment: prof[d], finalJudgment: prof[d] } });
+    }
+    const d1 = prof.D1;
+    const ans = d1 === 'low' ? ['Y', 'Y', 'PY'] : d1 === 'high' ? ['N', 'PN', 'NI'] : ['PY', 'NI', 'Y'];
+    for (let q = 0; q < 3; q++) {
+      await prisma.robAnswer.create({ data: { assessmentId: a.id, domainId: 'D1', questionId: `1.${q + 1}`, response: ans[q], rationale: 'Allocation sequence and concealment reported; baseline groups balanced. (Demo rationale.)' } });
+    }
+    await prisma.robOverall.create({ data: { assessmentId: a.id, proposedOverall: prof.overall, finalOverall: prof.overall } });
+  }
+  log('RoB seeded:', targets.length, 'RoB 2 assessments (D1–D5 + overall)');
+}
+
 async function main() {
   const curator = await ensureUser(CURATOR);
   const reviewer = await ensureUser(REVIEWER);
@@ -279,6 +328,12 @@ async function main() {
     await seedScreening(saved.id, curator, reviewer);
   } catch (e) {
     log('NOTE: screening workspace seed failed (blob project is still fully usable):', e.message);
+  }
+
+  try {
+    await seedRob(saved.id, saved.studies || blob.studies, curator);
+  } catch (e) {
+    log('NOTE: RoB seed failed (rob_engine_v2 is on; the new RoB UI still renders):', e.message);
   }
 
   log('done. Log in as', CURATOR.email, '/', DEMO_PASSWORD);

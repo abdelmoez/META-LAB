@@ -2,23 +2,20 @@
  * capture-marketing-screenshots.mjs — repeatable marketing screenshots of the
  * unified Review Project workflow, driven by Playwright against the running app.
  *
- * NAVIGATION (important): the workspace opens a project from in-memory state. A
- * COLD deep-link (page.goto('/app/project/:id?tab=…')) hits a load race and bounces
- * back to the project list — which is why an earlier version captured the dashboard
- * for every shot. So we open the project ONCE, then switch tabs by clicking the
- * workflow menu (SPA navigation, no reload). The menu defaults to "pinned" (always
- * expanded), so the labels stay clickable throughout.
+ * NAVIGATION: the workspace opens a project from in-memory state. A COLD deep-link
+ * (page.goto('/app/project/:id?tab=…')) hits a load race and bounces to the project
+ * list — so we open the project ONCE, then switch tabs by clicking the workflow menu
+ * (SPA, no reload; the menu is "pinned"/always expanded). Some shots also click into
+ * a sub-view (a screening record's abstract, a member's permissions, a subgroup
+ * variable) so the screenshot tells the story.
  *
  * PREREQUISITES
- *   1. App running:        npm run dev            (client :3000 → proxies /api → :3001)
+ *   1. App running:        npm run dev
  *   2. Demo data seeded:   npm run marketing:seed
- *   3. Playwright browser: npx playwright install chromium   (or system Chrome is used)
+ *   3. Playwright browser: npx playwright install chromium   (or system Chrome)
  *
- * RUN
- *   npm run marketing:screenshots
- *
- * OUTPUT  → marketing/screenshots/<YYYY-MM-DD>/NN-name.png  (1440×1000, retina/@2x)
- *           + a few hero shots at 1600×1000. Then optionally: npm run marketing:curate
+ * RUN: npm run marketing:screenshots   (then optionally: npm run marketing:curate)
+ * OUTPUT → marketing/screenshots/<YYYY-MM-DD>/NN-name.png (1440×1000 @2x) + hero-*.png (1600×1000)
  */
 import { chromium } from 'playwright';
 import path from 'node:path';
@@ -33,36 +30,6 @@ const TITLE_MATCH = 'GLP-1 Receptor Agonists';
 const DATE = new Date().toISOString().slice(0, 10);
 const OUT = path.join(ROOT, 'marketing', 'screenshots', DATE);
 
-// Workflow-menu tabs: { file, nav (visible menu label), wait (distinctive content text) }.
-const WORKSPACE_1 = [
-  { file: '02-project-overview.png', nav: 'Overview', wait: 'Overview' },
-  { file: '03-protocol-pico.png', nav: 'PICO & Question', wait: 'Research Question' },
-  { file: '04-search-builder.png', nav: 'Search Builder', wait: 'PubMed' },
-];
-// Screening sub-tabs (rendered inside the Screening stage; clicked after opening it).
-const SCREENING = [
-  { file: '05-screening-overview.png', sub: 'Overview' },
-  { file: '06-screening-import.png', sub: 'Import' },
-  { file: '07-duplicates.png', sub: 'Duplicates' },
-  { file: '08-title-abstract-screening.png', sub: 'Title & Abstract' },
-  { file: '09-conflicts.png', sub: 'Conflicts' },
-  { file: '10-final-review.png', sub: 'Final Review' },
-];
-const WORKSPACE_2 = [
-  { file: '11-data-extraction.png', nav: 'Data Extraction', wait: 'Data Extraction' },
-  { file: '12-risk-of-bias.png', nav: 'Risk of Bias', wait: 'Risk of Bias' },
-  { file: '13-grade.png', nav: 'GRADE Certainty', wait: 'GRADE' },
-  { file: '14-analysis-forest-plot.png', nav: 'Forest Plot', wait: 'Forest Plot' },
-  { file: '15-prisma.png', nav: 'PRISMA Flow', wait: 'PRISMA' },
-  { file: '16-report-export.png', nav: 'PRISMA Checklist', wait: 'Reporting' },
-  { file: '17-project-control.png', nav: 'Project Control', wait: 'Project Control' },
-];
-const HERO = [
-  { file: 'hero-overview.png', nav: 'Overview' },
-  { file: 'hero-search-builder.png', nav: 'Search Builder' },
-  { file: 'hero-forest-plot.png', nav: 'Forest Plot' },
-];
-
 const log = (...a) => console.log('[screenshots]', ...a);
 
 async function launch() {
@@ -70,21 +37,23 @@ async function launch() {
   catch { log('bundled Chromium unavailable, using system Chrome…'); return chromium.launch({ headless: true, channel: 'chrome' }); }
 }
 
-// The workflow-menu item is the FIRST occurrence of the label (left sidebar, before content).
-async function clickNav(page, label) {
-  await page.getByText(label, { exact: true }).first().click({ timeout: 15000 });
+// Workflow-menu item = FIRST occurrence (left sidebar, before content).
+const clickNav = (page, label) => page.getByText(label, { exact: true }).first().click({ timeout: 15000 });
+// Screening sub-tabs render after the sidebar → LAST occurrence (disambiguates "Overview").
+const clickSub = (page, label) => page.getByText(label, { exact: true }).last().click({ timeout: 15000 });
+// Best-effort click of any visible label (records, buttons, subgroup vars).
+async function tryClick(page, label, { exact = false } = {}) {
+  try { await page.getByText(label, { exact }).first().click({ timeout: 8000 }); return true; }
+  catch { log(`  (could not click "${label}", capturing as-is)`); return false; }
 }
-// Screening sub-tabs render after the sidebar in the DOM → LAST occurrence (disambiguates "Overview").
-async function clickSub(page, label) {
-  await page.getByText(label, { exact: true }).last().click({ timeout: 15000 });
-}
+const settle = (page, ms = 1400) => page.waitForTimeout(ms);
 
-async function shoot(page, file, waitText) {
+async function shoot(page, file, waitText, ms = 1400) {
   if (waitText) {
     try { await page.getByText(waitText, { exact: false }).first().waitFor({ state: 'visible', timeout: 12000 }); }
     catch { log('  (content text not found, capturing anyway):', file); }
   }
-  await page.waitForTimeout(1300); // settle framer-motion transitions + chart render
+  await settle(page, ms);
   await page.screenshot({ path: path.join(OUT, file) });
   log('  ✓', file);
 }
@@ -95,7 +64,7 @@ async function openDemoProject(page) {
   if (await openBtn.count()) await openBtn.click();
   else await page.getByText(TITLE_MATCH, { exact: false }).first().click();
   await page.waitForURL(/\/app\/project\//, { timeout: 20000 });
-  await page.getByText('Search Builder', { exact: true }).first().waitFor({ state: 'visible', timeout: 20000 }); // workflow menu ready
+  await page.getByText('Search Builder', { exact: true }).first().waitFor({ state: 'visible', timeout: 20000 });
 }
 
 async function main() {
@@ -106,32 +75,65 @@ async function main() {
   const res = await context.request.post(`${BASE}/api/auth/login`, { data: { email: EMAIL, password: PASSWORD } });
   if (!res.ok()) throw new Error(`login failed (${res.status()}). Run "npm run marketing:seed" and ensure the app is on ${BASE}.`);
   log('logged in as', EMAIL);
-
   const page = await context.newPage();
 
-  // 01 — Dashboard, then open the demo project ONCE (SPA navigation, no race).
+  // 01 — Dashboard, then open the demo project once.
   await page.goto(`${BASE}/app`, { waitUntil: 'domcontentloaded' });
   await shoot(page, '01-dashboard.png', 'Open Project');
   await openDemoProject(page);
   log('project open; workflow menu ready');
 
-  for (const s of WORKSPACE_1) { await clickNav(page, s.nav); await shoot(page, s.file, s.wait); }
+  // 02–04 — plan / protocol / search
+  await clickNav(page, 'Overview'); await shoot(page, '02-project-overview.png', 'Overview');
+  await clickNav(page, 'PICO & Question'); await shoot(page, '03-protocol-pico.png', 'Research Question');
+  await clickNav(page, 'Search Builder'); await shoot(page, '04-search-builder.png', 'PubMed');
 
-  await clickNav(page, 'Screening');
-  await page.waitForTimeout(1200);
-  for (const s of SCREENING) { await clickSub(page, s.sub); await shoot(page, s.file, null); }
+  // 05–10 — screening stage + sub-tabs
+  await clickNav(page, 'Screening'); await settle(page);
+  await clickSub(page, 'Overview'); await shoot(page, '05-screening-overview.png', null);
+  await clickSub(page, 'Import'); await shoot(page, '06-screening-import.png', null);
+  await clickSub(page, 'Duplicates'); await shoot(page, '07-duplicates.png', null);
+  await clickSub(page, 'Title & Abstract'); await settle(page);
+  await tryClick(page, 'Once-Weekly Semaglutide'); // open a record so its abstract shows
+  await shoot(page, '08-title-abstract-screening.png', 'Abstract');
+  await clickSub(page, 'Conflicts'); await shoot(page, '09-conflicts.png', null);
+  await clickSub(page, 'Final Review'); await shoot(page, '10-final-review.png', null);
 
-  for (const s of WORKSPACE_2) { await clickNav(page, s.nav); await shoot(page, s.file, s.wait); }
+  // 11–13 — extraction / RoB (v2) / GRADE
+  await clickNav(page, 'Data Extraction'); await shoot(page, '11-data-extraction.png', 'Data Extraction');
+  await clickNav(page, 'Risk of Bias'); await shoot(page, '12-risk-of-bias.png', null, 2200); // RoB2 workspace + traffic-light
+  await clickNav(page, 'GRADE Certainty'); await shoot(page, '13-grade.png', 'GRADE');
 
-  // 18 — Ops Console (separate admin route; demo user is an admin)
-  await page.goto(`${BASE}/ops`, { waitUntil: 'domcontentloaded' });
-  await shoot(page, '18-ops-console.png', 'Overview');
+  // 14–17 — analysis
+  await clickNav(page, 'Forest Plot'); await shoot(page, '14-analysis-forest-plot.png', 'Pooled', 1800);
+  await clickNav(page, 'Meta-Analysis'); await shoot(page, '15-research-ready-results.png', null, 1800); // ResearchExport table
+  await clickNav(page, 'Sensitivity & Publication Bias'); await shoot(page, '16-sensitivity-bias.png', 'Leave-One-Out', 1800);
+  await clickNav(page, 'Subgroup Analysis'); await settle(page);
+  await tryClick(page, 'Drug Class', { exact: true }); // group studies by drug class
+  await shoot(page, '17-subgroup-analysis.png', 'Subgroup', 1800);
 
-  // Hero shots at 1600×1000 (re-open the project, resize, no per-tab reload)
+  // 18–19 — PRISMA + report
+  await clickNav(page, 'PRISMA Flow'); await shoot(page, '18-prisma.png', 'PRISMA');
+  await clickNav(page, 'PRISMA Checklist'); await shoot(page, '19-report-export.png', 'Reporting');
+
+  // 20 — Project Control → open a member's permissions
+  await clickNav(page, 'Project Control'); await settle(page);
+  await tryClick(page, 'Advanced permissions');
+  await shoot(page, '20-project-control.png', 'Customize what this member');
+
+  // 21 — Customization (per-user): /profile → Screening Shortcuts (theme toggle is in the avatar menu)
+  await page.goto(`${BASE}/profile`, { waitUntil: 'domcontentloaded' });
+  await settle(page);
+  await tryClick(page, 'Screening Shortcuts');
+  await shoot(page, '21-customization.png', 'Screening Shortcuts');
+
+  // Hero shots at 1600×1000
   await openDemoProject(page);
   await page.setViewportSize({ width: 1600, height: 1000 });
   await page.getByText('Search Builder', { exact: true }).first().waitFor({ state: 'visible', timeout: 20000 });
-  for (const s of HERO) { await clickNav(page, s.nav); await shoot(page, s.file, null); }
+  await clickNav(page, 'Overview'); await shoot(page, 'hero-overview.png', null);
+  await clickNav(page, 'Search Builder'); await shoot(page, 'hero-search-builder.png', null);
+  await clickNav(page, 'Forest Plot'); await shoot(page, 'hero-forest-plot.png', null, 1800);
 
   await browser.close();
   log('done →', path.relative(ROOT, OUT));

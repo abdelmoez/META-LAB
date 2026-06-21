@@ -17,8 +17,13 @@ npm run marketing:screenshots   # captures into marketing/screenshots/<YYYY-MM-D
 npm run marketing:curate        # optional: AI picks the best shots (needs ANTHROPIC_API_KEY)
 ```
 
-Output: `01-dashboard.png … 18-ops-console.png` at **1440×1000 @2x**, plus a few
-`hero-*.png` at **1600×1000**.
+Output: `01-dashboard.png … 21-customization.png` at **1440×1000 @2x**, plus a few
+`hero-*.png` at **1600×1000**. Covers dashboard, overview, PICO, Search Builder,
+the screening sub-tabs (with a record's abstract open), data extraction, the RoB 2
+workspace, GRADE, forest plot, research-ready results, sensitivity & publication
+bias, subgroup analysis (by drug class), PRISMA, report, project-control permissions,
+and the per-user customization screen. (The admin-only Ops Console is intentionally
+not captured.)
 
 **Navigation:** the capture opens the demo project **once** and then clicks the
 workflow menu to switch tabs (in-app/SPA navigation, no reload). A cold deep-link

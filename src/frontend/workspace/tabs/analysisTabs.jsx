@@ -1194,6 +1194,7 @@ export function SubgroupTab({project}){
 
   const keys=[
     {id:"design",label:"Study Design"},
+    {id:"drugClass",label:"Drug Class"},
     {id:"country",label:"Country/Region"},
     {id:"timepoint",label:"Time Point"},
     {id:"adjusted",label:"Adjusted vs Unadjusted"},
