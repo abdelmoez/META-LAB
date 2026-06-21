@@ -401,6 +401,7 @@ model ScreenProject {
   studyTypeFilter        String                 @default("[]")           // JSON string[]
   picoSnapshot           String                 @default("{}")           // cached PICO/criteria (from linked META·LAB project or standalone)
   chatRestricted         Boolean                @default(false)          // when true, only members with canChat may post
+  aiSettings             String                 @default("{}")           // per-project AI screening policy (JSON: enabled, policy, blindFromAi, includeThreshold) — flag aiScreening
   deletedAt              DateTime?                                       // prompt9 — soft delete (owner/admin)
   deletedSource          String?                                         // prompt9 — 'owner' | 'admin'
   createdAt              DateTime               @default(now())
@@ -876,4 +877,95 @@ model WorkflowStateAudit {
 
   @@index([projectId, createdAt])
   @@index([projectId, moduleKey])
+}
+
+// ─── PecanRev Screening Intelligence Engine (flag: aiScreening) ───────
+//
+// AI-assisted, active-learning relevance scoring layer over META·SIFT screening.
+// ALL ADDITIVE: every table below uses a BARE `projectId` scope-key string (no
+// Prisma relation / FK) — the same audit-survival precedent as ScreenAuditLog /
+// ScreenPdfAttachment / RobAuditLog — so adding them is a pure `prisma db push`
+// with no change to any existing model and no --accept-data-loss. The AI layer
+// is strictly read-only w.r.t. the human decision pipeline: it NEVER writes a
+// ScreenDecision. Records are scored; humans decide.
+
+// One row per scoring run (train + score the whole project). Stores the run's
+// configuration snapshot, label counts, model summary, and an internal-validation
+// snapshot (AI ranking vs human final decisions). This IS the model-run history.
+model ScreenAiRun {
+  id              String    @id @default(uuid())
+  projectId       String    // bare scope key (no FK; audit-survival)
+  status          String    @default("completed")  // running | completed | failed
+  mode            String    @default("cold_start") // cold_start | supervised
+  stage           String    @default("title_abstract")
+  engineVersion   String    @default("1.0")
+  trigger         String    @default("manual")     // manual | auto
+  // Summary
+  nRecords        Int       @default(0)
+  nScored         Int       @default(0)
+  nFeatures       Int       @default(0)
+  labelCountsJson String    @default("{}")         // {include,exclude,maybe,undecided,positives,negatives,classBalance}
+  modelInfoJson   String    @default("{}")         // {epochs,converged,classWeights,nPos,nNeg} or {}
+  configJson      String    @default("{}")         // resolved engine config snapshot (provider, weights, thresholds)
+  metricsJson     String    @default("{}")         // computeValidation() snapshot (auc, wss95, recall@k, stages, warning)
+  failureReason   String    @default("")
+  triggeredById   String?                          // bare user id
+  triggeredByName String    @default("")           // denormalised
+  startedAt       DateTime  @default(now())
+  completedAt     DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([projectId, status])
+}
+
+// Latest relevance score per (project, record, stage). Upserted each run so the
+// screening queue can join scores cheaply; run history lives in ScreenAiRun.
+model ScreenAiScore {
+  id              String   @id @default(uuid())
+  projectId       String   // bare scope key
+  recordId        String   // bare scope key (record may be soft-deleted)
+  runId           String   @default("")
+  stage           String   @default("title_abstract")
+  score           Float    @default(0)             // hybrid relevance [0,1]
+  proba           Float?                            // supervised classifier probability, null in cold-start
+  coldStartScore  Float    @default(0)
+  uncertainty     Float    @default(0)
+  confidence      Float    @default(0)
+  prediction      String   @default("uncertain")   // include | exclude | uncertain
+  band            String   @default("unscored")    // very_high|high|medium|low|very_low
+  mode            String   @default("cold_start")
+  lowConfidence   Boolean  @default(false)
+  missingAbstract Boolean  @default(false)
+  picoMean        Float?
+  subScoresJson   String   @default("{}")          // {classifier,coldStart,semantic,keyword}
+  signalsJson     String   @default("{}")          // {studyDesign,inclusionMatched,exclusionHits,pico}
+  explanationJson String   @default("{}")          // buildExplanation() output (reasons, picoBreakdown, similar, note)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([projectId, recordId, stage])
+  @@index([projectId, stage])
+  @@index([projectId, score])
+}
+
+// Human feedback on an AI suggestion (active-learning signal + auditability).
+// Append-only; never blocks the decision flow.
+model ScreenAiFeedback {
+  id           String   @id @default(uuid())
+  projectId    String   // bare scope key
+  recordId     String
+  runId        String   @default("")
+  aiPrediction String   @default("")               // include|exclude|uncertain at time of feedback
+  aiScore      Float?
+  humanDecision String  @default("")               // include|exclude|maybe
+  agree        Boolean?                             // did the human agree with the AI?
+  rating       String   @default("")               // helpful | not_helpful | ''
+  note         String   @default("")
+  givenById    String?                              // bare user id
+  givenByName  String   @default("")
+  createdAt    DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([projectId, recordId])
 }

@@ -21,6 +21,9 @@ import PdfViewer from '../components/PdfViewer.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 import { useRealtime } from '../../hooks/useRealtime.js';
 import { useScreeningShortcuts } from '../hooks/useScreeningShortcuts.js';
+import { useScreeningAi } from '../ai/useScreeningAi.js';
+import { AiScoreCard, AiQueueBar, AiStatusPanel, ScoreBadge } from '../ai/AiAssist.jsx';
+import { rankItems } from '../../../research-engine/screening/ai/ranking.js';
 import { parseScreeningShortcuts, DEFAULT_SCREENING_SHORTCUTS, keyLabel } from '../screeningShortcuts.js';
 import { api } from '../../api-client/apiClient.js';
 import Tooltip from '../../components/Tooltip.jsx';
@@ -198,6 +201,39 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   useEffect(() => { recordsRef.current = records; }, [records]);
   useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
 
+  // ── AI Screening Intelligence Engine (feature flag: aiScreening) ──────────
+  // Self-detecting hook: when the flag is off it reports { enabled:false } and
+  // every AI surface below renders nothing, so behaviour is identical to today.
+  const ai = useScreeningAi(pid, 'title_abstract');
+  const [queueMode, setQueueMode] = useState('default');
+  const [aiBand, setAiBand] = useState('all');
+
+  // AI-reordered / band-filtered view of the LOADED records. When AI is off or in
+  // default mode this is exactly `records` (referential identity preserved).
+  const displayRecords = useMemo(() => {
+    if (!ai.enabled || (queueMode === 'default' && aiBand === 'all')) return records;
+    let list = records;
+    if (aiBand !== 'all') {
+      list = list.filter(r => {
+        const sc = ai.scores[r.id];
+        if (!sc) return false;
+        if (aiBand === 'uncertain') return sc.prediction === 'uncertain';
+        return sc.band === aiBand;
+      });
+    }
+    if (queueMode !== 'default') {
+      const items = list.map((r, i) => {
+        const sc = ai.scores[r.id] || {};
+        return { recordId: r.id, score: sc.score, uncertainty: sc.uncertainty, picoMean: sc.picoMean, missingAbstract: sc.missingAbstract, isDuplicate: r.isDuplicate, hasConflict: r.disputed, order: i };
+      });
+      const byId = new Map(list.map(r => [r.id, r]));
+      list = rankItems(items, queueMode).map(it => byId.get(it.recordId)).filter(Boolean);
+    }
+    return list;
+  }, [records, ai.enabled, ai.scores, queueMode, aiBand]);
+  const displayRecordsRef = useRef(displayRecords);
+  useEffect(() => { displayRecordsRef.current = displayRecords; }, [displayRecords]);
+
   // ── Load a page of records (reset = page 1 / append = next page) ──────────
   const loadRecords = useCallback(async ({ reset = false, p, s, f } = {}) => {
     const pageNum = reset ? 1 : (p ?? page);
@@ -321,7 +357,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   }, [pid]);
 
   function moveSelection(dir) {
-    const recs = recordsRef.current;
+    const recs = displayRecordsRef.current;
     const idx = recs.findIndex(r => r.id === selectedIdRef.current);
     const next = recs[idx + dir];
     if (next) selectRecord(next.id);
@@ -427,7 +463,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         <CollapsedRail side="left" label="Records" hint={`${total} record${total === 1 ? '' : 's'}`} onExpand={() => setPanel('leftCollapsed', false)} />
       ) : (
         <LeftColumn
-          records={records} total={total} loading={loading} loadingMore={loadingMore}
+          records={displayRecords} total={total} loading={loading} loadingMore={loadingMore}
           listError={listError} onRetry={() => loadRecords({ reset: true })}
           search={search} onSearchChange={onSearchChange}
           filter={filter} onFilterChange={onFilterChange}
@@ -436,6 +472,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
           hasMore={records.length < total} onLoadMore={loadMore}
           shortcutPrefs={shortcutPrefs}
           onCollapse={() => setPanel('leftCollapsed', true)}
+          ai={ai} queueMode={queueMode} onQueueMode={setQueueMode} aiBand={aiBand} onAiBand={setAiBand}
         />
       )}
 
@@ -451,10 +488,11 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         labels={labels} chosenLabels={chosenLabels} toggleLabel={toggleLabel}
         onDecisionClick={onDecisionClick} onUndo={onUndo} onSaveDetails={onSaveDetails}
         saving={saving} saveMsg={saveMsg} decErr={decErr}
-        recordIndex={records.findIndex(r => r.id === selectedId)}
-        recordCount={records.length} totalCount={total}
+        recordIndex={displayRecords.findIndex(r => r.id === selectedId)}
+        recordCount={displayRecords.length} totalCount={total}
         onPrev={() => moveSelection(-1)} onNext={() => moveSelection(1)}
         shortcutPrefs={shortcutPrefs}
+        ai={ai}
       />
 
       {uiPrefs.rightCollapsed ? (
@@ -476,6 +514,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
           clearKeywordFilters={clearKeywordFilters}
           shownCount={total} projectTotal={kwStats.total}
           onCollapse={() => setPanel('rightCollapsed', true)}
+          ai={ai}
         />
       )}
     </div>
@@ -509,6 +548,7 @@ function LeftColumn({
   search, onSearchChange, filter, onFilterChange,
   selectedId, onSelect, blindMode, hasMore, onLoadMore,
   shortcutPrefs, onCollapse,
+  ai, queueMode, onQueueMode, aiBand, onAiBand,
 }) {
   const k = shortcutPrefs?.keys ?? DEFAULT_SCREENING_SHORTCUTS.keys;
   return (
@@ -549,6 +589,13 @@ function LeftColumn({
         </div>
       </div>
 
+      {/* AI active-learning queue selector (feature flag: aiScreening) */}
+      {ai?.enabled && (
+        <div style={{ padding: '9px 14px', borderBottom: `1px solid ${C.brd}`, flexShrink: 0 }}>
+          <AiQueueBar ai={ai} mode={queueMode} onMode={onQueueMode} band={aiBand} onBand={onAiBand} />
+        </div>
+      )}
+
       {/* List */}
       <div className="sift-rl" style={{ flex: 1, overflowY: 'auto', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         {loading ? (
@@ -564,7 +611,7 @@ function LeftColumn({
         ) : (
           <>
             {records.map(r => (
-              <RecordRow key={r.id} record={r} selected={r.id === selectedId} onClick={() => onSelect(r.id)} blindMode={blindMode} />
+              <RecordRow key={r.id} record={r} selected={r.id === selectedId} onClick={() => onSelect(r.id)} blindMode={blindMode} scoreInfo={ai?.enabled ? ai.scores[r.id] : null} />
             ))}
             {hasMore && (
               <div style={{ position: 'sticky', bottom: 0, background: C.surf, borderTop: `1px solid ${C.brd}`, padding: '10px 14px', textAlign: 'center', flexShrink: 0 }}>
@@ -587,7 +634,7 @@ function LeftColumn({
   );
 }
 
-function RecordRow({ record, selected, onClick, blindMode }) {
+function RecordRow({ record, selected, onClick, blindMode, scoreInfo }) {
   const [hover, setHover] = useState(false);
   const my = record.myDecision?.decision;
   const myDc = DECISION_COLORS[my] || DECISION_COLORS.undecided;
@@ -682,6 +729,7 @@ function RecordRow({ record, selected, onClick, blindMode }) {
         {record.handoffStatus === 'sent' && <Tooltip content={STATUS_HELP.sent}><Badge color={C.acc}>Sent</Badge></Tooltip>}
         {record.disputed && <Tooltip content={STATUS_HELP.disputed}><Badge color={C.gold}>Disputed</Badge></Tooltip>}
         {record.isDuplicate && <Tooltip content={STATUS_HELP.duplicate}><Badge color={C.gold}>Dup</Badge></Tooltip>}
+        {scoreInfo && <ScoreBadge score={scoreInfo.score} band={scoreInfo.band} prediction={scoreInfo.prediction} />}
       </div>
     </div>
   );
@@ -698,7 +746,7 @@ function MiddleColumn({
   reasons, setReasons, labels, chosenLabels, toggleLabel,
   onDecisionClick, onUndo, onSaveDetails, saving, saveMsg, decErr,
   recordIndex, recordCount, totalCount, onPrev, onNext,
-  shortcutPrefs,
+  shortcutPrefs, ai,
 }) {
   const k = shortcutPrefs?.keys ?? DEFAULT_SCREENING_SHORTCUTS.keys;
   const shortcutsOn = shortcutPrefs?.enabled !== false;
@@ -771,6 +819,13 @@ function MiddleColumn({
         <div style={{ margin: '4px 0 16px' }}>
           <PdfViewer pid={pid} recordId={record.id} canManage={canScreen || isLeader} />
         </div>
+
+        {/* ── AI relevance assistance (feature flag: aiScreening) ─────────── */}
+        {ai?.enabled && (
+          <div style={{ margin: '4px 0 16px' }}>
+            <AiScoreCard ai={ai} record={record} decided={record.myDecision?.decision} />
+          </div>
+        )}
 
         {/* ── Quorum / workflow status ───────────────────────────────────── */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '16px 0', flexWrap: 'wrap' }}>
@@ -1049,10 +1104,10 @@ function RightColumn({
   showInclusion, setShowInclusion, showExclusion, setShowExclusion,
   labels, setLabels, reasons, setReasons, blindMode,
   kwStats, loadKwStats, selectedIncl, setSelectedIncl, selectedExcl, setSelectedExcl,
-  clearKeywordFilters, shownCount, projectTotal, onCollapse,
+  clearKeywordFilters, shownCount, projectTotal, onCollapse, ai,
 }) {
   const [open, setOpen] = useState({
-    pico: true, keywords: true,
+    ai: true, pico: true, keywords: true,
     studyTypes: false, labels: false, reasons: false,
   });
   const toggle = key => setOpen(o => ({ ...o, [key]: !o[key] }));
@@ -1073,6 +1128,13 @@ function RightColumn({
           <Badge color={C.gold}>Blind mode</Badge>
           <span style={{ fontSize: 11, color: C.txt2 }}>Authors & reviewers anonymised</span>
         </div>
+      )}
+
+      {/* AI Screening (feature flag: aiScreening) */}
+      {ai?.enabled && (
+        <Section title="AI Screening" open={open.ai} onToggle={() => toggle('ai')}>
+          <AiStatusPanel ai={ai} />
+        </Section>
       )}
 
       {/* PICO / Question */}

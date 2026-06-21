@@ -66,6 +66,23 @@ const DEFAULTS = {
     // legacy SearchTab. When ON, the new SearchBuilderTab renders (NLM-backed MeSH
     // lookup + live PubMed counts) and persists per project (module 'search').
     searchEngine: false,
+    // screeningEngin.md — PecanRev Screening Intelligence Engine. Default OFF: the
+    // /api/screening/projects/:pid/ai/* endpoints 404 and the screening workbench
+    // shows no AI surfaces. When ON, the deterministic TF-IDF + active-learning
+    // relevance engine scores/ranks/explains records (human decisions unchanged).
+    aiScreening: false,
+  }),
+  // screeningEngin.md — global (admin) AI screening policy. Surfaced in Ops ›
+  // AI Screening. Additive SiteSetting; merged with AI_GLOBAL_DEFAULTS server-side.
+  aiScreeningSettings: JSON.stringify({
+    enabled: true,
+    embeddingProvider: 'lexical',     // lexical | hashing | hosted
+    maxRecordsPerRun: 5000,
+    requireHumanFinalDecision: true,
+    allowReviewersToRun: false,
+    includeThreshold: 0.65,
+    excludeThreshold: 0.35,
+    defaultPolicy: 'assist',
   }),
 };
 

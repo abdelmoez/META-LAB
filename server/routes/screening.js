@@ -16,6 +16,7 @@ import * as OV from '../controllers/screeningOverviewController.js';
 import * as PDF from '../controllers/screeningPdfController.js';
 import * as OA from '../controllers/screeningOaController.js';
 import * as PR from '../controllers/presenceController.js';
+import * as AI from '../controllers/screeningAiController.js';
 
 const r = Router();
 const prisma = new PrismaClient();
@@ -124,6 +125,15 @@ r.post('/projects/:pid/match-pdfs',      OA.matchPdfs);    // suggestion-only, n
 // Decisions
 r.post('/projects/:pid/records/:rid/decision', S.saveDecision);
 r.get('/projects/:pid/decisions',              S.listDecisions);
+
+// AI Screening Intelligence Engine (feature flag: aiScreening; each handler 404s when off)
+r.get('/projects/:pid/ai/status',                       AI.getAiStatus);
+r.post('/projects/:pid/ai/run',                         AI.postAiRun);
+r.get('/projects/:pid/ai/scores',                       AI.getAiScores);
+r.get('/projects/:pid/ai/validation',                   AI.getAiValidation);
+r.put('/projects/:pid/ai/settings',                     AI.putAiSettings);
+r.get('/projects/:pid/records/:rid/ai/explanation',     AI.getAiExplanation);
+r.post('/projects/:pid/records/:rid/ai/feedback',       AI.postAiFeedback);
 
 // Second Review (full-text stage) + META·LAB handoff (Parts 3/12)
 r.get('/projects/:pid/second-review',            RV.listSecondReview);

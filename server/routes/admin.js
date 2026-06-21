@@ -62,6 +62,12 @@ import {
 } from '../controllers/screeningAdminController.js';
 
 import {
+  getAiScreeningSettings,
+  updateAiScreeningSettings,
+  getAiRunLogs,
+} from '../controllers/screeningAiAdminController.js';
+
+import {
   adminListQuestions,
   adminCreateQuestion,
   adminUpdateQuestion,
@@ -198,6 +204,11 @@ router.get('/screening/projects/:id/members',  requireAdmin, getScreeningProject
 router.patch('/screening/projects/:id/status', requireAdmin, updateScreeningProjectStatus);
 // prompt9 — revive an owner-deleted ScreenProject (clears deletedAt + deletedSource).
 router.patch('/screening/projects/:id/restore', requireAdmin, restoreScreeningProject);
+
+// screeningEngin.md — AI Screening Intelligence Engine ops controls (admin only)
+router.get('/ai-screening/settings', requireAdmin, getAiScreeningSettings);
+router.put('/ai-screening/settings', requireAdmin, updateAiScreeningSettings);
+router.get('/ai-screening/runs',     requireAdmin, getAiRunLogs);
 
 // ── Onboarding questions (prompt32 Task 7) — admin only ─────────────────────────
 router.get('/onboarding-settings',              requireAdmin, getOnboardingSettings);

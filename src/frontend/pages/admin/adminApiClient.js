@@ -126,6 +126,17 @@ export const adminApi = {
     restore:      (id)       => req(`${BASE}/screening/projects/${id}/restore`, { method: 'PATCH' }),
   },
 
+  // ── AI Screening Intelligence Engine (screeningEngin.md, admin only) ─────────
+  // getSettings → { settings:{ enabled, embeddingProvider, maxRecordsPerRun,
+  //   requireHumanFinalDecision, allowReviewersToRun, includeThreshold,
+  //   excludeThreshold, defaultPolicy }, defaults:{...} }.
+  // getRuns(p) → { runs:[{ id, projectId, status, mode, nScored, metrics, ... }], errorCount }.
+  aiScreening: {
+    getSettings:  ()         => req(`${BASE}/ai-screening/settings`),
+    saveSettings: (body)     => req(`${BASE}/ai-screening/settings`, { method: 'PUT', ...json(body) }),
+    getRuns:      (p)        => req(`${BASE}/ai-screening/runs?${new URLSearchParams(p || {})}`),
+  },
+
   // ── Onboarding (prompt32 Task 7, admin only) ─────────────────────────────────
   // Behaviour settings: getSettings → { enabled, introTitle, introBody };
   // saveSettings(body) PUTs the same shape. Questions manager:

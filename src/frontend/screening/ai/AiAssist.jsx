@@ -1,0 +1,326 @@
+/**
+ * AiAssist.jsx — UI surfaces for the PecanRev Screening Intelligence Engine.
+ *
+ * Institutional, calm, no gimmicks: a relevance gauge, an honest prediction +
+ * confidence, a transparent "why" breakdown (model terms, criteria/PICO matches,
+ * similar included records), an active-learning queue selector, and a model /
+ * validation status panel. All AI output is ASSISTIVE — the human decision
+ * controls are untouched. Components degrade gracefully when AI is unavailable.
+ */
+import { useState, useEffect } from 'react';
+import { C, FONT, MONO, alpha } from '../ui/theme.js';
+import { QUEUE_MODES } from '../../../research-engine/screening/ai/ranking.js';
+
+const pct = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
+const BAND_COLOR = {
+  very_high: C.grn, high: C.grn, medium: C.yel, low: C.red, very_low: C.red, unscored: C.muted,
+};
+const PRED_LABEL = { include: 'Likely include', exclude: 'Likely exclude', uncertain: 'Uncertain' };
+const PRED_COLOR = { include: C.grn, exclude: C.red, uncertain: C.yel };
+
+function Bar({ value, color, height = 6 }) {
+  return (
+    <div style={{ background: C.card2, borderRadius: 99, height, overflow: 'hidden' }}>
+      <div style={{ width: `${Math.round((value || 0) * 100)}%`, height: '100%', background: color, borderRadius: 99, transition: 'width .25s' }} />
+    </div>
+  );
+}
+
+function Chip({ children, color = C.muted, title }) {
+  return (
+    <span title={title} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4, fontFamily: MONO, fontSize: 10,
+      letterSpacing: '.04em', textTransform: 'uppercase', color, background: alpha(color, 0.12),
+      border: `1px solid ${alpha(color, 0.4)}`, borderRadius: 5, padding: '2px 6px', whiteSpace: 'nowrap',
+    }}>{children}</span>
+  );
+}
+
+function MiniBtn({ children, onClick, active, disabled, title, color = C.acc }) {
+  return (
+    <button type="button" onClick={onClick} disabled={disabled} title={title} style={{
+      fontFamily: FONT, fontSize: 12, padding: '5px 9px', borderRadius: 6, cursor: disabled ? 'default' : 'pointer',
+      color: active ? C.accText : color, background: active ? color : 'transparent',
+      border: `1px solid ${active ? color : alpha(color, 0.45)}`, opacity: disabled ? 0.5 : 1, fontWeight: 500,
+    }}>{children}</button>
+  );
+}
+
+/** Compact score pill for record-list rows. */
+export function ScoreBadge({ score, band, prediction }) {
+  if (score == null) return null;
+  const color = BAND_COLOR[band] || C.muted;
+  return (
+    <span title={`AI relevance ${pct(score)}${prediction ? ` · ${PRED_LABEL[prediction] || prediction}` : ''}`}
+      style={{
+        fontFamily: MONO, fontSize: 10, fontWeight: 700, color, background: alpha(color, 0.14),
+        border: `1px solid ${alpha(color, 0.45)}`, borderRadius: 5, padding: '1px 5px', letterSpacing: '.02em',
+      }}>AI {Math.round(score * 100)}</span>
+  );
+}
+
+/** The main record-detail AI card: score, prediction, confidence, and "why". */
+export function AiScoreCard({ ai, record, decided }) {
+  const [expl, setExpl] = useState(null);
+  const [open, setOpen] = useState(false);
+  const [fb, setFb] = useState('');
+  const rid = record?.id;
+  const score = rid ? ai.scores[rid] : null;
+  const blind = ai.status?.project?.blindFromAi;
+
+  useEffect(() => {
+    setExpl(null); setOpen(false); setFb('');
+    if (!rid || !ai.enabled) return;
+    if (blind && !decided) return;        // respect AI-blinding until the reviewer decides
+    let live = true;
+    ai.getExplanation(rid).then(e => { if (live) setExpl(e); });
+    return () => { live = false; };
+  }, [rid, ai.enabled, blind, decided]); // eslint-disable-line
+
+  if (!ai.enabled) return null;
+
+  const card = (children) => (
+    <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: 14, fontFamily: FONT }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <span style={{ fontFamily: MONO, fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase', color: C.acc, fontWeight: 700 }}>AI relevance</span>
+        <span style={{ flex: 1 }} />
+        {ai.status?.latestRun && <Chip color={C.muted}>{ai.status.latestRun.mode === 'supervised' ? 'Trained model' : 'Cold-start'}</Chip>}
+      </div>
+      {children}
+    </div>
+  );
+
+  if (blind && !decided) {
+    return card(
+      <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.5 }}>
+        AI suggestions are hidden until you record your own decision (independent screening is enabled for this project).
+      </div>
+    );
+  }
+
+  if (!score) {
+    return card(
+      <div style={{ fontSize: 12.5, color: C.muted }}>
+        No AI score yet. {ai.status?.canRun ? 'Run AI scoring from the AI Screening panel.' : 'Ask a project leader to run AI scoring.'}
+      </div>
+    );
+  }
+
+  const predColor = PRED_COLOR[score.prediction] || C.muted;
+  const e = expl?.explanation;
+
+  return card(
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+        <div style={{ fontSize: 30, fontWeight: 700, fontFamily: MONO, color: BAND_COLOR[score.band] || C.txt, lineHeight: 1 }}>{Math.round(score.score * 100)}</div>
+        <div style={{ fontSize: 12, color: C.muted }}>/ 100</div>
+        <span style={{ flex: 1 }} />
+        <Chip color={predColor}>{PRED_LABEL[score.prediction] || score.prediction}</Chip>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: C.muted, marginBottom: 3 }}><span>CONFIDENCE</span><span>{pct(score.confidence)}</span></div>
+          <Bar value={score.confidence} color={C.acc} />
+        </div>
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: C.muted, marginBottom: 3 }}><span>UNCERTAINTY</span><span>{pct(score.uncertainty)}</span></div>
+          <Bar value={score.uncertainty} color={C.yel} />
+        </div>
+      </div>
+
+      {score.missingAbstract && <Chip color={C.gold} title="No abstract — title-only, low confidence">No abstract — title only</Chip>}
+      {score.lowConfidence && <div style={{ fontSize: 11.5, color: C.gold }}>Low-confidence prior — no model trained and no criteria configured yet.</div>}
+
+      <button type="button" onClick={() => setOpen(o => !o)} style={{
+        background: 'transparent', border: 'none', color: C.acc, fontFamily: FONT, fontSize: 12, cursor: 'pointer',
+        textAlign: 'left', padding: 0, fontWeight: 500,
+      }}>{open ? '▾ Hide reasons' : '▸ Why this score?'}</button>
+
+      {open && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10, borderTop: `1px solid ${C.brd}`, paddingTop: 10 }}>
+          {!e && <div style={{ fontSize: 12, color: C.muted }}>Loading explanation…</div>}
+          {e && (
+            <>
+              {e.uncertaintyNote && <div style={{ fontSize: 11.5, color: C.txt2, fontStyle: 'italic', lineHeight: 1.5 }}>{e.uncertaintyNote}</div>}
+              <ReasonList title="Reasons to include" color={C.grn} reasons={e.reasonsInclude} />
+              <ReasonList title="Reasons to exclude" color={C.red} reasons={e.reasonsExclude} />
+              <PicoMatch breakdown={e.picoBreakdown} />
+              {e.similar?.length > 0 && (
+                <div>
+                  <div style={{ fontSize: 10.5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>Similar included records</div>
+                  {e.similar.map(s => (
+                    <div key={s.recordId} style={{ fontSize: 12, color: C.txt2, display: 'flex', gap: 6, padding: '2px 0' }}>
+                      <span style={{ fontFamily: MONO, color: C.teal, fontSize: 10 }}>{Math.round(s.similarity * 100)}%</span>
+                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title || s.recordId}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
+            <span style={{ fontSize: 11, color: C.muted }}>Was this helpful?</span>
+            <MiniBtn color={C.grn} active={fb === 'helpful'} onClick={() => { setFb('helpful'); ai.sendFeedback(rid, { rating: 'helpful', humanDecision: decided || '' }); }}>Yes</MiniBtn>
+            <MiniBtn color={C.red} active={fb === 'not_helpful'} onClick={() => { setFb('not_helpful'); ai.sendFeedback(rid, { rating: 'not_helpful', humanDecision: decided || '' }); }}>No</MiniBtn>
+            {fb && <span style={{ fontSize: 11, color: C.muted }}>Thanks — logged.</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReasonList({ title, color, reasons }) {
+  if (!reasons || !reasons.length) return null;
+  return (
+    <div>
+      <div style={{ fontSize: 10.5, color, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4, fontWeight: 600 }}>{title}</div>
+      {reasons.slice(0, 6).map((r, i) => (
+        <div key={i} style={{ fontSize: 12, color: C.txt2, display: 'flex', gap: 6, padding: '1px 0', lineHeight: 1.4 }}>
+          <span style={{ color, marginTop: 1 }}>•</span><span>{r.text}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PicoMatch({ breakdown }) {
+  if (!breakdown || !breakdown.some(d => d.match != null)) return null;
+  return (
+    <div>
+      <div style={{ fontSize: 10.5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>PICO match</div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {breakdown.map(d => d.match == null ? null : (
+          <Chip key={d.dimension} color={d.match > 0.001 ? C.teal : C.muted} title={(d.matched || []).join(', ')}>
+            {d.dimension[0].toUpperCase()} {pct(d.match)}
+          </Chip>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Active-learning queue selector + Run control for the list header. */
+export function AiQueueBar({ ai, mode, onMode, band, onBand }) {
+  if (!ai.enabled) return null;
+  const sel = {
+    fontFamily: FONT, fontSize: 12, color: C.txt, background: C.card, border: `1px solid ${C.brd}`,
+    borderRadius: 6, padding: '5px 7px', cursor: 'pointer',
+  };
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+      <span style={{ fontFamily: MONO, fontSize: 10, color: C.acc, letterSpacing: '.06em' }}>AI QUEUE</span>
+      <select value={mode} onChange={e => onMode(e.target.value)} style={sel} title="Reorder the worklist by AI signal">
+        {QUEUE_MODES.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+      </select>
+      <select value={band || 'all'} onChange={e => onBand(e.target.value)} style={sel} title="Filter loaded records by AI score band">
+        <option value="all">All scores</option>
+        <option value="very_high">Very high (80+)</option>
+        <option value="high">High (60+)</option>
+        <option value="medium">Medium (40–60)</option>
+        <option value="low">Low (&lt;40)</option>
+        <option value="uncertain">Uncertain band</option>
+      </select>
+      {ai.status?.canRun && (
+        <MiniBtn onClick={() => ai.run()} disabled={ai.running} title="Train on current decisions and re-score all records">
+          {ai.running ? 'Scoring…' : 'Run AI scoring'}
+        </MiniBtn>
+      )}
+    </div>
+  );
+}
+
+/** RightColumn section: model status, training summary, validation, policy. */
+export function AiStatusPanel({ ai }) {
+  const [val, setVal] = useState(null);
+  const s = ai.status;
+
+  useEffect(() => {
+    if (s && s.canConfigure) ai.getValidation().then(setVal);
+  }, [s?.latestRun?.id]); // eslint-disable-line
+
+  if (!ai.ready) return null;
+  if (!ai.enabled) return null;
+
+  const run = s?.latestRun;
+  const lc = run?.labelCounts || {};
+  const m = (val?.metrics) || run?.metrics || {};
+  const num = (x, d = 2) => (typeof x === 'number' ? x.toFixed(d) : '—');
+
+  const row = (label, value, color) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '2px 0' }}>
+      <span style={{ color: C.muted }}>{label}</span><span style={{ fontFamily: MONO, color: color || C.txt }}>{value}</span>
+    </div>
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, fontFamily: FONT }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <Chip color={run?.mode === 'supervised' ? C.grn : C.yel}>{run ? (run.mode === 'supervised' ? 'Trained model' : 'Cold-start') : 'Not run'}</Chip>
+        {s?.scoreCount > 0 && <span style={{ fontSize: 11, color: C.muted }}>{s.scoreCount} scored</span>}
+        <span style={{ flex: 1 }} />
+        {s?.canRun && <MiniBtn onClick={() => ai.run()} disabled={ai.running}>{ai.running ? 'Scoring…' : 'Run scoring'}</MiniBtn>}
+      </div>
+
+      {ai.error && <div style={{ fontSize: 11.5, color: C.red }}>{ai.error}</div>}
+
+      {run && (
+        <div>
+          <div style={{ fontSize: 10.5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>Training set</div>
+          {row('Includes', lc.include ?? 0, C.grn)}
+          {row('Excludes', lc.exclude ?? 0, C.red)}
+          {row('Class balance', lc.classBalance != null ? pct(lc.classBalance) : '—')}
+          {run.mode !== 'supervised' && <div style={{ fontSize: 11, color: C.gold, marginTop: 4 }}>Add more decisions to train a model (≥10 labels, ≥3 of each class).</div>}
+        </div>
+      )}
+
+      {run && run.mode === 'supervised' && (
+        <div>
+          <div style={{ fontSize: 10.5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>Validation (in-sample)</div>
+          {row('AUC', num(m.auc))}
+          {row('Sensitivity', m.sensitivity != null ? pct(m.sensitivity) : '—')}
+          {row('Specificity', m.specificity != null ? pct(m.specificity) : '—')}
+          {row('WSS@95', m.wss95 != null ? num(m.wss95) : '—', C.teal)}
+          {row('Recall@10', m.recallAt10 != null ? pct(m.recallAt10) : '—')}
+          {m.sampleWarning?.warn && <div style={{ fontSize: 11, color: C.gold, marginTop: 4, lineHeight: 1.4 }}>{m.sampleWarning.reason}</div>}
+          <div style={{ fontSize: 10.5, color: C.muted, marginTop: 4, lineHeight: 1.4 }}>Apparent (in-sample) performance vs human decisions. See docs for held-out validation.</div>
+        </div>
+      )}
+
+      {s?.canConfigure && <AiPolicyControls ai={ai} />}
+
+      <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, borderTop: `1px solid ${C.brd}`, paddingTop: 8 }}>
+        AI suggestions are assistive. Every record still requires the project's normal human review — the engine never includes or excludes on its own.
+      </div>
+    </div>
+  );
+}
+
+function AiPolicyControls({ ai }) {
+  const p = ai.status?.project || {};
+  const [busy, setBusy] = useState(false);
+  const set = async (patch) => { setBusy(true); try { await ai.updateSettings(patch); } finally { setBusy(false); } };
+  const sel = { fontFamily: FONT, fontSize: 12, color: C.txt, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 6, padding: '4px 6px' };
+
+  return (
+    <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 8 }}>
+      <div style={{ fontSize: 10.5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>Project AI policy</div>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: C.txt2, marginBottom: 6, cursor: 'pointer' }}>
+        <input type="checkbox" checked={!!p.enabled} disabled={busy} onChange={e => set({ enabled: e.target.checked })} />
+        AI screening enabled for this project
+      </label>
+      <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: C.txt2, marginBottom: 6, cursor: 'pointer' }}>
+        <input type="checkbox" checked={!!p.blindFromAi} disabled={busy} onChange={e => set({ blindFromAi: e.target.checked })} />
+        Hide AI scores until the reviewer decides (independent screening)
+      </label>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: C.txt2 }}>
+        <span>Policy</span>
+        <select value={p.policy || 'assist'} disabled={busy} onChange={e => set({ policy: e.target.value })} style={sel}>
+          <option value="assist">Assist (suggest only)</option>
+          <option value="prioritize">Prioritize (reorder queue)</option>
+        </select>
+      </div>
+    </div>
+  );
+}

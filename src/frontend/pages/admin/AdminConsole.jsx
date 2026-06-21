@@ -4330,6 +4330,7 @@ const FLAG_META = [
   { key: 'rob_engine_v2',        label: 'Risk of Bias (RoB 2)',  desc: 'Enable the PecanRev RoB 2 assessment workspace (beta). Off by default until validated.' },
   { key: 'serverBackedWorkflowState', label: 'Server-Backed Workflow State', desc: 'Persist migrated workflow modules (Protocol, Search Builder) server-side with revision-based conflict detection. Off keeps the legacy whole-project autosave.' },
   { key: 'searchEngine',         label: 'Search Builder Engine', desc: 'Enable the new concept→multi-database Search Builder (MeSH lookup + live PubMed counts via the NLM proxy). Off keeps the legacy in-app search builder.' },
+  { key: 'aiScreening',          label: 'AI Screening Engine',   desc: 'Enable the PecanRev Screening Intelligence Engine: deterministic TF-IDF + active-learning relevance scoring, ranking, explanations, and validation metrics inside the screening workbench. Assistive only — human decisions are never automated. Off by default until validated. Configure policy in AI Screening below.' },
 ];
 
 function FlagsSection() {
@@ -4362,6 +4363,93 @@ function FlagsSection() {
         ))}
       </SectionCard>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}><SaveButton onClick={save} status={status} /></div>
+
+      {flags.aiScreening && <AiScreeningSection />}
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   SECTION: AI SCREENING ENGINE (screeningEngin.md) — global policy + run logs.
+   Rendered inside the Feature Flags view only when the aiScreening flag is on.
+   ════════════════════════════════════════════════════════════════════════ */
+
+function AiScreeningSection() {
+  const [s, setS] = useState(null);
+  const [runs, setRuns] = useState(null);
+  const [errorCount, setErrorCount] = useState(0);
+  const [status, setStatus] = useState('idle');
+
+  useEffect(() => {
+    adminApi.aiScreening.getSettings().then(d => setS(d.settings)).catch(() => setS(null));
+    adminApi.aiScreening.getRuns({ limit: 20 }).then(d => { setRuns(d.runs || []); setErrorCount(d.errorCount || 0); }).catch(() => setRuns([]));
+  }, []);
+
+  async function save() {
+    setStatus('saving');
+    try { const d = await adminApi.aiScreening.saveSettings(s); setS(d.settings); setStatus('saved'); setTimeout(() => setStatus('idle'), 3000); }
+    catch { setStatus('error'); setTimeout(() => setStatus('idle'), 3000); }
+  }
+
+  if (!s) return null;
+  const set = (k, v) => setS(p => ({ ...p, [k]: v }));
+  const inp = { background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 6, padding: '6px 9px', color: C.txt, fontSize: 13, width: 160 };
+  const Row = ({ label, desc, children }) => (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', borderBottom: `1px solid ${C.brd}`, gap: 20 }}>
+      <div><div style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>{label}</div>{desc && <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>{desc}</div>}</div>
+      {children}
+    </div>
+  );
+
+  return (
+    <div style={{ marginTop: 32 }}>
+      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 6px' }}>AI Screening · global policy</h2>
+      <p style={{ fontSize: 12, color: C.muted, margin: '0 0 16px', lineHeight: 1.6 }}>
+        The deterministic engine runs in-process with no external calls under the default <code>lexical</code> provider. AI is assistive only — it never finalises a screening decision.
+      </p>
+      <SectionCard>
+        <Row label="AI screening enabled" desc="Master switch within the feature flag (per-project opt-in still applies).">
+          <Toggle checked={!!s.enabled} onChange={v => set('enabled', v)} />
+        </Row>
+        <Row label="Embedding provider" desc="lexical = in-process TF-IDF (no external calls). hashing = dependency-free dense vectors. hosted = bring-your-own embedding service (server-configured).">
+          <select value={s.embeddingProvider} onChange={e => set('embeddingProvider', e.target.value)} style={inp}>
+            <option value="lexical">lexical</option><option value="hashing">hashing</option><option value="hosted">hosted</option>
+          </select>
+        </Row>
+        <Row label="Require human final decision" desc="AI may never finalise an include/exclude. Strongly recommended on.">
+          <Toggle checked={!!s.requireHumanFinalDecision} onChange={v => set('requireHumanFinalDecision', v)} />
+        </Row>
+        <Row label="Allow reviewers to run scoring" desc="Off = only project leaders/owners may trigger scoring.">
+          <Toggle checked={!!s.allowReviewersToRun} onChange={v => set('allowReviewersToRun', v)} />
+        </Row>
+        <Row label="Max records per run" desc="Upper bound on records scored in a single run.">
+          <input type="number" min={10} max={100000} value={s.maxRecordsPerRun} onChange={e => set('maxRecordsPerRun', parseInt(e.target.value, 10) || 0)} style={inp} />
+        </Row>
+        <Row label="Default policy" desc="assist = suggest only · prioritize = also reorder the queue.">
+          <select value={s.defaultPolicy} onChange={e => set('defaultPolicy', e.target.value)} style={inp}>
+            <option value="assist">assist</option><option value="prioritize">prioritize</option>
+          </select>
+        </Row>
+      </SectionCard>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}><SaveButton onClick={save} status={status} /></div>
+
+      <h3 style={{ fontSize: 14, fontWeight: 700, color: C.txt, margin: '24px 0 10px' }}>
+        Recent runs {errorCount > 0 && <span style={{ color: C.red, fontSize: 12 }}>· {errorCount} failed</span>}
+      </h3>
+      <SectionCard>
+        {runs && runs.length === 0 && <div style={{ padding: 18, fontSize: 12.5, color: C.muted }}>No AI runs yet.</div>}
+        {runs && runs.map((r, i) => (
+          <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 18px', borderBottom: i < runs.length - 1 ? `1px solid ${C.brd}` : 'none', fontSize: 12 }}>
+            <span style={{ fontFamily: 'monospace', color: r.status === 'failed' ? C.red : C.grn, width: 70 }}>{r.status}</span>
+            <span style={{ color: C.txt2, width: 90 }}>{r.mode}</span>
+            <span style={{ color: C.muted }}>{r.nScored} scored</span>
+            {r.metrics?.auc != null && <span style={{ color: C.muted }}>· AUC {Number(r.metrics.auc).toFixed(2)}</span>}
+            {r.failureReason && <span style={{ color: C.red }}>· {r.failureReason}</span>}
+            <span style={{ flex: 1 }} />
+            <span style={{ color: C.muted, fontFamily: 'monospace', fontSize: 10 }}>{r.projectId?.slice(0, 8)}</span>
+          </div>
+        ))}
+      </SectionCard>
     </div>
   );
 }
