@@ -8,7 +8,7 @@
 
 | Type | Request | Area | Priority | Owner | Assignee | Status |
 |---|---|---|---|---|---|---|
-| Suggestion | Move "AI Screening · Global Policy" into the Screening section of the Ops Console. | Ops Console | High | Abdulmoiz | Claude | **In progress** (Increment 1b) |
+| Suggestion | Move "AI Screening · Global Policy" into the Screening section of the Ops Console. | Ops Console | High | Abdulmoiz | Claude | **Done** ✅ (Increment 1b — see `se2-increment-1b.md`) |
 | Bug | "Why this score?" stuck on "Loading explanation…" too long. | Screening Engine | Critical | Abdulmoiz | Claude | **Done** ✅ |
 | Suggestion | Recompute/incrementally update AI scoring on each new decision so reviewers see rankings from the latest human decisions. | Screening Engine | Critical | Abdulmoiz | Claude | **Done** ✅ |
 
@@ -83,8 +83,9 @@ embedding provider when configured) — it is labeled as such, not as "biomedica
 understanding." A real biomedical-embedding default is Increment 3.
 
 ## Next (this PR series)
-- **1b:** relocate AI Screening Global Policy into the Ops Console **Screening** section
-  with grouped subsections (one source of truth, RBAC, audit) — §4.
+- **1b:** ✅ **DONE** — relocated AI Screening Global Policy into the Ops Console
+  **Screening** section as the **AI Policy** sub-tab with grouped subsections (one source
+  of truth, RBAC inherited, before→after audit) — §4. See `se2-increment-1b.md`.
 - **Increment 2:** probability calibration (Platt/isotonic, out-of-fold) + statistically
   grounded stopping rules — §8/§9.
 - **Increment 3:** biomedical embedding service, duplicate calibration, model

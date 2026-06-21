@@ -1265,9 +1265,11 @@ export async function updateThemeSettings(req, res) {
 export async function getAuditLog(req, res) {
   try {
     const { page, limit, skip } = parsePage(req.query);
-    const { adminId } = req.query;
+    const { adminId, action } = req.query;
 
-    const where = adminId ? { adminId } : {};
+    const where = {};
+    if (adminId) where.adminId = adminId;
+    if (action) where.action = String(action);
 
     const [total, logs] = await Promise.all([
       prisma.adminAuditLog.count({ where }),

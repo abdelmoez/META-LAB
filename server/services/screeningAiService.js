@@ -66,14 +66,38 @@ export async function aiFlagEnabled() {
   } catch { return false; }
 }
 
-/** Global AI settings merged with defaults. */
-export async function getGlobalAiSettings() {
+/**
+ * applyKillSwitch — when the emergency kill switch is set it forces `enabled=false`
+ * everywhere the engine consults settings, overriding all other toggles. Pure (no
+ * mutation of the input); exported for unit testing. se2.md §4.
+ */
+export function applyKillSwitch(settings) {
+  const s = { ...settings };
+  if (s.killSwitch) s.enabled = false;
+  return s;
+}
+
+/**
+ * getRawGlobalAiSettings — defaults merged with the stored override, WITHOUT the
+ * kill-switch runtime override. Use this for the admin editor so the stored `enabled`
+ * value is edited directly (the override is a runtime effect, not a persisted state —
+ * applying it before save would clobber `enabled` whenever the kill switch is on).
+ */
+export async function getRawGlobalAiSettings() {
   try {
     const row = await prisma.siteSetting.findUnique({ where: { key: AI_SETTINGS_KEY } });
-    const merged = { ...AI_GLOBAL_DEFAULTS, ...safeParse(row?.value, {}) };
-    // Emergency kill switch overrides `enabled` everywhere it is consulted.
-    if (merged.killSwitch) merged.enabled = false;
-    return merged;
+    return { ...AI_GLOBAL_DEFAULTS, ...safeParse(row?.value, {}) };
+  } catch { return { ...AI_GLOBAL_DEFAULTS }; }
+}
+
+/**
+ * getGlobalAiSettings — EFFECTIVE global AI settings consumed by the engine: the raw
+ * stored values with the emergency kill switch applied. Behaviour is unchanged for all
+ * existing callers (kill switch still forces enabled=false).
+ */
+export async function getGlobalAiSettings() {
+  try {
+    return applyKillSwitch(await getRawGlobalAiSettings());
   } catch { return { ...AI_GLOBAL_DEFAULTS }; }
 }
 

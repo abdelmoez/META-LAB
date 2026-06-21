@@ -4330,7 +4330,7 @@ const FLAG_META = [
   { key: 'rob_engine_v2',        label: 'Risk of Bias (RoB 2)',  desc: 'Enable the PecanRev RoB 2 assessment workspace (beta). Off by default until validated.' },
   { key: 'serverBackedWorkflowState', label: 'Server-Backed Workflow State', desc: 'Persist migrated workflow modules (Protocol, Search Builder) server-side with revision-based conflict detection. Off keeps the legacy whole-project autosave.' },
   { key: 'searchEngine',         label: 'Search Builder Engine', desc: 'Enable the new concept→multi-database Search Builder (MeSH lookup + live PubMed counts via the NLM proxy). Off keeps the legacy in-app search builder.' },
-  { key: 'aiScreening',          label: 'AI Screening Engine',   desc: 'Enable the PecanRev Screening Intelligence Engine: deterministic TF-IDF + active-learning relevance scoring, ranking, explanations, and validation metrics inside the screening workbench. Assistive only — human decisions are never automated. Off by default until validated. Configure policy in AI Screening below.' },
+  { key: 'aiScreening',          label: 'AI Screening Engine',   desc: 'Enable the PecanRev Screening Intelligence Engine: deterministic TF-IDF + active-learning relevance scoring, ranking, explanations, and validation metrics inside the screening workbench. Assistive only — human decisions are never automated. Off by default until validated. Configure global policy in Screening → AI Policy.' },
 ];
 
 function FlagsSection() {
@@ -4363,36 +4363,72 @@ function FlagsSection() {
         ))}
       </SectionCard>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}><SaveButton onClick={save} status={status} /></div>
-
-      {flags.aiScreening && <AiScreeningSection />}
     </div>
   );
 }
 
 /* ════════════════════════════════════════════════════════════════════════
-   SECTION: AI SCREENING ENGINE (screeningEngin.md) — global policy + run logs.
-   Rendered inside the Feature Flags view only when the aiScreening flag is on.
+   SECTION: AI SCREENING ENGINE (screeningEngin.md / se2.md §4) — global policy,
+   run health + audit. This is the SINGLE source of truth for the AI policy; it
+   renders as the "AI Policy" sub-tab of the Screening Ops section (it used to be
+   buried in the Feature Flags view — moved here in se2.md Increment 1b). The
+   master `aiScreening` feature flag still lives in Flags; this configures the
+   engine that flag turns on.
    ════════════════════════════════════════════════════════════════════════ */
+
+// Honest, precise descriptions of each embedding provider (se2.md §7/§19 —
+// lexical TF-IDF is NOT semantic understanding; never mislabel it as such).
+const AI_PROVIDER_LABELS = {
+  lexical: 'lexical — in-process TF-IDF (no external calls). Lexical similarity, not semantic.',
+  hashing: 'hashing — dependency-free dense hashing vectors (no external calls).',
+  hosted:  'hosted — bring-your-own embedding service (server-configured base URL).',
+};
+
+function AiPolicyBanner({ tone, children }) {
+  const col = tone === 'danger' ? C.red : C.ylw;
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 9, padding: '10px 14px', marginBottom: 14, borderRadius: 8, background: alpha(col, '14'), border: `1px solid ${alpha(col, '50')}`, fontSize: 12.5, color: C.txt, lineHeight: 1.55 }}>
+      <span style={{ color: col, display: 'inline-flex', marginTop: 1 }}><Icon name="alertTriangle" size={14} /></span>
+      <div>{children}</div>
+    </div>
+  );
+}
 
 function AiScreeningSection() {
   const [s, setS] = useState(null);
+  const [loadErr, setLoadErr] = useState(false);
   const [runs, setRuns] = useState(null);
   const [errorCount, setErrorCount] = useState(0);
+  const [flagOn, setFlagOn] = useState(null);   // master aiScreening feature flag
+  const [audit, setAudit] = useState(null);     // recent UPDATE_AI_SCREENING changes
   const [status, setStatus] = useState('idle');
 
-  useEffect(() => {
-    adminApi.aiScreening.getSettings().then(d => setS(d.settings)).catch(() => setS(null));
-    adminApi.aiScreening.getRuns({ limit: 20 }).then(d => { setRuns(d.runs || []); setErrorCount(d.errorCount || 0); }).catch(() => setRuns([]));
+  const loadAudit = useCallback(() => {
+    adminApi.auditLog({ action: 'UPDATE_AI_SCREENING', limit: 15 })
+      .then(d => setAudit(d.logs || [])).catch(() => setAudit([]));
   }, []);
+
+  useEffect(() => {
+    adminApi.aiScreening.getSettings().then(d => { setS(d.settings); setLoadErr(false); }).catch(() => { setS(null); setLoadErr(true); });
+    adminApi.aiScreening.getRuns({ limit: 20 }).then(d => { setRuns(d.runs || []); setErrorCount(d.errorCount || 0); }).catch(() => setRuns([]));
+    adminApi.featureFlags.get().then(d => setFlagOn(!!d.aiScreening)).catch(() => setFlagOn(null));
+    loadAudit();
+  }, [loadAudit]);
 
   async function save() {
     setStatus('saving');
-    try { const d = await adminApi.aiScreening.saveSettings(s); setS(d.settings); setStatus('saved'); setTimeout(() => setStatus('idle'), 3000); }
-    catch { setStatus('error'); setTimeout(() => setStatus('idle'), 3000); }
+    try {
+      const d = await adminApi.aiScreening.saveSettings(s);
+      setS(d.settings); setStatus('saved'); setTimeout(() => setStatus('idle'), 3000);
+      loadAudit(); // reflect the change we just audited
+    } catch { setStatus('error'); setTimeout(() => setStatus('idle'), 3000); }
   }
 
-  if (!s) return null;
+  if (loadErr) return <div style={{ padding: 24, fontSize: 13, color: C.red }}>Could not load AI screening policy. Check that you have admin access and retry.</div>;
+  if (!s) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={20} /></div>;
+
   const set = (k, v) => setS(p => ({ ...p, [k]: v }));
+  const setNum = (k, raw, dflt = 0) => { const v = parseFloat(raw); set(k, Number.isFinite(v) ? v : dflt); };
   const inp = { background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 6, padding: '6px 9px', color: C.txt, fontSize: 13, width: 160 };
   const Row = ({ label, desc, children }) => (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', borderBottom: `1px solid ${C.brd}`, gap: 20 }}>
@@ -4400,21 +4436,36 @@ function AiScreeningSection() {
       {children}
     </div>
   );
+  const Sub = ({ children }) => (
+    <h3 style={{ fontSize: 12.5, fontWeight: 700, color: C.txt2, textTransform: 'uppercase', letterSpacing: '0.06em', margin: '24px 0 8px' }}>{children}</h3>
+  );
 
   return (
-    <div style={{ marginTop: 32 }}>
-      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 6px' }}>AI Screening · global policy</h2>
-      <p style={{ fontSize: 12, color: C.muted, margin: '0 0 16px', lineHeight: 1.6 }}>
-        The deterministic engine runs in-process with no external calls under the default <code>lexical</code> provider. AI is assistive only — it never finalises a screening decision.
+    <div>
+      <p style={{ fontSize: 12.5, color: C.muted, margin: '0 0 14px', lineHeight: 1.6, maxWidth: 760 }}>
+        Authoritative global policy for the PecanRev Screening Intelligence Engine. The deterministic engine
+        runs in-process with no external calls under the default <code>lexical</code> provider. AI is
+        assistive only — it never finalises a screening decision. Every change here is recorded in the audit
+        history below.
       </p>
+
+      {flagOn === false && (
+        <AiPolicyBanner tone="warn">
+          The <strong>AI Screening Engine</strong> feature flag is currently <strong>OFF</strong> (Ops → Flags).
+          These settings are saved but the engine stays inactive until the flag is enabled.
+        </AiPolicyBanner>
+      )}
+      {s.killSwitch && (
+        <AiPolicyBanner tone="danger">
+          <strong>Emergency kill switch is ENGAGED.</strong> AI scoring is force-disabled everywhere,
+          overriding the toggles below, until the kill switch is turned off.
+        </AiPolicyBanner>
+      )}
+
+      <Sub>Global policy</Sub>
       <SectionCard>
         <Row label="AI screening enabled" desc="Master switch within the feature flag (per-project opt-in still applies).">
           <Toggle checked={!!s.enabled} onChange={v => set('enabled', v)} />
-        </Row>
-        <Row label="Embedding provider" desc="lexical = in-process TF-IDF (no external calls). hashing = dependency-free dense vectors. hosted = bring-your-own embedding service (server-configured).">
-          <select value={s.embeddingProvider} onChange={e => set('embeddingProvider', e.target.value)} style={inp}>
-            <option value="lexical">lexical</option><option value="hashing">hashing</option><option value="hosted">hosted</option>
-          </select>
         </Row>
         <Row label="Require human final decision" desc="AI may never finalise an include/exclude. Strongly recommended on.">
           <Toggle checked={!!s.requireHumanFinalDecision} onChange={v => set('requireHumanFinalDecision', v)} />
@@ -4422,33 +4473,103 @@ function AiScreeningSection() {
         <Row label="Allow reviewers to run scoring" desc="Off = only project leaders/owners may trigger scoring.">
           <Toggle checked={!!s.allowReviewersToRun} onChange={v => set('allowReviewersToRun', v)} />
         </Row>
-        <Row label="Max records per run" desc="Upper bound on records scored in a single run.">
-          <input type="number" min={10} max={100000} value={s.maxRecordsPerRun} onChange={e => set('maxRecordsPerRun', parseInt(e.target.value, 10) || 0)} style={inp} />
-        </Row>
-        <Row label="Default policy" desc="assist = suggest only · prioritize = also reorder the queue.">
+        <Row label="Default project policy" desc="assist = suggest only · prioritize = also reorder the queue.">
           <select value={s.defaultPolicy} onChange={e => set('defaultPolicy', e.target.value)} style={inp}>
             <option value="assist">assist</option><option value="prioritize">prioritize</option>
           </select>
         </Row>
+        <Row label="Max records per run" desc="Upper bound on records scored in a single run.">
+          <input type="number" min={10} max={100000} value={s.maxRecordsPerRun} onChange={e => set('maxRecordsPerRun', parseInt(e.target.value, 10) || 0)} style={inp} />
+        </Row>
       </SectionCard>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}><SaveButton onClick={save} status={status} /></div>
 
-      <h3 style={{ fontSize: 14, fontWeight: 700, color: C.txt, margin: '24px 0 10px' }}>
-        Recent runs {errorCount > 0 && <span style={{ color: C.red, fontSize: 12 }}>· {errorCount} failed</span>}
-      </h3>
+      <Sub>Providers &amp; privacy</Sub>
+      <SectionCard>
+        <Row label="Embedding provider" desc={AI_PROVIDER_LABELS[s.embeddingProvider] || 'Similarity backend used for ranking.'}>
+          <select value={s.embeddingProvider} onChange={e => set('embeddingProvider', e.target.value)} style={inp}>
+            <option value="lexical">lexical</option><option value="hashing">hashing</option><option value="hosted">hosted</option>
+          </select>
+        </Row>
+        <div style={{ padding: '12px 20px', fontSize: 11.5, color: C.muted, lineHeight: 1.6 }}>
+          <code>lexical</code> and <code>hashing</code> are fully in-process — no project text leaves the server.
+          <code> hosted</code> sends record text to the configured embedding service; only enable it when the
+          provider is permitted by your data-handling policy. Real biomedical embeddings are a later increment.
+        </div>
+      </SectionCard>
+
+      <Sub>Thresholds</Sub>
+      <SectionCard>
+        <Row label="Include threshold" desc="Score at or above which a record is suggested for inclusion.">
+          <input type="number" min={0} max={1} step={0.01} value={s.includeThreshold} onChange={e => setNum('includeThreshold', e.target.value, 0.65)} style={inp} />
+        </Row>
+        <Row label="Exclude threshold" desc="Score at or below which a record is suggested for exclusion.">
+          <input type="number" min={0} max={1} step={0.01} value={s.excludeThreshold} onChange={e => setNum('excludeThreshold', e.target.value, 0.35)} style={inp} />
+        </Row>
+        <div style={{ padding: '12px 20px', fontSize: 11.5, color: C.muted, lineHeight: 1.6 }}>
+          These are <strong>uncalibrated</strong> default cut-offs on the raw ranking score — not calibrated
+          probabilities. Calibrated probabilities and a reliability curve arrive in the calibration increment.
+        </div>
+      </SectionCard>
+
+      <Sub>Live updating &amp; background jobs</Sub>
+      <SectionCard>
+        <Row label="Live rescoring after decisions" desc="Queue a debounced rescore when reviewers make new include/exclude decisions (se2.md §6).">
+          <Toggle checked={!!s.liveUpdateEnabled} onChange={v => set('liveUpdateEnabled', v)} />
+        </Row>
+        <Row label="Rescore debounce (ms)" desc="Coalesce rapid decisions into one job. 500–60000 ms.">
+          <input type="number" min={500} max={60000} step={500} value={s.retrainDebounceMs} onChange={e => set('retrainDebounceMs', parseInt(e.target.value, 10) || 0)} style={inp} />
+        </Row>
+      </SectionCard>
+
+      <Sub>Emergency kill switch</Sub>
+      <div style={{ border: `1px solid ${alpha(C.red, '50')}`, borderRadius: 10, background: alpha(C.red, '08'), overflow: 'hidden' }}>
+        <Row label="Force-disable all AI scoring" desc="Immediately disables AI scoring everywhere, overriding every toggle above. Use during an incident.">
+          <Toggle checked={!!s.killSwitch} onChange={v => set('killSwitch', v)} />
+        </Row>
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}><SaveButton onClick={save} status={status} /></div>
+
+      <Sub>Validation &amp; health — recent runs {errorCount > 0 && <span style={{ color: C.red, fontSize: 11, fontWeight: 600 }}>· {errorCount} failed</span>}</Sub>
       <SectionCard>
         {runs && runs.length === 0 && <div style={{ padding: 18, fontSize: 12.5, color: C.muted }}>No AI runs yet.</div>}
         {runs && runs.map((r, i) => (
           <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 18px', borderBottom: i < runs.length - 1 ? `1px solid ${C.brd}` : 'none', fontSize: 12 }}>
-            <span style={{ fontFamily: 'monospace', color: r.status === 'failed' ? C.red : C.grn, width: 70 }}>{r.status}</span>
+            <span style={{ fontFamily: MONO, color: r.status === 'failed' ? C.red : C.grn, width: 70 }}>{r.status}</span>
             <span style={{ color: C.txt2, width: 90 }}>{r.mode}</span>
             <span style={{ color: C.muted }}>{r.nScored} scored</span>
             {r.metrics?.auc != null && <span style={{ color: C.muted }}>· AUC {Number(r.metrics.auc).toFixed(2)}</span>}
             {r.failureReason && <span style={{ color: C.red }}>· {r.failureReason}</span>}
             <span style={{ flex: 1 }} />
-            <span style={{ color: C.muted, fontFamily: 'monospace', fontSize: 10 }}>{r.projectId?.slice(0, 8)}</span>
+            <span style={{ color: C.muted, fontFamily: MONO, fontSize: 10 }}>{r.projectId?.slice(0, 8)}</span>
           </div>
         ))}
+        {!runs && <div style={{ padding: 18 }}><Spinner size={16} /></div>}
+      </SectionCard>
+
+      <Sub>Audit history — policy changes</Sub>
+      <SectionCard>
+        {audit && audit.length === 0 && <div style={{ padding: 18, fontSize: 12.5, color: C.muted }}>No policy changes recorded yet.</div>}
+        {audit && audit.map((a, i) => {
+          let changes = {};
+          try { changes = JSON.parse(a.details || '{}').changes || {}; } catch { changes = {}; }
+          const keys = Object.keys(changes);
+          return (
+            <div key={a.id} style={{ padding: '11px 18px', borderBottom: i < audit.length - 1 ? `1px solid ${C.brd}` : 'none', fontSize: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ color: C.txt, fontWeight: 600 }}>{a.admin?.name || a.admin?.email || 'admin'}</span>
+                <span style={{ color: C.muted }}>{fmtAgo(a.createdAt)}</span>
+                <span style={{ flex: 1 }} />
+                <span style={{ color: C.muted, fontFamily: MONO, fontSize: 10 }}>{a.ip || ''}</span>
+              </div>
+              <div style={{ marginTop: 4, color: C.txt2, fontSize: 11.5, fontFamily: MONO, lineHeight: 1.6 }}>
+                {keys.length === 0 ? <span style={{ color: C.muted }}>no field changes</span>
+                  : keys.map(k => <div key={k}>{k}: <span style={{ color: C.red }}>{String(changes[k]?.from)}</span> → <span style={{ color: C.grn }}>{String(changes[k]?.to)}</span></div>)}
+              </div>
+            </div>
+          );
+        })}
+        {!audit && <div style={{ padding: 18 }}><Spinner size={16} /></div>}
       </SectionCard>
     </div>
   );
@@ -4604,12 +4725,13 @@ const SIFT_DEFAULTS = {
 };
 
 const SIFT_TABS = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'projects', label: 'Projects' },
-  { id: 'members',  label: 'Members'  },
-  { id: 'settings', label: 'Settings' },
-  { id: 'handoff',  label: 'Handoff'  },
-  { id: 'audit',    label: 'Audit'    },
+  { id: 'overview', label: 'Overview'  },
+  { id: 'projects', label: 'Projects'  },
+  { id: 'members',  label: 'Members'   },
+  { id: 'settings', label: 'Settings'  },
+  { id: 'aiPolicy', label: 'AI Policy' },
+  { id: 'handoff',  label: 'Handoff'   },
+  { id: 'audit',    label: 'Audit'     },
 ];
 
 const siftMiniBtn = (color) => ({
@@ -5336,6 +5458,7 @@ function SiftAdminSection() {
     projects: <SiftProjects />,
     members:  <SiftMembers />,
     settings: <SiftSettings />,
+    aiPolicy: <AiScreeningSection />,
     handoff:  <SiftHandoff />,
     audit:    <SiftAudit />,
   };
