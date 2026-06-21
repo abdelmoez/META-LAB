@@ -344,7 +344,18 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         loadRecords({ reset: true, s: searchRef.current, f: filterRef.current });
       }
     },
+    // se2.md §6 — a background rescore finished: refresh scores/badges + flag that
+    // fresher rankings are available, WITHOUT auto-reordering under the reviewer.
+    'ai.updated': (ev) => {
+      if (!ev || ev.projectId === pid || ev.projectId === undefined) ai.onScoresUpdated();
+    },
   });
+
+  // Apply the freshly-computed ranking on demand (preserves the current record).
+  const refreshRankings = useCallback(() => {
+    ai.clearRankingsAvailable();
+    loadRecords({ reset: true, s: searchRef.current, f: filterRef.current });
+  }, [ai, loadRecords]);
 
   // Keyword article counts — refresh on project load and whenever the project's
   // keyword lists change (a leader edited them).
@@ -447,6 +458,9 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         : r));
       setSaveMsg(resp?.promoted ? 'Saved · advanced to Final Review' : 'Saved');
       refreshRow(rid); // re-sync reviewer indicators / quorum / disputed
+      // se2.md §6 — surface the "scores updating" indicator promptly after a
+      // settled decision (the server has queued a debounced rescore).
+      if (dec === 'include' || dec === 'exclude') ai.loadJobStatus?.();
       setTimeout(() => setSaveMsg(''), 2200);
     } catch (e) {
       setDecErr(e.message || 'Save failed');
@@ -512,7 +526,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
           hasMore={records.length < total} onLoadMore={loadMore}
           shortcutPrefs={shortcutPrefs}
           onCollapse={() => setPanel('leftCollapsed', true)}
-          ai={ai} queueMode={queueMode} onQueueMode={setQueueMode} aiBand={aiBand} onAiBand={setAiBand}
+          ai={ai} queueMode={queueMode} onQueueMode={setQueueMode} aiBand={aiBand} onAiBand={setAiBand} onRefreshRankings={refreshRankings}
         />
       )}
 
@@ -588,7 +602,7 @@ function LeftColumn({
   search, onSearchChange, filter, onFilterChange,
   selectedId, onSelect, blindMode, hasMore, onLoadMore,
   shortcutPrefs, onCollapse,
-  ai, queueMode, onQueueMode, aiBand, onAiBand,
+  ai, queueMode, onQueueMode, aiBand, onAiBand, onRefreshRankings,
 }) {
   const k = shortcutPrefs?.keys ?? DEFAULT_SCREENING_SHORTCUTS.keys;
   return (
@@ -632,7 +646,7 @@ function LeftColumn({
       {/* AI active-learning queue selector (feature flag: aiScreening) */}
       {ai?.enabled && (
         <div style={{ padding: '9px 14px', borderBottom: `1px solid ${C.brd}`, flexShrink: 0 }}>
-          <AiQueueBar ai={ai} mode={queueMode} onMode={onQueueMode} band={aiBand} onBand={onAiBand} />
+          <AiQueueBar ai={ai} mode={queueMode} onMode={onQueueMode} band={aiBand} onBand={onAiBand} onRefreshRankings={onRefreshRankings} />
         </div>
       )}
 

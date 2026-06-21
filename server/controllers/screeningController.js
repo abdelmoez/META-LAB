@@ -8,6 +8,7 @@ import { syncConflicts } from '../services/screeningConflictService.js';
 import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../screening/access.js';
 import { rankItems } from '../../src/research-engine/screening/ai/ranking.js';
 import { aiFlagEnabled } from '../services/screeningAiService.js';
+import { scheduleRescore } from '../services/screeningAiJobs.js';
 import { emitToProjectMembers, emitToMetaLabProject } from '../realtime/bus.js';
 import { getMetaSiftSettings, getEffectiveQuorum } from '../screening/settings.js';
 import { snapshotPico } from '../screening/picoSnapshot.js';
@@ -705,20 +706,25 @@ export async function listRecords(req, res) {
       filtered = filterRecordsByKeywords(filtered, selectedKeywords, { mode });
     }
 
-    // Server-side AI-ordered queue (feature flag: aiScreening). Only runs when the
-    // client requests an AI queue mode or score band — so the default screening path
-    // is byte-identical. This orders/filters the WHOLE pool (not just one page) and
-    // attaches the AI score inline for list badges.
+    // Server-side AI integration (feature flag: aiScreening). Two parts:
+    //   (1) AI-ordered/filtered queue — only when the client requests aiQueue/aiBand,
+    //       ordering/filtering the WHOLE pool before pagination.
+    //   (2) Inline AI score + persisted explanation on the returned PAGE (≤ limit),
+    //       so the "Why this score?" panel renders instantly with no round-trip
+    //       (se2.md §5). The default screening path stays byte-identical when the
+    //       feature flag is OFF (no aiScore field).
     const aiQueue = String(req.query.aiQueue || '');
     const aiBand = String(req.query.aiBand || '');
     // Respect AI-blinding: a non-leader reviewer on a blindFromAi project must not
-    // get an AI-ordered/filtered worklist (the order itself leaks the model's
-    // include/exclude opinion before they screen independently). Leaders are exempt.
+    // get AI scores or an AI-ordered worklist (both leak the model's opinion before
+    // independent screening). Leaders are exempt.
     let aiBlind = false;
     try { aiBlind = !!JSON.parse(p.aiSettings || '{}').blindFromAi; } catch { /* default false */ }
     const aiBlocked = aiBlind && !access.isLeader;
-    if (!aiBlocked && ((aiQueue && aiQueue !== 'default') || (aiBand && aiBand !== 'all')) && await aiFlagEnabled()) {
-      const aiStage = req.query.aiStage === 'full_text' ? 'full_text' : 'title_abstract';
+    const aiStage = req.query.aiStage === 'full_text' ? 'full_text' : 'title_abstract';
+    const aiOn = !aiBlocked && await aiFlagEnabled();
+
+    if (aiOn && ((aiQueue && aiQueue !== 'default') || (aiBand && aiBand !== 'all'))) {
       const scoreRows = await prisma.screenAiScore.findMany({
         where: { projectId: p.id, stage: aiStage },
         select: { recordId: true, score: true, band: true, prediction: true, uncertainty: true, picoMean: true, missingAbstract: true },
@@ -741,12 +747,34 @@ export async function listRecords(req, res) {
         const byId = new Map(filtered.map(r => [r.id, r]));
         filtered = rankItems(items, aiQueue).map(it => byId.get(it.recordId)).filter(Boolean);
       }
-      filtered = filtered.map(r => ({ ...r, aiScore: sMap.get(r.id) || null }));
     }
 
     const total = filtered.length;
     const start = (page - 1) * limit;
-    const paged = filtered.slice(start, start + limit);
+    let paged = filtered.slice(start, start + limit);
+
+    // Attach the FULL persisted AI score + explanation to the page (bounded by limit)
+    // → instant Layer-1 "Why this score?" with no extra request (se2.md §5).
+    if (aiOn && paged.length) {
+      const ids = paged.map(r => r.id);
+      const full = await prisma.screenAiScore.findMany({ where: { projectId: p.id, stage: aiStage, recordId: { in: ids } } });
+      const fMap = new Map(full.map(s => [s.recordId, s]));
+      const parse = (s) => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
+      paged = paged.map(r => {
+        const s = fMap.get(r.id);
+        if (!s) return r;
+        return {
+          ...r,
+          aiScore: {
+            recordId: s.recordId, score: s.score, proba: s.proba, band: s.band, prediction: s.prediction,
+            confidence: s.confidence, uncertainty: s.uncertainty, mode: s.mode, lowConfidence: s.lowConfidence,
+            missingAbstract: s.missingAbstract, picoMean: s.picoMean,
+            subScores: parse(s.subScoresJson), signals: parse(s.signalsJson), explanation: parse(s.explanationJson),
+            updatedAt: s.updatedAt,
+          },
+        };
+      });
+    }
 
     res.json({
       records: paged,
@@ -1242,6 +1270,14 @@ export async function saveDecision(req, res) {
     // Realtime poke (Task 7) — deliberately carries NO actor identity
     // (blind-mode safe by construction); recipients refetch what they may see.
     emitToProjectMembers(p.id, { type: 'decision.saved' }, { exclude: req.user.id });
+
+    // se2.md §6 — near-real-time rescoring. The human decision is ALREADY saved;
+    // this only queues a debounced background rescore so rankings reflect the latest
+    // labels. Fire-and-forget — it can never block or lose the decision. Only
+    // settled include/exclude labels change the training set.
+    if (decision === 'include' || decision === 'exclude') {
+      scheduleRescore(p.id, { stage, actor: req.user });
+    }
 
     res.json({ ...d, promoted });
   } catch (err) {

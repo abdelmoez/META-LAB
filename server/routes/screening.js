@@ -128,6 +128,7 @@ r.get('/projects/:pid/decisions',              S.listDecisions);
 
 // AI Screening Intelligence Engine (feature flag: aiScreening; each handler 404s when off)
 r.get('/projects/:pid/ai/status',                       AI.getAiStatus);
+r.get('/projects/:pid/ai/job-status',                   AI.getAiJobStatus);
 r.post('/projects/:pid/ai/run',                         AI.postAiRun);
 r.get('/projects/:pid/ai/scores',                       AI.getAiScores);
 r.get('/projects/:pid/ai/validation',                   AI.getAiValidation);

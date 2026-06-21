@@ -28,6 +28,7 @@ const qs = (stage) => (stage ? `?stage=${encodeURIComponent(stage)}` : '');
 
 export const aiApi = {
   status:      (pid, stage)        => req('GET',  `/projects/${pid}/ai/status${qs(stage)}`),
+  jobStatus:   (pid, stage)        => req('GET',  `/projects/${pid}/ai/job-status${qs(stage)}`),
   run:         (pid, stage)        => req('POST', `/projects/${pid}/ai/run`, { stage }),
   scores:      (pid, stage)        => req('GET',  `/projects/${pid}/ai/scores${qs(stage)}`),
   validation:  (pid, stage)        => req('GET',  `/projects/${pid}/ai/validation${qs(stage)}`),

@@ -83,6 +83,9 @@ const DEFAULTS = {
     includeThreshold: 0.65,
     excludeThreshold: 0.35,
     defaultPolicy: 'assist',
+    liveUpdateEnabled: true,          // se2.md §6 — rescore on new decisions
+    retrainDebounceMs: 4000,
+    killSwitch: false,                // se2.md §4 — emergency global disable
   }),
 };
 

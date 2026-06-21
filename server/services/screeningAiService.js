@@ -33,6 +33,10 @@ export const AI_GLOBAL_DEFAULTS = Object.freeze({
   includeThreshold: 0.65,
   excludeThreshold: 0.35,
   defaultPolicy: 'assist',          // assist | prioritize | auto_after_human
+  // se2.md §6 — near-real-time rescoring after each include/exclude decision.
+  liveUpdateEnabled: true,          // queue a debounced rescore on new decisions
+  retrainDebounceMs: 4000,          // coalesce rapid decisions into one job
+  killSwitch: false,                // se2.md §4 — emergency global disable (overrides enabled)
 });
 
 /** Per-project AI policy defaults (stored on ScreenProject.aiSettings JSON). */
@@ -66,7 +70,10 @@ export async function aiFlagEnabled() {
 export async function getGlobalAiSettings() {
   try {
     const row = await prisma.siteSetting.findUnique({ where: { key: AI_SETTINGS_KEY } });
-    return { ...AI_GLOBAL_DEFAULTS, ...safeParse(row?.value, {}) };
+    const merged = { ...AI_GLOBAL_DEFAULTS, ...safeParse(row?.value, {}) };
+    // Emergency kill switch overrides `enabled` everywhere it is consulted.
+    if (merged.killSwitch) merged.enabled = false;
+    return merged;
   } catch { return { ...AI_GLOBAL_DEFAULTS }; }
 }
 

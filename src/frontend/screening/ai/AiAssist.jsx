@@ -61,21 +61,41 @@ export function ScoreBadge({ score, band, prediction }) {
 
 /** The main record-detail AI card: score, prediction, confidence, and "why". */
 export function AiScoreCard({ ai, record, decided }) {
-  const [expl, setExpl] = useState(null);
   const [open, setOpen] = useState(false);
   const [fb, setFb] = useState('');
+  const [fetched, setFetched] = useState(null);        // Layer-1 fallback fetch result
+  const [explState, setExplState] = useState('idle');  // idle | loading | error | timeout
   const rid = record?.id;
   const score = rid ? (record?.aiScore || ai.scores[rid]) : null;
   const blind = ai.status?.project?.blindFromAi;
 
+  // se2.md §5 — Layer 1 (instant): the explanation is served INLINE with the record
+  // (server attaches the persisted ScreenAiScore.explanation), so "Why this score?"
+  // renders immediately with no round-trip. The fetch below is a rare fallback.
+  const inlineExpl = (score && score.explanation && Object.keys(score.explanation).length) ? score.explanation : null;
+  const e = inlineExpl || fetched;
+
+  // Reset per record.
+  useEffect(() => { setOpen(false); setFb(''); setFetched(null); setExplState('idle'); }, [rid]);
+
+  // Fallback fetch ONLY when expanded and no inline explanation. Abortable + timed
+  // out so the panel never sticks on "Loading…"; cancelled when the panel closes.
   useEffect(() => {
-    setExpl(null); setOpen(false); setFb('');
-    if (!rid || !ai.enabled) return;
-    if (blind && !decided) return;        // respect AI-blinding until the reviewer decides
+    if (!open || inlineExpl || !rid || !ai.enabled) return;
+    if (blind && !decided) return;
     let live = true;
-    ai.getExplanation(rid).then(e => { if (live) setExpl(e); });
-    return () => { live = false; };
-  }, [rid, ai.enabled, blind, decided]); // eslint-disable-line
+    setExplState('loading');
+    const timer = setTimeout(() => { if (live) setExplState('timeout'); }, 8000);
+    ai.getExplanation(rid).then(res => {
+      if (!live) return;
+      clearTimeout(timer);
+      if (res && res.explanation) { setFetched(res.explanation); setExplState('idle'); }
+      else setExplState('error');
+    });
+    return () => { live = false; clearTimeout(timer); };
+  }, [open, inlineExpl, rid, ai.enabled, blind, decided]); // eslint-disable-line
+
+  const retry = () => { setFetched(null); setExplState('loading'); ai.refreshExplanation?.(rid); setOpen(false); setTimeout(() => setOpen(true), 0); };
 
   if (!ai.enabled) return null;
 
@@ -107,7 +127,6 @@ export function AiScoreCard({ ai, record, decided }) {
   }
 
   const predColor = PRED_COLOR[score.prediction] || C.muted;
-  const e = expl?.explanation;
 
   return card(
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -139,7 +158,19 @@ export function AiScoreCard({ ai, record, decided }) {
 
       {open && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10, borderTop: `1px solid ${C.brd}`, paddingTop: 10 }}>
-          {!e && <div style={{ fontSize: 12, color: C.muted }}>Loading explanation…</div>}
+          {!e && explState === 'loading' && (
+            <div aria-label="Loading explanation" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {[80, 60, 70].map((w, i) => (
+                <div key={i} style={{ height: 9, width: `${w}%`, borderRadius: 4, background: alpha(C.muted, 0.18), animation: 'sift-fade 0.6s ease infinite alternate' }} />
+              ))}
+            </div>
+          )}
+          {!e && (explState === 'error' || explState === 'timeout') && (
+            <div style={{ fontSize: 12, color: C.gold, display: 'flex', alignItems: 'center', gap: 8 }}>
+              <span>{explState === 'timeout' ? 'Explanation timed out.' : 'Explanation unavailable for this record.'}</span>
+              <MiniBtn color={C.acc} onClick={retry}>Retry</MiniBtn>
+            </div>
+          )}
           {e && (
             <>
               {e.uncertaintyNote && <div style={{ fontSize: 11.5, color: C.txt2, fontStyle: 'italic', lineHeight: 1.5 }}>{e.uncertaintyNote}</div>}
@@ -202,7 +233,7 @@ function PicoMatch({ breakdown }) {
 }
 
 /** Active-learning queue selector + Run control for the list header. */
-export function AiQueueBar({ ai, mode, onMode, band, onBand }) {
+export function AiQueueBar({ ai, mode, onMode, band, onBand, onRefreshRankings }) {
   if (!ai.enabled) return null;
   // AI-blinding: a non-leader reviewer must not get AI-ordered/filtered worklists
   // (the order leaks the model's opinion). Server enforces this too; leaders exempt.
@@ -228,6 +259,18 @@ export function AiQueueBar({ ai, mode, onMode, band, onBand }) {
       {ai.status?.canRun && (
         <MiniBtn onClick={() => ai.run()} disabled={ai.running} title="Train on current decisions and re-score all records">
           {ai.running ? 'Scoring…' : 'Run AI scoring'}
+        </MiniBtn>
+      )}
+      {/* se2.md §6 — live rescoring state + position-preserving refresh */}
+      {(ai.jobStatus?.state === 'updating' || (ai.jobStatus?.running)) && (
+        <span title={`${ai.jobStatus.pending || 0} new decision(s) being incorporated`} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: C.teal }}>
+          <span style={{ width: 7, height: 7, borderRadius: '50%', background: C.teal, animation: 'sift-fade .8s ease infinite alternate' }} />
+          Scores updating{ai.jobStatus.pending ? ` (${ai.jobStatus.pending})` : ''}…
+        </span>
+      )}
+      {ai.rankingsAvailable && ai.jobStatus?.state !== 'updating' && (
+        <MiniBtn color={C.teal} onClick={() => onRefreshRankings && onRefreshRankings()} title="Apply the freshly-computed rankings (keeps your current record)">
+          ↻ Refresh rankings
         </MiniBtn>
       )}
     </div>

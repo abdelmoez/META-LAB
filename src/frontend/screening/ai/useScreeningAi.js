@@ -79,6 +79,8 @@ export function useScreeningAi(pid, stage = 'title_abstract') {
     } catch { return null; }
   }, [pid, stage]);
 
+  const refreshExplanation = useCallback((rid) => { explCache.current.delete(rid); }, []);
+
   const sendFeedback = useCallback(async (rid, body) => {
     try { return await aiApi.feedback(pid, rid, body); } catch { return null; }
   }, [pid]);
@@ -91,9 +93,44 @@ export function useScreeningAi(pid, stage = 'title_abstract') {
 
   const getValidation = useCallback(() => aiApi.validation(pid, stage).catch(() => null), [pid, stage]);
 
+  // se2.md §6 — live rescoring state. jobStatus drives the "Scores updating" UI;
+  // rankingsAvailable prompts a (position-preserving) queue refresh.
+  const [jobStatus, setJobStatus] = useState({ state: 'idle', running: false, queued: false, pending: 0 });
+  const [rankingsAvailable, setRankingsAvailable] = useState(false);
+
+  const loadJobStatus = useCallback(async () => {
+    try { const js = await aiApi.jobStatus(pid, stage); if (mounted.current) setJobStatus(js); return js; }
+    catch { return null; }
+  }, [pid, stage]);
+
+  // Called by the screening tab on a realtime `ai.updated` event (rescore done):
+  // refresh scores + status, and flag that fresher rankings are available so the
+  // reviewer can refresh the queue order WITHOUT being yanked off the current record.
+  const onScoresUpdated = useCallback(async () => {
+    explCache.current.clear();
+    await Promise.all([loadScores(), loadStatus(), loadJobStatus()]);
+    if (mounted.current) setRankingsAvailable(true);
+  }, [loadScores, loadStatus, loadJobStatus]);
+  const clearRankingsAvailable = useCallback(() => setRankingsAvailable(false), []);
+
+  // Bounded poll while a rescore is in flight (efficient: stops at idle). Realtime
+  // `ai.updated` is the primary completion signal; this just keeps the indicator live.
+  useEffect(() => {
+    if (!enabled) return;
+    if (jobStatus.state === 'idle') return;
+    let n = 0; let live = true;
+    const id = setInterval(async () => {
+      if (!live || ++n > 20) { clearInterval(id); return; }
+      const js = await loadJobStatus();
+      if (js && js.state === 'idle') clearInterval(id);
+    }, 3500);
+    return () => { live = false; clearInterval(id); };
+  }, [enabled, jobStatus.state, loadJobStatus]);
+
   return {
     enabled, ready, status, scores, running, error,
-    run, getExplanation, sendFeedback, updateSettings, getValidation,
+    run, getExplanation, refreshExplanation, sendFeedback, updateSettings, getValidation,
     refresh: loadScores,
+    jobStatus, loadJobStatus, onScoresUpdated, rankingsAvailable, clearRankingsAvailable,
   };
 }

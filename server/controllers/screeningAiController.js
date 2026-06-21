@@ -17,6 +17,7 @@ import {
   aiFlagEnabled, getGlobalAiSettings, getProjectAiSettings,
   runScoring, getScoresMap, getRecordExplanation, getStatus, getValidation, recordFeedback,
 } from '../services/screeningAiService.js';
+import { getJobStatus } from '../services/screeningAiJobs.js';
 
 /** Shared gate: flag → access. Returns access or null (response already sent). */
 async function gate(req, res) {
@@ -70,6 +71,17 @@ export async function postAiRun(req, res) {
   } catch (e) {
     console.error('postAiRun', e);
     res.status(e.status || 500).json({ error: e.message || 'Scoring failed' });
+  }
+}
+
+/** GET /projects/:pid/ai/job-status — live rescoring state (se2.md §6) */
+export async function getAiJobStatus(req, res) {
+  const access = await gate(req, res); if (!access) return;
+  try {
+    res.json(await getJobStatus(req.params.pid, stageOf(req)));
+  } catch (e) {
+    console.error('getAiJobStatus', e);
+    res.status(500).json({ error: 'Internal server error' });
   }
 }
 

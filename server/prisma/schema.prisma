@@ -969,3 +969,31 @@ model ScreenAiFeedback {
   @@index([projectId, createdAt])
   @@index([projectId, recordId])
 }
+
+// se2.md §6/§12 — background scoring jobs. A debounced, coalesced rescore is
+// queued whenever a new include/exclude decision lands, so reviewers always see
+// rankings based on the latest human decisions WITHOUT a synchronous retrain in
+// the decision request. One active job per (project, stage); a rerun flag picks
+// up decisions that arrive mid-run. Append-only history for observability.
+// Bare projectId scope key (audit-survival precedent). NEVER blocks/loses a
+// human decision — the decision is saved transactionally before the job is queued.
+model ScreenAiJob {
+  id          String    @id @default(uuid())
+  projectId   String
+  stage       String    @default("title_abstract")
+  kind        String    @default("rescore")   // rescore | train
+  status      String    @default("queued")    // queued | running | completed | failed | superseded
+  trigger     String    @default("decision")  // decision | manual | api
+  reason      String    @default("")          // failure reason (no article text)
+  runId       String    @default("")          // resulting ScreenAiRun id
+  nScored     Int       @default(0)
+  coalesced   Int       @default(0)           // decisions coalesced into this job
+  durationMs  Int?                            // observability (se2.md §17)
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([projectId, createdAt])
+  @@index([projectId, status])
+}
