@@ -26,7 +26,9 @@ import {
 // Central editable-user-field schema (shared with the server) — the Ops edit
 // form is rendered + validated from this single source of truth (prompt20 Task 5).
 import { editableFieldsForRole, PRIMARY_ROLE_OPTIONS, RESEARCH_FIELD_OPTIONS, MAIN_USE_CASE_OPTIONS } from '../../../shared/editableUserFields.js';
-import { countryNameForCode } from '../../../shared/countries.js';
+import { countryNameForCode, COUNTRY_OPTIONS } from '../../../shared/countries.js';
+// prompt48 — Beta Waitlist domain constants (shared with the public form + server).
+import { WAITLIST_ROLES, WAITLIST_STATUSES, WAITLIST_STATUS_LABELS, applicantRoleLabel, applicantDisplayName } from '../../../shared/betaWaitlist.js';
 // Real world-country geometry (pre-projected equirectangular paths, no map lib)
 // for the Ops users-by-country choropleth (prompt20 Task 6).
 import { WORLD_COUNTRIES, WORLD_VIEWBOX } from './worldGeo.js';
@@ -4382,6 +4384,7 @@ const FLAG_META = [
   { key: 'serverBackedWorkflowState', label: 'Server-Backed Workflow State', desc: 'Persist migrated workflow modules (Protocol, Search Builder) server-side with revision-based conflict detection. Off keeps the legacy whole-project autosave.' },
   { key: 'searchEngine',         label: 'Search Builder Engine', desc: 'Enable the new concept→multi-database Search Builder (MeSH lookup + live PubMed counts via the NLM proxy). Off keeps the legacy in-app search builder.' },
   { key: 'aiScreening',          label: 'AI Screening Engine',   desc: 'Enable the PecanRev Screening Intelligence Engine: deterministic TF-IDF + active-learning relevance scoring, ranking, explanations, and validation metrics inside the screening workbench. Assistive only — human decisions are never automated. Off by default until validated. Configure global policy in Screening → AI Policy.' },
+  { key: 'betaWaitlist',         label: 'Beta Waitlist Landing Page', desc: 'When ON, unauthenticated visitors to the homepage ( / ) see the Beta Waitlist sign-up page instead of the standard landing page. Signed-in users and the login/register pages are unaffected. The existing landing page is preserved and returns when this is OFF. Manage applicants in the Beta Waitlist tab. Preview at /beta-waitlist.' },
 ];
 
 function FlagsSection() {
@@ -6435,6 +6438,493 @@ function OnboardingSection() {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+   BETA WAITLIST (prompt48) — admin-only management of the strictly-separate
+   waitlist DB. All numbers come from real records; empty data → empty states.
+   ════════════════════════════════════════════════════════════════════════ */
+
+const WL_PAGE = 25;
+const WL_STATUS_COLOR = { WAITLISTED: C.acc, UNDER_REVIEW: C.yel, INVITED: C.purp, ACCEPTED: C.grn, DECLINED: C.red, REMOVED: C.muted };
+const WL_STATUS_BG = { WAITLISTED: C.accBg, UNDER_REVIEW: C.yelBg, INVITED: C.purpBg, ACCEPTED: C.grnBg, DECLINED: C.redBg, REMOVED: C.card2 };
+const WL_EMAIL_COLOR = { sent: C.grn, failed: C.red, pending: C.yel, queued: C.yel, skipped: C.muted };
+const WL_EMAIL_STATUSES = ['sent', 'failed', 'pending', 'queued', 'skipped'];
+
+const wlFmtDate = (d) => { if (!d) return '—'; const dt = new Date(d); return isNaN(dt) ? '—' : dt.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }); };
+const wlFmtDateTime = (d) => { if (!d) return '—'; const dt = new Date(d); return isNaN(dt) ? '—' : dt.toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); };
+
+const wlInput = { height: 34, boxSizing: 'border-box', padding: '0 10px', fontSize: 12.5, fontFamily: FONT, color: C.txt, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 7, outline: 'none' };
+const wlSelect = { ...wlInput, appearance: 'none', paddingRight: 22, cursor: 'pointer' };
+const wlBtn = { height: 34, padding: '0 13px', fontSize: 12.5, fontWeight: 600, fontFamily: FONT, borderRadius: 7, cursor: 'pointer', border: `1px solid ${C.brd2}`, background: C.card, color: C.txt, display: 'inline-flex', alignItems: 'center', gap: 6 };
+
+function WlBadge({ status }) {
+  const color = WL_STATUS_COLOR[status] || C.muted;
+  const bg = WL_STATUS_BG[status] || C.card2;
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 9px', borderRadius: 999, fontSize: 11, fontWeight: 700, color, background: bg, border: `1px solid ${alpha(color, '40')}`, fontFamily: FONT, whiteSpace: 'nowrap' }}>
+      <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: '50%', background: color }} />
+      {WAITLIST_STATUS_LABELS[status] || status}
+    </span>
+  );
+}
+
+const WL_EMAIL_BG = { sent: C.grnBg, failed: C.redBg, pending: C.yelBg, queued: C.yelBg, skipped: C.card2 };
+function WlEmailBadge({ status }) {
+  const color = WL_EMAIL_COLOR[status] || C.muted;
+  const label = status ? status.charAt(0).toUpperCase() + status.slice(1) : '—';
+  return <span style={{ display: 'inline-block', fontSize: 11, fontWeight: 700, color, background: WL_EMAIL_BG[status] || C.card2, padding: '2px 8px', borderRadius: 6, fontFamily: MONO }}>{label}</span>;
+}
+
+function WlBars({ title, items, color = C.acc }) {
+  if (!items || items.length === 0) return null;
+  const max = Math.max(1, ...items.map((i) => i.count));
+  return (
+    <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: '14px 16px' }}>
+      <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 10 }}>{title}</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {items.map((it) => (
+          <div key={it.label} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span title={it.label} style={{ width: 130, flexShrink: 0, fontSize: 12.5, color: C.txt, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</span>
+            <span style={{ flex: 1, height: 7, background: C.card2, borderRadius: 99, overflow: 'hidden', minWidth: 0 }}>
+              <span style={{ display: 'block', height: '100%', width: `${Math.round((it.count / max) * 100)}%`, background: color, borderRadius: 99 }} />
+            </span>
+            <span style={{ width: 32, textAlign: 'right', fontSize: 12, fontFamily: MONO, color: C.muted, fontVariantNumeric: 'tabular-nums' }}>{it.count}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function WlConfigNeeded({ config }) {
+  return (
+    <div style={{ background: C.card, border: `1px dashed ${C.brd2}`, borderRadius: 12, padding: '28px 24px', textAlign: 'center', maxWidth: 640, margin: '24px auto' }}>
+      <div style={{ width: 44, height: 44, borderRadius: 10, background: C.yelBg, color: C.yel, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}><Icon name="alertTriangle" size={22} /></div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 8 }}>Beta Waitlist database not configured</div>
+      <div style={{ fontSize: 13.5, color: C.muted, lineHeight: 1.6, marginBottom: 14 }}>
+        The waitlist uses a strictly-separate database. Set <code style={{ fontFamily: MONO, color: C.txt }}>BETA_WAITLIST_DATABASE_URL</code> in the server environment,
+        then apply the schema:
+      </div>
+      <pre style={{ textAlign: 'left', background: C.card2, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '10px 12px', fontFamily: MONO, fontSize: 12, color: C.txt2, overflowX: 'auto' }}>cd server
+npx prisma db push --schema=prisma/waitlist/schema.prisma</pre>
+      <div style={{ fontSize: 12, color: C.muted, marginTop: 10 }}>Target: <span style={{ fontFamily: MONO }}>{config?.target || 'unset'}</span> · Submissions fail safe (503) until configured — never written to the user database.</div>
+    </div>
+  );
+}
+
+function WaitlistSection() {
+  const [data, setData] = useState(null);
+  const [loadingM, setLoadingM] = useState(true);
+  const [rows, setRows] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [pages, setPages] = useState(1);
+  const [loadingT, setLoadingT] = useState(true);
+  const [configured, setConfigured] = useState(true);
+  const [err, setErr] = useState('');
+  const [search, setSearch] = useState('');
+  const [status, setStatus] = useState('');
+  const [role, setRole] = useState('');
+  const [countryCode, setCountryCode] = useState('');
+  const [emailStatus, setEmailStatus] = useState('');
+  const [sortBy, setSortBy] = useState('createdAt');
+  const [sortDir, setSortDir] = useState('desc');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [selectedId, setSelectedId] = useState(null);
+  const searchTimer = useRef(null);
+  const filtersRef = useRef({});
+  // dateTo is widened to end-of-day so the chosen day is inclusive.
+  filtersRef.current = {
+    search, status, role, countryCode, emailStatus, sortBy, sortDir,
+    dateFrom: dateFrom || undefined,
+    dateTo: dateTo ? `${dateTo}T23:59:59.999` : undefined,
+  };
+
+  const loadMetrics = useCallback(() => {
+    setLoadingM(true);
+    adminApi.betaWaitlist.metrics()
+      .then((d) => { setData(d); setConfigured(d.configured !== false); })
+      .catch((e) => setErr(e.message))
+      .finally(() => setLoadingM(false));
+  }, []);
+
+  const loadTable = useCallback((p) => {
+    setLoadingT(true);
+    const f = filtersRef.current;
+    adminApi.betaWaitlist.list({ page: p, limit: WL_PAGE, ...f })
+      .then((d) => {
+        setConfigured(d.configured !== false);
+        setRows(d.rows || []);
+        setTotal(d.total || 0);
+        setPages(d.pages || 1);
+        setPage(d.page || p);
+      })
+      .catch((e) => setErr(e.message))
+      .finally(() => setLoadingT(false));
+  }, []);
+
+  useEffect(() => { loadMetrics(); }, [loadMetrics]);
+  // Reload table whenever a non-search filter or sort changes (search is debounced).
+  useEffect(() => { loadTable(1); }, [status, role, countryCode, emailStatus, sortBy, sortDir, dateFrom, dateTo, loadTable]);
+
+  const onSearch = (v) => {
+    setSearch(v);
+    clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => loadTable(1), 300);
+  };
+  const clearFilters = () => { setSearch(''); setStatus(''); setRole(''); setCountryCode(''); setEmailStatus(''); setSortBy('createdAt'); setSortDir('desc'); setDateFrom(''); setDateTo(''); };
+  const toggleSort = (col) => {
+    if (sortBy === col) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    else { setSortBy(col); setSortDir(col === 'createdAt' ? 'desc' : 'asc'); }
+  };
+  const refreshAll = () => { loadMetrics(); loadTable(page); };
+
+  const doExport = async () => {
+    try {
+      const url = adminApi.betaWaitlist.exportUrl(filtersRef.current);
+      const res = await fetch(url, { credentials: 'include' });
+      if (!res.ok) throw new Error(`Export failed (${res.status})`);
+      const blob = await res.blob();
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = href;
+      a.download = `beta-waitlist-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(href);
+    } catch (e) { setErr(`Export failed: ${e.message}`); }
+  };
+
+  const m = data && data.metrics;
+  const hasData = m && m.total > 0;
+
+  const SortHead = ({ col, children, width }) => (
+    <th onClick={() => toggleSort(col)} style={{ textAlign: 'left', padding: '9px 10px', fontSize: 11, fontWeight: 700, color: C.muted, fontFamily: MONO, letterSpacing: '0.04em', textTransform: 'uppercase', cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', width }}>
+      {children}{sortBy === col ? <span aria-hidden="true" style={{ color: C.acc }}> {sortDir === 'asc' ? '▲' : '▼'}</span> : null}
+    </th>
+  );
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 4px' }}>Beta Waitlist</h2>
+        <div style={{ fontSize: 12.5, color: C.muted, lineHeight: 1.5 }}>Applicants who joined the public beta waitlist. Stored in a separate database — never mixed with user accounts.</div>
+      </div>
+
+      {err && <div role="alert" style={{ margin: '0 0 14px', padding: '9px 12px', background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 8, color: C.red, fontSize: 12.5 }}>{err}</div>}
+
+      {!configured && !loadingM ? (
+        <WlConfigNeeded config={data && data.config} />
+      ) : (
+        <>
+          {/* ── Overview metrics (real data only) ─────────────────────────── */}
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
+            <KpiCard label="Total applicants" value={m ? m.total : null} loading={loadingM} spark={m ? m.trend.map((t) => t.count) : null} />
+            <KpiCard label="New today" value={m ? m.today : null} loading={loadingM} color={C.grn} />
+            <KpiCard label="Last 7 days" value={m ? m.last7Days : null} loading={loadingM} color={C.grn} />
+            <KpiCard label="Last 30 days" value={m ? m.last30Days : null} loading={loadingM} color={C.acc} />
+            <KpiCard label="Confirmation emails sent" value={m ? m.email.sent : null} loading={loadingM} color={C.grn} />
+            <KpiCard label="Email failures" value={m ? m.email.failed : null} loading={loadingM} color={m && m.email.failed > 0 ? C.red : C.muted} />
+          </div>
+
+          {hasData && (
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 8 }}>By status</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 16 }}>
+                {WAITLIST_STATUSES.map((s) => (
+                  <span key={s} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '5px 11px', borderRadius: 8, background: C.card, border: `1px solid ${C.brd}` }}>
+                    <WlBadge status={s} />
+                    <span style={{ fontSize: 13, fontWeight: 700, fontFamily: MONO, color: C.txt }}>{m.byStatus[s] || 0}</span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {hasData && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, marginBottom: 18 }}>
+              <WlBars title="Top roles" items={m.topRoles} color={C.acc} />
+              <WlBars title="Top institutions" items={m.topInstitutions} color={C.purp} />
+              <WlBars title="Top countries" items={m.topCountries} color={C.teal} />
+              <WlBars title="Top interests" items={m.topInterests} color={C.gold} />
+            </div>
+          )}
+
+          {/* ── Filters ───────────────────────────────────────────────────── */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center', marginBottom: 12 }}>
+            <input aria-label="Search applicants" placeholder="Search name, email, institution…" value={search} onChange={(e) => onSearch(e.target.value)} style={{ ...wlInput, flex: '1 1 200px', minWidth: 160 }} />
+            <select aria-label="Filter by status" value={status} onChange={(e) => setStatus(e.target.value)} style={wlSelect}>
+              <option value="">All statuses</option>
+              {WAITLIST_STATUSES.map((s) => <option key={s} value={s}>{WAITLIST_STATUS_LABELS[s]}</option>)}
+            </select>
+            <select aria-label="Filter by role" value={role} onChange={(e) => setRole(e.target.value)} style={wlSelect}>
+              <option value="">All roles</option>
+              {WAITLIST_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+            </select>
+            <select aria-label="Filter by country" value={countryCode} onChange={(e) => setCountryCode(e.target.value)} style={wlSelect}>
+              <option value="">All countries</option>
+              {COUNTRY_OPTIONS.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+            </select>
+            <select aria-label="Filter by confirmation email status" value={emailStatus} onChange={(e) => setEmailStatus(e.target.value)} style={wlSelect}>
+              <option value="">All emails</option>
+              {WL_EMAIL_STATUSES.map((s) => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+            </select>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: C.muted }}>From<input type="date" aria-label="Submitted on or after" value={dateFrom} max={dateTo || undefined} onChange={(e) => setDateFrom(e.target.value)} style={wlInput} /></label>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: C.muted }}>To<input type="date" aria-label="Submitted on or before" value={dateTo} min={dateFrom || undefined} onChange={(e) => setDateTo(e.target.value)} style={wlInput} /></label>
+            <button type="button" onClick={clearFilters} style={wlBtn}>Clear</button>
+            <button type="button" onClick={refreshAll} style={wlBtn}><Icon name="refresh" size={13} />Refresh</button>
+            <button type="button" onClick={doExport} disabled={total === 0} style={{ ...wlBtn, opacity: total === 0 ? 0.5 : 1, color: C.acc, borderColor: alpha(C.acc, '50') }}><Icon name="download" size={13} />Export CSV</button>
+          </div>
+
+          {/* ── Applicants table ──────────────────────────────────────────── */}
+          <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 12, overflow: 'hidden' }}>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 880 }}>
+                <thead>
+                  <tr style={{ borderBottom: `1px solid ${C.brd}`, background: C.card2 }}>
+                    <SortHead col="lastName">Name</SortHead>
+                    <SortHead col="email">Email</SortHead>
+                    <SortHead col="institutionName">Institution</SortHead>
+                    <th style={{ textAlign: 'left', padding: '9px 10px', fontSize: 11, fontWeight: 700, color: C.muted, fontFamily: MONO, letterSpacing: '0.04em', textTransform: 'uppercase' }}>Role</th>
+                    <SortHead col="countryName">Country</SortHead>
+                    <SortHead col="status">Status</SortHead>
+                    <th style={{ textAlign: 'left', padding: '9px 10px', fontSize: 11, fontWeight: 700, color: C.muted, fontFamily: MONO, letterSpacing: '0.04em', textTransform: 'uppercase' }}>Interests</th>
+                    <SortHead col="createdAt">Submitted</SortHead>
+                    <th style={{ textAlign: 'left', padding: '9px 10px', fontSize: 11, fontWeight: 700, color: C.muted, fontFamily: MONO, letterSpacing: '0.04em', textTransform: 'uppercase' }}>Email</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {loadingT ? (
+                    <tr><td colSpan={9} style={{ padding: 40, textAlign: 'center' }}><Spinner /></td></tr>
+                  ) : rows.length === 0 ? (
+                    <tr><td colSpan={9} style={{ padding: '44px 16px', textAlign: 'center', color: C.muted, fontSize: 13.5 }}>
+                      {total === 0 && !search && !status && !role && !countryCode && !emailStatus
+                        ? 'No applicants yet. When people join the waitlist, they will appear here.'
+                        : 'No applicants match these filters.'}
+                    </td></tr>
+                  ) : rows.map((r) => (
+                    <tr key={r.id} onClick={() => setSelectedId(r.id)} tabIndex={0}
+                      aria-label={`View applicant ${applicantDisplayName(r)}`}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelectedId(r.id); } }}
+                      style={{ borderBottom: `1px solid ${C.brd}`, cursor: 'pointer' }}
+                      onMouseEnter={(e) => e.currentTarget.style.background = C.card2}
+                      onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
+                      onFocus={(e) => { e.currentTarget.style.background = C.card2; e.currentTarget.style.outline = `2px solid ${C.acc}`; e.currentTarget.style.outlineOffset = '-2px'; }}
+                      onBlur={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.outline = 'none'; }}>
+                      <td style={{ padding: '10px', fontSize: 13, color: C.txt, fontWeight: 600, whiteSpace: 'nowrap' }}>{applicantDisplayName(r)}</td>
+                      <td style={{ padding: '10px', fontSize: 12.5, color: C.txt2, fontFamily: MONO, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.email}>{r.email}</td>
+                      <td style={{ padding: '10px', fontSize: 12.5, color: C.txt2, maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.institutionName}>{r.institutionName}</td>
+                      <td style={{ padding: '10px', fontSize: 12.5, color: C.txt2, whiteSpace: 'nowrap' }}>{applicantRoleLabel(r)}</td>
+                      <td style={{ padding: '10px', fontSize: 12.5, color: C.txt2, whiteSpace: 'nowrap' }}>{r.countryName || r.countryCode || '—'}</td>
+                      <td style={{ padding: '10px' }}><WlBadge status={r.status} /></td>
+                      <td style={{ padding: '10px', fontSize: 11.5, color: C.muted, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={(r.areasOfInterest || []).join(', ')}>{(r.areasOfInterest || []).length ? `${r.areasOfInterest.length} selected` : '—'}</td>
+                      <td style={{ padding: '10px', fontSize: 12, color: C.txt2, whiteSpace: 'nowrap' }}>{wlFmtDate(r.createdAt)}</td>
+                      <td style={{ padding: '10px' }}><WlEmailBadge status={r.confirmationEmailStatus} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {/* Pagination */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderTop: `1px solid ${C.brd}`, flexWrap: 'wrap', gap: 8 }}>
+              <span style={{ fontSize: 12, color: C.muted, fontFamily: MONO }}>{total} applicant{total === 1 ? '' : 's'}{total > 0 ? ` · page ${page} of ${pages}` : ''}</span>
+              <span style={{ display: 'flex', gap: 8 }}>
+                <button type="button" onClick={() => page > 1 && loadTable(page - 1)} disabled={page <= 1 || loadingT} style={{ ...wlBtn, opacity: page <= 1 ? 0.5 : 1 }}><Icon name="chevronLeft" size={13} />Prev</button>
+                <button type="button" onClick={() => page < pages && loadTable(page + 1)} disabled={page >= pages || loadingT} style={{ ...wlBtn, opacity: page >= pages ? 0.5 : 1 }}>Next<Icon name="chevronRight" size={13} /></button>
+              </span>
+            </div>
+          </div>
+
+          {m && <div style={{ fontSize: 11, color: C.muted, marginTop: 10, fontFamily: FONT }}>Metrics reflect all records as of {wlFmtDateTime(m.generatedAt)}. Trend window: last {m.trendDays} days.</div>}
+        </>
+      )}
+
+      {selectedId && <WaitlistDrawer id={selectedId} onClose={() => setSelectedId(null)} onChanged={refreshAll} />}
+    </div>
+  );
+}
+
+function WaitlistDrawer({ id, onClose, onChanged }) {
+  const [applicant, setApplicant] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  const [statusVal, setStatusVal] = useState('');
+  const [statusNote, setStatusNote] = useState('');
+  const [notes, setNotes] = useState('');
+  const [savingStatus, setSavingStatus] = useState(false);
+  const [savingNotes, setSavingNotes] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [msg, setMsg] = useState('');
+  const panelRef = useRef(null);
+  const prevFocusRef = useRef(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    adminApi.betaWaitlist.get(id)
+      .then((d) => { setApplicant(d.applicant); setStatusVal(d.applicant.status); setNotes(d.applicant.internalNotes || ''); })
+      .catch((e) => setErr(e.message))
+      .finally(() => setLoading(false));
+  }, [id]);
+  useEffect(() => { load(); }, [load]);
+
+  // Modal focus management: move focus into the dialog on open, restore it to the
+  // triggering element on close, and trap Tab within the panel (WCAG 2.1.2/2.4.3).
+  useEffect(() => {
+    prevFocusRef.current = document.activeElement;
+    const t = setTimeout(() => {
+      const first = panelRef.current?.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])');
+      if (first) first.focus();
+    }, 0);
+    return () => {
+      clearTimeout(t);
+      const prev = prevFocusRef.current;
+      if (prev && typeof prev.focus === 'function') prev.focus();
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape') { onClose(); return; }
+      if (e.key === 'Tab' && panelRef.current) {
+        const focusables = Array.from(panelRef.current.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'))
+          .filter((el) => !el.disabled && el.offsetParent !== null);
+        if (focusables.length === 0) return;
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const saveStatus = async () => {
+    setSavingStatus(true); setMsg('');
+    try {
+      const d = await adminApi.betaWaitlist.setStatus(id, statusVal, statusNote.trim() || undefined);
+      setApplicant(d.applicant); setStatusNote(''); setMsg('Status updated.'); onChanged();
+    } catch (e) { setErr(e.message); } finally { setSavingStatus(false); }
+  };
+  const saveNotes = async () => {
+    setSavingNotes(true); setMsg('');
+    try { const d = await adminApi.betaWaitlist.setNotes(id, notes); setApplicant(d.applicant); setMsg('Notes saved.'); }
+    catch (e) { setErr(e.message); } finally { setSavingNotes(false); }
+  };
+  const resend = async () => {
+    setResending(true); setMsg('');
+    try {
+      const d = await adminApi.betaWaitlist.resend(id, true);
+      setApplicant(d.applicant);
+      setMsg(d.emailConfigured ? 'Confirmation email re-sent.' : 'Email is not configured — nothing was sent.');
+      onChanged();
+    } catch (e) {
+      setErr(e.status === 429 ? 'A confirmation was sent very recently. Try again shortly.' : e.message);
+    } finally { setResending(false); }
+  };
+  const remove = async () => {
+    try { await adminApi.betaWaitlist.remove(id); onChanged(); onClose(); }
+    catch (e) { setErr(e.message); }
+  };
+
+  const Row = ({ label, children }) => (children == null || children === '' || (Array.isArray(children) && !children.length)) ? null : (
+    <div style={{ display: 'flex', gap: 12, padding: '9px 0', borderBottom: `1px solid ${C.brd}` }}>
+      <div style={{ width: 140, flexShrink: 0, fontSize: 12, color: C.muted, fontWeight: 600 }}>{label}</div>
+      <div style={{ fontSize: 13, color: C.txt, lineHeight: 1.5, minWidth: 0, wordBreak: 'break-word' }}>{Array.isArray(children) ? children.join(', ') : children}</div>
+    </div>
+  );
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Applicant details" style={{ position: 'fixed', inset: 0, zIndex: 500 }}>
+      <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)' }} />
+      <div ref={panelRef} style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: 'min(560px, 100%)', background: C.surf, borderLeft: `1px solid ${C.brd}`, boxShadow: '-12px 0 40px rgba(0,0,0,0.18)', display: 'flex', flexDirection: 'column' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 18px', borderBottom: `1px solid ${C.brd}`, flexShrink: 0 }}>
+          <span style={{ fontSize: 15, fontWeight: 700, color: C.txt }}>{applicant ? applicantDisplayName(applicant) : 'Applicant'}</span>
+          <button type="button" onClick={onClose} aria-label="Close" style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: C.muted, display: 'inline-flex' }}><Icon name="x" size={18} /></button>
+        </div>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 18px' }}>
+          {loading ? <div style={{ padding: 30, textAlign: 'center' }}><Spinner /></div> : err && !applicant ? (
+            <div role="alert" style={{ color: C.red, fontSize: 13 }}>{err}</div>
+          ) : applicant && (
+            <>
+              {msg && <div style={{ marginBottom: 12, padding: '8px 11px', background: C.grnBg, border: `1px solid ${C.grn}`, borderRadius: 8, color: C.grn, fontSize: 12.5 }}>{msg}</div>}
+              {err && <div role="alert" style={{ marginBottom: 12, padding: '8px 11px', background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 8, color: C.red, fontSize: 12.5 }}>{err}</div>}
+
+              <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 10 }}>
+                <WlBadge status={applicant.status} />
+                <WlEmailBadge status={applicant.confirmationEmailStatus} />
+              </div>
+
+              <Row label="Email">{applicant.email}</Row>
+              <Row label="Institution">{applicant.institutionName}</Row>
+              <Row label="Role">{applicantRoleLabel(applicant)}</Row>
+              <Row label="Country">{applicant.countryName || applicant.countryCode}</Row>
+              <Row label="Primary use">{applicant.primaryUse}</Row>
+              <Row label="Experience">{applicant.researchExperienceLevel}</Row>
+              <Row label="Reviews / year">{applicant.annualReviewVolume}</Row>
+              <Row label="Works">{applicant.workingStyle === 'Research team' && applicant.teamSize ? `Research team (${applicant.teamSize})` : applicant.workingStyle}</Row>
+              <Row label="Interests">{applicant.areasOfInterest}</Row>
+              <Row label="Heard via">{applicant.referralSource === 'Other' && applicant.referralOther ? `Other — ${applicant.referralOther}` : applicant.referralSource}</Row>
+              <Row label="Message">{applicant.message}</Row>
+              <Row label="Submitted">{wlFmtDateTime(applicant.createdAt)}</Row>
+              <Row label="Source">{applicant.submissionSource}</Row>
+              <Row label="Consent">{applicant.consent ? `Agreed ${wlFmtDateTime(applicant.consentAt)} (v${applicant.consentVersion || '—'})` : 'Not given'}</Row>
+              <Row label="Confirmation sent">{wlFmtDateTime(applicant.confirmationEmailSentAt)}</Row>
+              <Row label="Last email error">{applicant.lastConfirmationEmailError}</Row>
+
+              {/* Status history */}
+              {applicant.statusEvents && applicant.statusEvents.length > 0 && (
+                <div style={{ marginTop: 16 }}>
+                  <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 8 }}>Status history</div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    {applicant.statusEvents.map((ev) => (
+                      <div key={ev.id} style={{ fontSize: 12, color: C.txt2, display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <span style={{ fontFamily: MONO, color: C.muted, fontSize: 11 }}>{wlFmtDateTime(ev.createdAt)}</span>
+                        <span>{ev.fromStatus ? `${WAITLIST_STATUS_LABELS[ev.fromStatus] || ev.fromStatus} → ` : ''}<strong>{WAITLIST_STATUS_LABELS[ev.toStatus] || ev.toStatus}</strong>{ev.note ? ` · ${ev.note}` : ''}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Admin actions */}
+              <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${C.brd}` }}>
+                <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 10 }}>Administrative actions</div>
+
+                <label htmlFor="wl-status" style={{ fontSize: 12.5, fontWeight: 600, color: C.txt, display: 'block', marginBottom: 6 }}>Change status</label>
+                <div style={{ display: 'flex', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+                  <select id="wl-status" value={statusVal} onChange={(e) => setStatusVal(e.target.value)} style={{ ...wlSelect, flex: '1 1 160px' }}>
+                    {WAITLIST_STATUSES.map((s) => <option key={s} value={s}>{WAITLIST_STATUS_LABELS[s]}</option>)}
+                  </select>
+                  <button type="button" onClick={saveStatus} disabled={savingStatus || statusVal === applicant.status} style={{ ...wlBtn, color: C.acc, borderColor: alpha(C.acc, '50'), opacity: (savingStatus || statusVal === applicant.status) ? 0.5 : 1 }}>{savingStatus ? 'Saving…' : 'Update'}</button>
+                </div>
+                <input placeholder="Optional note for the status change" value={statusNote} onChange={(e) => setStatusNote(e.target.value)} style={{ ...wlInput, width: '100%', marginBottom: 16 }} />
+
+                <label htmlFor="wl-notes" style={{ fontSize: 12.5, fontWeight: 600, color: C.txt, display: 'block', marginBottom: 6 }}>Internal notes <span style={{ color: C.muted, fontWeight: 400 }}>(never shown to the applicant)</span></label>
+                <textarea id="wl-notes" value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} style={{ ...wlInput, width: '100%', height: 'auto', padding: '8px 10px', resize: 'vertical', marginBottom: 8 }} />
+                <button type="button" onClick={saveNotes} disabled={savingNotes} style={{ ...wlBtn, marginBottom: 16, opacity: savingNotes ? 0.5 : 1 }}>{savingNotes ? 'Saving…' : 'Save notes'}</button>
+
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <button type="button" onClick={resend} disabled={resending} style={{ ...wlBtn, opacity: resending ? 0.5 : 1 }}><Icon name="mail" size={13} />{resending ? 'Sending…' : 'Resend confirmation'}</button>
+                  {!confirmRemove ? (
+                    <button type="button" onClick={() => setConfirmRemove(true)} style={{ ...wlBtn, color: C.red, borderColor: alpha(C.red, '50') }}><Icon name="trash" size={13} />Remove</button>
+                  ) : (
+                    <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                      <span style={{ fontSize: 12, color: C.red, fontWeight: 600 }}>Delete permanently?</span>
+                      <button type="button" onClick={remove} style={{ ...wlBtn, background: C.red, color: '#fff', borderColor: C.red }}>Yes, remove</button>
+                      <button type="button" onClick={() => setConfirmRemove(false)} style={wlBtn}>Cancel</button>
+                    </span>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
    ROOT COMPONENT
    ════════════════════════════════════════════════════════════════════════ */
 
@@ -6445,6 +6935,7 @@ const NAV_SECTIONS = [
   { id: 'projects',   icon: 'folders',   label: 'Projects'      },
   { id: 'sift',       icon: 'hexagon',   label: 'Screening'     },
   { id: 'rob',        icon: 'scale',     label: 'Risk of Bias'  },
+  { id: 'waitlist',   icon: 'flask',     label: 'Beta Waitlist' },
   { id: 'content',    icon: 'fileText',  label: 'Content'       },
   { id: 'settings',   icon: 'settings',  label: 'Settings'      },
   { id: 'style',      icon: 'eye',       label: 'Appearance'    },
@@ -6517,6 +7008,7 @@ export default function AdminConsole() {
     projects:   <ProjectsSection />,
     sift:       <SiftAdminSection />,
     rob:        <RobAdminSection />,
+    waitlist:   <WaitlistSection />,
     content:    <ContentSection />,
     settings:   <SettingsSection />,
     style:      <StyleSection />,

@@ -2017,7 +2017,7 @@ export async function restoreProject(req, res) {
 export async function getConsole(req, res) {
   const role = req.user?.role || 'user';
   const sections = role === 'admin'
-    ? ['overview', 'users', 'projects', 'sift', 'rob', 'onboarding', 'content', 'settings', 'style', 'flags', 'messages', 'security', 'health']
+    ? ['overview', 'users', 'projects', 'sift', 'rob', 'waitlist', 'onboarding', 'content', 'settings', 'style', 'flags', 'messages', 'security', 'health']
     : role === 'mod'
       ? ['users', 'messages']
       : [];

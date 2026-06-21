@@ -1,0 +1,108 @@
+// ──────────────────────────────────────────────────────────────────────────────
+// PecanRev — Beta Waitlist schema (prompt48). STRICTLY SEPARATE from the main
+// application database (server/prisma/schema.prisma).
+//
+// Isolation guarantees:
+//   - Its OWN datasource, driven by a DEDICATED env var BETA_WAITLIST_DATABASE_URL
+//     (never DATABASE_URL). A genuinely separate SQLite file.
+//   - Its OWN generated client, emitted to ../generated/waitlist-client so it can
+//     NEVER be confused with the main `@prisma/client` import. Waitlist code uses
+//     server/waitlist/waitlistClient.js; application code uses server/db/client.js.
+//   - NO foreign keys to the user/application database. `changedBy` is stored as an
+//     opaque admin userId string — there is intentionally no cross-database relation.
+//
+// Apply locally / in CI (from the server/ directory):
+//   npx prisma generate --schema=prisma/waitlist/schema.prisma
+//   npx prisma db push  --schema=prisma/waitlist/schema.prisma
+// ──────────────────────────────────────────────────────────────────────────────
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/waitlist-client"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("BETA_WAITLIST_DATABASE_URL")
+}
+
+model BetaWaitlistApplicant {
+  id              String @id @default(uuid())
+  // email keeps the address as typed (display); normalizedEmail (trimmed +
+  // lowercased) is the case-insensitive UNIQUE dedupe key.
+  email           String
+  normalizedEmail String @unique
+
+  firstName        String
+  lastName         String
+  institutionName  String
+  institutionRorId String? // optional normalized institution identifier (ROR)
+
+  role       String
+  customRole String? // only when role == "Other"
+
+  countryCode String
+  countryName String
+
+  researchExperienceLevel String?
+  annualReviewVolume      String?
+  workingStyle            String? // "Individual" | "Research team"
+  teamSize                String?
+
+  areasOfInterest String  @default("[]") // JSON-encoded array of interest strings
+  primaryUse      String
+  referralSource  String?
+  referralOther   String?
+  message         String?
+
+  // Consent — explicit, never pre-checked. consentVersion records WHICH copy the
+  // applicant agreed to; consentAt is the server timestamp of agreement.
+  consent        Boolean   @default(false)
+  consentVersion String?
+  consentAt      DateTime?
+
+  status           String @default("WAITLISTED") // see WAITLIST_STATUSES
+  submissionSource String @default("public_web")
+
+  // Confirmation-email delivery tracking. lastConfirmationEmailError stores a SAFE
+  // short reason only — never SMTP secrets or stack traces.
+  confirmationEmailStatus    String    @default("pending") // pending|queued|sent|failed|skipped
+  confirmationEmailSentAt    DateTime?
+  lastConfirmationEmailError String?
+  confirmationEmailAttempts  Int       @default(0)
+  lastConfirmationAttemptAt  DateTime?
+
+  // Administrative — never shown to the applicant.
+  internalNotes String?
+
+  // Lifecycle timestamps (optional; set when status advances).
+  invitedAt  DateTime?
+  acceptedAt DateTime?
+  removedAt  DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  statusEvents BetaWaitlistStatusEvent[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([countryCode])
+  @@index([role])
+  @@index([confirmationEmailStatus])
+}
+
+// Append-only status history for the Ops detail view + audit trail.
+model BetaWaitlistStatusEvent {
+  id          String                @id @default(uuid())
+  applicantId String
+  applicant   BetaWaitlistApplicant @relation(fields: [applicantId], references: [id], onDelete: Cascade)
+  fromStatus  String?
+  toStatus    String
+  // Opaque admin userId from the MAIN db (no cross-database FK on purpose).
+  changedBy   String?
+  note        String?
+  createdAt   DateTime              @default(now())
+
+  @@index([applicantId])
+}

@@ -71,6 +71,14 @@ const DEFAULTS = {
     // shows no AI surfaces. When ON, the deterministic TF-IDF + active-learning
     // relevance engine scores/ranks/explains records (human decisions unchanged).
     aiScreening: false,
+    // prompt48 — Beta Waitlist landing page. Default OFF: `/` shows the existing
+    // PecanRev landing page. When ON, an UNAUTHENTICATED visitor to `/` sees the
+    // Beta Waitlist page instead (authenticated users keep their normal landing /
+    // workspace redirect). The waitlist APIs + Ops tab are independent of this
+    // flag; the flag ONLY controls which public homepage unauthenticated visitors
+    // see. Stored in the same featureFlags SiteSetting; takes effect without a
+    // redeploy and surfaces in Ops › Flags automatically.
+    betaWaitlist: false,
   }),
   // screeningEngin.md — global (admin) AI screening policy. Surfaced in Ops ›
   // AI Screening. Additive SiteSetting; merged with AI_GLOBAL_DEFAULTS server-side.

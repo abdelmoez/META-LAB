@@ -28,6 +28,16 @@ const json = body => ({
   body: JSON.stringify(body),
 });
 
+// Build a query string from only the NON-EMPTY params (avoids '?x=undefined').
+const qs = (params = {}) => {
+  const sp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') sp.set(k, v);
+  }
+  const s = sp.toString();
+  return s ? `?${s}` : '';
+};
+
 export const adminApi = {
   // Platform metrics (admin only). prompt6 Task 9 adds unique-login counts:
   // logins: { day, week, month, quarter, year } — distinct userIds, rolling windows.
@@ -174,6 +184,22 @@ export const adminApi = {
     getSettings:  ()         => req(`${BASE}/rob/settings`),
     saveSettings: (body)     => req(`${BASE}/rob/settings`, { method: 'PUT', ...json(body) }),
     getMetrics:   ()         => req(`${BASE}/rob/metrics`),
+  },
+
+  // ── Beta Waitlist (prompt48, admin only) ─────────────────────────────────────
+  // metrics() → { configured, config, metrics } (metrics null when not configured);
+  // list(p)   → { configured, rows, total, page, limit, pages };
+  // get(id)   → { applicant } (full record + statusEvents);
+  // exportUrl(p) builds the CSV download URL (fetched as a blob with credentials).
+  betaWaitlist: {
+    metrics:   ()              => req(`${BASE}/beta-waitlist/metrics`),
+    list:      (p)             => req(`${BASE}/beta-waitlist/applicants${qs(p)}`),
+    get:       (id)            => req(`${BASE}/beta-waitlist/applicants/${id}`),
+    setStatus: (id, status, note) => req(`${BASE}/beta-waitlist/applicants/${id}/status`, { method: 'PATCH', ...json({ status, note }) }),
+    setNotes:  (id, notes)     => req(`${BASE}/beta-waitlist/applicants/${id}/notes`, { method: 'PATCH', ...json({ notes }) }),
+    resend:    (id, force)     => req(`${BASE}/beta-waitlist/applicants/${id}/resend`, { method: 'POST', ...json({ force: !!force }) }),
+    remove:    (id)            => req(`${BASE}/beta-waitlist/applicants/${id}`, { method: 'DELETE' }),
+    exportUrl: (p)             => `${BASE}/beta-waitlist/export${qs(p)}`,
   },
 
   auditLog:       (p)        => req(`${BASE}/audit-log?${new URLSearchParams(p || {})}`),

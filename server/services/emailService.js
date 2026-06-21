@@ -218,6 +218,63 @@ export function renderReplyEmail({ appName = 'PecanRev', toName = '', bodyText =
 export const renderContactReplyEmail = renderReplyEmail;
 
 /**
+ * renderBetaWaitlistConfirmationEmail — branded confirmation that an applicant
+ * joined the PecanRev BETA WAITLIST (prompt48 §6). This is explicitly NOT an
+ * account-creation email and NOT a beta-access invitation: it contains NO
+ * password, login link, or onboarding link. Joining the waitlist does not
+ * guarantee access. Returns both HTML and a plain-text fallback.
+ *
+ * @param {{appName?:string, firstName?:string, supportEmail?:string}} opts
+ * @returns {{html:string, text:string}}
+ */
+export function renderBetaWaitlistConfirmationEmail({ appName = 'PecanRev', firstName = '', supportEmail = '' } = {}) {
+  const greeting = firstName ? `Hi ${escapeHtml(firstName)},` : 'Hello,';
+  const appBase = env('APP_BASE_URL');
+  const siteLink = appBase
+    ? `<a href="${escapeHtml(appBase)}" style="color:#6366f1;text-decoration:none;">${escapeHtml(appBase)}</a>`
+    : escapeHtml(appName);
+  const supportHtml = supportEmail
+    ? `<a href="mailto:${escapeHtml(supportEmail)}" style="color:#6366f1;text-decoration:none;">${escapeHtml(supportEmail)}</a>`
+    : siteLink;
+
+  const bodyHtml = `          <div style="font-size:17px;font-weight:700;color:#111827;margin-bottom:14px;">You're on the ${escapeHtml(appName)} beta waitlist</div>
+          <div style="font-size:14px;color:#1f2937;line-height:1.6;margin-bottom:14px;">${greeting}</div>
+          <div style="font-size:14px;color:#1f2937;line-height:1.7;margin-bottom:16px;">
+            Thanks for your interest — we've added you to the waitlist for the ${escapeHtml(appName)} beta.
+            ${escapeHtml(appName)} is a professional workspace for systematic reviews and meta-analyses:
+            search building, title &amp; abstract screening, data extraction, risk-of-bias assessment, and
+            meta-analysis with publication-ready reporting, all in one place.
+          </div>
+          <div style="font-size:13px;color:#374151;line-height:1.7;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:14px 16px;margin-bottom:16px;">
+            This is a <strong>waitlist confirmation only</strong>. It does not create an account and is not a
+            beta invitation — joining the waitlist does not guarantee immediate access. If a place opens up,
+            we'll email you separately with the next steps.
+          </div>
+          <div style="font-size:13px;color:#6b7280;line-height:1.7;">
+            We may occasionally send you beta updates. Questions? Visit ${siteLink} or contact us at ${supportHtml}.
+          </div>`;
+
+  const html = renderBaseEmailLayout({ appName, bodyHtml });
+
+  const textParts = [
+    `You're on the ${appName} beta waitlist`,
+    '',
+    firstName ? `Hi ${firstName},` : 'Hello,',
+    '',
+    `Thanks for your interest — we've added you to the waitlist for the ${appName} beta. ${appName} is a professional workspace for systematic reviews and meta-analyses: search building, title & abstract screening, data extraction, risk-of-bias assessment, and meta-analysis with publication-ready reporting, all in one place.`,
+    '',
+    'This is a waitlist confirmation only. It does not create an account and is not a beta invitation — joining the waitlist does not guarantee immediate access. If a place opens up, we\'ll email you separately with the next steps.',
+    '',
+    `We may occasionally send you beta updates. Questions? Contact us${supportEmail ? ` at ${supportEmail}` : appBase ? ` via ${appBase}` : ''}.`,
+    '',
+    `— The ${appName} team`,
+  ];
+  if (appBase && !supportEmail) textParts.push(appBase);
+
+  return { html, text: textParts.join('\n') };
+}
+
+/**
  * renderPasswordResetEmail — META·LAB-styled password-reset email (prompt14 Task 4).
  * The link carries the single-use reset token; the body never reveals account
  * details. Every interpolated value is escaped. Returns HTML + plain text.

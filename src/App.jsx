@@ -6,6 +6,7 @@ import { ThemeProvider } from './frontend/theme/ThemeContext.jsx';
 import ProtectedRoute from './frontend/components/ProtectedRoute.jsx';
 import PublicRoute    from './frontend/components/PublicRoute.jsx';
 import AdminRoute     from './frontend/components/AdminRoute.jsx';
+import BetaWaitlistGate from './frontend/components/BetaWaitlistGate.jsx';
 import Landing        from './frontend/pages/Landing.jsx';
 
 // ── Route-level code splitting ──────────────────────────────────────────
@@ -27,6 +28,10 @@ const VerifyEmail   = lazy(() => import('./frontend/pages/VerifyEmail.jsx'));
 const Onboarding    = lazy(() => import('./frontend/pages/Onboarding.jsx'));
 const RobPage       = lazy(() => import('./frontend/rob/RobPage.jsx'));
 const Terms         = lazy(() => import('./frontend/pages/Terms.jsx'));
+// prompt48 — Beta Waitlist preview route (noindex). The live homepage swap is
+// handled by BetaWaitlistGate on `/`; this route renders the page regardless of
+// the flag so admins can preview it safely.
+const BetaWaitlistPreview = lazy(() => import('./frontend/pages/waitlist/BetaWaitlistPage.jsx'));
 
 /* Minimal theme-token loading state shown while a route chunk downloads. */
 function RouteFallback() {
@@ -151,8 +156,14 @@ export default function App() {
       <GlobalPresence />
       <Suspense fallback={<RouteFallback />}>
       <Routes>
-        {/* Public landing page */}
-        <Route path="/"         element={<Landing />} />
+        {/* Public landing page. prompt48 — when the betaWaitlist flag is ON,
+            BetaWaitlistGate shows the Beta Waitlist page to UNAUTHENTICATED
+            visitors; otherwise (and for signed-in users) the existing Landing
+            renders exactly as before. */}
+        <Route path="/"         element={<BetaWaitlistGate><Landing /></BetaWaitlistGate>} />
+
+        {/* prompt48 — Beta Waitlist preview (noindex; renders regardless of flag) */}
+        <Route path="/beta-waitlist" element={<BetaWaitlistPreview preview />} />
 
         {/* Public Terms of Service + Privacy Policy (prompt29) — works signed in or out */}
         <Route path="/terms"    element={<Terms />} />

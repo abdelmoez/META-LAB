@@ -88,6 +88,17 @@ import {
   getRobMetrics,
 } from '../controllers/robAdminController.js';
 
+import {
+  adminWaitlistMetrics,
+  adminListApplicants,
+  adminGetApplicant,
+  adminUpdateStatus,
+  adminUpdateNotes,
+  adminResendConfirmation,
+  adminRemoveApplicant,
+  adminExportApplicants,
+} from '../controllers/waitlistAdminController.js';
+
 const router = Router();
 
 // Admin-specific rate limiter (prompt6 Task 14): the two cheap, high-frequency
@@ -233,5 +244,18 @@ router.delete('/onboarding-questions/:id',      requireAdmin, adminDeleteQuestio
 router.get('/rob/settings',  requireAdmin, getRobSettings);
 router.put('/rob/settings',  requireAdmin, updateRobSettings);
 router.get('/rob/metrics',   requireAdmin, getRobMetrics);
+
+// ── Beta Waitlist (prompt48) — ADMIN ONLY (sensitive applicant PII). Reads the
+// strictly-separate waitlist database through the dedicated data layer; applicant
+// data is never copied into the main user database. Specific paths (metrics,
+// export) are declared BEFORE the :id routes so they are never shadowed.
+router.get('/beta-waitlist/metrics',                requireAdmin, adminWaitlistMetrics);
+router.get('/beta-waitlist/export',                 requireAdmin, adminExportApplicants);
+router.get('/beta-waitlist/applicants',             requireAdmin, adminListApplicants);
+router.get('/beta-waitlist/applicants/:id',         requireAdmin, adminGetApplicant);
+router.patch('/beta-waitlist/applicants/:id/status', requireAdmin, adminUpdateStatus);
+router.patch('/beta-waitlist/applicants/:id/notes',  requireAdmin, adminUpdateNotes);
+router.post('/beta-waitlist/applicants/:id/resend',  requireAdmin, adminResendConfirmation);
+router.delete('/beta-waitlist/applicants/:id',       requireAdmin, adminRemoveApplicant);
 
 export default router;

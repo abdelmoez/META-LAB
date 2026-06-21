@@ -37,7 +37,9 @@ import onboardingRouter   from './routes/onboarding.js';
 import institutionsRouter from './routes/institutions.js';
 import workflowStateRouter from './routes/workflowState.js';
 import searchEngineRouter  from './routes/searchEngine.js';
+import waitlistRouter       from './routes/waitlist.js';
 
+import { isWaitlistDbConfigured, redactedDbTarget } from './waitlist/config.js';
 import { initDefaultSettings } from './controllers/settingsController.js';
 import { seedOnboardingQuestions } from './controllers/onboardingController.js';
 import { seedAdmins } from './auth/seedAdmins.js';
@@ -127,6 +129,18 @@ const searchEngineLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// ── Rate limiter for the PUBLIC Beta Waitlist form (prompt48) — unauthenticated
+// submit + resend per IP. Tight in production (spam/abuse protection); relaxed in
+// dev/test so the integration suite can iterate. Per-email resend bursts +
+// cooldown are additionally enforced in the waitlist service. ────────────────────
+const waitlistLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 20 : 1000,
+  message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // ── Core middleware ────────────────────────────────────────────────────────────
 // CORS origin is env-driven for deployment (CORS_ORIGIN, then APP_BASE_URL),
 // falling back to the local Vite dev server. credentials:true is required so the
@@ -177,6 +191,12 @@ app.use('/api/notifications',        notificationsRouter);
 // router below: that router applies requireAuth at router level and would 401
 // every unauthenticated /api/* request, killing the pre-auth invite landing.
 app.use('/api/invites', inviteLimiter, invitesRouter);
+
+// ── Public Beta Waitlist (prompt48) — unauthenticated submit/resend. Own mount
+// with a dedicated limiter; MUST be BEFORE the bare '/api' importExport router
+// (which applies requireAuth at router level and would 401 the public form).
+// Writes ONLY to the strictly-separate waitlist DB — never the user database.
+app.use('/api/waitlist', waitlistLimiter, waitlistRouter);
 
 app.use('/api',                      importExportRouter);  // /api/import/... and /api/export/...
 
@@ -254,6 +274,28 @@ const server = app.listen(PORT, () => {
   initDefaultSettings().catch(console.error);
   seedOnboardingQuestions().catch(err => console.error('[seed] onboarding seed failed:', err.message));
   seedAdmins().catch(err => console.error('[seed] admin seed failed:', err.message));
+
+  // prompt48 — fail-safe waitlist config check. If the betaWaitlist flag is ON but
+  // the dedicated DB is not configured, log a CLEAR, REDACTED warning for admins.
+  // This is non-fatal: submissions already fail safe (503) at request time and
+  // NEVER fall back to the main user database. The flag lives in the main DB's
+  // featureFlags SiteSetting (read here, in the orchestrator, not in waitlist code
+  // — that keeps the waitlist module's isolation boundary intact).
+  (async () => {
+    try {
+      const { prisma } = await import('./db/client.js');
+      const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
+      let flags = {};
+      try { flags = JSON.parse(row?.value || '{}'); } catch { flags = {}; }
+      if (flags.betaWaitlist && !isWaitlistDbConfigured()) {
+        console.warn('[waitlist] WARNING: betaWaitlist is ENABLED but BETA_WAITLIST_DATABASE_URL is not set. ' +
+          'The page will load, but submissions fail safe (503) and NEVER write to the user database. ' +
+          'Fix: set BETA_WAITLIST_DATABASE_URL, then `cd server && npx prisma db push --schema=prisma/waitlist/schema.prisma`.');
+      } else if (isWaitlistDbConfigured()) {
+        console.log(`[waitlist] dedicated DB configured (${redactedDbTarget()}).`);
+      }
+    } catch { /* non-fatal */ }
+  })();
 });
 
 export default app;
