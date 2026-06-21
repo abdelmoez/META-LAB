@@ -3,7 +3,7 @@
  */
 import { PrismaClient } from '@prisma/client';
 import { createHash } from 'crypto';
-import { detectDuplicatesInProject } from '../services/screeningDuplicateService.js';
+import { detectDuplicatesInProject, recordDuplicateLabels, getDuplicateEvaluation } from '../services/screeningDuplicateService.js';
 import { syncConflicts } from '../services/screeningConflictService.js';
 import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../screening/access.js';
 import { rankItems } from '../../src/research-engine/screening/ai/ranking.js';
@@ -12,7 +12,17 @@ import { scheduleRescore } from '../services/screeningAiJobs.js';
 import { emitToProjectMembers, emitToMetaLabProject } from '../realtime/bus.js';
 import { getMetaSiftSettings, getEffectiveQuorum } from '../screening/settings.js';
 import { snapshotPico } from '../screening/picoSnapshot.js';
-import { scorePair, normalizeTitle } from '../../src/research-engine/screening/deduplication.js';
+import { scorePair, normalizeTitle, classifyPair, DUP_TYPES } from '../../src/research-engine/screening/deduplication.js';
+
+// Human-readable label per duplicate type (se2.md §10), shown in the UI.
+const DUP_TYPE_LABEL = {
+  [DUP_TYPES.EXACT]: 'Exact duplicate',
+  [DUP_TYPES.PROBABLE]: 'Probable duplicate',
+  [DUP_TYPES.POSSIBLE]: 'Possible duplicate',
+  [DUP_TYPES.RELATED]: 'Related report — likely not a duplicate',
+  [DUP_TYPES.FAMILY]: 'Same study family — not a duplicate record',
+  [DUP_TYPES.NOT]: 'Not a duplicate',
+};
 import { DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS } from '../../src/research-engine/screening/defaultKeywords.js';
 import { effectiveKeywords } from '../../src/research-engine/screening/criteriaKeywords.js';
 import { isScreeningComplete } from '../utils/screeningCompletion.js';
@@ -1410,19 +1420,34 @@ export async function listDuplicates(req, res) {
       } } },
       orderBy: { createdAt: 'desc' },
     });
-    // Surface an explainable similarity % per group (max pairwise score).
+    // Surface an explainable similarity % + a TYPED verdict per group (se2.md §10):
+    // the strongest pair's classification, conflicts, and whether a merge may even be
+    // suggested. `mergeable:false` (related report / same study family) must never be
+    // auto-merged — separate reports of one study are not duplicate records.
     const scored = groups.map(g => {
-      let best = { score: 0, reason: '' };
       const recs = g.records || [];
+      let best = null;
       for (let i = 0; i < recs.length; i++) {
         for (let j = i + 1; j < recs.length; j++) {
-          const s = scorePair(recs[i], recs[j]);
-          if (s.score >= best.score) best = s;
+          const c = classifyPair(recs[i], recs[j]);
+          if (!best || c.score >= best.score) best = c;
         }
       }
-      return { ...g, similarity: best.score, similarityReason: best.reason, resolved: !!g.resolvedAt };
+      const v = best || { score: 0, reasons: [], conflicts: [], type: DUP_TYPES.NOT, mergeable: false };
+      return {
+        ...g,
+        similarity: v.score,
+        similarityReason: (v.reasons || []).join('; '),
+        dupType: v.type,
+        dupTypeLabel: DUP_TYPE_LABEL[v.type] || v.type,
+        dupConflicts: v.conflicts || [],
+        mergeable: !!v.mergeable,
+        resolved: !!g.resolvedAt,
+      };
     });
-    res.json({ groups: scored, isLeader: access.isLeader });
+    // Leaders also get the evaluation of the classifier against accrued reviewer labels.
+    const evaluation = access.isLeader ? await getDuplicateEvaluation(access.project.id, prisma).catch(() => null) : null;
+    res.json({ groups: scored, isLeader: access.isLeader, evaluation });
   } catch (err) {
     console.error('[screening] listDuplicates:', err.message);
     res.status(500).json({ error: 'Internal server error' });
@@ -1460,10 +1485,24 @@ export async function resolveDuplicateGroup(req, res) {
     if (!group) return res.status(404).json({ error: 'Duplicate group not found' });
     const { primaryId, keepAll } = req.body || {};
 
+    // se2.md §10 — accrue a reviewer-confirmed label for every pair in this group so the
+    // duplicate classifier can be evaluated against real decisions. Best-effort: a
+    // labelling failure must never block the resolution. Fetch the records once up front.
+    const labelPairs = async (label) => {
+      try {
+        const recs = await prisma.screenRecord.findMany({
+          where: { duplicateGroupId: group.id },
+          select: { id: true, title: true, doi: true, pmid: true, authors: true, year: true, journal: true, abstract: true },
+        });
+        await recordDuplicateLabels({ projectId: p.id, records: recs, label, reviewerId: req.user.id, prisma });
+      } catch (e) { console.error('[screening] duplicate label accrual failed:', e.message); }
+    };
+
     // prompt23 Task 10 — "Not duplicates / keep all": the suggestion was a false
     // positive. Resolve the group WITHOUT merging — every record stays active (no
     // record is flagged isDuplicate), so both remain in screening.
     if (keepAll) {
+      await labelPairs('not_duplicate');
       await prisma.screenRecord.updateMany({ where: { duplicateGroupId: group.id }, data: { isDuplicate: false, isPrimary: false } });
       await prisma.screenDuplicateGroup.update({ where: { id: group.id }, data: { resolvedAt: new Date(), primaryId: null } });
       await writeAudit(p.id, req.user, 'DUPLICATE_GROUP_KEEP_ALL', { entityType: 'duplicateGroup', entityId: group.id });
@@ -1473,6 +1512,8 @@ export async function resolveDuplicateGroup(req, res) {
 
     if (!primaryId) return res.status(400).json({ error: 'primaryId is required' });
 
+    // Reviewer confirmed these ARE the same record → label every pair 'duplicate'.
+    await labelPairs('duplicate');
     // Mark all in group as duplicate, except primary
     await prisma.screenRecord.updateMany({ where: { duplicateGroupId: group.id }, data: { isDuplicate: true, isPrimary: false } });
     await prisma.screenRecord.update({ where: { id: primaryId }, data: { isDuplicate: false, isPrimary: true } });

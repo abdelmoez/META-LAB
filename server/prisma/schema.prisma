@@ -513,6 +513,27 @@ model ScreenDuplicateGroup {
   records     ScreenRecord[]
 }
 
+// se2.md §10 — reviewer-confirmed duplicate labels, accrued from resolve actions, used
+// to evaluate (and eventually calibrate/validate) the duplicate classifier. Additive;
+// bare scope keys (records may be soft-deleted). Pairs stored in canonical order A<B.
+model ScreenDuplicateLabel {
+  id            String   @id @default(uuid())
+  projectId     String
+  recordIdA     String
+  recordIdB     String
+  label         String   // duplicate | not_duplicate | related | uncertain
+  predictedType String   @default("")   // classifier verdict at label time (classifyPair)
+  score         Int      @default(0)
+  reason        String   @default("")
+  modelVersion  String   @default("")
+  reviewerId    String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([projectId, recordIdA, recordIdB])
+  @@index([projectId])
+}
+
 model ScreenConflict {
   id                String        @id @default(uuid())
   projectId         String

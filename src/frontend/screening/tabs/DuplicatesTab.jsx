@@ -34,6 +34,18 @@ function scoreColor(pct) {
   return C.muted;
 }
 
+/** Colour for the typed duplicate verdict (se2.md §10). Non-mergeable types (related
+ *  report / same study family) are teal — informational, "do NOT merge". */
+function dupTypeColor(type, mergeable) {
+  if (type === 'exact_duplicate') return C.red;
+  if (type === 'probable_duplicate') return C.gold;
+  if (type === 'possible_duplicate') return C.ylw;
+  if (mergeable === false) return C.teal;
+  return C.muted;
+}
+
+const pctLabel = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
+
 const shortId = (id) => (id == null ? '?' : String(id).slice(-6));
 
 // Small uppercase MONO field label, used to align fields across stacked records.
@@ -51,6 +63,7 @@ function FieldLabel({ children }) {
 // ── Component ────────────────────────────────────────────────────────────────
 export default function DuplicatesTab({ pid, project, access = {}, refreshProject }) {
   const [groups, setGroups]   = useState([]);
+  const [evaluation, setEvaluation] = useState(null); // se2.md §10 classifier accuracy (leader)
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
 
@@ -83,6 +96,7 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
       const data = await screeningApi.listDuplicates(pid);
       const gs = Array.isArray(data?.groups) ? data.groups : [];
       setGroups(gs);
+      setEvaluation(data?.evaluation || null);
       seedPrimaries(gs);
     } catch (e) {
       setError(e?.message || 'Failed to load duplicate groups.');
@@ -175,6 +189,7 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
             <span style={{ color: C.brd2 }}>·</span>
             <span><strong style={{ fontFamily: MONO, color: C.grn }}>{resolved.length}</strong> resolved</span>
           </div>
+          {isLeader && <DupAccuracy ev={evaluation} />}
         </div>
 
         {isLeader && (
@@ -282,6 +297,25 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
   );
 }
 
+// ── Classifier accuracy line (leader; se2.md §10) — honest until enough labels ──
+function DupAccuracy({ ev }) {
+  if (!ev) return null;
+  const logged = ev.labelCount || 0;  // total reviewer decisions recorded (incl. 'uncertain')
+  const scored = ev.n || 0;           // labels actually scored by the harness (excl. 'uncertain')
+  if (scored < 20) {
+    return (
+      <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+        Duplicate classifier not yet validated — {logged} reviewer decision{logged === 1 ? '' : 's'} logged (need ≥ 20 scored to estimate accuracy).
+      </div>
+    );
+  }
+  return (
+    <div style={{ fontSize: 11, color: C.txt2, marginTop: 4, fontFamily: MONO }}>
+      Classifier vs {ev.n} labels: precision {pctLabel(ev.precision)} · recall {pctLabel(ev.recall)} · false-merge {pctLabel(ev.falseMergeRate)}
+    </div>
+  );
+}
+
 // ── Section header ───────────────────────────────────────────────────────────
 function SectionHeader({ label, count, countColor = C.muted }) {
   return (
@@ -308,6 +342,7 @@ function DuplicateGroup({ group, isLeader, selectedId, onSelect, onResolve, onKe
   const resolved = !!group.resolved;
   const pct      = pctOf(group.similarity);
   const simColor = scoreColor(pct);
+  const typeColor = dupTypeColor(group.dupType, group.mergeable);
   const editable = isLeader && !resolved;
 
   return (
@@ -331,12 +366,31 @@ function DuplicateGroup({ group, isLeader, selectedId, onSelect, onResolve, onKe
               {pct}% similar
             </span>
 
+            {/* Typed verdict (se2.md §10) — colour signals whether a merge may be suggested. */}
+            {group.dupTypeLabel && (
+              <span title={group.mergeable === false ? 'Likely separate reports of the same study — not a duplicate record to merge.' : undefined}
+                style={{
+                  fontSize: 10.5, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.02em',
+                  color: typeColor, background: alpha(typeColor, '1a'), border: `1px solid ${alpha(typeColor, '55')}`,
+                  borderRadius: 6, padding: '3px 9px',
+                }}>
+                {group.dupTypeLabel}
+              </span>
+            )}
+
             {resolved && <Badge color={C.grn}>Resolved</Badge>}
           </div>
 
           {group.similarityReason && (
             <div style={{ fontSize: 11.5, fontStyle: 'italic', color: C.txt2, marginTop: 7, lineHeight: 1.4 }}>
               {group.similarityReason}
+            </div>
+          )}
+
+          {group.dupConflicts?.length > 0 && (
+            <div style={{ fontSize: 11, color: C.gold, marginTop: 6, display: 'flex', alignItems: 'flex-start', gap: 6, lineHeight: 1.4 }}>
+              <span style={{ flexShrink: 0 }}>⚠</span>
+              <span>Conflicting metadata: {group.dupConflicts.join(' · ')}. Verify before merging.</span>
             </div>
           )}
         </div>
@@ -363,8 +417,10 @@ function DuplicateGroup({ group, isLeader, selectedId, onSelect, onResolve, onKe
       {/* ── Resolve action (unresolved + leader only) ── */}
       {editable && (
         <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.brd}`, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 11.5, color: C.muted }}>
-            Keep the selected record and mark the rest as duplicates — or keep them all if these aren&rsquo;t duplicates.
+          <span style={{ fontSize: 11.5, color: group.mergeable === false ? C.teal : C.muted, maxWidth: 460, lineHeight: 1.45 }}>
+            {group.mergeable === false
+              ? 'These look like separate reports of the same study (e.g. preprint + journal article, or a secondary analysis). Prefer “Not duplicates — keep all” unless you confirm they are the same record.'
+              : 'Keep the selected record and mark the rest as duplicates — or keep them all if these aren’t duplicates.'}
           </span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, flexWrap: 'wrap' }}>
             {resolveError && (

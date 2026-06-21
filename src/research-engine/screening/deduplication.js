@@ -256,3 +256,191 @@ export function findDuplicateGroupsScored(records, titleThreshold = 0.85) {
     };
   });
 }
+
+// ── Typed duplicate classification (se2.md §10) ──────────────────────────────
+//
+// scorePair gives a single 0–100 likelihood. §10 requires more: a calibrated,
+// TYPED distinction that never silently merges two separate REPORTS of the same
+// underlying study. classifyPair adds richer features (journal / volume / issue /
+// pages / abstract / publication type / language), conflict detection, and a typed
+// verdict. It is a transparent heuristic — NOT yet validated against a labelled
+// duplicate dataset; keep `verified:false` until evaluateDuplicateLabels shows
+// adequate precision/recall on real reviewer labels.
+
+/** Bump when the feature set or thresholds change so labels/metrics stay comparable. */
+export const DUP_MODEL_VERSION = 'dup-1.0.0';
+
+/** Ordered from "definitely the same record" to "definitely different". */
+export const DUP_TYPES = Object.freeze({
+  EXACT: 'exact_duplicate',         // same record (hard identifier match)
+  PROBABLE: 'probable_duplicate',   // almost certainly the same record
+  POSSIBLE: 'possible_duplicate',   // might be the same record — needs a human
+  RELATED: 'related_report',        // a different report of (likely) the same study — DO NOT merge
+  FAMILY: 'same_study_family',      // same trial/study family (e.g. secondary analysis) — DO NOT merge
+  NOT: 'not_duplicate',
+});
+
+/** A merge is only ever SUGGESTED for these types; the rest must never auto-merge. */
+export const DUP_MERGEABLE = Object.freeze(new Set([DUP_TYPES.EXACT, DUP_TYPES.PROBABLE, DUP_TYPES.POSSIBLE]));
+
+export const DUP_DEFAULTS = Object.freeze({
+  titleProbable: 0.95,   // title sim at/above → strong same-record evidence
+  titlePossible: 0.80,
+  titleRelated: 0.70,    // similar title but conflicting venue/year → related report
+  authorOverlap: 0.34,   // jaccard at/above → meaningful author agreement
+  abstractProbable: 0.85,
+});
+
+const normStr = (s) => String(s == null ? '' : s).toLowerCase().replace(/[^a-z0-9]/g, '');
+function tokenSet(s) {
+  const out = new Set();
+  String(s || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).forEach(t => { if (t.length >= 3) out.add(t); });
+  return out;
+}
+function jaccardSet(a, b) {
+  if (!a.size || !b.size) return 0;
+  let inter = 0; for (const x of a) if (b.has(x)) inter++;
+  return inter / (a.size + b.size - inter);
+}
+
+/**
+ * extractDupFeatures — every comparison signal between two records. Each is 0/1 or a
+ * [0,1] similarity; identifier conflicts (both present but different) are tracked so
+ * the classifier can refuse to merge despite a high title score.
+ */
+export function extractDupFeatures(a = {}, b = {}) {
+  const doiA = (a.doi || '').trim().toLowerCase(), doiB = (b.doi || '').trim().toLowerCase();
+  const pmidA = (a.pmid || '').toString().trim(), pmidB = (b.pmid || '').toString().trim();
+  const yearA = a.year != null && a.year !== '' ? String(a.year).trim() : '';
+  const yearB = b.year != null && b.year !== '' ? String(b.year).trim() : '';
+  const jrnA = normStr(a.journal), jrnB = normStr(b.journal);
+  const volA = normStr(a.volume), volB = normStr(b.volume);
+  const issA = normStr(a.issue), issB = normStr(b.issue);
+  const pgA = normStr(a.pages), pgB = normStr(b.pages);
+  const langA = normStr(a.language), langB = normStr(b.language);
+  const ptA = normStr(a.publicationType || a.pubType), ptB = normStr(b.publicationType || b.pubType);
+
+  const both = (x, y) => !!x && !!y;
+  return {
+    doiMatch: both(doiA, doiB) && doiA === doiB,
+    doiConflict: both(doiA, doiB) && doiA !== doiB,
+    pmidMatch: both(pmidA, pmidB) && pmidA === pmidB,
+    pmidConflict: both(pmidA, pmidB) && pmidA !== pmidB,
+    titleSim: titleSimilarity(a.title, b.title),
+    authorJaccard: jaccard(parseSurnames(a.authors), parseSurnames(b.authors)),
+    abstractSim: (a.abstract && b.abstract) ? jaccardSet(tokenSet(a.abstract), tokenSet(b.abstract)) : null,
+    yearMatch: both(yearA, yearB) && yearA === yearB,
+    yearConflict: both(yearA, yearB) && yearA !== yearB,
+    journalMatch: both(jrnA, jrnB) && jrnA === jrnB,
+    journalConflict: both(jrnA, jrnB) && jrnA !== jrnB,
+    volumeMatch: both(volA, volB) && volA === volB,
+    issueMatch: both(issA, issB) && issA === issB,
+    pagesMatch: both(pgA, pgB) && pgA === pgB,
+    languageConflict: both(langA, langB) && langA !== langB,
+    pubTypeMatch: both(ptA, ptB) && ptA === ptB,
+  };
+}
+
+/**
+ * classifyPair — typed, explainable duplicate verdict between two records.
+ *
+ * @returns {{ type:string, mergeable:boolean, score:number, confidence:number,
+ *   reasons:string[], conflicts:string[], signals:object }}
+ */
+export function classifyPair(a = {}, b = {}, cfg = {}) {
+  const t = { ...DUP_DEFAULTS, ...cfg };
+  const f = extractDupFeatures(a, b);
+  const reasons = [];
+  const conflicts = [];
+  if (f.doiConflict) conflicts.push('Different DOIs');
+  if (f.pmidConflict) conflicts.push('Different PMIDs');
+  if (f.yearConflict) conflicts.push('Different publication years');
+  if (f.journalConflict) conflicts.push('Different journals');
+  if (f.languageConflict) conflicts.push('Different languages');
+
+  const venueAgrees = f.journalMatch || f.volumeMatch || f.pagesMatch;
+  const venueDiffers = f.journalConflict || f.yearConflict;
+  // Distinct DOIs/PMIDs mean two DIFFERENT records (each article has its own). A hard
+  // identifier conflict is therefore a no-merge signal: it can never be a mergeable
+  // duplicate, and with similar-title evidence it is a related report of the same study.
+  const idConflict = f.doiConflict || f.pmidConflict;
+  const strongAuthors = f.authorJaccard >= t.authorOverlap;
+
+  const verdict = (type, score, confidence) => {
+    if (f.titleSim > 0) reasons.unshift(`${Math.round(f.titleSim * 100)}% title similarity`);
+    if (strongAuthors) reasons.push('overlapping authors');
+    if (f.abstractSim != null && f.abstractSim >= t.abstractProbable) reasons.push('near-identical abstract');
+    if (f.journalMatch) reasons.push('same journal');
+    if (f.volumeMatch && f.pagesMatch) reasons.push('same volume & pages');
+    return { type, mergeable: DUP_MERGEABLE.has(type), score, confidence, reasons, conflicts, signals: f };
+  };
+
+  // 1. Hard identifiers → exact (DOI/PMID are authoritative). A conflicting OTHER id is
+  //    surfaced but does not downgrade an exact id match.
+  if (f.doiMatch) { reasons.push('exact DOI match'); return verdict(DUP_TYPES.EXACT, 100, 0.99); }
+  if (f.pmidMatch) { reasons.push('exact PMID match'); return verdict(DUP_TYPES.EXACT, 100, 0.99); }
+
+  // 2. Same study reported twice (NOT a duplicate record): strong author + similar title
+  //    but the venue/year OR a hard identifier (DOI/PMID) differs. Classic preprint↔journal,
+  //    conference↔full article, erratum/reprint, secondary analysis. Must never auto-merge.
+  if (strongAuthors && f.titleSim >= t.titleRelated && (venueDiffers || idConflict)) {
+    reasons.push('same authors & similar title but a different venue/year or identifier');
+    const type = f.titleSim >= t.titleProbable ? DUP_TYPES.RELATED : DUP_TYPES.FAMILY;
+    return verdict(type, Math.round(f.titleSim * 100), 0.55);
+  }
+
+  // 3. Probable duplicate record: near-identical title + agreeing venue, NO hard conflict
+  //    (a conflicting DOI/PMID always disqualifies a merge).
+  if (f.titleSim >= t.titleProbable && !venueDiffers && !idConflict && (strongAuthors || venueAgrees || (f.abstractSim != null && f.abstractSim >= t.abstractProbable))) {
+    return verdict(DUP_TYPES.PROBABLE, Math.round(f.titleSim * 100), 0.85);
+  }
+
+  // 4. Possible duplicate: moderately similar; a human should look — but never when a hard
+  //    identifier conflicts (distinct DOI/PMID ⇒ different records, surfaced as not_duplicate).
+  if (f.titleSim >= t.titlePossible && !idConflict && (strongAuthors || f.yearMatch || venueAgrees)) {
+    return verdict(DUP_TYPES.POSSIBLE, Math.round(f.titleSim * 100), 0.6);
+  }
+
+  // 5. Otherwise not a duplicate.
+  return verdict(DUP_TYPES.NOT, Math.round(f.titleSim * 100), 0.9);
+}
+
+/**
+ * evaluateDuplicateLabels — evaluation harness (se2.md §10). Given reviewer-labelled
+ * pairs, score the classifier so the team can decide whether to flip `verified:false`.
+ * A merge is "predicted" iff the predicted type is in DUP_MERGEABLE. Labels: 'duplicate'
+ * (true merge), 'not_duplicate' / 'related' (true no-merge), 'uncertain' (excluded).
+ *
+ * @param {Array<{predictedType:string, score?:number, label:string}>} pairs
+ * @returns {object} precision/recall/specificity/f1 + falseMerge/falseSplit rates + byType
+ */
+export function evaluateDuplicateLabels(pairs = []) {
+  let tp = 0, fp = 0, tn = 0, fn = 0, used = 0, uncertain = 0;
+  const byType = {};
+  for (const p of pairs) {
+    if (!p || p.label === 'uncertain' || p.label == null) { uncertain++; continue; }
+    used++;
+    const predMerge = DUP_MERGEABLE.has(p.predictedType);
+    const trueMerge = p.label === 'duplicate';
+    if (predMerge && trueMerge) tp++;
+    else if (predMerge && !trueMerge) fp++;       // false merge
+    else if (!predMerge && trueMerge) fn++;       // false split
+    else tn++;
+    const k = p.predictedType || 'unknown';
+    byType[k] = byType[k] || { merged: 0, total: 0 };
+    byType[k].total++; if (trueMerge) byType[k].merged++;
+  }
+  const div = (a, b) => (b > 0 ? a / b : null);
+  return {
+    n: used, uncertain,
+    precision: div(tp, tp + fp),
+    recall: div(tp, tp + fn),
+    specificity: div(tn, tn + fp),
+    f1: (tp || fp || fn) ? div(2 * tp, 2 * tp + fp + fn) : null,
+    falseMergeRate: div(fp, fp + tn),   // P(predict merge | truly not a duplicate)
+    falseSplitRate: div(fn, fn + tp),   // P(predict no-merge | truly a duplicate)
+    confusion: { tp, fp, tn, fn },
+    byType,
+    modelVersion: DUP_MODEL_VERSION,
+  };
+}
