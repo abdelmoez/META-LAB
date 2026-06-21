@@ -65,7 +65,7 @@ export function AiScoreCard({ ai, record, decided }) {
   const [open, setOpen] = useState(false);
   const [fb, setFb] = useState('');
   const rid = record?.id;
-  const score = rid ? ai.scores[rid] : null;
+  const score = rid ? (record?.aiScore || ai.scores[rid]) : null;
   const blind = ai.status?.project?.blindFromAi;
 
   useEffect(() => {
@@ -204,6 +204,9 @@ function PicoMatch({ breakdown }) {
 /** Active-learning queue selector + Run control for the list header. */
 export function AiQueueBar({ ai, mode, onMode, band, onBand }) {
   if (!ai.enabled) return null;
+  // AI-blinding: a non-leader reviewer must not get AI-ordered/filtered worklists
+  // (the order leaks the model's opinion). Server enforces this too; leaders exempt.
+  if (ai.status?.project?.blindFromAi && !ai.status?.canConfigure) return null;
   const sel = {
     fontFamily: FONT, fontSize: 12, color: C.txt, background: C.card, border: `1px solid ${C.brd}`,
     borderRadius: 6, padding: '5px 7px', cursor: 'pointer',
@@ -217,7 +220,7 @@ export function AiQueueBar({ ai, mode, onMode, band, onBand }) {
       <select value={band || 'all'} onChange={e => onBand(e.target.value)} style={sel} title="Filter loaded records by AI score band">
         <option value="all">All scores</option>
         <option value="very_high">Very high (80+)</option>
-        <option value="high">High (60+)</option>
+        <option value="high">High (60–80)</option>
         <option value="medium">Medium (40–60)</option>
         <option value="low">Low (&lt;40)</option>
         <option value="uncertain">Uncertain band</option>
@@ -281,14 +284,17 @@ export function AiStatusPanel({ ai }) {
         const cv = m.crossVal && m.crossVal.heldOut ? m.crossVal : null;
         const v = cv || m;                       // prefer honest held-out metrics
         const label = cv ? `Validation (held-out ${cv.k}-fold CV)` : 'Validation (in-sample)';
+        const ci = v.ci || {};
+        const fmtCI = (c, fmt) => (c && c.lo != null && c.hi != null) ? ` (${fmt(c.lo)}–${fmt(c.hi)})` : '';
         return (
           <div>
             <div style={{ fontSize: 10.5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>{label}</div>
-            {row('AUC', num(v.auc))}
-            {row('Sensitivity', v.sensitivity != null ? pct(v.sensitivity) : '—')}
+            {row('AUC', num(v.auc) + fmtCI(ci.auc, num))}
+            {row('Sensitivity', (v.sensitivity != null ? pct(v.sensitivity) : '—') + fmtCI(ci.sensitivity, pct))}
             {row('Specificity', v.specificity != null ? pct(v.specificity) : '—')}
-            {row('WSS@95', v.wss95 != null ? num(v.wss95) : '—', C.teal)}
+            {row('WSS@95', (v.wss95 != null ? num(v.wss95) : '—') + fmtCI(ci.wss95, num), C.teal)}
             {row('Recall@10', v.recallAt10 != null ? pct(v.recallAt10) : '—')}
+            {ci.auc && ci.auc.lo != null && <div style={{ fontSize: 10, color: C.muted, marginTop: 2 }}>95% bootstrap CI in parentheses.</div>}
             {v.sampleWarning?.warn && <div style={{ fontSize: 11, color: C.gold, marginTop: 4, lineHeight: 1.4 }}>{v.sampleWarning.reason}</div>}
             {cv && m.crossVal?.insufficient && <div style={{ fontSize: 11, color: C.gold, marginTop: 4 }}>{m.crossVal.reason}</div>}
             <div style={{ fontSize: 10.5, color: C.muted, marginTop: 4, lineHeight: 1.4 }}>

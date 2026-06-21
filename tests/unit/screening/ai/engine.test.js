@@ -5,7 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { trainAndScore, crossValidate, summarizeLabels } from '../../../../src/research-engine/screening/ai/activeLearning.js';
 import { coldStartScore, detectStudyDesign } from '../../../../src/research-engine/screening/ai/coldStart.js';
-import { computeValidation, rocAuc, wssAtRecall, recallAtK, stageMetrics } from '../../../../src/research-engine/screening/ai/validation.js';
+import { computeValidation, rocAuc, wssAtRecall, recallAtK, stageMetrics, bootstrapCI } from '../../../../src/research-engine/screening/ai/validation.js';
 import { rankItems, uncertainty, predictionLabel } from '../../../../src/research-engine/screening/ai/ranking.js';
 import { hashingEmbed, cosineDense, createEmbeddingProvider } from '../../../../src/research-engine/screening/ai/embeddings.js';
 import { resolveConfig } from '../../../../src/research-engine/screening/ai/config.js';
@@ -129,6 +129,27 @@ describe('validation metrics', () => {
     const bad = wssAtRecall([0.1, 0.15, 0.2, 0.8, 0.85, 0.9], perfectLabels, 0.95);
     expect(bad.wss).toBeLessThan(good.wss);
   });
+  it('bootstrapCI brackets the point estimate, deterministically', () => {
+    const s = [0.95, 0.9, 0.85, 0.8, 0.3, 0.25, 0.2, 0.15];
+    const l = [1, 1, 1, 1, 0, 0, 0, 0];
+    const a = bootstrapCI(s, l, (ss, ll) => rocAuc(ss, ll), { iters: 200 });
+    const b = bootstrapCI(s, l, (ss, ll) => rocAuc(ss, ll), { iters: 200 });
+    expect(a.point).toBeCloseTo(1, 6);
+    expect(a.lo).toBeLessThanOrEqual(a.point);
+    expect(a.hi).toBeGreaterThanOrEqual(a.point - 1e-9);
+    expect(a.lo).toBe(b.lo);            // deterministic
+    expect(a.hi).toBe(b.hi);
+  });
+
+  it('computeValidation attaches 95% bootstrap CIs', () => {
+    const v = computeValidation([0.9, 0.8, 0.2, 0.1], [1, 1, 0, 0]);
+    expect(v.ci).toBeTruthy();
+    expect(v.ci.auc.point).toBeCloseTo(1, 6);
+    expect(v.ci.auc.lo).toBeLessThanOrEqual(v.ci.auc.hi);
+    // opt-out path
+    expect(computeValidation([0.9, 0.1], [1, 0], { ci: false }).ci).toBeNull();
+  });
+
   it('computeValidation bundles metrics + small-sample warning', () => {
     const v = computeValidation(perfectScores, perfectLabels);
     expect(v.auc).toBeCloseTo(1, 6);
@@ -180,6 +201,47 @@ describe('ranking + uncertainty', () => {
   });
 });
 
+describe('dense embedding semantic path', () => {
+  const records = makeRecords();
+  // Few labels → cold-start mode, so the SEMANTIC signal (not the classifier) drives
+  // the difference. Dense vectors cleanly separate includes [1,0] from excludes [0,1].
+  const labels = {};
+  records.filter(r => r.title.includes('Randomized')).slice(0, 2).forEach(r => { labels[r.id] = 'include'; });
+  records.filter(r => r.title.includes('Narrative')).slice(0, 2).forEach(r => { labels[r.id] = 'exclude'; });
+  const denseEmbeddings = {};
+  records.forEach(r => { denseEmbeddings[r.id] = r.title.includes('Randomized') ? [1, 0] : [0, 1]; });
+
+  it('uses injected dense vectors and is deterministic', () => {
+    const a = trainAndScore({ records, labelByRecordId: labels, denseEmbeddings, picoSnapshot });
+    const b = trainAndScore({ records, labelByRecordId: labels, denseEmbeddings, picoSnapshot });
+    expect(a.scores.map(s => s.score)).toEqual(b.scores.map(s => s.score));
+    // A held-out include-like record's semantic subscore exceeds an exclude-like one's.
+    const byId = Object.fromEntries(a.scores.map(s => [s.recordId, s]));
+    const incHeld = a.scores.find(s => s.recordId.startsWith('inc') && !(s.recordId in labels));
+    const excHeld = a.scores.find(s => s.recordId.startsWith('exc') && !(s.recordId in labels));
+    expect(incHeld.subScores.semantic).toBeGreaterThan(excHeld.subScores.semantic);
+  });
+
+  it('falls back cleanly when no dense vectors are given', () => {
+    const res = trainAndScore({ records, labelByRecordId: labels, picoSnapshot });
+    expect(res.scores.length).toBe(records.length);
+  });
+
+  it('ragged or partial dense coverage → all-or-nothing lexical fallback, never NaN', () => {
+    // (a) one wrong-dimension vector → not uniform → dense disabled
+    const ragged = { ...denseEmbeddings, [records[0].id]: [1] };
+    const r1 = trainAndScore({ records, labelByRecordId: labels, denseEmbeddings: ragged, picoSnapshot });
+    expect(r1.scores.every(s => Number.isFinite(s.score))).toBe(true);
+    // (b) partial coverage (some records missing a vector) → dense disabled
+    const partial = {}; records.slice(0, 3).forEach(r => { partial[r.id] = [1, 0]; });
+    const r2 = trainAndScore({ records, labelByRecordId: labels, denseEmbeddings: partial, picoSnapshot });
+    // Both equal the pure-lexical result (dense path never engaged on non-uniform coverage).
+    const lexical = trainAndScore({ records, labelByRecordId: labels, picoSnapshot });
+    expect(r1.scores.map(s => s.score)).toEqual(lexical.scores.map(s => s.score));
+    expect(r2.scores.map(s => s.score)).toEqual(lexical.scores.map(s => s.score));
+  });
+});
+
 describe('crossValidate (held-out k-fold)', () => {
   const records = makeRecords();
   const labels = {};
@@ -227,6 +289,12 @@ describe('embeddings provider', () => {
     const p = createEmbeddingProvider({ embedding: 'hosted' }, {});
     expect(p.available).toBe(false);
   });
+  it('cosineDense skips non-finite components and never returns NaN', () => {
+    expect(cosineDense([1, 0, NaN], [1, 0, 0])).toBeCloseTo(1, 6); // NaN dim skipped
+    expect(cosineDense([NaN, NaN], [1, 1])).toBe(0);               // all non-finite → 0
+    expect(Number.isFinite(cosineDense([1, 2], [3, 4]))).toBe(true);
+  });
+
   it('hashing provider embeds records', async () => {
     const p = createEmbeddingProvider({ embedding: 'hashing', hashingDims: 128 });
     const out = await p.embedRecords([{ title: 'heart failure' }, { title: 'cancer' }]);

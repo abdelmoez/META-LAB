@@ -48,17 +48,21 @@ export function hashingEmbed(text, dims = 512) {
   return vec;
 }
 
-/** Cosine similarity of two equal-length dense vectors. */
+/** Cosine similarity of two equal-length dense vectors. Non-finite components are
+ *  skipped, and a non-finite result degrades to 0 (never propagates NaN). */
 export function cosineDense(a, b) {
   if (!a || !b || a.length !== b.length) return 0;
   let dot = 0, na = 0, nb = 0;
   for (let i = 0; i < a.length; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
+    const ai = a[i], bi = b[i];
+    if (!Number.isFinite(ai) || !Number.isFinite(bi)) continue;
+    dot += ai * bi;
+    na += ai * ai;
+    nb += bi * bi;
   }
   if (na === 0 || nb === 0) return 0;
-  return dot / (Math.sqrt(na) * Math.sqrt(nb));
+  const r = dot / (Math.sqrt(na) * Math.sqrt(nb));
+  return Number.isFinite(r) ? r : 0;
 }
 
 /**

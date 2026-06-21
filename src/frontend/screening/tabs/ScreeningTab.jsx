@@ -213,9 +213,13 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   const displayRecords = useMemo(() => {
     if (!ai.enabled || (queueMode === 'default' && aiBand === 'all')) return records;
     let list = records;
+    // Prefer the server-attached r.aiScore (authoritative for the loaded page) over
+    // the separately-fetched ai.scores map, which can be stale/empty and would
+    // otherwise silently hide in-band records the server legitimately returned.
+    const scoreOf = (r) => r.aiScore || ai.scores[r.id];
     if (aiBand !== 'all') {
       list = list.filter(r => {
-        const sc = ai.scores[r.id];
+        const sc = scoreOf(r);
         if (!sc) return false;
         if (aiBand === 'uncertain') return sc.prediction === 'uncertain';
         if (aiBand === 'low') return sc.score != null && sc.score < 0.4;  // "Low (<40)" covers the low + very_low bands
@@ -224,7 +228,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     }
     if (queueMode !== 'default') {
       const items = list.map((r, i) => {
-        const sc = ai.scores[r.id] || {};
+        const sc = scoreOf(r) || {};
         return { recordId: r.id, score: sc.score, uncertainty: sc.uncertainty, picoMean: sc.picoMean, missingAbstract: sc.missingAbstract, isDuplicate: r.isDuplicate, hasConflict: r.disputed, order: i };
       });
       const byId = new Map(list.map(r => [r.id, r]));
@@ -243,6 +247,24 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     }
   }, [displayRecords, ai.enabled, selectedId]);
 
+  // Refs so loadRecords (stable identity) can send the active AI queue mode/band to
+  // the server, which orders + filters the WHOLE pool before paginating (the
+  // client-side displayRecords reorder above is then just instant in-page feedback).
+  const aiEnabledRef = useRef(ai.enabled);
+  const queueModeRef = useRef(queueMode);
+  const aiBandRef = useRef(aiBand);
+  useEffect(() => { aiEnabledRef.current = ai.enabled; }, [ai.enabled]);
+  useEffect(() => { queueModeRef.current = queueMode; }, [queueMode]);
+  useEffect(() => { aiBandRef.current = aiBand; }, [aiBand]);
+  // Re-query the server (page 1) when the queue mode or band changes so ordering
+  // spans every record, not just the loaded page. Skips the initial mount.
+  const aiQueueMounted = useRef(false);
+  useEffect(() => {
+    if (!aiQueueMounted.current) { aiQueueMounted.current = true; return; }
+    if (ai.enabled) loadRecords({ reset: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queueMode, aiBand]);
+
   // ── Load a page of records (reset = page 1 / append = next page) ──────────
   const loadRecords = useCallback(async ({ reset = false, p, s, f } = {}) => {
     const pageNum = reset ? 1 : (p ?? page);
@@ -255,6 +277,10 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
       if (searchVal) params.search = searchVal;
       if (filterVal && filterVal !== 'all') params.filter = filterVal;
       if (keywordsRef.current) params.keywords = keywordsRef.current;
+      if (aiEnabledRef.current) {
+        if (queueModeRef.current && queueModeRef.current !== 'default') params.aiQueue = queueModeRef.current;
+        if (aiBandRef.current && aiBandRef.current !== 'all') params.aiBand = aiBandRef.current;
+      }
       const data = await screeningApi.listRecords(pid, params);
       const recs = data.records || [];
       setRecords(prev => (reset ? recs : [...prev, ...recs]));
@@ -293,6 +319,11 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
     filterRef.current = 'all';
     setSearch('');
     setFilter('all');
+    // Reset AI queue state so a mode/band never leaks into another project. Refs are
+    // set BEFORE loadRecords so the first page-1 load sends no stale aiQueue/aiBand.
+    setQueueMode('default'); setAiBand('all');
+    queueModeRef.current = 'default'; aiBandRef.current = 'all';
+    aiQueueMounted.current = false;
     loadRecords({ reset: true, s: '', f: 'all' });
     setSelectedIncl([]); setSelectedExcl([]); keywordsRef.current = '';
     Promise.all([
@@ -620,7 +651,7 @@ function LeftColumn({
         ) : (
           <>
             {records.map(r => (
-              <RecordRow key={r.id} record={r} selected={r.id === selectedId} onClick={() => onSelect(r.id)} blindMode={blindMode} scoreInfo={ai?.enabled ? ai.scores[r.id] : null} />
+              <RecordRow key={r.id} record={r} selected={r.id === selectedId} onClick={() => onSelect(r.id)} blindMode={blindMode} scoreInfo={ai?.enabled ? (r.aiScore || ai.scores[r.id]) : null} />
             ))}
             {hasMore && (
               <div style={{ position: 'sticky', bottom: 0, background: C.surf, borderTop: `1px solid ${C.brd}`, padding: '10px 14px', textAlign: 'center', flexShrink: 0 }}>

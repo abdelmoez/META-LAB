@@ -18,6 +18,7 @@ import {
   computeValidation,
   createEmbeddingProvider,
 } from '../../src/research-engine/screening/ai/index.js';
+import { buildEmbedFn } from './aiEmbeddingClient.js';
 
 export const AI_SETTINGS_KEY = 'aiScreeningSettings';
 export const AI_FLAG_KEY = 'aiScreening';
@@ -186,9 +187,27 @@ export async function runScoring({ projectId, stage = 'title_abstract', actor, t
     hybrid: {},
   };
 
-  // Optional hosted embeddings would be injected here; lexical/hashing need no deps.
-  // const provider = createEmbeddingProvider(config.provider, { embed: hostedEmbedFn });
-  void createEmbeddingProvider; // provider abstraction available for future hosted wiring
+  // Embedding provider: 'lexical' (default, no vectors), 'hashing' (in-process dense),
+  // or 'hosted' (env-configured external service). Best-effort: any failure → no
+  // dense vectors → the engine uses its in-process lexical semantic signal.
+  let denseEmbeddings;
+  let embeddingProviderUsed = 'lexical';
+  try {
+    const provider = createEmbeddingProvider(config.provider, { embed: buildEmbedFn(process.env) });
+    if (provider.available) {
+      const vecs = await provider.embedRecords(records);
+      // All-or-nothing: only use embeddings when EVERY record got a uniform-length
+      // dense vector. Any ragged/missing row → fall back to the lexical engine.
+      const dim = Array.isArray(vecs) && Array.isArray(vecs[0]) ? vecs[0].length : 0;
+      const uniform = Array.isArray(vecs) && vecs.length === records.length && dim > 0
+        && vecs.every(v => Array.isArray(v) && v.length === dim && v.every(Number.isFinite));
+      if (uniform) {
+        denseEmbeddings = {};
+        records.forEach((r, i) => { denseEmbeddings[r.id] = vecs[i]; });
+        embeddingProviderUsed = provider.name;
+      }
+    }
+  } catch { denseEmbeddings = undefined; }
 
   let result;
   try {
@@ -199,6 +218,7 @@ export async function runScoring({ projectId, stage = 'title_abstract', actor, t
       inclusionKeywords: input.inclusionKeywords,
       exclusionKeywords: input.exclusionKeywords,
       studyTypeFilter: input.studyTypeFilter,
+      denseEmbeddings,
       config,
     });
   } catch (err) {
@@ -255,7 +275,7 @@ export async function runScoring({ projectId, stage = 'title_abstract', actor, t
       nFeatures: result.meta.nFeatures,
       labelCountsJson: JSON.stringify(result.meta.labelCounts || {}),
       modelInfoJson: JSON.stringify(result.meta.modelInfo || {}),
-      configJson: JSON.stringify({ provider: config.provider, includeThreshold: aiProject.includeThreshold }),
+      configJson: JSON.stringify({ provider: config.provider, embeddingProviderUsed, includeThreshold: aiProject.includeThreshold }),
       metricsJson: JSON.stringify(metrics),
       triggeredById: actor?.id || null,
       triggeredByName: actor?.name || actor?.email || '',

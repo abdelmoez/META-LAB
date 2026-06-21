@@ -17,6 +17,7 @@
 import { resolveConfig } from './config.js';
 import { recordFeatures, hasUsableText } from './text.js';
 import { buildVectorizer, transform, cosine } from './vectorizer.js';
+import { cosineDense } from './embeddings.js';
 import { trainLogReg, predictProba } from './logreg.js';
 import { coldStartScore } from './coldStart.js';
 import { hybridScore } from './hybrid.js';
@@ -48,6 +49,27 @@ function sparseSum(vectors) {
 function sparseMinus(centroid, vec) {
   const out = { ...centroid };
   for (const k in vec) out[k] = (out[k] || 0) - vec[k];
+  return out;
+}
+
+/** Sum equal-length dense vectors → one array (or null if none). Ragged or
+ *  non-finite components are skipped/zeroed so a bad vector can never poison the
+ *  centroid with NaN. */
+function denseSum(vectors) {
+  if (!vectors.length) return null;
+  const dim = vectors[0].length;
+  const out = new Array(dim).fill(0);
+  for (const v of vectors) {
+    if (!Array.isArray(v) || v.length !== dim) continue;
+    for (let i = 0; i < dim; i++) out[i] += Number.isFinite(v[i]) ? v[i] : 0;
+  }
+  return out;
+}
+/** dense centroid − vec, for leave-one-out. New array; no-op on length mismatch. */
+function denseMinus(centroid, vec) {
+  const out = centroid.slice();
+  if (!Array.isArray(vec) || vec.length !== centroid.length) return out;
+  for (let i = 0; i < out.length; i++) out[i] -= Number.isFinite(vec[i]) ? vec[i] : 0;
   return out;
 }
 
@@ -103,10 +125,27 @@ export function trainAndScore(args = {}) {
   const vectors = featureLists.map(f => transform(f, vec));
   const vectorById = new Map(records.map((r, i) => [r.id, vectors[i]]));
 
+  // Optional dense embeddings (hosted/hashing provider). When present, the SEMANTIC
+  // signal uses real embedding cosine instead of the lexical TF-IDF centroid. The
+  // supervised classifier always stays on TF-IDF (deterministic, interpretable).
+  // ALL-OR-NOTHING per run: the dense path is enabled only when EVERY record has a
+  // dense vector of uniform dimension — never mixing embedding-cosine and TF-IDF-
+  // cosine semantic subscores on one ranking scale.
+  const denseMap = (args.denseEmbeddings && typeof args.denseEmbeddings === 'object') ? args.denseEmbeddings : null;
+  let useDense = false;
+  if (denseMap) {
+    const dvals = records.map(r => denseMap[r.id]);
+    const dim = Array.isArray(dvals[0]) ? dvals[0].length : 0;
+    useDense = dim > 0 && dvals.every(v => Array.isArray(v) && v.length === dim);
+  }
+  const dense = useDense ? denseMap : null;
+
   // 2. Assemble labeled samples.
   const samples = [];
   const includedVecs = [];
   const excludedVecs = [];
+  const denseIncludedVecs = [];
+  const denseExcludedVecs = [];
   const includedExamples = [];
   records.forEach((r, i) => {
     const y = decisionToLabel(labelByRecordId[r.id], cfg);
@@ -114,11 +153,13 @@ export function trainAndScore(args = {}) {
     samples.push({ x: vectors[i], y });
     if (y === 1) {
       includedVecs.push(vectors[i]);
+      if (dense && dense[r.id]) denseIncludedVecs.push(dense[r.id]);
       if (includedExamples.length < NEIGHBOR_EXAMPLE_CAP) {
         includedExamples.push({ recordId: r.id, title: r.title || '', vector: vectors[i] });
       }
     } else {
       excludedVecs.push(vectors[i]);
+      if (dense && dense[r.id]) denseExcludedVecs.push(dense[r.id]);
     }
   });
 
@@ -127,10 +168,12 @@ export function trainAndScore(args = {}) {
     && labelSummary.positives >= cfg.activeLearning.minPositivesToTrain
     && labelSummary.negatives >= cfg.activeLearning.minNegativesToTrain;
 
-  // 3. Train (optional) + centroids.
+  // 3. Train (optional) + semantic centroids (sparse TF-IDF, and dense if available).
   const model = canTrain ? trainLogReg(samples, vec.terms.length, cfg.classifier) : null;
   const includedCentroid = includedVecs.length ? sparseSum(includedVecs) : null;
   const excludedCentroid = excludedVecs.length ? sparseSum(excludedVecs) : null;
+  const denseIncCentroid = denseIncludedVecs.length ? denseSum(denseIncludedVecs) : null;
+  const denseExcCentroid = denseExcludedVecs.length ? denseSum(denseExcludedVecs) : null;
 
   // 4. Score every record.
   const scores = records.map((r, i) => {
@@ -140,11 +183,25 @@ export function trainAndScore(args = {}) {
     // Leave-one-out: a record that is itself labelled must not be compared to a
     // centroid that contains its own vector (that self-similarity would inflate
     // semanticIncluded/Excluded). Subtract its own vector from the matching centroid.
+    // NB: for a singleton-class centroid this neutralises the record's own semantic
+    // signal to 0 — the conservative, intended behaviour (identical in the sparse
+    // path); already-labelled records are not what the queue needs re-ranked anyway.
     const yi = decisionToLabel(labelByRecordId[r.id], cfg);
-    const incCentroid = (yi === 1 && includedCentroid) ? sparseMinus(includedCentroid, vector) : includedCentroid;
-    const excCentroid = (yi === 0 && excludedCentroid) ? sparseMinus(excludedCentroid, vector) : excludedCentroid;
-    const semInc = incCentroid ? cosine(vector, incCentroid) : null;
-    const semExc = excCentroid ? cosine(vector, excCentroid) : null;
+    const dv = dense ? dense[r.id] : null;
+    let semInc, semExc;
+    if (dv && (denseIncCentroid || denseExcCentroid)) {
+      // Dense (embedding) semantic similarity, with leave-one-out for labelled records.
+      const incC = (yi === 1 && denseIncCentroid) ? denseMinus(denseIncCentroid, dv) : denseIncCentroid;
+      const excC = (yi === 0 && denseExcCentroid) ? denseMinus(denseExcCentroid, dv) : denseExcCentroid;
+      semInc = incC ? cosineDense(dv, incC) : null;
+      semExc = excC ? cosineDense(dv, excC) : null;
+    } else {
+      // Lexical (TF-IDF) semantic similarity, with leave-one-out.
+      const incCentroid = (yi === 1 && includedCentroid) ? sparseMinus(includedCentroid, vector) : includedCentroid;
+      const excCentroid = (yi === 0 && excludedCentroid) ? sparseMinus(excludedCentroid, vector) : excludedCentroid;
+      semInc = incCentroid ? cosine(vector, incCentroid) : null;
+      semExc = excCentroid ? cosine(vector, excCentroid) : null;
+    }
 
     const hybrid = hybridScore({
       classifier: { available: !!model, proba: proba ?? 0 },

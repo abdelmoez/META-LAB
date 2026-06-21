@@ -6,6 +6,8 @@ import { createHash } from 'crypto';
 import { detectDuplicatesInProject } from '../services/screeningDuplicateService.js';
 import { syncConflicts } from '../services/screeningConflictService.js';
 import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../screening/access.js';
+import { rankItems } from '../../src/research-engine/screening/ai/ranking.js';
+import { aiFlagEnabled } from '../services/screeningAiService.js';
 import { emitToProjectMembers, emitToMetaLabProject } from '../realtime/bus.js';
 import { getMetaSiftSettings, getEffectiveQuorum } from '../screening/settings.js';
 import { snapshotPico } from '../screening/picoSnapshot.js';
@@ -701,6 +703,45 @@ export async function listRecords(req, res) {
     if (selectedKeywords.length) {
       const mode = (req.query.keywordMode || 'or').toLowerCase() === 'and' ? 'AND' : 'OR';
       filtered = filterRecordsByKeywords(filtered, selectedKeywords, { mode });
+    }
+
+    // Server-side AI-ordered queue (feature flag: aiScreening). Only runs when the
+    // client requests an AI queue mode or score band — so the default screening path
+    // is byte-identical. This orders/filters the WHOLE pool (not just one page) and
+    // attaches the AI score inline for list badges.
+    const aiQueue = String(req.query.aiQueue || '');
+    const aiBand = String(req.query.aiBand || '');
+    // Respect AI-blinding: a non-leader reviewer on a blindFromAi project must not
+    // get an AI-ordered/filtered worklist (the order itself leaks the model's
+    // include/exclude opinion before they screen independently). Leaders are exempt.
+    let aiBlind = false;
+    try { aiBlind = !!JSON.parse(p.aiSettings || '{}').blindFromAi; } catch { /* default false */ }
+    const aiBlocked = aiBlind && !access.isLeader;
+    if (!aiBlocked && ((aiQueue && aiQueue !== 'default') || (aiBand && aiBand !== 'all')) && await aiFlagEnabled()) {
+      const aiStage = req.query.aiStage === 'full_text' ? 'full_text' : 'title_abstract';
+      const scoreRows = await prisma.screenAiScore.findMany({
+        where: { projectId: p.id, stage: aiStage },
+        select: { recordId: true, score: true, band: true, prediction: true, uncertainty: true, picoMean: true, missingAbstract: true },
+      });
+      const sMap = new Map(scoreRows.map(s => [s.recordId, s]));
+      if (aiBand && aiBand !== 'all') {
+        filtered = filtered.filter(r => {
+          const sc = sMap.get(r.id);
+          if (!sc) return false;
+          if (aiBand === 'uncertain') return sc.prediction === 'uncertain';
+          if (aiBand === 'low') return sc.score != null && sc.score < 0.4;
+          return sc.band === aiBand;
+        });
+      }
+      if (aiQueue && aiQueue !== 'default') {
+        const items = filtered.map((r, i) => {
+          const sc = sMap.get(r.id) || {};
+          return { recordId: r.id, score: sc.score, uncertainty: sc.uncertainty, picoMean: sc.picoMean, missingAbstract: sc.missingAbstract, isDuplicate: r.isDuplicate, hasConflict: r.disputed, order: i };
+        });
+        const byId = new Map(filtered.map(r => [r.id, r]));
+        filtered = rankItems(items, aiQueue).map(it => byId.get(it.recordId)).filter(Boolean);
+      }
+      filtered = filtered.map(r => ({ ...r, aiScore: sMap.get(r.id) || null }));
     }
 
     const total = filtered.length;

@@ -19,5 +19,5 @@ export { buildExplanation, termContributions } from './explain.js';
 export { trainAndScore, crossValidate, decisionToLabel, summarizeLabels } from './activeLearning.js';
 export {
   rocAuc, confusionAt, metricsFromConfusion, recallAtK,
-  wssAtRecall, stageMetrics, smallSampleWarning, computeValidation,
+  wssAtRecall, stageMetrics, smallSampleWarning, computeValidation, bootstrapCI,
 } from './validation.js';

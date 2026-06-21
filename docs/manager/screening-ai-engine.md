@@ -205,24 +205,30 @@ human reviewers, and exposes every reason and metric.
 
 ---
 
-## 9. Remaining limitations & next phase
+## 9. Status — next phases delivered (v3.33.0)
 
-1. **Validation depth.** Held-out stratified **k-fold cross-validation is now
-   computed** automatically when labels suffice (the in-sample snapshot is only a
-   fallback for small label sets). **Next:** per-topic confidence intervals on a
-   public benchmark + a held-out simulated-screening yield curve.
-2. **Client-side queue ordering.** Ranking/band filtering currently reorders the
-   *loaded* page of records. **Next:** server-side AI-ordered pagination (join
-   `ScreenAiScore` into `listRecords`).
-3. **Hosted embeddings are a seam, not yet wired.** `lexical`/`hashing` are fully
-   functional; selecting `hosted` falls back to lexical until the `AI_EMBEDDING_*`
-   server integration is added (`screeningAiService.js`).
-4. **Manual run trigger.** Scoring runs on demand. **Next:** optional auto-rescore
-   after N new decisions (debounced), surfaced via the realtime bus.
-5. **Public benchmark datasets** are not bundled; the engine + metrics interface is
-   ready for one (e.g. the CLEF/Cohen drug-review collections) to produce a
-   publishable validation.
+Three of the documented next-phase items are now **DONE** (v3.33.0):
+
+1. ✅ **Held-out k-fold cross-validation** (v3.32.1) + **95% bootstrap confidence
+   intervals** on AUC / WSS@95 / sensitivity (`bootstrapCI`, deterministic, seeded).
+   The UI shows the CI in parentheses next to each metric.
+2. ✅ **Server-side AI-ordered queue.** `listRecords` takes optional `aiQueue` (mode)
+   and `aiBand` params; when present (flag on) it joins `ScreenAiScore` and
+   orders/filters the **whole pool** before paginating, attaching the AI score
+   inline. The default screening path is byte-identical when the params are absent.
+3. ✅ **Hosted embeddings wired end-to-end.** `server/services/aiEmbeddingClient.js`
+   (OpenAI-compatible `/v1/embeddings`, batched, in-memory cache, mockable) feeds the
+   engine's provider; `trainAndScore` now **uses dense embeddings** for the semantic
+   signal (dense centroids + `cosineDense`, leave-one-out), with graceful lexical
+   fallback. Selectable via Ops (`lexical` | `hashing` | `hosted`).
+
+### Still remaining
+4. **Auto-rescore trigger.** Scoring runs on demand (manual / API). **Next:** optional
+   debounced auto-rescore after N new decisions, via the realtime bus.
+5. **Public benchmark datasets** are not bundled; the engine + CV + CIs are ready to
+   run one (e.g. CLEF/Cohen drug-review collections) for a publishable validation.
 
 ### Recommended path to a publishable validation
-Wire k-fold CV → run on a public SR screening benchmark → report AUC + WSS@95 with
-CIs across topics → server-side AI-ordered queue → optional hosted-embedding hybrid.
+Run the (now-implemented) k-fold CV + bootstrap CIs on a public SR screening benchmark
+→ report AUC + WSS@95 with CIs across topics → (optionally) enable the hosted-embedding
+hybrid and compare.

@@ -12,6 +12,7 @@
  * record whose human label `labels[i]` ∈ {0,1} (1 = include). The caller passes
  * ONLY records with a settled human decision.
  */
+import { mulberry32 } from '../sampling.js';
 
 /**
  * Labels sorted by score descending, with ties broken PESSIMISTICALLY: within an
@@ -167,6 +168,42 @@ export function smallSampleWarning(nPos, nNeg) {
 }
 
 /**
+ * bootstrapCI — percentile bootstrap confidence interval for a metric over the
+ * (score,label) pairs. DETERMINISTIC: resampling uses a seeded PRNG, so the same
+ * inputs always yield the same interval (a hard requirement for citable metrics).
+ *
+ * @param {number[]} scores
+ * @param {number[]} labels
+ * @param {(s:number[], l:number[])=>number|null} metricFn
+ * @param {{iters?:number, seed?:number, alpha?:number}} [opts]
+ * @returns {{ point:number|null, lo:number|null, hi:number|null, iters:number }}
+ */
+export function bootstrapCI(scores, labels, metricFn, opts = {}) {
+  const iters = opts.iters ?? 300;
+  const alpha = opts.alpha ?? 0.05;
+  const n = scores.length;
+  const point = metricFn(scores, labels);
+  if (n < 2 || point == null) return { point: point ?? null, lo: null, hi: null, iters: 0 };
+
+  const rng = mulberry32((opts.seed ?? 20260620) >>> 0);
+  const vals = [];
+  const rs = new Array(n);
+  const rl = new Array(n);
+  for (let b = 0; b < iters; b++) {
+    for (let i = 0; i < n; i++) {
+      const j = Math.floor(rng() * n);
+      rs[i] = scores[j]; rl[i] = labels[j];
+    }
+    const v = metricFn(rs, rl);
+    if (v != null && Number.isFinite(v)) vals.push(v);
+  }
+  if (!vals.length) return { point, lo: null, hi: null, iters: 0 };
+  vals.sort((a, b) => a - b);
+  const pick = (q) => vals[Math.min(vals.length - 1, Math.max(0, Math.round(q * (vals.length - 1))))];
+  return { point, lo: pick(alpha / 2), hi: pick(1 - alpha / 2), iters: vals.length };
+}
+
+/**
  * computeValidation — the full validation bundle comparing AI scores to human
  * final decisions.
  *
@@ -189,6 +226,14 @@ export function computeValidation(scores, labels, opts = {}) {
   const wss95 = wssAtRecall(scores, labels, 0.95);
   const wss100 = wssAtRecall(scores, labels, 1.0);
 
+  // 95% bootstrap CIs on the headline metrics (deterministic; default ON, opt-out
+  // via opts.ci === false for hot paths that only need point estimates).
+  const ci = opts.ci === false ? null : {
+    auc: bootstrapCI(scores, labels, (s, l) => rocAuc(s, l), { iters: opts.bootstrapIters ?? 300, seed: opts.seed }),
+    wss95: bootstrapCI(scores, labels, (s, l) => { const w = wssAtRecall(s, l, 0.95); return w ? w.wss : null; }, { iters: opts.bootstrapIters ?? 300, seed: opts.seed }),
+    sensitivity: bootstrapCI(scores, labels, (s, l) => metricsFromConfusion(confusionAt(s, l, threshold)).sensitivity, { iters: opts.bootstrapIters ?? 300, seed: opts.seed }),
+  };
+
   return {
     n, nPos, nNeg, threshold,
     auc,
@@ -203,5 +248,6 @@ export function computeValidation(scores, labels, opts = {}) {
     wss100Detail: wss100,
     stages: stageMetrics(scores, labels),
     sampleWarning: smallSampleWarning(nPos, nNeg),
+    ci,
   };
 }
