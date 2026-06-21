@@ -929,6 +929,7 @@ model ScreenAiScore {
   stage           String   @default("title_abstract")
   score           Float    @default(0)             // hybrid relevance [0,1]
   proba           Float?                            // supervised classifier probability, null in cold-start
+  calibratedProba Float?                            // calibrated P(include) (se2.md §8); null when uncalibrated
   coldStartScore  Float    @default(0)
   uncertainty     Float    @default(0)
   confidence      Float    @default(0)

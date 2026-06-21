@@ -57,6 +57,31 @@ export const DEFAULT_AI_CONFIG = Object.freeze({
     semanticEnabled: true,   // use embedding/lexical neighbour similarity if available
   },
 
+  // ── Probability calibration (se2.md §8) ─────────────────────────────
+  // Calibrates the ranking score → P(include) using OUT-OF-FOLD predictions.
+  // Method is chosen by sample size; below the minimum, no calibration is applied
+  // (the UI shows the uncalibrated score, labelled as such).
+  calibration: {
+    enabled: true,
+    minSamplesToCalibrate: 50,   // total labels below this → method 'none'
+    isotonicMinSamples: 200,     // below this → Platt (stable on small data); at/above → isotonic
+    reliabilityBins: 10,
+    eceBins: 10,
+  },
+
+  // ── Stopping-rule estimation (se2.md §9) ────────────────────────────
+  // Estimates achieved recall from calibrated probabilities; gated by preconditions
+  // and judged against the conservative lower confidence bound. Decision SUPPORT only.
+  stopping: {
+    enabled: true,
+    targetRecall: 0.95,
+    minIncludes: 8,              // need this many found includes to estimate prevalence
+    minDecisions: 50,
+    maxEce: 0.15,                // calibration worse than this suppresses the estimate
+    maxRecentYield: 0.10,        // recent include rate above this → "keep screening"
+    recentWindow: 50,
+  },
+
   // ── Provider abstraction (resolved server-side; pure layer only knows the shape) ─
   provider: {
     embedding: 'lexical',    // 'lexical' (default, in-process) | 'hashing' | 'hosted'

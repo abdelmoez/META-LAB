@@ -131,11 +131,19 @@ export function AiScoreCard({ ai, record, decided }) {
   return card(
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-        <div style={{ fontSize: 30, fontWeight: 700, fontFamily: MONO, color: BAND_COLOR[score.band] || C.txt, lineHeight: 1 }}>{Math.round(score.score * 100)}</div>
-        <div style={{ fontSize: 12, color: C.muted }}>/ 100</div>
+        <div style={{ fontSize: 30, fontWeight: 700, fontFamily: MONO, color: BAND_COLOR[score.band] || C.txt, lineHeight: 1 }} title="Ranking score — the worklist ordering signal, not a probability.">{Math.round(score.score * 100)}</div>
+        <div style={{ fontSize: 12, color: C.muted }}>/ 100 ranking</div>
         <span style={{ flex: 1 }} />
         <Chip color={predColor}>{PRED_LABEL[score.prediction] || score.prediction}</Chip>
       </div>
+
+      {score.calibratedProba != null && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, background: alpha(C.acc, 0.06), border: `1px solid ${alpha(C.acc, 0.25)}`, borderRadius: 7, padding: '6px 9px' }}>
+          <span style={{ color: C.txt2 }} title="Calibrated probability that this record meets the inclusion criteria, learned from your decisions via out-of-fold cross-validation. Distinct from the ranking score.">Calibrated inclusion probability</span>
+          <span style={{ flex: 1 }} />
+          <span style={{ fontFamily: MONO, fontWeight: 700, color: C.acc }}>{pct(score.calibratedProba)}</span>
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
         <div>
@@ -277,6 +285,107 @@ export function AiQueueBar({ ai, mode, onMode, band, onBand, onRefreshRankings }
   );
 }
 
+const numFmt = (x, d = 2) => (typeof x === 'number' && Number.isFinite(x) ? x.toFixed(d) : '—');
+
+function SubHeader({ children }) {
+  return <div style={{ fontSize: 10.5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>{children}</div>;
+}
+function KV({ label, value, color, title }) {
+  return (
+    <div title={title} style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, padding: '2px 0' }}>
+      <span style={{ color: C.muted }}>{label}</span><span style={{ fontFamily: MONO, color: color || C.txt }}>{value}</span>
+    </div>
+  );
+}
+
+/** Reliability diagram (predicted vs observed) — small inline SVG. se2.md §8. */
+function ReliabilityCurve({ bins }) {
+  const pts = (bins || []).filter(b => b.count > 0 && b.meanPredicted != null && b.observedRate != null);
+  if (pts.length < 2) return null;
+  const W = 180, H = 120, pad = 18;
+  const x = v => pad + v * (W - 2 * pad);
+  const y = v => H - pad - v * (H - 2 * pad);
+  const maxCount = Math.max(...pts.map(p => p.count));
+  return (
+    <svg width={W} height={H} role="img" aria-label="Calibration reliability curve" style={{ marginTop: 6 }}>
+      <rect x={0} y={0} width={W} height={H} fill={alpha(C.muted, 0.04)} rx={6} />
+      {/* ideal diagonal */}
+      <line x1={x(0)} y1={y(0)} x2={x(1)} y2={y(1)} stroke={alpha(C.muted, 0.5)} strokeDasharray="3 3" />
+      {/* observed polyline */}
+      <polyline fill="none" stroke={C.acc} strokeWidth={1.5}
+        points={pts.map(p => `${x(p.meanPredicted)},${y(p.observedRate)}`).join(' ')} />
+      {pts.map((p, i) => (
+        <circle key={i} cx={x(p.meanPredicted)} cy={y(p.observedRate)} r={2 + 3 * (p.count / maxCount)} fill={C.acc} fillOpacity={0.8} />
+      ))}
+      <text x={pad} y={H - 4} fontSize={8} fill={C.muted}>predicted →</text>
+      <text x={2} y={pad} fontSize={8} fill={C.muted} transform={`rotate(-90 8,${pad})`}>observed →</text>
+    </svg>
+  );
+}
+
+/** Calibration quality block (leader view). */
+function CalibrationBlock({ cal }) {
+  if (!cal) return null;
+  const m = cal.metrics || {};
+  return (
+    <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 8 }}>
+      <SubHeader>Probability calibration</SubHeader>
+      {cal.method === 'none' ? (
+        <div style={{ fontSize: 11.5, color: C.gold, lineHeight: 1.5 }}>{cal.reason}</div>
+      ) : (
+        <>
+          <KV label="Method" value={cal.method === 'platt' ? 'Platt scaling' : 'Isotonic regression'} />
+          <KV label="Brier score" value={numFmt(m.brier, 3)} title="Mean squared error of the calibrated probabilities (lower is better)." />
+          <KV label="Log loss" value={numFmt(m.logLoss, 3)} />
+          <KV label="ECE" value={numFmt(m.ece, 3)} title="Expected calibration error — mean gap between predicted and observed inclusion rate." color={m.ece > 0.15 ? C.gold : C.txt} />
+          <KV label="Calibration slope" value={numFmt(m.slope, 2)} title="≈1 is well-calibrated; <1 over-confident." />
+          <KV label="Calibration intercept" value={numFmt(m.intercept, 2)} title="≈0 is unbiased." />
+          <ReliabilityCurve bins={m.reliability} />
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.4 }}>
+            Fitted on out-of-fold predictions ({cal.n ?? '—'} labels). Apparent calibration can be optimistic on small sets.
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** Stopping-rule estimate block (leader view). se2.md §9 — cautious by design. */
+function StoppingBlock({ stop }) {
+  if (!stop) return null;
+  const e = stop.estimate || {};
+  const headColor = !stop.available ? C.muted : (stop.recommendStop ? C.grn : C.gold);
+  return (
+    <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 8 }}>
+      <SubHeader>Stopping estimate</SubHeader>
+      <div style={{ fontSize: 12.5, color: headColor, fontWeight: 600, lineHeight: 1.45, marginBottom: 6 }}>{stop.headline}</div>
+      {stop.available ? (
+        <>
+          <KV label="Target recall" value={pct(stop.targetRecall)} />
+          <KV label="Estimated recall" value={e.estimatedRecall != null ? pct(e.estimatedRecall) : '—'} color={C.acc} />
+          <KV label="95% interval" value={e.recallLo != null ? `${pct(e.recallLo)} – ${pct(e.recallHi)}` : '—'} title="Judged against the lower bound (conservative)." />
+          <KV label="Eligible found" value={e.foundPositives ?? '—'} />
+          <KV label="Est. remaining" value={e.estimatedRemainingPositives != null ? `${e.estimatedRemainingPositives.toFixed(1)} (${e.remainingLo?.toFixed(1)}–${e.remainingHi?.toFixed(1)})` : '—'} />
+          {stop.recentYield?.yield != null && <KV label="Recent include rate" value={`${pct(stop.recentYield.yield)} of last ${stop.recentYield.window}`} />}
+        </>
+      ) : (
+        <ul style={{ margin: '0 0 6px', paddingLeft: 16, fontSize: 11.5, color: C.gold, lineHeight: 1.5 }}>
+          {(stop.preconditions?.reasons || []).map((r, i) => <li key={i}>{r}</li>)}
+        </ul>
+      )}
+      {stop.retrospective?.wssAtTarget != null && (
+        <KV label="WSS@95 (retrospective)" value={numFmt(stop.retrospective.wssAtTarget, 2)} color={C.teal} title="Work that ranking would have saved at the target recall, on held-out pairs." />
+      )}
+      {stop.coverage?.capped && (
+        <div style={{ fontSize: 10, color: C.gold, marginTop: 4, lineHeight: 1.4 }}>
+          Estimate covers the {stop.coverage.scoredRecords} most-recent scored records (project exceeds the per-run cap).
+        </div>
+      )}
+      <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.4 }}>{stop.caveat}</div>
+    </div>
+  );
+}
+
 /** RightColumn section: model status, training summary, validation, policy. */
 export function AiStatusPanel({ ai }) {
   const [val, setVal] = useState(null);
@@ -346,6 +455,9 @@ export function AiStatusPanel({ ai }) {
           </div>
         );
       })()}
+
+      {s?.canConfigure && m.calibration && <CalibrationBlock cal={m.calibration} />}
+      {s?.canConfigure && m.stopping && <StoppingBlock stop={m.stopping} />}
 
       {s?.canConfigure && <AiPolicyControls ai={ai} />}
 

@@ -334,6 +334,7 @@ export function crossValidate(args = {}) {
   const folds = stratifiedFolds(labeled, labelOf, k, cfg.classifier.seed);
   const heldScores = [];
   const heldLabels = [];
+  const heldIds = [];
   for (let f = 0; f < k; f++) {
     const heldSet = new Set(folds[f]);
     const trainLabels = {};
@@ -342,9 +343,15 @@ export function crossValidate(args = {}) {
     const byId = new Map(res.scores.map(s => [s.recordId, s]));
     for (const id of folds[f]) {
       const sc = byId.get(id);
-      if (sc) { heldScores.push(sc.score); heldLabels.push(labelOf(id)); }
+      if (sc) { heldScores.push(sc.score); heldLabels.push(labelOf(id)); heldIds.push(id); }
     }
   }
 
-  return { heldOut: true, k, ...computeValidation(heldScores, heldLabels, { threshold: cfg.hybrid.includeThreshold ?? 0.5 }) };
+  return {
+    heldOut: true, k,
+    // Pooled OUT-OF-FOLD predictions — each scored by a model that never saw it.
+    // These are the honest inputs for probability calibration (se2.md §8).
+    oof: { scores: heldScores, labels: heldLabels, ids: heldIds },
+    ...computeValidation(heldScores, heldLabels, { threshold: cfg.hybrid.includeThreshold ?? 0.5 }),
+  };
 }

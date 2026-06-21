@@ -17,6 +17,11 @@ import {
   crossValidate,
   computeValidation,
   createEmbeddingProvider,
+  resolveConfig,
+  fitCalibrator,
+  applyCalibrator,
+  evaluateStopping,
+  retrospectiveStopping,
 } from '../../src/research-engine/screening/ai/index.js';
 import { buildEmbedFn } from './aiEmbeddingClient.js';
 
@@ -154,7 +159,7 @@ export async function loadEngineInput(projectId, stage = 'title_abstract') {
     }),
     prisma.screenDecision.findMany({
       where: { projectId, stage },
-      select: { recordId: true, reviewerId: true, decision: true },
+      select: { recordId: true, reviewerId: true, decision: true, createdAt: true },
     }),
   ]);
 
@@ -170,10 +175,27 @@ export async function loadEngineInput(projectId, stage = 'title_abstract') {
     if (lab) labelByRecordId[r.id] = lab;
   }
 
+  // Chronological settled labels (oldest→newest by latest decision time) — feeds the
+  // stopping-rule "recent inclusion yield" precondition (se2.md §9).
+  const settled = [];
+  for (const r of records) {
+    const lab = labelByRecordId[r.id];
+    if (!lab) continue;
+    let t = 0;
+    for (const d of (decByRecord.get(r.id) || [])) {
+      const ms = d.createdAt ? new Date(d.createdAt).getTime() : 0;
+      if (ms > t) t = ms;
+    }
+    settled.push({ t, y: lab === 'include' ? 1 : 0 });
+  }
+  settled.sort((a, b) => a.t - b.t);
+  const chronoLabels = settled.map(s => s.y);
+
   return {
     project,
     records,
     labelByRecordId,
+    chronoLabels,
     picoSnapshot: project.picoSnapshot,
     inclusionKeywords: safeArray(project.inclusionKeywords),
     exclusionKeywords: safeArray(project.exclusionKeywords),
@@ -295,6 +317,54 @@ export async function runScoring({ projectId, stage = 'title_abstract', actor, t
     } catch { /* CV is best-effort; in-sample metrics still stand */ }
   }
 
+  // ── Probability calibration (se2.md §8) ──────────────────────────────────────
+  // Fit the calibrator on the OUT-OF-FOLD CV predictions (never in-sample), then map
+  // every record's ranking score → calibrated P(include). Below the sample-size floor
+  // the method is 'none' and calibratedProba stays null (the UI shows the raw score).
+  const cfg = resolveConfig(config);
+  let calibration = { method: 'none', params: null, metrics: null, reason: 'Calibration needs held-out predictions from cross-validation (not enough labels yet).' };
+  if (cfg.calibration?.enabled && metrics.crossVal?.oof?.scores?.length) {
+    try { calibration = fitCalibrator(metrics.crossVal.oof.scores, metrics.crossVal.oof.labels, cfg.calibration); }
+    catch { /* keep 'none' on any calibration failure — scores remain usable */ }
+  }
+  for (const s of result.scores) {
+    s.calibratedProba = calibration.method === 'none' ? null : applyCalibrator(calibration.params, s.score);
+  }
+  // Persist calibration metadata + params (not the per-point reliability arrays twice).
+  metrics.calibration = calibration;
+
+  // ── Stopping-rule estimate (se2.md §9) ───────────────────────────────────────
+  // Σ calibrated P(include) over UNSCREENED records = estimated remaining eligible.
+  // Gated by preconditions (incl. adequate calibration) and judged against the
+  // conservative lower bound. Decision support only — never actionable on its own.
+  if (cfg.stopping?.enabled) {
+    try {
+      const labeledSet = new Set(Object.keys(input.labelByRecordId));
+      const foundPositives = Object.values(input.labelByRecordId).filter(v => v === 'include').length;
+      const nDecisions = result.meta.labelCounts?.labeledForTraining ?? labeledSet.size;
+      const unscreenedProbs = result.scores
+        .filter(s => !labeledSet.has(s.recordId) && s.calibratedProba != null)
+        .map(s => s.calibratedProba);
+      // Unscreened records dropped by the per-run cap (capping keeps every LABELED record,
+      // so all dropped rows are unscreened). Their eligible mass is unaccounted for in
+      // Σ p_i, so this MUST suppress any actionable recommendation (review HIGH finding).
+      const unscoredUnscreened = Math.max(0, input.records.length - result.scores.length);
+      const stopping = evaluateStopping({
+        foundPositives, nDecisions, unscreenedProbs, calibration, unscoredUnscreened,
+        chronoLabels: input.chronoLabels || [],
+        targetRecall: cfg.stopping.targetRecall,
+        config: cfg.stopping,
+      });
+      // Retrospective work-saved from the honest held-out (or in-sample) pairs.
+      const retroPairs = metrics.crossVal?.oof?.scores?.length
+        ? metrics.crossVal.oof
+        : (valScores.length >= 4 ? { scores: valScores, labels: valLabels } : null);
+      if (retroPairs) stopping.retrospective = retrospectiveStopping(retroPairs.scores, retroPairs.labels, cfg.stopping.targetRecall);
+      stopping.coverage = { scoredRecords: result.scores.length, totalRecords: input.records.length, capped: unscoredUnscreened > 0 };
+      metrics.stopping = stopping;
+    } catch { /* stopping is best-effort; the scoring run still persists */ }
+  }
+
   // Create the run row FIRST so every score can be stamped with the real run id
   // directly (no broad post-hoc updateMany that could mis-attribute scores across
   // concurrent/over-cap runs on the same project+stage).
@@ -321,6 +391,7 @@ export async function runScoring({ projectId, stage = 'title_abstract', actor, t
       stage,
       score: s.score,
       proba: s.proba,
+      calibratedProba: s.calibratedProba ?? null,
       coldStartScore: s.coldStartScore,
       uncertainty: s.uncertainty,
       confidence: s.confidence,
@@ -358,6 +429,7 @@ export async function getScoresMap(projectId, stage = 'title_abstract') {
       recordId: r.recordId,
       score: r.score,
       proba: r.proba,
+      calibratedProba: r.calibratedProba ?? null,
       uncertainty: r.uncertainty,
       confidence: r.confidence,
       prediction: r.prediction,
@@ -382,6 +454,7 @@ export async function getRecordExplanation(projectId, recordId, stage = 'title_a
   return {
     recordId,
     score: row.score,
+    calibratedProba: row.calibratedProba ?? null,
     prediction: row.prediction,
     confidence: row.confidence,
     uncertainty: row.uncertainty,

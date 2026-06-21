@@ -21,3 +21,12 @@ export {
   rocAuc, confusionAt, metricsFromConfusion, recallAtK,
   wssAtRecall, stageMetrics, smallSampleWarning, computeValidation, bootstrapCI,
 } from './validation.js';
+export {
+  fitCalibrator, applyCalibrator, fitPlatt, fitIsotonic, fit1DLogistic,
+  calibrationMetrics, brierScore, logLoss, expectedCalibrationError,
+  reliabilityBins, calibrationSlopeIntercept, selectCalibrationMethod,
+} from './calibration.js';
+export {
+  evaluateStopping, estimateRecall, recentInclusionYield, stoppingPreconditions,
+  retrospectiveStopping, STOPPING_LANGUAGE,
+} from './stopping.js';

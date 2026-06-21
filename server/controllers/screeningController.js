@@ -766,7 +766,8 @@ export async function listRecords(req, res) {
         return {
           ...r,
           aiScore: {
-            recordId: s.recordId, score: s.score, proba: s.proba, band: s.band, prediction: s.prediction,
+            recordId: s.recordId, score: s.score, proba: s.proba, calibratedProba: s.calibratedProba ?? null,
+            band: s.band, prediction: s.prediction,
             confidence: s.confidence, uncertainty: s.uncertainty, mode: s.mode, lowConfidence: s.lowConfidence,
             missingAbstract: s.missingAbstract, picoMean: s.picoMean,
             subScores: parse(s.subScoresJson), signals: parse(s.signalsJson), explanation: parse(s.explanationJson),
