@@ -53,3 +53,26 @@ jobs:
           script_stop: true
           command_timeout: 15m
           script: bash /usr/local/bin/metalab-deploy.sh
+
+      # ── Post-deploy smoke test (prompt49 §11) ──────────────────────────────
+      # Hits the live deployment: health, readiness (DB), version (matches the
+      # deployed commit), a protected route's 401, and public settings. Retries
+      # a few times to allow the service to come up, then fails the workflow if
+      # the deployment is unhealthy (so the failure is visible in deploy logs).
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Post-deploy smoke test
+        env:
+          SMOKE_BASE: ${{ secrets.SMOKE_BASE }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          EXPECT_COMMIT: ${{ github.sha }}
+        run: |
+          BASE="${SMOKE_BASE:-https://${VPS_HOST}}"
+          echo "Smoke testing $BASE"
+          for i in 1 2 3 4 5; do
+            if SMOKE_BASE="$BASE" node scripts/smoke-deploy.mjs; then exit 0; fi
+            echo "smoke attempt $i failed; retrying in 10s…"; sleep 10
+          done
+          echo "Post-deploy smoke test failed after retries"; exit 1

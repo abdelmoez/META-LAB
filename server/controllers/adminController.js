@@ -9,6 +9,8 @@ import { getVersion } from '../version.js';
 import { bustMaintenanceCache } from '../middleware/maintenance.js';
 import { defaultFeatureFlags } from './settingsController.js';
 import { USAGE, recordUsage } from '../utils/usage.js';
+import { forceCloseStreams } from '../realtime/bus.js';
+import { invalidateAuthState } from '../middleware/auth.js';
 import { buildUserUpdate } from '../../src/shared/editableUserFields.js';
 import { buildCountryDistribution } from '../utils/countryStats.js';
 import * as Presence from '../realtime/presence.js';
@@ -68,27 +70,10 @@ function formatUserDetail(u) {
   return { ...rest, projectCount: _count ? _count.projects : (u.projectCount ?? 0) };
 }
 
-/**
- * Generate a strong, human-typeable temporary password.
- * Mixed case + digits + symbols, ~16 chars. Returned ONCE to the admin/mod; never stored.
- */
-function generateTempPassword() {
-  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
-  const lower = 'abcdefghijkmnpqrstuvwxyz';
-  const digits = '23456789';
-  const symbols = '!@#$%^&*-_=+';
-  const all = upper + lower + digits + symbols;
-  const pick = set => set[Math.floor(Math.random() * set.length)];
-  // Guarantee at least one of each class, then fill to length 16.
-  const chars = [pick(upper), pick(lower), pick(digits), pick(symbols)];
-  while (chars.length < 16) chars.push(pick(all));
-  // Fisher–Yates shuffle so the guaranteed chars are not always at the front.
-  for (let i = chars.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [chars[i], chars[j]] = [chars[j], chars[i]];
-  }
-  return chars.join('');
-}
+// prompt49 — the plaintext temporary-password generator was REMOVED. Admin password
+// resets now issue a secure, single-use, hashed-at-rest reset token + email link
+// (see resetUserPassword / sendPasswordReset). No plaintext password is ever
+// generated, returned, or emailed.
 
 function startOf(unit) {
   const now = new Date();
@@ -774,11 +759,24 @@ export async function updateUserStatus(req, res) {
       return res.status(400).json({ error: 'Cannot suspend admin users' });
     }
 
+    // prompt49 — session revocation. Suspending BUMPS sessionEpoch so every
+    // already-issued token across all devices is invalidated on its next request
+    // (requireAuth compares the token's epoch to the DB). Unsuspending does NOT
+    // restore old sessions: the epoch stays bumped, so a suspended-then-restored
+    // user must sign in again. We also force-close their open SSE streams and drop
+    // the cached auth state so revocation is effectively immediate.
     const updated = await prisma.user.update({
       where: { id: req.params.id },
-      data: { suspended },
+      data: suspended
+        ? { suspended: true, suspendedAt: new Date(), sessionEpoch: { increment: 1 } }
+        : { suspended: false },
       select: { id: true, email: true, name: true, role: true, suspended: true, createdAt: true, lastActive: true },
     });
+
+    invalidateAuthState(target.id);
+    if (suspended) {
+      try { forceCloseStreams(target.id); } catch { /* best-effort */ }
+    }
 
     await logAdminAction(req, suspended ? 'SUSPEND_USER' : 'UNSUSPEND_USER', 'User', target.id, {
       email: target.email,
@@ -845,9 +843,13 @@ export async function updateUserRole(req, res) {
 }
 
 // ── POST /api/admin/users/:id/reset-password ──────────────────────────────────
-// Generates a strong temp password, hashes it, returns the plaintext ONCE.
-// (admin + mod). Production-preferred flow is a token-based email reset — see
-// server/docs/email-setup.md.
+// prompt49 — SECURE token-based reset (admin + mod). Previously this generated a
+// plaintext temporary password and returned it in the response body (visible in
+// logs/network/history). That plaintext path is REMOVED: this now issues a single-
+// use, hashed-at-rest, expiring reset TOKEN and emails the user a reset link
+// (identical ceremony to /send-password-reset). No password is set here and no
+// secret is ever returned — the user chooses their own password, which then bumps
+// their sessionEpoch (revoking other sessions) when they complete the reset.
 
 export async function resetUserPassword(req, res) {
   try {
@@ -855,24 +857,38 @@ export async function resetUserPassword(req, res) {
     if (!target) return res.status(404).json({ error: 'User not found' });
 
     // Defense-in-depth (route also mounts requireTargetEditable): mods may
-    // only mutate ordinary users — a mod resetting an admin/mod password and
-    // receiving the plaintext would be a full account takeover.
+    // only mutate ordinary users — never admin/mod accounts.
     if (req.user.role === 'mod' && target.role !== 'user') {
       return res.status(403).json({ error: 'Moderators cannot modify administrator or moderator accounts' });
     }
 
-    const tempPassword = generateTempPassword();
-    const hashed = await hashPassword(tempPassword);
-
-    await prisma.user.update({
-      where: { id: req.params.id },
-      data: { password: hashed },
+    const { token, expiresAt } = await createResetToken(target.id, {
+      requestedByUserId: req.user.id,
+      ip: req.ip || '',
     });
+    const base = (process.env.APP_BASE_URL || '').replace(/\/+$/, '') || `${req.protocol}://${req.get('host')}`;
+    const link = `${base}/reset?token=${token}`;
 
-    await logAdminAction(req, 'RESET_PASSWORD', 'User', target.id, { email: target.email });
+    const emailConfigured = isEmailConfigured();
+    let sent = false;
+    if (emailConfigured) {
+      const { html, text } = renderPasswordResetEmail({
+        toName: target.name || '',
+        link,
+        expiresAt,
+        initiatedByOperator: true,
+      });
+      const result = await sendEmail({ to: target.email, subject: 'Reset your PecanRev password', html, text, context: 'password_reset' });
+      sent = result.sent === true;
+      recordUsage({ type: sent ? USAGE.PASSWORD_RESET_EMAIL_SENT : USAGE.PASSWORD_RESET_EMAIL_FAILED, userId: target.id, meta: { byOperator: req.user.id } });
+    }
 
-    // Return the plaintext temp password exactly once. NEVER store or return hashes.
-    return res.json({ tempPassword });
+    await logAdminAction(req, 'RESET_PASSWORD', 'User', target.id, { email: target.email, method: 'token_link', sent, emailConfigured });
+
+    // The raw token/link is returned to the authorized operator ONLY when the
+    // email could not be sent (so they can deliver it) — never the password,
+    // never a token alongside a successful send, never in logs.
+    return res.json({ sent, emailConfigured, expiresAt, ...(sent ? {} : { link }) });
   } catch (err) {
     console.error('[admin] resetUserPassword error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
@@ -1701,13 +1717,15 @@ export async function getContactMessages(req, res) {
       ];
     }
 
-    // Per-staff inbox boxes (prompt5 Task 9): unread/read are computed against THIS
-    // user's read receipts, not the legacy global `read` flag.
-    if (box === 'unread' || box === 'read') {
-      const myReads = await prisma.contactMessageRead.findMany({ where: { userId: me }, select: { messageId: true } });
-      const readIds = myReads.map(r => r.messageId);
+    // prompt49 — GLOBAL shared read state across all admins+mods. A message is
+    // unread when readAt is null (identical for every staff member). Opening it
+    // marks it read for EVERYONE; marking it unread clears it for everyone.
+    if (box === 'unread') {
       where.archived = false;
-      where.id = box === 'unread' ? { notIn: readIds } : { in: readIds };
+      where.readAt = null;
+    } else if (box === 'read') {
+      where.archived = false;
+      where.readAt = { not: null };
     } else if (box === 'archived') {
       where.archived = true;
     }
@@ -1716,17 +1734,12 @@ export async function getContactMessages(req, res) {
 
     const [total, messages] = await Promise.all([
       prisma.contactMessage.count({ where }),
-      prisma.contactMessage.findMany({
-        where,
-        orderBy,
-        skip,
-        take: limit,
-        include: { reads: { where: { userId: me }, select: { id: true } } },
-      }),
+      prisma.contactMessage.findMany({ where, orderBy, skip, take: limit }),
     ]);
 
-    // Annotate each message with this user's read state (per-staff).
-    const shaped = messages.map(({ reads, ...m }) => ({ ...m, readByMe: (reads?.length || 0) > 0 }));
+    // readByMe is now the GLOBAL read state (kept for frontend compatibility);
+    // readByName tells staff WHO opened it.
+    const shaped = messages.map((m) => ({ ...m, readByMe: !!m.readAt }));
 
     return res.json({ messages: shaped, total });
   } catch (err) {
@@ -1736,17 +1749,12 @@ export async function getContactMessages(req, res) {
 }
 
 // ── GET /api/admin/contact-messages/unread-count ──────────────────────────────
-// Per-staff unread badge count (prompt5 Task 9). Unread = non-archived messages
-// with NO read receipt for the calling staff member. Persists across logout/login.
+// prompt49 — GLOBAL shared unread badge: non-archived messages with readAt null.
+// The same count for every admin/mod (no per-staff divergence).
 
 export async function getUnreadMessageCount(req, res) {
   try {
-    const me = req.user.id;
-    const [activeTotal, myReadActive] = await Promise.all([
-      prisma.contactMessage.count({ where: { archived: false } }),
-      prisma.contactMessageRead.count({ where: { userId: me, message: { archived: false } } }),
-    ]);
-    const unread = Math.max(0, activeTotal - myReadActive);
+    const unread = await prisma.contactMessage.count({ where: { archived: false, readAt: null } });
     return res.json({ unread });
   } catch (err) {
     console.error('[admin] getUnreadMessageCount error:', err.message);
@@ -1755,8 +1763,9 @@ export async function getUnreadMessageCount(req, res) {
 }
 
 // ── POST /api/admin/contact-messages/:id/mark-read ────────────────────────────
-// Mark a message read for THIS staff member (idempotent upsert of a read receipt).
-// Body { read: false } removes the receipt (mark-as-unread for this user).
+// prompt49 — GLOBAL shared read state. Opening a message (read:true) sets
+// readAt/readByUserId/readByName so it is read for ALL admins+mods; { read:false }
+// clears them so it is unread for everyone. Returns the shared unread count.
 
 export async function markMessageRead(req, res) {
   try {
@@ -1766,26 +1775,49 @@ export async function markMessageRead(req, res) {
     if (!msg) return res.status(404).json({ error: 'Message not found' });
 
     if (wantRead) {
-      // Per-staff only — do NOT touch the global `read` flag (that would drop the
-      // unread count for other staff). Read state lives entirely in receipts.
-      await prisma.contactMessageRead.upsert({
-        where: { messageId_userId: { messageId: msg.id, userId: me } },
-        update: { readAt: new Date() },
-        create: { messageId: msg.id, userId: me },
+      const actor = await prisma.user.findUnique({ where: { id: me }, select: { name: true, email: true } });
+      await prisma.contactMessage.update({
+        where: { id: msg.id },
+        data: { readAt: new Date(), readByUserId: me, readByName: actor?.name || actor?.email || '' },
       });
     } else {
-      await prisma.contactMessageRead.deleteMany({ where: { messageId: msg.id, userId: me } });
+      await prisma.contactMessage.update({
+        where: { id: msg.id },
+        data: { readAt: null, readByUserId: null, readByName: null },
+      });
     }
 
-    // Return the caller's fresh unread count so the badge can update immediately.
-    const [activeTotal, myReadActive] = await Promise.all([
-      prisma.contactMessage.count({ where: { archived: false } }),
-      prisma.contactMessageRead.count({ where: { userId: me, message: { archived: false } } }),
-    ]);
-    return res.json({ ok: true, read: wantRead, unread: Math.max(0, activeTotal - myReadActive) });
+    const unread = await prisma.contactMessage.count({ where: { archived: false, readAt: null } });
+    return res.json({ ok: true, read: wantRead, unread });
   } catch (err) {
     console.error('[admin] markMessageRead error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// prompt49 — one-time idempotent backfill: any message that ANY staff member had
+// previously read (a per-staff receipt) becomes globally read (using the earliest
+// receipt). Only touches messages whose shared readAt is still null AND that have a
+// receipt, so it is safe to run on every boot. Non-blocking from index.js.
+export async function backfillSharedMessageReadState() {
+  try {
+    const pending = await prisma.contactMessage.findMany({
+      where: { readAt: null, reads: { some: {} } },
+      select: { id: true, reads: { select: { userId: true, readAt: true }, orderBy: { readAt: 'asc' }, take: 1 } },
+    });
+    let migrated = 0;
+    for (const m of pending) {
+      const first = m.reads[0];
+      if (!first) continue;
+      await prisma.contactMessage.update({
+        where: { id: m.id },
+        data: { readAt: first.readAt, readByUserId: first.userId },
+      }).catch(() => {});
+      migrated += 1;
+    }
+    if (migrated > 0) console.log(`[backfill] shared message read state: migrated ${migrated} message(s).`);
+  } catch (err) {
+    console.error('[backfill] shared message read state failed:', err.message);
   }
 }
 

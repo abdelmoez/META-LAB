@@ -1653,7 +1653,8 @@ function MessagesSection({ onUnreadChange }) {
     setLoading(true); setError('');
     try {
       const params = { page: p, limit: PER_PAGE, sort: so };
-      // Per-staff inbox boxes (prompt5 Task 9): unread/read are computed per-user.
+      // prompt49 — inbox boxes use the GLOBAL shared read state (unread/read are
+      // the same for all admins+mods; opening a message marks it read for everyone).
       if (f === 'unread' || f === 'read' || f === 'archived') params.box = f;
       if (s) params.search = s;
       const data = await adminApi.messages.list(params);
@@ -1900,11 +1901,7 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
   const [roleConfirm, setRoleConfirm] = useState(null); // pending new role
   const [roleError,   setRoleError]   = useState('');
 
-  // Reset password (legacy temp-password fallback)
-  const [tempPw,      setTempPw]      = useState('');
-  const [pwStatus,    setPwStatus]    = useState('idle');
-  const [pwError,     setPwError]     = useState('');
-  // Token-based reset email (prompt14, preferred)
+  // Token-based reset email (prompt14, preferred; prompt49 — now the ONLY reset path)
   const [resetEmail,  setResetEmail]  = useState(null); // { sent, emailConfigured, link?, expiresAt }
   const [resetStatus, setResetStatus] = useState('idle');
   const [resetError,  setResetError]  = useState('');
@@ -1917,7 +1914,7 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
   useEffect(() => {
     setCurrent(user);
     setEditing(false); setForm(seedForm(user));
-    setEditError(''); setRoleError(''); setTempPw(''); setPwError('');
+    setEditError(''); setRoleError('');
     setResetEmail(null); setResetStatus('idle'); setResetError('');
     setActivity(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1996,14 +1993,6 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
       onUserUpdate?.();
     } catch (e) { setRoleError(e.message); }
     setRoleConfirm(null);
-  }
-
-  async function doResetPassword() {
-    setPwStatus('saving'); setPwError(''); setTempPw('');
-    try {
-      const { tempPassword } = await adminApi.users.resetPassword(current.id);
-      setTempPw(tempPassword); setPwStatus('idle');
-    } catch (e) { setPwStatus('error'); setPwError(e.message); }
   }
 
   // Token-based reset (prompt14): emails the user a self-service link; when email
@@ -2179,20 +2168,12 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
             {resetStatus === 'saving' ? 'Sending…' : 'Send password reset email'}
           </button>
 
-          {/* ── Fallback: legacy temporary password ── */}
-          {pwError && <div style={{ fontSize: 11, color: C.red, marginBottom: 8 }}>{pwError}</div>}
-          {tempPw ? (
-            <div>
-              <CopyableBox value={tempPw} label="Temporary password (shown once)" />
-              <div style={{ fontSize: 10, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
-                Share this securely with the user. It is not stored and cannot be retrieved again.
-              </div>
-            </div>
-          ) : (
-            <button onClick={doResetPassword} disabled={pwStatus === 'saving'} style={{ width: '100%', padding: '7px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.muted, fontSize: 11, cursor: pwStatus === 'saving' ? 'not-allowed' : 'pointer', fontFamily: FONT }}>
-              {pwStatus === 'saving' ? 'Generating…' : 'Generate temporary password (legacy)'}
-            </button>
-          )}
+          {/* prompt49 — the legacy "generate temporary password" action was removed.
+              Password resets now ONLY issue a secure, single-use, expiring reset
+              link; no plaintext password is generated, shown, or emailed. */}
+          <div style={{ fontSize: 10, color: C.muted, lineHeight: 1.5 }}>
+            Sends a secure, single-use reset link. When the user completes the reset, their other sessions are signed out.
+          </div>
         </div>
       )}
 

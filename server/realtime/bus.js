@@ -47,6 +47,27 @@ export function connectionCount() {
   return n;
 }
 
+/**
+ * forceCloseStreams — prompt49: immediately close ALL open SSE streams for a user
+ * (called when an admin suspends them or a password change revokes sessions). A
+ * final `session.revoked` event lets the client redirect to sign-in. Returns the
+ * number of streams closed. Never throws.
+ */
+export function forceCloseStreams(userId) {
+  const set = connections.get(userId);
+  if (!set) return 0;
+  let closed = 0;
+  for (const res of set) {
+    try {
+      res.write('event: session.revoked\ndata: {"type":"session.revoked"}\n\n');
+      res.end();
+      closed += 1;
+    } catch { /* socket already dead */ }
+  }
+  connections.delete(userId);
+  return closed;
+}
+
 /** Serialize one event and write it to every open stream of the given users. */
 function writeFrame(userIds, event) {
   const payload = { ...event, at: event.at || new Date().toISOString() };

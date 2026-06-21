@@ -205,7 +205,7 @@ export async function register(req, res) {
     // and registration succeeds even if SMTP is unconfigured).
     if (verifyRequired) sendVerificationEmail(req, user).catch(() => {});
 
-    const token = signToken({ id: user.id, email: user.email, role: user.role });
+    const token = signToken({ id: user.id, email: user.email, role: user.role, se: user.sessionEpoch ?? 0 });
     res.cookie(COOKIE_NAME, token, cookieOptions());
 
     return res.status(201).json({
@@ -280,7 +280,7 @@ export async function login(req, res) {
     recordLoginEvent(req, user, true);
     prisma.user.update({ where: { id: user.id }, data: { lastActive: new Date() } }).catch(() => {});
 
-    const token = signToken({ id: user.id, email: user.email, role: user.role });
+    const token = signToken({ id: user.id, email: user.email, role: user.role, se: user.sessionEpoch ?? 0 });
     res.cookie(COOKIE_NAME, token, cookieOptions());
 
     return res.json({

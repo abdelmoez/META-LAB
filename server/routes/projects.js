@@ -18,6 +18,8 @@ import {
   duplicateProject,
 } from '../controllers/projectsController.js';
 import { requireAuth } from '../middleware/auth.js';
+import { validateBody } from '../middleware/validateBody.js';
+import { autosaveProjectSchema } from '../schemas/requestSchemas.js';
 
 const router = Router();
 
@@ -33,7 +35,7 @@ router.post('/:id/delete',    ownerDeleteProject);
 // prompt11 — owner-only reversible archive (hide) + linked-workspace cascade.
 router.post('/:id/archive',   archiveProject);
 router.post('/:id/unarchive', unarchiveProject);
-router.put('/:id/autosave',   autosaveProject);
+router.put('/:id/autosave',   validateBody(autosaveProjectSchema), autosaveProject);
 router.post('/:id/duplicate', duplicateProject);
 
 export default router;

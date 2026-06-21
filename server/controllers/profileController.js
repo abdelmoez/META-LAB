@@ -6,8 +6,16 @@
 
 import { prisma } from '../db/client.js';
 import { hashPassword, verifyPassword } from '../auth/password.js';
+import { signToken } from '../auth/jwt.js';
+import { invalidateAuthState } from '../middleware/auth.js';
 import { invalidateUserName } from './presenceController.js';
 import { resolveInstitutionInput, invalidateInstitutionCandidates } from '../services/institutionService.js';
+
+const SESSION_COOKIE = 'metalab_session';
+// Mirrors authController.cookieOptions() — kept in sync intentionally.
+function sessionCookieOptions() {
+  return { httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 };
+}
 
 // prompt35 — institution + onboarding-profile fields exposed/editable on the
 // self-service profile (in addition to the legacy onboarding write path).
@@ -154,10 +162,17 @@ export async function changePassword(req, res) {
     }
 
     const hashed = await hashPassword(newPassword);
-    await prisma.user.update({
+    // prompt49 — changing your password REVOKES every other session (bump
+    // sessionEpoch so all already-issued tokens fail their next request) while
+    // keeping THIS device signed in by re-issuing its cookie with the new epoch.
+    const updated = await prisma.user.update({
       where: { id: req.user.id },
-      data: { password: hashed, lastActive: new Date() },
+      data: { password: hashed, lastActive: new Date(), sessionEpoch: { increment: 1 }, passwordChangedAt: new Date() },
+      select: { id: true, email: true, role: true, sessionEpoch: true },
     });
+    invalidateAuthState(req.user.id);
+    const token = signToken({ id: updated.id, email: updated.email, role: updated.role, se: updated.sessionEpoch });
+    res.cookie(SESSION_COOKIE, token, sessionCookieOptions());
 
     res.json({ ok: true });
   } catch (err) {

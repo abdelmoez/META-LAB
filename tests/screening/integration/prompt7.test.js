@@ -99,12 +99,12 @@ describe('prompt7 T1 — mod target-role enforcement', () => {
     expect(readBack.data.name).toBe('Renamed By Mod');
   });
 
-  it('mod reset-password: 403 on admin and mod targets (no plaintext leak), 200 + tempPassword on ordinary user', async () => {
+  it('mod reset-password: 403 on admin/mod targets; 200 secure reset LINK (no plaintext) on ordinary user', async () => {
     if (!up) return;
     if (!adminCookie) return;
     const { mod, otherMod, targetAdmin, plain } = await setupCast();
 
-    // Mod → admin target: 403 and NO tempPassword in the body (account-takeover vector).
+    // Mod → admin target: 403 and NO plaintext password in the body.
     const vsAdmin = await api(`/admin/users/${targetAdmin.id}/reset-password`, { method: 'POST', cookie: mod.cookie });
     expect(vsAdmin.status).toBe(403);
     expect(vsAdmin.data.error).toBe(MOD_DENIED);
@@ -119,12 +119,14 @@ describe('prompt7 T1 — mod target-role enforcement', () => {
     // The admin victim's original password still works (nothing was overwritten).
     expect(await loginAs(targetAdmin.email)).toBeTruthy();
 
-    // Mod → ordinary user: allowed, plaintext temp password returned once and usable.
+    // prompt49 — Mod → ordinary user: allowed, but now issues a SECURE reset link
+    // (single-use token emailed). NO plaintext temporary password is ever returned,
+    // and the user's password is unchanged until they complete the reset themselves.
     const ok = await api(`/admin/users/${plain.id}/reset-password`, { method: 'POST', cookie: mod.cookie });
     expect(ok.status).toBe(200);
-    expect(typeof ok.data.tempPassword).toBe('string');
-    expect(ok.data.tempPassword.length).toBeGreaterThan(0);
-    expect(await loginAs(plain.email, ok.data.tempPassword)).toBeTruthy();
+    expect(ok.data.tempPassword).toBeUndefined();
+    expect(typeof ok.data.emailConfigured).toBe('boolean');
+    expect(await loginAs(plain.email)).toBeTruthy(); // original password still valid
   });
 
   it('mod status: 403 suspending another mod; 200 suspend + unsuspend on an ordinary user', async () => {

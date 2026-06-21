@@ -39,12 +39,19 @@ import workflowStateRouter from './routes/workflowState.js';
 import searchEngineRouter  from './routes/searchEngine.js';
 import waitlistRouter       from './routes/waitlist.js';
 
+import { prisma } from './db/client.js';
 import { isWaitlistDbConfigured, redactedDbTarget } from './waitlist/config.js';
 import { initDefaultSettings } from './controllers/settingsController.js';
+import { backfillSharedMessageReadState } from './controllers/adminController.js';
 import { seedOnboardingQuestions } from './controllers/onboardingController.js';
 import { seedAdmins } from './auth/seedAdmins.js';
 import { getVersion } from './version.js';
 import { resolveCorsOrigin } from './config/cors.js';
+import { runStartupConfigCheck } from './config/validateConfig.js';
+
+// prompt49 — fail-fast configuration diagnostic. In production a missing critical
+// value (JWT_SECRET / DATABASE_URL / CORS origin) aborts boot; in dev it warns.
+runStartupConfigCheck();
 
 const app = express();
 
@@ -159,9 +166,33 @@ app.use(requestLogger);
 // appSettings.maintenanceMode === true. 10s-TTL settings cache; default off.
 app.use(maintenanceGate);
 
-// ── Health check (public) ─────────────────────────────────────────────────────
+// ── Health check (public, liveness) ────────────────────────────────────────────
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString(), version: getVersion().version });
+});
+
+// ── Readiness check (public, prompt49 §11) — verifies critical dependencies (DB)
+// so a load balancer / post-deploy smoke test can gate traffic. 503 when not
+// ready. Exposes NO secrets / connection strings / stack traces. ────────────────
+app.get('/api/health/ready', async (_req, res) => {
+  const checks = {};
+  let ready = true;
+  const t0 = Date.now();
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    checks.database = 'ok';
+  } catch {
+    checks.database = 'error';
+    ready = false;
+  }
+  return res.status(ready ? 200 : 503).json({
+    status: ready ? 'ok' : 'unavailable',
+    checks,
+    version: getVersion().version,
+    env: process.env.NODE_ENV || 'development',
+    dbLatencyMs: Date.now() - t0,
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // ── Version metadata (public, no auth) ─────────────────────────────────────────
@@ -274,6 +305,9 @@ const server = app.listen(PORT, () => {
   initDefaultSettings().catch(console.error);
   seedOnboardingQuestions().catch(err => console.error('[seed] onboarding seed failed:', err.message));
   seedAdmins().catch(err => console.error('[seed] admin seed failed:', err.message));
+  // prompt49 — one-time idempotent backfill so any message a staff member already
+  // read becomes globally read under the new shared read-state model.
+  backfillSharedMessageReadState().catch(err => console.error('[seed] message read backfill failed:', err.message));
 
   // prompt48 — fail-safe waitlist config check. If the betaWaitlist flag is ON but
   // the dedicated DB is not configured, log a CLEAR, REDACTED warning for admins.

@@ -18,6 +18,14 @@ model User {
   password    String    // bcrypt hash — never stored or returned as plain text
   role        String    @default("user")   // "user" | "admin"
   suspended   Boolean   @default(false)
+  // prompt49 — session revocation. Every issued JWT carries the user's sessionEpoch
+  // at sign time; requireAuth rejects a token whose epoch is behind the DB value.
+  // Incremented on SUSPEND and on PASSWORD CHANGE → all existing sessions across
+  // devices are invalidated immediately (and unsuspend does NOT restore them: the
+  // epoch stays bumped, so old tokens never become valid again). Additive default 0.
+  sessionEpoch Int      @default(0)
+  suspendedAt  DateTime? // when the account was last suspended (audit/forensics)
+  passwordChangedAt DateTime? // when the password last changed (session-revocation forensics)
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
   lastActive  DateTime?
@@ -257,9 +265,17 @@ model ContactMessage {
   origin    String   @default("contact_form") // contact_form | staff (Ops-composed) | inbound_email
   replied   Boolean  @default(false)   // prompt4 Task 4
   repliedAt DateTime?
+  // prompt49 — SHARED read state across all admins+mods. A message is unread
+  // globally when readAt is null. Opening it sets readAt/readByUserId/readByName
+  // for EVERYONE; any staff can mark it unread (clears these) for everyone. This
+  // replaces the per-staff ContactMessageRead receipts as the source of truth
+  // (the table is retained only for one-time backfill).
+  readAt       DateTime?
+  readByUserId String?
+  readByName   String?
   createdAt DateTime @default(now())
   replies   ContactReply[]
-  reads     ContactMessageRead[]       // prompt5 Task 9 — per-staff read receipts
+  reads     ContactMessageRead[]       // prompt5 Task 9 — per-staff read receipts (superseded by readAt; kept for backfill)
 }
 
 // Per-staff read receipt for an ops-console contact message (prompt5 Task 9).

@@ -1,6 +1,6 @@
 {
   "name": "meta-lab",
-  "version": "3.41.0",
+  "version": "3.42.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,6 +14,7 @@
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
     "test:ci": "vitest run tests/unit tests/screening/unit",
+    "smoke:deploy": "node scripts/smoke-deploy.mjs",
     "review:legal": "node scripts/review-legal.js",
     "review:ops-impact": "node scripts/review-ops-impact.js",
     "marketing:seed": "node scripts/seed-marketing-demo.mjs",

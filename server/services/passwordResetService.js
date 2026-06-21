@@ -14,6 +14,7 @@
 import crypto from 'crypto';
 import { prisma } from '../db/client.js';
 import { hashPassword } from '../auth/password.js';
+import { invalidateAuthState } from '../middleware/auth.js';
 
 const DEFAULT_TTL_MINUTES = 60;
 
@@ -85,7 +86,13 @@ export async function consumeResetToken(token, newPassword) {
   if (burn.count === 0) return { ok: false, reason: 'invalid' };
 
   const hashed = await hashPassword(newPassword);
-  await prisma.user.update({ where: { id: row.userId }, data: { password: hashed } });
+  // prompt49 — bump sessionEpoch on password change so EVERY existing session
+  // (all devices) is revoked on its next request; stamp passwordChangedAt.
+  await prisma.user.update({
+    where: { id: row.userId },
+    data: { password: hashed, sessionEpoch: { increment: 1 }, passwordChangedAt: new Date() },
+  });
+  invalidateAuthState(row.userId);
 
   // Invalidate any other outstanding tokens for this user.
   await prisma.passwordResetToken.updateMany({

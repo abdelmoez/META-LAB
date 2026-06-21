@@ -24,23 +24,79 @@ function touchLastActive(userId) {
   recordUsage({ type: USAGE.APP_ACTIVE, userId });
 }
 
+// ── Session revocation state (prompt49) ────────────────────────────────────────
+// Stateless JWTs can't be deleted server-side, so on every authenticated request
+// we check the user's live `suspended` flag and `sessionEpoch` against the DB.
+// A short in-memory cache keeps this to ~1 DB read per user per TTL; suspend /
+// password-change call invalidateAuthState() so revocation is effectively instant.
+const AUTH_STATE_TTL_MS = 15 * 1000;
+const authStateCache = new Map(); // userId -> { suspended, sessionEpoch, exp }
+
+/** Drop the cached auth state for a user so the next request re-reads the DB. */
+export function invalidateAuthState(userId) {
+  if (userId) authStateCache.delete(userId);
+}
+
+async function loadAuthState(userId) {
+  const cached = authStateCache.get(userId);
+  if (cached && cached.exp > Date.now()) return cached;
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { suspended: true, sessionEpoch: true },
+  });
+  if (!user) { authStateCache.delete(userId); return null; }
+  const rec = { suspended: !!user.suspended, sessionEpoch: user.sessionEpoch ?? 0, exp: Date.now() + AUTH_STATE_TTL_MS };
+  authStateCache.set(userId, rec);
+  return rec;
+}
+
 /**
  * requireAuth — Express middleware that enforces authentication.
- * Reads the httpOnly cookie `metalab_session`, verifies the JWT,
- * and attaches `req.user = { id, email }` on success.
- * Returns 401 if the cookie is missing or the token is invalid/expired.
+ * Reads the httpOnly cookie `metalab_session`, verifies the JWT, then checks the
+ * live account state (suspended + sessionEpoch) so suspended users and revoked
+ * sessions are rejected promptly across ALL devices — not after a 7-day expiry.
+ * Attaches `req.user = { id, email, role }` on success. 401/403 otherwise.
  */
-export function requireAuth(req, res, next) {
+export async function requireAuth(req, res, next) {
   const token = req.cookies?.[COOKIE_NAME];
   if (!token) {
     return res.status(401).json({ error: 'Authentication required' });
   }
+  let payload;
   try {
-    const payload = verifyToken(token);
-    req.user = { id: payload.id, email: payload.email, role: payload.role || 'user' };
-    touchLastActive(payload.id);
-    next();
+    payload = verifyToken(token);
   } catch {
     return res.status(401).json({ error: 'Invalid or expired session' });
+  }
+
+  try {
+    const state = await loadAuthState(payload.id);
+    if (!state) {
+      // User no longer exists — clear the cookie and reject.
+      res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict' });
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+    if (state.suspended) {
+      res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict' });
+      return res.status(403).json({ error: 'Your account has been suspended. Please contact support.', code: 'ACCOUNT_SUSPENDED' });
+    }
+    // Tokens issued before this feature have no `se` claim → treated as epoch 0,
+    // so existing sessions are NOT force-logged-out on deploy (epoch starts at 0).
+    const tokenEpoch = Number.isInteger(payload.se) ? payload.se : 0;
+    if (tokenEpoch !== state.sessionEpoch) {
+      res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict' });
+      return res.status(401).json({ error: 'Your session has ended. Please sign in again.', code: 'SESSION_REVOKED' });
+    }
+    req.user = { id: payload.id, email: payload.email, role: payload.role || 'user' };
+    touchLastActive(payload.id);
+    return next();
+  } catch (err) {
+    // A transient DB error during the state check must not log everyone out (the
+    // app is SQLite/local). Suspended accounts are also blocked at login and on
+    // every admin route via requireRole's own DB check, so proceed with the token
+    // identity and record the anomaly. Fail-open is bounded to DB-outage windows.
+    console.error('[auth] account-state check failed, proceeding on token identity:', err.message);
+    req.user = { id: payload.id, email: payload.email, role: payload.role || 'user' };
+    return next();
   }
 }
