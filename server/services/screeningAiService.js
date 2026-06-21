@@ -14,6 +14,7 @@ import { prisma } from '../db/client.js';
 import { writeAudit } from '../screening/access.js';
 import {
   trainAndScore,
+  crossValidate,
   computeValidation,
   createEmbeddingProvider,
 } from '../../src/research-engine/screening/ai/index.js';
@@ -112,6 +113,7 @@ export async function loadEngineInput(projectId, stage = 'title_abstract') {
   const [records, decisions] = await Promise.all([
     prisma.screenRecord.findMany({
       where: { projectId },
+      orderBy: { createdAt: 'desc' },   // deterministic "most recent first" so the per-run cap is reproducible
       select: {
         id: true, title: true, abstract: true, authors: true, year: true,
         journal: true, doi: true, pmid: true, keywords: true, isDuplicate: true,
@@ -166,10 +168,18 @@ export async function runScoring({ projectId, stage = 'title_abstract', actor, t
   const aiProject = getProjectAiSettings(input.project, global);
   const startedAt = new Date();
 
-  // Cap records per run (score the most recent N if over the cap).
+  // Cap records per run. Label-preserving: keep ALL human-labelled records (so the
+  // training set + validation cohort are never silently shrunk) plus the most
+  // recent unlabelled records up to the cap. records are already newest-first.
   const cap = global.maxRecordsPerRun || 5000;
   let records = input.records;
-  if (records.length > cap) records = records.slice(records.length - cap);
+  if (records.length > cap) {
+    const labeledSet = new Set(Object.keys(input.labelByRecordId));
+    const labeled = records.filter(r => labeledSet.has(r.id));
+    const unlabeled = records.filter(r => !labeledSet.has(r.id));
+    const room = Math.max(0, cap - labeled.length);
+    records = [...labeled, ...unlabeled.slice(0, room)];
+  }
 
   const config = {
     provider: { embedding: global.embeddingProvider || 'lexical' },
@@ -217,10 +227,46 @@ export async function runScoring({ projectId, stage = 'title_abstract', actor, t
     ? { ...computeValidation(valScores, valLabels, { threshold: aiProject.includeThreshold }), inSample: true }
     : { insufficient: true, n: valScores.length };
 
-  // Persist: upsert latest score per record, then the run summary.
+  // Honest held-out metrics (stratified k-fold CV) when there are enough labels.
+  // This trains k extra models; bounded by the same record cap, so it's cheap.
+  if (result.meta.canTrain) {
+    try {
+      const cv = crossValidate({
+        records,
+        labelByRecordId: input.labelByRecordId,
+        picoSnapshot: input.picoSnapshot,
+        inclusionKeywords: input.inclusionKeywords,
+        exclusionKeywords: input.exclusionKeywords,
+        studyTypeFilter: input.studyTypeFilter,
+        config,
+      });
+      metrics.crossVal = cv;
+    } catch { /* CV is best-effort; in-sample metrics still stand */ }
+  }
+
+  // Create the run row FIRST so every score can be stamped with the real run id
+  // directly (no broad post-hoc updateMany that could mis-attribute scores across
+  // concurrent/over-cap runs on the same project+stage).
+  const run = await prisma.screenAiRun.create({
+    data: {
+      projectId, stage, status: 'completed', mode: result.meta.mode, trigger,
+      nRecords: result.meta.nRecords,
+      nScored: result.scores.length,
+      nFeatures: result.meta.nFeatures,
+      labelCountsJson: JSON.stringify(result.meta.labelCounts || {}),
+      modelInfoJson: JSON.stringify(result.meta.modelInfo || {}),
+      configJson: JSON.stringify({ provider: config.provider, includeThreshold: aiProject.includeThreshold }),
+      metricsJson: JSON.stringify(metrics),
+      triggeredById: actor?.id || null,
+      triggeredByName: actor?.name || actor?.email || '',
+      startedAt, completedAt: new Date(),
+    },
+  });
+
+  // Persist: upsert the latest score per (project, record, stage), stamped with run.id.
   for (const s of result.scores) {
     const data = {
-      runId: '', // set after run row exists; we patch below via runId on the run, scores reference loosely
+      runId: run.id,
       stage,
       score: s.score,
       proba: s.proba,
@@ -243,28 +289,6 @@ export async function runScoring({ projectId, stage = 'title_abstract', actor, t
       update: data,
     });
   }
-
-  const run = await prisma.screenAiRun.create({
-    data: {
-      projectId, stage, status: 'completed', mode: result.meta.mode, trigger,
-      nRecords: result.meta.nRecords,
-      nScored: result.scores.length,
-      nFeatures: result.meta.nFeatures,
-      labelCountsJson: JSON.stringify(result.meta.labelCounts || {}),
-      modelInfoJson: JSON.stringify(result.meta.modelInfo || {}),
-      configJson: JSON.stringify({ provider: config.provider, includeThreshold: aiProject.includeThreshold }),
-      metricsJson: JSON.stringify(metrics),
-      triggeredById: actor?.id || null,
-      triggeredByName: actor?.name || actor?.email || '',
-      startedAt, completedAt: new Date(),
-    },
-  });
-
-  // Stamp the runId onto the scores just written (best-effort, single update).
-  await prisma.screenAiScore.updateMany({
-    where: { projectId, stage, runId: '' },
-    data: { runId: run.id },
-  }).catch(() => {});
 
   writeAudit(projectId, actor, 'AI_RUN_COMPLETED', {
     entityType: 'ScreenAiRun', entityId: run.id,

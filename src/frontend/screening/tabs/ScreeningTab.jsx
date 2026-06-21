@@ -218,6 +218,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         const sc = ai.scores[r.id];
         if (!sc) return false;
         if (aiBand === 'uncertain') return sc.prediction === 'uncertain';
+        if (aiBand === 'low') return sc.score != null && sc.score < 0.4;  // "Low (<40)" covers the low + very_low bands
         return sc.band === aiBand;
       });
     }
@@ -233,6 +234,14 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   }, [records, ai.enabled, ai.scores, queueMode, aiBand]);
   const displayRecordsRef = useRef(displayRecords);
   useEffect(() => { displayRecordsRef.current = displayRecords; }, [displayRecords]);
+
+  // When an AI band/queue filter excludes the currently-selected record, re-select
+  // the first in-band record so the Prev/Next footer never strands at "0 / N".
+  useEffect(() => {
+    if (ai.enabled && selectedId && displayRecords.length && !displayRecords.some(r => r.id === selectedId)) {
+      setSelectedId(displayRecords[0].id);
+    }
+  }, [displayRecords, ai.enabled, selectedId]);
 
   // ── Load a page of records (reset = page 1 / append = next page) ──────────
   const loadRecords = useCallback(async ({ reset = false, p, s, f } = {}) => {

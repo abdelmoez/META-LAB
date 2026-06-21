@@ -3,7 +3,7 @@
  * ranking + embeddings integration & determinism.
  */
 import { describe, it, expect } from 'vitest';
-import { trainAndScore, summarizeLabels } from '../../../../src/research-engine/screening/ai/activeLearning.js';
+import { trainAndScore, crossValidate, summarizeLabels } from '../../../../src/research-engine/screening/ai/activeLearning.js';
 import { coldStartScore, detectStudyDesign } from '../../../../src/research-engine/screening/ai/coldStart.js';
 import { computeValidation, rocAuc, wssAtRecall, recallAtK, stageMetrics } from '../../../../src/research-engine/screening/ai/validation.js';
 import { rankItems, uncertainty, predictionLabel } from '../../../../src/research-engine/screening/ai/ranking.js';
@@ -137,6 +137,17 @@ describe('validation metrics', () => {
     expect(v.sampleWarning.warn).toBe(true); // only 6 decisions
     expect(v.stages.length).toBe(6);
   });
+  it('breaks score ties pessimistically (order-independent, conservative)', () => {
+    // All scores tied → result must NOT depend on input order, and must take the
+    // worst case within the tie (excludes ranked ahead of includes).
+    expect(recallAtK([0.5, 0.5, 0.5, 0.5], [1, 1, 0, 0], 1)).toBeCloseTo(0, 6);
+    expect(recallAtK([0.5, 0.5, 0.5, 0.5], [0, 0, 1, 1], 1)).toBeCloseTo(0, 6);
+    const tied = [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5];
+    const a = wssAtRecall(tied, [1, 1, 0, 0, 0, 0, 0, 0, 0, 0], 0.95);
+    const b = wssAtRecall(tied, [0, 0, 0, 0, 0, 0, 0, 0, 1, 1], 0.95);
+    expect(a.wss).toBeCloseTo(b.wss, 6);   // no optimistic inflation from input order
+  });
+
   it('stageMetrics recall is monotonic non-decreasing', () => {
     const stages = stageMetrics(perfectScores, perfectLabels);
     for (let i = 1; i < stages.length; i++) {
@@ -166,6 +177,33 @@ describe('ranking + uncertainty', () => {
     expect(rankItems(items, 'ai_uncertain').map(i => i.recordId)).toEqual(['c', 'a', 'b']);
     expect(rankItems(items, 'exclusion_triage').map(i => i.recordId)).toEqual(['a', 'c', 'b']);
     expect(rankItems(items, 'default').map(i => i.recordId)).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('crossValidate (held-out k-fold)', () => {
+  const records = makeRecords();
+  const labels = {};
+  records.forEach(r => { labels[r.id] = r.title.includes('Randomized') ? 'include' : 'exclude'; });
+
+  it('returns out-of-sample metrics when enough labels exist', () => {
+    const cv = crossValidate({ records, labelByRecordId: labels, picoSnapshot, k: 5 });
+    expect(cv.heldOut).toBe(true);
+    expect(cv.k).toBe(5);
+    expect(cv.auc).toBeGreaterThan(0.7);          // separable synthetic classes
+    expect(cv.n).toBe(20);                         // every labeled record held out exactly once
+  });
+
+  it('is deterministic', () => {
+    const a = crossValidate({ records, labelByRecordId: labels, picoSnapshot, k: 5 });
+    const b = crossValidate({ records, labelByRecordId: labels, picoSnapshot, k: 5 });
+    expect(a.auc).toBe(b.auc);
+    expect(a.wss95).toBe(b.wss95);
+  });
+
+  it('reports insufficient when labels are too few', () => {
+    const few = { inc0: 'include', exc0: 'exclude' };
+    const cv = crossValidate({ records, labelByRecordId: few, picoSnapshot, k: 5 });
+    expect(cv.insufficient).toBe(true);
   });
 });
 

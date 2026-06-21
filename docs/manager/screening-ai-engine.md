@@ -110,11 +110,17 @@ ranking to the **human final decisions** (`validation.js`):
   **precision/PPV**, **NPV**, **F1**, **accuracy** at the configured threshold.
 - **recall@k** (10/25/50), **WSS@95** and **WSS@100** (Cohen et al. 2006), per-stage
   metrics after 5/10/20/40/60/80 % screened, and a **small-sample warning**.
+- **Held-out k-fold cross-validation** (`crossValidate`) — when enough labels exist,
+  the engine also computes honest **out-of-sample** metrics: stratified k-fold, the
+  held-out fold's labels are *removed* before training each fold, and the pooled
+  held-out (score,label) pairs are scored. The UI prefers these over the in-sample
+  snapshot and labels them "held-out k-fold CV".
 
-> **Honesty note:** the current snapshot is **apparent / in-sample** — the model is
-> validated on the same settled records it trained on, so it is optimistic. The UI
-> and this doc label it as such. Held-out **k-fold cross-validation** is the
-> documented next phase (§8).
+> **Honesty note:** with few labels the engine shows the **apparent / in-sample**
+> snapshot (model validated on its own training set, optimistic) and says so. Once
+> there are enough labels for k-fold CV, the **held-out** metrics take over
+> automatically. The remaining gap is per-topic confidence intervals on a public
+> benchmark (§8).
 
 WSS@95 reads as "fraction of screening work the AI ordering would have saved while
 still finding 95 % of the includes." Random ordering → ≈ 0.
@@ -201,8 +207,10 @@ human reviewers, and exposes every reason and metric.
 
 ## 9. Remaining limitations & next phase
 
-1. **In-sample validation.** Metrics are apparent (train = test set). **Next:**
-   k-fold cross-validation + a held-out simulated-screening curve.
+1. **Validation depth.** Held-out stratified **k-fold cross-validation is now
+   computed** automatically when labels suffice (the in-sample snapshot is only a
+   fallback for small label sets). **Next:** per-topic confidence intervals on a
+   public benchmark + a held-out simulated-screening yield curve.
 2. **Client-side queue ordering.** Ranking/band filtering currently reorders the
    *loaded* page of records. **Next:** server-side AI-ordered pagination (join
    `ScreenAiScore` into `listRecords`).

@@ -61,13 +61,15 @@ export function trainLogReg(samples, dim, cfg = {}) {
     let gBias = 0;
 
     for (const s of samples) {
-      // z = bias + w·x
+      // z = bias + w·x  (skip any non-finite feature value defensively — the TF-IDF
+      // path is always finite, but a future dense/hosted-embedding caller must not
+      // be able to poison a weight to NaN)
       let z = bias;
-      for (const k in s.x) z += weights[k] * s.x[k];
+      for (const k in s.x) { const xv = s.x[k]; if (Number.isFinite(xv)) z += weights[k] * xv; }
       const p = sigmoid(z);
       const cw = s.y === 1 ? wPos : wNeg;
       const err = cw * (p - s.y);
-      for (const k in s.x) grad[k] += err * s.x[k];
+      for (const k in s.x) { const xv = s.x[k]; if (Number.isFinite(xv)) grad[k] += err * xv; }
       gBias += err;
     }
 
@@ -104,7 +106,7 @@ export function trainLogReg(samples, dim, cfg = {}) {
 export function predictProba(model, x) {
   let z = model.bias;
   const w = model.weights;
-  for (const k in x) z += w[k] * x[k];
+  for (const k in x) { const xv = x[k]; if (Number.isFinite(xv)) z += w[k] * xv; }
   return sigmoid(z);
 }
 

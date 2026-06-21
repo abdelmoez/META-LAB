@@ -22,6 +22,8 @@ import { coldStartScore } from './coldStart.js';
 import { hybridScore } from './hybrid.js';
 import { uncertainty, predictionLabel, scoreBand } from './ranking.js';
 import { buildExplanation } from './explain.js';
+import { computeValidation } from './validation.js';
+import { mulberry32 } from '../sampling.js';
 
 const NEIGHBOR_EXAMPLE_CAP = 300;
 
@@ -40,6 +42,13 @@ function sparseSum(vectors) {
     for (const k in v) acc[k] = (acc[k] || 0) + v[k];
   }
   return acc;
+}
+
+/** centroid − vec (component-wise), for leave-one-out similarity. New object. */
+function sparseMinus(centroid, vec) {
+  const out = { ...centroid };
+  for (const k in vec) out[k] = (out[k] || 0) - vec[k];
+  return out;
 }
 
 /**
@@ -128,8 +137,14 @@ export function trainAndScore(args = {}) {
     const vector = vectors[i];
     const cs = coldStartScore(r, ctx);
     const proba = model ? predictProba(model, vector) : null;
-    const semInc = includedCentroid ? cosine(vector, includedCentroid) : null;
-    const semExc = excludedCentroid ? cosine(vector, excludedCentroid) : null;
+    // Leave-one-out: a record that is itself labelled must not be compared to a
+    // centroid that contains its own vector (that self-similarity would inflate
+    // semanticIncluded/Excluded). Subtract its own vector from the matching centroid.
+    const yi = decisionToLabel(labelByRecordId[r.id], cfg);
+    const incCentroid = (yi === 1 && includedCentroid) ? sparseMinus(includedCentroid, vector) : includedCentroid;
+    const excCentroid = (yi === 0 && excludedCentroid) ? sparseMinus(excludedCentroid, vector) : excludedCentroid;
+    const semInc = incCentroid ? cosine(vector, incCentroid) : null;
+    const semExc = excCentroid ? cosine(vector, excCentroid) : null;
 
     const hybrid = hybridScore({
       classifier: { available: !!model, proba: proba ?? 0 },
@@ -206,4 +221,73 @@ export function trainAndScore(args = {}) {
     },
     scores,
   };
+}
+
+/** Deal each class round-robin into k folds → deterministic stratified split. */
+function stratifiedFolds(ids, labelOf, k, seed) {
+  const byClass = { 1: [], 0: [] };
+  for (const id of ids) byClass[labelOf(id)].push(id);
+  const rng = mulberry32(seed >>> 0);
+  const shuffle = (arr) => {
+    const a = [...arr];
+    for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(rng() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+    return a;
+  };
+  const folds = Array.from({ length: k }, () => []);
+  for (const cls of [1, 0]) shuffle(byClass[cls]).forEach((id, i) => folds[i % k].push(id));
+  return folds;
+}
+
+/**
+ * crossValidate — HONEST held-out validation via stratified k-fold CV. For each
+ * fold, the model is trained on the OTHER folds' labels (the held-out fold's
+ * labels are removed, not just unused) and the held-out records are scored. The
+ * pooled held-out (score,label) pairs are then run through computeValidation, so
+ * the metrics are out-of-sample — unlike the optimistic in-sample snapshot.
+ *
+ * Reuses the full trainAndScore pipeline per fold, so cold-start fallback and the
+ * hybrid score are exactly what production uses.
+ *
+ * @param {object} args — same as trainAndScore, plus { k?:number }
+ * @returns {{ heldOut:true, k:number, ...metrics }|{ insufficient:true, reason:string }}
+ */
+export function crossValidate(args = {}) {
+  const cfg = resolveConfig(args.config);
+  const records = Array.isArray(args.records) ? args.records : [];
+  const labelByRecordId = args.labelByRecordId || {};
+  const recIds = new Set(records.map(r => r.id));
+
+  const labeled = Object.keys(labelByRecordId).filter(id =>
+    recIds.has(id) && (labelByRecordId[id] === 'include' || labelByRecordId[id] === 'exclude'));
+  const labelOf = (id) => (labelByRecordId[id] === 'include' ? 1 : 0);
+  const nPos = labeled.filter(id => labelOf(id) === 1).length;
+  const nNeg = labeled.length - nPos;
+
+  let k = Math.max(2, Math.min(args.k || 5, nPos, nNeg));
+  // Need every TRAINING split to still clear the supervised thresholds, else CV
+  // would silently measure cold-start. Require a comfortable margin.
+  const minTrainPos = cfg.activeLearning.minPositivesToTrain;
+  const minTrainNeg = cfg.activeLearning.minNegativesToTrain;
+  if (labeled.length < cfg.activeLearning.minLabelsToTrain + k ||
+      nPos - Math.ceil(nPos / k) < minTrainPos ||
+      nNeg - Math.ceil(nNeg / k) < minTrainNeg) {
+    return { insufficient: true, reason: `Need more labels for ${k}-fold cross-validation (have ${nPos} includes / ${nNeg} excludes).` };
+  }
+
+  const folds = stratifiedFolds(labeled, labelOf, k, cfg.classifier.seed);
+  const heldScores = [];
+  const heldLabels = [];
+  for (let f = 0; f < k; f++) {
+    const heldSet = new Set(folds[f]);
+    const trainLabels = {};
+    for (const id of Object.keys(labelByRecordId)) if (!heldSet.has(id)) trainLabels[id] = labelByRecordId[id];
+    const res = trainAndScore({ ...args, labelByRecordId: trainLabels });
+    const byId = new Map(res.scores.map(s => [s.recordId, s]));
+    for (const id of folds[f]) {
+      const sc = byId.get(id);
+      if (sc) { heldScores.push(sc.score); heldLabels.push(labelOf(id)); }
+    }
+  }
+
+  return { heldOut: true, k, ...computeValidation(heldScores, heldLabels, { threshold: cfg.hybrid.includeThreshold ?? 0.5 }) };
 }

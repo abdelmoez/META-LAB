@@ -13,10 +13,20 @@
  * ONLY records with a settled human decision.
  */
 
-/** Pairs sorted by score descending; ties broken to be pessimistic-stable. */
+/**
+ * Labels sorted by score descending, with ties broken PESSIMISTICALLY: within an
+ * equal-score block, excludes (0) are ranked ABOVE includes (1), then input index.
+ * For a recall-oriented screening tool this reports the worst case within ties —
+ * a conservative lower bound for WSS/recall@k/stageMetrics — instead of letting
+ * the (arbitrary) input order optimistically inflate the work-saved estimate.
+ * (rocAuc is unaffected: it uses its own average-rank tie handling.)
+ */
 function rankedLabels(scores, labels) {
   const idx = scores.map((s, i) => i);
-  idx.sort((a, b) => (scores[b] - scores[a]) || (a - b));
+  idx.sort((a, b) =>
+    (scores[b] - scores[a]) ||
+    ((labels[a] ? 1 : 0) - (labels[b] ? 1 : 0)) ||
+    (a - b));
   return idx.map(i => labels[i] ? 1 : 0);
 }
 

@@ -15,27 +15,33 @@ export function useScreeningAi(pid, stage = 'title_abstract') {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
   const explCache = useRef(new Map());
+  // Guard against setState after the screening tab unmounts mid-request (a slow
+  // scoring run resolving after navigate-away). React 18 silently drops these,
+  // but the guard keeps it explicit and avoids wasted renders.
+  const mounted = useRef(true);
+  useEffect(() => () => { mounted.current = false; }, []);
 
   const loadStatus = useCallback(async () => {
     try {
       const s = await aiApi.status(pid, stage);
-      setStatus(s);
-      setEnabled(!!s.enabled);
+      if (mounted.current) { setStatus(s); setEnabled(!!s.enabled); }
       return s;
     } catch (e) {
       // 404 → feature flag off (silent). Other errors → disabled too, but note.
-      setEnabled(false);
-      if (e.status && e.status !== 404) setError(e.message || 'AI unavailable');
+      if (mounted.current) {
+        setEnabled(false);
+        if (e.status && e.status !== 404) setError(e.message || 'AI unavailable');
+      }
       return null;
     } finally {
-      setReady(true);
+      if (mounted.current) setReady(true);
     }
   }, [pid, stage]);
 
   const loadScores = useCallback(async () => {
     try {
       const s = await aiApi.scores(pid, stage);
-      setScores(s.scores || {});
+      if (mounted.current) setScores(s.scores || {});
       return s;
     } catch { return null; }
   }, [pid, stage]);
@@ -57,10 +63,10 @@ export function useScreeningAi(pid, stage = 'title_abstract') {
       await Promise.all([loadStatus(), loadScores()]);
       return out;
     } catch (e) {
-      setError(e.message || 'Scoring failed');
+      if (mounted.current) setError(e.message || 'Scoring failed');
       throw e;
     } finally {
-      setRunning(false);
+      if (mounted.current) setRunning(false);
     }
   }, [pid, stage, loadStatus, loadScores]);
 

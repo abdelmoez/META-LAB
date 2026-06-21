@@ -237,8 +237,10 @@ export function AiStatusPanel({ ai }) {
   const s = ai.status;
 
   useEffect(() => {
-    if (s && s.canConfigure) ai.getValidation().then(setVal);
-  }, [s?.latestRun?.id]); // eslint-disable-line
+    let live = true;
+    if (s && s.canConfigure) ai.getValidation().then(v => { if (live && v) setVal(v); });
+    return () => { live = false; };
+  }, [s?.latestRun?.id, s?.canConfigure]); // eslint-disable-line
 
   if (!ai.ready) return null;
   if (!ai.enabled) return null;
@@ -275,18 +277,26 @@ export function AiStatusPanel({ ai }) {
         </div>
       )}
 
-      {run && run.mode === 'supervised' && (
-        <div>
-          <div style={{ fontSize: 10.5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>Validation (in-sample)</div>
-          {row('AUC', num(m.auc))}
-          {row('Sensitivity', m.sensitivity != null ? pct(m.sensitivity) : '—')}
-          {row('Specificity', m.specificity != null ? pct(m.specificity) : '—')}
-          {row('WSS@95', m.wss95 != null ? num(m.wss95) : '—', C.teal)}
-          {row('Recall@10', m.recallAt10 != null ? pct(m.recallAt10) : '—')}
-          {m.sampleWarning?.warn && <div style={{ fontSize: 11, color: C.gold, marginTop: 4, lineHeight: 1.4 }}>{m.sampleWarning.reason}</div>}
-          <div style={{ fontSize: 10.5, color: C.muted, marginTop: 4, lineHeight: 1.4 }}>Apparent (in-sample) performance vs human decisions. See docs for held-out validation.</div>
-        </div>
-      )}
+      {run && run.mode === 'supervised' && (() => {
+        const cv = m.crossVal && m.crossVal.heldOut ? m.crossVal : null;
+        const v = cv || m;                       // prefer honest held-out metrics
+        const label = cv ? `Validation (held-out ${cv.k}-fold CV)` : 'Validation (in-sample)';
+        return (
+          <div>
+            <div style={{ fontSize: 10.5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>{label}</div>
+            {row('AUC', num(v.auc))}
+            {row('Sensitivity', v.sensitivity != null ? pct(v.sensitivity) : '—')}
+            {row('Specificity', v.specificity != null ? pct(v.specificity) : '—')}
+            {row('WSS@95', v.wss95 != null ? num(v.wss95) : '—', C.teal)}
+            {row('Recall@10', v.recallAt10 != null ? pct(v.recallAt10) : '—')}
+            {v.sampleWarning?.warn && <div style={{ fontSize: 11, color: C.gold, marginTop: 4, lineHeight: 1.4 }}>{v.sampleWarning.reason}</div>}
+            {cv && m.crossVal?.insufficient && <div style={{ fontSize: 11, color: C.gold, marginTop: 4 }}>{m.crossVal.reason}</div>}
+            <div style={{ fontSize: 10.5, color: C.muted, marginTop: 4, lineHeight: 1.4 }}>
+              {cv ? `Out-of-sample ${cv.k}-fold cross-validation vs human decisions.` : 'Apparent (in-sample) performance vs human decisions. More labels unlock held-out cross-validation.'}
+            </div>
+          </div>
+        );
+      })()}
 
       {s?.canConfigure && <AiPolicyControls ai={ai} />}
 

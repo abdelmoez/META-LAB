@@ -16,7 +16,7 @@ export { createEmbeddingProvider, hashingEmbed, cosineDense } from './embeddings
 export { hybridScore } from './hybrid.js';
 export { uncertainty, confidence, predictionLabel, rankItems, scoreBand, QUEUE_MODES } from './ranking.js';
 export { buildExplanation, termContributions } from './explain.js';
-export { trainAndScore, decisionToLabel, summarizeLabels } from './activeLearning.js';
+export { trainAndScore, crossValidate, decisionToLabel, summarizeLabels } from './activeLearning.js';
 export {
   rocAuc, confusionAt, metricsFromConfusion, recallAtK,
   wssAtRecall, stageMetrics, smallSampleWarning, computeValidation,
