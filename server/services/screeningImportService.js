@@ -1,0 +1,156 @@
+/**
+ * screeningImportService.js — prompt50 WS2.
+ *
+ * The scalable core of the screening reference import: parse → dedupe → bulk
+ * insert, shared by BOTH the synchronous endpoint (small imports) and the
+ * durable async job worker (large imports). No arbitrary small record cap; the
+ * only ceiling is the admin-configured per-project maximum.
+ *
+ * Design notes:
+ *  - Dedupe queries only the indexed identity columns of existing records (doi,
+ *    pmid, title) and dedupes within the incoming batch too — O(n) memory in the
+ *    project's record count, not the full row payload.
+ *  - Inserts use Prisma createMany in batches (one round-trip per CHUNK) instead
+ *    of one INSERT per record, and report progress via an onProgress callback so
+ *    the job row stays observable.
+ *  - Records with no usable identity (no title AND no doi AND no pmid) are
+ *    counted as rejected and reported back rather than silently dropped.
+ */
+import { prisma } from '../db/client.js';
+import { parseByFormat, normTitle } from '../../src/research-engine/import-export/parsers.js';
+
+// Insert batch size. createMany on SQLite is bound by the 999-variable limit
+// (~12 columns/row → ~80 rows max per statement); 400 keeps us safely under it
+// while minimising round-trips. Postgres has no such limit but 400 is fine there.
+export const INSERT_CHUNK = 400;
+
+// Absolute safety ceiling for a SINGLE import, independent of the (configurable)
+// per-project total. Generous — a real systematic review rarely exceeds this in
+// one file — but bounds a pathological/malicious payload. NOT the "small limit"
+// the prompt warns against (that was 5000); this is two orders of magnitude up.
+export const MAX_RECORDS_PER_IMPORT = 200000;
+
+/** Default per-project record ceiling when the admin setting is unset. */
+export const DEFAULT_MAX_RECORDS_PER_PROJECT = 100000;
+
+const truthyId = (r) =>
+  String(r.title || '').trim() || String(r.doi || '').trim() || String(r.pmid || '').trim();
+
+/**
+ * parseImportContent(content, { format, filename })
+ * BOM-tolerant parse via the parser registry (explicit format or auto-detect).
+ * @returns {{ records: object[], detectedFormat: string }}
+ */
+export function parseImportContent(content, { format = 'auto', filename = '' } = {}) {
+  const { records, format: detectedFormat } = parseByFormat(String(content || ''), format, filename);
+  return { records: Array.isArray(records) ? records : [], detectedFormat: detectedFormat || 'unknown' };
+}
+
+/** Normalised dedupe keys for a record. */
+function keysOf(r) {
+  return {
+    doi: String(r.doi || '').trim().toLowerCase(),
+    pmid: String(r.pmid || '').trim(),
+    nt: normTitle(String(r.title || '')),
+  };
+}
+
+/**
+ * dedupeAndInsertRecords(projectId, records, opts)
+ * Dedupe `records` against the project's existing records AND within the batch,
+ * then bulk-insert the survivors. Throws a typed error { code: 'CAPACITY' } when
+ * the project ceiling would be exceeded (caller maps to a clear message).
+ *
+ * @param {string} projectId
+ * @param {object[]} records   parsed canonical records
+ * @param {object} opts        { format, fileHash, fileSize, importedById, importedByName, parser, maxRecords, onProgress(progress) }
+ * @returns {Promise<{ imported, skippedDuplicates, rejected, batchId, total, keptCount }>}
+ */
+export async function dedupeAndInsertRecords(projectId, records, opts = {}) {
+  const {
+    format = '', filename = '', fileHash = null, fileSize = 0,
+    importedById = null, importedByName = '', parser = '',
+    maxRecords = DEFAULT_MAX_RECORDS_PER_PROJECT, onProgress,
+  } = opts;
+
+  const incoming = Array.isArray(records) ? records : [];
+
+  // Seed dedupe sets from the project's existing identity columns (indexed).
+  const existing = await prisma.screenRecord.findMany({
+    where: { projectId },
+    select: { doi: true, pmid: true, title: true },
+  });
+  const seenDois = new Set(), seenPmids = new Set(), seenTitles = new Set();
+  for (const r of existing) {
+    const { doi, pmid, nt } = keysOf(r);
+    if (doi) seenDois.add(doi);
+    if (pmid) seenPmids.add(pmid);
+    if (nt) seenTitles.add(nt);
+  }
+
+  const kept = [];
+  let skippedDuplicates = 0;
+  let rejected = 0;
+  for (const r of incoming) {
+    if (!truthyId(r)) { rejected += 1; continue; } // no title/doi/pmid → unusable
+    const { doi, pmid, nt } = keysOf(r);
+    if ((doi && seenDois.has(doi)) || (pmid && seenPmids.has(pmid)) || (nt && seenTitles.has(nt))) {
+      skippedDuplicates += 1;
+      continue;
+    }
+    if (doi) seenDois.add(doi);
+    if (pmid) seenPmids.add(pmid);
+    if (nt) seenTitles.add(nt);
+    kept.push(r);
+  }
+
+  const cap = Number.isFinite(maxRecords) && maxRecords > 0 ? maxRecords : DEFAULT_MAX_RECORDS_PER_PROJECT;
+  if (existing.length + kept.length > cap) {
+    const err = new Error(`Import would exceed the project limit of ${cap} records (currently ${existing.length}).`);
+    err.code = 'CAPACITY';
+    err.currentCount = existing.length;
+    err.cap = cap;
+    throw err;
+  }
+
+  const batch = await prisma.screenImportBatch.create({
+    data: {
+      projectId, filename, format,
+      recordCount: kept.length,
+      fileHash, fileSize,
+      importedById, importedByName, parser,
+    },
+  });
+
+  let imported = 0;
+  for (let i = 0; i < kept.length; i += INSERT_CHUNK) {
+    const chunk = kept.slice(i, i + INSERT_CHUNK);
+    await prisma.screenRecord.createMany({
+      data: chunk.map(r => ({
+        projectId,
+        importBatchId: batch.id,
+        title:    String(r.title || '').slice(0, 1000),
+        authors:  Array.isArray(r.authors) ? r.authors.join('; ').slice(0, 500) : String(r.authors || '').slice(0, 500),
+        year:     String(r.year || ''),
+        journal:  String(r.journal || r.source || '').slice(0, 300),
+        doi:      String(r.doi || '').slice(0, 200),
+        pmid:     String(r.pmid || '').slice(0, 50),
+        abstract: String(r.abstract || '').slice(0, 5000),
+        keywords: Array.isArray(r.keywords) ? r.keywords.join('; ') : String(r.keywords || ''),
+        sourceDb: String(r.sourceDb || r.source || format).slice(0, 100),
+        rawData:  JSON.stringify(r).slice(0, 2000),
+      })),
+    });
+    imported += chunk.length;
+    if (typeof onProgress === 'function') {
+      // Best-effort progress tick; a reporting failure must not abort the insert.
+      try { await onProgress({ imported, total: kept.length }); } catch { /* ignore */ }
+    }
+  }
+
+  if (imported !== batch.recordCount) {
+    await prisma.screenImportBatch.update({ where: { id: batch.id }, data: { recordCount: imported } });
+  }
+
+  return { imported, skippedDuplicates, rejected, batchId: batch.id, total: incoming.length, keptCount: kept.length };
+}

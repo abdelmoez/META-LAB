@@ -6,6 +6,11 @@ import { createHash } from 'crypto';
 import { detectDuplicatesInProject, recordDuplicateLabels, getDuplicateEvaluation } from '../services/screeningDuplicateService.js';
 import { syncConflicts } from '../services/screeningConflictService.js';
 import { touchProjectActivity } from '../store.js';
+import {
+  parseImportContent, dedupeAndInsertRecords,
+  MAX_RECORDS_PER_IMPORT, DEFAULT_MAX_RECORDS_PER_PROJECT,
+} from '../services/screeningImportService.js';
+import { kickImportWorker } from '../services/screeningImportWorker.js';
 import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../screening/access.js';
 import { rankItems } from '../../src/research-engine/screening/ai/ranking.js';
 import { aiFlagEnabled } from '../services/screeningAiService.js';
@@ -958,112 +963,144 @@ export async function importRecords(req, res) {
       });
     }
 
-    // Parse references using existing engine parsers
-    let records = [];
-    let parser = '';
-    try {
-      const { detectAndParse } = await import('../../src/research-engine/import-export/parsers.js');
-      const parsed = detectAndParse(content, format);
-      records = parsed.records || parsed || [];
-      parser = parsed.format || 'engine';
-    } catch (parseErr) {
-      // Fallback: try basic RIS split
-      records = fallbackParseRIS(content);
-      parser = 'fallback-ris';
-    }
-
+    // Parse via the modular registry (BOM-tolerant; explicit format or
+    // content/extension auto-detect). prompt50 WS2 — pass the real filename so a
+    // .txt/.csv/.nbib extension hints detection; content markers still win.
+    const { records, detectedFormat } = parseImportContent(content, { format, filename });
     if (!records.length) return res.status(400).json({ error: 'No records found in the provided content' });
-    if (records.length > 5000) return res.status(400).json({ error: 'Import limit: 5000 records per batch' });
-
-    // Task 19: record-level dedupe is ALWAYS applied — even with force:true —
-    // by exact DOI, exact PMID, and normalized title against the project's
-    // existing records (and within the incoming batch itself).
-    const existing = await prisma.screenRecord.findMany({
-      where: { projectId: p.id },
-      select: { doi: true, pmid: true, title: true },
-    });
-    const seenDois = new Set(), seenPmids = new Set(), seenTitles = new Set();
-    const keysOf = r => ({
-      doi: String(r.doi || '').trim().toLowerCase(),
-      pmid: String(r.pmid || '').trim(),
-      nt: normalizeTitle(String(r.title || '')),
-    });
-    for (const r of existing) {
-      const { doi, pmid, nt } = keysOf(r);
-      if (doi) seenDois.add(doi);
-      if (pmid) seenPmids.add(pmid);
-      if (nt) seenTitles.add(nt);
+    // prompt50 WS2 — the old 5000-per-batch cap is GONE. The only ceilings are a
+    // generous absolute safety bound and the admin-configurable per-project total.
+    if (records.length > MAX_RECORDS_PER_IMPORT) {
+      return res.status(413).json({ error: `This file holds ${records.length} records, above the ${MAX_RECORDS_PER_IMPORT.toLocaleString()} single-import safety limit. Split it into smaller files or use the async import.` });
     }
-    const kept = [];
-    let skippedDuplicates = 0;
-    for (const r of records) {
-      const { doi, pmid, nt } = keysOf(r);
-      if ((doi && seenDois.has(doi)) || (pmid && seenPmids.has(pmid)) || (nt && seenTitles.has(nt))) {
-        skippedDuplicates++;
-        continue;
-      }
-      if (doi) seenDois.add(doi);
-      if (pmid) seenPmids.add(pmid);
-      if (nt) seenTitles.add(nt);
-      kept.push(r);
-    }
+    const maxRecords = Number(settings.maxRecordsPerProject) > 0 ? Number(settings.maxRecordsPerProject) : DEFAULT_MAX_RECORDS_PER_PROJECT;
 
-    const maxRecords = settings.maxRecordsPerProject || 10000;
-    const existingCount = existing.length;
-    if (existingCount + kept.length > maxRecords) {
-      return res.status(400).json({ error: `Import would exceed the project limit of ${maxRecords} records (currently ${existingCount})` });
-    }
-
-    // Create import batch (carries the Task 19 fingerprint + provenance shown
-    // in the "already imported on DATE by USER" warning).
-    const batch = await prisma.screenImportBatch.create({
-      data: {
-        projectId: p.id,
-        filename,
-        format,
-        recordCount: kept.length,
-        fileHash,
-        fileSize: Buffer.byteLength(content, 'utf8'),
-        importedById: req.user.id,
-        importedByName: access.member?.name || req.user.email || '',
-        parser,
-      },
-    });
-
-    // Create records in chunks to avoid SQLite limits
-    const CHUNK = 100;
-    let imported = 0;
-    for (let i = 0; i < kept.length; i += CHUNK) {
-      const chunk = kept.slice(i, i + CHUNK);
-      await prisma.screenRecord.createMany({
-        data: chunk.map(r => ({
-          projectId:    p.id,
-          importBatchId: batch.id,
-          title:        String(r.title || '').slice(0, 1000),
-          authors:      Array.isArray(r.authors) ? r.authors.join('; ').slice(0, 500) : String(r.authors || '').slice(0, 500),
-          year:         String(r.year || ''),
-          journal:      String(r.journal || r.source || '').slice(0, 300),
-          doi:          String(r.doi || '').slice(0, 200),
-          pmid:         String(r.pmid || '').slice(0, 50),
-          abstract:     String(r.abstract || '').slice(0, 5000),
-          keywords:     Array.isArray(r.keywords) ? r.keywords.join('; ') : String(r.keywords || ''),
-          sourceDb:     String(r.sourceDb || r.source || format).slice(0, 100),
-          rawData:      JSON.stringify(r).slice(0, 2000),
-        })),
+    let result;
+    try {
+      result = await dedupeAndInsertRecords(p.id, records, {
+        format: detectedFormat, filename,
+        fileHash, fileSize: Buffer.byteLength(content, 'utf8'),
+        importedById: req.user.id, importedByName: access.member?.name || req.user.email || '',
+        parser: detectedFormat, maxRecords,
       });
-      imported += chunk.length;
+    } catch (e) {
+      if (e && e.code === 'CAPACITY') return res.status(400).json({ error: e.message });
+      throw e;
     }
-
-    // Update batch count
-    await prisma.screenImportBatch.update({ where: { id: batch.id }, data: { recordCount: imported } });
 
     // prompt50 WS5 — an import is meaningful activity on the linked META·LAB project.
-    if (imported > 0) void touchProjectActivity(p.linkedMetaLabProjectId);
+    if (result.imported > 0) await touchProjectActivity(p.linkedMetaLabProjectId);
 
-    res.json({ imported, skippedDuplicates, total: records.length, batchId: batch.id });
+    res.json({
+      imported: result.imported,
+      skippedDuplicates: result.skippedDuplicates,
+      rejected: result.rejected,
+      total: result.total,
+      batchId: result.batchId,
+      format: detectedFormat,
+    });
   } catch (err) {
     console.error('[screening] importRecords:', err.message);
     res.status(500).json({ error: 'Import failed: ' + err.message });
+  }
+}
+
+/**
+ * POST /projects/:pid/import/start — prompt50 WS2.
+ * Create a DURABLE import job and return immediately (202 { jobId }). The
+ * in-process worker parses + dedupes + bulk-inserts off the request thread, so
+ * the browser need not keep the dialog open and a large file never blocks/times
+ * out the request. Idempotent by (projectId, fileHash): an in-flight job for the
+ * same file is reused; a completed one returns 409 duplicate_import unless force.
+ */
+export async function startImport(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    const canImport = access.isOwner || (access.active && (access.isLeader || access.perms.canImportRecords));
+    if (!canImport) return res.status(403).json({ error: 'You do not have permission to import records in this project' });
+    const p = access.project;
+
+    const settings = await getMetaSiftSettings();
+    if (!settings.allowImport) return res.status(403).json({ error: 'Import is currently disabled by the administrator' });
+
+    const { format = 'auto', content = '', filename = 'import', force } = req.body || {};
+    if (!String(content).trim()) return res.status(400).json({ error: 'content is required' });
+    const fileSize = Buffer.byteLength(String(content), 'utf8');
+    const fileHash = createHash('sha256').update(String(content).replace(/\r\n/g, '\n'), 'utf8').digest('hex');
+
+    // Idempotency / duplicate-file guard (mirrors the sync endpoint's Task 19).
+    if (force !== true) {
+      const priorJob = await prisma.screenImportJob.findFirst({
+        where: { projectId: p.id, fileHash, status: { not: 'failed' } },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (priorJob && (priorJob.status === 'queued' || priorJob.status === 'processing')) {
+        // Same file already being imported → return the in-flight job (no double insert).
+        return res.status(202).json({ jobId: priorJob.id, status: priorJob.status, alreadyRunning: true });
+      }
+      const prior = priorJob || await prisma.screenImportBatch.findFirst({
+        where: { projectId: p.id, fileHash }, orderBy: { createdAt: 'desc' },
+      });
+      if (prior) {
+        return res.status(409).json({
+          error: 'duplicate_import',
+          batch: {
+            filename: prior.filename,
+            importedAt: priorJob ? (priorJob.completedAt || priorJob.createdAt) : prior.createdAt,
+            importedByName: priorJob ? priorJob.createdByName : (prior.importedByName || ''),
+            recordCount: priorJob ? priorJob.importedRecords : prior.recordCount,
+          },
+        });
+      }
+    }
+
+    const job = await prisma.screenImportJob.create({
+      data: {
+        projectId: p.id,
+        createdById: req.user.id,
+        createdByName: access.member?.name || req.user.email || '',
+        status: 'queued', stage: 'queued',
+        filename: String(filename).slice(0, 300),
+        format: String(format).slice(0, 40),
+        fileHash, fileSize,
+        content: String(content),
+        force: force === true,
+      },
+    });
+    kickImportWorker();
+    return res.status(202).json({ jobId: job.id, status: 'queued' });
+  } catch (err) {
+    console.error('[screening] startImport:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/** GET /projects/:pid/import/jobs/:jobId — poll import progress/result (no raw content). */
+export async function getImportJob(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    const job = await prisma.screenImportJob.findFirst({
+      where: { id: req.params.jobId, projectId: access.project.id },
+    });
+    if (!job) return res.status(404).json({ error: 'Import job not found' });
+    const done = job.status === 'completed' || job.status === 'completed_with_warnings';
+    res.json({
+      id: job.id, status: job.status, stage: job.stage,
+      filename: job.filename, format: job.format, detectedFormat: job.detectedFormat,
+      totalRecords: job.totalRecords, processedRecords: job.processedRecords,
+      importedRecords: job.importedRecords, duplicateRecords: job.duplicateRecords,
+      rejectedRecords: job.rejectedRecords, warningCount: job.warningCount,
+      error: job.error, batchId: job.batchId,
+      createdAt: job.createdAt, startedAt: job.startedAt, completedAt: job.completedAt,
+      progress: job.totalRecords > 0
+        ? Math.min(100, Math.round((job.processedRecords / job.totalRecords) * 100))
+        : (done ? 100 : 0),
+    });
+  } catch (err) {
+    console.error('[screening] getImportJob:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
   }
 }
 

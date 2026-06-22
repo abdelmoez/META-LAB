@@ -46,6 +46,7 @@ import { backfillSharedMessageReadState } from './controllers/adminController.js
 import { seedOnboardingQuestions } from './controllers/onboardingController.js';
 import { backfillUserNumbers } from './services/userNumber.js';
 import { backfillProjectActivity } from './store.js';
+import { startImportWorker } from './services/screeningImportWorker.js';
 import { seedAdmins } from './auth/seedAdmins.js';
 import { getVersion } from './version.js';
 import { resolveCorsAllowlist, corsOriginDelegate } from './config/cors.js';
@@ -159,7 +160,14 @@ const waitlistLimiter = rateLimit({
 const CORS_ALLOWLIST = resolveCorsAllowlist();
 console.log(`[cors] allowlist: ${CORS_ALLOWLIST.join(', ')}`);
 app.use(cors({ origin: corsOriginDelegate(), credentials: true }));
-app.use(express.json({ limit: '10mb' }));
+// prompt50 WS2 — screening reference imports may carry tens of thousands of
+// citations in one JSON payload, so the import endpoints get a much larger body
+// budget than the 10MB default that protects every other route from oversized
+// bodies. Matched on the path suffix (/import and /import/start).
+const jsonStandard    = express.json({ limit: '10mb' });
+const jsonLargeImport = express.json({ limit: '64mb' });
+app.use((req, res, next) =>
+  (/\/import(\/start)?$/.test(req.path) ? jsonLargeImport : jsonStandard)(req, res, next));
 app.use(cookieParser());
 app.use(requestLogger);
 
@@ -322,6 +330,9 @@ const server = app.listen(PORT, () => {
   backfillProjectActivity()
     .then(n => { if (n) console.log(`[seed] backfilled lastActivityAt on ${n} project(s)`); })
     .catch(err => console.error('[seed] project activity backfill failed:', err.message));
+  // prompt50 WS2 — start the durable screening-import worker. Re-queues any job
+  // a crash left mid-flight, then drains the queue off the request thread.
+  startImportWorker().catch(err => console.error('[import-worker] start failed:', err.message));
 
   // prompt48 — fail-safe waitlist config check. If the betaWaitlist flag is ON but
   // the dedicated DB is not configured, log a CLEAR, REDACTED warning for admins.

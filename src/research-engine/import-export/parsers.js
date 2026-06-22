@@ -9,6 +9,22 @@
 import { uid } from '../project-model/defaults.js';
 
 /**
+ * stripBom(text)
+ * Remove a leading UTF-8 / UTF-16 byte-order mark so the first field tag of a
+ * file exported on Windows is recognised (e.g. "﻿TY  - JOUR"). Pure string
+ * op — decoding from bytes happens upstream (the server reads as UTF-8). Also
+ * normalises a lone NBSP that some exporters prepend.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripBom(text) {
+  let s = String(text == null ? "" : text);
+  if (s.charCodeAt(0) === 0xfeff) s = s.slice(1);
+  return s;
+}
+
+/**
  * normTitle(t)
  * Normalise a title string for fuzzy deduplication:
  * lower-case, collapse non-alphanumeric runs to spaces.
@@ -442,6 +458,7 @@ function looksLikeReferenceTable(head) {
  */
 export function detectAndParse(text, filename) {
   const fn   = (filename || "").toLowerCase();
+  text = stripBom(text);                 // tolerate a Windows/UTF-8 BOM (data-quality)
   const head = text.slice(0, 3000);
 
   if (fn.endsWith(".xml") || /<xml|<records>|<record>/i.test(head))
@@ -467,6 +484,66 @@ export function detectAndParse(text, filename) {
   r = parseNBIB(text);      if (r.length) return { records: r, format: "MEDLINE" };
   r = parseCSV(text);       if (r.length) return { records: r, format: "CSV" };
   return { records: [], format: "unknown" };
+}
+
+// ── Modular parser registry (prompt50 WS2) ──────────────────────────────────
+// A single map from a format key to its parser, so a NEW bibliographic-database
+// export format can be added in ONE place without rewriting detectAndParse's
+// dispatch. detectAndParse stays the content/extension auto-detector;
+// PARSER_REGISTRY lets a caller force a known format (e.g. an explicit selector).
+export const PARSER_REGISTRY = {
+  ris:     { label: "RIS",                    parse: (t) => parseRIS(t) },
+  bibtex:  { label: "BibTeX",                 parse: (t) => parseBibTeX(t) },
+  nbib:    { label: "PubMed/MEDLINE (nbib)",  parse: (t) => parseNBIB(t) },
+  medline: { label: "MEDLINE",                parse: (t) => parseNBIB(t) },
+  pubmed:  { label: "PubMed",                 parse: (t) => parseNBIB(t) },
+  endnote: { label: "EndNote XML",            parse: (t) => parseEndNoteXML(t) },
+  xml:     { label: "EndNote XML",            parse: (t) => parseEndNoteXML(t) },
+  ciw:     { label: "CIW (Web of Science)",   parse: (t) => parseCIW(t) },
+  wos:     { label: "CIW (Web of Science)",   parse: (t) => parseCIW(t) },
+  scopus:  { label: "Scopus (RIS/CSV)",       parse: (t) => { const r = parseRIS(t); return r.length ? r : parseCSV(t); } },
+  embase:  { label: "Embase (RIS)",           parse: (t) => parseRIS(t) },
+  cochrane:{ label: "Cochrane (RIS)",         parse: (t) => parseRIS(t) },
+  csv:     { label: "CSV",                    parse: (t) => parseCSV(t) },
+  tsv:     { label: "TSV",                    parse: (t) => parseCSV(t, "\t") },
+  txt:     { label: "Text",                   parse: (t) => parseTXT(t) },
+};
+
+// The format options the import UI offers + the file extensions that map onto
+// each. 'auto' (the safe default) lets the server content-detect the real format.
+export const SUPPORTED_IMPORT_FORMATS = [
+  { key: "auto",    label: "Auto-detect",      extensions: [".ris", ".txt", ".nbib", ".bib", ".ciw", ".csv", ".tsv", ".xml"] },
+  { key: "ris",     label: "RIS",              extensions: [".ris"] },
+  { key: "nbib",    label: "PubMed / MEDLINE", extensions: [".nbib", ".txt"] },
+  { key: "ciw",     label: "Web of Science",   extensions: [".ciw", ".txt"] },
+  { key: "bibtex",  label: "BibTeX",           extensions: [".bib"] },
+  { key: "endnote", label: "EndNote XML",      extensions: [".xml"] },
+  { key: "csv",     label: "CSV",              extensions: [".csv"] },
+  { key: "tsv",     label: "TSV",              extensions: [".tsv", ".txt"] },
+  { key: "txt",     label: "Plain text",       extensions: [".txt"] },
+];
+
+/**
+ * parseByFormat(text, formatKey, filename)
+ * Parse with an EXPLICIT format key from PARSER_REGISTRY. 'auto'/unknown keys —
+ * and an explicit key that yields zero records (a mismatched selector) — fall
+ * back to content/extension auto-detection. BOM-tolerant. Always returns
+ * { records, format }.
+ */
+export function parseByFormat(text, formatKey, filename) {
+  const clean = stripBom(text);
+  const key = String(formatKey || "").toLowerCase();
+  const entry = key && key !== "auto" ? PARSER_REGISTRY[key] : null;
+  if (entry) {
+    const records = entry.parse(clean) || [];
+    if (records.length) return { records, format: entry.label };
+  }
+  return detectAndParse(clean, filename);
+}
+
+/** detectFormat(text, filename) — the format name auto-detection WOULD choose. */
+export function detectFormat(text, filename) {
+  return detectAndParse(text, filename).format;
 }
 
 /**

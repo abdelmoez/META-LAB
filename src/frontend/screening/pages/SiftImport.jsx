@@ -86,16 +86,19 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
     else navigate(`/sift-beta/projects/${pid}?tab=duplicates`);
   };
 
-  const [format,     setFormat]     = useState('ris');
+  const [format,     setFormat]     = useState('auto');
   const [content,    setContent]    = useState('');
   const [filename,   setFilename]   = useState('');
   const [previews,   setPreviews]   = useState([]);
   const [previewDone,setPreviewDone]= useState(false);
   const [importing,  setImporting]  = useState(false);
-  const [result,     setResult]     = useState(null);  // { imported, skippedDuplicates, total, batchId }
+  const [result,     setResult]     = useState(null);  // { imported, duplicateRecords, rejectedRecords, ... }
   const [error,      setError]      = useState(null);
   const [duplicate,  setDuplicate]  = useState(null);  // 409 duplicate_import → batch info (Task 19)
   const [dragOver,   setDragOver]   = useState(false);
+  // prompt50 WS2 — durable async import progress (staged: validating → parsing →
+  // deduplicating → saving → finalizing → completed). Polled from the job row.
+  const [progress,   setProgress]   = useState(null);  // { status, stage, progress, importedRecords, ... }
 
   const estimated = countEntries(format, content);
 
@@ -114,16 +117,17 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
     setPreviewDone(true);
   }
 
+  // Map a file extension to a format HINT. The server still content-detects, so
+  // an ambiguous extension (.txt) is left on 'auto' rather than mis-forced.
+  const EXT_FORMAT = { ris: 'ris', bib: 'bibtex', nbib: 'nbib', ciw: 'ciw', xml: 'endnote', csv: 'csv', tsv: 'tsv' };
   function handleFileRead(file) {
     if (!file) return;
     setFilename(file.name);
     const ext = file.name.split('.').pop().toLowerCase();
-    if (ext === 'bib') setFormat('bibtex');
-    else if (ext === 'nbib') setFormat('nbib');
-    else setFormat('ris');
+    setFormat(EXT_FORMAT[ext] || 'auto');
     const reader = new FileReader();
     reader.onload = e => handleContentChange(e.target.result || '');
-    reader.readAsText(file);
+    reader.readAsText(file);  // UTF-8 by default; the server strips any BOM
   }
 
   function handleDrop(e) {
@@ -133,24 +137,50 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
     if (file) handleFileRead(file);
   }
 
-  // force=true is the "Import anyway" override after a duplicate-file warning
-  // (Task 19). Record-level DOI/PMID/title dedupe still applies server-side.
+  // prompt50 WS2 — durable async import. We POST the file once, then POLL the job
+  // row for staged progress until it reaches a terminal state. The browser can be
+  // closed mid-import without losing the job (the server worker finishes it).
+  // force=true is the "Import anyway" override after a duplicate-file warning.
   async function handleImport(force = false) {
     if (!content.trim()) return;
     setImporting(true);
     setError(null);
     setResult(null);
     setDuplicate(null);
+    setProgress({ status: 'queued', stage: 'validating', progress: 0 });
     try {
-      const data = await screeningApi.importRecords(pid, {
+      const started = await screeningApi.startImport(pid, {
         format,
         content,
         filename: filename || undefined,
       }, { force });
-      setResult(data);
+      const jobId = started.jobId;
+
+      // Poll until terminal. ~1s cadence; the server is authoritative.
+      let job = null;
+      for (let i = 0; i < 1800; i++) {           // up to ~30 min ceiling
+        job = await screeningApi.getImportJob(pid, jobId);
+        setProgress(job);
+        if (job.status === 'completed' || job.status === 'completed_with_warnings' || job.status === 'failed') break;
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      if (!job) throw new Error('Import did not start. Please try again.');
+      if (job.status === 'failed') {
+        setError(job.error || 'Import failed');
+      } else {
+        // Normalise to the legacy success shape the UI already renders.
+        setResult({
+          imported: job.importedRecords,
+          skippedDuplicates: job.duplicateRecords,
+          rejected: job.rejectedRecords,
+          total: job.totalRecords,
+          batchId: job.batchId,
+          format: job.detectedFormat,
+          withWarnings: job.status === 'completed_with_warnings',
+        });
+      }
     } catch (e) {
-      // 409 duplicate_import — same file fingerprint already imported into this
-      // project. Show the warning banner instead of a generic error.
+      // 409 duplicate_import — same file fingerprint already imported.
       if (e.status === 409 && e.data?.error === 'duplicate_import') {
         setDuplicate(e.data.batch || {});
       } else {
@@ -158,13 +188,29 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
       }
     } finally {
       setImporting(false);
+      setProgress(null);
     }
   }
 
+  // Human label for the current import stage (durable-job progress UI).
+  const STAGE_LABEL = {
+    queued: 'Queued', validating: 'Validating', detecting: 'Detecting format',
+    parsing: 'Parsing records', deduplicating: 'Checking duplicates',
+    saving: 'Saving studies', finalizing: 'Finalizing', done: 'Completed', failed: 'Failed',
+  };
+
+  // prompt50 WS2 — the server auto-detects the real format from content (a .txt
+  // file with RIS/PubMed/WoS markers is parsed correctly), so "Auto-detect" is the
+  // recommended default. Explicit formats remain available for forcing.
   const formatOptions = [
-    { val: 'ris',    label: 'RIS',    ext: '.ris',  desc: 'Standard reference manager format (PubMed, Scopus, Embase, Zotero)' },
-    { val: 'bibtex', label: 'BibTeX', ext: '.bib',  desc: 'LaTeX bibliography format (Mendeley, Zotero, Google Scholar)' },
-    { val: 'nbib',   label: 'NBIB',   ext: '.nbib', desc: 'NCBI/PubMed native format' },
+    { val: 'auto',    label: 'Auto-detect',    ext: 'any',    desc: 'Detect the format from the file content (recommended) — RIS, PubMed, Web of Science, BibTeX, CSV, …' },
+    { val: 'ris',     label: 'RIS',            ext: '.ris',   desc: 'Reference manager format (PubMed, Scopus, Embase, Cochrane, Zotero)' },
+    { val: 'nbib',    label: 'PubMed / MEDLINE',ext: '.nbib', desc: 'NCBI/PubMed tagged export (also valid as .txt)' },
+    { val: 'ciw',     label: 'Web of Science', ext: '.ciw',   desc: 'Clarivate/WoS tagged export (FN/VR header; also .txt)' },
+    { val: 'bibtex',  label: 'BibTeX',         ext: '.bib',   desc: 'LaTeX bibliography (Mendeley, Zotero, Google Scholar)' },
+    { val: 'csv',     label: 'CSV / TSV',      ext: '.csv',   desc: 'Delimited table with a title/doi header row' },
+    { val: 'endnote', label: 'EndNote XML',    ext: '.xml',   desc: 'EndNote XML export' },
+    { val: 'txt',     label: 'Plain text',     ext: '.txt',   desc: 'One title per line, or a delimited table' },
   ];
 
   return (
@@ -245,7 +291,7 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
                 browse
                 <input
                   type="file"
-                  accept=".ris,.bib,.nbib,.txt"
+                  accept=".ris,.bib,.nbib,.txt,.ciw,.csv,.tsv,.xml,.nbi,text/plain"
                   style={{ display: 'none' }}
                   onChange={e => handleFileRead(e.target.files?.[0])}
                 />
@@ -392,6 +438,27 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
           </div>
         )}
 
+        {/* Durable-import progress (prompt50 WS2) — staged, responsive, leaveable */}
+        {importing && progress && (
+          <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '16px 20px', marginBottom: 16 }} role="status" aria-live="polite">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 10 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.txt }}>
+                {STAGE_LABEL[progress.stage] || 'Importing'}…
+              </div>
+              <div style={{ fontSize: 11, fontFamily: MONO, color: C.muted }}>
+                {progress.totalRecords ? `${progress.importedRecords || 0} / ${progress.totalRecords}` : ''}
+              </div>
+            </div>
+            <div role="progressbar" aria-valuenow={progress.progress || 0} aria-valuemin={0} aria-valuemax={100}
+              style={{ height: 8, background: C.bg, borderRadius: 99, overflow: 'hidden', border: `1px solid ${C.brd2}` }}>
+              <div style={{ height: '100%', width: `${Math.max(4, progress.progress || 0)}%`, background: C.acc2, transition: 'width 0.3s ease' }} />
+            </div>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 8 }}>
+              Processing on the server — you can leave this page and the import will finish.
+            </div>
+          </div>
+        )}
+
         {/* Error */}
         {error && (
           <div style={{
@@ -409,7 +476,7 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
             borderRadius: 8, padding: '16px 20px', marginBottom: 16,
           }}>
             <div style={{ fontSize: 14, fontWeight: 700, color: C.grn, marginBottom: 6 }}>
-              Import successful
+              {result.withWarnings ? 'Import completed with warnings' : 'Import successful'}
             </div>
             <div style={{ fontSize: 13, color: C.txt2, marginBottom: 14 }}>
               {result.imported} new records imported
@@ -417,7 +484,11 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
                 // Server reports skippedDuplicates explicitly (Task 19); fall back
                 // to the old total−imported math for older payloads.
                 const skipped = result.skippedDuplicates ?? (result.total > result.imported ? result.total - result.imported : 0);
-                return skipped > 0 ? ` (${skipped} skipped as duplicates)` : '';
+                const parts = [];
+                if (skipped > 0) parts.push(`${skipped} skipped as duplicates`);
+                if (result.rejected > 0) parts.push(`${result.rejected} rejected (no usable title/DOI/PMID)`);
+                if (result.format) parts.push(`detected as ${result.format}`);
+                return parts.length ? ` (${parts.join(' · ')})` : '';
               })()}.
             </div>
             <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>

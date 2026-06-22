@@ -54,6 +54,13 @@ export const screeningApi = {
   // applies). Thrown errors carry .status and .data (the parsed JSON body).
   importRecords: (pid, body, { force = false } = {}) =>
     req('POST', `/projects/${pid}/import`, force ? { ...body, force: true } : body),
+  // prompt50 WS2 — durable async import. startImport returns 202 { jobId } (or
+  // 409 duplicate_import like the sync path); poll getImportJob until the status
+  // is completed / completed_with_warnings / failed. The browser need not stay open.
+  startImport: (pid, body, { force = false } = {}) =>
+    req('POST', `/projects/${pid}/import/start`, force ? { ...body, force: true } : body),
+  getImportJob: (pid, jobId) =>
+    req('GET', `/projects/${pid}/import/jobs/${jobId}`),
   // params: { format: 'csv'|'json'|'ris', filter } — no client-side format
   // validation here; the ExportDialog item declares the valid formats and the
   // server generates the file (prompt9 Task 6 adds 'ris').

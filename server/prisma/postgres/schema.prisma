@@ -482,6 +482,7 @@ model ScreenProject {
   duplicateGroups        ScreenDuplicateGroup[]
   conflicts              ScreenConflict[]
   importBatches          ScreenImportBatch[]
+  importJobs             ScreenImportJob[]
   members                ScreenProjectMember[]
   chatMessages           ScreenChatMessage[]
   auditLogs              ScreenAuditLog[]
@@ -635,6 +636,49 @@ model ScreenImportBatch {
 
   records     ScreenRecord[]
 
+  @@index([projectId, fileHash])
+}
+
+// prompt50 WS2 — durable, observable, retryable screening import job. The source
+// content is persisted here (so the browser need NOT keep the dialog open and the
+// job survives a request end / worker restart); an in-process worker parses,
+// dedupes, and bulk-inserts in batches, writing progress back to this row. The
+// source content is cleared once the job reaches a terminal state to reclaim
+// space. Idempotent by (projectId, fileHash). All additive / defaulted → `prisma
+// db push` stays safe.
+model ScreenImportJob {
+  id               String        @id @default(uuid())
+  projectId        String
+  project          ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdById      String
+  createdByName    String        @default("")
+  // queued | processing | completed | completed_with_warnings | failed
+  status           String        @default("queued")
+  // queued | validating | detecting | parsing | deduplicating | saving | finalizing | done | failed
+  stage            String        @default("queued")
+  filename         String        @default("")
+  format           String        @default("")  // caller's hint (auto = content-detected)
+  detectedFormat   String        @default("")  // what the parser actually used
+  fileHash         String?
+  fileSize         Int           @default(0)
+  content          String        @default("")  // source text; cleared on terminal state
+  force            Boolean       @default(false)
+  totalRecords     Int           @default(0)   // parsed record count
+  processedRecords Int           @default(0)   // deduped + considered so far
+  importedRecords  Int           @default(0)
+  duplicateRecords Int           @default(0)
+  rejectedRecords  Int           @default(0)
+  warningCount     Int           @default(0)
+  errorReport      String        @default("[]") // JSON [{ index, title, reason }] for rejects
+  error            String        @default("")    // fatal error message (status=failed)
+  batchId          String?                        // linked ScreenImportBatch once records are saved
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([projectId, status])
+  @@index([status, createdAt])
   @@index([projectId, fileHash])
 }
 
