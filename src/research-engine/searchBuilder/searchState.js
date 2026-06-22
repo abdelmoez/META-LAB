@@ -173,12 +173,17 @@ export function stableStringify(value) {
   return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
 }
 
-/** The shared, persisted slice of the tab state (everything that rides to the server). */
+/** The shared, persisted slice of the tab state (everything that rides to the server).
+ *  SB3 adds `databases` (selected database ids; [] = use the catalogue defaults) and
+ *  `readyForScreening` (advisory handoff marker). Both are additive + optional, so
+ *  pre-SB3 saved searches load unchanged. */
 export function pickPersisted(state) {
   return {
     concepts: Array.isArray(state && state.concepts) ? state.concepts : [],
     overrides: state && state.overrides && typeof state.overrides === 'object' ? state.overrides : {},
     ignored: Array.isArray(state && state.ignored) ? state.ignored : [],
+    databases: Array.isArray(state && state.databases) ? state.databases.filter((s) => typeof s === 'string') : [],
+    readyForScreening: !!(state && state.readyForScreening),
   };
 }
 
@@ -220,3 +225,71 @@ export function extractActiveConcepts(pico, ignoredList) {
     .map((c) => ({ ...c, terms: c.terms.filter((t) => !ig.has(norm(t.text))) }))
     .filter((c) => c.terms.length);
 }
+
+/* ── SB3: helpers for Tab 1 ("Select Keywords") ──────────────────────────────
+   Selecting a keyword in the question/PICO text means adding it as a search term
+   into the matching canonical PICO concept group; unselecting removes it. These
+   are pure (no id assignment, no I/O — the caller fills ids, mirroring the sync
+   contract) so the click→concept mapping is unit-testable without a DOM. */
+
+/** The canonical PICO concept group for a given key ('P'/'I'/'C'/'O'/'T'), or null. */
+export function findFieldConcept(concepts, fieldKey) {
+  return (Array.isArray(concepts) ? concepts : []).find((c) => conceptFieldKey(c) === fieldKey) || null;
+}
+
+/** True when a term with this (normalized) text already lives in the field group. */
+export function fieldHasTerm(concepts, fieldKey, text) {
+  const c = findFieldConcept(concepts, fieldKey);
+  const n = norm(text);
+  return !!(n && c && (c.terms || []).some((t) => norm(t.text) === n));
+}
+
+/**
+ * Add a manually-selected keyword as a term into the canonical PICO group `fieldKey`.
+ * No-op (returns the same array) if the text is blank or already present. The new
+ * term is id-less and `source:'user_added'` (so a PICO re-sync never strips it); the
+ * caller assigns its id. Pure.
+ */
+export function addManualTermToField(concepts, fieldKey, text, source = 'user_added') {
+  const n = norm(text);
+  const clean = String(text || '').trim();
+  if (!n || !clean) return Array.isArray(concepts) ? concepts : [];
+  const list = Array.isArray(concepts) ? concepts : [];
+  const idx = list.findIndex((c) => conceptFieldKey(c) === fieldKey);
+  const term = { text: clean, normalizedLabel: n, type: 'freetext', field: 'tiab', source };
+  if (idx >= 0) {
+    if ((list[idx].terms || []).some((t) => norm(t.text) === n)) return list; // dedupe
+    return list.map((c, i) => (i === idx ? { ...c, terms: [...(c.terms || []), term] } : c));
+  }
+  // No canonical group for this key (defensive — the five groups normally exist).
+  const def = PICO_FIELD_DEFS.find((d) => d.key === fieldKey);
+  return [...list, { label: def ? def.label : clean, picoField: fieldKey, field: def ? def.label : fieldKey, source: 'pico_auto', op: 'AND', terms: [term] }];
+}
+
+/** Remove every term matching `text` (normalized) from the canonical group `fieldKey`. Pure. */
+export function removeTermFromField(concepts, fieldKey, text) {
+  const n = norm(text);
+  return (Array.isArray(concepts) ? concepts : []).map((c) =>
+    conceptFieldKey(c) === fieldKey ? { ...c, terms: (c.terms || []).filter((t) => norm(t.text) !== n) } : c);
+}
+
+/* ── SB3: helper for Tab 2 ("Organize Concepts") ─────────────────────────────
+   A simple, beginner-readable status for a concept card. Pure + deterministic.
+   Returns one of: 'empty' | 'needs-review' | 'mesh-suggested' | 'ready'. */
+export function conceptStatus(concept) {
+  const terms = (concept && concept.terms) || [];
+  const live = terms.filter((t) => String(t.text || '').trim());
+  if (!live.length) return concept && concept.note ? 'ready' : 'empty'; // Time-Frame group is "ready" when a restriction is set
+  if (live.some((t) => t.type === 'controlled')) return 'ready';        // has a subject heading + free text
+  if (live.some((t) => t.type !== 'controlled' && t.vocab)) return 'mesh-suggested'; // a heading is available but not added
+  if (live.length === 1) return 'needs-review';                         // one term — suggest adding synonyms
+  return 'ready';
+}
+
+/** Human label + intent for each `conceptStatus` value (UI maps to colour). */
+export const CONCEPT_STATUS_LABELS = {
+  empty: 'No terms yet',
+  'needs-review': 'Needs review',
+  'mesh-suggested': 'Subject heading suggested',
+  ready: 'Ready',
+};

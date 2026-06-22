@@ -11,4 +11,7 @@ export { default as SearchBuilderTab } from './SearchBuilderTab.jsx';
 // and the `ignored` legacy→object normalizer used by the granular term restore).
 export { strategyHash, relativeTime, normalizeIgnored, normalizeIgnoredEntry } from './SearchBuilderTab.jsx';
 export { localMeshSuggestions } from '../../research-engine/searchBuilder/meshSuggest.js';
+// SB3 — guided workflow helpers (Tab 1 keyword tokenization + Tab 3 database catalogue).
+export { tokenizeForSelection, suggestedKeywords, isFillerWord } from '../../research-engine/searchBuilder/keywordSelection.js';
+export { DATABASE_CATALOG, databaseGroups, defaultSelectedDatabases, accessNote } from '../../research-engine/searchBuilder/databases.js';
 export { searchBuilderApi, loadSearch, saveSearch, searchEngineFlagEnabled } from './searchBuilderApi.js';

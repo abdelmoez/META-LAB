@@ -2,7 +2,10 @@ import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { C, FONT, MONO, alpha } from "../../frontend/theme/tokens.js";  // SearchEngine: adapt to app theme (day/night + brand)
 import { picoToConcepts } from "../../research-engine/searchBuilder/conceptExtraction.js"; // prompt40 Task 3
 import { localMeshSuggestions } from "../../research-engine/searchBuilder/meshSuggest.js"; // prompt42 Task 3
-import { serializeSearchState, pickPersisted, remoteAdoptDecision, syncSearchBuilderFromPico } from "../../research-engine/searchBuilder/searchState.js"; // SE1 + SE2
+import { serializeSearchState, pickPersisted, remoteAdoptDecision, syncSearchBuilderFromPico,
+  findFieldConcept, fieldHasTerm, conceptStatus, CONCEPT_STATUS_LABELS, PICO_FIELD_DEFS } from "../../research-engine/searchBuilder/searchState.js"; // SE1 + SE2 + SB3
+import { tokenizeForSelection } from "../../research-engine/searchBuilder/keywordSelection.js"; // SB3 Tab 1
+import { databaseGroups, defaultSelectedDatabases, getDatabase, ACCESS_TIERS, ACCESS_TOOLTIP } from "../../research-engine/searchBuilder/databases.js"; // SB3 Tab 3
 import { useRealtime } from "../../frontend/hooks/useRealtime.js"; // SE1 Task 5 — live collaborator sync (shared SSE poke channel)
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -663,6 +666,185 @@ function QueryOutput({dbId,concepts,override,setOverride,beginner,liveCount,coun
 
 
 /* ════════════════════════════════════════════════════════════════════════════
+   SB3 — GUIDED WORKFLOW UI (presentational; the engine + state stay in the main
+   component). A light 5-step stepper replaces the old single dense two-column view.
+   ════════════════════════════════════════════════════════════════════════════ */
+const STEPS=[
+  {n:1,key:"keywords",label:"Select Keywords",hint:"Click the important ideas in your question."},
+  {n:2,key:"concepts",label:"Organize Concepts",hint:"Group your keywords; add synonyms & subject headings."},
+  {n:3,key:"databases",label:"Choose Databases",hint:"Pick where to search."},
+  {n:4,key:"strategy",label:"Build Strategy",hint:"See your keywords become a search."},
+  {n:5,key:"check",label:"Check & Export",hint:"Review, then export or send to screening."},
+];
+
+/* Horizontal, clickable step nav. Current step highlighted; done steps get a check. */
+function StepNav({step,setStep}){
+  return(
+    <div style={{display:"flex",alignItems:"stretch",gap:0,marginBottom:14,background:C.card,border:`1px solid ${C.brd}`,borderRadius:12,padding:6,overflowX:"auto"}}>
+      {STEPS.map((s,i)=>{
+        const active=s.n===step, done=s.n<step;
+        return(
+          <button key={s.key} onClick={()=>setStep(s.n)} title={s.hint}
+            style={{flex:"1 1 0",minWidth:128,display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderRadius:8,cursor:"pointer",
+              border:active?`1px solid ${alpha(C.acc,"66")}`:"1px solid transparent",
+              background:active?`${alpha(C.acc,"14")}`:"transparent",fontFamily:SANS,textAlign:"left"}}>
+            <span style={{width:22,height:22,borderRadius:"50%",flexShrink:0,display:"inline-flex",alignItems:"center",justifyContent:"center",
+              fontSize:11,fontWeight:700,background:active?C.acc:done?alpha(C.grn,"22"):C.card2,
+              color:active?C.accText:done?C.grn:C.muted,border:done?`1px solid ${alpha(C.grn,"55")}`:"none"}}>{done?"✓":s.n}</span>
+            <span style={{display:"flex",flexDirection:"column",lineHeight:1.2,minWidth:0}}>
+              <span style={{fontSize:11.5,fontWeight:700,color:active?C.txt:C.txt2,whiteSpace:"nowrap"}}>{s.label}</span>
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+const STATUS_COLOR={empty:C.dim,"needs-review":C.yel,"mesh-suggested":C.acc,ready:C.grn};
+function StatusChip({status}){
+  const label=CONCEPT_STATUS_LABELS[status]||status; const col=STATUS_COLOR[status]||C.muted;
+  return <span title="Concept readiness" style={{fontSize:8.5,fontWeight:700,letterSpacing:.4,color:col,textTransform:"uppercase",background:`${alpha(col,"14")}`,border:`1px solid ${alpha(col,"44")}`,borderRadius:5,padding:"1px 7px"}}>{label}</span>;
+}
+
+/* One PICO field as readable text with click-to-select word/phrase tokens. Filler
+   words are dimmed + non-clickable; the manual box can still force any text in. */
+function KeywordField({fieldKey,label,hint,text,accent,isSelected,onToggle,onAddManual}){
+  const [manual,setManual]=useState("");
+  const tokens=useMemo(()=>tokenizeForSelection(text||""),[text]);
+  const addManual=()=>{ const v=manual.trim(); if(v){ onAddManual(fieldKey,v); setManual(""); } };
+  return(
+    <div style={{background:C.card,border:`1px solid ${C.brd}`,borderLeft:`3px solid ${accent}`,borderRadius:10,padding:"11px 13px",marginBottom:10}}>
+      <div style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:6}}>
+        <span style={{fontSize:12,fontWeight:700,color:C.txt}}>{label}</span>
+        <span style={{fontSize:10.5,color:C.muted}}>{hint}</span>
+      </div>
+      {String(text||"").trim()?(
+        <div style={{lineHeight:2.1}}>
+          {tokens.map((tok,i)=>{
+            if(tok.kind==="filler") return <span key={i} style={{color:C.dim,fontSize:12.5,margin:"0 1px"}}>{tok.text} </span>;
+            const sel=isSelected(tok.text);
+            return(
+              <span key={i}> <button onClick={()=>onToggle(fieldKey,tok.text)} title={sel?"Click to unselect":"Click to select as a keyword"}
+                style={{cursor:"pointer",fontFamily:SANS,fontSize:12.5,padding:"2px 8px",borderRadius:7,margin:"0 1px",
+                  border:sel?`1px solid ${accent}`:`1px ${tok.suggested?"solid":"dashed"} ${tok.suggested?alpha(accent,"66"):C.brd2}`,
+                  background:sel?`${alpha(accent,"22")}`:tok.suggested?`${alpha(accent,"0c")}`:"transparent",
+                  color:sel?C.txt:C.txt2,fontWeight:sel?600:400}}>
+                {sel?"✓ ":""}{tok.text}{tok.kind==="phrase"&&!sel?<span style={{fontSize:8,opacity:.7,marginLeft:4}}>phrase</span>:null}
+              </button> </span>
+            );
+          })}
+        </div>
+      ):(
+        <div style={{fontSize:11.5,color:C.dim,fontStyle:"italic"}}>Empty — fill this in Protocol → PICO, then your keywords appear here to click.</div>
+      )}
+      <div style={{display:"flex",gap:6,marginTop:9}}>
+        <input value={manual} onChange={e=>setManual(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();addManual();}}}
+          placeholder={`Add a keyword to ${label}…`} style={{...inputStyle,flex:1,fontSize:11.5}}/>
+        <button onClick={addManual} style={{...btn("ghost"),fontSize:11}}>+ Add</button>
+      </div>
+    </div>
+  );
+}
+
+/* Visual concept blocks joined by AND/OR — the beginner's mental model before any
+   Boolean string. Read-only summary used at the top of Build Strategy. */
+function ConceptBlocksBar({concepts}){
+  const blocks=concepts.map(c=>({label:c.label,n:c.terms.filter(t=>(t.text||"").trim()).length,op:c.op||"AND",pico:!!c.picoField})).filter(b=>b.n>0);
+  if(!blocks.length) return <div style={{color:C.dim,fontSize:12,fontStyle:"italic",padding:"6px 0"}}>No concepts with terms yet — add keywords first.</div>;
+  return(
+    <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8}}>
+      {blocks.map((b,i)=>{
+        const color=CONCEPT_COLORS[i%CONCEPT_COLORS.length];
+        return(
+          <span key={i} style={{display:"inline-flex",alignItems:"center",gap:8}}>
+            <span style={{display:"inline-flex",alignItems:"center",gap:7,background:`${alpha(color,"12")}`,border:`1px solid ${alpha(color,"55")}`,borderRadius:9,padding:"6px 11px"}}>
+              <span style={{width:8,height:8,borderRadius:2,background:color}}/>
+              <span style={{fontSize:11.5,fontWeight:700,color:C.txt}}>{b.label}</span>
+              <span style={{fontSize:9.5,color:C.muted,fontFamily:MONO}}>{b.n} term{b.n===1?"":"s"}</span>
+            </span>
+            {i<blocks.length-1&&<span style={{fontSize:10.5,fontWeight:700,fontFamily:MONO,letterSpacing:1,color:b.op==="OR"?C.yel:C.acc}}>{b.op}</span>}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
+const TIER_COLOR={free:"#22c55e",freeFulltext:"#22c55e",freeRegistry:"#22c55e",freeLimited:"#84cc16",subscription:"#f59e0b",mixed:"#eab308"};
+/* Database catalogue with access notes (SB3 Tab 3). `selected` is a Set of ids. */
+function DatabaseCatalogView({selected,onToggle}){
+  return(
+    <div>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,fontSize:11.5,color:C.txt2}}>
+        <span>Pick the databases you plan to search.</span>
+        <Help text={ACCESS_TOOLTIP}/>
+        <span style={{marginLeft:"auto",fontSize:10.5,color:C.muted,fontFamily:MONO}}>{selected.size} selected</span>
+      </div>
+      {databaseGroups().map(({group,databases})=>(
+        <div key={group} style={{marginBottom:12}}>
+          <div style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase",marginBottom:6}}>{group}</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:8}}>
+            {databases.map(db=>{
+              const on=selected.has(db.id); const tcol=TIER_COLOR[db.tier]||C.muted;
+              return(
+                <label key={db.id} style={{display:"flex",alignItems:"flex-start",gap:9,background:on?`${alpha(C.acc,"0e")}`:C.card,border:`1px solid ${on?alpha(C.acc,"55"):C.brd}`,borderRadius:9,padding:"9px 11px",cursor:"pointer"}}>
+                  <input type="checkbox" checked={on} onChange={()=>onToggle(db.id)} style={{marginTop:2}}/>
+                  <span style={{display:"flex",flexDirection:"column",gap:3,minWidth:0}}>
+                    <span style={{display:"flex",alignItems:"center",gap:6}}>
+                      <span style={{fontSize:12,fontWeight:600,color:C.txt}}>{db.label}</span>
+                      {db.nativeSyntax&&<span title="The builder generates this database's exact search format" style={{fontSize:8,fontWeight:700,letterSpacing:.4,color:C.grn,textTransform:"uppercase",border:`1px solid ${alpha(C.grn,"55")}`,borderRadius:4,padding:"0 4px"}}>auto syntax</span>}
+                    </span>
+                    <span style={{fontSize:10.5,color:tcol}}>{ACCESS_TIERS[db.tier]}</span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* Generic (database-agnostic) keyword strategy — used for selected databases that
+   don't have a verified native-syntax renderer. No field tags, no fabricated syntax. */
+function genericStrategyString(concepts){ return renderSearch(concepts,"__generic__").full; }
+
+/* The final query string for one database: the verified native syntax (honouring a
+   user override) for PubMed/Embase/Cochrane, else the generic keyword strategy. */
+function strategyForDb(concepts,overrides,dbId){
+  const db=getDatabase(dbId);
+  if(db&&db.nativeSyntax){ const o=overrides&&overrides[dbId]; return o!=null?o:renderSearch(concepts,dbId).full; }
+  return genericStrategyString(concepts);
+}
+
+/* Plain, copy-able strategy table (concept → terms). */
+function strategyTableText(concepts){
+  const rows=concepts.filter(c=>c.terms.some(t=>(t.text||"").trim()))
+    .map((c,i)=>`${i+1}\t${c.label}\t${c.terms.filter(t=>(t.text||"").trim()).map(t=>t.text).join(" OR ")}`);
+  return ["#\tConcept\tTerms",...rows].join("\n");
+}
+
+/* Beginner-readable health check for Tab 5 (no fabricated numbers). */
+function buildWarnings(concepts,hitState){
+  const w=[];
+  const withTerms=concepts.filter(c=>c.terms.some(t=>(t.text||"").trim()));
+  if(!withTerms.length){ w.push({level:"error",msg:"No search terms yet. Go to Select Keywords and click the important ideas in your question."}); return w; }
+  for(const k of ["P","I","O"]){
+    const def=PICO_FIELD_DEFS.find(d=>d.key===k);
+    const c=concepts.find(x=>x.picoField===k);
+    if(def&&c&&!c.terms.some(t=>(t.text||"").trim())) w.push({level:"warn",msg:`No terms for ${def.label}. Your search may miss this concept.`});
+  }
+  if(hitState&&hitState.status==="updated"&&hitState.hitCount!=null){
+    if(hitState.hitCount===0) w.push({level:"warn",msg:"PubMed returns 0 results — the search may be too narrow, or a term may have a typo."});
+    else if(hitState.hitCount>100000) w.push({level:"warn",msg:`PubMed returns ${fmtCount(hitState.hitCount)} results — quite broad. Consider adding a concept or narrowing terms.`});
+  }
+  if(!w.length) w.push({level:"ok",msg:"Looks good — your search has multiple concepts with terms. Export it below or send it to screening."});
+  return w;
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
    MAIN EXPORT — SearchBuilderTab
    PROPS (all optional except where noted; see INTEGRATION_README.md):
      projectId   string   — INTEGRATION: which project this search belongs to
@@ -676,7 +858,14 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const [concepts,setConcepts]=useState([]);
   const [overrides,setOverrides]=useState({});
   const [activeDB,setActiveDB]=useState("pubmed");
-  const [beginner,setBeginner]=useState(false);
+  const [beginner,setBeginner]=useState(true); // SB3 — beginner mode is the default
+  // SB3 — guided stepper position (1..5) and the selected databases / handoff marker.
+  // selectedDbs [] means "use the catalogue defaults"; it is only written once the
+  // user changes the selection, so existing projects don't trigger a spurious save.
+  const [step,setStep]=useState(1);
+  const [selectedDbs,setSelectedDbs]=useState([]);
+  const [readyForScreening,setReadyForScreening]=useState(false);
+  const [exportMsg,setExportMsg]=useState(""); // transient copy/export feedback
   const [editing,setEditing]=useState(null);
   const [adding,setAdding]=useState(null);
   const [draft,setDraft]=useState("");
@@ -746,6 +935,9 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     const ig=saved&&Array.isArray(saved.ignored)?saved.ignored:[];
     const ov=saved&&saved.overrides&&typeof saved.overrides==="object"?saved.overrides:{};
     setOverrides(ov); setIgnored(ig);
+    // SB3 — selected databases + handoff marker ([] / false when absent in older saves).
+    setSelectedDbs(saved&&Array.isArray(saved.databases)?saved.databases.filter(s=>typeof s==="string"):[]);
+    setReadyForScreening(!!(saved&&saved.readyForScreening));
     // Record what the server actually holds BEFORE syncing, so autosave persists the
     // synced structure once when it differs (legacy/blank) and is a no-op when stable.
     lastSavedRef.current=saved&&saved.concepts?serializeSearchState(saved):"";
@@ -759,19 +951,19 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const saveTimer=useRef(null);
   useEffect(()=>{
     if(!loaded||!saveSearch||!projectId) return;
-    const sig=serializeSearchState({concepts,overrides,ignored});
+    const sig=serializeSearchState({concepts,overrides,ignored,databases:selectedDbs,readyForScreening});
     if(sig===lastSavedRef.current) return; // unchanged vs the server (e.g. just loaded/applied) → no PUT, no ping-pong
     setRemoteUpdatedBy(null); // this user is now editing → drop the "updated by collaborator" attribution
     clearTimeout(saveTimer.current);
     saveTimer.current=setTimeout(async()=>{
       try{
-        const res=await saveSearch(projectId,{concepts,overrides,ignored});
+        const res=await saveSearch(projectId,{concepts,overrides,ignored,databases:selectedDbs,readyForScreening});
         lastSavedRef.current=sig;
         if(res&&typeof res.revision==="number") revisionRef.current=res.revision;
       }catch(e){ console.error("saveSearch failed",e); }
     },800);
     return ()=>clearTimeout(saveTimer.current);
-  },[concepts,overrides,ignored,loaded]); // eslint-disable-line
+  },[concepts,overrides,ignored,selectedDbs,readyForScreening,loaded]); // eslint-disable-line
 
   /* ── SE2: auto-sync the five groups whenever PICO changes — no manual button.
      Updates the editor's UI immediately; collaborators converge via the realtime
@@ -793,6 +985,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     lastSavedRef.current=serializeSearchState(saved); // set BEFORE state writes so autosave sees no diff (no echo PUT)
     if(typeof saved.revision==="number") revisionRef.current=saved.revision;
     setConcepts(persisted.concepts); setOverrides(persisted.overrides); setIgnored(persisted.ignored);
+    setSelectedDbs(persisted.databases); setReadyForScreening(persisted.readyForScreening); // SB3
     setRemoteUpdatedBy(saved.updatedBy&&saved.updatedBy.name?saved.updatedBy.name:"a collaborator");
     pendingRemoteRef.current=null; setRemotePending(false);
   }
@@ -1024,6 +1217,39 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
 
   const stats=searchStats(concepts);
 
+  /* ── SB3: keyword select/deselect (Tab 1) + database selection (Tab 3) ───── */
+  const effectiveDbs=useMemo(()=>selectedDbs.length?selectedDbs:defaultSelectedDatabases(),[selectedDbs]);
+  const toggleDb=(id)=>setSelectedDbs(prev=>{
+    const base=prev.length?prev:defaultSelectedDatabases();
+    return base.includes(id)?base.filter(x=>x!==id):[...base,id];
+  });
+  // Which PICO group a keyword clicked in the Research Question belongs to: the first
+  // PICO field whose text contains it (so question clicks usually land correctly),
+  // else Population as a sensible default. 'Q' is the Research-Question pseudo-field.
+  const fieldKeyForQuestionToken=(text)=>{
+    const n=cnorm(text);
+    for(const k of ["P","I","C","O"]){ if(n&&cnorm(pico?.[k]||"").includes(n)) return k; }
+    return "P";
+  };
+  const resolveKey=(fieldKey,text)=> fieldKey==="Q"?fieldKeyForQuestionToken(text):fieldKey;
+  const addKeyword=(fieldKey,text)=>{
+    const clean=String(text||"").trim(); if(!clean) return;
+    const c=findFieldConcept(conceptsRef.current,fieldKey); if(!c) return;
+    if(c.terms.some(t=>cnorm(t.text)===cnorm(clean))) return; // dedupe / already selected
+    const tid=uid();
+    setConcepts(cs=>cs.map(x=>x.id===c.id?{...x,terms:[...x.terms,{id:tid,text:clean,type:"freetext",field:"tiab",source:"user_added"}]}:x));
+    tryLookup(c.id,tid,clean);
+  };
+  const removeKeyword=(fieldKey,text)=>{
+    const c=findFieldConcept(conceptsRef.current,fieldKey); if(!c) return;
+    const t=c.terms.find(x=>cnorm(x.text)===cnorm(text)); if(!t) return;
+    removeTerm(c.id,t.id); // reuses the auto→ignored bookkeeping
+  };
+  const toggleKeyword=(fieldKey,text)=>{ const k=resolveKey(fieldKey,text); return fieldHasTerm(conceptsRef.current,k,text)?removeKeyword(k,text):addKeyword(k,text); };
+  const isKeywordSelected=(fieldKey,text)=>{ const k=resolveKey(fieldKey,text); return fieldHasTerm(concepts,k,text); };
+  const addManualKeyword=(fieldKey,text)=>addKeyword(fieldKey==="Q"?"P":fieldKey,text);
+  const copyOut=(text,label)=>{ try{navigator.clipboard?.writeText(text);}catch{/* clipboard unavailable */} setExportMsg(label||"Copied"); setTimeout(()=>setExportMsg(""),1800); };
+
   if(!loaded) return <div style={{padding:40,color:C.muted,fontFamily:SANS,background:C.bg,minHeight:"100%"}}>Loading search…</div>;
 
   return(
@@ -1079,28 +1305,68 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
         </div>
       )}
 
-      {/* two-column */}
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:18}}>
-        {/* LEFT */}
+      {/* ── SB3: guided 5-step workflow ─────────────────────────────────────── */}
+      <StepNav step={step} setStep={setStep}/>
+      <div style={{fontSize:11.5,color:C.muted,marginBottom:12}}>{STEPS[step-1].hint}</div>
+
+      {/* ─────────── STEP 1 — Select Keywords ─────────── */}
+      {step===1&&(
         <div>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-            <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Concepts</span>
-            <Help text="A concept is one idea in your question (a disease, a treatment). Under each concept, list the ways authors might phrase that idea. Concepts join with AND (all must appear); terms inside a concept join with OR (any one counts)."/>
-            {concepts.length===0&&pico&&<span style={{fontSize:11,color:C.muted}}>No concepts yet — they seed from your PICO automatically.</span>}
-            {/* prompt42 Task 2 — toggle the granular "Hidden PICO terms" panel. */}
+            <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Click the important ideas in your question</span>
+            <Help text="Click the key words and phrases in your question — PecanRev turns the ones you pick into a search. Grey words (and, with, of…) aren't useful on their own; highlighted words are suggestions. Use the box under each field to add anything that isn't shown."/>
+          </div>
+          {pico?.question&&(
+            <KeywordField fieldKey="Q" label="Research Question" hint="click the key ideas" text={pico.question} accent={C.acc}
+              isSelected={(t)=>isKeywordSelected("Q",t)} onToggle={toggleKeyword} onAddManual={addManualKeyword}/>
+          )}
+          {[["P","Population","who or what is studied?"],["I","Intervention / Exposure","the treatment, exposure, or test"],["C","Comparator / Control","what it is compared against"],["O","Outcomes","what is measured"]].map(([k,label,hint],i)=>(
+            <KeywordField key={k} fieldKey={k} label={label} hint={hint} text={pico?.[k]||""} accent={CONCEPT_COLORS[i%CONCEPT_COLORS.length]}
+              isSelected={(t)=>isKeywordSelected(k,t)} onToggle={toggleKeyword} onAddManual={addManualKeyword}/>
+          ))}
+          {/* Selected-keywords tray — shows each keyword and the PICO field it came from. */}
+          <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:12,marginTop:4}}>
+            <div style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase",marginBottom:8}}>Selected keywords</div>
+            {concepts.filter(c=>c.picoField&&c.picoField!=="T"&&c.terms.some(t=>(t.text||"").trim())).length===0
+              ? <div style={{fontSize:11.5,color:C.dim,fontStyle:"italic"}}>Nothing selected yet — click the highlighted words above.</div>
+              : concepts.filter(c=>c.picoField&&c.picoField!=="T").map(c=>{
+                  const live=c.terms.filter(t=>(t.text||"").trim()); if(!live.length) return null;
+                  return(
+                    <div key={c.id} style={{display:"flex",alignItems:"baseline",gap:8,marginBottom:7,flexWrap:"wrap"}}>
+                      <span style={{fontSize:10,fontWeight:700,color:C.muted,minWidth:150}}>{c.label}</span>
+                      <span style={{display:"flex",flexWrap:"wrap",gap:5}}>
+                        {live.map(t=>(
+                          <span key={t.id} style={{display:"inline-flex",alignItems:"center",gap:5,background:C.surf,border:`1px solid ${C.brd2}`,borderRadius:6,padding:"2px 8px",fontSize:11,color:C.txt2}}>
+                            {t.text}
+                            <button onClick={()=>removeTerm(c.id,t.id)} title="Remove keyword" aria-label={`Remove ${t.text}`} style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:12,padding:0,lineHeight:1}}>×</button>
+                          </span>
+                        ))}
+                      </span>
+                    </div>
+                  );
+                })}
+          </div>
+        </div>
+      )}
+
+      {/* ─────────── STEP 2 — Organize Concepts (existing concept editor) ─────────── */}
+      {step===2&&(
+        <div style={{maxWidth:720}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+            <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Your concepts</span>
+            <Help text="A concept is one idea in your question (a disease, a treatment). Under each concept, list the ways authors might phrase it. Concepts join with AND (all must appear); terms inside a concept join with OR (any one counts)."/>
             {pico&&ignored.length>0&&(
-              <button onClick={()=>setShowHidden(s=>!s)} aria-expanded={showHidden} title="Show terms you removed from the PICO suggestions, grouped by field, to restore them"
-                style={{marginLeft:"auto",background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:10.5,fontFamily:MONO,textDecoration:"underline"}}>{showHidden?"▾":"▸"} Hidden PICO terms ({ignored.length})</button>
+              <button onClick={()=>setShowHidden(s=>!s)} aria-expanded={showHidden} title="Show terms you removed from the suggestions, grouped by field, to restore them"
+                style={{marginLeft:"auto",background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:10.5,fontFamily:MONO,textDecoration:"underline"}}>{showHidden?"▾":"▸"} Hidden terms ({ignored.length})</button>
             )}
           </div>
 
-          {/* prompt42 Task 2 — Hidden PICO terms: per-term ↩ restore, per-field
-              "Restore all from <field>", and restore-all (= legacy Reset suggestions). */}
+          {/* prompt42 Task 2 — Hidden PICO terms (unchanged): per-term restore + per-field + restore-all. */}
           {pico&&ignored.length>0&&showHidden&&(
             <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:12,marginBottom:10}}>
               <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-                <span style={{fontSize:10.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase"}}>Hidden PICO terms</span>
-                <span style={{fontSize:10,color:C.dim}}>removed auto-suggestions — won't return on re-sync until restored</span>
+                <span style={{fontSize:10.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase"}}>Hidden terms</span>
+                <span style={{fontSize:10,color:C.dim}}>removed suggestions — won't return on re-sync until restored</span>
                 <button onClick={resetSuggestions} title={`Restore all ${ignored.length} removed suggestion${ignored.length===1?"":"s"} and re-seed from PICO`}
                   style={{marginLeft:"auto",...btn("ghost"),fontSize:10,padding:"3px 9px"}}>↺ Restore all ({ignored.length})</button>
               </div>
@@ -1135,6 +1401,8 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
                     <span style={{width:9,height:9,borderRadius:3,background:color}}/>
                     <input value={c.label} onChange={e=>updateConcept(c.id,{label:e.target.value})}
                       style={{...inputStyle,fontWeight:600,width:"auto",flex:1,background:"transparent",border:"none",padding:"2px 0",fontSize:13}}/>
+                    {/* SB3 — beginner-readable readiness status. */}
+                    <StatusChip status={conceptStatus(c)}/>
                     {/* SE2 — mark the five PICO-derived groups (vs user-added manual concepts). */}
                     {c.picoField&&(
                       <span title="Auto-generated from your PICO — updates when PICO changes" style={{fontSize:8.5,fontWeight:700,letterSpacing:.4,color:C.acc,textTransform:"uppercase",background:`${alpha(C.acc,"14")}`,border:`1px solid ${alpha(C.acc,"44")}`,borderRadius:5,padding:"1px 6px"}}>PICO</span>
@@ -1172,7 +1440,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
                         onCommitTyped={()=>commitAdd(c.id)}
                         onEscape={()=>{ setAdding(null); setDraft(""); }}
                         onBlur={()=>{ commitAdd(c.id); setAdding(null); }}
-                        placeholder="type a term — MeSH suggestions appear"
+                        placeholder="type a term — suggestions appear"
                         style={{verticalAlign:"top"}}
                         inputStyle={{...inputStyle,width:220,display:"inline-block",fontSize:11,fontFamily:MONO}}/>
                     ):(
@@ -1192,32 +1460,130 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
           <button onClick={addConcept} style={{...btn("ghost"),width:"100%",justifyContent:"center",borderStyle:"dashed",marginTop:4}}>+ Add concept</button>
 
           <div style={{display:"flex",gap:16,marginTop:14,fontSize:10.5,color:C.muted}}>
-            <span style={{display:"inline-flex",alignItems:"center",gap:6}}><span style={{width:9,height:9,borderRadius:2,background:CONCEPT_COLORS[0]}}/> filled square = MeSH</span>
-            <span style={{display:"inline-flex",alignItems:"center",gap:6}}><span style={{width:9,height:9,borderRadius:"50%",border:`1.5px solid ${C.muted}`}}/> hollow circle = free-text</span>
+            <span style={{display:"inline-flex",alignItems:"center",gap:6}}><span style={{width:9,height:9,borderRadius:2,background:CONCEPT_COLORS[0]}}/> filled square = subject heading (MeSH)</span>
+            <span style={{display:"inline-flex",alignItems:"center",gap:6}}><span style={{width:9,height:9,borderRadius:"50%",border:`1.5px solid ${C.muted}`}}/> hollow circle = plain words</span>
           </div>
         </div>
+      )}
 
-        {/* RIGHT */}
-        <div>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-            <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Live output</span>
-            <div style={{display:"flex",gap:4,marginLeft:"auto"}}>
-              {DBS.map(d=>(
-                <button key={d.id} onClick={()=>setActiveDB(d.id)}
-                  style={{...btn(activeDB===d.id?"solid":"ghost"),fontSize:10,padding:"3px 9px",borderColor:activeDB===d.id?d.color:C.brd2,color:activeDB===d.id?d.color:C.muted}}>
-                  {d.label}{overrides[d.id]!=null?" ✎":""}
-                </button>
+      {/* ─────────── STEP 3 — Choose Databases ─────────── */}
+      {step===3&&(
+        <DatabaseCatalogView selected={new Set(effectiveDbs)} onToggle={toggleDb}/>
+      )}
+
+      {/* ─────────── STEP 4 — Build Strategy ─────────── */}
+      {step===4&&(()=>{
+        const nativeSelected=DBS.filter(d=>effectiveDbs.includes(d.id));
+        const showDb=nativeSelected.find(d=>d.id===activeDB)?activeDB:(nativeSelected[0]?nativeSelected[0].id:"pubmed");
+        const genericDbs=effectiveDbs.filter(id=>{const db=getDatabase(id);return db&&!db.nativeSyntax;});
+        return(
+          <div>
+            <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:14,marginBottom:12}}>
+              <div style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase",marginBottom:8}}>How your search fits together</div>
+              <ConceptBlocksBar concepts={concepts}/>
+              <div style={{fontSize:11,color:C.muted,marginTop:10,lineHeight:1.55}}>
+                Similar terms inside one concept are joined with <strong style={{color:C.yel}}>OR</strong> (any one counts); different concepts are joined with <strong style={{color:C.acc}}>AND</strong> (all must appear).
+              </div>
+            </div>
+            {nativeSelected.length>0?(
+              <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:14,marginBottom:12}}>
+                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+                  <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Database search format</span>
+                  <div style={{display:"flex",gap:4,marginLeft:"auto"}}>
+                    {nativeSelected.map(d=>(
+                      <button key={d.id} onClick={()=>setActiveDB(d.id)}
+                        style={{...btn(showDb===d.id?"solid":"ghost"),fontSize:10,padding:"3px 9px",borderColor:showDb===d.id?d.color:C.brd2,color:showDb===d.id?d.color:C.muted}}>
+                        {d.label}{overrides[d.id]!=null?" ✎":""}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <QueryOutput dbId={showDb} concepts={concepts} beginner={beginner}
+                  override={overrides[showDb]??null}
+                  setOverride={val=>setOverrides(o=>({...o,[showDb]:val}))}
+                  liveCount={counts[showDb]} countState={showDb==="pubmed"?countState:"idle"}
+                  hitState={showDb==="pubmed"?hitState:null}/>
+              </div>
+            ):(
+              <div style={{background:`${alpha(C.yel,"10")}`,border:`1px solid ${alpha(C.yel,"44")}`,borderRadius:8,padding:"10px 12px",marginBottom:12,fontSize:12,color:C.txt2}}>
+                None of your selected databases have an auto-generated search format. Select PubMed, Embase, or Cochrane in <button onClick={()=>setStep(3)} style={{...btn("ghost"),fontSize:11,padding:"1px 8px"}}>Choose Databases</button> to see ready-to-paste syntax, or use the generic strategy below.
+              </div>
+            )}
+            {genericDbs.length>0&&(
+              <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:14}}>
+                <div style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase",marginBottom:8}}>Generic strategy for: {genericDbs.map(id=>getDatabase(id)?.label).filter(Boolean).join(", ")}</div>
+                <div style={{fontSize:11,color:C.dim,marginBottom:8,lineHeight:1.5}}>PecanRev doesn't generate the exact native syntax for these databases yet. This keyword strategy is a starting point — adapt it to each database's own search format.</div>
+                <pre style={{background:C.bg,border:`1px solid ${C.brd}`,borderRadius:8,padding:12,fontFamily:MONO,fontSize:11,lineHeight:1.7,color:C.txt,whiteSpace:"pre-wrap",wordBreak:"break-word",margin:0,maxHeight:240,overflowY:"auto"}}>{genericStrategyString(concepts)||"Add terms to see the strategy…"}</pre>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ─────────── STEP 5 — Check & Export ─────────── */}
+      {step===5&&(()=>{
+        const warnings=buildWarnings(concepts,hitState);
+        const wcol={error:C.red,warn:C.yel,ok:C.grn};
+        const allStrategies=effectiveDbs.map(id=>{const db=getDatabase(id);return db?`### ${db.label}\n${strategyForDb(concepts,overrides,id)||"(no terms)"}`:"";}).filter(Boolean).join("\n\n");
+        return(
+          <div style={{maxWidth:760}}>
+            {/* warnings / health check */}
+            <div style={{marginBottom:12}}>
+              {warnings.map((w,i)=>(
+                <div key={i} style={{display:"flex",gap:8,alignItems:"flex-start",background:`${alpha(wcol[w.level],"10")}`,border:`1px solid ${alpha(wcol[w.level],"44")}`,borderRadius:8,padding:"8px 12px",marginBottom:6,fontSize:12,color:C.txt2}}>
+                  <span style={{color:wcol[w.level],fontWeight:700}}>{w.level==="error"?"✕":w.level==="ok"?"✓":"⚠"}</span>
+                  <span>{w.msg}</span>
+                </div>
               ))}
             </div>
+            {/* final strategy per selected database */}
+            <div style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase",marginBottom:8}}>Final strategy per database</div>
+            {effectiveDbs.map(id=>{
+              const db=getDatabase(id); if(!db) return null;
+              const str=strategyForDb(concepts,overrides,id);
+              return(
+                <div key={id} style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:"11px 13px",marginBottom:8}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
+                    <span style={{fontSize:12,fontWeight:700,color:C.txt}}>{db.label}</span>
+                    {!db.nativeSyntax&&<span title="Generic keyword strategy — adapt to this database's own format" style={{fontSize:8,fontWeight:700,letterSpacing:.4,color:C.yel,textTransform:"uppercase",border:`1px solid ${alpha(C.yel,"55")}`,borderRadius:4,padding:"0 4px"}}>generic</span>}
+                    <span style={{fontSize:10,color:C.muted}}>{ACCESS_TIERS[db.tier]}</span>
+                    {id==="pubmed"&&hitState&&hitState.status==="updated"&&hitState.hitCount!=null&&(
+                      <span style={{fontSize:10.5,color:C.acc,fontFamily:MONO}}>{fmtCount(hitState.hitCount)} hits · updated {relativeTime(hitState.lastUpdatedAt)}</span>
+                    )}
+                    <button onClick={()=>copyOut(str,`Copied ${db.label} strategy`)} style={{marginLeft:"auto",...btn("ghost"),fontSize:10,padding:"3px 9px"}}>Copy</button>
+                  </div>
+                  <pre style={{background:C.bg,border:`1px solid ${C.brd}`,borderRadius:8,padding:10,fontFamily:MONO,fontSize:10.5,lineHeight:1.6,color:C.txt2,whiteSpace:"pre-wrap",wordBreak:"break-word",margin:0,maxHeight:160,overflowY:"auto"}}>{str||"(add terms first)"}</pre>
+                  {id!=="pubmed"&&<div style={{fontSize:10,color:C.dim,marginTop:5}}>Hit counts are not available for this database yet.</div>}
+                </div>
+              );
+            })}
+            {/* export actions */}
+            <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:12,alignItems:"center"}}>
+              <button onClick={()=>copyOut(allStrategies,"Copied all strategies")} style={{...btn("primary"),fontSize:11}}>Copy all strategies</button>
+              <button onClick={()=>copyOut(strategyTableText(concepts),"Copied strategy table")} style={{...btn("solid"),fontSize:11}}>Copy strategy table</button>
+              <button onClick={()=>setReadyForScreening(r=>!r)} style={{...btn(readyForScreening?"primary":"ghost"),fontSize:11}}>
+                {readyForScreening?"✓ Ready for Screening Import":"Mark ready for Screening Import"}
+              </button>
+              {exportMsg&&<span style={{fontSize:11,color:C.grn,fontWeight:600}}>{exportMsg}</span>}
+            </div>
+            {readyForScreening&&(
+              <div style={{marginTop:10,background:`${alpha(C.grn,"0e")}`,border:`1px solid ${alpha(C.grn,"33")}`,borderRadius:8,padding:"9px 12px",fontSize:11.5,color:C.txt2}}>
+                This search is marked ready. Run each database strategy, export the results, and import them in the <strong>Screening</strong> stage.
+              </div>
+            )}
           </div>
-          <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:14,position:"sticky",top:14}}>
-            <QueryOutput dbId={activeDB} concepts={concepts} beginner={beginner}
-              override={overrides[activeDB]??null}
-              setOverride={val=>setOverrides(o=>({...o,[activeDB]:val}))}
-              liveCount={counts[activeDB]} countState={activeDB==="pubmed"?countState:"idle"}
-              hitState={activeDB==="pubmed"?hitState:null}/>
-          </div>
-        </div>
+        );
+      })()}
+
+      {/* step footer — Back / Next */}
+      <div style={{display:"flex",alignItems:"center",gap:10,marginTop:18,paddingTop:14,borderTop:`1px solid ${C.brd}`}}>
+        <button onClick={()=>setStep(s=>Math.max(1,s-1))} disabled={step===1}
+          style={{...btn("ghost"),fontSize:12,opacity:step===1?0.4:1,cursor:step===1?"default":"pointer"}}>← Back</button>
+        <span style={{fontSize:11,color:C.dim,marginLeft:"auto"}}>Step {step} of {STEPS.length}</span>
+        <button onClick={()=>setStep(s=>Math.min(STEPS.length,s+1))} disabled={step===STEPS.length}
+          style={{...btn("primary"),fontSize:12,opacity:step===STEPS.length?0.4:1,cursor:step===STEPS.length?"default":"pointer"}}>
+          {step===STEPS.length?"Done":`Next: ${STEPS[step].label} →`}
+        </button>
       </div>
     </div>
   );

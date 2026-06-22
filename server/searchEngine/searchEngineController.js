@@ -146,6 +146,13 @@ export async function putSearch(req, res) {
       // field for granular per-field restore). Normalized + capped to keep the row
       // small; new fields are kept (not dropped).
       ignored: sanitizeIgnored(body.ignored),
+      // SB3 Tab 3/5 — selected database ids ([] = use the catalogue defaults) and an
+      // advisory "ready for Screening Import" marker. Additive + optional, validated
+      // and capped so the row stays small; pre-SB3 searches simply omit them.
+      databases: Array.isArray(body.databases)
+        ? body.databases.filter((s) => typeof s === 'string').slice(0, 40)
+        : [],
+      readyForScreening: !!body.readyForScreening,
     };
     // baseRevision null = overwrite (the contract's PUT is a full upsert; the
     // search builder is single-strategy-per-project so last-write-wins is fine).

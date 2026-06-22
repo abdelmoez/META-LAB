@@ -9,6 +9,8 @@ import {
   stableStringify, serializeSearchState, searchStatesEqual, pickPersisted, extractActiveConcepts,
   remoteAdoptDecision, syncSearchBuilderFromPico, timeframeLabel, extractFieldTerms,
   conceptFieldKey, PICO_FIELD_DEFS,
+  findFieldConcept, fieldHasTerm, addManualTermToField, removeTermFromField,
+  conceptStatus, CONCEPT_STATUS_LABELS,
 } from '../../src/research-engine/searchBuilder/searchState.js';
 import { norm, picoToConcepts } from '../../src/research-engine/searchBuilder/conceptExtraction.js';
 
@@ -52,8 +54,9 @@ describe('serializeSearchState / searchStatesEqual', () => {
   });
 
   it('pickPersisted coerces shape defensively', () => {
-    expect(pickPersisted(null)).toEqual({ concepts: [], overrides: {}, ignored: [] });
-    expect(pickPersisted({ concepts: 'bad', overrides: 7, ignored: {} })).toEqual({ concepts: [], overrides: {}, ignored: [] });
+    const empty = { concepts: [], overrides: {}, ignored: [], databases: [], readyForScreening: false };
+    expect(pickPersisted(null)).toEqual(empty);
+    expect(pickPersisted({ concepts: 'bad', overrides: 7, ignored: {} })).toEqual(empty);
   });
 });
 
@@ -218,5 +221,83 @@ describe('extractActiveConcepts (hidden/deleted terms stay hidden)', () => {
   it('tolerates empty / missing PICO', () => {
     expect(extractActiveConcepts(null, [])).toEqual([]);
     expect(extractActiveConcepts({}, ['x'])).toEqual([]);
+  });
+});
+
+/* ── SB3 ──────────────────────────────────────────────────────────────────── */
+
+describe('pickPersisted — SB3 databases + readyForScreening', () => {
+  it('defaults the new fields safely for pre-SB3 saves (no spurious data)', () => {
+    const p = pickPersisted({ concepts: [], overrides: {}, ignored: [] });
+    expect(p.databases).toEqual([]);
+    expect(p.readyForScreening).toBe(false);
+  });
+  it('round-trips databases + readyForScreening through the persisted signature', () => {
+    const withDbs = { concepts: [], overrides: {}, ignored: [], databases: ['pubmed', 'scopus'], readyForScreening: true };
+    const p = pickPersisted(withDbs);
+    expect(p.databases).toEqual(['pubmed', 'scopus']);
+    expect(p.readyForScreening).toBe(true);
+    // a databases change must change the signature (so autosave fires)
+    expect(serializeSearchState(withDbs)).not.toBe(serializeSearchState({ ...withDbs, databases: ['pubmed'] }));
+    // toggling readyForScreening changes the signature too
+    expect(serializeSearchState(withDbs)).not.toBe(serializeSearchState({ ...withDbs, readyForScreening: false }));
+  });
+  it('drops non-string database ids', () => {
+    expect(pickPersisted({ databases: ['pubmed', 5, null, 'embase'] }).databases).toEqual(['pubmed', 'embase']);
+  });
+});
+
+describe('addManualTermToField / removeTermFromField / fieldHasTerm', () => {
+  // Start from the five canonical PICO groups so the click→concept mapping is realistic.
+  const base = () => syncSearchBuilderFromPico({ P: '', I: '', C: '', O: '' }, [], []);
+
+  it('adds a selected keyword into the matching PICO group as a kept (user_added) term', () => {
+    const next = addManualTermToField(base(), 'P', 'obesity');
+    const pop = findFieldConcept(next, 'P');
+    expect(pop.terms.some((t) => t.text === 'obesity')).toBe(true);
+    expect(pop.terms.find((t) => t.text === 'obesity').source).toBe('user_added');
+    expect(fieldHasTerm(next, 'P', 'OBESITY')).toBe(true); // case-insensitive
+  });
+  it('is a no-op when the term already exists in the field (dedupe)', () => {
+    const once = addManualTermToField(base(), 'I', 'semaglutide');
+    const twice = addManualTermToField(once, 'I', 'Semaglutide');
+    expect(findFieldConcept(twice, 'I').terms.filter((t) => t.text.toLowerCase() === 'semaglutide').length).toBe(1);
+  });
+  it('routes keywords to the correct group (Intervention vs Population)', () => {
+    let cs = base();
+    cs = addManualTermToField(cs, 'P', 'adults');
+    cs = addManualTermToField(cs, 'I', 'GLP-1 receptor agonists');
+    expect(fieldHasTerm(cs, 'P', 'adults')).toBe(true);
+    expect(fieldHasTerm(cs, 'P', 'GLP-1 receptor agonists')).toBe(false);
+    expect(fieldHasTerm(cs, 'I', 'GLP-1 receptor agonists')).toBe(true);
+  });
+  it('removeTermFromField removes the keyword from its group', () => {
+    let cs = addManualTermToField(base(), 'O', 'weight loss');
+    expect(fieldHasTerm(cs, 'O', 'weight loss')).toBe(true);
+    cs = removeTermFromField(cs, 'O', 'weight loss');
+    expect(fieldHasTerm(cs, 'O', 'weight loss')).toBe(false);
+  });
+  it('ignores blank text', () => {
+    const cs = base();
+    expect(addManualTermToField(cs, 'P', '   ')).toBe(cs);
+  });
+});
+
+describe('conceptStatus', () => {
+  it('reports "empty" for a group with no terms', () => {
+    expect(conceptStatus({ terms: [] })).toBe('empty');
+    expect(CONCEPT_STATUS_LABELS.empty).toBe('No terms yet');
+  });
+  it('reports "ready" for a Time-Frame group that has a note', () => {
+    expect(conceptStatus({ picoField: 'T', terms: [], note: 'Last 10 years' })).toBe('ready');
+  });
+  it('reports "needs-review" for a single free-text term', () => {
+    expect(conceptStatus({ terms: [{ text: 'obesity', type: 'freetext' }] })).toBe('needs-review');
+  });
+  it('reports "mesh-suggested" when a heading is available but not yet added', () => {
+    expect(conceptStatus({ terms: [{ text: 'obesity', type: 'freetext', vocab: { mesh: 'Obesity' } }] })).toBe('mesh-suggested');
+  });
+  it('reports "ready" once a subject heading (controlled term) is present', () => {
+    expect(conceptStatus({ terms: [{ text: 'Obesity', type: 'controlled' }, { text: 'obese', type: 'freetext' }] })).toBe('ready');
   });
 });
