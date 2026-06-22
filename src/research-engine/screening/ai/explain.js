@@ -53,7 +53,7 @@ export function termContributions(model, terms, vector, k = 6) {
  * @returns {object}
  */
 export function buildExplanation(args = {}) {
-  const { coldStart, hybrid, model = null, terms = [], vector = null, neighbors = [], missingAbstract = false } = args;
+  const { coldStart, hybrid, model = null, terms = [], vector = null, neighbors = [], missingAbstract = false, reviewerSignals = null } = args;
   const sig = (coldStart && coldStart.signals) || {};
   const supervised = hybrid && hybrid.mode === 'supervised';
 
@@ -84,6 +84,26 @@ export function buildExplanation(args = {}) {
     }
   }
 
+  // prompt49 item 1 — reviewer quality + note signals (separate from the model).
+  // Include/exclude-polarity note factors join the inline reason lists; quality,
+  // concern, and uncertainty factors are surfaced in a dedicated block. All
+  // factors are fixed, identity-free labels (no raw note text → injection-safe).
+  let reviewer = null;
+  if (reviewerSignals && Array.isArray(reviewerSignals.factors) && reviewerSignals.factors.length) {
+    for (const f of reviewerSignals.factors) {
+      if (f.polarity === 'include') reasonsInclude.push({ kind: f.kind, text: f.text });
+      else if (f.polarity === 'exclude') reasonsExclude.push({ kind: f.kind, text: f.text });
+    }
+    reviewer = {
+      methodologicalQuality: reviewerSignals.methodologicalQuality ?? null,
+      qualityN: reviewerSignals.qualityN ?? 0,
+      reviewerConfidence: reviewerSignals.reviewerConfidence ?? null,
+      conflict: !!reviewerSignals.conflict,
+      decisionCounts: reviewerSignals.decisionCounts || null,
+      factors: reviewerSignals.factors,
+    };
+  }
+
   // Similar included records.
   const similar = (neighbors || []).filter(n => n && n.similarity > 0).slice(0, 5);
 
@@ -110,6 +130,7 @@ export function buildExplanation(args = {}) {
     studyDesign: sig.studyDesign || null,
     studyDesignMatch: sig.studyDesignMatch ?? null,
     similar,
+    reviewer,
     uncertaintyNote,
   };
 }

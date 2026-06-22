@@ -24,6 +24,7 @@ import { hybridScore } from './hybrid.js';
 import { uncertainty, predictionLabel, scoreBand } from './ranking.js';
 import { buildExplanation } from './explain.js';
 import { computeValidation } from './validation.js';
+import { aggregateReviewerSignals, prioritizationScore } from './reviewerSignals.js';
 import { mulberry32 } from '../sampling.js';
 
 const NEIGHBOR_EXAMPLE_CAP = 300;
@@ -106,12 +107,20 @@ export function summarizeLabels(labelByRecordId, cfg) {
  * @param {string[]} [args.studyTypeFilter]
  * @param {object} [args.config] — partial AI config override
  * @param {Record<string,number[]>} [args.denseEmbeddings] — optional recordId → dense vector
+ * @param {Record<string,Array<{reviewerId,decision,rating,notes}>>} [args.decisionsByRecordId]
+ *   — per-record reviewer decisions WITH quality rating + note (prompt49 item 1).
+ *   Used ONLY to derive separate reviewer-quality / note signals; the relevance
+ *   classifier is unchanged (eligibility and quality stay distinct axes).
+ * @param {boolean} [args.revealReviewerSignals] — false during blind review →
+ *   reviewer signals are suppressed (no cross-reviewer leakage). Default true.
  * @returns {{ meta:object, scores:Array<object> }}
  */
 export function trainAndScore(args = {}) {
   const cfg = resolveConfig(args.config);
   const records = Array.isArray(args.records) ? args.records : [];
   const labelByRecordId = args.labelByRecordId || {};
+  const decisionsByRecordId = args.decisionsByRecordId || {};
+  const revealReviewerSignals = args.revealReviewerSignals !== false;
   const ctx = {
     picoSnapshot: args.picoSnapshot,
     inclusionKeywords: args.inclusionKeywords || [],
@@ -228,9 +237,18 @@ export function trainAndScore(args = {}) {
     const topNeighbors = neighbors.slice(0, 3);
 
     const picoMean = cs.signals.pico ? cs.signals.pico.mean : null;
+
+    // prompt49 item 1 — SEPARATE reviewer signals (quality + notes). These never
+    // touch the relevance `score` (so quality can't overwhelm eligibility); they
+    // become a distinct quality/confidence axis + a bounded prioritisation, and
+    // feed traceable factors into the explanation. Suppressed during blind review.
+    const reviewer = aggregateReviewerSignals(decisionsByRecordId[r.id] || [], { reveal: revealReviewerSignals });
+    const prioritization = prioritizationScore(hybrid.score, reviewer);
+
     const explanation = buildExplanation({
       coldStart: cs, hybrid, model, terms: vec.terms, vector,
       neighbors: topNeighbors, missingAbstract,
+      reviewerSignals: reviewer.hasSignals ? reviewer : null,
     });
 
     return {
@@ -242,17 +260,26 @@ export function trainAndScore(args = {}) {
       confidence,
       prediction: predictionLabel(hybrid.score),
       band: scoreBand(hybrid.score),
+      // prioritisation = relevance + a hard-clamped (±0.05) quality nudge, for
+      // ranking/surfacing only; equals `score` when there is no quality signal.
+      prioritization,
       missingAbstract,
       lowConfidence: !model && cs.lowConfidence,
       mode: hybrid.mode,
       subScores: hybrid.subScores,
       picoMean,
       semanticIncluded: semInc,
+      // The four separate concepts the engine now exposes:
+      //   relevance (score) · methodologicalQuality · reviewerConfidence · prioritization
+      methodologicalQuality: reviewer.methodologicalQuality,
+      reviewerConfidence: reviewer.reviewerConfidence,
       signals: {
         studyDesign: cs.signals.studyDesign,
         inclusionMatched: cs.signals.inclusion ? cs.signals.inclusion.matched : [],
         exclusionHits: cs.signals.exclusion ? cs.signals.exclusion.hits : 0,
         pico: cs.signals.pico,
+        reviewer: reviewer.hasSignals ? reviewer : null,
+        prioritization,
       },
       similar: topNeighbors,
       explanation,

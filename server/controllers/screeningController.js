@@ -1284,9 +1284,12 @@ export async function saveDecision(req, res) {
 
     // se2.md §6 — near-real-time rescoring. The human decision is ALREADY saved;
     // this only queues a debounced background rescore so rankings reflect the latest
-    // labels. Fire-and-forget — it can never block or lose the decision. Only
-    // settled include/exclude labels change the training set.
-    if (decision === 'include' || decision === 'exclude') {
+    // labels. Fire-and-forget — it can never block or lose the decision. A settled
+    // include/exclude label changes the TRAINING set; a quality rating or reviewer
+    // note changes the SEPARATE reviewer-signal layer (prompt49 item 1) — both
+    // warrant a rescore so the AI panel reflects the latest human input.
+    const hasReviewerSignalInput = rating != null || (typeof notes === 'string' && notes.trim() !== '');
+    if (decision === 'include' || decision === 'exclude' || hasReviewerSignalInput) {
       scheduleRescore(p.id, { stage, actor: req.user });
     }
 

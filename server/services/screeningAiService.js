@@ -175,7 +175,9 @@ export async function loadEngineInput(projectId, stage = 'title_abstract') {
     }),
     prisma.screenDecision.findMany({
       where: { projectId, stage },
-      select: { recordId: true, reviewerId: true, decision: true, createdAt: true },
+      // prompt49 item 1 — also load rating + notes so the engine can derive
+      // SEPARATE reviewer-quality + note signals (relevance classifier unchanged).
+      select: { recordId: true, reviewerId: true, decision: true, rating: true, notes: true, createdAt: true },
     }),
   ]);
 
@@ -183,6 +185,13 @@ export async function loadEngineInput(projectId, stage = 'title_abstract') {
   for (const d of decisions) {
     if (!decByRecord.has(d.recordId)) decByRecord.set(d.recordId, []);
     decByRecord.get(d.recordId).push(d);
+  }
+
+  // Per-record reviewer decisions (with rating + note) for the quality/note signal
+  // layer. Plain objects keyed by recordId; the engine treats notes as untrusted.
+  const decisionsByRecordId = {};
+  for (const [rid, ds] of decByRecord) {
+    decisionsByRecordId[rid] = ds.map((d) => ({ reviewerId: d.reviewerId, decision: d.decision, rating: d.rating ?? null, notes: d.notes || '' }));
   }
 
   const labelByRecordId = {};
@@ -211,6 +220,7 @@ export async function loadEngineInput(projectId, stage = 'title_abstract') {
     project,
     records,
     labelByRecordId,
+    decisionsByRecordId,
     chronoLabels,
     picoSnapshot: project.picoSnapshot,
     inclusionKeywords: safeArray(project.inclusionKeywords),
@@ -309,6 +319,10 @@ async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger
     result = trainAndScore({
       records,
       labelByRecordId: input.labelByRecordId,
+      decisionsByRecordId: input.decisionsByRecordId,
+      // Blind review → suppress reviewer signals so one reviewer's hidden
+      // rating/note never leaks to another (the relevance score is unaffected).
+      revealReviewerSignals: !input.project.blindMode,
       picoSnapshot: input.picoSnapshot,
       inclusionKeywords: input.inclusionKeywords,
       exclusionKeywords: input.exclusionKeywords,
