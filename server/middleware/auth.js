@@ -1,8 +1,9 @@
 import { verifyToken } from '../auth/jwt.js';
 import { prisma } from '../db/client.js';
 import { recordUsage, USAGE } from '../utils/usage.js';
+import { sessionCookieName, clearSessionCookieOptions } from '../config/cookies.js';
 
-const COOKIE_NAME = 'metalab_session';
+const COOKIE_NAME = sessionCookieName();
 
 // ── Throttled lastActive updates (prompt6 Task 10) ─────────────────────────────
 // Every meaningful authenticated action (opens app, saves, screens, sends a
@@ -73,18 +74,18 @@ export async function requireAuth(req, res, next) {
     const state = await loadAuthState(payload.id);
     if (!state) {
       // User no longer exists — clear the cookie and reject.
-      res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict' });
+      res.clearCookie(COOKIE_NAME, clearSessionCookieOptions());
       return res.status(401).json({ error: 'Authentication required' });
     }
     if (state.suspended) {
-      res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict' });
+      res.clearCookie(COOKIE_NAME, clearSessionCookieOptions());
       return res.status(403).json({ error: 'Your account has been suspended. Please contact support.', code: 'ACCOUNT_SUSPENDED' });
     }
     // Tokens issued before this feature have no `se` claim → treated as epoch 0,
     // so existing sessions are NOT force-logged-out on deploy (epoch starts at 0).
     const tokenEpoch = Number.isInteger(payload.se) ? payload.se : 0;
     if (tokenEpoch !== state.sessionEpoch) {
-      res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict' });
+      res.clearCookie(COOKIE_NAME, clearSessionCookieOptions());
       return res.status(401).json({ error: 'Your session has ended. Please sign in again.', code: 'SESSION_REVOKED' });
     }
     req.user = { id: payload.id, email: payload.email, role: payload.role || 'user' };

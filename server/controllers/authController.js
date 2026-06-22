@@ -11,8 +11,9 @@ import { createVerificationToken, consumeVerificationToken } from '../services/e
 import { normalizeInstitution } from '../../src/research-engine/institutions/institutionMatch.js';
 import { resolveCountry, getClientIp, hashIp } from '../utils/geo.js';
 import { allocateUserNumber } from '../services/userNumber.js';
+import { sessionCookieName, sessionCookieOptions, clearSessionCookieOptions } from '../config/cookies.js';
 
-const COOKIE_NAME = 'metalab_session';
+const COOKIE_NAME = sessionCookieName();
 
 // Identical body for every forgot-password outcome — prevents account
 // enumeration (a valid, an invalid, and a suspended email all look the same).
@@ -97,14 +98,9 @@ async function captureRegistrationCountry(req, user) {
   } catch { /* best-effort side-effect — swallow, never affect the response */ }
 }
 
-function cookieOptions() {
-  return {
-    httpOnly: true,
-    sameSite: 'strict',
-    secure: process.env.NODE_ENV === 'production',
-    maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days in ms
-  };
-}
+// Session cookie attributes now live in config/cookies.js (single source of
+// truth so set/clear stay consistent). Kept as a thin local alias for callers.
+const cookieOptions = sessionCookieOptions;
 
 /**
  * Is email verification currently required? Reads appSettings.requireEmailVerification
@@ -307,7 +303,7 @@ export async function login(req, res) {
  * Requires auth (protected by requireAuth middleware).
  */
 export async function logout(req, res) {
-  res.clearCookie(COOKIE_NAME, { httpOnly: true, sameSite: 'strict' });
+  res.clearCookie(COOKIE_NAME, clearSessionCookieOptions());
   return res.json({ ok: true });
 }
 

@@ -30,6 +30,16 @@ export function validateConfig({ env = process.env } = {}) {
     critical('DATABASE_URL is not set.');
   }
 
+  // Database provider selection (prompt49 item 2 — PostgreSQL readiness).
+  const provider = String(env.DATABASE_PROVIDER || 'sqlite').trim().toLowerCase();
+  if (provider === 'postgres' || provider === 'postgresql') {
+    if (!env.POSTGRES_DATABASE_URL || !String(env.POSTGRES_DATABASE_URL).trim()) {
+      critical('DATABASE_PROVIDER=postgres but POSTGRES_DATABASE_URL is not set.');
+    }
+  } else if (provider !== 'sqlite') {
+    warnings.push(`DATABASE_PROVIDER="${provider}" is not recognised — expected "sqlite" or "postgres" (defaulting to sqlite).`);
+  }
+
   // CORS / cookies (credentialed requests need an explicit, non-wildcard origin).
   if (isProd) {
     const origin = env.CORS_ORIGIN || env.APP_BASE_URL || '';

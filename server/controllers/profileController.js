@@ -10,12 +10,9 @@ import { signToken } from '../auth/jwt.js';
 import { invalidateAuthState } from '../middleware/auth.js';
 import { invalidateUserName } from './presenceController.js';
 import { resolveInstitutionInput, invalidateInstitutionCandidates } from '../services/institutionService.js';
+import { sessionCookieName, sessionCookieOptions } from '../config/cookies.js';
 
-const SESSION_COOKIE = 'metalab_session';
-// Mirrors authController.cookieOptions() — kept in sync intentionally.
-function sessionCookieOptions() {
-  return { httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: 7 * 24 * 60 * 60 * 1000 };
-}
+const SESSION_COOKIE = sessionCookieName();
 
 // prompt35 — institution + onboarding-profile fields exposed/editable on the
 // self-service profile (in addition to the legacy onboarding write path).

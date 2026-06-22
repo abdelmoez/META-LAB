@@ -54,6 +54,29 @@ describe('validateConfig — production', () => {
   });
 });
 
+describe('validateConfig — database provider (prompt49 item 2)', () => {
+  it('passes with sqlite (default) and no postgres URL', () => {
+    expect(validateConfig({ env: { ...goodProd, DATABASE_PROVIDER: 'sqlite' } }).ok).toBe(true);
+    expect(validateConfig({ env: goodProd }).ok).toBe(true); // unset = sqlite
+  });
+
+  it('fails in production when DATABASE_PROVIDER=postgres but POSTGRES_DATABASE_URL is missing', () => {
+    const r = validateConfig({ env: { ...goodProd, DATABASE_PROVIDER: 'postgres' } });
+    expect(r.ok).toBe(false);
+    expect(r.errors.join(' ')).toMatch(/POSTGRES_DATABASE_URL/);
+  });
+
+  it('passes when postgres provider has its URL', () => {
+    const r = validateConfig({ env: { ...goodProd, DATABASE_PROVIDER: 'postgresql', POSTGRES_DATABASE_URL: 'postgresql://u:p@h:5432/pg' } });
+    expect(r.ok).toBe(true);
+  });
+
+  it('warns on an unrecognised provider', () => {
+    const r = validateConfig({ env: { ...goodProd, DATABASE_PROVIDER: 'mysql' } });
+    expect(r.warnings.join(' ')).toMatch(/not recognised/i);
+  });
+});
+
 describe('validateConfig — development', () => {
   it('never fails in dev, only warns', () => {
     const r = validateConfig({ env: { NODE_ENV: 'development' } });

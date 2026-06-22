@@ -47,7 +47,7 @@ import { seedOnboardingQuestions } from './controllers/onboardingController.js';
 import { backfillUserNumbers } from './services/userNumber.js';
 import { seedAdmins } from './auth/seedAdmins.js';
 import { getVersion } from './version.js';
-import { resolveCorsOrigin } from './config/cors.js';
+import { resolveCorsAllowlist, corsOriginDelegate } from './config/cors.js';
 import { runStartupConfigCheck } from './config/validateConfig.js';
 
 // prompt49 — fail-fast configuration diagnostic. In production a missing critical
@@ -150,11 +150,14 @@ const waitlistLimiter = rateLimit({
 });
 
 // ── Core middleware ────────────────────────────────────────────────────────────
-// CORS origin is env-driven for deployment (CORS_ORIGIN, then APP_BASE_URL),
-// falling back to the local Vite dev server. credentials:true is required so the
-// httpOnly session cookie is sent on cross-origin requests.
-const ORIGIN = resolveCorsOrigin();
-app.use(cors({ origin: ORIGIN, credentials: true }));
+// CORS is an EXPLICIT, env-driven allowlist (CORS_ORIGIN — one origin or a
+// comma-separated list for apex + www + a deliberate preview origin — unioned
+// with APP_BASE_URL), falling back to the local Vite dev server. credentials:true
+// is required so the httpOnly session cookie is sent on cross-origin requests;
+// the delegate therefore echoes only allowlisted origins and NEVER a wildcard.
+const CORS_ALLOWLIST = resolveCorsAllowlist();
+console.log(`[cors] allowlist: ${CORS_ALLOWLIST.join(', ')}`);
+app.use(cors({ origin: corsOriginDelegate(), credentials: true }));
 app.use(express.json({ limit: '10mb' }));
 app.use(cookieParser());
 app.use(requestLogger);
