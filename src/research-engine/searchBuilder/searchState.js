@@ -14,7 +14,8 @@
  * Deterministic and dependency-light (only the extraction engine). No timestamps,
  * no randomness — id assignment stays in the component.
  */
-import { picoToConcepts, extractConcepts, norm } from './conceptExtraction.js';
+import { picoToConcepts, extractConcepts, matchFamily, norm } from './conceptExtraction.js';
+import { FAMILY_PICO_ROLE } from './medicalSynonyms.js';
 
 /* ── SE2: the five canonical PICO concept groups ──────────────────────────────
    The Search Builder ALWAYS shows these five, in this order, each keyed by a
@@ -119,6 +120,8 @@ export function syncSearchBuilderFromPico(pico, existingConcepts, ignoredList) {
 
   const fieldText = { P: pico && pico.P, I: pico && pico.I, C: pico && pico.C, O: pico && pico.O };
 
+  const PICO_ORDER = { P: 0, I: 1, C: 2, O: 3, T: 4 };
+
   const groups = PICO_FIELD_DEFS.map(({ key, label }) => {
     const prior = termsByKey[key];
     const manualTerms = prior.filter((t) => t.source !== 'pico_auto');     // user-added / user synonyms: always kept
@@ -161,7 +164,75 @@ export function syncSearchBuilderFromPico(pico, existingConcepts, ignoredList) {
     return group;
   });
 
-  return [...groups, ...manualConcepts];
+  // SB4 — PICO-aware reassignment + cross-group dedup of AUTO terms. Root cause of the
+  // leakage bug: each field is extracted independently, so a generic family term (e.g.
+  // "endoscopic ultrasound"/"EUS") can land in Population, Intervention AND Comparator,
+  // and AND-ing them over-narrows the search. Two passes (auto terms only — user-added
+  // terms are never moved/removed; Part 4 warns about those instead):
+  //  (1) RELOCATE: an auto term whose concept family carries a PICO role hint
+  //      (procedure→Intervention, condition→Population, outcome→Outcomes) is moved to
+  //      its role group, so e.g. EUS never sits in Population. Ambiguous families
+  //      (ERCP, transluminal/transpapillary drainage) are unmapped and stay put.
+  //  (2) DEDUP: any auto term still duplicated across groups is kept once (role group
+  //      if applicable, else first by PICO order) and stripped from the others.
+  const giByField = {};
+  groups.forEach((g, i) => { if (g.picoField) giByField[g.picoField] = i; });
+  const groupTerms = groups.map((g) => (g.terms || []).slice());
+
+  // (1) relocate role-hinted auto terms
+  const moveInto = {}; // targetGi -> [term]
+  groups.forEach((g, gi) => {
+    if (!g.picoField || g.picoField === 'T') return;
+    groupTerms[gi] = groupTerms[gi].filter((t) => {
+      if (t.source !== 'pico_auto') return true; // keep manual terms where the user put them
+      const role = termPicoRole(t.text);
+      if (role && role !== g.picoField && giByField[role] != null) {
+        (moveInto[giByField[role]] = moveInto[giByField[role]] || []).push(t);
+        return false;
+      }
+      return true;
+    });
+  });
+  for (const [giStr, terms] of Object.entries(moveInto)) {
+    const gi = Number(giStr);
+    const have = new Set(groupTerms[gi].map((t) => norm(t.text)));
+    for (const t of terms) { const n = norm(t.text); if (n && !have.has(n)) { have.add(n); groupTerms[gi].push(t); } }
+  }
+
+  // (2) dedup any auto term still present in >1 group
+  const occ = new Map(); // norm -> [groupIndex,...]
+  groupTerms.forEach((terms, gi) => terms.forEach((t) => {
+    if (t.source !== 'pico_auto') return;
+    const n = norm(t.text);
+    if (!n) return;
+    if (!occ.has(n)) occ.set(n, []);
+    if (!occ.get(n).includes(gi)) occ.get(n).push(gi);
+  }));
+  const removeFrom = {}; // groupIndex -> Set(norm)
+  for (const [n, gis] of occ) {
+    if (gis.length < 2) continue;
+    const role = termPicoRole(n);
+    let winner = null;
+    if (role) { const roleGi = giByField[role]; if (roleGi != null && gis.includes(roleGi)) winner = roleGi; }
+    if (winner == null) winner = gis.slice().sort((a, b) => (PICO_ORDER[groups[a].picoField] ?? 9) - (PICO_ORDER[groups[b].picoField] ?? 9))[0];
+    for (const gi of gis) if (gi !== winner) (removeFrom[gi] = removeFrom[gi] || new Set()).add(n);
+  }
+
+  const deduped = groups.map((g, gi) => {
+    let terms = groupTerms[gi];
+    const rm = removeFrom[gi];
+    if (rm) terms = terms.filter((t) => !(t.source === 'pico_auto' && rm.has(norm(t.text))));
+    return terms === g.terms ? g : { ...g, terms };
+  });
+
+  return [...deduped, ...manualConcepts];
+}
+
+/** The default PICO role ('P'/'I'/'O') for a term via its concept family, or null
+ *  when the family is unmapped/ambiguous (or the term matches no family). Pure. */
+export function termPicoRole(text) {
+  const fam = matchFamily(norm(text));
+  return fam ? (FAMILY_PICO_ROLE[fam.id] || null) : null;
 }
 
 /** Deterministic JSON: object keys sorted, undefined keys omitted (as JSON does),
@@ -184,6 +255,8 @@ export function pickPersisted(state) {
     ignored: Array.isArray(state && state.ignored) ? state.ignored : [],
     databases: Array.isArray(state && state.databases) ? state.databases.filter((s) => typeof s === 'string') : [],
     readyForScreening: !!(state && state.readyForScreening),
+    // SB4 — keys of Search-Quality/duplicate warnings the user has dismissed ("keep anyway").
+    dismissedWarnings: Array.isArray(state && state.dismissedWarnings) ? state.dismissedWarnings.filter((s) => typeof s === 'string') : [],
   };
 }
 

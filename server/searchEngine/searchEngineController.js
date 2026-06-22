@@ -153,6 +153,10 @@ export async function putSearch(req, res) {
         ? body.databases.filter((s) => typeof s === 'string').slice(0, 40)
         : [],
       readyForScreening: !!body.readyForScreening,
+      // SB4 — dismissed Search-Quality/duplicate warning keys (validated + capped).
+      dismissedWarnings: Array.isArray(body.dismissedWarnings)
+        ? body.dismissedWarnings.filter((s) => typeof s === 'string').slice(0, 200)
+        : [],
     };
     // baseRevision null = overwrite (the contract's PUT is a full upsert; the
     // search builder is single-strategy-per-project so last-write-wins is fine).

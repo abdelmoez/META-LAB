@@ -6,6 +6,7 @@ import { serializeSearchState, pickPersisted, remoteAdoptDecision, syncSearchBui
   findFieldConcept, fieldHasTerm, conceptStatus, CONCEPT_STATUS_LABELS, PICO_FIELD_DEFS } from "../../research-engine/searchBuilder/searchState.js"; // SE1 + SE2 + SB3
 import { tokenizeForSelection } from "../../research-engine/searchBuilder/keywordSelection.js"; // SB3 Tab 1
 import { databaseGroups, defaultSelectedDatabases, getDatabase, ACCESS_TIERS, ACCESS_TOOLTIP } from "../../research-engine/searchBuilder/databases.js"; // SB3 Tab 3
+import { detectCrossConceptDuplicates, searchQualityCheck, sensitivitySignal, termEquivalenceKey } from "../../research-engine/searchBuilder/crossConcept.js"; // SB4 Parts 4/8/9
 import { useRealtime } from "../../frontend/hooks/useRealtime.js"; // SE1 Task 5 — live collaborator sync (shared SSE poke channel)
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -335,14 +336,16 @@ function MeSHDetail({vocab,term,pinned,onClose}){
 }
 
 /* term chip */
-function TermChip({term,dbId,color,onEdit,onRemove}){
+function TermChip({term,dbId,color,onEdit,onRemove,onMove,moveTargets,isDuplicate}){
   const rendered=renderTerm(term,dbId);
   const isControlled=term.type==="controlled";
   const matched=isControlled&&term.vocab;
   const [hover,setHover]=useState(false);
   const [pinned,setPinned]=useState(false);
+  const [moveOpen,setMoveOpen]=useState(false);
   const showPanel=(hover||pinned)&&matched;
   const live=DBS.find(d=>d.id===dbId)?.live;
+  const canMove=onMove&&Array.isArray(moveTargets)&&moveTargets.length>0;
   const chipStyle=isControlled
     ? {background:matched?`${alpha(color,"1a")}`:`${alpha(C.yel,"14")}`,border:`1px solid ${matched?alpha(color,"88"):alpha(C.yel,"66")}`}
     : {background:"transparent",border:`1px dashed ${C.brd2}`};
@@ -362,10 +365,22 @@ function TermChip({term,dbId,color,onEdit,onRemove}){
           const m={pico_auto:["auto",C.muted],user_added:["added",C.grn],synonym:["syn",C.acc2||C.acc]}[term.source];
           return m?<span title={m[0]==="auto"?"Auto-suggested from PICO":m[0]==="added"?"Added by you":"Synonym"} style={{fontSize:8,fontWeight:700,letterSpacing:.4,color:m[1],textTransform:"uppercase",opacity:.85}}>{m[0]}</span>:null;
         })()}
+        {/* SB4 — appears in more than one AND-ed concept (over-narrows the search). */}
+        {isDuplicate&&<span title="This term appears in more than one concept. Since concepts are joined with AND, repeating it may make the search too narrow — move it to the single best concept." style={{fontSize:8,fontWeight:700,letterSpacing:.4,color:C.yel,textTransform:"uppercase",background:`${alpha(C.yel,"1a")}`,border:`1px solid ${alpha(C.yel,"66")}`,borderRadius:4,padding:"0 4px"}}>dup</span>}
         <BreadthDots term={term}/>
+        {canMove&&<button onClick={e=>{e.stopPropagation();setMoveOpen(o=>!o);}} title="Move to another concept" aria-label="Move to another concept" style={{background:"none",border:"none",color:isDuplicate?C.yel:C.muted,cursor:"pointer",fontSize:12,padding:0}}>⇄</button>}
         <button onClick={e=>{e.stopPropagation();onEdit();}} title="Edit term" aria-label="Edit term" style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:11,padding:0}}>✎</button>
         <button onClick={e=>{e.stopPropagation();onRemove();}} title="Remove term" aria-label="Remove term" style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:13,padding:0,lineHeight:1}}>×</button>
       </span>
+      {canMove&&moveOpen&&(
+        <span style={{position:"absolute",zIndex:75,top:"100%",left:0,marginTop:4,background:C.card,border:`1px solid ${C.brd2}`,borderRadius:8,boxShadow:"0 14px 40px #000a",overflow:"hidden",minWidth:180}}>
+          <span style={{display:"block",fontSize:9,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase",padding:"6px 10px 2px"}}>Move to concept</span>
+          {moveTargets.map(t=>(
+            <button key={t.id} onClick={e=>{e.stopPropagation();onMove(t.id);setMoveOpen(false);}}
+              style={{display:"block",width:"100%",textAlign:"left",background:"none",border:"none",color:C.txt2,cursor:"pointer",fontSize:11.5,padding:"6px 10px",fontFamily:SANS}}>{t.label}</button>
+          ))}
+        </span>
+      )}
       {showPanel&&(
         <span style={{position:"absolute",zIndex:60,top:"100%",left:0,paddingTop:4}}>
           <MeSHDetail vocab={term.vocab} term={term} pinned={pinned} onClose={()=>{setPinned(false);setHover(false);}}/>
@@ -702,6 +717,9 @@ function StepNav({step,setStep}){
 }
 
 const STATUS_COLOR={empty:C.dim,"needs-review":C.yel,"mesh-suggested":C.acc,ready:C.grn};
+// SB4 — Search Quality Check severity + sensitivity-signal colour maps.
+const QC_COLOR={critical:C.red,warning:C.yel,info:C.acc};
+const SENS_COLOR={"very-broad":C.red,broad:C.yel,balanced:C.grn,narrow:C.yel,"very-narrow":C.red};
 function StatusChip({status}){
   const label=CONCEPT_STATUS_LABELS[status]||status; const col=STATUS_COLOR[status]||C.muted;
   return <span title="Concept readiness" style={{fontSize:8.5,fontWeight:700,letterSpacing:.4,color:col,textTransform:"uppercase",background:`${alpha(col,"14")}`,border:`1px solid ${alpha(col,"44")}`,borderRadius:5,padding:"1px 7px"}}>{label}</span>;
@@ -865,6 +883,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const [step,setStep]=useState(1);
   const [selectedDbs,setSelectedDbs]=useState([]);
   const [readyForScreening,setReadyForScreening]=useState(false);
+  const [dismissedWarnings,setDismissedWarnings]=useState([]); // SB4 — Search-Quality warnings the user kept anyway
   const [exportMsg,setExportMsg]=useState(""); // transient copy/export feedback
   const [editing,setEditing]=useState(null);
   const [adding,setAdding]=useState(null);
@@ -938,6 +957,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     // SB3 — selected databases + handoff marker ([] / false when absent in older saves).
     setSelectedDbs(saved&&Array.isArray(saved.databases)?saved.databases.filter(s=>typeof s==="string"):[]);
     setReadyForScreening(!!(saved&&saved.readyForScreening));
+    setDismissedWarnings(saved&&Array.isArray(saved.dismissedWarnings)?saved.dismissedWarnings.filter(s=>typeof s==="string"):[]);
     // Record what the server actually holds BEFORE syncing, so autosave persists the
     // synced structure once when it differs (legacy/blank) and is a no-op when stable.
     lastSavedRef.current=saved&&saved.concepts?serializeSearchState(saved):"";
@@ -951,19 +971,19 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const saveTimer=useRef(null);
   useEffect(()=>{
     if(!loaded||!saveSearch||!projectId) return;
-    const sig=serializeSearchState({concepts,overrides,ignored,databases:selectedDbs,readyForScreening});
+    const sig=serializeSearchState({concepts,overrides,ignored,databases:selectedDbs,readyForScreening,dismissedWarnings});
     if(sig===lastSavedRef.current) return; // unchanged vs the server (e.g. just loaded/applied) → no PUT, no ping-pong
     setRemoteUpdatedBy(null); // this user is now editing → drop the "updated by collaborator" attribution
     clearTimeout(saveTimer.current);
     saveTimer.current=setTimeout(async()=>{
       try{
-        const res=await saveSearch(projectId,{concepts,overrides,ignored,databases:selectedDbs,readyForScreening});
+        const res=await saveSearch(projectId,{concepts,overrides,ignored,databases:selectedDbs,readyForScreening,dismissedWarnings});
         lastSavedRef.current=sig;
         if(res&&typeof res.revision==="number") revisionRef.current=res.revision;
       }catch(e){ console.error("saveSearch failed",e); }
     },800);
     return ()=>clearTimeout(saveTimer.current);
-  },[concepts,overrides,ignored,selectedDbs,readyForScreening,loaded]); // eslint-disable-line
+  },[concepts,overrides,ignored,selectedDbs,readyForScreening,dismissedWarnings,loaded]); // eslint-disable-line
 
   /* ── SE2: auto-sync the five groups whenever PICO changes — no manual button.
      Updates the editor's UI immediately; collaborators converge via the realtime
@@ -986,6 +1006,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     if(typeof saved.revision==="number") revisionRef.current=saved.revision;
     setConcepts(persisted.concepts); setOverrides(persisted.overrides); setIgnored(persisted.ignored);
     setSelectedDbs(persisted.databases); setReadyForScreening(persisted.readyForScreening); // SB3
+    setDismissedWarnings(persisted.dismissedWarnings); // SB4
     setRemoteUpdatedBy(saved.updatedBy&&saved.updatedBy.name?saved.updatedBy.name:"a collaborator");
     pendingRemoteRef.current=null; setRemotePending(false);
   }
@@ -1250,6 +1271,32 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const addManualKeyword=(fieldKey,text)=>addKeyword(fieldKey==="Q"?"P":fieldKey,text);
   const copyOut=(text,label)=>{ try{navigator.clipboard?.writeText(text);}catch{/* clipboard unavailable */} setExportMsg(label||"Copied"); setTimeout(()=>setExportMsg(""),1800); };
 
+  /* ── SB4: Organize Concepts hygiene (move term between concepts; dismiss a
+     warning) + derived duplicate/quality/sensitivity signals. Moving marks the term
+     user-controlled so a PICO re-sync respects it; user terms are never auto-removed. */
+  const moveTerm=(fromCid,tid,toCid)=>{
+    if(fromCid===toCid) return;
+    setConcepts(cs=>{
+      const from=cs.find(c=>c.id===fromCid); const t=from?.terms.find(x=>x.id===tid);
+      const to=cs.find(c=>c.id===toCid); if(!t||!to) return cs;
+      const dup=to.terms.some(x=>cnorm(x.text)===cnorm(t.text));
+      const moved={...t,source:"user_added"};
+      return cs.map(c=>{
+        if(c.id===fromCid) return {...c,terms:c.terms.filter(x=>x.id!==tid)};
+        if(c.id===toCid&&!dup) return {...c,terms:[...c.terms,moved]};
+        return c;
+      });
+    });
+  };
+  const dismissWarning=(id)=>setDismissedWarnings(d=>d.includes(id)?d:[...d,id]);
+  const restoreWarnings=()=>setDismissedWarnings([]);
+  const duplicates=useMemo(()=>detectCrossConceptDuplicates(concepts),[concepts]);
+  const dupKeys=useMemo(()=>new Set(duplicates.map(d=>d.equivKey)),[duplicates]);
+  const qualityWarnings=useMemo(()=>searchQualityCheck(concepts,{dismissed:dismissedWarnings}),[concepts,dismissedWarnings]);
+  const sensitivity=useMemo(()=>(hitState&&hitState.status==="updated")?sensitivitySignal(hitState.hitCount):null,[hitState]);
+  const moveTargetsFor=(cid)=>concepts.filter(c=>c.id!==cid&&c.picoField!=="T").map(c=>({id:c.id,label:c.label}));
+  const isDupTerm=(t)=>dupKeys.has(termEquivalenceKey(t.text));
+
   if(!loaded) return <div style={{padding:40,color:C.muted,fontFamily:SANS,background:C.bg,minHeight:"100%"}}>Loading search…</div>;
 
   return(
@@ -1361,6 +1408,37 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
             )}
           </div>
 
+          {/* SB4 — Search Quality Check + total PubMed hits / sensitivity (reuses the
+              live count; no extra calls). Non-blocking; the user can dismiss a check. */}
+          {(qualityWarnings.length>0||dismissedWarnings.length>0||(hitState&&hitState.status==="updated"&&hitState.hitCount!=null))&&(
+            <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:12,marginBottom:10}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:qualityWarnings.length?8:0}}>
+                <span style={{fontSize:10.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase"}}>Search Quality Check</span>
+                <Help text="Quick, non-blocking checks: duplicates across AND-ed concepts, empty concepts, missing controlled vocabulary, and terms that may make the search too narrow. Guidance only — you stay in control."/>
+                {hitState&&hitState.status==="updated"&&hitState.hitCount!=null&&(
+                  <span style={{marginLeft:"auto",display:"inline-flex",alignItems:"center",gap:8,fontSize:11,fontFamily:MONO}}>
+                    <span style={{color:C.acc,fontWeight:700}}>{fmtCount(hitState.hitCount)} PubMed hits</span>
+                    {sensitivity&&<span title="Rough breadth of the current strategy" style={{fontSize:9,fontWeight:700,letterSpacing:.4,textTransform:"uppercase",color:SENS_COLOR[sensitivity.key]||C.muted,border:`1px solid ${alpha(SENS_COLOR[sensitivity.key]||C.muted,"66")}`,borderRadius:4,padding:"0 5px"}}>{sensitivity.label}</span>}
+                  </span>
+                )}
+                {hitState&&(hitState.status==="updating"||hitState.status==="stale")&&<span style={{marginLeft:"auto",fontSize:10.5,color:C.muted,fontFamily:MONO}}>updating hits…</span>}
+                {dismissedWarnings.length>0&&<button onClick={restoreWarnings} title="Show dismissed checks again" style={{...btn("ghost"),fontSize:9.5,padding:"2px 8px"}}>restore dismissed ({dismissedWarnings.length})</button>}
+              </div>
+              {qualityWarnings.length===0
+                ? <div style={{fontSize:11,color:C.grn}}>✓ No issues detected.</div>
+                : qualityWarnings.map(w=>(
+                    <div key={w.id} style={{display:"flex",gap:8,alignItems:"flex-start",padding:"6px 0",borderTop:`1px solid ${C.brd}`}}>
+                      <span style={{color:QC_COLOR[w.severity]||C.muted,fontWeight:700,fontSize:12}}>{w.severity==="critical"?"✕":w.severity==="warning"?"⚠":"ℹ"}</span>
+                      <span style={{flex:1,fontSize:11.5,color:C.txt2,lineHeight:1.5}}>
+                        <span>{w.message}</span>
+                        {w.action&&<span style={{display:"block",color:C.muted,fontSize:10.5,marginTop:2}}>→ {w.action}</span>}
+                      </span>
+                      <button onClick={()=>dismissWarning(w.id)} title="Keep anyway / dismiss this check" style={{...btn("ghost"),fontSize:9.5,padding:"2px 8px"}}>Dismiss</button>
+                    </div>
+                  ))}
+            </div>
+          )}
+
           {/* prompt42 Task 2 — Hidden PICO terms (unchanged): per-term restore + per-field + restore-all. */}
           {pico&&ignored.length>0&&showHidden&&(
             <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:12,marginBottom:10}}>
@@ -1408,6 +1486,10 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
                       <span title="Auto-generated from your PICO — updates when PICO changes" style={{fontSize:8.5,fontWeight:700,letterSpacing:.4,color:C.acc,textTransform:"uppercase",background:`${alpha(C.acc,"14")}`,border:`1px solid ${alpha(C.acc,"44")}`,borderRadius:5,padding:"1px 6px"}}>PICO</span>
                     )}
                     <span style={{fontSize:9.5,color:C.dim,fontFamily:MONO}}>{meshN} mesh · {freeN} text</span>
+                    {/* SB4 Part 6 — controlled-vocabulary coverage indicator (MeSH/Emtree). */}
+                    {c.picoField!=="T"&&c.terms.some(t=>(t.text||"").trim())&&(
+                      <span title={meshN>0?"This concept includes a controlled-vocabulary (MeSH) term":"No MeSH/Emtree term yet — add one for better recall (click a term → Subject term)"} style={{fontSize:8,fontWeight:700,letterSpacing:.4,textTransform:"uppercase",borderRadius:4,padding:"0 5px",color:meshN>0?C.grn:C.muted,border:`1px solid ${alpha(meshN>0?C.grn:C.muted,"55")}`}}>{meshN>0?"MeSH found":"no MeSH yet"}</span>
+                    )}
                     {/* SE2 — the five PICO groups always exist (not deletable); only manual concepts can be removed. */}
                     {!c.picoField&&<button onClick={()=>removeConcept(c.id)} title="Remove this concept" style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:15}}>×</button>}
                   </div>
@@ -1423,7 +1505,8 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
                       <span key={t.id} style={{position:"relative",display:"inline-block"}}>
                         <TermChip term={t} dbId={activeDB} color={color}
                           onEdit={()=>setEditing(editing?.termId===t.id?null:{conceptId:c.id,termId:t.id})}
-                          onRemove={()=>removeTerm(c.id,t.id)}/>
+                          onRemove={()=>removeTerm(c.id,t.id)}
+                          onMove={(toCid)=>moveTerm(c.id,t.id,toCid)} moveTargets={moveTargetsFor(c.id)} isDuplicate={isDupTerm(t)}/>
                         {editing?.termId===t.id&&(
                           <TermEditor term={t}
                             onChange={patch=>updateTerm(c.id,t.id,patch)}

@@ -89,3 +89,46 @@ describe('suggestedKeywords', () => {
     expect(suggestedKeywords('   ')).toEqual([]);
   });
 });
+
+/* ── SB4 — extraction noise + biliary/EUS phrases ─────────────────────────── */
+
+describe('SB4 — vague verbs / adverbs / population-noise are not selectable', () => {
+  // The exact words the SB4 spec calls out as bad keyword suggestions.
+  for (const w of ['across', 'including', 'grouped', 'appropriately', 'possibly',
+    'underwent', 'undergoing', 'received', 'using', 'patients', 'subjects',
+    'individuals', 'participants', 'people', 'population']) {
+    it(`"${w}" is filler (not selectable)`, () => {
+      expect(isFillerWord(w)).toBe(true);
+    });
+  }
+  it('still keeps real content words selectable (adults, children, obesity, antegrade)', () => {
+    for (const w of ['adults', 'children', 'obesity', 'antegrade', 'semaglutide']) {
+      expect(isFillerWord(w)).toBe(false);
+    }
+  });
+  it('drops the noise words from a realistic messy sentence', () => {
+    const toks = tokenizeForSelection('Patients underwent EUS-guided drainage, grouped appropriately across centers including possibly malignant biliary obstruction');
+    const selectableNorms = toks.filter((t) => t.selectable).map((t) => t.norm);
+    for (const bad of ['patients', 'underwent', 'grouped', 'appropriately', 'across', 'including', 'possibly']) {
+      expect(selectableNorms).not.toContain(bad);
+    }
+  });
+});
+
+describe('SB4 — biliary / EUS phrase preservation', () => {
+  it('keeps "malignant biliary obstruction" whole', () => {
+    expect(extractPhrases('patients with malignant biliary obstruction')).toContain('malignant biliary obstruction');
+  });
+  it('keeps "endoscopic ultrasound" and "transluminal biliary drainage" whole', () => {
+    expect(extractPhrases('endoscopic ultrasound versus transluminal biliary drainage'))
+      .toEqual(expect.arrayContaining(['endoscopic ultrasound', 'transluminal biliary drainage']));
+  });
+  it('does not emit "heart"/"reduced"/"ejection" as separate selectable words when the full phrase is present', () => {
+    const toks = tokenizeForSelection('heart failure with reduced ejection fraction');
+    const phrases = toks.filter((t) => t.kind === 'phrase').map((t) => t.norm);
+    expect(phrases).toContain('heart failure with reduced ejection fraction');
+    const words = toks.filter((t) => t.kind === 'word').map((t) => t.norm);
+    expect(words).not.toContain('reduced');
+    expect(words).not.toContain('ejection');
+  });
+});

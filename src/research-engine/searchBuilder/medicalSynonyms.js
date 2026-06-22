@@ -115,7 +115,69 @@ export const CONCEPT_FAMILIES = [
   { id: 'qol', label: 'quality of life',
     triggers: ['quality of life', 'qol', 'health-related quality of life', 'hrqol'],
     terms: ['quality of life', 'health-related quality of life', 'QoL'] },
+  // ── Hepatobiliary / biliary obstruction (SB4) ────────────────────────────
+  { id: 'mbo', label: 'malignant biliary obstruction',
+    triggers: ['malignant biliary obstruction', 'malignant bile duct obstruction', 'distal malignant biliary obstruction', 'mbo'],
+    terms: ['malignant biliary obstruction', 'malignant bile duct obstruction', 'biliary obstruction'] },
+  { id: 'biliaryobstruction', label: 'biliary obstruction',
+    triggers: ['biliary obstruction', 'bile duct obstruction', 'obstructive jaundice', 'biliary stricture'],
+    terms: ['biliary obstruction', 'bile duct obstruction', 'obstructive jaundice'] },
+  { id: 'eusbd', label: 'EUS-guided biliary drainage',
+    triggers: ['eus-guided biliary drainage', 'endoscopic ultrasound-guided biliary drainage', 'eus-bd', 'eusbd', 'eus guided biliary drainage'],
+    terms: ['EUS-guided biliary drainage', 'endoscopic ultrasound-guided biliary drainage', 'EUS-BD'] },
+  { id: 'eusantegrade', label: 'EUS-guided antegrade/transpapillary drainage',
+    triggers: ['eus-guided antegrade biliary drainage', 'eus-guided transpapillary biliary drainage', 'transpapillary biliary drainage', 'antegrade biliary drainage', 'eus antegrade', 'eus transpapillary'],
+    terms: ['EUS-guided antegrade biliary drainage', 'EUS-guided transpapillary biliary drainage', 'transpapillary biliary drainage'] },
+  { id: 'eustransluminal', label: 'transluminal biliary drainage',
+    triggers: ['eus-guided transluminal biliary drainage', 'transluminal biliary drainage', 'eus transluminal', 'hepaticogastrostomy', 'choledochoduodenostomy'],
+    terms: ['transluminal biliary drainage', 'EUS-guided transluminal biliary drainage', 'hepaticogastrostomy'] },
+  // ── Endocrine drugs (SB4) ────────────────────────────────────────────────
+  { id: 'glp1', label: 'GLP-1 receptor agonists',
+    triggers: ['glp-1 receptor agonists', 'glp-1 receptor agonist', 'glucagon-like peptide-1 receptor agonist', 'glucagon-like peptide 1 receptor agonist', 'glp1', 'glp-1', 'glp-1 ra', 'incretin mimetic'],
+    terms: ['GLP-1 receptor agonists', 'glucagon-like peptide-1 receptor agonists', 'GLP-1 RA'] },
+  // ── Procedure / trial outcomes (SB4) ─────────────────────────────────────
+  { id: 'adverseevents', label: 'adverse events',
+    triggers: ['adverse events', 'adverse event', 'complications', 'adverse effects'],
+    terms: ['adverse events', 'complications', 'adverse effects'] },
+  { id: 'techsuccess', label: 'technical success',
+    triggers: ['technical success', 'technical success rate'],
+    terms: ['technical success', 'technical success rate'] },
+  { id: 'clinsuccess', label: 'clinical success',
+    triggers: ['clinical success', 'clinical success rate'],
+    terms: ['clinical success', 'clinical success rate'] },
+  { id: 'stentdysfunction', label: 'stent dysfunction',
+    triggers: ['stent dysfunction', 'stent occlusion', 'stent obstruction', 'stent migration'],
+    terms: ['stent dysfunction', 'stent occlusion', 'stent migration'] },
+  { id: 'reintervention', label: 'reintervention',
+    triggers: ['reintervention', 're-intervention', 'reinterventions'],
+    terms: ['reintervention', 're-intervention'] },
+  { id: 'discontinuation', label: 'treatment discontinuation',
+    triggers: ['treatment discontinuation', 'drug discontinuation', 'treatment withdrawal'],
+    terms: ['treatment discontinuation', 'drug discontinuation'] },
+  { id: 'tumor', label: 'tumour',
+    triggers: ['tumor', 'tumour', 'tumors', 'tumours', 'neoplasm', 'neoplasms'],
+    terms: ['tumour', 'tumor', 'neoplasm'] },
 ];
+
+/* SB4 — a per-family default PICO role hint, used ONLY to break ties when the SAME
+   auto-extracted term leaks into more than one PICO concept (searchState dedup keeps
+   it in the role group). Families that are genuinely ambiguous (e.g. ERCP can be the
+   intervention or part of the population as "failed ERCP"; transluminal drainage is
+   usually the comparator) are intentionally left unmapped so their term stays where
+   the PICO author put it. Pure data; deterministic. */
+export const FAMILY_PICO_ROLE = {
+  // Population — conditions / diseases / problem
+  t2dm: 'P', t1dm: 'P', obesity: 'P', hfref: 'P', hfpef: 'P', hf: 'P', htn: 'P',
+  mi: 'P', af: 'P', stroke: 'P', copd: 'P', asthma: 'P', ckd: 'P', aki: 'P',
+  ibd: 'P', crohn: 'P', uc: 'P', nafld: 'P', crc: 'P', hcc: 'P',
+  mbo: 'P', biliaryobstruction: 'P', tumor: 'P',
+  // Intervention / Exposure — procedures / drugs
+  eus: 'I', esd: 'I', emr: 'I', eusgbd: 'I', eusbd: 'I', eusantegrade: 'I', glp1: 'I',
+  // Outcomes
+  mortality: 'O', readmission: 'O', los: 'O', qol: 'O', adverseevents: 'O',
+  techsuccess: 'O', clinsuccess: 'O', stentdysfunction: 'O', reintervention: 'O',
+  discontinuation: 'O',
+};
 
 // Standalone single-token abbreviation → expansion (for unknown phrases that
 // happen to contain a well-known abbreviation but no full family entry).

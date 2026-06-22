@@ -10,7 +10,7 @@ import {
   remoteAdoptDecision, syncSearchBuilderFromPico, timeframeLabel, extractFieldTerms,
   conceptFieldKey, PICO_FIELD_DEFS,
   findFieldConcept, fieldHasTerm, addManualTermToField, removeTermFromField,
-  conceptStatus, CONCEPT_STATUS_LABELS,
+  conceptStatus, CONCEPT_STATUS_LABELS, termPicoRole,
 } from '../../src/research-engine/searchBuilder/searchState.js';
 import { norm, picoToConcepts } from '../../src/research-engine/searchBuilder/conceptExtraction.js';
 
@@ -54,7 +54,7 @@ describe('serializeSearchState / searchStatesEqual', () => {
   });
 
   it('pickPersisted coerces shape defensively', () => {
-    const empty = { concepts: [], overrides: {}, ignored: [], databases: [], readyForScreening: false };
+    const empty = { concepts: [], overrides: {}, ignored: [], databases: [], readyForScreening: false, dismissedWarnings: [] };
     expect(pickPersisted(null)).toEqual(empty);
     expect(pickPersisted({ concepts: 'bad', overrides: 7, ignored: {} })).toEqual(empty);
   });
@@ -299,5 +299,80 @@ describe('conceptStatus', () => {
   });
   it('reports "ready" once a subject heading (controlled term) is present', () => {
     expect(conceptStatus({ terms: [{ text: 'Obesity', type: 'controlled' }, { text: 'obese', type: 'freetext' }] })).toBe('ready');
+  });
+});
+
+/* ── SB4 — PICO-aware concept assignment (role hints + cross-group dedup) ──── */
+
+describe('termPicoRole', () => {
+  it('maps procedures → Intervention, conditions → Population, outcomes → Outcomes', () => {
+    expect(termPicoRole('endoscopic ultrasound')).toBe('I');
+    expect(termPicoRole('EUS')).toBe('I');
+    expect(termPicoRole('malignant biliary obstruction')).toBe('P');
+    expect(termPicoRole('mortality')).toBe('O');
+    expect(termPicoRole('adverse events')).toBe('O');
+  });
+  it('returns null for ambiguous / unmapped families and unknown terms', () => {
+    expect(termPicoRole('transluminal biliary drainage')).toBeNull(); // intentionally unmapped (often the comparator)
+    expect(termPicoRole('some bespoke phrase')).toBeNull();
+  });
+});
+
+describe('syncSearchBuilderFromPico — cross-concept leakage fix (SB4)', () => {
+  const fieldText = (groups, key) => {
+    const g = groups.find((c) => conceptFieldKey(c) === key);
+    return (g ? g.terms : []).map((t) => norm(t.text));
+  };
+
+  it('keeps EUS / endoscopic ultrasound OUT of Population and IN Intervention', () => {
+    const pico = {
+      P: 'patients with malignant biliary obstruction undergoing endoscopic ultrasound',
+      I: 'EUS-guided antegrade biliary drainage',
+      C: 'transluminal biliary drainage',
+      O: 'technical success and adverse events',
+    };
+    const groups = syncSearchBuilderFromPico(pico, [], []);
+    const pop = fieldText(groups, 'P');
+    const int = fieldText(groups, 'I');
+    expect(pop).not.toContain('endoscopic ultrasound');
+    expect(pop).not.toContain('eus');
+    expect(int).toContain('endoscopic ultrasound');
+    expect(int).toContain('eus');
+    // Population still has its own condition; Comparator keeps the distinct term.
+    expect(pop).toContain('malignant biliary obstruction');
+    expect(fieldText(groups, 'C')).toContain('transluminal biliary drainage');
+  });
+
+  it('does not duplicate the same auto term across the five groups', () => {
+    const pico = { P: 'endoscopic ultrasound', I: 'endoscopic ultrasound', C: 'endoscopic ultrasound', O: 'mortality' };
+    const groups = syncSearchBuilderFromPico(pico, [], []);
+    let count = 0;
+    for (const k of ['P', 'I', 'C', 'O', 'T']) if (fieldText(groups, k).includes('endoscopic ultrasound')) count += 1;
+    expect(count).toBe(1); // consolidated into exactly one group (Intervention, by role)
+    expect(fieldText(groups, 'I')).toContain('endoscopic ultrasound');
+  });
+
+  it('does not move user-added terms (only auto terms are relocated)', () => {
+    // Pre-place a user-added "endoscopic ultrasound" in Population; sync must leave it.
+    const existing = syncSearchBuilderFromPico({ P: 'obesity', I: '', C: '', O: '' }, [], []);
+    const popId = existing.find((c) => conceptFieldKey(c) === 'P').id;
+    const withUserTerm = existing.map((c) => (c.id === popId
+      ? { ...c, terms: [...c.terms, { id: 'u1', text: 'endoscopic ultrasound', type: 'freetext', source: 'user_added' }] }
+      : c));
+    const re = syncSearchBuilderFromPico({ P: 'obesity', I: '', C: '', O: '' }, withUserTerm, []);
+    expect(re.find((c) => conceptFieldKey(c) === 'P').terms.some((t) => t.text === 'endoscopic ultrasound' && t.source === 'user_added')).toBe(true);
+  });
+});
+
+describe('pickPersisted — SB4 dismissedWarnings', () => {
+  it('defaults to [] and round-trips string ids only', () => {
+    expect(pickPersisted({}).dismissedWarnings).toEqual([]);
+    expect(pickPersisted({ dismissedWarnings: ['multi:fam:eus', 7, null, 'empty:O'] }).dismissedWarnings)
+      .toEqual(['multi:fam:eus', 'empty:O']);
+  });
+  it('changes the persisted signature so autosave fires', () => {
+    const a = { concepts: [], overrides: {}, ignored: [], databases: [], readyForScreening: false, dismissedWarnings: [] };
+    const b = { ...a, dismissedWarnings: ['empty:O'] };
+    expect(serializeSearchState(a)).not.toBe(serializeSearchState(b));
   });
 });

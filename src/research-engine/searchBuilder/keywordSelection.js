@@ -40,24 +40,53 @@ export function norm(s) {
 
 /* Connector / filler words that carry no search signal on their own. This is the
    spec's explicit list (articles, prepositions, conjunctions, comparison words) —
-   intentionally NOT the medical JUNK_WORDS set, so content words like "adults" and
-   "patients" stay selectable. STOPWORDS supplies the long grammatical tail. */
+   intentionally NOT the whole medical JUNK_WORDS set, so content words like "adults"
+   and "children" stay selectable. STOPWORDS supplies the long grammatical tail. */
 const EXPLICIT_FILLER = [
   'and', 'or', 'if', 'the', 'a', 'an', 'of', 'with', 'without', 'in', 'on', 'at',
   'to', 'from', 'by', 'for', 'as', 'is', 'are', 'do', 'does', 'be', 'been',
   'versus', 'vs', 'vs.', 'compared', 'comparison', 'among', 'between', 'than',
 ];
 
+/* SB4 — vague verbs / adverbs / qualifiers and population-noise nouns that are not
+   useful standalone search keywords (the SB4 spec's "do not suggest" list). These
+   are dropped from Step-1 suggestions UNLESS the user forces them via the manual box.
+   Deliberately curated (explicit words, not a broad "-ly adverb" rule) so real terms
+   are never dimmed. "adults"/"children"/"men"/"women"/"elderly" are NOT here — those
+   stay selectable. Multi-word phrases are matched first, so a vague word that is part
+   of a real phrase (e.g. "treatment discontinuation") is preserved. */
+const NOISE_WORDS = [
+  // vague verbs (standalone)
+  'underwent', 'undergoing', 'undergo', 'undergoes',
+  'received', 'receiving', 'receive', 'receives',
+  'including', 'included', 'include', 'includes',
+  'using', 'used', 'use', 'uses', 'grouped', 'grouping',
+  'treated', 'given', 'followed', 'following', 'performed', 'conducted',
+  'assessed', 'evaluated', 'measured', 'reported', 'defined', 'considered',
+  'analysed', 'analyzed', 'observed', 'investigated', 'examined',
+  // vague adverbs / qualifiers
+  'across', 'possibly', 'appropriately', 'approximately', 'respectively',
+  'generally', 'typically', 'usually', 'mainly', 'mostly', 'particularly',
+  'specifically', 'overall', 'however', 'therefore', 'thus', 'also', 'either',
+  'both', 'each', 'any', 'all', 'such', 'various', 'several', 'many', 'more',
+  // population-noise nouns (the spec drops these explicitly; "adults"/"children" stay)
+  'patient', 'patients', 'subject', 'subjects', 'individual', 'individuals',
+  'participant', 'participants', 'people', 'person', 'persons', 'population',
+  'cohort', 'cases', 'case',
+];
+
 export const FILLER_WORDS = new Set([
   ...EXPLICIT_FILLER,
+  ...NOISE_WORDS,
   ...Array.from(STOPWORDS || []),
 ]);
 
-/** A connector/filler word that should not be auto-selectable (but can be forced). */
+/** A connector / filler / vague word that should not be auto-selectable (but can be
+ *  forced via the manual "add keyword" box). */
 export function isFillerWord(word) {
   const n = norm(word);
   if (!n) return true;
-  if (n.length < 2 && !/[0-9]/.test(n)) return true; // stray single letters
+  if (n.length < 2 && !/[0-9]/.test(n)) return true; // stray single letters (keep 2-letter acronyms: AF, MI, HF, UC)
   return FILLER_WORDS.has(n);
 }
 
@@ -71,6 +100,16 @@ const CURATED_PHRASES = [
   'randomized controlled trial', 'randomised controlled trial',
   'all-cause mortality', 'blood pressure', 'weight loss', 'adverse events',
   'length of stay', 'glycated hemoglobin', 'glycated haemoglobin',
+  // SB4 — biliary / endoscopy domain + common outcome phrases the spec calls out.
+  'endoscopic ultrasound', 'endoscopic ultrasonography',
+  'malignant biliary obstruction', 'biliary obstruction', 'bile duct obstruction',
+  'biliary drainage', 'eus-guided biliary drainage',
+  'eus-guided antegrade biliary drainage', 'eus-guided transpapillary biliary drainage',
+  'transpapillary biliary drainage', 'transluminal biliary drainage',
+  'eus-guided transluminal biliary drainage', 'failed ercp',
+  'treatment discontinuation', 'technical success', 'clinical success',
+  'stent dysfunction', 'gastroesophageal reflux disease',
+  'glp-1 receptor agonist', 'glp-1 receptor agonists',
 ];
 
 function buildPhraseSet() {

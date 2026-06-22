@@ -14,4 +14,6 @@ export { localMeshSuggestions } from '../../research-engine/searchBuilder/meshSu
 // SB3 — guided workflow helpers (Tab 1 keyword tokenization + Tab 3 database catalogue).
 export { tokenizeForSelection, suggestedKeywords, isFillerWord } from '../../research-engine/searchBuilder/keywordSelection.js';
 export { DATABASE_CATALOG, databaseGroups, defaultSelectedDatabases, accessNote } from '../../research-engine/searchBuilder/databases.js';
+// SB4 — concept-hygiene helpers (duplicate detection, Search Quality Check, sensitivity).
+export { termEquivalenceKey, detectCrossConceptDuplicates, searchQualityCheck, sensitivitySignal } from '../../research-engine/searchBuilder/crossConcept.js';
 export { searchBuilderApi, loadSearch, saveSearch, searchEngineFlagEnabled } from './searchBuilderApi.js';
