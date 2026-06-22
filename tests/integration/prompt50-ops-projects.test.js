@@ -92,20 +92,29 @@ describe('prompt50 WS1 — Ops Projects analytics: shapes (admin)', () => {
 describe('prompt50 WS1 — server-side sort is applied BEFORE pagination', () => {
   it('paginated results equal the globally-sorted order (created asc) and reverse with dir', async () => {
     if (!up || !adminCookie) return;
-    const asc = await api('/admin/projects?sort=created&dir=asc&limit=100&page=1', { cookie: adminCookie });
+    // Scope to a DEDICATED owner so concurrent tests mutating other users'
+    // projects can't change the set mid-assertion (isolation under parallel run).
+    const ownerCookie = await register(`opssort_${rnd()}@t.local`);
+    const me = await api('/auth/me', { cookie: ownerCookie });
+    const ownerId = me.data?.user?.id;
+    expect(ownerId).toBeTruthy();
+    const mk = (n) => api('/projects', { method: 'POST', cookie: ownerCookie, body: { name: `Sort ${n} ${rnd()}` } });
+    for (let i = 0; i < 4; i++) await mk(i);   // sequential → distinct createdAt order
+
+    const q = (extra) => `/admin/projects?userId=${ownerId}&sort=created&${extra}`;
+    const asc = await api(q('dir=asc&limit=100&page=1'), { cookie: adminCookie });
     expect(asc.status).toBe(200);
     const ids = asc.data.projects.map(p => p.id);
-    if (ids.length < 4) return; // not enough data to prove pagination ordering
+    expect(ids.length).toBe(4);
 
-    // Page through with a small page size; the concatenation must match the
-    // single-shot global order exactly (→ sort happened before pagination).
-    const p1 = await api('/admin/projects?sort=created&dir=asc&limit=2&page=1', { cookie: adminCookie });
-    const p2 = await api('/admin/projects?sort=created&dir=asc&limit=2&page=2', { cookie: adminCookie });
+    // Page through; concatenation must equal the single-shot order (sort-before-pagination).
+    const p1 = await api(q('dir=asc&limit=2&page=1'), { cookie: adminCookie });
+    const p2 = await api(q('dir=asc&limit=2&page=2'), { cookie: adminCookie });
     expect(p1.data.projects.map(p => p.id)).toEqual(ids.slice(0, 2));
     expect(p2.data.projects.map(p => p.id)).toEqual(ids.slice(2, 4));
 
-    // dir=desc reverses the order.
-    const desc = await api('/admin/projects?sort=created&dir=desc&limit=100&page=1', { cookie: adminCookie });
+    // dir=desc is the exact reverse (deterministic tiebreak follows direction).
+    const desc = await api(q('dir=desc&limit=100&page=1'), { cookie: adminCookie });
     expect(desc.data.projects.map(p => p.id)).toEqual([...ids].reverse());
 
     // Rows carry the new ops fields.
