@@ -6,7 +6,13 @@ import { alpha as themeAlpha } from "../../theme/tokens.js";
 import { C } from "../ui/styles.js";
 import { runMeta } from "../../../research-engine/statistics/monolithStats.js";
 import { ES_TYPES } from "../../../research-engine/project-model/monolithConstants.js";
-import { fmtNum, fmtES, fmtI2, fmtWeight, normalizePrecision } from "../../../research-engine/format/precision.js";
+// WS4 (prompt 50): the INTERACTIVE on-screen plots format every visible number
+// through the chart-display formatter (chartFormat.js), which is bounded and
+// edge-case safe and NEVER honours `full` precision — so the chart can never
+// render unreadable noise like "0.00000000000000000". The PUBLICATION export
+// (svgBuilders.js) and CSV/report export keep their own user-configurable
+// precision; chart ≠ export by construction.
+import { chartNum, chartES, chartI2, chartWeight, chartP, chartAxisTick } from "../../../research-engine/format/chartFormat.js";
 
 export function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",showCounts=true,showWeights=true,svgId="forestplot-svg",prec,live=false,theme="night"}){
   if(!result) return(<div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:40,textAlign:"center",color:C.muted}}>
@@ -25,7 +31,7 @@ export function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",sh
   const isLog=esType&&ES_TYPES[esType]&&ES_TYPES[esType].log;
   const isProp=esType==="PROP";
   const bt=x=>{ if(isLog)return Math.exp(x); if(isProp){const e=Math.exp(x);return e/(1+e);} return x; };
-  const fmtV=(x,pr)=>isProp?(bt(x)*100).toFixed(normalizePrecision(pr||prec).decimals)+"%":(isLog?fmtES(bt(x),pr||prec):fmtES(x,pr||prec));
+  const fmtV=(x,pr)=>isProp?chartES(bt(x)*100,pr||prec)+"%":(isLog?chartES(bt(x),pr||prec):chartES(x,pr||prec));
   // does any study actually have count data to show?
   const anyExp=studies.some(s=>s.a!==""&&s.a!=null), anyCtrl=studies.some(s=>s.c!==""&&s.c!=null);
   const colCounts=showCounts&&(anyExp||anyCtrl);
@@ -89,8 +95,8 @@ export function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",sh
           <line x1={x2} y1={cy-4} x2={x2} y2={cy+4} stroke={FC.acc} strokeWidth={1.5}/>
           <rect x={xc-sq/2} y={cy-sq/2} width={sq} height={sq} fill={FC.acc} rx={1}/>
           <text x={colEffX} y={cy+4} fontSize={10} fill={FC.muted}>{fmtV(s._es,prec)} [{fmtV(s._lo,prec)}, {fmtV(s._hi,prec)}]</text>
-          {showWeights&&<text x={colWfX} y={cy+4} fontSize={10} fill={FC.dim}>{fmtWeight(s._wFixedPct||0,prec)}%</text>}
-          {showWeights&&<text x={colWrX} y={cy+4} fontSize={10} fill={FC.dim}>{fmtWeight(s._wRandomPct||0,prec)}%</text>}
+          {showWeights&&<text x={colWfX} y={cy+4} fontSize={10} fill={FC.dim}>{chartWeight(s._wFixedPct||0)}%</text>}
+          {showWeights&&<text x={colWrX} y={cy+4} fontSize={10} fill={FC.dim}>{chartWeight(s._wRandomPct||0)}%</text>}
         </g>);
       })}
       <line x1={padL} y1={TOP+k*ROW+6} x2={W-6} y2={TOP+k*ROW+6} stroke={FC.brd}/>
@@ -106,17 +112,17 @@ export function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",sh
         </g>);
       })()}
       {/* axis ticks (back-transformed labels for log/prop) */}
-      {gridVals.map(v=><text key={v} x={xS(v)} y={yAxisTicks} textAnchor="middle" fontSize={10} fill={FC.muted}>{isLog?bt(v).toFixed(2):(isProp?(bt(v)*100).toFixed(0)+"%":v)}</text>)}
+      {gridVals.map(v=><text key={v} x={xS(v)} y={yAxisTicks} textAnchor="middle" fontSize={10} fill={FC.muted}>{isLog?chartAxisTick(bt(v),{isLog:true}):(isProp?chartAxisTick(bt(v),{isProp:true}):chartAxisTick(v))}</text>)}
       {/* favours labels — flank the null line, one row below the ticks */}
       <text x={xS(nullLine)-6} y={yFavours} textAnchor="end" fontSize={9} fill={FC.dim}>← favours</text>
       <text x={xS(nullLine)+6} y={yFavours} textAnchor="start" fontSize={9} fill={FC.dim}>favours →</text>
       {/* effect-measure label — centered under the plot, on its own row */}
       <text x={LM+plotW/2} y={yEsLabel} textAnchor="middle" fontSize={11} fill={FC.txt}>{esLabel}</text>
-      {/* heterogeneity line — prompt32 Task 8: route every number through the
-          precision helpers so the LIVE plot matches the exported figure (export
-          path uses the same fmtI2/fmtNum). I²/weights stay 1dp by convention. */}
+      {/* heterogeneity line — prompt50 WS4: route every number through the
+          CHART formatter (bounded, edge-case safe, never `full`). I²/weights stay
+          1dp by convention; τ²/Q render a clean "0.000" instead of a digit wall. */}
       <text x={padL} y={yHetero} fontSize={10} fill={FC.dim}>
-        Heterogeneity: I² = {fmtI2(I2,prec)}%  ·  τ² = {fmtNum(tau2,prec)}  ·  Q = {fmtNum(Q,prec)} (p {Qpval<0.001?"< 0.001":"= "+fmtNum(Qpval,prec)})  ·  overall p {pval<0.001?"< 0.001":"= "+fmtNum(pval,prec)}
+        Heterogeneity: I² = {chartI2(I2)}%  ·  τ² = {chartNum(tau2,prec)}  ·  Q = {chartNum(Q,prec)} (p {Qpval<0.001?"< 0.001":"= "+chartNum(Qpval,prec)})  ·  overall p {pval<0.001?"< 0.001":"= "+chartNum(pval,prec)}
       </text>
     </svg>
   </div>);
@@ -176,12 +182,12 @@ export function FunnelPlot({studies}){
       {/* SE ticks (y) */}
       {seTicks.map(function(t,i){ return (<g key={i}>
         <line x1={ML-4} y1={yS(t)} x2={ML} y2={yS(t)} stroke={C.brd}/>
-        <text x={ML-8} y={yS(t)+4} textAnchor="end" fontSize={10} fill={C.muted}>{t.toFixed(3)}</text>
+        <text x={ML-8} y={yS(t)+4} textAnchor="end" fontSize={10} fill={C.muted}>{chartNum(t,{decimals:3})}</text>
       </g>); })}
       {/* ES ticks (x) */}
       {esTicks.map(function(t,i){ return (<g key={i}>
         <line x1={xS(t)} y1={MT+plotH} x2={xS(t)} y2={MT+plotH+4} stroke={C.brd}/>
-        <text x={xS(t)} y={MT+plotH+18} textAnchor="middle" fontSize={10} fill={C.muted}>{t.toFixed(2)}</text>
+        <text x={xS(t)} y={MT+plotH+18} textAnchor="middle" fontSize={10} fill={C.muted}>{chartNum(t,{decimals:2})}</text>
       </g>); })}
       {/* axis labels */}
       <text x={ML+plotW/2} y={H-12} textAnchor="middle" fontSize={11} fill={C.muted}>Effect Size</text>
@@ -189,9 +195,9 @@ export function FunnelPlot({studies}){
       {/* points */}
       {pts.map(function(p,i){ return (<g key={i}>
         <circle cx={xS(p.es)} cy={yS(p.se)} r={5} fill={C.acc} stroke={C.bg} strokeWidth={1.5}/>
-        <title>{`${p.label} · ES=${p.es.toFixed(3)}, SE=${p.se.toFixed(3)}`}</title>
+        <title>{`${p.label} · ES=${chartNum(p.es,{decimals:3})}, SE=${chartNum(p.se,{decimals:3})}`}</title>
       </g>); })}
-      <text x={ML+plotW-4} y={MT+12} textAnchor="end" fontSize={10} fill={C.dim}>Pooled: {centre.toFixed(3)}</text>
+      <text x={ML+plotW-4} y={MT+12} textAnchor="end" fontSize={10} fill={C.dim}>Pooled: {chartNum(centre,{decimals:3})}</text>
     </svg>
   </div>);
 }
