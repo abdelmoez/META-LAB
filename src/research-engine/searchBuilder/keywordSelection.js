@@ -46,6 +46,7 @@ const EXPLICIT_FILLER = [
   'and', 'or', 'if', 'the', 'a', 'an', 'of', 'with', 'without', 'in', 'on', 'at',
   'to', 'from', 'by', 'for', 'as', 'is', 'are', 'do', 'does', 'be', 'been',
   'versus', 'vs', 'vs.', 'compared', 'comparison', 'among', 'between', 'than',
+  'after', 'before', 'during', 'per', 'via', 'into', 'onto', 'upon',
 ];
 
 /* SB4 — vague verbs / adverbs / qualifiers and population-noise nouns that are not
@@ -69,10 +70,18 @@ const NOISE_WORDS = [
   'generally', 'typically', 'usually', 'mainly', 'mostly', 'particularly',
   'specifically', 'overall', 'however', 'therefore', 'thus', 'also', 'either',
   'both', 'each', 'any', 'all', 'such', 'various', 'several', 'many', 'more',
-  // population-noise nouns (the spec drops these explicitly; "adults"/"children" stay)
+  // population-noise nouns. SB5 explicitly rejects "adults"/"patients" when alone, so
+  // (unlike SB3/SB4) generic age/population nouns are dropped here too — a real disease
+  // population is a condition phrase ("type 2 diabetes"), never the bare word "adults".
   'patient', 'patients', 'subject', 'subjects', 'individual', 'individuals',
   'participant', 'participants', 'people', 'person', 'persons', 'population',
-  'cohort', 'cases', 'case',
+  'cohort', 'cases', 'case', 'adult', 'adults', 'child', 'children', 'ill',
+  // SB5 — weak clinical qualifiers that carry no search signal alone (real disease
+  // names that contain them are matched as phrases first, so e.g. "early gastric
+  // cancer" still yields "gastric cancer"). Deliberately conservative: clinically
+  // loaded modifiers like acute/chronic/metastatic/refractory are NOT here.
+  'failed', 'unsuccessful', 'suspected', 'confirmed', 'early', 'late',
+  'severe', 'moderate', 'mild', 'resistant', 'critically',
 ];
 
 export const FILLER_WORDS = new Set([

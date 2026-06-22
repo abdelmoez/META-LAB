@@ -179,15 +179,22 @@ export function syncSearchBuilderFromPico(pico, existingConcepts, ignoredList) {
   groups.forEach((g, i) => { if (g.picoField) giByField[g.picoField] = i; });
   const groupTerms = groups.map((g) => (g.terms || []).slice());
 
-  // (1) relocate role-hinted auto terms
+  // (1) relocate role-hinted auto terms — CONSERVATIVELY. We only relocate
+  // INTERVENTION/procedure/drug terms (role 'I') that were extracted from Population
+  // or Outcomes, because a procedure essentially never defines the population and is
+  // never an outcome (this is the EUS-in-Population fix). We deliberately do NOT
+  // relocate disease (role 'P') or outcome (role 'O') terms, since those are genuinely
+  // ambiguous — e.g. "stroke" or "mortality" is a valid OUTCOME in one review and the
+  // POPULATION in another, so we respect where the PICO author placed them. Comparator
+  // (role-I procedures/drugs as the control arm) is left alone too. Any remaining exact
+  // duplicate across groups is resolved by the role-aware dedup pass below.
   const moveInto = {}; // targetGi -> [term]
   groups.forEach((g, gi) => {
-    if (!g.picoField || g.picoField === 'T') return;
+    if (g.picoField !== 'P' && g.picoField !== 'O') return; // only pull interventions OUT of P/O
     groupTerms[gi] = groupTerms[gi].filter((t) => {
       if (t.source !== 'pico_auto') return true; // keep manual terms where the user put them
-      const role = termPicoRole(t.text);
-      if (role && role !== g.picoField && giByField[role] != null) {
-        (moveInto[giByField[role]] = moveInto[giByField[role]] || []).push(t);
+      if (termPicoRole(t.text) === 'I' && giByField.I != null) {
+        (moveInto[giByField.I] = moveInto[giByField.I] || []).push(t);
         return false;
       }
       return true;

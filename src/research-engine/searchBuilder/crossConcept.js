@@ -79,12 +79,18 @@ export function searchQualityCheck(concepts, opts = {}) {
   const warnings = [];
   const push = (w) => { if (!dismissed.has(w.id)) warnings.push(w); };
 
-  // 1. Major concept has no terms.
-  for (const [key, label] of MAJOR_CONCEPTS) {
+  // 1. Population / Intervention with no terms is a real problem (warning). Outcomes
+  //    empty is NORMAL — many SR searches deliberately omit outcomes to stay sensitive
+  //    — so it gets a calm, informational note instead of a warning (SB5 Part 7).
+  for (const [key, label] of [['P', 'Population'], ['I', 'Intervention / Exposure']]) {
     const c = list.find((x) => x.picoField === key);
     if (c && liveTerms(c).length === 0) {
       push({ id: `empty:${key}`, severity: 'warning', conceptId: c.id, concept: label, message: `${label} has no search terms.`, action: `Add at least one term for ${label} in Select Keywords.` });
     }
+  }
+  const outEmpty = list.find((x) => x.picoField === 'O');
+  if (outEmpty && liveTerms(outEmpty).length === 0) {
+    push({ id: 'outcomes-optional', severity: 'info', conceptId: outEmpty.id, concept: 'Outcomes', message: 'No outcome terms — that’s usually fine. Outcomes are optional in many systematic-review searches; adding them makes the search more specific but can reduce sensitivity (you can apply outcomes at screening instead).', action: 'Leave empty for a sensitive search, or add outcome terms if you want a narrower, more targeted search.' });
   }
 
   // 2. Same/equivalent term in more than one AND-ed concept.

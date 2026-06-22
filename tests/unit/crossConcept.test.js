@@ -57,11 +57,18 @@ describe('searchQualityCheck', () => {
     concept('O', 'Outcomes'), // empty major concept
   ];
 
-  it('warns about a term in more than one concept and an empty major concept', () => {
-    const w = searchQualityCheck(concepts);
-    const ids = w.map((x) => x.id);
+  it('warns about a term in more than one concept', () => {
+    const ids = searchQualityCheck(concepts).map((x) => x.id);
     expect(ids).toContain('multi:fam:eus');
-    expect(ids).toContain('empty:O');
+  });
+  it('treats empty Outcomes as optional guidance (info), not a warning', () => {
+    const w = searchQualityCheck(concepts).find((x) => x.id === 'outcomes-optional');
+    expect(w).toBeTruthy();
+    expect(w.severity).toBe('info');
+    expect(w.message.toLowerCase()).toContain('optional');
+    // empty Population / Intervention remain real warnings
+    const emptyPop = searchQualityCheck([{ id: 'p', picoField: 'P', label: 'Population', terms: [] }]);
+    expect(emptyPop.find((x) => x.id === 'empty:P').severity).toBe('warning');
   });
   it('warns when a major concept with terms has no controlled vocabulary', () => {
     const ids = searchQualityCheck(concepts).map((x) => x.id);

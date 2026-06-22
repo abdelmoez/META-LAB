@@ -20,9 +20,14 @@ describe('isFillerWord', () => {
       expect(isFillerWord(w)).toBe(true);
     }
   });
-  it('does NOT flag clinically meaningful content words (spec selects "adults")', () => {
-    for (const w of ['adults', 'obesity', 'placebo', 'semaglutide', 'mortality']) {
+  it('does NOT flag clinically meaningful content words', () => {
+    for (const w of ['obesity', 'placebo', 'semaglutide', 'mortality', 'antegrade']) {
       expect(isFillerWord(w)).toBe(false);
+    }
+  });
+  it('flags population-noise nouns (SB5: "adults"/"patients"/"children" alone are not keywords)', () => {
+    for (const w of ['adults', 'adult', 'patients', 'subjects', 'participants', 'children']) {
+      expect(isFillerWord(w)).toBe(true);
     }
   });
   it('treats blank/stray single letters as filler', () => {
@@ -37,12 +42,12 @@ describe('tokenizeForSelection — words', () => {
   it('returns a token per word in reading order', () => {
     expect(toks.length).toBeGreaterThan(5);
   });
-  it('marks content words selectable and connector words not', () => {
-    expect(byNorm(toks, 'adults').selectable).toBe(true);
+  it('marks content words selectable and connector/noise words not', () => {
     expect(byNorm(toks, 'obesity').selectable).toBe(true);
     expect(byNorm(toks, 'placebo').selectable).toBe(true);
     expect(byNorm(toks, 'with').selectable).toBe(false);
     expect(byNorm(toks, 'and').selectable).toBe(false);
+    expect(byNorm(toks, 'adults').selectable).toBe(false); // SB5: population-noise
     expect(byNorm(toks, 'with').kind).toBe('filler');
   });
   it('strips trailing punctuation from the display text', () => {
@@ -101,8 +106,8 @@ describe('SB4 — vague verbs / adverbs / population-noise are not selectable', 
       expect(isFillerWord(w)).toBe(true);
     });
   }
-  it('still keeps real content words selectable (adults, children, obesity, antegrade)', () => {
-    for (const w of ['adults', 'children', 'obesity', 'antegrade', 'semaglutide']) {
+  it('still keeps real content words selectable (obesity, antegrade, semaglutide)', () => {
+    for (const w of ['obesity', 'antegrade', 'semaglutide', 'thrombectomy']) {
       expect(isFillerWord(w)).toBe(false);
     }
   });

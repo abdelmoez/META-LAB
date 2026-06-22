@@ -165,3 +165,35 @@ export function localMeshSuggestions(text, cap = 6) {
 
 /** Exported for tests + the dropdown (so it can label remote results consistently). */
 export const _seed = SEED;
+
+/* ── SB5 — controlled-vocabulary SAFETY ───────────────────────────────────────
+   A close-but-wrong MeSH heading (e.g. "Endoscopic Ultrasound-Guided Fine Needle
+   Aspiration" offered for an EUS *biliary drainage* review) is harmful. We can't do
+   semantic disambiguation offline (synonymous headings like "Endosonography" ↔
+   "endoscopic ultrasound" share no tokens), so this is intentionally CONSERVATIVE:
+   it returns 'high' only when the heading clearly token-overlaps the typed term, else
+   'review' (needs human confirmation). It NEVER returns a silent 'trust me' — the UI
+   labels 'review' suggestions and the engine never auto-adds any controlled term. */
+const MESH_STOP = new Set(['the', 'of', 'and', 'with', 'for', 'in', 'to', 'a', 'an',
+  'disease', 'diseases', 'syndrome', 'disorder', 'disorders', 'guided', 'related', 'type']);
+
+function sigTokens(s) {
+  return norm(s).split(/[\s,/()-]+/).filter((w) => w.length > 1 && !MESH_STOP.has(w));
+}
+
+/**
+ * meshConfidence(termText, heading) → 'high' | 'review'.
+ * 'high' when the candidate heading shares a strong fraction of significant tokens
+ * with the typed term (Jaccard ≥ 0.5 and ≥1 shared token); otherwise 'review'.
+ * Curated SEED suggestions are treated as 'high' by the caller; this guards REMOTE
+ * (NLM) suggestions the offline engine cannot verify. Pure + deterministic.
+ */
+export function meshConfidence(termText, heading) {
+  const tt = new Set(sigTokens(termText));
+  const hh = sigTokens(heading);
+  if (!tt.size || !hh.length) return 'review';
+  const shared = hh.filter((w) => tt.has(w)).length;
+  if (!shared) return 'review';
+  const union = new Set([...tt, ...hh]).size;
+  return shared / union >= 0.5 ? 'high' : 'review';
+}

@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { C, FONT, MONO, alpha } from "../../frontend/theme/tokens.js";  // SearchEngine: adapt to app theme (day/night + brand)
 import { picoToConcepts } from "../../research-engine/searchBuilder/conceptExtraction.js"; // prompt40 Task 3
-import { localMeshSuggestions } from "../../research-engine/searchBuilder/meshSuggest.js"; // prompt42 Task 3
+import { localMeshSuggestions, meshConfidence } from "../../research-engine/searchBuilder/meshSuggest.js"; // prompt42 Task 3 + SB5 vocab safety
 import { serializeSearchState, pickPersisted, remoteAdoptDecision, syncSearchBuilderFromPico,
   findFieldConcept, fieldHasTerm, conceptStatus, CONCEPT_STATUS_LABELS, PICO_FIELD_DEFS } from "../../research-engine/searchBuilder/searchState.js"; // SE1 + SE2 + SB3
 import { tokenizeForSelection } from "../../research-engine/searchBuilder/keywordSelection.js"; // SB3 Tab 1
@@ -520,7 +520,9 @@ function SuggestBox({api,value,onChange,onPick,onCommitTyped,onEscape,onBlur,pla
       if(!api||typeof api.meshSuggest!=="function"){ if(live) setRemote([]); return; }
       try{
         const recs=await api.meshSuggest(q);
-        const mapped=(Array.isArray(recs)?recs:[]).map(r=>({label:r.mesh,type:"mesh",mesh:r.mesh,vocab:r,source:"remote"})).filter(x=>x.label);
+        // SB5 vocab safety — score each remote heading's confidence vs the typed term;
+        // 'review' headings are labelled in the dropdown and never auto-added.
+        const mapped=(Array.isArray(recs)?recs:[]).map(r=>({label:r.mesh,type:"mesh",mesh:r.mesh,vocab:r,source:"remote",confidence:meshConfidence(q,r.mesh)})).filter(x=>x.label);
         if(live) setRemote(mapped);
       }catch{ if(live) setRemote([]); } // graceful — keep local-only
     },320);
@@ -558,6 +560,10 @@ function SuggestBox({api,value,onChange,onPick,onCommitTyped,onEscape,onBlur,pla
                 onMouseDown={e=>{e.preventDefault();pick(s);}} onMouseEnter={()=>setHi(i)}
                 style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",cursor:"pointer",background:i===hi?alpha(C.acc,"1a"):"transparent"}}>
                 <span style={{flex:1,fontFamily:s.type==="mesh"?MONO:SANS,fontSize:11.5,color:C.txt2,wordBreak:"break-word"}}>{s.label}</span>
+                {/* SB5 vocab safety — flag a low-confidence remote heading so the user verifies it before adding. */}
+                {s.type==="mesh"&&s.confidence==="review"&&(
+                  <span title="Low-confidence match — check this subject heading fits your topic before adding. PecanRev never adds it automatically." style={{fontSize:8,fontWeight:700,letterSpacing:.4,color:C.yel,textTransform:"uppercase",flexShrink:0,border:`1px solid ${alpha(C.yel,"66")}`,borderRadius:4,padding:"0 4px"}}>review</span>
+                )}
                 <span style={{fontSize:8,fontWeight:700,letterSpacing:.4,color:badge[1],textTransform:"uppercase",opacity:.85,flexShrink:0,border:`1px solid ${alpha(badge[1],"55")}`,borderRadius:4,padding:"0 4px"}}>{badge[0]}</span>
               </div>
             );

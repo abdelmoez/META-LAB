@@ -4,7 +4,7 @@
  * (and when) the backend lookup is unavailable.
  */
 import { describe, it, expect } from 'vitest';
-import { localMeshSuggestions } from '../../src/research-engine/searchBuilder/meshSuggest.js';
+import { localMeshSuggestions, meshConfidence } from '../../src/research-engine/searchBuilder/meshSuggest.js';
 
 // Helper: the MeSH-typed suggestion labels for a query.
 const meshLabels = (q) => localMeshSuggestions(q).filter((s) => s.type === 'mesh').map((s) => s.label);
@@ -71,5 +71,22 @@ describe('localMeshSuggestions — shape, dedupe, cap', () => {
   it('expands a standalone abbreviation with no family heading (RCT)', () => {
     const labels = localMeshSuggestions('RCT').map((s) => s.label.toLowerCase());
     expect(labels).toContain('randomized controlled trial');
+  });
+});
+
+describe('meshConfidence — SB5 controlled-vocabulary safety', () => {
+  it('is high when the heading strongly overlaps the typed term', () => {
+    expect(meshConfidence('type 2 diabetes', 'Diabetes Mellitus, Type 2')).toBe('high');
+  });
+  it('flags a close-but-WRONG heading for review (EUS biliary drainage vs EUS-FNA)', () => {
+    // The harmful example from the SB5 spec: do not silently trust this heading.
+    expect(meshConfidence('EUS-guided biliary drainage', 'Endoscopic Ultrasound-Guided Fine Needle Aspiration')).toBe('review');
+  });
+  it('flags an unrelated heading for review', () => {
+    expect(meshConfidence('atrial fibrillation', 'Asthma')).toBe('review');
+  });
+  it('returns review for empty input rather than over-trusting', () => {
+    expect(meshConfidence('', 'Anything')).toBe('review');
+    expect(meshConfidence('something', '')).toBe('review');
   });
 });

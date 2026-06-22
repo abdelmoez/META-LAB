@@ -205,7 +205,25 @@ export const CONNECTORS = [
 // if a segment reduces to only these, the segment is dropped. (Beyond STOPWORDS.)
 export const JUNK_WORDS = new Set([
   'patient', 'patients', 'adult', 'adults', 'people', 'person', 'persons',
-  'subject', 'subjects', 'individual', 'individuals', 'population', 'cases',
+  'subject', 'subjects', 'individual', 'individuals', 'participant', 'participants',
+  'population', 'cohort', 'cases', 'case',
   'study', 'studies', 'trial', 'trials', 'effect', 'effects', 'group', 'groups',
   'men', 'women', 'children', 'use', 'using', 'undergoing', 'receiving',
+  // SB5 (issue #3) — vague verbs / adverbs / qualifiers so conceptExtraction never
+  // emits them as standalone concept terms (they are leading/trailing junk, or a
+  // whole segment collapses to junk and is dropped). Multi-word clinical phrases are
+  // matched by CONCEPT_FAMILIES first, so real phrases are unaffected.
+  'underwent', 'undergo', 'undergoes', 'received', 'receive', 'receives',
+  'including', 'included', 'include', 'includes', 'grouped', 'grouping',
+  'across', 'possibly', 'appropriately', 'approximately', 'respectively',
+  'generally', 'typically', 'usually', 'mainly', 'mostly', 'particularly',
+  'specifically', 'overall', 'assessed', 'evaluated', 'measured', 'reported',
+  'defined', 'considered', 'observed', 'investigated', 'examined', 'performed',
+  'conducted', 'analysed', 'analyzed', 'given', 'followed', 'following', 'treated',
+  // SB5 (issue #2) — weak clinical qualifiers, so a Population collapses to its clean
+  // disease concept ("early gastric cancer" → "gastric cancer", "suspected pulmonary
+  // embolism" → "pulmonary embolism"). Disease names that genuinely contain these are
+  // matched as CONCEPT_FAMILIES phrases first, so they are not harmed.
+  'failed', 'unsuccessful', 'suspected', 'confirmed', 'early', 'late',
+  'severe', 'moderate', 'mild', 'resistant', 'critically', 'ill',
 ]);
