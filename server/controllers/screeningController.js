@@ -1289,11 +1289,19 @@ export async function saveDecision(req, res) {
       }
     }
 
-    // Sync conflicts for this record (non-blocking)
-    syncConflicts(p.id, rec.id).catch(() => {});
+    // Recalculate the conflict row from the reviewers' CURRENT active decisions
+    // BEFORE poking clients, so any refetch triggered by the event observes a
+    // consistent conflict state (prompt50 WS3). The decision is already
+    // persisted; a sync failure must never fail the save — log and continue.
+    try {
+      await syncConflicts(p.id, rec.id);
+    } catch (e) {
+      console.error('[screening] syncConflicts:', e.message);
+    }
 
     // Realtime poke (Task 7) — deliberately carries NO actor identity
     // (blind-mode safe by construction); recipients refetch what they may see.
+    // The Conflicts tab subscribes to this to add/remove a record without reload.
     emitToProjectMembers(p.id, { type: 'decision.saved' }, { exclude: req.user.id });
 
     // se2.md §6 — near-real-time rescoring. The human decision is ALREADY saved;

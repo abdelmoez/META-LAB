@@ -5,6 +5,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { Loading, ErrorBanner, Button, Badge, DecisionChip, Card, EmptyState } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
+import { useRealtime } from '../../hooks/useRealtime.js';
 
 function parseDecisions(json) {
   try {
@@ -35,6 +36,15 @@ export default function ConflictsTab({ pid, project, access, refreshProject }) {
     finally { setLoading(false); }
   }, [pid]);
   useEffect(() => { load(); }, [load]);
+
+  // prompt50 WS3 — refetch when ANY reviewer decision changes or a conflict is
+  // resolved elsewhere, so a conflict appears the moment it is created and
+  // disappears the moment it is resolved, without a manual reload. Server-side
+  // syncConflicts is the single source of truth; this only re-reads it.
+  useRealtime({
+    'decision.saved':    (ev) => { if (!ev || ev.projectId === pid || ev.projectId === undefined) load(); },
+    'conflict.changed':  (ev) => { if (!ev || ev.projectId === pid || ev.projectId === undefined) load(); },
+  });
 
   async function resolve(cid) {
     const f = forms[cid] || {};

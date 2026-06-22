@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { detectConflict, findAllConflicts } from '../../../src/research-engine/screening/conflicts.js';
+import { detectConflict, findAllConflicts, consensusState, CONSENSUS } from '../../../src/research-engine/screening/conflicts.js';
 
 // ── detectConflict ─────────────────────────────────────────────────────────────
 
@@ -181,5 +181,79 @@ describe('findAllConflicts', () => {
     };
     const conflicts = findAllConflicts(recordDecisions);
     expect(conflicts[0].decisions).toEqual({ alice: 'include', bob: 'exclude' });
+  });
+});
+
+// ── prompt50 WS3 — single-reviewer-across-stages must NOT be a conflict ──────
+describe('detectConflict — duplicate reviewer rows (cross-stage safety)', () => {
+  it('one reviewer with two differing rows is not a self-conflict', () => {
+    // e.g. the SAME reviewer included at title/abstract and excluded at full text;
+    // when those rows are (incorrectly) combined, it must not read as disagreement.
+    const decisions = [
+      { reviewerId: 'r1', decision: 'include' },
+      { reviewerId: 'r1', decision: 'exclude' },
+    ];
+    const result = detectConflict(decisions);
+    expect(result.reviewerCount).toBe(1);
+    expect(result.hasConflict).toBe(false);
+  });
+
+  it('two reviewers who both include — even with stray duplicate rows — is agreement', () => {
+    const decisions = [
+      { reviewerId: 'r1', decision: 'include' },
+      { reviewerId: 'r2', decision: 'include' },
+      { reviewerId: 'r1', decision: 'include' },
+    ];
+    expect(detectConflict(decisions).hasConflict).toBe(false);
+  });
+
+  it('a genuine two-reviewer disagreement is still a conflict', () => {
+    const decisions = [
+      { reviewerId: 'r1', decision: 'include' },
+      { reviewerId: 'r1', decision: 'include' }, // duplicate, collapses
+      { reviewerId: 'r2', decision: 'exclude' },
+    ];
+    expect(detectConflict(decisions).hasConflict).toBe(true);
+  });
+});
+
+// ── prompt50 WS3 §3.1 — authoritative consensus-state matrix ────────────────
+describe('consensusState — decision matrix', () => {
+  const A = (decision) => ({ reviewerId: 'A', decision });
+  const B = (decision) => ({ reviewerId: 'B', decision });
+
+  it('no decisions → awaiting_screening', () => {
+    expect(consensusState([])).toBe(CONSENSUS.AWAITING);
+    expect(consensusState([A('undecided'), B('undecided')])).toBe(CONSENSUS.AWAITING);
+  });
+
+  it('one decision → awaiting_second_reviewer', () => {
+    expect(consensusState([A('include')])).toBe(CONSENSUS.AWAITING_SECOND);
+    expect(consensusState([A('exclude'), B('undecided')])).toBe(CONSENSUS.AWAITING_SECOND);
+  });
+
+  it('include + include → agreement_included', () => {
+    expect(consensusState([A('include'), B('include')])).toBe(CONSENSUS.AGREEMENT_INCLUDED);
+  });
+
+  it('exclude + exclude → agreement_excluded', () => {
+    expect(consensusState([A('exclude'), B('exclude')])).toBe(CONSENSUS.AGREEMENT_EXCLUDED);
+  });
+
+  it('include + exclude (either order) → conflict', () => {
+    expect(consensusState([A('include'), B('exclude')])).toBe(CONSENSUS.CONFLICT);
+    expect(consensusState([A('exclude'), B('include')])).toBe(CONSENSUS.CONFLICT);
+  });
+
+  it('maybe interacts per policy: include+maybe → conflict; maybe+maybe → agreement_other', () => {
+    expect(consensusState([A('include'), B('maybe')])).toBe(CONSENSUS.CONFLICT);
+    expect(consensusState([A('maybe'), B('maybe')])).toBe(CONSENSUS.AGREEMENT_OTHER);
+  });
+
+  it('respects a higher requiredReviewers before declaring agreement', () => {
+    // 2 includes but the project requires 3 → still awaiting another reviewer.
+    expect(consensusState([A('include'), B('include')], 3)).toBe(CONSENSUS.AWAITING_SECOND);
+    // a disagreement is a conflict regardless of the required count.
+    expect(consensusState([A('include'), B('exclude')], 3)).toBe(CONSENSUS.CONFLICT);
   });
 });
