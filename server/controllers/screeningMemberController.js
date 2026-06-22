@@ -363,9 +363,17 @@ export async function updateMember(req, res) {
     }
 
     const updated = await prisma.screenProjectMember.update({ where: { id: member.id }, data });
+    // prompt50 WS6 — make a chat-permission change explicit in the audit trail
+    // (acting user, affected member, project, previous → new, timestamp).
+    const chatChanged = data.canChat !== undefined && !!data.canChat !== !!member.canChat;
     await writeAudit(req.params.pid, req.user, 'MEMBER_PERMISSIONS_CHANGED', {
       entityType: 'member', entityId: member.id,
-      details: { email: member.email, before: { role: member.role, status: member.status }, changes: data },
+      details: {
+        email: member.email,
+        before: { role: member.role, status: member.status, canChat: !!member.canChat },
+        changes: data,
+        ...(chatChanged ? { chatPermission: { from: !!member.canChat, to: !!data.canChat } } : {}),
+      },
     });
     // ROLE_CHANGED notification on a REAL role/preset change (prompt6 Task 1) —
     // best-effort fire-and-forget; skipped for unclaimed invites (no userId) and

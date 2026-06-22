@@ -50,6 +50,26 @@ function activeTypers(projectId, exceptUserId) {
   return names;
 }
 
+/**
+ * Per-member chat WRITE gate (prompt50 WS6).
+ *
+ * A member explicitly denied chat (canChat=false) is READ-ONLY: they keep read
+ * access to existing chat content but cannot create new chat content — REGARDLESS
+ * of the project-wide `chatRestricted` flag. The owner and leaders are never
+ * blocked. Before this fix the gate only fired when `chatRestricted` was on, so
+ * disabling a single member's canChat had no effect (the reported bug).
+ *
+ * The project-wide `chatRestricted` flag remains a valid additional lockdown; it
+ * is fully subsumed by this per-member check (it only ever blocked members who
+ * already lacked canChat). Enforced on EVERY chat WRITE route (send, delete,
+ * typing) so a forged request body, a stale browser tab, a replayed WebSocket
+ * event, or a direct API call cannot bypass it — the UI hint is never the
+ * source of truth.
+ */
+function canWriteChat(access) {
+  return !!(access && (access.isLeader || access.canChat));
+}
+
 /** Strip HTML tags + control chars; trim; cap length. */
 function sanitize(text) {
   return String(text || '')
@@ -93,7 +113,9 @@ async function postMessageCore(access, req, res) {
   const settings = await getMetaSiftSettings();
   if (settings.allowChat === false) return res.status(403).json({ error: 'Chat is currently disabled by the administrator' });
   if (!access.active) return res.status(403).json({ error: 'Inactive members cannot post' });
-  if (access.project.chatRestricted && !access.canChat && !access.isLeader) {
+  // Per-member canChat is authoritative and always enforced (prompt50 WS6) —
+  // independent of the project-wide chatRestricted flag.
+  if (!canWriteChat(access)) {
     return res.status(403).json({ error: 'You do not have permission to post in this chat.' });
   }
   const message = sanitize(req.body?.message);
@@ -157,6 +179,8 @@ async function markReadCore(access, req, res) {
 /** Mark the current member as typing (Task 7). */
 async function setTypingStatusCore(access, req, res) {
   if (!access.active) return res.status(403).json({ error: 'Inactive members cannot post' });
+  // Read-only members do not broadcast typing (a chat write signal) — prompt50 WS6.
+  if (!canWriteChat(access)) return res.status(403).json({ error: 'You do not have permission to post in this chat.' });
   const name = access.member?.name || req.user.email || 'Member';
   setTyping(access.project.id, req.user.id, name);
   res.json({ ok: true });
@@ -169,6 +193,11 @@ const CHAT_DELETE_WINDOW_MS = 2 * 60 * 1000;
 
 /** Sender (within 2 min) or leader (moderation) may soft-delete a message. */
 async function deleteMessageCore(access, req, res) {
+  // Deleting is a chat WRITE — a read-only member (canChat=false) cannot delete,
+  // even their own message (prompt50 WS6). Leaders/owner keep moderation power.
+  if (!canWriteChat(access)) {
+    return res.status(403).json({ error: 'You do not have permission to modify this chat.' });
+  }
   const messageId = req.params.cmid || req.params.messageId;
   const msg = await prisma.screenChatMessage.findFirst({
     where: { id: messageId, projectId: access.project.id, deletedAt: null },

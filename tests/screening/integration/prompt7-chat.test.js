@@ -215,39 +215,45 @@ describe('prompt7 T11 — shared chat via the META·LAB door (/screening/metalab
     await cleanupPair(owner, spid, mlId);
   });
 
-  it('chatRestricted: member without canChat → 403 post via the metalab door (read stays 200); owner still posts 200', async () => {
+  it('canChat=false → read-only on EVERY write route regardless of chatRestricted; re-enabling restores posting [prompt50 WS6]', async () => {
     if (!up) return;
     const { r, owner, mlId, spid } = await setupPair('p7c_r');
-    // NOTE: the 'viewer' preset grants canChat — 'readonly_both' is the
-    // viewer-ROLE preset WITHOUT canChat (permissionPresets.js), which is what
-    // the chatRestricted gate keys on.
+    // 'readonly_both' is the viewer-ROLE preset WITHOUT canChat (permissionPresets.js).
     const v = await register(`p7c_r_v${r}@t.local`);
     const add = await api(`/screening/projects/${spid}/members`, { method: 'POST', cookie: owner.cookie, body: { email: v.email, preset: 'readonly_both' } });
     expect(add.status).toBe(201);
+    const mid = add.data.member.id;
     expect(add.data.member.canChat).toBe(false);
 
-    // Unrestricted: even a no-canChat member may post (gate only applies when restricted).
-    expect((await api(`/screening/metalab/${mlId}/chat`, { method: 'POST', cookie: v.cookie, body: { message: `pre-restrict ${r}` } })).status).toBe(201);
+    // prompt50 WS6 — the reported bug: a member denied chat must be read-only
+    // IMMEDIATELY, even though the project-wide chatRestricted flag is still OFF.
+    expect((await api(`/screening/metalab/${mlId}/chat`, { method: 'POST', cookie: v.cookie, body: { message: `blocked early ${r}` } })).status).toBe(403);
+    expect((await api(`/screening/projects/${spid}/chat`, { method: 'POST', cookie: v.cookie, body: { message: `blocked early sift ${r}` } })).status).toBe(403);
+    // Typing + delete are chat writes too — also blocked for a read-only member.
+    expect((await api(`/screening/projects/${spid}/chat/typing`, { method: 'POST', cookie: v.cookie })).status).toBe(403);
 
-    // Owner restricts chat (project settings route — owner has canManageSettings).
+    // Turning the project-wide flag ON does not change the per-member outcome.
     const restrict = await api(`/screening/projects/${spid}`, { method: 'PUT', cookie: owner.cookie, body: { chatRestricted: true } });
     expect(restrict.status).toBe(200);
-
-    // Member without canChat: post → 403 via the metalab door (and the SIFT door agrees).
     const denied = await api(`/screening/metalab/${mlId}/chat`, { method: 'POST', cookie: v.cookie, body: { message: `blocked ${r}` } });
     expect(denied.status).toBe(403);
     expect(String(denied.data.error)).toMatch(/permission/i);
-    expect((await api(`/screening/projects/${spid}/chat`, { method: 'POST', cookie: v.cookie, body: { message: `blocked sift ${r}` } })).status).toBe(403);
 
-    // Reading is never restricted for members; the flag travels in the response.
+    // Reading is never restricted; canChat travels in the response so the UI can
+    // flip to read-only without a reload.
     const list = await api(`/screening/metalab/${mlId}/chat`, { cookie: v.cookie });
     expect(list.status).toBe(200);
-    expect(list.data.chatRestricted).toBe(true);
     expect(list.data.canChat).toBe(false);
-    expect(list.data.messages.find(x => x.message === `blocked ${r}`)).toBeFalsy();
+    expect(list.data.messages.find(x => String(x.message).startsWith('blocked'))).toBeFalsy();
 
-    // Owner (leader) still posts 200/201 via the metalab door.
+    // Owner (leader) is never blocked.
     expect((await api(`/screening/metalab/${mlId}/chat`, { method: 'POST', cookie: owner.cookie, body: { message: `leader ok ${r}` } })).status).toBe(201);
+
+    // Scenario 7 step 7–8: re-enabling canChat restores the member's ability to post.
+    const reEnable = await api(`/screening/projects/${spid}/members/${mid}`, { method: 'PATCH', cookie: owner.cookie, body: { canChat: true } });
+    expect(reEnable.status).toBe(200);
+    expect(reEnable.data.member.canChat).toBe(true);
+    expect((await api(`/screening/metalab/${mlId}/chat`, { method: 'POST', cookie: v.cookie, body: { message: `now allowed ${r}` } })).status).toBe(201);
 
     await cleanupPair(owner, spid, mlId);
   });

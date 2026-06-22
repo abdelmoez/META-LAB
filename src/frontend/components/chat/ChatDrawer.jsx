@@ -177,9 +177,14 @@ export default function ChatDrawer({
   }, [merge]);
 
   // Realtime — a chat.message poke matching this thread triggers an immediate
-  // fetch through the authorized list endpoint (poke carries no content).
+  // fetch through the authorized list endpoint (poke carries no content). A
+  // permissions.changed poke (user-targeted; emitted when a leader/owner edits
+  // THIS member's permissions, incl. canChat) likewise refetches so the composer
+  // flips to read-only WITHOUT a reload (prompt50 WS6) — the fetched `canChat`
+  // is server-authoritative and drives `blocked` below.
   const { healthy: rtHealthy } = useRealtime({
     'chat.message': ev => { if (matchRef.current && matchRef.current(ev)) pollNow(); },
+    'permissions.changed': () => pollNow(),
   });
   const rtHealthyRef = useRef(rtHealthy);
   rtHealthyRef.current = rtHealthy;
@@ -220,7 +225,12 @@ export default function ChatDrawer({
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
-  const blocked = chatRestricted && !canChat && !isLeader;
+  // prompt50 WS6 — a member denied chat (canChat=false) is read-only regardless
+  // of the project-wide chatRestricted flag; leaders/owner are never blocked.
+  // `canChat` is refreshed from every authorized list() response + the
+  // permissions.changed poke, so this flips without a reload. Backend enforces
+  // the same rule — this is a true disabled state, not a cosmetic hide.
+  const blocked = !canChat && !isLeader;
 
   const send = useCallback(async () => {
     const text = draft.trim();
@@ -332,11 +342,11 @@ export default function ChatDrawer({
           {blocked ? (
             <div>
               <input type="text" value="" disabled readOnly
-                placeholder="You do not have permission to post in this chat."
-                aria-label="You do not have permission to post in this chat."
+                placeholder="Chat is read-only for your account in this project."
+                aria-label="Chat is read-only for your account in this project."
                 style={{ width: '100%', background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 8, padding: '9px 12px', color: C.muted, fontSize: 13, fontFamily: FONT, outline: 'none', opacity: 0.6, cursor: 'not-allowed', boxSizing: 'border-box' }} />
-              <div style={{ fontSize: 11.5, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
-                You do not have permission to post in this chat. Chat is restricted to members with the Chat permission.
+              <div role="status" style={{ fontSize: 11.5, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
+                Chat is read-only for your account in this project. You can read existing messages, but a project owner or leader has turned off your permission to post.
               </div>
             </div>
           ) : (
