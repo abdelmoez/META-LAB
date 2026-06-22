@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  EDITABLE_USER_FIELDS, SENSITIVE_USER_FIELDS,
+  EDITABLE_USER_FIELDS, SENSITIVE_USER_FIELDS, READONLY_USER_FIELDS,
   editableFieldsForRole, buildUserUpdate,
 } from '../../src/shared/editableUserFields.js';
 
@@ -22,6 +22,16 @@ describe('editableUserFields — role visibility', () => {
     expect(mod).not.toContain('registrationCountryCode');
     expect(mod).not.toContain('registrationCountryName');
     expect(mod).not.toContain('role');
+  });
+
+  it('treats the numeric userNumber as immutable: display-only, never editable (prompt49 item 8)', () => {
+    const editableKeys = new Set(EDITABLE_USER_FIELDS.map(f => f.key));
+    expect(editableKeys.has('userNumber')).toBe(false);
+    expect(READONLY_USER_FIELDS.map(f => f.key)).toContain('userNumber');
+    // An admin attempting to set it is silently dropped (not an error, not applied).
+    const { data, changed } = buildUserUpdate({ userNumber: 999, name: 'X' }, 'admin');
+    expect(data).not.toHaveProperty('userNumber');
+    expect(changed).not.toContain('userNumber');
   });
 
   it('never lists a sensitive field as editable', () => {

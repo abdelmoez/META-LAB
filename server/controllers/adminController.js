@@ -12,6 +12,10 @@ import { USAGE, recordUsage } from '../utils/usage.js';
 import { forceCloseStreams } from '../realtime/bus.js';
 import { invalidateAuthState } from '../middleware/auth.js';
 import { buildUserUpdate } from '../../src/shared/editableUserFields.js';
+import {
+  AUDIT_ACTIONS, SECURITY_TYPES,
+  auditActionWhereForSeverity, securityTypeWhereForSeverity,
+} from '../../src/shared/auditFormat.js';
 import { buildCountryDistribution } from '../utils/countryStats.js';
 import * as Presence from '../realtime/presence.js';
 import {
@@ -1281,11 +1285,33 @@ export async function updateThemeSettings(req, res) {
 export async function getAuditLog(req, res) {
   try {
     const { page, limit, skip } = parsePage(req.query);
-    const { adminId, action } = req.query;
+    const { adminId, action, severity, q, from, to } = req.query;
 
     const where = {};
     if (adminId) where.adminId = adminId;
     if (action) where.action = String(action);
+    // prompt49 item 10 — severity filter maps to a set of action strings (or a
+    // NOT-IN set for the INFO catch-all) via the shared catalogue.
+    if (severity) {
+      const sw = auditActionWhereForSeverity(String(severity));
+      if (sw) where.action = where.action ? where.action : sw;
+    }
+    if (from || to) {
+      where.createdAt = {};
+      if (from) where.createdAt.gte = new Date(String(from));
+      if (to) where.createdAt.lte = new Date(String(to));
+    }
+    if (q && String(q).trim()) {
+      const term = String(q).trim();
+      where.OR = [
+        { action: { contains: term } },
+        { entityType: { contains: term } },
+        { entityId: { contains: term } },
+        { details: { contains: term } },
+        { admin: { email: { contains: term } } },
+        { admin: { name: { contains: term } } },
+      ];
+    }
 
     const [total, logs] = await Promise.all([
       prisma.adminAuditLog.count({ where }),
@@ -1319,9 +1345,28 @@ export async function getAuditLog(req, res) {
 export async function getSecurityEvents(req, res) {
   try {
     const { page, limit, skip } = parsePage(req.query);
-    const { type } = req.query;
+    const { type, severity, q, from, to } = req.query;
 
-    const where = type ? { type } : {};
+    const where = {};
+    if (type) where.type = String(type);
+    if (severity && !type) {
+      const sw = securityTypeWhereForSeverity(String(severity));
+      if (sw) where.type = sw;
+    }
+    if (from || to) {
+      where.createdAt = {};
+      if (from) where.createdAt.gte = new Date(String(from));
+      if (to) where.createdAt.lte = new Date(String(to));
+    }
+    if (q && String(q).trim()) {
+      const term = String(q).trim();
+      where.OR = [
+        { type: { contains: term } },
+        { email: { contains: term } },
+        { ip: { contains: term } },
+        { details: { contains: term } },
+      ];
+    }
 
     const [total, events] = await Promise.all([
       prisma.securityEvent.count({ where }),
@@ -1336,6 +1381,48 @@ export async function getSecurityEvents(req, res) {
     return res.json({ events, total });
   } catch (err) {
     console.error('[admin] getSecurityEvents error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── GET /api/admin/security-summary?window=24h|7d|30d|90d ────────────────────
+// Aggregate dashboard for the Security tab (prompt49 item 10). Counts admin
+// audit actions + security events over a window and rolls them up by severity
+// using the shared catalogue. Read-only; no secrets. Admin only.
+export async function getSecuritySummary(req, res) {
+  try {
+    const windowKey = String(req.query.window || '7d');
+    const days = ({ '24h': 1, '7d': 7, '30d': 30, '90d': 90 })[windowKey] || 7;
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    const [auditGroups, secGroups] = await Promise.all([
+      prisma.adminAuditLog.groupBy({ by: ['action'], where: { createdAt: { gte: since } }, _count: { _all: true } }),
+      prisma.securityEvent.groupBy({ by: ['type'], where: { createdAt: { gte: since } }, _count: { _all: true } }),
+    ]);
+
+    const auditCounts = Object.fromEntries(auditGroups.map((g) => [g.action, g._count._all]));
+    const secCounts = Object.fromEntries(secGroups.map((g) => [g.type, g._count._all]));
+
+    const severityCounts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+    for (const g of auditGroups) severityCounts[AUDIT_ACTIONS[g.action]?.severity || 'info'] += g._count._all;
+    for (const g of secGroups) severityCounts[SECURITY_TYPES[g.type]?.severity || 'info'] += g._count._all;
+
+    const totals = {
+      failedLogins: secCounts.FAILED_LOGIN || 0,
+      adminAccessDenied: secCounts.ADMIN_ACCESS_DENIED || 0,
+      rateLimited: secCounts.RATE_LIMITED || 0,
+      passwordResetsRequested: secCounts.PASSWORD_RESET_REQUESTED || 0,
+      suspensions: auditCounts.SUSPEND_USER || 0,
+      roleChanges: auditCounts.ASSIGN_ROLE || 0,
+      passwordResetsSent: (auditCounts.SEND_PASSWORD_RESET || 0) + (auditCounts.RESET_PASSWORD || 0),
+      settingChanges: auditCounts.UPDATE_SETTING || 0,
+      auditEvents: auditGroups.reduce((s, g) => s + g._count._all, 0),
+      securityEvents: secGroups.reduce((s, g) => s + g._count._all, 0),
+    };
+
+    return res.json({ window: windowKey, since, severityCounts, totals });
+  } catch (err) {
+    console.error('[admin] getSecuritySummary error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

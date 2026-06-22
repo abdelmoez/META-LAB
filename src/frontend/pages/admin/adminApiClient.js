@@ -202,8 +202,9 @@ export const adminApi = {
     exportUrl: (p)             => `${BASE}/beta-waitlist/export${qs(p)}`,
   },
 
-  auditLog:       (p)        => req(`${BASE}/audit-log?${new URLSearchParams(p || {})}`),
-  securityEvents: (p)        => req(`${BASE}/security-events?${new URLSearchParams(p || {})}`),
+  auditLog:        (p)       => req(`${BASE}/audit-log?${new URLSearchParams(p || {})}`),
+  securityEvents:  (p)       => req(`${BASE}/security-events?${new URLSearchParams(p || {})}`),
+  securitySummary: (p)       => req(`${BASE}/security-summary?${new URLSearchParams(p || {})}`),
 
   // ── Ops Users analytics + institution management (admin only) ────────────────
   // getUserAnalytics(window) → distributions filtered to accounts CREATED in the

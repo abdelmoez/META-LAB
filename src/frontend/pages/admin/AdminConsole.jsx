@@ -3,7 +3,7 @@
  * v2.2 — inbox messages, user+projects panel, redesigned overview, full content editor
  */
 
-import { useState, useEffect, useCallback, useRef, Component } from 'react';
+import { useState, useEffect, useCallback, useRef, Component, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { adminApi, fetchVersion } from './adminApiClient.js';
@@ -27,6 +27,7 @@ import {
 // form is rendered + validated from this single source of truth (prompt20 Task 5).
 import { editableFieldsForRole, PRIMARY_ROLE_OPTIONS, RESEARCH_FIELD_OPTIONS, MAIN_USE_CASE_OPTIONS } from '../../../shared/editableUserFields.js';
 import { countryNameForCode, COUNTRY_OPTIONS } from '../../../shared/countries.js';
+import { describeAuditEvent, describeSecurityEvent, parseDetails, SEVERITY_ORDER } from '../../../shared/auditFormat.js';
 // prompt48 — Beta Waitlist domain constants (shared with the public form + server).
 import { WAITLIST_ROLES, WAITLIST_STATUSES, WAITLIST_STATUS_LABELS, applicantRoleLabel, applicantDisplayName } from '../../../shared/betaWaitlist.js';
 // Real world-country geometry (pre-projected equirectangular paths, no map lib)
@@ -4614,6 +4615,66 @@ function AiScreeningSection() {
    SECTION: SECURITY (unchanged)
    ════════════════════════════════════════════════════════════════════════ */
 
+// prompt49 item 10 — severity → theme colour (consistent across the section).
+const SEVERITY_COLOR = () => ({ critical: C.red, high: C.red, medium: C.ylw, low: C.acc, info: C.muted });
+function SeverityBadge({ severity }) {
+  const color = SEVERITY_COLOR()[severity] || C.muted;
+  return <Badge text={severity} color={color} />;
+}
+
+// One row's expandable detail: human description, who/when/where, before→after
+// changes (when present), and the raw JSON tucked behind a <details> so nothing
+// is hidden but an admin never has to read JSON to understand the event.
+function EventDetailPanel({ kind, row }) {
+  const info = kind === 'audit' ? describeAuditEvent(row) : describeSecurityEvent(row);
+  const raw = parseDetails(row.details);
+  const meta = [
+    ['When', fmtDateTime(row.createdAt)],
+    kind === 'audit' ? ['Actor', row.admin?.email || row.admin?.name || row.adminId || '—'] : ['Email', row.email || '—'],
+    kind === 'audit' ? ['Target', [row.entityType, row.entityId].filter(Boolean).join(' · ') || '—'] : ['IP', row.ip || '—'],
+    ['Category', info.category],
+  ];
+  return (
+    <div style={{ padding: '14px 18px', background: C.surf, borderTop: `1px solid ${C.brd}` }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+        <SeverityBadge severity={info.severity} />
+        <span style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>{info.description}</span>
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 28px', marginBottom: info.changes?.length ? 12 : 0 }}>
+        {meta.map(([k, v]) => (
+          <div key={k} style={{ fontSize: 11 }}>
+            <span style={{ color: C.muted, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.06em', marginRight: 6 }}>{k}</span>
+            <span style={{ color: C.txt2, fontFamily: MONO, overflowWrap: 'anywhere' }}>{v}</span>
+          </div>
+        ))}
+      </div>
+      {info.changes && info.changes.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 10, color: C.muted, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>What changed</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr', gap: '4px 14px', fontSize: 12 }}>
+            <div style={{ color: C.muted, fontFamily: MONO, fontSize: 10 }}>FIELD</div>
+            <div style={{ color: C.muted, fontFamily: MONO, fontSize: 10 }}>BEFORE</div>
+            <div style={{ color: C.muted, fontFamily: MONO, fontSize: 10 }}>AFTER</div>
+            {info.changes.map((c) => (
+              <Fragment key={c.field}>
+                <div style={{ color: C.txt, fontWeight: 600 }}>{c.field}</div>
+                <div style={{ color: C.red, fontFamily: MONO, overflowWrap: 'anywhere' }}>{c.before === undefined ? '—' : String(c.before)}</div>
+                <div style={{ color: C.grn, fontFamily: MONO, overflowWrap: 'anywhere' }}>{c.after === undefined ? '—' : String(c.after)}</div>
+              </Fragment>
+            ))}
+          </div>
+        </div>
+      )}
+      {raw && Object.keys(raw).length > 0 && (
+        <details>
+          <summary style={{ fontSize: 11, color: C.muted, cursor: 'pointer', fontFamily: MONO }}>Raw details</summary>
+          <pre style={{ margin: '8px 0 0', padding: 10, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 6, fontSize: 11, color: C.txt2, overflowX: 'auto', fontFamily: MONO }}>{JSON.stringify(raw, null, 2)}</pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function SecuritySection() {
   const [tab,        setTab]        = useState('audit');
   const [auditRows,  setAuditRows]  = useState([]);
@@ -4623,61 +4684,140 @@ function SecuritySection() {
   const [secTotal,   setSecTotal]   = useState(0);
   const [secPage,    setSecPage]    = useState(1);
   const [loading,    setLoading]    = useState(false);
+  const [severity,   setSeverity]   = useState('');   // '' = all
+  const [query,      setQuery]      = useState('');
+  const [search,     setSearch]     = useState('');   // debounced
+  const [expandedId, setExpandedId] = useState(null);
+  const [summary,    setSummary]    = useState(null);
+  const [windowKey,  setWindowKey]  = useState('7d');
   const PER_PAGE = 25;
 
-  const loadAudit = useCallback(async p => {
+  // Debounce the free-text search.
+  useEffect(() => { const t = setTimeout(() => setSearch(query.trim()), 320); return () => clearTimeout(t); }, [query]);
+
+  const loadAudit = useCallback(async (p, sev, q) => {
     setLoading(true);
-    try { const d = await adminApi.auditLog({ page: p, limit: PER_PAGE }); setAuditRows(d.logs || []); setAuditTotal(d.total || 0); }
+    try { const d = await adminApi.auditLog({ page: p, limit: PER_PAGE, ...(sev ? { severity: sev } : {}), ...(q ? { q } : {}) }); setAuditRows(d.logs || []); setAuditTotal(d.total || 0); }
     catch { setAuditRows([]); } finally { setLoading(false); }
   }, []);
 
-  const loadSec = useCallback(async p => {
+  const loadSec = useCallback(async (p, sev, q) => {
     setLoading(true);
-    try { const d = await adminApi.securityEvents({ page: p, limit: PER_PAGE }); setSecRows(d.events || []); setSecTotal(d.total || 0); }
+    try { const d = await adminApi.securityEvents({ page: p, limit: PER_PAGE, ...(sev ? { severity: sev } : {}), ...(q ? { q } : {}) }); setSecRows(d.events || []); setSecTotal(d.total || 0); }
     catch { setSecRows([]); } finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { tab === 'audit' ? loadAudit(auditPage) : loadSec(secPage); }, [tab]);
-  useEffect(() => { if (tab === 'audit') loadAudit(auditPage); }, [auditPage]);
-  useEffect(() => { if (tab === 'security') loadSec(secPage); }, [secPage]);
+  // Load the active tab whenever tab / page / filters change.
+  useEffect(() => {
+    setExpandedId(null);
+    if (tab === 'audit') loadAudit(auditPage, severity, search);
+    else loadSec(secPage, severity, search);
+  }, [tab, auditPage, secPage, severity, search, loadAudit, loadSec]);
 
-  const typeColor = t => ({ FAILED_LOGIN: C.red, ADMIN_ACCESS_DENIED: C.ylw, RATE_LIMITED: C.acc }[t] || C.muted);
+  // Reset to page 1 when filters change.
+  useEffect(() => { setAuditPage(1); setSecPage(1); }, [severity, search, tab]);
 
-  const auditCols = [
-    { key: 'createdAt', label: 'Time',    render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{fmtDateTime(v)}</span> },
-    { key: 'admin',     label: 'Admin',   render: v => <span style={{ fontFamily: MONO, fontSize: 11, overflowWrap: 'anywhere' }}>{v?.email || v}</span> },
-    { key: 'action',    label: 'Action',  render: v => <span style={{ color: C.txt, fontWeight: 600 }}>{v}</span> },
-    { key: 'entityType',label: 'Entity',  render: v => v || '—' },
-    { key: 'details',   label: 'Details', render: v => <span style={{ fontFamily: MONO, fontSize: 10, color: C.muted, display: 'block', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={typeof v === 'object' ? JSON.stringify(v) : v}>{typeof v === 'object' ? JSON.stringify(v) : (v || '—')}</span> },
-  ];
+  // Security overview dashboard.
+  useEffect(() => { adminApi.securitySummary({ window: windowKey }).then(setSummary).catch(() => setSummary(null)); }, [windowKey]);
 
-  const secCols = [
-    { key: 'createdAt', label: 'Time',    render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{fmtDateTime(v)}</span> },
-    { key: 'type',      label: 'Type',    render: v => <Badge text={v} color={typeColor(v)} /> },
-    { key: 'email',     label: 'Email',   render: v => <span style={{ fontFamily: MONO, fontSize: 11, overflowWrap: 'anywhere' }}>{v || '—'}</span> },
-    { key: 'ip',        label: 'IP',      render: v => <span style={{ fontFamily: MONO, fontSize: 11 }}>{v || '—'}</span> },
-    { key: 'details',   label: 'Details', render: v => <span style={{ fontFamily: MONO, fontSize: 10, color: C.muted, display: 'block', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{typeof v === 'object' ? JSON.stringify(v) : (v || '—')}</span> },
-  ];
+  const page = tab === 'audit' ? auditPage : secPage;
+  const setPage = tab === 'audit' ? setAuditPage : setSecPage;
+  const total = tab === 'audit' ? auditTotal : secTotal;
+  const rows = tab === 'audit' ? auditRows : secRows;
+
+  const severityFilters = [{ id: '', label: 'All' }, ...SEVERITY_ORDER.map((s) => ({ id: s, label: s }))];
+  const WINDOWS = [['24h', '24h'], ['7d', '7 days'], ['30d', '30 days'], ['90d', '90 days']];
 
   return (
     <div>
-      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 20px' }}>Security</h2>
-      <div style={{ display: 'flex', gap: 4, marginBottom: 16, borderBottom: `1px solid ${C.brd}` }}>
+      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 16px' }}>Security &amp; audit</h2>
+
+      {/* ── Security overview dashboard (real counts over a window) ── */}
+      <SectionCard
+        title="Security overview"
+        action={
+          <select value={windowKey} onChange={(e) => setWindowKey(e.target.value)} style={{ ...inputStyle, width: 'auto', padding: '5px 10px', fontSize: 12 }}>
+            {WINDOWS.map(([v, l]) => <option key={v} value={v}>Last {l}</option>)}
+          </select>
+        }
+      >
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, padding: 16 }}>
+          {summary ? [
+            ['Failed logins', summary.totals.failedLogins, C.red],
+            ['Admin access denied', summary.totals.adminAccessDenied, C.red],
+            ['Suspensions', summary.totals.suspensions, C.ylw],
+            ['Role changes', summary.totals.roleChanges, C.ylw],
+            ['Password resets', summary.totals.passwordResetsSent + summary.totals.passwordResetsRequested, C.acc],
+            ['Rate limited', summary.totals.rateLimited, C.acc],
+            ['Setting changes', summary.totals.settingChanges, C.muted],
+            ['Audit events', summary.totals.auditEvents, C.acc2],
+          ].map(([label, value, color]) => <Chip key={label} label={label} value={value} color={color} />)
+          : <div style={{ color: C.muted, fontSize: 12, padding: '8px 2px' }}>Loading overview…</div>}
+        </div>
+      </SectionCard>
+
+      {/* ── Tabs ── */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 14, borderBottom: `1px solid ${C.brd}` }}>
         {[['audit', 'Audit Log'], ['security', 'Security Events']].map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)} style={{ padding: '8px 18px', background: 'transparent', border: 'none', borderBottom: tab === id ? `2px solid ${C.acc}` : '2px solid transparent', color: tab === id ? C.acc : C.txt2, fontSize: 13, fontWeight: tab === id ? 700 : 400, cursor: 'pointer', fontFamily: FONT, marginBottom: -1 }}>{label}</button>
         ))}
       </div>
-      {tab === 'audit' ? (
-        <SectionCard>
-          <DataTable columns={auditCols} rows={auditRows} loading={loading} emptyMessage="No audit log entries." />
-          <div style={{ padding: '0 14px' }}><Pagination page={auditPage} total={auditTotal} perPage={PER_PAGE} onPage={setAuditPage} /></div>
-        </SectionCard>
-      ) : (
-        <SectionCard>
-          <DataTable columns={secCols} rows={secRows} loading={loading} emptyMessage="No security events." />
-          <div style={{ padding: '0 14px' }}><Pagination page={secPage} total={secTotal} perPage={PER_PAGE} onPage={setSecPage} /></div>
-        </SectionCard>
-      )}
+
+      {/* ── Filters: severity + search ── */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center', marginBottom: 14 }}>
+        <FilterBar filters={severityFilters} active={severity} onSelect={setSeverity} />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder={tab === 'audit' ? 'Search action, actor, target, details…' : 'Search type, email, IP, details…'}
+          style={{ ...inputStyle, flex: '1 1 240px', maxWidth: 360, padding: '7px 11px', fontSize: 12 }}
+        />
+      </div>
+
+      <SectionCard>
+        {loading ? (
+          <div style={{ padding: '40px 0', textAlign: 'center' }}><Spinner size={20} /><div style={{ fontSize: 12, color: C.muted, marginTop: 12 }}>Loading…</div></div>
+        ) : rows.length === 0 ? (
+          <div style={{ padding: '32px 12px', textAlign: 'center', color: C.muted, fontSize: 12 }}>No {tab === 'audit' ? 'audit log entries' : 'security events'} match.</div>
+        ) : (
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+              <thead>
+                <tr>{['Time', 'Severity', 'Event', tab === 'audit' ? 'Actor' : 'Source', ''].map((h, i) => (
+                  <th key={i} style={{ padding: '10px 12px', textAlign: 'left', fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.1em', textTransform: 'uppercase', borderBottom: `1px solid ${C.brd}`, fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                ))}</tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => {
+                  const info = tab === 'audit' ? describeAuditEvent(row) : describeSecurityEvent(row);
+                  const open = expandedId === row.id;
+                  const source = tab === 'audit' ? (row.admin?.email || row.admin?.name || '—') : (row.email || row.ip || '—');
+                  return (
+                    <Fragment key={row.id}>
+                      <tr
+                        onClick={() => setExpandedId(open ? null : row.id)}
+                        style={{ cursor: 'pointer', background: open ? alpha(C.acc, '0e') : 'transparent', borderLeft: open ? `3px solid ${C.acc}` : '3px solid transparent' }}
+                        onMouseEnter={(e) => { if (!open) e.currentTarget.style.background = C.card2; }}
+                        onMouseLeave={(e) => { e.currentTarget.style.background = open ? alpha(C.acc, '0e') : 'transparent'; }}
+                      >
+                        <td style={{ padding: '10px 12px', fontSize: 11, fontFamily: MONO, color: C.muted, borderBottom: `1px solid ${C.brd}`, whiteSpace: 'nowrap' }}>{fmtDateTime(row.createdAt)}</td>
+                        <td style={{ padding: '10px 12px', borderBottom: `1px solid ${C.brd}` }}><SeverityBadge severity={info.severity} /></td>
+                        <td style={{ padding: '10px 12px', fontSize: 12, color: C.txt, borderBottom: `1px solid ${C.brd}` }}>{info.description}</td>
+                        <td style={{ padding: '10px 12px', fontSize: 11, fontFamily: MONO, color: C.txt2, borderBottom: `1px solid ${C.brd}`, overflowWrap: 'anywhere' }}>{source}</td>
+                        <td style={{ padding: '10px 12px', fontSize: 11, color: C.muted, borderBottom: `1px solid ${C.brd}` }}>{open ? '▾' : '▸'}</td>
+                      </tr>
+                      {open && (
+                        <tr><td colSpan={5} style={{ padding: 0, borderBottom: `1px solid ${C.brd}` }}><EventDetailPanel kind={tab} row={row} /></td></tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div style={{ padding: '0 14px' }}><Pagination page={page} total={total} perPage={PER_PAGE} onPage={setPage} /></div>
+      </SectionCard>
     </div>
   );
 }

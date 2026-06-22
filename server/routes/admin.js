@@ -29,6 +29,7 @@ import {
   updateFeatureFlags,
   getAuditLog,
   getSecurityEvents,
+  getSecuritySummary,
   getUserAnalytics,
   getUserGrowth,
   getInstitutions,
@@ -190,6 +191,7 @@ router.put('/feature-flags', requireAdmin, updateFeatureFlags);
 
 router.get('/audit-log', requireAdmin, getAuditLog);
 router.get('/security-events', requireAdmin, getSecurityEvents);
+router.get('/security-summary', requireAdmin, getSecuritySummary);
 
 // ── Ops Users analytics + institution management (admin only) ──────────────────
 router.get('/user-analytics', requireAdmin, getUserAnalytics);
