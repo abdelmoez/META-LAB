@@ -13,7 +13,7 @@
  * Every create / answer / override / finalise / delete writes a RobAuditLog row.
  */
 import { prisma } from '../db/client.js';
-import { getById as getOwnedProject } from '../store.js';
+import { getById as getOwnedProject, touchProjectActivity } from '../store.js';
 import { getRobMemberAccess } from '../screening/metalabAccess.js';
 import { canMutateAssessment, normaliseScreeningStudy, normaliseManualStudy } from './robAccess.js';
 import { getRobTool } from '../../src/research-engine/rob/tools.js';
@@ -67,6 +67,9 @@ async function audit(projectId, assessmentId, actor, action, { entityType = null
       },
     });
   } catch { /* audit is best-effort */ }
+  // prompt50 WS5 — every RoB mutation is meaningful activity on the META·LAB
+  // project (projectId IS the META·LAB project id here). Best-effort, never throws.
+  if (action !== 'ROB_EXPORT') void touchProjectActivity(projectId);
 }
 
 // ── Authorization (prompt41 Task 5) ───────────────────────────────────────────

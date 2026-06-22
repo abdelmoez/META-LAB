@@ -56,8 +56,11 @@ import {
 const RECENT_WINDOW_MS = 14 * 24 * 60 * 60 * 1000; // 14 days
 
 function isRecent(p) {
-  if (!p || !p.updatedAt) return false;
-  const t = new Date(p.updatedAt).getTime();
+  // prompt50 WS5 — "recent" tracks meaningful activity (lastActivityAt), not a
+  // bare row-touch; falls back to updatedAt for older payloads.
+  const stamp = p && (p.lastActivityAt || p.updatedAt);
+  if (!stamp) return false;
+  const t = new Date(stamp).getTime();
   if (Number.isNaN(t)) return false;
   return Date.now() - t <= RECENT_WINDOW_MS;
 }
@@ -532,7 +535,7 @@ function ProjectCard({ p, handlers, reduced }) {
         <span>{p._studyCount || 0} studies</span>
         {linked && <span>{linked.recordCount || 0} records</span>}
         {linked && <span>{linked.memberCount || 0} members</span>}
-        <span>upd {relTime(p.updatedAt)}</span>
+        <span>upd {relTime(p.lastActivityAt || p.updatedAt)}</span>
       </div>
 
       {/* progress bar */}
@@ -645,7 +648,7 @@ function ProjectTable({ rows, handlers }) {
                     {p._studyCount || 0}
                   </td>
                   <td style={{ ...td, fontFamily: MONO, fontSize: 11, color: C.muted, whiteSpace: 'nowrap' }}>
-                    {relTime(p.updatedAt)}
+                    {relTime(p.lastActivityAt || p.updatedAt)}
                   </td>
                   <td style={{ ...td, textAlign: 'right' }} onClick={(e) => e.stopPropagation()}>
                     <ActionMenu actions={buildActions(p, handlers)} />

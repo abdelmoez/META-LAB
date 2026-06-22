@@ -5,6 +5,7 @@ import { PrismaClient } from '@prisma/client';
 import { createHash } from 'crypto';
 import { detectDuplicatesInProject, recordDuplicateLabels, getDuplicateEvaluation } from '../services/screeningDuplicateService.js';
 import { syncConflicts } from '../services/screeningConflictService.js';
+import { touchProjectActivity } from '../store.js';
 import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../screening/access.js';
 import { rankItems } from '../../src/research-engine/screening/ai/ranking.js';
 import { aiFlagEnabled } from '../services/screeningAiService.js';
@@ -429,6 +430,10 @@ export async function updateProject(req, res) {
         }
       } catch { /* name sync is best-effort */ }
     }
+
+    // prompt50 WS5 — a screening project-config change is meaningful activity on
+    // the linked META·LAB project (cross-workstream timestamp).
+    void touchProjectActivity(p.linkedMetaLabProjectId);
 
     // Realtime poke (Task 7) — thin, fire-and-forget, error-swallowed.
     emitToProjectMembers(p.id, { type: 'project.updated' }, { exclude: req.user.id });
@@ -1052,6 +1057,9 @@ export async function importRecords(req, res) {
     // Update batch count
     await prisma.screenImportBatch.update({ where: { id: batch.id }, data: { recordCount: imported } });
 
+    // prompt50 WS5 — an import is meaningful activity on the linked META·LAB project.
+    if (imported > 0) void touchProjectActivity(p.linkedMetaLabProjectId);
+
     res.json({ imported, skippedDuplicates, total: records.length, batchId: batch.id });
   } catch (err) {
     console.error('[screening] importRecords:', err.message);
@@ -1299,6 +1307,12 @@ export async function saveDecision(req, res) {
       console.error('[screening] syncConflicts:', e.message);
     }
 
+    // prompt50 WS5 — a screening decision is meaningful activity on the linked
+    // META·LAB project; bump its authoritative "Last Modified" timestamp so the
+    // project dashboard + Ops analytics reflect it. Awaited (a sub-ms scoped
+    // update that never throws) so a subsequent project list is consistent.
+    await touchProjectActivity(p.linkedMetaLabProjectId);
+
     // Realtime poke (Task 7) — deliberately carries NO actor identity
     // (blind-mode safe by construction); recipients refetch what they may see.
     // The Conflicts tab subscribes to this to add/remove a record without reload.
@@ -1421,6 +1435,9 @@ export async function resolveConflict(req, res) {
       entityType: 'record', entityId: conflict.recordId,
       details: { finalDecision, promoted, notes: String(notes).slice(0, 200) },
     });
+
+    // prompt50 WS5 — conflict resolution is meaningful activity (cross-workstream).
+    void touchProjectActivity(p.linkedMetaLabProjectId);
 
     // Realtime poke (Task 7) — a resolution changes effective decisions (no actor in the event).
     emitToProjectMembers(p.id, { type: 'decision.saved' }, { exclude: req.user.id });

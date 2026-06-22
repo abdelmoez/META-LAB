@@ -118,9 +118,21 @@ export const FILTERS = [
   { key: 'archived',   label: 'Archived',        test: (p) => !!p._archived },
 ];
 
+// prompt50 WS5 — the authoritative "Last Modified" instant for a project is the
+// server's Project.lastActivityAt (meaningful activity: real edits + linked
+// screening/RoB actions), NOT the generic updatedAt. Fall back to updatedAt then
+// createdAt for any older payload, and break ties deterministically (createdAt,
+// then id) so the order is STABLE across refreshes and identical to the
+// server-side getAll() ordering and across card/list views.
+export const activityTime = (p) =>
+  new Date((p && (p.lastActivityAt || p.updatedAt || p.createdAt)) || 0).getTime();
+const tieBreak = (a, b) =>
+  (new Date(b.createdAt || 0) - new Date(a.createdAt || 0)) ||
+  String((a && a.id) || '').localeCompare(String((b && b.id) || ''));
+
 export const SORTS = [
-  { key: 'modified', label: 'Last modified', cmp: (a, b) => new Date(b.updatedAt || 0) - new Date(a.updatedAt || 0) },
-  { key: 'created',  label: 'Created',       cmp: (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0) },
+  { key: 'modified', label: 'Last modified', cmp: (a, b) => (activityTime(b) - activityTime(a)) || tieBreak(a, b) },
+  { key: 'created',  label: 'Created',       cmp: (a, b) => (new Date(b.createdAt || 0) - new Date(a.createdAt || 0)) || String((a && a.id) || '').localeCompare(String((b && b.id) || '')) },
   { key: 'title',    label: 'Title A–Z',     cmp: (a, b) => (a.name || '').localeCompare(b.name || '') },
   { key: 'status',   label: 'Status',        cmp: (a, b) => statusOf(a).localeCompare(statusOf(b)) },
   { key: 'role',     label: 'My role',       cmp: (a, b) => roleOf(a).localeCompare(roleOf(b)) },

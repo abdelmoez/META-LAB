@@ -45,6 +45,7 @@ import { initDefaultSettings } from './controllers/settingsController.js';
 import { backfillSharedMessageReadState } from './controllers/adminController.js';
 import { seedOnboardingQuestions } from './controllers/onboardingController.js';
 import { backfillUserNumbers } from './services/userNumber.js';
+import { backfillProjectActivity } from './store.js';
 import { seedAdmins } from './auth/seedAdmins.js';
 import { getVersion } from './version.js';
 import { resolveCorsAllowlist, corsOriginDelegate } from './config/cors.js';
@@ -315,6 +316,12 @@ const server = app.listen(PORT, () => {
   // prompt49 item 8 — assign the immutable numeric userNumber to any user created
   // before the column existed (idempotent; a no-op once everyone is numbered).
   backfillUserNumbers().catch(err => console.error('[seed] userNumber backfill failed:', err.message));
+  // prompt50 WS5 — seed Project.lastActivityAt (the authoritative "Last Modified"
+  // timestamp) for any legacy/`db push` row where it is still NULL, so project
+  // sorting is correct from the first request. Idempotent; a no-op once seeded.
+  backfillProjectActivity()
+    .then(n => { if (n) console.log(`[seed] backfilled lastActivityAt on ${n} project(s)`); })
+    .catch(err => console.error('[seed] project activity backfill failed:', err.message));
 
   // prompt48 — fail-safe waitlist config check. If the betaWaitlist flag is ON but
   // the dedicated DB is not configured, log a CLEAR, REDACTED warning for admins.

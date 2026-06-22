@@ -24,6 +24,9 @@ function rowToProject(row) {
     name: row.name,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+    // prompt50 WS5 — authoritative "Last Modified" timestamp (meaningful activity).
+    // Falls back to updatedAt/createdAt for any row not yet backfilled.
+    lastActivityAt: row.lastActivityAt || row.updatedAt || row.createdAt,
     ...parsed,
   };
 }
@@ -36,7 +39,7 @@ function rowToProject(row) {
  * @param {object} project
  */
 function projectToData(project) {
-  const { id, name, createdAt, updatedAt, ...rest } = project;
+  const { id, name, createdAt, updatedAt, lastActivityAt, ...rest } = project;
   const data = {};
   for (const k of Object.keys(rest)) {
     if (!k.startsWith('_')) data[k] = rest[k];
@@ -69,7 +72,11 @@ export async function getAll(userId, opts = {}) {
   const includeArchived = opts && opts.includeArchived === true;
   const rows = await prisma.project.findMany({
     where: { userId, ...NOT_OWNER_DELETED, ...(includeArchived ? {} : { archived: false }) },
-    orderBy: { updatedAt: 'desc' },
+    // prompt50 WS5 — order by the authoritative meaningful-activity timestamp,
+    // newest first, with a deterministic tiebreak (createdAt, then id) so the
+    // order is stable across refreshes and identical in every view. Backfill
+    // guarantees lastActivityAt is non-null, so there are no NULL-ordering gaps.
+    orderBy: [{ lastActivityAt: 'desc' }, { createdAt: 'desc' }, { id: 'asc' }],
   });
   return rows.map(rowToProject);
 }
@@ -135,10 +142,14 @@ export async function save(project, userId) {
     return rowToProject(existing);
   }
 
+  // prompt50 WS5 — a real content change IS meaningful activity → stamp the
+  // authoritative "Last Modified" timestamp. (Reached only past the no-op guard
+  // above, so merely opening/normalising a project never reorders the list.)
+  const now = new Date();
   const row = await prisma.project.upsert({
     where: { id },
-    update: { name, data: dataStr },
-    create: { id, userId, name, data: dataStr },
+    update: { name, data: dataStr, lastActivityAt: now },
+    create: { id, userId, name, data: dataStr, lastActivityAt: now },
   });
 
   return rowToProject(row);
@@ -192,7 +203,7 @@ export async function saveAsMember(project) {
   }
   const row = await prisma.project.update({
     where: { id: project.id },
-    data: { name: project.name, data },
+    data: { name: project.name, data, lastActivityAt: new Date() }, // prompt50 WS5 — meaningful edit by a member
   });
   return rowToProject(row);
 }
@@ -215,4 +226,56 @@ export async function remove(id, userId) {
     data: { deletedAt: new Date(), deletedSource: 'owner' },
   });
   return true;
+}
+
+/**
+ * touchProjectActivity — the single, central way for a LINKED module (screening
+ * decisions/imports/conflict resolution, RoB, …) to record that meaningful
+ * activity happened on a META·LAB project, so "Last Modified" and the Ops
+ * analytics agree (prompt50 WS5 + cross-workstream requirement).
+ *
+ * Updates ONLY lastActivityAt (never the blob), is scoped to live rows, and is
+ * best-effort: it never throws and must never fail/slow the action that called
+ * it. A null/blank projectId (e.g. an unlinked screening project) is a no-op.
+ *
+ * @param {string|null|undefined} projectId  META·LAB Project id (e.g. ScreenProject.linkedMetaLabProjectId)
+ * @param {{ at?: Date }} [opts]
+ * @returns {Promise<boolean>} true if a live row was stamped
+ */
+export async function touchProjectActivity(projectId, { at } = {}) {
+  if (!projectId) return false;
+  try {
+    const r = await prisma.project.updateMany({
+      where: { id: projectId, deletedAt: null },
+      data: { lastActivityAt: at instanceof Date ? at : new Date() },
+    });
+    return r.count > 0;
+  } catch {
+    return false; // best-effort — activity tracking must never break a flow
+  }
+}
+
+/**
+ * backfillProjectActivity — one-time idempotent boot backfill (mirrors the
+ * backfillUserNumbers pattern). Seeds lastActivityAt for any legacy/`db push`
+ * row where it is still NULL, from updatedAt → createdAt, so "Last Modified"
+ * sorting is correct from the first request even before any new edit.
+ * @returns {Promise<number>} rows backfilled
+ */
+export async function backfillProjectActivity() {
+  const rows = await prisma.project.findMany({
+    where: { lastActivityAt: null },
+    select: { id: true, updatedAt: true, createdAt: true },
+  });
+  let n = 0;
+  for (const r of rows) {
+    try {
+      await prisma.project.update({
+        where: { id: r.id },
+        data: { lastActivityAt: r.updatedAt || r.createdAt || new Date() },
+      });
+      n += 1;
+    } catch { /* per-row best-effort */ }
+  }
+  return n;
 }

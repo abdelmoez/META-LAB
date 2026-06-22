@@ -420,6 +420,40 @@ describe('SORTS comparators', () => {
     expect(cmp(newer, newer)).toBe(0);
   });
 
+  // prompt50 WS5 — "Last Modified" prefers lastActivityAt (meaningful activity)
+  // over the generic updatedAt, and breaks ties deterministically.
+  it('"modified" prefers lastActivityAt over updatedAt', () => {
+    const cmp = sortByKey('modified').cmp;
+    // Same updatedAt, but A has more recent meaningful activity → A sorts first.
+    const a = { id: 'a', updatedAt: '2025-01-01T00:00:00Z', createdAt: '2024-01-01T00:00:00Z', lastActivityAt: '2025-06-01T00:00:00Z' };
+    const b = { id: 'b', updatedAt: '2025-01-01T00:00:00Z', createdAt: '2024-01-01T00:00:00Z', lastActivityAt: '2025-02-01T00:00:00Z' };
+    expect(cmp(a, b)).toBeLessThan(0);
+    expect(cmp(b, a)).toBeGreaterThan(0);
+  });
+
+  it('"modified" falls back to updatedAt when lastActivityAt is absent', () => {
+    const cmp = sortByKey('modified').cmp;
+    const a = { id: 'a', updatedAt: '2025-06-01T00:00:00Z', createdAt: '2024-01-01T00:00:00Z' };
+    const b = { id: 'b', updatedAt: '2025-01-01T00:00:00Z', createdAt: '2024-01-01T00:00:00Z' };
+    expect(cmp(a, b)).toBeLessThan(0);
+  });
+
+  it('"modified" is a deterministic, stable order on ties (createdAt then id)', () => {
+    const cmp = sortByKey('modified').cmp;
+    const sameTime = '2025-01-01T00:00:00Z';
+    const x = { id: 'x', lastActivityAt: sameTime, createdAt: '2024-05-01T00:00:00Z' };
+    const y = { id: 'y', lastActivityAt: sameTime, createdAt: '2024-01-01T00:00:00Z' };
+    // identical activity → newer createdAt wins (x before y)
+    expect(cmp(x, y)).toBeLessThan(0);
+    // fully identical timestamps → fall back to id, never 0 for distinct ids
+    const p = { id: 'aaa', lastActivityAt: sameTime, createdAt: sameTime };
+    const q = { id: 'bbb', lastActivityAt: sameTime, createdAt: sameTime };
+    expect(cmp(p, q)).toBeLessThan(0);
+    expect(cmp(q, p)).toBeGreaterThan(0);
+    // a comparator must report 0 only for a truly-equal pair (same id) → stable.
+    expect(cmp(p, { ...p })).toBe(0);
+  });
+
   it('"created" sorts newer createdAt first (desc)', () => {
     const cmp = sortByKey('created').cmp;
     expect(cmp(newer, older)).toBeLessThan(0);

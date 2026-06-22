@@ -8,6 +8,7 @@
  */
 import crypto from 'crypto';
 import { prisma } from '../db/client.js';
+import { touchProjectActivity } from '../store.js';
 import { getProjectAccess, ensureLeaderMember, findUserByEmail, writeAudit } from '../screening/access.js';
 import { PERMISSION_KEYS, GLOBAL_PERMISSION_KEYS, resolvePreset, fullPermissions } from '../../src/research-engine/screening/permissionPresets.js';
 import { createNotification, notifyProjectInvite } from '../services/notificationService.js';
@@ -217,6 +218,7 @@ export async function addMember(req, res) {
     await writeAudit(req.params.pid, req.user, 'MEMBER_ADDED', {
       entityType: 'member', entityId: member.id, details: { email: normEmail, role, preset: presetName, pending: !user },
     });
+    void touchProjectActivity(access.project.linkedMetaLabProjectId); // prompt50 WS5 — member change = activity
     // Invite notification for already-registered users (prompt6 Task 1) — pending
     // email-only invites are notified by the claim-on-register hook instead.
     // Best-effort fire-and-forget: never fails or slows the add-member response.
@@ -375,6 +377,9 @@ export async function updateMember(req, res) {
         ...(chatChanged ? { chatPermission: { from: !!member.canChat, to: !!data.canChat } } : {}),
       },
     });
+    // prompt50 WS5 — a member/permission change is meaningful activity on the
+    // linked META·LAB project (cross-workstream timestamp). Best-effort.
+    void touchProjectActivity(access.project.linkedMetaLabProjectId);
     // ROLE_CHANGED notification on a REAL role/preset change (prompt6 Task 1) —
     // best-effort fire-and-forget; skipped for unclaimed invites (no userId) and
     // for actors changing their own row.
@@ -438,6 +443,7 @@ export async function removeMember(req, res) {
     await writeAudit(req.params.pid, req.user, 'MEMBER_REMOVED', {
       entityType: 'member', entityId: member.id, details: { email: member.email },
     });
+    void touchProjectActivity(access.project.linkedMetaLabProjectId); // prompt50 WS5 — member change = activity
     // Removing a pending row IS the invite-revoke path (prompt9) — the token
     // hash dies with the row, so the invite link instantly turns 404.
     if (member.status === 'pending') {
