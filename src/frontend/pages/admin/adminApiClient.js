@@ -83,6 +83,7 @@ export const adminApi = {
     // Rows include linkedMetaSift: { id, title } | null (prompt6 Task 11) —
     // the linked ScreenProject IS the Review Workspace (workspaceId == linkedMetaSift.id).
     list:         (p)        => req(`${BASE}/projects?${new URLSearchParams(p || {})}`),
+    detail:       (id)       => req(`${BASE}/projects/${id}/detail`),
     archive:      (id)       => req(`${BASE}/projects/${id}/archive`, { method: 'PATCH' }),
     restore:      (id)       => req(`${BASE}/projects/${id}/restore`, { method: 'PATCH' }),
   },

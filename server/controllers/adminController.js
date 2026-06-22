@@ -1099,6 +1099,83 @@ export async function getProjects(req, res) {
   }
 }
 
+// ── GET /api/admin/projects/:id/detail ────────────────────────────────────────
+// Rich, REAL project analytics for the Ops Projects detail drawer (prompt49 item
+// 9). Computed with bounded count/groupBy/aggregate queries (no N+1, no loading
+// every record) so it scales. No fabricated data — every number is a live count.
+// Admin only.
+export async function getProjectDetail(req, res) {
+  try {
+    const { id } = req.params;
+    const project = await prisma.project.findUnique({
+      where: { id },
+      select: {
+        id: true, userId: true, name: true, data: true, createdAt: true, updatedAt: true,
+        deletedAt: true, deletedSource: true, archived: true, lastSavedAt: true,
+        user: { select: { name: true, email: true } },
+      },
+    });
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const data = safeParseData(project.data);
+    const studyCount = Array.isArray(data.studies) ? data.studies.length : 0;
+    const recordCount = Array.isArray(data.records) ? data.records.length : 0;
+    const pico = (data.pico && typeof data.pico === 'object') ? data.pico : (data.protocol?.pico || null);
+    const hasPico = !!(pico && typeof pico === 'object' && Object.values(pico).some((v) => v && String(v).trim()));
+    const hasSearch = !!(data.search && typeof data.search === 'object' && Object.keys(data.search).length > 0);
+
+    const [robCount, sift] = await Promise.all([
+      prisma.robAssessment.count({ where: { projectId: id, deletedAt: null } }),
+      prisma.screenProject.findFirst({
+        where: { linkedMetaLabProjectId: id },
+        select: { id: true, title: true, stage: true, progressStatus: true, blindMode: true, requiredScreeningReviewers: true, createdAt: true, updatedAt: true },
+      }),
+    ]);
+
+    let screening = null;
+    if (sift) {
+      const [recTotal, byStage, byDecision, byFinal, conflictsOpen, conflictsTotal, dupGroups, members, pdfAgg, aiRun] = await Promise.all([
+        prisma.screenRecord.count({ where: { projectId: sift.id } }),
+        prisma.screenRecord.groupBy({ by: ['currentStage'], where: { projectId: sift.id }, _count: { _all: true } }),
+        prisma.screenDecision.groupBy({ by: ['decision'], where: { projectId: sift.id }, _count: { _all: true } }),
+        prisma.screenRecord.groupBy({ by: ['finalStatus'], where: { projectId: sift.id }, _count: { _all: true } }),
+        prisma.screenConflict.count({ where: { projectId: sift.id, resolvedAt: null } }),
+        prisma.screenConflict.count({ where: { projectId: sift.id } }),
+        prisma.screenDuplicateGroup.count({ where: { projectId: sift.id } }),
+        prisma.screenProjectMember.count({ where: { projectId: sift.id, status: 'active' } }),
+        prisma.screenPdfAttachment.aggregate({ where: { projectId: sift.id }, _count: { _all: true }, _sum: { fileSize: true } }),
+        prisma.screenAiRun.findFirst({ where: { projectId: sift.id }, orderBy: { createdAt: 'desc' }, select: { id: true, createdAt: true, stage: true, status: true, nScored: true, engineVersion: true, isActive: true } }),
+      ]);
+      const tally = (rows, key) => Object.fromEntries(rows.map((r) => [r[key] || '(none)', r._count._all]));
+      screening = {
+        id: sift.id, title: sift.title, stage: sift.stage, progressStatus: sift.progressStatus,
+        blindMode: sift.blindMode, requiredReviewers: sift.requiredScreeningReviewers,
+        records: recTotal,
+        byStage: tally(byStage, 'currentStage'),
+        byDecision: tally(byDecision, 'decision'),
+        byFinal: tally(byFinal, 'finalStatus'),
+        conflictsOpen, conflictsTotal, duplicateGroups: dupGroups, members,
+        pdfCount: pdfAgg._count._all || 0, pdfBytes: pdfAgg._sum.fileSize || 0,
+        ai: aiRun || null,
+      };
+    }
+
+    return res.json({
+      project: {
+        id: project.id, name: project.name,
+        owner: { id: project.userId, name: project.user?.name || null, email: project.user?.email || null },
+        createdAt: project.createdAt, updatedAt: project.updatedAt, lastSavedAt: project.lastSavedAt,
+        status: project.deletedAt ? 'archived' : 'active', deletedSource: project.deletedSource || null,
+      },
+      workflow: { studyCount, recordCount, hasPico, hasSearch, robAssessments: robCount },
+      screening,
+    });
+  } catch (err) {
+    console.error('[admin] getProjectDetail error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 // ── Settings helpers ──────────────────────────────────────────────────────────
 
 const SETTING_KEYS = ['appSettings', 'landingContent', 'featureFlags'];

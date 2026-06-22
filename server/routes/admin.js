@@ -17,6 +17,7 @@ import {
   resetUserPassword,
   sendPasswordReset,
   getProjects,
+  getProjectDetail,
   archiveProject,
   restoreProject,
   getAdminSettings,
@@ -172,6 +173,7 @@ router.get('/metrics', requireAdmin, getMetrics);
 router.get('/metrics/timeseries', requireAdmin, getMetricsTimeseries);
 
 router.get('/projects', requireAdmin, getProjects);
+router.get('/projects/:id/detail', requireAdmin, getProjectDetail);
 router.patch('/projects/:id/archive', requireAdmin, archiveProject);
 router.patch('/projects/:id/restore', requireAdmin, restoreProject);
 

@@ -3328,8 +3328,45 @@ function InstitutionsManager() {
    SECTION: PROJECTS (redesigned — search + detail drawer)
    ════════════════════════════════════════════════════════════════════════ */
 
+// prompt49 item 9 — compact proportional bar of screening decisions (real counts).
+function DecisionBar({ byDecision }) {
+  const order = [['include', C.grn], ['exclude', C.red], ['maybe', C.ylw], ['undecided', C.muted]];
+  const total = Object.values(byDecision || {}).reduce((s, n) => s + n, 0);
+  if (!total) return <div style={{ fontSize: 11, color: C.muted }}>No decisions yet</div>;
+  return (
+    <div>
+      <div style={{ display: 'flex', height: 8, borderRadius: 4, overflow: 'hidden', background: C.surf }}>
+        {order.map(([k, color]) => {
+          const n = byDecision[k] || 0;
+          return n ? <div key={k} title={`${k}: ${n}`} style={{ width: `${(n / total) * 100}%`, background: color }} /> : null;
+        })}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 10px', marginTop: 6 }}>
+        {order.map(([k, color]) => (byDecision[k] ? (
+          <span key={k} style={{ fontSize: 10, color: C.muted, fontFamily: MONO }}>
+            <span style={{ display: 'inline-block', width: 7, height: 7, borderRadius: 2, background: color, marginRight: 4 }} />{k} {byDecision[k]}
+          </span>
+        ) : null))}
+      </div>
+    </div>
+  );
+}
+
 function ProjectDetailPanel({ project, onClose, onAction }) {
   const [confirm, setConfirm] = useState(null);
+  const [detail, setDetail] = useState(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  // Fetch rich, REAL analytics for the selected project (prompt49 item 9).
+  useEffect(() => {
+    let live = true;
+    setDetail(null); setDetailLoading(true);
+    adminApi.projects.detail(project.id)
+      .then((d) => { if (live) setDetail(d); })
+      .catch(() => { if (live) setDetail(null); })
+      .finally(() => { if (live) setDetailLoading(false); });
+    return () => { live = false; };
+  }, [project.id]);
 
   async function doAction() {
     if (!confirm) return;
@@ -3343,9 +3380,10 @@ function ProjectDetailPanel({ project, onClose, onAction }) {
   }
 
   const isArchived = !!project.deletedAt;
+  const fmtBytes = (b) => (!b ? '0 B' : b >= 1e6 ? `${(b / 1e6).toFixed(1)} MB` : b >= 1e3 ? `${(b / 1e3).toFixed(0)} KB` : `${b} B`);
 
   return (
-    <div style={{ width: 280, flexShrink: 0, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, overflow: 'hidden', alignSelf: 'flex-start', position: 'sticky', top: TOPBAR_H + 28 }}>
+    <div style={{ width: 300, flexShrink: 0, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, overflow: 'hidden', alignSelf: 'flex-start', position: 'sticky', top: TOPBAR_H + 28 }}>
       <div style={{ padding: '12px 16px', borderBottom: `1px solid ${C.brd}`, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: C.txt }}>Project Detail</span>
         <button onClick={onClose} style={{ background: 'none', border: 'none', color: C.muted, cursor: 'pointer', fontSize: 16 }}>✕</button>
@@ -3379,6 +3417,40 @@ function ProjectDetailPanel({ project, onClose, onAction }) {
             <span style={{ fontSize: 11, color: C.txt2, minWidth: 0, textAlign: 'right', overflowWrap: 'anywhere' }}>{r.value}</span>
           </div>
         ))}
+
+        {/* prompt49 item 9 — real, computed project analytics */}
+        {detailLoading && <div style={{ fontSize: 11, color: C.muted, padding: '10px 0' }}>Loading analytics…</div>}
+        {detail && (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ fontSize: 10, color: C.muted, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>Workflow</div>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, marginBottom: 14 }}>
+              <Badge text={detail.workflow.hasPico ? 'PICO' : 'no PICO'} color={detail.workflow.hasPico ? C.grn : C.muted} />
+              <Badge text={detail.workflow.hasSearch ? 'Search' : 'no search'} color={detail.workflow.hasSearch ? C.grn : C.muted} />
+              <Badge text={`RoB ${detail.workflow.robAssessments}`} color={detail.workflow.robAssessments ? C.acc : C.muted} />
+            </div>
+            {detail.screening ? (
+              <>
+                <div style={{ fontSize: 10, color: C.muted, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>Screening analytics</div>
+                <div style={{ marginBottom: 12 }}><DecisionBar byDecision={detail.screening.byDecision} /></div>
+                {[
+                  ['Records', detail.screening.records],
+                  ['Reviewers', detail.screening.members],
+                  ['Open conflicts', `${detail.screening.conflictsOpen} / ${detail.screening.conflictsTotal}`],
+                  ['Duplicate groups', detail.screening.duplicateGroups],
+                  ['PDFs', `${detail.screening.pdfCount} (${fmtBytes(detail.screening.pdfBytes)})`],
+                  ['AI runs', detail.screening.ai ? `${detail.screening.ai.engineVersion} · ${detail.screening.ai.nScored} scored` : '—'],
+                ].map(([label, value]) => (
+                  <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '4px 0', borderBottom: `1px solid ${C.brd}` }}>
+                    <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
+                    <span style={{ fontSize: 11, color: C.txt2, textAlign: 'right', overflowWrap: 'anywhere' }}>{value}</span>
+                  </div>
+                ))}
+              </>
+            ) : (
+              <div style={{ fontSize: 11, color: C.muted, padding: '4px 0' }}>No linked screening project.</div>
+            )}
+          </div>
+        )}
       </div>
 
       <div style={{ padding: '12px 16px', borderTop: `1px solid ${C.brd}` }}>
