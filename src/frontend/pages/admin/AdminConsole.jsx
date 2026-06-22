@@ -3474,53 +3474,95 @@ function ProjectDetailPanel({ project, onClose, onAction }) {
   );
 }
 
+// prompt50 WS1 — the Ops Projects tab is now a multi-view workspace mirroring the
+// Users tab: a richer Directory plus platform Overview, Growth, and Analytics.
+const PROJECT_SUBTABS = [
+  { id: 'directory', label: 'Directory' },
+  { id: 'overview',  label: 'Overview' },
+  { id: 'growth',    label: 'Growth' },
+  { id: 'analytics', label: 'Analytics' },
+];
+
 function ProjectsSection() {
+  const [view, setView] = useState('directory');
+  return (
+    <div>
+      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 16px' }}>Projects</h2>
+      <UsersSubTabs active={view} onSelect={setView} tabs={PROJECT_SUBTABS} />
+      <OpsErrorBoundary key={view} label={`the ${view} view`}>
+        {view === 'directory' && <ProjectsDirectory />}
+        {view === 'overview'  && <ProjectsOverviewSection />}
+        {view === 'growth'    && <ProjectsGrowthSection />}
+        {view === 'analytics' && <ProjectsAnalyticsSection />}
+      </OpsErrorBoundary>
+    </div>
+  );
+}
+
+const PROJECT_SORTS = [
+  { id: 'lastActivity', label: 'Last activity' },
+  { id: 'created',      label: 'Created' },
+  { id: 'updated',      label: 'Updated' },
+  { id: 'name',         label: 'Name' },
+];
+
+function ProjectsDirectory() {
   const [rows,    setRows]    = useState([]);
   const [total,   setTotal]   = useState(0);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState('');
   const [search,  setSearch]  = useState('');
   const [filter,  setFilter]  = useState('all');
+  const [linked,  setLinked]  = useState('any');     // any | yes | no
+  const [sort,    setSort]    = useState('lastActivity');
+  const [dir,     setDir]     = useState('desc');
   const [page,    setPage]    = useState(1);
   const [selectedProject, setSelectedProject] = useState(null);
   const searchTimer = useRef(null);
   const PER_PAGE = 25;
 
-  const load = useCallback(async (s, f, p) => {
+  // Server-side: search + status + linked filter + sort BEFORE pagination, so the
+  // order is authoritative and correct across every page (prompt50 WS1/WS5).
+  const load = useCallback(async (opts = {}) => {
+    const { s = search, f = filter, l = linked, so = sort, d = dir, p = page } = opts;
     setLoading(true); setError('');
     try {
-      const params = { page: p, limit: PER_PAGE };
+      const params = { page: p, limit: PER_PAGE, sort: so, dir: d };
       if (s) params.search = s;
       if (f !== 'all') params.status = f;
+      if (l !== 'any') params.linked = l;
       const data = await adminApi.projects.list(params);
       // prompt25 Task 5 — show the LIVE owner name (falls back to email) so a rename reflects.
-      setRows((data.projects || []).map(p => ({ ...p, ownerEmail: p.owner?.name || p.userEmail || p.ownerEmail })));
+      setRows((data.projects || []).map(pp => ({ ...pp, ownerEmail: pp.owner?.name || pp.userEmail || pp.ownerEmail })));
       setTotal(data.total || 0);
     } catch (e) { setRows([]); setError(e.message); }
     finally { setLoading(false); }
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search, filter, linked, sort, dir, page]);
 
-  useEffect(() => { load(search, filter, page); }, [page]);
+  useEffect(() => { load({ p: page }); /* eslint-disable-next-line */ }, [page]);
 
+  function reload(patch) { setPage(1); load({ p: 1, ...patch }); }
   function handleSearch(val) {
     setSearch(val);
     clearTimeout(searchTimer.current);
-    searchTimer.current = setTimeout(() => { setPage(1); load(val, filter, 1); }, 280);
+    searchTimer.current = setTimeout(() => reload({ s: val }), 280);
   }
 
   const columns = [
-    { key: 'name',       label: 'Name',    render: v => <span title={v} style={{ color: C.txt, fontWeight: 600, display: 'block', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span> },
-    // Linked META·SIFT screening project (prompt6 Task 11). linkedMetaSift = { id, title } | null;
-    // its id IS the shared Review Workspace id (shown in the detail panel).
+    { key: 'name',       label: 'Name',    render: v => <span title={v} style={{ color: C.txt, fontWeight: 600, display: 'block', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</span> },
     { key: 'linkedMetaSift', label: 'Linked Screening',
       render: v => v?.id
-        ? <span title={v.title || '(linked, untitled)'} style={{ fontSize: 11, display: 'block', maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.title || '(linked, untitled)'}</span>
+        ? <span title={v.title || '(linked, untitled)'} style={{ fontSize: 11, display: 'block', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v.title || '(linked)'}{v.progressStatus ? <span style={{ color: C.muted }}> · {v.progressStatus}</span> : ''}</span>
         : <span style={{ fontSize: 11, color: C.muted }}>— not linked</span> },
     { key: 'ownerEmail', label: 'Owner',   render: v => <span title={v || undefined} style={{ fontFamily: MONO, fontSize: 11, overflowWrap: 'anywhere' }}>{v || '—'}</span> },
-    { key: 'createdAt',  label: 'Created', render: v => fmtDate(v) },
-    { key: 'updatedAt',  label: 'Updated', render: v => fmtAgo(v) },
+    { key: 'lastActivityAt', label: 'Last activity', render: v => fmtAgo(v) },
     { key: 'studyCount', label: 'Studies', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
-    { key: 'recordCount',label: 'Records', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
+    { key: 'memberCount',label: 'Members', render: v => <span style={{ fontFamily: MONO }}>{v ?? 0}</span> },
+    { key: 'conflictsOpen', label: 'Conflicts',
+      render: v => v > 0
+        ? <Badge text={String(v)} color={C.ylw} />
+        : <span style={{ fontFamily: MONO, color: C.muted }}>0</span> },
     { key: 'deletedAt',  label: 'Status',  render: (v, row) => {
         if (!v) return <Badge text="active" color={C.grn} />;
         if (row.deletedSource === 'owner') return <Badge text="owner-deleted" color={C.red} />;
@@ -3533,16 +3575,36 @@ function ProjectsSection() {
     { id: 'active',   label: 'Active' },
     { id: 'archived', label: 'Archived' },
   ];
+  const linkedDefs = [
+    { id: 'any', label: 'Any' },
+    { id: 'yes', label: 'Linked' },
+    { id: 'no',  label: 'Not linked' },
+  ];
 
   return (
     <div>
-      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 20px' }}>Projects</h2>
       {error && <ErrorBox msg={error} />}
 
-      <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 8, flexWrap: 'wrap', alignItems: 'center' }}>
         <input type="text" placeholder="Search by project name…" value={search} onChange={e => handleSearch(e.target.value)}
-          style={{ ...inputStyle, width: 260, flex: 'none' }} />
-        <FilterBar filters={filterDefs} active={filter} onSelect={f => { setFilter(f); setPage(1); load(search, f, 1); }} />
+          style={{ ...inputStyle, width: 240, flex: 'none' }} aria-label="Search projects by name" />
+        <FilterBar filters={filterDefs} active={filter} onSelect={f => { setFilter(f); reload({ f }); }} />
+      </div>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+        <span style={{ fontSize: 11, fontFamily: MONO, color: C.muted, letterSpacing: '0.05em', textTransform: 'uppercase' }}>Screening</span>
+        <FilterBar filters={linkedDefs} active={linked} onSelect={l => { setLinked(l); reload({ l }); }} />
+        <span style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+          <label htmlFor="proj-sort" style={{ fontSize: 11, fontFamily: MONO, color: C.muted }}>Sort</label>
+          <select id="proj-sort" value={sort} onChange={e => { setSort(e.target.value); reload({ so: e.target.value }); }}
+            style={{ ...inputStyle, width: 'auto', padding: '6px 8px', fontSize: 12 }}>
+            {PROJECT_SORTS.map(s => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </select>
+          <button onClick={() => { const nd = dir === 'desc' ? 'asc' : 'desc'; setDir(nd); reload({ d: nd }); }}
+            title={dir === 'desc' ? 'Descending' : 'Ascending'} aria-label="Toggle sort direction"
+            style={{ ...inputStyle, width: 'auto', padding: '6px 10px', cursor: 'pointer', fontFamily: MONO }}>
+            {dir === 'desc' ? '▼' : '▲'}
+          </button>
+        </span>
       </div>
 
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
@@ -3561,9 +3623,283 @@ function ProjectsSection() {
           <ProjectDetailPanel
             project={selectedProject}
             onClose={() => setSelectedProject(null)}
-            onAction={() => load(search, filter, page)}
+            onAction={() => load({ p: page })}
           />
         )}
+      </div>
+    </div>
+  );
+}
+
+// prompt50 WS1 — platform PROJECT overview: live totals + screening rollups.
+function ProjectsOverviewSection() {
+  const [data, setData]       = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true); setError('');
+      try { const d = await adminApi.projects.overview(); if (alive) setData(d); }
+      catch (e) { if (alive) setError(e.message); }
+      finally { if (alive) setLoading(false); }
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const t = data?.totals || {};
+  const created = data?.created || {};
+  const act = data?.activity || {};
+  const scr = data?.screening || {};
+  const stageRows = Object.entries(scr.byStage || {}).map(([label, count]) => ({ label, count }));
+
+  return (
+    <div>
+      {error && <ErrorBox msg={error} />}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10, marginBottom: 18 }}>
+        <StatTile label="Total projects"    value={loading ? '—' : (t.total ?? 0).toLocaleString()}        color={C.txt}  loading={loading} />
+        <StatTile label="Active"            value={loading ? '—' : (t.active ?? 0).toLocaleString()}       color={C.grn}  loading={loading} sub="not deleted" />
+        <StatTile label="Admin-archived"   value={loading ? '—' : (t.archivedAdmin ?? 0).toLocaleString()} color={C.ylw}  loading={loading} />
+        <StatTile label="Owner-deleted"    value={loading ? '—' : (t.deletedByOwner ?? 0).toLocaleString()} color={C.red}  loading={loading} />
+        <StatTile label="New this month"   value={loading ? '—' : (created.month?.count ?? 0).toLocaleString()} color={C.acc}  loading={loading} sub="created" />
+        <StatTile label="Active this month" value={loading ? '—' : (act.modifiedThisMonth ?? 0).toLocaleString()} color={C.teal} loading={loading} sub="meaningfully modified" />
+        <StatTile label="Inactive 30d+"    value={loading ? '—' : (act.inactive30 ?? 0).toLocaleString()}  color={C.purp} loading={loading} sub="at risk" />
+        <StatTile label="Inactive 90d+"    value={loading ? '—' : (act.inactive90 ?? 0).toLocaleString()}  color={C.muted} loading={loading} sub="stalled" />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: 18 }}>
+        <SectionCard title="With screening">
+          <div style={{ padding: '16px 18px' }}>
+            <PercentCard value={scr.withScreening || 0} total={t.active || 0} label="linked to a Screening project" color={C.acc} loading={loading} suffix="projects" />
+          </div>
+        </SectionCard>
+        <SectionCard title="Unresolved conflicts">
+          <div style={{ padding: '16px 18px' }}>
+            <div style={{ fontSize: 30, fontWeight: 800, fontFamily: MONO, color: (scr.withOpenConflicts ? C.ylw : C.grn), fontVariantNumeric: 'tabular-nums' }}>
+              {loading ? '—' : (scr.withOpenConflicts ?? 0).toLocaleString()}
+            </div>
+            <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, marginTop: 6, textTransform: 'uppercase', letterSpacing: '0.06em' }}>projects with open conflicts</div>
+          </div>
+        </SectionCard>
+        <SectionCard title="Risk of Bias">
+          <div style={{ padding: '16px 18px' }}>
+            <PercentCard value={scr.withRoB || 0} total={t.active || 0} label="have RoB assessments" color={C.purp} loading={loading} suffix="projects" />
+          </div>
+        </SectionCard>
+        <SectionCard title="Avg members / project">
+          <div style={{ padding: '16px 18px' }}>
+            <div style={{ fontSize: 30, fontWeight: 800, fontFamily: MONO, color: C.teal, fontVariantNumeric: 'tabular-nums' }}>{loading ? '—' : (scr.avgMembers ?? 0)}</div>
+            <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, marginTop: 6, textTransform: 'uppercase', letterSpacing: '0.06em' }}>active members · linked projects</div>
+          </div>
+        </SectionCard>
+      </div>
+
+      <SectionCard title="Projects by workflow stage">
+        <div style={{ padding: '16px 18px' }}>
+          <RankedBars items={stageRows} color={C.acc2} loading={loading} emptyLabel="no linked screening projects yet" />
+        </div>
+      </SectionCard>
+    </div>
+  );
+}
+
+// prompt50 WS1 — project CREATION over time (mirrors the Users Growth tab).
+function ProjectsGrowthSection() {
+  const [data, setData]   = useState(null);
+  const [years, setYears] = useState([]);
+  const [year, setYear]   = useState(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy]   = useState(false);
+  const [dayRange, setDayRange] = useState('30d');
+
+  const load = useCallback(async (y) => {
+    setBusy(true);
+    try {
+      const d = await adminApi.projects.growth(y || undefined);
+      setData(d); setYears(d.availableYears || []);
+      if (y == null) setYear(d.selectedYear);
+      setError('');
+    } catch (e) { setError(e.message); if (y == null) setData(undefined); }
+    finally { setBusy(false); }
+  }, []);
+  useEffect(() => { load(null); }, [load]);
+  function pickYear(y) { setYear(y); load(y); }
+
+  const loading = data === null;
+  const w = data?.windows || {};
+  const byYear = data?.byYear || [];
+  const byMonth = data?.byMonth || [];
+  const byQuarter = data?.byQuarter || [];
+  const stats = data?.stats || {};
+  const dayTrend = growthTrend(data, dayRange);
+  const monthRows = byMonth.map(m => ({ label: m.label, value: m.count }));
+  const quarterRows = byQuarter.map(q => ({ label: q.label, value: q.count }));
+  const yearRows = byYear.map(y => ({ label: String(y.year), value: y.count }));
+  const dayRanges = [{ id: '7d', label: '7d' }, { id: '30d', label: '30d' }, { id: '90d', label: '90d' }];
+
+  return (
+    <div>
+      {error && <ErrorBox msg={error} />}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(118px, 1fr))', gap: 10, marginBottom: 18 }}>
+        <GrowthSummaryCard label="Today"        win={w.today}   accent={C.acc}  loading={loading} prevLabel="day" />
+        <GrowthSummaryCard label="This week"    win={w.week}    accent={C.teal} loading={loading} prevLabel="week" />
+        <GrowthSummaryCard label="This month"   win={w.month}   accent={C.grn}  loading={loading} prevLabel="month" />
+        <GrowthSummaryCard label="This quarter" win={w.quarter} accent={C.purp} loading={loading} prevLabel="quarter" />
+        <GrowthSummaryCard label="This year"    win={w.year}    accent={C.acc2} loading={loading} prevLabel="year" />
+        <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: '14px 16px', minWidth: 0 }}>
+          <div style={{ fontSize: 26, fontWeight: 800, color: C.txt, fontFamily: MONO, letterSpacing: '-1px', lineHeight: 1.05, fontVariantNumeric: 'tabular-nums' }}>
+            {loading ? '—' : (w.total?.count ?? 0).toLocaleString()}
+          </div>
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 6, fontFamily: MONO, letterSpacing: '0.06em', textTransform: 'uppercase' }}>Total · all time</div>
+          <div style={{ fontSize: 9, fontFamily: MONO, color: C.muted, marginTop: 5 }}>projects created</div>
+        </div>
+      </div>
+
+      <SectionCard title="Projects created by day" action={<RangeSwitch options={dayRanges} value={dayRange} onChange={setDayRange} />}>
+        <div style={{ padding: '16px 18px' }}>
+          <AreaChart series={loading ? null : [{ id: 'newProjects', label: 'New projects', color: C.grn, values: dayTrend.values }]}
+            labels={dayTrend.labels} height={180} loading={loading} emptyLabel="Not enough project data yet" />
+        </div>
+      </SectionCard>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16, marginTop: 16 }}>
+        <SectionCard title="Projects created by year" action={<span style={{ fontSize: 10, fontFamily: MONO, color: C.muted }}>year-over-year</span>}>
+          <div style={{ padding: '16px 18px' }}>
+            <BarRow rows={yearRows} color={C.acc2} loading={loading} emptyLabel="no yearly data yet" />
+            {!loading && byYear.length > 0 && (
+              <div style={{ marginTop: 14, display: 'grid', gap: 6 }}>
+                {byYear.map(y => (
+                  <div key={y.year} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 11, fontFamily: MONO, color: C.txt2 }}>
+                    <span>{y.year}</span>
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+                      <span style={{ color: C.txt, fontWeight: 700, fontVariantNumeric: 'tabular-nums' }}>{y.count.toLocaleString()}</span>
+                      <DeltaBadge delta={y.growthPct} title="vs previous year" />
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Projects created by month" action={
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+            {busy && <Spinner size={11} />}
+            {years.map(y => (
+              <button key={y} onClick={() => pickYear(y)} style={{
+                padding: '3px 9px', background: y === year ? C.acc2 : 'transparent',
+                border: `1px solid ${y === year ? C.acc2 : C.brd2}`, borderRadius: 6,
+                color: y === year ? C.accText : C.txt2, fontSize: 11, fontFamily: MONO, cursor: 'pointer',
+              }}>{y}</button>
+            ))}
+          </span>
+        }>
+          <div style={{ padding: '16px 18px' }}>
+            <BarRow rows={monthRows} color={C.grn} loading={loading} emptyLabel="no monthly data yet" />
+          </div>
+        </SectionCard>
+      </div>
+
+      <SectionCard title="Projects created by quarter">
+        <div style={{ padding: '16px 18px' }}>
+          <BarRow rows={quarterRows} color={C.purp} loading={loading} emptyLabel="no quarterly data yet" />
+        </div>
+      </SectionCard>
+
+      <SectionCard title="This month at a glance" action={<span style={{ fontSize: 10, fontFamily: MONO, color: C.muted }}>current calendar month</span>}>
+        <div style={{ padding: '16px 18px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+            <StatTile label="New projects" value={(stats.newProjectsThisMonth ?? 0).toLocaleString()} color={C.grn} loading={loading} />
+            <StatTile label="Avg / day" value={stats.avgPerDayThisMonth ?? 0} color={C.acc} loading={loading} sub="month-to-date" />
+            <StatTile label="Best day" value={stats.bestDay ? stats.bestDay.count.toLocaleString() : '—'} color={C.teal} loading={loading} sub={stats.bestDay ? fmtDayKey(stats.bestDay.date) : 'no projects yet'} />
+            <StatTile label="Still active" value={(stats.activeThisMonth ?? 0).toLocaleString()} color={C.acc2} loading={loading} sub="not since deleted" />
+          </div>
+        </div>
+      </SectionCard>
+    </div>
+  );
+}
+
+// prompt50 WS1 — project DISTRIBUTIONS, filterable by creation window.
+function ProjectsAnalyticsSection() {
+  const [data, setData]       = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError]     = useState('');
+  const [window, setWindow]   = useState('all');
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      setLoading(true); setError('');
+      try { const d = await adminApi.projects.analytics(window); if (alive) setData(d); }
+      catch (e) { if (alive) setError(e.message); }
+      finally { if (alive) setLoading(false); }
+    })();
+    return () => { alive = false; };
+  }, [window]);
+
+  const byOwner = (data?.byOwner || []).map(o => ({ label: o.key, count: o.count }));
+  const link = data?.byScreeningLink || { linked: 0, unlinked: 0 };
+  const comp = data?.completion || { withScreening: 0, withRoB: 0, total: 0 };
+  const windowLabel = (ANALYTICS_WINDOWS.find(x => x.id === window) || {}).label || 'All time';
+
+  return (
+    <div>
+      {error && <ErrorBox msg={error} />}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 16, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, fontFamily: MONO, color: C.muted, letterSpacing: '0.05em', textTransform: 'uppercase' }}>Created in</span>
+        <FilterBar filters={ANALYTICS_WINDOWS} active={window} onSelect={setWindow} />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: 18 }}>
+        <SectionCard title={window === 'all' ? 'Total projects' : 'New projects'}>
+          <div style={{ padding: '16px 18px' }}>
+            <div style={{ fontSize: 34, fontWeight: 800, fontFamily: MONO, color: C.acc, letterSpacing: '-1.2px', fontVariantNumeric: 'tabular-nums' }}>
+              {loading ? '—' : (data?.totalProjects ?? 0).toLocaleString()}
+            </div>
+            <div style={{ fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', marginTop: 6 }}>{window === 'all' ? 'all projects' : `${windowLabel.toLowerCase()} · new`}</div>
+          </div>
+        </SectionCard>
+        <SectionCard title="Linked to screening">
+          <div style={{ padding: '16px 18px' }}>
+            <DonutGauge
+              segments={[
+                { label: 'Linked',   value: link.linked || 0,   color: C.grn },
+                { label: 'Unlinked', value: link.unlinked || 0, color: C.muted },
+              ]}
+              centerValue={(link.linked + link.unlinked) > 0 ? `${Math.round((link.linked / (link.linked + link.unlinked)) * 100)}%` : '—'}
+              centerLabel="linked" size={108} thickness={12} loading={loading} emptyLabel="no projects yet" />
+          </div>
+        </SectionCard>
+        <SectionCard title="With Risk of Bias">
+          <div style={{ padding: '16px 18px' }}>
+            <PercentCard value={comp.withRoB || 0} total={comp.total || 0} label="have RoB assessments" color={C.purp} loading={loading} suffix="projects" />
+          </div>
+        </SectionCard>
+        <SectionCard title="With screening">
+          <div style={{ padding: '16px 18px' }}>
+            <PercentCard value={comp.withScreening || 0} total={comp.total || 0} label="linked to screening" color={C.acc2} loading={loading} suffix="projects" />
+          </div>
+        </SectionCard>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
+        <SectionCard title="By status">
+          <div style={{ padding: '16px 18px' }}>
+            <RankedBars items={data?.byStatus} color={C.acc} loading={loading} emptyLabel="no status data yet" />
+          </div>
+        </SectionCard>
+        <SectionCard title="By workflow stage">
+          <div style={{ padding: '16px 18px' }}>
+            <RankedBars items={data?.byStage} color={C.teal} loading={loading} emptyLabel="no stage data yet" />
+          </div>
+        </SectionCard>
+        <SectionCard title="Top owners">
+          <div style={{ padding: '16px 18px' }}>
+            <RankedBars items={byOwner} color={C.grn} max={10} loading={loading} emptyLabel="no owner data yet" />
+          </div>
+        </SectionCard>
       </div>
     </div>
   );

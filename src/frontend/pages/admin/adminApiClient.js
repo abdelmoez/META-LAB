@@ -82,10 +82,16 @@ export const adminApi = {
   projects: {
     // Rows include linkedMetaSift: { id, title } | null (prompt6 Task 11) —
     // the linked ScreenProject IS the Review Workspace (workspaceId == linkedMetaSift.id).
+    // prompt50 WS1 — list params now include sort (lastActivity|created|updated|name),
+    // dir (asc|desc), and linked (yes|no), plus search/status/page/limit.
     list:         (p)        => req(`${BASE}/projects?${new URLSearchParams(p || {})}`),
     detail:       (id)       => req(`${BASE}/projects/${id}/detail`),
     archive:      (id)       => req(`${BASE}/projects/${id}/archive`, { method: 'PATCH' }),
     restore:      (id)       => req(`${BASE}/projects/${id}/restore`, { method: 'PATCH' }),
+    // prompt50 WS1 — platform-wide project analytics (mirror the Users tab).
+    overview:     ()         => req(`${BASE}/projects/overview`),
+    growth:       (year)     => req(`${BASE}/project-growth${year ? `?year=${encodeURIComponent(year)}` : ''}`),
+    analytics:    (window)   => req(`${BASE}/project-analytics${window && window !== 'all' ? `?window=${encodeURIComponent(window)}` : ''}`),
   },
 
   settings: {

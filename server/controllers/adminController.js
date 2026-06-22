@@ -1019,10 +1019,16 @@ export async function getUserProjects(req, res) {
 
 // ── GET /api/admin/projects ───────────────────────────────────────────────────
 
+// prompt50 WS1 — server-side sortable columns. ONLY authoritative DB columns are
+// sortable so the order is correct ACROSS pages (blob-derived counts like
+// studies/members live in JSON/related tables and cannot be DB-sorted without
+// denormalised counters — those remain client-side within the current page).
+const PROJECT_SORT_COLUMNS = { lastActivity: 'lastActivityAt', created: 'createdAt', updated: 'updatedAt', name: 'name' };
+
 export async function getProjects(req, res) {
   try {
     const { page, limit, skip } = parsePage(req.query);
-    const { userId, search, status } = req.query;
+    const { userId, search, status, linked } = req.query;
 
     const where = {};
     if (userId) where.userId = userId;
@@ -1030,22 +1036,38 @@ export async function getProjects(req, res) {
     if (status === 'active') where.deletedAt = null;
     else if (status === 'archived') where.deletedAt = { not: null };
 
+    // Linked-screening filter (prompt50 WS1). Resolve the set of META·LAB project
+    // ids that have a live linked ScreenProject, then constrain by it.
+    if (linked === 'yes' || linked === 'no') {
+      const linkedRows = await prisma.screenProject.findMany({
+        where: { linkedMetaLabProjectId: { not: null }, deletedAt: null },
+        select: { linkedMetaLabProjectId: true },
+      });
+      const ids = [...new Set(linkedRows.map(r => r.linkedMetaLabProjectId))];
+      where.id = linked === 'yes' ? { in: ids } : { notIn: ids };
+    }
+
+    // prompt50 WS1 — server-side sort BEFORE pagination, with a deterministic
+    // tiebreak so the order is stable across refreshes and pages.
+    const sortKey = PROJECT_SORT_COLUMNS[req.query.sort] || 'lastActivityAt';
+    const dir = req.query.dir === 'asc' ? 'asc' : (req.query.dir === 'desc' ? 'desc' : (sortKey === 'name' ? 'asc' : 'desc'));
+    // Deterministic tiebreak in the SAME direction as the primary key, so the
+    // order is fully reproducible and dir simply reverses it.
+    const orderBy = sortKey === 'createdAt'
+      ? [{ createdAt: dir }, { id: dir }]
+      : [{ [sortKey]: dir }, { createdAt: dir }, { id: dir }];
+
     const [total, projects] = await Promise.all([
       prisma.project.count({ where }),
       prisma.project.findMany({
         where,
         select: {
-          id: true,
-          userId: true,
-          name: true,
-          data: true,
-          createdAt: true,
-          updatedAt: true,
-          deletedAt: true,
-          deletedSource: true,
+          id: true, userId: true, name: true, data: true,
+          createdAt: true, updatedAt: true, lastActivityAt: true,
+          deletedAt: true, deletedSource: true,
           user: { select: { name: true, email: true } },
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy,
         skip,
         take: limit,
       }),
@@ -1057,15 +1079,25 @@ export async function getProjects(req, res) {
     const linkedSifts = projectIds.length
       ? await prisma.screenProject.findMany({
           where: { linkedMetaLabProjectId: { in: projectIds } },
-          select: { id: true, title: true, linkedMetaLabProjectId: true },
+          select: { id: true, title: true, linkedMetaLabProjectId: true, progressStatus: true, stage: true },
         })
       : [];
     const siftByMetaLabId = {};
     for (const sp of linkedSifts) {
-      // First match wins — multiple ScreenProjects linking one META·LAB project
-      // is not a supported state; display the first deterministically.
       if (!siftByMetaLabId[sp.linkedMetaLabProjectId]) siftByMetaLabId[sp.linkedMetaLabProjectId] = sp;
     }
+
+    // prompt50 WS1 — batched member + open-conflict counts for THIS page's linked
+    // screening projects (no N+1; one groupBy each, scoped to the page).
+    const siftIds = linkedSifts.map(s => s.id);
+    const [memberGroups, conflictGroups] = siftIds.length
+      ? await Promise.all([
+          prisma.screenProjectMember.groupBy({ by: ['projectId'], where: { projectId: { in: siftIds }, status: 'active' }, _count: { _all: true } }),
+          prisma.screenConflict.groupBy({ by: ['projectId'], where: { projectId: { in: siftIds }, resolvedAt: null }, _count: { _all: true } }),
+        ])
+      : [[], []];
+    const membersBySift = Object.fromEntries(memberGroups.map(g => [g.projectId, g._count._all]));
+    const conflictsBySift = Object.fromEntries(conflictGroups.map(g => [g.projectId, g._count._all]));
 
     const formatted = projects.map(p => {
       const data = safeParseData(p.data);
@@ -1074,25 +1106,27 @@ export async function getProjects(req, res) {
         id: p.id,
         userId: p.userId,
         userEmail: p.user?.email || null,
-        // owner object mirrors the SIFT admin rows' shape ({id,name,email}).
         owner: { id: p.userId, name: p.user?.name || null, email: p.user?.email || null },
         name: p.name,
         createdAt: p.createdAt,
         updatedAt: p.updatedAt,
+        // prompt50 WS5 — authoritative "Last Modified" timestamp (meaningful activity).
+        lastActivityAt: p.lastActivityAt || p.updatedAt || p.createdAt,
         deletedAt: p.deletedAt,
-        // prompt9 (additive): lets ops distinguish admin archive (null/'admin')
-        // from an owner soft delete ('owner') — both show status 'archived'.
         deletedSource: p.deletedSource || null,
         deleted: p.deletedSource === 'owner',
         status: p.deletedAt ? 'archived' : 'active',
-        linkedMetaSift: sift ? { id: sift.id, title: sift.title } : null,
+        linkedMetaSift: sift ? { id: sift.id, title: sift.title, progressStatus: sift.progressStatus ?? null, stage: sift.stage ?? null } : null,
         workspaceId: sift ? sift.id : null,
         studyCount: Array.isArray(data.studies) ? data.studies.length : 0,
         recordCount: Array.isArray(data.records) ? data.records.length : 0,
+        // prompt50 WS1 — additive ops fields for the richer directory.
+        memberCount: sift ? (membersBySift[sift.id] || 0) : 0,
+        conflictsOpen: sift ? (conflictsBySift[sift.id] || 0) : 0,
       };
     });
 
-    return res.json({ projects: formatted, total });
+    return res.json({ projects: formatted, total, sort: req.query.sort || 'lastActivity', dir });
   } catch (err) {
     console.error('[admin] getProjects error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
@@ -1172,6 +1206,178 @@ export async function getProjectDetail(req, res) {
     });
   } catch (err) {
     console.error('[admin] getProjectDetail error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── GET /api/admin/projects/overview ─────────────────────────────────────────
+// prompt50 WS1 — platform-wide PROJECT summary metrics for the Ops Projects
+// Overview (the cards above the directory). Every number is a live, authoritative
+// count/aggregate; nothing is fabricated. Built from cheap count/groupBy queries
+// + ONE small-column findMany (id/createdAt/lastActivityAt/deletedAt — NEVER the
+// data blob) so it scales with project volume. Admin only.
+export async function getProjectsOverview(req, res) {
+  try {
+    const now = new Date();
+    // Small-column read (no blobs) → windows + activity/stall metrics.
+    const projects = await prisma.project.findMany({
+      select: { id: true, userId: true, createdAt: true, lastActivityAt: true, updatedAt: true, deletedAt: true, deletedSource: true },
+    });
+    const live = projects.filter(p => !p.deletedAt);
+    const activityOf = p => p.lastActivityAt || p.updatedAt || p.createdAt;
+
+    // Creation windows (today/week/month/quarter/year + all-time, each w/ delta).
+    const created = windowSummary(projects.map(p => ({ createdAt: p.createdAt })), now);
+
+    const thirtyAgo = new Date(now.getTime() - 30 * 864e5);
+    const ninetyAgo = new Date(now.getTime() - 90 * 864e5);
+    const modifiedThisMonth = live.filter(p => new Date(activityOf(p)) >= startOfWindow('month', now)).length;
+    const inactive30 = live.filter(p => new Date(activityOf(p)) < thirtyAgo).length;
+    const inactive90 = live.filter(p => new Date(activityOf(p)) < ninetyAgo).length;
+
+    // Linked screening + per-stage distribution + member averages + open conflicts.
+    const [sifts, memberGroups, conflictGroups, robGroups] = await Promise.all([
+      prisma.screenProject.findMany({
+        where: { linkedMetaLabProjectId: { not: null }, deletedAt: null },
+        select: { id: true, linkedMetaLabProjectId: true, stage: true, progressStatus: true },
+      }),
+      prisma.screenProjectMember.groupBy({ by: ['projectId'], where: { status: 'active' }, _count: { _all: true } }),
+      prisma.screenConflict.groupBy({ by: ['projectId'], where: { resolvedAt: null }, _count: { _all: true } }),
+      prisma.robAssessment.groupBy({ by: ['projectId'], where: { deletedAt: null }, _count: { _all: true } }),
+    ]);
+    const liveIds = new Set(live.map(p => p.id));
+    const linkedLive = sifts.filter(s => liveIds.has(s.linkedMetaLabProjectId));
+    const siftIdToProject = new Map(linkedLive.map(s => [s.id, s.linkedMetaLabProjectId]));
+
+    const byStage = {};
+    for (const s of linkedLive) {
+      const k = s.progressStatus === 'done' ? 'done' : (s.progressStatus === 'in_progress' ? 'in_progress' : (s.stage || 'title_abstract'));
+      byStage[k] = (byStage[k] || 0) + 1;
+    }
+
+    // Members per linked screening project → average.
+    const memberCounts = memberGroups.filter(g => siftIdToProject.has(g.projectId)).map(g => g._count._all);
+    const avgMembers = memberCounts.length ? Math.round((memberCounts.reduce((a, b) => a + b, 0) / memberCounts.length) * 10) / 10 : 0;
+
+    // Distinct LIVE projects with open conflicts (map screen→metalab project id).
+    const projectsWithOpenConflicts = new Set(
+      conflictGroups.map(g => siftIdToProject.get(g.projectId)).filter(Boolean),
+    ).size;
+    const projectsWithRoB = new Set(robGroups.map(g => g.projectId).filter(id => liveIds.has(id))).size;
+
+    return res.json({
+      generatedAt: now.toISOString(),
+      totals: {
+        total: projects.length,
+        active: live.length,
+        archivedAdmin: projects.filter(p => p.deletedAt && p.deletedSource !== 'owner').length,
+        deletedByOwner: projects.filter(p => p.deletedSource === 'owner').length,
+      },
+      created,                                   // { today, week, month, quarter, year, total } each { count, prev, deltaPct }
+      activity: { modifiedThisMonth, inactive30, inactive90 },
+      screening: {
+        withScreening: new Set(linkedLive.map(s => s.linkedMetaLabProjectId)).size,
+        withOpenConflicts: projectsWithOpenConflicts,
+        withRoB: projectsWithRoB,
+        avgMembers,
+        byStage,
+      },
+    });
+  } catch (err) {
+    console.error('[admin] getProjectsOverview error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── GET /api/admin/project-growth ────────────────────────────────────────────
+// prompt50 WS1 — project CREATION analytics over time (mirrors getUserGrowth's
+// shape so the frontend reuses the same growth components). Reads only the tiny
+// {createdAt, deletedAt} columns. Admin only. ?year=YYYY selects byMonth/byQuarter.
+export async function getProjectGrowth(req, res) {
+  try {
+    const now = new Date();
+    const rows = await prisma.project.findMany({ select: { createdAt: true, deletedAt: true } });
+
+    const windows = windowSummary(rows, now);
+    const byYear = groupByYear(rows);
+    const availableYears = byYear.map(y => y.year);
+    const rawYear = parseInt(req.query.year, 10);
+    const selectedYear = Number.isFinite(rawYear) && availableYears.includes(rawYear)
+      ? rawYear
+      : (availableYears.length ? availableYears[availableYears.length - 1] : now.getFullYear());
+
+    const byMonth = groupByMonth(rows, selectedYear);
+    const quarterYears = [...new Set([selectedYear - 1, selectedYear].filter(y => y === selectedYear || availableYears.includes(y)))];
+    const byQuarter = groupByQuarter(rows, quarterYears);
+    const byDay = groupByDay(rows, 90, now);
+    const byMonth12 = groupByTrailingMonths(rows, 12, now);
+
+    const monthRows = filterInRange(rows, startOfWindow('month', now), null);
+    const daysElapsed = now.getDate();
+    const monthDayBuckets = groupByDay(monthRows, daysElapsed, now);
+    let bestDay = null;
+    for (const b of monthDayBuckets) if (!bestDay || b.count > bestDay.count) bestDay = b;
+
+    return res.json({
+      windows, byYear, availableYears, selectedYear,
+      byMonth, byQuarter, byDay, byMonth12,
+      stats: {
+        newProjectsThisMonth: monthRows.length,
+        avgPerDayThisMonth: daysElapsed > 0 ? Math.round((monthRows.length / daysElapsed) * 10) / 10 : 0,
+        bestDay: bestDay && bestDay.count > 0 ? bestDay : null,
+        activeThisMonth: monthRows.filter(r => !r.deletedAt).length,
+      },
+    });
+  } catch (err) {
+    console.error('[admin] getProjectGrowth error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── GET /api/admin/project-analytics ─────────────────────────────────────────
+// prompt50 WS1 — project DISTRIBUTIONS for the Analytics sub-tab, filtered to a
+// creation window (?window=today|week|month|quarter|year|all). Cheap small-column
+// reads + groupBy; no blobs. Admin only.
+export async function getProjectAnalytics(req, res) {
+  try {
+    const windowUnit = WINDOW_UNITS.includes(req.query.window) ? req.query.window : 'all';
+    const all = await prisma.project.findMany({
+      select: { id: true, userId: true, createdAt: true, deletedAt: true, deletedSource: true, user: { select: { name: true, email: true } } },
+    });
+    const projects = windowUnit === 'all' ? all : filterInRange(all, startOfWindow(windowUnit, new Date()), null);
+    const idSet = new Set(projects.map(p => p.id));
+
+    const byStatus = tally(projects.map(p => p.deletedAt ? (p.deletedSource === 'owner' ? 'owner-deleted' : 'admin-archived') : 'active'));
+    // tally() → [{ label, count }] desc; top 12 owners by project count.
+    const byOwner = tally(projects.map(p => p.user?.email || p.userId)).slice(0, 12).map(t => ({ key: t.label, count: t.count }));
+
+    // Linked-screening status + stage distribution within the window.
+    const sifts = await prisma.screenProject.findMany({
+      where: { linkedMetaLabProjectId: { in: [...idSet] }, deletedAt: null },
+      select: { linkedMetaLabProjectId: true, stage: true, progressStatus: true },
+    });
+    const linkedIds = new Set(sifts.map(s => s.linkedMetaLabProjectId));
+    const byScreeningLink = { linked: linkedIds.size, unlinked: projects.length - linkedIds.size };
+    const byStage = tally(sifts.map(s => s.progressStatus === 'done' ? 'done' : (s.progressStatus === 'in_progress' ? 'in_progress' : (s.stage || 'title_abstract'))));
+
+    const robGroups = await prisma.robAssessment.groupBy({ by: ['projectId'], where: { deletedAt: null, projectId: { in: [...idSet] } }, _count: { _all: true } });
+    const withRoB = robGroups.length;
+
+    return res.json({
+      window: windowUnit,
+      totalProjects: projects.length,
+      byStatus,
+      byOwner,
+      byScreeningLink,
+      byStage,
+      completion: {
+        withScreening: linkedIds.size,
+        withRoB,
+        total: projects.length,
+      },
+    });
+  } catch (err) {
+    console.error('[admin] getProjectAnalytics error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

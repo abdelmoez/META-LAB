@@ -18,6 +18,9 @@ import {
   sendPasswordReset,
   getProjects,
   getProjectDetail,
+  getProjectsOverview,
+  getProjectGrowth,
+  getProjectAnalytics,
   archiveProject,
   restoreProject,
   getAdminSettings,
@@ -172,6 +175,11 @@ router.delete('/contact-messages/:id', requireAdmin, deleteContactMessage);
 router.get('/metrics', requireAdmin, getMetrics);
 router.get('/metrics/timeseries', requireAdmin, getMetricsTimeseries);
 
+// prompt50 WS1 — Ops Projects analytics. Static /projects/overview is declared
+// BEFORE the /projects/:id/* routes so it can never be shadowed by :id.
+router.get('/projects/overview', requireAdmin, getProjectsOverview);
+router.get('/project-growth', requireAdmin, getProjectGrowth);
+router.get('/project-analytics', requireAdmin, getProjectAnalytics);
 router.get('/projects', requireAdmin, getProjects);
 router.get('/projects/:id/detail', requireAdmin, getProjectDetail);
 router.patch('/projects/:id/archive', requireAdmin, archiveProject);
