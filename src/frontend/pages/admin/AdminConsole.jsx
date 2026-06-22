@@ -4767,16 +4767,23 @@ function SecuritySection() {
   // Debounce the free-text search.
   useEffect(() => { const t = setTimeout(() => setSearch(query.trim()), 320); return () => clearTimeout(t); }, [query]);
 
+  // Request-sequence guard: a filter change can dispatch a stale-page fetch and a
+  // page-1 fetch in quick succession; only the LAST dispatched request may write
+  // state, so out-of-order responses can never render the wrong rows.
+  const reqSeq = useRef(0);
+
   const loadAudit = useCallback(async (p, sev, q) => {
+    const my = ++reqSeq.current;
     setLoading(true);
-    try { const d = await adminApi.auditLog({ page: p, limit: PER_PAGE, ...(sev ? { severity: sev } : {}), ...(q ? { q } : {}) }); setAuditRows(d.logs || []); setAuditTotal(d.total || 0); }
-    catch { setAuditRows([]); } finally { setLoading(false); }
+    try { const d = await adminApi.auditLog({ page: p, limit: PER_PAGE, ...(sev ? { severity: sev } : {}), ...(q ? { q } : {}) }); if (my !== reqSeq.current) return; setAuditRows(d.logs || []); setAuditTotal(d.total || 0); }
+    catch { if (my === reqSeq.current) setAuditRows([]); } finally { if (my === reqSeq.current) setLoading(false); }
   }, []);
 
   const loadSec = useCallback(async (p, sev, q) => {
+    const my = ++reqSeq.current;
     setLoading(true);
-    try { const d = await adminApi.securityEvents({ page: p, limit: PER_PAGE, ...(sev ? { severity: sev } : {}), ...(q ? { q } : {}) }); setSecRows(d.events || []); setSecTotal(d.total || 0); }
-    catch { setSecRows([]); } finally { setLoading(false); }
+    try { const d = await adminApi.securityEvents({ page: p, limit: PER_PAGE, ...(sev ? { severity: sev } : {}), ...(q ? { q } : {}) }); if (my !== reqSeq.current) return; setSecRows(d.events || []); setSecTotal(d.total || 0); }
+    catch { if (my === reqSeq.current) setSecRows([]); } finally { if (my === reqSeq.current) setLoading(false); }
   }, []);
 
   // Load the active tab whenever tab / page / filters change.

@@ -244,6 +244,12 @@ export function trainAndScore(args = {}) {
     // feed traceable factors into the explanation. Suppressed during blind review.
     const reviewer = aggregateReviewerSignals(decisionsByRecordId[r.id] || [], { reveal: revealReviewerSignals });
     const prioritization = prioritizationScore(hybrid.score, reviewer);
+    // Persisted/serialised signals must NOT carry per-reviewer identity: drop
+    // `byReviewer` (reviewerId+decision+rating) so it can never reach the client
+    // via signalsJson, even in non-blind mode (it would expose individual reviewer
+    // decisions to reviewers who haven't decided, biasing independent screening).
+    // The aggregated, identity-free fields + explanation factors are kept.
+    const reviewerPersistable = reviewer.hasSignals ? { ...reviewer, byReviewer: undefined } : null;
 
     const explanation = buildExplanation({
       coldStart: cs, hybrid, model, terms: vec.terms, vector,
@@ -278,7 +284,7 @@ export function trainAndScore(args = {}) {
         inclusionMatched: cs.signals.inclusion ? cs.signals.inclusion.matched : [],
         exclusionHits: cs.signals.exclusion ? cs.signals.exclusion.hits : 0,
         pico: cs.signals.pico,
-        reviewer: reviewer.hasSignals ? reviewer : null,
+        reviewer: reviewerPersistable,
         prioritization,
       },
       similar: topNeighbors,

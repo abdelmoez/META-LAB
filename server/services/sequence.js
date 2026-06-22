@@ -47,12 +47,15 @@ export async function allocateNumber(name, client = defaultPrisma) {
  */
 export async function ensureSequenceAtLeast(name, floor, client = defaultPrisma) {
   const f = Number.isFinite(floor) ? Math.max(0, Math.floor(floor)) : 0;
-  const existing = await client.appSequence.findUnique({ where: { name } });
-  const base = Math.max(existing?.value || 0, f);
-  await client.appSequence.upsert({
-    where: { name },
-    create: { name, value: base },
-    update: { value: base },
-  });
-  return base;
+  // Ensure the row exists (create at the floor if missing; never touch its value
+  // if it already exists), THEN raise it to the floor with a single GUARDED update
+  // (`value < f`). The guard is what makes this concurrency-safe: a parallel
+  // allocateNumber that has already incremented the counter ABOVE f leaves
+  // value >= f, so the updateMany matches no row and that increment is NOT
+  // clobbered — unlike a read-then-absolute-SET, which could rewind the counter
+  // and hand out a duplicate. Correct on both SQLite and PostgreSQL.
+  await client.appSequence.upsert({ where: { name }, create: { name, value: f }, update: {} });
+  await client.appSequence.updateMany({ where: { name, value: { lt: f } }, data: { value: f } });
+  const row = await client.appSequence.findUnique({ where: { name } });
+  return row ? row.value : f;
 }

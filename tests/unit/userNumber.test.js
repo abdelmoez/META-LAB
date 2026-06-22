@@ -28,6 +28,16 @@ function makeFakeClient(users = []) {
       else if (typeof data.value === 'number') row.value = data.value;
       return { ...row };
     },
+    async updateMany({ where: { name, value }, data }) {
+      const row = sequences.get(name);
+      let count = 0;
+      // Mirror Prisma: apply only when the guard (e.g. value < f) matches.
+      if (row && (value == null || (value.lt != null && row.value < value.lt))) {
+        if (typeof data.value === 'number') row.value = data.value;
+        count = 1;
+      }
+      return { count };
+    },
     async findUnique({ where: { name } }) { const r = sequences.get(name); return r ? { ...r } : null; },
   };
 

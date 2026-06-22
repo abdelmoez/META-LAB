@@ -49,6 +49,12 @@ describe('reviewer signals flow through trainAndScore', () => {
     const exc0 = scores.find((s) => s.recordId === 'exc0');
     expect(exc0.signals.reviewer.noteFlags.wrongPopulation).toBe(1);
     expect(exc0.explanation.reasonsExclude.some((r) => r.kind === 'reviewer_note')).toBe(true);
+
+    // Persisted/serialised signals must NEVER carry per-reviewer identity
+    // (reviewerId/decision/rating) — only aggregated, identity-free fields — so
+    // they can't expose individual reviewer decisions via signalsJson.
+    expect(inc0.signals.reviewer.byReviewer).toBeUndefined();
+    expect(inc0.explanation.reviewer.byReviewer).toBeUndefined();
   });
 
   it('NON-INTERFERENCE: the relevance score is identical with and without reviewer signals', () => {

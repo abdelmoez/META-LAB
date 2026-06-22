@@ -378,6 +378,11 @@ export async function updateProject(req, res) {
     // Audit blind-mode changes (Part 5).
     if (blindMode !== undefined && !!blindMode !== p.blindMode) {
       await writeAudit(p.id, req.user, blindMode ? 'BLIND_MODE_ON' : 'BLIND_MODE_OFF', { entityType: 'project', entityId: p.id });
+      // prompt49 item 1 — regenerate AI scores so persisted reviewer signals match
+      // the new blind state (the read path also re-suppresses, but this keeps the
+      // stored blobs correct). Fire-and-forget, both stages.
+      scheduleRescore(p.id, { stage: 'title_abstract', actor: req.user });
+      scheduleRescore(p.id, { stage: 'full_text', actor: req.user });
     }
 
     // Audit required-reviewers changes (prompt19 Task 9).
@@ -1213,6 +1218,15 @@ export async function saveDecision(req, res) {
       : (rec.currentStage || 'title_abstract');
     const reviewerName = access.member?.name || req.user.email || '';
 
+    // prompt49 item 1 — capture the PRIOR rating/note so a rescore also fires when
+    // a reviewer CLEARS a previously-set quality signal (rating:null / notes:'')
+    // while leaving the decision as maybe/undecided — otherwise stale quality/note
+    // factors would linger in the persisted AI explanation.
+    const prior = await prisma.screenDecision.findUnique({
+      where: { recordId_reviewerId_stage: { recordId: rec.id, reviewerId: req.user.id, stage } },
+      select: { rating: true, notes: true },
+    });
+
     // One active decision per reviewer per record per stage (schema-enforced).
     const d = await prisma.screenDecision.upsert({
       where: { recordId_reviewerId_stage: { recordId: rec.id, reviewerId: req.user.id, stage } },
@@ -1289,7 +1303,8 @@ export async function saveDecision(req, res) {
     // note changes the SEPARATE reviewer-signal layer (prompt49 item 1) — both
     // warrant a rescore so the AI panel reflects the latest human input.
     const hasReviewerSignalInput = rating != null || (typeof notes === 'string' && notes.trim() !== '');
-    if (decision === 'include' || decision === 'exclude' || hasReviewerSignalInput) {
+    const hadReviewerSignal = !!prior && (prior.rating != null || (typeof prior.notes === 'string' && prior.notes.trim() !== ''));
+    if (decision === 'include' || decision === 'exclude' || hasReviewerSignalInput || hadReviewerSignal) {
       scheduleRescore(p.id, { stage, actor: req.user });
     }
 

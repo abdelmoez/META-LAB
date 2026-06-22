@@ -603,13 +603,33 @@ export async function getScoresMap(projectId, stage = 'title_abstract') {
   return map;
 }
 
+/**
+ * Strip every reviewer-derived signal from a persisted explanation payload
+ * (prompt49 item 1 — blind-mode read-path defense-in-depth). Suppression at
+ * SCORING time can go stale if blindMode is toggled ON after a non-blind run, so
+ * we ALSO re-suppress on READ: a blind reviewer must never see signals derived
+ * from peers' ratings/notes/decisions, regardless of when the row was scored.
+ */
+function stripReviewerSignals(payload) {
+  if (payload.signals && typeof payload.signals === 'object') payload.signals.reviewer = null;
+  const ex = payload.explanation;
+  if (ex && typeof ex === 'object') {
+    ex.reviewer = null;
+    const dropReviewer = (arr) => Array.isArray(arr) ? arr.filter((r) => !String(r.kind || '').startsWith('reviewer_')) : arr;
+    ex.reasonsInclude = dropReviewer(ex.reasonsInclude);
+    ex.reasonsExclude = dropReviewer(ex.reasonsExclude);
+  }
+  return payload;
+}
+
 /** Full explanation for one record (persisted; no recompute). */
 export async function getRecordExplanation(projectId, recordId, stage = 'title_abstract') {
-  const row = await prisma.screenAiScore.findUnique({
-    where: { projectId_recordId_stage: { projectId, recordId, stage } },
-  });
+  const [row, project] = await Promise.all([
+    prisma.screenAiScore.findUnique({ where: { projectId_recordId_stage: { projectId, recordId, stage } } }),
+    prisma.screenProject.findUnique({ where: { id: projectId }, select: { blindMode: true } }),
+  ]);
   if (!row) return null;
-  return {
+  const payload = {
     recordId,
     score: row.score,
     calibratedProba: row.calibratedProba ?? null,
@@ -622,6 +642,8 @@ export async function getRecordExplanation(projectId, recordId, stage = 'title_a
     explanation: safeParse(row.explanationJson, {}),
     updatedAt: row.updatedAt,
   };
+  // Blind review → never serve peer-derived reviewer signals (timing-independent).
+  return project?.blindMode ? stripReviewerSignals(payload) : payload;
 }
 
 /** Latest run + status summary for a project. */

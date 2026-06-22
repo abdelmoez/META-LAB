@@ -15,8 +15,9 @@
  */
 import { prisma } from '../db/client.js';
 import { verifyToken } from '../auth/jwt.js';
+import { sessionCookieName } from '../config/cookies.js';
 
-const COOKIE_NAME = 'metalab_session';
+const COOKIE_NAME = sessionCookieName();
 const CACHE_TTL_MS = 10 * 1000;
 const FALLBACK_MESSAGE = 'PecanRev is temporarily down for maintenance. Please check back soon.';
 

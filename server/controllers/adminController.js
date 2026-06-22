@@ -1359,6 +1359,16 @@ export async function updateThemeSettings(req, res) {
 
 // ── GET /api/admin/audit-log ──────────────────────────────────────────────────
 
+// Build a validated Prisma createdAt range from from/to query params. Returns
+// { range } or { error } (a 400 message) on an unparseable date — so a bad param
+// is a clean 400, not a Prisma-thrown 500. (prompt49 item 10 review fix.)
+function buildDateRange(from, to) {
+  const range = {};
+  if (from) { const d = new Date(String(from)); if (isNaN(d.getTime())) return { error: 'Invalid "from" date' }; range.gte = d; }
+  if (to) { const d = new Date(String(to)); if (isNaN(d.getTime())) return { error: 'Invalid "to" date' }; range.lte = d; }
+  return { range };
+}
+
 export async function getAuditLog(req, res) {
   try {
     const { page, limit, skip } = parsePage(req.query);
@@ -1374,9 +1384,9 @@ export async function getAuditLog(req, res) {
       if (sw) where.action = where.action ? where.action : sw;
     }
     if (from || to) {
-      where.createdAt = {};
-      if (from) where.createdAt.gte = new Date(String(from));
-      if (to) where.createdAt.lte = new Date(String(to));
+      const dr = buildDateRange(from, to);
+      if (dr.error) return res.status(400).json({ error: dr.error });
+      where.createdAt = dr.range;
     }
     if (q && String(q).trim()) {
       const term = String(q).trim();
@@ -1431,9 +1441,9 @@ export async function getSecurityEvents(req, res) {
       if (sw) where.type = sw;
     }
     if (from || to) {
-      where.createdAt = {};
-      if (from) where.createdAt.gte = new Date(String(from));
-      if (to) where.createdAt.lte = new Date(String(to));
+      const dr = buildDateRange(from, to);
+      if (dr.error) return res.status(400).json({ error: dr.error });
+      where.createdAt = dr.range;
     }
     if (q && String(q).trim()) {
       const term = String(q).trim();
