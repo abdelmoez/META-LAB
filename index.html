@@ -43,7 +43,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=Manrope:wght@400;500;600;700;800&display=swap"
       rel="stylesheet"
     />
     <script>
@@ -75,6 +75,25 @@
           for (var k in map) if (HEX.test(side[k] || '')) document.documentElement.style.setProperty(map[k], side[k]);
         }
       } catch (e) { /* no brand info → stylesheet default indigo */ }
+      // Design-mode bootstrap (design.md) — set data-ui-design before first paint
+      // so an admin's chosen UI (legacy | stitch) is correct on the very first
+      // frame (no flash). Priority: ?ui= override > localStorage cache > legacy.
+      // This only sets an attribute; the Stitch stylesheet + bundle activate later
+      // and ONLY for an authenticated admin (DesignModeProvider re-resolves and
+      // forces legacy for everyone else), so this can never expose the preview.
+      try {
+        var uiVALID = { legacy: 1, stitch: 1 };
+        var uiMode = null;
+        try {
+          var uiQ = new URLSearchParams(window.location.search).get('ui');
+          if (uiQ && uiVALID[uiQ.toLowerCase()]) uiMode = uiQ.toLowerCase();
+        } catch (e2) {}
+        if (!uiMode) {
+          var uiSaved = localStorage.getItem('metalab_ui_design');
+          if (uiSaved && uiVALID[uiSaved]) uiMode = uiSaved;
+        }
+        document.documentElement.dataset.uiDesign = uiMode || 'legacy';
+      } catch (e) { document.documentElement.dataset.uiDesign = 'legacy'; }
     </script>
     <style>
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

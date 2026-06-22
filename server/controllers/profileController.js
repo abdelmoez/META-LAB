@@ -18,7 +18,7 @@ const SESSION_COOKIE = sessionCookieName();
 // self-service profile (in addition to the legacy onboarding write path).
 const PROFILE_SELECT = {
   id: true, email: true, name: true, createdAt: true, lastActive: true,
-  themePreference: true, workflowMenuMode: true, dashboardPreferences: true, screeningShortcuts: true,
+  themePreference: true, workflowMenuMode: true, uiDesignMode: true, dashboardPreferences: true, screeningShortcuts: true,
   primaryRole: true, researchField: true, mainUseCase: true, country: true,
   institutionOriginal: true, institutionCanonicalName: true, institutionRorId: true,
   institutionCity: true, institutionCountryName: true, institutionCountryCode: true,
@@ -51,7 +51,7 @@ export async function getProfile(req, res) {
  */
 export async function updateProfile(req, res) {
   try {
-    const { name, themePreference, workflowMenuMode, dashboardPreferences, screeningShortcuts, institution, country } = req.body || {};
+    const { name, themePreference, workflowMenuMode, uiDesignMode, dashboardPreferences, screeningShortcuts, institution, country } = req.body || {};
     if (name !== undefined && typeof name !== 'string') {
       return res.status(400).json({ error: 'name must be a string' });
     }
@@ -61,6 +61,25 @@ export async function updateProfile(req, res) {
     // prompt39 Task 5 — workflow-menu mode: "pinned" | "auto", or null to clear.
     if (workflowMenuMode !== undefined && workflowMenuMode !== null && !['pinned', 'auto'].includes(workflowMenuMode)) {
       return res.status(400).json({ error: 'workflowMenuMode must be "pinned" or "auto"' });
+    }
+    // design.md §5/§ADMIN — parallel UI design mode: "legacy" | "stitch" (null clears
+    // to legacy). The switch is ADMIN-ONLY and protected HERE at the authorization
+    // layer (not merely hidden in the UI): persisting "stitch" requires a
+    // DB-verified admin role, so a non-admin can never store the preview preference
+    // (and therefore never resolves into the Stitch UI on any device). "legacy" is
+    // always allowed — it is the safe default and the emergency reset value.
+    let uiDesignPatch = {};
+    if (uiDesignMode !== undefined) {
+      if (uiDesignMode !== null && !['legacy', 'stitch'].includes(uiDesignMode)) {
+        return res.status(400).json({ error: 'uiDesignMode must be "legacy", "stitch", or null' });
+      }
+      if (uiDesignMode === 'stitch') {
+        const actor = await prisma.user.findUnique({ where: { id: req.user.id }, select: { role: true, suspended: true } });
+        if (!actor || actor.suspended || actor.role !== 'admin') {
+          return res.status(403).json({ error: 'The Stitch design preview is available to administrators only' });
+        }
+      }
+      uiDesignPatch = { uiDesignMode: uiDesignMode || null };
     }
     // prompt23 Task 2 (follow-up) — dashboard view prefs, stored as a small JSON
     // string. Accepts an object or a JSON string; null clears it. Capped to keep
@@ -114,6 +133,7 @@ export async function updateProfile(req, res) {
         ...(name !== undefined ? { name: name.trim() || null } : {}),
         ...(themePreference !== undefined ? { themePreference } : {}),
         ...(workflowMenuMode !== undefined ? { workflowMenuMode } : {}),
+        ...uiDesignPatch,
         ...dashPatch,
         ...shortcutPatch,
         ...instPatch,

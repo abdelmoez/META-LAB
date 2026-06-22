@@ -3,6 +3,9 @@ import { Routes, Route, Navigate, useNavigate, useLocation } from 'react-router-
 import { AuthProvider, useAuth } from './frontend/context/AuthContext.jsx';
 import { useGlobalPresence } from './frontend/hooks/useGlobalPresence.js';
 import { ThemeProvider } from './frontend/theme/ThemeContext.jsx';
+import { DesignModeProvider } from './frontend/design/DesignModeContext.jsx';
+import DesignRoute from './frontend/design/DesignRoute.jsx';
+import AdminDesignSwitch from './frontend/design/AdminDesignSwitch.jsx';
 import ProtectedRoute from './frontend/components/ProtectedRoute.jsx';
 import PublicRoute    from './frontend/components/PublicRoute.jsx';
 import AdminRoute     from './frontend/components/AdminRoute.jsx';
@@ -32,6 +35,14 @@ const Terms         = lazy(() => import('./frontend/pages/Terms.jsx'));
 // handled by BetaWaitlistGate on `/`; this route renders the page regardless of
 // the flag so admins can preview it safely.
 const BetaWaitlistPreview = lazy(() => import('./frontend/pages/waitlist/BetaWaitlistPage.jsx'));
+
+// design.md — Stitch (Vivid Enterprise) parallel presentation pages. Lazily
+// imported so legacy/non-admin users never download the Stitch bundle. Each is
+// paired with its legacy page through <DesignRoute>; the route/data are identical.
+const StitchDashboard       = lazy(() => import('./frontend/stitch/pages/StitchDashboard.jsx'));
+const StitchProfile         = lazy(() => import('./frontend/stitch/pages/StitchProfile.jsx'));
+const StitchProjectOverview = lazy(() => import('./frontend/stitch/pages/StitchProjectOverview.jsx'));
+const StitchOpsConsole      = lazy(() => import('./frontend/stitch/pages/StitchOpsConsole.jsx'));
 
 /* Minimal theme-token loading state shown while a route chunk downloads. */
 function RouteFallback() {
@@ -153,7 +164,12 @@ export default function App() {
   return (
     <ThemeProvider>
     <AuthProvider>
+    <DesignModeProvider>
       <GlobalPresence />
+      {/* design.md §5/§6 — admin-only design switch, mounted as a floating overlay
+          beside (never inside) the legacy header. Renders nothing for non-admins
+          and only in legacy mode; the Stitch header hosts its own inline switch. */}
+      <AdminDesignSwitch variant="floating" />
       <Suspense fallback={<RouteFallback />}>
       <Routes>
         {/* Public landing page. prompt48 — when the betaWaitlist flag is ON,
@@ -191,16 +207,16 @@ export default function App() {
             protected routes redirects here; /onboarding itself is gate-exempt. */}
         <Route path="/onboarding" element={<ProtectedRoute><Onboarding /></ProtectedRoute>} />
 
-        <Route path="/app"      element={<ProtectedRoute><OnboardingGate><ProjectLanding /></OnboardingGate></ProtectedRoute>} />
+        <Route path="/app"      element={<ProtectedRoute><OnboardingGate><DesignRoute legacy={<ProjectLanding />} stitch={<StitchDashboard />} /></OnboardingGate></ProtectedRoute>} />
 
         {/* Protected workspace — opens one project by id into the existing overview/workflow */}
-        <Route path="/app/project/:projectId" element={<ProtectedRoute><OnboardingGate><AppWorkspace /></OnboardingGate></ProtectedRoute>} />
+        <Route path="/app/project/:projectId" element={<ProtectedRoute><OnboardingGate><DesignRoute legacy={<AppWorkspace />} stitch={<StitchProjectOverview />} /></OnboardingGate></ProtectedRoute>} />
 
         {/* Protected profile */}
-        <Route path="/profile"  element={<ProtectedRoute><OnboardingGate><Profile /></OnboardingGate></ProtectedRoute>} />
+        <Route path="/profile"  element={<ProtectedRoute><OnboardingGate><DesignRoute legacy={<Profile />} stitch={<StitchProfile />} /></OnboardingGate></ProtectedRoute>} />
 
         {/* Internal admin console — not linked from anywhere in the normal UI */}
-        <Route path="/ops"      element={<AdminRoute><OnboardingGate><AdminConsole /></OnboardingGate></AdminRoute>} />
+        <Route path="/ops"      element={<AdminRoute><OnboardingGate><DesignRoute legacy={<AdminConsole />} stitch={<StitchOpsConsole />} /></OnboardingGate></AdminRoute>} />
 
         {/* META·SIFT Beta — Screening workspace (tabbed project shell) */}
         <Route path="/sift-beta"                      element={<ProtectedRoute><OnboardingGate><SiftDashboard /></OnboardingGate></ProtectedRoute>} />
@@ -215,6 +231,7 @@ export default function App() {
         <Route path="*"         element={<Navigate to="/" replace />} />
       </Routes>
       </Suspense>
+    </DesignModeProvider>
     </AuthProvider>
     </ThemeProvider>
   );

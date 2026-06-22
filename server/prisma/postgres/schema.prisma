@@ -71,6 +71,11 @@ model User {
   // steps). null ⇒ "auto" (current default). Nullable → `prisma db push` stays
   // additive-safe. Mirrors themePreference; cross-device, server-backed.
   workflowMenuMode String?
+  // design.md — parallel design-mode preference: "legacy" (default UI) | "stitch"
+  // (the new Vivid-Enterprise research-OS UI). ADMIN-ONLY: the server refuses to
+  // persist "stitch" for a non-admin (profileController). null ⇒ "legacy".
+  // Nullable → `prisma db push` stays additive-safe. Cross-device, server-backed.
+  uiDesignMode String?
   // prompt19 — aggregate ops analytics only. COUNTRY-LEVEL ONLY; no city/coords.
   // Captured best-effort at registration from a proxy country header (e.g.
   // CF-IPCountry) or an offline lookup; raw IP is never stored (only an optional
