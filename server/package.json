@@ -3,6 +3,13 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "scripts": {
+    "db:sync-postgres-schema": "node scripts/sync-postgres-schema.mjs",
+    "db:generate:postgres": "node scripts/sync-postgres-schema.mjs && prisma generate --schema=prisma/postgres/schema.prisma && prisma generate --schema=prisma/postgres/waitlist-schema.prisma",
+    "db:push:postgres": "prisma db push --schema=prisma/postgres/schema.prisma && prisma db push --schema=prisma/postgres/waitlist-schema.prisma",
+    "db:migrate:postgres": "node scripts/migrate-db.mjs",
+    "db:verify:postgres": "node scripts/verify-migration.mjs"
+  },
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "bcryptjs": "^2.4.3",

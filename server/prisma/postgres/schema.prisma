@@ -1,14 +1,28 @@
-// META·LAB Prisma schema
-// Provider: SQLite (via Prisma ORM)
-// Auth: users own projects — userId enforced on every query
+// ──────────────────────────────────────────────────────────────────────────────
+// PecanRev — PostgreSQL schema. GENERATED FILE — DO NOT EDIT BY HAND.
+// Produced from the canonical SQLite schema by scripts/sync-postgres-schema.mjs.
+// Edit the canonical schema, then re-run:  node scripts/sync-postgres-schema.mjs
+//
+// The model definitions below are identical to the canonical schema; only the
+// generator output path and the datasource provider differ. The generated client
+// lands in ../generated/postgres-client (separate from the default @prisma/client) so
+// the SQLite→Postgres migration tool can use source + target clients at once.
+// Runtime selection is by DATABASE_PROVIDER=postgres (see server/db/client.js).
+//
+// Apply (from server/):
+//   POSTGRES_DATABASE_URL="postgresql://user:pass@host:5432/db?schema=public" \
+//     npx prisma generate --schema=prisma/postgres/schema.prisma
+//   POSTGRES_DATABASE_URL=... npx prisma db push --schema=prisma/postgres/schema.prisma
+// ──────────────────────────────────────────────────────────────────────────────
 
 generator client {
   provider = "prisma-client-js"
+  output   = "../generated/postgres-client"
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider = "postgresql"
+  url      = env("POSTGRES_DATABASE_URL")
 }
 
 model User {

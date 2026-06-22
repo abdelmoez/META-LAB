@@ -44,6 +44,7 @@ import { isWaitlistDbConfigured, redactedDbTarget } from './waitlist/config.js';
 import { initDefaultSettings } from './controllers/settingsController.js';
 import { backfillSharedMessageReadState } from './controllers/adminController.js';
 import { seedOnboardingQuestions } from './controllers/onboardingController.js';
+import { backfillUserNumbers } from './services/userNumber.js';
 import { seedAdmins } from './auth/seedAdmins.js';
 import { getVersion } from './version.js';
 import { resolveCorsOrigin } from './config/cors.js';
@@ -308,6 +309,9 @@ const server = app.listen(PORT, () => {
   // prompt49 — one-time idempotent backfill so any message a staff member already
   // read becomes globally read under the new shared read-state model.
   backfillSharedMessageReadState().catch(err => console.error('[seed] message read backfill failed:', err.message));
+  // prompt49 item 8 — assign the immutable numeric userNumber to any user created
+  // before the column existed (idempotent; a no-op once everyone is numbered).
+  backfillUserNumbers().catch(err => console.error('[seed] userNumber backfill failed:', err.message));
 
   // prompt48 — fail-safe waitlist config check. If the betaWaitlist flag is ON but
   // the dedicated DB is not configured, log a CLEAR, REDACTED warning for admins.

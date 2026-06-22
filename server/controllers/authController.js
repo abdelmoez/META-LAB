@@ -10,6 +10,7 @@ import { createResetToken, consumeResetToken } from '../services/passwordResetSe
 import { createVerificationToken, consumeVerificationToken } from '../services/emailVerificationService.js';
 import { normalizeInstitution } from '../../src/research-engine/institutions/institutionMatch.js';
 import { resolveCountry, getClientIp, hashIp } from '../utils/geo.js';
+import { allocateUserNumber } from '../services/userNumber.js';
 
 const COOKIE_NAME = 'metalab_session';
 
@@ -182,12 +183,18 @@ export async function register(req, res) {
     const verifyRequired = await isEmailVerificationRequired();
 
     const hashed = await hashPassword(password);
+    // prompt49 item 8 — allocate the immutable, sequential numeric user id BEFORE
+    // create so the new row has it atomically. A gap (if the create later fails)
+    // is harmless — sequences may skip values. Failure to allocate must never
+    // block registration, so it falls back to null (the startup backfill repairs).
+    const userNumber = await allocateUserNumber().catch(() => null);
     const user = await prisma.user.create({
       data: {
         email: normalizedEmail,
         name: name?.trim() || null,
         password: hashed,
         role: 'user',
+        userNumber,
         termsAcceptedAt: acceptedTerms ? new Date() : null,
         emailVerifiedAt: verifyRequired ? null : new Date(),
       },
@@ -313,7 +320,7 @@ export async function getMe(req, res) {
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
       select: {
-        id: true, email: true, name: true, role: true, suspended: true, createdAt: true,
+        id: true, userNumber: true, email: true, name: true, role: true, suspended: true, createdAt: true,
         themePreference: true, workflowMenuMode: true, lastActive: true,
         emailVerifiedAt: true, onboardingCompletedAt: true,
         primaryRole: true, researchField: true, mainUseCase: true,

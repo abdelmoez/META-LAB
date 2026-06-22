@@ -173,7 +173,11 @@ export const EDITABLE_USER_FIELDS = [
 
 /** Display-only fields shown in the detail panel but never editable. */
 export const READONLY_USER_FIELDS = [
-  { key: 'id',                          label: 'User ID',        mono: true },
+  // prompt49 item 8 — the immutable, sequential numeric user id. Admin-VISIBLE,
+  // NEVER editable (it is not in EDITABLE_USER_FIELDS, so buildUserUpdate drops
+  // any attempt to set it). Distinct from the internal uuid below.
+  { key: 'userNumber',                  label: 'User number',    mono: true },
+  { key: 'id',                          label: 'User ID (internal)', mono: true },
   { key: 'createdAt',                   label: 'Joined',         kind: 'date' },
   { key: 'updatedAt',                   label: 'Updated',        kind: 'date' },
   { key: 'lastActive',                  label: 'Last active',    kind: 'ago' },

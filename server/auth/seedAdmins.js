@@ -9,6 +9,7 @@
  */
 import { prisma } from '../db/client.js';
 import { hashPassword } from './password.js';
+import { allocateUserNumber } from '../services/userNumber.js';
 
 export async function seedAdmins({ silent = false } = {}) {
   const log = (...a) => { if (!silent) console.log(...a); };
@@ -31,8 +32,11 @@ export async function seedAdmins({ silent = false } = {}) {
         seeded++;
       }
     } else {
+      // Allocate the immutable numeric id at create (closes the first-boot race
+      // where the startup backfill could run before the admin is seeded).
+      const userNumber = await allocateUserNumber().catch(() => null);
       await prisma.user.create({
-        data: { email, name: 'Admin', password: await hashPassword(seedPassword), role: 'admin', suspended: false },
+        data: { email, name: 'Admin', password: await hashPassword(seedPassword), role: 'admin', suspended: false, userNumber },
       });
       created++; seeded++;
     }
