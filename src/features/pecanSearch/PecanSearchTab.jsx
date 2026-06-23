@@ -47,6 +47,24 @@ function summarizeQuery(canonical) {
   return { concepts, terms };
 }
 
+/* Terms whose text contains a STANDALONE uppercase Boolean operator (AND/OR/NOT).
+   Such terms are searched literally as a phrase (≈ 0 hits), so we flag them. Mirrors
+   the server-side ast.findLiteralBooleanTerms; uppercase-only keeps it high-precision
+   (a real phrase like "signs and symptoms" uses lowercase and is not flagged). */
+function literalBooleanTerms(canonical) {
+  if (!canonical || !Array.isArray(canonical.concepts)) return [];
+  const re = /(?:^|\s)(AND|OR|NOT)(?:\s|$)/;
+  const out = [];
+  for (const c of canonical.concepts) {
+    for (const t of (c.terms || [])) {
+      const text = (t && t.text) || '';
+      const m = re.exec(text);
+      if (m && text.trim().split(/\s+/).length > 1) out.push({ text, op: m[1] });
+    }
+  }
+  return out;
+}
+
 export default function PecanSearchTab({ projectId, pico, readOnly }) {
   // ── Canonical query (the saved Search Builder strategy) ──────────────────────
   const [query, setQuery] = useState(null);        // { concepts, filters, overrides } | null
@@ -429,13 +447,25 @@ function StrategyCard({ queryState, queryError, query, qSummary, pico }) {
             {query.concepts.map((c, i) => (
               <li key={c.id || i} style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.6 }}>
                 <strong style={{ color: C.txt }}>{c.label || `Concept ${i + 1}`}</strong>
-                <span style={{ color: C.muted }}> — {(c.terms || []).map((t) => t.text).filter(Boolean).join(`  ${c.op || 'OR'}  `)}</span>
+                {/* Terms within a concept are SYNONYMS → always shown (and searched) with OR.
+                    The concept's op joins it to the NEXT concept, not its own terms. */}
+                <span style={{ color: C.muted }}> — {(c.terms || []).map((t) => t.text).filter(Boolean).join('  OR  ')}</span>
+                {i < query.concepts.length - 1 && (
+                  <span style={{ color: C.dim, fontWeight: 700, fontSize: 11 }}> &nbsp;{c.op === 'OR' ? 'OR' : 'AND'}↓</span>
+                )}
               </li>
             ))}
           </ol>
           <div style={{ marginTop: 12 }}>
-            <Note tone="info">Concepts combine with <strong>AND</strong>; terms inside a concept combine with the concept&apos;s own operator. To change the strategy, open the <strong>Search Builder</strong> tab.</Note>
+            <Note tone="info">Terms inside a concept are <strong>alternatives (OR)</strong> — any one of them matches; concepts are combined with <strong>AND</strong>. To change the strategy, open the <strong>Search Builder</strong> tab.</Note>
           </div>
+          {literalBooleanTerms(query).length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              <Note tone="warn">
+                {literalBooleanTerms(query).length === 1 ? 'One term contains' : `${literalBooleanTerms(query).length} terms contain`} a literal <strong>AND/OR/NOT</strong> and {literalBooleanTerms(query).length === 1 ? 'is' : 'are'} searched as text, not as an operator — e.g. “{literalBooleanTerms(query)[0].text}”. In the <strong>Search Builder</strong>, split {literalBooleanTerms(query).length === 1 ? 'it' : 'them'} into separate terms; synonyms in a concept are already combined for you.
+              </Note>
+            </div>
+          )}
         </>
       )}
     </Card>

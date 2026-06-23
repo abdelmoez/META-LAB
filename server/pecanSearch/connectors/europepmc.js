@@ -36,6 +36,7 @@ import { normalizeRecord, NORMALIZATION_VERSION } from '../normalize.js';
 import {
   FIELD, normalizeCanonical, validateCanonical, quoteIfPhrase, makeTranslated,
 } from '../query/ast.js';
+import { toIso6392b } from '../query/vocab.js';
 import { PecanError } from '../errors.js';
 
 export const EUROPEPMC_VERSION = 'europepmc-1.0.0';
@@ -97,13 +98,16 @@ function renderFilters(filters, warnings) {
     clauses.push(`(PUB_YEAR:[${yFrom} TO ${yTo}])`);
   }
   if (filters.languages.length) {
-    // Europe PMC LANG uses ISO codes; pass through but warn on non-code values.
-    const langs = filters.languages.map((l) => {
-      const v = String(l).trim();
-      if (v.length > 3) warnings.push(`Language "${l}" was passed to Europe PMC LANG as-is; it expects ISO codes (e.g. "eng") and may not match.`);
-      return `LANG:"${v.replace(/"/g, '')}"`;
-    });
-    clauses.push('(' + langs.join(' OR ') + ')');
+    // Europe PMC LANG expects ISO 639-2/B 3-letter codes (e.g. "eng"). Map the
+    // canonical label/code; drop + warn on anything unmappable so a full name like
+    // "English" can never silently zero the source (it did before this mapping).
+    const codes = [];
+    for (const l of filters.languages) {
+      const code = toIso6392b(l);
+      if (code) codes.push(code);
+      else warnings.push(`Language "${l}" could not be mapped to an Europe PMC ISO 639-2 code and was not applied.`);
+    }
+    if (codes.length) clauses.push('(' + [...new Set(codes)].map((c) => `LANG:"${c}"`).join(' OR ') + ')');
   }
   if (filters.pubTypes.length) {
     clauses.push('(' + filters.pubTypes.map((p) => `PUB_TYPE:"${String(p).replace(/"/g, '')}"`).join(' OR ') + ')');
@@ -210,11 +214,14 @@ export function createEuropePmcConnector(providerConfig, deps = {}) {
     return p;
   }
 
-  async function callSearch(query, cursorMark, pageSize, signal) {
+  async function callSearch(query, cursorMark, pageSize, signal, httpOpts = {}) {
     await slot();
     const url = buildUrl(cfg.baseUrl, '/search', searchParams(query, cursorMark, pageSize));
     const { json } = await http.requestJson(url, {
-      provider: 'europepmc', timeoutMs: cfg.timeoutMs, retryLimit: deps.retryLimit, signal,
+      provider: 'europepmc',
+      timeoutMs: httpOpts.timeoutMs ?? cfg.timeoutMs,
+      retryLimit: httpOpts.retryLimit ?? deps.retryLimit,
+      signal,
     });
     if (!json || typeof json !== 'object') {
       throw new PecanError('PROVIDER_MALFORMED_RESPONSE', { meta: { provider: 'europepmc' } });
@@ -244,12 +251,12 @@ export function createEuropePmcConnector(providerConfig, deps = {}) {
 
     validateQuery(canonical) { return validateCanonical(canonical); },
 
-    async previewCount(translated, { signal } = {}) {
+    async previewCount(translated, { signal, timeoutMs, retryLimit } = {}) {
       const at = new Date().toISOString();
       const query = translated && translated.query;
       if (!query) return { count: null, kind: 'unavailable', at };
       try {
-        const r = await callSearch(query, '*', 1, signal);
+        const r = await callSearch(query, '*', 1, signal, { timeoutMs, retryLimit });
         if (r.total == null) return { count: null, kind: 'unavailable', at };
         return { count: r.total, kind: 'exact', at };
       } catch {

@@ -32,6 +32,7 @@ import { normalizeRecord, NORMALIZATION_VERSION } from '../normalize.js';
 import {
   FIELD, normalizeCanonical, validateCanonical, makeTranslated,
 } from '../query/ast.js';
+import { toS2PublicationType } from '../query/vocab.js';
 import { PecanError } from '../errors.js';
 
 export const SEMANTICSCHOLAR_VERSION = 'semanticscholar-1.0.0';
@@ -109,7 +110,14 @@ function translateSemanticScholar(canonicalInput, { override } = {}) {
   // Filters: year is a native bulk param (handled in search()); record support.
   const f = canonical.filters;
   if (f.dateFrom || f.dateTo) supported.push(`year:${f.dateFrom || '*'}..${f.dateTo || '*'}`);
-  if (f.pubTypes.length) supported.push(`pubTypes:${f.pubTypes.join(',')}`);
+  if (f.pubTypes.length) {
+    // S2 publicationTypes is a fixed enum; an unknown value matches nothing (→ 0).
+    // Map each label; record the supported ones and warn on anything dropped.
+    const mappedOk = [...new Set(f.pubTypes.map(toS2PublicationType).filter(Boolean))];
+    const dropped = f.pubTypes.filter((t) => !toS2PublicationType(t));
+    if (mappedOk.length) supported.push(`pubTypes:${mappedOk.join(',')}`);
+    if (dropped.length) warnings.push(`Publication type(s) ${dropped.join(', ')} are not Semantic Scholar publication types and were not applied.`);
+  }
   if (f.languages.length) {
     unsupported.push(`languages:${f.languages.join(',')}`);
     warnings.push('Semantic Scholar does not support language filtering; the language filter was ignored.');
@@ -140,7 +148,11 @@ function filterParams(canonicalInput) {
   const fromY = (c.filters.dateFrom.match(/\d{4}/) || [])[0];
   const toY = (c.filters.dateTo.match(/\d{4}/) || [])[0];
   if (fromY || toY) p.year = `${fromY || ''}-${toY || ''}`; // S2 accepts "2010-2020", "2010-", "-2020"
-  if (c.filters.pubTypes.length) p.publicationTypes = c.filters.pubTypes.join(',');
+  if (c.filters.pubTypes.length) {
+    // Only send mapped S2 enum values; an unknown type would match nothing.
+    const mapped = [...new Set(c.filters.pubTypes.map(toS2PublicationType).filter(Boolean))];
+    if (mapped.length) p.publicationTypes = mapped.join(',');
+  }
   return p;
 }
 
@@ -163,14 +175,16 @@ export function createSemanticScholarConnector(providerConfig, deps = {}) {
     return h;
   }
 
-  async function bulkSearch(query, { token, extraParams = {}, signal } = {}) {
+  async function bulkSearch(query, { token, extraParams = {}, signal, timeoutMs, retryLimit } = {}) {
     await slot();
     const params = { query, fields: SEARCH_FIELDS, ...extraParams };
     if (token) params.token = token;
     const url = buildUrl(cfg.baseUrl, '/paper/search/bulk', params);
     const { json } = await http.requestJson(url, {
-      provider: 'semanticscholar', timeoutMs: cfg.timeoutMs,
-      retryLimit: deps.retryLimit, headers: reqHeaders(), signal,
+      provider: 'semanticscholar',
+      timeoutMs: timeoutMs ?? cfg.timeoutMs,
+      retryLimit: retryLimit ?? deps.retryLimit,
+      headers: reqHeaders(), signal,
     });
     return json && typeof json === 'object' ? json : {};
   }
@@ -191,14 +205,14 @@ export function createSemanticScholarConnector(providerConfig, deps = {}) {
 
     validateQuery(canonical) { return validateCanonical(canonical); },
 
-    async previewCount(translated, { signal } = {}) {
+    async previewCount(translated, { signal, timeoutMs, retryLimit } = {}) {
       const at = new Date().toISOString();
       const query = translated && translated.query;
       if (!query) return { count: null, kind: 'unavailable', at };
       try {
         // Minimal field set keeps the count probe cheap.
         const params = { ...(translated.filterParams || {}), fields: 'paperId' };
-        const json = await bulkSearch(query, { extraParams: params, signal });
+        const json = await bulkSearch(query, { extraParams: params, signal, timeoutMs, retryLimit });
         const total = Number(json.total);
         if (!Number.isFinite(total)) return { count: null, kind: 'unavailable', at };
         // S2 `total` is documented as an estimate of corpus matches.

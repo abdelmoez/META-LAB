@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   normalizeCanonical, validateCanonical, renderPlain, hashQuery, normalizeField,
-  flattenTerms, quoteIfPhrase, FIELD, QUERY_LIMITS,
+  flattenTerms, quoteIfPhrase, findLiteralBooleanTerms, FIELD, QUERY_LIMITS,
 } from '../../../server/pecanSearch/query/ast.js';
 
 describe('query/ast — canonical model', () => {
@@ -51,6 +51,23 @@ describe('query/ast — canonical model', () => {
   it('honors an inter-concept OR operator between concepts', () => {
     const s = renderPlain({ concepts: [{ op: 'OR', terms: [{ text: 'a' }, { text: 'b' }] }, { op: 'AND', terms: [{ text: 'c' }] }], filters: {} });
     expect(s).toBe('(a OR b) OR c'); // concept[0].op='OR' joins it to the next concept with OR
+  });
+
+  it('defaults a missing inter-concept op to AND (never silently ORs concepts)', () => {
+    const c = normalizeCanonical({ concepts: [{ terms: [{ text: 'a' }] }, { terms: [{ text: 'b' }] }] });
+    expect(c.concepts[0].op).toBe('AND');
+    expect(renderPlain(c)).toBe('a AND b');
+  });
+
+  it('findLiteralBooleanTerms flags standalone uppercase AND/OR/NOT inside a term', () => {
+    const hits = findLiteralBooleanTerms({ concepts: [{ terms: [
+      { text: 'stroke OR transient ischemic attack' },
+      { text: 'heart failure' },          // clean phrase → not flagged
+      { text: 'signs and symptoms' },      // lowercase "and" → not flagged
+      { text: 'diabetes NOT type 1' },
+    ] }] });
+    expect(hits.map((h) => h.op).sort()).toEqual(['NOT', 'OR']);
+    expect(validateCanonical({ concepts: [{ terms: [{ text: 'a AND b' }] }] }).warnings.join(' ')).toMatch(/searched literally/i);
   });
 
   it('hashQuery is stable and order-sensitive', () => {

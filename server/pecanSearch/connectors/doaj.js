@@ -36,6 +36,7 @@ import { normalizeRecord, NORMALIZATION_VERSION } from '../normalize.js';
 import {
   FIELD, normalizeCanonical, validateCanonical, makeTranslated,
 } from '../query/ast.js';
+import { toIso6391 } from '../query/vocab.js';
 import { PecanError } from '../errors.js';
 
 export const DOAJ_VERSION = 'doaj-1.0.0';
@@ -112,7 +113,16 @@ function renderFilters(filters, warnings) {
     clauses.push(`bibjson.year:[${lo} TO ${hi}]`);
   }
   if (filters.languages && filters.languages.length) {
-    clauses.push('(' + filters.languages.map((l) => `bibjson.journal.language:${escapeEs(l)}`).join(' OR ') + ')');
+    // DOAJ indexes bibjson.journal.language as ISO 639-1 2-letter codes (verified
+    // live: "en" matches, "eng"/"English" return 0). Map the label/code; drop + warn
+    // on anything unmappable rather than emit a clause that matches nothing.
+    const codes = [];
+    for (const l of filters.languages) {
+      const code = toIso6391(l);
+      if (code) codes.push(code);
+      else warnings.push(`Language "${l}" could not be mapped to a DOAJ ISO 639-1 code and was not applied.`);
+    }
+    if (codes.length) clauses.push('(' + [...new Set(codes)].map((c) => `bibjson.journal.language:${escapeEs(c)}`).join(' OR ') + ')');
   }
   if (filters.pubTypes && filters.pubTypes.length) {
     warnings.push('Publication-type filters are not supported by DOAJ and were ignored.');
@@ -169,14 +179,17 @@ export function createDoajConnector(providerConfig, deps = {}) {
   // The effective per-search ceiling is the smaller of cfg.maxResults and DOAJ's 1000.
   const hardCap = Math.min(Number(cfg.maxResults) || DOAJ_MAX_OFFSET, DOAJ_MAX_OFFSET);
 
-  async function fetchPage(term, page, pageSize, signal) {
+  async function fetchPage(term, page, pageSize, signal, httpOpts = {}) {
     await slot();
     // The query is a PATH SEGMENT — buildUrl encodes it; never string-concatenated.
     const url = buildUrl(cfg.baseUrl, `/search/articles/${encodeURIComponent(term)}`, {
       page, pageSize,
     });
     const { json } = await http.requestJson(url, {
-      provider: 'doaj', timeoutMs: cfg.timeoutMs, retryLimit: deps.retryLimit, signal,
+      provider: 'doaj',
+      timeoutMs: httpOpts.timeoutMs ?? cfg.timeoutMs,
+      retryLimit: httpOpts.retryLimit ?? deps.retryLimit,
+      signal,
     });
     if (!json || typeof json !== 'object') {
       throw new PecanError('PROVIDER_MALFORMED_RESPONSE', { meta: { provider: 'doaj' } });
@@ -202,12 +215,12 @@ export function createDoajConnector(providerConfig, deps = {}) {
 
     validateQuery(canonical) { return validateCanonical(canonical); },
 
-    async previewCount(translated, { signal } = {}) {
+    async previewCount(translated, { signal, timeoutMs, retryLimit } = {}) {
       const at = new Date().toISOString();
       const term = translated && translated.query;
       if (!term) return { count: null, kind: 'unavailable', at };
       try {
-        const { total } = await fetchPage(term, 1, 1, signal);
+        const { total } = await fetchPage(term, 1, 1, signal, { timeoutMs, retryLimit });
         if (total == null) return { count: null, kind: 'unavailable', at };
         // DOAJ counts exactly but only 1000 are retrievable; the count itself is exact.
         return { count: total, kind: 'exact', at };

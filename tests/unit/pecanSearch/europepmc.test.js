@@ -73,6 +73,21 @@ describe('Europe PMC connector — contract', () => {
     expect(tr.queryHash).toHaveLength(16);
   });
 
+  it('maps a language NAME to the Europe PMC ISO 639-2/B code (English → eng, not "English")', () => {
+    const c = buildConnector(createEuropePmcConnector, PROVIDER_CFG, epmcMock());
+    const tr = c.translateQuery({ concepts: [{ terms: [{ text: 'sepsis' }] }], filters: { languages: ['English', 'German'] } });
+    expect(tr.query).toContain('LANG:"eng"');
+    expect(tr.query).toContain('LANG:"ger"');
+    expect(tr.query).not.toContain('LANG:"English"');
+  });
+
+  it('drops an unmappable language + warns (never emits a 0-matching LANG clause)', () => {
+    const c = buildConnector(createEuropePmcConnector, PROVIDER_CFG, epmcMock());
+    const tr = c.translateQuery({ concepts: [{ terms: [{ text: 'sepsis' }] }], filters: { languages: ['Klingon'] } });
+    expect(tr.query).not.toContain('LANG:');
+    expect(tr.warnings.join(' ')).toMatch(/could not be mapped/i);
+  });
+
   it('maps AUTHOR→AUTH, JOURNAL→JOURNAL, DOI→DOI and PMID→EXT_ID/SRC', () => {
     const c = buildConnector(createEuropePmcConnector, PROVIDER_CFG, epmcMock());
     const tr = c.translateQuery({

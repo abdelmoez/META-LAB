@@ -101,6 +101,15 @@ export async function postTranslate(req, res) {
   } catch (err) { return handleError(res, err, 'postTranslate'); }
 }
 
+/**
+ * postPreviewCount — best-effort count preview fanned out across every selected
+ * provider. A preview is INTERACTIVE and must never block long enough for a reverse
+ * proxy to return 504, so the whole fan-out is bounded by `previewDeadlineMs`: any
+ * provider still in flight at the deadline is aborted and reported as `timeout`
+ * (the full search still runs that source). Each provider request also fails fast
+ * (a short `previewTimeoutMs` + few retries) so a single sick provider can't consume
+ * the entire budget. Only a real exact/estimate result is cached.
+ */
 export async function postPreviewCount(req, res) {
   try {
     const access = await gate(req, res); if (!access) return;
@@ -108,32 +117,58 @@ export async function postPreviewCount(req, res) {
     const canonical = normalizeCanonical(req.body && req.body.canonicalQuery);
     const overrides = (req.body && req.body.overrides) || {};
     const ids = selectedIds(req.body, engine);
+    const eng = engine.config.engine;
+    const deadlineMs = eng.previewDeadlineMs;
+    const deadlineAt = Date.now() + deadlineMs;   // shared start → the endpoint returns within deadlineMs
     const out = {};
     await Promise.all(ids.map(async (id) => {
       const connector = engine.connectors[id];
       const p = engine.config.providers[id];
       if (!connector || !p || !p.available || !p.supportsCountPreview) { out[id] = { count: null, kind: 'unsupported' }; return; }
+      // Translation is local + cheap; a failure here is the query's fault, not the provider's.
+      let tr;
+      try { tr = connector.translateQuery(canonical, { override: clampOverride(overrides[id]) }); }
+      catch { out[id] = { count: null, kind: 'unavailable' }; return; }
+
+      const cacheKey = `${id}:${tr.queryHash}`;
+      const cached = previewCache.get(cacheKey);
+      if (cached !== undefined) { out[id] = { ...cached, cached: true }; return; }
+
+      // Per-(user,provider) throttle: a DISTINCT query the cache can't collapse
+      // still cannot hit a provider more often than previewThrottleMs.
+      const throttleKey = `${req.user.id}:${id}`;
+      const throttleMs = eng.previewThrottleMs;
+      const last = previewLastCall.get(throttleKey) || 0;
+      if (throttleMs > 0 && Date.now() - last < throttleMs) { out[id] = { count: null, kind: 'throttled' }; return; }
+      // Bound the throttle map (one entry per (user,provider)); evict en masse far
+      // above any realistic concurrent fan-out so it can never leak unbounded.
+      if (previewLastCall.size > 20000) previewLastCall.clear();
+      previewLastCall.set(throttleKey, Date.now());
+
+      // Race the provider call against the remaining budget. On deadline we abort
+      // the in-flight request (frees the socket + stops retries) and report a timeout.
+      const ac = new AbortController();
+      const remaining = Math.max(0, deadlineAt - Date.now());
+      let timer = null;
+      const onDeadline = new Promise((resolve) => {
+        timer = setTimeout(() => { try { ac.abort(); } catch { /* ignore */ } resolve({ count: null, kind: 'timeout' }); }, remaining);
+      });
       try {
-        const tr = connector.translateQuery(canonical, { override: clampOverride(overrides[id]) });
-        const cacheKey = `${id}:${tr.queryHash}`;
-        const cached = previewCache.get(cacheKey);
-        if (cached !== undefined) { out[id] = { ...cached, cached: true }; return; }
-        // Per-(user,provider) throttle: a DISTINCT query the cache can't collapse
-        // still cannot hit a provider more often than previewThrottleMs.
-        const throttleKey = `${req.user.id}:${id}`;
-        const throttleMs = engine.config.engine.previewThrottleMs;
-        const last = previewLastCall.get(throttleKey) || 0;
-        if (throttleMs > 0 && Date.now() - last < throttleMs) { out[id] = { count: null, kind: 'throttled' }; return; }
-        // Bound the throttle map (one entry per (user,provider)); evict en masse far
-        // above any realistic concurrent fan-out so it can never leak unbounded.
-        if (previewLastCall.size > 20000) previewLastCall.clear();
-        previewLastCall.set(throttleKey, Date.now());
-        const pc = await connector.previewCount(tr, {});
+        const pc = await Promise.race([
+          connector.previewCount(tr, { signal: ac.signal, timeoutMs: eng.previewTimeoutMs, retryLimit: eng.previewRetryLimit }),
+          onDeadline,
+        ]);
+        if (!pc || pc.kind === 'timeout') { out[id] = { count: null, kind: 'timeout' }; return; }
         const val = { count: pc.count, kind: pc.kind, at: pc.at };
-        previewCache.set(cacheKey, val);
         out[id] = val;
+        // Cache ONLY a usable number — never a transient unavailable/timeout (so a
+        // later attempt can still succeed instead of being pinned for the TTL).
+        if (pc.count != null && (pc.kind === 'exact' || pc.kind === 'estimate')) previewCache.set(cacheKey, val);
       } catch (e) {
+        try { ac.abort(); } catch { /* ignore */ }
         out[id] = { count: null, kind: 'unavailable' };
+      } finally {
+        if (timer) clearTimeout(timer);
       }
     }));
     return res.json({ counts: out });

@@ -69,7 +69,8 @@ describe('DOAJ connector — contract', () => {
     expect(tr.query).toContain('bibjson.title:cardiomyopathy');
     expect(tr.query).toContain('bibjson.author.name:"Smith J"');
     expect(tr.query).toContain('bibjson.year:[2010 TO 2020]');
-    expect(tr.query).toContain('bibjson.journal.language:EN');
+    // Language is mapped to a DOAJ ISO 639-1 code (verified live: DOAJ matches "en", not "EN"/"English").
+    expect(tr.query).toContain('bibjson.journal.language:en');
     expect(tr.query).toMatch(/ AND /); // concepts AND-joined
     expect(tr.query).toMatch(/ OR /);  // terms OR-joined within a concept
     expect(tr.queryHash).toHaveLength(16);

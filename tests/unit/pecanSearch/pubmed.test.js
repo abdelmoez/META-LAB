@@ -74,6 +74,20 @@ describe('PubMed connector — contract', () => {
     expect(tr.warnings.join(' ')).toMatch(/truncation/i);
   });
 
+  it('maps a language code to the PubMed full name (eng → English[Language])', () => {
+    const c = buildConnector(createPubmedConnector, PROVIDER_CFG, pubmedMock());
+    const tr = c.translateQuery({ concepts: [{ terms: [{ text: 'sepsis' }] }], filters: { languages: ['eng'] } });
+    expect(tr.query).toContain('English[Language]');
+  });
+
+  it('leaves an invalid date bound open + warns (never emits "soon"[Date - Publication])', () => {
+    const c = buildConnector(createPubmedConnector, PROVIDER_CFG, pubmedMock());
+    const tr = c.translateQuery({ concepts: [{ terms: [{ text: 'sepsis' }] }], filters: { dateFrom: 'soon', dateTo: '2020' } });
+    expect(tr.query).not.toContain('soon');
+    expect(tr.query).toContain('"2020"[Date - Publication]');
+    expect(tr.warnings.join(' ')).toMatch(/not a valid date/i);
+  });
+
   it('validateQuery rejects an empty query', () => {
     const c = buildConnector(createPubmedConnector, PROVIDER_CFG, pubmedMock());
     expect(c.validateQuery({ concepts: [] }).ok).toBe(false);

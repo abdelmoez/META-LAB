@@ -69,3 +69,8 @@ ds-bundle/
 .design-sync/.cache/
 .design-sync/learnings/
 .design-sync/node_modules
+
+# Pecan search diagnostic harness outputs (regenerated on demand)
+scripts/pecan-harness-report.json
+scripts/pecan-harness-report.md
+scripts/pecan-harness-live.log

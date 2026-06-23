@@ -19,6 +19,7 @@ import { normalizeRecord, NORMALIZATION_VERSION } from '../normalize.js';
 import {
   FIELD, normalizeCanonical, validateCanonical, quoteIfPhrase, makeTranslated, composeConcepts,
 } from '../query/ast.js';
+import { toPubmedLanguage, parseDateBound } from '../query/vocab.js';
 import { PecanError } from '../errors.js';
 
 export const PUBMED_VERSION = 'pubmed-1.0.0';
@@ -58,12 +59,28 @@ function renderTerm(t, warnings) {
 function renderFilters(filters, warnings) {
   const clauses = [];
   if (filters.dateFrom || filters.dateTo) {
-    const from = (filters.dateFrom || '1500').replace(/-/g, '/');
-    const to = (filters.dateTo || '3000').replace(/-/g, '/');
+    // Validate each bound: an unparseable value (e.g. "soon") would otherwise be
+    // emitted verbatim ("soon"[Date - Publication]) and silently zero the query. A
+    // bad bound is left open instead + warned.
+    const fromB = filters.dateFrom ? parseDateBound(filters.dateFrom) : null;
+    const toB = filters.dateTo ? parseDateBound(filters.dateTo) : null;
+    if (filters.dateFrom && !fromB) warnings.push(`Start date "${filters.dateFrom}" is not a valid date; the lower bound was left open.`);
+    if (filters.dateTo && !toB) warnings.push(`End date "${filters.dateTo}" is not a valid date; the upper bound was left open.`);
+    const from = (fromB ? fromB.ymd : '1500').replace(/-/g, '/');
+    const to = (toB ? toB.ymd : '3000').replace(/-/g, '/');
     clauses.push(`("${from}"[Date - Publication] : "${to}"[Date - Publication])`);
   }
   if (filters.languages.length) {
-    clauses.push('(' + filters.languages.map((l) => `${l}[Language]`).join(' OR ') + ')');
+    // PubMed [Language] uses the full English name ("English"). Map a code/label to
+    // that name so a user-selected "eng"/"en" still matches; pass an unmappable value
+    // through as-is with a warning rather than dropping the user's intent.
+    const names = [];
+    for (const l of filters.languages) {
+      const name = toPubmedLanguage(l);
+      if (name) names.push(name);
+      else { names.push(String(l)); warnings.push(`Language "${l}" was sent to PubMed as-is; PubMed expects a full English language name (e.g. "English").`); }
+    }
+    clauses.push('(' + [...new Set(names)].map((n) => `${n}[Language]`).join(' OR ') + ')');
   }
   if (filters.pubTypes.length) {
     clauses.push('(' + filters.pubTypes.map((p) => `"${p}"[Publication Type]`).join(' OR ') + ')');
@@ -120,13 +137,18 @@ export function createPubmedConnector(providerConfig, deps = {}) {
     return p;
   }
 
-  async function esearch(term, { usehistory = false, retmax = 0 } = {}, signal) {
+  async function esearch(term, { usehistory = false, retmax = 0, timeoutMs, retryLimit } = {}, signal) {
     await slot();
     const url = buildUrl(cfg.baseUrl, '/esearch.fcgi', commonParams({
       db: 'pubmed', term, retmode: 'json', retmax,
       ...(usehistory ? { usehistory: 'y' } : {}),
     }));
-    const { json } = await http.requestJson(url, { provider: 'pubmed', timeoutMs: cfg.timeoutMs, retryLimit: deps.retryLimit, signal });
+    const { json } = await http.requestJson(url, {
+      provider: 'pubmed',
+      timeoutMs: timeoutMs ?? cfg.timeoutMs,
+      retryLimit: retryLimit ?? deps.retryLimit,
+      signal,
+    });
     return parseEsearch(json);
   }
 
@@ -146,10 +168,10 @@ export function createPubmedConnector(providerConfig, deps = {}) {
 
     validateQuery(canonical) { return validateCanonical(canonical); },
 
-    async previewCount(translated, { signal } = {}) {
+    async previewCount(translated, { signal, timeoutMs, retryLimit } = {}) {
       const term = translated && translated.query;
       if (!term) return { count: null, kind: 'unavailable', at: new Date().toISOString() };
-      const r = await esearch(term, { retmax: 0 }, signal);
+      const r = await esearch(term, { retmax: 0, timeoutMs, retryLimit }, signal);
       return { count: r.count, kind: r.count == null ? 'unavailable' : 'exact', at: new Date().toISOString() };
     },
 

@@ -11,7 +11,9 @@
  *     version: string,             // search-builder/engine version
  *     concepts: [{
  *       id, label,
- *       op: 'AND' | 'OR',          // how this concept's TERMS combine (default OR)
+ *       op: 'AND' | 'OR',          // INTER-concept operator: joins this concept to the
+ *                                  // NEXT one (default AND). A concept's own terms are
+ *                                  // always synonyms (OR) — op never AND-joins terms.
  *       terms: [{
  *         text, type: 'freetext'|'controlled',
  *         field,                   // semantic field: title|abstract|tiab|author|journal|doi|pmid|mesh|keyword|all
@@ -22,10 +24,12 @@
  *     filters: { dateFrom, dateTo, languages:[], pubTypes:[] }
  *   }
  *
- * Concepts combine with AND (standard PICO); a concept's terms combine with its
- * own `op` (default OR). Translators walk the normalized AST and emit a provider
- * string PLUS a structured TranslatedQuery (supported/unsupported/modified clauses
- * + warnings), so the engine NEVER silently weakens a query.
+ * Terms within a concept are SYNONYMS and always combine with OR; concepts combine
+ * with the inter-concept `op` (default AND, the standard PICO intersection — see
+ * composeConcepts). AND-joining a concept's synonyms was the root cause of 0-result
+ * searches. Translators walk the normalized AST and emit a provider string PLUS a
+ * structured TranslatedQuery (supported/unsupported/modified clauses + warnings), so
+ * the engine NEVER silently weakens a query.
  */
 import crypto from 'crypto';
 
@@ -124,7 +128,10 @@ export function normalizeCanonical(input = {}) {
     concepts.push({
       id: clampStr(c.id, 64),
       label: clampStr(c.label, 120),
-      op: c.op === 'AND' ? 'AND' : 'OR',
+      // INTER-concept operator (joins to the next concept). Default AND = the PICO
+      // intersection. Only an explicit 'OR' opts a concept into an OR join; a missing
+      // op must NOT silently OR concepts together.
+      op: c.op === 'OR' ? 'OR' : 'AND',
       terms,
     });
   }
@@ -159,7 +166,35 @@ export function validateCanonical(canonical) {
   });
   if (c.filters.dateFrom && !/^\d{4}(\/\d{1,2}(\/\d{1,2})?)?$/.test(c.filters.dateFrom)) warnings.push('Start date is not a recognised YYYY or YYYY/MM/DD value.');
   if (c.filters.dateTo && !/^\d{4}(\/\d{1,2}(\/\d{1,2})?)?$/.test(c.filters.dateTo)) warnings.push('End date is not a recognised YYYY or YYYY/MM/DD value.');
+  for (const lt of findLiteralBooleanTerms(c)) {
+    warnings.push(`The term "${lt.text}" contains "${lt.op}" as text and is searched literally, not as a Boolean operator. Split it into separate terms in the Search Builder (synonyms within a concept are already combined automatically).`);
+  }
   return { ok: errors.length === 0, errors, warnings, normalized: c };
+}
+
+/**
+ * findLiteralBooleanTerms — detect terms whose TEXT contains a standalone uppercase
+ * Boolean operator (AND / OR / NOT). The canonical model treats every term as one
+ * literal string, so "stroke OR TIA" is searched as the exact phrase "stroke OR TIA"
+ * (≈ 0 hits) — almost always a sign the user meant separate terms. We only flag the
+ * uppercase operator words (a real phrase like "signs and symptoms" uses lowercase),
+ * so this is a high-precision hint, never a destructive rewrite.
+ * @returns {Array<{text:string, op:string, conceptLabel:string}>}
+ */
+export function findLiteralBooleanTerms(canonical) {
+  const c = normalizeCanonical(canonical);
+  const out = [];
+  const re = /(?:^|\s)(AND|OR|NOT)(?:\s|$)/;
+  for (const concept of c.concepts) {
+    for (const t of concept.terms) {
+      const m = re.exec(t.text);
+      // Require other words around the operator (a bare "AND" term isn't this bug).
+      if (m && t.text.trim().split(/\s+/).length > 1) {
+        out.push({ text: t.text, op: m[1], conceptLabel: concept.label || concept.id || '' });
+      }
+    }
+  }
+  return out;
 }
 
 /** Flatten every term across all concepts (translation diagnostics / tests). */

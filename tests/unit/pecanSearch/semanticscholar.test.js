@@ -76,6 +76,16 @@ describe('Semantic Scholar connector — contract', () => {
     expect(tr.unsupported.join(' ')).toMatch(/languages/);
   });
 
+  it('maps publication types to the S2 enum (review→Review, RCT→ClinicalTrial) and drops/warns unknown', () => {
+    const c = buildConnector(createSemanticScholarConnector, PROVIDER_CFG, s2Mock());
+    const tr = c.translateQuery({
+      concepts: [{ terms: [{ text: 'aspirin' }] }],
+      filters: { pubTypes: ['review', 'randomized controlled trial', 'nonsense'] },
+    });
+    expect(tr.filterParams.publicationTypes).toBe('Review,ClinicalTrial');
+    expect(tr.warnings.join(' ')).toMatch(/not Semantic Scholar publication types/i);
+  });
+
   it('validateQuery rejects an empty query', () => {
     const c = buildConnector(createSemanticScholarConnector, PROVIDER_CFG, s2Mock());
     expect(c.validateQuery({ concepts: [] }).ok).toBe(false);

@@ -88,6 +88,27 @@ describe('Crossref connector — contract', () => {
     expect(tr.queryHash).toHaveLength(16);
   });
 
+  it('drops a non-Crossref pub type (review/RCT) + warns instead of emitting an invalid filter', () => {
+    const c = buildConnector(createCrossrefConnector, PROVIDER_CFG, crossrefMock());
+    const tr = c.translateQuery({
+      concepts: [{ op: 'OR', terms: [{ text: 'aspirin' }] }],
+      filters: { pubTypes: ['review', 'randomized controlled trial'] },
+    });
+    const params = JSON.parse(tr.query).params;
+    // No `type:` clause at all → the whole query can't be errored by an invalid type id.
+    expect(params.filter == null || !/type:/.test(params.filter)).toBe(true);
+    expect(tr.warnings.join(' ')).toMatch(/not a Crossref work type/i);
+  });
+
+  it('drops an invalid date bound + warns (never emits from-pub-date:soon)', () => {
+    const c = buildConnector(createCrossrefConnector, PROVIDER_CFG, crossrefMock());
+    const tr = c.translateQuery({ concepts: [{ terms: [{ text: 'gout' }] }], filters: { dateFrom: 'soon', dateTo: '2020' } });
+    const params = JSON.parse(tr.query).params;
+    expect(params.filter || '').not.toContain('soon');
+    expect(params.filter).toContain('until-pub-date:2020');
+    expect(tr.warnings.join(' ')).toMatch(/not a valid date/i);
+  });
+
   it('warns that Boolean structure is approximated (not silently dropped)', () => {
     const c = buildConnector(createCrossrefConnector, PROVIDER_CFG, crossrefMock());
     const tr = c.translateQuery({
@@ -139,11 +160,11 @@ describe('Crossref connector — contract', () => {
     expect(c.validateQuery({ concepts: [] }).ok).toBe(false);
   });
 
-  it('previewCount returns an exact total-results count', async () => {
+  it('previewCount returns total-results as an ESTIMATE (Crossref is relevance-ranked, not Boolean)', async () => {
     const c = buildConnector(createCrossrefConnector, PROVIDER_CFG, crossrefMock(137));
     const tr = c.translateQuery(SAMPLE_CANONICAL);
     const pc = await c.previewCount(tr);
-    expect(pc).toMatchObject({ count: 137, kind: 'exact' });
+    expect(pc).toMatchObject({ count: 137, kind: 'estimate' });
   });
 
   it('previewCount returns unavailable (never throws) on a malformed response', async () => {

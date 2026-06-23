@@ -36,6 +36,7 @@ import { normalizeRecord, NORMALIZATION_VERSION } from '../normalize.js';
 import {
   FIELD, normalizeCanonical, validateCanonical, makeTranslated,
 } from '../query/ast.js';
+import { toCrossrefType, parseDateBound } from '../query/vocab.js';
 import { PecanError } from '../errors.js';
 
 export const CROSSREF_VERSION = 'crossref-1.0.0';
@@ -66,14 +67,22 @@ export function stripJats(abstract) {
 /** Map a canonical filters block → a Crossref `filter=` value (real constraints). */
 function renderFilters(filters, warnings) {
   const parts = [];
-  // Crossref pub-date filters take YYYY, YYYY-MM, or YYYY-MM-DD (use the value as-is).
-  if (filters.dateFrom) parts.push(`from-pub-date:${filters.dateFrom.replace(/\//g, '-')}`);
-  if (filters.dateTo) parts.push(`until-pub-date:${filters.dateTo.replace(/\//g, '-')}`);
-  // pubTypes → type:<id>. Crossref uses ids like journal-article/proceedings-article.
+  // Crossref pub-date filters take YYYY, YYYY-MM, or YYYY-MM-DD. An invalid value
+  // (e.g. "soon") makes the WHOLE /works request fail, so validate + drop + warn.
+  const from = filters.dateFrom ? parseDateBound(filters.dateFrom) : null;
+  const to = filters.dateTo ? parseDateBound(filters.dateTo) : null;
+  if (filters.dateFrom && !from) warnings.push(`Start date "${filters.dateFrom}" is not a valid date and was not applied to Crossref.`);
+  if (filters.dateTo && !to) warnings.push(`End date "${filters.dateTo}" is not a valid date and was not applied to Crossref.`);
+  if (from) parts.push(`from-pub-date:${from.ymd}`);
+  if (to) parts.push(`until-pub-date:${to.ymd}`);
+  // pubTypes → type:<id>, but ONLY a valid Crossref work-type id. An unknown id
+  // (e.g. "review", "randomized-controlled-trial") errors the entire query — those
+  // are study designs, not Crossref work types — so map, then drop + warn.
   if (filters.pubTypes.length) {
     for (const t of filters.pubTypes) {
-      const id = String(t).trim().toLowerCase().replace(/\s+/g, '-');
-      parts.push(`type:${id}`);
+      const id = toCrossrefType(t);
+      if (id) parts.push(`type:${id}`);
+      else warnings.push(`Publication type "${t}" is not a Crossref work type and was not applied (Crossref has no review/study-design types).`);
     }
   }
   if (filters.languages.length) {
@@ -215,13 +224,13 @@ export function createCrossrefConnector(providerConfig, deps = {}) {
   }
 
   /** One GET /works request. Returns the parsed `message` object. */
-  async function fetchWorks(params, signal) {
+  async function fetchWorks(params, signal, httpOpts = {}) {
     await slot();
     const url = buildUrl(cfg.baseUrl, '/works', withContact(params));
     const { json } = await http.requestJson(url, {
       provider: 'crossref',
-      timeoutMs: cfg.timeoutMs,
-      retryLimit: deps.retryLimit,
+      timeoutMs: httpOpts.timeoutMs ?? cfg.timeoutMs,
+      retryLimit: httpOpts.retryLimit ?? deps.retryLimit,
       headers: { 'User-Agent': userAgentHeader() },
       signal,
     });
@@ -247,16 +256,23 @@ export function createCrossrefConnector(providerConfig, deps = {}) {
 
     validateQuery(canonical) { return validateCanonical(canonical); },
 
-    /** previewCount — rows=0 → message.total-results. Exact. Never throws. */
-    async previewCount(translated, { signal } = {}) {
+    /**
+     * previewCount — rows=0 → message.total-results. Reported as an ESTIMATE, not an
+     * exact count: Crossref is a dismax RELEVANCE engine, so total-results is the size
+     * of the ranked candidate set for the free-text query, NOT the count of records
+     * that satisfy the Boolean expression (it routinely runs to millions). Labelling it
+     * 'estimate' keeps the UI honest and stops a Crossref total from dominating the
+     * summed preview as if it were a comparable Boolean count. Never throws.
+     */
+    async previewCount(translated, { signal, timeoutMs, retryLimit } = {}) {
       const at = new Date().toISOString();
       const params = decodeParams(translated);
       if (!hasSearchableParams(params)) return { count: null, kind: 'unavailable', at };
       try {
-        const message = await fetchWorks({ ...params, rows: 0 }, signal);
+        const message = await fetchWorks({ ...params, rows: 0 }, signal, { timeoutMs, retryLimit });
         const total = Number(message['total-results']);
         if (!Number.isFinite(total)) return { count: null, kind: 'unavailable', at };
-        return { count: total, kind: 'exact', at };
+        return { count: total, kind: 'estimate', at };
       } catch {
         return { count: null, kind: 'unavailable', at };
       }

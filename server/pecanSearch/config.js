@@ -118,9 +118,19 @@ export const ENGINE_DEFAULTS = Object.freeze({
   maxResultCap: 10000,        // hard per-source ceiling (cannot be exceeded by a user)
   concurrency: 3,             // simultaneous provider fetches within one run
   retryLimit: 4,              // transient-error retries per provider request
-  requestTimeoutMs: 20000,    // per external request
+  requestTimeoutMs: 20000,    // per external request (full run path)
   maxResponseBytes: 25 * 1024 * 1024, // 25 MB per response — guards against OOM
   previewThrottleMs: 1500,    // min spacing between count-preview calls per provider/IP
+  // ── Count-preview budget (interactive, best-effort) ───────────────────────────
+  // A preview must NEVER block the request long enough for a reverse proxy to
+  // return 504. The endpoint fans out to every provider and waits at most
+  // previewDeadlineMs total; any provider still in flight is reported as a
+  // 'timeout' (the full search still runs that source). Each preview request also
+  // fails fast: a short timeout + few retries (a run retries thoroughly; a preview
+  // should be snappy). previewDeadlineMs must stay well under any proxy timeout.
+  previewDeadlineMs: 12000,   // overall fan-out budget for one preview-count call
+  previewTimeoutMs: 7000,     // per-provider count-preview request timeout (fast-fail)
+  previewRetryLimit: 1,       // count previews retry at most once
   pageDelayMs: 0,             // optional extra spacing between page fetches
   institutionalMode: false,   // when true, only explicitly-enabled providers run
   maxActiveRunsPerProject: 3, // quota: queued+running runs per project (abuse guard)
@@ -148,6 +158,12 @@ export function loadPecanConfig(env = process.env, settings = {}) {
     requestTimeoutMs: Math.min(num(env.PECAN_SEARCH_TIMEOUT_MS || s.requestTimeoutMs, ENGINE_DEFAULTS.requestTimeoutMs), 120000),
     maxResponseBytes: num(s.maxResponseBytes, ENGINE_DEFAULTS.maxResponseBytes),
     previewThrottleMs: num(s.previewThrottleMs, ENGINE_DEFAULTS.previewThrottleMs),
+    // Preview budget: clamp so it can never exceed a sane interactive ceiling. The
+    // deadline stays < 30s (under typical proxy_read_timeout); the per-call timeout
+    // stays < the deadline so a single provider cannot consume the whole budget.
+    previewDeadlineMs: Math.max(2000, Math.min(num(env.PECAN_PREVIEW_DEADLINE_MS || s.previewDeadlineMs, ENGINE_DEFAULTS.previewDeadlineMs), 30000)),
+    previewTimeoutMs:  Math.max(1000, Math.min(num(env.PECAN_PREVIEW_TIMEOUT_MS || s.previewTimeoutMs, ENGINE_DEFAULTS.previewTimeoutMs), 30000)),
+    previewRetryLimit: Math.min(num(s.previewRetryLimit, ENGINE_DEFAULTS.previewRetryLimit), 4),
     pageDelayMs:      num(s.pageDelayMs, ENGINE_DEFAULTS.pageDelayMs),
     institutionalMode: bool(env.PECAN_SEARCH_INSTITUTIONAL_MODE ?? s.institutionalMode, ENGINE_DEFAULTS.institutionalMode),
     maxActiveRunsPerProject: Math.max(1, Math.min(num(s.maxActiveRunsPerProject, ENGINE_DEFAULTS.maxActiveRunsPerProject), 20)),

@@ -251,7 +251,7 @@ export function createOpenAlexConnector(providerConfig, deps = {}) {
     return p;
   }
 
-  async function getWorks(filter, { perPage, cursor, select }, signal) {
+  async function getWorks(filter, { perPage, cursor, select, timeoutMs, retryLimit }, signal) {
     await slot();
     const url = buildUrl(cfg.baseUrl, '/works', commonParams({
       filter,
@@ -260,7 +260,10 @@ export function createOpenAlexConnector(providerConfig, deps = {}) {
       ...(select ? { select } : {}),
     }));
     const { json } = await http.requestJson(url, {
-      provider: 'openalex', timeoutMs: cfg.timeoutMs, retryLimit: deps.retryLimit, signal,
+      provider: 'openalex',
+      timeoutMs: timeoutMs ?? cfg.timeoutMs,
+      retryLimit: retryLimit ?? deps.retryLimit,
+      signal,
     });
     return json && typeof json === 'object' ? json : {};
   }
@@ -281,13 +284,13 @@ export function createOpenAlexConnector(providerConfig, deps = {}) {
 
     validateQuery(canonical) { return validateCanonical(canonical); },
 
-    async previewCount(translated, { signal } = {}) {
+    async previewCount(translated, { signal, timeoutMs, retryLimit } = {}) {
       const at = new Date().toISOString();
       const filter = translated && translated.query;
       if (!filter) return { count: null, kind: 'unavailable', at };
       try {
         // per-page=1 + select=id keeps the count probe cheap; meta.count is exact.
-        const json = await getWorks(filter, { perPage: 1, cursor: '*', select: 'id' }, signal);
+        const json = await getWorks(filter, { perPage: 1, cursor: '*', select: 'id', timeoutMs, retryLimit }, signal);
         const count = json.meta && Number.isFinite(Number(json.meta.count)) ? Number(json.meta.count) : null;
         return { count, kind: count == null ? 'unavailable' : 'exact', at };
       } catch {

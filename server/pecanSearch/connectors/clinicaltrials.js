@@ -234,11 +234,14 @@ export function createClinicalTrialsConnector(providerConfig, deps = {}) {
   const pageCeiling = Math.min(cfg.pageSize || 100, CTG_MAX_PAGE_SIZE);
 
   /** GET /studies with the given extra params (handles throttle + http). */
-  async function studies(params, signal) {
+  async function studies(params, signal, httpOpts = {}) {
     await slot();
     const url = buildUrl(cfg.baseUrl, '/studies', { format: 'json', ...params });
     const { json } = await http.requestJson(url, {
-      provider: 'clinicaltrials', timeoutMs: cfg.timeoutMs, retryLimit: deps.retryLimit, signal,
+      provider: 'clinicaltrials',
+      timeoutMs: httpOpts.timeoutMs ?? cfg.timeoutMs,
+      retryLimit: httpOpts.retryLimit ?? deps.retryLimit,
+      signal,
     });
     return json && typeof json === 'object' ? json : {};
   }
@@ -259,12 +262,12 @@ export function createClinicalTrialsConnector(providerConfig, deps = {}) {
 
     validateQuery(canonical) { return validateCanonical(canonical); },
 
-    async previewCount(translated, { signal } = {}) {
+    async previewCount(translated, { signal, timeoutMs, retryLimit } = {}) {
       const at = new Date().toISOString();
       const term = translated && translated.query;
       if (!term) return { count: null, kind: 'unavailable', at };
       try {
-        const json = await studies({ 'query.term': term, pageSize: 1, countTotal: 'true' }, signal);
+        const json = await studies({ 'query.term': term, pageSize: 1, countTotal: 'true' }, signal, { timeoutMs, retryLimit });
         const total = Number(json.totalCount);
         if (Number.isFinite(total)) return { count: total, kind: 'exact', at };
         return { count: null, kind: 'unavailable', at };

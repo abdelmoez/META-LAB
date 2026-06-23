@@ -138,7 +138,7 @@ export function Btn({ variant = 'primary', children, busy, ...rest }) {
 /** A count-preview cell: estimate/exact get a number; the rest get a labelled dash. */
 export function CountValue({ count, kind, at }) {
   const known = (kind === 'estimate' || kind === 'exact') && count != null;
-  const label = kind === 'exact' ? 'exact' : kind === 'estimate' ? 'estimated' : kind === 'unsupported' ? 'not supported' : kind === 'unavailable' ? 'unavailable' : kind === 'throttled' ? 'updating…' : '';
+  const label = kind === 'exact' ? 'exact' : kind === 'estimate' ? 'estimated' : kind === 'unsupported' ? 'not supported' : kind === 'unavailable' ? 'unavailable' : kind === 'throttled' ? 'updating…' : kind === 'timeout' ? 'timed out — runs in full' : '';
   return (
     <span style={{ display: 'inline-flex', alignItems: 'baseline', gap: 6 }}>
       <span style={{ fontFamily: "'IBM Plex Mono',monospace", fontWeight: 700, color: known ? C.txt : C.dim, fontVariantNumeric: 'tabular-nums' }}>
