@@ -123,6 +123,7 @@ export const ENGINE_DEFAULTS = Object.freeze({
   previewThrottleMs: 1500,    // min spacing between count-preview calls per provider/IP
   pageDelayMs: 0,             // optional extra spacing between page fetches
   institutionalMode: false,   // when true, only explicitly-enabled providers run
+  maxActiveRunsPerProject: 3, // quota: queued+running runs per project (abuse guard)
 });
 
 const num = (v, dflt) => { const n = Number(v); return Number.isFinite(n) && n >= 0 ? n : dflt; };
@@ -149,6 +150,7 @@ export function loadPecanConfig(env = process.env, settings = {}) {
     previewThrottleMs: num(s.previewThrottleMs, ENGINE_DEFAULTS.previewThrottleMs),
     pageDelayMs:      num(s.pageDelayMs, ENGINE_DEFAULTS.pageDelayMs),
     institutionalMode: bool(env.PECAN_SEARCH_INSTITUTIONAL_MODE ?? s.institutionalMode, ENGINE_DEFAULTS.institutionalMode),
+    maxActiveRunsPerProject: Math.max(1, Math.min(num(s.maxActiveRunsPerProject, ENGINE_DEFAULTS.maxActiveRunsPerProject), 20)),
   };
 
   // Shared polite-pool identity (NLM/Crossref/OpenAlex all ask tools to identify).

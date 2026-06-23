@@ -71,6 +71,9 @@ function renderTerm(t, warnings) {
   }
   let body = sanitizeTermText(t.text);
   if (!body) return '';
+  // No silent weakening (§2.2): disclose when reserved characters were removed.
+  const origText = String(t.text || '').trim();
+  if (body !== origText && !isPhrase(body)) warnings.push(`Term "${origText}" contained characters reserved by Semantic Scholar (parentheses, pipe, quote) that were removed; it was searched as "${body}".`);
   if (isPhrase(body)) {
     if (t.truncate) warnings.push(`Wildcard truncation on the phrase "${t.text}" is not supported by Semantic Scholar and was dropped.`);
     return `"${body}"`;

@@ -136,9 +136,17 @@ export default function PecanSearchTab({ projectId, pico, readOnly }) {
     setHistoryState('loading');
     try {
       const out = await pecanSearchApi.listRuns(projectId, { skip: page * HISTORY_TAKE, take: HISTORY_TAKE });
-      setHistory((out && out.runs) || []);
+      const runs = (out && out.runs) || [];
+      setHistory(runs);
       setHistoryTotal((out && out.total) || 0);
       setHistoryState('ready');
+      // Reload-reconstruction (§6.4): if a run is still in flight and nothing is
+      // currently tracked, re-attach to it so the Live Progress card resumes after
+      // a browser refresh. Functional update → never clobbers an active selection.
+      if (page === 0) {
+        const inflight = runs.find((r) => !TERMINAL.has(r.state));
+        if (inflight) setActiveRun((prev) => prev || inflight);
+      }
     } catch {
       setHistoryState('error');
     }
@@ -619,12 +627,20 @@ function RunReview({ sourceIds, providers, counts, caps, totalPreview, anyUnknow
 }
 
 /* ════════════ (4) LIVE PROGRESS ════════════ */
+// Visually-hidden helper so screen-reader-only status text doesn't affect layout.
+const SR_ONLY = { position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: 0 };
+
 function LiveProgress({ run, onCancel }) {
   const counts = run.counts || {};
   const perSource = counts.perSource || {};
   const sources = run.sources || [];
   // INDETERMINATE: we have no reliable "total to fetch", so we never fake a %.
   const indeterminate = true;
+  // A dynamic, recomputed-each-poll sentence so screen readers HEAR progress +
+  // per-source state changes (not just a static "Working…"). (§7 accessibility.)
+  const srStatus = `Retrieved ${(counts.rawRetrieved || 0).toLocaleString()}, imported ${(counts.imported || 0).toLocaleString()}, `
+    + `${((counts.exactDup || 0) + (counts.fuzzyDup || 0)).toLocaleString()} duplicates, ${(counts.ambiguousDup || 0).toLocaleString()} to review. `
+    + sources.map((s) => `${s.provider} ${s.state || 'pending'}`).join('; ') + '.';
   return (
     <Card
       title={<span>Search in progress <StatusPill state={run.state} /></span>}
@@ -632,7 +648,8 @@ function LiveProgress({ run, onCancel }) {
       desc={run.name}
       right={onCancel && !['cancelling'].includes(run.stage) ? <Btn variant="danger" onClick={onCancel}>Cancel</Btn> : null}
     >
-      <div aria-live="polite" style={{ marginBottom: 14 }}>
+      <span role="status" aria-live="polite" style={SR_ONLY}>{srStatus}</span>
+      <div style={{ marginBottom: 14 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <div className="ml-indeterminate" style={{ flex: 1, height: 6, borderRadius: 99, overflow: 'hidden', background: C.brd, position: 'relative' }}>
             <div style={{ position: 'absolute', top: 0, bottom: 0, width: '34%', background: C.acc, borderRadius: 99, animation: indeterminate ? 'ml-indet 1.4s ease-in-out infinite' : 'none' }} />

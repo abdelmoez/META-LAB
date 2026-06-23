@@ -157,3 +157,72 @@ describe('Pecan Search Engine — lifecycle (integration)', () => {
     expect(report.deduplicationMethod).toMatch(/scorePair|classifyPair/);
   });
 });
+
+// Concurrency + idempotency guards (limitation-hunt fixes). Own project so the
+// non-terminal runs created here never interfere with the lifecycle suite.
+describe('Pecan Search Engine — start guards (integration)', () => {
+  let gUser, gProject;
+  const mock = makeMock({ total: 1 });
+  beforeAll(async () => {
+    gUser = await prisma.user.create({ data: { email: `${tag}_g@x.io`, password: 'x', name: 'Guards' } });
+    gProject = await prisma.project.create({ data: { userId: gUser.id, name: 'Guards', data: '{}' } });
+  });
+  afterAll(async () => {
+    try {
+      const runs = await prisma.pecanSearchRun.findMany({ where: { metaLabProjectId: gProject.id }, select: { id: true } });
+      const ids = runs.map((r) => r.id);
+      if (ids.length) {
+        await prisma.pecanSearchJob.deleteMany({ where: { runId: { in: ids } } });
+        await prisma.pecanSearchRun.deleteMany({ where: { id: { in: ids } } });
+      }
+      const sps = await prisma.screenProject.findMany({ where: { linkedMetaLabProjectId: gProject.id }, select: { id: true } });
+      for (const sp of sps) { await prisma.screenExclusionReason.deleteMany({ where: { projectId: sp.id } }); await prisma.screenProjectMember.deleteMany({ where: { projectId: sp.id } }); }
+      await prisma.screenProject.deleteMany({ where: { linkedMetaLabProjectId: gProject.id } });
+      await prisma.project.delete({ where: { id: gProject.id } });
+      await prisma.user.delete({ where: { id: gUser.id } });
+    } catch { /* best-effort */ }
+  });
+  const start = (extra) => startRun({ metaLabProjectId: gProject.id, user: gUser, canonicalQuery: CANONICAL, sources: ['pubmed'], caps: { pubmed: 10 }, ...extra }, { autoKick: false, engineOverrides: ov(mock) });
+  const clearActive = async () => { await prisma.pecanSearchRun.updateMany({ where: { metaLabProjectId: gProject.id }, data: { state: 'cancelled' } }); };
+
+  it('same idempotency key returns the SAME run (created:false) — no duplicate', async () => {
+    const a = await start({ idempotencyKey: 'KEY-A' });
+    const b = await start({ idempotencyKey: 'KEY-A' });
+    expect(a.run.id).toBe(b.run.id);
+    expect(b.created).toBe(false);
+    await clearActive();
+  });
+
+  it('a no-key start re-attaches to an existing active run instead of launching a parallel one', async () => {
+    const a = await start({});
+    const b = await start({});
+    expect(b.run.id).toBe(a.run.id);
+    expect(b.created).toBe(false);
+    await clearActive();
+  });
+
+  it('enforces the per-project active-run quota (QUOTA_EXCEEDED)', async () => {
+    await clearActive();
+    await start({ idempotencyKey: 'Q1' });
+    await start({ idempotencyKey: 'Q2' });
+    await start({ idempotencyKey: 'Q3' });
+    await expect(start({ idempotencyKey: 'Q4' })).rejects.toMatchObject({ code: 'QUOTA_EXCEEDED' });
+    await clearActive();
+  });
+
+  it('cancelling a queued (unclaimed) run finalizes it to cancelled synchronously', async () => {
+    await clearActive();
+    const a = await start({ idempotencyKey: 'CXL' });
+    const r = await cancelRun(a.run.id);
+    expect(r.state).toBe('cancelled');
+    expect(r.cancelRequested).toBe(true);
+  });
+
+  it('retry is a no-op while the run is still active', async () => {
+    await clearActive();
+    const a = await start({ idempotencyKey: 'RA' });
+    const r = await retryRun(a.run.id); // run is 'queued' → not retried
+    expect(r.state).toBe('queued');
+    await clearActive();
+  });
+});

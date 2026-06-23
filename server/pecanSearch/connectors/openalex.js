@@ -123,6 +123,9 @@ function translateOpenAlex(canonicalInput, { override } = {}) {
       const clean = sanitizeSearchTerm(t.text);
       if (!clean) continue;
       supported.push(`${t.field}:${t.text}`);
+      // No silent weakening (§2.2): disclose when reserved characters were removed.
+      const origText = String(t.text || '').trim();
+      if (clean !== origText) warnings.push(`Term "${origText}" contained characters reserved by OpenAlex (comma, pipe, quote) that were removed; it was searched as "${clean}".`);
 
       // Per-field precision is lost: OpenAlex search filter spans title+abstract.
       if (FIELD_NOTE[t.field]) {

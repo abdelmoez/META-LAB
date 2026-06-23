@@ -112,21 +112,24 @@ export async function runSource(a) {
       const raw = Array.isArray(page.records) ? page.records : [];
       if (!raw.length && !page.nextCursor) break; // genuinely empty / exhausted
 
-      // ── Normalize (per-record fault isolation: one bad record never kills the page). ──
+      // ── Normalize. Per-record fault isolation; page-LOCAL counters that are folded
+      //    into the durable totals ONLY after the page commits, so a re-fetch after a
+      //    mid-page failure/retry never double-counts (§17.1). ──
       await setSource(sourceRow.id, { stage: 'normalizing' });
+      const pagec = { raw: 0, normalized: 0, imported: 0, existingMatch: 0, exactDup: 0, fuzzyDup: 0, ambiguous: 0, failed: 0 };
       const normalized = [];
       for (const item of raw) {
-        if (counts.rawCount >= cap) { capReached = true; break; }
-        counts.rawCount += 1;
+        if (counts.rawCount + pagec.raw >= cap) { capReached = true; break; }
+        pagec.raw += 1;
         try {
           const norm = connector.normalize(item);
           const providerRecordId = norm.providerRecordId || contentHashId(norm);
           if (seen.has(providerRecordId)) continue;       // idempotent: already persisted
           seen.add(providerRecordId);
           normalized.push({ ...norm, providerRecordId });
-          counts.normalizedCount += 1;
+          pagec.normalized += 1;
         } catch (err) {
-          counts.failedRecordCount += 1;
+          pagec.failed += 1;
         }
       }
 
@@ -141,14 +144,11 @@ export async function runSource(a) {
         norm._verdict = verdict;
         records.push(norm);
         if (verdict.outcome === 'new' || verdict.outcome === 'ambiguous') toLand.push(norm);
-        else if (verdict.outcome === 'existing_match') counts.existingMatchCount += 1;
-        else if (verdict.outcome === 'exact_dup') counts.exactDupCount += 1;
-        else if (verdict.outcome === 'fuzzy_dup') counts.fuzzyDupCount += 1;
-        if (verdict.outcome === 'ambiguous') counts.ambiguousDupCount += 1;
       }
 
       // ── Land NEW + AMBIGUOUS records (reuses the screening import landing). ──
-      let landedMap = new Map(); // normTitle/doi/pmid -> screenRecordId
+      const landedMap = new Map();   // doi/pmid/normTitle -> screenRecordId
+      const landedIds = new Set();   // ScreenRecord ids CREATED in this batch (genuinely new)
       if (toLand.length) {
         await setSource(sourceRow.id, { stage: 'importing' });
         const screeningRecords = toLand.map((n) => toScreeningRecord(n, { sourceDb: provider }));
@@ -169,8 +169,7 @@ export async function runSource(a) {
           errorClass = pe.code; errorDetail = sanitizeErrorDetail(pe, secrets);
           finalState = 'partial'; break;
         }
-        counts.importedCount += result.imported;
-        // Map the landed batch's records back to ids for provenance linking.
+        pagec.imported += result.imported;
         const landed = await prisma.screenRecord.findMany({
           where: { importBatchId: result.batchId }, select: { id: true, doi: true, pmid: true, title: true },
         });
@@ -178,21 +177,53 @@ export async function runSource(a) {
           if (r.doi) landedMap.set('doi:' + String(r.doi).toLowerCase(), r.id);
           if (r.pmid) landedMap.set('pmid:' + String(r.pmid), r.id);
           const t = nt(r.title); if (t) landedMap.set('t:' + t, r.id);
+          landedIds.add(r.id);
           index.addLanded(r); // future pages dedup against these
         }
       }
 
-      // ── Persist source records (provenance) + dedup decisions. ──
-      const screenRecordIdFor = (norm) => {
+      // Resolve the canonical ScreenRecord id for a record. For new/ambiguous, prefer
+      // this batch's landed id; else fall back to the SHARED dedup index — which
+      // catches a record a CONCURRENT source landed between our classify and our
+      // insert (which dedupeAndInsertRecords then skipped) so provenance is NEVER
+      // lost (§3.1).
+      const resolveScreenId = (norm) => {
         const v = norm._verdict;
         if (v && (v.outcome === 'existing_match' || v.outcome === 'exact_dup' || v.outcome === 'fuzzy_dup')) return v.matchedId || '';
-        return landedMap.get('doi:' + norm.doi) || landedMap.get('pmid:' + norm.pmid) || landedMap.get('t:' + nt(norm.title)) || '';
+        return landedMap.get('doi:' + norm.doi) || landedMap.get('pmid:' + norm.pmid) || landedMap.get('t:' + nt(norm.title))
+          || (index.resolveId ? index.resolveId(norm) : '') || '';
       };
 
+      // ── Reconcile final outcome + page counts (AFTER landing). A new/ambiguous
+      //    record that did NOT create a fresh ScreenRecord (deduped away by the
+      //    landing, or matched a concurrently-landed record) is a duplicate — counted
+      //    as existing_match, NOT as a dangling "ambiguous" review item (§16). ──
+      for (const norm of records) {
+        const v = norm._verdict;
+        const sid = resolveScreenId(norm);
+        norm._screenId = sid;
+        if (v.outcome === 'new' || v.outcome === 'ambiguous') {
+          const landedNew = sid && landedIds.has(sid);
+          if (landedNew) {
+            norm._finalOutcome = v.outcome;
+            if (v.outcome === 'ambiguous') pagec.ambiguous += 1;
+          } else if (sid) {
+            norm._finalOutcome = 'existing_match'; // collapsed into an existing/sibling record
+            pagec.existingMatch += 1;
+          } else {
+            norm._finalOutcome = 'new'; // genuinely new but unlinkable (rare); count via imported
+          }
+        } else if (v.outcome === 'existing_match') { norm._finalOutcome = 'existing_match'; pagec.existingMatch += 1; }
+        else if (v.outcome === 'exact_dup') { norm._finalOutcome = 'exact_dup'; pagec.exactDup += 1; }
+        else if (v.outcome === 'fuzzy_dup') { norm._finalOutcome = 'fuzzy_dup'; pagec.fuzzyDup += 1; }
+        else { norm._finalOutcome = 'new'; }
+      }
+
+      // ── Persist source records (provenance) + dedup decisions. ──
       const sourceRecordRows = records.map((norm) => ({
         runId: sourceRow.runId, sourceId: sourceRow.id, metaLabProjectId, provider,
         providerRecordId: norm.providerRecordId,
-        screenRecordId: screenRecordIdFor(norm),
+        screenRecordId: norm._screenId || '',
         doi: norm.doi || '', pmid: norm.pmid || '', pmcid: norm.pmcid || '', nctId: norm.nctId || '',
         title: (norm.title || '').slice(0, 1000), abstract: (norm.abstract || '').slice(0, 12000),
         authors: (norm.authors || '').slice(0, 2000), year: norm.year || '', journal: (norm.journal || '').slice(0, 400),
@@ -204,31 +235,43 @@ export async function runSource(a) {
         rawPayload: typeof norm.raw === 'string' ? norm.raw.slice(0, 20000) : JSON.stringify(norm.raw || {}).slice(0, 20000),
         normalized: JSON.stringify({ doi: norm.doi, pmid: norm.pmid, title: norm.title, year: norm.year, authors: norm.authors }).slice(0, 4000),
         normalizationVersion: norm.normalizationVersion || '',
-        dedupOutcome: norm._verdict ? norm._verdict.outcome : 'new',
+        dedupOutcome: norm._finalOutcome || 'new',
       }));
 
       const decisionRows = [];
       for (const norm of records) {
         const v = norm._verdict;
-        if (!v || v.outcome === 'new' || v.outcome === 'existing_match') continue; // existing-match is identity, not a review item
-        // For an ambiguous (landed) record, reference its landed ScreenRecord id so
-        // duplicate review can group it with the matched record via the existing
-        // screening duplicate model; for auto-merged dups, the provider record id.
-        const incomingRef = v.outcome === 'ambiguous' ? (screenRecordIdFor(norm) || norm.providerRecordId) : norm.providerRecordId;
-        decisionRows.push({
-          runId: sourceRow.runId, metaLabProjectId,
-          sourceRecordId: incomingRef,
-          matchedScreenRecordId: v.matchedId || '',
-          score: Math.round(v.score || 0),
-          scoreComponents: JSON.stringify(v.components || {}).slice(0, 2000),
-          ruleVersion: DEDUP_RULE_VERSION,
-          matchType: shortType(v.type),
-          decision: v.outcome === 'ambiguous' ? 'pending' : 'merged',
-          decisionSource: v.outcome === 'fuzzy_dup' ? 'automatic' : (v.outcome === 'exact_dup' ? 'identity' : 'pending'),
-          reasons: JSON.stringify(v.reasons || []).slice(0, 2000),
-          conflicts: JSON.stringify(v.conflicts || []).slice(0, 1000),
-          ...(v.outcome !== 'ambiguous' ? { decidedAt: new Date() } : {}),
-        });
+        const outcome = norm._finalOutcome;
+        if (outcome === 'ambiguous') {
+          // A genuinely-distinct record awaiting human review — reference its landed
+          // ScreenRecord id so review groups it via the screening duplicate model.
+          decisionRows.push({
+            runId: sourceRow.runId, metaLabProjectId,
+            sourceRecordId: norm._screenId || norm.providerRecordId,
+            matchedScreenRecordId: v.matchedId || '',
+            score: Math.round(v.score || 0),
+            scoreComponents: JSON.stringify(v.components || {}).slice(0, 2000),
+            ruleVersion: DEDUP_RULE_VERSION, matchType: shortType(v.type),
+            decision: 'pending', decisionSource: 'pending',
+            reasons: JSON.stringify(v.reasons || []).slice(0, 2000),
+            conflicts: JSON.stringify(v.conflicts || []).slice(0, 1000),
+          });
+        } else if (outcome === 'fuzzy_dup' || outcome === 'exact_dup') {
+          // Auto-merged duplicate — an audit record of the automatic decision.
+          decisionRows.push({
+            runId: sourceRow.runId, metaLabProjectId,
+            sourceRecordId: norm.providerRecordId,
+            matchedScreenRecordId: v.matchedId || '',
+            score: Math.round(v.score || 0),
+            scoreComponents: JSON.stringify(v.components || {}).slice(0, 2000),
+            ruleVersion: DEDUP_RULE_VERSION, matchType: shortType(v.type),
+            decision: 'merged', decisionSource: outcome === 'fuzzy_dup' ? 'automatic' : 'identity',
+            reasons: JSON.stringify(v.reasons || []).slice(0, 2000),
+            conflicts: JSON.stringify(v.conflicts || []).slice(0, 1000),
+            decidedAt: new Date(),
+          });
+        }
+        // new + existing_match → no decision row.
       }
 
       // Idempotent inserts (records were filtered against `seen`, so all are new).
@@ -239,6 +282,16 @@ export async function runSource(a) {
       if (decisionRows.length) {
         try { await prisma.pecanDedupDecision.createMany({ data: decisionRows }); } catch { /* advisory; non-fatal */ }
       }
+
+      // ── Page committed: fold page-local counters into the durable totals NOW. ──
+      counts.rawCount += pagec.raw;
+      counts.normalizedCount += pagec.normalized;
+      counts.importedCount += pagec.imported;
+      counts.existingMatchCount += pagec.existingMatch;
+      counts.exactDupCount += pagec.exactDup;
+      counts.fuzzyDupCount += pagec.fuzzyDup;
+      counts.ambiguousDupCount += pagec.ambiguous;
+      counts.failedRecordCount += pagec.failed;
 
       // ── Advance durable state + emit progress. ──
       lastCompletedPage += 1;

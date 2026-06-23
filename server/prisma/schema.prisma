@@ -1182,7 +1182,11 @@ model PecanSearchRun {
   counts           String    @default("{}") // JSON aggregate counts (persisted at finalize; derived from sources)
   warningSummary   String    @default("[]") // JSON run-level warnings
   errorSummary     String    @default("") // sanitized run-level error message
-  idempotencyKey   String    @default("") // client-supplied start idempotency key
+  // Nullable so a no-key start never collides with another no-key start under the
+  // composite @@unique below (SQLite/PG treat NULLs as DISTINCT in a unique index);
+  // a non-null key makes (project,key) unique so a double-submit/refresh-retry is
+  // an atomic no-op (the create races into a P2002 the loser catches).
+  idempotencyKey   String? // client-supplied start idempotency key
   jobId            String    @default("") // linked PecanSearchJob id
   softwareVersion  String    @default("")
   engineVersion    String    @default("")
@@ -1197,9 +1201,9 @@ model PecanSearchRun {
   records        PecanSourceRecord[]
   dedupDecisions PecanDedupDecision[]
 
+  @@unique([metaLabProjectId, idempotencyKey])
   @@index([metaLabProjectId, createdAt])
   @@index([state])
-  @@index([idempotencyKey])
 }
 
 // Per-source execution state within a run. Each provider is isolated so one

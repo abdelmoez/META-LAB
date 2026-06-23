@@ -19,12 +19,18 @@ import {
 import { listRunDuplicates, resolveRunDuplicate } from './duplicates.js';
 import { buildReport, reportToCsv, reportToHtml } from './report.js';
 import { publicProviderConfig } from './config.js';
-import { normalizeCanonical, validateCanonical } from './query/ast.js';
+import { normalizeCanonical, validateCanonical, QUERY_LIMITS } from './query/ast.js';
 import { PecanError } from './errors.js';
 
 const AUDIT_MODULE = 'pecanSearch';
 // Cache identical count previews briefly so rapid typing never floods providers.
 const previewCache = createTtlCache({ ttlMs: 5 * 60 * 1000, max: 4000 });
+// Per-(user,provider) last preview-call timestamp — enforces previewThrottleMs so
+// rapid DISTINCT queries (which the cache can't collapse) can't flood a provider.
+const previewLastCall = new Map(); // `${userId}:${provider}` -> epoch ms
+
+/** Clamp a per-source override to the canonical query length ceiling. */
+const clampOverride = (v) => (typeof v === 'string' ? v.slice(0, QUERY_LIMITS.MAX_QUERY_LEN) : '');
 
 /** Flag + project-access gate. Returns access or null (after writing a response). */
 async function gate(req, res, { mutate = false } = {}) {
@@ -46,6 +52,7 @@ function handleError(res, err, where) {
   if (err instanceof PecanError) return res.status(err.httpStatus).json(err.toResponse());
   if (err && err.code === 'INVALID_QUERY') return res.status(400).json({ error: err.userMessage || 'Invalid query', code: 'INVALID_QUERY' });
   if (err && err.code === 'AUTHORIZATION_FAILED') return res.status(403).json({ error: err.userMessage || 'Forbidden', code: 'AUTHORIZATION_FAILED' });
+  if (err && err.code === 'QUOTA_EXCEEDED') return res.status(429).json({ error: err.userMessage || 'Too many active searches', code: 'QUOTA_EXCEEDED' });
   console.error(`[pecan-search] ${where}:`, err?.message);
   return res.status(500).json({ error: 'Internal server error' });
 }
@@ -86,7 +93,7 @@ export async function postTranslate(req, res) {
       const connector = engine.connectors[id];
       if (!connector) { out[id] = { available: false }; continue; }
       try {
-        const tr = connector.translateQuery(canonical, { override: typeof overrides[id] === 'string' ? overrides[id] : '' });
+        const tr = connector.translateQuery(canonical, { override: clampOverride(overrides[id]) });
         out[id] = { available: engine.config.providers[id].available, query: tr.query, queryHash: tr.queryHash, warnings: tr.warnings, supported: tr.supported, unsupported: tr.unsupported, assumptions: tr.assumptions, hasOverride: tr.hasOverride };
       } catch (e) { out[id] = { available: false, error: 'Translation failed' }; }
     }
@@ -107,10 +114,17 @@ export async function postPreviewCount(req, res) {
       const p = engine.config.providers[id];
       if (!connector || !p || !p.available || !p.supportsCountPreview) { out[id] = { count: null, kind: 'unsupported' }; return; }
       try {
-        const tr = connector.translateQuery(canonical, { override: typeof overrides[id] === 'string' ? overrides[id] : '' });
+        const tr = connector.translateQuery(canonical, { override: clampOverride(overrides[id]) });
         const cacheKey = `${id}:${tr.queryHash}`;
         const cached = previewCache.get(cacheKey);
         if (cached !== undefined) { out[id] = { ...cached, cached: true }; return; }
+        // Per-(user,provider) throttle: a DISTINCT query the cache can't collapse
+        // still cannot hit a provider more often than previewThrottleMs.
+        const throttleKey = `${req.user.id}:${id}`;
+        const throttleMs = engine.config.engine.previewThrottleMs;
+        const last = previewLastCall.get(throttleKey) || 0;
+        if (throttleMs > 0 && Date.now() - last < throttleMs) { out[id] = { count: null, kind: 'throttled' }; return; }
+        previewLastCall.set(throttleKey, Date.now());
         const pc = await connector.previewCount(tr, {});
         const val = { count: pc.count, kind: pc.kind, at: pc.at };
         previewCache.set(cacheKey, val);

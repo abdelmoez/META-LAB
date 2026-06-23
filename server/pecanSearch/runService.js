@@ -82,15 +82,34 @@ export async function startRun(params, deps = {}) {
     caps = {}, idempotencyKey = '', engineOverrides = {},
   } = params;
 
-  // Idempotency: an existing run with this key for this project wins.
-  if (idempotencyKey) {
+  const key = idempotencyKey ? String(idempotencyKey).slice(0, 200) : null;
+
+  // Idempotency (fast path): an existing run with this key for this project wins.
+  if (key) {
     const existing = await prisma.pecanSearchRun.findFirst({
-      where: { metaLabProjectId, idempotencyKey }, orderBy: { createdAt: 'desc' },
+      where: { metaLabProjectId, idempotencyKey: key }, orderBy: { createdAt: 'desc' },
     });
     if (existing) return { run: existing, created: false };
   }
 
   const engine = await buildEngine(engineOverrides);
+
+  // Concurrency guard + quota (§12.3, §20.4): at most maxActiveRunsPerProject
+  // non-terminal runs per project. If one already exists and no idempotency key
+  // was supplied, return the most recent active run (so a refresh/double-submit
+  // re-attaches instead of launching a parallel run that would double-count).
+  const active = await prisma.pecanSearchRun.findMany({
+    where: { metaLabProjectId, state: { in: ['queued', 'running'] } },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (active.length) {
+    if (!key) return { run: active[0], created: false };
+    if (active.length >= engine.config.engine.maxActiveRunsPerProject) {
+      const e = new Error('Too many searches are already running for this project.');
+      e.code = 'QUOTA_EXCEEDED'; e.userMessage = 'Too many searches are already running for this project. Wait for one to finish.';
+      throw e;
+    }
+  }
   const canonical = normalizeCanonical(canonicalQuery);
   const v = validateCanonical(canonical);
   if (!v.ok) { const e = new Error(v.errors.join(' ')); e.code = 'INVALID_QUERY'; e.userMessage = v.errors.join(' '); throw e; }
@@ -105,7 +124,7 @@ export async function startRun(params, deps = {}) {
     const p = engine.config.providers[id];
     if (!isProviderImplemented(id)) { warnings.push(`${p.label} is not yet available and was skipped.`); continue; }
     if (!p.available) { warnings.push(`${p.label} is disabled or unconfigured and was skipped.`); continue; }
-    selected.push({ id, override: (s && typeof s.override === 'string') ? s.override : '' });
+    selected.push({ id, override: (s && typeof s.override === 'string') ? s.override.slice(0, 12000) : '' });
   }
   if (!selected.length) { const e = new Error('No usable sources were selected.'); e.code = 'INVALID_QUERY'; e.userMessage = 'No usable sources were selected.'; throw e; }
 
@@ -122,21 +141,32 @@ export async function startRun(params, deps = {}) {
   };
 
   const runId = uuid();
-  const run = await prisma.pecanSearchRun.create({
-    data: {
-      id: runId, metaLabProjectId, screenProjectId: landing.id,
-      initiatedById: user.id, initiatedByName: user.name || user.email || '',
-      name: String(name || '').slice(0, 200) || 'Search ' + new Date().toISOString().slice(0, 10),
-      state: 'queued',
-      canonicalQuery: JSON.stringify(canonical).slice(0, 60000),
-      canonicalText: renderPlain(canonical).slice(0, 12000),
-      config: JSON.stringify(config).slice(0, 20000),
-      counts: '{}',
-      warningSummary: JSON.stringify(warnings).slice(0, 8000),
-      idempotencyKey: String(idempotencyKey || '').slice(0, 200),
-      softwareVersion: ENGINE_VERSION, engineVersion: ENGINE_VERSION,
-    },
-  });
+  let run;
+  try {
+    run = await prisma.pecanSearchRun.create({
+      data: {
+        id: runId, metaLabProjectId, screenProjectId: landing.id,
+        initiatedById: user.id, initiatedByName: user.name || user.email || '',
+        name: String(name || '').slice(0, 200) || 'Search ' + new Date().toISOString().slice(0, 10),
+        state: 'queued',
+        canonicalQuery: JSON.stringify(canonical).slice(0, 60000),
+        canonicalText: renderPlain(canonical).slice(0, 12000),
+        config: JSON.stringify(config).slice(0, 20000),
+        counts: '{}',
+        warningSummary: JSON.stringify(warnings).slice(0, 8000),
+        idempotencyKey: key, // null when no key → never collides; a duplicate key → P2002 below
+        softwareVersion: ENGINE_VERSION, engineVersion: ENGINE_VERSION,
+      },
+    });
+  } catch (err) {
+    // Atomic idempotency: a concurrent start with the same key won the unique
+    // [metaLabProjectId, idempotencyKey] race — return THE winner, create nothing.
+    if (err && err.code === 'P2002' && key) {
+      const winner = await prisma.pecanSearchRun.findFirst({ where: { metaLabProjectId, idempotencyKey: key }, orderBy: { createdAt: 'desc' } });
+      if (winner) return { run: winner, created: false };
+    }
+    throw err;
+  }
 
   // Per-source rows with translated queries (exact executed query stored).
   for (const s of selected) {
@@ -320,7 +350,16 @@ export async function cancelRun(runId) {
   if (!run) return null;
   if (['completed', 'failed', 'cancelled'].includes(run.state)) return run;
   await prisma.pecanSearchRun.update({ where: { id: runId }, data: { cancelRequested: true } });
-  await prisma.pecanSearchJob.updateMany({ where: { runId, status: { in: ['queued', 'processing'] } }, data: { stage: 'cancelling' } });
+  // If a job is still QUEUED (no worker has claimed it), atomically flip it to
+  // cancelled and finalize the run synchronously — otherwise a queued run would
+  // sit "cancelRequested" forever until a worker happens to pick it up.
+  const flipped = await prisma.pecanSearchJob.updateMany({ where: { runId, status: 'queued' }, data: { status: 'cancelled', stage: 'cancelled', finishedAt: new Date() } });
+  await prisma.pecanSearchJob.updateMany({ where: { runId, status: 'processing' }, data: { stage: 'cancelling' } });
+  if (flipped.count > 0) {
+    // Was unclaimed → safe to finalize now (the worker can no longer pick it up).
+    const stillUnclaimed = await prisma.pecanSearchJob.count({ where: { runId, status: 'processing' } });
+    if (stillUnclaimed === 0) await finalizeRun(run, 'cancelled');
+  }
   return prisma.pecanSearchRun.findUnique({ where: { id: runId } });
 }
 
@@ -328,6 +367,11 @@ export async function cancelRun(runId) {
 export async function retryRun(runId) {
   const run = await prisma.pecanSearchRun.findUnique({ where: { id: runId } });
   if (!run) return null;
+  // Never retry a run that is still active (queued/running) — that would reset its
+  // sources under a live worker and enqueue a second competing job (§12).
+  if (['queued', 'running'].includes(run.state)) return run;
+  const liveJob = await prisma.pecanSearchJob.count({ where: { runId, status: { in: ['queued', 'processing'] } } });
+  if (liveJob > 0) return run;
   const retryable = await prisma.pecanSearchSource.findMany({ where: { runId, state: { in: ['failed', 'partial'] } } });
   if (!retryable.length) return run;
   for (const s of retryable) {

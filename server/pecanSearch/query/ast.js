@@ -29,6 +29,15 @@
  */
 import crypto from 'crypto';
 
+// KNOWN LIMITATION (documented, not silent): the canonical model represents
+// concept-level AND/OR exactly as the upstream Search Builder expresses it. It does
+// NOT yet model Boolean NOT / exclusion terms or arbitrary nested groups — because
+// the Search Builder UI does not produce them, so nothing is silently dropped today.
+// When NOT/nesting support is added to the builder, extend normalizeCanonical (a
+// per-concept `negate` or a top-level exclude list) AND every translator together,
+// emitting an explicit unsupported-clause warning for providers that cannot honor it
+// (Crossref/OpenAlex dismax). Tracked as a P1 follow-up (pairs with AI search, P11).
+
 export const QUERY_LIMITS = Object.freeze({
   MAX_QUERY_LEN: 12000,     // canonical raw / rendered length ceiling
   MAX_CONCEPTS: 40,

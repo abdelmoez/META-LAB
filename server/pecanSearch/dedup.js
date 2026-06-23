@@ -105,6 +105,20 @@ export function createDedupIndex(existingRecords = [], opts = {}) {
     addLanded(rec) { addToIndex(rec, 'run'); },
 
     /**
+     * resolveId(rec) — the indexed ScreenRecord id that shares this record's exact
+     * DOI / PMID / normalized title, or '' . Used for provenance back-fill: a record
+     * the landing function deduped away (or that a concurrent source landed) still
+     * gets its source→screen provenance link from the shared index.
+     */
+    resolveId(rec) {
+      const doi = String(rec.doi || '').trim().toLowerCase();
+      const pmid = String(rec.pmid || '').trim();
+      const nt2 = normalizeTitle(rec.title || '');
+      const hit = (doi && byDoi.get(doi)) || (pmid && byPmid.get(pmid)) || (nt2 && byNormTitle.get(nt2));
+      return hit ? hit.id : '';
+    },
+
+    /**
      * classify(incoming) — typed outcome for one normalized incoming record.
      * @returns {{ outcome, matchedId, matchedOrigin, score, components, type,
      *   reasons, conflicts, decisionSource }}
