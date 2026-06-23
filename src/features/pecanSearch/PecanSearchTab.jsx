@@ -1,0 +1,818 @@
+/**
+ * PecanSearchTab.jsx — the "Search & Discovery" workspace (P1). A first-class,
+ * accessible research surface over the Pecan Search Engine backend
+ * (server/pecanSearch). It does NOT re-implement search; it drives the contract
+ * API (pecanSearchApi.js) and renders the seven product areas of the mandate:
+ *
+ *   1. Search Strategy  — canonical query (from the Search Builder), source
+ *                         selection, per-source translated query + warnings,
+ *                         optional override, date/result caps, debounced count
+ *                         preview per source.
+ *   2. Source cards     — one card per configured provider (availability, creds
+ *                         state, translation status, preview, cap, inclusion).
+ *   3. Run review       — a pre-flight summary + Start (Idempotency-Key per try).
+ *   4. Live progress    — authoritative polling + the realtime poke channel, an
+ *                         honest INDETERMINATE state, Cancel + Retry.
+ *   5. Completion        — every number from run.counts + links + report export.
+ *   6. Search history   — paginated past runs + detail + safe retry + export.
+ *   7. Duplicate review  — explainable, side-by-side ambiguous-pair resolution.
+ *
+ * Reconstruction-first: the active run is always rebuilt from the server; the
+ * realtime event is only a hint to refetch (never trusted as data). Read-only
+ * callers can browse + preview but cannot start/cancel/retry/resolve.
+ */
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { C, btnS, inp, lbl } from '../../frontend/workspace/ui/styles.js';
+import { alpha as themeAlpha } from '../../frontend/theme/tokens.js';
+import { Icon } from '../../frontend/components/icons.jsx';
+import { useRealtime } from '../../frontend/hooks/useRealtime.js';
+import {
+  pecanSearchApi, loadCanonicalQuery, newIdempotencyKey,
+} from './pecanSearchApi.js';
+import {
+  Card, StatTile, StatusPill, runStateLabel, Disclosure, Note, Skeleton,
+  EmptyState, Btn, CountValue, CredsBadge, Toggle, formatWhen,
+} from './components/parts.jsx';
+import DuplicateReview from './components/DuplicateReview.jsx';
+
+const PREVIEW_DEBOUNCE_MS = 700;
+const ACTIVE_POLL_MS = 2500;
+const TERMINAL = new Set(['completed', 'failed', 'cancelled', 'partial']);
+
+/* Count concepts/terms in a canonical query for the read-only summary. */
+function summarizeQuery(canonical) {
+  if (!canonical || !Array.isArray(canonical.concepts)) return { concepts: 0, terms: 0 };
+  const concepts = canonical.concepts.length;
+  const terms = canonical.concepts.reduce((n, c) => n + (Array.isArray(c.terms) ? c.terms.length : 0), 0);
+  return { concepts, terms };
+}
+
+export default function PecanSearchTab({ projectId, pico, readOnly }) {
+  // ── Canonical query (the saved Search Builder strategy) ──────────────────────
+  const [query, setQuery] = useState(null);        // { concepts, filters, overrides } | null
+  const [queryState, setQueryState] = useState('loading'); // loading | ready | empty | error
+  const [queryError, setQueryError] = useState('');
+
+  // ── Providers ────────────────────────────────────────────────────────────────
+  const [providers, setProviders] = useState(null);  // array | null
+  const [engineCfg, setEngineCfg] = useState(null);
+  const [providersError, setProvidersError] = useState('');
+
+  // ── Per-source selection / overrides / caps ──────────────────────────────────
+  const [selected, setSelected] = useState({});      // { [id]: true }
+  const [overrides, setOverrides] = useState({});    // { [id]: string }
+  const [caps, setCaps] = useState({});              // { [id]: number }
+  const [showOverride, setShowOverride] = useState({}); // { [id]: true }
+
+  // ── Translation + preview (debounced) ────────────────────────────────────────
+  const [translations, setTranslations] = useState({}); // { [id]: {...} }
+  const [counts, setCounts] = useState({});             // { [id]: {count,kind,at} }
+  const [previewing, setPreviewing] = useState(false);
+  const [previewError, setPreviewError] = useState('');
+
+  // ── Run lifecycle ─────────────────────────────────────────────────────────────
+  const [runName, setRunName] = useState('');
+  const [activeRun, setActiveRun] = useState(null);   // the run summary we are tracking
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState('');
+
+  // ── Duplicates (for the active/selected run) ─────────────────────────────────
+  const [dupes, setDupes] = useState(null);
+  const [dupesState, setDupesState] = useState('idle'); // idle|loading|ready|error
+  const [dupesError, setDupesError] = useState('');
+  const [resolving, setResolving] = useState(false);
+
+  // ── History ───────────────────────────────────────────────────────────────────
+  const [history, setHistory] = useState(null);
+  const [historyTotal, setHistoryTotal] = useState(0);
+  const [historyPage, setHistoryPage] = useState(0);
+  const [historyState, setHistoryState] = useState('loading');
+  const HISTORY_TAKE = 10;
+
+  // ── Report (for the completion summary) ──────────────────────────────────────
+  const [report, setReport] = useState(null);
+
+  const debounceRef = useRef(null);
+  const previewAbort = useRef(null);
+  const pollRef = useRef(null);
+  const canRun = !readOnly;
+
+  /* ── load canonical query + providers + first history page on mount ───────── */
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      // Canonical query
+      try {
+        const q = await loadCanonicalQuery(projectId);
+        if (dead) return;
+        if (!q || !q.concepts || q.concepts.length === 0) { setQuery(q || null); setQueryState('empty'); }
+        else { setQuery(q); setQueryState('ready'); }
+      } catch (e) {
+        if (!dead) { setQueryError(e.message || 'Failed to load strategy'); setQueryState('error'); }
+      }
+      // Providers
+      try {
+        const p = await pecanSearchApi.getProviders();
+        if (dead) return;
+        const list = (p && p.providers) || [];
+        setProviders(list);
+        setEngineCfg((p && p.engine) || null);
+        // Default selection = all selectable providers; default caps from provider.
+        const sel = {}; const cp = {};
+        for (const pr of list) {
+          if (pr.selectable) sel[pr.id] = true;
+          cp[pr.id] = pr.defaultCap || (p.engine && p.engine.defaultResultCap) || 2000;
+        }
+        setSelected(sel); setCaps(cp);
+      } catch (e) {
+        if (!dead) setProvidersError(e.message || 'Failed to load providers');
+      }
+    })();
+    return () => { dead = true; };
+  }, [projectId]);
+
+  /* ── load history (page) ──────────────────────────────────────────────────── */
+  const loadHistory = useCallback(async (page = historyPage) => {
+    setHistoryState('loading');
+    try {
+      const out = await pecanSearchApi.listRuns(projectId, { skip: page * HISTORY_TAKE, take: HISTORY_TAKE });
+      setHistory((out && out.runs) || []);
+      setHistoryTotal((out && out.total) || 0);
+      setHistoryState('ready');
+    } catch {
+      setHistoryState('error');
+    }
+  }, [projectId, historyPage]);
+
+  useEffect(() => { loadHistory(historyPage); }, [historyPage, loadHistory]);
+
+  /* ── debounced translate + preview whenever the inputs change ──────────────── */
+  const sourceIds = useMemo(() => Object.keys(selected).filter((id) => selected[id]), [selected]);
+  const overridesKey = useMemo(() => JSON.stringify(overrides), [overrides]);
+
+  const runPreview = useCallback(async () => {
+    if (queryState !== 'ready' || sourceIds.length === 0) { setTranslations({}); setCounts({}); return; }
+    // cancel any in-flight preview
+    if (previewAbort.current) previewAbort.current.cancelled = true;
+    const token = { cancelled: false };
+    previewAbort.current = token;
+    setPreviewing(true); setPreviewError('');
+    const canonicalQuery = { concepts: query.concepts, filters: query.filters };
+    const sources = sourceIds.map((id) => ({ provider: id }));
+    try {
+      const [tr, ct] = await Promise.all([
+        pecanSearchApi.translate(projectId, { canonicalQuery, sources, overrides }),
+        pecanSearchApi.previewCount(projectId, { canonicalQuery, sources, overrides }),
+      ]);
+      if (token.cancelled) return;
+      setTranslations((tr && tr.translations) || {});
+      setCounts((ct && ct.counts) || {});
+    } catch (e) {
+      if (!token.cancelled) setPreviewError(e.message || 'Preview failed');
+    } finally {
+      if (!token.cancelled) setPreviewing(false);
+    }
+  }, [projectId, query, queryState, sourceIds, overrides]);
+
+  useEffect(() => {
+    if (queryState !== 'ready') return undefined;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => { runPreview(); }, PREVIEW_DEBOUNCE_MS);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+    // re-run when the selected sources, overrides, or loaded query change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceIds.join(','), overridesKey, queryState, query]);
+
+  /* ── refetch the active run from the server (authoritative) ────────────────── */
+  const refetchActiveRun = useCallback(async (runId) => {
+    const id = runId || (activeRun && activeRun.id);
+    if (!id) return;
+    try {
+      const out = await pecanSearchApi.getRun(projectId, id);
+      if (out && out.run) setActiveRun(out.run);
+    } catch { /* keep the last good summary; polling/realtime will retry */ }
+  }, [projectId, activeRun]);
+
+  /* ── poll the active run while it is non-terminal (server is the truth) ────── */
+  useEffect(() => {
+    if (!activeRun || TERMINAL.has(activeRun.state)) {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      return undefined;
+    }
+    pollRef.current = setInterval(() => { refetchActiveRun(activeRun.id); }, ACTIVE_POLL_MS);
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
+  }, [activeRun, refetchActiveRun]);
+
+  /* ── when the active run reaches a terminal state, pull report + duplicates ── */
+  useEffect(() => {
+    if (!activeRun || !TERMINAL.has(activeRun.state)) return;
+    let dead = false;
+    (async () => {
+      try { const r = await pecanSearchApi.getReport(projectId, activeRun.id); if (!dead && r) setReport(r.report); } catch { /* report optional */ }
+      loadDupes(activeRun.id);
+      loadHistory(historyPage);
+    })();
+    return () => { dead = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRun && activeRun.state, activeRun && activeRun.id]);
+
+  /* ── realtime: a poke for THIS project → refetch the authoritative run ─────── */
+  useRealtime({
+    'search.run.progress': (ev) => {
+      if (ev && ev.metaLabProjectId === projectId) {
+        const id = ev.runId || (activeRun && activeRun.id);
+        if (id) refetchActiveRun(id);
+      }
+    },
+  });
+
+  /* ── duplicates loader ─────────────────────────────────────────────────────── */
+  const loadDupes = useCallback(async (runId) => {
+    if (!runId) return;
+    setDupesState('loading'); setDupesError('');
+    try {
+      const out = await pecanSearchApi.listDuplicates(projectId, runId, { skip: 0, take: 50 });
+      setDupes(out);
+      setDupesState('ready');
+    } catch (e) {
+      setDupesError(e.message || 'Failed to load duplicates');
+      setDupesState('error');
+    }
+  }, [projectId]);
+
+  const resolveDupe = useCallback(async (decisionId, action) => {
+    if (!activeRun) return;
+    setResolving(true);
+    try {
+      await pecanSearchApi.resolveDuplicate(projectId, activeRun.id, decisionId, action);
+      await loadDupes(activeRun.id);
+    } catch (e) {
+      setDupesError(e.message || 'Failed to resolve');
+    } finally {
+      setResolving(false);
+    }
+  }, [projectId, activeRun, loadDupes]);
+
+  /* ── start a run (Idempotency-Key per attempt) ─────────────────────────────── */
+  const startRun = useCallback(async () => {
+    if (!canRun || sourceIds.length === 0 || queryState !== 'ready') return;
+    setStarting(true); setStartError('');
+    const idem = newIdempotencyKey();
+    const canonicalQuery = { concepts: query.concepts, filters: query.filters };
+    const sources = sourceIds.map((id) => ({ provider: id, override: overrides[id] || '' }));
+    const capPayload = {};
+    for (const id of sourceIds) if (caps[id]) capPayload[id] = Number(caps[id]);
+    try {
+      const out = await pecanSearchApi.startRun(projectId, {
+        name: runName.trim(), canonicalQuery, sources, caps: capPayload,
+      }, idem);
+      if (out && out.run) {
+        setActiveRun(out.run);
+        setReport(null);
+        setDupes(null); setDupesState('idle');
+      }
+      loadHistory(0); setHistoryPage(0);
+    } catch (e) {
+      setStartError(e.message || 'Could not start the search.');
+    } finally {
+      setStarting(false);
+    }
+  }, [canRun, sourceIds, queryState, query, overrides, caps, projectId, runName, loadHistory]);
+
+  const cancelActive = useCallback(async () => {
+    if (!activeRun) return;
+    try { await pecanSearchApi.cancelRun(projectId, activeRun.id); await refetchActiveRun(activeRun.id); } catch { /* refetch will reconcile */ }
+  }, [projectId, activeRun, refetchActiveRun]);
+
+  const retryActive = useCallback(async (runId) => {
+    const id = runId || (activeRun && activeRun.id);
+    if (!id) return;
+    try { const out = await pecanSearchApi.retryRun(projectId, id); if (out && out.run) setActiveRun(out.run); } catch { /* surfaced via refetch */ }
+  }, [projectId, activeRun]);
+
+  const openHistoryRun = useCallback(async (runId) => {
+    try {
+      const out = await pecanSearchApi.getRun(projectId, runId);
+      if (out && out.run) {
+        setActiveRun(out.run);
+        setReport(null);
+        if (TERMINAL.has(out.run.state)) {
+          try { const r = await pecanSearchApi.getReport(projectId, runId); if (r) setReport(r.report); } catch { /* optional */ }
+          loadDupes(runId);
+        }
+      }
+    } catch { /* ignore */ }
+  }, [projectId, loadDupes]);
+
+  /* ── derived ────────────────────────────────────────────────────────────────── */
+  const qSummary = summarizeQuery(query);
+  const selectableProviders = (providers || []).filter((p) => p.selectable);
+  const totalPreview = sourceIds.reduce((n, id) => {
+    const c = counts[id];
+    return (c && (c.kind === 'estimated' || c.kind === 'exact') && c.count != null) ? n + Number(c.count) : n;
+  }, 0);
+  const anyUnknownPreview = sourceIds.some((id) => { const c = counts[id]; return !c || (c.kind !== 'estimated' && c.kind !== 'exact'); });
+
+  return (
+    <div style={{ maxWidth: 1180, margin: '0 auto' }}>
+      <Header />
+
+      {/* ════════════ (1) SEARCH STRATEGY ════════════ */}
+      <StrategyCard
+        queryState={queryState} queryError={queryError} query={query} qSummary={qSummary} pico={pico}
+      />
+
+      {/* ════════════ (2) SOURCE CARDS ════════════ */}
+      <SourcesSection
+        providers={providers} providersError={providersError} engineCfg={engineCfg}
+        selected={selected} setSelected={setSelected}
+        overrides={overrides} setOverrides={setOverrides}
+        showOverride={showOverride} setShowOverride={setShowOverride}
+        caps={caps} setCaps={setCaps}
+        translations={translations} counts={counts}
+        previewing={previewing} previewError={previewError}
+        readOnly={readOnly} queryReady={queryState === 'ready'}
+        onRefreshPreview={runPreview}
+      />
+
+      {/* ════════════ (3) RUN REVIEW + START ════════════ */}
+      {canRun && (
+        <RunReview
+          projectId={projectId}
+          sourceIds={sourceIds} providers={providers} counts={counts} caps={caps}
+          totalPreview={totalPreview} anyUnknownPreview={anyUnknownPreview}
+          runName={runName} setRunName={setRunName}
+          queryReady={queryState === 'ready'}
+          starting={starting} startError={startError} onStart={startRun}
+          hasActiveRun={!!activeRun && !TERMINAL.has(activeRun.state)}
+        />
+      )}
+
+      {/* ════════════ (4) LIVE PROGRESS / (5) COMPLETION ════════════ */}
+      {activeRun && (
+        TERMINAL.has(activeRun.state)
+          ? <CompletionSummary run={activeRun} report={report} projectId={projectId} onRetry={canRun ? () => retryActive(activeRun.id) : null} />
+          : <LiveProgress run={activeRun} onCancel={canRun ? cancelActive : null} />
+      )}
+
+      {/* ════════════ (7) DUPLICATE REVIEW ════════════ */}
+      {activeRun && TERMINAL.has(activeRun.state) && (dupesState !== 'idle') && (
+        <DuplicateReview
+          candidates={dupes && dupes.candidates}
+          total={dupes && dupes.total}
+          loading={dupesState === 'loading'}
+          error={dupesState === 'error' ? dupesError : ''}
+          onResolve={canRun ? resolveDupe : (() => {})}
+          onReload={() => loadDupes(activeRun.id)}
+          resolving={resolving}
+        />
+      )}
+
+      {/* ════════════ (6) SEARCH HISTORY ════════════ */}
+      <SearchHistory
+        history={history} total={historyTotal} state={historyState}
+        page={historyPage} take={HISTORY_TAKE} setPage={setHistoryPage}
+        onOpen={openHistoryRun} onRetry={canRun ? retryActive : null}
+        projectId={projectId} activeRunId={activeRun && activeRun.id}
+      />
+    </div>
+  );
+}
+
+/* ════════════ HEADER ════════════ */
+function Header() {
+  return (
+    <header style={{ marginBottom: 22 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+        <div aria-hidden="true" style={{ width: 36, height: 36, borderRadius: 10, color: C.acc, background: themeAlpha(C.acc, '16'), border: `1px solid ${themeAlpha(C.acc, '28')}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <Icon name="globe" size={16} />
+        </div>
+        <h2 style={{ margin: 0, fontSize: 19, fontWeight: 700, color: C.txt, letterSpacing: -0.4 }}>Search &amp; Discovery</h2>
+      </div>
+      <p style={{ margin: 0, paddingLeft: 48, fontSize: 12.5, color: C.muted, lineHeight: 1.7, maxWidth: 760 }}>
+        Run your saved search strategy across multiple bibliographic databases, deduplicate the results, and hand the new records straight to screening — with a reproducible, PRISMA-S–ready record of exactly what ran.
+      </p>
+    </header>
+  );
+}
+
+/* ════════════ (1) STRATEGY CARD ════════════ */
+function StrategyCard({ queryState, queryError, query, qSummary, pico }) {
+  return (
+    <Card title="Search strategy" icon="search" desc="The canonical concept query you built in the Search Builder. Edit it there — this is the single source of truth.">
+      {queryState === 'loading' && <Skeleton height={56} />}
+      {queryState === 'error' && <Note tone="error" role="alert">Could not load your saved strategy: {queryError}. The Search &amp; Discovery tools need a strategy to run.</Note>}
+      {queryState === 'empty' && (
+        <EmptyState icon="search" title="No saved search strategy yet">
+          Build your concept query in the <strong>Search Builder</strong> tab first. Once it is saved, it appears here ready to run across every database.
+        </EmptyState>
+      )}
+      {queryState === 'ready' && query && (
+        <>
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+            <span style={{ ...tagStyle() }}>{qSummary.concepts} concept{qSummary.concepts === 1 ? '' : 's'}</span>
+            <span style={{ ...tagStyle() }}>{qSummary.terms} term{qSummary.terms === 1 ? '' : 's'}</span>
+            {query.filters && (query.filters.dateFrom || query.filters.dateTo) && (
+              <span style={{ ...tagStyle() }}>Dates {query.filters.dateFrom || '*'}–{query.filters.dateTo || '*'}</span>
+            )}
+            {query.updatedAt && <span style={{ fontSize: 11, color: C.dim, alignSelf: 'center' }}>Saved {formatWhen(query.updatedAt)}</span>}
+          </div>
+          <ol style={{ margin: 0, paddingLeft: 18, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {query.concepts.map((c, i) => (
+              <li key={c.id || i} style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.6 }}>
+                <strong style={{ color: C.txt }}>{c.label || `Concept ${i + 1}`}</strong>
+                <span style={{ color: C.muted }}> — {(c.terms || []).map((t) => t.text).filter(Boolean).join(`  ${c.op || 'OR'}  `)}</span>
+              </li>
+            ))}
+          </ol>
+          <div style={{ marginTop: 12 }}>
+            <Note tone="info">Concepts combine with <strong>AND</strong>; terms inside a concept combine with the concept&apos;s own operator. To change the strategy, open the <strong>Search Builder</strong> tab.</Note>
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+function tagStyle() {
+  return { display: 'inline-flex', alignItems: 'center', padding: '3px 11px', borderRadius: 99, fontSize: 11, fontWeight: 600, background: C.card2, color: C.txt2, border: `1px solid ${C.brd}` };
+}
+
+/* ════════════ (2) SOURCE CARDS ════════════ */
+function SourcesSection({
+  providers, providersError, engineCfg, selected, setSelected, overrides, setOverrides,
+  showOverride, setShowOverride, caps, setCaps, translations, counts, previewing, previewError,
+  readOnly, queryReady, onRefreshPreview,
+}) {
+  return (
+    <Card
+      title="Sources"
+      icon="layers"
+      desc="Pick the databases to search. Each card shows availability, the query translated to that database, and an estimated result count."
+      right={previewing ? <span style={{ fontSize: 11, color: C.muted, display: 'inline-flex', alignItems: 'center', gap: 6 }}><span className="spin-ico" aria-hidden="true">⟳</span> Updating previews…</span>
+        : queryReady ? <Btn variant="ghost" style={{ fontSize: 11 }} onClick={onRefreshPreview}>Refresh counts</Btn> : null}
+    >
+      {providers == null && !providersError && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(280px,1fr))', gap: 12 }}>
+          {[0, 1, 2].map((i) => <Skeleton key={i} height={150} radius={12} />)}
+        </div>
+      )}
+      {providersError && <Note tone="error" role="alert">Could not load the provider list: {providersError}</Note>}
+      {providers && providers.length === 0 && !providersError && (
+        <EmptyState icon="alert" title="No search providers are configured">
+          Ask an administrator to enable at least one database in the Ops console before running a search.
+        </EmptyState>
+      )}
+      {previewError && <div style={{ marginBottom: 12 }}><Note tone="warn">Some previews could not be fetched ({previewError}). You can still run the search.</Note></div>}
+      {providers && providers.length > 0 && (
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(290px,1fr))', gap: 12 }}>
+          {providers.map((p) => (
+            <SourceCard
+              key={p.id} provider={p}
+              selected={!!selected[p.id]}
+              onToggle={(v) => setSelected((s) => ({ ...s, [p.id]: v }))}
+              translation={translations[p.id]} count={counts[p.id]}
+              cap={caps[p.id]} onCap={(v) => setCaps((c) => ({ ...c, [p.id]: v }))}
+              overrideValue={overrides[p.id] || ''} onOverride={(v) => setOverrides((o) => ({ ...o, [p.id]: v }))}
+              overrideOpen={!!showOverride[p.id]} onToggleOverride={(v) => setShowOverride((s) => ({ ...s, [p.id]: v }))}
+              maxCap={(p.maxCap) || (engineCfg && engineCfg.maxResultCap) || 10000}
+              readOnly={readOnly}
+            />
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function SourceCard({ provider, selected, onToggle, translation, count, cap, onCap, overrideValue, onOverride, overrideOpen, onToggleOverride, maxCap, readOnly }) {
+  const p = provider;
+  const usable = p.selectable;
+  const trWarnings = (translation && translation.warnings) || [];
+  const unsupported = (translation && translation.unsupported) || [];
+  return (
+    <div style={{ background: selected && usable ? themeAlpha(C.acc, '06') : C.bg, border: `1px solid ${selected && usable ? themeAlpha(C.acc, '40') : C.brd}`, borderRadius: 12, padding: 14, display: 'flex', flexDirection: 'column', gap: 10, opacity: usable ? 1 : 0.78 }}>
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 13.5, fontWeight: 700, color: C.txt }}>{p.label}</div>
+          <div style={{ fontSize: 10.5, color: C.muted, marginTop: 1 }}>{p.platform}</div>
+        </div>
+        <Toggle on={selected && usable} disabled={!usable || readOnly} ariaLabel={`Include ${p.label} in the search`} onChange={onToggle} />
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        {usable ? <span style={{ ...tagStyle(), color: C.grn, borderColor: themeAlpha(C.grn, '40') }}>Available</span>
+          : p.implemented === false ? <span style={{ ...tagStyle(), color: C.muted }}>Not yet available</span>
+            : <span style={{ ...tagStyle(), color: C.yel, borderColor: themeAlpha(C.yel, '40') }}>Unavailable</span>}
+        <CredsBadge requiresCredentials={p.requiresCredentials} configured={p.configured} />
+        {p.maxResults != null && <span style={{ ...tagStyle() }}>Cap ≤ {Number(p.maxResults).toLocaleString()}</span>}
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 11.5 }}>
+        <span style={{ color: C.muted }}>Estimated results</span>
+        {p.supportsCountPreview === false
+          ? <span style={{ fontSize: 11, color: C.dim }}>preview not supported</span>
+          : <CountValue count={count && count.count} kind={count && count.kind} at={count && count.at} />}
+      </div>
+
+      {translation && (
+        <Disclosure summary="Translated query" count={trWarnings.length}>
+          {translation.query
+            ? <pre style={{ margin: 0, fontFamily: "'IBM Plex Mono',monospace", fontSize: 10.5, lineHeight: 1.6, color: C.txt, whiteSpace: 'pre-wrap', wordBreak: 'break-word', background: C.card2, border: `1px solid ${C.brd}`, borderRadius: 6, padding: 10 }}>{translation.query}</pre>
+            : <div style={{ fontSize: 11.5, color: C.dim }}>{translation.available === false ? 'This source is unavailable.' : 'No query produced.'}</div>}
+          {trWarnings.length > 0 && (
+            <ul style={{ margin: '8px 0 0', paddingLeft: 16, fontSize: 11, color: C.yel, lineHeight: 1.6 }}>
+              {trWarnings.map((w, i) => <li key={i}>{typeof w === 'string' ? w : (w.message || JSON.stringify(w))}</li>)}
+            </ul>
+          )}
+          {unsupported.length > 0 && (
+            <div style={{ fontSize: 10.5, color: C.muted, marginTop: 6 }}>Unsupported here: {unsupported.map((u) => (typeof u === 'string' ? u : u.field || '')).filter(Boolean).join(', ')}</div>
+          )}
+        </Disclosure>
+      )}
+
+      {usable && !readOnly && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 10.5, color: C.muted, fontWeight: 700 }}>Result cap
+            <input type="number" min={1} max={maxCap} value={cap || ''} disabled={!selected}
+              onChange={(e) => onCap(Math.max(1, Math.min(maxCap, parseInt(e.target.value, 10) || 0)))}
+              aria-label={`Maximum results to retrieve from ${p.label}`}
+              style={{ ...inp, width: 92, padding: '5px 8px', fontSize: 11.5, marginLeft: 6, display: 'inline-block', opacity: selected ? 1 : 0.5 }} />
+          </label>
+          <button type="button" onClick={() => onToggleOverride(!overrideOpen)} disabled={!selected}
+            style={{ ...btnS('ghost'), fontSize: 10.5, padding: '4px 10px', opacity: selected ? 1 : 0.5 }}
+            aria-expanded={overrideOpen}>
+            {overrideOpen ? 'Hide override' : 'Override query'}
+          </button>
+        </div>
+      )}
+
+      {usable && overrideOpen && !readOnly && (
+        <div>
+          <label style={{ ...lbl, marginBottom: 4 }}>Manual query override for {p.label}</label>
+          <textarea value={overrideValue} onChange={(e) => onOverride(e.target.value)}
+            placeholder="Leave blank to use the translated query above. A non-empty override replaces it for this source only."
+            style={{ ...inp, height: 70, resize: 'vertical', fontFamily: "'IBM Plex Mono',monospace", fontSize: 11 }} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ════════════ (3) RUN REVIEW + START ════════════ */
+function RunReview({ sourceIds, providers, counts, caps, totalPreview, anyUnknownPreview, runName, setRunName, queryReady, starting, startError, onStart, hasActiveRun }) {
+  const providerById = useMemo(() => Object.fromEntries((providers || []).map((p) => [p.id, p])), [providers]);
+  const ready = queryReady && sourceIds.length > 0 && !hasActiveRun;
+  return (
+    <Card title="Review &amp; run" icon="checkSquare" desc="Confirm what will run. Records land in this project's screening workspace.">
+      {!queryReady && <Note tone="warn">Save a search strategy first (Search Builder).</Note>}
+      {queryReady && sourceIds.length === 0 && <Note tone="warn">Select at least one available source above.</Note>}
+      {hasActiveRun && <div style={{ marginBottom: 12 }}><Note tone="info">A search is already running for this project. Wait for it to finish (or cancel it) before starting another.</Note></div>}
+
+      {queryReady && sourceIds.length > 0 && (
+        <>
+          <div style={{ marginBottom: 14 }}>
+            <label htmlFor="pecan-run-name" style={lbl}>Search name (optional)</label>
+            <input id="pecan-run-name" value={runName} onChange={(e) => setRunName(e.target.value)} maxLength={200}
+              placeholder="e.g. Primary search — June 2026" style={inp} />
+          </div>
+          <div style={{ overflowX: 'auto', marginBottom: 14 }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <caption className="sr-only" style={srOnly}>Sources that will run, with their estimated counts and caps.</caption>
+              <thead>
+                <tr>
+                  {['Source', 'Estimated', 'Cap'].map((h, i) => (
+                    <th key={h} scope="col" style={{ textAlign: i === 0 ? 'left' : 'right', padding: '7px 10px', color: C.muted, fontSize: 10, fontWeight: 700, letterSpacing: 0.6, textTransform: 'uppercase', borderBottom: `1px solid ${C.brd}` }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {sourceIds.map((id) => {
+                  const c = counts[id];
+                  return (
+                    <tr key={id}>
+                      <td style={{ padding: '7px 10px', color: C.txt, borderBottom: `1px solid ${C.brd}` }}>{(providerById[id] && providerById[id].label) || id}</td>
+                      <td style={{ padding: '7px 10px', textAlign: 'right', borderBottom: `1px solid ${C.brd}` }}><CountValue count={c && c.count} kind={c && c.kind} /></td>
+                      <td style={{ padding: '7px 10px', textAlign: 'right', color: C.txt2, fontFamily: "'IBM Plex Mono',monospace", borderBottom: `1px solid ${C.brd}` }}>{caps[id] ? Number(caps[id]).toLocaleString() : '—'}</td>
+                    </tr>
+                  );
+                })}
+                <tr>
+                  <td style={{ padding: '7px 10px', fontWeight: 700, color: C.txt }}>Total ({sourceIds.length} source{sourceIds.length === 1 ? '' : 's'})</td>
+                  <td style={{ padding: '7px 10px', textAlign: 'right', fontWeight: 700, color: C.txt, fontFamily: "'IBM Plex Mono',monospace" }}>
+                    {totalPreview ? totalPreview.toLocaleString() : '—'}{anyUnknownPreview ? '+' : ''}
+                  </td>
+                  <td />
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          {anyUnknownPreview && <div style={{ marginBottom: 12 }}><Note tone="info">Some sources could not estimate a count, so the total is a lower bound (shown with a “+”). The search still runs in full.</Note></div>}
+          <div style={{ fontSize: 11.5, color: C.muted, marginBottom: 14 }}>Destination: <strong style={{ color: C.txt2 }}>this project&apos;s screening workspace</strong>. Duplicates are removed automatically; ambiguous matches go to duplicate review.</div>
+          {startError && <div style={{ marginBottom: 12 }}><Note tone="error" role="alert">{startError}</Note></div>}
+          <Btn variant="primary" disabled={!ready} busy={starting} onClick={onStart} style={{ padding: '9px 22px', fontSize: 13 }}>
+            <Icon name="arrowRight" size={14} /> Start search
+          </Btn>
+        </>
+      )}
+    </Card>
+  );
+}
+
+/* ════════════ (4) LIVE PROGRESS ════════════ */
+function LiveProgress({ run, onCancel }) {
+  const counts = run.counts || {};
+  const perSource = counts.perSource || {};
+  const sources = run.sources || [];
+  // INDETERMINATE: we have no reliable "total to fetch", so we never fake a %.
+  const indeterminate = true;
+  return (
+    <Card
+      title={<span>Search in progress <StatusPill state={run.state} /></span>}
+      icon="activity"
+      desc={run.name}
+      right={onCancel && !['cancelling'].includes(run.stage) ? <Btn variant="danger" onClick={onCancel}>Cancel</Btn> : null}
+    >
+      <div aria-live="polite" style={{ marginBottom: 14 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div className="ml-indeterminate" style={{ flex: 1, height: 6, borderRadius: 99, overflow: 'hidden', background: C.brd, position: 'relative' }}>
+            <div style={{ position: 'absolute', top: 0, bottom: 0, width: '34%', background: C.acc, borderRadius: 99, animation: indeterminate ? 'ml-indet 1.4s ease-in-out infinite' : 'none' }} />
+          </div>
+          <span style={{ fontSize: 11, color: C.muted }}>Working…</span>
+        </div>
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>
+          The total number of records is not known until each database responds, so progress is shown as activity rather than a misleading percentage.
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 10, marginBottom: 14 }}>
+        <StatTile label="Retrieved" value={(counts.rawRetrieved || 0).toLocaleString()} />
+        <StatTile label="Normalized" value={(counts.normalized || 0).toLocaleString()} />
+        <StatTile label="Imported" value={(counts.imported || 0).toLocaleString()} tone="green" />
+        <StatTile label="Duplicates" value={((counts.exactDup || 0) + (counts.fuzzyDup || 0)).toLocaleString()} />
+        <StatTile label="Ambiguous" value={(counts.ambiguousDup || 0).toLocaleString()} tone="yellow" />
+        <StatTile label="Failed" value={(counts.failedRecords || 0).toLocaleString()} tone={counts.failedRecords ? 'red' : undefined} />
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {sources.map((s) => {
+          const ps = perSource[s.provider] || {};
+          return (
+            <div key={s.id || s.provider} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px', background: C.bg, border: `1px solid ${C.brd}`, borderRadius: 8, flexWrap: 'wrap' }}>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: C.txt, minWidth: 120 }}>{s.provider}</span>
+              <StatusPill state={s.state}>{s.stage && s.state !== 'completed' ? labelStage(s.stage) : runStateLabel(s.state)}</StatusPill>
+              <span style={{ fontSize: 11, color: C.muted, fontFamily: "'IBM Plex Mono',monospace" }}>
+                raw {(s.rawCount || ps.raw || 0).toLocaleString()} · imp {(s.importedCount || ps.imported || 0).toLocaleString()} · dup {((s.exactDupCount || 0) + (s.fuzzyDupCount || 0)).toLocaleString()}
+                {s.ambiguousDupCount ? ` · amb ${s.ambiguousDupCount}` : ''}
+                {s.retryCount ? ` · retry ${s.retryCount}` : ''}
+              </span>
+              {s.errorDetail && <span style={{ fontSize: 11, color: C.red }}>{s.errorDetail}</span>}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+function labelStage(stage) {
+  if (!stage) return '';
+  if (stage.startsWith('fetching')) return 'Fetching';
+  return ({ queued: 'Queued', running: 'Running', cancelling: 'Cancelling', skipped: 'Skipped' })[stage] || stage;
+}
+
+/* ════════════ (5) COMPLETION SUMMARY ════════════ */
+function CompletionSummary({ run, report, projectId, onRetry }) {
+  const counts = run.counts || {};
+  const perSource = counts.perSource || {};
+  const dupRemoved = (counts.exactDup || 0) + (counts.fuzzyDup || 0);
+  const retryable = (run.sources || []).some((s) => s.state === 'failed' || s.state === 'partial');
+  const exportBase = pecanSearchApi.reportExportUrl(projectId, run.id);
+  return (
+    <Card
+      title={<span>Search results <StatusPill state={run.state} /></span>}
+      icon={run.state === 'completed' ? 'circleCheck' : run.state === 'failed' ? 'alertOctagon' : 'alertTriangle'}
+      desc={run.name}
+      right={onRetry && retryable ? <Btn variant="ghost" onClick={onRetry}><Icon name="refresh" size={13} /> Retry failed sources</Btn> : null}
+    >
+      {run.state === 'partial' && <div style={{ marginBottom: 12 }}><Note tone="warn">Some sources succeeded and some did not. Every count below is exact for the sources that completed.</Note></div>}
+      {run.state === 'failed' && <div style={{ marginBottom: 12 }}><Note tone="error" role="alert">The search failed. {run.errorSummary || 'No records were imported.'} You can retry.</Note></div>}
+      {run.state === 'cancelled' && <div style={{ marginBottom: 12 }}><Note tone="info">This search was cancelled. Any records fetched before cancellation were kept.</Note></div>}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(135px,1fr))', gap: 10 }}>
+        <StatTile label="Records identified" value={(counts.rawRetrieved || 0).toLocaleString()} tone="accent" />
+        <StatTile label="Net imported" value={(counts.imported || 0).toLocaleString()} tone="green" hint="new to screening" />
+        <StatTile label="Duplicates removed" value={dupRemoved.toLocaleString()} />
+        <StatTile label="Already in project" value={(counts.existingMatched || 0).toLocaleString()} />
+        <StatTile label="Ambiguous (review)" value={(counts.ambiguousDup || 0).toLocaleString()} tone={counts.ambiguousDup ? 'yellow' : undefined} />
+        <StatTile label="Failed records" value={(counts.failedRecords || 0).toLocaleString()} tone={counts.failedRecords ? 'red' : undefined} />
+        <StatTile label="Sources OK" value={`${counts.sourcesCompleted || 0}`} tone="green" />
+        <StatTile label="Sources failed" value={`${(counts.sourcesFailed || 0) + (counts.sourcesPartial || 0)}`} tone={(counts.sourcesFailed || counts.sourcesPartial) ? 'red' : undefined} />
+      </div>
+
+      {Object.keys(perSource).length > 0 && (
+        <Disclosure summary="Per-source breakdown" defaultOpen>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+              <thead>
+                <tr>
+                  {['Source', 'Raw', 'Imported', 'Existing', 'Dup', 'Ambiguous', 'Failed', 'Status'].map((h, i) => (
+                    <th key={h} scope="col" style={{ textAlign: i === 0 || i === 7 ? 'left' : 'right', padding: '6px 9px', color: C.muted, fontSize: 10, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, borderBottom: `1px solid ${C.brd}` }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {Object.entries(perSource).map(([id, ps]) => (
+                  <tr key={id}>
+                    <td style={cellL}>{id}</td>
+                    <td style={cellR}>{(ps.raw || 0).toLocaleString()}</td>
+                    <td style={cellR}>{(ps.imported || 0).toLocaleString()}</td>
+                    <td style={cellR}>{(ps.existingMatched || 0).toLocaleString()}</td>
+                    <td style={cellR}>{((ps.exactDup || 0) + (ps.fuzzyDup || 0)).toLocaleString()}</td>
+                    <td style={cellR}>{(ps.ambiguousDup || 0).toLocaleString()}</td>
+                    <td style={cellR}>{(ps.failed || 0).toLocaleString()}</td>
+                    <td style={cellL}><StatusPill state={ps.state} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Disclosure>
+      )}
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 16, alignItems: 'center' }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: C.muted, marginRight: 4 }}>Report:</span>
+        <a href={exportBase} target="_blank" rel="noreferrer" style={{ ...btnS('ghost'), textDecoration: 'none', fontSize: 11.5 }}><Icon name="download" size={13} /> JSON</a>
+        <a href={pecanSearchApi.reportExportUrl(projectId, run.id, 'csv')} target="_blank" rel="noreferrer" style={{ ...btnS('ghost'), textDecoration: 'none', fontSize: 11.5 }}><Icon name="download" size={13} /> CSV</a>
+        <a href={pecanSearchApi.reportExportUrl(projectId, run.id, 'html')} target="_blank" rel="noreferrer" style={{ ...btnS('ghost'), textDecoration: 'none', fontSize: 11.5 }}><Icon name="externalLink" size={13} /> HTML</a>
+      </div>
+      {report && report.counts && (
+        <div style={{ fontSize: 11, color: C.dim, marginTop: 10 }}>
+          PRISMA identification: {report.counts.recordsIdentified} identified → {report.counts.duplicatesRemoved} duplicates removed → {report.counts.recordsToScreening} to screening.
+        </div>
+      )}
+      <div style={{ fontSize: 11, color: C.muted, marginTop: 12 }}>
+        Imported records are now in the <strong style={{ color: C.txt2 }}>Screening</strong> tab. Resolve any ambiguous duplicates below before you begin title/abstract screening.
+      </div>
+    </Card>
+  );
+}
+const cellL = { padding: '6px 9px', color: C.txt, borderBottom: `1px solid ${C.brd}` };
+const cellR = { padding: '6px 9px', textAlign: 'right', color: C.txt2, fontFamily: "'IBM Plex Mono',monospace", borderBottom: `1px solid ${C.brd}` };
+
+/* ════════════ (6) SEARCH HISTORY ════════════ */
+function SearchHistory({ history, total, state, page, take, setPage, onOpen, onRetry, activeRunId }) {
+  const pages = Math.max(1, Math.ceil((total || 0) / take));
+  return (
+    <Card title="Search history" icon="clock" desc="Every search you have run for this project. Open one to see its results, export its report, or safely retry it.">
+      {state === 'loading' && [0, 1].map((i) => <div key={i} style={{ marginBottom: 8 }}><Skeleton height={48} radius={8} /></div>)}
+      {state === 'error' && <Note tone="error" role="alert">Could not load the search history.</Note>}
+      {state === 'ready' && (!history || history.length === 0) && (
+        <EmptyState icon="clock" title="No searches yet">Your past searches will appear here once you run one.</EmptyState>
+      )}
+      {state === 'ready' && history && history.length > 0 && (
+        <>
+          <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+            {history.map((r) => {
+              const c = r.counts || {};
+              const isActive = r.id === activeRunId;
+              return (
+                <li key={r.id} style={{ border: `1px solid ${isActive ? themeAlpha(C.acc, '50') : C.brd}`, background: isActive ? themeAlpha(C.acc, '06') : C.bg, borderRadius: 10, padding: '10px 14px', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+                  <div style={{ flex: '1 1 240px', minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 13, fontWeight: 700, color: C.txt }}>{r.name || 'Untitled search'}</span>
+                      <StatusPill state={r.state} />
+                    </div>
+                    <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>
+                      {(r.sources || []).map((s) => s.provider).join(', ') || '—'}
+                      {r.initiatedByName ? ` · ${r.initiatedByName}` : ''}
+                      {r.createdAt ? ` · ${formatWhen(r.createdAt)}` : ''}
+                    </div>
+                    {r.canonicalText && <div style={{ fontSize: 10.5, color: C.dim, marginTop: 3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 460 }}>{r.canonicalText}</div>}
+                  </div>
+                  <div style={{ fontSize: 11, color: C.muted, fontFamily: "'IBM Plex Mono',monospace", textAlign: 'right' }}>
+                    <div>raw {(c.rawRetrieved || 0).toLocaleString()}</div>
+                    <div>imp {(c.imported || 0).toLocaleString()}</div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 6 }}>
+                    <Btn variant="ghost" style={{ fontSize: 11 }} onClick={() => onOpen(r.id)}>Open</Btn>
+                    {onRetry && (r.state === 'failed' || r.state === 'partial') && (
+                      <Btn variant="ghost" style={{ fontSize: 11 }} onClick={() => onRetry(r.id)}>Retry</Btn>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+          {pages > 1 && (
+            <nav aria-label="Search history pages" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 12, marginTop: 14 }}>
+              <Btn variant="ghost" style={{ fontSize: 11 }} disabled={page <= 0} onClick={() => setPage(page - 1)}><Icon name="chevronLeft" size={13} /> Prev</Btn>
+              <span style={{ fontSize: 11.5, color: C.muted }}>Page {page + 1} of {pages}</span>
+              <Btn variant="ghost" style={{ fontSize: 11 }} disabled={page >= pages - 1} onClick={() => setPage(page + 1)}>Next <Icon name="chevronRight" size={13} /></Btn>
+            </nav>
+          )}
+        </>
+      )}
+    </Card>
+  );
+}
+
+const srOnly = { position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: 0 };

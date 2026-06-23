@@ -3,7 +3,7 @@
  * v2.2 — inbox messages, user+projects panel, redesigned overview, full content editor
  */
 
-import { useState, useEffect, useCallback, useRef, Component, Fragment } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, Component, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { adminApi, fetchVersion } from './adminApiClient.js';
@@ -4774,6 +4774,7 @@ const FLAG_META = [
   { key: 'serverBackedWorkflowState', label: 'Server-Backed Workflow State', desc: 'Persist migrated workflow modules (Protocol, Search Builder) server-side with revision-based conflict detection. Off keeps the legacy whole-project autosave.' },
   { key: 'searchEngine',         label: 'Search Builder Engine', desc: 'Enable the new concept→multi-database Search Builder (MeSH lookup + live PubMed counts via the NLM proxy). Off keeps the legacy in-app search builder.' },
   { key: 'aiScreening',          label: 'AI Screening Engine',   desc: 'Enable the PecanRev Screening Intelligence Engine: deterministic TF-IDF + active-learning relevance scoring, ranking, explanations, and validation metrics inside the screening workbench. Assistive only — human decisions are never automated. Off by default until validated. Configure global policy in Screening → AI Policy.' },
+  { key: 'pecanSearch',          label: 'Pecan Search Engine',   desc: 'Enable the concept→multi-database literature search engine (PubMed, Europe PMC, ClinicalTrials.gov, Crossref, DOAJ, OpenAlex, Semantic Scholar) with query translation, count previews, deduplicated runs, and exportable reports. Off by default until provisioned. Configure providers, caps, concurrency, and queue health in Search Providers.' },
   { key: 'betaWaitlist',         label: 'Beta Waitlist Landing Page', desc: 'When ON, unauthenticated visitors to the homepage ( / ) see the Beta Waitlist sign-up page instead of the standard landing page. Signed-in users and the login/register pages are unaffected. The existing landing page is preserved and returns when this is OFF. Manage applicants in the Beta Waitlist tab. Preview at /beta-waitlist.' },
 ];
 
@@ -5014,6 +5015,326 @@ function AiScreeningSection() {
           );
         })}
         {!audit && <div style={{ padding: 18 }}><Spinner size={16} /></div>}
+      </SectionCard>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   SECTION: SEARCH PROVIDERS (Pecan Search Engine) — provider state, non-secret
+   policy (caps/concurrency/retry/timeouts/preview throttle/institutional mode),
+   queue + worker health, recent sanitized failures + safe requeue.
+
+   Backed by the admin-only endpoints in server/pecanSearch/adminController.js:
+     GET   /api/admin/search-providers            (state + policy + health)
+     PATCH /api/admin/search-providers            (validated policy write)
+     POST  /api/admin/search-providers/jobs/:id/requeue  (safe requeue)
+
+   API keys are NEVER read or written here — `configured` is a boolean only.
+   All numeric inputs are validated client-side and re-validated/bounded server-side.
+   ════════════════════════════════════════════════════════════════════════ */
+
+// Bounds mirror server sanitizeSettings() so the UI rejects out-of-range values
+// before the round-trip (the server still re-clamps — this is UX, not security).
+const SEARCH_POLICY_FIELDS = [
+  { key: 'defaultResultCap',  label: 'Default result cap',     desc: 'Per-source default cap when a user does not set one.',          min: 1,    max: 50000 },
+  { key: 'maxResultCap',      label: 'Max result cap',         desc: 'Hard per-source ceiling a user can never exceed.',              min: 1,    max: 50000 },
+  { key: 'concurrency',       label: 'Concurrency',            desc: 'Simultaneous provider fetches within one run.',                min: 1,    max: 8 },
+  { key: 'retryLimit',        label: 'Retry limit',            desc: 'Transient-error retries per provider request.',                min: 0,    max: 10 },
+  { key: 'requestTimeoutMs',  label: 'Request timeout (ms)',   desc: 'Per external request timeout.',                                min: 1000, max: 120000 },
+  { key: 'previewThrottleMs', label: 'Preview throttle (ms)',  desc: 'Minimum spacing between count-preview calls per provider/IP.', min: 0,    max: 60000 },
+  { key: 'pageDelayMs',       label: 'Page delay (ms)',        desc: 'Optional extra spacing between page fetches.',                  min: 0,    max: 10000 },
+];
+
+const QUEUE_TONES = {
+  queued:     C.acc,
+  processing: C.ylw,
+  completed:  C.grn,
+  failed:     C.red,
+  cancelled:  C.muted,
+  stale:      C.red,
+};
+
+function SearchProvidersSection() {
+  const [data, setData]       = useState(null);   // full GET payload
+  const [loadErr, setLoadErr] = useState(false);
+  const [policy, setPolicy]   = useState(null);   // editable settings block (engine + providers)
+  const [status, setStatus]   = useState('idle');
+  const [requeuing, setRequeuing] = useState({}); // jobId → bool
+
+  const load = useCallback(() => {
+    setLoadErr(false);
+    adminApi.searchProviders.getSettings()
+      .then(d => {
+        setData(d);
+        // Seed the editable block from the saved settings, falling back to engine
+        // defaults so every control is controlled (never reads `undefined`).
+        const s = d.settings && typeof d.settings === 'object' ? d.settings : {};
+        const def = d.defaults || {};
+        const providers = {};
+        (d.providers || []).forEach(p => {
+          const sp = (s.providers && s.providers[p.id]) || {};
+          providers[p.id] = {
+            enabled:    sp.enabled != null ? !!sp.enabled : !!p.enabled,
+            defaultCap: sp.defaultCap != null ? sp.defaultCap : (p.defaultCap ?? ''),
+            maxCap:     sp.maxCap != null ? sp.maxCap : (p.maxCap ?? ''),
+            timeoutMs:  sp.timeoutMs != null ? sp.timeoutMs : (p.timeoutMs ?? ''),
+          };
+        });
+        setPolicy({
+          defaultResultCap:  s.defaultResultCap  ?? def.defaultResultCap  ?? 2000,
+          maxResultCap:      s.maxResultCap      ?? def.maxResultCap      ?? 10000,
+          concurrency:       s.concurrency       ?? def.concurrency       ?? 3,
+          retryLimit:        s.retryLimit        ?? def.retryLimit        ?? 4,
+          requestTimeoutMs:  s.requestTimeoutMs  ?? def.requestTimeoutMs  ?? 20000,
+          previewThrottleMs: s.previewThrottleMs ?? def.previewThrottleMs ?? 1500,
+          pageDelayMs:       s.pageDelayMs       ?? def.pageDelayMs       ?? 0,
+          institutionalMode: s.institutionalMode ?? def.institutionalMode ?? false,
+          providers,
+        });
+      })
+      .catch(() => { setData(null); setLoadErr(true); });
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  // Per-field client validation against the server bounds (UX only).
+  const fieldErrors = useMemo(() => {
+    if (!policy) return {};
+    const errs = {};
+    SEARCH_POLICY_FIELDS.forEach(f => {
+      const v = Number(policy[f.key]);
+      if (!Number.isFinite(v) || v < f.min || v > f.max) errs[f.key] = `Must be ${f.min}–${f.max}`;
+    });
+    if (Number(policy.defaultResultCap) > Number(policy.maxResultCap)) {
+      errs.defaultResultCap = 'Cannot exceed the max result cap';
+    }
+    return errs;
+  }, [policy]);
+  const hasErrors = Object.keys(fieldErrors).length > 0;
+
+  async function save() {
+    if (hasErrors) return;
+    setStatus('saving');
+    // Normalise the editable block: drop empty per-provider override strings so the
+    // server falls back to engine defaults (matches its sanitizeSettings contract).
+    const providers = {};
+    Object.entries(policy.providers || {}).forEach(([id, p]) => {
+      const out = { enabled: !!p.enabled };
+      if (p.defaultCap !== '' && p.defaultCap != null) out.defaultCap = Number(p.defaultCap);
+      if (p.maxCap     !== '' && p.maxCap     != null) out.maxCap     = Number(p.maxCap);
+      if (p.timeoutMs  !== '' && p.timeoutMs  != null) out.timeoutMs  = Number(p.timeoutMs);
+      providers[id] = out;
+    });
+    const body = {
+      defaultResultCap:  Number(policy.defaultResultCap),
+      maxResultCap:      Number(policy.maxResultCap),
+      concurrency:       Number(policy.concurrency),
+      retryLimit:        Number(policy.retryLimit),
+      requestTimeoutMs:  Number(policy.requestTimeoutMs),
+      previewThrottleMs: Number(policy.previewThrottleMs),
+      pageDelayMs:       Number(policy.pageDelayMs),
+      institutionalMode: !!policy.institutionalMode,
+      providers,
+    };
+    try {
+      await adminApi.searchProviders.updateSettings(body);
+      setStatus('saved'); setTimeout(() => setStatus('idle'), 3000);
+      load(); // reflect the bounded values the server actually stored
+    } catch { setStatus('error'); setTimeout(() => setStatus('idle'), 3000); }
+  }
+
+  async function requeue(jobId) {
+    setRequeuing(r => ({ ...r, [jobId]: true }));
+    try { await adminApi.searchProviders.requeueJob(jobId); load(); }
+    catch { /* surfaced by the refreshed list staying failed */ }
+    finally { setRequeuing(r => ({ ...r, [jobId]: false })); }
+  }
+
+  if (loadErr) return <div style={{ padding: 24, fontSize: 13, color: C.red }}>Could not load search providers. Check that you have admin access and retry.</div>;
+  if (!data || !policy) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={20} /></div>;
+
+  const set = (k, v) => setPolicy(p => ({ ...p, [k]: v }));
+  const setNum = (k, raw) => setPolicy(p => ({ ...p, [k]: raw === '' ? '' : (Number.isFinite(parseInt(raw, 10)) ? parseInt(raw, 10) : '') }));
+  const setProv = (id, k, v) => setPolicy(p => ({ ...p, providers: { ...p.providers, [id]: { ...p.providers[id], [k]: v } } }));
+  const setProvNum = (id, k, raw) => setProv(id, k, raw === '' ? '' : (Number.isFinite(parseInt(raw, 10)) ? parseInt(raw, 10) : ''));
+
+  const inp = { background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 6, padding: '6px 9px', color: C.txt, fontSize: 13, width: 160 };
+  const inpErr = { ...inp, borderColor: C.red };
+  const provInp = { ...inp, width: 90 };
+
+  const Row = ({ label, desc, children }) => (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', borderBottom: `1px solid ${C.brd}`, gap: 20 }}>
+      <div><div style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>{label}</div>{desc && <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>{desc}</div>}</div>
+      {children}
+    </div>
+  );
+  const Sub = ({ children }) => (
+    <h3 style={{ fontSize: 12.5, fontWeight: 700, color: C.txt2, textTransform: 'uppercase', letterSpacing: '0.06em', margin: '24px 0 8px' }}>{children}</h3>
+  );
+
+  const q = data.queue || {};
+  const runs = data.runs || {};
+  const failedJobs = data.recentFailedJobs || [];
+  const failedSources = data.recentFailedSources || [];
+  const providers = data.providers || [];
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 14 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 700, color: C.txt, margin: 0, letterSpacing: '-0.02em' }}>Search Providers</h2>
+        <button onClick={load} style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '6px 12px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
+          <Icon name="refresh" size={12} /> Reload
+        </button>
+      </div>
+      <p style={{ fontSize: 12.5, color: C.muted, margin: '0 0 14px', lineHeight: 1.6, maxWidth: 780 }}>
+        Configure the Pecan Search Engine: per-provider availability, result caps, concurrency, retries, timeouts,
+        preview throttling, and institutional mode. API keys live in server environment only and are never shown or
+        edited here — <code>configured</code> reflects whether a key is present, never its value. Changes are
+        validated and bounded server-side, and recorded in the audit log.
+      </p>
+
+      {data.engine?.institutionalMode || policy.institutionalMode ? (
+        <AiPolicyBanner tone="warn">
+          <strong>Institutional mode</strong> is engaged: only providers explicitly enabled below will run. Providers
+          left disabled are skipped even when otherwise available.
+        </AiPolicyBanner>
+      ) : null}
+
+      {/* ── Providers ─────────────────────────────────────────────────────── */}
+      <Sub>Providers</Sub>
+      <SectionCard>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
+            <thead>
+              <tr>
+                {['Provider', 'Platform', 'State', 'Enabled', 'Default cap', 'Max cap', 'Timeout (ms)'].map(h => (
+                  <th key={h} style={{ padding: '10px 14px', textAlign: 'left', fontSize: 10, fontFamily: MONO, color: C.muted, letterSpacing: '0.1em', textTransform: 'uppercase', borderBottom: `1px solid ${C.brd}`, fontWeight: 600, whiteSpace: 'nowrap' }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {providers.map((p, i) => {
+                const ed = policy.providers[p.id] || {};
+                const last = i === providers.length - 1;
+                const td = { padding: '10px 14px', fontSize: 12, color: C.txt2, borderBottom: last ? 'none' : `1px solid ${C.brd}`, verticalAlign: 'middle' };
+                return (
+                  <tr key={p.id}>
+                    <td style={td}>
+                      <div style={{ color: C.txt, fontWeight: 600 }}>{p.label}</div>
+                      <div style={{ fontFamily: MONO, fontSize: 10, color: C.muted }}>{p.id}</div>
+                    </td>
+                    <td style={td}>{p.platform}</td>
+                    <td style={td}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+                        <Badge text={p.available ? 'available' : 'unavailable'} color={p.available ? C.grn : C.muted} />
+                        {p.requiresCredentials && <Badge text={p.configured ? 'key set' : 'no key'} color={p.configured ? C.grn : C.red} />}
+                        {p.implemented === false && <Badge text="not implemented" color={C.ylw} />}
+                      </div>
+                    </td>
+                    <td style={td}><Toggle checked={!!ed.enabled} onChange={v => setProv(p.id, 'enabled', v)} /></td>
+                    <td style={td}><input type="number" min={1} max={50000} value={ed.defaultCap ?? ''} placeholder={String(p.defaultCap ?? '')} onChange={e => setProvNum(p.id, 'defaultCap', e.target.value)} style={provInp} /></td>
+                    <td style={td}><input type="number" min={1} max={50000} value={ed.maxCap ?? ''} placeholder={String(p.maxCap ?? p.maxResults ?? '')} onChange={e => setProvNum(p.id, 'maxCap', e.target.value)} style={provInp} /></td>
+                    <td style={td}><input type="number" min={1000} max={120000} value={ed.timeoutMs ?? ''} placeholder={String(p.timeoutMs ?? '')} onChange={e => setProvNum(p.id, 'timeoutMs', e.target.value)} style={provInp} /></td>
+                  </tr>
+                );
+              })}
+              {providers.length === 0 && (
+                <tr><td colSpan={7} style={{ padding: 18, fontSize: 12.5, color: C.muted, textAlign: 'center' }}>No providers registered.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div style={{ padding: '12px 20px', fontSize: 11.5, color: C.muted, lineHeight: 1.6, borderTop: `1px solid ${C.brd}` }}>
+          Leave a per-provider cap or timeout blank to inherit the engine defaults below. Per-provider caps are bounded
+          by the engine max result cap; <code>configured</code> is a key-present boolean only — keys are never exposed.
+        </div>
+      </SectionCard>
+
+      {/* ── Engine policy (caps, concurrency, retry, timeouts, throttling) ──── */}
+      <Sub>Engine policy</Sub>
+      <SectionCard>
+        {SEARCH_POLICY_FIELDS.map(f => (
+          <Row key={f.key} label={f.label} desc={f.desc}>
+            <div style={{ textAlign: 'right' }}>
+              <input
+                type="number" min={f.min} max={f.max} value={policy[f.key] ?? ''}
+                onChange={e => setNum(f.key, e.target.value)}
+                style={fieldErrors[f.key] ? inpErr : inp}
+              />
+              {fieldErrors[f.key] && <div style={{ fontSize: 10.5, color: C.red, marginTop: 4 }}>{fieldErrors[f.key]}</div>}
+            </div>
+          </Row>
+        ))}
+        <Row label="Institutional mode" desc="When on, only explicitly-enabled providers run (a provider is off unless enabled above).">
+          <Toggle checked={!!policy.institutionalMode} onChange={v => set('institutionalMode', v)} />
+        </Row>
+      </SectionCard>
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, marginTop: 4 }}>
+        {hasErrors && <span style={{ fontSize: 12, color: C.red }}>Fix the highlighted fields before saving.</span>}
+        {status === 'saved' && !hasErrors && <span style={{ fontSize: 12, color: C.grn, display: 'inline-flex', alignItems: 'center', gap: 5 }}><Icon name="check" size={13} /> Settings saved</span>}
+        <SaveButton onClick={save} status={status} disabled={hasErrors} />
+      </div>
+
+      {/* ── Queue + worker health ─────────────────────────────────────────── */}
+      <Sub>Queue &amp; worker health</Sub>
+      <SectionCard>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, padding: '16px 18px' }}>
+          {['queued', 'processing', 'completed', 'failed', 'cancelled', 'stale'].map(k => (
+            <Chip key={k} label={k} value={Number(q[k] || 0)} color={QUEUE_TONES[k] || C.acc} />
+          ))}
+        </div>
+        {Number(q.stale || 0) > 0 && (
+          <div style={{ padding: '0 20px 14px', fontSize: 11.5, color: C.red, lineHeight: 1.6 }}>
+            {q.stale} processing job{Number(q.stale) === 1 ? '' : 's'} have a stale heartbeat (&gt;10 min) — they can be requeued below.
+          </div>
+        )}
+      </SectionCard>
+
+      {/* ── Run stats ─────────────────────────────────────────────────────── */}
+      <Sub>Run stats</Sub>
+      <SectionCard>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, padding: '16px 18px' }}>
+          <Chip label="total"     value={Number(runs.total || 0)}     color={C.acc} />
+          <Chip label="completed" value={Number(runs.completed || 0)} color={C.grn} />
+          <Chip label="partial"   value={Number(runs.partial || 0)}   color={C.ylw} />
+          <Chip label="failed"    value={Number(runs.failed || 0)}    color={C.red} />
+        </div>
+      </SectionCard>
+
+      {/* ── Recent failed jobs (sanitized) + requeue ──────────────────────── */}
+      <Sub>Recent failed jobs</Sub>
+      <SectionCard>
+        {failedJobs.length === 0 && <div style={{ padding: 18, fontSize: 12.5, color: C.muted }}>No failed jobs.</div>}
+        {failedJobs.map((j, i) => (
+          <div key={j.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 18px', borderBottom: i < failedJobs.length - 1 ? `1px solid ${C.brd}` : 'none', fontSize: 12 }}>
+            <span style={{ fontFamily: MONO, fontSize: 10, color: C.muted }} title={`run ${j.runId}`}>{String(j.runId || j.id).slice(0, 8)}</span>
+            <span style={{ color: C.red, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={j.error || ''}>{j.error || 'failed'}</span>
+            {j.attempts != null && <span style={{ color: C.muted }}>· {j.attempts} attempt{Number(j.attempts) === 1 ? '' : 's'}</span>}
+            <span style={{ color: C.muted, fontSize: 11 }}>{fmtAgo(j.updatedAt)}</span>
+            <button
+              onClick={() => requeue(j.id)} disabled={!!requeuing[j.id]}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '5px 12px', background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '40')}`, borderRadius: 6, color: C.acc, fontSize: 11.5, fontWeight: 600, cursor: requeuing[j.id] ? 'not-allowed' : 'pointer', fontFamily: FONT, opacity: requeuing[j.id] ? 0.6 : 1 }}
+            >
+              {requeuing[j.id] ? <Spinner size={11} /> : <Icon name="refresh" size={12} />} Requeue
+            </button>
+          </div>
+        ))}
+      </SectionCard>
+
+      {/* ── Recent failed sources (per provider) ──────────────────────────── */}
+      <Sub>Recent failed sources</Sub>
+      <SectionCard>
+        {failedSources.length === 0 && <div style={{ padding: 18, fontSize: 12.5, color: C.muted }}>No failed sources.</div>}
+        {failedSources.map((sfail, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '11px 18px', borderBottom: i < failedSources.length - 1 ? `1px solid ${C.brd}` : 'none', fontSize: 12 }}>
+            <span style={{ color: C.txt, fontWeight: 600, width: 130 }}>{sfail.provider}</span>
+            <span style={{ fontFamily: MONO, fontSize: 11, color: C.ylw, width: 130 }}>{sfail.errorClass || '—'}</span>
+            <span style={{ color: C.txt2, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={sfail.errorDetail || ''}>{sfail.errorDetail || '—'}</span>
+            <span style={{ color: C.muted, fontSize: 11 }}>{fmtAgo(sfail.updatedAt)}</span>
+          </div>
+        ))}
       </SectionCard>
     </div>
   );
@@ -7471,6 +7792,7 @@ const NAV_SECTIONS = [
   { id: 'projects',   icon: 'folders',   label: 'Projects'      },
   { id: 'sift',       icon: 'hexagon',   label: 'Screening'     },
   { id: 'rob',        icon: 'scale',     label: 'Risk of Bias'  },
+  { id: 'searchProviders', icon: 'search', label: 'Search Providers' },
   { id: 'waitlist',   icon: 'flask',     label: 'Beta Waitlist' },
   { id: 'content',    icon: 'fileText',  label: 'Content'       },
   { id: 'settings',   icon: 'settings',  label: 'Settings'      },
@@ -7544,6 +7866,7 @@ export default function AdminConsole() {
     projects:   <ProjectsSection />,
     sift:       <SiftAdminSection />,
     rob:        <RobAdminSection />,
+    searchProviders: <SearchProvidersSection />,
     waitlist:   <WaitlistSection />,
     content:    <ContentSection />,
     settings:   <SettingsSection />,

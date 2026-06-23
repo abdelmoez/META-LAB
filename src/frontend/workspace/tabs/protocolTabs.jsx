@@ -18,6 +18,7 @@ import { AI_FEATURES_ENABLED, callClaude, testClaudeConnection, parseSections, p
 import { ProtocolModulePanel, TIMEFRAME_OPTIONS, STUDY_DESIGNS } from "../../../features/protocol/index.js";
 import { workflowStateFlagEnabled } from "../../../services/workflowState/api.js";
 import { SearchBuilderTab, searchBuilderApi, loadSearch as sbLoad, saveSearch as sbSave, searchEngineFlagEnabled } from "../../../features/searchBuilder/index.js";
+import { PecanSearchTab, pecanSearchFlagEnabled } from "../../../features/pecanSearch/index.js";
 
 /* fmtDate — verbatim copy of the monolith module-local helper (the monolith
    keeps its own copy for its other consumers). */
@@ -258,6 +259,29 @@ function SearchDispatcher({project,activeId,updNested,upd}){
   if(flag===null) return <div style={{padding:40,textAlign:"center",color:C.muted,fontSize:13}}>Loading Search…</div>;
   if(!flag) return <SearchTab project={project} updNested={updNested} upd={upd}/>;
   return <SearchBuilderTab projectId={activeId} pico={project.pico} api={searchBuilderApi} loadSearch={sbLoad} saveSearch={sbSave}/>;
+}
+
+/* P1 — Search & Discovery dispatcher. When the `pecanSearch` flag is ON, the tab
+   IS the multi-database Pecan Search Engine workspace (run/dedup/import/report).
+   When OFF (default), the tab is INERT: it does NO API calls and shows a quiet
+   "feature disabled" note (mirrors SearchDispatcher's flag-gating, but the deep
+   tool has no legacy fallback — it simply explains it is not enabled). */
+function DiscoveryDispatcher({project,activeId,readOnly}){
+  const[flag,setFlag]=useState(null); // null=checking
+  useEffect(()=>{let dead=false;
+    (async()=>{ let v=false; try{ v=await pecanSearchFlagEnabled(); }catch{ v=false; } if(!dead) setFlag(!!v); })();
+    return()=>{dead=true;};
+  },[]);
+  if(flag===null) return <div style={{padding:40,textAlign:"center",color:C.muted,fontSize:13}}>Loading Search &amp; Discovery…</div>;
+  if(!flag) return (
+    <div style={{maxWidth:760,margin:"0 auto",padding:"48px 24px",textAlign:"center",color:C.muted}}>
+      <SectionHeader icon="globe" title="Search & Discovery" desc="Run your saved search strategy across multiple bibliographic databases, deduplicate, and import directly into screening."/>
+      <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:"18px 20px",fontSize:13,lineHeight:1.7,color:C.txt2}}>
+        This feature is not enabled yet. An administrator can switch on the <strong style={{color:C.txt}}>Search &amp; Discovery</strong> engine in the Ops console. Until then, build your strategy in the <strong style={{color:C.txt}}>Search Builder</strong> tab.
+      </div>
+    </div>
+  );
+  return <PecanSearchTab projectId={activeId} pico={project.pico} readOnly={readOnly}/>;
 }
 
 /* ════════════ TAB: SEARCH ════════════ */
@@ -1592,4 +1616,4 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
   </div>);
 }
 
-export { PICOTab, PICODispatcher, SearchDispatcher, SearchTab, MeSHTab, PROSPEROTab };
+export { PICOTab, PICODispatcher, SearchDispatcher, DiscoveryDispatcher, SearchTab, MeSHTab, PROSPEROTab };

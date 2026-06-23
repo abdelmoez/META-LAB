@@ -154,6 +154,25 @@ export const adminApi = {
     getRuns:      (p)        => req(`${BASE}/ai-screening/runs?${new URLSearchParams(p || {})}`),
   },
 
+  // ── Pecan Search Engine providers (admin only) ───────────────────────────────
+  // getSettings() → { engine, defaults, settings (editable non-secret policy block),
+  //   providers:[{ id, label, platform, enabled, requiresCredentials, configured
+  //   (boolean only — NEVER a key), available, supportsCountPreview, maxResults,
+  //   defaultCap, maxCap, supportedFields, implemented }], queue:{ queued,
+  //   processing, completed, failed, cancelled, stale }, runs:{ total, completed,
+  //   partial, failed }, recentFailedJobs:[{ id, runId, error, updatedAt, attempts }],
+  //   recentFailedSources:[{ provider, errorClass, errorDetail, updatedAt }] }.
+  // updateSettings(body) PATCHes the policy block (caps/concurrency/retry/timeouts/
+  //   preview throttle/institutional mode + per-provider enable/defaultCap/maxCap/
+  //   timeoutMs) → { ok, settings }. Server validates + bounds everything; secrets
+  //   are NEVER accepted or returned here.
+  // requeueJob(jobId) POSTs a safe requeue of a failed or stuck job → { ok }.
+  searchProviders: {
+    getSettings:    ()         => req(`${BASE}/search-providers`),
+    updateSettings: (body)     => req(`${BASE}/search-providers`, { method: 'PATCH', ...json(body) }),
+    requeueJob:     (jobId)    => req(`${BASE}/search-providers/jobs/${jobId}/requeue`, { method: 'POST' }),
+  },
+
   // ── Onboarding (prompt32 Task 7, admin only) ─────────────────────────────────
   // Behaviour settings: getSettings → { enabled, introTitle, introBody };
   // saveSettings(body) PUTs the same shape. Questions manager:

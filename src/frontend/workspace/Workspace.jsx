@@ -88,7 +88,7 @@ import { PlanProtocolDispatcher } from "../../features/planProtocol/index.js";
 import { AuditPanel, ProjectTitle, ProjectHeaderBar, ScreeningWorkspaceFrame, EmbeddedScreening, OverviewTab, ControlTab } from "./tabs/overviewTabs.jsx";
 
 /* ════════════ PROTOCOL / SEARCH / MeSH / PROSPERO TABS (extracted prompt46 Phase 6c — verbatim) ════════════ */
-import { PICOTab, PICODispatcher, SearchDispatcher, SearchTab, MeSHTab } from "./tabs/protocolTabs.jsx";
+import { PICOTab, PICODispatcher, SearchDispatcher, DiscoveryDispatcher, SearchTab, MeSHTab } from "./tabs/protocolTabs.jsx";
 
 /* ════════════ DATA-EXTRACTION TAB + STUDY EDITORS (extracted prompt46 Phase 6e — verbatim) ════════════ */
 import { ESCalcInline, ConversionPanel, AddStudyModal, StudyCard, ExtractionTab } from "./tabs/extractionTabs.jsx";
@@ -1545,6 +1545,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           {tab==="pico"&&<PICODispatcher project={project} activeId={activeId} updNested={updNested} upd={upd} lockCtx={{pid:spId,myUserId:authUser?.id,locks:presenceLocks}}/>}
           {tab==="prospero"&&<PlanProtocolDispatcher project={project} activeId={activeId} upd={upd}/>}
           {tab==="search"&&<SearchDispatcher project={project} activeId={activeId} updNested={updNested} upd={upd}/>}
+          {tab==="discovery"&&<DiscoveryDispatcher project={project} activeId={activeId} readOnly={projectPerms(project).readOnly}/>}
           {tab==="prisma"&&<PRISMATab project={project} updNested={updNested} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
           {tab==="extraction"&&<ExtractionTab project={project} updateProject={updateProject} activeId={activeId}/>}
           {tab==="rob"&&<RoBTab project={project} updateProject={updateProject} activeId={activeId} setTab={setTab} onWorkspaceChange={setRobInWorkspace}/>}

@@ -205,20 +205,24 @@ export const TABS=[
   {id:"pico",       icon:"target",      label:"PICO & Question",      phase:"Plan",    num:1},
   {id:"prospero",   icon:"clipboard",   label:"Protocol",             phase:"Plan",    num:2},
   {id:"search",     icon:"search",      label:"Search Builder",       phase:"Search",  num:3},
+  // P1 — Search & Discovery: run the saved strategy across multiple databases,
+  // deduplicate, and hand new records to screening (flag `pecanSearch`, default
+  // OFF; the dispatcher renders a disabled-note when the flag is off).
+  {id:"discovery",  icon:"globe",       label:"Search & Discovery",   phase:"Search",  num:4},
   // prompt18 — Screening is now ONE in-project stage that embeds the full
   // META·SIFT engine (import → duplicates → title/abstract → conflicts → full
   // text). The old "Screening & PRISMA" tab is demoted to the PRISMA flow only.
-  {id:"screening",  icon:"filter",      label:"Screening",            phase:"Screen",  num:4},
-  {id:"prisma",     icon:"flow",        label:"PRISMA Flow",          phase:"Screen",  num:5},
-  {id:"extraction", icon:"table",       label:"Data Extraction",      phase:"Extract", num:6},
-  {id:"rob",        icon:"scale",       label:"Risk of Bias",         phase:"Extract", num:7},
-  {id:"analysis",   icon:"sigma",       label:"Meta-Analysis",        phase:"Analyze", num:8},
-  {id:"forest",     icon:"forest",      label:"Forest Plot",          phase:"Analyze", num:9},
-  {id:"sensitivity",icon:"activity",    label:"Sensitivity & Bias",   phase:"Analyze", num:10},
-  {id:"subgroup",   icon:"layers",      label:"Subgroup Analysis",    phase:"Analyze", num:11},
-  {id:"grade",      icon:"award",       label:"GRADE Certainty",      phase:"Report",  num:12},
-  {id:"report",     icon:"checkSquare", label:"PRISMA Checklist",     phase:"Report",  num:13},
-  {id:"manuscript", icon:"pencil",      label:"Manuscript Draft",     phase:"Report",  num:14},
+  {id:"screening",  icon:"filter",      label:"Screening",            phase:"Screen",  num:5},
+  {id:"prisma",     icon:"flow",        label:"PRISMA Flow",          phase:"Screen",  num:6},
+  {id:"extraction", icon:"table",       label:"Data Extraction",      phase:"Extract", num:7},
+  {id:"rob",        icon:"scale",       label:"Risk of Bias",         phase:"Extract", num:8},
+  {id:"analysis",   icon:"sigma",       label:"Meta-Analysis",        phase:"Analyze", num:9},
+  {id:"forest",     icon:"forest",      label:"Forest Plot",          phase:"Analyze", num:10},
+  {id:"sensitivity",icon:"activity",    label:"Sensitivity & Bias",   phase:"Analyze", num:11},
+  {id:"subgroup",   icon:"layers",      label:"Subgroup Analysis",    phase:"Analyze", num:12},
+  {id:"grade",      icon:"award",       label:"GRADE Certainty",      phase:"Report",  num:13},
+  {id:"report",     icon:"checkSquare", label:"PRISMA Checklist",     phase:"Report",  num:14},
+  {id:"manuscript", icon:"pencil",      label:"Manuscript Draft",     phase:"Report",  num:15},
   // phase:null ⇒ reference page, NOT a workflow step — excluded from the
   // workflow map, progress denominator and "Next step" walker (all filter on t.phase).
   {id:"methods",    icon:"bookOpen",    label:"Methods & Equations",  phase:null,  group:"reference"},

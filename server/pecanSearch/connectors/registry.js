@@ -12,14 +12,26 @@
 import { loadPecanConfig, configSecrets, PROVIDER_IDS } from '../config.js';
 import { createHttpClient } from '../httpClient.js';
 import { createPubmedConnector } from './pubmed.js';
+import { createEuropePmcConnector } from './europepmc.js';
+import { createClinicalTrialsConnector } from './clinicaltrials.js';
+import { createCrossrefConnector } from './crossref.js';
+import { createDoajConnector } from './doaj.js';
+import { createOpenAlexConnector } from './openalex.js';
+import { createSemanticScholarConnector } from './semanticscholar.js';
 
 /**
- * Factory map: providerId → (providerConfig, deps) => Connector.
- * Additional providers (europepmc, clinicaltrials, crossref, doaj, openalex,
- * semanticscholar) register here as they are implemented against the contract.
+ * Factory map: providerId → (providerConfig, deps) => Connector. All seven P1
+ * providers are implemented against the shared contract (connectors/CONTRACT.md);
+ * each was built + tested independently and verified against its live API docs.
  */
 export const CONNECTOR_FACTORIES = {
   pubmed: createPubmedConnector,
+  europepmc: createEuropePmcConnector,
+  clinicaltrials: createClinicalTrialsConnector,
+  crossref: createCrossrefConnector,
+  doaj: createDoajConnector,
+  openalex: createOpenAlexConnector,
+  semanticscholar: createSemanticScholarConnector,
 };
 
 /**
