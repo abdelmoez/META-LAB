@@ -103,6 +103,11 @@ import {
   adminRemoveApplicant,
   adminExportApplicants,
 } from '../controllers/waitlistAdminController.js';
+import {
+  getSearchProviders,
+  updateSearchProviders,
+  requeueJob as requeueSearchJob,
+} from '../pecanSearch/adminController.js';
 
 const router = Router();
 
@@ -198,6 +203,11 @@ router.put('/landing-content', requireAdmin, updateLandingContent);
 
 router.get('/feature-flags', requireAdmin, getFeatureFlags);
 router.put('/feature-flags', requireAdmin, updateFeatureFlags);
+
+// ── Pecan Search Engine (P1) provider management + queue/worker health ─────────
+router.get('/search-providers', requireAdmin, getSearchProviders);
+router.patch('/search-providers', requireAdmin, updateSearchProviders);
+router.post('/search-providers/jobs/:jobId/requeue', requireAdmin, requeueSearchJob);
 
 router.get('/audit-log', requireAdmin, getAuditLog);
 router.get('/security-events', requireAdmin, getSecurityEvents);

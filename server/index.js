@@ -37,6 +37,7 @@ import onboardingRouter   from './routes/onboarding.js';
 import institutionsRouter from './routes/institutions.js';
 import workflowStateRouter from './routes/workflowState.js';
 import searchEngineRouter  from './routes/searchEngine.js';
+import pecanSearchRouter    from './routes/pecanSearch.js';
 import waitlistRouter       from './routes/waitlist.js';
 
 import { prisma } from './db/client.js';
@@ -47,6 +48,7 @@ import { seedOnboardingQuestions } from './controllers/onboardingController.js';
 import { backfillUserNumbers } from './services/userNumber.js';
 import { backfillProjectActivity } from './store.js';
 import { startImportWorker } from './services/screeningImportWorker.js';
+import { startPecanSearchWorker } from './pecanSearch/pecanSearchWorker.js';
 import { seedAdmins } from './auth/seedAdmins.js';
 import { getVersion } from './version.js';
 import { resolveCorsAllowlist, corsOriginDelegate } from './config/cors.js';
@@ -134,6 +136,18 @@ const institutionLimiter = rateLimit({
 const searchEngineLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: process.env.NODE_ENV === 'production' ? 600 : 2000,
+  message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ── Rate limiter for the Pecan Search Engine (P1) — translate/preview-count fire
+// on debounced typing and proxy external providers with server-side keys; run
+// start/cancel/retry mutate durable jobs. Cap per IP (a bit tighter than the
+// search-builder budget since previews fan out across multiple providers). ──────
+const pecanSearchLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 400 : 2000,
   message: { error: 'Too many requests, please try again later' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -280,6 +294,12 @@ app.use('/api/workspaces', requireAuth, workflowStateRouter);
 // load/save reuse the per-module workflow-state infra (moduleKey 'search').
 app.use('/api/search-builder', requireAuth, searchEngineLimiter, searchEngineRouter);
 
+// ── Pecan Search Engine (P1) — automated literature search, auto-import, dedup,
+// provenance, PRISMA-S. requireAuth + a dedicated limiter at the mount; each
+// handler gates on the `pecanSearch` flag (default OFF → 404) and the caller's
+// META·LAB project access. External provider calls + API keys stay server-side.
+app.use('/api/pecan-search', requireAuth, pecanSearchLimiter, pecanSearchRouter);
+
 // ── SPA serving with server-injected theme (prompt37 follow-up) ────────────────
 // When a production build exists (or SERVE_SPA=true), serve dist/ assets and the
 // index.html with the live brand palette injected pre-paint, so the admin's
@@ -333,6 +353,9 @@ const server = app.listen(PORT, () => {
   // prompt50 WS2 — start the durable screening-import worker. Re-queues any job
   // a crash left mid-flight, then drains the queue off the request thread.
   startImportWorker().catch(err => console.error('[import-worker] start failed:', err.message));
+  // p1.md — start the durable Pecan Search Engine worker. Re-queues any search
+  // job a crash left mid-flight (resumes from each source's cursor), then drains.
+  startPecanSearchWorker().catch(err => console.error('[pecan-search-worker] start failed:', err.message));
 
   // prompt48 — fail-safe waitlist config check. If the betaWaitlist flag is ON but
   // the dedicated DB is not configured, log a CLEAR, REDACTED warning for admins.

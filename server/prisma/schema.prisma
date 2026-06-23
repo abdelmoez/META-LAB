@@ -12,7 +12,7 @@ datasource db {
 }
 
 model User {
-  id          String    @id @default(uuid())
+  id                            String                   @id @default(uuid())
   // prompt49 item 8 / Postgres-readiness — immutable, sequential, admin-VISIBLE
   // numeric user id (distinct from the internal uuid `id`). Allocated atomically
   // from the "userNumber" AppSequence counter (NEVER MAX(id)+1) so it is
@@ -25,94 +25,95 @@ model User {
   // same reasoning as inviteTokenHash / PasswordResetToken.tokenHash). Uniqueness
   // is guaranteed by construction: the AppSequence allocator hands out each value
   // exactly once inside a transaction.
-  userNumber  Int?
-  email       String    @unique
-  name        String?
-  password    String    // bcrypt hash — never stored or returned as plain text
-  role        String    @default("user")   // "user" | "admin"
-  suspended   Boolean   @default(false)
+  userNumber                    Int?
+  email                         String                   @unique
+  name                          String?
+  password                      String // bcrypt hash — never stored or returned as plain text
+  role                          String                   @default("user") // "user" | "admin"
+  suspended                     Boolean                  @default(false)
   // prompt49 — session revocation. Every issued JWT carries the user's sessionEpoch
   // at sign time; requireAuth rejects a token whose epoch is behind the DB value.
   // Incremented on SUSPEND and on PASSWORD CHANGE → all existing sessions across
   // devices are invalidated immediately (and unsuspend does NOT restore them: the
   // epoch stays bumped, so old tokens never become valid again). Additive default 0.
-  sessionEpoch Int      @default(0)
-  suspendedAt  DateTime? // when the account was last suspended (audit/forensics)
-  passwordChangedAt DateTime? // when the password last changed (session-revocation forensics)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  lastActive  DateTime?
-  themePreference String? // "night" | "day" — UI theme, synced from the account menu toggle
+  sessionEpoch                  Int                      @default(0)
+  suspendedAt                   DateTime? // when the account was last suspended (audit/forensics)
+  passwordChangedAt             DateTime? // when the password last changed (session-revocation forensics)
+  createdAt                     DateTime                 @default(now())
+  updatedAt                     DateTime                 @updatedAt
+  lastActive                    DateTime?
+  themePreference               String? // "night" | "day" — UI theme, synced from the account menu toggle
   // prompt23 Task 2 (follow-up) — per-user dashboard view preferences as a small
   // JSON blob: { sort, filter, view, showArchived }. Nullable → `prisma db push`
   // stays additive-safe. Mirrors themePreference; cross-device, server-backed.
-  dashboardPreferences String?
+  dashboardPreferences          String?
   // prompt25 Task 7 — per-user Screening keyboard-shortcut preferences as a small
   // JSON blob: { enabled, keys: { next, previous, include, exclude, maybe, undo } }.
   // Nullable → `prisma db push` stays additive-safe. Mirrors dashboardPreferences;
   // cross-device, server-backed.
-  screeningShortcuts String?
+  screeningShortcuts            String?
   // prompt39 Task 5 — per-user left workflow-menu mode: "pinned" (stay open, never
   // auto-collapse on workflow navigation) | "auto" (auto-collapse on workflow
   // steps). null ⇒ "auto" (current default). Nullable → `prisma db push` stays
   // additive-safe. Mirrors themePreference; cross-device, server-backed.
-  workflowMenuMode String?
+  workflowMenuMode              String?
   // design.md — parallel design-mode preference: "legacy" (default UI) | "stitch"
   // (the new Vivid-Enterprise research-OS UI). ADMIN-ONLY: the server refuses to
   // persist "stitch" for a non-admin (profileController). null ⇒ "legacy".
   // Nullable → `prisma db push` stays additive-safe. Cross-device, server-backed.
-  uiDesignMode String?
+  uiDesignMode                  String?
   // prompt19 — aggregate ops analytics only. COUNTRY-LEVEL ONLY; no city/coords.
   // Captured best-effort at registration from a proxy country header (e.g.
   // CF-IPCountry) or an offline lookup; raw IP is never stored (only an optional
   // salted hash). All nullable → `prisma db push` stays additive-safe.
-  registrationCountryCode     String?  // ISO-3166 alpha-2 (e.g. "US"), or null/"" when unknown
-  registrationCountryName     String?  // human-readable country name, or null when unknown
-  registrationIpCountrySource String?  // "header" | "geoip" | "local" | "none"
-  registrationIpHash          String?  // optional salted SHA-256 of the IP — NEVER the raw IP
+  registrationCountryCode       String? // ISO-3166 alpha-2 (e.g. "US"), or null/"" when unknown
+  registrationCountryName       String? // human-readable country name, or null when unknown
+  registrationIpCountrySource   String? // "header" | "geoip" | "local" | "none"
+  registrationIpHash            String? // optional salted SHA-256 of the IP — NEVER the raw IP
   registrationCountryDetectedAt DateTime? // prompt32 — when country was resolved at registration
   // prompt26 — email verification (OFF by default via appSettings.requireEmailVerification).
   // Mirrors the PasswordResetToken ceremony but inline on User: only the SHA-256
   // HASH of the verify token is stored (plaintext lives only in the email link),
   // single-use (hash nulled on verify), short-lived (expiresAt). All nullable →
   // `prisma db push` stays additive-safe. emailVerifiedAt=null ⇒ unverified.
-  emailVerifiedAt            DateTime?
-  emailVerificationTokenHash String?  // SHA-256 hex; nulled when consumed
-  emailVerificationExpiresAt DateTime?
-  termsAcceptedAt           DateTime? // prompt26 — when the user agreed to Terms & Privacy
+  emailVerifiedAt               DateTime?
+  emailVerificationTokenHash    String? // SHA-256 hex; nulled when consumed
+  emailVerificationExpiresAt    DateTime?
+  termsAcceptedAt               DateTime? // prompt26 — when the user agreed to Terms & Privacy
   // prompt26 — optional onboarding profile (skippable; never blocks app access).
   // All nullable/additive. institutionOriginal preserves the EXACT user text;
   // institutionNormalized is the matching key (see research-engine institutionMatch).
-  primaryRole           String?       // Student | Researcher | Faculty/PI | …
-  researchField         String?       // Health sciences | Psychology | …
-  mainUseCase           String?       // Systematic review | Meta-analysis | …
-  institutionOriginal   String?       // exact text the user typed
-  institutionNormalized String?       // normalized matching key
+  primaryRole                   String? // Student | Researcher | Faculty/PI | …
+  researchField                 String? // Health sciences | Psychology | …
+  mainUseCase                   String? // Systematic review | Meta-analysis | …
+  institutionOriginal           String? // exact text the user typed
+  institutionNormalized         String? // normalized matching key
   // prompt35 — canonical institution linkage (ROR registry or a matched local
   // canonical). ADDITIVE + nullable so `prisma db push` stays safe; the typed text
   // above is always preserved. institutionRorId is the ROR id URL when a canonical
   // ROR record was selected; institutionNeedsReview flags an uncertain custom match
   // for Ops (never silently merged).
-  institutionRorId           String?  // e.g. https://ror.org/03vek6s52 (null = custom/local)
-  institutionCanonicalName   String?  // canonical display name (ROR or matched local)
-  institutionCity            String?
-  institutionCountryName     String?  // canonical institution country (distinct from user-stated `country`)
-  institutionCountryCode     String?  // ISO-3166 alpha-2
-  institutionSource          String?  // "ror" | "local" | "custom"
-  institutionMatchConfidence Float?   // 0..1 confidence of the canonical link
-  institutionNeedsReview     Boolean  @default(false) // uncertain custom match → Ops review
+  institutionRorId              String? // e.g. https://ror.org/03vek6s52 (null = custom/local)
+  institutionCanonicalName      String? // canonical display name (ROR or matched local)
+  institutionCity               String?
+  institutionCountryName        String? // canonical institution country (distinct from user-stated `country`)
+  institutionCountryCode        String? // ISO-3166 alpha-2
+  institutionSource             String? // "ror" | "local" | "custom"
+  institutionMatchConfidence    Float? // 0..1 confidence of the canonical link
+  institutionNeedsReview        Boolean                  @default(false) // uncertain custom match → Ops review
   // prompt36 follow-up — link to the canonical Institution cache row (nullable;
   // null for custom/unmatched). Additive FK → `prisma db push` stays safe.
-  institutionId         String?
-  institution           Institution? @relation(fields: [institutionId], references: [id])
-  country               String?       // user-stated country/region (onboarding)
-  onboardingCompletedAt DateTime?     // null ⇒ onboarding not completed/skipped-not-done
-  projects    Project[]
-  auditLogs   AdminAuditLog[]
-  screenProjects ScreenProject[] @relation("UserScreenProjects")
-  screenMemberships ScreenProjectMember[] @relation("UserScreenMemberships")
-  passwordResetTokens PasswordResetToken[]
-  onboardingResponses UserOnboardingResponse[] // prompt32 — per-question onboarding state
+  institutionId                 String?
+  institution                   Institution?             @relation(fields: [institutionId], references: [id])
+  country                       String? // user-stated country/region (onboarding)
+  onboardingCompletedAt         DateTime? // null ⇒ onboarding not completed/skipped-not-done
+  projects                      Project[]
+  auditLogs                     AdminAuditLog[]
+  screenProjects                ScreenProject[]          @relation("UserScreenProjects")
+  screenMemberships             ScreenProjectMember[]    @relation("UserScreenMemberships")
+  passwordResetTokens           PasswordResetToken[]
+  onboardingResponses           UserOnboardingResponse[] // prompt32 — per-question onboarding state
+
   @@index([userNumber])
 }
 
@@ -125,8 +126,8 @@ model User {
 // but the same allocator code keeps working unchanged. Brand-new table → `prisma
 // db push` creates it cleanly (no --accept-data-loss).
 model AppSequence {
-  name      String   @id          // logical sequence name, e.g. "userNumber"
-  value     Int      @default(0)  // last allocated value; next = value + 1
+  name      String   @id // logical sequence name, e.g. "userNumber"
+  value     Int      @default(0) // last allocated value; next = value + 1
   updatedAt DateTime @updatedAt
 }
 
@@ -138,19 +139,20 @@ model AppSequence {
 model Institution {
   id             String   @id @default(uuid())
   canonicalName  String
-  normalizedName String                        // institutionMatch.normalizeInstitution key
-  rorId          String?  @unique               // ROR id URL (null for local-only canonicals)
+  normalizedName String // institutionMatch.normalizeInstitution key
+  rorId          String?  @unique // ROR id URL (null for local-only canonicals)
   openAlexId     String?
   countryName    String?
   countryCode    String?
   city           String?
   website        String?
-  aliases        String?                        // JSON array of alternative spellings
-  source         String   @default("local")    // "ror" | "openalex" | "local"
+  aliases        String? // JSON array of alternative spellings
+  source         String   @default("local") // "ror" | "openalex" | "local"
   needsReview    Boolean  @default(false)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
   users          User[]
+
   @@index([normalizedName])
 }
 
@@ -160,35 +162,37 @@ model Institution {
 // already-registered users on their next login, and answered/skipped state is tracked
 // per (user, question). Brand-new tables → `prisma db push` stays additive-safe.
 model OnboardingQuestion {
-  id         String   @id @default(uuid())
-  key        String   @unique          // stable slug, e.g. "primary_role"
-  prompt     String                     // question text shown to the user
-  description String?                   // optional helper text
-  type       String   @default("single_select") // text|single_select|multi_select|boolean|number|date
-  options    String?                    // JSON array of { value, label } for *_select types
-  isActive   Boolean  @default(true)    // ops on/off without delete (soft)
-  isRequired Boolean  @default(false)   // when true, the question cannot be skipped
-  allowSkip  Boolean  @default(true)    // when false (and not required), still no skip
-  displayOrder Int    @default(0)
-  audience   String?                    // optional JSON rule (reserved; null = everyone)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-  responses  UserOnboardingResponse[]
+  id           String                   @id @default(uuid())
+  key          String                   @unique // stable slug, e.g. "primary_role"
+  prompt       String // question text shown to the user
+  description  String? // optional helper text
+  type         String                   @default("single_select") // text|single_select|multi_select|boolean|number|date
+  options      String? // JSON array of { value, label } for *_select types
+  isActive     Boolean                  @default(true) // ops on/off without delete (soft)
+  isRequired   Boolean                  @default(false) // when true, the question cannot be skipped
+  allowSkip    Boolean                  @default(true) // when false (and not required), still no skip
+  displayOrder Int                      @default(0)
+  audience     String? // optional JSON rule (reserved; null = everyone)
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
+  responses    UserOnboardingResponse[]
+
   @@index([isActive, displayOrder])
 }
 
 model UserOnboardingResponse {
-  id         String   @id @default(uuid())
+  id         String             @id @default(uuid())
   userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   questionId String
   question   OnboardingQuestion @relation(fields: [questionId], references: [id], onDelete: Cascade)
-  answer     String?            // JSON-encoded answer value; null when skipped
-  status     String   @default("answered") // "answered" | "skipped"
+  answer     String? // JSON-encoded answer value; null when skipped
+  status     String             @default("answered") // "answered" | "skipped"
   answeredAt DateTime?
   skippedAt  DateTime?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+
   @@unique([userId, questionId]) // one row per (user, question)
   @@index([userId])
 }
@@ -203,10 +207,10 @@ model PasswordResetToken {
   id                String    @id @default(uuid())
   userId            String
   user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  tokenHash         String    // SHA-256 hex of the raw token; plaintext never stored
-  expiresAt         DateTime  // validity window (now + PASSWORD_RESET_TTL_MINUTES)
+  tokenHash         String // SHA-256 hex of the raw token; plaintext never stored
+  expiresAt         DateTime // validity window (now + PASSWORD_RESET_TTL_MINUTES)
   usedAt            DateTime? // set when consumed — single-use marker
-  requestedByUserId String?   // admin/mod who initiated; null = self-service forgot-password
+  requestedByUserId String? // admin/mod who initiated; null = self-service forgot-password
   ip                String    @default("")
   createdAt         DateTime  @default(now())
 
@@ -215,35 +219,35 @@ model PasswordResetToken {
 }
 
 model Project {
-  id            String    @id @default(uuid())
-  userId        String
-  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  name          String
-  data          String    @default("{}")  // JSON-serialised project payload (studies, records, pico, search, etc.)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  deletedAt     DateTime?
-  deletedSource String?   // prompt9 — 'owner' | 'admin'; legacy null = admin archive
-  archived      Boolean   @default(false)  // prompt11 — user-facing archive (reversible hide)
-  archivedAt    DateTime?                   // prompt11 — when archived
-  lastSavedAt   DateTime?
+  id                   String                @id @default(uuid())
+  userId               String
+  user                 User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name                 String
+  data                 String                @default("{}") // JSON-serialised project payload (studies, records, pico, search, etc.)
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  deletedAt            DateTime?
+  deletedSource        String? // prompt9 — 'owner' | 'admin'; legacy null = admin archive
+  archived             Boolean               @default(false) // prompt11 — user-facing archive (reversible hide)
+  archivedAt           DateTime? // prompt11 — when archived
+  lastSavedAt          DateTime?
   // prompt50 WS5 — authoritative MEANINGFUL-activity timestamp for "Last Modified"
   // sorting. Distinct from the Prisma @updatedAt column (which a bare row-touch
   // bumps): this is set only by meaningful user activity — a real blob edit, or a
   // linked-module action (screening decision/import/conflict resolution, RoB)
   // routed through touchProjectActivity(). Nullable + indexed → `prisma db push`
   // stays additive-safe; backfilled at boot from updatedAt/createdAt.
-  lastActivityAt DateTime?
+  lastActivityAt       DateTime?
   // roadmap 0.2 — additive virtual back-relations (no column on Project). The
   // Project.data JSON blob stays the source of truth until the
   // relationalProjectStore feature flag is flipped at an evaluation gate.
-  reviewRecords ReviewRecord[]
-  reviewStudies ReviewStudy[]
+  reviewRecords        ReviewRecord[]
+  reviewStudies        ReviewStudy[]
   // rob.md — META·LAB RoB: outcome/result-level Risk-of-Bias assessments.
   // Additive back-relation only (no column on Project); cascades with the project.
-  robAssessments RobAssessment[]
+  robAssessments       RobAssessment[]
   // prompt46 #4 — RoB-local manual studies (added directly in the RoB engine).
-  robManualStudies RobManualStudy[]
+  robManualStudies     RobManualStudy[]
   // prompt38 — server-backed per-module workflow state (additive back-relation).
   workflowModuleStates WorkflowModuleState[]
 
@@ -262,14 +266,14 @@ model ReviewRecord {
   id           String   @id @default(uuid())
   projectId    String
   project      Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  recordId     String   // the in-document record.id (8-char uid) — stable across saves
-  position     Int      // preserves the records[] array order
+  recordId     String // the in-document record.id (8-char uid) — stable across saves
+  position     Int // preserves the records[] array order
   title        String?
   doi          String?
   pmid         String?
   decision     String?
-  mergedIntoId String?  // 1.1 soft-merge target; null = not merged
-  data         String   @default("{}")  // full mkRecord object, JSON-serialised
+  mergedIntoId String? // 1.1 soft-merge target; null = not merged
+  data         String   @default("{}") // full mkRecord object, JSON-serialised
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
@@ -285,12 +289,12 @@ model ReviewStudy {
   id        String   @id @default(uuid())
   projectId String
   project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  studyId   String   // the in-document study.id (8-char uid)
-  position  Int      // preserves the studies[] array order
+  studyId   String // the in-document study.id (8-char uid)
+  position  Int // preserves the studies[] array order
   author    String?
   year      String?
   esType    String?
-  data      String   @default("{}")  // full mkStudy object, JSON-serialised
+  data      String   @default("{}") // full mkStudy object, JSON-serialised
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -298,16 +302,16 @@ model ReviewStudy {
 }
 
 model ContactMessage {
-  id        String   @id @default(uuid())
-  email     String
-  name      String?
-  subject   String?
-  message   String
-  read      Boolean  @default(false)   // legacy global read flag (kept for back-compat)
-  archived  Boolean  @default(false)
-  origin    String   @default("contact_form") // contact_form | staff (Ops-composed) | inbound_email
-  replied   Boolean  @default(false)   // prompt4 Task 4
-  repliedAt DateTime?
+  id           String               @id @default(uuid())
+  email        String
+  name         String?
+  subject      String?
+  message      String
+  read         Boolean              @default(false) // legacy global read flag (kept for back-compat)
+  archived     Boolean              @default(false)
+  origin       String               @default("contact_form") // contact_form | staff (Ops-composed) | inbound_email
+  replied      Boolean              @default(false) // prompt4 Task 4
+  repliedAt    DateTime?
   // prompt49 — SHARED read state across all admins+mods. A message is unread
   // globally when readAt is null. Opening it sets readAt/readByUserId/readByName
   // for EVERYONE; any staff can mark it unread (clears these) for everyone. This
@@ -316,9 +320,9 @@ model ContactMessage {
   readAt       DateTime?
   readByUserId String?
   readByName   String?
-  createdAt DateTime @default(now())
-  replies   ContactReply[]
-  reads     ContactMessageRead[]       // prompt5 Task 9 — per-staff read receipts (superseded by readAt; kept for backfill)
+  createdAt    DateTime             @default(now())
+  replies      ContactReply[]
+  reads        ContactMessageRead[] // prompt5 Task 9 — per-staff read receipts (superseded by readAt; kept for backfill)
 }
 
 // Per-staff read receipt for an ops-console contact message (prompt5 Task 9).
@@ -345,26 +349,26 @@ model ContactReply {
   toEmail       String
   subject       String         @default("")
   body          String
-  status        String         @default("sent")  // sent | failed | draft
+  status        String         @default("sent") // sent | failed | draft
   error         String         @default("")
   createdAt     DateTime       @default(now())
 }
 
 model SiteSetting {
   key       String   @id
-  value     String   // JSON-serialised value
+  value     String // JSON-serialised value
   updatedAt DateTime @updatedAt
-  updatedBy String?  // admin userId who last changed this
+  updatedBy String? // admin userId who last changed this
 }
 
 model AdminAuditLog {
   id         String   @id @default(uuid())
   adminId    String
   admin      User     @relation(fields: [adminId], references: [id])
-  action     String   // e.g. "UPDATE_SETTING", "SUSPEND_USER", "DELETE_MESSAGE"
-  entityType String?  // "User", "Project", "SiteSetting", "ContactMessage", etc.
+  action     String // e.g. "UPDATE_SETTING", "SUSPEND_USER", "DELETE_MESSAGE"
+  entityType String? // "User", "Project", "SiteSetting", "ContactMessage", etc.
   entityId   String?
-  details    String?  // JSON-serialised context (what changed, before/after summary)
+  details    String? // JSON-serialised context (what changed, before/after summary)
   ip         String?
   userAgent  String?
   createdAt  DateTime @default(now())
@@ -372,12 +376,12 @@ model AdminAuditLog {
 
 model SecurityEvent {
   id        String   @id @default(uuid())
-  type      String   // "FAILED_LOGIN", "ADMIN_ACCESS_DENIED", "RATE_LIMITED"
+  type      String // "FAILED_LOGIN", "ADMIN_ACCESS_DENIED", "RATE_LIMITED"
   userId    String?
   email     String?
   ip        String?
   userAgent String?
-  details   String?  // JSON-serialised extra info
+  details   String? // JSON-serialised extra info
   createdAt DateTime @default(now())
 }
 
@@ -389,11 +393,11 @@ model SecurityEvent {
 model Notification {
   id                      String    @id @default(uuid())
   userId                  String
-  type                    String    // PROJECT_INVITE | ROLE_CHANGED | ...
+  type                    String // PROJECT_INVITE | ROLE_CHANGED | ...
   title                   String
   message                 String    @default("")
   app                     String    @default("") // metalab | metasift | workspace
-  relatedScreenProjectId  String?   // = workspaceId (ScreenProject id)
+  relatedScreenProjectId  String? // = workspaceId (ScreenProject id)
   relatedMetaLabProjectId String?
   actorId                 String?
   actorName               String    @default("")
@@ -439,92 +443,92 @@ model ScreenProjectStatusEvent {
 }
 
 model ScreenProject {
-  id                     String                 @id @default(uuid())
-  ownerId                String
-  owner                  User                   @relation("UserScreenProjects", fields: [ownerId], references: [id], onDelete: Cascade)
-  linkedMetaLabProjectId String?
-  title                  String
-  description            String                 @default("")
-  reviewQuestion         String                 @default("")
-  stage                  String                 @default("title_abstract")
-  blindMode              Boolean                @default(false)
+  id                         String    @id @default(uuid())
+  ownerId                    String
+  owner                      User      @relation("UserScreenProjects", fields: [ownerId], references: [id], onDelete: Cascade)
+  linkedMetaLabProjectId     String?
+  title                      String
+  description                String    @default("")
+  reviewQuestion             String    @default("")
+  stage                      String    @default("title_abstract")
+  blindMode                  Boolean   @default(false)
   // prompt19 — per-project minimum independent title/abstract reviewer decisions
   // required before a record may advance to Full Text. Owner/leader editable in
   // Project Settings (default 2 = research standard). Additive int → db-push safe.
-  requiredScreeningReviewers Int                @default(2)
+  requiredScreeningReviewers Int       @default(2)
   // ── upgrade additions ──────────────────────────────────────────────
-  progressStatus         String                 @default("not_started")  // not_started | in_progress | done (leader-editable)
-  archived               Boolean                @default(false)          // admin lifecycle
-  disabled               Boolean                @default(false)          // admin per-project disable
-  inclusionKeywords      String                 @default("[]")           // JSON string[] — green highlight terms
-  exclusionKeywords      String                 @default("[]")           // JSON string[] — red highlight terms
-  studyTypeFilter        String                 @default("[]")           // JSON string[]
-  picoSnapshot           String                 @default("{}")           // cached PICO/criteria (from linked META·LAB project or standalone)
-  chatRestricted         Boolean                @default(false)          // when true, only members with canChat may post
-  aiSettings             String                 @default("{}")           // per-project AI screening policy (JSON: enabled, policy, blindFromAi, includeThreshold) — flag aiScreening
-  deletedAt              DateTime?                                       // prompt9 — soft delete (owner/admin)
-  deletedSource          String?                                         // prompt9 — 'owner' | 'admin'
-  createdAt              DateTime               @default(now())
-  updatedAt              DateTime               @updatedAt
+  progressStatus             String    @default("not_started") // not_started | in_progress | done (leader-editable)
+  archived                   Boolean   @default(false) // admin lifecycle
+  disabled                   Boolean   @default(false) // admin per-project disable
+  inclusionKeywords          String    @default("[]") // JSON string[] — green highlight terms
+  exclusionKeywords          String    @default("[]") // JSON string[] — red highlight terms
+  studyTypeFilter            String    @default("[]") // JSON string[]
+  picoSnapshot               String    @default("{}") // cached PICO/criteria (from linked META·LAB project or standalone)
+  chatRestricted             Boolean   @default(false) // when true, only members with canChat may post
+  aiSettings                 String    @default("{}") // per-project AI screening policy (JSON: enabled, policy, blindFromAi, includeThreshold) — flag aiScreening
+  deletedAt                  DateTime? // prompt9 — soft delete (owner/admin)
+  deletedSource              String? // prompt9 — 'owner' | 'admin'
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
 
-  records                ScreenRecord[]
-  labels                 ScreenLabel[]
-  exclusionReasons       ScreenExclusionReason[]
-  duplicateGroups        ScreenDuplicateGroup[]
-  conflicts              ScreenConflict[]
-  importBatches          ScreenImportBatch[]
-  importJobs             ScreenImportJob[]
-  members                ScreenProjectMember[]
-  chatMessages           ScreenChatMessage[]
-  auditLogs              ScreenAuditLog[]
+  records          ScreenRecord[]
+  labels           ScreenLabel[]
+  exclusionReasons ScreenExclusionReason[]
+  duplicateGroups  ScreenDuplicateGroup[]
+  conflicts        ScreenConflict[]
+  importBatches    ScreenImportBatch[]
+  importJobs       ScreenImportJob[]
+  members          ScreenProjectMember[]
+  chatMessages     ScreenChatMessage[]
+  auditLogs        ScreenAuditLog[]
 
   @@index([linkedMetaLabProjectId])
 }
 
 model ScreenRecord {
-  id               String                @id @default(uuid())
-  projectId        String
-  project          ScreenProject         @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  importBatchId    String?
-  importBatch      ScreenImportBatch?    @relation(fields: [importBatchId], references: [id])
-  duplicateGroupId String?
-  duplicateGroup   ScreenDuplicateGroup? @relation(fields: [duplicateGroupId], references: [id])
-  isPrimary        Boolean               @default(false)
-  isDuplicate      Boolean               @default(false)
-  title            String                @default("")
-  authors          String                @default("")
-  year             String                @default("")
-  journal          String                @default("")
-  doi              String                @default("")
-  pmid             String                @default("")
-  abstract         String                @default("")
-  keywords         String                @default("")
-  sourceDb         String                @default("")
-  rawData          String                @default("{}")
+  id                         String                @id @default(uuid())
+  projectId                  String
+  project                    ScreenProject         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  importBatchId              String?
+  importBatch                ScreenImportBatch?    @relation(fields: [importBatchId], references: [id])
+  duplicateGroupId           String?
+  duplicateGroup             ScreenDuplicateGroup? @relation(fields: [duplicateGroupId], references: [id])
+  isPrimary                  Boolean               @default(false)
+  isDuplicate                Boolean               @default(false)
+  title                      String                @default("")
+  authors                    String                @default("")
+  year                       String                @default("")
+  journal                    String                @default("")
+  doi                        String                @default("")
+  pmid                       String                @default("")
+  abstract                   String                @default("")
+  keywords                   String                @default("")
+  sourceDb                   String                @default("")
+  rawData                    String                @default("{}")
   // ── upgrade additions: two-stage workflow ──────────────────────────
-  currentStage     String                @default("title_abstract")  // title_abstract | full_text
-  finalStatus      String                @default("")                // "" | accepted | rejected
-  promotedAt       DateTime?                                          // when it reached quorum and moved to full_text
-  promotedVia      String                @default("")                // "" | quorum | conflict_resolution (how it reached 2nd review)
-  acceptedAt       DateTime?                                          // when accepted in second review (sent to extraction)
-  rejectedReason   String                @default("")
+  currentStage               String                @default("title_abstract") // title_abstract | full_text
+  finalStatus                String                @default("") // "" | accepted | rejected
+  promotedAt                 DateTime? // when it reached quorum and moved to full_text
+  promotedVia                String                @default("") // "" | quorum | conflict_resolution (how it reached 2nd review)
+  acceptedAt                 DateTime? // when accepted in second review (sent to extraction)
+  rejectedReason             String                @default("")
   // ── META·LAB Data Extraction handoff state (prompt2 Task 4/5) ───────
-  handoffStatus    String                @default("")                // "" | pending | sent | failed | already_exists
-  handoffAt        DateTime?
-  handoffStudyId   String                @default("")                // id of the created META·LAB study (for idempotent re-sync)
-  handoffError     String                @default("")
+  handoffStatus              String                @default("") // "" | pending | sent | failed | already_exists
+  handoffAt                  DateTime?
+  handoffStudyId             String                @default("") // id of the created META·LAB study (for idempotent re-sync)
+  handoffError               String                @default("")
   // prompt21 — when a Final Review decision is REVERTED out of Data Extraction, the
   // removed META·LAB study (incl. any extracted data) is snapshotted here instead of
   // being destroyed, so a later re-accept can RESTORE it rather than start blank.
   // Nullable → `prisma db push` stays additive-safe.
   revertedExtractionSnapshot String?
-  createdAt        DateTime              @default(now())
-  updatedAt        DateTime              @updatedAt
+  createdAt                  DateTime              @default(now())
+  updatedAt                  DateTime              @updatedAt
 
-  decisions        ScreenDecision[]
-  conflicts        ScreenConflict[]
-  pdfAttachments   ScreenPdfAttachment[]
-  openStates       ScreenRecordOpenState[]
+  decisions      ScreenDecision[]
+  conflicts      ScreenConflict[]
+  pdfAttachments ScreenPdfAttachment[]
+  openStates     ScreenRecordOpenState[]
 }
 
 model ScreenDecision {
@@ -533,8 +537,8 @@ model ScreenDecision {
   record          ScreenRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
   projectId       String
   reviewerId      String
-  reviewerName    String       @default("")   // denormalised for blind-mode-safe display joins
-  stage           String       @default("title_abstract")  // which review stage this decision belongs to
+  reviewerName    String       @default("") // denormalised for blind-mode-safe display joins
+  stage           String       @default("title_abstract") // which review stage this decision belongs to
   decision        String       @default("undecided")
   exclusionReason String       @default("")
   notes           String       @default("")
@@ -564,14 +568,14 @@ model ScreenExclusionReason {
 }
 
 model ScreenDuplicateGroup {
-  id          String        @id @default(uuid())
-  projectId   String
-  project     ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  resolvedAt  DateTime?
-  primaryId   String        @default("")
-  createdAt   DateTime      @default(now())
+  id         String        @id @default(uuid())
+  projectId  String
+  project    ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  resolvedAt DateTime?
+  primaryId  String        @default("")
+  createdAt  DateTime      @default(now())
 
-  records     ScreenRecord[]
+  records ScreenRecord[]
 }
 
 // se2.md §10 — reviewer-confirmed duplicate labels, accrued from resolve actions, used
@@ -582,8 +586,8 @@ model ScreenDuplicateLabel {
   projectId     String
   recordIdA     String
   recordIdB     String
-  label         String   // duplicate | not_duplicate | related | uncertain
-  predictedType String   @default("")   // classifier verdict at label time (classifyPair)
+  label         String // duplicate | not_duplicate | related | uncertain
+  predictedType String   @default("") // classifier verdict at label time (classifyPair)
   score         Int      @default(0)
   reason        String   @default("")
   modelVersion  String   @default("")
@@ -611,21 +615,21 @@ model ScreenConflict {
 }
 
 model ScreenImportBatch {
-  id          String        @id @default(uuid())
-  projectId   String
-  project     ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  filename    String        @default("")
-  format      String        @default("")
-  recordCount Int           @default(0)
+  id             String        @id @default(uuid())
+  projectId      String
+  project        ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  filename       String        @default("")
+  format         String        @default("")
+  recordCount    Int           @default(0)
   // ── import fingerprinting (prompt6 Task 19; nullable so legacy rows migrate clean) ──
-  fileHash       String?    // sha256 of line-ending-normalized content
+  fileHash       String? // sha256 of line-ending-normalized content
   fileSize       Int?
   importedById   String?
-  importedByName String     @default("")
-  parser         String     @default("")
-  createdAt   DateTime      @default(now())
+  importedByName String        @default("")
+  parser         String        @default("")
+  createdAt      DateTime      @default(now())
 
-  records     ScreenRecord[]
+  records ScreenRecord[]
 
   @@index([projectId, fileHash])
 }
@@ -648,21 +652,21 @@ model ScreenImportJob {
   // queued | validating | detecting | parsing | deduplicating | saving | finalizing | done | failed
   stage            String        @default("queued")
   filename         String        @default("")
-  format           String        @default("")  // caller's hint (auto = content-detected)
-  detectedFormat   String        @default("")  // what the parser actually used
+  format           String        @default("") // caller's hint (auto = content-detected)
+  detectedFormat   String        @default("") // what the parser actually used
   fileHash         String?
   fileSize         Int           @default(0)
-  content          String        @default("")  // source text; cleared on terminal state
+  content          String        @default("") // source text; cleared on terminal state
   force            Boolean       @default(false)
-  totalRecords     Int           @default(0)   // parsed record count
-  processedRecords Int           @default(0)   // deduped + considered so far
+  totalRecords     Int           @default(0) // parsed record count
+  processedRecords Int           @default(0) // deduped + considered so far
   importedRecords  Int           @default(0)
   duplicateRecords Int           @default(0)
   rejectedRecords  Int           @default(0)
   warningCount     Int           @default(0)
   errorReport      String        @default("[]") // JSON [{ index, title, reason }] for rejects
-  error            String        @default("")    // fatal error message (status=failed)
-  batchId          String?                        // linked ScreenImportBatch once records are saved
+  error            String        @default("") // fatal error message (status=failed)
+  batchId          String? // linked ScreenImportBatch once records are saved
   startedAt        DateTime?
   completedAt      DateTime?
   createdAt        DateTime      @default(now())
@@ -679,18 +683,18 @@ model ScreenProjectMember {
   id                  String        @id @default(uuid())
   projectId           String
   project             ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  userId              String?       // null for pending invites (user not yet registered)
+  userId              String? // null for pending invites (user not yet registered)
   user                User?         @relation("UserScreenMemberships", fields: [userId], references: [id], onDelete: Cascade)
   name                String        @default("")
   email               String        @default("")
-  role                String        @default("reviewer")  // owner | leader | reviewer | viewer
-  status              String        @default("active")     // active | inactive | pending
+  role                String        @default("reviewer") // owner | leader | reviewer | viewer
+  status              String        @default("active") // active | inactive | pending
   // ── META·SIFT permissions (existing) ───────────────────────────────
   canScreen           Boolean       @default(true)
   canChat             Boolean       @default(true)
   canResolveConflicts Boolean       @default(false)
   // ── Shared Review Workspace permissions (prompt4 Task 9; additive) ──
-  permissionPreset    String        @default("reviewer")   // owner|leader|reviewer|data_extractor|viewer|readonly_*
+  permissionPreset    String        @default("reviewer") // owner|leader|reviewer|data_extractor|viewer|readonly_*
   // META·SIFT module
   canViewMetaSift     Boolean       @default(true)
   canSecondReview     Boolean       @default(true)
@@ -704,20 +708,20 @@ model ScreenProjectMember {
   canManageExtraction Boolean       @default(false)
   canRunAnalysis      Boolean       @default(false)
   canExport           Boolean       @default(false)
-  canAssessRiskOfBias Boolean       @default(false)   // prompt31 Part 4 — edit RoB assessments
+  canAssessRiskOfBias Boolean       @default(false) // prompt31 Part 4 — edit RoB assessments
   readOnlyMetaLab     Boolean       @default(false)
   // Global
   canManageMembers    Boolean       @default(false)
   canManageSettings   Boolean       @default(false)
   // ── Invite lifecycle (prompt9 — token ceremony atop the pending row) ──
-  invitedByUserId     String?       // who created the invite (fixes "A project manager" UX gap)
+  invitedByUserId     String? // who created the invite (fixes "A project manager" UX gap)
   // Plain index, NOT @unique: a unique constraint forces `prisma db push` (the VPS deploy path)
   // to demand --accept-data-loss, which the deploy script does not pass. Uniqueness is already
   // guaranteed by 256-bit random token generation + single-use nulling on accept; the index keeps
   // the hash lookup fast. Looked up via findFirst (findUnique requires a @unique field).
-  inviteTokenHash     String?       // SHA-256 hex of the invite token; plaintext never stored
-  inviteExpiresAt     DateTime?     // invite validity window (default now + inviteExpiryDays)
-  inviteAcceptedAt    DateTime?     // when the invite was accepted/claimed (single-use marker)
+  inviteTokenHash     String? // SHA-256 hex of the invite token; plaintext never stored
+  inviteExpiresAt     DateTime? // invite validity window (default now + inviteExpiryDays)
+  inviteAcceptedAt    DateTime? // when the invite was accepted/claimed (single-use marker)
   joinedAt            DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
 
@@ -732,41 +736,41 @@ model ScreenChatMessage {
   senderId   String
   senderName String        @default("")
   message    String
-  status     String        @default("sent")   // sent | failed
+  status     String        @default("sent") // sent | failed
   createdAt  DateTime      @default(now())
   updatedAt  DateTime      @updatedAt
   deletedAt  DateTime?
 }
 
 model ScreenPdfAttachment {
-  id         String       @id @default(uuid())
-  projectId  String       // plain scope key (no relation — mirrors ScreenDecision.projectId)
-  recordId   String
-  record     ScreenRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
-  fileName   String                              // original upload name
-  storedName String                              // on-disk uuid filename
-  fileSize   Int          @default(0)
-  mimeType   String       @default("application/pdf")
-  uploadedBy String
-  createdAt  DateTime     @default(now())
+  id                   String       @id @default(uuid())
+  projectId            String // plain scope key (no relation — mirrors ScreenDecision.projectId)
+  recordId             String
+  record               ScreenRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  fileName             String // original upload name
+  storedName           String // on-disk uuid filename
+  fileSize             Int          @default(0)
+  mimeType             String       @default("application/pdf")
+  uploadedBy           String
+  createdAt            DateTime     @default(now())
   // roadmap 1.4 — provenance + auto-acquisition metadata. All ADDITIVE + nullable
   // (or defaulted) so `prisma db push` stays safe and the existing PDF viewer is
   // unaffected. source: manual_upload | oa_unpaywall | oa_openalex | oa_crossref
   // | uploaded_matched. oaStatus mirrors OA_STATUS. matchedBy: doi|pmid|title|
   // title+year|manual. matchConfidence in [0,1].
-  source             String   @default("manual_upload")
-  oaStatus           String?
-  sourceUrl          String?
-  resolvedDoi        String?
-  matchedBy          String?
-  matchConfidence    Float?
+  source               String       @default("manual_upload")
+  oaStatus             String?
+  sourceUrl            String?
+  resolvedDoi          String?
+  matchedBy            String?
+  matchConfidence      Float?
   retrievalAttemptedAt DateTime?
-  retrievalError     String?
+  retrievalError       String?
 }
 
 model ScreenRecordOpenState {
   id        String       @id @default(uuid())
-  projectId String       // plain scope key
+  projectId String // plain scope key
   recordId  String
   record    ScreenRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
   userId    String
@@ -792,12 +796,12 @@ model ScreenChatRead {
 // rows must outlive the users/projects they describe.
 model UsageEvent {
   id               String   @id @default(uuid())
-  type             String   // EXPORT | EMAIL_SENT | EMAIL_FAILED | MEMBER_LEFT | PROJECT_DELETED | INVITE_CREATED | INVITE_ACCEPTED | INVITE_REVOKED | NOTIFICATION_CLICKED
+  type             String // EXPORT | EMAIL_SENT | EMAIL_FAILED | MEMBER_LEFT | PROJECT_DELETED | INVITE_CREATED | INVITE_ACCEPTED | INVITE_REVOKED | NOTIFICATION_CLICKED
   userId           String?
   screenProjectId  String?
   metaLabProjectId String?
-  format           String?  // export format (csv | json | ris | png | svg | ...)
-  meta             String?  // JSON-serialised context
+  format           String? // export format (csv | json | ris | png | svg | ...)
+  meta             String? // JSON-serialised context
   createdAt        DateTime @default(now())
 
   @@index([type, createdAt])
@@ -809,10 +813,10 @@ model ScreenAuditLog {
   project    ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
   actorId    String
   actorName  String        @default("")
-  action     String        // BLIND_MODE_ON | MEMBER_ADDED | RECORD_ACCEPTED | ...
+  action     String // BLIND_MODE_ON | MEMBER_ADDED | RECORD_ACCEPTED | ...
   entityType String?
   entityId   String?
-  details    String        @default("{}")  // JSON context
+  details    String        @default("{}") // JSON context
   createdAt  DateTime      @default(now())
 }
 
@@ -832,21 +836,21 @@ model ScreenAuditLog {
 // The legacy per-study `rob` field in Project.data.studies[] is left untouched;
 // an adapter (server/rob/legacyAdapter.js) can surface a legacy view from it.
 model RobAssessment {
-  id                String   @id @default(uuid())
+  id                String    @id @default(uuid())
   projectId         String
-  project           Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  studyId           String   // in-document study.id (8-char uid); not a DB FK
-  outcomeId         String?  // optional specific outcome/result identifier
-  resultLabel       String?  // human-readable result being assessed (e.g. "Mortality at 6 months")
-  instrumentId      String   @default("RoB2")
-  instrumentVersion String   @default("2019-08-22")
-  variant           String   @default("assignment")  // assignment | adherence (future)
-  reviewerId        String                            // user id (bare string; not a FK)
-  reviewerName      String   @default("")             // denormalised for display/audit
-  status            String   @default("draft")        // draft | complete | consensus
-  deletedAt         DateTime?                         // soft delete; never hard-delete
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  project           Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  studyId           String // in-document study.id (8-char uid); not a DB FK
+  outcomeId         String? // optional specific outcome/result identifier
+  resultLabel       String? // human-readable result being assessed (e.g. "Mortality at 6 months")
+  instrumentId      String    @default("RoB2")
+  instrumentVersion String    @default("2019-08-22")
+  variant           String    @default("assignment") // assignment | adherence (future)
+  reviewerId        String // user id (bare string; not a FK)
+  reviewerName      String    @default("") // denormalised for display/audit
+  status            String    @default("draft") // draft | complete | consensus
+  deletedAt         DateTime? // soft delete; never hard-delete
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   answers         RobAnswer[]
   domainJudgments RobDomainJudgment[]
@@ -865,13 +869,13 @@ model RobAnswer {
   id              String        @id @default(uuid())
   assessmentId    String
   assessment      RobAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
-  domainId        String        // D1..D5
-  questionId      String        // e.g. "2.3"
-  response        String        @default("")  // Y|PY|PN|N|NI|NA
+  domainId        String // D1..D5
+  questionId      String // e.g. "2.3"
+  response        String        @default("") // Y|PY|PN|N|NI|NA
   rationale       String?
   evidenceQuote   String?
-  evidenceLocator String?       // PDF page/offset etc. (reserved)
-  aiSuggested     Boolean?      // was the response AI-suggested?
+  evidenceLocator String? // PDF page/offset etc. (reserved)
+  aiSuggested     Boolean? // was the response AI-suggested?
   aiModel         String?
   aiModelVersion  String?
   createdAt       DateTime      @default(now())
@@ -884,16 +888,16 @@ model RobAnswer {
 // Per-domain proposed + final judgement. proposed = engine output; final =
 // proposed unless overridden (overridden=true requires overrideJustification).
 model RobDomainJudgment {
-  id                   String        @id @default(uuid())
-  assessmentId         String
-  assessment           RobAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
-  domainId             String        // D1..D5
-  proposedJudgment     String        @default("")  // low|some|high
-  finalJudgment        String?       // low|some|high (null until resolved)
-  overridden           Boolean       @default(false)
+  id                    String        @id @default(uuid())
+  assessmentId          String
+  assessment            RobAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
+  domainId              String // D1..D5
+  proposedJudgment      String        @default("") // low|some|high
+  finalJudgment         String? // low|some|high (null until resolved)
+  overridden            Boolean       @default(false)
   overrideJustification String?
-  createdAt            DateTime      @default(now())
-  updatedAt            DateTime      @updatedAt
+  createdAt             DateTime      @default(now())
+  updatedAt             DateTime      @updatedAt
 
   @@unique([assessmentId, domainId])
 }
@@ -903,7 +907,7 @@ model RobOverall {
   id                    String        @id @default(uuid())
   assessmentId          String        @unique
   assessment            RobAssessment @relation(fields: [assessmentId], references: [id], onDelete: Cascade)
-  proposedOverall       String        @default("")  // low|some|high
+  proposedOverall       String        @default("") // low|some|high
   finalOverall          String?
   overridden            Boolean       @default(false)
   overrideJustification String?
@@ -921,10 +925,10 @@ model RobAuditLog {
   assessmentId String   @default("")
   actorId      String
   actorName    String   @default("")
-  action       String   // ROB_CREATE | ROB_ANSWER | ROB_OVERRIDE | ROB_FINALISE | ROB_DELETE
-  entityType   String?  // "RobAssessment" | "RobDomainJudgment" | "RobOverall"
+  action       String // ROB_CREATE | ROB_ANSWER | ROB_OVERRIDE | ROB_FINALISE | ROB_DELETE
+  entityType   String? // "RobAssessment" | "RobDomainJudgment" | "RobOverall"
   entityId     String?
-  details      String   @default("{}")  // JSON context
+  details      String   @default("{}") // JSON context
   createdAt    DateTime @default(now())
 
   @@index([projectId, createdAt])
@@ -944,13 +948,13 @@ model RobManualStudy {
   projectId     String
   project       Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
   title         String    @default("")
-  authors       String    @default("")   // free-text author string (mirrors studies[].author display)
-  year          String    @default("")   // string (studies[].year is rendered as-is)
+  authors       String    @default("") // free-text author string (mirrors studies[].author display)
+  year          String    @default("") // string (studies[].year is rendered as-is)
   doi           String?
   pmid          String?
   notes         String?
-  createdById   String                    // bare user id (not a FK) — creator
-  createdByName String    @default("")    // denormalised for display/audit
+  createdById   String // bare user id (not a FK) — creator
+  createdByName String    @default("") // denormalised for display/audit
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   deletedAt     DateTime?
@@ -972,11 +976,11 @@ model WorkflowModuleState {
   id            String   @id @default(uuid())
   projectId     String
   project       Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  moduleKey     String   // whitelisted module key (see server/services/workflowState.js)
-  stateJson     String   @default("{}")  // the module's state, JSON-serialised
-  revision      Int      @default(0)     // optimistic-concurrency counter, incremented per accepted patch
-  updatedById   String?                  // user id (bare string; not a FK)
-  updatedByName String   @default("")    // denormalised for display/audit
+  moduleKey     String // whitelisted module key (see server/services/workflowState.js)
+  stateJson     String   @default("{}") // the module's state, JSON-serialised
+  revision      Int      @default(0) // optimistic-concurrency counter, incremented per accepted patch
+  updatedById   String? // user id (bare string; not a FK)
+  updatedByName String   @default("") // denormalised for display/audit
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
@@ -993,11 +997,11 @@ model WorkflowStateAudit {
   id        String   @id @default(uuid())
   projectId String
   moduleKey String   @default("")
-  action    String   // PROTOCOL_UPDATED | …_UPDATED | WORKFLOW_STATE_CONFLICT
-  revision  Int?     // resulting revision (updates) / current revision (conflicts)
+  action    String // PROTOCOL_UPDATED | …_UPDATED | WORKFLOW_STATE_CONFLICT
+  revision  Int? // resulting revision (updates) / current revision (conflicts)
   userId    String?
   userName  String   @default("")
-  details   String   @default("{}")  // JSON: changed keys, baseRevision, etc.
+  details   String   @default("{}") // JSON: changed keys, baseRevision, etc.
   createdAt DateTime @default(now())
 
   @@index([projectId, createdAt])
@@ -1018,36 +1022,36 @@ model WorkflowStateAudit {
 // configuration snapshot, label counts, model summary, and an internal-validation
 // snapshot (AI ranking vs human final decisions). This IS the model-run history.
 model ScreenAiRun {
-  id              String    @id @default(uuid())
-  projectId       String    // bare scope key (no FK; audit-survival)
-  status          String    @default("completed")  // running | completed | failed
-  mode            String    @default("cold_start") // cold_start | supervised
-  stage           String    @default("title_abstract")
-  engineVersion   String    @default("1.0")
-  trigger         String    @default("manual")     // manual | auto
+  id                String    @id @default(uuid())
+  projectId         String // bare scope key (no FK; audit-survival)
+  status            String    @default("completed") // running | completed | failed
+  mode              String    @default("cold_start") // cold_start | supervised
+  stage             String    @default("title_abstract")
+  engineVersion     String    @default("1.0")
+  trigger           String    @default("manual") // manual | auto
   // Summary
-  nRecords        Int       @default(0)
-  nScored         Int       @default(0)
-  nFeatures       Int       @default(0)
-  labelCountsJson String    @default("{}")         // {include,exclude,maybe,undecided,positives,negatives,classBalance}
-  modelInfoJson   String    @default("{}")         // {epochs,converged,classWeights,nPos,nNeg} or {}
-  configJson      String    @default("{}")         // resolved engine config snapshot (provider, weights, thresholds)
-  metricsJson     String    @default("{}")         // computeValidation() snapshot (auc, wss95, recall@k, stages, warning)
-  failureReason   String    @default("")
-  triggeredById   String?                          // bare user id
-  triggeredByName String    @default("")           // denormalised
+  nRecords          Int       @default(0)
+  nScored           Int       @default(0)
+  nFeatures         Int       @default(0)
+  labelCountsJson   String    @default("{}") // {include,exclude,maybe,undecided,positives,negatives,classBalance}
+  modelInfoJson     String    @default("{}") // {epochs,converged,classWeights,nPos,nNeg} or {}
+  configJson        String    @default("{}") // resolved engine config snapshot (provider, weights, thresholds)
+  metricsJson       String    @default("{}") // computeValidation() snapshot (auc, wss95, recall@k, stages, warning)
+  failureReason     String    @default("")
+  triggeredById     String? // bare user id
+  triggeredByName   String    @default("") // denormalised
   // se2.md §11 — model version lifecycle, lineage + drift. A completed run is a model
   // version; exactly one per (project,stage) is the ACTIVE version whose scores are live.
-  isActive        Boolean   @default(false)
-  supersededAt    DateTime?                         // set when a newer version takes over
-  parentRunId     String?                           // lineage: the version this one superseded
-  rollbackFromRunId String?                         // set when this run was produced by a rollback
-  snapshotHash    String    @default("")            // hash of training labels + config (reproducibility)
-  featureVersion  String    @default("")            // feature/preprocessing version tag
-  driftJson       String    @default("{}")          // { snapshot, drift:{warnings,deltas,psi,collapse} }
-  startedAt       DateTime  @default(now())
-  completedAt     DateTime?
-  createdAt       DateTime  @default(now())
+  isActive          Boolean   @default(false)
+  supersededAt      DateTime? // set when a newer version takes over
+  parentRunId       String? // lineage: the version this one superseded
+  rollbackFromRunId String? // set when this run was produced by a rollback
+  snapshotHash      String    @default("") // hash of training labels + config (reproducibility)
+  featureVersion    String    @default("") // feature/preprocessing version tag
+  driftJson         String    @default("{}") // { snapshot, drift:{warnings,deltas,psi,collapse} }
+  startedAt         DateTime  @default(now())
+  completedAt       DateTime?
+  createdAt         DateTime  @default(now())
 
   @@index([projectId, createdAt])
   @@index([projectId, status])
@@ -1058,25 +1062,25 @@ model ScreenAiRun {
 // screening queue can join scores cheaply; run history lives in ScreenAiRun.
 model ScreenAiScore {
   id              String   @id @default(uuid())
-  projectId       String   // bare scope key
-  recordId        String   // bare scope key (record may be soft-deleted)
+  projectId       String // bare scope key
+  recordId        String // bare scope key (record may be soft-deleted)
   runId           String   @default("")
   stage           String   @default("title_abstract")
-  score           Float    @default(0)             // hybrid relevance [0,1]
-  proba           Float?                            // supervised classifier probability, null in cold-start
-  calibratedProba Float?                            // calibrated P(include) (se2.md §8); null when uncalibrated
+  score           Float    @default(0) // hybrid relevance [0,1]
+  proba           Float? // supervised classifier probability, null in cold-start
+  calibratedProba Float? // calibrated P(include) (se2.md §8); null when uncalibrated
   coldStartScore  Float    @default(0)
   uncertainty     Float    @default(0)
   confidence      Float    @default(0)
-  prediction      String   @default("uncertain")   // include | exclude | uncertain
-  band            String   @default("unscored")    // very_high|high|medium|low|very_low
+  prediction      String   @default("uncertain") // include | exclude | uncertain
+  band            String   @default("unscored") // very_high|high|medium|low|very_low
   mode            String   @default("cold_start")
   lowConfidence   Boolean  @default(false)
   missingAbstract Boolean  @default(false)
   picoMean        Float?
-  subScoresJson   String   @default("{}")          // {classifier,coldStart,semantic,keyword}
-  signalsJson     String   @default("{}")          // {studyDesign,inclusionMatched,exclusionHits,pico}
-  explanationJson String   @default("{}")          // buildExplanation() output (reasons, picoBreakdown, similar, note)
+  subScoresJson   String   @default("{}") // {classifier,coldStart,semantic,keyword}
+  signalsJson     String   @default("{}") // {studyDesign,inclusionMatched,exclusionHits,pico}
+  explanationJson String   @default("{}") // buildExplanation() output (reasons, picoBreakdown, similar, note)
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
 
@@ -1088,19 +1092,19 @@ model ScreenAiScore {
 // Human feedback on an AI suggestion (active-learning signal + auditability).
 // Append-only; never blocks the decision flow.
 model ScreenAiFeedback {
-  id           String   @id @default(uuid())
-  projectId    String   // bare scope key
-  recordId     String
-  runId        String   @default("")
-  aiPrediction String   @default("")               // include|exclude|uncertain at time of feedback
-  aiScore      Float?
-  humanDecision String  @default("")               // include|exclude|maybe
-  agree        Boolean?                             // did the human agree with the AI?
-  rating       String   @default("")               // helpful | not_helpful | ''
-  note         String   @default("")
-  givenById    String?                              // bare user id
-  givenByName  String   @default("")
-  createdAt    DateTime @default(now())
+  id            String   @id @default(uuid())
+  projectId     String // bare scope key
+  recordId      String
+  runId         String   @default("")
+  aiPrediction  String   @default("") // include|exclude|uncertain at time of feedback
+  aiScore       Float?
+  humanDecision String   @default("") // include|exclude|maybe
+  agree         Boolean? // did the human agree with the AI?
+  rating        String   @default("") // helpful | not_helpful | ''
+  note          String   @default("")
+  givenById     String? // bare user id
+  givenByName   String   @default("")
+  createdAt     DateTime @default(now())
 
   @@index([projectId, createdAt])
   @@index([projectId, recordId])
@@ -1117,14 +1121,14 @@ model ScreenAiJob {
   id          String    @id @default(uuid())
   projectId   String
   stage       String    @default("title_abstract")
-  kind        String    @default("rescore")   // rescore | train
-  status      String    @default("queued")    // queued | running | completed | failed | superseded
-  trigger     String    @default("decision")  // decision | manual | api
-  reason      String    @default("")          // failure reason (no article text)
-  runId       String    @default("")          // resulting ScreenAiRun id
+  kind        String    @default("rescore") // rescore | train
+  status      String    @default("queued") // queued | running | completed | failed | superseded
+  trigger     String    @default("decision") // decision | manual | api
+  reason      String    @default("") // failure reason (no article text)
+  runId       String    @default("") // resulting ScreenAiRun id
   nScored     Int       @default(0)
-  coalesced   Int       @default(0)           // decisions coalesced into this job
-  durationMs  Int?                            // observability (se2.md §17)
+  coalesced   Int       @default(0) // decisions coalesced into this job
+  durationMs  Int? // observability (se2.md §17)
   startedAt   DateTime?
   completedAt DateTime?
   createdAt   DateTime  @default(now())
@@ -1132,4 +1136,215 @@ model ScreenAiJob {
 
   @@index([projectId, createdAt])
   @@index([projectId, status])
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// PECAN SEARCH ENGINE (P1) — automated literature search via database APIs,
+// auto-import, full source provenance, and explainable deduplication.
+//
+// A "search run" executes a user-authored Boolean strategy against one or more
+// open bibliographic providers (PubMed, Europe PMC, ClinicalTrials.gov, Crossref,
+// DOAJ, OpenAlex, Semantic Scholar). Each provider runs as an isolated per-source
+// task; results are normalized to a canonical record, deduplicated against the
+// project's existing records using the SAME explainable engine the screening
+// import uses (scorePair / classifyPair), then landed as ScreenRecord rows via
+// dedupeAndInsertRecords — so screening, conflicts, fuzzy duplicate detection,
+// extraction handoff and PRISMA all consume them UNCHANGED.
+//
+// Design invariants (see docs/manager/pecan-search/ADRs):
+//  - All models are additive + defaulted/nullable → `prisma db push` stays safe.
+//  - JSON columns are stored as String (repo convention). Frequently-queried
+//    identifiers (doi/pmid) are indexed columns, NOT buried in JSON.
+//  - Composite @@unique appear ONLY on brand-new (empty-at-migration) tables,
+//    which db push creates cleanly with no --accept-data-loss prompt — they are
+//    the explicit idempotency keys P1 requires (a re-run/retry never duplicates a
+//    source record or a search run).
+//  - metaLabProjectId = the META·LAB Project id (the search workspace, authorized
+//    via resolveProjectAccess). screenProjectId = the linked ScreenProject the
+//    records land into (resolved at run start). No FK to those tables is declared
+//    here (kept as plain indexed strings) to keep the migration purely additive.
+//  - After editing, re-run `node scripts/sync-postgres-schema.mjs`.
+// ════════════════════════════════════════════════════════════════════════════
+
+// A single execution of a search strategy against one or more providers.
+// Reproducibility: canonicalQuery + config are immutable snapshots taken at start.
+model PecanSearchRun {
+  id               String    @id @default(uuid())
+  metaLabProjectId String // META·LAB Project id (search workspace)
+  screenProjectId  String    @default("") // resolved ScreenProject landing target
+  initiatedById    String    @default("")
+  initiatedByName  String    @default("")
+  name             String    @default("") // user-facing search name/label
+  state            String    @default("queued") // queued|running|partial|completed|cancelled|failed
+  canonicalQuery   String    @default("{}") // JSON snapshot of the canonical query (concepts AST + filters)
+  canonicalText    String    @default("") // rendered plain-text query (display/report)
+  config           String    @default("{}") // JSON snapshot: sources[], caps, dedup opts, filters
+  counts           String    @default("{}") // JSON aggregate counts (persisted at finalize; derived from sources)
+  warningSummary   String    @default("[]") // JSON run-level warnings
+  errorSummary     String    @default("") // sanitized run-level error message
+  idempotencyKey   String    @default("") // client-supplied start idempotency key
+  jobId            String    @default("") // linked PecanSearchJob id
+  softwareVersion  String    @default("")
+  engineVersion    String    @default("")
+  cancelRequested  Boolean   @default(false) // durable user cancel intent (checked between pages)
+  startedAt        DateTime?
+  completedAt      DateTime?
+  cancelledAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  sources        PecanSearchSource[]
+  records        PecanSourceRecord[]
+  dedupDecisions PecanDedupDecision[]
+
+  @@index([metaLabProjectId, createdAt])
+  @@index([state])
+  @@index([idempotencyKey])
+}
+
+// Per-source execution state within a run. Each provider is isolated so one
+// failing source never fails the whole run (honest partial success).
+model PecanSearchSource {
+  id                  String         @id @default(uuid())
+  runId               String
+  run                 PecanSearchRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  provider            String // pubmed|europepmc|clinicaltrials|crossref|doaj|openalex|semanticscholar
+  providerVersion     String         @default("") // connector/translation version
+  generatedQuery      String         @default("") // engine-translated query
+  finalQuery          String         @default("") // exact executed query (== generated unless overridden)
+  queryHash           String         @default("") // stable hash of finalQuery
+  translationWarnings String         @default("[]") // JSON warnings from translation
+  overrideById        String         @default("") // who supplied a manual override (if any)
+  overrideReason      String         @default("")
+  filters             String         @default("{}") // JSON source-specific filters/limits
+  previewCount        Int? // previewed hit count (null = unknown)
+  previewKind         String         @default("") // exact|estimate|unavailable|unsupported
+  previewAt           DateTime?
+  rawCount            Int            @default(0) // raw records retrieved from provider
+  normalizedCount     Int            @default(0)
+  importedCount       Int            @default(0) // NET new ScreenRecords landed from this source
+  existingMatchCount  Int            @default(0) // matched an existing project record
+  exactDupCount       Int            @default(0)
+  fuzzyDupCount       Int            @default(0)
+  ambiguousDupCount   Int            @default(0)
+  failedRecordCount   Int            @default(0) // malformed records skipped (run continues)
+  cursor              String         @default("") // resumable provider cursor / page token
+  lastCompletedPage   Int            @default(0)
+  cap                 Int            @default(0) // effective per-source record cap
+  capReached          Boolean        @default(false)
+  stage               String         @default("queued") // queued|validating|waiting|counting|fetching|normalizing|deduplicating|importing|finalizing|completed|partial|cancelled|failed|skipped
+  state               String         @default("pending") // pending|running|partial|completed|failed|cancelled|skipped
+  retryCount          Int            @default(0)
+  rateLimitMeta       String         @default("{}") // JSON last-seen rate-limit headers
+  errorClass          String         @default("") // typed error code (PROVIDER_RATE_LIMITED, …)
+  errorDetail         String         @default("") // sanitized, user-safe detail
+  startedAt           DateTime?
+  completedAt         DateTime?
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
+
+  @@index([runId])
+  @@index([runId, provider])
+}
+
+// An external bibliographic record retrieved from a provider, with full raw +
+// normalized provenance. The composite @@unique is the per-source idempotency key:
+// re-fetching a page (retry / worker restart) can never persist the same provider
+// record twice. screenRecordId links to the landed ScreenRecord (preserved through
+// dedup merges so provenance survives).
+model PecanSourceRecord {
+  id                   String         @id @default(uuid())
+  runId                String
+  run                  PecanSearchRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  sourceId             String         @default("") // PecanSearchSource id
+  metaLabProjectId     String         @default("")
+  provider             String
+  providerRecordId     String         @default("") // PMID / DOI / NCT id / OpenAlex work id / content hash fallback
+  screenRecordId       String         @default("") // landed ScreenRecord id (provenance link)
+  doi                  String         @default("")
+  pmid                 String         @default("")
+  pmcid                String         @default("")
+  nctId                String         @default("")
+  title                String         @default("")
+  abstract             String         @default("")
+  authors              String         @default("")
+  year                 String         @default("")
+  journal              String         @default("")
+  volume               String         @default("")
+  issue                String         @default("")
+  pages                String         @default("")
+  pubType              String         @default("")
+  language             String         @default("")
+  url                  String         @default("")
+  keywords             String         @default("[]") // JSON string[]
+  meshTerms            String         @default("[]") // JSON string[]
+  retracted            Boolean        @default(false)
+  rawPayload           String         @default("{}") // JSON safe snapshot of the provider response item
+  normalized           String         @default("{}") // JSON normalized canonical record
+  normalizationVersion String         @default("")
+  dedupOutcome         String         @default("") // new|existing_match|exact_dup|fuzzy_dup|ambiguous
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  @@unique([runId, provider, providerRecordId])
+  @@index([metaLabProjectId, doi])
+  @@index([metaLabProjectId, pmid])
+  @@index([sourceId])
+  @@index([runId])
+}
+
+// A deduplication decision (automatic, identity, or human-confirmed). Stores the
+// explainable score, its component signals, the matched target, and the verdict —
+// so every merge/keep-separate is auditable and reversible.
+model PecanDedupDecision {
+  id                    String         @id @default(uuid())
+  runId                 String
+  run                   PecanSearchRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  metaLabProjectId      String         @default("")
+  sourceRecordId        String         @default("") // incoming PecanSourceRecord id
+  matchedScreenRecordId String         @default("") // matched existing ScreenRecord (if any)
+  matchedSourceRecordId String         @default("") // matched in-run source record (if any)
+  score                 Int            @default(0) // 0..100
+  scoreComponents       String         @default("{}") // JSON signals {titleSim,authorJaccard,yearMatch,doiMatch,pmidMatch,…}
+  ruleVersion           String         @default("") // DUP_MODEL_VERSION at decision time
+  matchType             String         @default("") // exact|probable|possible|related|family|not|ambiguous
+  decision              String         @default("pending") // merged|kept_separate|deferred|pending
+  decisionSource        String         @default("") // automatic|manual|identity
+  decidedById           String         @default("")
+  decidedByName         String         @default("")
+  decidedAt             DateTime?
+  reasons               String         @default("[]") // JSON string[] human-readable reasons
+  conflicts             String         @default("[]") // JSON string[] conflicting fields
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  @@index([runId])
+  @@index([runId, decision])
+  @@index([metaLabProjectId, decision])
+}
+
+// Durable background job for a search run. Cloned from the ScreenImportJob pattern
+// (DB-backed, single-process, crash-resumable): the run survives browser refresh
+// and worker restart; a boot hook re-queues jobs left 'processing' beyond the
+// heartbeat lease. claimedBy/leaseUntil are present for a future multi-node lease.
+model PecanSearchJob {
+  id               String    @id @default(uuid())
+  runId            String    @default("")
+  metaLabProjectId String    @default("")
+  status           String    @default("queued") // queued|processing|completed|failed|cancelled
+  stage            String    @default("queued")
+  progress         Int       @default(-1) // 0..100, or -1 = indeterminate (unknown total)
+  attempts         Int       @default(0)
+  claimedBy        String    @default("") // worker instance id (future multi-node lease)
+  leaseUntil       DateTime?
+  heartbeatAt      DateTime?
+  payload          String    @default("{}") // JSON minimal job payload (runId, sources, caps)
+  error            String    @default("") // sanitized fatal error
+  startedAt        DateTime?
+  finishedAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([status, createdAt])
+  @@index([runId])
 }

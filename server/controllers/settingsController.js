@@ -66,6 +66,15 @@ const DEFAULTS = {
     // legacy SearchTab. When ON, the new SearchBuilderTab renders (NLM-backed MeSH
     // lookup + live PubMed counts) and persists per project (module 'search').
     searchEngine: false,
+    // p1.md — Pecan Search Engine (P1). Default OFF: the /api/pecan-search/*
+    // endpoints 404 and the Search & Discovery workspace tab is hidden. When ON,
+    // a user can execute a Boolean strategy against open bibliographic providers
+    // (PubMed, Europe PMC, ClinicalTrials.gov, Crossref, DOAJ, OpenAlex, Semantic
+    // Scholar), auto-import + deduplicate the results into screening, and generate
+    // a PRISMA-S search report. Per-provider enable + caps live in the separate
+    // `searchProviderSettings` block (Ops › Search Providers). Manual file import
+    // stays available regardless of this flag.
+    pecanSearch: false,
     // screeningEngin.md — PecanRev Screening Intelligence Engine. Default OFF: the
     // /api/screening/projects/:pid/ai/* endpoints 404 and the screening workbench
     // shows no AI surfaces. When ON, the deterministic TF-IDF + active-learning
@@ -94,6 +103,28 @@ const DEFAULTS = {
     liveUpdateEnabled: true,          // se2.md §6 — rescore on new decisions
     retrainDebounceMs: 4000,
     killSwitch: false,                // se2.md §4 — emergency global disable
+  }),
+  // p1.md — Pecan Search Engine non-secret policy block (Ops › Search Providers).
+  // API keys NEVER live here — they stay in server env (redacted). Additive
+  // SiteSetting; merged with ENGINE_DEFAULTS + PROVIDER_REGISTRY server-side.
+  searchProviderSettings: JSON.stringify({
+    defaultResultCap: 2000,
+    maxResultCap: 10000,
+    concurrency: 3,
+    retryLimit: 4,
+    requestTimeoutMs: 20000,
+    previewThrottleMs: 1500,
+    pageDelayMs: 0,
+    institutionalMode: false,
+    providers: {
+      pubmed: { enabled: true },
+      europepmc: { enabled: true },
+      clinicaltrials: { enabled: true },
+      crossref: { enabled: true },
+      doaj: { enabled: true },
+      openalex: { enabled: true },
+      semanticscholar: { enabled: true },
+    },
   }),
 };
 
