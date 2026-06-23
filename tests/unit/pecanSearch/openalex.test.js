@@ -93,13 +93,12 @@ describe('OpenAlex connector — contract', () => {
     expect(tr.unsupported).toContain('field:author');
   });
 
-  it('warns when a concept asks for AND across its own terms (approximated as OR)', () => {
+  it('OR-joins synonym terms within a concept (op is the inter-concept operator)', () => {
     const c = buildConnector(createOpenAlexConnector, PROVIDER_CFG, openAlexMock());
     const tr = c.translateQuery({
       concepts: [{ label: 'Combo', op: 'AND', terms: [{ text: 'aspirin', field: 'tiab' }, { text: 'warfarin', field: 'tiab' }] }],
     });
-    expect(tr.warnings.join(' ')).toMatch(/AND across its terms/i);
-    // Terms still OR-joined (broader) — never silently dropped.
+    // Synonyms within a concept are OR-joined (pipe) — never AND'd, never dropped.
     expect(tr.query).toContain('title_and_abstract.search:aspirin|warfarin');
   });
 

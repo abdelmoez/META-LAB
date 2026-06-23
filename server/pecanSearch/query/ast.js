@@ -182,15 +182,38 @@ export function renderPlain(canonical) {
       const field = t.field && t.field !== FIELD.TIAB ? `:${t.field}` : '';
       return q + field;
     });
-    const joined = parts.join(` ${concept.op} `);
-    return parts.length > 1 ? `(${joined})` : joined;
+    // Terms within a concept are SYNONYMS → always OR (never concept.op).
+    const joined = parts.join(' OR ');
+    return { q: parts.length > 1 ? `(${joined})` : joined, op: concept.op };
   });
-  let out = blocks.join(' AND ');
+  let out = composeConcepts(blocks);
   const fl = [];
   if (c.filters.dateFrom || c.filters.dateTo) fl.push(`date ${c.filters.dateFrom || '*'}..${c.filters.dateTo || '*'}`);
   if (c.filters.languages.length) fl.push(`lang ${c.filters.languages.join('/')}`);
   if (c.filters.pubTypes.length) fl.push(`type ${c.filters.pubTypes.join('/')}`);
   if (fl.length) out = out ? `${out} [${fl.join('; ')}]` : `[${fl.join('; ')}]`;
+  return out;
+}
+
+/**
+ * composeConcepts(blocks) — join per-concept rendered strings using the INTER-concept
+ * operator, matching the Search Builder (renderSearch): `concept.op` connects a concept
+ * to the NEXT concept (default AND), and terms WITHIN a concept are synonyms the caller
+ * must have already OR'd. Joining a concept's synonym terms by `concept.op` (AND by
+ * default) was the cause of 0-result searches — a multi-synonym concept became
+ * "syn1 AND syn2 AND …", requiring every synonym to co-occur.
+ *
+ * @param {Array<{q:string, op?:string}>} blocks  rendered concept strings + their op
+ * @returns {string}
+ */
+export function composeConcepts(blocks) {
+  const items = (blocks || []).filter((b) => b && b.q);
+  if (!items.length) return '';
+  let out = items[0].q;
+  for (let i = 1; i < items.length; i++) {
+    const op = items[i - 1].op === 'OR' ? 'OR' : 'AND';
+    out += ` ${op} ${items[i].q}`;
+  }
   return out;
 }
 

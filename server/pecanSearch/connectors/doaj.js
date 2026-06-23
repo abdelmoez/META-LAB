@@ -65,6 +65,15 @@ function escapeEs(text) {
   return String(text == null ? '' : text).replace(/([+\-=&|><!(){}\[\]^"~*?:\\/])/g, '\\$1');
 }
 
+/**
+ * Inside a quoted phrase, Elasticsearch query_string treats reserved characters as
+ * LITERAL — escaping them (e.g. `non\-insulin`) inserts literal backslashes and the
+ * phrase matches nothing. So a phrase only needs the quote and backslash escaped.
+ */
+function escapeEsPhrase(text) {
+  return String(text == null ? '' : text).replace(/(["\\])/g, '\\$1');
+}
+
 /** Render one canonical term into a DOAJ query_string clause: field:"phrase" or field:token. */
 function renderTerm(t, warnings) {
   const raw = String(t.text || '').trim();
@@ -80,7 +89,7 @@ function renderTerm(t, warnings) {
 
   const path = FIELD_PATH[t.field];
   const phrase = /\s/.test(raw);
-  const value = phrase ? `"${escapeEs(raw)}"` : escapeEs(raw);
+  const value = phrase ? `"${escapeEsPhrase(raw)}"` : escapeEs(raw);
 
   if (t.field === FIELD.TIAB || !path) {
     // No single DOAJ field is title-or-abstract → expand to (title OR abstract).
@@ -125,7 +134,7 @@ function translateDoaj(canonicalInput, { override } = {}) {
       return clause;
     }).filter(Boolean);
     if (!parts.length) return '';
-    return parts.length > 1 ? `(${parts.join(` ${concept.op} `)})` : parts[0];
+    return parts.length > 1 ? `(${parts.join(' OR ')})` : parts[0];
   }).filter(Boolean);
 
   const filterClauses = renderFilters(canonical.filters, warnings);

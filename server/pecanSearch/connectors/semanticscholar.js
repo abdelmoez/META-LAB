@@ -98,9 +98,10 @@ function translateSemanticScholar(canonicalInput, { override } = {}) {
     }).filter(Boolean);
     if (!parts.length) return '';
     if (parts.length === 1) return parts[0];
-    // op AND inside a concept → space-join; op OR → pipe-join. Group either way.
-    const joiner = concept.op === 'AND' ? ' ' : ' | ';
-    return `(${parts.join(joiner)})`;
+    // Terms within a concept are SYNONYMS → always OR (pipe-join in S2 syntax). The
+    // space-join (AND) joins CONCEPTS, below. (concept.op was misused here, AND-ing
+    // synonyms → 0 results.)
+    return `(${parts.join(' | ')})`;
   }).filter(Boolean);
 
   let query = conceptStrings.join(' ');

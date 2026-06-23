@@ -121,7 +121,7 @@ function translateClinicalTrials(canonicalInput, { override } = {}) {
     }).filter(Boolean);
     if (!parts.length) return '';
     // A concept's terms join with its own op; group so AND/OR precedence is explicit.
-    return parts.length > 1 ? `(${parts.join(` ${concept.op} `)})` : parts[0];
+    return parts.length > 1 ? `(${parts.join(' OR ')})` : parts[0];
   }).filter(Boolean);
 
   renderFilters(canonical.filters, warnings, unsupported);

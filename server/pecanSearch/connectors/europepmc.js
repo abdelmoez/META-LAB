@@ -124,7 +124,7 @@ function translateEuropePmc(canonicalInput, { override } = {}) {
       else supported.push(`${t.field}:${t.text}`);
       return renderTerm(t, warnings);
     });
-    return parts.length > 1 ? `(${parts.join(` ${concept.op} `)})` : parts[0];
+    return parts.length > 1 ? `(${parts.join(' OR ')})` : parts[0];
   }).filter(Boolean);
 
   const filterClauses = renderFilters(canonical.filters, warnings);

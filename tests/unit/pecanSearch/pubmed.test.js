@@ -55,6 +55,19 @@ describe('PubMed connector — contract', () => {
     expect(tr.queryHash).toHaveLength(16);
   });
 
+  it('OR-joins synonyms within a concept and AND-joins concepts (the 0-results regression)', () => {
+    const c = buildConnector(createPubmedConnector, PROVIDER_CFG, pubmedMock());
+    const tr = c.translateQuery({
+      concepts: [
+        { id: 'p', op: 'AND', terms: [{ text: 'diabetes', field: 'tiab' }, { text: 'T2DM', field: 'tiab' }, { text: 'hyperglycemia', field: 'tiab' }] },
+        { id: 'i', op: 'AND', terms: [{ text: 'metformin', field: 'tiab' }, { text: 'glucophage', field: 'tiab' }] },
+      ],
+    });
+    // Synonyms MUST be OR'd (requiring all of them = 0 results); concepts AND'd.
+    expect(tr.query).toBe('(diabetes[Title/Abstract] OR T2DM[Title/Abstract] OR hyperglycemia[Title/Abstract]) AND (metformin[Title/Abstract] OR glucophage[Title/Abstract])');
+    expect(tr.query).not.toMatch(/diabetes\[Title\/Abstract\] AND T2DM/); // never AND between synonyms
+  });
+
   it('warns when truncation is applied to a phrase', () => {
     const c = buildConnector(createPubmedConnector, PROVIDER_CFG, pubmedMock());
     const tr = c.translateQuery({ concepts: [{ terms: [{ text: 'heart failure', field: 'tiab', truncate: true }] }] });

@@ -142,11 +142,9 @@ function translateOpenAlex(canonicalInput, { override } = {}) {
 
     if (!termTexts.length) continue;
 
-    // OpenAlex cannot express AND *within* one search filter value; if the concept
-    // asked for AND across its own terms, the OR'd .search approximates it (broader).
-    if (concept.op === 'AND' && termTexts.length > 1) {
-      warnings.push(`Concept "${concept.label || concept.id || 'unnamed'}" uses AND across its terms, which OpenAlex cannot express inside one search filter; it was approximated as OR (broader). For strict AND, split the terms into separate concepts.`);
-    }
+    // Terms within a concept are synonyms (OR) — pipe-joined below — and concepts
+    // are AND'd as separate comma-joined filters. (concept.op is the inter-concept
+    // operator, default AND; OpenAlex joins filters with AND.)
     if (conceptHadFieldCollapse) {
       warnings.push(`A field restriction (author/journal/doi/pmid/mesh) in concept "${concept.label || concept.id || 'unnamed'}" was searched across title+abstract instead, as OpenAlex's text search does not scope those fields.`);
     }

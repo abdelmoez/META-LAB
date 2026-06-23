@@ -17,7 +17,7 @@ import { makeThrottle } from '../throttle.js';
 import { parseEsearch, parsePubmedXml } from './pubmedXml.js';
 import { normalizeRecord, NORMALIZATION_VERSION } from '../normalize.js';
 import {
-  FIELD, normalizeCanonical, validateCanonical, quoteIfPhrase, makeTranslated,
+  FIELD, normalizeCanonical, validateCanonical, quoteIfPhrase, makeTranslated, composeConcepts,
 } from '../query/ast.js';
 import { PecanError } from '../errors.js';
 
@@ -78,16 +78,18 @@ function translatePubmed(canonicalInput, { override } = {}) {
   const supported = [];
   const unsupported = [];
 
-  const conceptStrings = canonical.concepts.map((concept) => {
+  const conceptBlocks = canonical.concepts.map((concept) => {
     const parts = concept.terms.map((t) => {
       supported.push(`${t.field}:${t.text}`);
       return renderTerm(t, warnings);
-    });
-    return parts.length > 1 ? `(${parts.join(` ${concept.op} `)})` : parts[0];
+    }).filter(Boolean);
+    if (!parts.length) return null;
+    // Terms within a concept are SYNONYMS → always OR. concept.op joins CONCEPTS.
+    return { q: parts.length > 1 ? `(${parts.join(' OR ')})` : parts[0], op: concept.op };
   }).filter(Boolean);
 
   const filterClauses = renderFilters(canonical.filters, warnings);
-  let query = [...conceptStrings, ...filterClauses].join(' AND ');
+  let query = [composeConcepts(conceptBlocks), ...filterClauses].filter(Boolean).join(' AND ');
 
   const hasOverride = typeof override === 'string' && override.trim().length > 0;
   if (hasOverride) query = override.trim();

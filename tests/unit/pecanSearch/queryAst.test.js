@@ -40,11 +40,17 @@ describe('query/ast — canonical model', () => {
     expect(quoteIfPhrase('heart failure')).toBe('"heart failure"');
   });
 
-  it('renderPlain is database-neutral and includes filters', () => {
-    const s = renderPlain({ concepts: [{ op: 'OR', terms: [{ text: 'a' }, { text: 'b' }] }, { op: 'AND', terms: [{ text: 'c' }] }], filters: { dateFrom: '2010', dateTo: '2020' } });
-    expect(s).toContain('(a OR b)');
-    expect(s).toContain('AND');
+  it('renderPlain ORs synonyms within a concept and joins concepts by the inter-concept op', () => {
+    const s = renderPlain({ concepts: [{ op: 'AND', terms: [{ text: 'a' }, { text: 'b' }] }, { op: 'AND', terms: [{ text: 'c' }, { text: 'd' }] }], filters: { dateFrom: '2010', dateTo: '2020' } });
+    expect(s).toContain('(a OR b)');     // terms within a concept are SYNONYMS → OR
+    expect(s).toContain('(c OR d)');
+    expect(s).toContain(') AND (');      // concepts joined by inter-concept op (default AND)
     expect(s).toMatch(/2010\.\.2020/);
+  });
+
+  it('honors an inter-concept OR operator between concepts', () => {
+    const s = renderPlain({ concepts: [{ op: 'OR', terms: [{ text: 'a' }, { text: 'b' }] }, { op: 'AND', terms: [{ text: 'c' }] }], filters: {} });
+    expect(s).toBe('(a OR b) OR c'); // concept[0].op='OR' joins it to the next concept with OR
   });
 
   it('hashQuery is stable and order-sensitive', () => {
