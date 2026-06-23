@@ -56,12 +56,24 @@ import { resolveCorsAllowlist, corsOriginDelegate } from './config/cors.js';
 import { runStartupConfigCheck } from './config/validateConfig.js';
 import { cspMiddleware, cspMode, CSP_REPORT_PATH } from './security/csp.js';
 import { cspReportHandler } from './security/cspReport.js';
+import { helmetOptions, apiNoStore, publicVersion } from './security/headers.js';
+import { verifyToken } from './auth/jwt.js';
+import { sessionCookieName } from './config/cookies.js';
 
 // prompt49 — fail-fast configuration diagnostic. In production a missing critical
 // value (JWT_SECRET / DATABASE_URL / CORS origin) aborts boot; in dev it warns.
 runStartupConfigCheck();
 
 const app = express();
+
+// Fingerprinting reduction (prompt 52): Express advertises itself via
+// `X-Powered-By: Express` by default. helmet already strips it; disabling it
+// explicitly is belt-and-suspenders and documents the intent. The app emits no
+// Server/version/runtime header — a reverse proxy's `Server:` is removed at the
+// proxy (see docs/manager/http-header-hardening.md).
+app.disable('x-powered-by');
+
+const SESSION_COOKIE = sessionCookieName();
 
 // ── Trust proxy (prompt30 Part 1) ────────────────────────────────────────────────
 // Behind a reverse proxy / load balancer (nginx, Cloudflare, a cloud LB) the real
@@ -90,8 +102,12 @@ app.set('trust proxy', resolveTrustProxy(process.env.TRUST_PROXY));
 // HTML *and* the JSON API from one source of truth, attach a per-response nonce,
 // set frame-ancestors/report-to, and switch report-only ↔ enforce via CSP_MODE.
 // Disabling helmet's CSP here guarantees we never emit two conflicting policies.
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet(helmetOptions()));
 app.use(cspMiddleware());
+// Dynamic, often user-specific /api JSON must not be cached by shared/browser
+// caches (prompt 52). Download/PDF/SSE handlers set their own Cache-Control and
+// override this; static assets keep their long-lived cache headers.
+app.use(apiNoStore);
 
 // ── CSP violation reports (prompt 51) ──────────────────────────────────────────
 // Mounted FIRST — before the maintenance gate, the global JSON body parser and
@@ -235,18 +251,32 @@ app.get('/api/health/ready', async (_req, res) => {
     checks.database = 'error';
     ready = false;
   }
+  // Public readiness probe: a load balancer only needs the 200/503 + the coarse
+  // check map. The environment name and DB latency are fingerprinting/infra detail
+  // (prompt 52) — kept out of the public body (still in server logs / admin health).
+  void t0;
   return res.status(ready ? 200 : 503).json({
     status: ready ? 'ok' : 'unavailable',
     checks,
     version: getVersion().version,
-    env: process.env.NODE_ENV || 'development',
-    dbLatencyMs: Date.now() - t0,
     timestamp: new Date().toISOString(),
   });
 });
 
-// ── Version metadata (public, no auth) ─────────────────────────────────────────
-app.get('/api/version', (_req, res) => res.json(getVersion()));
+// ── Version metadata ───────────────────────────────────────────────────────────
+// The product version is intentionally public (shown in the UI). Build metadata
+// (commit hash, commit/build dates) is fingerprinting (prompt 52) — it is only
+// returned to an authenticated caller (the UI footer/Ops Console fetch it with
+// credentials). A valid, unexpired session token is sufficient gating here.
+app.get('/api/version', (req, res) => {
+  const full = getVersion();
+  let authed = false;
+  try {
+    const tok = req.cookies && req.cookies[SESSION_COOKIE];
+    if (tok) { verifyToken(tok); authed = true; }
+  } catch { authed = false; }
+  return res.json(authed ? full : publicVersion(full));
+});
 
 // ── Auth routes (public: register/login; protected: logout/me) ────────────────
 app.use('/api/auth', authLimiter, authRouter);
