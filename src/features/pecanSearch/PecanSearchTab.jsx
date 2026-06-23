@@ -317,9 +317,9 @@ export default function PecanSearchTab({ projectId, pico, readOnly }) {
   const selectableProviders = (providers || []).filter((p) => p.selectable);
   const totalPreview = sourceIds.reduce((n, id) => {
     const c = counts[id];
-    return (c && (c.kind === 'estimated' || c.kind === 'exact') && c.count != null) ? n + Number(c.count) : n;
+    return (c && (c.kind === 'estimate' || c.kind === 'exact') && c.count != null) ? n + Number(c.count) : n;
   }, 0);
-  const anyUnknownPreview = sourceIds.some((id) => { const c = counts[id]; return !c || (c.kind !== 'estimated' && c.kind !== 'exact'); });
+  const anyUnknownPreview = sourceIds.some((id) => { const c = counts[id]; return !c || (c.kind !== 'estimate' && c.kind !== 'exact'); });
 
   return (
     <div style={{ maxWidth: 1180, margin: '0 auto' }}>
@@ -701,7 +701,10 @@ function CompletionSummary({ run, report, projectId, onRetry }) {
   const counts = run.counts || {};
   const perSource = counts.perSource || {};
   const dupRemoved = (counts.exactDup || 0) + (counts.fuzzyDup || 0);
-  const retryable = (run.sources || []).some((s) => s.state === 'failed' || s.state === 'partial');
+  // Retry is only offered for runs that ended in unintended incomplete work — never
+  // for a run the user explicitly cancelled (a cancel stays sticky; start a new run).
+  const retryable = (run.state === 'failed' || run.state === 'partial')
+    && (run.sources || []).some((s) => s.state === 'failed' || s.state === 'partial');
   const exportBase = pecanSearchApi.reportExportUrl(projectId, run.id);
   return (
     <Card

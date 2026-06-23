@@ -124,6 +124,9 @@ export async function postPreviewCount(req, res) {
         const throttleMs = engine.config.engine.previewThrottleMs;
         const last = previewLastCall.get(throttleKey) || 0;
         if (throttleMs > 0 && Date.now() - last < throttleMs) { out[id] = { count: null, kind: 'throttled' }; return; }
+        // Bound the throttle map (one entry per (user,provider)); evict en masse far
+        // above any realistic concurrent fan-out so it can never leak unbounded.
+        if (previewLastCall.size > 20000) previewLastCall.clear();
         previewLastCall.set(throttleKey, Date.now());
         const pc = await connector.previewCount(tr, {});
         const val = { count: pc.count, kind: pc.kind, at: pc.at };

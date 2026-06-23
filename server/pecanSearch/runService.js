@@ -367,9 +367,11 @@ export async function cancelRun(runId) {
 export async function retryRun(runId) {
   const run = await prisma.pecanSearchRun.findUnique({ where: { id: runId } });
   if (!run) return null;
-  // Never retry a run that is still active (queued/running) — that would reset its
-  // sources under a live worker and enqueue a second competing job (§12).
-  if (['queued', 'running'].includes(run.state)) return run;
+  // Only retry runs that represent UNINTENDED incomplete work (failed/partial).
+  // Excludes queued/running (would reset sources under a live worker + enqueue a
+  // second job) AND completed/cancelled (an explicit cancel stays sticky — a new
+  // search must be started rather than silently un-cancelling §12.4).
+  if (!['failed', 'partial'].includes(run.state)) return run;
   const liveJob = await prisma.pecanSearchJob.count({ where: { runId, status: { in: ['queued', 'processing'] } } });
   if (liveJob > 0) return run;
   const retryable = await prisma.pecanSearchSource.findMany({ where: { runId, state: { in: ['failed', 'partial'] } } });

@@ -225,4 +225,13 @@ describe('Pecan Search Engine — start guards (integration)', () => {
     expect(r.state).toBe('queued');
     await clearActive();
   });
+
+  it('retry does NOT resurrect an explicitly cancelled run (cancel is sticky)', async () => {
+    await clearActive();
+    const a = await start({ idempotencyKey: 'STICKY' });
+    await cancelRun(a.run.id); // → cancelled
+    const r = await retryRun(a.run.id);
+    expect(r.state).toBe('cancelled'); // not flipped back to queued
+    await clearActive();
+  });
 });
