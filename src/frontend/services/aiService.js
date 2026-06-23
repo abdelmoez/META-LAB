@@ -167,11 +167,14 @@ export function fileToBase64(file){
   });
 }
 
-/* ════════════ CITATION LOOKUP (browser fetch; graceful fallback to manual) ════════════ */
-/* DOI → CrossRef (CORS-enabled public API) */
+/* ════════════ CITATION LOOKUP (via same-origin /api/citation proxy) ════════════ */
+/* The proxy passes CrossRef/NCBI responses through verbatim, so parsing here is
+   unchanged — but the browser only ever talks to its own origin, keeping the
+   strict CSP `connect-src 'self'` intact (prompt 51). */
+/* DOI → CrossRef (proxied) */
 export async function fetchByDOI(doi){
   const clean=String(doi).trim().replace(/^https?:\/\/(dx\.)?doi\.org\//i,"");
-  const resp=await fetch("https://api.crossref.org/works/"+encodeURIComponent(clean),{headers:{Accept:"application/json"}});
+  const resp=await fetch("/api/citation/crossref?doi="+encodeURIComponent(clean),{headers:{Accept:"application/json"},credentials:"include"});
   if(!resp.ok) throw new Error("CrossRef returned HTTP "+resp.status+" for that DOI.");
   const data=await resp.json();
   const m=data.message||{};
@@ -188,11 +191,11 @@ export async function fetchByDOI(doi){
     abstract:(m.abstract||"").replace(/<[^>]+>/g," ").replace(/\s+/g," ").trim(),
   };
 }
-/* PMID → NCBI E-utilities (esummary for citation, efetch for abstract). CORS-enabled. */
+/* PMID → NCBI E-utilities (esummary for citation, efetch for abstract), proxied. */
 export async function fetchByPMID(pmid){
   const id=String(pmid).trim().replace(/[^0-9]/g,"");
   if(!id) throw new Error("Enter a numeric PubMed ID.");
-  const sumResp=await fetch(`https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id=${id}&retmode=json`);
+  const sumResp=await fetch(`/api/citation/pubmed/esummary?id=${id}`,{credentials:"include"});
   if(!sumResp.ok) throw new Error("PubMed returned HTTP "+sumResp.status+".");
   const sum=await sumResp.json();
   const rec=sum.result&&sum.result[id];
@@ -201,7 +204,7 @@ export async function fetchByPMID(pmid){
   const yr=(rec.pubdate||"").match(/\d{4}/);
   let abstract="";
   try{
-    const abResp=await fetch(`https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pubmed&id=${id}&rettype=abstract&retmode=text`);
+    const abResp=await fetch(`/api/citation/pubmed/efetch?id=${id}`,{credentials:"include"});
     if(abResp.ok){ abstract=(await abResp.text()).replace(/\s+/g," ").trim().slice(0,4000); }
   }catch(_){}
   return {

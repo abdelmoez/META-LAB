@@ -54,6 +54,21 @@ export function validateConfig({ env = process.env } = {}) {
     }
   }
 
+  // Content-Security-Policy rollout mode (prompt 51). Unknown values fall back
+  // to report-only, but warn so a typo (e.g. "enforced") is noticed. Production
+  // must not silently DISABLE CSP — flag it as a warning so it is a deliberate,
+  // visible choice rather than an accident.
+  const cspRaw = String(env.CSP_MODE || '').trim().toLowerCase();
+  if (cspRaw && !['disabled', 'off', 'report-only', 'reportonly', 'report', 'enforce', 'enforcing', 'on'].includes(cspRaw)) {
+    warnings.push(`CSP_MODE="${env.CSP_MODE}" is not recognised — expected disabled | report-only | enforce (defaulting to report-only).`);
+  }
+  if (isProd && (cspRaw === 'disabled' || cspRaw === 'off')) {
+    warnings.push('CSP_MODE=disabled in production — Content-Security-Policy is OFF. Set report-only or enforce.');
+  }
+  if (!isProd && (cspRaw === 'enforce' || cspRaw === 'enforcing' || cspRaw === 'on')) {
+    warnings.push('CSP_MODE=enforce outside production — the STRICT production policy is enforced; if Node serves the Vite dev HTML, the HMR inline preamble may be blocked. Use report-only for everyday dev, or build first for a faithful enforce test.');
+  }
+
   // Email is optional, but half-configured email silently never sends.
   const hasHost = !!(env.SMTP_HOST && String(env.SMTP_HOST).trim());
   const hasFrom = !!(env.EMAIL_FROM && String(env.EMAIL_FROM).trim());

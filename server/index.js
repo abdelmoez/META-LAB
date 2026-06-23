@@ -39,6 +39,7 @@ import workflowStateRouter from './routes/workflowState.js';
 import searchEngineRouter  from './routes/searchEngine.js';
 import pecanSearchRouter    from './routes/pecanSearch.js';
 import waitlistRouter       from './routes/waitlist.js';
+import citationRouter       from './routes/citation.js';
 
 import { prisma } from './db/client.js';
 import { isWaitlistDbConfigured, redactedDbTarget } from './waitlist/config.js';
@@ -53,6 +54,8 @@ import { seedAdmins } from './auth/seedAdmins.js';
 import { getVersion } from './version.js';
 import { resolveCorsAllowlist, corsOriginDelegate } from './config/cors.js';
 import { runStartupConfigCheck } from './config/validateConfig.js';
+import { cspMiddleware, cspMode, CSP_REPORT_PATH } from './security/csp.js';
+import { cspReportHandler } from './security/cspReport.js';
 
 // prompt49 — fail-fast configuration diagnostic. In production a missing critical
 // value (JWT_SECRET / DATABASE_URL / CORS origin) aborts boot; in dev it warns.
@@ -80,19 +83,39 @@ function resolveTrustProxy(raw) {
 app.set('trust proxy', resolveTrustProxy(process.env.TRUST_PROXY));
 
 // ── Security headers ───────────────────────────────────────────────────────────
-// The API serves JSON only, so its CSP can be maximally strict (default-src 'none').
-// The SPA's own CSP lives in index.html (<meta http-equiv>) because the frontend
-// is served by Vite/nginx, not this process.
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'none'"],
-      frameAncestors: ["'none'"],
-      baseUri: ["'none'"],
-      formAction: ["'none'"],
-    },
-  },
-}));
+// helmet provides the well-tested baseline (X-Content-Type-Options: nosniff,
+// Referrer-Policy, Cross-Origin-Opener/Resource-Policy, Strict-Transport-Security,
+// X-Frame-Options, Origin-Agent-Cluster, …). CSP is handled by our own central
+// generator instead (server/security/csp.js, prompt 51) so it can: serve the SPA
+// HTML *and* the JSON API from one source of truth, attach a per-response nonce,
+// set frame-ancestors/report-to, and switch report-only ↔ enforce via CSP_MODE.
+// Disabling helmet's CSP here guarantees we never emit two conflicting policies.
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(cspMiddleware());
+
+// ── CSP violation reports (prompt 51) ──────────────────────────────────────────
+// Mounted FIRST — before the maintenance gate, the global JSON body parser and
+// every authenticated router — so browser reports always flow, carry no CSRF/auth
+// assumptions, and use a tight body limit + a dedicated rate limiter. The handler
+// sanitizes/redacts and logs one line; it never persists or reflects report data.
+const cspReportLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 120 : 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  // No body on rejection — a report endpoint must not become a chatty surface.
+  handler: (_req, res) => res.status(429).end(),
+});
+const cspReportParser = express.json({
+  type: ['application/csp-report', 'application/reports+json', 'application/json'],
+  limit: '16kb',
+});
+app.post(CSP_REPORT_PATH, cspReportLimiter, (req, res, next) => {
+  cspReportParser(req, res, (err) => {
+    if (err) return res.status(err.type === 'entity.too.large' ? 413 : 400).end();
+    return cspReportHandler(req, res);
+  });
+});
 
 // ── Rate limiter for auth routes (20 req / 15 min in production; relaxed in dev/test) ──
 const authLimiter = rateLimit({
@@ -278,6 +301,19 @@ app.use('/api/onboarding', onboardingRouter);
 // requireAuth applied inside the router. Backend-only ROR/local search.
 app.use('/api/institutions', institutionLimiter, institutionsRouter);
 
+// ── Citation metadata proxy (prompt 51 review fix) — same-origin pass-through to
+// CrossRef / NCBI for the DOI/PMID "Add Study" auto-fill, so the strict
+// `connect-src 'self'` CSP need not whitelist those external origins. requireAuth
+// (never an open relay) + a dedicated limiter (typeahead-ish, but bounded).
+const citationLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 120 : 1000,
+  message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+app.use('/api/citation', requireAuth, citationLimiter, citationRouter);
+
 // ── Realtime SSE stream (prompt6 Task 7) — own mount, NEVER under the
 // rate-limited /api/auth or /api/admin routers (requireAuth inside the router).
 app.use('/api/events', eventsRouter);
@@ -334,6 +370,7 @@ const PORT = process.env.PORT || 3001;
 const server = app.listen(PORT, () => {
   const { version, commit } = getVersion();
   console.log(`PecanRev API on :${PORT} (v${version} · ${commit})`);
+  console.log(`[csp] mode=${cspMode()} (CSP_MODE; disabled|report-only|enforce) → reports at ${CSP_REPORT_PATH}`);
   // Initialize default settings + ensure admin accounts exist (non-blocking)
   initDefaultSettings().catch(console.error);
   seedOnboardingQuestions().catch(err => console.error('[seed] onboarding seed failed:', err.message));

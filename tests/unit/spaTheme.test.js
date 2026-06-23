@@ -61,4 +61,18 @@ describe('buildThemeInjection', () => {
     const { mode } = parseGlobals(buildThemeInjection({ brandColor: '#2563eb' }, 'rainbow'));
     expect(mode).toBe('day');
   });
+
+  it('stamps a valid CSP nonce on the tag (prompt 51)', () => {
+    const tag = buildThemeInjection({ brandColor: '#2563eb' }, 'day', 'AbCd_1234-EfGhIjKl');
+    expect(tag.startsWith('<script nonce="AbCd_1234-EfGhIjKl">')).toBe(true);
+    // globals still parse with the nonce attribute present
+    const body = tag.replace(/^<script[^>]*>/, '').replace(/<\/script>$/, '');
+    expect(body).toContain('window.__METALAB_BRAND__=');
+  });
+
+  it('ignores a malformed nonce (no attribute injection)', () => {
+    const tag = buildThemeInjection({ brandColor: '#2563eb' }, 'day', 'evil" onload="x');
+    expect(tag.startsWith('<script>')).toBe(true); // bad nonce dropped → bare tag
+    expect(tag).not.toContain('onload');
+  });
 });

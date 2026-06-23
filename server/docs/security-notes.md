@@ -2,29 +2,44 @@
 
 ---
 
-## HTTP Security Headers — helmet
+## HTTP Security Headers — helmet + central CSP
 
-The server mounts `helmet` (v8.x) as the first middleware layer, before CORS and all route handlers.
+The server mounts `helmet` as the first middleware layer (before CORS and route
+handlers) for its well-tested header baseline, then a **central CSP generator**
+(`server/security/csp.js`, prompt 51) that owns Content-Security-Policy for both
+the JSON API and the server-rendered SPA HTML:
 
 ```js
-app.use(helmet({ contentSecurityPolicy: false }));
+app.use(helmet({ contentSecurityPolicy: false })); // helmet keeps its OTHER headers
+app.use(cspMiddleware());                           // our CSP is the single source of truth
 ```
 
-`contentSecurityPolicy` is disabled because the API server serves only JSON — no HTML or scripts. The frontend (Vite / React) manages its own CSP.
+helmet's CSP is disabled so we never emit **two** conflicting policies; CSP is
+instead generated centrally with a per-response nonce, report-only ↔ enforce
+modes (`CSP_MODE`), `frame-ancestors`, and a first-party report endpoint
+(`POST /api/csp-report`). Full design + every directive: **`docs/manager/csp-security.md`**.
 
 Helmet sets the following response headers automatically:
 
 | Header                          | Value / Effect |
 |---------------------------------|----------------|
 | X-DNS-Prefetch-Control          | off |
-| X-Frame-Options                 | SAMEORIGIN |
+| X-Frame-Options                 | SAMEORIGIN (legacy defense-in-depth; `frame-ancestors 'none'` is the primary control) |
 | X-Content-Type-Options          | nosniff |
 | Referrer-Policy                 | no-referrer |
 | X-Permitted-Cross-Domain-Policies | none |
 | Cross-Origin-Opener-Policy      | same-origin |
 | Cross-Origin-Resource-Policy    | same-origin |
 | Origin-Agent-Cluster            | ?1 |
-| Strict-Transport-Security       | max-age=15552000; includeSubDomains (production) |
+| Strict-Transport-Security       | max-age; includeSubDomains (production) |
+
+Plus, set by `cspMiddleware`:
+
+| Header | Value / Effect |
+|--------|----------------|
+| Content-Security-Policy *(or -Report-Only)* | Strict SPA policy (nonce + hash; no `unsafe-inline`/`unsafe-eval` in `script-src`) for HTML; `default-src 'none'` for `/api`. |
+| Permissions-Policy | Denies camera/microphone/geolocation/payment/usb/… ; `fullscreen=(self)`. |
+| Reporting-Endpoints | `csp-endpoint="/api/csp-report"`. |
 
 ---
 

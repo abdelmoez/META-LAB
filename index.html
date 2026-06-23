@@ -4,17 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!--
-      SPA Content-Security-Policy (defense-in-depth, prompt7 Task 7).
-      'unsafe-inline' is required by the inline-style architecture and the Vite
-      dev preamble; external script/connect origins are still locked down.
-      connect-src allows CrossRef + PubMed E-utilities (citation lookup).
-      NOTE: frame-ancestors cannot be set via <meta> — set it at the reverse
-      proxy in production (see docs/manager/security-and-diagnostics-report.md).
+      Content-Security-Policy is delivered as a real HTTP RESPONSE HEADER by the
+      server (server/security/csp.js, prompt 51) — NOT a <meta> tag. A header can
+      express frame-ancestors, report-to/report-uri and per-response nonces that a
+      <meta> cannot, and supports report-only ↔ enforce rollout via CSP_MODE.
+      The bootstrap <script> below is authorized by its SHA-256 hash; the server-
+      injected theme <script> by a per-response nonce. See docs/manager/csp-security.md.
     -->
-    <meta
-      http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; img-src 'self' data: blob:; connect-src 'self' https://api.crossref.org https://eutils.ncbi.nlm.nih.gov ws: wss:; worker-src 'self' blob:; frame-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
-    />
     <title>PecanRev — Systematic Review &amp; Meta-Analysis Platform</title>
     <meta
       name="description"

@@ -43,11 +43,15 @@ function safePalette(p) {
 }
 
 /**
- * buildThemeInjection(themeSettings, defaultTheme) → a <script> string defining
- * window.__METALAB_BRAND__ + window.__METALAB_DEFAULT_THEME__. Pure + testable.
- * `<` is escaped so no value can close the <script> early.
+ * buildThemeInjection(themeSettings, defaultTheme, nonce) → a <script> string
+ * defining window.__METALAB_BRAND__ + window.__METALAB_DEFAULT_THEME__. Pure +
+ * testable. `<` is escaped so no value can close the <script> early.
+ *
+ * When a CSP nonce is supplied (the production path, prompt 51) it is stamped on
+ * the tag so this DYNAMIC inline script is authorized by `script-src 'nonce-…'`.
+ * The nonce is validated to base64url, so it can never inject attribute markup.
  */
-export function buildThemeInjection(themeSettings, defaultTheme) {
+export function buildThemeInjection(themeSettings, defaultTheme, nonce) {
   const ts = themeSettings || {};
   const brand = {
     brandColor: HEX.test(ts.brandColor || '') ? ts.brandColor : '#4f46e5',
@@ -56,7 +60,8 @@ export function buildThemeInjection(themeSettings, defaultTheme) {
   };
   const mode = defaultTheme === 'night' || defaultTheme === 'day' ? defaultTheme : 'day';
   const json = (o) => JSON.stringify(o).replace(/</g, '\\u003c');
-  return `<script>window.__METALAB_BRAND__=${json(brand)};window.__METALAB_DEFAULT_THEME__=${json(mode)};</script>`;
+  const nonceAttr = (typeof nonce === 'string' && /^[A-Za-z0-9_-]{16,}$/.test(nonce)) ? ` nonce="${nonce}"` : '';
+  return `<script${nonceAttr}>window.__METALAB_BRAND__=${json(brand)};window.__METALAB_DEFAULT_THEME__=${json(mode)};</script>`;
 }
 
 /* ─── Cached IO ───────────────────────────────────────────────────────── */
@@ -74,7 +79,13 @@ let cache = { at: 0, tag: null };
 /** Force the next SPA request to re-read theme settings (called on theme writes). */
 export function bustThemeCache() { cache = { at: 0, tag: null }; }
 
-async function getInjectionTag() {
+/**
+ * Resolve the current {themeSettings, defaultTheme}. Cached (~10s TTL) so the
+ * SPA request adds no per-request DB cost. The theme TAG itself is built
+ * per-response (it carries the per-response CSP nonce), so only the inputs are
+ * cached, not the final tag string.
+ */
+async function getThemeInputs() {
   const now = Date.now();
   if (cache.tag != null && now - cache.at < TTL_MS) return cache.tag;
   let themeSettings = defaultThemeSettings();
@@ -91,14 +102,19 @@ async function getInjectionTag() {
       }
     }
   } catch { /* DB down → ship defaults, never break the page */ }
-  const tag = buildThemeInjection(themeSettings, defaultTheme);
-  cache = { at: now, tag };
-  return tag;
+  const inputs = { themeSettings, defaultTheme };
+  cache = { at: now, tag: inputs };
+  return inputs;
 }
 
 /**
  * Express handler: serve dist/index.html for SPA routes with the theme injected.
  * Skips /api/* (so JSON 404s still fire) and non-GET requests.
+ *
+ * The injected theme <script> carries the per-response CSP nonce that the CSP
+ * middleware placed on res.locals.cspNonce (prompt 51), so it is authorized by
+ * `script-src 'nonce-…'`. The static bootstrap script already in index.html is
+ * authorized by its hash, so it is left untouched here.
  */
 export async function serveSpa(req, res, next) {
   try {
@@ -106,7 +122,8 @@ export async function serveSpa(req, res, next) {
     if (req.path.startsWith('/api/')) return next();
     if (!spaEnabled()) return next();
     const html = getRawHtml();
-    const tag = await getInjectionTag();
+    const { themeSettings, defaultTheme } = await getThemeInputs();
+    const tag = buildThemeInjection(themeSettings, defaultTheme, res.locals && res.locals.cspNonce);
     // Inject right after <head> so the globals exist before the bootstrap runs.
     const out = html.includes('<head>') ? html.replace('<head>', `<head>${tag}`) : tag + html;
     res.set('Cache-Control', 'no-cache'); // HTML must revalidate so theme stays fresh
