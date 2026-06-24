@@ -19,6 +19,7 @@ import { emitToProjectMembers, emitToMetaLabProject } from '../realtime/bus.js';
 import { getMetaSiftSettings, getEffectiveQuorum } from '../screening/settings.js';
 import { snapshotPico } from '../screening/picoSnapshot.js';
 import { scorePair, normalizeTitle, classifyPair, DUP_TYPES } from '../../src/research-engine/screening/deduplication.js';
+import { csvRow } from '../utils/csv.js';
 
 // Human-readable label per duplicate type (se2.md §10), shown in the UI.
 const DUP_TYPE_LABEL = {
@@ -1224,10 +1225,12 @@ export async function exportRecords(req, res) {
       return res.send(ris);
     }
 
-    // CSV
+    // CSV — every cell goes through csvField (RFC-4180 quoting + spreadsheet
+    // formula-injection guard, prompt 53): study fields come from untrusted
+    // imports, so a title/notes value like `=HYPERLINK(...)` must not execute
+    // when the reviewer opens the export in Excel/Sheets.
     const cols = ['title','authors','year','journal','doi','pmid','decision','exclusionReason','notes','rating','isDuplicate','abstract'];
-    const escape = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const csv = [cols.join(','), ...filtered.map(r => cols.map(c => escape(r[c])).join(','))].join('\n');
+    const csv = [cols.join(','), ...filtered.map(r => csvRow(cols.map(c => r[c])))].join('\n');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="sift-export-${p.id.slice(0,8)}.csv"`);
     res.send(csv);

@@ -10,6 +10,7 @@
 import { prisma } from '../db/client.js';
 import { aggregateCounts, shapeSource } from './runService.js';
 import { PROVIDER_REGISTRY } from './config.js';
+import { csvField } from '../utils/csv.js';
 
 /** Build the full report object for a run. */
 export async function buildReport(runId) {
@@ -104,13 +105,9 @@ export function reportToCsv(report) {
   return [...meta, '', head, ...rows].join('\n');
 }
 
-/** Escape a CSV cell + neutralize spreadsheet formula-injection (=,+,-,@). */
-function csvCell(v) {
-  let s = v == null ? '' : String(v);
-  if (/^[=+\-@]/.test(s)) s = "'" + s;           // formula-injection guard
-  if (/[",\n\r]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
-  return s;
-}
+// CSV cell encoding (RFC-4180 quoting + spreadsheet formula-injection guard) is
+// centralized in server/utils/csv.js so every exporter shares one implementation.
+const csvCell = csvField;
 
 /** Print-friendly, self-contained HTML export (all dynamic text escaped). */
 export function reportToHtml(report) {
