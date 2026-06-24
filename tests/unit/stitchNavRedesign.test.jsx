@@ -1,0 +1,157 @@
+/**
+ * stitchNavRedesign.test.jsx — design2.md redesign guarantees.
+ *
+ * Pure tests over the centralized nav config + the small chrome helpers, plus SSR
+ * smoke assertions over the dashboard chrome (global rail = no standalone engines,
+ * white column = real menu not a project list, PecanRev branding, prominent
+ * welcome). Modal interaction lives behind portals (not rendered by
+ * renderToStaticMarkup), so deletion/Ops gating are validated via their extracted
+ * pure helpers instead.
+ */
+import { describe, it, expect, vi } from 'vitest';
+import { createElement as h } from 'react';
+import { renderToStaticMarkup } from 'react-dom/server';
+import {
+  GLOBAL_NAV, DASHBOARD_MENU, buildProjectNav, projectStageHref, SCREENING_SUBNAV,
+  screeningSubHref, readView, normalizeDashboardView, activeGlobalKey, globalHref,
+  dashboardHref, deleteConfirmMatches, welcomeGreeting, workflowStepCount,
+} from '../../src/frontend/stitch/nav/navConfig.js';
+
+describe('navConfig — global rail (design2.md Part 1)', () => {
+  it('contains only global destinations — no standalone engines', () => {
+    const keys = GLOBAL_NAV.map((g) => g.key);
+    expect(keys).toEqual(['dashboard', 'activity', 'invitations', 'help']);
+    expect(keys).not.toContain('screening');
+    expect(keys).not.toContain('rob');
+    expect(keys).not.toContain('ops'); // Ops moves to the profile dropdown (Part 3)
+  });
+  it('routes global destinations to the dashboard hub views', () => {
+    expect(globalHref(GLOBAL_NAV[0])).toBe('/app');
+    expect(globalHref(GLOBAL_NAV[1])).toBe('/app?view=activity');
+  });
+});
+
+describe('navConfig — dashboard menu (no duplicated project list)', () => {
+  it('is a workspace menu with real views', () => {
+    const keys = DASHBOARD_MENU.map((m) => m.view);
+    expect(keys).toContain('overview');
+    expect(keys).toContain('mywork');
+    expect(keys).toContain('invitations');
+    expect(keys).toContain('archived');
+    expect(keys).toContain('resources');
+  });
+  it('normalizes + routes views', () => {
+    expect(normalizeDashboardView('mywork')).toBe('mywork');
+    expect(normalizeDashboardView('nope')).toBe('overview');
+    expect(dashboardHref('overview')).toBe('/app');
+    expect(dashboardHref('archived')).toBe('/app?view=archived');
+    expect(readView('?view=invitations')).toBe('invitations');
+    expect(readView('?view=bogus')).toBe('overview');
+    expect(readView('')).toBe('overview');
+  });
+});
+
+describe('navConfig — project workflow nav (derived from legacy TABS)', () => {
+  const nav = buildProjectNav();
+  it('mirrors the legacy project + workflow + reference structure', () => {
+    expect(nav.project.map((s) => s.id)).toEqual(['overview', 'control']);
+    expect(nav.reference.map((s) => s.id)).toContain('methods');
+    expect(nav.phases.map((p) => p.phase)).toEqual(['Plan', 'Search', 'Screen', 'Extract', 'Analyze', 'Report']);
+    expect(nav.phases[0].label).toBe('Plan & Protocol'); // display label override
+    expect(nav.flat.length).toBe(18); // 2 project + 15 workflow + 1 reference
+    expect(workflowStepCount()).toBe(15);
+  });
+  it('opens each stage at its REAL destination by workflow name', () => {
+    expect(projectStageHref('overview', { projectId: 'p1' })).toBe('/app/project/p1');
+    expect(projectStageHref('screening', { projectId: 'p1', linkedSiftId: 's1' })).toBe('/sift-beta/projects/s1');
+    expect(projectStageHref('rob', { projectId: 'p1' })).toBe('/rob/p1');
+    expect(projectStageHref('pico', { projectId: 'p1' })).toBe('/app/project/p1?ui=legacy&tab=pico');
+    expect(projectStageHref('analysis', { projectId: 'p1' })).toBe('/app/project/p1?ui=legacy&tab=analysis');
+  });
+});
+
+describe('navConfig — screening contextual sub-nav (design2.md Part 6)', () => {
+  it('matches the canonical 8-item order + labels', () => {
+    expect(SCREENING_SUBNAV.map((s) => s.label)).toEqual([
+      'Overview', 'Import', 'Duplicates', 'Title & Abstract', 'Conflicts', 'Final Review', 'Settings', 'Export',
+    ]);
+  });
+  it('deep-links each subpage into the real screening engine', () => {
+    expect(screeningSubHref('import', { linkedSiftId: 's1' })).toBe('/sift-beta/projects/s1/import');
+    expect(screeningSubHref('conflicts', { linkedSiftId: 's1' })).toBe('/sift-beta/projects/s1?tab=conflicts');
+    expect(screeningSubHref('second-review', { linkedSiftId: 's1' })).toBe('/sift-beta/projects/s1?tab=second-review');
+    expect(screeningSubHref('overview', {})).toBeNull(); // no linked workspace yet
+  });
+});
+
+describe('navConfig — active-route matching (preserve deep links)', () => {
+  it('resolves the active global key', () => {
+    expect(activeGlobalKey('/app', '?view=activity')).toBe('activity');
+    expect(activeGlobalKey('/app', '')).toBe('dashboard');
+    expect(activeGlobalKey('/app/project/p1', '')).toBe('dashboard');
+    expect(activeGlobalKey('/profile', '')).toBeNull();
+  });
+});
+
+describe('chrome helpers — deletion confirm + welcome (Parts 1)', () => {
+  it('gates deletion on an exact (trimmed, case-sensitive) name match', () => {
+    expect(deleteConfirmMatches('Cherry', 'Cherry')).toBe(true);
+    expect(deleteConfirmMatches('  Cherry  ', 'Cherry')).toBe(true); // whitespace lenient
+    expect(deleteConfirmMatches('cherry', 'Cherry')).toBe(false);    // case sensitive
+    expect(deleteConfirmMatches('', '')).toBe(false);                 // empty never matches
+    expect(deleteConfirmMatches('مشروع البحث', 'مشروع البحث')).toBe(true); // unicode/arabic
+    expect(deleteConfirmMatches('Project: A/B (2024)', 'Project: A/B (2024)')).toBe(true); // punctuation
+  });
+  it('never renders "Welcome, undefined", an email or a placeholder', () => {
+    expect(welcomeGreeting('Test Admin')).toBe('Welcome, Test');
+    expect(welcomeGreeting('')).toBe('Welcome back');
+    expect(welcomeGreeting(undefined)).toBe('Welcome back');
+    expect(welcomeGreeting('  ')).toBe('Welcome back');
+    expect(welcomeGreeting('user@example.com')).toBe('Welcome back'); // email guard
+  });
+});
+
+/* ─── SSR chrome smoke (mocks like the existing Stitch tests) ─────────────────── */
+vi.mock('../../src/frontend/context/AuthContext.jsx', () => ({
+  useAuth: () => ({ user: { id: 'u1', name: 'Maya Lopez', email: 'm@b.co', role: 'admin' }, logout: () => {} }),
+}));
+vi.mock('../../src/frontend/theme/ThemeContext.jsx', () => ({ useTheme: () => ({ theme: 'day', toggleTheme: () => {} }) }));
+vi.mock('../../src/frontend/design/DesignModeContext.jsx', () => ({
+  useDesignMode: () => ({ mode: 'stitch', isStitch: true, isAdmin: true, setMode: () => {}, toggle: () => {} }),
+}));
+vi.mock('react-router-dom', () => ({
+  useNavigate: () => () => {},
+  useLocation: () => ({ pathname: '/app', search: '' }),
+  useParams: () => ({}),
+}));
+vi.mock('../../src/frontend/api-client/apiClient.js', () => ({
+  api: { projects: { list: () => new Promise(() => {}) } },
+}));
+
+const StitchDashboard = (await import('../../src/frontend/stitch/pages/StitchDashboard.jsx')).default;
+
+describe('StitchDashboard chrome (SSR)', () => {
+  const html = renderToStaticMarkup(h(StitchDashboard));
+
+  it('global rail has the global destinations and NO standalone engines', () => {
+    expect(html).toContain('aria-label="Dashboard"');
+    expect(html).toContain('aria-label="Activity"');
+    expect(html).toContain('aria-label="Help &amp; Feedback"'); // & is HTML-escaped in SSR
+    expect(html).not.toContain('aria-label="Risk of Bias"');
+    expect(html).not.toContain('aria-label="Screening"'); // no engine button in the global rail
+  });
+
+  it('uses PecanRev branding and a prominent welcome — not "Research OS"', () => {
+    expect(html).toContain('PecanRev');
+    expect(html).toContain('Welcome, Maya');
+    expect(html).not.toContain('Research OS');
+  });
+
+  it('white column is a menu, not a duplicated project list', () => {
+    expect(html).toContain('Workspace Overview');
+    expect(html).toContain('My Work');
+    expect(html).toContain('Archived Projects');
+    expect(html).toContain('Resources');
+    expect(html).not.toMatch(/YOUR PROJECTS/i);
+  });
+});

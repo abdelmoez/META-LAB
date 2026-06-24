@@ -25,7 +25,7 @@ vi.mock('../../src/frontend/api-client/apiClient.js', () => ({
   api: { projects: { get: never, list: never }, studies: { list: never }, exportProject: never },
 }));
 vi.mock('../../src/frontend/screening/api-client/screeningApi.js', () => ({
-  screeningApi: { listMembers: never, summary: never, getProject: never },
+  screeningApi: { listMembers: never, getOverview: never, getProject: never },
 }));
 vi.mock('../../src/frontend/pages/admin/adminApiClient.js', () => ({
   adminApi: new Proxy({}, { get: () => never }),
@@ -39,7 +39,7 @@ const StitchOpsConsole = (await import('../../src/frontend/stitch/pages/StitchOp
 describe('StitchProjectOverview (SSR smoke)', () => {
   it('renders the shell without crashing in its initial state', () => {
     const html = renderToStaticMarkup(h(StitchProjectOverview));
-    expect(html).toContain('aria-label="Primary"'); // shell primary rail mounted
+    expect(html).toContain('aria-label="Project workflow"'); // project workflow rail mounted
     expect(html.length).toBeGreaterThan(200);
   });
 });

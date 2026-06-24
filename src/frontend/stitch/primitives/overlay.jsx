@@ -138,6 +138,8 @@ export function StitchTooltip({ label, children, placement = 'top' }) {
     const map = {
       top: { left: r.left + r.width / 2, top: r.top - 8, tx: '-50%', ty: '-100%' },
       bottom: { left: r.left + r.width / 2, top: r.bottom + 8, tx: '-50%', ty: '0' },
+      right: { left: r.right + 10, top: r.top + r.height / 2, tx: '0', ty: '-50%' },
+      left: { left: r.left - 10, top: r.top + r.height / 2, tx: '-100%', ty: '-50%' },
     };
     setCoords(map[placement] || map.top);
     setShow(true);

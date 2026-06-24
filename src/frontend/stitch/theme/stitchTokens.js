@@ -120,15 +120,33 @@ export const STITCH_DARK = {
 
 /* ─── Non-color tokens (shared across themes) ─────────────────────────────── */
 export const STITCH_SHAPE = {
-  railPrimary: '72px',
-  railContext: '280px',
-  gutter:      '24px',
-  cardPad:     '20px',
+  railPrimary:  '72px',
+  railExpanded: '248px',  // hover/focus-expanded width of the project workflow rail
+  railContext:  '280px',  // contextual white column (design2.md Part 6: 240–300px)
+  gutter:       '24px',
+  cardPad:      '20px',
   radiusControl: '8px',
   radiusCardSm:  '12px',
   radiusCard:    '16px',
   radiusModal:   '16px',
   radiusPill:    '9999px',
+};
+
+/* ─── Fixed deep-purple rail palette (brand anchor — does NOT flip day/night) ───
+   Aligned to the Stitch design source (vivid_enterprise/DESIGN.md): primary
+   #5d509c, primary-container #7669b6 (hover/active fill), and the green
+   secondary-container #96f591 as the active indicator bar. One tokenized purple —
+   design2.md Part 9: "no multiple competing shades of purple without tokens". */
+export const STITCH_RAIL = {
+  bg:        '#5d509c',
+  bgHover:   '#7669b6',
+  active:    'rgba(255,255,255,0.16)',
+  indicator: '#96f591',
+  text:      '#ffffff',
+  idle:      0.64,
+  expandedWidth: 248,
+  collapsedWidth: 72,
+  transition: '180ms cubic-bezier(0.4, 0, 0.2, 1)',
 };
 
 export const STITCH_FONT = "'Manrope', 'Inter', system-ui, sans-serif";
@@ -166,6 +184,7 @@ S.radiusCardSm = STITCH_SHAPE.radiusCardSm;
 S.radiusCard = STITCH_SHAPE.radiusCard;
 S.radiusModal = STITCH_SHAPE.radiusModal;
 S.radiusPill = STITCH_SHAPE.radiusPill;
+S.railExpanded = STITCH_SHAPE.railExpanded;
 
 /** Theme-aware translucency, same contract as tokens.js `alpha`. */
 export function salpha(color, a) {
@@ -242,6 +261,12 @@ html[data-ui-design="stitch"] body {
   font-size: 14px;
   line-height: 1.6;
 }
+/* Manrope across the WHOLE Stitch theme — including portaled overlays (modals,
+   menus, dropdowns, tooltips, toasts, drawers) which mount on document.body but
+   inside the design-mode root and carry the .stitch-scope class. Set on the SCOPE
+   container only (not every descendant) so explicitly monospaced technical fields
+   keep their monospace font (design2.md Part 2). */
+html[data-ui-design="stitch"] .stitch-scope { font-family: ${STITCH_FONT}; }
 html[data-ui-design="stitch"] ::selection { background: color-mix(in srgb, var(--stitch-brand) 24%, transparent); }
 html[data-ui-design="stitch"] .stitch-scope ::-webkit-scrollbar { width: 10px; height: 10px; }
 html[data-ui-design="stitch"] .stitch-scope ::-webkit-scrollbar-track { background: transparent; }
@@ -261,9 +286,40 @@ html[data-ui-design="stitch"] a.stitch-link:focus-visible {
 @keyframes stitchScaleIn { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
 html[data-ui-design="stitch"] .stitch-fade-in { animation: stitchFadeIn 0.22s ease-out both; }
 html[data-ui-design="stitch"] .stitch-scale-in { animation: stitchScaleIn 0.16s ease-out both; }
+
+/* Project workflow rail (design2.md Part 5): collapsed 72px (icons only), expands
+   to reveal full labels on hover, on keyboard focus-within, OR via an explicit
+   toggle ([data-expanded="true"]) for touch/keyboard. It expands as an OVERLAY so
+   the page content never reflows. */
+html[data-ui-design="stitch"] .stitch-prail { position: relative; width: ${STITCH_RAIL.collapsedWidth}px; flex-shrink: 0; height: 100%; }
+html[data-ui-design="stitch"] .stitch-prail-overlay {
+  position: absolute; left: 0; top: 0; bottom: 0; width: ${STITCH_RAIL.collapsedWidth}px; overflow: hidden;
+  background: ${STITCH_RAIL.bg}; display: flex; flex-direction: column;
+  transition: width ${STITCH_RAIL.transition}, box-shadow ${STITCH_RAIL.transition}; z-index: 45;
+}
+html[data-ui-design="stitch"] .stitch-prail-overlay:hover,
+html[data-ui-design="stitch"] .stitch-prail-overlay:focus-within,
+html[data-ui-design="stitch"] .stitch-prail[data-expanded="true"] .stitch-prail-overlay {
+  width: ${STITCH_RAIL.expandedWidth}px; box-shadow: 14px 0 36px rgba(16,18,30,0.22);
+}
+html[data-ui-design="stitch"] .stitch-prail-label {
+  opacity: 0; transition: opacity 120ms ease; white-space: nowrap; pointer-events: none;
+}
+html[data-ui-design="stitch"] .stitch-prail-overlay:hover .stitch-prail-label,
+html[data-ui-design="stitch"] .stitch-prail-overlay:focus-within .stitch-prail-label,
+html[data-ui-design="stitch"] .stitch-prail[data-expanded="true"] .stitch-prail-label { opacity: 1; }
+/* Phase group headers collapse to nothing while the rail is collapsed (no gaps). */
+html[data-ui-design="stitch"] .stitch-prail-group { max-height: 0; opacity: 0; overflow: hidden; transition: max-height 140ms ease, opacity 140ms ease; }
+html[data-ui-design="stitch"] .stitch-prail-overlay:hover .stitch-prail-group,
+html[data-ui-design="stitch"] .stitch-prail-overlay:focus-within .stitch-prail-group,
+html[data-ui-design="stitch"] .stitch-prail[data-expanded="true"] .stitch-prail-group { max-height: 34px; opacity: 1; }
+
 @media (prefers-reduced-motion: reduce) {
   html[data-ui-design="stitch"] .stitch-fade-in,
   html[data-ui-design="stitch"] .stitch-scale-in { animation: none; }
+  html[data-ui-design="stitch"] .stitch-prail-overlay,
+  html[data-ui-design="stitch"] .stitch-prail-group,
+  html[data-ui-design="stitch"] .stitch-prail-label { transition: none !important; }
   html[data-ui-design="stitch"] * { scroll-behavior: auto !important; }
 }
 `;

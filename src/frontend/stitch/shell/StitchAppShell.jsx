@@ -26,15 +26,33 @@ const RESPONSIVE_CSS = `
 @media (min-width: 1024px) {
   html[data-ui-design="stitch"] .stitch-mobile-only { display: none !important; }
 }
-@media (max-width: 1279px) {
+/* The contextual column is hidden exactly where the off-canvas drawer takes over
+   (< 1024px), so there is never a band where it is hidden with no way to reopen it
+   (the drawer's hamburger only appears < 1024px). On small laptops / tablet
+   landscape (1024–1279px) it stays visible. */
+@media (max-width: 1023px) {
   html[data-ui-design="stitch"] .stitch-context-rail { display: none !important; }
 }
 `;
 
 export default function StitchAppShell({
-  activeKey, contextRail, breadcrumb, children, maxWidth = 1320, contentPad = true,
+  activeKey, contextRail, contextRailMobile, breadcrumb, children, maxWidth = 1320, contentPad = true,
+  renderPrimaryRail,
 }) {
   const [navOpen, setNavOpen] = useState(false);
+
+  // The primary rail is pluggable: global pages use the default global rail; the
+  // project workspace passes its own collapsible workflow rail. `variant` lets the
+  // rail render differently on desktop (collapsible overlay) vs the mobile drawer
+  // (a static, always-expanded column).
+  const rail = (variant) => (renderPrimaryRail ? renderPrimaryRail(variant) : <StitchPrimaryRail activeKey={activeKey} />);
+
+  // In the mobile drawer a 280px contextual column would push the page off-screen
+  // alongside a full-width rail (design2.md: "avoid two permanently visible
+  // sidebars"). Pages that pass a wide project rail set contextRailMobile={null}
+  // so the drawer shows only the (full-label) rail; the secondary nav is reachable
+  // inside the stage it belongs to.
+  const mobileContext = contextRailMobile !== undefined ? contextRailMobile : contextRail;
 
   return (
     <StitchToastProvider>
@@ -43,15 +61,15 @@ export default function StitchAppShell({
       <div className="stitch-scope" style={{ display: 'flex', height: '100vh', width: '100%', overflow: 'hidden', background: S.surface, fontFamily: S.font, color: S.textPrimary }}>
         {/* Desktop rails */}
         <div className="stitch-desktop-nav" style={{ display: 'flex', height: '100%', flexShrink: 0 }}>
-          <StitchPrimaryRail activeKey={activeKey} />
+          {rail('desktop')}
           {contextRail ? <div className="stitch-context-rail" style={{ display: 'flex', height: '100%' }}>{contextRail}</div> : null}
         </div>
 
         {/* Mobile off-canvas nav (primary + context stacked) */}
-        <StitchDrawer open={navOpen} onClose={() => setNavOpen(false)} side="left" width={352} label="Navigation">
+        <StitchDrawer open={navOpen} onClose={() => setNavOpen(false)} side="left" width={mobileContext ? 352 : 280} label="Navigation">
           <div style={{ display: 'flex', height: '100%' }}>
-            <StitchPrimaryRail activeKey={activeKey} />
-            {contextRail ? <div style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex' }}>{contextRail}</div> : null}
+            {rail('mobile')}
+            {mobileContext ? <div style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex' }}>{mobileContext}</div> : null}
           </div>
         </StitchDrawer>
 
