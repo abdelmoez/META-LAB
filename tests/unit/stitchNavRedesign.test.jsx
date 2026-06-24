@@ -65,7 +65,12 @@ describe('navConfig — project workflow nav (derived from legacy TABS)', () => 
     expect(projectStageHref('overview', { projectId: 'p1' })).toBe('/app/project/p1');
     expect(projectStageHref('screening', { projectId: 'p1', linkedSiftId: 's1' })).toBe('/sift-beta/projects/s1');
     expect(projectStageHref('rob', { projectId: 'p1' })).toBe('/rob/p1');
-    expect(projectStageHref('pico', { projectId: 'p1' })).toBe('/app/project/p1?ui=legacy&tab=pico');
+    // design3: native Stitch deep-tool stages route via ?tab= (no ?ui=legacy flip)
+    expect(projectStageHref('pico', { projectId: 'p1' })).toBe('/app/project/p1?tab=pico');
+    expect(projectStageHref('control', { projectId: 'p1' })).toBe('/app/project/p1?tab=control');
+    expect(projectStageHref('search', { projectId: 'p1' })).toBe('/app/project/p1?tab=search');
+    expect(projectStageHref('discovery', { projectId: 'p1' })).toBe('/app/project/p1?tab=discovery');
+    // monolith-only stages still open the classic workspace by workflow name
     expect(projectStageHref('analysis', { projectId: 'p1' })).toBe('/app/project/p1?ui=legacy&tab=analysis');
   });
 });

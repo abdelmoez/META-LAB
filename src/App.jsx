@@ -42,6 +42,7 @@ const BetaWaitlistPreview = lazy(() => import('./frontend/pages/waitlist/BetaWai
 const StitchDashboard       = lazy(() => import('./frontend/stitch/pages/StitchDashboard.jsx'));
 const StitchProfile         = lazy(() => import('./frontend/stitch/pages/StitchProfile.jsx'));
 const StitchProjectOverview = lazy(() => import('./frontend/stitch/pages/StitchProjectOverview.jsx'));
+const StitchProjectWorkspace = lazy(() => import('./frontend/stitch/pages/StitchProjectWorkspace.jsx'));
 const StitchOpsConsole      = lazy(() => import('./frontend/stitch/pages/StitchOpsConsole.jsx'));
 
 /* Minimal theme-token loading state shown while a route chunk downloads. */
@@ -210,7 +211,7 @@ export default function App() {
         <Route path="/app"      element={<ProtectedRoute><OnboardingGate><DesignRoute legacy={<ProjectLanding />} stitch={<StitchDashboard />} /></OnboardingGate></ProtectedRoute>} />
 
         {/* Protected workspace — opens one project by id into the existing overview/workflow */}
-        <Route path="/app/project/:projectId" element={<ProtectedRoute><OnboardingGate><DesignRoute legacy={<AppWorkspace />} stitch={<StitchProjectOverview />} /></OnboardingGate></ProtectedRoute>} />
+        <Route path="/app/project/:projectId" element={<ProtectedRoute><OnboardingGate><DesignRoute legacy={<AppWorkspace />} stitch={<StitchProjectWorkspace />} /></OnboardingGate></ProtectedRoute>} />
 
         {/* Protected profile */}
         <Route path="/profile"  element={<ProtectedRoute><OnboardingGate><DesignRoute legacy={<Profile />} stitch={<StitchProfile />} /></OnboardingGate></ProtectedRoute>} />

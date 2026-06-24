@@ -87,7 +87,14 @@ export function dashboardHref(view) {
 // routes (no design flip); every other monolith stage opens the classic workspace
 // tab. Overview is the Stitch-native project page.
 const STAGE_KIND = {
-  overview: 'stitch',     // /app/project/:id  (this very Stitch page)
+  overview: 'stitch',     // /app/project/:id  (the Stitch project overview)
+  // design3: these deep tools now have NATIVE Stitch pages (StitchProjectWorkspace
+  // renders them in the Stitch shell), so they route via ?tab= with NO ?ui=legacy.
+  control: 'stitch',
+  pico: 'stitch',
+  prospero: 'stitch',
+  search: 'stitch',
+  discovery: 'stitch',
   screening: 'screening', // standalone screening engine
   rob: 'rob',             // standalone RoB workspace
 };
@@ -141,7 +148,9 @@ export function projectStageHref(stage, ctx = {}) {
   const kind = typeof stage === 'string' ? stageKind(stage) : stage.kind;
   switch (kind) {
     case 'stitch':
-      return `/app/project/${pid}`;
+      // overview is the bare project route; other native stages carry ?tab=<id>
+      // so StitchProjectWorkspace renders them natively (no legacy design flip).
+      return id === 'overview' ? `/app/project/${pid}` : `/app/project/${pid}?tab=${encodeURIComponent(id)}`;
     case 'screening':
       return ctx.linkedSiftId ? `/sift-beta/projects/${encodeURIComponent(ctx.linkedSiftId)}` : `/app/project/${pid}?ui=legacy&tab=screening`;
     case 'rob':
