@@ -102,15 +102,22 @@ renders once, in the top bar, on every linked project page.
 ## Theme-compliance audit (§10)
 
 Phase-1 fanned out per engine. Result: the screening engine, extraction, PICO/protocol,
-search builder etc. already harmonize because they style via `C`/`var(--t-*)` tokens which
-`legacyRemap` re-tunes under `html[data-ui-design="stitch"]`. **Fixed** (genuine hardcoded
-hex that broke dark mode in BOTH themes): `rob/judgmentStyle.js` (on-screen pill `bg/fg`
-now token-based; `hex` kept absolute for the SVG/PNG export rasteriser), `nmaTab.jsx`
-(button text, banners, readiness/status colors → tokens / `color-mix`). **Documented
-follow-ons** (cosmetic, lower value): live forest-plot palette re-tune to Stitch brand
-(`charts.jsx` — currently legacy-tuned but legible), notification-badge contrast on the
-remapped danger color, screening toggle-thumb `#fff`. The modal/drawer dark scrim flagged
-by an agent is correct (dark scrims are standard in both light + dark) — left as-is.
+search builder, the funnel plot etc. already harmonize because they style via
+`C`/`var(--t-*)` tokens which `legacyRemap` re-tunes under `html[data-ui-design="stitch"]`.
+**Fixed** (genuine hardcoded hex that broke dark mode / looked off-brand in BOTH themes):
+
+- `rob/judgmentStyle.js` — on-screen pill `bg/fg` now token-based (`hex` kept absolute for the SVG/PNG export rasteriser).
+- `workspace/tabs/nmaTab.jsx` — button text, banners, readiness/status colors → tokens / `color-mix`.
+- `workspace/charts/charts.jsx` (**recs round**) — the LIVE forest plot now follows the app
+  theme TOKENS (like the funnel plot already did) instead of a fixed indigo DARK/LIGHT
+  palette, so it harmonizes with the Stitch light/dark themes (and a custom admin brand)
+  and the legacy themes. The publication/"Dark (screen)" EXPORT render (`live=false`) keeps
+  its absolute hex unchanged.
+
+**Verified non-issues:** the modal/drawer dark scrim (dark scrims are standard in both
+light + dark), the notification badge (`C.accText` on `C.red` resolves to readable
+fg/bg in both themes), and the white toggle-thumb/avatar text (white-on-colored is the
+standard, theme-independent pattern). Left as-is.
 
 ## Files changed
 
@@ -140,11 +147,19 @@ Legacy theme, all routes, permissions, role gating, screening/extraction/analysi
 reference data, presence, project switching, admin-only design switching, deep links,
 autosave — all preserved. No data reset/reseed.
 
+## Required-review fixes (post-implementation, all confirmed)
+
+A fresh 4-lens (UX / architecture / a11y / correctness) adversarial review with per-finding
+verification reported **zero confirmed high-severity issues**. Fixed: white focus ring on the
+purple rail (WCAG 2.4.7 — the brand ring was purple-on-purple, invisible); disabled screening
+rows now expose the "available once screening is set up" reason in `aria-label` (a disabled
+button can't receive the hover tooltip). Also self-caught + fixed: the unpinned reserved rail
+width was tied to `--prail-w` (would reflow content on hover) → fixed to a constant; the mobile
+drawer rail labels were hidden (not inside `.stitch-wsnav`) → `stitch-prail-static` reveal rule.
+
 ## Remaining limitations (honest)
 
-- Mobile is a single stacked drawer (rail + submenu) — functional, but a layered
-  category→submenu drill-down is a follow-on.
-- Forest-plot/PRISMA on-screen palette re-tune to Stitch brand + the minor cosmetic theme
-  items above are documented follow-ons (legible today; legacyRemap covers the bulk).
+- Mobile is a single stacked drawer (rail + submenu, full-label) — functional, with pinning
+  correctly disabled on small screens; a layered category→submenu drill-down is a follow-on.
 - Visual-regression (Playwright) coverage of every nav state is scaffolded (`playwright.config.ts`)
-  but the spec suite is a remaining QA pass.
+  but the spec suite is a remaining QA pass (needs a running app + auth, out of scope here).

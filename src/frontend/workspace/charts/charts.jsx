@@ -19,15 +19,18 @@ export function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",sh
     <div style={{fontSize:32,marginBottom:8}}>🌲</div>Enter effect sizes for at least 2 studies to generate a forest plot
   </div>);
   const{studies,pES,lo95,hi95,I2,Q,Qpval,tau2,k,pval}=result;
-  // prompt19 — the LIVE on-screen plot follows the app theme (day=light, night=dark)
-  // and scales to its container; the EXPORT render (live=false) keeps the absolute
-  // dark hex so the downloaded "Dark (screen)" artifact never changes. The white
-  // "Light (publication)" export is a separate builder and is untouched.
+  // prompt19 / 56.md §10 — the LIVE on-screen plot follows the app theme TOKENS (C),
+  // so it harmonizes with the legacy day/night themes AND the Stitch light/dark
+  // themes (incl. a custom admin brand) exactly like the funnel plot — no fixed
+  // indigo palette. The EXPORT render (live=false) keeps the absolute dark hex so
+  // the downloaded "Dark (screen)" artifact never changes; the white "Light
+  // (publication)" export is a separate builder (svgBuilders.js) and is untouched.
   const DARK={txt:"#eaecf6",dim:"#253050",brd:"#1f2640",muted:"#536080",acc:"#818cf8",grn:"#34d399"};
-  const LIGHT={txt:"#0f172a",dim:"#64748b",brd:"#e2e8f0",muted:"#64748b",acc:"#4f46e5",grn:"#059669"};
-  const dayLive=live&&theme==="day";
-  const FC=dayLive?LIGHT:DARK;
-  const BG=dayLive?"#ffffff":"#0e1420";
+  const LIVE={txt:C.txt,dim:C.dim,brd:C.brd,muted:C.muted,acc:C.acc,grn:C.grn};
+  const FC=live?LIVE:DARK;
+  const BG=live?C.card:"#0e1420";
+  const nullGrid=live?themeAlpha(C.acc,'40'):"#38bdf855";
+  const liveBorder=live?C.brd:"#1f2640";
   const isLog=esType&&ES_TYPES[esType]&&ES_TYPES[esType].log;
   const isProp=esType==="PROP";
   const bt=x=>{ if(isLog)return Math.exp(x); if(isProp){const e=Math.exp(x);return e/(1+e);} return x; };
@@ -65,7 +68,7 @@ export function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",sh
         // prompt39 Task 4 — the live plot caps at its natural width; margin-inline
         // auto CENTERS that capped block in the (wider) container instead of
         // left-aligning it. Export render (live=false) is unaffected.
-        ...(live?{width:"100%",height:"auto",maxWidth:Math.round(W*1.5),margin:"0 auto",border:`1px solid ${dayLive?"#e2e8f0":"#1f2640"}`}:{})}}>
+        ...(live?{width:"100%",height:"auto",maxWidth:Math.round(W*1.5),margin:"0 auto",border:`1px solid ${liveBorder}`}:{})}}>
       <rect x={0} y={0} width={W} height={H} fill={BG}/>
       {/* Header row */}
       <text x={padL} y={26} fontSize={11} fill={FC.txt} fontWeight={700}>Study</text>
@@ -80,7 +83,7 @@ export function ForestPlot({result,esLabel="Effect Size",nullLine=0,esType="",sh
       {showWeights&&<text x={colWrX} y={32} fontSize={9} fill={FC.dim}>(random)</text>}
       <line x1={padL} y1={TOP-4} x2={W-6} y2={TOP-4} stroke={FC.brd}/>
       {/* grid + null line */}
-      {gridVals.map(v=><line key={v} x1={xS(v)} y1={TOP} x2={xS(v)} y2={TOP+k*ROW} stroke={v===nullLine?"#38bdf855":FC.brd} strokeWidth={v===nullLine?1.5:0.5} strokeDasharray={v===nullLine?"none":"3,3"}/>)}
+      {gridVals.map(v=><line key={v} x1={xS(v)} y1={TOP} x2={xS(v)} y2={TOP+k*ROW} stroke={v===nullLine?nullGrid:FC.brd} strokeWidth={v===nullLine?1.5:0.5} strokeDasharray={v===nullLine?"none":"3,3"}/>)}
       <line x1={xS(nullLine)} y1={TOP-4} x2={xS(nullLine)} y2={TOP+k*ROW+6} stroke={FC.muted} strokeWidth={1}/>
       {studies.map((s,i)=>{
         const cy=yP(i),x1=xS(s._lo),x2=xS(s._hi),xc=xS(s._es),sq=Math.max(4,Math.min(12,(s._wFixedPct||10)/4+3));
