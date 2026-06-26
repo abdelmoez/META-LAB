@@ -14,14 +14,13 @@
  * status all match the legacy application exactly (design2.md Part 5/12: "rely on
  * the same underlying workflow truth"). We do NOT re-invent stage names here.
  *
- * ROUTING CONTRACT (design2.md "Preserve deep links"): every destination is an
- * EXISTING route. Deep workflow tools that have no Stitch-native page open in their
- * real engine:
- *   - Screening  → the standalone screening engine  /sift-beta/projects/:linkedId
- *   - Risk of Bias → the standalone RoB workspace    /rob/:projectId
- *   - all other monolith stages → the classic workspace /app/project/:id?ui=legacy&tab=<id>
- * These are labelled by their USER-FACING workflow name — never "classic/legacy
- * view" — so the rail communicates one integrated research workflow while every
+ * ROUTING CONTRACT (design4.md "Unified application shell"): every project workflow
+ * stage opens INSIDE the one shared Stitch project workspace at
+ * `/app/project/:id?tab=<stage>` (overview is the bare project route). No stage
+ * escapes to a standalone engine route (`/sift-beta`, `/rob`) or to the classic
+ * monolith (`?ui=legacy`). The engines stay separate at the backend/service level
+ * (each tab mounts its own engine component + APIs), but the rail communicates one
+ * integrated research workflow — same shell, same header, same presence — and every
  * route, permission and piece of state is preserved.
  *
  * Pure module: no React, no DOM. Trivially unit-testable.
@@ -83,22 +82,17 @@ export function dashboardHref(view) {
    Derived 1:1 from the legacy TABS so order/labels/icons/phases match the classic
    application. `kind` decides how the stage opens (see ROUTING CONTRACT above). */
 
-// How each stage id opens. Screening + RoB have dedicated self-contained engine
-// routes (no design flip); every other monolith stage opens the classic workspace
-// tab. Overview is the Stitch-native project page.
-const STAGE_KIND = {
-  overview: 'stitch',     // /app/project/:id  (the Stitch project overview)
-  // design3: these deep tools now have NATIVE Stitch pages (StitchProjectWorkspace
-  // renders them in the Stitch shell), so they route via ?tab= with NO ?ui=legacy.
-  control: 'stitch',
-  pico: 'stitch',
-  prospero: 'stitch',
-  search: 'stitch',
-  discovery: 'stitch',
-  screening: 'screening', // standalone screening engine
-  rob: 'rob',             // standalone RoB workspace
-};
-function stageKind(id) { return STAGE_KIND[id] || 'monolith'; }
+// design4.md "Unified application shell": EVERY project workflow stage now renders
+// inside the ONE shared Stitch project workspace (StitchProjectWorkspace) via the
+// `?tab=` route — there is no longer a stage that escapes to a standalone engine
+// shell (`/sift-beta`, `/rob`) or to the classic monolith (`?ui=legacy`). The
+// engines stay SEPARATE at the backend/service level (each tab mounts its own
+// proven engine component + APIs), but from the user's perspective screening, RoB,
+// extraction, meta-analysis, PRISMA and reporting are all native parts of the same
+// PecanRev application: same rail, same header, same presence, no "back to the main
+// app" trip. `kind` is therefore 'stitch' for everything (overview is the bare
+// project route; all other stages carry ?tab=<id>).
+function stageKind() { return 'stitch'; }
 
 /** A single project stage descriptor used by the rail + contextual nav. */
 function toStage(t) {
@@ -109,7 +103,7 @@ function toStage(t) {
     phase: t.phase || null,
     num: t.num || null,
     group: t.group || (t.phase ? 'workflow' : null),
-    kind: stageKind(t.id),
+    kind: stageKind(),
   };
 }
 
@@ -135,37 +129,27 @@ export function workflowStepCount() {
 }
 
 /**
- * The canonical destination for a project stage.
- * ctx = { projectId, linkedSiftId }.
- * - stitch:    the Stitch overview route (no design flip)
- * - screening: the standalone screening engine (own chrome)
- * - rob:       the standalone RoB workspace
- * - monolith:  the classic workspace tab (?ui=legacy keeps every feature working)
+ * The canonical destination for a project stage — ALWAYS the unified Stitch project
+ * workspace (design4.md). Overview is the bare project route; every other stage
+ * (including screening, RoB, extraction, meta-analysis, PRISMA, reporting) carries
+ * `?tab=<id>` so StitchProjectWorkspace renders it natively inside the one shared
+ * shell. No stage escapes to a standalone engine route or `?ui=legacy`.
+ * ctx = { projectId }.
  */
 export function projectStageHref(stage, ctx = {}) {
   const pid = encodeURIComponent(ctx.projectId || '');
   const id = typeof stage === 'string' ? stage : stage.id;
-  const kind = typeof stage === 'string' ? stageKind(stage) : stage.kind;
-  switch (kind) {
-    case 'stitch':
-      // overview is the bare project route; other native stages carry ?tab=<id>
-      // so StitchProjectWorkspace renders them natively (no legacy design flip).
-      return id === 'overview' ? `/app/project/${pid}` : `/app/project/${pid}?tab=${encodeURIComponent(id)}`;
-    case 'screening':
-      return ctx.linkedSiftId ? `/sift-beta/projects/${encodeURIComponent(ctx.linkedSiftId)}` : `/app/project/${pid}?ui=legacy&tab=screening`;
-    case 'rob':
-      return `/rob/${pid}`;
-    default:
-      return `/app/project/${pid}?ui=legacy&tab=${encodeURIComponent(id)}`;
-  }
+  return id === 'overview' ? `/app/project/${pid}` : `/app/project/${pid}?tab=${encodeURIComponent(id)}`;
 }
 
 /* ─── 4. Screening contextual sub-navigation (the white column stepper) ────────
-   design2.md Part 6: the canonical EMBEDDED screening subpages, in order. These
-   map to the standalone screening engine routes so a contextual item opens the
-   real screening page (no design flip). `countKey` ties each to a live number from
-   screeningApi.getOverview(...).dataSummary (only the middle steps carry counts).
-   `step` is the screeningSteps.js id used for status. */
+   design2.md Part 6 / design4.md: the canonical screening subpages, in order. These
+   now open the screening engine EMBEDDED in the unified Stitch workspace
+   (`/app/project/:id?tab=screening&screen=<key>`) — the embedded SiftProject reads
+   the `?screen=` param for its own sub-navigation, so a contextual item opens the
+   real screening page without ever leaving the PecanRev shell. `count` ties each to
+   a live number from screeningApi.getOverview(...).dataSummary (only the middle
+   steps carry counts). `step` is the screeningSteps.js id used for status. */
 export const SCREENING_SUBNAV = [
   { key: 'overview',      label: 'Overview',          icon: 'grid',        step: null,            count: null },
   { key: 'import',        label: 'Import',            icon: 'upload',      step: 'import',        count: 'totalArticles' },
@@ -178,16 +162,19 @@ export const SCREENING_SUBNAV = [
 ];
 
 /**
- * Deep-link a screening subpage. Uses the standalone screening engine (own chrome,
- * no design flip). Import has its own route; everything else is a ?tab= value.
- * ctx = { linkedSiftId } (the ScreenProject id) — required for standalone links.
+ * Deep-link a screening subpage WITHIN the unified Stitch workspace (design4.md).
+ * The host route is `?tab=screening`; the embedded screening engine reads `?screen=`
+ * for its own sub-navigation (a collision-free param — the host owns `?tab=`).
+ * ctx = { projectId, linkedSiftId }. `linkedSiftId` only gates availability (no
+ * linked screening workspace yet → null so the stepper item is disabled).
  */
 export function screeningSubHref(key, ctx = {}) {
-  const lid = ctx.linkedSiftId;
-  if (!lid) return null; // no linked screening workspace yet
-  const sid = encodeURIComponent(lid);
-  if (key === 'import') return `/sift-beta/projects/${sid}/import`;
-  return `/sift-beta/projects/${sid}?tab=${encodeURIComponent(key)}`;
+  if (!ctx.linkedSiftId) return null; // no linked screening workspace yet
+  const pid = encodeURIComponent(ctx.projectId || '');
+  if (!pid) return null;
+  return key === 'overview'
+    ? `/app/project/${pid}?tab=screening`
+    : `/app/project/${pid}?tab=screening&screen=${encodeURIComponent(key)}`;
 }
 
 /* ─── 5. Active-route matching (design2.md "Preserve deep links") ─────────────── */

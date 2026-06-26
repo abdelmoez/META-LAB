@@ -77,7 +77,7 @@ function stepTone(status) { return STEP_TONE[status] || 'neutral'; }
 
 /* Build the contextual Screening pipeline steps (design2.md Part 6 canonical set),
    merging live counts/status from the screening overview where available. */
-function buildScreeningNavSteps(dataSummary, linkedId) {
+function buildScreeningNavSteps(dataSummary, linkedId, projectId) {
   const ds = dataSummary || {};
   const num = (v) => (typeof v === 'number' ? v : null);
   const map = {
@@ -95,7 +95,7 @@ function buildScreeningNavSteps(dataSummary, linkedId) {
       icon: s.icon,
       status: live ? live.status : undefined,
       count: live && live.count != null ? live.count : null,
-      href: screeningSubHref(s.key, { linkedSiftId: linkedId }),
+      href: screeningSubHref(s.key, { projectId, linkedSiftId: linkedId }),
       disabled: !linkedId,
     };
   });
@@ -221,7 +221,7 @@ export default function StitchProjectOverview() {
       variant={variant === 'mobile' ? 'static' : 'overlay'}
     />
   );
-  const screeningSteps = useMemo(() => buildScreeningNavSteps(dataSummary, linkedId), [dataSummary, linkedId]);
+  const screeningSteps = useMemo(() => buildScreeningNavSteps(dataSummary, linkedId, projectId), [dataSummary, linkedId, projectId]);
   const contextRail = linkedId ? (
     <StitchWorkflowNav
       title="Screening"

@@ -65,21 +65,32 @@ export function useStitchProjectDoc(projectId) {
   // Flush any pending write on unmount so navigation never drops an edit.
   useEffect(() => () => { if (timerRef.current) { clearTimeout(timerRef.current); if (projectRef.current) api.projects.autosave(projectId, projectRef.current).catch(() => {}); } }, [projectId]);
 
-  const upd = useCallback((field, val) => {
+  // The canonical write choke point — the native equivalent of the legacy
+  // workspace's `updateProject(id, updater)` (Workspace.jsx). The monolith tab
+  // components (Extraction / PRISMA / RoB / Analysis) call this with the full
+  // updater function; `upd`/`updNested` are thin wrappers over it. `id` is accepted
+  // for signature parity with the legacy multi-project updater but this hook owns a
+  // SINGLE project, so the loaded project is always the target. Read-only is gated
+  // here (the server independently no-ops read-only autosaves — defense in depth).
+  const updateProject = useCallback((id, updater) => {
     if (readOnly) return;
     setProject((prev) => {
       if (!prev) return prev;
-      const next = { ...prev, [field]: val, modified: new Date().toISOString() };
+      const base = typeof updater === 'function' ? updater(prev) : (updater || prev);
+      const next = { ...base, modified: new Date().toISOString() };
       projectRef.current = next;
       scheduleSave(next);
       return next;
     });
   }, [readOnly, scheduleSave]);
 
-  const updNested = useCallback((field, key, val) => {
-    const cur = (projectRef.current && projectRef.current[field]) || {};
-    upd(field, { ...cur, [key]: val });
-  }, [upd]);
+  const upd = useCallback((field, val) => {
+    updateProject(projectId, (p) => ({ ...p, [field]: val }));
+  }, [updateProject, projectId]);
 
-  return { project, loading, error, reload: load, readOnly, upd, updNested, saveStatus, flush };
+  const updNested = useCallback((field, key, val) => {
+    updateProject(projectId, (p) => ({ ...p, [field]: { ...(p[field] || {}), [key]: val } }));
+  }, [updateProject, projectId]);
+
+  return { project, loading, error, reload: load, readOnly, upd, updNested, updateProject, saveStatus, flush };
 }

@@ -61,17 +61,21 @@ describe('navConfig — project workflow nav (derived from legacy TABS)', () => 
     expect(nav.flat.length).toBe(18); // 2 project + 15 workflow + 1 reference
     expect(workflowStepCount()).toBe(15);
   });
-  it('opens each stage at its REAL destination by workflow name', () => {
+  it('opens EVERY stage inside the unified Stitch workspace via ?tab= (design4.md)', () => {
     expect(projectStageHref('overview', { projectId: 'p1' })).toBe('/app/project/p1');
-    expect(projectStageHref('screening', { projectId: 'p1', linkedSiftId: 's1' })).toBe('/sift-beta/projects/s1');
-    expect(projectStageHref('rob', { projectId: 'p1' })).toBe('/rob/p1');
-    // design3: native Stitch deep-tool stages route via ?tab= (no ?ui=legacy flip)
+    // design4: no stage escapes to a standalone engine route or ?ui=legacy — every
+    // engine renders inside the one shared Stitch project workspace.
     expect(projectStageHref('pico', { projectId: 'p1' })).toBe('/app/project/p1?tab=pico');
     expect(projectStageHref('control', { projectId: 'p1' })).toBe('/app/project/p1?tab=control');
     expect(projectStageHref('search', { projectId: 'p1' })).toBe('/app/project/p1?tab=search');
     expect(projectStageHref('discovery', { projectId: 'p1' })).toBe('/app/project/p1?tab=discovery');
-    // monolith-only stages still open the classic workspace by workflow name
-    expect(projectStageHref('analysis', { projectId: 'p1' })).toBe('/app/project/p1?ui=legacy&tab=analysis');
+    expect(projectStageHref('screening', { projectId: 'p1', linkedSiftId: 's1' })).toBe('/app/project/p1?tab=screening');
+    expect(projectStageHref('rob', { projectId: 'p1' })).toBe('/app/project/p1?tab=rob');
+    expect(projectStageHref('extraction', { projectId: 'p1' })).toBe('/app/project/p1?tab=extraction');
+    expect(projectStageHref('analysis', { projectId: 'p1' })).toBe('/app/project/p1?tab=analysis');
+    expect(projectStageHref('prisma', { projectId: 'p1' })).toBe('/app/project/p1?tab=prisma');
+    expect(projectStageHref('report', { projectId: 'p1' })).toBe('/app/project/p1?tab=report');
+    expect(projectStageHref('methods', { projectId: 'p1' })).toBe('/app/project/p1?tab=methods');
   });
 });
 
@@ -81,10 +85,13 @@ describe('navConfig — screening contextual sub-nav (design2.md Part 6)', () =>
       'Overview', 'Import', 'Duplicates', 'Title & Abstract', 'Conflicts', 'Final Review', 'Settings', 'Export',
     ]);
   });
-  it('deep-links each subpage into the real screening engine', () => {
-    expect(screeningSubHref('import', { linkedSiftId: 's1' })).toBe('/sift-beta/projects/s1/import');
-    expect(screeningSubHref('conflicts', { linkedSiftId: 's1' })).toBe('/sift-beta/projects/s1?tab=conflicts');
-    expect(screeningSubHref('second-review', { linkedSiftId: 's1' })).toBe('/sift-beta/projects/s1?tab=second-review');
+  it('deep-links each subpage into the screening engine EMBEDDED in the Stitch workspace', () => {
+    // design4: the screening engine runs inside /app/project/:id?tab=screening; its
+    // own sub-navigation reads the collision-free ?screen= param.
+    expect(screeningSubHref('import', { projectId: 'p1', linkedSiftId: 's1' })).toBe('/app/project/p1?tab=screening&screen=import');
+    expect(screeningSubHref('conflicts', { projectId: 'p1', linkedSiftId: 's1' })).toBe('/app/project/p1?tab=screening&screen=conflicts');
+    expect(screeningSubHref('second-review', { projectId: 'p1', linkedSiftId: 's1' })).toBe('/app/project/p1?tab=screening&screen=second-review');
+    expect(screeningSubHref('overview', { projectId: 'p1', linkedSiftId: 's1' })).toBe('/app/project/p1?tab=screening');
     expect(screeningSubHref('overview', {})).toBeNull(); // no linked workspace yet
   });
 });
