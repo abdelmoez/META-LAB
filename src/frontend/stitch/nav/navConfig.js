@@ -238,3 +238,159 @@ export function activeProjectStage(search) {
     return 'overview';
   }
 }
+
+/** Parse the screening sub-page (`?screen=`) — only meaningful while tab=screening. */
+export function readScreenParam(search) {
+  if (typeof search !== 'string' || !search) return 'overview';
+  try {
+    const qs = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+    return qs.get('screen') || 'overview';
+  } catch {
+    return 'overview';
+  }
+}
+
+/* ─── 7. PROJECT CATEGORY MODEL (55.md) ────────────────────────────────────────
+   55.md restructures the purple rail to show ONLY 9 top-level CATEGORIES; a
+   category with children reveals a persistent white submenu beside the rail.
+   Categories are derived from the SAME legacy TABS/PHASES truth (no new routes):
+   - overview / control / reference are single destinations (no submenu);
+   - the six workflow PHASES (Plan…Report) become categories whose children are
+     their TABS;
+   - 'screen' is special — its submenu is the screening sub-workflow
+     (SCREENING_SUBNAV) plus the PRISMA Flow page.
+   Pure + unit-testable; every existing export stays back-compatible. */
+
+/** Phase → category id (the 6 workflow phases map 1:1 to a category). */
+const PHASE_TO_CATEGORY = { Plan: 'plan', Search: 'search', Screen: 'screen', Extract: 'extract', Analyze: 'analyze', Report: 'report' };
+
+/** The 9 categories shown in the purple rail, in workflow order. */
+export const PROJECT_CATEGORIES = [
+  { id: 'overview',  label: 'Overview',         icon: 'home',     kind: 'overview',  stage: 'overview' },
+  { id: 'control',   label: 'Project Control',  icon: 'sliders',  kind: 'control',   stage: 'control' },
+  { id: 'plan',      label: 'Plan & Protocol',  icon: 'target',   kind: 'phase',     phase: 'Plan' },
+  { id: 'search',    label: 'Search',           icon: 'search',   kind: 'phase',     phase: 'Search' },
+  { id: 'screen',    label: 'Screen',           icon: 'filter',   kind: 'screen',    phase: 'Screen' },
+  { id: 'extract',   label: 'Extract',          icon: 'table',    kind: 'phase',     phase: 'Extract' },
+  { id: 'analyze',   label: 'Analyze',          icon: 'sigma',    kind: 'phase',     phase: 'Analyze' },
+  { id: 'report',    label: 'Report',           icon: 'fileText', kind: 'phase',     phase: 'Report' },
+  { id: 'reference', label: 'Reference',        icon: 'bookOpen', kind: 'reference', stage: 'methods' },
+];
+
+export const PROJECT_CATEGORY_IDS = PROJECT_CATEGORIES.map((c) => c.id);
+const CATEGORY_BY_ID = PROJECT_CATEGORIES.reduce((m, c) => { m[c.id] = c; return m; }, {});
+
+/** Which category a workflow stage id belongs to (route → active category). */
+export function categoryForStage(stageId) {
+  if (!stageId || stageId === 'overview') return 'overview';
+  if (stageId === 'control') return 'control';
+  if (stageId === 'methods') return 'reference';
+  if (stageId === 'screening' || stageId === 'prisma') return 'screen';
+  const t = TABS.find((x) => x.id === stageId);
+  if (t && t.phase && PHASE_TO_CATEGORY[t.phase]) return PHASE_TO_CATEGORY[t.phase];
+  return 'overview'; // unknown stage → overview (deep links never break)
+}
+
+/**
+ * Ordered child descriptors for a category's white submenu, or null when the
+ * category has no submenu (overview / control / single-destination reference).
+ * Each child: { key, label, icon, href|null, completionKey, screening? }.
+ * `href` is null when the destination is unavailable (e.g. screening sub-pages
+ * with no linked workspace) → the submenu renders it disabled.
+ * ctx = { projectId, linkedSiftId }.
+ */
+export function submenuForCategory(categoryId, ctx = {}) {
+  const cat = CATEGORY_BY_ID[categoryId];
+  if (!cat) return null;
+  if (cat.kind === 'overview' || cat.kind === 'control') return null;
+  if (cat.kind === 'reference') return null; // single destination → no submenu
+
+  if (cat.kind === 'screen') {
+    // The screening sub-workflow (import → export, from SCREENING_SUBNAV) followed
+    // by the PRISMA Flow page (a screening output that lives at ?tab=prisma).
+    const screeningItems = SCREENING_SUBNAV.map((s) => ({
+      key: s.key,
+      label: s.label,
+      icon: s.icon,
+      href: screeningSubHref(s.key, ctx),
+      completionKey: s.step,
+      countKey: s.count,
+      screening: true,
+    }));
+    const prismaTab = TABS.find((t) => t.id === 'prisma');
+    screeningItems.push({
+      key: 'prisma',
+      label: prismaTab ? prismaTab.label : 'PRISMA Flow',
+      icon: prismaTab ? prismaTab.icon : 'flow',
+      href: projectStageHref('prisma', ctx),
+      completionKey: 'prisma',
+      countKey: null,
+      screening: false,
+    });
+    return screeningItems;
+  }
+
+  // A workflow phase → its TABS, in order.
+  return TABS.filter((t) => t.phase === cat.phase).map((t) => ({
+    key: t.id,
+    label: t.label,
+    icon: t.icon,
+    href: projectStageHref(t.id, ctx),
+    completionKey: t.id,
+    countKey: null,
+    screening: false,
+  }));
+}
+
+/** True when a category opens a persistent white submenu (has >1 navigable child). */
+export function categoryShowsSubmenu(categoryId) {
+  const items = submenuForCategory(categoryId, { projectId: 'x', linkedSiftId: 'y' });
+  return Array.isArray(items) && items.length > 1;
+}
+
+/**
+ * The active submenu child key for the current route within its category.
+ * For 'screen', the active child is the `?screen=` sub-page (or 'prisma' when
+ * tab=prisma); for every other category it is the active stage id.
+ */
+export function activeSubmenuKey(search) {
+  const stage = activeProjectStage(search);
+  if (stage === 'prisma') return 'prisma';
+  if (stage === 'screening') return readScreenParam(search);
+  return stage;
+}
+
+/**
+ * The destination a category's rail button navigates to (its "entry" page).
+ * Single-destination categories go straight to their page; multi-child categories
+ * go to their first/host stage (the workspace then reveals the white submenu).
+ * For 'screen' this is the screening host tab (?tab=screening) which always works —
+ * the embedded engine handles its own sub-nav + the "no linked workspace" state.
+ */
+const CATEGORY_ENTRY_STAGE = {
+  overview: 'overview', control: 'control', plan: 'pico', search: 'search',
+  screen: 'screening', extract: 'extraction', analyze: 'analysis', report: 'grade', reference: 'methods',
+};
+
+export function categoryEntryHref(categoryId, ctx = {}) {
+  const stage = CATEGORY_ENTRY_STAGE[categoryId] || 'overview';
+  return projectStageHref(stage, ctx);
+}
+
+/**
+ * The raw per-stage statuses (from `stepStatus()`) for the workflow stages a
+ * category owns — used to roll a category up to one status glyph in the rail.
+ * Empty for non-workflow categories (overview/control/reference).
+ */
+export function categoryStageStatuses(categoryId, statusMap = {}) {
+  const cat = CATEGORY_BY_ID[categoryId];
+  if (!cat || !cat.phase) return [];
+  return TABS.filter((t) => t.phase === cat.phase).map((t) => statusMap[t.id]).filter(Boolean);
+}
+
+/** Build the full category nav (the 9 rail buttons + resolved active category). */
+export function buildCategoryNav(search) {
+  const stage = activeProjectStage(search);
+  const activeCategory = categoryForStage(stage);
+  return { categories: PROJECT_CATEGORIES, activeCategory, activeStage: stage };
+}

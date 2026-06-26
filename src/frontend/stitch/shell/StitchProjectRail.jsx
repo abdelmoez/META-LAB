@@ -1,22 +1,22 @@
 /**
- * StitchProjectRail.jsx — the project workspace's primary workflow rail
- * (design2.md Part 5).
+ * StitchProjectRail.jsx — the project workspace's primary CATEGORY rail (55.md).
+ *
+ * 55.md restructures this rail to show ONLY the 9 top-level workflow CATEGORIES
+ * (Overview, Project Control, Plan & Protocol, Search, Screen, Extract, Analyze,
+ * Report, Reference) — the single, understandable research workflow from planning
+ * to reporting — instead of all 19 flat stages. Selecting a category with children
+ * navigates to its entry page and the workspace reveals the persistent white
+ * submenu beside this rail (StitchProjectSubnav); Overview / Project Control /
+ * Reference are single destinations and show no submenu.
  *
  * Collapsed it is a 72px icon-only rail; it expands (as an overlay, so content
- * never reflows) to reveal the full label of every stage on:
- *   - pointer hover,
- *   - keyboard focus entering it (CSS :focus-within), and
- *   - an explicit toggle button (for touch / an unambiguous keyboard control).
- * All three are handled in scoped CSS (stitchTokens .stitch-prail*) so the open
- * state survives moving the pointer between an icon and its label and respects
- * prefers-reduced-motion.
+ * never reflows) on hover, keyboard focus-within, or the explicit toggle — handled
+ * in scoped CSS (.stitch-prail*), respecting prefers-reduced-motion.
  *
- * The stage list, order, labels and icons come straight from the centralized nav
- * config (which derives them from the legacy TABS) — so it mirrors the legacy
- * workflow exactly and uses USER-FACING workflow names, never internal engine
- * names. Every stage opens its REAL destination (screening / RoB engines or the
- * classic workspace tab); permissions, routes, progress and feature flags are all
- * preserved by the underlying pages.
+ * Per-category completion is rolled up from the legacy `stepStatus()` truth and
+ * shown with a NON-COLOR glyph + accessible label (check / clock / hollow ring),
+ * not a color-only dot (55.md #11/#12 — WCAG 1.4.1). Categories, order, labels and
+ * icons come from the centralized nav contract.
  */
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -24,28 +24,41 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { Icon } from '../../components/icons.jsx';
 import { S, salpha, STITCH_RAIL, STITCH_MONO } from '../theme/stitchTokens.js';
 import { StitchAvatar } from '../primitives/core.jsx';
-import { buildProjectNav, projectStageHref } from '../nav/navConfig.js';
+import {
+  PROJECT_CATEGORIES, categoryForStage, categoryEntryHref, categoryStageStatuses,
+} from '../nav/navConfig.js';
+import { rollUpStatus, statusMeta } from '../nav/navStatus.js';
 import { useAppVersion } from './useAppVersion.js';
 
-const STATUS_COLOR = { done: STITCH_RAIL.indicator, partial: '#ecbb4e', empty: 'rgba(255,255,255,0.32)' };
+const STATUS_TINT = { done: STITCH_RAIL.indicator, partial: '#ecbb4e', empty: 'rgba(255,255,255,0.4)' };
 
-function StatusDot({ status }) {
+/** Non-color category status: distinct SHAPE per state (check / clock / hollow ring). */
+function RailStatusGlyph({ status }) {
   if (!status) return null;
-  return <span aria-hidden="true" style={{ width: 7, height: 7, borderRadius: '50%', background: STATUS_COLOR[status] || STATUS_COLOR.empty, flexShrink: 0 }} />;
+  const meta = statusMeta(status);
+  const tint = STATUS_TINT[status] || STATUS_TINT.empty;
+  return (
+    <span title={meta.label} style={{ display: 'inline-flex', alignItems: 'center', flexShrink: 0, color: tint }}>
+      {meta.icon
+        ? <Icon name={meta.icon} size={15} />
+        : <span aria-hidden="true" style={{ width: 10, height: 10, borderRadius: '50%', border: `1.6px solid ${tint}`, display: 'inline-block' }} />}
+    </span>
+  );
 }
 
-function RailRow({ stage, active, status, onClick }) {
+function CategoryRow({ cat, active, status, onClick }) {
+  const meta = status ? statusMeta(status) : null;
   return (
     <button
       type="button"
       className="stitch-focusable"
-      aria-label={stage.label}
+      aria-label={meta ? `${cat.label} — ${meta.label}` : cat.label}
       aria-current={active ? 'page' : undefined}
       onClick={onClick}
       onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = salpha('#ffffff', 0.08); }}
       onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = 'transparent'; }}
       style={{
-        position: 'relative', display: 'flex', alignItems: 'center', width: '100%', minHeight: 44,
+        position: 'relative', display: 'flex', alignItems: 'center', width: '100%', minHeight: 46,
         border: 'none', background: active ? STITCH_RAIL.active : 'transparent', cursor: 'pointer',
         color: STITCH_RAIL.text, opacity: active ? 1 : STITCH_RAIL.idle, padding: 0,
         transition: 'background 0.15s ease, opacity 0.15s ease',
@@ -53,22 +66,18 @@ function RailRow({ stage, active, status, onClick }) {
     >
       {active ? <span aria-hidden="true" style={{ position: 'absolute', left: 0, top: 8, bottom: 8, width: 3, borderRadius: 3, background: STITCH_RAIL.indicator }} /> : null}
       <span style={{ width: 72, flexShrink: 0, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-        <Icon name={stage.icon} size={20} />
+        <Icon name={cat.icon} size={20} />
       </span>
       <span className="stitch-prail-label" style={{ flex: 1, minWidth: 0, display: 'flex', alignItems: 'center', gap: 8, paddingRight: 14, textAlign: 'left' }}>
-        <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, fontWeight: active ? 700 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{stage.label}</span>
-        <StatusDot status={status} />
+        <span style={{ flex: 1, minWidth: 0, fontSize: 13.5, fontWeight: active ? 700 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cat.label}</span>
+        <RailStatusGlyph status={status} />
       </span>
     </button>
   );
 }
 
-function GroupHeader({ label }) {
-  return (
-    <div className="stitch-prail-group" style={{ display: 'flex', alignItems: 'center', padding: '8px 0 2px 18px' }}>
-      <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: 'rgba(255,255,255,0.55)', whiteSpace: 'nowrap' }}>{label}</span>
-    </div>
-  );
+function RailDivider() {
+  return <div className="stitch-prail-label" aria-hidden="true" style={{ height: 1, background: salpha('#ffffff', 0.12), margin: '8px 18px' }} />;
 }
 
 export default function StitchProjectRail({ projectId, linkedSiftId, statusMap = {}, activeStage = 'overview', variant = 'overlay' }) {
@@ -76,11 +85,12 @@ export default function StitchProjectRail({ projectId, linkedSiftId, statusMap =
   const { user } = useAuth();
   const version = useAppVersion();
   const [expanded, setExpanded] = useState(false);
-  const nav = buildProjectNav();
   const ctx = { projectId, linkedSiftId };
   const isStatic = variant === 'static'; // mobile drawer: always-expanded, in-flow
+  const activeCategory = categoryForStage(activeStage);
 
-  const go = (stage) => navigate(projectStageHref(stage, ctx));
+  const go = (cat) => navigate(categoryEntryHref(cat.id, ctx));
+  const statusFor = (cat) => rollUpStatus(categoryStageStatuses(cat.id, statusMap));
 
   return (
     <div
@@ -114,32 +124,20 @@ export default function StitchProjectRail({ projectId, linkedSiftId, statusMap =
           ) : null}
         </div>
 
-        {/* Scrollable stage list */}
+        {/* The 9 workflow categories (one understandable research workflow) */}
         <div className="stitch-prail-scroll" style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', paddingBottom: 8 }}>
-          {/* Project group: Overview, Project Control */}
-          {nav.project.map((stage) => (
-            <RailRow key={stage.id} stage={stage} active={activeStage === stage.id} status={statusMap[stage.id]} onClick={() => go(stage)} />
-          ))}
-
-          {/* Workflow phases */}
-          {nav.phases.map((ph) => (
-            <div key={ph.phase}>
-              <GroupHeader label={ph.label} />
-              {ph.steps.map((stage) => (
-                <RailRow key={stage.id} stage={stage} active={activeStage === stage.id} status={statusMap[stage.id]} onClick={() => go(stage)} />
-              ))}
+          {PROJECT_CATEGORIES.map((cat, i) => (
+            <div key={cat.id}>
+              {/* a subtle divider sets Reference apart from the core workflow */}
+              {cat.id === 'reference' ? <RailDivider /> : null}
+              <CategoryRow
+                cat={cat}
+                active={activeCategory === cat.id}
+                status={statusFor(cat)}
+                onClick={() => go(cat)}
+              />
             </div>
           ))}
-
-          {/* Reference group: Methods */}
-          {nav.reference.length ? (
-            <div>
-              <GroupHeader label="Reference" />
-              {nav.reference.map((stage) => (
-                <RailRow key={stage.id} stage={stage} active={activeStage === stage.id} status={statusMap[stage.id]} onClick={() => go(stage)} />
-              ))}
-            </div>
-          ) : null}
         </div>
 
         {/* Bottom: profile + subtle version */}

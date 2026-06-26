@@ -35,9 +35,12 @@ import { linkedSiftId, projectPerms, stepStatus, TABS } from '../../workspace/pr
 import { registerExportDialog } from '../../workspace/exportDialogBridge.js';
 import StitchAppShell from '../shell/StitchAppShell.jsx';
 import StitchProjectRail from '../shell/StitchProjectRail.jsx';
+import StitchProjectSubnav from '../shell/StitchProjectSubnav.jsx';
 import StitchProjectOverview from './StitchProjectOverview.jsx';
 import { useStitchProjectDoc } from '../shell/useStitchProjectDoc.js';
-import { activeProjectStage, projectStageHref } from '../nav/navConfig.js';
+import {
+  activeProjectStage, projectStageHref, categoryForStage, categoryShowsSubmenu, activeSubmenuKey,
+} from '../nav/navConfig.js';
 import {
   StitchLoadingState, StitchErrorState, StitchButton, StitchBadge, S, salpha,
 } from '../primitives';
@@ -92,6 +95,7 @@ export default function StitchProjectWorkspace() {
 
 function DeepToolPage({ stage }) {
   const { projectId } = useParams();
+  const { search } = useLocation();
   const navigate = useNavigate();
   const { user } = useAuth();
   const doc = useStitchProjectDoc(projectId);
@@ -131,9 +135,26 @@ function DeepToolPage({ stage }) {
     <StitchProjectRail projectId={projectId} linkedSiftId={spId} statusMap={statusMap}
       activeStage={stage} variant={variant === 'mobile' ? 'static' : 'overlay'} />
   );
+
+  // 55.md — categories with children reveal a PERSISTENT white submenu beside the
+  // purple rail (Overview / Project Control / single-page Reference reclaim the
+  // width instead). The active submenu item is derived from the route so refresh /
+  // deep links restore it.
+  const activeCategory = categoryForStage(stage);
+  const showSubmenu = categoryShowsSubmenu(activeCategory);
+  const contextRail = showSubmenu ? (
+    <StitchProjectSubnav projectId={projectId} linkedSiftId={spId} category={activeCategory}
+      activeKey={activeSubmenuKey(search)} statusMap={statusMap} />
+  ) : null;
+
+  // 55.md #14 — project presence moves to the top bar (shell), not the page header.
+  const topPresence = spId ? (
+    <PresenceIndicator users={users} locks={locks} totalMembers={totalMembers} myUserId={user?.id} />
+  ) : null;
+
   const shellProps = {
-    activeKey: 'dashboard', renderPrimaryRail, contextRail: null, contextRailMobile: null,
-    maxWidth: fullbleed ? 100000 : 1560, contentPad: !fullbleed,
+    activeKey: 'dashboard', renderPrimaryRail, contextRail, contextRailMobile: null,
+    topPresence, maxWidth: fullbleed ? 100000 : 1560, contentPad: !fullbleed,
   };
 
   const breadcrumb = (
@@ -181,7 +202,7 @@ function DeepToolPage({ stage }) {
         </div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-        <PresenceIndicator users={users} locks={locks} totalMembers={totalMembers} myUserId={user?.id} />
+        {/* Presence now lives in the top bar (55.md #14) — not duplicated here. */}
         {nextId ? (
           <StitchButton iconRight="arrowRight" onClick={() => goStage(nextId)}>
             {nextId === 'screening' ? 'Continue to Screening' : `Next: ${STAGE_LABEL[nextId] || 'Continue'}`}

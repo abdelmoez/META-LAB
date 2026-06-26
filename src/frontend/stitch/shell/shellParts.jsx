@@ -245,7 +245,11 @@ export function StitchAccountMenu() {
 }
 
 /* ─── Top utility header ──────────────────────────────────────────────────── */
-export function StitchTopHeader({ onOpenNav, breadcrumb }) {
+// 55.md #14: project "Active now" presence lives HERE in the top bar, beside the
+// notification bell — never in the side navigation or duplicated in page content.
+// `topPresence` is the project-scoped PresenceIndicator (or null when there is no
+// project / no online members); a thin divider separates it from the utilities.
+export function StitchTopHeader({ onOpenNav, breadcrumb, topPresence = null }) {
   const { theme, toggleTheme } = useTheme();
   return (
     <header style={{
@@ -261,6 +265,12 @@ export function StitchTopHeader({ onOpenNav, breadcrumb }) {
         {breadcrumb}
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+        {topPresence ? (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center' }}>{topPresence}</div>
+            <span aria-hidden="true" style={{ width: 1, height: 24, background: salpha(S.outlineVariant, 0.6) }} />
+          </>
+        ) : null}
         <AdminDesignSwitch variant="inline" />
         <NotificationsBell />
         <StitchIconButton icon={theme === 'night' ? 'sun' : 'moon'} label={theme === 'night' ? 'Light theme' : 'Dark theme'} onClick={toggleTheme} />
