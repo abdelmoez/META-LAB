@@ -32,16 +32,28 @@ model BetaWaitlistApplicant {
   email           String
   normalizedEmail String @unique
 
-  firstName        String
-  lastName         String
-  institutionName  String
+  // 54.md Part 3 — names are now OPTIONAL (doc: "make all fields optional except
+  // Country"; the minimal required set is email + country + consent). Existing
+  // rows keep their NOT-NULL values; relaxing to nullable is a non-destructive
+  // `db push` (DROP NOT NULL), so legacy records stay valid + readable.
+  firstName        String?
+  lastName         String?
+  institutionName  String? // doc: institution NAME is sensitive at sign-up → optional
   institutionRorId String? // optional normalized institution identifier (ROR)
 
-  role       String
+  role       String? // doc Q1 — now optional
   customRole String? // only when role == "Other"
 
-  countryCode String
+  countryCode String // REQUIRED (doc Q3 — GDPR)
   countryName String
+
+  // 54.md Part 3 — new questionnaire fields from WhatToCollectFromUsers.docx.
+  // All nullable → additive `db push`; old applicants simply have null answers.
+  primaryField     String? // doc Q2 — Medicine / Nursing / Pharmacy / …
+  institutionType  String? // doc Q5 — University / Hospital / CRO / …
+  covidenceLicense String? // doc Q4 — Yes / No / Not sure (competitive signal)
+  priorReviewCount String? // doc Q6 — first / 1–2 / 3–5 / more than 5
+  lastReviewTool   String? // doc Q7 — first / Rayyan / Covidence / Excel / …
 
   researchExperienceLevel String?
   annualReviewVolume      String?
@@ -49,16 +61,24 @@ model BetaWaitlistApplicant {
   teamSize                String?
 
   areasOfInterest String  @default("[]") // JSON-encoded array of interest strings
-  primaryUse      String
+  primaryUse      String? // now optional (doc: all optional except Country)
   referralSource  String?
   referralOther   String?
   message         String?
 
   // Consent — explicit, never pre-checked. consentVersion records WHICH copy the
   // applicant agreed to; consentAt is the server timestamp of agreement.
-  consent        Boolean   @default(false)
-  consentVersion String?
-  consentAt      DateTime?
+  //
+  // 54.md Part 3 / WhatToCollectFromUsers.docx legal requirement — TWO consent
+  // layers kept separate: (1) `consent` is OPERATIONAL (required — agree to be
+  // contacted about the beta); (2) `researchConsent` is a SEPARATE, OPTIONAL
+  // opt-in to aggregated/anonymized research-insights use (never required, never
+  // pre-checked). Defaulting researchConsent=false keeps `db push` additive.
+  consent           Boolean   @default(false)
+  consentVersion    String?
+  consentAt         DateTime?
+  researchConsent   Boolean   @default(false)
+  researchConsentAt DateTime?
 
   status           String @default("WAITLISTED") // see WAITLIST_STATUSES
   submissionSource String @default("public_web")
@@ -89,6 +109,10 @@ model BetaWaitlistApplicant {
   @@index([countryCode])
   @@index([role])
   @@index([confirmationEmailStatus])
+  // 54.md — Ops filtering on the new high-signal questionnaire fields.
+  @@index([institutionType])
+  @@index([primaryField])
+  @@index([covidenceLicense])
 }
 
 // Append-only status history for the Ops detail view + audit trail.

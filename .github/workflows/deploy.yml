@@ -21,6 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Need history so the engine-version check can diff HEAD against its parent.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
@@ -36,6 +39,13 @@ jobs:
           DATABASE_URL: "file:./dev.db"
       - name: Run hermetic test gate
         run: npm run test:ci
+      # 54.md Part 5 — detect engine-affecting changes + classify them. INFORMATIONAL
+      # only: it never writes versions during PR/push validation (DB-backed bumps run
+      # in the controlled post-merge/release step, so there is no recursive-commit
+      # risk). Flip to `--strict` to make malformed declarations / ambiguous ownership
+      # block the pipeline once the ownership map is fully settled.
+      - name: Engine version check (informational)
+        run: npm run engine-version:check || true
 
   # ── Deploy (only on push to main / manual dispatch; never on PRs) ──────────
   deploy:

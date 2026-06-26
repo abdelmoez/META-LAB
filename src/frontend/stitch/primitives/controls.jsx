@@ -142,6 +142,56 @@ export function StitchSwitch({ checked = false, onChange, label, disabled = fals
   );
 }
 
+/**
+ * StitchRadioGroup — accessible single-select rendered as tactile option "cards"
+ * over NATIVE radio inputs (so arrow-key navigation, focus, and screen-reader
+ * semantics come for free). Fills a real gap in the primitive set (54.md). Options
+ * may be plain strings or { value, label } objects. The visible card is driven by
+ * the native radio's :checked state via React, and the radio stays operable.
+ */
+export function StitchRadioGroup({
+  name, value, onChange, options = [], columns = 1, disabled = false,
+  ariaLabel, ariaLabelledBy, ariaDescribedBy, invalid = false,
+}) {
+  const autoName = useId();
+  const groupName = name || autoName;
+  return (
+    <div
+      role="radiogroup"
+      aria-label={ariaLabel}
+      aria-labelledby={ariaLabelledBy}
+      aria-describedby={ariaDescribedBy}
+      aria-invalid={invalid || undefined}
+      style={{ display: 'grid', gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`, gap: 8 }}
+    >
+      {options.map((opt) => {
+        const o = typeof opt === 'string' ? { value: opt, label: opt } : opt;
+        const checked = value === o.value;
+        return (
+          <label
+            key={o.value}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 10, padding: '11px 13px',
+              cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.55 : 1,
+              border: `1.5px solid ${checked ? S.brand : (invalid ? S.danger : S.outlineVariant)}`,
+              borderRadius: S.radiusControl,
+              background: checked ? salpha(S.brand, 0.08) : S.card,
+              transition: 'border-color 0.15s ease, background 0.15s ease',
+            }}
+          >
+            <input
+              type="radio" name={groupName} value={o.value} checked={checked} disabled={disabled}
+              onChange={() => onChange?.(o.value)}
+              style={{ width: 16, height: 16, accentColor: S.brand, flexShrink: 0, cursor: 'inherit' }}
+            />
+            <span style={{ fontSize: 13.5, color: S.textPrimary }}>{o.label}</span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
 export function StitchCheckbox({ checked = false, onChange, label, disabled = false, id }) {
   const autoId = useId();
   const fieldId = id || autoId;

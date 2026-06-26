@@ -25,6 +25,9 @@ const LIST_SELECT = {
   customRole: true,
   countryCode: true,
   countryName: true,
+  primaryField: true,
+  institutionType: true,
+  covidenceLicense: true,
   status: true,
   areasOfInterest: true,
   createdAt: true,
@@ -62,26 +65,37 @@ export async function createApplicant(client, value, meta = {}) {
   const data = {
     email: value.email,
     normalizedEmail: value.normalizedEmail,
-    firstName: value.firstName,
-    lastName: value.lastName,
-    institutionName: value.institutionName,
+    // 54.md — names / institution name / role / primaryUse are now OPTIONAL; store
+    // null when omitted (schema columns are nullable; legacy rows keep their values).
+    firstName: value.firstName || null,
+    lastName: value.lastName || null,
+    institutionName: value.institutionName || null,
     institutionRorId: value.institutionRorId || null,
-    role: value.role,
+    role: value.role || null,
     customRole: value.customRole || null,
     countryCode: value.countryCode,
     countryName: value.countryName || '',
+    // 54.md questionnaire fields (doc Q2/Q4/Q5/Q6/Q7).
+    primaryField: value.primaryField || null,
+    institutionType: value.institutionType || null,
+    covidenceLicense: value.covidenceLicense || null,
+    priorReviewCount: value.priorReviewCount || null,
+    lastReviewTool: value.lastReviewTool || null,
     researchExperienceLevel: value.researchExperienceLevel || null,
     annualReviewVolume: value.annualReviewVolume || null,
     workingStyle: value.workingStyle || null,
     teamSize: value.teamSize || null,
     areasOfInterest: JSON.stringify(Array.isArray(value.areasOfInterest) ? value.areasOfInterest : []),
-    primaryUse: value.primaryUse,
+    primaryUse: value.primaryUse || null,
     referralSource: value.referralSource || null,
     referralOther: value.referralOther || null,
     message: value.message || null,
     consent: value.consent === true,
     consentVersion: value.consentVersion || null,
     consentAt: value.consent === true ? now : null,
+    // 54.md — separate, optional research-insights opt-in (never required).
+    researchConsent: value.researchConsent === true,
+    researchConsentAt: value.researchConsent === true ? now : null,
     status: DEFAULT_WAITLIST_STATUS,
     submissionSource: meta.submissionSource || 'public_web',
     confirmationEmailStatus: 'pending',
@@ -112,6 +126,10 @@ export async function listApplicants(client, params = {}) {
   if (params.role) where.role = params.role;
   if (params.countryCode) where.countryCode = String(params.countryCode).toUpperCase();
   if (params.emailStatus) where.confirmationEmailStatus = params.emailStatus;
+  // 54.md — filter on the new high-signal questionnaire fields.
+  if (params.institutionType) where.institutionType = params.institutionType;
+  if (params.covidenceLicense) where.covidenceLicense = params.covidenceLicense;
+  if (params.primaryField) where.primaryField = params.primaryField;
 
   const dateFilter = {};
   if (params.dateFrom) { const d = new Date(params.dateFrom); if (!Number.isNaN(d.getTime())) dateFilter.gte = d; }
@@ -170,6 +188,10 @@ export async function allForMetrics(client) {
       countryName: true,
       countryCode: true,
       areasOfInterest: true,
+      // 54.md — aggregate the new high-signal fields in the Ops dashboard.
+      primaryField: true,
+      institutionType: true,
+      covidenceLicense: true,
     },
   });
   return rows.map(parseApplicant);
@@ -182,6 +204,9 @@ export async function forExport(client, params = {}) {
   if (params.role) where.role = params.role;
   if (params.countryCode) where.countryCode = String(params.countryCode).toUpperCase();
   if (params.emailStatus) where.confirmationEmailStatus = params.emailStatus;
+  if (params.institutionType) where.institutionType = params.institutionType;
+  if (params.covidenceLicense) where.covidenceLicense = params.covidenceLicense;
+  if (params.primaryField) where.primaryField = params.primaryField;
   const dateFilter = {};
   if (params.dateFrom) { const d = new Date(params.dateFrom); if (!Number.isNaN(d.getTime())) dateFilter.gte = d; }
   if (params.dateTo) { const d = new Date(params.dateTo); if (!Number.isNaN(d.getTime())) dateFilter.lte = d; }

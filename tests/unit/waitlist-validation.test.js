@@ -69,11 +69,20 @@ describe('validateApplication — mass assignment protection', () => {
 });
 
 describe('validateApplication — required fields & consent', () => {
-  it('flags missing required fields', () => {
+  // 54.md — only email, countryCode and consent are required now ("all optional
+  // except Country"); names/role/institution/primaryUse are optional.
+  it('flags the (reduced) required field set', () => {
     const r = validateApplication({});
     expect(r.ok).toBe(false);
-    for (const k of ['email', 'firstName', 'lastName', 'institutionName', 'role', 'countryCode', 'primaryUse', 'consent']) {
+    for (const k of ['email', 'countryCode', 'consent']) {
       expect(r.errors[k]).toBeTruthy();
+    }
+  });
+  it('does NOT require name / role / institution / primaryUse', () => {
+    const r = validateApplication({ email: 'a@b.co', countryCode: 'US', consent: true });
+    expect(r.ok).toBe(true);
+    for (const k of ['firstName', 'lastName', 'institutionName', 'role', 'primaryUse']) {
+      expect(r.errors?.[k]).toBeFalsy();
     }
   });
   it('requires consent to be explicitly true', () => {
@@ -118,6 +127,60 @@ describe('validateApplication — length caps', () => {
     const r = validateApplication({ ...base(), firstName: 'x'.repeat(300) });
     expect(r.ok).toBe(true);
     expect(r.value.firstName.length).toBe(100);
+  });
+});
+
+describe('validateApplication — 54.md questionnaire fields', () => {
+  it('accepts valid new questionnaire enums', () => {
+    const r = validateApplication({
+      ...base(),
+      primaryField: 'Medicine',
+      institutionType: 'University',
+      covidenceLicense: 'No',
+      priorReviewCount: '3–5',
+      lastReviewTool: 'Rayyan',
+    });
+    expect(r.ok).toBe(true);
+    expect(r.value.primaryField).toBe('Medicine');
+    expect(r.value.institutionType).toBe('University');
+    expect(r.value.covidenceLicense).toBe('No');
+    expect(r.value.priorReviewCount).toBe('3–5');
+    expect(r.value.lastReviewTool).toBe('Rayyan');
+  });
+  it('rejects invalid values for the new enums', () => {
+    expect(validateApplication({ ...base(), primaryField: 'Astrology' }).errors.primaryField).toBeTruthy();
+    expect(validateApplication({ ...base(), institutionType: 'Spaceship' }).errors.institutionType).toBeTruthy();
+    expect(validateApplication({ ...base(), covidenceLicense: 'Maybe' }).errors.covidenceLicense).toBeTruthy();
+    expect(validateApplication({ ...base(), priorReviewCount: 'lots' }).errors.priorReviewCount).toBeTruthy();
+    expect(validateApplication({ ...base(), lastReviewTool: 'Notepad' }).errors.lastReviewTool).toBeTruthy();
+  });
+  it('treats the new fields as optional (omitting them is valid)', () => {
+    const r = validateApplication(base());
+    expect(r.ok).toBe(true);
+    expect(r.value).not.toHaveProperty('primaryField');
+    expect(r.value).not.toHaveProperty('covidenceLicense');
+  });
+});
+
+describe('validateApplication — two-layer consent (54.md)', () => {
+  it('operational consent is required; researchConsent defaults to false', () => {
+    const r = validateApplication(base());
+    expect(r.ok).toBe(true);
+    expect(r.value.consent).toBe(true);
+    expect(r.value.researchConsent).toBe(false);
+  });
+  it('records an explicit research-insights opt-in', () => {
+    const r = validateApplication({ ...base(), researchConsent: true });
+    expect(r.ok).toBe(true);
+    expect(r.value.researchConsent).toBe(true);
+  });
+  it('research opt-in is never required (operational-only still submits)', () => {
+    expect(validateApplication({ ...base(), researchConsent: false }).ok).toBe(true);
+  });
+  it('only literal true opts in (a truthy string does not)', () => {
+    const r = validateApplication({ ...base(), researchConsent: 'yes' });
+    expect(r.ok).toBe(true);
+    expect(r.value.researchConsent).toBe(false);
   });
 });
 

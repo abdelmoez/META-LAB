@@ -69,6 +69,10 @@ export function computeWaitlistMetrics(applicants, opts = {}) {
   const institutionCounter = new Map();
   const countryCounter = new Map();
   const interestCounter = new Map();
+  // 54.md — new high-signal aggregations.
+  const fieldCounter = new Map();
+  const institutionTypeCounter = new Map();
+  const covidence = { Yes: 0, No: 0, 'Not sure': 0 };
 
   // Trend buckets: last `trendDays` days, zero-filled, ascending, last = today (UTC).
   const trend = [];
@@ -114,6 +118,14 @@ export function computeWaitlistMetrics(applicants, opts = {}) {
     for (const interest of parseInterests(a.areasOfInterest)) {
       if (interest) interestCounter.set(interest, (interestCounter.get(interest) || 0) + 1);
     }
+
+    const field = (a.primaryField || '').trim();
+    if (field) fieldCounter.set(field, (fieldCounter.get(field) || 0) + 1);
+
+    const instType = (a.institutionType || '').trim();
+    if (instType) institutionTypeCounter.set(instType, (institutionTypeCounter.get(instType) || 0) + 1);
+
+    if (Object.prototype.hasOwnProperty.call(covidence, a.covidenceLicense)) covidence[a.covidenceLicense] += 1;
   }
 
   return {
@@ -128,6 +140,10 @@ export function computeWaitlistMetrics(applicants, opts = {}) {
     topInstitutions: topN(institutionCounter, topLimit),
     topCountries: topN(countryCounter, topLimit),
     topInterests: topN(interestCounter, topLimit),
+    // 54.md — competitive-intelligence + segmentation aggregations.
+    topFields: topN(fieldCounter, topLimit),
+    topInstitutionTypes: topN(institutionTypeCounter, topLimit),
+    covidence, // { Yes, No, 'Not sure' } counts
     trend, // [{ date:'YYYY-MM-DD', count }] ascending, zero-filled
     trendDays,
   };

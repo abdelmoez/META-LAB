@@ -1366,3 +1366,70 @@ model PecanSearchJob {
   @@index([status, createdAt])
   @@index([runId])
 }
+
+// ─── Engine Version Registry (54.md Part 4/7) ───────────────────────────────
+// Internal, OPS-ONLY per-engine version tracking. DELIBERATELY DISTINCT from the
+// overall app version (package.json / server/version.js), the deployment/commit,
+// and the DB schema version — see docs/manager/engine-versions.md. Versions are
+// STRUCTURAL (major/minor Int columns, NEVER a float — float arithmetic is unsafe
+// for versioning) and rendered as v{major}.{minor}.
+//
+// The canonical engine CATALOG (stable ids, display names, ownership globs) lives
+// in code at src/research-engine/engine-registry/engines.js (code-reviewed,
+// merge-conflict-safe, deterministic). These TABLES hold the LIVE version state +
+// append-only history (atomic increments, auditability, no production drift). All
+// three are brand-new tables, so `prisma db push` stays additive-safe (the @id /
+// @@unique below are safe on empty tables — unlike adding them to existing ones).
+model EngineRegistry {
+  // Stable machine id, e.g. "screening", "network-meta-analysis" (NEVER a display
+  // name — renaming an engine in the UI must not orphan its version history).
+  id                String   @id
+  displayName       String
+  description       String?
+  major             Int      @default(0)
+  minor             Int      @default(1)
+  status            String   @default("active") // active|beta|experimental|deprecated
+  lastChangeType    String? // "minor" | "major"
+  lastChangeSummary String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+// One row per version change. The current version is on EngineRegistry; history
+// rows keep the full trail (who/what/why/when) for the Ops detail/timeline view.
+model EngineVersionHistory {
+  id                   String   @id @default(uuid())
+  engineId             String
+  previousMajor        Int
+  previousMinor        Int
+  newMajor             Int
+  newMinor             Int
+  changeType           String // "minor" | "major"
+  changeSummary        String
+  classificationReason String?
+  commitSha            String?
+  branch               String?
+  actor                String? // automation source ("ci"/"cli") or admin id
+  pullRequest          String?
+  automatic            Boolean  @default(true)
+  createdAt            DateTime @default(now())
+
+  @@index([engineId, createdAt])
+  @@index([commitSha])
+}
+
+// Idempotency + concurrency guard: a (changeKey, engineId) pair is processed at
+// most once, so re-running the bump for the same commit/manifest never
+// double-increments (CI retries, deploy retries, rebases, rerun workflows,
+// multiple instances). The @@unique IS the concurrency boundary — a duplicate
+// insert raises Prisma P2002 inside the bump transaction and that engine is
+// skipped, leaving any concurrent update intact.
+model ProcessedEngineChange {
+  id        String   @id @default(uuid())
+  changeKey String // commit SHA / merged-PR SHA / manifest id
+  engineId  String
+  createdAt DateTime @default(now())
+
+  @@unique([changeKey, engineId])
+  @@index([changeKey])
+}

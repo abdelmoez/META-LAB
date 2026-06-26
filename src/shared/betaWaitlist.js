@@ -100,6 +100,58 @@ export const REFERRAL_SOURCES = [
   'Other',
 ];
 
+// ── 54.md Part 3 — questionnaire fields from WhatToCollectFromUsers.docx ────────
+// These map the document's high-signal onboarding questions onto the waitlist.
+// All are OPTIONAL (the doc: "make all fields optional except Country"); each is
+// validated against a closed allow-list when present.
+
+// doc Q2 — primary field of research.
+export const WAITLIST_FIELDS = [
+  'Medicine',
+  'Nursing',
+  'Pharmacy',
+  'Public health',
+  'Dentistry',
+  'Psychology',
+  'Social sciences',
+  'Environmental science',
+  'Other',
+];
+
+// doc Q5 — type of institution.
+export const WAITLIST_INSTITUTION_TYPES = [
+  'University',
+  'Hospital or health system',
+  'Research institute',
+  'Contract research organization (CRO)',
+  'Government agency',
+  'Non-governmental organization (NGO)',
+  'Independent',
+  'Industry',
+];
+
+// doc Q4 — competitive-intelligence signal. "Not sure" is a first-class answer.
+export const WAITLIST_COVIDENCE = ['Yes', 'No', 'Not sure'];
+
+// doc Q6 — number of systematic reviews completed before (lifetime; distinct from
+// RESEARCH_EXPERIENCE_LEVELS [career stage] and ANNUAL_REVIEW_VOLUMES [per year]).
+export const WAITLIST_PRIOR_REVIEW_COUNTS = [
+  'This is my first',
+  '1–2',
+  '3–5',
+  'More than 5',
+];
+
+// doc Q7 — tool used for the last review (switching-friction signal).
+export const WAITLIST_PRIOR_TOOLS = [
+  'This is my first review',
+  'Rayyan',
+  'Covidence',
+  'Excel only',
+  'DistillerSR',
+  'Other',
+];
+
 // Lifecycle status model. WAITLISTED is the only status the submit path may set.
 export const WAITLIST_STATUSES = [
   'WAITLISTED',
@@ -135,7 +187,7 @@ export const WAITLIST_MAX = {
 
 // Current consent copy version — bump when the consent wording changes so a record
 // always records WHICH consent text the applicant agreed to.
-export const CONSENT_VERSION = '2026-06-21';
+export const CONSENT_VERSION = '2026-06-26'; // 54.md two-layer consent
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
 export function isValidStatus(s) {
@@ -186,35 +238,38 @@ export function validateApplication(payload) {
     value.normalizedEmail = normalizeEmail(email);
   }
 
-  // Names (required)
+  // Names (OPTIONAL — 54.md: only email + country + consent are required; the doc
+  // assumes identity is known post-signup, but a cold waitlist still benefits from
+  // a name to address invitees, so we collect it lightly without requiring it).
   const firstName = cleanStr(p.firstName, WAITLIST_MAX.name);
   const lastName = cleanStr(p.lastName, WAITLIST_MAX.name);
-  if (!firstName) errors.firstName = 'First name is required.';
-  else value.firstName = firstName;
-  if (!lastName) errors.lastName = 'Last name is required.';
-  else value.lastName = lastName;
+  if (firstName) value.firstName = firstName;
+  if (lastName) value.lastName = lastName;
 
-  // Institution (required)
+  // Institution NAME (OPTIONAL — the doc flags institution name as too sensitive
+  // for a first impression; institution TYPE is the high-signal question instead).
   const institutionName = cleanStr(p.institutionName, WAITLIST_MAX.institution);
-  if (!institutionName) errors.institutionName = 'Institution or organization is required.';
-  else value.institutionName = institutionName;
+  if (institutionName) value.institutionName = institutionName;
   // Optional normalized institution identifier (ROR id), when the client resolved one.
   const rorId = cleanStr(p.institutionRorId, 64);
   if (rorId) value.institutionRorId = rorId;
 
-  // Role (required, closed list) + optional custom role
-  if (!inList(WAITLIST_ROLES, p.role)) {
-    errors.role = 'Select your professional or academic role.';
-  } else {
-    value.role = p.role;
-    if (p.role === 'Other') {
-      const customRole = cleanStr(p.customRole, WAITLIST_MAX.customRole);
-      if (!customRole) errors.customRole = 'Tell us your role.';
-      else value.customRole = customRole;
+  // Role (OPTIONAL, closed list — doc Q1) + optional custom role
+  if (p.role != null && p.role !== '') {
+    if (!inList(WAITLIST_ROLES, p.role)) {
+      errors.role = 'Select a valid professional or academic role.';
+    } else {
+      value.role = p.role;
+      // Conditional requirement: if you choose "Other", tell us what it is.
+      if (p.role === 'Other') {
+        const customRole = cleanStr(p.customRole, WAITLIST_MAX.customRole);
+        if (!customRole) errors.customRole = 'Tell us your role.';
+        else value.customRole = customRole;
+      }
     }
   }
 
-  // Country (required, must be a real ISO alpha-2)
+  // Country (REQUIRED — doc Q3, GDPR — must be a real ISO alpha-2)
   const countryCode = typeof p.countryCode === 'string' ? p.countryCode.trim().toUpperCase() : '';
   if (!countryCode) {
     errors.countryCode = 'Select your country.';
@@ -225,11 +280,37 @@ export function validateApplication(payload) {
     value.countryName = countryNameForCode(countryCode) || '';
   }
 
-  // Primary intended use (required, closed list)
-  if (!inList(PRIMARY_USES, p.primaryUse)) {
-    errors.primaryUse = 'Select your primary intended use.';
-  } else {
-    value.primaryUse = p.primaryUse;
+  // ── 54.md questionnaire fields (all OPTIONAL, validated-if-present) ──
+  // doc Q2 — primary field
+  if (p.primaryField != null && p.primaryField !== '') {
+    if (!inList(WAITLIST_FIELDS, p.primaryField)) errors.primaryField = 'Select a valid field.';
+    else value.primaryField = p.primaryField;
+  }
+  // doc Q5 — institution type
+  if (p.institutionType != null && p.institutionType !== '') {
+    if (!inList(WAITLIST_INSTITUTION_TYPES, p.institutionType)) errors.institutionType = 'Select a valid institution type.';
+    else value.institutionType = p.institutionType;
+  }
+  // doc Q4 — Covidence license
+  if (p.covidenceLicense != null && p.covidenceLicense !== '') {
+    if (!inList(WAITLIST_COVIDENCE, p.covidenceLicense)) errors.covidenceLicense = 'Select Yes, No, or Not sure.';
+    else value.covidenceLicense = p.covidenceLicense;
+  }
+  // doc Q6 — prior review count
+  if (p.priorReviewCount != null && p.priorReviewCount !== '') {
+    if (!inList(WAITLIST_PRIOR_REVIEW_COUNTS, p.priorReviewCount)) errors.priorReviewCount = 'Select a valid number of completed reviews.';
+    else value.priorReviewCount = p.priorReviewCount;
+  }
+  // doc Q7 — last review tool
+  if (p.lastReviewTool != null && p.lastReviewTool !== '') {
+    if (!inList(WAITLIST_PRIOR_TOOLS, p.lastReviewTool)) errors.lastReviewTool = 'Select a valid tool.';
+    else value.lastReviewTool = p.lastReviewTool;
+  }
+
+  // Primary intended use (OPTIONAL, closed list)
+  if (p.primaryUse != null && p.primaryUse !== '') {
+    if (!inList(PRIMARY_USES, p.primaryUse)) errors.primaryUse = 'Select a valid primary intended use.';
+    else value.primaryUse = p.primaryUse;
   }
 
   // ── Optional, validated-if-present fields ──
@@ -293,13 +374,19 @@ export function validateApplication(payload) {
     if (msg) value.message = msg;
   }
 
-  // Consent (required, must be explicitly true — never pre-checked)
+  // Consent — TWO SEPARATE LAYERS (54.md / doc legal requirement):
+  //   (1) OPERATIONAL consent (required, explicit true, never pre-checked): agree to
+  //       be contacted about the beta. Without it we cannot run the waitlist.
+  //   (2) RESEARCH-insights opt-in (OPTIONAL, separate, never pre-checked): consent
+  //       to aggregated/anonymized research-insights use. Defaults to false; only
+  //       stored true when the applicant explicitly opts in. NEVER required.
   if (p.consent !== true) {
     errors.consent = 'You must agree to be contacted about the beta to join the waitlist.';
   } else {
     value.consent = true;
     value.consentVersion = CONSENT_VERSION;
   }
+  value.researchConsent = p.researchConsent === true;
 
   if (Object.keys(errors).length > 0) return { ok: false, errors };
   return { ok: true, value };

@@ -10,6 +10,13 @@ dist/
 server/.env
 *.env.local
 
+# Stitch MCP (design source) — a local Claude MCP config can carry the
+# X-Goog-Api-Key header (STITCH_API_KEY). NEVER commit it. The MCP is added at
+# USER scope via `claude mcp add` (see docs/manager/54-stitch-waitlist-engine-versions.md
+# and .env.example); a repo-level .mcp.json must stay secret-free.
+.mcp.json
+.mcp.local.json
+
 # Prisma migrations ARE committed (full history + migration_lock.toml) so
 # `npx prisma migrate deploy` works from a clean clone. Fixed 2026-06-12 —
 # they were wrongly ignored before, contradicting deployment-readiness.md.
@@ -74,3 +81,10 @@ ds-bundle/
 scripts/pecan-harness-report.json
 scripts/pecan-harness-report.md
 scripts/pecan-harness-live.log
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/

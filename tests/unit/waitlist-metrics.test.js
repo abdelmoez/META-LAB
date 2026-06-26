@@ -61,3 +61,27 @@ describe('computeWaitlistMetrics — real records', () => {
     expect(m.trend.reduce((s, t) => s + t.count, 0)).toBe(3);
   });
 });
+
+describe('computeWaitlistMetrics — 54.md new aggregations', () => {
+  const records = [
+    { createdAt: new Date(NOW), status: 'WAITLISTED', confirmationEmailStatus: 'sent', primaryField: 'Medicine', institutionType: 'University', covidenceLicense: 'No' },
+    { createdAt: new Date(NOW), status: 'WAITLISTED', confirmationEmailStatus: 'sent', primaryField: 'Medicine', institutionType: 'Hospital or health system', covidenceLicense: 'No' },
+    { createdAt: new Date(NOW), status: 'WAITLISTED', confirmationEmailStatus: 'sent', primaryField: 'Nursing', institutionType: 'University', covidenceLicense: 'Yes' },
+    { createdAt: new Date(NOW), status: 'WAITLISTED', confirmationEmailStatus: 'sent' }, // all-null → ignored in aggregations
+  ];
+  const m = computeWaitlistMetrics(records, { now: NOW });
+
+  it('ranks top fields + institution types, ignoring nulls', () => {
+    expect(m.topFields[0]).toEqual({ label: 'Medicine', count: 2 });
+    expect(m.topInstitutionTypes.find((t) => t.label === 'University').count).toBe(2);
+  });
+  it('breaks down Covidence license (competitive signal)', () => {
+    expect(m.covidence).toEqual({ Yes: 1, No: 2, 'Not sure': 0 });
+  });
+  it('empty input yields well-formed zero aggregations', () => {
+    const e = computeWaitlistMetrics([], { now: NOW });
+    expect(e.topFields).toEqual([]);
+    expect(e.topInstitutionTypes).toEqual([]);
+    expect(e.covidence).toEqual({ Yes: 0, No: 0, 'Not sure': 0 });
+  });
+});

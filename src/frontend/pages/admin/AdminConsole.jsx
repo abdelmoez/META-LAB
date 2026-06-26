@@ -7500,9 +7500,26 @@ function WaitlistSection() {
           {hasData && (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 12, marginBottom: 18 }}>
               <WlBars title="Top roles" items={m.topRoles} color={C.acc} />
+              <WlBars title="Top fields" items={m.topFields} color={C.acc} />
+              <WlBars title="Top institution types" items={m.topInstitutionTypes} color={C.purp} />
               <WlBars title="Top institutions" items={m.topInstitutions} color={C.purp} />
               <WlBars title="Top countries" items={m.topCountries} color={C.teal} />
               <WlBars title="Top interests" items={m.topInterests} color={C.gold} />
+            </div>
+          )}
+
+          {hasData && m.covidence && (
+            <div style={{ marginBottom: 18 }}>
+              <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 8 }}>Covidence license at institution</div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                {['Yes', 'No', 'Not sure'].map((k) => (
+                  <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 7, padding: '5px 11px', borderRadius: 8, background: C.card, border: `1px solid ${C.brd}` }}>
+                    <span style={{ fontSize: 12.5, color: C.txt2 }}>{k}</span>
+                    <span style={{ fontSize: 13, fontWeight: 700, fontFamily: MONO, color: k === 'No' ? C.grn : C.txt }}>{m.covidence[k] || 0}</span>
+                  </span>
+                ))}
+                <span style={{ fontSize: 11.5, color: C.muted, alignSelf: 'center' }}>“No” = strongest conversion signal.</span>
+              </div>
             </div>
           )}
 
@@ -7713,9 +7730,14 @@ function WaitlistDrawer({ id, onClose, onChanged }) {
               </div>
 
               <Row label="Email">{applicant.email}</Row>
-              <Row label="Institution">{applicant.institutionName}</Row>
               <Row label="Role">{applicantRoleLabel(applicant)}</Row>
+              <Row label="Field">{applicant.primaryField}</Row>
               <Row label="Country">{applicant.countryName || applicant.countryCode}</Row>
+              <Row label="Institution type">{applicant.institutionType}</Row>
+              <Row label="Institution">{applicant.institutionName}</Row>
+              <Row label="Covidence license">{applicant.covidenceLicense}</Row>
+              <Row label="Reviews completed">{applicant.priorReviewCount}</Row>
+              <Row label="Last review tool">{applicant.lastReviewTool}</Row>
               <Row label="Primary use">{applicant.primaryUse}</Row>
               <Row label="Experience">{applicant.researchExperienceLevel}</Row>
               <Row label="Reviews / year">{applicant.annualReviewVolume}</Row>
@@ -7726,6 +7748,7 @@ function WaitlistDrawer({ id, onClose, onChanged }) {
               <Row label="Submitted">{wlFmtDateTime(applicant.createdAt)}</Row>
               <Row label="Source">{applicant.submissionSource}</Row>
               <Row label="Consent">{applicant.consent ? `Agreed ${wlFmtDateTime(applicant.consentAt)} (v${applicant.consentVersion || '—'})` : 'Not given'}</Row>
+              <Row label="Research opt-in">{applicant.researchConsent ? `Yes — agreed ${wlFmtDateTime(applicant.researchConsentAt)}` : 'No (optional, declined)'}</Row>
               <Row label="Confirmation sent">{wlFmtDateTime(applicant.confirmationEmailSentAt)}</Row>
               <Row label="Last email error">{applicant.lastConfirmationEmailError}</Row>
 
@@ -7786,6 +7809,151 @@ function WaitlistDrawer({ id, onClose, onChanged }) {
    ROOT COMPONENT
    ════════════════════════════════════════════════════════════════════════ */
 
+// ── Engine Versions (54.md Part 6) — ADMIN ONLY ─────────────────────────────────
+// Internal per-engine version tracking. NEVER shown to ordinary users (no public
+// endpoint exposes it). Read-only here; bumps happen via the controlled CLI
+// (scripts/engine-version.mjs) so the deterministic safeguards live in one place.
+const ENGINE_STATUS_COLOR = {
+  active:       { c: C.grn,  bg: C.grnBg },
+  beta:         { c: C.acc,  bg: C.accBg },
+  experimental: { c: C.gold, bg: C.goldBg },
+  deprecated:   { c: C.muted, bg: C.card2 },
+};
+function evFmt(v) {
+  if (!v) return '—';
+  try { return new Date(v).toLocaleString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }); }
+  catch { return String(v); }
+}
+
+function EngineVersionHistoryModal({ engineId, onClose }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    adminApi.engineVersions.history(engineId)
+      .then((d) => { if (alive) { setData(d); setErr(''); } })
+      .catch((e) => { if (alive) setErr(e.message || 'Failed to load history'); })
+      .finally(() => { if (alive) setLoading(false); });
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => { alive = false; window.removeEventListener('keydown', onKey); };
+  }, [engineId, onClose]);
+
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Engine version history" onClick={onClose}
+      style={{ position: 'fixed', inset: 0, zIndex: 1000, background: 'rgba(8,10,18,0.45)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(680px, 96vw)', maxHeight: '86vh', overflow: 'auto', background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 14, padding: 20, boxShadow: '0 24px 70px -24px rgba(0,0,0,0.5)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+          <h3 style={{ fontSize: 15, fontWeight: 700, color: C.txt, margin: 0 }}>
+            {data?.engine?.displayName || engineId} <span style={{ fontFamily: MONO, color: C.acc }}>{data?.engine?.version}</span> — history
+          </h3>
+          <button onClick={onClose} aria-label="Close" style={{ background: 'transparent', border: 'none', color: C.muted, cursor: 'pointer', padding: 4 }}><Icon name="x" size={18} /></button>
+        </div>
+        {loading && <div style={{ padding: 20, textAlign: 'center', color: C.muted }}><Spinner size={18} /></div>}
+        {err && <div role="alert" style={{ padding: '9px 12px', background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 8, color: C.red, fontSize: 12.5 }}>{err}</div>}
+        {!loading && !err && data && (
+          data.history.length === 0
+            ? <div style={{ padding: 16, color: C.muted, fontSize: 13 }}>No version changes recorded yet. The engine is at its initial version (v0.1).</div>
+            : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {data.history.map((h) => (
+                  <div key={h.id} style={{ border: `1px solid ${C.brd}`, borderRadius: 10, padding: '11px 13px', background: C.card }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 9, flexWrap: 'wrap' }}>
+                      <span style={{ fontFamily: MONO, fontSize: 13, color: C.txt }}>{h.previous} → <strong style={{ color: C.acc }}>{h.next}</strong></span>
+                      <Badge text={h.changeType === 'major' ? 'MAJOR' : 'minor'} color={h.changeType === 'major' ? C.red : C.acc} />
+                      <Badge text={h.automatic ? 'auto' : 'manual'} color={C.muted} />
+                      <span style={{ marginLeft: 'auto', fontSize: 11, fontFamily: MONO, color: C.muted }}>{evFmt(h.createdAt)}</span>
+                    </div>
+                    <div style={{ fontSize: 13, color: C.txt2, marginTop: 6 }}>{h.changeSummary}</div>
+                    {h.classificationReason && <div style={{ fontSize: 11.5, color: C.muted, marginTop: 4 }}>Reason: {h.classificationReason}</div>}
+                    {(h.commitSha || h.branch || h.actor || h.pullRequest) && (
+                      <div style={{ fontSize: 11, fontFamily: MONO, color: C.muted, marginTop: 5, display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+                        {h.commitSha && <span>commit {h.commitSha}</span>}
+                        {h.branch && <span>branch {h.branch}</span>}
+                        {h.pullRequest && <span>PR {h.pullRequest}</span>}
+                        {h.actor && <span>by {h.actor}</span>}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )
+        )}
+      </div>
+    </div>
+  );
+}
+
+function EngineVersionsSection() {
+  const [engines, setEngines] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  const [historyFor, setHistoryFor] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    adminApi.engineVersions.list()
+      .then((d) => { if (alive) { setEngines(d.engines || []); setErr(''); } })
+      .catch((e) => { if (alive) setErr(e.message || 'Failed to load engine versions'); })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, []);
+
+  const Th = ({ children, width }) => (
+    <th style={{ textAlign: 'left', padding: '9px 10px', fontSize: 11, fontWeight: 700, color: C.muted, fontFamily: MONO, letterSpacing: '0.04em', textTransform: 'uppercase', whiteSpace: 'nowrap', width }}>{children}</th>
+  );
+
+  return (
+    <div>
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 4px' }}>Engine Versions</h2>
+        <div style={{ fontSize: 12.5, color: C.muted, lineHeight: 1.5 }}>
+          Internal per-engine versions (v{'{major}'}.{'{minor}'}). Distinct from the app version, deployment, and DB schema. Visible only here — never to ordinary users. Bump via <code style={{ fontFamily: MONO, color: C.txt }}>npm run engine-version:bump</code>.
+        </div>
+      </div>
+
+      {err && <div role="alert" style={{ margin: '0 0 14px', padding: '9px 12px', background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 8, color: C.red, fontSize: 12.5 }}>{err}</div>}
+      {loading && <div style={{ padding: 24, textAlign: 'center', color: C.muted }}><Spinner size={18} /></div>}
+
+      {!loading && engines && (
+        <div style={{ overflowX: 'auto', border: `1px solid ${C.brd}`, borderRadius: 12 }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 720 }}>
+            <thead><tr style={{ borderBottom: `1px solid ${C.brd}`, background: C.card2 }}>
+              <Th>Engine</Th><Th width={90}>Version</Th><Th width={110}>Status</Th>
+              <Th width={120}>Last change</Th><Th>Summary</Th><Th width={150}>Updated</Th><Th width={90}></Th>
+            </tr></thead>
+            <tbody>
+              {engines.map((e) => {
+                const sc = ENGINE_STATUS_COLOR[e.status] || ENGINE_STATUS_COLOR.active;
+                return (
+                  <tr key={e.id} style={{ borderBottom: `1px solid ${C.brd}` }}>
+                    <td style={{ padding: '10px' }}>
+                      <div style={{ fontSize: 13.5, fontWeight: 600, color: C.txt }}>{e.displayName}</div>
+                      <div style={{ fontSize: 11, fontFamily: MONO, color: C.muted }}>{e.id}</div>
+                    </td>
+                    <td style={{ padding: '10px', fontFamily: MONO, fontSize: 14, fontWeight: 700, color: C.acc }}>{e.version}</td>
+                    <td style={{ padding: '10px' }}><Badge text={e.status} color={sc.c} bg={sc.bg} /></td>
+                    <td style={{ padding: '10px' }}>{e.lastChangeType ? <Badge text={e.lastChangeType === 'major' ? 'MAJOR' : 'minor'} color={e.lastChangeType === 'major' ? C.red : C.acc} /> : <span style={{ color: C.muted, fontSize: 12 }}>initial</span>}</td>
+                    <td style={{ padding: '10px', fontSize: 12.5, color: C.txt2, maxWidth: 280 }} title={e.lastChangeSummary || ''}>{e.lastChangeSummary || <span style={{ color: C.muted }}>{e.description}</span>}</td>
+                    <td style={{ padding: '10px', fontSize: 12, fontFamily: MONO, color: C.muted }}>{e.updatedAt ? evFmt(e.updatedAt) : '—'}</td>
+                    <td style={{ padding: '10px' }}>
+                      <button onClick={() => setHistoryFor(e.id)} style={{ background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 8, padding: '5px 10px', fontSize: 12, fontWeight: 600, color: C.txt, cursor: 'pointer' }}>History</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {historyFor && <EngineVersionHistoryModal engineId={historyFor} onClose={() => setHistoryFor(null)} />}
+    </div>
+  );
+}
+
 const NAV_SECTIONS = [
   { id: 'overview',   icon: 'grid',      label: 'Overview'      },
   { id: 'users',      icon: 'users',     label: 'Users'         },
@@ -7802,6 +7970,7 @@ const NAV_SECTIONS = [
   { id: 'messages',   icon: 'mail',      label: 'Messages'      },
   { id: 'security',   icon: 'shield',    label: 'Security'      },
   { id: 'health',     icon: 'activity',  label: 'Health'        },
+  { id: 'engineVersions', icon: 'layers', label: 'Engine Versions' },
 ];
 
 // Role-derived section sets — mirror of server getConsole (the server descriptor
@@ -7876,6 +8045,7 @@ export default function AdminConsole() {
     messages:   <MessagesSection onUnreadChange={setUnread} />,
     security:   <SecuritySection />,
     health:     <HealthSection />,
+    engineVersions: <EngineVersionsSection />,
   };
 
   // Section labels for the access-denied message.

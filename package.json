@@ -1,6 +1,6 @@
 {
   "name": "meta-lab",
-  "version": "3.49.1",
+  "version": "3.50.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -18,6 +18,9 @@
     "smoke:deploy": "node scripts/smoke-deploy.mjs",
     "review:legal": "node scripts/review-legal.js",
     "review:ops-impact": "node scripts/review-ops-impact.js",
+    "engine-version:check": "node scripts/engine-version.mjs check",
+    "engine-version:bump": "node scripts/engine-version.mjs bump",
+    "engine-registry:seed": "node server/scripts/seed-engine-registry.js",
     "marketing:seed": "node scripts/seed-marketing-demo.mjs",
     "marketing:seed:remove": "node scripts/seed-marketing-demo.mjs --remove",
     "marketing:screenshots": "node scripts/capture-marketing-screenshots.mjs",
@@ -31,6 +34,8 @@
     "react-router-dom": "^7.17.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^26.0.0",
     "@vitejs/plugin-react": "^4.3.1",
     "concurrently": "^9.1.0",
     "playwright": "^1.49.0",

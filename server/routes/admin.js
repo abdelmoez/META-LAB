@@ -108,6 +108,10 @@ import {
   updateSearchProviders,
   requeueJob as requeueSearchJob,
 } from '../pecanSearch/adminController.js';
+import {
+  adminListEngineVersions,
+  adminEngineVersionHistory,
+} from '../controllers/engineVersionController.js';
 
 const router = Router();
 
@@ -279,5 +283,12 @@ router.patch('/beta-waitlist/applicants/:id/status', requireAdmin, adminUpdateSt
 router.patch('/beta-waitlist/applicants/:id/notes',  requireAdmin, adminUpdateNotes);
 router.post('/beta-waitlist/applicants/:id/resend',  requireAdmin, adminResendConfirmation);
 router.delete('/beta-waitlist/applicants/:id',       requireAdmin, adminRemoveApplicant);
+
+// ── Engine versions (54.md Part 6) — ADMIN ONLY, internal/operational only ──────
+// Read-only: current per-engine version + change history. Bumps happen via the
+// controlled CLI (scripts/engine-version.mjs), not the UI. These are NEVER mirrored
+// on any public/user endpoint. Static path before the :id route.
+router.get('/engine-versions',                       requireAdmin, adminListEngineVersions);
+router.get('/engine-versions/:id/history',           requireAdmin, adminEngineVersionHistory);
 
 export default router;

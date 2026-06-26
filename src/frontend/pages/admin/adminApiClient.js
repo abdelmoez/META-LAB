@@ -228,6 +228,12 @@ export const adminApi = {
     exportUrl: (p)             => `${BASE}/beta-waitlist/export${qs(p)}`,
   },
 
+  // 54.md Part 6 — engine versions (admin-only, read-only).
+  engineVersions: {
+    list:    ()   => req(`${BASE}/engine-versions`),
+    history: (id) => req(`${BASE}/engine-versions/${id}/history`),
+  },
+
   auditLog:        (p)       => req(`${BASE}/audit-log?${new URLSearchParams(p || {})}`),
   securityEvents:  (p)       => req(`${BASE}/security-events?${new URLSearchParams(p || {})}`),
   securitySummary: (p)       => req(`${BASE}/security-summary?${new URLSearchParams(p || {})}`),
