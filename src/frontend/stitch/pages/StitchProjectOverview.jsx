@@ -30,6 +30,7 @@ import { statusOf, STATUS_META, relTime, ROLE_LABEL } from '../../pages/projectL
 import StitchAppShell from '../shell/StitchAppShell.jsx';
 import StitchProjectRail from '../shell/StitchProjectRail.jsx';
 import StitchWorkflowNav from '../shell/StitchWorkflowNav.jsx';
+import StitchProjectPresence from '../shell/StitchProjectPresence.jsx';
 import { projectStageHref, SCREENING_SUBNAV, screeningSubHref } from '../nav/navConfig.js';
 import {
   StitchPageHeader, StitchSectionHeader, StitchCard, StitchMetricCard,
@@ -288,6 +289,13 @@ export default function StitchProjectOverview() {
         {pico.studyDesign ? <StitchBadge tone="neutral">{pico.studyDesign}</StitchBadge> : null}
         {linkedId ? <StitchBadge tone="info" icon="link">Linked to Screening</StitchBadge> : <StitchBadge tone="neutral" icon="alert">No linked Screening</StitchBadge>}
         {project._archived ? <StitchBadge tone="warn" icon="layers">Archived</StitchBadge> : null}
+        {/* design4: live online project members on the overview too (deep-tool pages
+            already show this) — real, project-scoped presence, never a fake list. */}
+        {linkedId ? (
+          <div style={{ marginLeft: 'auto' }}>
+            <StitchProjectPresence spId={linkedId} location="Project overview" totalMembers={members ? members.length : undefined} />
+          </div>
+        ) : null}
       </div>
 
       {(readOnly || project._shared) ? (

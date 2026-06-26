@@ -19,6 +19,14 @@ import {
 const ROLE_LABEL = { owner: 'Owner', leader: 'Leader', reviewer: 'Reviewer', viewer: 'Viewer' };
 const MAX_FANOUT = 16; // cap the N+1 fan-out (audit B: no aggregate endpoint exists)
 
+// Open a work row: linked screening → the unified workspace's screening tab;
+// standalone screening (no PecanRev parent) → the engine route.
+function workHref(row) {
+  return row.linkedProjectId
+    ? `/app/project/${encodeURIComponent(row.linkedProjectId)}?tab=screening`
+    : `/sift-beta/projects/${encodeURIComponent(row.id)}`;
+}
+
 export default function MyWorkView() {
   const navigate = useNavigate();
   const [rows, setRows] = useState(null);
@@ -37,6 +45,10 @@ export default function MyWorkView() {
         const s = stats[i].status === 'fulfilled' ? stats[i].value : null;
         return {
           id: p.id,
+          // The parent PecanRev project (when this screening project is linked) lets
+          // us open the work inside the unified workspace instead of the standalone
+          // engine. Standalone screening projects have none → keep the engine route.
+          linkedProjectId: p.linkedMetaLabProjectId || null,
           title: p.title || 'Untitled project',
           // Use the server-supplied role; never guess a role that could over-state
           // the user's actual access (a neutral "Member" is shown if it's absent).
@@ -88,7 +100,7 @@ export default function MyWorkView() {
         {actionable.length ? (
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             {actionable.map((r, i) => (
-              <WorkRow key={r.id} row={r} last={i === actionable.length - 1} onOpen={() => navigate(`/sift-beta/projects/${encodeURIComponent(r.id)}`)} />
+              <WorkRow key={r.id} row={r} last={i === actionable.length - 1} onOpen={() => navigate(workHref(r))} />
             ))}
           </div>
         ) : (

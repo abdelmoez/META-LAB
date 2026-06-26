@@ -27,7 +27,7 @@ server module / API).
 
 | Stage | Route (`?tab=`) | Engine component (reused) | Source of truth | Presence | Status |
 |---|---|---|---|---|---|
-| Project Overview | (bare) | StitchProjectOverview (native) | project + screening overview | strip pending | native-page |
+| Project Overview | (bare) | StitchProjectOverview (native) | project + screening overview | yes | native-page |
 | Project Control | `control` | ControlTab + ProjectMembersPanel | ScreenProject + blob | yes | native |
 | PICO / Question | `pico` | PICODispatcher | `protocol` module / `project.pico` | yes | native |
 | Plan & Protocol | `prospero` | PlanProtocolDispatcher | `planProtocol` module / `project.prospero` | yes | native |
@@ -71,25 +71,28 @@ changed by design4.
 | Notifications | bell (global) | native | reused NotificationsBell in the Stitch top header |
 | Invitations / Activity | `/app?view=` | native | reused notificationsApi |
 
+## Resolved in the recs pass
+
+- **Dashboard quick-links to screening** (`MyWork` / `Activity` / `Invitations` rows) now
+  route **PecanRev-linked** screening through the unified workspace
+  (`/app/project/:id?tab=screening`) using the linked project id the list/notification
+  payloads already carry. **Standalone** screening projects (created directly in the
+  screening dashboard, with no PecanRev parent) legitimately keep the `/sift-beta` route
+  — they have no `/app/project/:id` to host them.
+- **Project Overview presence strip** — the overview now shows the same live,
+  project-scoped online-members strip (`StitchProjectPresence`) as the deep-tool pages.
+
 ## Documented boundaries (remaining, non-blocking)
 
-1. **Dashboard quick-links to screening** (`MyWork`/`Activity`/`Invitations` rows) opened
-   the standalone `/sift-beta/projects/:screenProjectId` by ScreenProject id. design4
-   routes **PecanRev-linked** screening through the unified workspace where the parent
-   project id is known; **standalone** screening projects (created directly in the
-   screening dashboard, with no PecanRev parent) legitimately keep the `/sift-beta`
-   route — they have no `/app/project/:id` to host them.
-2. **Project Overview presence strip** — the deep-tool pages show live presence; the
-   overview page itself gains the same strip in this pass.
-3. **Ops Console deep admin tools** — the native Stitch Ops page covers overview /
+1. **Ops Console deep admin tools** — the native Stitch Ops page covers overview /
    health / flags; the dense admin CRUD (users, projects, audit, waitlist, email,
    policies) opens the legacy console via `/ops?ui=legacy`. It shares auth + role
    guards; a fully-native dense admin surface is a separate, larger effort.
-4. **Pre-auth screens** (landing, login, register, verify, onboarding, beta waitlist)
+2. **Pre-auth screens** (landing, login, register, verify, onboarding, beta waitlist)
    remain legacy **by design**: the design switch is a per-user admin preference
    resolved only after login, so there is no Stitch user context before auth. The beta
    waitlist page already uses Stitch tokens.
-5. **Editor bodies** reuse the proven legacy/feature editors (harmonized to Stitch via
+3. **Editor bodies** reuse the proven legacy/feature editors (harmonized to Stitch via
    the `--t-*` token remap) rather than bespoke native-Stitch-styled form layouts. This
    guarantees full functional parity + zero data-corruption risk; fully native-styled
    card forms are a follow-up visual refinement, not a functional gap.

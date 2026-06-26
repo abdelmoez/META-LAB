@@ -24,7 +24,13 @@ const TYPE_ICON = {
 function iconFor(type) { return TYPE_ICON[type] || 'clock'; }
 
 function targetUrl(n) {
-  if (n.relatedMetaLabProjectId) return `/app/project/${encodeURIComponent(n.relatedMetaLabProjectId)}`;
+  // design4: prefer the unified PecanRev workspace. A screening-related notification
+  // on a LINKED project lands directly on the embedded screening engine in-shell;
+  // a standalone screening project (no PecanRev parent) keeps the engine route.
+  if (n.relatedMetaLabProjectId) {
+    const base = `/app/project/${encodeURIComponent(n.relatedMetaLabProjectId)}`;
+    return n.relatedScreenProjectId ? `${base}?tab=screening` : base;
+  }
   if (n.relatedScreenProjectId) return `/sift-beta/projects/${encodeURIComponent(n.relatedScreenProjectId)}`;
   return null;
 }

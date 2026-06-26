@@ -18,7 +18,13 @@ import {
 } from '../../primitives';
 
 function targetUrl(n) {
-  if (n.relatedMetaLabProjectId) return `/app/project/${encodeURIComponent(n.relatedMetaLabProjectId)}`;
+  // design4: prefer the unified PecanRev workspace; a screening notification on a
+  // LINKED project opens the embedded screening engine in-shell, while a standalone
+  // screening project (no PecanRev parent) keeps the engine route.
+  if (n.relatedMetaLabProjectId) {
+    const base = `/app/project/${encodeURIComponent(n.relatedMetaLabProjectId)}`;
+    return n.relatedScreenProjectId ? `${base}?tab=screening` : base;
+  }
   if (n.relatedScreenProjectId) return `/sift-beta/projects/${encodeURIComponent(n.relatedScreenProjectId)}`;
   return null;
 }

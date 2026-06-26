@@ -96,13 +96,22 @@ labels, off-canvas drawer < 1024px, reduced-motion). Full-bleed engines keep the
 internal scroll so no controls go off-screen; the page header wraps. Engines reused as-is
 retain their existing a11y.
 
-## 10. Documented boundaries (non-blocking)
+## 10. Recs/limitations pass (addressed) + remaining boundaries
 
-Listed in the parity matrix: (1) dashboard quick-links to *standalone* screening projects
-legitimately keep `/sift-beta`; (2) overview presence strip (added in the recs pass); (3)
-Ops deep admin CRUD opens the legacy console; (4) pre-auth screens are legacy by design
-(the switch is post-login); (5) editor bodies reuse the proven editors harmonized via the
-token remap rather than bespoke native forms (functional parity, not a gap).
+**Addressed in the recs pass (2nd commit):**
+- **Dashboard quick-links to screening** — `MyWork` / `Activity` / `Invitations` now route
+  PecanRev-**linked** screening through the unified workspace
+  (`/app/project/:id?tab=screening`) using the linked project id those payloads already
+  carry, so following a screening notification/work item keeps you in the PecanRev shell.
+  Standalone screening projects (no PecanRev parent) legitimately keep `/sift-beta`.
+- **Project Overview presence strip** — the overview now shows the same live,
+  project-scoped online-members strip (`StitchProjectPresence`) as every deep-tool page.
+
+**Remaining boundaries (documented, non-blocking):** Ops deep admin CRUD opens the legacy
+console (`/ops?ui=legacy`; native Stitch Ops covers overview/health/flags); pre-auth
+screens are legacy by design (the switch is a post-login per-user preference); editor
+bodies reuse the proven editors harmonized via the `--t-*` token remap rather than bespoke
+native form layouts (functional parity, not a gap — a visual refinement follow-up).
 
 ## 11. How to verify locally
 
