@@ -153,6 +153,7 @@ import { ScreeningModule, MetaSiftPrismaSync, PRISMATab, PrismaFigureExport } fr
    src/frontend/workspace/tabs/robTabs.jsx (prompt46 Phase 6f) and imported
    below. */
 import { RoBTab, LegacyRoBTab } from "./tabs/robTabs.jsx";
+import { NmaTab } from "./tabs/nmaTab.jsx";
 
 /* ════════════ TABS: ANALYSIS / FOREST / SENSITIVITY / SUBGROUP (extracted prompt46 Phase 6g — verbatim) ════════════
    AnalysisTab, DataBehindAnalysis, ResearchExport, ResultsWriteup, ForestTab,
@@ -1553,6 +1554,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           {tab==="forest"&&<ForestTab project={project}/>}
           {tab==="sensitivity"&&<SensitivityTab project={project}/>}
           {tab==="subgroup"&&<SubgroupTab project={project}/>}
+          {tab==="nma"&&<NmaTab project={project} updateProject={updateProject} activeId={activeId}/>}
           {tab==="grade"&&<GRADETab project={project} upd={upd}/>}
           {tab==="manuscript"&&<ManuscriptTab project={project} upd={upd}/>}
           {tab==="report"&&<ReportTab project={project} upd={upd}/>}

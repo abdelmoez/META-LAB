@@ -220,9 +220,13 @@ export const TABS=[
   {id:"forest",     icon:"forest",      label:"Forest Plot",          phase:"Analyze", num:10},
   {id:"sensitivity",icon:"activity",    label:"Sensitivity & Bias",   phase:"Analyze", num:11},
   {id:"subgroup",   icon:"layers",      label:"Subgroup Analysis",    phase:"Analyze", num:12},
-  {id:"grade",      icon:"award",       label:"GRADE Certainty",      phase:"Report",  num:13},
-  {id:"report",     icon:"checkSquare", label:"PRISMA Checklist",     phase:"Report",  num:14},
-  {id:"manuscript", icon:"pencil",      label:"Manuscript Draft",     phase:"Report",  num:15},
+  // P2 — Network Meta-Analysis: compare 3+ treatments via direct + indirect evidence
+  // (flag `networkMetaAnalysis`, default OFF; the tab renders a disabled-note when the
+  // flag is off, mirroring Search & Discovery). Backed by the separate NMA engine.
+  {id:"nma",        icon:"sigma",       label:"Network Meta-Analysis",phase:"Analyze", num:13},
+  {id:"grade",      icon:"award",       label:"GRADE Certainty",      phase:"Report",  num:14},
+  {id:"report",     icon:"checkSquare", label:"PRISMA Checklist",     phase:"Report",  num:15},
+  {id:"manuscript", icon:"pencil",      label:"Manuscript Draft",     phase:"Report",  num:16},
   // phase:null ⇒ reference page, NOT a workflow step — excluded from the
   // workflow map, progress denominator and "Next step" walker (all filter on t.phase).
   {id:"methods",    icon:"bookOpen",    label:"Methods & Equations",  phase:null,  group:"reference"},

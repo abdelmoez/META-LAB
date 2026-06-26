@@ -88,6 +88,13 @@ const DEFAULTS = {
     // see. Stored in the same featureFlags SiteSetting; takes effect without a
     // redeploy and surfaces in Ops › Flags automatically.
     betaWaitlist: false,
+    // p2.md — Network Meta-Analysis (NMA) engine (P2). Default OFF: the /api/nma/*
+    // endpoints 404 and the Network Meta-Analysis workspace tab is hidden. When ON,
+    // a project can build a multi-arm treatment network and run the frequentist NMA
+    // (league table, P-score ranking, network geometry, node-split + global
+    // inconsistency, contribution matrix). The deterministic engine runs server-side
+    // on user-supplied arm/contrast data (no project data leaves the server).
+    networkMetaAnalysis: false,
   }),
   // screeningEngin.md — global (admin) AI screening policy. Surfaced in Ops ›
   // AI Screening. Additive SiteSetting; merged with AI_GLOBAL_DEFAULTS server-side.
@@ -138,6 +145,19 @@ const DEFAULTS = {
  */
 export function defaultFeatureFlags() {
   try { return JSON.parse(DEFAULTS.featureFlags); } catch { return {}; }
+}
+
+/**
+ * getEffectiveFeatureFlags() — the stored featureFlags row merged over the defaults
+ * (stored values win), for SERVER-SIDE flag gating (e.g. `/api/nma`, `/api/pecan-search`).
+ * Never throws; falls back to defaults on any error.
+ */
+export async function getEffectiveFeatureFlags() {
+  try {
+    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
+    const stored = row ? JSON.parse(row.value) : {};
+    return { ...defaultFeatureFlags(), ...stored };
+  } catch { return defaultFeatureFlags(); }
 }
 
 /**

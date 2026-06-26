@@ -1,9 +1,35 @@
 # P2 — Network Meta-Analysis: methodology, validation & architecture
 
-Status: **frequentist engine complete + validated** (this commit) → integration
-(server API, native workspace UI, Ops flag, exports) follows in the next commit.
+Status: **frequentist engine complete + validated AND fully integrated** into the
+PecanRev project workflow (server API, native workspace tab, Ops flag, exports).
 Bayesian NMA and the R-`netmeta` numeric oracle are precisely-scoped follow-ons
 (see "Deferred / blocked", below) — they are NOT faked.
+
+## 0. Integration (server API + native workspace tab)
+
+- **Feature flag** `networkMetaAnalysis` (default OFF) in the standard featureFlags
+  block — auto-surfaces in Ops › Feature Flags (the admin/public settings merge
+  `defaultFeatureFlags()`).
+- **Server API** `/api/nma` (mirrors the stateless `/api/meta` pattern): `POST
+  /validate` (readiness) and `POST /run` (full analysis). Auth-required +
+  flag-gated (404 when OFF) + input-bounded (max studies/treatments) + structured
+  errors (400 invalid, 422 not-analysable, 404 disabled). The deterministic engine
+  runs **server-side** on user-supplied arm/contrast data — no project data leaves
+  the server, no arbitrary code is executed.
+- **Native workspace tab** `nma` ("Network Meta-Analysis", Analyze phase) added to
+  the workflow `TABS`. It renders inside the SAME project shell (legacy
+  `Workspace.jsx` dispatch + the unified Stitch `StitchProjectWorkspace` via
+  `?tab=nma`) — NOT a standalone engine; project context, rail, header and presence
+  are preserved. The dataset lives in `project.nma` (blob autosave; zero migration).
+  Views: Evidence data editor + live readiness, Overview (+ transparency warnings),
+  Network geometry (SVG + accessible table), League table, per-treatment Forest,
+  Ranking (P-scores), Consistency (node-split + global Q decomposition),
+  Contribution matrix, and Methods/reproducibility. Exports: league + ranking CSV,
+  full result JSON, auto-generated methods text. Flag-OFF shows a disabled note
+  (mirroring Search & Discovery), never a broken UI.
+- **Tests**: `tests/unit/nma/controller.test.js` (flag-gate 404, validation 400,
+  run 200 with full result, validate 200, not-analysable 422) against the real
+  engine. Full suite green (2301).
 
 ## 1. Architecture
 

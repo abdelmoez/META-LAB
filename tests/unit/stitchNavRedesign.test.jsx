@@ -58,8 +58,8 @@ describe('navConfig — project workflow nav (derived from legacy TABS)', () => 
     expect(nav.reference.map((s) => s.id)).toContain('methods');
     expect(nav.phases.map((p) => p.phase)).toEqual(['Plan', 'Search', 'Screen', 'Extract', 'Analyze', 'Report']);
     expect(nav.phases[0].label).toBe('Plan & Protocol'); // display label override
-    expect(nav.flat.length).toBe(18); // 2 project + 15 workflow + 1 reference
-    expect(workflowStepCount()).toBe(15);
+    expect(nav.flat.length).toBe(19); // 2 project + 16 workflow (+NMA) + 1 reference
+    expect(workflowStepCount()).toBe(16);
   });
   it('opens EVERY stage inside the unified Stitch workspace via ?tab= (design4.md)', () => {
     expect(projectStageHref('overview', { projectId: 'p1' })).toBe('/app/project/p1');

@@ -62,13 +62,14 @@ const LazyGrade       = lazy(() => import('../../workspace/tabs/reportTabs.jsx')
 const LazyManuscript  = lazy(() => import('../../workspace/tabs/reportTabs.jsx').then((m) => ({ default: m.ManuscriptTab })));
 const LazyReport      = lazy(() => import('../../workspace/tabs/reportTabs.jsx').then((m) => ({ default: m.ReportTab })));
 const LazyMethods     = lazy(() => import('../../workspace/tabs/reportTabs.jsx').then((m) => ({ default: m.MethodsTab })));
+const LazyNma         = lazy(() => import('../../workspace/tabs/nmaTab.jsx').then((m) => ({ default: m.NmaTab })));
 const LazyExportDialog = lazy(() => import('../../components/ExportDialog.jsx'));
 
 // Every workflow stage that has a native page here. Anything not in this set falls
 // through to the (already native) project overview, so deep links never break.
 const SCOPE = new Set([
   'control', 'pico', 'prospero', 'search', 'discovery', 'screening', 'prisma',
-  'extraction', 'rob', 'analysis', 'forest', 'sensitivity', 'subgroup', 'grade',
+  'extraction', 'rob', 'analysis', 'forest', 'sensitivity', 'subgroup', 'nma', 'grade',
   'manuscript', 'report', 'methods',
 ]);
 const STAGE_LABEL = TABS.reduce((m, t) => { m[t.id] = t.label; return m; }, {});
@@ -225,6 +226,8 @@ function DeepToolPage({ stage }) {
     body = (<LazySensitivity project={project} />);
   } else if (stage === 'subgroup') {
     body = (<LazySubgroup project={project} />);
+  } else if (stage === 'nma') {
+    body = (<LazyNma project={project} updateProject={doc.updateProject} activeId={projectId} />);
   } else if (stage === 'grade') {
     body = (<LazyGrade project={project} upd={doc.upd} />);
   } else if (stage === 'manuscript') {

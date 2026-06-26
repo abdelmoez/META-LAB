@@ -21,6 +21,7 @@ import projectsRouter    from './routes/projects.js';
 import studiesRouter     from './routes/studies.js';
 import recordsRouter     from './routes/records.js';
 import metaRouter        from './routes/meta.js';
+import nmaRouter         from './routes/nma.js';
 import validationRouter  from './routes/validation.js';
 import importExportRouter from './routes/importExport.js';
 import profileRouter     from './routes/profile.js';
@@ -292,6 +293,7 @@ app.use('/api/projects',             projectsRouter);
 app.use('/api/projects/:id/studies', studiesRouter);
 app.use('/api/projects/:id/records', recordsRouter);
 app.use('/api/meta',                 metaRouter);
+app.use('/api/nma',                  nmaRouter);
 app.use('/api/validation',           validationRouter);
 // Bell polling endpoint — own mount, NEVER under the rate-limited /api/auth
 // or /api/admin routers (requireAuth applied inside the router).
