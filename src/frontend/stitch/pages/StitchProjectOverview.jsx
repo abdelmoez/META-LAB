@@ -29,9 +29,8 @@ import {
 import { statusOf, STATUS_META, relTime, ROLE_LABEL } from '../../pages/projectLanding.helpers.js';
 import StitchAppShell from '../shell/StitchAppShell.jsx';
 import StitchProjectRail from '../shell/StitchProjectRail.jsx';
-import StitchWorkflowNav from '../shell/StitchWorkflowNav.jsx';
 import StitchProjectPresence from '../shell/StitchProjectPresence.jsx';
-import { projectStageHref, SCREENING_SUBNAV, screeningSubHref } from '../nav/navConfig.js';
+import { projectStageHref } from '../nav/navConfig.js';
 import {
   StitchPageHeader, StitchSectionHeader, StitchCard, StitchMetricCard,
   StitchProgressBar, StitchButton, StitchBadge, StitchAvatar, StitchEmptyState,
@@ -75,32 +74,6 @@ function rollupPhase(steps, statusMap) {
   return { status, pct, states };
 }
 function stepTone(status) { return STEP_TONE[status] || 'neutral'; }
-
-/* Build the contextual Screening pipeline steps (design2.md Part 6 canonical set),
-   merging live counts/status from the screening overview where available. */
-function buildScreeningNavSteps(dataSummary, linkedId, projectId) {
-  const ds = dataSummary || {};
-  const num = (v) => (typeof v === 'number' ? v : null);
-  const map = {
-    import: { count: num(ds.totalArticles), status: ds.totalArticles ? 'done' : 'active' },
-    duplicates: (() => { const u = num(ds.unresolvedDuplicateGroups); return { count: u, status: u > 0 ? 'attention' : (ds.totalArticles ? 'done' : 'pending') }; })(),
-    screening: (() => { const t = num(ds.titleAbstractPending); return { count: t, status: t === 0 ? 'done' : (t > 0 ? 'active' : 'pending') }; })(),
-    conflicts: (() => { const c = num(ds.unresolvedConflicts != null ? ds.unresolvedConflicts : ds.conflicts); return { count: c, status: c > 0 ? 'attention' : (ds.totalArticles ? 'done' : 'pending') }; })(),
-    'second-review': (() => { const e = num(ds.eligibleSecondReview); return { count: e, status: e === 0 ? 'done' : (e > 0 ? 'active' : 'pending') }; })(),
-  };
-  return SCREENING_SUBNAV.map((s) => {
-    const live = dataSummary ? map[s.key] : null;
-    return {
-      key: s.key,
-      label: s.label,
-      icon: s.icon,
-      status: live ? live.status : undefined,
-      count: live && live.count != null ? live.count : null,
-      href: screeningSubHref(s.key, { projectId, linkedSiftId: linkedId }),
-      disabled: !linkedId,
-    };
-  });
-}
 
 export default function StitchProjectOverview() {
   const { projectId } = useParams();
@@ -222,20 +195,13 @@ export default function StitchProjectOverview() {
       variant={variant === 'mobile' ? 'static' : 'overlay'}
     />
   );
-  const screeningSteps = useMemo(() => buildScreeningNavSteps(dataSummary, linkedId, projectId), [dataSummary, linkedId, projectId]);
-  const contextRail = linkedId ? (
-    <StitchWorkflowNav
-      title="Screening"
-      subtitle="Pipeline"
-      steps={screeningSteps}
-      onNavigate={(step) => { if (step.href) navigate(step.href); }}
-      footer={<div style={{ fontSize: 11.5, color: S.textMuted, textAlign: 'center' }}>{includedCount != null ? `${includedCount} included to extraction` : 'Live screening progress'}</div>}
-    />
+  // 55.md #2 — the Overview shows NO white submenu; it reclaims the full width.
+  // (The screening pipeline now lives in the Screen category's submenu.)
+  // 55.md #14 — project presence lives in the top bar, not in the page content.
+  const topPresence = linkedId ? (
+    <StitchProjectPresence spId={linkedId} location="Project overview" totalMembers={members ? members.length : undefined} />
   ) : null;
-
-  // On mobile the full-label project rail already covers navigation; omit the
-  // secondary column from the drawer to avoid two stacked sidebars.
-  const shellProps = { activeKey: 'dashboard', renderPrimaryRail, contextRail, contextRailMobile: null };
+  const shellProps = { activeKey: 'dashboard', renderPrimaryRail, contextRail: null, contextRailMobile: null, topPresence };
 
   /* ── loading / error ── */
   if (loading) {
@@ -289,13 +255,8 @@ export default function StitchProjectOverview() {
         {pico.studyDesign ? <StitchBadge tone="neutral">{pico.studyDesign}</StitchBadge> : null}
         {linkedId ? <StitchBadge tone="info" icon="link">Linked to Screening</StitchBadge> : <StitchBadge tone="neutral" icon="alert">No linked Screening</StitchBadge>}
         {project._archived ? <StitchBadge tone="warn" icon="layers">Archived</StitchBadge> : null}
-        {/* design4: live online project members on the overview too (deep-tool pages
-            already show this) — real, project-scoped presence, never a fake list. */}
-        {linkedId ? (
-          <div style={{ marginLeft: 'auto' }}>
-            <StitchProjectPresence spId={linkedId} location="Project overview" totalMembers={members ? members.length : undefined} />
-          </div>
-        ) : null}
+        {/* 55.md #14 — live project presence now lives in the TOP BAR (passed to the
+            shell as topPresence), not duplicated here in the page content. */}
       </div>
 
       {(readOnly || project._shared) ? (

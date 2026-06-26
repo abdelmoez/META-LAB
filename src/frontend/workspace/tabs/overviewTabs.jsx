@@ -15,6 +15,7 @@ import Tooltip from "../../components/Tooltip.jsx";
 import MetaLabChatLauncher from "../../components/chat/MetaLabChatLauncher.jsx";
 import NotificationsBell from "../../components/NotificationsBell.jsx";
 import UserMenu from "../../components/UserMenu.jsx";
+import AdminDesignSwitch from "../../design/AdminDesignSwitch.jsx";
 import ProjectMembersPanel from "../../screening/tabs/ProjectMembersPanel.jsx";
 import { api } from "../../api-client/apiClient.js";
 import { runMeta } from "../../../research-engine/statistics/monolithStats.js";
@@ -179,6 +180,10 @@ function ProjectHeaderBar({project,tab,inScreening,focus,onToggleFocus,setTab,on
       </div>
       {/* Middle — section nav + compact actions (report/export/import on non-overview) */}
       <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
+        {/* 55.md #21 — admin Legacy⇄Stitch switch lives INLINE here (left of the
+            Export/Projects controls) instead of a floating pill that overlapped the
+            header. Renders nothing for non-admins. */}
+        <AdminDesignSwitch variant="inline" />
         {compact&&onReport&&<>
           <Tooltip content="Export a full report (PDF / HTML)"><button onClick={onReport} aria-label="Export report" style={hdrIconBtn}><Icon name="fileText" size={13}/></button></Tooltip>
           {onJournalZip&&<Tooltip content="Journal submission package (ZIP): PRISMA, forest plots, methods text & study table"><button onClick={onJournalZip} aria-label="Export journal submission package" style={hdrIconBtn}><Icon name="layers" size={13}/></button></Tooltip>}

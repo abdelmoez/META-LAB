@@ -16,6 +16,7 @@
  * so this control can never leak the preview to members/leaders/owners/mods.
  */
 import { createPortal } from 'react-dom';
+import { useLocation } from 'react-router-dom';
 import { useDesignMode } from './DesignModeContext.jsx';
 
 const MODES = [
@@ -71,12 +72,18 @@ function Segmented({ mode, setMode, tone }) {
 
 export default function AdminDesignSwitch({ variant = 'inline', tone }) {
   const { mode, setMode, isAdmin, isStitch } = useDesignMode();
+  const { pathname } = useLocation();
   if (!isAdmin) return null;
 
   if (variant === 'floating') {
     // Only show the floating pill in legacy mode; in Stitch mode the header hosts
     // the inline control, so we avoid a duplicate.
     if (isStitch) return null;
+    // 55.md #21 — on a legacy PROJECT page the switch is rendered INLINE inside the
+    // ProjectHeaderBar (left of the Projects/Export controls), so the floating pill
+    // would overlap/duplicate it. Hide the pill there; keep it on other legacy
+    // pages (dashboard, profile, …) which host no inline switch.
+    if (pathname.startsWith('/app/project/')) return null;
     if (typeof document === 'undefined') return null;
     return createPortal(
       <div

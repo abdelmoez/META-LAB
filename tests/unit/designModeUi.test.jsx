@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { MemoryRouter } from 'react-router-dom';
 
 const mockState = { value: { mode: 'legacy', isStitch: false, isAdmin: false, setMode: () => {}, toggle: () => {} } };
 vi.mock('../../src/frontend/design/DesignModeContext.jsx', () => ({
@@ -19,6 +20,11 @@ vi.mock('../../src/frontend/design/DesignModeContext.jsx', () => ({
 const AdminDesignSwitch = (await import('../../src/frontend/design/AdminDesignSwitch.jsx')).default;
 const DesignRoute = (await import('../../src/frontend/design/DesignRoute.jsx')).default;
 
+// AdminDesignSwitch reads the route (useLocation) to hide the floating pill on
+// project pages (55.md #21), so it must render inside a Router — as it always does
+// in the app (its sibling DesignModeProvider needs one too).
+const renderSwitch = (props) => renderToStaticMarkup(h(MemoryRouter, null, h(AdminDesignSwitch, props)));
+
 beforeEach(() => {
   mockState.value = { mode: 'legacy', isStitch: false, isAdmin: false, setMode: () => {}, toggle: () => {} };
 });
@@ -26,12 +32,12 @@ beforeEach(() => {
 describe('AdminDesignSwitch (inline)', () => {
   it('renders nothing for a non-admin', () => {
     mockState.value = { ...mockState.value, isAdmin: false };
-    expect(renderToStaticMarkup(h(AdminDesignSwitch, { variant: 'inline' }))).toBe('');
+    expect(renderSwitch({ variant: 'inline' })).toBe('');
   });
 
   it('renders a labelled Classic/Stitch radiogroup for an admin', () => {
     mockState.value = { mode: 'legacy', isStitch: false, isAdmin: true, setMode: () => {}, toggle: () => {} };
-    const html = renderToStaticMarkup(h(AdminDesignSwitch, { variant: 'inline' }));
+    const html = renderSwitch({ variant: 'inline' });
     expect(html).toContain('role="radiogroup"');
     expect(html).toContain('aria-label="Interface design"');
     expect(html).toContain('Classic');
@@ -40,7 +46,7 @@ describe('AdminDesignSwitch (inline)', () => {
 
   it('marks the active mode with aria-checked', () => {
     mockState.value = { mode: 'stitch', isStitch: true, isAdmin: true, setMode: () => {}, toggle: () => {} };
-    const html = renderToStaticMarkup(h(AdminDesignSwitch, { variant: 'inline' }));
+    const html = renderSwitch({ variant: 'inline' });
     // The Stitch radio should be checked when stitch is active.
     expect(html).toMatch(/aria-checked="true"[^>]*>Stitch|Stitch<\/button>/);
     expect(html).toContain('aria-checked="true"');
