@@ -394,3 +394,52 @@ export function buildCategoryNav(search) {
   const activeCategory = categoryForStage(stage);
   return { categories: PROJECT_CATEGORIES, activeCategory, activeStage: stage };
 }
+
+/* ─── 8. NAV GROUPING + back-to-projects (56.md §7/§8) ─────────────────────────
+   56.md asks the rail to communicate grouping with separators between
+   conceptual sections, and to render the core research workflow as an ordered
+   vertical stepper. The grouping is pure data so the rail, the (future)
+   breadcrumb, and the tests all agree on ONE structure:
+     · Project Management — Overview, Project Control      (orientation/admin)
+     · Research Workflow  — Plan…Report                    (the ordered stepper)
+     · Project Resources  — Reference                      (supporting material)
+   A separator is drawn BETWEEN groups (so one appears between Project Control
+   and Plan & Protocol, and another between Report and Reference — matching the
+   conceptual break 55.md already drew before Reference). */
+export const PROJECT_NAV_GROUPS = [
+  { id: 'manage',    label: 'Project Management', categoryIds: ['overview', 'control'], stepper: false },
+  { id: 'workflow',  label: 'Research Workflow',  categoryIds: ['plan', 'search', 'screen', 'extract', 'analyze', 'report'], stepper: true },
+  { id: 'resources', label: 'Project Resources',  categoryIds: ['reference'], stepper: false },
+];
+
+/**
+ * The rail's category groups, each resolved to its category objects. Categories
+ * in the `stepper` group carry a 1-based `stepNum` (the ordered Plan→Report
+ * workflow position); non-stepper categories carry stepNum=null. This is the
+ * single source the rail renders — separators sit between groups, and the
+ * workflow group draws stepper connectors between consecutive steps.
+ */
+export function buildRailGroups() {
+  return PROJECT_NAV_GROUPS.map((g) => ({
+    id: g.id,
+    label: g.label,
+    stepper: g.stepper,
+    categories: g.categoryIds
+      .map((id) => CATEGORY_BY_ID[id])
+      .filter(Boolean)
+      .map((cat, i) => ({ ...cat, stepNum: g.stepper ? i + 1 : null })),
+  }));
+}
+
+/** Total number of ordered workflow steps in the main rail stepper (Plan→Report). */
+export function railWorkflowStepCount() {
+  const g = PROJECT_NAV_GROUPS.find((x) => x.stepper);
+  return g ? g.categoryIds.length : 0;
+}
+
+/**
+ * 56.md §8 "Back to Projects" — the destination is the dashboard projects
+ * surface, linked DIRECTLY (never history.back(), never an unrelated project).
+ * The dashboard's default view IS the workspace/projects overview.
+ */
+export function projectsHref() { return '/app'; }

@@ -18,7 +18,7 @@ const SESSION_COOKIE = sessionCookieName();
 // self-service profile (in addition to the legacy onboarding write path).
 const PROFILE_SELECT = {
   id: true, email: true, name: true, createdAt: true, lastActive: true,
-  themePreference: true, workflowMenuMode: true, uiDesignMode: true, dashboardPreferences: true, screeningShortcuts: true,
+  themePreference: true, workflowMenuMode: true, projectSidebarPinned: true, uiDesignMode: true, dashboardPreferences: true, screeningShortcuts: true,
   primaryRole: true, researchField: true, mainUseCase: true, country: true,
   institutionOriginal: true, institutionCanonicalName: true, institutionRorId: true,
   institutionCity: true, institutionCountryName: true, institutionCountryCode: true,
@@ -51,7 +51,7 @@ export async function getProfile(req, res) {
  */
 export async function updateProfile(req, res) {
   try {
-    const { name, themePreference, workflowMenuMode, uiDesignMode, dashboardPreferences, screeningShortcuts, institution, country } = req.body || {};
+    const { name, themePreference, workflowMenuMode, projectSidebarPinned, uiDesignMode, dashboardPreferences, screeningShortcuts, institution, country } = req.body || {};
     if (name !== undefined && typeof name !== 'string') {
       return res.status(400).json({ error: 'name must be a string' });
     }
@@ -61,6 +61,11 @@ export async function updateProfile(req, res) {
     // prompt39 Task 5 — workflow-menu mode: "pinned" | "auto", or null to clear.
     if (workflowMenuMode !== undefined && workflowMenuMode !== null && !['pinned', 'auto'].includes(workflowMenuMode)) {
       return res.status(400).json({ error: 'workflowMenuMode must be "pinned" or "auto"' });
+    }
+    // 56.md §6 — pin the project workspace purple sidebar open: boolean, or null
+    // to clear (collapsed-by-default). Accept real booleans only (no truthy coercion).
+    if (projectSidebarPinned !== undefined && projectSidebarPinned !== null && typeof projectSidebarPinned !== 'boolean') {
+      return res.status(400).json({ error: 'projectSidebarPinned must be a boolean or null' });
     }
     // design.md §5/§ADMIN — parallel UI design mode: "legacy" | "stitch" (null clears
     // to legacy). The switch is ADMIN-ONLY and protected HERE at the authorization
@@ -133,6 +138,7 @@ export async function updateProfile(req, res) {
         ...(name !== undefined ? { name: name.trim() || null } : {}),
         ...(themePreference !== undefined ? { themePreference } : {}),
         ...(workflowMenuMode !== undefined ? { workflowMenuMode } : {}),
+        ...(projectSidebarPinned !== undefined ? { projectSidebarPinned } : {}),
         ...uiDesignPatch,
         ...dashPatch,
         ...shortcutPatch,

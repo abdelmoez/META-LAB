@@ -1,10 +1,18 @@
 /**
  * StitchAppShell.jsx — the Stitch application shell.
  *
- * Desktop: fixed 72px primary rail + (optional) 280px contextual rail + a fluid
- * main workspace with a slim utility header. Below ~1024px the rails move into an
+ * Desktop: a fixed primary rail + (optional) contextual rail + a fluid main
+ * workspace with a slim utility header. Below ~1024px the rails move into an
  * off-canvas drawer opened from the header hamburger (design.md responsive rules:
  * "no important content permanently off-screen", "no horizontal page overflow").
+ *
+ * 56.md §2 — for the PROJECT workspace the primary (purple) rail and the white
+ * contextual submenu are ONE coordinated region (`coordinatedNav`): a single CSS
+ * width variable (`--prail-w`) drives the rail width AND the submenu's left offset
+ * so the two ALWAYS move together and the submenu can never be covered or clipped.
+ * The rail expands on hover / keyboard focus (overlay — content does not reflow) or
+ * stays open when `pinned` (content reflows once). Global pages (dashboard, profile,
+ * ops) keep the simple side-by-side layout.
  *
  * The shell mounts StitchStyle (scoped tokens) and the toast provider so it's the
  * single place the Stitch CSS/cost is paid — and only when an admin actually
@@ -37,7 +45,7 @@ const RESPONSIVE_CSS = `
 
 export default function StitchAppShell({
   activeKey, contextRail, contextRailMobile, breadcrumb, children, maxWidth = 1320, contentPad = true,
-  renderPrimaryRail, topPresence = null,
+  renderPrimaryRail, topPresence = null, coordinatedNav = false, pinned = false,
 }) {
   const [navOpen, setNavOpen] = useState(false);
 
@@ -47,11 +55,10 @@ export default function StitchAppShell({
   // (a static, always-expanded column).
   const rail = (variant) => (renderPrimaryRail ? renderPrimaryRail(variant) : <StitchPrimaryRail activeKey={activeKey} />);
 
-  // In the mobile drawer a 280px contextual column would push the page off-screen
-  // alongside a full-width rail (design2.md: "avoid two permanently visible
-  // sidebars"). Pages that pass a wide project rail set contextRailMobile={null}
-  // so the drawer shows only the (full-label) rail; the secondary nav is reachable
-  // inside the stage it belongs to.
+  // In the mobile drawer the rail (full-label) and the contextual submenu STACK
+  // vertically (one scroll column) so a phone never shows two side-by-side
+  // sidebars (design2.md). Pages can suppress the mobile submenu with
+  // contextRailMobile={null}; otherwise it defaults to the desktop submenu.
   const mobileContext = contextRailMobile !== undefined ? contextRailMobile : contextRail;
 
   return (
@@ -60,16 +67,26 @@ export default function StitchAppShell({
       <style>{RESPONSIVE_CSS}</style>
       <div className="stitch-scope" style={{ display: 'flex', height: '100vh', width: '100%', overflow: 'hidden', background: S.surface, fontFamily: S.font, color: S.textPrimary }}>
         {/* Desktop rails */}
-        <div className="stitch-desktop-nav" style={{ display: 'flex', height: '100%', flexShrink: 0 }}>
-          {rail('desktop')}
-          {contextRail ? <div className="stitch-context-rail" style={{ display: 'flex', height: '100%' }}>{contextRail}</div> : null}
-        </div>
+        {coordinatedNav ? (
+          // 56.md §2 — the rail + white submenu are ONE coordinated region; the
+          // shell CSS (`.stitch-wsnav*`) keeps the submenu attached at left:
+          // var(--prail-w) so it moves WITH the rail (never covered/clipped).
+          <div className="stitch-desktop-nav stitch-wsnav" data-pinned={pinned ? 'true' : undefined} data-has-submenu={contextRail ? 'true' : undefined}>
+            <div className="stitch-wsnav-rail">{rail('desktop')}</div>
+            {contextRail ? <div className="stitch-wsnav-sub">{contextRail}</div> : null}
+          </div>
+        ) : (
+          <div className="stitch-desktop-nav" style={{ display: 'flex', height: '100%', flexShrink: 0 }}>
+            {rail('desktop')}
+            {contextRail ? <div className="stitch-context-rail" style={{ display: 'flex', height: '100%' }}>{contextRail}</div> : null}
+          </div>
+        )}
 
-        {/* Mobile off-canvas nav (primary + context stacked) */}
-        <StitchDrawer open={navOpen} onClose={() => setNavOpen(false)} side="left" width={mobileContext ? 352 : 280} label="Navigation">
-          <div style={{ display: 'flex', height: '100%' }}>
-            {rail('mobile')}
-            {mobileContext ? <div style={{ flex: 1, minWidth: 0, height: '100%', display: 'flex' }}>{mobileContext}</div> : null}
+        {/* Mobile off-canvas nav (primary + context STACKED vertically) */}
+        <StitchDrawer open={navOpen} onClose={() => setNavOpen(false)} side="left" width={288} label="Navigation">
+          <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+            <div style={{ flexShrink: 0, background: '#5d509c' }}>{rail('mobile')}</div>
+            {mobileContext ? <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>{mobileContext}</div> : null}
           </div>
         </StitchDrawer>
 

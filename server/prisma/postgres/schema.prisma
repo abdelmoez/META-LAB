@@ -71,6 +71,10 @@ model User {
   // steps). null ⇒ "auto" (current default). Nullable → `prisma db push` stays
   // additive-safe. Mirrors themePreference; cross-device, server-backed.
   workflowMenuMode              String?
+  // 56.md §6 — pin the project workspace purple sidebar open. null ⇒ collapsed
+  // by default (hover/focus still expands temporarily); true ⇒ kept expanded.
+  // Nullable Boolean → `prisma db push` stays additive-safe; cross-device.
+  projectSidebarPinned          Boolean?
   // design.md — parallel design-mode preference: "legacy" (default UI) | "stitch"
   // (the new Vivid-Enterprise research-OS UI). ADMIN-ONLY: the server refuses to
   // persist "stitch" for a non-admin (profileController). null ⇒ "legacy".

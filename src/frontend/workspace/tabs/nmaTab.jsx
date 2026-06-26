@@ -143,7 +143,7 @@ function Header({ sm, model, readiness, running, onRun, canRun, hasResult }) {
         </div>
       </div>
       <button type="button" onClick={onRun} disabled={!canRun || running}
-        style={{ background: canRun && !running ? C.acc : C.brd, color: canRun && !running ? '#fff' : C.sub, border: 'none', borderRadius: 10, padding: '10px 18px', fontWeight: 700, fontSize: 14, cursor: canRun && !running ? 'pointer' : 'not-allowed' }}>
+        style={{ background: canRun && !running ? C.acc : C.brd, color: canRun && !running ? C.accText : C.sub, border: 'none', borderRadius: 10, padding: '10px 18px', fontWeight: 700, fontSize: 14, cursor: canRun && !running ? 'pointer' : 'not-allowed' }}>
         {running ? 'Running…' : hasResult ? 'Re-run analysis' : 'Run analysis'}
       </button>
     </div>
@@ -175,8 +175,11 @@ function ViewTabs({ view, setView, hasResult }) {
 }
 
 function Banner({ tone, children }) {
-  const bg = tone === 'error' ? '#fdecec' : tone === 'warn' ? '#fff7e6' : C.surf;
-  const col = tone === 'error' ? '#b42318' : tone === 'warn' ? '#92610a' : C.sub;
+  // Theme-aware tints (legacy day/night + Stitch light/dark) via color-mix — no
+  // hardcoded light pastels that break in dark mode (56.md §10).
+  const bg = tone === 'error' ? `color-mix(in srgb, ${C.red} 12%, transparent)`
+    : tone === 'warn' ? `color-mix(in srgb, ${C.yel} 12%, transparent)` : C.surf;
+  const col = tone === 'error' ? C.red : tone === 'warn' ? C.yel : C.sub;
   return <div style={{ padding: '10px 14px', borderRadius: 10, background: bg, color: col, fontSize: 13, border: `1px solid ${C.brd}` }}>{children}</div>;
 }
 
@@ -300,13 +303,13 @@ function ReadinessPanel({ readiness }) {
   return (
     <Card title="Readiness">
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-        <span style={{ width: 10, height: 10, borderRadius: '50%', background: readiness.ok ? '#16a34a' : '#dc2626' }} />
+        <span style={{ width: 10, height: 10, borderRadius: '50%', background: readiness.ok ? C.grn : C.red }} />
         <span style={{ fontWeight: 700, color: C.text }}>{readiness.ok ? 'Ready to analyse' : 'Not ready'}</span>
       </div>
       {fatal.map((e, i) => <Banner key={`f${i}`} tone="error">{e.msg}</Banner>)}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 8 }}>
-        {studyErr.map((e, i) => <div key={`s${i}`} style={{ fontSize: 13, color: '#b42318' }}>• {e.label || e.id}: {e.msg}</div>)}
-        {readiness.warnings.map((w, i) => <div key={`w${i}`} style={{ fontSize: 13, color: w.level === 'warn' ? '#92610a' : C.sub }}>• {w.msg}</div>)}
+        {studyErr.map((e, i) => <div key={`s${i}`} style={{ fontSize: 13, color: C.red }}>• {e.label || e.id}: {e.msg}</div>)}
+        {readiness.warnings.map((w, i) => <div key={`w${i}`} style={{ fontSize: 13, color: w.level === 'warn' ? C.yel : C.sub }}>• {w.msg}</div>)}
       </div>
     </Card>
   );

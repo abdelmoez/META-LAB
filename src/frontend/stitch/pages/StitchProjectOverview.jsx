@@ -7,15 +7,15 @@
  *   - screeningApi.getOverview/listMembers     — linked screening metrics + roster
  *   - workspace/projectHelpers.js              — stepStatus, PHASES, readinessCheck,
  *                                                projectPerms, linkedSiftId, auditProject
- * It is presented in the Stitch project shell: a collapsible workflow rail
- * (StitchProjectRail) + a contextual Screening pipeline (StitchWorkflowNav). Every
- * workflow stage opens its REAL destination by its USER-FACING name — there are NO
- * "open classic / legacy view" links (design2.md Part 4). Deep tools that have no
- * Stitch-native page open in their existing engine, reached by workflow name.
  *
- * Parity additions over the previous overview (audit E): a "Next step" call-to-
- * action, a PICO + protocol summary, a methodology audit summary, the screening
- * funnel, owner identity, a read-only/shared banner, and realtime refetch.
+ * 56.md §1 redesign: a CALMER command center built for "understand the project in
+ * seconds". It leads with a compact header, ONE context-aware Continue action, then
+ * a quiet two-column body — a high-level Workflow summary, a prioritized "Attention
+ * required" list and a role-aware "My work" list (both omitted when empty), with the
+ * key metrics, protocol-at-a-glance and team in a secondary column. Deeper detail is
+ * reached by opening the relevant stage (progressive disclosure) rather than packing
+ * every metric onto the first screen. Presence lives in the top bar; the white
+ * submenu is suppressed so the page reclaims the full width.
  */
 import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
@@ -30,7 +30,10 @@ import { statusOf, STATUS_META, relTime, ROLE_LABEL } from '../../pages/projectL
 import StitchAppShell from '../shell/StitchAppShell.jsx';
 import StitchProjectRail from '../shell/StitchProjectRail.jsx';
 import StitchProjectPresence from '../shell/StitchProjectPresence.jsx';
+import { useSidebarPin } from '../shell/useSidebarPin.js';
+import { totalMembersOf } from '../shell/presence.js';
 import { projectStageHref } from '../nav/navConfig.js';
+import { buildMyWork, buildAttention } from './overviewModel.js';
 import {
   StitchPageHeader, StitchSectionHeader, StitchCard, StitchMetricCard,
   StitchProgressBar, StitchButton, StitchBadge, StitchAvatar, StitchEmptyState,
@@ -46,25 +49,13 @@ const PHASE_STEPS = {
   Report:  ['grade', 'report', 'manuscript'],
 };
 const PHASE_PRIMARY = { Plan: 'pico', Search: 'search', Screen: 'screening', Extract: 'extraction', Analyze: 'analysis', Report: 'grade' };
-const PHASE_DESC = {
-  Plan:    'Define the PICO question, eligibility criteria and the registered protocol.',
-  Search:  'Build and run the multi-database search strategy.',
-  Screen:  'Import citations, de-duplicate, and screen titles, abstracts and full text.',
-  Extract: 'Extract study data and assess risk of bias for each included study.',
-  Analyze: 'Pool effect sizes, plot the forest, and run sensitivity / subgroup analyses.',
-  Report:  'Rate GRADE certainty, complete the PRISMA checklist and draft the manuscript.',
-};
 const STEP_TONE = { done: 'success', partial: 'warn', empty: 'neutral' };
 const STEP_LABEL = { done: 'Complete', partial: 'In progress', empty: 'Not started' };
-const STEP_LABELS_SHORT = {
-  pico: 'PICO', prospero: 'Protocol', search: 'Search', discovery: 'Discovery', screening: 'Screening',
-  prisma: 'PRISMA', extraction: 'Extraction', rob: 'RoB', analysis: 'Meta-analysis',
-  forest: 'Forest', sensitivity: 'Sensitivity', subgroup: 'Subgroup',
-  grade: 'GRADE', report: 'Checklist', manuscript: 'Manuscript',
-};
 // Ordered workflow ids + a label map (from the legacy TABS — single source).
 const WORKFLOW_TABS = TABS.filter((t) => t.phase);
 const STAGE_LABEL = TABS.reduce((m, t) => { m[t.id] = t.label; return m; }, {});
+const SEV_COLOR = (sev) => (sev === 'high' ? S.danger : sev === 'med' ? S.warn : S.textMuted);
+const SEV_ICON = (sev) => (sev === 'high' ? 'alertOctagon' : sev === 'med' ? 'alertTriangle' : 'info');
 
 function rollupPhase(steps, statusMap) {
   const states = steps.map((k) => statusMap[k] || 'empty');
@@ -136,7 +127,7 @@ export default function StitchProjectOverview() {
   const statusMap = useMemo(() => (safeProject ? stepStatus(safeProject, screeningComplete) : {}), [safeProject, screeningComplete]);
 
   const phases = useMemo(() => PHASES.map((name) => ({
-    name, label: phaseLabel(name), icon: PHASE_ICON[name], desc: PHASE_DESC[name],
+    name, label: phaseLabel(name), icon: PHASE_ICON[name],
     ...rollupPhase(PHASE_STEPS[name], statusMap),
   })), [statusMap]);
   const overallPct = phases.length ? Math.round(phases.reduce((n, ph) => n + ph.pct, 0) / phases.length) : 0;
@@ -151,11 +142,6 @@ export default function StitchProjectOverview() {
 
   const readiness = project ? readinessCheck(project) : null;
   const auditItems = useMemo(() => (safeProject ? auditProject(safeProject) : []), [safeProject]);
-  const auditCounts = useMemo(() => ({
-    high: auditItems.filter((i) => i.sev === 'high').length,
-    med: auditItems.filter((i) => i.sev === 'med').length,
-    low: auditItems.filter((i) => i.sev === 'low').length,
-  }), [auditItems]);
 
   // The single most-actionable element: the first workflow step that isn't done.
   const nextStepId = useMemo(() => {
@@ -185,7 +171,8 @@ export default function StitchProjectOverview() {
     } catch { setError('Export failed. Please try again.'); } finally { setExporting(false); }
   }, [perms, projectId, project]);
 
-  /* ── shell wiring: project rail + (when linked) the screening pipeline ── */
+  /* ── shell wiring: project rail (coordinated, pinnable) ── */
+  const { pinned, togglePin } = useSidebarPin();
   const renderPrimaryRail = (variant) => (
     <StitchProjectRail
       projectId={projectId}
@@ -193,15 +180,16 @@ export default function StitchProjectOverview() {
       statusMap={statusMap}
       activeStage="overview"
       variant={variant === 'mobile' ? 'static' : 'overlay'}
+      pinned={pinned}
+      onTogglePin={togglePin}
     />
   );
   // 55.md #2 — the Overview shows NO white submenu; it reclaims the full width.
-  // (The screening pipeline now lives in the Screen category's submenu.)
-  // 55.md #14 — project presence lives in the top bar, not in the page content.
+  // 55.md #14 / 56.md §5 — presence lives in the top bar from the ONE shared source.
   const topPresence = linkedId ? (
-    <StitchProjectPresence spId={linkedId} location="Project overview" totalMembers={members ? members.length : undefined} />
+    <StitchProjectPresence spId={linkedId} location="Project overview" totalMembers={totalMembersOf(project, members)} />
   ) : null;
-  const shellProps = { activeKey: 'dashboard', renderPrimaryRail, contextRail: null, contextRailMobile: null, topPresence };
+  const shellProps = { activeKey: 'dashboard', renderPrimaryRail, contextRail: null, coordinatedNav: true, pinned, topPresence };
 
   /* ── loading / error ── */
   if (loading) {
@@ -225,6 +213,12 @@ export default function StitchProjectOverview() {
   const role = (perms && perms.role) || 'owner';
   const readOnly = !!(perms && perms.readOnly);
   const owner = project._owner || null;
+  const canRob = !!(perms && (perms.isOwner || perms.canAssessRiskOfBias));
+
+  // Role-aware "My work" + prioritized "Attention required" (omitted when empty).
+  const myWork = buildMyWork({ statusMap, readiness, conflictsCount: conflictsCount || 0, perms: perms || {}, studyCount });
+  const attention = buildAttention({ auditItems, conflictsCount: conflictsCount || 0, phasePrimary: PHASE_PRIMARY, limit: 6 });
+  const attentionTotal = auditItems.length + (conflictsCount > 0 ? 1 : 0);
 
   const breadcrumb = (
     <>
@@ -236,27 +230,27 @@ export default function StitchProjectOverview() {
 
   return (
     <StitchAppShell {...shellProps} breadcrumb={breadcrumb}>
+      {/* A. Compact header */}
       <StitchPageHeader
-        eyebrow="Project Command Center"
+        eyebrow="Project"
         icon="folder"
         title={project.name || 'Untitled project'}
-        subtitle={`Updated ${relTime(project.updatedAt || project.modified)} · ${overallPct}% through the systematic-review workflow`}
+        subtitle={pico.question
+          ? pico.question
+          : `Updated ${relTime(project.updatedAt || project.modified)} · ${overallPct}% through the review`}
         actions={<>
-          {perms?.canExport ? <StitchButton variant="neutral" icon="download" loading={exporting} onClick={onExport}>Export</StitchButton> : null}
-          <StitchButton icon="sliders" variant="neutral" onClick={() => goStage('control')}>Project Control</StitchButton>
-          {linkedId ? <StitchButton icon="filter" iconRight="arrowRight" onClick={() => goStage('screening')}>Open Screening</StitchButton> : null}
+          {perms?.canExport ? <StitchButton variant="ghost" size="sm" icon="download" loading={exporting} onClick={onExport}>Export</StitchButton> : null}
+          <StitchButton icon="sliders" variant="neutral" size="sm" onClick={() => goStage('control')}>Project Control</StitchButton>
         </>}
       />
 
-      <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+      <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap', alignItems: 'center' }}>
         <StitchBadge tone={lifecycle === 'done' ? 'success' : lifecycle === 'archived' ? 'neutral' : 'brand'} dot>{sm.label || lifecycle}</StitchBadge>
         <StitchBadge tone="neutral">{ROLE_LABEL[role] || 'Owner'}{readOnly ? ' · read-only' : ''}</StitchBadge>
+        <StitchBadge tone="neutral" icon="clock">Updated {relTime(project.updatedAt || project.modified)}</StitchBadge>
         {pico.prosperoId ? <StitchBadge tone="info" icon="clipboard">PROSPERO {pico.prosperoId}</StitchBadge> : null}
-        {pico.studyDesign ? <StitchBadge tone="neutral">{pico.studyDesign}</StitchBadge> : null}
         {linkedId ? <StitchBadge tone="info" icon="link">Linked to Screening</StitchBadge> : <StitchBadge tone="neutral" icon="alert">No linked Screening</StitchBadge>}
         {project._archived ? <StitchBadge tone="warn" icon="layers">Archived</StitchBadge> : null}
-        {/* 55.md #14 — live project presence now lives in the TOP BAR (passed to the
-            shell as topPresence), not duplicated here in the page content. */}
       </div>
 
       {(readOnly || project._shared) ? (
@@ -269,17 +263,17 @@ export default function StitchProjectOverview() {
         </div>
       ) : null}
 
-      <div style={{ marginTop: 24, display: 'flex', flexDirection: 'column', gap: 24 }}>
-        {/* Next step CTA — the most actionable element (audit E gap #14) */}
+      {/* B. The ONE primary "Continue work" action */}
+      <div style={{ marginTop: 20 }}>
         {nextStepId ? (
           <StitchCard style={{ display: 'flex', alignItems: 'center', gap: 16, flexWrap: 'wrap', background: salpha(S.brand, 0.06), borderColor: salpha(S.brand, 0.25) }}>
             <span style={{ width: 44, height: 44, borderRadius: 12, background: S.brand, color: S.onBrand, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
               <StitchIcon name="target" size={22} />
             </span>
             <div style={{ minWidth: 0, flex: 1 }}>
-              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', color: S.brand }}>Recommended next step</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: S.textPrimary, marginTop: 2 }}>{STAGE_LABEL[nextStepId] || 'Continue the review'}</div>
-              <div style={{ fontSize: 12.5, color: S.textSecondary, marginTop: 2 }}>{stepsDone} of {WORKFLOW_TABS.length} workflow steps complete</div>
+              <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', color: S.brand }}>Continue where you left off</div>
+              <div style={{ fontSize: 17, fontWeight: 700, color: S.textPrimary, marginTop: 2 }}>{STAGE_LABEL[nextStepId] || 'Continue the review'}</div>
+              <div style={{ fontSize: 12.5, color: S.textSecondary, marginTop: 2 }}>{stepsDone} of {WORKFLOW_TABS.length} workflow steps complete · {overallPct}%</div>
             </div>
             <StitchButton iconRight="arrowRight" onClick={() => goStage(nextStepId)}>Continue</StitchButton>
           </StitchCard>
@@ -288,223 +282,184 @@ export default function StitchProjectOverview() {
             <span style={{ width: 44, height: 44, borderRadius: 12, background: S.success, color: S.onSuccess, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
               <StitchIcon name="circleCheck" size={22} />
             </span>
-            <div><div style={{ fontSize: 16, fontWeight: 700, color: S.textPrimary }}>All workflow steps complete</div>
-              <div style={{ fontSize: 12.5, color: S.textSecondary }}>Every stage of the review is marked done. Review the report and export your manuscript.</div></div>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div style={{ fontSize: 17, fontWeight: 700, color: S.textPrimary }}>All workflow steps complete</div>
+              <div style={{ fontSize: 12.5, color: S.textSecondary }}>Every stage is marked done. Review the report and export your manuscript.</div>
+            </div>
+            <StitchButton variant="neutral" iconRight="arrowRight" onClick={() => goStage('report')}>Open report</StitchButton>
           </StitchCard>
         )}
+      </div>
 
-        {/* Metric row */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16 }}>
-          <StitchMetricCard label="Studies extracted" value={studyCount} icon="table" tone="brand" onClick={() => goStage('extraction')} />
-          <StitchMetricCard label={linkedId ? 'Citations / records' : 'Records'} value={recordCount} icon="fileText" onClick={linkedId ? () => goStage('screening') : undefined} />
-          <StitchMetricCard label="Included (to extraction)" value={includedCount == null ? '—' : includedCount} icon="checkSquare" tone="success" />
-          <StitchMetricCard label="Open conflicts" value={conflictsCount == null ? '—' : conflictsCount} icon="alertTriangle" tone={conflictsCount ? 'danger' : 'neutral'} />
-        </div>
-
-        {/* Workflow progress + Methodology audit */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px, 1fr) minmax(320px, 1.2fr)', gap: 24, alignItems: 'stretch' }} className="stitch-bento">
-          <StitchCard style={{ display: 'flex', flexDirection: 'column' }}>
-            <StitchSectionHeader title="Workflow progress" desc={`${stepsDone} of ${WORKFLOW_TABS.length} steps complete`} />
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 12, justifyContent: 'center' }}>
-              {phases.map((ph) => (
-                <button key={ph.name} type="button" className="stitch-focusable" onClick={() => goPhase(ph.name)}
-                  style={{ border: 'none', background: 'transparent', cursor: 'pointer', textAlign: 'left', padding: 0 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5 }}>
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 12.5, fontWeight: 600, color: S.textSecondary }}>
-                      <StitchIcon name={ph.icon} size={14} /> {ph.label}
-                    </span>
-                    <span style={{ fontSize: 11.5, fontWeight: 700, color: S.textMuted }}>{ph.pct}%</span>
-                  </div>
-                  <StitchProgressBar value={ph.pct} tone={stepTone(ph.status)} height={6} />
-                </button>
+      {/* Calm two-column body */}
+      <div className="stitch-ov-grid" style={{ marginTop: 20, display: 'grid', gridTemplateColumns: 'minmax(0, 1.5fr) minmax(0, 1fr)', gap: 20, alignItems: 'start' }}>
+        {/* LEFT — workflow + what needs doing */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <StitchCard>
+            <StitchSectionHeader title="Workflow" desc={`${stepsDone} of ${WORKFLOW_TABS.length} steps complete`}
+              action={<StitchBadge tone={overallPct === 100 ? 'success' : 'brand'} dot>{overallPct}%</StitchBadge>} />
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {phases.map((ph, i) => (
+                <WorkflowRow key={ph.name} index={i + 1} phase={ph} active={PHASE_PRIMARY[ph.name] === nextStepId} onOpen={() => goPhase(ph.name)} />
               ))}
             </div>
           </StitchCard>
 
-          <StitchCard style={{ display: 'flex', flexDirection: 'column' }}>
-            <StitchSectionHeader title="Methodology check"
-              desc="Automated checks across the review (same engine as the classic audit)"
-              action={<StitchBadge tone={auditCounts.high ? 'danger' : auditCounts.med ? 'warn' : 'success'} dot>{auditItems.length ? `${auditItems.length} to review` : 'All clear'}</StitchBadge>} />
-            {auditItems.length ? (
+          {attention.length ? (
+            <StitchCard>
+              <StitchSectionHeader title="Attention required"
+                desc="Methodology and process items to resolve"
+                action={<StitchBadge tone={attention.some((a) => a.sev === 'high') ? 'danger' : 'warn'} dot>{attentionTotal}</StitchBadge>} />
               <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {auditItems.slice(0, 5).map((it, i) => (
-                  <li key={i}>
-                    <button type="button" className="stitch-focusable" onClick={() => goStage(PHASE_PRIMARY[it.phase] || 'overview')}
+                {attention.map((it) => (
+                  <li key={it.key}>
+                    <button type="button" className="stitch-focusable" onClick={() => goStage(it.stage)}
                       style={{ display: 'flex', alignItems: 'flex-start', gap: 9, width: '100%', border: 'none', background: 'transparent', cursor: 'pointer', textAlign: 'left', padding: '2px 0' }}>
-                      <span style={{ color: it.sev === 'high' ? S.danger : it.sev === 'med' ? S.warn : S.textMuted, flexShrink: 0, marginTop: 1 }}>
-                        <StitchIcon name={it.sev === 'high' ? 'alertOctagon' : it.sev === 'med' ? 'alertTriangle' : 'info'} size={15} />
-                      </span>
+                      <span style={{ color: SEV_COLOR(it.sev), flexShrink: 0, marginTop: 1 }}><StitchIcon name={SEV_ICON(it.sev)} size={15} /></span>
                       <span style={{ fontSize: 12.5, color: S.textSecondary, lineHeight: 1.5 }}>{it.msg}</span>
                     </button>
                   </li>
                 ))}
-                {auditItems.length > 5 ? <li style={{ fontSize: 12, color: S.textMuted, paddingTop: 2 }}>+{auditItems.length - 5} more across {auditCounts.high} high · {auditCounts.med} medium · {auditCounts.low} low priority</li> : null}
+                {attentionTotal > attention.length ? (
+                  <li style={{ fontSize: 12, color: S.textMuted, paddingTop: 2 }}>+{attentionTotal - attention.length} more — open a stage to review.</li>
+                ) : null}
               </ul>
-            ) : (
-              <div style={{ flex: 1, display: 'flex' }}>
-                <StitchEmptyState icon="circleCheck" title="No methodological gaps found" height={160}
-                  desc="Every automated check (PICO, search coverage, extraction, RoB, GRADE, PRISMA) currently passes." />
+            </StitchCard>
+          ) : null}
+
+          {myWork.length ? (
+            <StitchCard>
+              <StitchSectionHeader title="My work" desc="Actions you can take now" />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {myWork.map((w) => (
+                  <button key={w.key} type="button" className="stitch-focusable" onClick={() => goStage(w.stage)}
+                    style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', border: `1px solid ${salpha(S.outlineVariant, 0.4)}`, background: S.surfaceLow, cursor: 'pointer', textAlign: 'left', padding: '10px 12px', borderRadius: 10 }}>
+                    <span style={{ width: 32, height: 32, borderRadius: 9, flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', background: salpha(w.tone === 'danger' ? S.danger : w.tone === 'warn' ? S.warn : S.brand, 0.14), color: w.tone === 'danger' ? S.danger : w.tone === 'warn' ? S.warn : S.brand }}>
+                      <StitchIcon name={w.icon} size={16} />
+                    </span>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ display: 'block', fontSize: 13.5, fontWeight: 700, color: S.textPrimary }}>{w.label}</span>
+                      <span style={{ display: 'block', fontSize: 12, color: S.textSecondary }}>{w.desc}</span>
+                    </span>
+                    <StitchIcon name="arrowRight" size={16} />
+                  </button>
+                ))}
               </div>
-            )}
-          </StitchCard>
+            </StitchCard>
+          ) : null}
         </div>
 
-        {/* PICO + Readiness */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1.2fr) minmax(280px, 1fr)', gap: 24, alignItems: 'start' }} className="stitch-bento">
+        {/* RIGHT — metrics, protocol at a glance, team */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 12 }}>
+            <StitchMetricCard label={linkedId ? 'Citations / records' : 'Records'} value={recordCount} icon="fileText" onClick={linkedId ? () => goStage('screening') : undefined} />
+            <StitchMetricCard label="Included" value={includedCount == null ? '—' : includedCount} icon="checkSquare" tone="success" />
+            <StitchMetricCard label="Studies extracted" value={studyCount} icon="table" tone="brand" onClick={() => goStage('extraction')} />
+            <StitchMetricCard label="Open conflicts" value={conflictsCount == null ? '—' : conflictsCount} icon="alertTriangle" tone={conflictsCount ? 'danger' : 'neutral'} onClick={linkedId ? () => goStage('screening') : undefined} />
+          </div>
+
           <StitchCard>
-            <StitchSectionHeader title="Protocol (PICO)" desc="The review question and eligibility framework"
+            <StitchSectionHeader title="Protocol" desc="The review question & framework"
               action={<StitchButton size="sm" variant="ghost" iconRight="arrowRight" onClick={() => goStage('pico')}>{picoFilled ? 'Edit' : 'Start'}</StitchButton>} />
             {picoFilled ? (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {pico.question ? <div style={{ fontSize: 14, fontWeight: 600, color: S.textPrimary, lineHeight: 1.5 }}>{pico.question}</div> : null}
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                {pico.question ? <div style={{ fontSize: 13.5, fontWeight: 600, color: S.textPrimary, lineHeight: 1.5 }}>{pico.question}</div> : null}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 8 }}>
                   {[['Population', pico.P], ['Intervention', pico.I], ['Comparator', pico.C], ['Outcome', pico.O]].map(([k, v]) => (
-                    <div key={k} style={{ padding: '10px 12px', borderRadius: 10, background: S.surfaceLow, border: `1px solid ${salpha(S.outlineVariant, 0.4)}` }}>
-                      <div style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: S.brand }}>{k}</div>
-                      <div style={{ fontSize: 12.5, color: v ? S.textPrimary : S.textMuted, marginTop: 3, lineHeight: 1.4 }}>{v || 'Not set'}</div>
+                    <div key={k} style={{ padding: '8px 10px', borderRadius: 9, background: S.surfaceLow, border: `1px solid ${salpha(S.outlineVariant, 0.4)}` }}>
+                      <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: S.brand }}>{k}</div>
+                      <div style={{ fontSize: 12, color: v ? S.textPrimary : S.textMuted, marginTop: 2, lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical' }}>{v || 'Not set'}</div>
                     </div>
                   ))}
                 </div>
               </div>
             ) : (
-              <StitchEmptyState icon="target" title="No PICO yet" height={180}
+              <StitchEmptyState icon="target" title="No PICO yet" height={150}
                 desc="Define Population, Intervention, Comparator and Outcome to frame the review."
                 action={<StitchButton size="sm" variant="soft" iconRight="arrowRight" onClick={() => goStage('pico')}>Define PICO</StitchButton>} />
             )}
+            <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${salpha(S.outlineVariant, 0.35)}` }}>
+              <dl style={{ margin: 0 }}>
+                {owner ? <DetailRow label="Owner" value={owner.name || owner.email || '—'} /> : null}
+                <DetailRow label="Your role" value={`${ROLE_LABEL[role] || 'Owner'}${readOnly ? ' (read-only)' : ''}`} />
+                <DetailRow label="Created" value={relTime(project.created || project.createdAt)} />
+                <DetailRow label="Risk of Bias" value={STEP_LABEL[statusMap.rob || 'empty']} last />
+              </dl>
+            </div>
           </StitchCard>
 
-          <StitchCard style={{ display: 'flex', flexDirection: 'column' }}>
-            <StitchSectionHeader title="Readiness check" desc="Pre-screening green-light"
-              action={<StitchBadge tone={readiness?.ok ? 'success' : 'warn'} dot>{readiness?.ok ? 'Ready' : `${readiness?.missing.length || 0} to resolve`}</StitchBadge>} />
-            {readiness?.ok ? (
-              <div style={{ flex: 1, display: 'flex' }}>
-                <StitchEmptyState icon="circleCheck" title="Screening-ready" height={160}
-                  desc="PICO, time frame, ≥3 databases and a saved search strategy are all in place." />
-              </div>
-            ) : (
-              <ul style={{ listStyle: 'none', margin: 0, padding: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {(readiness?.missing || []).map((m, i) => (
-                  <li key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 9, fontSize: 13, color: S.textSecondary, lineHeight: 1.5 }}>
-                    <span style={{ color: S.warn, flexShrink: 0, marginTop: 1 }}><StitchIcon name="alertTriangle" size={15} /></span>
-                    <span>{m}</span>
-                  </li>
-                ))}
-                <li style={{ marginTop: 6 }}><StitchButton size="sm" variant="soft" iconRight="arrowRight" onClick={() => goStage('pico')}>Complete the protocol</StitchButton></li>
-              </ul>
-            )}
-          </StitchCard>
-        </div>
-
-        {/* Phase cards */}
-        <div>
-          <StitchSectionHeader title="Review phases" desc="Open a stage to continue. Each opens its dedicated workflow." />
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16 }}>
-            {phases.map((ph, i) => (
-              <PhaseCard key={ph.name} index={i + 1} phase={ph} statusMap={statusMap}
-                onOpen={() => goPhase(ph.name)}
-                onOpenRob={ph.name === 'Extract' ? () => goStage('rob') : undefined}
-                canRob={!!(perms && (perms.isOwner || perms.canAssessRiskOfBias))} />
-            ))}
-          </div>
-        </div>
-
-        {/* Team + details */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(300px, 1fr) minmax(280px, 1fr)', gap: 24, alignItems: 'start' }} className="stitch-bento">
           <StitchCard>
             <StitchSectionHeader title="Team"
-              desc={linkedId ? 'Members of the linked Screening workspace' : 'Not linked to a Screening workspace'}
+              desc={linkedId ? 'Linked Screening workspace' : 'Not linked to Screening'}
               action={linkedId ? <StitchButton size="sm" variant="ghost" iconRight="arrowRight" onClick={() => goStage('screening')}>Manage</StitchButton> : null} />
             {!linkedId ? (
-              <StitchEmptyState icon="users" title="No team yet" height={180}
-                desc="Link a Screening workspace to collaborate with reviewers on this review."
-                action={<StitchButton size="sm" variant="soft" icon="sliders" onClick={() => goStage('control')}>Open Project Control</StitchButton>} />
+              <StitchEmptyState icon="users" title="No team yet" height={140}
+                desc="Link a Screening workspace to collaborate with reviewers."
+                action={<StitchButton size="sm" variant="soft" icon="sliders" onClick={() => goStage('control')}>Project Control</StitchButton>} />
             ) : members === null ? (
-              <StitchEmptyState icon="users" title="Team unavailable" height={160}
-                desc="You don't have permission to view the member roster, or it could not be loaded." />
+              <StitchEmptyState icon="users" title="Team unavailable" height={130}
+                desc="You don't have permission to view the roster, or it couldn't be loaded." />
             ) : members.length === 0 ? (
-              <StitchEmptyState icon="users" title="No members yet" height={160}
-                desc="Invite reviewers from the Screening workspace to start collaborating."
-                action={<StitchButton size="sm" variant="soft" iconRight="arrowRight" onClick={() => goStage('screening')}>Open Screening</StitchButton>} />
+              <StitchEmptyState icon="users" title="No members yet" height={130}
+                desc="Invite reviewers from the Screening workspace to collaborate." />
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column' }}>
-                {members.map((m, i) => {
+                {members.slice(0, 6).map((m, i, arr) => {
                   const name = m.name || m.email || 'Member';
                   return (
-                    <div key={m.id || m.userId || i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '9px 4px', borderBottom: i < members.length - 1 ? `1px solid ${salpha(S.outlineVariant, 0.3)}` : 'none' }}>
-                      <StitchAvatar name={name} size={34} />
+                    <div key={m.id || m.userId || i} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 2px', borderBottom: i < arr.length - 1 ? `1px solid ${salpha(S.outlineVariant, 0.3)}` : 'none' }}>
+                      <StitchAvatar name={name} size={30} />
                       <div style={{ minWidth: 0, flex: 1 }}>
-                        <div style={{ fontSize: 13.5, fontWeight: 600, color: S.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
-                        {m.email && m.name ? <div style={{ fontSize: 11.5, color: S.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{m.email}</div> : null}
+                        <div style={{ fontSize: 13, fontWeight: 600, color: S.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{name}</div>
                       </div>
                       <StitchBadge tone={m.role === 'owner' || m.role === 'leader' ? 'brand' : 'neutral'}>{ROLE_LABEL[m.role] || m.role || 'Reviewer'}</StitchBadge>
                     </div>
                   );
                 })}
+                {members.length > 6 ? <div style={{ fontSize: 12, color: S.textMuted, paddingTop: 8 }}>+{members.length - 6} more</div> : null}
               </div>
             )}
-          </StitchCard>
-
-          <StitchCard>
-            <StitchSectionHeader title="Project details" desc="At a glance" />
-            <dl style={{ margin: 0, display: 'flex', flexDirection: 'column', gap: 0 }}>
-              {owner ? <DetailRow label="Owner" value={owner.name || owner.email || '—'} /> : null}
-              <DetailRow label="Your role" value={`${ROLE_LABEL[role] || 'Owner'}${readOnly ? ' (read-only)' : ''}`} />
-              <DetailRow label="Last updated" value={relTime(project.updatedAt || project.modified)} />
-              <DetailRow label="Created" value={relTime(project.created || project.createdAt)} />
-              <DetailRow label="Studies extracted" value={String(studyCount)} />
-              <DetailRow label={linkedId ? 'Screening records' : 'Records'} value={String(recordCount)} />
-              <DetailRow label="Risk of Bias" value={STEP_LABEL[statusMap.rob || 'empty']} last />
-            </dl>
           </StitchCard>
         </div>
       </div>
 
-      <style>{'@media (max-width: 980px){ html[data-ui-design="stitch"] .stitch-bento{ grid-template-columns: 1fr !important; } }'}</style>
+      <style>{'@media (max-width: 980px){ html[data-ui-design="stitch"] .stitch-ov-grid{ grid-template-columns: 1fr !important; } }'}</style>
     </StitchAppShell>
   );
 }
 
-function PhaseCard({ index, phase, statusMap, onOpen, onOpenRob, canRob }) {
-  const isExtract = phase.name === 'Extract';
+/** One compact, clickable workflow-phase row (replaces the dense phase-card grid). */
+function WorkflowRow({ index, phase, active, onOpen }) {
+  const tone = stepTone(phase.status);
+  const toneColor = tone === 'success' ? S.success : tone === 'warn' ? S.warn : S.textMuted;
   return (
-    <StitchCard interactive style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-        <span style={{ width: 38, height: 38, borderRadius: 10, background: S.brandSoft, color: S.onBrandSoft, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-          <StitchIcon name={phase.icon} size={19} />
+    <button type="button" className="stitch-focusable" onClick={onOpen}
+      onMouseEnter={(e) => { e.currentTarget.style.background = S.surfaceLow; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = active ? salpha(S.brand, 0.06) : 'transparent'; }}
+      style={{ display: 'flex', alignItems: 'center', gap: 12, width: '100%', border: 'none', borderRadius: 10, cursor: 'pointer', textAlign: 'left',
+        padding: '10px 12px', background: active ? salpha(S.brand, 0.06) : 'transparent', transition: 'background 0.15s ease' }}>
+      <span style={{ width: 30, height: 30, borderRadius: 9, flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+        background: phase.status === 'done' ? salpha(S.success, 0.15) : active ? salpha(S.brand, 0.14) : S.surfaceContainer,
+        color: phase.status === 'done' ? S.success : active ? S.brand : S.textSecondary }}>
+        {phase.status === 'done' ? <StitchIcon name="check" size={15} strokeWidth={2.6} /> : <StitchIcon name={phase.icon} size={15} />}
+      </span>
+      <span style={{ minWidth: 0, flex: 1 }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 700, color: S.textPrimary }}>{phase.label}</span>
+          {active ? <StitchBadge tone="brand">Current</StitchBadge> : null}
         </span>
-        <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ fontSize: 11, fontWeight: 700, color: S.textMuted }}>PHASE {index}</span>
-            <StitchBadge tone={stepTone(phase.status)} dot>{STEP_LABEL[phase.status]}</StitchBadge>
-          </div>
-          <h3 style={{ fontSize: 15.5, fontWeight: 700, color: S.textPrimary, margin: '3px 0 0', letterSpacing: '-0.01em' }}>{phase.label}</h3>
-        </div>
-      </div>
-      <p style={{ fontSize: 12.5, color: S.textSecondary, margin: 0, lineHeight: 1.55 }}>{phase.desc}</p>
-      <StitchProgressBar value={phase.pct} tone={stepTone(phase.status)} height={6} />
-      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-        {PHASE_STEPS[phase.name].map((k) => {
-          const s = statusMap[k] || 'empty';
-          return <StitchBadge key={k} tone={stepTone(s)}>{STEP_LABELS_SHORT[k] || k}</StitchBadge>;
-        })}
-      </div>
-      <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 4 }}>
-        <StitchButton size="sm" block iconRight="arrowRight" onClick={onOpen}>Continue</StitchButton>
-        {isExtract ? (
-          canRob
-            ? <StitchButton size="sm" block variant="neutral" icon="scale" onClick={onOpenRob}>Risk of Bias workspace</StitchButton>
-            : <div style={{ fontSize: 11, color: S.textMuted, textAlign: 'center', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}><StitchIcon name="lock" size={12} /> Risk of Bias is read-only for your role</div>
-        ) : null}
-      </div>
-    </StitchCard>
+        <span style={{ display: 'block', marginTop: 6 }}><StitchProgressBar value={phase.pct} tone={tone} height={5} /></span>
+      </span>
+      <span style={{ fontSize: 11.5, fontWeight: 700, color: toneColor, flexShrink: 0, minWidth: 64, textAlign: 'right' }}>{STEP_LABEL[phase.status]}</span>
+    </button>
   );
 }
 
 function DetailRow({ label, value, last }) {
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '9px 0', borderBottom: last ? 'none' : `1px solid ${salpha(S.outlineVariant, 0.3)}` }}>
-      <dt style={{ fontSize: 12.5, color: S.textSecondary, margin: 0 }}>{label}</dt>
-      <dd style={{ fontSize: 13, fontWeight: 600, color: S.textPrimary, margin: 0, textAlign: 'right' }}>{value}</dd>
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '7px 0', borderBottom: last ? 'none' : `1px solid ${salpha(S.outlineVariant, 0.3)}` }}>
+      <dt style={{ fontSize: 12, color: S.textSecondary, margin: 0 }}>{label}</dt>
+      <dd style={{ fontSize: 12.5, fontWeight: 600, color: S.textPrimary, margin: 0, textAlign: 'right' }}>{value}</dd>
     </div>
   );
 }

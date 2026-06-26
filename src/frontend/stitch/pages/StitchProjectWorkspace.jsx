@@ -26,11 +26,12 @@
  * Heavy editor bodies are lazy-imported (code-split). `?tab=` is parsed from
  * `useLocation().search` (not `useSearchParams`, which the SSR test mock omits).
  */
-import { lazy, Suspense, useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { useParams, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useProjectPresence } from '../../screening/hooks/usePresence.js';
 import PresenceIndicator from '../../screening/components/PresenceIndicator.jsx';
+import { buildScreeningSteps } from '../../screening/ui/screeningSteps.js';
 import { linkedSiftId, projectPerms, stepStatus, TABS } from '../../workspace/projectHelpers.js';
 import { registerExportDialog } from '../../workspace/exportDialogBridge.js';
 import StitchAppShell from '../shell/StitchAppShell.jsx';
@@ -38,6 +39,9 @@ import StitchProjectRail from '../shell/StitchProjectRail.jsx';
 import StitchProjectSubnav from '../shell/StitchProjectSubnav.jsx';
 import StitchProjectOverview from './StitchProjectOverview.jsx';
 import { useStitchProjectDoc } from '../shell/useStitchProjectDoc.js';
+import { useSidebarPin } from '../shell/useSidebarPin.js';
+import { useScreeningSummary, screenNeedsAttention } from '../shell/useScreeningSummary.js';
+import { totalMembersOf } from '../shell/presence.js';
 import {
   activeProjectStage, projectStageHref, categoryForStage, categoryShowsSubmenu, activeSubmenuKey,
 } from '../nav/navConfig.js';
@@ -100,6 +104,7 @@ function DeepToolPage({ stage }) {
   const { user } = useAuth();
   const doc = useStitchProjectDoc(projectId);
   const project = doc.project;
+  const { pinned, togglePin } = useSidebarPin();
 
   // The one shared ExportDialog (prompt9 plumbing): deep tools open it via the
   // module-level openExportDialog() trampoline. Register OUR opener so every export
@@ -114,10 +119,17 @@ function DeepToolPage({ stage }) {
   const spId = project ? linkedSiftId(project) : null;
   const perms = project ? projectPerms(project) : null;
   const readOnly = !!(perms && perms.readOnly);
-  const totalMembers = (project && project._linkedMetaSift && project._linkedMetaSift.memberCount) || undefined;
+  // 56.md §5 — one shared total-members source across every project page.
+  const totalMembers = totalMembersOf(project);
 
   // Live, project-scoped presence (this page IS the location → it heartbeats).
   const { users, locks } = useProjectPresence(spId, STAGE_LABEL[stage] || 'Project', { enabled: !!spId, heartbeat: true });
+
+  // 56.md §4 — the live screening summary powers the white-submenu screening
+  // vertical stepper (counts/states) and the rail's Screen "needs attention" state.
+  const summary = useScreeningSummary(spId);
+  const screeningSteps = useMemo(() => buildScreeningSteps(summary), [summary]);
+  const attentionMap = useMemo(() => ({ screen: screenNeedsAttention(summary) }), [summary]);
 
   const safeStudies = project && Array.isArray(project.studies) ? project.studies : [];
   const screeningComplete = !!(project && project._linkedMetaSift && project._linkedMetaSift.progressStatus === 'done');
@@ -133,18 +145,20 @@ function DeepToolPage({ stage }) {
 
   const renderPrimaryRail = (variant) => (
     <StitchProjectRail projectId={projectId} linkedSiftId={spId} statusMap={statusMap}
-      activeStage={stage} variant={variant === 'mobile' ? 'static' : 'overlay'} />
+      attentionMap={attentionMap} activeStage={stage} variant={variant === 'mobile' ? 'static' : 'overlay'}
+      pinned={pinned} onTogglePin={togglePin} />
   );
 
-  // 55.md — categories with children reveal a PERSISTENT white submenu beside the
-  // purple rail (Overview / Project Control / single-page Reference reclaim the
-  // width instead). The active submenu item is derived from the route so refresh /
-  // deep links restore it.
+  // 55.md/56.md — categories with children reveal a PERSISTENT white submenu beside
+  // the purple rail, coordinated so it moves WITH the rail (Overview / Project
+  // Control / single-page Reference reclaim the width instead). The active submenu
+  // item is derived from the route so refresh / deep links restore it. The Screen
+  // category renders a detailed vertical stepper from the live screening summary.
   const activeCategory = categoryForStage(stage);
   const showSubmenu = categoryShowsSubmenu(activeCategory);
   const contextRail = showSubmenu ? (
     <StitchProjectSubnav projectId={projectId} linkedSiftId={spId} category={activeCategory}
-      activeKey={activeSubmenuKey(search)} statusMap={statusMap} />
+      activeKey={activeSubmenuKey(search)} statusMap={statusMap} screeningSteps={screeningSteps} />
   ) : null;
 
   // 55.md #14 — project presence moves to the top bar (shell), not the page header.
@@ -153,7 +167,8 @@ function DeepToolPage({ stage }) {
   ) : null;
 
   const shellProps = {
-    activeKey: 'dashboard', renderPrimaryRail, contextRail, contextRailMobile: null,
+    activeKey: 'dashboard', renderPrimaryRail, contextRail,
+    coordinatedNav: true, pinned,
     topPresence, maxWidth: fullbleed ? 100000 : 1560, contentPad: !fullbleed,
   };
 

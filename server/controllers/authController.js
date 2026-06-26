@@ -317,7 +317,7 @@ export async function getMe(req, res) {
       where: { id: req.user.id },
       select: {
         id: true, userNumber: true, email: true, name: true, role: true, suspended: true, createdAt: true,
-        themePreference: true, workflowMenuMode: true, uiDesignMode: true, lastActive: true,
+        themePreference: true, workflowMenuMode: true, projectSidebarPinned: true, uiDesignMode: true, lastActive: true,
         emailVerifiedAt: true, onboardingCompletedAt: true,
         primaryRole: true, researchField: true, mainUseCase: true,
         institutionOriginal: true, country: true,
