@@ -128,9 +128,11 @@ headline validation needs **no external oracle**:
   (itself validated against R `meta`/`metafor`) plus hand-derived multi-arm/coherence
   checks. The validation harness is structured to accept committed `netmeta` reference
   fixtures when an R toolchain is available.
-- **SMD** and **multi-arm GENERIC (contrast-level)** covariance: MD/OR/RR/RD multi-arm
-  are exact; SMD and supplied-covariance multi-arm contrasts are the next extension
-  (the contrast layer is structured for it).
+- **SMD** native arm-based derivation and **multi-arm GENERIC (contrast-level)**
+  covariance: MD/OR/RR/RD multi-arm are exact. SMD is usable TODAY via the GENERIC
+  path (compute Hedges' g + SE per contrast and enter it as a generic effect); a
+  native arm-based SMD derivation and supplied-covariance multi-arm contrasts are the
+  next extension (the contrast layer is structured for it).
 - **Comparison-adjusted funnel** + **flow/streams contribution**: the aggregate
   hat-matrix contribution is shipped; the elaborate streams decomposition and the
   network funnel are scoped follow-ons.

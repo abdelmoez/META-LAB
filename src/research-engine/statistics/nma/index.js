@@ -61,7 +61,7 @@ export function validateNetwork(input) {
   if (geom && !geom.connected) {
     warnings.push({ level: 'warn', msg: `The evidence network has ${geom.nComponents} disconnected components. Treatments in different components cannot be compared; only the largest connected component is analysed.` });
   }
-  if (net.ccCount > 0) warnings.push({ level: 'info', msg: `${net.ccCount} study(ies) had a zero/!full cell — a 0.5 continuity correction was applied inside the analysis (raw counts unchanged).` });
+  if (net.ccCount > 0) warnings.push({ level: 'info', msg: `${net.ccCount} study(ies) had a zero (or full) cell — a 0.5 continuity correction was applied inside the analysis (raw counts unchanged).` });
   if (net.multiArmCount > 0) warnings.push({ level: 'info', msg: `${net.multiArmCount} multi-arm study(ies) — handled with their correct within-study covariance.` });
 
   const analysable = net.ok && tCount >= 2 && (!geom || geom.components.some((c) => c.length >= 2));

@@ -118,6 +118,24 @@ describe('NMA orchestrator', () => {
     expect(a.league.cells.A.C.est).toBeCloseTo(b.league.cells.A.C.est, 12);
   });
 
+  it('is invariant to arm order and study order (estimates + τ² unchanged)', () => {
+    const base = runNetworkMetaAnalysis({ sm: 'OR', smallerBetter: false, studies: [
+      { id: '1', arms: [{ treatment: 'A', events: 12, n: 100 }, { treatment: 'B', events: 20, n: 100 }] },
+      { id: '2', arms: [{ treatment: 'B', events: 18, n: 110 }, { treatment: 'C', events: 28, n: 110 }] },
+      { id: '3', arms: [{ treatment: 'A', events: 14, n: 130 }, { treatment: 'B', events: 19, n: 130 }, { treatment: 'C', events: 30, n: 130 }] },
+    ] }, { model: 'random' });
+    // Shuffle arms within studies AND the study order.
+    const shuffled = runNetworkMetaAnalysis({ sm: 'OR', smallerBetter: false, studies: [
+      { id: '3', arms: [{ treatment: 'C', events: 30, n: 130 }, { treatment: 'A', events: 14, n: 130 }, { treatment: 'B', events: 19, n: 130 }] },
+      { id: '1', arms: [{ treatment: 'B', events: 20, n: 100 }, { treatment: 'A', events: 12, n: 100 }] },
+      { id: '2', arms: [{ treatment: 'C', events: 28, n: 110 }, { treatment: 'B', events: 18, n: 110 }] },
+    ] }, { model: 'random' });
+    expect(base.league.cells.A.C.est).toBeCloseTo(shuffled.league.cells.A.C.est, 12);
+    expect(base.league.cells.A.C.se).toBeCloseTo(shuffled.league.cells.A.C.se, 12);
+    expect(base.heterogeneity.tau2).toBeCloseTo(shuffled.heterogeneity.tau2, 12);
+    expect(base.provenance.dataHash).toBe(shuffled.provenance.dataHash);
+  });
+
   it('handles a disconnected network by analysing the largest component', () => {
     const res = runNetworkMetaAnalysis({ sm: 'GENERIC', studies: [...CONSISTENT, gen('x', 'X', 'Y', 0.5)] });
     expect(res.ok).toBe(true);
