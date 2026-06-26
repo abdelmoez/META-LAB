@@ -1,7 +1,13 @@
 /**
  * WaitlistFlow.jsx — the multi-step Beta Waitlist form, rendered NATIVE to the
- * Stitch design system (54.md).
- *   Step 1  Email  ·  Step 2  About you  ·  Step 3  Your work  ·  Step 4  Review & confirm
+ * Stitch design system and skinned to match the Design/waitlist reference.
+ *   Step 1  Email (the reference's inline email-capture pill — no card, no stepper)
+ *   Step 2  About you  ·  Step 3  Your work  ·  Step 4  Review & confirm
+ *
+ * The reference mock is a single email field; the questionnaire (required by 54.md
+ * / WhatToCollectFromUsers.docx) is preserved as the steps AFTER the email pill, so
+ * the first impression matches the example exactly while we still collect the
+ * required country + consent + questionnaire answers.
  *
  * Validation is mirrored from the shared, server-authoritative validateApplication
  * so client + server never drift. Server 422 field errors are mapped back onto the
@@ -9,13 +15,14 @@
  * state is HONEST: no invented queue position, acceptance date, or beta-access
  * claim. Email-delivery hiccups never present as a failed submission.
  *
- * Only email + countryCode + consent are required — everything else is optional
- * (the questionnaire doc: "all fields optional except Country").
+ * Only email + countryCode + consent are required — everything else is optional.
  */
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { S, salpha } from '../../stitch/theme/stitchTokens.js';
-import { StitchButton, StitchCard } from '../../stitch/primitives/index.js';
+import { Icon } from '../../components/icons.jsx';
+import { StitchButton, StitchCard, StitchSpinner } from '../../stitch/primitives/index.js';
+import { WL } from './waitlistTheme.js';
 import {
   WAITLIST_ROLES, WAITLIST_FIELDS, WAITLIST_INSTITUTION_TYPES, WAITLIST_COVIDENCE,
   WAITLIST_PRIOR_REVIEW_COUNTS, WAITLIST_PRIOR_TOOLS, RESEARCH_EXPERIENCE_LEVELS,
@@ -23,7 +30,7 @@ import {
   REFERRAL_SOURCES, validateApplication, isValidEmail,
 } from '../../../shared/betaWaitlist.js';
 import { COUNTRY_OPTIONS } from '../../../shared/countries.js';
-import { TextField, TextareaField, SelectField, RadioGroupField, CheckboxGroupField, ConsentCheckbox } from './fields.jsx';
+import { TextField, TextareaField, SelectField, RadioGroupField, CheckboxGroupField, ConsentCheckbox, ErrorText } from './fields.jsx';
 import { submitWaitlist, resendWaitlist } from './waitlistApi.js';
 
 const COUNTRY_SELECT = COUNTRY_OPTIONS.map((c) => ({ value: c.code, label: c.name }));
@@ -75,7 +82,7 @@ const EMPTY = {
 
 function stepIndex(key) { return STEPS.findIndex((s) => s.key === key); }
 
-export default function WaitlistFlow({ onSignIn }) {
+export default function WaitlistFlow({ onSignIn, onStepChange }) {
   const [step, setStep] = useState('email');
   const [form, setForm] = useState(EMPTY);
   const [errors, setErrors] = useState({});
@@ -85,6 +92,9 @@ export default function WaitlistFlow({ onSignIn }) {
   const [announce, setAnnounce] = useState('');     // aria-live message
   const [resendState, setResendState] = useState('idle'); // idle|sending|done
   const topRef = useRef(null);
+
+  // Let the page show/hide the marketing hero + queue card per step.
+  useEffect(() => { onStepChange?.(step); }, [step, onStepChange]);
 
   const set = useCallback((key, val) => {
     setForm((f) => ({ ...f, [key]: val }));
@@ -209,35 +219,45 @@ export default function WaitlistFlow({ onSignIn }) {
   // Only the fields belonging to the current step contribute to its error summary.
   const stepErrorKeys = FOCUS_ORDER.filter((k) => (STEP_FIELDS[step] || []).includes(k) && errors[k]);
 
+  // ── Step 1: the reference email-capture pill (no card, no stepper) ────────────
+  if (step === 'email') {
+    return (
+      <div ref={topRef}>
+        <LiveRegion message={announce} />
+        <Honeypot value={form.website} onChange={(v) => set('website', v)} />
+        <form
+          onSubmit={(e) => { e.preventDefault(); next(); }}
+          aria-label="Beta waitlist sign-up"
+        >
+          <EmailPill
+            value={form.email}
+            onChange={(v) => set('email', v)}
+            error={errors.email}
+            submitLabel="Join the Beta"
+          />
+          <ErrorText id="email-error" error={errors.email} />
+          <FormError message={submitError} />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, marginTop: 16, color: salpha(S.textMuted, 0.95) }}>
+            <Icon name="shieldCheck" size={14} />
+            <span style={{ fontSize: 12, fontWeight: 600, fontFamily: S.font }}>
+              An institutional or .edu email is preferred, but any valid email works.
+            </span>
+          </div>
+        </form>
+      </div>
+    );
+  }
+
+  // ── Steps 2–4: the questionnaire, inside a Stitch card with the stepper ───────
   return (
     <div ref={topRef}>
+    <StitchCard style={{ padding: 'clamp(20px, 3vw, 30px)' }}>
       <LiveRegion message={announce} />
       <Stepper current={idx} />
-
-      {/* Honeypot — visually hidden, off the tab order, ignored by humans. */}
-      <div aria-hidden="true" style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, overflow: 'hidden' }}>
-        <label htmlFor="website">Leave this field empty</label>
-        <input id="website" type="text" tabIndex={-1} autoComplete="off" value={form.website} onChange={(e) => set('website', e.target.value)} />
-      </div>
+      <Honeypot value={form.website} onChange={(v) => set('website', v)} />
 
       {/* Accessible error summary — only when ≥2 field errors on this step. */}
       <ErrorSummary keys={stepErrorKeys} errors={errors} onJump={focusField} />
-
-      {step === 'email' && (
-        <Section title="Join the PecanRev beta waitlist" subtitle="Start with your email — a few quick, optional questions follow.">
-          <TextField
-            id="email" label="Email address" type="email" required value={form.email}
-            onChange={(v) => set('email', v)} error={errors.email} autoComplete="email"
-            placeholder="you@university.edu" inputMode="email" icon="mail"
-            hint="An institutional or .edu email is preferred, but any valid email works."
-          />
-          <FormError message={submitError} />
-          <Actions>
-            <span />
-            <StitchButton type="submit" variant="primary" iconRight="arrowRight" onClick={next}>Continue</StitchButton>
-          </Actions>
-        </Section>
-      )}
 
       {step === 'about' && (
         <Section title="About you" subtitle="All optional — it helps us tailor the beta.">
@@ -256,7 +276,7 @@ export default function WaitlistFlow({ onSignIn }) {
           <FormError message={submitError} />
           <Actions>
             <StitchButton type="button" variant="neutral" icon="arrowLeft" onClick={() => goTo('email')}>Back</StitchButton>
-            <StitchButton type="submit" variant="primary" iconRight="arrowRight" onClick={next}>Continue</StitchButton>
+            <WlPrimaryButton type="submit" iconRight="arrowRight" onClick={next}>Continue</WlPrimaryButton>
           </Actions>
         </Section>
       )}
@@ -290,7 +310,7 @@ export default function WaitlistFlow({ onSignIn }) {
           <FormError message={submitError} />
           <Actions>
             <StitchButton type="button" variant="neutral" icon="arrowLeft" onClick={() => goTo('about')}>Back</StitchButton>
-            <StitchButton type="submit" variant="primary" iconRight="arrowRight" onClick={next}>Review</StitchButton>
+            <WlPrimaryButton type="submit" iconRight="arrowRight" onClick={next}>Review</WlPrimaryButton>
           </Actions>
         </Section>
       )}
@@ -302,7 +322,7 @@ export default function WaitlistFlow({ onSignIn }) {
             <ConsentCheckbox id="consent" checked={form.consent} onChange={(v) => set('consent', v)} error={errors.consent}>
               I agree that PecanRev may store the information above and contact me by email about beta access and
               related updates. I can ask to be removed at any time. See the{' '}
-              <a href="/terms#privacy" target="_blank" rel="noopener noreferrer" style={{ color: S.brand, fontWeight: 600 }}>Privacy Policy</a>.
+              <a href="/terms#privacy" target="_blank" rel="noopener noreferrer" style={{ color: WL.primary, fontWeight: 600 }}>Privacy Policy</a>.
             </ConsentCheckbox>
             <div style={{ height: 1, background: salpha(S.outlineVariant, 0.6) }} />
             <ConsentCheckbox id="researchConsent" checked={form.researchConsent} onChange={(v) => set('researchConsent', v)}>
@@ -314,17 +334,102 @@ export default function WaitlistFlow({ onSignIn }) {
           <FormError message={submitError} />
           <Actions>
             <StitchButton type="button" variant="neutral" icon="arrowLeft" onClick={() => goTo('institution')} disabled={submitting}>Back</StitchButton>
-            <StitchButton type="submit" variant="primary" loading={submitting} onClick={submit}>
+            <WlPrimaryButton type="submit" loading={submitting} onClick={submit}>
               {submitting ? 'Joining…' : 'Join the waitlist'}
-            </StitchButton>
+            </WlPrimaryButton>
           </Actions>
         </Section>
       )}
+    </StitchCard>
     </div>
   );
 }
 
 /* ── Small presentational helpers ─────────────────────────────────────────────── */
+
+/** The reference inline email-capture pill: borderless field + indigo CTA. */
+function EmailPill({ value, onChange, error, submitLabel }) {
+  const [focus, setFocus] = useState(false);
+  return (
+    <div
+      style={{
+        background: S.card, padding: 8, borderRadius: S.radiusCard,
+        boxShadow: focus ? `${S.shadow1}, 0 0 0 3px ${WL.ring}` : S.shadow1,
+        border: `1px solid ${focus ? WL.softBorder : salpha(S.outlineVariant, 0.3)}`,
+        display: 'flex', gap: 8, flexWrap: 'wrap', transition: 'border-color 0.2s ease, box-shadow 0.2s ease',
+      }}
+    >
+      <div style={{ flex: '1 1 220px', position: 'relative', display: 'flex', alignItems: 'center', minWidth: 0 }}>
+        <label htmlFor="email" style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap' }}>Email address</label>
+        <span aria-hidden="true" style={{ position: 'absolute', left: 14, color: salpha(S.textMuted, 0.7), pointerEvents: 'none', display: 'inline-flex' }}>
+          <Icon name="mail" size={18} />
+        </span>
+        <input
+          id="email"
+          type="email"
+          inputMode="email"
+          autoComplete="email"
+          aria-required="true"
+          aria-invalid={error ? 'true' : undefined}
+          aria-describedby={error ? 'email-error' : undefined}
+          placeholder="Enter institutional email…"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onFocus={() => setFocus(true)}
+          onBlur={() => setFocus(false)}
+          style={{
+            width: '100%', height: 48, padding: '0 14px 0 42px', boxSizing: 'border-box',
+            background: S.surfaceLow, color: S.textPrimary, border: 'none', borderRadius: S.radiusControl,
+            fontFamily: S.font, fontSize: 15, outline: 'none',
+            boxShadow: focus ? `0 0 0 2px ${WL.primary}` : 'none', transition: 'box-shadow 0.15s ease',
+          }}
+        />
+      </div>
+      <WlPrimaryButton type="submit" iconRight="arrowRight" size="lg">{submitLabel}</WlPrimaryButton>
+    </div>
+  );
+}
+
+/** Indigo primary button matching the Design/waitlist reference CTA. */
+function WlPrimaryButton({ children, onClick, type = 'button', icon, iconRight, loading = false, disabled = false, block = false, size = 'md', style }) {
+  const z = size === 'lg' ? { padding: '0 22px', height: 48, fontSize: 15, icon: 18 } : { padding: '11px 20px', height: undefined, fontSize: 14.5, icon: 17 };
+  const isDisabled = disabled || loading;
+  return (
+    <button
+      type={type}
+      className="stitch-btn"
+      disabled={isDisabled}
+      aria-busy={loading || undefined}
+      onClick={onClick}
+      onMouseEnter={(e) => { if (!isDisabled) e.currentTarget.style.background = WL.primaryHover; }}
+      onMouseLeave={(e) => { if (!isDisabled) e.currentTarget.style.background = WL.primary; }}
+      onFocus={(e) => { e.currentTarget.style.boxShadow = `0 0 0 3px ${WL.ring}`; }}
+      onBlur={(e) => { e.currentTarget.style.boxShadow = 'none'; }}
+      style={{
+        display: block ? 'flex' : 'inline-flex', width: block ? '100%' : undefined,
+        alignItems: 'center', justifyContent: 'center', gap: 8,
+        padding: z.padding, height: z.height, fontSize: z.fontSize, fontWeight: 700, fontFamily: S.font,
+        lineHeight: 1.2, letterSpacing: '0.01em', color: WL.onPrimary, background: WL.primary,
+        border: '1px solid transparent', borderRadius: S.radiusControl, cursor: isDisabled ? 'not-allowed' : 'pointer',
+        opacity: isDisabled ? 0.55 : 1, transition: 'background 0.15s ease, opacity 0.15s ease', whiteSpace: 'nowrap', ...style,
+      }}
+    >
+      {loading ? <StitchSpinner size={z.icon} tone="currentColor" /> : (icon ? <Icon name={icon} size={z.icon} /> : null)}
+      {children}
+      {iconRight ? <Icon name={iconRight} size={z.icon} /> : null}
+    </button>
+  );
+}
+
+/** Honeypot — visually hidden, off the tab order, ignored by humans. */
+function Honeypot({ value, onChange }) {
+  return (
+    <div aria-hidden="true" style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, overflow: 'hidden' }}>
+      <label htmlFor="website">Leave this field empty</label>
+      <input id="website" type="text" tabIndex={-1} autoComplete="off" value={value} onChange={(e) => onChange(e.target.value)} />
+    </div>
+  );
+}
 
 function LiveRegion({ message }) {
   return (
@@ -340,13 +445,14 @@ function Stepper({ current }) {
       {STEPS.map((s, i) => {
         const active = i === current;
         const done = i < current;
+        const on = active || done;
         return (
           <li key={s.key} aria-current={active ? 'step' : undefined} style={{ display: 'flex', alignItems: 'center', gap: 8, flex: i < STEPS.length - 1 ? 1 : '0 0 auto' }}>
             <span style={{
               width: 26, height: 26, borderRadius: '50%', flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
               fontSize: 12.5, fontWeight: 700, fontFamily: S.font,
-              background: active || done ? S.brand : S.surfaceContainer, color: active || done ? S.onBrand : S.textMuted,
-              border: `1px solid ${active || done ? S.brand : S.outlineVariant}`,
+              background: on ? WL.primary : S.surfaceContainer, color: on ? WL.onPrimary : S.textMuted,
+              border: `1px solid ${on ? WL.primary : S.outlineVariant}`,
             }}>{done ? '✓' : i + 1}</span>
             <span style={{ fontSize: 13, fontWeight: active ? 700 : 500, color: active ? S.textPrimary : S.textMuted, fontFamily: S.font, whiteSpace: 'nowrap' }}>{s.label}</span>
             {i < STEPS.length - 1 && <span aria-hidden="true" style={{ flex: 1, height: 1, background: S.outlineVariant, margin: '0 4px' }} />}
@@ -388,7 +494,7 @@ function Actions({ children }) {
 function FormError({ message }) {
   if (!message) return null;
   return (
-    <div role="alert" style={{ padding: '11px 14px', background: S.dangerSoft, border: `1px solid ${salpha(S.danger, 0.5)}`, borderRadius: S.radiusControl, color: S.onDangerSoft, fontSize: 13.5, fontWeight: 600, fontFamily: S.font, display: 'flex', alignItems: 'center', gap: 8 }}>
+    <div role="alert" style={{ padding: '11px 14px', background: S.dangerSoft, border: `1px solid ${salpha(S.danger, 0.5)}`, borderRadius: S.radiusControl, color: S.onDangerSoft, fontSize: 13.5, fontWeight: 600, fontFamily: S.font, display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
       <span aria-hidden="true">⚠</span><span>{message}</span>
     </div>
   );
@@ -467,7 +573,8 @@ function ConfirmationPanel({ topRef, result, email, firstName, onResend, resendS
   else emailLine = "We've recorded your spot. You'll hear from us by email about next steps.";
 
   return (
-    <div ref={topRef} className="stitch-fade-in" style={{ textAlign: 'center', padding: '8px 4px' }}>
+    <div ref={topRef}>
+    <StitchCard className="stitch-fade-in" style={{ textAlign: 'center', padding: 'clamp(24px, 4vw, 36px)' }}>
       <LiveRegion message={announce} />
       <div aria-hidden="true" style={{
         width: 60, height: 60, borderRadius: '50%', margin: '0 auto 18px', display: 'flex', alignItems: 'center', justifyContent: 'center',
@@ -490,8 +597,9 @@ function ConfirmationPanel({ topRef, result, email, firstName, onResend, resendS
         <StitchButton type="button" variant="neutral" icon="mail" onClick={onResend} disabled={resendState !== 'idle'}>
           {resendState === 'sending' ? 'Sending…' : resendState === 'done' ? 'Confirmation re-sent' : 'Resend confirmation email'}
         </StitchButton>
-        <StitchButton type="button" variant="primary" onClick={onSignIn}>Already have an account? Sign in</StitchButton>
+        <WlPrimaryButton type="button" onClick={onSignIn}>Already have an account? Sign in</WlPrimaryButton>
       </div>
+    </StitchCard>
     </div>
   );
 }

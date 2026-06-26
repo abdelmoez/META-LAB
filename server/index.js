@@ -40,6 +40,7 @@ import workflowStateRouter from './routes/workflowState.js';
 import searchEngineRouter  from './routes/searchEngine.js';
 import pecanSearchRouter    from './routes/pecanSearch.js';
 import waitlistRouter       from './routes/waitlist.js';
+import { waitlistCount }    from './controllers/waitlistController.js';
 import citationRouter       from './routes/citation.js';
 
 import { prisma } from './db/client.js';
@@ -205,6 +206,18 @@ const waitlistLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// The public landing-page signup count (GET /api/waitlist/count) is a harmless
+// read that fires on every page load, so it gets its OWN generous limiter rather
+// than competing with the strict submit budget above. (Failure simply hides the
+// count card — never an error to the visitor.)
+const waitlistReadLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 240 : 2000,
+  message: { count: null },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // ── Core middleware ────────────────────────────────────────────────────────────
 // CORS is an EXPLICIT, env-driven allowlist (CORS_ORIGIN — one origin or a
 // comma-separated list for apex + www + a deliberate preview origin — unioned
@@ -309,6 +322,10 @@ app.use('/api/invites', inviteLimiter, invitesRouter);
 // with a dedicated limiter; MUST be BEFORE the bare '/api' importExport router
 // (which applies requireAuth at router level and would 401 the public form).
 // Writes ONLY to the strictly-separate waitlist DB — never the user database.
+// The public signup-count GET is registered FIRST with its own lenient limiter so
+// a normal page load never spends the strict submit budget (Express matches this
+// exact route before falling through to the strict-limited router below).
+app.get('/api/waitlist/count', waitlistReadLimiter, waitlistCount);
 app.use('/api/waitlist', waitlistLimiter, waitlistRouter);
 
 app.use('/api',                      importExportRouter);  // /api/import/... and /api/export/...

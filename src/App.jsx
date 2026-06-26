@@ -5,6 +5,7 @@ import { useGlobalPresence } from './frontend/hooks/useGlobalPresence.js';
 import { ThemeProvider } from './frontend/theme/ThemeContext.jsx';
 import { DesignModeProvider } from './frontend/design/DesignModeContext.jsx';
 import DesignRoute from './frontend/design/DesignRoute.jsx';
+import ForceLegacyDesign from './frontend/design/ForceLegacyDesign.jsx';
 import AdminDesignSwitch from './frontend/design/AdminDesignSwitch.jsx';
 import ProtectedRoute from './frontend/components/ProtectedRoute.jsx';
 import PublicRoute    from './frontend/components/PublicRoute.jsx';
@@ -43,7 +44,6 @@ const StitchDashboard       = lazy(() => import('./frontend/stitch/pages/StitchD
 const StitchProfile         = lazy(() => import('./frontend/stitch/pages/StitchProfile.jsx'));
 const StitchProjectOverview = lazy(() => import('./frontend/stitch/pages/StitchProjectOverview.jsx'));
 const StitchProjectWorkspace = lazy(() => import('./frontend/stitch/pages/StitchProjectWorkspace.jsx'));
-const StitchOpsConsole      = lazy(() => import('./frontend/stitch/pages/StitchOpsConsole.jsx'));
 
 /* Minimal theme-token loading state shown while a route chunk downloads. */
 function RouteFallback() {
@@ -216,8 +216,11 @@ export default function App() {
         {/* Protected profile */}
         <Route path="/profile"  element={<ProtectedRoute><OnboardingGate><DesignRoute legacy={<Profile />} stitch={<StitchProfile />} /></OnboardingGate></ProtectedRoute>} />
 
-        {/* Internal admin console — not linked from anywhere in the normal UI */}
-        <Route path="/ops"      element={<AdminRoute><OnboardingGate><DesignRoute legacy={<AdminConsole />} stitch={<StitchOpsConsole />} /></OnboardingGate></AdminRoute>} />
+        {/* Internal admin console — not linked from anywhere in the normal UI.
+            LEGACY ONLY: the Ops Console is intentionally never rendered in the
+            Stitch design. ForceLegacyDesign pins /ops to legacy even for an admin
+            whose global preference is Stitch (the Stitch ops surface was removed). */}
+        <Route path="/ops"      element={<AdminRoute><OnboardingGate><ForceLegacyDesign><AdminConsole /></ForceLegacyDesign></OnboardingGate></AdminRoute>} />
 
         {/* META·SIFT Beta — Screening workspace (tabbed project shell) */}
         <Route path="/sift-beta"                      element={<ProtectedRoute><OnboardingGate><SiftDashboard /></OnboardingGate></ProtectedRoute>} />

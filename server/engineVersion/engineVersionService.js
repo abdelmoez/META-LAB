@@ -28,6 +28,21 @@ import {
 
 const MAX_SUMMARY = 280;
 
+/**
+ * True when an error is "the engine-version tables don't exist / are out of date"
+ * — i.e. the MAIN database hasn't had `prisma db push` run after deploying the
+ * 54.md engine-registry migration. On a fresh/under-migrated deployment the READ
+ * paths must degrade to the in-code catalog (every engine at its initial version)
+ * instead of 500-ing the whole Ops console. Write paths still surface real errors.
+ *   P2021 — table does not exist   ·   P2022 — column does not exist
+ */
+function isMissingSchemaError(err) {
+  if (!err) return false;
+  if (err.code === 'P2021' || err.code === 'P2022') return true;
+  const msg = String(err.message || '').toLowerCase();
+  return msg.includes('does not exist') || msg.includes('no such table') || msg.includes('no such column');
+}
+
 /** Shape a DB registry row (or a catalog fallback) into the Ops view object. */
 function toView(engineId, row) {
   const cat = ENGINE_BY_ID[engineId] || {};
@@ -77,7 +92,15 @@ export async function seedEngines() {
 
 /** All engines for the Ops list — catalog overlaid with live DB state. */
 export async function listEngines() {
-  const rows = await prisma.engineRegistry.findMany();
+  let rows;
+  try {
+    rows = await prisma.engineRegistry.findMany();
+  } catch (err) {
+    // Under-migrated DB → show the in-code catalog at its initial version rather
+    // than 500-ing the Ops console. The Ops UI surfaces `seeded:false` already.
+    if (isMissingSchemaError(err)) return ENGINES.map((e) => toView(e.id, null));
+    throw err;
+  }
   const byId = Object.fromEntries(rows.map((r) => [r.id, r]));
   // Catalog order first (every known engine always shows), then any DB-only rows.
   const out = ENGINES.map((e) => toView(e.id, byId[e.id]));
@@ -86,22 +109,31 @@ export async function listEngines() {
 }
 
 export async function getEngine(id) {
-  if (!isEngineId(id)) {
+  try {
     const row = await prisma.engineRegistry.findUnique({ where: { id } });
-    return row ? toView(id, row) : null;
+    if (!isEngineId(id)) return row ? toView(id, row) : null;
+    return toView(id, row);
+  } catch (err) {
+    // Missing tables → fall back to the catalog (initial version) for a known id.
+    if (isMissingSchemaError(err)) return isEngineId(id) ? toView(id, null) : null;
+    throw err;
   }
-  const row = await prisma.engineRegistry.findUnique({ where: { id } });
-  return toView(id, row);
 }
 
 /** Version-change history for one engine (newest first). */
 export async function getHistory(id, limit = 50) {
   const take = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
-  const rows = await prisma.engineVersionHistory.findMany({
-    where: { engineId: id },
-    orderBy: { createdAt: 'desc' },
-    take,
-  });
+  let rows;
+  try {
+    rows = await prisma.engineVersionHistory.findMany({
+      where: { engineId: id },
+      orderBy: { createdAt: 'desc' },
+      take,
+    });
+  } catch (err) {
+    if (isMissingSchemaError(err)) return []; // no history table yet → empty history
+    throw err;
+  }
   return rows.map((h) => ({
     id: h.id,
     engineId: h.engineId,

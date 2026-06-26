@@ -56,6 +56,15 @@ export async function findByNormalizedEmail(client, normalizedEmail) {
 }
 
 /**
+ * Public total signups, used for the landing-page "teams registered" count.
+ * Excludes REMOVED rows so a hard-deleted/withdrawn applicant doesn't inflate the
+ * public number. Returns a plain integer.
+ */
+export async function countActive(client) {
+  return client.betaWaitlistApplicant.count({ where: { NOT: { status: 'REMOVED' } } });
+}
+
+/**
  * Create an applicant from a VALIDATED + whitelisted `value` (output of
  * validateApplication). `meta` carries server-owned context (submissionSource).
  * Writes the row + an initial status-history event in one transaction.

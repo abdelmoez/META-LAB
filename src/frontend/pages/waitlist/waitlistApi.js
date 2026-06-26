@@ -30,6 +30,22 @@ export const submitWaitlist = (payload) => postJson('/api/waitlist', payload);
 export const resendWaitlist = (email) => postJson('/api/waitlist/resend', { email });
 
 /**
+ * Public total signup count for the landing "teams registered" card. Never throws
+ * and never fabricates: returns an integer, or `null` when the count is
+ * unavailable (DB not configured, rate-limited, offline) so the card simply hides.
+ */
+export async function fetchWaitlistCount() {
+  try {
+    const res = await fetch('/api/waitlist/count', { credentials: 'include' });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return typeof data?.count === 'number' ? data.count : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Read public feature flags (no auth). Used by the homepage gate to decide whether
  * to show the Beta Waitlist page. Never throws — returns {} on any failure.
  */

@@ -66,6 +66,23 @@ export async function submitWaitlist(req, res) {
   }
 }
 
+/**
+ * GET /api/waitlist/count — public total signups for the landing page.
+ * Deliberately non-throwing and non-leaking: ANY unavailable/error path returns
+ * { count: null } (HTTP 200) so the optional "teams registered" card simply hides
+ * rather than ever showing a fabricated number or surfacing an error to visitors.
+ */
+export async function waitlistCount(req, res) {
+  try {
+    const result = await waitlist.getPublicCount();
+    if (!result.ok) return res.json({ count: null });
+    return res.json({ count: result.count });
+  } catch (err) {
+    console.error('[waitlist] count error:', err?.message || err);
+    return res.json({ count: null });
+  }
+}
+
 /** POST /api/waitlist/resend — re-send the confirmation email (rate-limited). */
 export async function resendWaitlist(req, res) {
   try {

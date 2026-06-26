@@ -1,8 +1,11 @@
 /**
- * stitchPagesWave1.test.jsx — SSR smoke tests for the agent-built Stitch pages
- * (Project Overview + Ops Console). Mocks auth/router/theme/design + the data
- * layer so each renders its initial state without a network — guarding against
- * import/render regressions and confirming the shell chrome mounts.
+ * stitchPagesWave1.test.jsx — SSR smoke test for the agent-built Stitch Project
+ * Overview page. Mocks auth/router/theme/design + the data layer so it renders its
+ * initial state without a network — guarding against import/render regressions and
+ * confirming the shell chrome mounts.
+ *
+ * (The Stitch Ops Console was removed — /ops is legacy-only — so its smoke test was
+ * dropped with it.)
  */
 import { describe, it, expect, vi } from 'vitest';
 import { createElement as h } from 'react';
@@ -34,20 +37,11 @@ vi.mock('../../src/frontend/pages/admin/adminApiClient.js', () => ({
 }));
 
 const StitchProjectOverview = (await import('../../src/frontend/stitch/pages/StitchProjectOverview.jsx')).default;
-const StitchOpsConsole = (await import('../../src/frontend/stitch/pages/StitchOpsConsole.jsx')).default;
 
 describe('StitchProjectOverview (SSR smoke)', () => {
   it('renders the shell without crashing in its initial state', () => {
     const html = renderToStaticMarkup(h(StitchProjectOverview));
     expect(html).toContain('aria-label="Project workflow"'); // project workflow rail mounted
-    expect(html.length).toBeGreaterThan(200);
-  });
-});
-
-describe('StitchOpsConsole (SSR smoke)', () => {
-  it('renders the shell without crashing in its initial state', () => {
-    const html = renderToStaticMarkup(h(StitchOpsConsole));
-    expect(html).toContain('aria-label="Primary"');
     expect(html.length).toBeGreaterThan(200);
   });
 });

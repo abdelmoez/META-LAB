@@ -162,6 +162,20 @@ export async function resendConfirmation(email, meta = {}) {
   return { ok: true, resent: true, emailStatus: updated.confirmationEmailStatus };
 }
 
+// ── Public: signup count ────────────────────────────────────────────────────────
+/**
+ * Total active signups for the public landing page ("teams registered").
+ * Fail-safe like every other entry point: returns a typed failure when the
+ * dedicated DB is unconfigured/unavailable so the caller can simply omit the
+ * count (never a fabricated number).
+ */
+export async function getPublicCount() {
+  const c = await resolveClient();
+  if (!c.ok) return { ok: false, code: c.code };
+  const count = await repo.countActive(c.client);
+  return { ok: true, count };
+}
+
 // ── Ops: metrics ────────────────────────────────────────────────────────────────
 export async function getMetrics() {
   const c = await resolveClient();
