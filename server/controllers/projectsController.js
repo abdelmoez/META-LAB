@@ -117,7 +117,12 @@ async function getLinkedSiftByProjectIds(projectIds, ownerUserId) {
       title: true,
       linkedMetaLabProjectId: true,
       progressStatus: true,
-      _count: { select: { records: true, members: true } },
+      // 58.md §1 — canonical member count = ACTIVE accepted members (the owner is
+      // stored as an active member row), NOT pending invites or removed/inactive
+      // members. This is the ONE definition the project-list cards read; the project
+      // Overview reads the same cached scalar via totalMembersOf(), so the list and
+      // Overview can never disagree (the old all-status _count.members could drift).
+      _count: { select: { records: true, members: { where: { status: 'active' } } } },
     },
     orderBy: { createdAt: 'asc' },
   });

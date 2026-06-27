@@ -428,17 +428,25 @@ export default function StitchDashboard() {
         </div>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'minmax(260px, 1fr) minmax(320px, 2fr)', gap: 24, alignItems: 'stretch' }} className="stitch-bento">
+          {/* 58.md §4 — lead with momentum (reviews in progress / records screened),
+              not a deflating "Done (0)". Completed work is shown as calm secondary
+              context; brand-new users get an encouraging prompt instead of "0%". */}
           <StitchCard style={{ display: 'flex', flexDirection: 'column' }}>
-            <StitchSectionHeader title="Project completion" desc="Reviews marked complete" />
+            <StitchSectionHeader title="Your progress" desc="Across your active reviews" />
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, paddingTop: 8 }}>
-              <StitchProgressRing value={completionPct} sublabel="Completed" tone="success" />
-              <div style={{ display: 'flex', gap: 18 }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: S.textSecondary }}>
-                  <span style={{ width: 10, height: 10, borderRadius: '50%', background: S.success }} /> Done ({kpis.done})
-                </span>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12.5, color: S.textSecondary }}>
-                  <span style={{ width: 10, height: 10, borderRadius: '50%', background: S.surfaceHighest }} /> In flight ({kpis.active})
-                </span>
+              <StitchProgressRing value={completionPct} sublabel="Complete" tone={completionPct >= 100 ? 'success' : 'brand'} />
+              <div style={{ textAlign: 'center' }}>
+                <div style={{ fontSize: 14.5, fontWeight: 700, color: S.textPrimary }}>
+                  {kpis.active > 0
+                    ? `${kpis.active} review${kpis.active === 1 ? '' : 's'} in progress`
+                    : kpis.done > 0
+                      ? `${kpis.done} review${kpis.done === 1 ? '' : 's'} complete`
+                      : 'Start your first review'}
+                </div>
+                <div style={{ fontSize: 12, color: S.textSecondary, marginTop: 3 }}>
+                  {kpis.done > 0 ? `${kpis.done} completed · ` : ''}
+                  {(kpis.records || 0).toLocaleString()} record{kpis.records === 1 ? '' : 's'} screened
+                </div>
               </div>
             </div>
           </StitchCard>
