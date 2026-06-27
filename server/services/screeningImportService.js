@@ -158,5 +158,39 @@ export async function dedupeAndInsertRecords(projectId, records, opts = {}) {
     await prisma.screenImportBatch.update({ where: { id: batch.id }, data: { recordCount: imported } });
   }
 
-  return { imported, skippedDuplicates, rejected, batchId: batch.id, total: incoming.length, keptCount: kept.length };
+  // 59.md Change 1 — apply imported screening decisions as REAL ScreenDecision rows
+  // (by the importer) so a pre-labelled benchmark dataset comes in already screened:
+  // counts, progress, reviewer status, the 50-screened AI threshold and training
+  // eligibility all derive from ScreenDecision, so nothing is double-counted.
+  //   include / exclude / maybe → applied;  undecided / empty → left unscreened.
+  // An INVALID label normalised to "" (unrecognised) is counted as a warning, never
+  // applied. Idempotent via @@unique([recordId, reviewerId, stage]).
+  let decisionsApplied = 0;
+  const invalidDecisions = kept.filter((r) => r.decision === '').length;
+  const labeled = kept.filter((r) => r.decision === 'include' || r.decision === 'exclude' || r.decision === 'maybe');
+  if (importedById && labeled.length) {
+    const inserted = await prisma.screenRecord.findMany({
+      where: { importBatchId: batch.id }, select: { id: true, doi: true, pmid: true, title: true },
+    });
+    const idByKey = new Map();
+    for (const rec of inserted) {
+      const { doi, pmid, nt } = keysOf(rec);
+      if (doi && !idByKey.has('d:' + doi)) idByKey.set('d:' + doi, rec.id);
+      if (pmid && !idByKey.has('p:' + pmid)) idByKey.set('p:' + pmid, rec.id);
+      if (nt && !idByKey.has('t:' + nt)) idByKey.set('t:' + nt, rec.id);
+    }
+    const decRows = [];
+    for (const r of labeled) {
+      const { doi, pmid, nt } = keysOf(r);
+      const id = (doi && idByKey.get('d:' + doi)) || (pmid && idByKey.get('p:' + pmid)) || (nt && idByKey.get('t:' + nt));
+      if (id) decRows.push({ recordId: id, projectId, reviewerId: importedById, reviewerName: importedByName || '', stage: 'title_abstract', decision: r.decision });
+    }
+    for (let i = 0; i < decRows.length; i += INSERT_CHUNK) {
+      const slice = decRows.slice(i, i + INSERT_CHUNK);
+      try { const out = await prisma.screenDecision.createMany({ data: slice }); decisionsApplied += out?.count ?? slice.length; }
+      catch { /* pre-existing decision (unique conflict) — leave it */ }
+    }
+  }
+
+  return { imported, skippedDuplicates, rejected, batchId: batch.id, total: incoming.length, keptCount: kept.length, decisionsApplied, invalidDecisions };
 }

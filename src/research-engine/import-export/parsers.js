@@ -55,11 +55,36 @@ export function mkRecord(r) {
     pmid:      r.pmid     || "",
     abstract:  r.abstract || "",
     source:    r.source   || "",
-    decision:  "",
+    // 59.md Change 1 — pass through a normalised screening decision when present.
+    decision:  normalizeImportedDecision(r.decision),
     reviewer2: "",
     notes:     "",
     dupOf:     null,
   };
+}
+
+// 59.md Change 1 — accepted screening-decision labels (the four states export writes).
+export const IMPORT_DECISIONS = ["include", "exclude", "maybe", "undecided"];
+// Lenient synonyms → canonical state; anything else is treated as INVALID (returns "").
+const DECISION_ALIASES = {
+  include: "include", included: "include", yes: "include", accept: "include", accepted: "include", relevant: "include",
+  exclude: "exclude", excluded: "exclude", no: "exclude", reject: "exclude", rejected: "exclude", irrelevant: "exclude",
+  maybe: "maybe", unsure: "maybe", uncertain: "maybe", "?": "maybe",
+  undecided: "undecided", "": "undecided", pending: "undecided", unscreened: "undecided", none: "undecided",
+};
+
+/**
+ * normalizeImportedDecision(v) — case-insensitive, whitespace-trimmed mapping of an
+ * imported decision cell to a canonical state ("include" | "exclude" | "maybe" |
+ * "undecided"). Empty/missing → "undecided" (neutral). An UNRECOGNISED non-empty
+ * value returns "" so the caller can flag a row-level warning instead of silently
+ * mislabelling the record (59.md: invalid values must not corrupt the dataset).
+ */
+export function normalizeImportedDecision(v) {
+  if (v == null) return "undecided";
+  const k = String(v).trim().toLowerCase();
+  if (k === "") return "undecided";
+  return Object.prototype.hasOwnProperty.call(DECISION_ALIASES, k) ? DECISION_ALIASES[k] : "";
 }
 
 /**
@@ -249,6 +274,10 @@ const CSV_FIELD_SYNONYMS = {
   abstract: ["abstract", "ab", "summary"],
   url:      ["url", "link", "fulltext url", "full text url", "full-text url"],
   keywords: ["keywords", "keyword", "author keywords", "de", "index keywords", "id"],
+  // 59.md Change 1 — round-trip the screening decision column written by export
+  // (and accept common synonyms) so a pre-labelled benchmark dataset imports already
+  // screened. Values are normalised in normalizeImportedDecision().
+  decision: ["decision", "screening decision", "label", "screening", "status", "decision (title/abstract)"],
 };
 
 /** Build a header-cell → canonical-field lookup from a header row. */
@@ -323,6 +352,7 @@ function rowToRecord(map, cells, source) {
     pmid,
     abstract: get("abstract"),
     source,
+    decision: get("decision"), // 59.md Change 1 — round-trip the screening decision
   });
   const url = get("url");
   const keywords = get("keywords");
