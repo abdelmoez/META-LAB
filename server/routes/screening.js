@@ -15,6 +15,7 @@ import * as CH from '../controllers/screeningChatController.js';
 import * as OV from '../controllers/screeningOverviewController.js';
 import * as PDF from '../controllers/screeningPdfController.js';
 import * as OA from '../controllers/screeningOaController.js';
+import * as IB from '../controllers/screeningImportBatchController.js';
 import * as PR from '../controllers/presenceController.js';
 import * as AI from '../controllers/screeningAiController.js';
 
@@ -58,6 +59,10 @@ r.post('/projects/:pid/unarchive', S.unarchiveProject);
 // META·LAB association (Task 4) — link/unlink + selectable targets + handoff rollup
 r.get('/projects/:pid/linkable',  S.getLinkable);
 r.post('/projects/:pid/link',     S.linkMetaLab);
+
+// 58.md §5 — import batches (Import History): list (members) + delete (owner/admin).
+r.get('/projects/:pid/import-batches',              IB.listImportBatches);
+r.delete('/projects/:pid/import-batches/:batchId',  IB.deleteImportBatch);
 
 // Presence + field locking (prompt23 Tasks 5/13/14/15) — ephemeral, member-gated.
 r.get('/projects/:pid/presence',            PR.list);
