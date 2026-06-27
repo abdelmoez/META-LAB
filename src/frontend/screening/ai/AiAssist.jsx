@@ -104,6 +104,16 @@ export function AiScoreCard({ ai, record, decided }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <span style={{ fontFamily: MONO, fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase', color: C.acc, fontWeight: 700 }}>AI relevance</span>
         <span style={{ flex: 1 }} />
+        {/* 58.md §8 — clearly flag (+ allow reverting) the admin testing override that
+            shows scores below the 50-screened threshold. */}
+        {ai.gate?.overrideApplied ? (
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <Chip color={C.gold} title="An admin is previewing AI scores before the threshold is reached (testing).">Admin preview</Chip>
+            <button type="button" onClick={() => ai.setOverride?.(false)}
+              title="Re-apply the threshold and hide scores again"
+              style={{ background: 'none', border: 'none', color: C.muted, fontSize: 11, fontFamily: FONT, cursor: 'pointer', textDecoration: 'underline' }}>Hide</button>
+          </span>
+        ) : null}
         {ai.status?.latestRun && <Chip color={C.muted}>{ai.status.latestRun.mode === 'supervised' ? 'Trained model' : 'Cold-start'}</Chip>}
       </div>
       {children}

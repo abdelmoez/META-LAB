@@ -20,6 +20,7 @@ import {
   Avatar, SectionLabel, Card, Button,
 } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
+import ImportHistory from '../components/ImportHistory.jsx';
 
 // ── Status model ──────────────────────────────────────────────────────────────
 const STATUS_OPTIONS = [
@@ -259,6 +260,11 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject,
           </div>
         )}
       </section>
+
+      {/* ───────── B1) Import History / datasets (58.md §5) ─────────
+          Lists imported datasets; owner/admin can delete a whole batch (the API
+          gates canDelete + recomputes PRISMA/analytics live). Hidden when empty. */}
+      <ImportHistory pid={pid} onChanged={async () => { if (refreshProject) await refreshProject(); await load(); }} />
 
       {/* ───────── C) Whole-Project Progress (leader-only, BUG 6) ───────── */}
       {data.isLeader && data.projectProgress && (
