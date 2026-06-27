@@ -267,6 +267,15 @@ html[data-ui-design="stitch"] body {
    container only (not every descendant) so explicitly monospaced technical fields
    keep their monospace font (design2.md Part 2). */
 html[data-ui-design="stitch"] .stitch-scope { font-family: ${STITCH_FONT}; }
+/* 57.md §8 — native form controls do NOT inherit font-family by default, so an
+   ad-hoc <button>/<input> in the Stitch UI that forgets to set it falls back to the
+   UA serif font (the "Recently updated" articles bug). Make every native control in
+   the Stitch scope inherit the app font; any element that sets its own inline
+   font-family (e.g. embedded engine controls, monospace fields) still wins. */
+html[data-ui-design="stitch"] .stitch-scope button,
+html[data-ui-design="stitch"] .stitch-scope input,
+html[data-ui-design="stitch"] .stitch-scope select,
+html[data-ui-design="stitch"] .stitch-scope textarea { font-family: inherit; }
 html[data-ui-design="stitch"] ::selection { background: color-mix(in srgb, var(--stitch-brand) 24%, transparent); }
 html[data-ui-design="stitch"] .stitch-scope ::-webkit-scrollbar { width: 10px; height: 10px; }
 html[data-ui-design="stitch"] .stitch-scope ::-webkit-scrollbar-track { background: transparent; }
@@ -323,27 +332,31 @@ html[data-ui-design="stitch"] .stitch-wsnav[data-pinned="true"] { --prail-w: ${S
 html[data-ui-design="stitch"] .stitch-wsnav[data-pinned="true"][data-has-submenu="true"] {
   width: calc(${STITCH_RAIL.expandedWidth}px + var(--subnav-w));
 }
-/* hover / keyboard focus expands the rail as an overlay (reserved width unchanged) */
-html[data-ui-design="stitch"] .stitch-wsnav:not([data-pinned="true"]):hover,
-html[data-ui-design="stitch"] .stitch-wsnav:not([data-pinned="true"]):focus-within { --prail-w: ${STITCH_RAIL.expandedWidth}px; }
+/* 57.md §1/§2 — the purple rail expands ONLY when the PURPLE RAIL itself is
+   hovered or keyboard-focused (scoped via :has(.stitch-wsnav-rail:hover|:focus-
+   within)), NEVER when the white submenu is hovered / scrolled / focused — even
+   though the submenu is a sibling inside the same .stitch-wsnav group. Pinned
+   keeps it open regardless. The reserved in-flow width stays constant (overlay). */
+html[data-ui-design="stitch"] .stitch-wsnav:not([data-pinned="true"]):has(.stitch-wsnav-rail:hover),
+html[data-ui-design="stitch"] .stitch-wsnav:not([data-pinned="true"]):has(.stitch-wsnav-rail:focus-within) { --prail-w: ${STITCH_RAIL.expandedWidth}px; }
 html[data-ui-design="stitch"] .stitch-wsnav-rail {
   position: absolute; left: 0; top: 0; bottom: 0; width: var(--prail-w); overflow: hidden;
   background: ${STITCH_RAIL.bg}; z-index: 46;
   transition: width ${STITCH_RAIL.transition}, box-shadow ${STITCH_RAIL.transition};
 }
-html[data-ui-design="stitch"] .stitch-wsnav:not([data-pinned="true"]):hover .stitch-wsnav-rail,
-html[data-ui-design="stitch"] .stitch-wsnav:not([data-pinned="true"]):focus-within .stitch-wsnav-rail {
+html[data-ui-design="stitch"] .stitch-wsnav:not([data-pinned="true"]):has(.stitch-wsnav-rail:hover) .stitch-wsnav-rail,
+html[data-ui-design="stitch"] .stitch-wsnav:not([data-pinned="true"]):has(.stitch-wsnav-rail:focus-within) .stitch-wsnav-rail {
   box-shadow: 14px 0 36px rgba(16,18,30,0.22);
 }
 html[data-ui-design="stitch"] .stitch-wsnav-sub {
   position: absolute; left: var(--prail-w); top: 0; bottom: 0; width: var(--subnav-w); z-index: 45; overflow: hidden;
   transition: left ${STITCH_RAIL.transition};
 }
-/* labels + step text reveal exactly when the rail is wide (hover / focus / pinned) */
+/* labels + step text reveal exactly when the rail is wide (rail hover / focus / pinned) */
 html[data-ui-design="stitch"] .stitch-prail-label { opacity: 0; transition: opacity 120ms ease; white-space: nowrap; }
 html[data-ui-design="stitch"] .stitch-wsnav[data-pinned="true"] .stitch-prail-label,
-html[data-ui-design="stitch"] .stitch-wsnav:hover .stitch-prail-label,
-html[data-ui-design="stitch"] .stitch-wsnav:focus-within .stitch-prail-label { opacity: 1; }
+html[data-ui-design="stitch"] .stitch-wsnav:has(.stitch-wsnav-rail:hover) .stitch-prail-label,
+html[data-ui-design="stitch"] .stitch-wsnav:has(.stitch-wsnav-rail:focus-within) .stitch-prail-label { opacity: 1; }
 /* the mobile drawer rail is always fully expanded (not inside .stitch-wsnav) so its
    labels + group headers must stay visible regardless of hover/pin state */
 html[data-ui-design="stitch"] .stitch-prail-static .stitch-prail-label { opacity: 1; }
@@ -351,8 +364,8 @@ html[data-ui-design="stitch"] .stitch-prail-static .stitch-prail-group { max-hei
 /* group headers collapse to nothing while the rail is narrow (no empty gaps) */
 html[data-ui-design="stitch"] .stitch-prail-group { max-height: 0; opacity: 0; overflow: hidden; transition: max-height 140ms ease, opacity 140ms ease; }
 html[data-ui-design="stitch"] .stitch-wsnav[data-pinned="true"] .stitch-prail-group,
-html[data-ui-design="stitch"] .stitch-wsnav:hover .stitch-prail-group,
-html[data-ui-design="stitch"] .stitch-wsnav:focus-within .stitch-prail-group { max-height: 34px; opacity: 1; }
+html[data-ui-design="stitch"] .stitch-wsnav:has(.stitch-wsnav-rail:hover) .stitch-prail-group,
+html[data-ui-design="stitch"] .stitch-wsnav:has(.stitch-wsnav-rail:focus-within) .stitch-prail-group { max-height: 34px; opacity: 1; }
 
 @media (prefers-reduced-motion: reduce) {
   html[data-ui-design="stitch"] .stitch-fade-in,

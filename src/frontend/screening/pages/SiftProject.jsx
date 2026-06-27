@@ -194,6 +194,14 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
   // account menu / notifications / META·LAB link chip — just the screening
   // sub-navigation + body, sized to sit within the host workspace content area.
   if (embedded) {
+    // 57.md §2/§3 — in the STITCH theme the white VERTICAL screening stepper
+    // (StitchProjectSubnav) is the sole screening navigation, so the embedded engine
+    // drops its own HORIZONTAL submenu + stepper here (the legacy theme keeps it).
+    // Navigation still flows through ?screen= (read at the top of this component), so
+    // deep links, refresh and back/forward all keep working; only the duplicate
+    // horizontal chrome is removed (no leftover spacing).
+    const stitchActive = typeof document !== 'undefined'
+      && document.documentElement.getAttribute('data-ui-design') === 'stitch';
     // Workflow step status per submenu tab (prompt22 Task 4). The stepper now
     // lives INSIDE the submenu — each step sits directly beneath its matching tab
     // — and is READ-ONLY (the submenu is the only navigation). Pipeline steps
@@ -250,21 +258,31 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
       <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 480, background: C.bg, overflow: 'hidden', fontFamily: FONT, color: C.txt }}>
         <GlobalStyle />
         {/* Screening submenu + read-only workflow stepper as one unit: each step
-            sits directly under its tab. The tabs are the only navigation. */}
-        <nav aria-label="Screening workflow"
-          style={{ display: 'flex', gap: 2, padding: '0 12px', background: C.surf, borderBottom: `1px solid ${C.brd}`, flexShrink: 0, overflowX: 'auto', alignItems: 'flex-start' }}>
-          {tabSet.map(navCol)}
-          {/* prompt24 Task 8 — when embedded in the META·LAB monolith, the
-              universal header owns the SINGLE presence indicator, so the screening
-              submenu no longer renders its own (avoids the duplicate chip). The
-              embedded SiftProject still heartbeats the fine-grained screening
-              location below. Blind-mode stays here as screening context. */}
-          {project?.blindMode && (
-            <div style={{ marginLeft: 'auto', alignSelf: 'center', display: 'flex', alignItems: 'center', gap: 8, paddingRight: 4, flexShrink: 0 }}>
-              <Badge color={C.gold}>Blind</Badge>
-            </div>
-          )}
-        </nav>
+            sits directly under its tab. The tabs are the only navigation.
+            57.md §2/§3 — hidden in the Stitch theme (the white vertical stepper is
+            the navigation there); the legacy theme keeps this horizontal nav. */}
+        {!stitchActive ? (
+          <nav aria-label="Screening workflow"
+            style={{ display: 'flex', gap: 2, padding: '0 12px', background: C.surf, borderBottom: `1px solid ${C.brd}`, flexShrink: 0, overflowX: 'auto', alignItems: 'flex-start' }}>
+            {tabSet.map(navCol)}
+            {/* prompt24 Task 8 — when embedded in the META·LAB monolith, the
+                universal header owns the SINGLE presence indicator, so the screening
+                submenu no longer renders its own (avoids the duplicate chip). The
+                embedded SiftProject still heartbeats the fine-grained screening
+                location below. Blind-mode stays here as screening context. */}
+            {project?.blindMode && (
+              <div style={{ marginLeft: 'auto', alignSelf: 'center', display: 'flex', alignItems: 'center', gap: 8, paddingRight: 4, flexShrink: 0 }}>
+                <Badge color={C.gold}>Blind</Badge>
+              </div>
+            )}
+          </nav>
+        ) : project?.blindMode ? (
+          // Stitch: no horizontal nav, but keep the blind-mode context as a slim
+          // right-aligned chip (no leftover full-height submenu spacing).
+          <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 16px', background: C.surf, borderBottom: `1px solid ${C.brd}`, flexShrink: 0 }}>
+            <Badge color={C.gold}>Blind</Badge>
+          </div>
+        ) : null}
 
         <div style={{ flex: 1, overflow: isFullBleed ? 'hidden' : 'auto', minHeight: 0 }}>
           {loading && <div style={{ padding: 32 }}><Loading label="Loading screening…" /></div>}

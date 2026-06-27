@@ -59,7 +59,7 @@ function InfoRow({ label, value, mono = false, last = false }) {
       padding: '11px 0', borderBottom: last ? 'none' : `1px solid ${salpha(S.outlineVariant, 0.4)}`,
     }}>
       <span style={{ fontSize: 12.5, color: S.textSecondary }}>{label}</span>
-      <span style={{ fontSize: 12.5, color: S.textPrimary, fontWeight: 600, fontFamily: mono ? 'ui-monospace, monospace' : S.font, textAlign: 'right' }}>
+      <span style={{ fontSize: 12.5, color: S.textPrimary, fontWeight: 600, fontFamily: mono ? S.mono : S.font, textAlign: 'right' }}>
         {value}
       </span>
     </div>
@@ -241,7 +241,7 @@ export default function StitchProfile() {
                 </StitchField>
                 <StitchField label="Email address" htmlFor="pf-email" help="Your sign-in email can't be changed here. Contact an administrator to update it.">
                   <StitchInput id="pf-email" icon="mail" value={user?.email || ''} readOnly disabled
-                    style={{ fontFamily: 'ui-monospace, monospace', opacity: 0.8 }} />
+                    style={{ fontFamily: S.mono, opacity: 0.8 }} />
                 </StitchField>
                 <div style={{ borderTop: `1px solid ${salpha(S.outlineVariant, 0.4)}`, paddingTop: 14 }}>
                   <InfoRow label="Member since" value={fmtDate(user?.createdAt)} />

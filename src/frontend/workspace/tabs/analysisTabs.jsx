@@ -753,7 +753,7 @@ export function ResultsWriteup({result,interp,esType,method,methodLabel,studies,
             <span style={{fontSize:12,fontWeight:700}}>{b.icon} {b.label}</span>
             <button onClick={()=>copy(b.text,b.id)} style={{...btnS("ghost"),fontSize:10,padding:"3px 10px"}}>{copied===b.id?"✓ Copied":"📋 Copy"}</button>
           </div>
-          <div style={{fontSize:12.5,color:C.txt,lineHeight:1.7,fontFamily:"Georgia,serif"}}>{b.text}</div>
+          <div style={{fontSize:12.5,color:C.txt,lineHeight:1.7}}>{b.text}</div>
         </div>
       ))}
     </div>

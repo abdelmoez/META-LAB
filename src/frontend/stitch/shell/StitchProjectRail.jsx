@@ -132,9 +132,17 @@ function StepRow({ cat, active, status, first, last, onClick }) {
           background: p.bg, border: `${active ? 2 : 1.6}px solid ${p.ring}`, color: p.fg,
           fontSize: 11, fontWeight: 800, fontFamily: STITCH_MONO, lineHeight: 1,
         }}>
-          {status === 'done' ? <Icon name="check" size={12} strokeWidth={2.6} />
-            : status === 'attention' ? <Icon name="alertTriangle" size={12} />
-              : (cat.stepNum || '')}
+          {/* 57.md §6/§10 — ALWAYS the step number; status is a secondary corner
+              badge (shape, visible even when collapsed) + the pip/number color. */}
+          {cat.stepNum || ''}
+          {status && status !== 'empty' && meta && meta.icon ? (
+            <span aria-hidden="true" style={{
+              position: 'absolute', right: -4, bottom: -4, width: 12, height: 12, borderRadius: '50%',
+              background: STITCH_RAIL.bg, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: p.fg,
+            }}>
+              <Icon name={meta.icon} size={8} strokeWidth={2.6} />
+            </span>
+          ) : null}
         </span>
       </span>
       <span className="stitch-prail-label" style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 1, paddingRight: 14, textAlign: 'left' }}>
