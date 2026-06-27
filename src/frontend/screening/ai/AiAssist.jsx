@@ -110,6 +110,24 @@ export function AiScoreCard({ ai, record, decided }) {
     </div>
   );
 
+  // 58.md §8 — below the screened-decisions threshold the server withholds scores;
+  // show honest progress toward the threshold (+ an admin-only testing override).
+  if (ai.gate?.scoresHidden) {
+    return card(
+      <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.5 }}>
+        AI relevance scores appear once {ai.gate.threshold} articles have been screened — they
+        need enough human decisions to be reliable.
+        <span style={{ fontFamily: MONO, color: C.acc, fontWeight: 700 }}> {ai.gate.screenedCount}/{ai.gate.threshold} screened.</span>
+        {ai.gate.canOverride ? (
+          <button type="button" onClick={() => ai.setOverride?.(true)}
+            style={{ display: 'block', marginTop: 9, background: 'none', border: `1px solid ${C.brd2}`, color: C.muted, borderRadius: 6, padding: '4px 10px', fontSize: 11, fontFamily: FONT, cursor: 'pointer' }}>
+            Admin: show score before {ai.gate.threshold} screened (testing)
+          </button>
+        ) : null}
+      </div>
+    );
+  }
+
   if (blind && !decided) {
     return card(
       <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.5 }}>

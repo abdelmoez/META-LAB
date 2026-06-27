@@ -103,6 +103,9 @@ export const screeningApi = {
   getStats:    (pid) => req('GET', `/projects/${pid}/stats`),
   getOverview: (pid) => req('GET', `/projects/${pid}/overview`),
   getAudit:    (pid) => req('GET', `/projects/${pid}/audit`),
+  // 58.md §5 — import history (datasets) + owner/admin batch deletion.
+  listImportBatches: (pid)          => req('GET',    `/projects/${pid}/import-batches`),
+  deleteImportBatch: (pid, batchId, confirm) => req('DELETE', `/projects/${pid}/import-batches/${batchId}`, { confirm }),
 
   // Members (Part 4)
   listMembers:  (pid)            => req('GET',    `/projects/${pid}/members`),
