@@ -17,6 +17,7 @@ import { aiFlagEnabled } from '../services/screeningAiService.js';
 import { scheduleRescore } from '../services/screeningAiJobs.js';
 import { emitToProjectMembers, emitToMetaLabProject } from '../realtime/bus.js';
 import { getMetaSiftSettings, getEffectiveQuorum } from '../screening/settings.js';
+import { resolveScreeningUploadLimit } from '../screening/uploadLimit.js';
 import { snapshotPico } from '../screening/picoSnapshot.js';
 import { scorePair, normalizeTitle, classifyPair, DUP_TYPES } from '../../src/research-engine/screening/deduplication.js';
 import { csvRow } from '../utils/csv.js';
@@ -974,7 +975,10 @@ export async function importRecords(req, res) {
     if (records.length > MAX_RECORDS_PER_IMPORT) {
       return res.status(413).json({ error: `This file holds ${records.length} records, above the ${MAX_RECORDS_PER_IMPORT.toLocaleString()} single-import safety limit. Split it into smaller files or use the async import.` });
     }
-    const maxRecords = Number(settings.maxRecordsPerProject) > 0 ? Number(settings.maxRecordsPerProject) : DEFAULT_MAX_RECORDS_PER_PROJECT;
+    // 58.md §3/§5 — resolve the limit through the ONE layered resolver (per-user →
+    // workspace → tier → global Ops default → ceiling) so future paid tiers drop in
+    // without touching this call site.
+    const maxRecords = resolveScreeningUploadLimit({ settings });
 
     let result;
     try {
@@ -1786,8 +1790,17 @@ export async function getMetaLabSummary(req, res) {
       prisma.screenDuplicateGroup.findMany({ where: { projectId: sp.id }, select: { resolvedAt: true } }),
     ]);
     const total              = records.length;
-    const duplicatesRemoved  = records.filter(r => r.isDuplicate).length;
-    const screened           = Math.max(0, total - duplicatesRemoved);
+    // 58.md §7 — PRISMA must show total-identified BEFORE dedup + ALL duplicates
+    // removed, for EVERY source (file + Pecan Search). Import-time duplicates were
+    // skipped at insert (never become ScreenRecords), so they are recovered from the
+    // per-batch dedup accounting; post-import detected duplicates are flagged on the
+    // surviving records. `identified` = pre-dedup total; `screened` = pool after dedup.
+    const importDedup        = await prisma.screenImportBatch.aggregate({ where: { projectId: sp.id }, _sum: { duplicateCount: true, preDedupCount: true } });
+    const importDuplicates   = importDedup._sum.duplicateCount || 0;
+    const postImportDupes    = records.filter(r => r.isDuplicate).length;
+    const duplicatesRemoved  = importDuplicates + postImportDupes;
+    const identified         = total + importDuplicates; // records identified before any dedup
+    const screened           = Math.max(0, total - postImportDupes);
     const fullTextAssessed   = records.filter(r => r.currentStage === 'full_text').length;
     const excludedTitleAbstract = Math.max(0, screened - fullTextAssessed);
     const fullTextExcluded   = records.filter(r => r.finalStatus === 'rejected').length;
@@ -1823,7 +1836,7 @@ export async function getMetaLabSummary(req, res) {
       linked: true,
       screeningProjectId: sp.id,
       title: sp.title,
-      prisma: { identified: total, duplicatesRemoved, screened, excludedTitleAbstract, fullTextAssessed, fullTextExcluded, included: includedFinal },
+      prisma: { identified, duplicatesRemoved, screened, excludedTitleAbstract, fullTextAssessed, fullTextExcluded, included: includedFinal },
       // prompt29 Part 9 — workflow-stepper completeness signals.
       screeningStarted,
       screeningComplete,

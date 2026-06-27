@@ -638,7 +638,12 @@ model ScreenImportBatch {
   project        ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
   filename       String        @default("")
   format         String        @default("")
-  recordCount    Int           @default(0)
+  recordCount    Int           @default(0) // records actually inserted (post import-time dedup)
+  // 58.md §7 — PRISMA transparency: import-time dedup accounting (see sqlite schema).
+  preDedupCount  Int           @default(0) // total parsed records offered to this import
+  duplicateCount Int           @default(0) // skipped as duplicates AT import time
+  rejectedCount  Int           @default(0) // skipped as unusable (no title/doi/pmid)
+  source         String        @default("file") // file | pecan-search | api
   // ── import fingerprinting (prompt6 Task 19; nullable so legacy rows migrate clean) ──
   fileHash       String? // sha256 of line-ending-normalized content
   fileSize       Int?

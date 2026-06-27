@@ -69,7 +69,7 @@ function keysOf(r) {
 export async function dedupeAndInsertRecords(projectId, records, opts = {}) {
   const {
     format = '', filename = '', fileHash = null, fileSize = 0,
-    importedById = null, importedByName = '', parser = '',
+    importedById = null, importedByName = '', parser = '', source = 'file',
     maxRecords = DEFAULT_MAX_RECORDS_PER_PROJECT, onProgress,
   } = opts;
 
@@ -117,6 +117,12 @@ export async function dedupeAndInsertRecords(projectId, records, opts = {}) {
     data: {
       projectId, filename, format,
       recordCount: kept.length,
+      // 58.md §7 — persist the import-time dedup accounting so PRISMA shows
+      // total-identified (preDedup) and duplicates-removed for file AND Pecan imports.
+      preDedupCount: incoming.length,
+      duplicateCount: skippedDuplicates,
+      rejectedCount: rejected,
+      source,
       fileHash, fileSize,
       importedById, importedByName, parser,
     },

@@ -222,10 +222,16 @@ export default function App() {
             whose global preference is Stitch (the Stitch ops surface was removed). */}
         <Route path="/ops"      element={<AdminRoute><OnboardingGate><ForceLegacyDesign><AdminConsole /></ForceLegacyDesign></OnboardingGate></AdminRoute>} />
 
-        {/* META·SIFT Beta — Screening workspace (tabbed project shell) */}
-        <Route path="/sift-beta"                      element={<ProtectedRoute><OnboardingGate><SiftDashboard /></OnboardingGate></ProtectedRoute>} />
-        <Route path="/sift-beta/projects/:pid"        element={<ProtectedRoute><OnboardingGate><SiftProject /></OnboardingGate></ProtectedRoute>} />
-        <Route path="/sift-beta/projects/:pid/import" element={<ProtectedRoute><OnboardingGate><SiftImport /></OnboardingGate></ProtectedRoute>} />
+        {/* PecanRev Screening — standalone/internal engine. 58.md §6: the DIRECT
+            /sift-beta routes are STAFF-ONLY (AdminRoute = admin|mod, 404-cloaked for
+            everyone else), matching the staff-gated entry link in UserMenu. Regular
+            users still use Screening through the integrated project workspace
+            (StitchProjectWorkspace ?tab=screening / the legacy workspace), which does
+            NOT go through these routes. The server enforces project access on every
+            screening API independently. */}
+        <Route path="/sift-beta"                      element={<AdminRoute><OnboardingGate><SiftDashboard /></OnboardingGate></AdminRoute>} />
+        <Route path="/sift-beta/projects/:pid"        element={<AdminRoute><OnboardingGate><SiftProject /></OnboardingGate></AdminRoute>} />
+        <Route path="/sift-beta/projects/:pid/import" element={<AdminRoute><OnboardingGate><SiftImport /></OnboardingGate></AdminRoute>} />
 
         {/* META·LAB RoB — Risk-of-Bias workspace (rob.md; gated on rob_engine_v2) */}
         <Route path="/rob"             element={<ProtectedRoute><OnboardingGate><RobPage /></OnboardingGate></ProtectedRoute>} />

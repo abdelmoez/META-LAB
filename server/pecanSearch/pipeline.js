@@ -156,6 +156,7 @@ export async function runSource(a) {
         try {
           result = await dedupeAndInsertRecords(screenProjectId, screeningRecords, {
             format: 'pecan-search', filename: `${provider} search`,
+            source: 'pecan-search', // 58.md §7 — tag the batch source for PRISMA accounting
             fileHash: `pecan:${sourceRow.runId}:${provider}:${lastCompletedPage + 1}`,
             importedById: a.initiatedById || '', importedByName: a.initiatedByName || '',
             parser: provider, maxRecords: maxRecordsPerProject,

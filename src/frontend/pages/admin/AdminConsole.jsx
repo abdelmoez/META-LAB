@@ -5628,7 +5628,10 @@ const SIFT_DEFAULTS = {
   minIncludeQuorum: 2,
   defaultBlindMode: false,
   maxPdfSizeMb: 25,
-  maxRecordsPerProject: 10000,
+  // 58.md §3 — screening article upload limit (records per project). Default raised
+  // to 100,000 (the backend DEFAULT_MAX_RECORDS_PER_PROJECT) so the import pipeline's
+  // real capacity is reflected; admins can raise/lower it (min enforced server-side).
+  maxRecordsPerProject: 100000,
   // prompt9: invite-link lifetime (Wave B2 adds it to META_SIFT_DEFAULTS +
   // coerceSettings; until then the server may drop it and this default
   // keeps the round-trip intact).
@@ -6240,9 +6243,9 @@ function SiftSettings() {
               onChange={e => upd('maxPdfSizeMb', Math.min(200, Math.max(1, parseInt(e.target.value) || 1)))}
               style={{ ...inputStyle, width: 140 }} />
           </Field>
-          <Field label="Max Records / Project">
-            <input type="number" min="1" value={settings.maxRecordsPerProject ?? 10000}
-              onChange={e => upd('maxRecordsPerProject', Math.max(1, parseInt(e.target.value) || 1))}
+          <Field label="Screening upload limit (records / project)" note="Max articles importable per project. Default 100,000; min 1,000.">
+            <input type="number" min="1000" value={settings.maxRecordsPerProject ?? 100000}
+              onChange={e => upd('maxRecordsPerProject', Math.max(1000, parseInt(e.target.value) || 100000))}
               style={{ ...inputStyle, width: 140 }} />
           </Field>
           <Field label="Invite Expiry (Days)" note="New invite links expire after this many days">
