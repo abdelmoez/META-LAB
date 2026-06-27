@@ -30,7 +30,9 @@ export const aiApi = {
   status:      (pid, stage)        => req('GET',  `/projects/${pid}/ai/status${qs(stage)}`),
   jobStatus:   (pid, stage)        => req('GET',  `/projects/${pid}/ai/job-status${qs(stage)}`),
   run:         (pid, stage)        => req('POST', `/projects/${pid}/ai/run`, { stage }),
-  scores:      (pid, stage)        => req('GET',  `/projects/${pid}/ai/scores${qs(stage)}`),
+  // 58.md §8 — `override` (admin-only, honored server-side) bypasses the
+  // <50-screened AI-score visibility threshold for testing.
+  scores:      (pid, stage, override) => { const u = `/projects/${pid}/ai/scores${qs(stage)}`; return req('GET', override ? u + (u.includes('?') ? '&' : '?') + 'showBelowThreshold=1' : u); },
   validation:  (pid, stage)        => req('GET',  `/projects/${pid}/ai/validation${qs(stage)}`),
   versions:    (pid, stage)        => req('GET',  `/projects/${pid}/ai/versions${qs(stage)}`),
   rollback:    (pid, runId, stage) => req('POST', `/projects/${pid}/ai/rollback`, { runId, stage }),

@@ -58,6 +58,10 @@ export const AI_GLOBAL_DEFAULTS = Object.freeze({
   liveUpdateEnabled: true,          // queue a debounced rescore on new decisions
   retrainDebounceMs: 4000,          // coalesce rapid decisions into one job
   killSwitch: false,                // se2.md §4 — emergency global disable (overrides enabled)
+  // 58.md §8 — minimum screened (decided) records before AI scores become visible.
+  // Below this the API withholds scores and the UI shows progress toward it. Admins
+  // can bypass per-request with ?showBelowThreshold=1 for testing.
+  minScreenedDecisions: 50,
 });
 
 /** Per-project AI policy defaults (stored on ScreenProject.aiSettings JSON). */
@@ -67,6 +71,7 @@ export const AI_PROJECT_DEFAULTS = Object.freeze({
   blindFromAi: false,       // hide AI scores until the reviewer has decided (independent screening first)
   includeThreshold: 0.65,
   excludeThreshold: 0.35,
+  minScreenedDecisions: 50, // 58.md §8 — per-project override of the visibility threshold
 });
 
 function safeParse(s, fallback) {

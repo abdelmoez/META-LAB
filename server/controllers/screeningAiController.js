@@ -94,8 +94,32 @@ export async function getAiScores(req, res) {
     const global = await getGlobalAiSettings();
     const project = await prisma.screenProject.findUnique({ where: { id: req.params.pid } });
     const aiProject = getProjectAiSettings(project, global);
-    const scores = await getScoresMap(req.params.pid, stage);
-    res.json({ scores, stage, blindFromAi: aiProject.blindFromAi, policy: aiProject.policy, enabled: global.enabled && aiProject.enabled });
+    const enabled = global.enabled && aiProject.enabled;
+
+    // 58.md §8 — AI scores are statistically meaningful only after enough human
+    // decisions, so they are HIDDEN until the project has >= threshold (default 50)
+    // screened records. The gate is SERVER-SIDE: below threshold we withhold the
+    // scores entirely (not just hide them client-side). An ADMIN may bypass for
+    // testing with ?showBelowThreshold=1 — request-level, never persisted, and
+    // surfaced as overrideApplied so the UI can flag it.
+    const threshold = Math.max(1, Number(aiProject.minScreenedDecisions ?? global.minScreenedDecisions ?? 50) || 50);
+    const decided = await prisma.screenDecision.findMany({
+      where: { projectId: req.params.pid, stage: 'title_abstract', decision: { not: 'undecided' } },
+      select: { recordId: true }, distinct: ['recordId'],
+    });
+    const screenedCount = decided.length;
+    const isAdmin = req.user?.role === 'admin';
+    const overrideRequested = isAdmin && (req.query.showBelowThreshold === '1' || req.query.showBelowThreshold === 'true');
+    const belowThreshold = screenedCount < threshold;
+    const scoresHidden = enabled && belowThreshold && !overrideRequested;
+
+    const scores = scoresHidden ? {} : await getScoresMap(req.params.pid, stage);
+    res.json({
+      scores, stage, blindFromAi: aiProject.blindFromAi, policy: aiProject.policy, enabled,
+      threshold, screenedCount, belowThreshold, scoresHidden,
+      overrideApplied: overrideRequested && belowThreshold,
+      canOverride: isAdmin, // UI shows the admin testing-override control only when true
+    });
   } catch (e) {
     console.error('getAiScores', e);
     res.status(500).json({ error: 'Internal server error' });

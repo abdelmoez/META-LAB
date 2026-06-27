@@ -14,6 +14,11 @@ export function useScreeningAi(pid, stage = 'title_abstract') {
   const [scores, setScores] = useState({});       // recordId → score summary
   const [running, setRunning] = useState(false);
   const [error, setError] = useState('');
+  // 58.md §8 — AI-score visibility gate. Below the threshold the server withholds
+  // scores; `gate` drives the "X/50 screened" placeholder + the admin override.
+  const [gate, setGate] = useState({ scoresHidden: false, screenedCount: 0, threshold: 50, belowThreshold: false, canOverride: false, overrideApplied: false });
+  const [override, setOverrideState] = useState(false);
+  const overrideRef = useRef(false);
   const explCache = useRef(new Map());
   // Guard against setState after the screening tab unmounts mid-request (a slow
   // scoring run resolving after navigate-away). React 18 silently drops these,
@@ -40,11 +45,24 @@ export function useScreeningAi(pid, stage = 'title_abstract') {
 
   const loadScores = useCallback(async () => {
     try {
-      const s = await aiApi.scores(pid, stage);
-      if (mounted.current) setScores(s.scores || {});
+      const s = await aiApi.scores(pid, stage, overrideRef.current);
+      if (mounted.current) {
+        setScores(s.scores || {});
+        setGate({
+          scoresHidden: !!s.scoresHidden, screenedCount: s.screenedCount || 0,
+          threshold: s.threshold || 50, belowThreshold: !!s.belowThreshold,
+          canOverride: !!s.canOverride, overrideApplied: !!s.overrideApplied,
+        });
+      }
       return s;
     } catch { return null; }
   }, [pid, stage]);
+
+  // Admin testing-override: flip and re-fetch (server re-checks the admin role).
+  const setOverride = useCallback(async (on) => {
+    overrideRef.current = !!on; setOverrideState(!!on);
+    await loadScores();
+  }, [loadScores]);
 
   useEffect(() => {
     let live = true;
@@ -146,6 +164,7 @@ export function useScreeningAi(pid, stage = 'title_abstract') {
 
   return {
     enabled, ready, status, scores, running, error,
+    gate, override, setOverride, // 58.md §8 — score-visibility threshold + admin override
     run, getExplanation, refreshExplanation, sendFeedback, updateSettings, getValidation,
     getVersions, rollback,
     refresh: loadScores,
