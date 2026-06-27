@@ -92,11 +92,21 @@ Modified: `stitch/theme/stitchTokens.js`, `stitch/shell/{StitchProjectSubnav, St
   state); CSS (`:has` hover scoping present + old whole-group trigger gone; native-control
   font reset present).
 
+## Recs round — engine typography harmonized (was a limitation)
+
+The embedded engines styled body text via the legacy `FONT` literal (Inter), so under
+Stitch they rendered in Inter while the shell used Manrope. Fixed with ONE global,
+backward-compatible lever instead of touching 283 call sites: `FONT` is now
+`var(--t-font, <Inter fallback>)`; `--t-font` is defined as Inter on `:root`
+(`buildThemeCss`) and **remapped to the Stitch font (Manrope) under
+`html[data-ui-design="stitch"]`** (`legacyRemap`). Every `fontFamily: FONT` therefore
+auto-harmonizes — Inter in the legacy theme (byte-identical to before), Manrope in the
+Stitch theme. The FOUC-safe fallback keeps Inter until the theme CSS mounts. Stitch-native
+components (which use `S.font` directly) are unaffected; monospace is identical in both
+themes so it was left alone. +3 tests assert the remap.
+
 ## Remaining limitations (honest)
 
-- Embedded engine BODY text remains the legacy Inter (vs the shell's Manrope) — both are
-  clean geometric sans; a full inline-font override would require touching every engine
-  component and risk regressions, so it is documented rather than forced.
 - A few database-identity chip colors in the Search Builder are intentional brand colors
   (not Stitch tokens) — left as semantic identity colors.
 - Playwright visual-regression of every stepper/hover state is scaffolded but the spec

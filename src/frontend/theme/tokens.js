@@ -150,7 +150,14 @@ export const C = {
 
 // prompt16 — Inter is the Nextly template font; IBM Plex Sans kept as a fallback.
 // Monospace stays IBM Plex Mono for statistical numbers / code (reads cleanly in tables).
-export const FONT = "'Inter', 'IBM Plex Sans', system-ui, sans-serif";
+const FONT_STACK = "'Inter', 'IBM Plex Sans', system-ui, sans-serif";
+// 57.md (recs) — FONT now resolves through the `--t-font` token (defined on :root in
+// buildThemeCss = Inter; remapped to Manrope under the Stitch theme in stitchTokens.js
+// legacyRemap), with the literal stack as a FOUC-safe fallback. Every existing
+// `fontFamily: FONT` therefore auto-harmonizes: Inter in the legacy theme, Manrope in
+// the Stitch theme — so embedded engine pages match the Stitch shell typography. The
+// legacy theme is byte-identical (the var resolves to the same Inter stack).
+export const FONT = `var(--t-font, ${FONT_STACK})`;
 export const MONO = "'IBM Plex Mono', ui-monospace, monospace";
 
 /* ─── Alpha helper ────────────────────────────────────────────────── */
@@ -183,7 +190,7 @@ function cssBlock(values) {
  */
 export function buildThemeCss() {
   return `
-:root, :root[data-theme="day"] { ${cssBlock(THEMES.day)} color-scheme: light; }
+:root, :root[data-theme="day"] { ${cssBlock(THEMES.day)} --t-font: ${FONT_STACK}; color-scheme: light; }
 :root[data-theme="night"] { ${cssBlock(THEMES.night)} color-scheme: dark; }
 body { background: var(--t-bg); color: var(--t-txt); font-family: ${FONT}; }
 html { transition: background 0.2s ease; }

@@ -74,4 +74,19 @@ describe('57.md §1/§2 + §8 — CSS scoping + font reset', () => {
     expect(css).toContain('.stitch-scope button');
     expect(css).toMatch(/\.stitch-scope (button|input|select|textarea)[^{]*\{[^}]*font-family: inherit/);
   });
+  it('remaps the engine font token (--t-font) to the Stitch font (recs round)', () => {
+    expect(css).toContain('--t-font:');
+    expect(css).toContain('Manrope'); // embedded engines (fontFamily: FONT = var(--t-font)) become Manrope under Stitch
+  });
+});
+
+describe('57.md recs — FONT resolves through --t-font (legacy Inter, Stitch Manrope)', () => {
+  it('legacy theme defines --t-font and FONT is the var with a FOUC-safe fallback', async () => {
+    const { FONT, buildThemeCss } = await import('../../src/frontend/theme/tokens.js');
+    expect(FONT).toContain('var(--t-font');
+    expect(FONT).toContain('Inter'); // fallback stack
+    const themeCss = buildThemeCss();
+    expect(themeCss).toContain('--t-font:');
+    expect(themeCss).toContain('Inter');
+  });
 });

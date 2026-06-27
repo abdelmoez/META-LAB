@@ -209,6 +209,12 @@ function declBlock(map) {
  */
 function legacyRemap(p) {
   return {
+    // 57.md (recs) — harmonize EMBEDDED engine typography: every legacy
+    // `fontFamily: FONT` resolves to var(--t-font); remapping it to the Stitch font
+    // (Manrope) makes engine pages match the Stitch shell instead of rendering in
+    // the legacy Inter. The legacy theme keeps Inter (this only applies under
+    // html[data-ui-design="stitch"]). Monospace is identical in both, so unchanged.
+    '--t-font': STITCH_FONT,
     '--t-bg': p.surface,
     '--t-surf': p.card,
     '--t-card': p.card,
