@@ -13,7 +13,10 @@ import {
 import { kickImportWorker } from '../services/screeningImportWorker.js';
 import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../screening/access.js';
 import { rankItems } from '../../src/research-engine/screening/ai/ranking.js';
-import { aiFlagEnabled } from '../services/screeningAiService.js';
+import {
+  crossValidatePerRecord, cvRowFields, AI_CV_COLUMNS, CV_SCORE_TYPES,
+} from '../../src/research-engine/screening/ai/index.js';
+import { aiFlagEnabled, loadEngineInput, getGlobalAiSettings } from '../services/screeningAiService.js';
 import { scheduleRescore } from '../services/screeningAiJobs.js';
 import { emitToProjectMembers, emitToMetaLabProject } from '../realtime/bus.js';
 import { getMetaSiftSettings, getEffectiveQuorum } from '../screening/settings.js';
@@ -1130,6 +1133,48 @@ function fallbackParseRIS(content) {
 
 // ── Export ───────────────────────────────────────────────────────────
 
+/**
+ * computeExportCvScores — compute per-record OUT-OF-SAMPLE (cross-validated) AI
+ * relevance scores for the export (59.md Change 2). Returns a Map keyed by recordId
+ * plus run metadata. Fully best-effort: any failure (or AI disabled, or below the
+ * minimum screened threshold) yields an empty map + a meta status so the columns
+ * export blank with a clear reason — never a leaky in-sample score.
+ */
+async function computeExportCvScores(projectId) {
+  const generatedAt = new Date().toISOString();
+  const blank = (status, reason) => ({
+    meta: { scoreType: CV_SCORE_TYPES.NOT_AVAILABLE, status, reason, modelVersion: '' },
+    byRecordId: new Map(),
+    generatedAt,
+  });
+  try {
+    const [flagOn, global] = await Promise.all([aiFlagEnabled(), getGlobalAiSettings()]);
+    // Respect the same governance gates as the rest of the engine: feature flag,
+    // global enable, and the emergency kill switch (folded into `enabled`).
+    if (!flagOn || !global.enabled) {
+      return blank('ai_unavailable', 'AI screening is not enabled for this site.');
+    }
+    const input = await loadEngineInput(projectId, 'title_abstract');
+    if (!input) return blank('ai_unavailable', 'Project not found.');
+
+    const cv = crossValidatePerRecord({
+      records: input.records,
+      labelByRecordId: input.labelByRecordId,
+      picoSnapshot: input.picoSnapshot,
+      inclusionKeywords: input.inclusionKeywords,
+      exclusionKeywords: input.exclusionKeywords,
+      studyTypeFilter: input.studyTypeFilter,
+      // 59.md Change 3 — centralised "≥ 50 screened" gate; imported include/exclude
+      // labels count toward it (they are real settled screening decisions).
+      minLabeledToScore: global.minScreenedDecisions ?? 50,
+    });
+    return { meta: cv.meta, byRecordId: cv.byRecordId, generatedAt };
+  } catch (err) {
+    console.error('[screening] export CV scoring failed:', err.message);
+    return blank('cv_error', 'Could not compute cross-validated scores.');
+  }
+}
+
 export async function exportRecords(req, res) {
   try {
     // Access-guard (prompt6 403-vs-404 audit): outsider → 404; active member
@@ -1151,6 +1196,14 @@ export async function exportRecords(req, res) {
       include: { decisions: true },
     });
 
+    // ── AI out-of-sample (cross-validated) relevance scores (59.md Change 2) ─────
+    // For validation studies the export must carry TRULY out-of-sample AI scores so a
+    // researcher can recompute WSS@95 / AUC / calibration / Brier offline. We compute
+    // them here, leakage-free (each labelled record scored by a model trained without
+    // it — features, classifier AND calibration fold-isolated; see crossValidate.js).
+    // Best-effort: any failure leaves the columns present but blank with a status.
+    const aiCv = await computeExportCvScores(p.id);
+
     // Build export rows
     const rows = records.map(r => {
       const myDec = r.decisions.find(d => d.reviewerId === req.user.id);
@@ -1170,6 +1223,8 @@ export async function exportRecords(req, res) {
         labels:         myDec?.labels || '[]',
         isDuplicate:    r.isDuplicate,
         sourceDb:       r.sourceDb,
+        // Appended AI validation columns (blank + status when not out-of-sample).
+        ...cvRowFields(aiCv.byRecordId.get(r.id), aiCv.meta, aiCv.generatedAt),
       };
     });
 
@@ -1233,7 +1288,9 @@ export async function exportRecords(req, res) {
     // formula-injection guard, prompt 53): study fields come from untrusted
     // imports, so a title/notes value like `=HYPERLINK(...)` must not execute
     // when the reviewer opens the export in Excel/Sheets.
-    const cols = ['title','authors','year','journal','doi','pmid','decision','exclusionReason','notes','rating','isDuplicate','abstract'];
+    // Existing columns + order are UNCHANGED for backwards compatibility; the AI
+    // validation columns are APPENDED (existing consumers ignore trailing columns).
+    const cols = ['title','authors','year','journal','doi','pmid','decision','exclusionReason','notes','rating','isDuplicate','abstract', ...AI_CV_COLUMNS];
     const csv = [cols.join(','), ...filtered.map(r => csvRow(cols.map(c => r[c])))].join('\n');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="sift-export-${p.id.slice(0,8)}.csv"`);

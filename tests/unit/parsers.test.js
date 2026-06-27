@@ -138,7 +138,7 @@ describe('mkRecord', () => {
     expect(r.title).toBe('');
     expect(r.authors).toBe('');
     expect(r.year).toBe('');
-    expect(r.decision).toBe('');
+    expect(r.decision).toBe('undecided'); // 59.md Change 1 — empty/missing decision normalises to 'undecided'
     expect(r.dupOf).toBeNull();
   });
 });

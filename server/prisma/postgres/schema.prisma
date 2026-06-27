@@ -639,7 +639,10 @@ model ScreenImportBatch {
   filename       String        @default("")
   format         String        @default("")
   recordCount    Int           @default(0) // records actually inserted (post import-time dedup)
-  // 58.md §7 — PRISMA transparency: import-time dedup accounting (see sqlite schema).
+  // 58.md §7 — PRISMA transparency: record the import-time dedup accounting so PRISMA
+  // can show total-identified (before dedup) and duplicates-removed for EVERY source
+  // (file + Pecan Search), not just post-import duplicate detection. Additive +
+  // defaulted → `prisma db push` stays safe; legacy rows read 0 (documented gap).
   preDedupCount  Int           @default(0) // total parsed records offered to this import
   duplicateCount Int           @default(0) // skipped as duplicates AT import time
   rejectedCount  Int           @default(0) // skipped as unusable (no title/doi/pmid)

@@ -129,8 +129,17 @@ export function trainAndScore(args = {}) {
   };
 
   // 1. Vocabulary over all records.
+  //
+  // An optional PRE-FIT vectorizer may be injected (args.vectorizer). This is what
+  // makes leakage-free cross-validation possible: the caller fits the TF-IDF/IDF
+  // vocabulary on the training fold ONLY, then passes it here so the held-out
+  // records are transformed against a vocabulary that never saw them (out-of-
+  // vocabulary terms are simply dropped — standard, honest OOV handling). When no
+  // vectorizer is injected the behaviour is unchanged: build it over all records.
   const featureLists = records.map(r => recordFeatures(r, cfg.vectorizer));
-  const vec = buildVectorizer(featureLists, cfg.vectorizer);
+  const vec = (args.vectorizer && Array.isArray(args.vectorizer.terms))
+    ? args.vectorizer
+    : buildVectorizer(featureLists, cfg.vectorizer);
   const vectors = featureLists.map(f => transform(f, vec));
   const vectorById = new Map(records.map((r, i) => [r.id, vectors[i]]));
 
@@ -313,8 +322,10 @@ export function trainAndScore(args = {}) {
   };
 }
 
-/** Deal each class round-robin into k folds → deterministic stratified split. */
-function stratifiedFolds(ids, labelOf, k, seed) {
+/** Deal each class round-robin into k folds → deterministic stratified split.
+ *  Exported so the per-record cross-validation (crossValidate.js) reuses the
+ *  exact same seeded fold assignment — identical folds across both entry points. */
+export function stratifiedFolds(ids, labelOf, k, seed) {
   const byClass = { 1: [], 0: [] };
   for (const id of ids) byClass[labelOf(id)].push(id);
   const rng = mulberry32(seed >>> 0);

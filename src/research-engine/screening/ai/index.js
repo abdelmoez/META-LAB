@@ -18,7 +18,11 @@ export { chunk, progressFraction } from './batch.js';
 export { hybridScore } from './hybrid.js';
 export { uncertainty, confidence, predictionLabel, rankItems, scoreBand, QUEUE_MODES } from './ranking.js';
 export { buildExplanation, termContributions } from './explain.js';
-export { trainAndScore, crossValidate, decisionToLabel, summarizeLabels } from './activeLearning.js';
+export { trainAndScore, crossValidate, stratifiedFolds, decisionToLabel, summarizeLabels } from './activeLearning.js';
+export {
+  crossValidatePerRecord, cvRowFields, fmtScore,
+  AI_CV_COLUMNS, CV_SCORE_TYPES, CV_ENGINE_VERSION,
+} from './crossValidate.js';
 export {
   rocAuc, confusionAt, metricsFromConfusion, recallAtK,
   wssAtRecall, stageMetrics, smallSampleWarning, computeValidation, bootstrapCI,
