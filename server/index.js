@@ -52,6 +52,7 @@ import { backfillUserNumbers } from './services/userNumber.js';
 import { backfillProjectActivity } from './store.js';
 import { startImportWorker } from './services/screeningImportWorker.js';
 import { startPecanSearchWorker } from './pecanSearch/pecanSearchWorker.js';
+import { applySqlitePragmas } from './db/client.js';
 import { seedAdmins } from './auth/seedAdmins.js';
 import { getVersion } from './version.js';
 import { resolveCorsAllowlist, corsOriginDelegate } from './config/cors.js';
@@ -436,12 +437,20 @@ const server = app.listen(PORT, () => {
   backfillProjectActivity()
     .then(n => { if (n) console.log(`[seed] backfilled lastActivityAt on ${n} project(s)`); })
     .catch(err => console.error('[seed] project activity backfill failed:', err.message));
-  // prompt50 WS2 — start the durable screening-import worker. Re-queues any job
-  // a crash left mid-flight, then drains the queue off the request thread.
-  startImportWorker().catch(err => console.error('[import-worker] start failed:', err.message));
-  // p1.md — start the durable Pecan Search Engine worker. Re-queues any search
-  // job a crash left mid-flight (resumes from each source's cursor), then drains.
-  startPecanSearchWorker().catch(err => console.error('[pecan-search-worker] start failed:', err.message));
+  // Reliability: switch the main SQLite DB to WAL + busy_timeout BEFORE the durable
+  // workers begin writing, so an in-progress write can never block reads into a
+  // timeout (the prod.db "failed to respond within the timeout" errors). No-op
+  // under Postgres; never blocks boot (fail-safe). Workers start once it settles.
+  applySqlitePragmas()
+    .catch(err => console.error('[db] SQLite pragma init failed:', err?.message || err))
+    .finally(() => {
+      // prompt50 WS2 — start the durable screening-import worker. Re-queues any job
+      // a crash left mid-flight, then drains the queue off the request thread.
+      startImportWorker().catch(err => console.error('[import-worker] start failed:', err.message));
+      // p1.md — start the durable Pecan Search Engine worker. Re-queues any search
+      // job a crash left mid-flight (resumes from each source's cursor), then drains.
+      startPecanSearchWorker().catch(err => console.error('[pecan-search-worker] start failed:', err.message));
+    });
 
   // prompt48 — fail-safe waitlist config check. If the betaWaitlist flag is ON but
   // the dedicated DB is not configured, log a CLEAR, REDACTED warning for admins.
