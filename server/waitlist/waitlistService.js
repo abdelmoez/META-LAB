@@ -30,6 +30,17 @@ function supportEmail() {
   return v && String(v).trim() ? String(v).trim() : '';
 }
 
+/**
+ * One-line cause from an error. Prisma validation errors are dozens of lines (the
+ * full query + every available field); the actionable cause is the last line
+ * (e.g. "Unknown field `primaryField` …"). Keeping logs to one line stops a
+ * repeated failure (e.g. an Ops poll against a stale generated client) from
+ * flooding the log with the full query dump on every request.
+ */
+function errDetail(err) {
+  return String(err?.message || err || 'unknown error').trim().split('\n').filter(Boolean).pop() || 'unknown error';
+}
+
 /** Non-sensitive view returned to the public after submit/resend. */
 function toPublicView(rec) {
   if (!rec) return null;
@@ -172,33 +183,53 @@ export async function resendConfirmation(email, meta = {}) {
 export async function getPublicCount() {
   const c = await resolveClient();
   if (!c.ok) return { ok: false, code: c.code };
-  const count = await repo.countActive(c.client);
-  return { ok: true, count };
+  try {
+    const count = await repo.countActive(c.client);
+    return { ok: true, count };
+  } catch (err) {
+    console.error('[waitlist] count query failed:', errDetail(err));
+    return { ok: false, code: 'db_error' };
+  }
 }
 
 // ── Ops: metrics ────────────────────────────────────────────────────────────────
 export async function getMetrics() {
   const c = await resolveClient();
   if (!c.ok) return { ok: false, code: c.code };
-  const rows = await repo.allForMetrics(c.client);
-  return { ok: true, metrics: computeWaitlistMetrics(rows) };
+  try {
+    const rows = await repo.allForMetrics(c.client);
+    return { ok: true, metrics: computeWaitlistMetrics(rows) };
+  } catch (err) {
+    console.error('[waitlist] metrics query failed:', errDetail(err));
+    return { ok: false, code: 'db_error' };
+  }
 }
 
 // ── Ops: list ─────────────────────────────────────────────────────────────────
 export async function listApplicants(params) {
   const c = await resolveClient();
   if (!c.ok) return { ok: false, code: c.code };
-  const result = await repo.listApplicants(c.client, params || {});
-  return { ok: true, ...result };
+  try {
+    const result = await repo.listApplicants(c.client, params || {});
+    return { ok: true, ...result };
+  } catch (err) {
+    console.error('[waitlist] list query failed:', errDetail(err));
+    return { ok: false, code: 'db_error' };
+  }
 }
 
 // ── Ops: detail ─────────────────────────────────────────────────────────────────
 export async function getApplicant(id) {
   const c = await resolveClient();
   if (!c.ok) return { ok: false, code: c.code };
-  const applicant = await repo.getApplicantById(c.client, id);
-  if (!applicant) return { ok: false, code: 'not_found' };
-  return { ok: true, applicant };
+  try {
+    const applicant = await repo.getApplicantById(c.client, id);
+    if (!applicant) return { ok: false, code: 'not_found' };
+    return { ok: true, applicant };
+  } catch (err) {
+    console.error('[waitlist] detail query failed:', errDetail(err));
+    return { ok: false, code: 'db_error' };
+  }
 }
 
 // ── Ops: status change ──────────────────────────────────────────────────────────
@@ -279,9 +310,14 @@ const EXPORT_COLUMNS = [
 export async function exportApplicants(params) {
   const c = await resolveClient();
   if (!c.ok) return { ok: false, code: c.code };
-  const rows = await repo.forExport(c.client, params || {});
-  const csv = toCsv(rows, EXPORT_COLUMNS);
-  return { ok: true, csv, count: rows.length };
+  try {
+    const rows = await repo.forExport(c.client, params || {});
+    const csv = toCsv(rows, EXPORT_COLUMNS);
+    return { ok: true, csv, count: rows.length };
+  } catch (err) {
+    console.error('[waitlist] export query failed:', errDetail(err));
+    return { ok: false, code: 'db_error' };
+  }
 }
 
 /** Config snapshot for the Ops console (no secrets). */
