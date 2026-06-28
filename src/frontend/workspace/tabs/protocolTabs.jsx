@@ -1,12 +1,12 @@
 /* ════════════ PROTOCOL / SEARCH / MeSH / PROSPERO TABS ════════════
    Extracted VERBATIM from meta-lab-3-patched.jsx (prompt46 Phase 6c). Holds:
-   PICOTab, PICODispatcher, SearchDispatcher, SearchTab (+ CombinedDBView,
-   ExpertDBResult), MeSHTab, PROSPEROTab. No logic changes — only the imports
-   below were added so the moved code resolves identically.
+   PICOTab, PICODispatcher, SearchWizardDispatcher, SearchTab (+ CombinedDBView,
+   ExpertDBResult), MeSHTab, PROSPEROTab. (prompt60 — the unified SearchWizardDispatcher
+   replaced the former SearchDispatcher + DiscoveryDispatcher two-tab flow.)
 
-   NOTE: SearchDispatcher / PICODispatcher delegate to the separately-owned
-   search-builder (src/features/searchBuilder) and protocol
-   (src/features/protocol) feature modules — those imports are kept intact. */
+   NOTE: SearchWizardDispatcher / PICODispatcher delegate to the separately-owned
+   search-wizard/search-builder (src/features/searchWizard, src/features/searchBuilder)
+   and protocol (src/features/protocol) feature modules. */
 import { useState, useEffect } from "react";
 import { flushStorage } from "../../storage/serverStorage.js";
 import { alpha as themeAlpha } from "../../theme/tokens.js";
@@ -17,8 +17,8 @@ import { MESH_DBS, PROSP_FIELDS } from "../../../research-engine/project-model/m
 import { AI_FEATURES_ENABLED, callClaude, testClaudeConnection, parseSections, parseBullets, parseTermReasons, parseConceptBlocks, parseFilters } from "../../services/aiService.js";
 import { ProtocolModulePanel, TIMEFRAME_OPTIONS, STUDY_DESIGNS } from "../../../features/protocol/index.js";
 import { workflowStateFlagEnabled } from "../../../services/workflowState/api.js";
-import { SearchBuilderTab, searchBuilderApi, loadSearch as sbLoad, saveSearch as sbSave, searchEngineFlagEnabled } from "../../../features/searchBuilder/index.js";
-import { PecanSearchTab, pecanSearchFlagEnabled } from "../../../features/pecanSearch/index.js";
+import { searchEngineFlagEnabled } from "../../../features/searchBuilder/index.js";
+import { pecanSearchFlagEnabled } from "../../../features/pecanSearch/index.js";
 import { SearchWizard } from "../../../features/searchWizard/index.js";
 
 /* fmtDate — verbatim copy of the monolith module-local helper (the monolith
@@ -247,47 +247,10 @@ function PICODispatcher({project,updNested,upd,lockCtx,activeId}){
     onMirror={(patch)=>Object.entries(patch).forEach(([k,v])=>updNested("pico",k,v))}/>;
 }
 
-/* SearchEngine — dispatcher. When the searchEngine flag is ON, the Search tab IS
-   the new separated Search Builder engine (NLM-backed MeSH lookup + live PubMed
-   counts, persisted per project via /api/search-builder). When OFF (default), the
-   legacy in-blob SearchTab below is preserved unchanged so nothing breaks. */
-function SearchDispatcher({project,activeId,updNested,upd}){
-  const[flag,setFlag]=useState(null); // null=checking
-  useEffect(()=>{let dead=false;
-    (async()=>{ let v=false; try{ v=await searchEngineFlagEnabled(); }catch{ v=false; } if(!dead) setFlag(!!v); })();
-    return()=>{dead=true;};
-  },[]);
-  if(flag===null) return <div style={{padding:40,textAlign:"center",color:C.muted,fontSize:13}}>Loading Search…</div>;
-  if(!flag) return <SearchTab project={project} updNested={updNested} upd={upd}/>;
-  return <SearchBuilderTab projectId={activeId} pico={project.pico} api={searchBuilderApi} loadSearch={sbLoad} saveSearch={sbSave}/>;
-}
-
-/* P1 — Search & Discovery dispatcher. When the `pecanSearch` flag is ON, the tab
-   IS the multi-database Pecan Search Engine workspace (run/dedup/import/report).
-   When OFF (default), the tab is INERT: it does NO API calls and shows a quiet
-   "feature disabled" note (mirrors SearchDispatcher's flag-gating, but the deep
-   tool has no legacy fallback — it simply explains it is not enabled). */
-function DiscoveryDispatcher({project,activeId,readOnly}){
-  const[flag,setFlag]=useState(null); // null=checking
-  useEffect(()=>{let dead=false;
-    (async()=>{ let v=false; try{ v=await pecanSearchFlagEnabled(); }catch{ v=false; } if(!dead) setFlag(!!v); })();
-    return()=>{dead=true;};
-  },[]);
-  if(flag===null) return <div style={{padding:40,textAlign:"center",color:C.muted,fontSize:13}}>Loading Search &amp; Discovery…</div>;
-  if(!flag) return (
-    <div style={{maxWidth:760,margin:"0 auto",padding:"48px 24px",textAlign:"center",color:C.muted}}>
-      <SectionHeader icon="globe" title="Search & Discovery" desc="Run your saved search strategy across multiple bibliographic databases, deduplicate, and import directly into screening."/>
-      <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:"18px 20px",fontSize:13,lineHeight:1.7,color:C.txt2}}>
-        This feature is not enabled yet. An administrator can switch on the <strong style={{color:C.txt}}>Search &amp; Discovery</strong> engine in the Ops console. Until then, build your strategy in the <strong style={{color:C.txt}}>Search Builder</strong> tab.
-      </div>
-    </div>
-  );
-  return <PecanSearchTab projectId={activeId} pico={project.pico} readOnly={readOnly}/>;
-}
-
-/* prompt60 — the UNIFIED Search stage. Replaces SearchDispatcher + DiscoveryDispatcher
-   with one 3-step wizard (Define → Build → Run), mounted for the single `search` tab in
-   both shells. Flag reconciliation:
+/* prompt60 — the UNIFIED Search stage. Replaces the former SearchDispatcher +
+   DiscoveryDispatcher (removed in this change — the two-tab flow is gone) with one
+   3-step wizard (Define → Build → Run), mounted for the single `search` tab in both
+   shells. Flag reconciliation:
      · searchEngine OFF                       → legacy in-blob SearchTab (unchanged).
      · searchEngine ON, pecanSearch OFF/dep   → wizard Steps 1–2 work; the Run step shows
                                                 a clear "enable Search & Discovery in Ops"
@@ -1643,4 +1606,4 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
   </div>);
 }
 
-export { PICOTab, PICODispatcher, SearchDispatcher, DiscoveryDispatcher, SearchWizardDispatcher, SearchTab, MeSHTab, PROSPEROTab };
+export { PICOTab, PICODispatcher, SearchWizardDispatcher, SearchTab, MeSHTab, PROSPEROTab };

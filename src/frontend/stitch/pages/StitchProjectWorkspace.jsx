@@ -3,8 +3,8 @@
  * (design3.md → design4.md). Mounted on the /app/project/:id stitch route; it reads
  * `?tab=` and renders the project overview OR any project workflow stage inside ONE
  * shared Stitch project shell. design4.md: EVERY engine — Project Control, PICO,
- * Protocol, Search Builder, Search Discovery, Screening, Risk of Bias, Data
- * Extraction, Meta-analysis (+ Forest / Sensitivity / Subgroup), PRISMA, GRADE,
+ * Protocol, Search (the unified Define → Build → Run wizard), Screening, Risk of Bias,
+ * Data Extraction, Meta-analysis (+ Forest / Sensitivity / Subgroup), PRISMA, GRADE,
  * Manuscript, Reports/Export and the Methods reference — now renders here, so no
  * stage ever escapes to a standalone engine shell (`/sift-beta`, `/rob`) or the
  * classic monolith (`?ui=legacy`). The user never feels they left PecanRev.
@@ -248,7 +248,7 @@ function DeepToolPage({ stage }) {
   } else if (stage === 'search') {
     // prompt60 — ONE unified Search stage (Define → Build → Run). ?tab=discovery is
     // normalized to 'search' upstream (activeProjectStage), so the old discovery deep
-    // link lands here on the wizard's Run step instead of 404ing.
+    // link resolves to the wizard (opening on its Define step) instead of 404ing.
     body = (<LazySearch project={project} activeId={projectId} updNested={doc.updNested} upd={doc.upd} readOnly={readOnly} />);
   } else if (stage === 'prisma') {
     body = (<LazyPrisma project={project} updNested={doc.updNested} updateProject={doc.updateProject} activeId={projectId} setTab={goStage} />);

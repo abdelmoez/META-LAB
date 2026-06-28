@@ -34,9 +34,6 @@ import {
   EmptyState, Btn, CountValue, CredsBadge, Toggle, formatWhen,
 } from './components/parts.jsx';
 import DuplicateReview from './components/DuplicateReview.jsx';
-// prompt60 seam fix #1 — catalogue default database ids, used as the fallback source
-// selection for pre-SB3 strategies (intersected with the providers that have a connector).
-import { defaultSelectedDatabases } from '../../research-engine/searchBuilder/databases.js';
 
 const PREVIEW_DEBOUNCE_MS = 700;
 const ACTIVE_POLL_MS = 2500;
@@ -164,12 +161,12 @@ export default function PecanSearchTab({
         const cp = {};
         for (const pr of list) cp[pr.id] = pr.defaultCap || (p.engine && p.engine.defaultResultCap) || 2000;
         setCaps(cp);
-        // Seed source selection from what the user actually chose in the builder, not
-        // "all providers" (prompt60 seam fix #1 — see selectSourceIds).
+        // Seed source selection from the user's explicit database choice; with no
+        // explicit choice, default to all selectable providers (prompt60 seam fix #1 —
+        // see selectSourceIds; preserves multi-database recall).
         const chosen = selectSourceIds({
           initialSources,
           databases: q && q.databases,
-          defaults: defaultSelectedDatabases(),
           selectableIds,
         });
         const sel = {};

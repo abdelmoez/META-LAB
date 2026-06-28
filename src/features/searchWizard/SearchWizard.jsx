@@ -95,11 +95,13 @@ function BuildEstimates({ projectId, getLive, pecanEnabled }) {
     const live = getLive() || {};
     const concepts = Array.isArray(live.concepts) ? live.concepts : [];
     const databases = Array.isArray(live.databases) ? live.databases : [];
-    if (!concepts.length || !databases.length) { setErr('Add concepts and choose databases first.'); setState('error'); return; }
+    if (!concepts.length) { setErr('Add concepts first.'); setState('error'); return; }
     setState('loading'); setErr('');
     try {
       const canonicalQuery = { concepts, filters: live.filters || {} };
-      const sources = databases.map((id) => ({ provider: id }));
+      // No explicit database choice → omit sources so the engine estimates ALL implemented
+      // providers (mirrors how the Run step pre-selects them); else estimate the chosen set.
+      const sources = databases.length ? databases.map((id) => ({ provider: id })) : undefined;
       const out = await pecanSearchApi.previewCount(projectId, { canonicalQuery, sources, overrides: live.overrides || {} });
       setCounts((out && out.counts) || {});
       setState('ready');
@@ -153,11 +155,24 @@ export default function SearchWizard({ projectId, pico, readOnly, pecanEnabled }
   // builder); snapshotted into state only when we enter the Run step.
   const liveRef = useRef({ concepts: [], filters: { dateFrom: '', dateTo: '', languages: [], pubTypes: [] }, overrides: {}, databases: [] });
   const [runQuery, setRunQuery] = useState(null);
-  const onLiveQuery = useCallback((s) => { liveRef.current = s || liveRef.current; }, []);
+  // Only the 0↔>0 concept transition is tracked in state (so the "Run" button enables
+  // once the builder reports concepts). It flips rarely, and is NOT a dependency of the
+  // memoized builder element, so it never re-renders/remounts the heavy builder.
+  const [hasConcepts, setHasConcepts] = useState(false);
+  const onLiveQuery = useCallback((s) => {
+    liveRef.current = s || liveRef.current;
+    const hc = !!(s && Array.isArray(s.concepts) && s.concepts.length > 0);
+    setHasConcepts((prev) => (prev === hc ? prev : hc));
+  }, []);
   const getLive = useCallback(() => liveRef.current, []);
 
   const goTo = useCallback((id) => {
-    if (id === 'run') setRunQuery({ ...liveRef.current });
+    // Match the footer gate: can't reach Run until the strategy has concepts (clicking the
+    // Run step pip with an empty strategy is a no-op rather than landing on an empty run).
+    if (id === 'run') {
+      if (!(liveRef.current.concepts || []).length) return;
+      setRunQuery({ ...liveRef.current });
+    }
     setStep(id);
   }, []);
 
@@ -178,8 +193,6 @@ export default function SearchWizard({ projectId, pico, readOnly, pecanEnabled }
       onLiveQuery={onLiveQuery}
     />
   ), [projectId, pico, builderPhase, onLiveQuery]);
-
-  const hasConcepts = (liveRef.current.concepts || []).length > 0;
 
   return (
     <div style={{ maxWidth: 1180, margin: '0 auto', fontFamily: FONT, color: C.txt }}>

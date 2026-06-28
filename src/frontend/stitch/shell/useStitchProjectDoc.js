@@ -13,7 +13,7 @@
  * Read-only is gated client-side (the server also no-ops read-only writers). Writes
  * are debounced (800ms, matching serverStorage) and flushed on unmount so nothing
  * is lost on navigation. Tools backed by their OWN server module (PICO/Protocol
- * when the flag is on, Search Builder, Discovery) ignore this and persist
+ * when the flag is on, and the unified Search wizard) ignore this and persist
  * independently — the bridge is only for blob fields.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';

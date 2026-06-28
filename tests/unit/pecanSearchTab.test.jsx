@@ -67,20 +67,20 @@ describe('pecanSearchApi URL contracts', () => {
 describe('selectSourceIds — db-id ↔ provider-id seam (prompt60 seam fix #1)', () => {
   const selectable = ['pubmed', 'europepmc', 'crossref', 'doaj', 'openalex', 'semanticscholar', 'clinicaltrials'];
   it('prefers explicit initialSources (the wizard live selection), intersected with providers', () => {
-    expect(selectSourceIds({ initialSources: ['pubmed', 'europepmc'], databases: ['doaj'], defaults: ['crossref'], selectableIds: selectable }))
+    expect(selectSourceIds({ initialSources: ['pubmed', 'europepmc'], databases: ['doaj'], selectableIds: selectable }))
       .toEqual(['pubmed', 'europepmc']);
   });
-  it('falls back to the saved databases when no initialSources', () => {
-    expect(selectSourceIds({ databases: ['pubmed', 'crossref'], defaults: ['doaj'], selectableIds: selectable }))
-      .toEqual(['pubmed', 'crossref']);
+  it('narrows to the saved databases when no initialSources', () => {
+    expect(selectSourceIds({ databases: ['pubmed', 'crossref'], selectableIds: selectable })).toEqual(['pubmed', 'crossref']);
   });
-  it('falls back to the catalogue defaults when no databases', () => {
-    expect(selectSourceIds({ defaults: ['pubmed'], selectableIds: selectable })).toEqual(['pubmed']);
+  it('defaults to ALL selectable providers when there is NO explicit database choice (full recall)', () => {
+    expect(selectSourceIds({ selectableIds: selectable })).toEqual(selectable);
+    expect(selectSourceIds({ initialSources: [], databases: [], selectableIds: selectable })).toEqual(selectable);
   });
   it('drops builder database ids that have no Pecan connector (embase/cochrane)', () => {
     expect(selectSourceIds({ databases: ['pubmed', 'embase', 'cochrane'], selectableIds: selectable })).toEqual(['pubmed']);
   });
-  it('falls back to ALL selectable when nothing chosen is runnable (never an empty run)', () => {
+  it('falls back to ALL selectable when an explicit choice has nothing runnable (never an empty run)', () => {
     expect(selectSourceIds({ databases: ['embase', 'cochrane', 'scopus'], selectableIds: selectable })).toEqual(selectable);
   });
 });

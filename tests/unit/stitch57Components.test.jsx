@@ -51,7 +51,7 @@ describe('57.md §6/§10 — purple rail main stepper always shows step numbers'
   const html = renderToStaticMarkup(h(StitchProjectRail, {
     projectId: 'p1', linkedSiftId: 's1', activeStage: 'extraction', variant: 'overlay',
     pinned: false, onTogglePin: () => {},
-    statusMap: { pico: 'done', prospero: 'done', search: 'done', discovery: 'done', extraction: 'partial' },
+    statusMap: { pico: 'done', prospero: 'done', search: 'done', extraction: 'partial' },
   }));
   it('shows the six workflow step numbers regardless of completion state', () => {
     for (const n of ['1', '2', '3', '4', '5', '6']) expect(html).toContain(`>${n}<`);

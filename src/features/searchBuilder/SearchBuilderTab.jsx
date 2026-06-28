@@ -1316,12 +1316,14 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   });
   // prompt60 — report the live in-memory query up to the Search Wizard so its Run step
   // pre-fills without a reload. Ref-wrapped so a parent passing a fresh callback each
-  // render never re-fires the effect.
+  // render never re-fires the effect. We report the RAW `selectedDbs` (empty = the user
+  // hasn't explicitly chosen, so the run defaults to all providers for full recall) —
+  // NOT the resolved effectiveDbs, which would force the catalogue defaults.
   const liveQueryRef=useRef(onLiveQuery); liveQueryRef.current=onLiveQuery;
   useEffect(()=>{
     if(!loaded||!liveQueryRef.current) return;
-    liveQueryRef.current({concepts,filters,overrides,databases:effectiveDbs});
-  },[loaded,concepts,filters,overrides,effectiveDbs]);
+    liveQueryRef.current({concepts,filters,overrides,databases:selectedDbs});
+  },[loaded,concepts,filters,overrides,selectedDbs]);
   // Which PICO group a keyword clicked in the Research Question belongs to: the first
   // PICO field whose text contains it (so question clicks usually land correctly),
   // else Population as a sensible default. 'Q' is the Research-Question pseudo-field.

@@ -26,10 +26,13 @@ the authority).
 
 **Phase 1 — the 3 dead handoffs.**
 1. `databases`: `loadCanonicalQuery` now surfaces the persisted `databases` + `readyForScreening`;
-   `PecanSearchTab` seeds its `selected` sources from them via the new pure helper
-   `selectSourceIds()` — **intersecting** the Search-Builder catalogue ids with the Pecan
-   provider ids (the catalogue lists embase/cochrane/scopus which have no connector), falling
-   back to catalogue defaults, then to all-selectable so a run is never silently empty.
+   `PecanSearchTab` seeds its `selected` sources via the new pure helper `selectSourceIds()`.
+   When the user EXPLICITLY chose a database set it is **intersected** with the Pecan provider
+   ids (the builder catalogue lists embase/cochrane/scopus which have no connector); when there
+   is NO explicit choice it defaults to **all selectable providers** (full multi-database recall,
+   not PubMed-only). An explicit choice that maps to nothing runnable also falls back to all —
+   the run is never silently empty. The builder reports its RAW `selectedDbs` (empty = "not
+   chosen") so the wizard can tell the two cases apart.
 2. `overrides`: `PecanSearchTab` seeds per-source overrides from `query.overrides` (and from
    the wizard's `initialOverrides`), keyed by the providers that share ids (e.g. pubmed).
 3. `filters`: added to the `putSearch` allowlist via the exported `sanitizeFilters()` (mirrors
@@ -77,5 +80,15 @@ No Prisma migration (filters are JSON in `WorkflowModuleState`).
 - Manual verification (recommended on a running instance): Define → Build (auto AND manual) →
   Run → records land in Screening with the "Pecan Search" badge + live PRISMA, in BOTH legacy
   and Stitch; and the graceful Run note with `pecanSearch` off.
-- The legacy `SearchDispatcher` / `DiscoveryDispatcher` functions remain defined+exported for
-  back-compat but are no longer mounted (the single `SearchWizardDispatcher` replaces them).
+
+## Post-review fixes (adversarial review, applied before the second push)
+- **Recall (MEDIUM):** the default Run pre-selection no longer collapses to PubMed-only — with
+  no explicit database choice it pre-selects ALL connector-backed providers (`selectSourceIds`
+  now defaults to all selectable; the builder reports raw `selectedDbs`; BuildEstimates estimates
+  across all providers when nothing is explicitly chosen).
+- **Reactivity (LOW):** the wizard's "Run" CTA gate moved from a render-time ref read to a cheap
+  `hasConcepts` state (kept out of the builder memo deps); the Run step pip now respects the same
+  gate as the footer button.
+- **Cleanup (LOW/NIT):** the orphaned `SearchDispatcher` + `DiscoveryDispatcher` were removed
+  (and their now-unused imports trimmed); stale comments/test fixtures referencing the retired
+  `discovery` stage were corrected.

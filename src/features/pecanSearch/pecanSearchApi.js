@@ -172,23 +172,28 @@ export async function loadCanonicalQuery(projectId) {
 }
 
 /**
- * selectSourceIds — prompt60 seam fix #1. Decide which run sources to pre-select from
- * what the user chose in the Search Builder. The builder's database catalogue ids only
- * PARTIALLY overlap Pecan's provider ids (e.g. the builder lists embase/cochrane, which
- * Pecan has no connector for), so we intersect with the providers that actually run.
+ * selectSourceIds — prompt60 seam fix #1. Decide which run sources to pre-select.
  *
- * Precedence: explicit `initialSources` (the wizard's live selection) → the strategy's
- * saved `databases` → the catalogue `defaults`. Intersect with `selectableIds`; if
- * NOTHING runnable matched, fall back to all selectable so the run is never silently
- * empty. Pure + exported for unit tests.
+ * The Search Builder's database catalogue ids only PARTIALLY overlap Pecan's provider
+ * ids (the builder lists embase/cochrane/scopus which have no connector, and the
+ * builder catalogue does NOT list crossref/doaj/openalex/semanticscholar at all). So:
+ *  - When the user EXPLICITLY chose a database set (`initialSources` from the wizard, or
+ *    the strategy's saved `databases`), narrow to it — intersected with the providers
+ *    that actually run. If that intersection is empty (e.g. they only picked
+ *    embase/cochrane), fall back to all selectable so the run is never silently empty.
+ *  - When there is NO explicit choice (both empty), default to ALL selectable providers.
+ *    This preserves the multi-database recall a systematic review needs (the prior
+ *    behaviour) instead of collapsing to PubMed-only via the catalogue defaults.
+ * Either way the user can toggle any provider on/off on the Run source cards before
+ * launching. Pure + exported for unit tests.
  */
-export function selectSourceIds({ initialSources, databases, defaults, selectableIds } = {}) {
+export function selectSourceIds({ initialSources, databases, selectableIds } = {}) {
   const sel = Array.isArray(selectableIds) ? selectableIds : [];
   const want = (Array.isArray(initialSources) && initialSources.length) ? initialSources
-    : ((Array.isArray(databases) && databases.length) ? databases
-      : (Array.isArray(defaults) ? defaults : []));
+    : ((Array.isArray(databases) && databases.length) ? databases : null);
+  if (!want) return sel; // no explicit database choice → all selectable providers (full recall)
   const chosen = want.filter((id) => sel.includes(id));
-  return chosen.length ? chosen : sel;
+  return chosen.length ? chosen : sel; // explicit choice; never an empty run
 }
 
 /**
