@@ -54,34 +54,55 @@ export function trainLogReg(samples, dim, cfg = {}) {
     wNeg = n / (2 * nNeg);
   }
 
+  // Convert each sparse sample (a numeric-keyed plain object — slow to iterate in
+  // V8) to parallel typed arrays ONCE. The gradient-descent inner loops then walk
+  // Int32Array/Float64Array, which V8 optimises far better. Same features, same
+  // accumulation order → the trained model is bit-for-bit identical. Non-finite
+  // feature values are filtered here (the old loops skipped them defensively), so
+  // the inner loops stay branch-free. We also collect the "active" feature set:
+  // only features present in ≥1 sample can ever get a nonzero gradient; every other
+  // weight starts at 0 and L2 keeps it at 0, so the per-epoch weight update iterates
+  // active features only — O(active) instead of O(vocab).
+  const sx = new Array(n);
+  const sy = new Float64Array(n);
+  const activeSet = new Set();
+  for (let i = 0; i < n; i++) {
+    const x = samples[i].x;
+    const idxArr = [], valArr = [];
+    for (const k in x) { const v = x[k]; if (Number.isFinite(v)) { const ki = +k; idxArr.push(ki); valArr.push(v); activeSet.add(ki); } }
+    sx[i] = { idx: Int32Array.from(idxArr), val: Float64Array.from(valArr) };
+    sy[i] = samples[i].y;
+  }
+  const active = Int32Array.from(activeSet);
+  const grad = new Float64Array(dim);
+
   let converged = false;
   let epoch = 0;
   for (; epoch < maxEpochs; epoch++) {
-    const grad = new Float64Array(dim);
+    for (let a = 0; a < active.length; a++) grad[active[a]] = 0;
     let gBias = 0;
 
-    for (const s of samples) {
-      // z = bias + w·x  (skip any non-finite feature value defensively — the TF-IDF
-      // path is always finite, but a future dense/hosted-embedding caller must not
-      // be able to poison a weight to NaN)
+    for (let i = 0; i < n; i++) {
+      const idx = sx[i].idx, val = sx[i].val, y = sy[i];
       let z = bias;
-      for (const k in s.x) { const xv = s.x[k]; if (Number.isFinite(xv)) z += weights[k] * xv; }
+      for (let j = 0; j < idx.length; j++) z += weights[idx[j]] * val[j];
       const p = sigmoid(z);
-      const cw = s.y === 1 ? wPos : wNeg;
-      const err = cw * (p - s.y);
-      for (const k in s.x) { const xv = s.x[k]; if (Number.isFinite(xv)) grad[k] += err * xv; }
+      const cw = y === 1 ? wPos : wNeg;
+      const err = cw * (p - y);
+      for (let j = 0; j < idx.length; j++) grad[idx[j]] += err * val[j];
       gBias += err;
     }
 
-    // L2 on weights only (not bias), averaged over samples.
+    // L2 on weights only (not bias), averaged over samples. Active features only.
     let maxStep = 0;
     const inv = n > 0 ? 1 / n : 1;
-    for (let j = 0; j < dim; j++) {
+    for (let a = 0; a < active.length; a++) {
+      const j = active[a];
       const g = grad[j] * inv + l2 * weights[j];
       const step = lr * g;
       weights[j] -= step;
-      const a = step < 0 ? -step : step;
-      if (a > maxStep) maxStep = a;
+      const av = step < 0 ? -step : step;
+      if (av > maxStep) maxStep = av;
     }
     const bStep = lr * gBias * inv;
     bias -= bStep;

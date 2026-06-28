@@ -99,7 +99,12 @@ function mean(arr) { return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.le
  */
 export function coldStartScore(record, ctx = {}) {
   const padded = ` ${recordText(record).toLowerCase().replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim()} `;
-  const concepts = picoConcepts(ctx.picoSnapshot);
+  // PICO/criteria concepts depend ONLY on the (per-run constant) picoSnapshot, not
+  // on the record. Callers scoring many records should derive them ONCE and pass
+  // them in via ctx.concepts; otherwise we derive them here (back-compatible).
+  // Re-deriving per record was the dominant hot path at scale (criteria digest +
+  // synonym expansion × N records × k CV folds).
+  const concepts = ctx.concepts || picoConcepts(ctx.picoSnapshot);
 
   // PICO dimension matches (only dimensions that actually have terms count).
   const pico = {

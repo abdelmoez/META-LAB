@@ -91,19 +91,20 @@ export function transform(feats, vec) {
 }
 
 /**
- * dot — dot product of two sparse vectors (iterates the smaller one).
- * @param {Record<number,number>} a
+ * dot — dot product of two sparse vectors. Iterates `a` with a plain for-in (no
+ * Object.keys array allocation — that allocation, ×3 per cosine, dominated GC in
+ * the per-record neighbour/centroid loops). Callers in hot paths pass the SMALLER
+ * vector as `a` (a record vector vs. a class centroid); the result is independent
+ * of which side is iterated, so this is output-identical.
+ * @param {Record<number,number>} a — iterate this one (pass the smaller in hot loops)
  * @param {Record<number,number>} b
  * @returns {number}
  */
 export function dot(a, b) {
-  const ka = Object.keys(a);
-  const kb = Object.keys(b);
-  const [small, large] = ka.length <= kb.length ? [a, b] : [b, a];
   let s = 0;
-  for (const k of Object.keys(small)) {
-    const bv = large[k];
-    if (bv !== undefined) s += small[k] * bv;
+  for (const k in a) {
+    const bv = b[k];
+    if (bv !== undefined) s += a[k] * bv;
   }
   return s;
 }
