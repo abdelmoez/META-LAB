@@ -678,6 +678,10 @@ model ScreenImportJob {
   warningCount     Int           @default(0)
   errorReport      String        @default("[]") // JSON [{ index, title, reason }] for rejects
   error            String        @default("") // fatal error message (status=failed)
+  // Number of times this job has been claimed/started. Incremented on every claim
+  // so the boot recovery can cap retries of a job that crashes mid-import (poison
+  // pill) instead of re-queuing it forever. See server/utils/jobRetry.js.
+  attempts         Int           @default(0)
   batchId          String? // linked ScreenImportBatch once records are saved
   startedAt        DateTime?
   completedAt      DateTime?

@@ -22,10 +22,16 @@ import {
   dedupeAndInsertRecords,
   DEFAULT_MAX_RECORDS_PER_PROJECT,
 } from './screeningImportService.js';
+import { DEFAULT_MAX_JOB_ATTEMPTS, partitionStuckJobs } from '../utils/jobRetry.js';
 
 // A job claimed but not finished within this window (e.g. a crash mid-import) is
 // considered abandoned and re-queued at boot so it can resume.
 const STUCK_MS = 10 * 60 * 1000;
+
+// Bound the claim-race retry so a pathological burst of contention can never
+// recurse/loop unboundedly. Each iteration is a DB round-trip (never a CPU spin);
+// this is a hard backstop, not the common path (one drain runs at a time).
+const MAX_CLAIM_RACES = 1000;
 
 let draining = false;
 
@@ -45,18 +51,23 @@ async function fail(jobId, message) {
 
 /** Atomically claim the oldest queued job (queued → processing), or null. */
 async function claimNext() {
-  const next = await prisma.screenImportJob.findFirst({
-    where: { status: 'queued' },
-    orderBy: { createdAt: 'asc' },
-    select: { id: true },
-  });
-  if (!next) return null;
-  const claim = await prisma.screenImportJob.updateMany({
-    where: { id: next.id, status: 'queued' },
-    data: { status: 'processing', stage: 'parsing', startedAt: new Date() },
-  });
-  if (claim.count !== 1) return claimNext(); // lost the race → try the next one
-  return prisma.screenImportJob.findUnique({ where: { id: next.id } });
+  for (let race = 0; race < MAX_CLAIM_RACES; race++) {
+    const next = await prisma.screenImportJob.findFirst({
+      where: { status: 'queued' },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true },
+    });
+    if (!next) return null;
+    // attempts++ on every claim so the boot recovery can cap retries of a job
+    // that crashes mid-import instead of re-queuing it forever (poison pill).
+    const claim = await prisma.screenImportJob.updateMany({
+      where: { id: next.id, status: 'queued' },
+      data: { status: 'processing', stage: 'parsing', startedAt: new Date(), attempts: { increment: 1 } },
+    });
+    if (claim.count === 1) return prisma.screenImportJob.findUnique({ where: { id: next.id } });
+    // lost the race (another drain claimed it first) → try the next queued job
+  }
+  return null; // extreme contention; the next kick resumes draining
 }
 
 /** Process a single claimed job end-to-end. */
@@ -128,17 +139,42 @@ export function kickImportWorker() {
 }
 
 /**
- * startImportWorker — boot hook. Re-queues any job left 'processing' by a crash
- * (older than STUCK_MS) so it resumes, then drains the queue. Idempotent.
+ * Recover jobs left 'processing' by a crash. A job whose retry budget is spent
+ * (attempts ≥ cap — a poison pill that keeps crashing) is permanently FAILED
+ * instead of re-queued, so it can never loop across restarts; the rest are
+ * re-queued to resume. Pure DB work — does NOT kick the drain, so it can be
+ * tested in isolation. Returns a { requeued, failed } summary.
+ */
+export async function recoverStuckImportJobs(now = Date.now(), maxAttempts = DEFAULT_MAX_JOB_ATTEMPTS) {
+  const cutoff = new Date(now - STUCK_MS);
+  const stuck = await prisma.screenImportJob.findMany({
+    where: { status: 'processing', OR: [{ startedAt: null }, { startedAt: { lt: cutoff } }] },
+    select: { id: true, attempts: true },
+  });
+  if (!stuck.length) return { requeued: 0, failed: 0 };
+  const { giveUp, retry } = partitionStuckJobs(stuck, maxAttempts);
+  for (const job of giveUp) {
+    await fail(job.id, `Import stopped after ${maxAttempts} failed attempts — a record or the file repeatedly interrupted processing.`);
+  }
+  if (retry.length) {
+    await prisma.screenImportJob.updateMany({
+      where: { id: { in: retry.map((j) => j.id) } },
+      data: { status: 'queued', stage: 'queued' },
+    });
+  }
+  return { requeued: retry.length, failed: giveUp.length };
+}
+
+/**
+ * startImportWorker — boot hook. Recovers any job left 'processing' by a crash
+ * (re-queue under the retry cap, permanently fail over it), then drains the
+ * queue. Idempotent.
  */
 export async function startImportWorker() {
   try {
-    const cutoff = new Date(Date.now() - STUCK_MS);
-    const requeued = await prisma.screenImportJob.updateMany({
-      where: { status: 'processing', OR: [{ startedAt: null }, { startedAt: { lt: cutoff } }] },
-      data: { status: 'queued', stage: 'queued' },
-    });
-    if (requeued.count) console.log(`[import-worker] re-queued ${requeued.count} stuck import job(s)`);
+    const { requeued, failed } = await recoverStuckImportJobs();
+    if (requeued) console.log(`[import-worker] re-queued ${requeued} stuck import job(s)`);
+    if (failed) console.warn(`[import-worker] failed ${failed} import job(s) over the retry cap (${DEFAULT_MAX_JOB_ATTEMPTS})`);
   } catch (e) {
     console.error('[import-worker] startup requeue failed:', e?.message);
   }
