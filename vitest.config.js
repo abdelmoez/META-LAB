@@ -7,6 +7,10 @@ export default defineConfig({
   // transform; harmless for the .js tests that contain no JSX.
   esbuild: { jsx: 'automatic' },
   test: {
+    // The Playwright E2E suite lives under e2e/ and uses @playwright/test (NOT vitest);
+    // exclude it so `vitest run` never tries to collect *.spec.ts there. Keep vitest's
+    // own defaults for node_modules/dist/etc.
+    exclude: ['e2e/**', 'playwright-report/**', '**/node_modules/**', '**/dist/**', '.{idea,git,cache,output,temp}/**'],
     // Integration tests do real bcrypt (cost 12) + HTTP round-trips — they need extra time.
     // Unit tests are fast; this ceiling doesn't hurt them. The heavy-setup integration
     // files (multi-user register + workspace/member seeding) can exceed 10s for their

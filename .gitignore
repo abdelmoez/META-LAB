@@ -88,3 +88,6 @@ scripts/pecan-harness-live.log
 /blob-report/
 /playwright/.cache/
 /playwright/.auth/
+e2e/.auth/
+playwright-report/
+test-results/

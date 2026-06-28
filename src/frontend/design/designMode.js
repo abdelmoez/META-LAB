@@ -79,10 +79,16 @@ export function readQueryOverride(search) {
  * @param {string?} args.savedMode      persisted preference (localStorage or server)
  * @param {string?} args.queryOverride  already-parsed ?ui= value (or null)
  */
-export function resolveDesignMode({ user, savedMode, queryOverride } = {}) {
-  if (!isDesignAdmin(user)) return DEFAULT_MODE;
+export function resolveDesignMode({ user, savedMode, queryOverride, allowAll, defaultMode } = {}) {
+  // prompt61 — availability + default are governed by the Ops `designSettings`
+  // SiteSetting (allowAllUsers + defaultMode), not hardcoded. When `allowAll` is on,
+  // ANY visitor may use Stitch; otherwise it stays admin-only (the original rule).
+  // `defaultMode` (default 'legacy') is used when there is no saved preference.
+  const dflt = isValidMode(defaultMode) ? defaultMode : DEFAULT_MODE;
+  const canStitch = !!allowAll || isDesignAdmin(user);
+  if (!canStitch) return DEFAULT_MODE;
   if (isValidMode(queryOverride)) return queryOverride;
-  return normalizeMode(savedMode);
+  return normalizeMode(savedMode || dflt);
 }
 
 /* ─── localStorage persistence (each call individually guarded) ───────────── */

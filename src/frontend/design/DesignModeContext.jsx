@@ -53,6 +53,26 @@ export function DesignModeProvider({ children }) {
   const admin = isDesignAdmin(user);
   const override = readQueryOverride(location.search);
 
+  // prompt61 — Ops-governed rollout: { allowAllUsers, defaultMode } from
+  // /api/settings/public. Until it loads we keep the legacy/admin-only behaviour.
+  const [design, setDesign] = useState({ allowAllUsers: false, defaultMode: DEFAULT_MODE });
+  useEffect(() => {
+    let dead = false;
+    fetch('/api/settings/public', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        const ds = (d && d.designSettings) || {};
+        if (!dead) setDesign({
+          allowAllUsers: !!ds.allowAllUsers,
+          defaultMode: isValidMode(ds.defaultMode) ? ds.defaultMode : DEFAULT_MODE,
+        });
+      })
+      .catch(() => { /* keep defaults */ });
+    return () => { dead = true; };
+  }, []);
+  const allowAll = design.allowAllUsers;
+  const canStitch = allowAll || admin; // who may render Stitch
+
   // Seed from the pre-paint value already on <html> (bootstrap) so the first
   // React render matches what the user is looking at — no flash.
   const [mode, setModeState] = useState(() => {
@@ -75,12 +95,11 @@ export function DesignModeProvider({ children }) {
     if (loading) return;
 
     const savedMode = getSavedDesignMode() ?? (user ? user.uiDesignMode : null);
-    const resolved = resolveDesignMode({ user, savedMode, queryOverride: override });
+    const resolved = resolveDesignMode({ user, savedMode, queryOverride: override, allowAll, defaultMode: design.defaultMode });
 
-    // Fail-safe hygiene: a non-admin must never carry a stitch preference around.
-    if (!admin) {
-      if (getSavedDesignMode()) clearSavedDesignMode();
-    }
+    // Fail-safe hygiene: when Stitch is NOT available to this viewer, never carry a
+    // stitch preference around (mirrors the original admin-only guard).
+    if (!canStitch && getSavedDesignMode()) clearSavedDesignMode();
 
     applyDesignAttr(resolved);
     setModeState(resolved);
@@ -88,7 +107,7 @@ export function DesignModeProvider({ children }) {
     // A valid ?ui= override from an admin becomes the persisted preference (so it
     // survives dropping the param / refresh). Emergency `?ui=legacy` therefore
     // also "sticks" the user safely back on legacy.
-    if (admin && isValidMode(override) && persistedOverrideRef.current !== override) {
+    if (canStitch && isValidMode(override) && persistedOverrideRef.current !== override) {
       persistedOverrideRef.current = override;
       if (getSavedDesignMode() !== override) {
         saveDesignMode(override);
@@ -96,24 +115,24 @@ export function DesignModeProvider({ children }) {
       }
     }
     if (!isValidMode(override)) persistedOverrideRef.current = null;
-  }, [loading, user, admin, override]);
+  }, [loading, user, admin, override, allowAll, canStitch, design.defaultMode]);
 
   // ── Imperative switch (used by AdminDesignSwitch + error-boundary escape) ───
   const setMode = useCallback((next) => {
-    if (!admin) return; // server also refuses; this is the client guard
+    if (!canStitch) return; // server also enforces; this is the client guard
     if (!isValidMode(next)) next = DEFAULT_MODE;
     applyDesignAttr(next);
     setModeState(next);
     saveDesignMode(next);
     persistToServer(next);
-  }, [admin]);
+  }, [canStitch]);
 
   const toggle = useCallback(() => {
     setMode(mode === 'stitch' ? 'legacy' : 'stitch');
   }, [mode, setMode]);
 
-  // Non-admins always report legacy regardless of any seeded state.
-  const effectiveMode = admin ? mode : DEFAULT_MODE;
+  // Viewers without Stitch access always report legacy regardless of any seeded state.
+  const effectiveMode = canStitch ? mode : DEFAULT_MODE;
 
   return (
     <DesignModeContext.Provider value={{

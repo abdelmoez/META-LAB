@@ -9,6 +9,11 @@ const DEFAULTS = {
   // admin client and stored verbatim (every value strictly validated as hex).
   // Default = the original indigo, palette null (frontend uses stylesheet base).
   themeSettings: JSON.stringify(defaultThemeSettings()),
+  // prompt61 — UI design-mode rollout, controlled from Ops › Appearance. `allowAllUsers`
+  // lifts the admin-only gate so EVERY user can use the Stitch UI; `defaultMode` is the
+  // design a user with no explicit preference gets. Shipped defaulting to Stitch for
+  // everyone (the new product default); flip either field in Ops without a redeploy.
+  designSettings: JSON.stringify({ allowAllUsers: true, defaultMode: 'stitch' }),
   appSettings: JSON.stringify({
     appName: 'PecanRev',
     registrationOpen: true,
@@ -183,7 +188,7 @@ export async function initDefaultSettings() {
 export async function getPublicSettings(req, res) {
   try {
     const rows = await prisma.siteSetting.findMany({
-      where: { key: { in: ['appSettings', 'landingContent', 'featureFlags', 'onboardingSettings', 'robSettings', 'themeSettings'] } },
+      where: { key: { in: ['appSettings', 'landingContent', 'featureFlags', 'onboardingSettings', 'robSettings', 'themeSettings', 'designSettings'] } },
     });
 
     const result = {};
@@ -196,7 +201,7 @@ export async function getPublicSettings(req, res) {
     }
 
     // Fill in defaults for any missing keys
-    for (const key of ['appSettings', 'landingContent', 'featureFlags']) {
+    for (const key of ['appSettings', 'landingContent', 'featureFlags', 'designSettings']) {
       if (!result[key]) {
         try {
           result[key] = JSON.parse(DEFAULTS[key]);
