@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import {
   mapMeshSummary, mapMeshSummaryList, emtreeFallback, parseSparqlLabels, meshNarrower, meshSuggest,
 } from '../../server/searchEngine/nlmClient.js';
-import { sanitizeIgnored } from '../../server/searchEngine/searchEngineController.js';
+import { sanitizeIgnored, sanitizeFilters } from '../../server/searchEngine/searchEngineController.js';
 import { createTtlCache } from '../../server/searchEngine/ttlCache.js';
 
 describe('mapMeshSummary', () => {
@@ -97,6 +97,28 @@ describe('sanitizeIgnored — backend back-compat (prompt42 Task 2)', () => {
     expect(sanitizeIgnored(Array.from({ length: 600 }, (_, i) => `t${i}`)).length).toBe(500);
     expect(sanitizeIgnored(null)).toEqual([]);
     expect(sanitizeIgnored('nope')).toEqual([]);
+  });
+});
+
+describe('sanitizeFilters — putSearch allowlist (prompt60 seam fix #3)', () => {
+  it('returns the full shape with empty defaults for absent/garbage input', () => {
+    expect(sanitizeFilters(undefined)).toEqual({ dateFrom: '', dateTo: '', languages: [], pubTypes: [] });
+    expect(sanitizeFilters('nope')).toEqual({ dateFrom: '', dateTo: '', languages: [], pubTypes: [] });
+    expect(sanitizeFilters({})).toEqual({ dateFrom: '', dateTo: '', languages: [], pubTypes: [] });
+  });
+  it('keeps valid fields and drops empty / non-string array entries', () => {
+    expect(sanitizeFilters({ dateFrom: ' 2010 ', dateTo: '2025', languages: ['en', '', 5, 'es'], pubTypes: ['Review', null] }))
+      .toEqual({ dateFrom: '2010', dateTo: '2025', languages: ['en', 'es'], pubTypes: ['Review'] });
+  });
+  it('clamps long strings and caps the arrays (mirrors the AST clamps)', () => {
+    const out = sanitizeFilters({
+      dateFrom: '12345678901234567890',
+      languages: Array.from({ length: 40 }, (_, i) => `l${i}`),
+      pubTypes: Array.from({ length: 60 }, (_, i) => `p${i}`),
+    });
+    expect(out.dateFrom.length).toBeLessThanOrEqual(10);
+    expect(out.languages.length).toBe(20);
+    expect(out.pubTypes.length).toBe(40);
   });
 });
 

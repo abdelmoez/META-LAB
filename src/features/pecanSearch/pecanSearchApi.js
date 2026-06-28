@@ -160,21 +160,51 @@ export async function loadCanonicalQuery(projectId) {
     concepts: Array.isArray(d.concepts) ? d.concepts : [],
     filters: (d.filters && typeof d.filters === 'object') ? d.filters : { dateFrom: '', dateTo: '', languages: [], pubTypes: [] },
     overrides: d.overrides || {},
+    // prompt60 seam fix #1/#2 — surface the persisted database selection + handoff
+    // marker so the run step seeds its sources from what the user chose in the
+    // builder (instead of always defaulting to every provider). `databases` are
+    // Search-Builder catalogue ids; the run step intersects them with its provider ids.
+    databases: Array.isArray(d.databases) ? d.databases.filter((s) => typeof s === 'string') : [],
+    readyForScreening: !!d.readyForScreening,
     revision: d.revision,
     updatedAt: d.updatedAt,
   };
 }
 
 /**
- * Gate the Search & Discovery tab client-side (mirrors searchEngineFlagEnabled).
- * Default OFF on any error so a disabled flag never does work.
+ * selectSourceIds — prompt60 seam fix #1. Decide which run sources to pre-select from
+ * what the user chose in the Search Builder. The builder's database catalogue ids only
+ * PARTIALLY overlap Pecan's provider ids (e.g. the builder lists embase/cochrane, which
+ * Pecan has no connector for), so we intersect with the providers that actually run.
+ *
+ * Precedence: explicit `initialSources` (the wizard's live selection) → the strategy's
+ * saved `databases` → the catalogue `defaults`. Intersect with `selectableIds`; if
+ * NOTHING runnable matched, fall back to all selectable so the run is never silently
+ * empty. Pure + exported for unit tests.
+ */
+export function selectSourceIds({ initialSources, databases, defaults, selectableIds } = {}) {
+  const sel = Array.isArray(selectableIds) ? selectableIds : [];
+  const want = (Array.isArray(initialSources) && initialSources.length) ? initialSources
+    : ((Array.isArray(databases) && databases.length) ? databases
+      : (Array.isArray(defaults) ? defaults : []));
+  const chosen = want.filter((id) => sel.includes(id));
+  return chosen.length ? chosen : sel;
+}
+
+/**
+ * Gate the Search & Discovery (run) capability client-side. Prompt 60 — the run
+ * stage is INERT unless BOTH `pecanSearch` AND its dependency `searchEngine` are
+ * ON (the engine runs the strategy built by the Search Builder). Mirrors the
+ * server gate (runService.pecanSearchEnabled). Default OFF on any error so a
+ * disabled flag never does work.
  */
 export async function pecanSearchFlagEnabled() {
   try {
     const r = await fetch('/api/settings/public', { credentials: 'include' });
     if (!r.ok) return false;
     const d = await r.json();
-    return !!(d && d.featureFlags && d.featureFlags.pecanSearch === true);
+    const f = (d && d.featureFlags) || {};
+    return f.pecanSearch === true && f.searchEngine === true;
   } catch {
     return false;
   }

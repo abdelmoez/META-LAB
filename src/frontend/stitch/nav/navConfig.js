@@ -227,12 +227,16 @@ export function welcomeGreeting(name) {
   return first && !first.includes('@') ? `Welcome, ${first}` : 'Welcome back';
 }
 
-/** Which project stage id is active for the project route's `?tab=`/path. */
+/** Which project stage id is active for the project route's `?tab=`/path.
+ *  prompt60 — the former `discovery` stage was folded into `search`; old deep links
+ *  (?tab=discovery) normalize to `search` here so they resolve to the unified Search
+ *  wizard instead of falling through to the overview (or 404). */
 export function activeProjectStage(search) {
   if (typeof search !== 'string' || !search) return 'overview';
   try {
     const qs = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
     const tab = qs.get('tab');
+    if (tab === 'discovery') return 'search';
     return tab || 'overview';
   } catch {
     return 'overview';
@@ -282,6 +286,7 @@ const CATEGORY_BY_ID = PROJECT_CATEGORIES.reduce((m, c) => { m[c.id] = c; return
 
 /** Which category a workflow stage id belongs to (route → active category). */
 export function categoryForStage(stageId) {
+  if (stageId === 'discovery') stageId = 'search'; // prompt60 — folded into Search
   if (!stageId || stageId === 'overview') return 'overview';
   if (stageId === 'control') return 'control';
   if (stageId === 'methods') return 'reference';

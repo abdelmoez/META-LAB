@@ -868,6 +868,54 @@ function buildWarnings(concepts,hitState){
   return w;
 }
 
+/* prompt60 — compact "Limits" panel (the Search Wizard's Define step). Edits the
+   AST `filters` block { dateFrom, dateTo, languages[], pubTypes[] } that the Pecan
+   Search engine already applies per provider (unsupported limits are warned, never
+   silently dropped, in the run step). Languages are ISO 639-1 codes (DOAJ uses them;
+   PubMed maps them to the full English name). Pub types are PubMed Publication Type
+   strings. Pure presentational — the parent owns `filters` state + persistence. */
+const LIMIT_LANGS = [['en', 'English'], ['es', 'Spanish'], ['fr', 'French'], ['de', 'German'], ['zh', 'Chinese'], ['ja', 'Japanese'], ['pt', 'Portuguese'], ['it', 'Italian'], ['ru', 'Russian'], ['ar', 'Arabic']];
+const LIMIT_PUBTYPES = ['Randomized Controlled Trial', 'Clinical Trial', 'Systematic Review', 'Meta-Analysis', 'Review', 'Observational Study', 'Comparative Study', 'Case Reports'];
+function LimitsPanel({ filters, setFilters }) {
+  const f = filters || { dateFrom: '', dateTo: '', languages: [], pubTypes: [] };
+  const set = (patch) => setFilters({ ...f, ...patch });
+  const toggleIn = (key, val) => { const cur = Array.isArray(f[key]) ? f[key] : []; set({ [key]: cur.includes(val) ? cur.filter((x) => x !== val) : [...cur, val] }); };
+  const yr = (v) => String(v || '').replace(/[^0-9]/g, '').slice(0, 4);
+  const active = !!(f.dateFrom || f.dateTo || (f.languages || []).length || (f.pubTypes || []).length);
+  const chip = (on) => ({ ...btn(on ? 'primary' : 'ghost'), fontSize: 10.5, padding: '4px 10px' });
+  return (
+    <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: 14, marginTop: 12 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: 0.6, textTransform: 'uppercase' }}>Limits</span>
+        <Help text="Optional scope limits applied to every database that supports them: publication date range, language, and publication type. A database that can't apply a limit says so in the run step — the limit is never silently dropped." />
+        {active
+          ? <span style={{ marginLeft: 'auto', fontSize: 10, color: C.acc, fontFamily: MONO }}>active</span>
+          : <span style={{ marginLeft: 'auto', fontSize: 10, color: C.dim }}>none — all years &amp; languages</span>}
+      </div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 12 }}>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 10.5, color: C.muted }}>Published from (year)
+          <input value={f.dateFrom || ''} onChange={(e) => set({ dateFrom: yr(e.target.value) })} placeholder="e.g. 2010" inputMode="numeric" style={{ ...inputStyle, width: 120 }} /></label>
+        <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 10.5, color: C.muted }}>to (year)
+          <input value={f.dateTo || ''} onChange={(e) => set({ dateTo: yr(e.target.value) })} placeholder="e.g. 2025" inputMode="numeric" style={{ ...inputStyle, width: 120 }} /></label>
+      </div>
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 10.5, color: C.muted, marginBottom: 5 }}>Languages</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {LIMIT_LANGS.map(([code, label]) => { const on = (f.languages || []).includes(code); return (
+            <button key={code} onClick={() => toggleIn('languages', code)} style={chip(on)}>{on ? '✓ ' : ''}{label}</button>); })}
+        </div>
+      </div>
+      <div>
+        <div style={{ fontSize: 10.5, color: C.muted, marginBottom: 5 }}>Publication types</div>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+          {LIMIT_PUBTYPES.map((pt) => { const on = (f.pubTypes || []).includes(pt); return (
+            <button key={pt} onClick={() => toggleIn('pubTypes', pt)} style={chip(on)}>{on ? '✓ ' : ''}{pt}</button>); })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ════════════════════════════════════════════════════════════════════════════
    MAIN EXPORT — SearchBuilderTab
    PROPS (all optional except where noted; see INTEGRATION_README.md):
@@ -877,10 +925,19 @@ function buildWarnings(concepts,hitState){
      loadSearch  func     — INTEGRATION: async (projectId) => savedState|null
      saveSearch  func     — INTEGRATION: async (projectId, state) => void
    ════════════════════════════════════════════════════════════════════════════ */
-export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSearch}){
+export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSearch,phase,onLiveQuery}){
   const A=api||defaultApi;
+  // prompt60 — embedded mode: the Search Wizard renders this builder as its Define
+  // (phase='define': keywords + concepts + Limits) and Build (phase='build': databases
+  // + strategy/override) steps, supplying its own chrome + step header. When `phase`
+  // is undefined the builder keeps its standalone 5-step flow unchanged.
+  const embedded = phase === 'define' || phase === 'build';
   const [concepts,setConcepts]=useState([]);
   const [overrides,setOverrides]=useState({});
+  // prompt60 — search-scope limits { dateFrom, dateTo, languages[], pubTypes[] }; the
+  // Pecan Search AST already applies this block, the Limits panel edits it, and it is
+  // persisted alongside the rest of the strategy (and surfaced to the run step).
+  const [filters,setFilters]=useState({dateFrom:'',dateTo:'',languages:[],pubTypes:[]});
   const [activeDB,setActiveDB]=useState("pubmed");
   const [beginner,setBeginner]=useState(true); // SB3 — beginner mode is the default
   // SB3 — guided stepper position (1..5) and the selected databases / handoff marker.
@@ -960,6 +1017,12 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     const ig=saved&&Array.isArray(saved.ignored)?saved.ignored:[];
     const ov=saved&&saved.overrides&&typeof saved.overrides==="object"?saved.overrides:{};
     setOverrides(ov); setIgnored(ig);
+    // prompt60 — load persisted search-scope limits (default empty for older saves).
+    setFilters(saved&&saved.filters&&typeof saved.filters==="object"
+      ?{dateFrom:String(saved.filters.dateFrom||""),dateTo:String(saved.filters.dateTo||""),
+        languages:Array.isArray(saved.filters.languages)?saved.filters.languages.filter(s=>typeof s==="string"):[],
+        pubTypes:Array.isArray(saved.filters.pubTypes)?saved.filters.pubTypes.filter(s=>typeof s==="string"):[]}
+      :{dateFrom:"",dateTo:"",languages:[],pubTypes:[]});
     // SB3 — selected databases + handoff marker ([] / false when absent in older saves).
     setSelectedDbs(saved&&Array.isArray(saved.databases)?saved.databases.filter(s=>typeof s==="string"):[]);
     setReadyForScreening(!!(saved&&saved.readyForScreening));
@@ -977,19 +1040,19 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const saveTimer=useRef(null);
   useEffect(()=>{
     if(!loaded||!saveSearch||!projectId) return;
-    const sig=serializeSearchState({concepts,overrides,ignored,databases:selectedDbs,readyForScreening,dismissedWarnings});
+    const sig=serializeSearchState({concepts,overrides,ignored,databases:selectedDbs,readyForScreening,dismissedWarnings,filters});
     if(sig===lastSavedRef.current) return; // unchanged vs the server (e.g. just loaded/applied) → no PUT, no ping-pong
     setRemoteUpdatedBy(null); // this user is now editing → drop the "updated by collaborator" attribution
     clearTimeout(saveTimer.current);
     saveTimer.current=setTimeout(async()=>{
       try{
-        const res=await saveSearch(projectId,{concepts,overrides,ignored,databases:selectedDbs,readyForScreening,dismissedWarnings});
+        const res=await saveSearch(projectId,{concepts,overrides,ignored,databases:selectedDbs,readyForScreening,dismissedWarnings,filters});
         lastSavedRef.current=sig;
         if(res&&typeof res.revision==="number") revisionRef.current=res.revision;
       }catch(e){ console.error("saveSearch failed",e); }
     },800);
     return ()=>clearTimeout(saveTimer.current);
-  },[concepts,overrides,ignored,selectedDbs,readyForScreening,dismissedWarnings,loaded]); // eslint-disable-line
+  },[concepts,overrides,ignored,selectedDbs,readyForScreening,dismissedWarnings,filters,loaded]); // eslint-disable-line
 
   /* ── SE2: auto-sync the five groups whenever PICO changes — no manual button.
      Updates the editor's UI immediately; collaborators converge via the realtime
@@ -1013,6 +1076,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     setConcepts(persisted.concepts); setOverrides(persisted.overrides); setIgnored(persisted.ignored);
     setSelectedDbs(persisted.databases); setReadyForScreening(persisted.readyForScreening); // SB3
     setDismissedWarnings(persisted.dismissedWarnings); // SB4
+    setFilters(persisted.filters||{dateFrom:"",dateTo:"",languages:[],pubTypes:[]}); // prompt60
     setRemoteUpdatedBy(saved.updatedBy&&saved.updatedBy.name?saved.updatedBy.name:"a collaborator");
     pendingRemoteRef.current=null; setRemotePending(false);
   }
@@ -1250,6 +1314,14 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     const base=prev.length?prev:defaultSelectedDatabases();
     return base.includes(id)?base.filter(x=>x!==id):[...base,id];
   });
+  // prompt60 — report the live in-memory query up to the Search Wizard so its Run step
+  // pre-fills without a reload. Ref-wrapped so a parent passing a fresh callback each
+  // render never re-fires the effect.
+  const liveQueryRef=useRef(onLiveQuery); liveQueryRef.current=onLiveQuery;
+  useEffect(()=>{
+    if(!loaded||!liveQueryRef.current) return;
+    liveQueryRef.current({concepts,filters,overrides,databases:effectiveDbs});
+  },[loaded,concepts,filters,overrides,effectiveDbs]);
   // Which PICO group a keyword clicked in the Research Question belongs to: the first
   // PICO field whose text contains it (so question clicks usually land correctly),
   // else Population as a sensible default. 'Q' is the Research-Question pseudo-field.
@@ -1303,13 +1375,20 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const moveTargetsFor=(cid)=>concepts.filter(c=>c.id!==cid&&c.picoField!=="T").map(c=>({id:c.id,label:c.label}));
   const isDupTerm=(t)=>dupKeys.has(termEquivalenceKey(t.text));
 
+  // prompt60 — which of the 5 internal step panels render. Standalone: exactly the
+  // active step. Embedded: Define shows keywords+concepts (1,2); Build shows
+  // databases+strategy (3,4); the standalone Check & Export step (5) is replaced by
+  // the wizard's dedicated Run step, so it never shows in embedded mode.
+  const show = (n) => (embedded ? (phase === 'define' ? (n === 1 || n === 2) : (n === 3 || n === 4)) : step === n);
+
   if(!loaded) return <div style={{padding:40,color:C.muted,fontFamily:SANS,background:C.bg,minHeight:"100%"}}>Loading search…</div>;
 
   return(
     <div style={{background:C.bg,color:C.txt,fontFamily:SANS,minHeight:"100%",padding:"4px 2px"}}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap');`}</style>
 
-      {/* header row */}
+      {/* header row — hidden in embedded (wizard) mode; the wizard supplies chrome */}
+      {!embedded&&(
       <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14}}>
         <div>
           <div style={{fontWeight:800,fontSize:16,letterSpacing:-.3}}>Search Builder</div>
@@ -1337,6 +1416,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
           </div>
         </div>
       </div>
+      )}
 
       {limitedMode&&(
         <div style={{background:`${alpha(C.yel,"10")}`,border:`1px solid ${alpha(C.yel,"44")}`,borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:C.txt2}}>
@@ -1352,18 +1432,18 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
         </div>
       )}
 
-      {beginner&&(
+      {beginner&&!embedded&&(
         <div style={{background:`${alpha(C.grn,"0e")}`,border:`1px solid ${alpha(C.grn,"33")}`,borderRadius:8,padding:"10px 12px",marginBottom:12,fontSize:12,color:C.txt2,lineHeight:1.6}}>
           <strong style={{color:C.grn}}>Beginner mode is on.</strong> For each idea in your question, list the different ways authors might phrase it. The tool turns that into a correct search for each database. You don't need to know the technical terms — the defaults are already the recommended choice.
         </div>
       )}
 
-      {/* ── SB3: guided 5-step workflow ─────────────────────────────────────── */}
-      <StepNav step={step} setStep={setStep}/>
-      <div style={{fontSize:11.5,color:C.muted,marginBottom:12}}>{STEPS[step-1].hint}</div>
+      {/* ── SB3: guided 5-step workflow (the wizard supplies the step nav in embedded mode) ── */}
+      {!embedded&&<StepNav step={step} setStep={setStep}/>}
+      {!embedded&&<div style={{fontSize:11.5,color:C.muted,marginBottom:12}}>{STEPS[step-1].hint}</div>}
 
       {/* ─────────── STEP 1 — Select Keywords ─────────── */}
-      {step===1&&(
+      {show(1)&&(
         <div>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
             <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Click the important ideas in your question</span>
@@ -1403,7 +1483,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
       )}
 
       {/* ─────────── STEP 2 — Organize Concepts (existing concept editor) ─────────── */}
-      {step===2&&(
+      {show(2)&&(
         <div style={{maxWidth:720}}>
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
             <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Your concepts</span>
@@ -1555,13 +1635,16 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
         </div>
       )}
 
+      {/* prompt60 — Limits panel completes the wizard's Define step (date/language/pubtype). */}
+      {phase==='define'&&<LimitsPanel filters={filters} setFilters={setFilters}/>}
+
       {/* ─────────── STEP 3 — Choose Databases ─────────── */}
-      {step===3&&(
+      {show(3)&&(
         <DatabaseCatalogView selected={new Set(effectiveDbs)} onToggle={toggleDb}/>
       )}
 
       {/* ─────────── STEP 4 — Build Strategy ─────────── */}
-      {step===4&&(()=>{
+      {show(4)&&(()=>{
         const nativeSelected=DBS.filter(d=>effectiveDbs.includes(d.id));
         const showDb=nativeSelected.find(d=>d.id===activeDB)?activeDB:(nativeSelected[0]?nativeSelected[0].id:"pubmed");
         const genericDbs=effectiveDbs.filter(id=>{const db=getDatabase(id);return db&&!db.nativeSyntax;});
@@ -1609,8 +1692,8 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
         );
       })()}
 
-      {/* ─────────── STEP 5 — Check & Export ─────────── */}
-      {step===5&&(()=>{
+      {/* ─────────── STEP 5 — Check & Export (standalone only; the wizard's Run step replaces it) ─────────── */}
+      {show(5)&&(()=>{
         const warnings=buildWarnings(concepts,hitState);
         const wcol={error:C.red,warn:C.yel,ok:C.grn};
         const allStrategies=effectiveDbs.map(id=>{const db=getDatabase(id);return db?`### ${db.label}\n${strategyForDb(concepts,overrides,id)||"(no terms)"}`:"";}).filter(Boolean).join("\n\n");
@@ -1664,7 +1747,8 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
         );
       })()}
 
-      {/* step footer — Back / Next */}
+      {/* step footer — Back / Next (standalone only; the wizard owns step navigation) */}
+      {!embedded&&(
       <div style={{display:"flex",alignItems:"center",gap:10,marginTop:18,paddingTop:14,borderTop:`1px solid ${C.brd}`}}>
         <button onClick={()=>setStep(s=>Math.max(1,s-1))} disabled={step===1}
           style={{...btn("ghost"),fontSize:12,opacity:step===1?0.4:1,cursor:step===1?"default":"pointer"}}>← Back</button>
@@ -1674,6 +1758,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
           {step===STEPS.length?"Done":`Next: ${STEPS[step].label} →`}
         </button>
       </div>
+      )}
     </div>
   );
 }

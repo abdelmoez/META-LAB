@@ -67,9 +67,15 @@ describe('55.md — submenu visibility (Overview/Control/Reference reclaim width
     expect(submenuForCategory('reference', CTX)).toBeNull();
   });
   it('shows the white submenu for multi-child categories', () => {
-    for (const id of ['plan', 'search', 'screen', 'extract', 'analyze', 'report']) {
+    for (const id of ['plan', 'screen', 'extract', 'analyze', 'report']) {
       expect(categoryShowsSubmenu(id)).toBe(true);
     }
+  });
+  // prompt60 — Search is now a SINGLE-destination category (the unified Search wizard),
+  // so it no longer opens a white submenu; its one child is the `search` stage.
+  it('treats Search as a single destination (no submenu) after the search+discovery merge', () => {
+    expect(categoryShowsSubmenu('search')).toBe(false);
+    expect(submenuForCategory('search', CTX).map((i) => i.key)).toEqual(['search']);
   });
 });
 

@@ -15,6 +15,7 @@ import {
   GLOBAL_NAV, DASHBOARD_MENU, buildProjectNav, projectStageHref, SCREENING_SUBNAV,
   screeningSubHref, readView, normalizeDashboardView, activeGlobalKey, globalHref,
   dashboardHref, deleteConfirmMatches, welcomeGreeting, workflowStepCount,
+  activeProjectStage, submenuForCategory,
 } from '../../src/frontend/stitch/nav/navConfig.js';
 
 describe('navConfig — global rail (design2.md Part 1)', () => {
@@ -58,8 +59,14 @@ describe('navConfig — project workflow nav (derived from legacy TABS)', () => 
     expect(nav.reference.map((s) => s.id)).toContain('methods');
     expect(nav.phases.map((p) => p.phase)).toEqual(['Plan', 'Search', 'Screen', 'Extract', 'Analyze', 'Report']);
     expect(nav.phases[0].label).toBe('Plan & Protocol'); // display label override
-    expect(nav.flat.length).toBe(19); // 2 project + 16 workflow (+NMA) + 1 reference
-    expect(workflowStepCount()).toBe(16);
+    // prompt60 — the two search tabs (search + discovery) are unified into ONE "Search"
+    // stage, so the workflow has one fewer step.
+    expect(nav.flat.length).toBe(18); // 2 project + 15 workflow + 1 reference
+    expect(workflowStepCount()).toBe(15);
+    // Search phase now has exactly one stage, relabelled "Search".
+    const searchPhase = nav.phases.find((p) => p.phase === 'Search');
+    expect(searchPhase.steps.map((s) => s.id)).toEqual(['search']);
+    expect(searchPhase.steps[0].label).toBe('Search');
   });
   it('opens EVERY stage inside the unified Stitch workspace via ?tab= (design4.md)', () => {
     expect(projectStageHref('overview', { projectId: 'p1' })).toBe('/app/project/p1');
@@ -102,6 +109,18 @@ describe('navConfig — active-route matching (preserve deep links)', () => {
     expect(activeGlobalKey('/app', '')).toBe('dashboard');
     expect(activeGlobalKey('/app/project/p1', '')).toBe('dashboard');
     expect(activeGlobalKey('/profile', '')).toBeNull();
+  });
+  // prompt60 — the former `discovery` stage folds into `search`. Old deep links must
+  // resolve to the unified Search wizard, not 404 / fall through to overview.
+  it('redirects ?tab=discovery to the unified search stage', () => {
+    expect(activeProjectStage('?tab=discovery')).toBe('search');
+    expect(activeProjectStage('?tab=search')).toBe('search');
+    expect(activeProjectStage('?tab=screening')).toBe('screening');
+    expect(activeProjectStage('')).toBe('overview');
+  });
+  it('collapses the Search category submenu to a single Search entry', () => {
+    const items = submenuForCategory('search', { projectId: 'p1' });
+    expect(items.map((i) => i.key)).toEqual(['search']);
   });
 });
 

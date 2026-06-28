@@ -27,13 +27,16 @@ import { alpha as themeAlpha } from '../../frontend/theme/tokens.js';
 import { Icon } from '../../frontend/components/icons.jsx';
 import { useRealtime } from '../../frontend/hooks/useRealtime.js';
 import {
-  pecanSearchApi, loadCanonicalQuery, newIdempotencyKey,
+  pecanSearchApi, loadCanonicalQuery, newIdempotencyKey, selectSourceIds,
 } from './pecanSearchApi.js';
 import {
   Card, StatTile, StatusPill, runStateLabel, Disclosure, Note, Skeleton,
   EmptyState, Btn, CountValue, CredsBadge, Toggle, formatWhen,
 } from './components/parts.jsx';
 import DuplicateReview from './components/DuplicateReview.jsx';
+// prompt60 seam fix #1 — catalogue default database ids, used as the fallback source
+// selection for pre-SB3 strategies (intersected with the providers that have a connector).
+import { defaultSelectedDatabases } from '../../research-engine/searchBuilder/databases.js';
 
 const PREVIEW_DEBOUNCE_MS = 700;
 const ACTIVE_POLL_MS = 2500;
@@ -65,7 +68,15 @@ function literalBooleanTerms(canonical) {
   return out;
 }
 
-export default function PecanSearchTab({ projectId, pico, readOnly }) {
+export default function PecanSearchTab({
+  projectId, pico, readOnly,
+  // prompt60 — the Search Wizard passes its LIVE in-memory query straight into the run
+  // step so there is no separate "load strategy" round-trip. All optional: when absent
+  // the tab loads the saved strategy (loadCanonicalQuery) and seeds sources from it,
+  // preserving the standalone behaviour. initialSources/initialOverrides are keyed by
+  // pecan PROVIDER id (already intersected by the wizard).
+  initialCanonicalQuery, initialSources, initialOverrides,
+}) {
   // ── Canonical query (the saved Search Builder strategy) ──────────────────────
   const [query, setQuery] = useState(null);        // { concepts, filters, overrides } | null
   const [queryState, setQueryState] = useState('loading'); // loading | ready | empty | error
@@ -119,34 +130,64 @@ export default function PecanSearchTab({ projectId, pico, readOnly }) {
   useEffect(() => {
     let dead = false;
     (async () => {
-      // Canonical query
-      try {
-        const q = await loadCanonicalQuery(projectId);
-        if (dead) return;
-        if (!q || !q.concepts || q.concepts.length === 0) { setQuery(q || null); setQueryState('empty'); }
-        else { setQuery(q); setQueryState('ready'); }
-      } catch (e) {
-        if (!dead) { setQueryError(e.message || 'Failed to load strategy'); setQueryState('error'); }
+      // 1. Canonical query — prefer a LIVE in-memory query handed in by the Search
+      //    Wizard (prompt60); otherwise load the saved strategy from the Search Builder.
+      let q = null;
+      if (initialCanonicalQuery && Array.isArray(initialCanonicalQuery.concepts)) {
+        q = {
+          concepts: initialCanonicalQuery.concepts,
+          filters: initialCanonicalQuery.filters || { dateFrom: '', dateTo: '', languages: [], pubTypes: [] },
+          overrides: (initialOverrides && typeof initialOverrides === 'object') ? initialOverrides : {},
+          databases: Array.isArray(initialSources) ? initialSources : [],
+        };
+        if (!dead) { setQuery(q); setQueryState(q.concepts.length ? 'ready' : 'empty'); }
+      } else {
+        try {
+          q = await loadCanonicalQuery(projectId);
+          if (dead) return;
+          if (!q || !q.concepts || q.concepts.length === 0) { setQuery(q || null); setQueryState('empty'); }
+          else { setQuery(q); setQueryState('ready'); }
+        } catch (e) {
+          if (!dead) { setQueryError(e.message || 'Failed to load strategy'); setQueryState('error'); }
+          q = null;
+        }
       }
-      // Providers
+      // 2. Providers + source seeding (prompt60 seam fixes #1/#2).
       try {
         const p = await pecanSearchApi.getProviders();
         if (dead) return;
         const list = (p && p.providers) || [];
         setProviders(list);
         setEngineCfg((p && p.engine) || null);
-        // Default selection = all selectable providers; default caps from provider.
-        const sel = {}; const cp = {};
-        for (const pr of list) {
-          if (pr.selectable) sel[pr.id] = true;
-          cp[pr.id] = pr.defaultCap || (p.engine && p.engine.defaultResultCap) || 2000;
-        }
-        setSelected(sel); setCaps(cp);
+        const selectableIds = list.filter((pr) => pr.selectable).map((pr) => pr.id);
+        // Default caps from provider.
+        const cp = {};
+        for (const pr of list) cp[pr.id] = pr.defaultCap || (p.engine && p.engine.defaultResultCap) || 2000;
+        setCaps(cp);
+        // Seed source selection from what the user actually chose in the builder, not
+        // "all providers" (prompt60 seam fix #1 — see selectSourceIds).
+        const chosen = selectSourceIds({
+          initialSources,
+          databases: q && q.databases,
+          defaults: defaultSelectedDatabases(),
+          selectableIds,
+        });
+        const sel = {};
+        for (const id of chosen) sel[id] = true;
+        setSelected(sel);
+        // Seed per-source overrides from the strategy (keyed by provider id; the builder
+        // and Pecan share ids for the overlapping providers, e.g. pubmed).
+        const ovSrc = (initialOverrides && typeof initialOverrides === 'object') ? initialOverrides
+          : ((q && q.overrides) || {});
+        const ov = {};
+        for (const id of selectableIds) { if (ovSrc[id]) ov[id] = ovSrc[id]; }
+        if (Object.keys(ov).length) setOverrides(ov);
       } catch (e) {
         if (!dead) setProvidersError(e.message || 'Failed to load providers');
       }
     })();
     return () => { dead = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId]);
 
   /* ── load history (page) ──────────────────────────────────────────────────── */
@@ -726,6 +767,17 @@ function labelStage(stage) {
   return ({ queued: 'Queued', running: 'Running', cancelling: 'Cancelling', skipped: 'Skipped' })[stage] || stage;
 }
 
+/* prompt60 — the deep link to the screening Import sub-page WITHIN the unified
+   shell. Both shells host the project at the current pathname and read `?tab=`
+   (+ `?screen=` for the embedded screening engine), so building it off the live
+   pathname works in legacy and Stitch alike. ImportHistory there shows the
+   "Pecan Search" badge on these records. */
+function screeningImportHref() {
+  if (typeof window === 'undefined') return '#';
+  const path = (window.location && window.location.pathname) || '/app';
+  return `${path}?tab=screening&screen=import`;
+}
+
 /* ════════════ (5) COMPLETION SUMMARY ════════════ */
 function CompletionSummary({ run, report, projectId, onRetry }) {
   const counts = run.counts || {};
@@ -799,9 +851,20 @@ function CompletionSummary({ run, report, projectId, onRetry }) {
           PRISMA identification: {report.counts.recordsIdentified} identified → {report.counts.duplicatesRemoved} duplicates removed → {report.counts.recordsToScreening} to screening.
         </div>
       )}
-      <div style={{ fontSize: 11, color: C.muted, marginTop: 12 }}>
-        Imported records are now in the <strong style={{ color: C.txt2 }}>Screening</strong> tab. Resolve any ambiguous duplicates below before you begin title/abstract screening.
-      </div>
+      {(run.state === 'completed' || run.state === 'partial') && (counts.imported || counts.existingMatched) ? (
+        <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <a href={screeningImportHref()} style={{ ...btnS('primary'), textDecoration: 'none', fontSize: 12.5, padding: '9px 18px' }}>
+            <Icon name="arrowRight" size={14} /> Go to Screening
+          </a>
+          <span style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.6, flex: 1, minWidth: 220 }}>
+            {(counts.imported || 0).toLocaleString()} new record{(counts.imported || 0) === 1 ? '' : 's'} imported with the <strong style={{ color: C.txt2 }}>Pecan Search</strong> badge. Resolve any ambiguous duplicates below before you begin title/abstract screening.
+          </span>
+        </div>
+      ) : (
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 12 }}>
+          Imported records are now in the <strong style={{ color: C.txt2 }}>Screening</strong> tab. Resolve any ambiguous duplicates below before you begin title/abstract screening.
+        </div>
+      )}
     </Card>
   );
 }

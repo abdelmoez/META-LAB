@@ -12,7 +12,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import PecanSearchTab from '../../src/features/pecanSearch/PecanSearchTab.jsx';
 import {
-  pecanSearchApi, runsUrl, reportExportUrl, newIdempotencyKey, loadCanonicalQuery, pecanSearchFlagEnabled,
+  pecanSearchApi, runsUrl, reportExportUrl, newIdempotencyKey, loadCanonicalQuery, pecanSearchFlagEnabled, selectSourceIds,
 } from '../../src/features/pecanSearch/pecanSearchApi.js';
 
 describe('PecanSearchTab (SSR smoke)', () => {
@@ -64,6 +64,27 @@ describe('pecanSearchApi URL contracts', () => {
   });
 });
 
+describe('selectSourceIds — db-id ↔ provider-id seam (prompt60 seam fix #1)', () => {
+  const selectable = ['pubmed', 'europepmc', 'crossref', 'doaj', 'openalex', 'semanticscholar', 'clinicaltrials'];
+  it('prefers explicit initialSources (the wizard live selection), intersected with providers', () => {
+    expect(selectSourceIds({ initialSources: ['pubmed', 'europepmc'], databases: ['doaj'], defaults: ['crossref'], selectableIds: selectable }))
+      .toEqual(['pubmed', 'europepmc']);
+  });
+  it('falls back to the saved databases when no initialSources', () => {
+    expect(selectSourceIds({ databases: ['pubmed', 'crossref'], defaults: ['doaj'], selectableIds: selectable }))
+      .toEqual(['pubmed', 'crossref']);
+  });
+  it('falls back to the catalogue defaults when no databases', () => {
+    expect(selectSourceIds({ defaults: ['pubmed'], selectableIds: selectable })).toEqual(['pubmed']);
+  });
+  it('drops builder database ids that have no Pecan connector (embase/cochrane)', () => {
+    expect(selectSourceIds({ databases: ['pubmed', 'embase', 'cochrane'], selectableIds: selectable })).toEqual(['pubmed']);
+  });
+  it('falls back to ALL selectable when nothing chosen is runnable (never an empty run)', () => {
+    expect(selectSourceIds({ databases: ['embase', 'cochrane', 'scopus'], selectableIds: selectable })).toEqual(selectable);
+  });
+});
+
 describe('pecanSearchApi network-backed helpers (fetch stubbed)', () => {
   const realFetch = global.fetch;
 
@@ -82,7 +103,7 @@ describe('pecanSearchApi network-backed helpers (fetch stubbed)', () => {
     global.fetch = realFetch;
   });
 
-  it('loadCanonicalQuery reads the search-builder backend and shapes { concepts, filters }', async () => {
+  it('loadCanonicalQuery reads the search-builder backend and shapes { concepts, filters, databases }', async () => {
     global.fetch = async (url) => {
       expect(url).toBe('/api/search-builder/p1');
       return { ok: true, status: 200, text: async () => JSON.stringify({ concepts: [{ id: 'c1', terms: [{ text: 'diabetes' }] }], revision: 3 }) };
@@ -91,6 +112,18 @@ describe('pecanSearchApi network-backed helpers (fetch stubbed)', () => {
     expect(q.concepts).toHaveLength(1);
     expect(q.filters).toBeTruthy();
     expect(q.revision).toBe(3);
+    // prompt60 seam fix #1/#2 — databases + readyForScreening are surfaced (defaulted here).
+    expect(q.databases).toEqual([]);
+    expect(q.readyForScreening).toBe(false);
+    global.fetch = realFetch;
+  });
+
+  it('loadCanonicalQuery surfaces the persisted databases + readyForScreening (prompt60)', async () => {
+    global.fetch = async () => ({ ok: true, status: 200, text: async () => JSON.stringify({ concepts: [{ id: 'c1', terms: [{ text: 'x' }] }], databases: ['pubmed', 'embase'], readyForScreening: true, overrides: { pubmed: 'OVR' } }) });
+    const q = await loadCanonicalQuery('p1');
+    expect(q.databases).toEqual(['pubmed', 'embase']);
+    expect(q.readyForScreening).toBe(true);
+    expect(q.overrides).toEqual({ pubmed: 'OVR' });
     global.fetch = realFetch;
   });
 
@@ -101,11 +134,20 @@ describe('pecanSearchApi network-backed helpers (fetch stubbed)', () => {
     global.fetch = realFetch;
   });
 
-  it('pecanSearchFlagEnabled reads the public flag, default OFF on error', async () => {
-    global.fetch = async () => ({ ok: true, json: async () => ({ featureFlags: { pecanSearch: true } }) });
+  it('pecanSearchFlagEnabled requires BOTH pecanSearch AND searchEngine (prompt 60 co-dependency)', async () => {
+    // both ON → enabled
+    global.fetch = async () => ({ ok: true, json: async () => ({ featureFlags: { pecanSearch: true, searchEngine: true } }) });
     expect(await pecanSearchFlagEnabled()).toBe(true);
-    global.fetch = async () => ({ ok: true, json: async () => ({ featureFlags: { pecanSearch: false } }) });
+    // pecanSearch ON but its dependency searchEngine OFF → inert
+    global.fetch = async () => ({ ok: true, json: async () => ({ featureFlags: { pecanSearch: true, searchEngine: false } }) });
     expect(await pecanSearchFlagEnabled()).toBe(false);
+    // pecanSearch alone (no searchEngine key) → inert
+    global.fetch = async () => ({ ok: true, json: async () => ({ featureFlags: { pecanSearch: true } }) });
+    expect(await pecanSearchFlagEnabled()).toBe(false);
+    // pecanSearch OFF → off regardless
+    global.fetch = async () => ({ ok: true, json: async () => ({ featureFlags: { pecanSearch: false, searchEngine: true } }) });
+    expect(await pecanSearchFlagEnabled()).toBe(false);
+    // network error → safe default OFF
     global.fetch = async () => { throw new Error('down'); };
     expect(await pecanSearchFlagEnabled()).toBe(false);
     global.fetch = realFetch;

@@ -251,10 +251,30 @@ export function stableStringify(value) {
   return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(value[k])}`).join(',')}}`;
 }
 
+/** prompt60 — normalize the search-scope limits block to { dateFrom, dateTo,
+ *  languages[], pubTypes[] }, or return undefined when every field is empty. Pure.
+ *  Returning undefined keeps pre-filters persisted signatures byte-identical (a key
+ *  set to undefined is omitted by stableStringify), so existing saves never appear
+ *  "changed" and never trigger a spurious autosave. */
+export function normalizePersistedFilters(raw) {
+  const f = raw && typeof raw === 'object' ? raw : {};
+  const str = (v, n) => (typeof v === 'string' ? v : '').slice(0, n).trim();
+  const arr = (v, n, cap) => (Array.isArray(v) ? v.map((x) => str(x, n)).filter(Boolean).slice(0, cap) : []);
+  const out = {
+    dateFrom: str(f.dateFrom, 10),
+    dateTo: str(f.dateTo, 10),
+    languages: arr(f.languages, 20, 20),
+    pubTypes: arr(f.pubTypes, 60, 40),
+  };
+  const empty = !out.dateFrom && !out.dateTo && !out.languages.length && !out.pubTypes.length;
+  return empty ? undefined : out;
+}
+
 /** The shared, persisted slice of the tab state (everything that rides to the server).
  *  SB3 adds `databases` (selected database ids; [] = use the catalogue defaults) and
- *  `readyForScreening` (advisory handoff marker). Both are additive + optional, so
- *  pre-SB3 saved searches load unchanged. */
+ *  `readyForScreening` (advisory handoff marker). prompt60 adds `filters` (search
+ *  scope limits), included ONLY when non-empty so pre-filters saves load unchanged.
+ *  All additive + optional, so pre-SB3 saved searches load unchanged. */
 export function pickPersisted(state) {
   return {
     concepts: Array.isArray(state && state.concepts) ? state.concepts : [],
@@ -264,6 +284,8 @@ export function pickPersisted(state) {
     readyForScreening: !!(state && state.readyForScreening),
     // SB4 — keys of Search-Quality/duplicate warnings the user has dismissed ("keep anyway").
     dismissedWarnings: Array.isArray(state && state.dismissedWarnings) ? state.dismissedWarnings.filter((s) => typeof s === 'string') : [],
+    // prompt60 — search-scope limits; undefined (and thus omitted) when empty.
+    filters: normalizePersistedFilters(state && state.filters),
   };
 }
 

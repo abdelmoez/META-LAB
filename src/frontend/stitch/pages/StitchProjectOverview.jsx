@@ -42,7 +42,7 @@ import {
 
 const PHASE_STEPS = {
   Plan:    ['pico', 'prospero'],
-  Search:  ['search', 'discovery'],
+  Search:  ['search'],
   Screen:  ['screening', 'prisma'],
   Extract: ['extraction', 'rob'],
   Analyze: ['analysis', 'forest', 'sensitivity', 'subgroup'],

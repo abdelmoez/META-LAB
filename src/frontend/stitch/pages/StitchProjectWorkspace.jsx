@@ -56,8 +56,9 @@ const LazyControl     = lazy(() => import('../../workspace/tabs/overviewTabs.jsx
 const LazyScreening   = lazy(() => import('../../workspace/tabs/overviewTabs.jsx').then((m) => ({ default: m.ScreeningWorkspaceFrame })));
 const LazyPico        = lazy(() => import('../../workspace/tabs/protocolTabs.jsx').then((m) => ({ default: m.PICODispatcher })));
 const LazyProtocol    = lazy(() => import('../../../features/planProtocol/index.js').then((m) => ({ default: m.PlanProtocolDispatcher })));
-const LazySearch      = lazy(() => import('../../workspace/tabs/protocolTabs.jsx').then((m) => ({ default: m.SearchDispatcher })));
-const LazyDiscovery   = lazy(() => import('../../workspace/tabs/protocolTabs.jsx').then((m) => ({ default: m.DiscoveryDispatcher })));
+// prompt60 — the unified Search wizard (Define → Build → Run) replaces the two former
+// SearchDispatcher + DiscoveryDispatcher mounts.
+const LazySearch      = lazy(() => import('../../workspace/tabs/protocolTabs.jsx').then((m) => ({ default: m.SearchWizardDispatcher })));
 const LazyPrisma      = lazy(() => import('../../workspace/tabs/screeningTabs.jsx').then((m) => ({ default: m.PRISMATab })));
 const LazyExtraction  = lazy(() => import('../../workspace/tabs/extractionTabs.jsx').then((m) => ({ default: m.ExtractionTab })));
 const LazyRob         = lazy(() => import('../../workspace/tabs/robTabs.jsx').then((m) => ({ default: m.RoBTab })));
@@ -75,7 +76,9 @@ const LazyExportDialog = lazy(() => import('../../components/ExportDialog.jsx'))
 // Every workflow stage that has a native page here. Anything not in this set falls
 // through to the (already native) project overview, so deep links never break.
 const SCOPE = new Set([
-  'control', 'pico', 'prospero', 'search', 'discovery', 'screening', 'prisma',
+  // prompt60 — 'discovery' folded into 'search'; ?tab=discovery normalizes to 'search'
+  // (activeProjectStage) so it still resolves inside this scope.
+  'control', 'pico', 'prospero', 'search', 'screening', 'prisma',
   'extraction', 'rob', 'analysis', 'forest', 'sensitivity', 'subgroup', 'nma', 'grade',
   'manuscript', 'report', 'methods',
 ]);
@@ -243,9 +246,10 @@ function DeepToolPage({ stage }) {
   } else if (stage === 'prospero') {
     body = (<LazyProtocol project={project} activeId={projectId} upd={doc.upd} />);
   } else if (stage === 'search') {
-    body = (<LazySearch project={project} activeId={projectId} updNested={doc.updNested} upd={doc.upd} />);
-  } else if (stage === 'discovery') {
-    body = (<LazyDiscovery project={project} activeId={projectId} readOnly={readOnly} />);
+    // prompt60 — ONE unified Search stage (Define → Build → Run). ?tab=discovery is
+    // normalized to 'search' upstream (activeProjectStage), so the old discovery deep
+    // link lands here on the wizard's Run step instead of 404ing.
+    body = (<LazySearch project={project} activeId={projectId} updNested={doc.updNested} upd={doc.upd} readOnly={readOnly} />);
   } else if (stage === 'prisma') {
     body = (<LazyPrisma project={project} updNested={doc.updNested} updateProject={doc.updateProject} activeId={projectId} setTab={goStage} />);
   } else if (stage === 'extraction') {

@@ -54,6 +54,28 @@ export function sanitizeIgnored(raw) {
   return out;
 }
 
+/**
+ * Normalize the persisted `filters` block (prompt 60 — seam fix #3). The Pecan
+ * Search AST already reads/applies a { dateFrom, dateTo, languages[], pubTypes[] }
+ * filters block (server/pecanSearch/query/ast.js), but the Search Builder never
+ * persisted it. Mirror the AST's defensive clamps here so the saved shape is
+ * exactly what the engine consumes. Always returns the full shape (empty fields
+ * when absent). Exported for unit tests.
+ */
+export function sanitizeFilters(raw) {
+  const f = raw && typeof raw === 'object' ? raw : {};
+  const str = (v, n) => (typeof v === 'string' ? v : '').slice(0, n).trim();
+  const arr = (v, n, cap) => (Array.isArray(v)
+    ? v.map((x) => str(x, n)).filter(Boolean).slice(0, cap)
+    : []);
+  return {
+    dateFrom: str(f.dateFrom, 10),
+    dateTo: str(f.dateTo, 10),
+    languages: arr(f.languages, 20, 20),
+    pubTypes: arr(f.pubTypes, 60, 40),
+  };
+}
+
 async function searchEngineEnabled() {
   try {
     const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
@@ -157,6 +179,11 @@ export async function putSearch(req, res) {
       dismissedWarnings: Array.isArray(body.dismissedWarnings)
         ? body.dismissedWarnings.filter((s) => typeof s === 'string').slice(0, 200)
         : [],
+      // prompt60 — search scope limits (date range / languages / publication types).
+      // The Pecan Search AST already reads this block but it was never persisted; the
+      // Search Wizard's Limits panel writes it here. JSON in WorkflowModuleState → no
+      // migration. Defensive clamp via sanitizeFilters.
+      filters: sanitizeFilters(body.filters),
     };
     // baseRevision null = overwrite (the contract's PUT is a full upsert; the
     // search builder is single-strategy-per-project so last-write-wins is fine).

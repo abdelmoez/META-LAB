@@ -19,6 +19,7 @@ import { ProtocolModulePanel, TIMEFRAME_OPTIONS, STUDY_DESIGNS } from "../../../
 import { workflowStateFlagEnabled } from "../../../services/workflowState/api.js";
 import { SearchBuilderTab, searchBuilderApi, loadSearch as sbLoad, saveSearch as sbSave, searchEngineFlagEnabled } from "../../../features/searchBuilder/index.js";
 import { PecanSearchTab, pecanSearchFlagEnabled } from "../../../features/pecanSearch/index.js";
+import { SearchWizard } from "../../../features/searchWizard/index.js";
 
 /* fmtDate — verbatim copy of the monolith module-local helper (the monolith
    keeps its own copy for its other consumers). */
@@ -282,6 +283,32 @@ function DiscoveryDispatcher({project,activeId,readOnly}){
     </div>
   );
   return <PecanSearchTab projectId={activeId} pico={project.pico} readOnly={readOnly}/>;
+}
+
+/* prompt60 — the UNIFIED Search stage. Replaces SearchDispatcher + DiscoveryDispatcher
+   with one 3-step wizard (Define → Build → Run), mounted for the single `search` tab in
+   both shells. Flag reconciliation:
+     · searchEngine OFF                       → legacy in-blob SearchTab (unchanged).
+     · searchEngine ON, pecanSearch OFF/dep   → wizard Steps 1–2 work; the Run step shows
+                                                a clear "enable Search & Discovery in Ops"
+                                                note instead of a silent 404.
+     · both ON                                → full wizard incl. the live run + import.
+   pecanSearchFlagEnabled() already enforces the pecanSearch→searchEngine co-dependency,
+   so `pecan` here is true only when the run can actually execute. */
+function SearchWizardDispatcher({project,activeId,updNested,upd,readOnly}){
+  const[flags,setFlags]=useState(null); // null=checking; {searchEngine,pecan}
+  useEffect(()=>{let dead=false;
+    (async()=>{
+      let se=false,ps=false;
+      try{ se=await searchEngineFlagEnabled(); }catch{ se=false; }
+      try{ ps=await pecanSearchFlagEnabled(); }catch{ ps=false; }
+      if(!dead) setFlags({searchEngine:!!se,pecan:!!ps});
+    })();
+    return()=>{dead=true;};
+  },[]);
+  if(flags===null) return <div style={{padding:40,textAlign:"center",color:C.muted,fontSize:13}}>Loading Search…</div>;
+  if(!flags.searchEngine) return <SearchTab project={project} updNested={updNested} upd={upd}/>;
+  return <SearchWizard projectId={activeId} pico={project.pico} readOnly={readOnly} pecanEnabled={flags.pecan}/>;
 }
 
 /* ════════════ TAB: SEARCH ════════════ */
@@ -1616,4 +1643,4 @@ CRITICAL: Stay under ${field.maxLen} characters. Third person, present tense. Ou
   </div>);
 }
 
-export { PICOTab, PICODispatcher, SearchDispatcher, DiscoveryDispatcher, SearchTab, MeSHTab, PROSPEROTab };
+export { PICOTab, PICODispatcher, SearchDispatcher, DiscoveryDispatcher, SearchWizardDispatcher, SearchTab, MeSHTab, PROSPEROTab };

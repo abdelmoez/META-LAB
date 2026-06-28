@@ -10,7 +10,7 @@ import {
   remoteAdoptDecision, syncSearchBuilderFromPico, timeframeLabel, extractFieldTerms,
   conceptFieldKey, PICO_FIELD_DEFS,
   findFieldConcept, fieldHasTerm, addManualTermToField, removeTermFromField,
-  conceptStatus, CONCEPT_STATUS_LABELS, termPicoRole,
+  conceptStatus, CONCEPT_STATUS_LABELS, termPicoRole, normalizePersistedFilters,
 } from '../../src/research-engine/searchBuilder/searchState.js';
 import { norm, picoToConcepts } from '../../src/research-engine/searchBuilder/conceptExtraction.js';
 
@@ -244,6 +244,46 @@ describe('pickPersisted — SB3 databases + readyForScreening', () => {
   });
   it('drops non-string database ids', () => {
     expect(pickPersisted({ databases: ['pubmed', 5, null, 'embase'] }).databases).toEqual(['pubmed', 'embase']);
+  });
+});
+
+/* ── prompt60 — search-scope limits (filters) ────────────────────────────────── */
+
+describe('normalizePersistedFilters — search-scope limits', () => {
+  it('returns undefined for an absent / all-empty filters block (keeps signatures stable)', () => {
+    expect(normalizePersistedFilters(undefined)).toBeUndefined();
+    expect(normalizePersistedFilters(null)).toBeUndefined();
+    expect(normalizePersistedFilters({})).toBeUndefined();
+    expect(normalizePersistedFilters({ dateFrom: '', dateTo: '', languages: [], pubTypes: [] })).toBeUndefined();
+  });
+  it('normalizes a populated block and clamps + caps the fields', () => {
+    const out = normalizePersistedFilters({
+      dateFrom: '2010', dateTo: '2025', languages: ['en', 'es', 5, ''], pubTypes: ['Randomized Controlled Trial'],
+    });
+    expect(out).toEqual({ dateFrom: '2010', dateTo: '2025', languages: ['en', 'es'], pubTypes: ['Randomized Controlled Trial'] });
+    // a single non-empty field is enough to be "active"
+    expect(normalizePersistedFilters({ pubTypes: ['Review'] })).toEqual({ dateFrom: '', dateTo: '', languages: [], pubTypes: ['Review'] });
+  });
+  it('caps the arrays', () => {
+    const out = normalizePersistedFilters({ languages: Array.from({ length: 40 }, (_, i) => `l${i}`) });
+    expect(out.languages.length).toBe(20);
+  });
+});
+
+describe('pickPersisted / serializeSearchState — filters round-trip (prompt60)', () => {
+  it('omits filters from the persisted slice when empty (no signature drift for old saves)', () => {
+    const before = serializeSearchState({ concepts: [], overrides: {}, ignored: [] });
+    const withEmpty = serializeSearchState({ concepts: [], overrides: {}, ignored: [], filters: { dateFrom: '', dateTo: '', languages: [], pubTypes: [] } });
+    expect(withEmpty).toBe(before); // byte-identical → no spurious autosave
+    expect(pickPersisted({ concepts: [] }).filters).toBeUndefined();
+  });
+  it('round-trips a populated filters block and changes the signature (autosave fires)', () => {
+    const base = { concepts: [], overrides: {}, ignored: [], databases: [] };
+    const withFilters = { ...base, filters: { dateFrom: '2015', dateTo: '', languages: ['en'], pubTypes: [] } };
+    expect(pickPersisted(withFilters).filters).toEqual({ dateFrom: '2015', dateTo: '', languages: ['en'], pubTypes: [] });
+    expect(serializeSearchState(withFilters)).not.toBe(serializeSearchState(base));
+    // changing a filter changes the signature
+    expect(serializeSearchState(withFilters)).not.toBe(serializeSearchState({ ...withFilters, filters: { ...withFilters.filters, dateFrom: '2016' } }));
   });
 });
 

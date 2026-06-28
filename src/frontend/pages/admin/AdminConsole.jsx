@@ -4772,9 +4772,9 @@ const FLAG_META = [
   { key: 'exportTools',          label: 'Export Tools',          desc: 'Allow project and data exports in various formats.' },
   { key: 'rob_engine_v2',        label: 'Risk of Bias (RoB 2)',  desc: 'Enable the PecanRev RoB 2 assessment workspace (beta). Off by default until validated.' },
   { key: 'serverBackedWorkflowState', label: 'Server-Backed Workflow State', desc: 'Persist migrated workflow modules (Protocol, Search Builder) server-side with revision-based conflict detection. Off keeps the legacy whole-project autosave.' },
-  { key: 'searchEngine',         label: 'Search Builder Engine', desc: 'Enable the new concept→multi-database Search Builder (MeSH lookup + live PubMed counts via the NLM proxy). Off keeps the legacy in-app search builder.' },
+  { key: 'searchEngine',         label: 'Search Builder Engine', desc: 'Enable the new concept→multi-database Search Builder (MeSH lookup + live PubMed counts via the NLM proxy). Off keeps the legacy in-app search builder. Required by the Pecan Search Engine.' },
   { key: 'aiScreening',          label: 'AI Screening Engine',   desc: 'Enable the PecanRev Screening Intelligence Engine: deterministic TF-IDF + active-learning relevance scoring, ranking, explanations, and validation metrics inside the screening workbench. Assistive only — human decisions are never automated. Off by default until validated. Configure global policy in Screening → AI Policy.' },
-  { key: 'pecanSearch',          label: 'Pecan Search Engine',   desc: 'Enable the concept→multi-database literature search engine (PubMed, Europe PMC, ClinicalTrials.gov, Crossref, DOAJ, OpenAlex, Semantic Scholar) with query translation, count previews, deduplicated runs, and exportable reports. Off by default until provisioned. Configure providers, caps, concurrency, and queue health in Search Providers.' },
+  { key: 'pecanSearch',          label: 'Pecan Search Engine',   requires: 'searchEngine', desc: 'Requires the Search Builder Engine (above) — it runs the strategy you build there. Enable the concept→multi-database literature search engine (PubMed, Europe PMC, ClinicalTrials.gov, Crossref, DOAJ, OpenAlex, Semantic Scholar) with query translation, count previews, deduplicated runs, and exportable reports. Off by default until provisioned. Configure providers, caps, concurrency, and queue health in Search Providers.' },
   { key: 'betaWaitlist',         label: 'Beta Waitlist Landing Page', desc: 'When ON, unauthenticated visitors to the homepage ( / ) see the Beta Waitlist sign-up page instead of the standard landing page. Signed-in users and the login/register pages are unaffected. The existing landing page is preserved and returns when this is OFF. Manage applicants in the Beta Waitlist tab. Preview at /beta-waitlist.' },
   { key: 'networkMetaAnalysis',  label: 'Network Meta-Analysis', desc: 'Enable the Network Meta-Analysis workspace tab: compare 3+ treatments via direct + indirect evidence (league table, P-score ranking, network geometry, node-split + global inconsistency, contribution matrix). Deterministic frequentist engine, validated against the pairwise engine; runs server-side via /api/nma. Off by default. Bayesian NMA is a planned follow-on.' },
 ];
@@ -4798,15 +4798,27 @@ function FlagsSection() {
     <div>
       <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 20px' }}>Feature Flags</h2>
       <SectionCard>
-        {FLAG_META.map((f, i) => (
+        {FLAG_META.map((f, i) => {
+          // Prompt 60 — surface an unmet flag dependency (e.g. Pecan Search requires
+          // the Search Builder Engine). The toggle stays clickable (so flags remain
+          // independently togglable for tests/ops), but the feature is inert server-side
+          // until its dependency is ON, and we say so plainly.
+          const depUnmet = f.requires && !flags[f.requires];
+          return (
           <div key={f.key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', borderBottom: i < FLAG_META.length - 1 ? `1px solid ${C.brd}` : 'none', gap: 20 }}>
             <div>
               <div style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>{f.label}</div>
               <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>{f.desc}</div>
+              {depUnmet && !!flags[f.key] && (
+                <div style={{ fontSize: 11, color: C.yel, marginTop: 5, fontWeight: 600 }}>
+                  ⚠ Inactive: enable “{(FLAG_META.find(x => x.key === f.requires) || {}).label || f.requires}” first — this feature stays off until then.
+                </div>
+              )}
             </div>
             <Toggle checked={!!flags[f.key]} onChange={v => setFlags(fl => ({ ...fl, [f.key]: v }))} />
           </div>
-        ))}
+          );
+        })}
       </SectionCard>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}><SaveButton onClick={save} status={status} /></div>
     </div>

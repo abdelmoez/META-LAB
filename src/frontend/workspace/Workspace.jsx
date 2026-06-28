@@ -88,7 +88,7 @@ import { PlanProtocolDispatcher } from "../../features/planProtocol/index.js";
 import { AuditPanel, ProjectTitle, ProjectHeaderBar, ScreeningWorkspaceFrame, EmbeddedScreening, OverviewTab, ControlTab } from "./tabs/overviewTabs.jsx";
 
 /* ════════════ PROTOCOL / SEARCH / MeSH / PROSPERO TABS (extracted prompt46 Phase 6c — verbatim) ════════════ */
-import { PICOTab, PICODispatcher, SearchDispatcher, DiscoveryDispatcher, SearchTab, MeSHTab } from "./tabs/protocolTabs.jsx";
+import { PICOTab, PICODispatcher, SearchWizardDispatcher, SearchTab, MeSHTab } from "./tabs/protocolTabs.jsx";
 
 /* ════════════ DATA-EXTRACTION TAB + STUDY EDITORS (extracted prompt46 Phase 6e — verbatim) ════════════ */
 import { ESCalcInline, ConversionPanel, AddStudyModal, StudyCard, ExtractionTab } from "./tabs/extractionTabs.jsx";
@@ -232,7 +232,9 @@ let _versionCache=null; // module-level so remounts don't refetch (same pattern 
 export default function MetaLab({ initialProjectId = null, initialTab = null, onProjectChange = null, onTabChange = null, onBackToProjects = null } = {}){
   const[projects,setProjects]=useState([]);
   const[activeId,setActiveId]=useState(null);
-  const[tab,setTab]=useState(initialTab||"overview"); // Overview is the landing tab (prompt6 Task 15); a ?tab= deep-link (e.g. screening) overrides on first open
+  // prompt60 — the former `discovery` stage folded into `search`; normalize old deep
+  // links so ?tab=discovery opens the unified Search wizard instead of a blank tab.
+  const[tab,setTab]=useState((initialTab==="discovery"?"search":initialTab)||"overview"); // Overview is the landing tab (prompt6 Task 15); a ?tab= deep-link (e.g. screening) overrides on first open
   // prompt34 Task 8 — ONE unified workflow-menu collapse for EVERY project tab
   // (Overview … Project Control AND Screening). The universal header's ☰ toggles
   // it; the sidebar slides away and the workspace gains the full width. The choice
@@ -320,7 +322,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
       if(res?.value){pjs=JSON.parse(res.value);setProjects(pjs);}
     }catch(_){}
     if(want){
-      if(pjs.some(p=>p.id===want)){setActiveId(want);setTab(initialTab||"overview");}
+      if(pjs.some(p=>p.id===want)){setActiveId(want);setTab((initialTab==="discovery"?"search":initialTab)||"overview");}
       // NEVER silently fall back to the first project — show the explicit
       // no-access panel instead (rendered in the main content area).
       else setDeepLinkMiss(want);
@@ -359,7 +361,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   // so it never fights the one-way tab→URL sync above (which uses replace, so
   // in-app stage switches stay out of history — no back-button spam).
   useEffect(()=>{
-    if(initialTab) setTab(t=> initialTab!==t ? initialTab : t);
+    if(initialTab){ const it=initialTab==="discovery"?"search":initialTab; setTab(t=> it!==t ? it : t); }
   },[initialTab]);
 
   // Debouncing is handled inside window.storage.set (serverStorage.js).
@@ -1545,8 +1547,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
             onDeleted={(delId)=>{setProjects(prev=>prev.filter(p=>p.id!==delId));if(onBackToProjects)onBackToProjects();else setActiveId(null);}}/>}
           {tab==="pico"&&<PICODispatcher project={project} activeId={activeId} updNested={updNested} upd={upd} lockCtx={{pid:spId,myUserId:authUser?.id,locks:presenceLocks}}/>}
           {tab==="prospero"&&<PlanProtocolDispatcher project={project} activeId={activeId} upd={upd}/>}
-          {tab==="search"&&<SearchDispatcher project={project} activeId={activeId} updNested={updNested} upd={upd}/>}
-          {tab==="discovery"&&<DiscoveryDispatcher project={project} activeId={activeId} readOnly={projectPerms(project).readOnly}/>}
+          {tab==="search"&&<SearchWizardDispatcher project={project} activeId={activeId} updNested={updNested} upd={upd} readOnly={projectPerms(project).readOnly}/>}
           {tab==="prisma"&&<PRISMATab project={project} updNested={updNested} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
           {tab==="extraction"&&<ExtractionTab project={project} updateProject={updateProject} activeId={activeId}/>}
           {tab==="rob"&&<RoBTab project={project} updateProject={updateProject} activeId={activeId} setTab={setTab} onWorkspaceChange={setRobInWorkspace}/>}

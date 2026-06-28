@@ -30,11 +30,20 @@ export async function loadProviderSettings() {
   } catch { return {}; }
 }
 
-/** The `pecanSearch` global feature flag (default OFF → endpoints 404). */
+/**
+ * The `pecanSearch` global feature flag (default OFF → endpoints 404).
+ *
+ * Prompt 60 — co-dependency: Pecan Search runs the strategy built by the Search
+ * Builder, so it is INERT unless `searchEngine` is also ON. Enforcing it here (the
+ * single server gate every /api/pecan-search endpoint calls) means a stored
+ * `pecanSearch:true, searchEngine:false` state can never launch a run — the engine
+ * is silent without its dependency, regardless of how the flags were toggled.
+ */
 export async function pecanSearchEnabled() {
   try {
     const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
-    return !!(row && JSON.parse(row.value || '{}').pecanSearch === true);
+    const flags = JSON.parse(row && row.value ? row.value : '{}');
+    return flags.pecanSearch === true && flags.searchEngine === true;
   } catch { return false; }
 }
 
