@@ -13,6 +13,7 @@ import Icon from '../components/icons.jsx';
 // Theme-aware tokens (prompt7) — C values are `var(--t-*)` strings; use
 // alpha(C.x, '40') instead of hex+alpha concatenation.
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
+import BrandWordmark from '../components/BrandWordmark.jsx';
 import { DEFAULT_SCREENING_SHORTCUTS, parseScreeningShortcuts, keyLabel } from '../screening/screeningShortcuts.js';
 import InstitutionAutocomplete from '../components/InstitutionAutocomplete.jsx';
 
@@ -488,9 +489,7 @@ export default function Profile() {
         </button>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'default' }}>
           <span style={{ display: 'inline-flex', color: C.acc }}><Icon name="hexagon" size={16} /></span>
-          <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: '0.07em', color: C.txt }}>
-            META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>LAB
-          </span>
+          <BrandWordmark size={13} weight={700} letterSpacing="0.07em" />
         </div>
       </div>
 

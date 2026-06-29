@@ -2,7 +2,8 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { register } from "../auth/authClient.js";
 import { Icon } from "../components/icons.jsx";
-import { C, FONT, MONO, alpha } from "../theme/tokens.js";
+import { C, FONT, alpha } from "../theme/tokens.js";
+import BrandWordmark from "../components/BrandWordmark.jsx";
 
 /* ── Shared input / label tokens ─────────────────────────────────────────── */
 const inputBase = {
@@ -219,7 +220,7 @@ export default function Register({ onSuccess, onBack }) {
               lineHeight: 1.1,
             }}
           >
-            META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>LAB
+            <BrandWordmark size={26} weight={700} letterSpacing="0.06em" />
           </div>
           <div style={{ fontSize: 18, fontWeight: 600, color: C.txt, marginTop: 10, lineHeight: 1.3 }}>
             Create your research workspace

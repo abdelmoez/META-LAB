@@ -185,5 +185,27 @@ export function globalOnlineCount(now = Date.now()) {
   return globalOnlineSnapshot(now).size;
 }
 
+/**
+ * 63.md AREA 4 — per-ScreenProject online counts for the project-list cards.
+ * Reads the in-memory `rooms` map (keyed by ScreenProject id) for the supplied
+ * ids and returns `{ [screenProjectId]: activeUserCount }`. A room with no
+ * active heartbeats — or never created — contributes 0. Synchronous, cheap
+ * (only the requested rooms are pruned), and NEVER throws, so listProjects can
+ * attach the count on the hot path without a try/catch. The GLOBAL_ROOM is
+ * never a real ScreenProject id, so it is naturally excluded.
+ */
+export function onlineCountsFor(projectIds, now = Date.now()) {
+  const out = {};
+  if (!Array.isArray(projectIds)) return out;
+  for (const id of projectIds) {
+    if (id == null) continue;
+    const r = rooms.get(id);
+    if (!r) { out[id] = 0; continue; }
+    prune(r, now);
+    out[id] = r.users.size;
+  }
+  return out;
+}
+
 /** Test-only: wipe all rooms. */
 export function _reset() { rooms.clear(); }

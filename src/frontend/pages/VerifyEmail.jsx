@@ -6,7 +6,8 @@
  */
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { C, FONT, MONO, alpha } from '../theme/tokens.js';
+import { C, FONT, alpha } from '../theme/tokens.js';
+import BrandWordmark from '../components/BrandWordmark.jsx';
 import { verifyEmail, resendVerification } from '../auth/authClient.js';
 
 export default function VerifyEmail() {
@@ -37,7 +38,7 @@ export default function VerifyEmail() {
     <div style={{ minHeight: '100vh', background: C.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', fontFamily: FONT, padding: '24px 16px' }}>
       <div style={{ width: '100%', maxWidth: 440, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 14, padding: '40px', boxShadow: `0 24px 48px ${C.shadow}`, textAlign: 'center' }}>
         <div style={{ fontSize: 24, fontWeight: 700, color: C.txt, letterSpacing: '0.06em', marginBottom: 18 }}>
-          META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>LAB
+          <BrandWordmark size={24} weight={700} letterSpacing="0.06em" />
         </div>
         <div style={{ fontSize: 16, fontWeight: 600, color: tone, marginBottom: 10 }}>
           {status === 'verifying' ? 'Verifying your email…' : status === 'ok' ? 'Email verified' : 'Verification failed'}

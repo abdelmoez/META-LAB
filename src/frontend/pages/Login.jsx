@@ -2,7 +2,8 @@ import { useState } from "react";
 import { motion } from "framer-motion";
 import { login } from "../auth/authClient.js";
 import { Icon } from "../components/icons.jsx";
-import { C, FONT, MONO, alpha } from "../theme/tokens.js";
+import { C, FONT, alpha } from "../theme/tokens.js";
+import BrandWordmark from "../components/BrandWordmark.jsx";
 
 /* ── Shared input / label tokens ─────────────────────────────────────────── */
 const inputBase = {
@@ -144,7 +145,7 @@ export default function Login({ onSuccess, onRegister, onForgot }) {
               lineHeight: 1.1,
             }}
           >
-            META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>LAB
+            <BrandWordmark size={26} weight={700} letterSpacing="0.06em" />
           </div>
           <div style={{ fontSize: 14, color: C.muted, marginTop: 8, lineHeight: 1.5 }}>
             Sign in to your research workspace

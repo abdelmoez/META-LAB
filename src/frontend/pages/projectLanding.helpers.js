@@ -73,16 +73,48 @@ export function relTime(iso) {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+   Linked-workspace stats (63.md — real DB-computed counts)
+   ════════════════════════════════════════════════════════════════════════ */
+
+/** Real counts for the linked screening workspace, all defaulting to 0.
+ *  studyCount === recordCount (a "study" is an imported record). When the
+ *  project has no linked workspace every field is 0 so callers can render
+ *  uniformly without null-guards. */
+export function projectStatsOf(p) {
+  const ms = (p && p._linkedMetaSift) || null;
+  const recordCount = (ms && ms.recordCount) || 0;
+  return {
+    recordCount,
+    decidedCount: (ms && ms.decidedCount) || 0,
+    memberCount: (ms && ms.memberCount) || 0,
+    onlineCount: (ms && ms.onlineCount) || 0,
+    studyCount: recordCount, // studies === imported records
+  };
+}
+
+/* ════════════════════════════════════════════════════════════════════════
    Progress signal
    ════════════════════════════════════════════════════════════════════════ */
 
-/** A meaningful progress signal exists only for an actively-screening workspace. */
+/** Real screening progress as a 0..100 percentage.
+ *  Formula: null when the project has no linked workspace OR recordCount === 0
+ *  (no studies to screen yet → no meaningful bar); 100 when progressStatus is
+ *  'done'; otherwise round(decidedCount / recordCount * 100) clamped to 0..100.
+ *  This is a REAL decided/imported ratio — NOT the old hardcoded 50. */
 export function progressOf(p) {
-  const ms = p._linkedMetaSift;
+  const ms = p && p._linkedMetaSift;
   if (!ms) return null;
   if (ms.progressStatus === 'done') return 100;
-  if (ms.progressStatus === 'in_progress') return 50;
-  return null; // not_started / unknown → no fake bar
+  const { recordCount, decidedCount } = projectStatsOf(p);
+  if (recordCount === 0) return null; // nothing imported → no fake bar
+  const pct = Math.round((decidedCount / recordCount) * 100);
+  return Math.max(0, Math.min(100, pct));
+}
+
+/** "Active now" display: "<online> / <total>" when the project has members,
+ *  else "0 members" (never a misleading number when presence is unavailable). */
+export function onlineTotalLabel(online, total) {
+  return total > 0 ? (online + ' / ' + total) : '0 members';
 }
 
 /* ════════════════════════════════════════════════════════════════════════

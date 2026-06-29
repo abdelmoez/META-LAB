@@ -367,11 +367,10 @@ html[data-ui-design="stitch"] .stitch-wsnav:has(.stitch-wsnav-rail:focus-within)
    labels + group headers must stay visible regardless of hover/pin state */
 html[data-ui-design="stitch"] .stitch-prail-static .stitch-prail-label { opacity: 1; }
 html[data-ui-design="stitch"] .stitch-prail-static .stitch-prail-group { max-height: 34px; opacity: 1; }
-/* group headers collapse to nothing while the rail is narrow (no empty gaps) */
-html[data-ui-design="stitch"] .stitch-prail-group { max-height: 0; opacity: 0; overflow: hidden; transition: max-height 140ms ease, opacity 140ms ease; }
-html[data-ui-design="stitch"] .stitch-wsnav[data-pinned="true"] .stitch-prail-group,
-html[data-ui-design="stitch"] .stitch-wsnav:has(.stitch-wsnav-rail:hover) .stitch-prail-group,
-html[data-ui-design="stitch"] .stitch-wsnav:has(.stitch-wsnav-rail:focus-within) .stitch-prail-group { max-height: 34px; opacity: 1; }
+/* 63.md AREA 5 — group headers reserve a CONSTANT 34px box in BOTH collapsed and
+   expanded states so rows never shift on hover-expand. The title TEXT is revealed
+   by the inner .stitch-prail-label opacity (above), NOT by growing the box height. */
+html[data-ui-design="stitch"] .stitch-prail-group { height: 34px; overflow: hidden; }
 
 @media (prefers-reduced-motion: reduce) {
   html[data-ui-design="stitch"] .stitch-fade-in,

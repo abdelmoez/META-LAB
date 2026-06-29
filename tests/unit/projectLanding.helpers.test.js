@@ -32,6 +32,7 @@ vi.mock('../../src/frontend/theme/tokens.js', () => {
 
 import {
   statusOf, roleOf, isOwnerOf, canEditOf, relTime, progressOf,
+  projectStatsOf, onlineTotalLabel,
   FILTERS, SORTS, ROLE_ORDER, ROLE_LABEL, ROLE_COLOR, STATUS_META, TAG_COLORS,
 } from '../../src/frontend/pages/projectLanding.helpers.js';
 
@@ -58,14 +59,14 @@ const sharedReviewer = {
   _permissions: { isOwner: false, canEdit: false, role: 'reviewer' },
 };
 
-/** Project with a linked workspace in progress. */
+/** Project with a linked workspace in progress (60 of 200 records decided). */
 const linkedInProgress = {
   id: 'p3',
   name: 'Linked WS Project',
   updatedAt: '2025-03-20T10:00:00Z',
   createdAt: '2025-03-01T00:00:00Z',
   _permissions: { isOwner: true, canEdit: true, role: 'owner' },
-  _linkedMetaSift: { id: 'ws1', progressStatus: 'in_progress' },
+  _linkedMetaSift: { id: 'ws1', progressStatus: 'in_progress', recordCount: 200, decidedCount: 60, memberCount: 5, onlineCount: 2 },
 };
 
 /** Project with a linked workspace that is done. */
@@ -75,7 +76,7 @@ const linkedDone = {
   updatedAt: '2025-04-01T00:00:00Z',
   createdAt: '2025-03-15T00:00:00Z',
   _permissions: { isOwner: false, canEdit: false, role: 'leader' },
-  _linkedMetaSift: { id: 'ws2', progressStatus: 'done' },
+  _linkedMetaSift: { id: 'ws2', progressStatus: 'done', recordCount: 120, decidedCount: 120, memberCount: 3, onlineCount: 0 },
 };
 
 /** Archived project. */
@@ -300,17 +301,85 @@ describe('progressOf', () => {
     expect(progressOf({})).toBeNull();
   });
 
-  it('returns 100 when done', () => {
+  it('returns 100 when progressStatus is done', () => {
     expect(progressOf(linkedDone)).toBe(100);
   });
 
-  it('returns 50 when in_progress', () => {
-    expect(progressOf(linkedInProgress)).toBe(50);
+  it('returns the real decided/record ratio when in_progress (60/200 → 30)', () => {
+    expect(progressOf(linkedInProgress)).toBe(30);
   });
 
-  it('returns null for not_started / unknown progressStatus', () => {
-    const p = { _linkedMetaSift: { progressStatus: 'not_started' } };
-    expect(progressOf(p)).toBeNull();
+  it('rounds the ratio to a whole percent', () => {
+    // 1 of 3 decided → 33.33% → 33
+    const p = { _linkedMetaSift: { progressStatus: 'in_progress', recordCount: 3, decidedCount: 1 } };
+    expect(progressOf(p)).toBe(33);
+  });
+
+  it('clamps the ratio to 0..100', () => {
+    const over = { _linkedMetaSift: { progressStatus: 'in_progress', recordCount: 10, decidedCount: 25 } };
+    expect(progressOf(over)).toBe(100);
+    const under = { _linkedMetaSift: { progressStatus: 'in_progress', recordCount: 10, decidedCount: -5 } };
+    expect(progressOf(under)).toBe(0);
+  });
+
+  it('returns null when the workspace has no imported records (empty state, NOT 0)', () => {
+    const empty = { _linkedMetaSift: { progressStatus: 'in_progress', recordCount: 0, decidedCount: 0 } };
+    expect(progressOf(empty)).toBeNull();
+    // not_started with no counts is likewise an empty state → null
+    const notStarted = { _linkedMetaSift: { progressStatus: 'not_started' } };
+    expect(progressOf(notStarted)).toBeNull();
+  });
+
+  it('returns 0 when records exist but none are decided yet', () => {
+    const fresh = { _linkedMetaSift: { progressStatus: 'in_progress', recordCount: 80, decidedCount: 0 } };
+    expect(progressOf(fresh)).toBe(0);
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   projectStatsOf
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+describe('projectStatsOf', () => {
+  it('returns real counts from the linked workspace (studyCount === recordCount)', () => {
+    expect(projectStatsOf(linkedInProgress)).toEqual({
+      recordCount: 200, decidedCount: 60, memberCount: 5, onlineCount: 2, studyCount: 200,
+    });
+  });
+
+  it('defaults every field to 0 when there is no linked workspace', () => {
+    expect(projectStatsOf(ownedActive)).toEqual({
+      recordCount: 0, decidedCount: 0, memberCount: 0, onlineCount: 0, studyCount: 0,
+    });
+    expect(projectStatsOf({})).toEqual({
+      recordCount: 0, decidedCount: 0, memberCount: 0, onlineCount: 0, studyCount: 0,
+    });
+  });
+
+  it('coerces missing/partial linked fields to 0', () => {
+    const partial = { _linkedMetaSift: { recordCount: 42 } };
+    const s = projectStatsOf(partial);
+    expect(s.recordCount).toBe(42);
+    expect(s.studyCount).toBe(42);
+    expect(s.decidedCount).toBe(0);
+    expect(s.memberCount).toBe(0);
+    expect(s.onlineCount).toBe(0);
+  });
+});
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   onlineTotalLabel
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+describe('onlineTotalLabel', () => {
+  it('formats "<online> / <total>" when there are members', () => {
+    expect(onlineTotalLabel(2, 5)).toBe('2 / 5');
+    expect(onlineTotalLabel(0, 5)).toBe('0 / 5');
+  });
+
+  it('returns "0 members" when total is 0 (never a misleading number)', () => {
+    expect(onlineTotalLabel(0, 0)).toBe('0 members');
+    expect(onlineTotalLabel(3, 0)).toBe('0 members');
   });
 });
 

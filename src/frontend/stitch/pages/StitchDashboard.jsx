@@ -15,12 +15,13 @@
  * "PecanRev" with a prominent "Welcome, [first name]". All data shown is real;
  * empty/loading/error states are first-class.
  */
-import { useEffect, useMemo, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { api } from '../../api-client/apiClient.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import {
   STATUS_META, statusOf, roleOf, isOwnerOf, canEditOf, relTime, progressOf, ROLE_LABEL,
+  projectStatsOf, onlineTotalLabel, readDashboardPrefs, writeDashboardPrefs,
 } from '../../pages/projectLanding.helpers.js';
 import StitchAppShell from '../shell/StitchAppShell.jsx';
 import {
@@ -221,6 +222,7 @@ function ProjectRow({ p, onOpen, onAction }) {
   const pct = progressOf(p);
   const owner = isOwnerOf(p);
   const canEdit = canEditOf(p);
+  const stats = projectStatsOf(p);
   return (
     <StitchCard interactive style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
@@ -235,9 +237,9 @@ function ProjectRow({ p, onOpen, onAction }) {
         </div>
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 14px', fontSize: 12, color: S.textMuted, fontWeight: 500 }}>
-        <span>{p._studyCount || 0} studies</span>
-        {p._linkedMetaSift ? <span>{p._linkedMetaSift.recordCount || 0} records</span> : null}
-        {p._linkedMetaSift ? <span>{p._linkedMetaSift.memberCount || 0} members</span> : null}
+        {p._linkedMetaSift ? <span>{stats.recordCount} records</span> : null}
+        {p._linkedMetaSift ? <span>{stats.decidedCount}/{stats.recordCount} screened</span> : null}
+        {p._linkedMetaSift ? <span>{onlineTotalLabel(stats.onlineCount, stats.memberCount)}</span> : null}
         <span>updated {relTime(p.updatedAt)}</span>
       </div>
       {pct != null ? (
@@ -251,6 +253,86 @@ function ProjectRow({ p, onOpen, onAction }) {
         {owner ? <StitchButton size="sm" variant="neutral" icon={p._archived ? 'refresh' : 'layers'} onClick={() => onAction({ type: p._archived ? 'unarchive' : 'archive', project: p })} aria-label={p._archived ? 'Restore' : 'Archive'} /> : null}
         {owner ? <StitchButton size="sm" variant="ghost" icon="trash" onClick={() => onAction({ type: 'delete', project: p })} aria-label="Delete" style={{ color: S.danger }} /> : null}
       </div>
+    </StitchCard>
+  );
+}
+
+/* ─── Project LIST (semantic table, 63.md AREA 3 List view) ─────────────────
+   A denser, column-oriented alternative to the card grid. Same open / rename /
+   archive / delete handlers as ProjectRow, gated by canEditOf / isOwnerOf.
+   Collapses to a stacked layout below ~720px via the file <style> block. */
+function ProjectListRow({ p, onOpen, onAction }) {
+  const status = statusOf(p);
+  const sm = STATUS_META[status] || {};
+  const pct = progressOf(p);
+  const owner = isOwnerOf(p);
+  const canEdit = canEditOf(p);
+  const stats = projectStatsOf(p);
+  const cell = { padding: '12px 14px', verticalAlign: 'middle', borderBottom: `1px solid ${salpha(S.outlineVariant, 0.35)}` };
+  return (
+    <tr className="stitch-projlist-row"
+      onMouseEnter={(e) => { e.currentTarget.style.background = S.surfaceLow; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+      style={{ transition: 'background 0.15s ease' }}>
+      <td style={{ ...cell, minWidth: 0 }} data-th="Project">
+        <div title={p.name} style={{ fontSize: 14, fontWeight: 700, color: S.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320 }}>
+          {p.name || 'Untitled project'}
+        </div>
+      </td>
+      <td style={cell} data-th="Status">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+          <StitchBadge tone={statusTone(status)} dot>{sm.label || status}</StitchBadge>
+          {pct != null ? (
+            <div style={{ height: 4, width: 88, borderRadius: 99, background: S.surfaceHigh, overflow: 'hidden' }}>
+              <div style={{ width: `${pct}%`, height: '100%', background: pct >= 100 ? S.success : S.brand, borderRadius: 99 }} />
+            </div>
+          ) : null}
+        </div>
+      </td>
+      <td style={{ ...cell, fontSize: 12.5, color: S.textSecondary, whiteSpace: 'nowrap' }} data-th="Members">
+        {p._linkedMetaSift ? onlineTotalLabel(stats.onlineCount, stats.memberCount) : '—'}
+      </td>
+      <td style={{ ...cell, fontSize: 12.5, color: S.textSecondary, whiteSpace: 'nowrap' }} data-th="Records">
+        {p._linkedMetaSift ? `${stats.decidedCount}/${stats.recordCount}` : '—'}
+      </td>
+      <td style={{ ...cell, fontSize: 12.5, color: S.textMuted, whiteSpace: 'nowrap' }} data-th="Updated">
+        {relTime(p.updatedAt)}
+      </td>
+      <td style={cell} data-th="Role">
+        <StitchBadge tone="neutral">{ROLE_LABEL[roleOf(p)] || 'Owner'}</StitchBadge>
+      </td>
+      <td style={{ ...cell, textAlign: 'right', whiteSpace: 'nowrap' }} data-th="Actions">
+        <div style={{ display: 'inline-flex', gap: 6, justifyContent: 'flex-end' }}>
+          <StitchButton size="sm" iconRight="arrowRight" onClick={() => onOpen(p)}>Open</StitchButton>
+          {canEdit ? <StitchButton size="sm" variant="neutral" icon="pencil" onClick={() => onAction({ type: 'rename', project: p })} aria-label="Rename" /> : null}
+          {owner ? <StitchButton size="sm" variant="neutral" icon={p._archived ? 'refresh' : 'layers'} onClick={() => onAction({ type: p._archived ? 'unarchive' : 'archive', project: p })} aria-label={p._archived ? 'Restore' : 'Archive'} /> : null}
+          {owner ? <StitchButton size="sm" variant="ghost" icon="trash" onClick={() => onAction({ type: 'delete', project: p })} aria-label="Delete" style={{ color: S.danger }} /> : null}
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function ProjectList({ projects, onOpen, onAction }) {
+  const th = { padding: '8px 14px', textAlign: 'left', fontSize: 11, fontWeight: 700, letterSpacing: '0.04em', textTransform: 'uppercase', color: S.textMuted, borderBottom: `1px solid ${salpha(S.outlineVariant, 0.5)}`, whiteSpace: 'nowrap' };
+  return (
+    <StitchCard style={{ padding: 0, overflowX: 'auto' }}>
+      <table className="stitch-projlist" style={{ width: '100%', borderCollapse: 'collapse', fontFamily: S.font }}>
+        <thead>
+          <tr>
+            <th style={th}>Project</th>
+            <th style={th}>Status</th>
+            <th style={th}>Members</th>
+            <th style={th}>Records</th>
+            <th style={th}>Updated</th>
+            <th style={th}>Role</th>
+            <th style={{ ...th, textAlign: 'right' }}>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {projects.map((p) => <ProjectListRow key={p.id} p={p} onOpen={onOpen} onAction={onAction} />)}
+        </tbody>
+      </table>
     </StitchCard>
   );
 }
@@ -325,6 +407,23 @@ export default function StitchDashboard() {
   const [filter, setFilter] = useState('all');
   const [createOpen, setCreateOpen] = useState(false);
   const [action, setAction] = useState(null); // {type:'rename'|'archive'|'unarchive'|'delete', project}
+  const [viewMode, setViewMode] = useState('cards'); // 'cards' (default) | 'table'
+
+  // Hydrate the saved Cards/List choice ONCE per user (guarded so later writes
+  // don't re-trigger). Persist on every change to localStorage AND, when the
+  // profile endpoint exists, the server so it follows the user across devices.
+  const prefsHydrated = useRef(false);
+  useEffect(() => {
+    if (prefsHydrated.current) return;
+    prefsHydrated.current = true;
+    const v = readDashboardPrefs(user?.id).view;
+    if (v) setViewMode(v);
+  }, [user?.id]);
+  useEffect(() => {
+    if (!prefsHydrated.current) return;
+    writeDashboardPrefs(user?.id, { view: viewMode });
+    if (api.profile?.update) api.profile.update({ dashboardPreferences: { view: viewMode } }).catch(() => {});
+  }, [viewMode, user?.id]);
 
   const reload = useCallback(async () => {
     setError('');
@@ -344,19 +443,32 @@ export default function StitchDashboard() {
 
   const kpis = useMemo(() => {
     const live = projects.filter((p) => !p._archived);
+    // Aggregate REAL screening progress across live linked workspaces:
+    // totalDecided / totalRecords drives the "Your progress" ring (63.md AREA 2)
+    // — NOT the count of projects whose enum happens to be 'done'.
+    let totalRecords = 0, totalDecided = 0;
+    for (const p of live) {
+      if (!p._linkedMetaSift) continue;
+      const s = projectStatsOf(p);
+      totalRecords += s.recordCount;
+      totalDecided += s.decidedCount;
+    }
     return {
       total: live.length,
       owned: projects.filter((p) => isOwnerOf(p) && !p._archived).length,
       active: projects.filter((p) => { const s = statusOf(p); return s === 'active' || s === 'in_progress'; }).length,
       done: projects.filter((p) => statusOf(p) === 'done').length,
       archived: projects.filter((p) => p._archived).length,
-      studies: projects.reduce((n, p) => n + (p._studyCount || 0), 0),
-      records: projects.reduce((n, p) => n + ((p._linkedMetaSift && p._linkedMetaSift.recordCount) || 0), 0),
+      studies: live.reduce((n, p) => n + projectStatsOf(p).studyCount, 0),
+      records: totalRecords,
+      decided: totalDecided,
     };
   }, [projects]);
 
-  const completionPct = kpis.total + kpis.archived > 0
-    ? Math.round((kpis.done / Math.max(1, kpis.total + kpis.archived)) * 100) : 0;
+  // Real completion = decided records / imported records across live linked
+  // workspaces (clamped 0..100); 0 when nothing is imported yet.
+  const completionPct = kpis.records > 0
+    ? Math.max(0, Math.min(100, Math.round((kpis.decided / kpis.records) * 100))) : 0;
 
   const filtered = useMemo(() => {
     const f = FILTERS.find((x) => x.key === filter) || FILTERS[0];
@@ -403,9 +515,13 @@ export default function StitchDashboard() {
         {loading ? <StitchLoadingState label="Loading archived projects…" />
           : error ? <StitchErrorState title="Couldn't load projects" desc={error} onRetry={reload} />
             : archivedProjects.length ? (
+              viewMode === 'table' ? (
+                <ProjectList projects={archivedProjects} onOpen={openProject} onAction={setAction} />
+              ) : (
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16 }}>
                 {archivedProjects.map((p) => <ProjectRow key={p.id} p={p} onOpen={openProject} onAction={setAction} />)}
               </div>
+              )
             ) : (
               <StitchCard><StitchEmptyState icon="layers" title="No archived projects"
                 desc="Projects you archive from the dashboard will appear here. Archiving keeps a project's data but removes it from your active list." /></StitchCard>
@@ -466,7 +582,7 @@ export default function StitchDashboard() {
                     </span>
                     <span style={{ minWidth: 0, flex: 1 }}>
                       <span style={{ display: 'block', fontSize: 13.5, color: S.textPrimary }}><strong>{p.name || 'Untitled'}</strong> was updated</span>
-                      <span style={{ display: 'block', fontSize: 11.5, color: S.textMuted }}>{relTime(p.updatedAt)} · {p._studyCount || 0} studies</span>
+                      <span style={{ display: 'block', fontSize: 11.5, color: S.textMuted }}>{relTime(p.updatedAt)} · {projectStatsOf(p).studyCount} studies</span>
                     </span>
                     <StitchBadge tone={statusTone(statusOf(p))} dot>{(STATUS_META[statusOf(p)] || {}).label || statusOf(p)}</StitchBadge>
                   </button>
@@ -491,15 +607,25 @@ export default function StitchDashboard() {
                 );
               })}
             </div>
-            <div style={{ width: 240, maxWidth: '100%' }}>
-              <StitchSearchInput value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search projects…" />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <div role="group" aria-label="View as" style={{ display: 'inline-flex', gap: 4, padding: 3, borderRadius: 10, background: S.surfaceLow, border: `1px solid ${S.outlineVariant}` }}>
+                <StitchButton size="sm" icon="grid" variant={viewMode === 'cards' ? 'primary' : 'ghost'} aria-pressed={viewMode === 'cards'} aria-label="Card view" onClick={() => setViewMode('cards')} />
+                <StitchButton size="sm" icon="table" variant={viewMode === 'table' ? 'primary' : 'ghost'} aria-pressed={viewMode === 'table'} aria-label="List view" onClick={() => setViewMode('table')} />
+              </div>
+              <div style={{ width: 240, maxWidth: '100%' }}>
+                <StitchSearchInput value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search projects…" />
+              </div>
             </div>
           </div>
 
           {filtered.length ? (
+            viewMode === 'table' ? (
+              <ProjectList projects={filtered} onOpen={openProject} onAction={setAction} />
+            ) : (
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16 }}>
               {filtered.map((p) => <ProjectRow key={p.id} p={p} onOpen={openProject} onAction={setAction} />)}
             </div>
+            )
           ) : (
             <StitchCard>
               <StitchEmptyState
@@ -519,7 +645,17 @@ export default function StitchDashboard() {
     <StitchAppShell activeKey="dashboard" contextRail={contextRail} breadcrumb={`Dashboard · ${VIEW_LABEL[view] || 'Workspace'}`}>
       {header}
       {content}
-      <style>{`@media (max-width: 900px){ html[data-ui-design="stitch"] .stitch-bento{ grid-template-columns: 1fr !important; } }`}</style>
+      <style>{`
+        @media (max-width: 900px){ html[data-ui-design="stitch"] .stitch-bento{ grid-template-columns: 1fr !important; } }
+        @media (max-width: 720px){
+          html[data-ui-design="stitch"] .stitch-projlist thead{ display: none; }
+          html[data-ui-design="stitch"] .stitch-projlist, html[data-ui-design="stitch"] .stitch-projlist tbody{ display: block; }
+          html[data-ui-design="stitch"] .stitch-projlist-row{ display: block; padding: 6px 4px 10px; }
+          html[data-ui-design="stitch"] .stitch-projlist-row td{ display: flex; justify-content: space-between; gap: 12px; border: none !important; padding: 4px 14px !important; text-align: left !important; }
+          html[data-ui-design="stitch"] .stitch-projlist-row td::before{ content: attr(data-th); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--t-muted, #888); }
+          html[data-ui-design="stitch"] .stitch-projlist-row td[data-th="Actions"]{ justify-content: flex-start; }
+        }
+      `}</style>
       <CreateProjectModal open={createOpen} onClose={() => setCreateOpen(false)} onCreated={() => { setCreateOpen(false); reload(); }} />
       <ActionModal state={action && action.type !== 'delete' ? action : null} onClose={() => setAction(null)} onDone={() => { setAction(null); reload(); }} />
       <DeleteProjectModal project={action && action.type === 'delete' ? action.project : null} onClose={() => setAction(null)} onDone={() => { setAction(null); reload(); }} />

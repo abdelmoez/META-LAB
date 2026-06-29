@@ -13,6 +13,8 @@ import { createLinkedScreenProject } from '../screening/createScreenProject.js';
 import { emitToMetaLabProject, emitToProjectMembers } from '../realtime/bus.js';
 import { writeAudit } from '../screening/access.js';
 import { recordUsage, USAGE } from '../utils/usage.js';
+import { screeningCountSelect, DECIDED_FINAL_STATUSES, classifyDecided } from '../utils/screeningCounts.js';
+import { onlineCountsFor } from '../realtime/presence.js';
 
 const generateId = () => randomBytes(4).toString('hex');
 
@@ -29,9 +31,13 @@ function countsFromBlob(projectObj) {
 }
 
 /**
- * prompt11 — normalise the linked-workspace summary for the card. Accepts the
- * map value from getLinkedSiftByProjectIds; always returns the full shape
- * `{ id, title, progressStatus, recordCount, memberCount }` or null.
+ * prompt11 / 63.md — normalise the linked-workspace summary for the card.
+ * Accepts the map value from screenProjectSummaries; always returns the UNIFORM
+ * shape `{ id, title, progressStatus, recordCount, memberCount, decidedCount,
+ * onlineCount }` or null. Every numeric field defaults to 0 — IDENTICAL shape for
+ * owned and shared projects (63.md data contract). decidedCount/onlineCount are
+ * layered on by listProjects (batched groupBy + in-memory presence) and may be
+ * absent on the base summary, hence the `?? 0` guards.
  */
 function linkedSiftSummary(linked) {
   if (!linked) return null;
@@ -41,6 +47,8 @@ function linkedSiftSummary(linked) {
     progressStatus: linked.progressStatus ?? null,
     recordCount: linked.recordCount ?? 0,
     memberCount: linked.memberCount ?? 0,
+    decidedCount: linked.decidedCount ?? 0,
+    onlineCount: linked.onlineCount ?? 0,
   };
 }
 
@@ -49,7 +57,15 @@ function linkedSiftSummary(linked) {
  * member. `meta` carries prompt11 archive flags `{ archived, archivedAt }` from
  * the live DB row (the blob does not hold these first-class columns).
  */
-function annotateShared(projectObj, acc, owner, meta = {}) {
+function annotateShared(projectObj, acc, owner, meta = {}, linked = null) {
+  // 63.md — prefer the DB-computed summary (full uniform shape) when listProjects
+  // resolved it; fall back to the id/title carried by the membership access so the
+  // card never loses the link even if the summary lookup came back empty.
+  const linkedSift = linked
+    ? linkedSiftSummary(linked)
+    : (acc.screenProjectId
+        ? linkedSiftSummary({ id: acc.screenProjectId, title: acc.screenProjectTitle || '' })
+        : null);
   return {
     ...projectObj,
     _shared: true,
@@ -62,13 +78,15 @@ function annotateShared(projectObj, acc, owner, meta = {}) {
     _archived: !!meta.archived,
     _archivedAt: meta.archivedAt ? new Date(meta.archivedAt).toISOString() : null,
     ...countsFromBlob(projectObj),
+    // 63.md — keep the top-level _recordCount consistent with the linked
+    // screening workspace's real record count when one exists (studies === records);
+    // otherwise the blob-derived count from countsFromBlob stands.
+    ...(linkedSift ? { _recordCount: linkedSift.recordCount } : {}),
     // prompt6 Tasks 3/8 — linked workspace + caller capability flags. All `_`
     // keys are transient and stripped on persist (store.projectToData).
-    // prompt11 — a shared member only has the workspace id/title from access
-    // (no _count batch on this path); progress/record/member counts default.
-    _linkedMetaSift: acc.screenProjectId
-      ? linkedSiftSummary({ id: acc.screenProjectId, title: acc.screenProjectTitle || '' })
-      : null,
+    // 63.md — shared cards now carry the SAME full _linkedMetaSift shape as owned
+    // (recordCount/memberCount/decidedCount/onlineCount), resolved by listProjects.
+    _linkedMetaSift: linkedSift,
     _permissions: {
       role: acc.role,
       isOwner: false,
@@ -87,57 +105,99 @@ function annotateShared(projectObj, acc, owner, meta = {}) {
  * DB row (the blob does not hold these first-class columns).
  */
 function annotateOwned(projectObj, linked, meta = {}) {
+  const linkedSift = linkedSiftSummary(linked);
   return {
     ...projectObj,
     _archived: !!meta.archived,
     _archivedAt: meta.archivedAt ? new Date(meta.archivedAt).toISOString() : null,
     ...countsFromBlob(projectObj),
-    _linkedMetaSift: linkedSiftSummary(linked),
+    // 63.md — keep the top-level _recordCount consistent with the linked
+    // workspace's real record count when one exists (studies === records).
+    ...(linkedSift ? { _recordCount: linkedSift.recordCount } : {}),
+    _linkedMetaSift: linkedSift,
     _permissions: { role: 'owner', isOwner: true, canView: true, canEdit: true, readOnly: false, canExport: true, canAssessRiskOfBias: true },
   };
 }
 
 /**
- * Batch reverse-lookup: META·LAB project ids → linked ScreenProject summary.
- * Enforces the link invariant (ScreenProject.ownerId === Project.userId) by
- * filtering on the owner; oldest workspace wins when a project is linked twice.
- * Uses the @@index on ScreenProject.linkedMetaLabProjectId.
+ * Batch ScreenProject summaries for the project-list cards (63.md AREA 2 — ONE
+ * query, no N+1). Two lookup modes share the SAME select + the SAME uniform
+ * summary shape so OWNED and SHARED cards can never diverge:
  *
- * prompt11: the summary is enriched to
- * `{ id, title, progressStatus, recordCount, memberCount }` for the landing card
- * (progressStatus + _count:{records,members} added to the select).
+ *   by:'linked'  — reverse-lookup from META·LAB project ids. Filters
+ *                  `linkedMetaLabProjectId IN ids` AND `ownerId === ownerId`,
+ *                  enforcing the link invariant (ScreenProject.ownerId ===
+ *                  Project.userId) and blocking any foreign-link leak. The Map is
+ *                  keyed by linkedMetaLabProjectId (the META·LAB project id), and
+ *                  the oldest workspace wins when a project is linked twice. Uses
+ *                  the @@index on ScreenProject.linkedMetaLabProjectId. (owned path)
+ *
+ *   by:'screenId' — direct lookup by ScreenProject id. Filters `id IN ids` with
+ *                  NO ownerId (a shared member is NOT the owner — the link
+ *                  invariant for these is already enforced upstream in listProjects
+ *                  via accById[id].ownerId). The Map is keyed by ScreenProject id.
+ *                  (shared path)
+ *
+ * Returns Map(lookupId -> { id, title, progressStatus, recordCount, memberCount }).
+ * The lookupId is whatever the caller will use to find the summary: the META·LAB
+ * project id for 'linked', the ScreenProject id for 'screenId'. decidedCount and
+ * onlineCount are layered on by listProjects after this returns.
+ *
+ * 58.md §1 — memberCount = ACTIVE accepted members only (screeningCountSelect),
+ * the ONE canonical denominator; the Overview reads the same scalar so they can
+ * never disagree.
  */
-async function getLinkedSiftByProjectIds(projectIds, ownerUserId) {
-  const byProject = new Map();
-  if (!projectIds.length) return byProject;
+async function screenProjectSummaries(ids, { by = 'linked', ownerId } = {}) {
+  const out = new Map();
+  if (!ids || !ids.length) return out;
+  const where = by === 'screenId'
+    ? { id: { in: ids } }
+    : { linkedMetaLabProjectId: { in: ids }, ownerId };
   const rows = await prisma.screenProject.findMany({
-    where: { linkedMetaLabProjectId: { in: projectIds }, ownerId: ownerUserId },
+    where,
     select: {
       id: true,
       title: true,
       linkedMetaLabProjectId: true,
       progressStatus: true,
-      // 58.md §1 — canonical member count = ACTIVE accepted members (the owner is
-      // stored as an active member row), NOT pending invites or removed/inactive
-      // members. This is the ONE definition the project-list cards read; the project
-      // Overview reads the same cached scalar via totalMembersOf(), so the list and
-      // Overview can never disagree (the old all-status _count.members could drift).
-      _count: { select: { records: true, members: { where: { status: 'active' } } } },
+      _count: { select: screeningCountSelect() },
     },
     orderBy: { createdAt: 'asc' },
   });
   for (const r of rows) {
-    if (!byProject.has(r.linkedMetaLabProjectId)) {
-      byProject.set(r.linkedMetaLabProjectId, {
-        id: r.id,
-        title: r.title,
-        progressStatus: r.progressStatus,
-        recordCount: r._count?.records ?? 0,
-        memberCount: r._count?.members ?? 0,
-      });
-    }
+    // 'linked' keys by the META·LAB project id (reverse lookup); 'screenId' keys
+    // by the ScreenProject id (direct lookup). oldest-wins via the asc order + the
+    // has() guard, matching the prompt11 reverse-lookup behaviour.
+    const key = by === 'screenId' ? r.id : r.linkedMetaLabProjectId;
+    if (key == null || out.has(key)) continue;
+    out.set(key, {
+      id: r.id,
+      title: r.title,
+      progressStatus: r.progressStatus,
+      recordCount: r._count?.records ?? 0,
+      memberCount: r._count?.members ?? 0,
+    });
   }
-  return byProject;
+  return out;
+}
+
+/**
+ * 63.md AREA 2/4 — layer the real decidedCount + onlineCount onto a SINGLE
+ * ScreenProject summary (the single-project getProject paths). decidedCount is a
+ * cheap scoped count of terminally-decided records; onlineCount reads the
+ * in-memory presence room. Both default to 0; pass-through null. Mirrors the
+ * batched `withCounts` used by listProjects so the list and the detail view emit
+ * an IDENTICAL _linkedMetaSift shape.
+ */
+async function enrichSummaryCounts(summary) {
+  if (!summary) return null;
+  let decidedCount = 0;
+  try {
+    decidedCount = await prisma.screenRecord.count({
+      where: { projectId: summary.id, finalStatus: { in: DECIDED_FINAL_STATUSES } },
+    });
+  } catch { /* best-effort — a count failure must never break getProject */ }
+  return { ...summary, decidedCount, onlineCount: onlineCountsFor([summary.id])[summary.id] || 0 };
 }
 
 /**
@@ -188,8 +248,11 @@ export async function listProjects(req, res) {
 
     // Projects the user can access AS A MEMBER of a linked Review Workspace
     // (prompt5 Task 4 §4 — the META·LAB list must include member projects too).
+    // 63.md AREA 2 — we resolve the shared SUMMARIES here but DEFER annotation
+    // until after the cross-list batched decidedCount/onlineCount queries, so the
+    // shared cards carry the SAME full _linkedMetaSift shape as owned cards.
     const sharedAccess = await listSharedMetaLabAccess(req.user.id);
-    let shared = [];
+    let sharedCtx = null; // { items: [{ p, acc, owner, meta }], summaryByMlId }
     if (sharedAccess.length) {
       const ids = sharedAccess.filter(s => s.metaLabProjectId).map(s => s.metaLabProjectId);
       // Only existing, non-deleted projects the user does not already own.
@@ -216,26 +279,72 @@ export async function listProjects(req, res) {
         ? await prisma.user.findMany({ where: { id: { in: ownerIds } }, select: { id: true, name: true, email: true } })
         : [];
       const ownerById = Object.fromEntries(owners.map(o => [o.id, o]));
-      shared = projObjs.map(p => {
+      const items = projObjs.map(p => {
         const row = liveById.get(p.id);
-        return annotateShared(
-          p, accById[p.id], ownerById[row.userId] || null,
-          { archived: row.archived, archivedAt: row.archivedAt },
-        );
+        return {
+          p, acc: accById[p.id], owner: ownerById[row.userId] || null,
+          meta: { archived: row.archived, archivedAt: row.archivedAt },
+        };
       });
+      // 63.md AREA 2 — batch the shared ScreenProject summaries by ScreenProject id
+      // (by:'screenId', NO ownerId — the member is not the owner; the link invariant
+      // is already enforced above via accById[id].ownerId). Keyed by ScreenProject id.
+      const sharedScreenProjectIds = [...new Set(items.map(it => it.acc?.screenProjectId).filter(Boolean))];
+      const summaryByScreenId = await screenProjectSummaries(sharedScreenProjectIds, { by: 'screenId' });
+      sharedCtx = { items, summaryByScreenId };
     }
 
+    // prompt6 Tasks 3/8 / 63.md AREA 2 — owned linked summaries, reverse-looked-up
+    // by META·LAB project id and owner-scoped (the link invariant). Keyed by the
+    // META·LAB project id.
+    const ownedSummaryByMlId = await screenProjectSummaries(owned.map(p => p.id), { by: 'linked', ownerId: req.user.id });
+
+    // 63.md AREA 2 — ONE batched decidedCount query for the WHOLE list (owned +
+    // shared), keyed by ScreenProject id. decidedCount = ScreenRecords terminally
+    // decided (finalStatus ∈ accepted|rejected) — the REAL progress numerator.
+    const allScreenProjectIds = [
+      ...[...ownedSummaryByMlId.values()].map(s => s.id),
+      ...(sharedCtx ? [...sharedCtx.summaryByScreenId.values()].map(s => s.id) : []),
+    ];
+    let decidedByScreenId = new Map();
+    if (allScreenProjectIds.length) {
+      const decidedRows = await prisma.screenRecord.groupBy({
+        by: ['projectId'],
+        where: { projectId: { in: allScreenProjectIds }, finalStatus: { in: DECIDED_FINAL_STATUSES } },
+        _count: { _all: true },
+      });
+      decidedByScreenId = classifyDecided(decidedRows);
+    }
+
+    // 63.md AREA 4 — per-ScreenProject online counts from the in-memory presence
+    // rooms (sync, cheap, never throws). Keyed by ScreenProject id.
+    const onlineByScreenId = onlineCountsFor(allScreenProjectIds);
+
+    // Enrich a base summary (keyed however the caller looked it up) with the two
+    // layered, ScreenProject-id-keyed counts. decidedCount/onlineCount default 0.
+    const withCounts = (summary) => summary && {
+      ...summary,
+      decidedCount: decidedByScreenId.get(summary.id) || 0,
+      onlineCount: onlineByScreenId[summary.id] || 0,
+    };
+
     // prompt6 Tasks 3/8 — annotate owned rows with their linked META·SIFT
-    // workspace + full owner permissions (shared rows get theirs in
-    // annotateShared above, from the membership access already resolved).
-    const ownedLinks = await getLinkedSiftByProjectIds(owned.map(p => p.id), req.user.id);
+    // workspace + full owner permissions.
     const annotatedOwned = owned.map(p => {
       const ar = ownedArchiveById.get(p.id);
       return annotateOwned(
-        p, ownedLinks.get(p.id) || null,
+        p, withCounts(ownedSummaryByMlId.get(p.id)) || null,
         { archived: ar?.archived, archivedAt: ar?.archivedAt },
       );
     });
+
+    // 63.md AREA 2 — annotate shared rows with the SAME full _linkedMetaSift shape.
+    const shared = sharedCtx
+      ? sharedCtx.items.map(({ p, acc, owner, meta }) => {
+          const summary = acc?.screenProjectId ? sharedCtx.summaryByScreenId.get(acc.screenProjectId) : null;
+          return annotateShared(p, acc, owner, meta, withCounts(summary) || null);
+        })
+      : [];
 
     const all = [...annotatedOwned, ...shared];
     res.json(full ? all : all.map(({ studies, records, ...meta }) => meta));
@@ -308,12 +417,13 @@ export async function getProject(req, res) {
     // (prompt6 Tasks 3/8).
     const project = await getById(req.params.id, req.user.id);
     if (project) {
-      const links = await getLinkedSiftByProjectIds([project.id], req.user.id);
+      const links = await screenProjectSummaries([project.id], { by: 'linked', ownerId: req.user.id });
+      const linked = await enrichSummaryCounts(links.get(project.id) || null);
       // prompt11 — archive flags come from the first-class columns, not the blob.
       const ar = await prisma.project.findUnique({
         where: { id: project.id }, select: { archived: true, archivedAt: true },
       });
-      return res.json(annotateOwned(project, links.get(project.id) || null, ar || {}));
+      return res.json(annotateOwned(project, linked, ar || {}));
     }
 
     // Member path (prompt5 Task 4): access a linked-workspace project they don't own.
@@ -325,7 +435,14 @@ export async function getProject(req, res) {
     const ar = await prisma.project.findUnique({
       where: { id: raw.id }, select: { archived: true, archivedAt: true },
     });
-    return res.json(annotateShared(raw, acc, owner, ar || {}));
+    // 63.md — resolve the FULL linked summary by ScreenProject id so the shared
+    // detail view carries the same _linkedMetaSift shape as the list cards.
+    let linkedShared = null;
+    if (acc.screenProjectId) {
+      const sums = await screenProjectSummaries([acc.screenProjectId], { by: 'screenId' });
+      linkedShared = await enrichSummaryCounts(sums.get(acc.screenProjectId) || null);
+    }
+    return res.json(annotateShared(raw, acc, owner, ar || {}, linkedShared));
   } catch (err) {
     console.error('[projects] getProject error:', err.message);
     res.status(500).json({ error: 'Internal server error' });

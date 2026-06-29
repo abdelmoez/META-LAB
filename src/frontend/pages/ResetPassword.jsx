@@ -17,6 +17,7 @@ import { motion } from 'framer-motion';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Icon } from '../components/icons.jsx';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
+import BrandWordmark from '../components/BrandWordmark.jsx';
 import { api } from '../api-client/apiClient.js';
 
 /* ── Shared style tokens ─────────────────────────────────────────────────── */
@@ -74,7 +75,7 @@ function Shell({ children }) {
             fontSize: 26, fontWeight: 700, color: C.txt,
             letterSpacing: '0.06em', whiteSpace: 'nowrap', lineHeight: 1.1,
           }}>
-            META<span style={{ color: C.acc, fontFamily: MONO, fontWeight: 400 }}>·</span>LAB
+            <BrandWordmark size={26} weight={700} letterSpacing="0.06em" />
           </div>
         </div>
         <div style={{ height: 1, background: C.brd, margin: '28px 0' }} />

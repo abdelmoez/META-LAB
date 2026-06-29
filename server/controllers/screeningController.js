@@ -27,6 +27,7 @@ import { emitToProjectMembers, emitToMetaLabProject } from '../realtime/bus.js';
 import { getMetaSiftSettings, getEffectiveQuorum } from '../screening/settings.js';
 import { resolveScreeningUploadLimit } from '../screening/uploadLimit.js';
 import { snapshotPico } from '../screening/picoSnapshot.js';
+import { screeningCountSelect } from '../utils/screeningCounts.js';
 import { scorePair, normalizeTitle, classifyPair, DUP_TYPES } from '../../src/research-engine/screening/deduplication.js';
 import fs from 'node:fs';
 
@@ -117,7 +118,10 @@ export async function listProjects(req, res) {
       where: { deletedAt: null, OR: [{ ownerId: req.user.id }, { id: { in: memberProjectIds } }] },
       orderBy: { updatedAt: 'desc' },
       include: {
-        _count: { select: { records: true, members: true } },
+        // 63.md AREA 6 / 58.md §1 — canonical denominator = ACTIVE members only
+        // (status:'active'), matching the META·LAB project-list cards. Shared select
+        // fragment so the two lists can never drift to different member counts.
+        _count: { select: screeningCountSelect() },
         owner: { select: { id: true, name: true, email: true } },
       },
     });
