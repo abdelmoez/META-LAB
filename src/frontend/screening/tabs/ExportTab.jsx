@@ -10,6 +10,7 @@ import { C, MONO } from '../ui/theme.js';
 import { Loading, ErrorBanner, Button, StatTile, Card } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 import ExportDialog from '../../components/ExportDialog.jsx';
+import { downloadBlob } from '../../components/exportCore.js';
 
 const FILTERS = [
   { key: 'all',      label: 'All records',  desc: 'Every record in the project' },
@@ -51,14 +52,47 @@ export default function ExportTab({ pid }) {
       formats: FORMATS,
       sizing: false,
       defaults: { format: 'csv' },
-      run: async ({ format }) => {
-        // Server-generated file — same anchor-click download as before.
-        const url = screeningApi.exportUrl(pid, { format, filter: chosenFilter });
-        const a = document.createElement('a');
-        a.href = url; a.download = '';
-        document.body.appendChild(a); a.click(); a.remove();
-        setNote('Download started.');
-        setTimeout(() => setNote(''), 3000);
+      run: async ({ format }, onProgress) => {
+        // 62.md — try the fast synchronous path (instant for typical projects). If the
+        // project is too large the server answers 413; we then switch to a durable async
+        // export job, show progress, and download the finished file — so a big project
+        // never 504s or freezes the browser.
+        let res;
+        try { res = await fetch(screeningApi.exportUrl(pid, { format, filter: chosenFilter }), { credentials: 'include' }); }
+        catch { throw new Error('Network error while exporting. Please try again.'); }
+
+        if (res.ok) {
+          downloadBlob(await res.blob(), `sift-export-${String(pid).slice(0, 8)}.${format}`);
+          setNote('Download started.'); setTimeout(() => setNote(''), 3000);
+          return;
+        }
+        if (res.status !== 413) {
+          let msg = `Export failed (${res.status}).`;
+          try { const d = await res.json(); if (d?.error) msg = d.error; } catch { /* keep default */ }
+          throw new Error(msg);
+        }
+
+        // Large project → async export job (start → poll → download).
+        onProgress?.('Preparing export…');
+        const started = await screeningApi.startExport(pid, { format, filter: chosenFilter });
+        const jobId = started.jobId;
+        for (let i = 0; i < 600; i++) { // ~12 min ceiling at 1.2s/poll
+          const st = await screeningApi.getExportJob(pid, jobId);
+          if (st.status === 'failed') throw new Error(st.error || 'Export failed.');
+          if (st.ready) {
+            // The file exists + the download route re-checks permission; a same-origin
+            // anchor streams it natively (no blob in memory).
+            const a = document.createElement('a');
+            a.href = screeningApi.exportDownloadUrl(pid, jobId);
+            a.download = st.filename || '';
+            document.body.appendChild(a); a.click(); a.remove();
+            setNote('Download started.'); setTimeout(() => setNote(''), 3000);
+            return;
+          }
+          onProgress?.(`Preparing export…${st.progress != null ? ` (${st.progress}%)` : ''}`);
+          await new Promise(r => setTimeout(r, 1200));
+        }
+        throw new Error('Export is taking longer than expected; please check back shortly.');
       },
     });
   }

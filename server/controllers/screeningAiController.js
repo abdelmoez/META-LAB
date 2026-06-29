@@ -15,10 +15,10 @@ import { emitToProjectMembers } from '../realtime/bus.js';
 import { prisma } from '../db/client.js';
 import {
   aiFlagEnabled, getGlobalAiSettings, getProjectAiSettings,
-  runScoring, getScoresMap, getRecordExplanation, getStatus, getValidation, recordFeedback,
+  getScoresMap, getRecordExplanation, getStatus, getValidation, recordFeedback,
   rollbackToRun, listModelVersions,
 } from '../services/screeningAiService.js';
-import { getJobStatus } from '../services/screeningAiJobs.js';
+import { getJobStatus, enqueueManualRun } from '../services/screeningAiJobs.js';
 
 /** Shared gate: flag → access. Returns access or null (response already sent). */
 async function gate(req, res) {
@@ -52,7 +52,15 @@ export async function getAiStatus(req, res) {
   }
 }
 
-/** POST /projects/:pid/ai/run */
+/**
+ * POST /projects/:pid/ai/run — start a scoring run.
+ *
+ * 62.md: scoring is CPU-heavy and used to run inline (`await runScoring`), blocking the
+ * single Node event loop for the whole run (≈tens of seconds at 5k records) and 504-ing
+ * on large projects. It now ENQUEUES a durable job and returns 202 + jobId immediately;
+ * the in-process worker runs the compute in a worker_thread, writes progress to the job
+ * row, and emits `ai.updated` on completion. The client polls GET …/ai/job-status.
+ */
 export async function postAiRun(req, res) {
   const access = await gate(req, res); if (!access) return;
   try {
@@ -60,18 +68,11 @@ export async function postAiRun(req, res) {
     if (!global.enabled) return res.status(403).json({ error: 'AI screening is disabled by the administrator' });
     if (!canRunAi(access, global)) return res.status(403).json({ error: 'You do not have permission to run AI scoring' });
     const stage = stageOf(req);
-    const out = await runScoring({ projectId: req.params.pid, stage, actor: req.user, trigger: 'manual' });
-    emitToProjectMembers(req.params.pid, { type: 'ai.updated' });
-    res.json({
-      ok: true,
-      run: {
-        id: out.run.id, mode: out.run.mode, nScored: out.scoredCount,
-        labelCounts: out.meta.labelCounts, modelInfo: out.meta.modelInfo, metrics: out.metrics,
-      },
-    });
+    const job = await enqueueManualRun(req.params.pid, { stage, actor: req.user });
+    res.status(202).json({ ok: true, jobId: job.id, status: job.status, stage });
   } catch (e) {
     console.error('postAiRun', e);
-    res.status(e.status || 500).json({ error: e.message || 'Scoring failed' });
+    res.status(e.status || 500).json({ error: e.message || 'Failed to start scoring' });
   }
 }
 

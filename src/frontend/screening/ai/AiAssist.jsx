@@ -292,16 +292,22 @@ export function AiQueueBar({ ai, mode, onMode, band, onBand, onRefreshRankings }
         <option value="low">Low (&lt;40)</option>
         <option value="uncertain">Uncertain band</option>
       </select>
-      {ai.status?.canRun && (
-        <MiniBtn onClick={() => ai.run()} disabled={ai.running} title="Train on current decisions and re-score all records">
-          {ai.running ? 'Scoring…' : 'Run AI scoring'}
-        </MiniBtn>
-      )}
-      {/* se2.md §6 — live rescoring state + position-preserving refresh */}
+      {ai.status?.canRun && (() => {
+        // 62.md — scoring runs in the background; keep the button busy (and prevent a
+        // duplicate run) while a job is queued or running, not just during the enqueue.
+        const aiBusy = ai.running || ai.jobStatus?.running || ai.jobStatus?.state === 'updating' || ai.jobStatus?.state === 'queued';
+        const pct = ai.jobStatus?.total > 0 ? ai.jobStatus.progress : null;
+        return (
+          <MiniBtn onClick={() => ai.run()} disabled={aiBusy} title="Train on current decisions and re-score all records (runs in the background)">
+            {aiBusy ? (pct != null ? `Scoring… ${pct}%` : 'Scoring…') : 'Run AI scoring'}
+          </MiniBtn>
+        );
+      })()}
+      {/* se2.md §6 / 62.md — background scoring state + position-preserving refresh */}
       {(ai.jobStatus?.state === 'updating' || (ai.jobStatus?.running)) && (
         <span title={`${ai.jobStatus.pending || 0} new decision(s) being incorporated`} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: C.teal }}>
           <span style={{ width: 7, height: 7, borderRadius: '50%', background: C.teal, animation: 'sift-fade .8s ease infinite alternate' }} />
-          Scores updating{ai.jobStatus.pending ? ` (${ai.jobStatus.pending})` : ''}…
+          Scores updating{ai.jobStatus?.total > 0 ? ` (${ai.jobStatus.progress}%)` : (ai.jobStatus.pending ? ` (${ai.jobStatus.pending})` : '')}…
         </span>
       )}
       {ai.rankingsAvailable && ai.jobStatus?.state !== 'updating' && (
@@ -499,7 +505,11 @@ export function AiStatusPanel({ ai }) {
         <Chip color={run?.mode === 'supervised' ? C.grn : C.yel}>{run ? (run.mode === 'supervised' ? 'Trained model' : 'Cold-start') : 'Not run'}</Chip>
         {s?.scoreCount > 0 && <span style={{ fontSize: 11, color: C.muted }}>{s.scoreCount} scored</span>}
         <span style={{ flex: 1 }} />
-        {s?.canRun && <MiniBtn onClick={() => ai.run()} disabled={ai.running}>{ai.running ? 'Scoring…' : 'Run scoring'}</MiniBtn>}
+        {s?.canRun && (() => {
+          const aiBusy = ai.running || ai.jobStatus?.running || ai.jobStatus?.state === 'updating' || ai.jobStatus?.state === 'queued';
+          const pct = ai.jobStatus?.total > 0 ? ai.jobStatus.progress : null;
+          return <MiniBtn onClick={() => ai.run()} disabled={aiBusy}>{aiBusy ? (pct != null ? `Scoring… ${pct}%` : 'Scoring…') : 'Run scoring'}</MiniBtn>;
+        })()}
       </div>
 
       {ai.error && <div style={{ fontSize: 11.5, color: C.red }}>{ai.error}</div>}

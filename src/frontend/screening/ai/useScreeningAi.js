@@ -76,17 +76,21 @@ export function useScreeningAi(pid, stage = 'title_abstract') {
   const run = useCallback(async () => {
     setRunning(true); setError('');
     try {
+      // 62.md — scoring no longer blocks: this ENQUEUES a job and returns { jobId }.
       const out = await aiApi.run(pid, stage);
       explCache.current.clear();
-      await Promise.all([loadStatus(), loadScores()]);
+      // Kick the progress poller (job status flips to queued/updating); scores refresh
+      // when the background job completes — via realtime ai.updated or the poller's
+      // idle-transition below. The user can keep working meanwhile.
+      try { const js = await aiApi.jobStatus(pid, stage); if (mounted.current) setJobStatus(js); } catch { /* ignore */ }
       return out;
     } catch (e) {
-      if (mounted.current) setError(e.message || 'Scoring failed');
+      if (mounted.current) setError(e.message || 'Failed to start scoring');
       throw e;
     } finally {
       if (mounted.current) setRunning(false);
     }
-  }, [pid, stage, loadStatus, loadScores]);
+  }, [pid, stage]);
 
   const getExplanation = useCallback(async (rid) => {
     if (explCache.current.has(rid)) return explCache.current.get(rid);
@@ -154,13 +158,22 @@ export function useScreeningAi(pid, stage = 'title_abstract') {
     if (!enabled) return;
     if (jobStatus.state === 'idle') return;
     let n = 0; let live = true;
+    // 62.md — cap covers a multi-minute large run as a FALLBACK; realtime ai.updated is
+    // still the primary completion signal.
     const id = setInterval(async () => {
-      if (!live || ++n > 20) { clearInterval(id); return; }
+      if (!live || ++n > 120) { clearInterval(id); return; }
       const js = await loadJobStatus();
-      if (js && js.state === 'idle') clearInterval(id);
-    }, 3500);
+      if (js && js.state === 'idle') {
+        clearInterval(id);
+        // Background scoring finished: refresh scores/status even without a realtime event
+        // (tab reopened, SSE dropped). Position-preserving — the queue isn't yanked.
+        explCache.current.clear();
+        await Promise.all([loadScores(), loadStatus()]);
+        if (mounted.current) setRankingsAvailable(true);
+      }
+    }, 2500);
     return () => { live = false; clearInterval(id); };
-  }, [enabled, jobStatus.state, loadJobStatus]);
+  }, [enabled, jobStatus.state, loadJobStatus, loadScores, loadStatus]);
 
   return {
     enabled, ready, status, scores, running, error,

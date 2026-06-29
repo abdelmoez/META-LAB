@@ -547,6 +547,11 @@ model ScreenRecord {
   conflicts      ScreenConflict[]
   pdfAttachments ScreenPdfAttachment[]
   openStates     ScreenRecordOpenState[]
+
+  // 62.md — every project-scoped read (records list, export, AI input load) filters by
+  // projectId; without this index those are full-table scans that add real latency before
+  // any CPU work even starts on a large project. Additive/safe for `prisma db push`.
+  @@index([projectId])
 }
 
 model ScreenDecision {
@@ -566,6 +571,9 @@ model ScreenDecision {
   updatedAt       DateTime     @updatedAt
 
   @@unique([recordId, reviewerId, stage])
+  // 62.md — export + AI input load fetch all decisions for a project; the unique key only
+  // indexes recordId (the join side), not projectId (the filter side). Additive/safe.
+  @@index([projectId])
 }
 
 model ScreenLabel {
@@ -1152,13 +1160,24 @@ model ScreenAiJob {
   projectId   String
   stage       String    @default("title_abstract")
   kind        String    @default("rescore") // rescore | train
-  status      String    @default("queued") // queued | running | completed | failed | superseded
+  status      String    @default("queued") // queued | running | completed | failed | superseded | cancelled
   trigger     String    @default("decision") // decision | manual | api
   reason      String    @default("") // failure reason (no article text)
   runId       String    @default("") // resulting ScreenAiRun id
   nScored     Int       @default(0)
   coalesced   Int       @default(0) // decisions coalesced into this job
   durationMs  Int? // observability (se2.md §17)
+  // 62.md — durable, crash-recoverable background-worker fields (mirrors ScreenImportJob).
+  // Manual runs now enqueue a job + return 202 instead of blocking the request thread;
+  // the in-process drain worker claims + processes off the event loop. attempts caps a
+  // poison-pill that keeps crashing (see server/utils/jobRetry.js); processed/total drive
+  // the progress UI; heartbeatAt lets boot recovery distinguish a live run from a crash.
+  attempts    Int       @default(0) // claims so far (retry-budget cap)
+  processed   Int       @default(0) // records scored so far (progress)
+  total       Int       @default(0) // records to score (progress denominator)
+  heartbeatAt DateTime? // last liveness write while running
+  createdById String? // who triggered (manual); null for system auto-rescore
+  createdByName String  @default("")
   startedAt   DateTime?
   completedAt DateTime?
   createdAt   DateTime  @default(now())
@@ -1166,6 +1185,47 @@ model ScreenAiJob {
 
   @@index([projectId, createdAt])
   @@index([projectId, status])
+  @@index([status, createdAt]) // claim ordering across projects (oldest queued first)
+}
+
+// 62.md — durable, DB-backed ASYNC EXPORT jobs. A large screening export used to run
+// k-fold cross-validation AND buffer the whole CSV in memory INSIDE the HTTP request,
+// freezing the single Node event loop and 504-ing behind the proxy. Now the request
+// only enqueues a job (queued) + returns a jobId; the in-process export worker claims
+// it, computes capped CV off the event loop (worker_threads), streams rows to a file,
+// and the client polls status then downloads the finished file. Mirrors ScreenImportJob
+// (atomic claim, attempts cap, crash recovery). Bare projectId scope key (audit-survival
+// precedent, like ScreenAiJob); access is RE-checked at download — a jobId is not a
+// capability token. resultPath points at server/storage/exports/<id>.<ext>.
+model ScreenExportJob {
+  id               String    @id @default(uuid())
+  projectId        String
+  createdById      String
+  createdByName    String    @default("")
+  // queued | processing | completed | failed | cancelled
+  status           String    @default("queued")
+  // queued | loading | cvscoring | rendering | done | failed
+  stage            String    @default("queued")
+  format           String    @default("csv") // csv | json | ris
+  filter           String    @default("all") // all | include | exclude | maybe | undecided
+  includeAiCv      Boolean   @default(true) // compute out-of-sample CV columns (capped)
+  totalRecords     Int       @default(0)
+  processedRecords Int       @default(0)
+  cvStatus         String    @default("") // mirror of computeExportCvScores meta.status
+  resultPath       String    @default("") // file path of the rendered export (cleared on delete)
+  resultBytes      Int       @default(0)
+  filename         String    @default("")
+  error            String    @default("") // user-facing failure message (status=failed)
+  attempts         Int       @default(0) // claims so far (retry-budget cap; poison-pill guard)
+  heartbeatAt      DateTime?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([projectId, status])
+  @@index([projectId, createdAt])
+  @@index([status, createdAt]) // claim ordering across projects (oldest queued first)
 }
 
 // ════════════════════════════════════════════════════════════════════════════

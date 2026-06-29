@@ -14,8 +14,6 @@ import { prisma } from '../db/client.js';
 import { writeAudit } from '../screening/access.js';
 import crypto from 'node:crypto';
 import {
-  trainAndScore,
-  crossValidate,
   computeValidation,
   createEmbeddingProvider,
   resolveConfig,
@@ -29,6 +27,10 @@ import {
   chunk,
 } from '../../src/research-engine/screening/ai/index.js';
 import { buildEmbedFn } from './aiEmbeddingClient.js';
+// 62.md — the two CPU-heavy phases (trainAndScore + cross-validation) now run in a
+// worker_thread (with an inline fallback) so a large run never blocks the HTTP event
+// loop. Results are identical (deterministic engine, same inputs).
+import { runTrainAndScore, runCrossValidate } from './aiCompute.js';
 
 const FEATURE_VERSION = 'feat-1.0';
 const PERSIST_CHUNK = 500;   // se2.md §12 — score upserts per DB transaction (bounded write batch)
@@ -269,7 +271,10 @@ export async function runScoring(opts = {}) {
   return withRunLock(`${opts.projectId}::${stage}`, () => _runScoring({ ...opts, stage }));
 }
 
-async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger = 'manual', pinnedConfig = null, rollbackFromRunId = null }) {
+async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger = 'manual', pinnedConfig = null, rollbackFromRunId = null, onProgress = null }) {
+  // 62.md — best-effort progress hook (drives the durable-job progress bar); a reporter
+  // error must never interrupt scoring.
+  const report = (data) => { try { if (onProgress) onProgress(data); } catch { /* ignore */ } };
   const global = await getGlobalAiSettings();
   const input = await loadEngineInput(projectId, stage);
   if (!input) throw Object.assign(new Error('Project not found'), { status: 404 });
@@ -289,6 +294,7 @@ async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger
     const room = Math.max(0, cap - labeled.length);
     records = [...labeled, ...unlabeled.slice(0, room)];
   }
+  report({ phase: 'scoring', processed: 0, total: records.length });
 
   const config = {
     // se2.md §11 — a rollback pins the prior version's embedding provider; otherwise the
@@ -321,7 +327,7 @@ async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger
 
   let result;
   try {
-    result = trainAndScore({
+    result = await runTrainAndScore({
       records,
       labelByRecordId: input.labelByRecordId,
       decisionsByRecordId: input.decisionsByRecordId,
@@ -365,7 +371,7 @@ async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger
   // This trains k extra models; bounded by the same record cap, so it's cheap.
   if (result.meta.canTrain) {
     try {
-      const cv = crossValidate({
+      const cv = await runCrossValidate({
         records,
         labelByRecordId: input.labelByRecordId,
         picoSnapshot: input.picoSnapshot,
@@ -492,6 +498,8 @@ async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger
       signalsJson: JSON.stringify(s.signals || {}),
       explanationJson: JSON.stringify(s.explanation || {}),
     });
+    let persisted = 0;
+    report({ phase: 'persisting', processed: 0, total: result.scores.length });
     for (const part of chunk(result.scores, PERSIST_CHUNK)) {
       await prisma.$transaction(part.map(s => {
         const data = toData(s);
@@ -501,6 +509,11 @@ async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger
           update: data,
         });
       }));
+      persisted += part.length;
+      report({ phase: 'persisting', processed: persisted, total: result.scores.length });
+      // Yield between chunks so a large commit never holds the event loop in one burst
+      // (matters in inline-compute mode; harmless otherwise).
+      await new Promise(r => setImmediate(r));
     }
 
     // Demote the previous active version(s) now that the new version's scores are live

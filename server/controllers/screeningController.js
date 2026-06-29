@@ -13,17 +13,22 @@ import {
 import { kickImportWorker } from '../services/screeningImportWorker.js';
 import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../screening/access.js';
 import { rankItems } from '../../src/research-engine/screening/ai/ranking.js';
+import { aiFlagEnabled } from '../services/screeningAiService.js';
+// 62.md — export logic moved into a shared service so the sync route + the async export
+// worker share one CSV schema and one row mapping. CV is now capped + run off the event
+// loop; large projects stream via the durable job instead of buffering in one request.
 import {
-  crossValidatePerRecord, cvRowFields, AI_CV_COLUMNS, CV_SCORE_TYPES,
-} from '../../src/research-engine/screening/ai/index.js';
-import { aiFlagEnabled, loadEngineInput, getGlobalAiSettings } from '../services/screeningAiService.js';
+  EXPORT_SYNC_MAX, EXPORT_COLUMNS, buildExportRow, renderRisBlock, renderCsvRow,
+  computeExportCvScores, exportContentType,
+} from '../services/screeningExportService.js';
+import { enqueueExportJob } from '../services/screeningExportWorker.js';
 import { scheduleRescore } from '../services/screeningAiJobs.js';
 import { emitToProjectMembers, emitToMetaLabProject } from '../realtime/bus.js';
 import { getMetaSiftSettings, getEffectiveQuorum } from '../screening/settings.js';
 import { resolveScreeningUploadLimit } from '../screening/uploadLimit.js';
 import { snapshotPico } from '../screening/picoSnapshot.js';
 import { scorePair, normalizeTitle, classifyPair, DUP_TYPES } from '../../src/research-engine/screening/deduplication.js';
-import { csvRow } from '../utils/csv.js';
+import fs from 'node:fs';
 
 // Human-readable label per duplicate type (se2.md §10), shown in the UI.
 const DUP_TYPE_LABEL = {
@@ -1133,47 +1138,9 @@ function fallbackParseRIS(content) {
 
 // ── Export ───────────────────────────────────────────────────────────
 
-/**
- * computeExportCvScores — compute per-record OUT-OF-SAMPLE (cross-validated) AI
- * relevance scores for the export (59.md Change 2). Returns a Map keyed by recordId
- * plus run metadata. Fully best-effort: any failure (or AI disabled, or below the
- * minimum screened threshold) yields an empty map + a meta status so the columns
- * export blank with a clear reason — never a leaky in-sample score.
- */
-async function computeExportCvScores(projectId) {
-  const generatedAt = new Date().toISOString();
-  const blank = (status, reason) => ({
-    meta: { scoreType: CV_SCORE_TYPES.NOT_AVAILABLE, status, reason, modelVersion: '' },
-    byRecordId: new Map(),
-    generatedAt,
-  });
-  try {
-    const [flagOn, global] = await Promise.all([aiFlagEnabled(), getGlobalAiSettings()]);
-    // Respect the same governance gates as the rest of the engine: feature flag,
-    // global enable, and the emergency kill switch (folded into `enabled`).
-    if (!flagOn || !global.enabled) {
-      return blank('ai_unavailable', 'AI screening is not enabled for this site.');
-    }
-    const input = await loadEngineInput(projectId, 'title_abstract');
-    if (!input) return blank('ai_unavailable', 'Project not found.');
-
-    const cv = crossValidatePerRecord({
-      records: input.records,
-      labelByRecordId: input.labelByRecordId,
-      picoSnapshot: input.picoSnapshot,
-      inclusionKeywords: input.inclusionKeywords,
-      exclusionKeywords: input.exclusionKeywords,
-      studyTypeFilter: input.studyTypeFilter,
-      // 59.md Change 3 — centralised "≥ 50 screened" gate; imported include/exclude
-      // labels count toward it (they are real settled screening decisions).
-      minLabeledToScore: global.minScreenedDecisions ?? 50,
-    });
-    return { meta: cv.meta, byRecordId: cv.byRecordId, generatedAt };
-  } catch (err) {
-    console.error('[screening] export CV scoring failed:', err.message);
-    return blank('cv_error', 'Could not compute cross-validated scores.');
-  }
-}
+// computeExportCvScores now lives in services/screeningExportService.js (62.md): capped
+// and run in a worker_thread so it never blocks the event loop, shared by the sync route
+// and the async export worker.
 
 export async function exportRecords(req, res) {
   try {
@@ -1191,48 +1158,37 @@ export async function exportRecords(req, res) {
     const fmt    = req.query.format || 'csv';
     const filter = req.query.filter || 'all';
 
+    // 62.md — guard the SYNCHRONOUS path. A large project must not build its whole export
+    // in one request (it would block the single Node event loop and 504 behind the proxy).
+    // Over the cap we return 413 and the client switches to the async export job
+    // (POST …/export/start), which streams to a file off the request thread.
+    const recordCount = await prisma.screenRecord.count({ where: { projectId: p.id } });
+    if (recordCount > EXPORT_SYNC_MAX) {
+      return res.status(413).json({
+        error: 'This project is too large for a direct download. Use background export instead.',
+        useAsync: true,
+        count: recordCount,
+        max: EXPORT_SYNC_MAX,
+        startUrl: `/api/screening/projects/${p.id}/export/start`,
+      });
+    }
+
     const records = await prisma.screenRecord.findMany({
       where: { projectId: p.id },
       include: { decisions: true },
     });
 
     // ── AI out-of-sample (cross-validated) relevance scores (59.md Change 2) ─────
-    // For validation studies the export must carry TRULY out-of-sample AI scores so a
-    // researcher can recompute WSS@95 / AUC / calibration / Brier offline. We compute
-    // them here, leakage-free (each labelled record scored by a model trained without
-    // it — features, classifier AND calibration fold-isolated; see crossValidate.js).
-    // Best-effort: any failure leaves the columns present but blank with a status.
+    // For validation studies the export carries TRULY out-of-sample AI scores so a
+    // researcher can recompute WSS@95 / AUC / calibration / Brier offline (leakage-free).
+    // 62.md — capped + computed in a worker_thread so it never freezes the event loop.
     const aiCv = await computeExportCvScores(p.id);
 
-    // Build export rows
-    const rows = records.map(r => {
-      const myDec = r.decisions.find(d => d.reviewerId === req.user.id);
-      return {
-        id:             r.id,
-        title:          r.title,
-        authors:        r.authors,
-        year:           r.year,
-        journal:        r.journal,
-        doi:            r.doi,
-        pmid:           r.pmid,
-        abstract:       r.abstract,
-        decision:       myDec?.decision || 'undecided',
-        exclusionReason: myDec?.exclusionReason || '',
-        notes:          myDec?.notes || '',
-        rating:         myDec?.rating ?? '',
-        labels:         myDec?.labels || '[]',
-        isDuplicate:    r.isDuplicate,
-        sourceDb:       r.sourceDb,
-        // Appended AI validation columns (blank + status when not out-of-sample).
-        ...cvRowFields(aiCv.byRecordId.get(r.id), aiCv.meta, aiCv.generatedAt),
-      };
-    });
-
-    // Apply filter
+    // Build + filter rows (shared row mapping; CSV schema unchanged).
+    const rows = records.map(r => buildExportRow(r, req.user.id, aiCv));
     const filtered = filter === 'all' ? rows : rows.filter(r => r.decision === filter);
 
-    // Usage metric (prompt9) — every export, every format. Best-effort,
-    // fire-and-forget, recorded with the format actually emitted.
+    // Usage metric (prompt9) — every export, every format. Best-effort, fire-and-forget.
     const emittedFormat = fmt === 'json' ? 'json' : fmt === 'ris' ? 'ris' : 'csv';
     recordUsage({
       type: USAGE.EXPORT,
@@ -1248,56 +1204,114 @@ export async function exportRecords(req, res) {
       return res.json(filtered);
     }
 
-    // RIS (prompt9) — standard reference-manager format. One record per row,
-    // TY..ER blocks; one AU line per author; values flattened to single lines.
     if (fmt === 'ris') {
-      const oneLine = v => String(v ?? '').replace(/\r?\n/g, ' ').trim();
-      const blocks = filtered.map(r => {
-        const lines = ['TY  - JOUR'];
-        const title = oneLine(r.title);
-        if (title) lines.push(`TI  - ${title}`);
-        const authorsRaw = oneLine(r.authors);
-        if (authorsRaw) {
-          const authors = authorsRaw.includes(';')
-            ? authorsRaw.split(/;\s*/)
-            : authorsRaw.split(/,\s*/);
-          for (const a of authors.map(s => s.trim()).filter(Boolean)) {
-            lines.push(`AU  - ${a}`);
-          }
-        }
-        const journal = oneLine(r.journal);
-        if (journal) lines.push(`JO  - ${journal}`);
-        const year = oneLine(r.year);
-        if (year) lines.push(`PY  - ${year}`);
-        const doi = oneLine(r.doi);
-        if (doi) lines.push(`DO  - ${doi}`);
-        const pmid = oneLine(r.pmid);
-        if (pmid) lines.push(`AN  - ${pmid}`);
-        const abstract = oneLine(r.abstract);
-        if (abstract) lines.push(`AB  - ${abstract}`);
-        lines.push('ER  - ');
-        return lines.join('\n');
-      });
-      const ris = blocks.join('\n\n') + (blocks.length ? '\n' : '');
+      const ris = filtered.map(renderRisBlock).join('\n\n') + (filtered.length ? '\n' : '');
       res.setHeader('Content-Type', 'application/x-research-info-systems');
       res.setHeader('Content-Disposition', `attachment; filename="sift-export-${p.id.slice(0,8)}.ris"`);
       return res.send(ris);
     }
 
-    // CSV — every cell goes through csvField (RFC-4180 quoting + spreadsheet
-    // formula-injection guard, prompt 53): study fields come from untrusted
-    // imports, so a title/notes value like `=HYPERLINK(...)` must not execute
-    // when the reviewer opens the export in Excel/Sheets.
-    // Existing columns + order are UNCHANGED for backwards compatibility; the AI
-    // validation columns are APPENDED (existing consumers ignore trailing columns).
-    const cols = ['title','authors','year','journal','doi','pmid','decision','exclusionReason','notes','rating','isDuplicate','abstract', ...AI_CV_COLUMNS];
-    const csv = [cols.join(','), ...filtered.map(r => csvRow(cols.map(c => r[c])))].join('\n');
+    // CSV — every cell goes through the shared injection-safe encoder; columns + order
+    // are UNCHANGED for backwards compatibility (AI validation columns are APPENDED).
+    const csv = [EXPORT_COLUMNS.join(','), ...filtered.map(renderCsvRow)].join('\n');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="sift-export-${p.id.slice(0,8)}.csv"`);
     res.send(csv);
   } catch (err) {
     console.error('[screening] exportRecords:', err.message);
     res.status(500).json({ error: 'Export failed' });
+  }
+}
+
+/** Shared export permission gate: outsider → 404; no canExportRecords/leader/owner → 403. */
+async function gateExport(req, res) {
+  const access = await getProjectAccess(req.params.pid, req.user);
+  if (!access) { res.status(404).json({ error: 'Project not found' }); return null; }
+  const canExport = access.isOwner || (access.active && (access.isLeader || access.perms.canExportRecords));
+  if (!canExport) { res.status(403).json({ error: 'You do not have permission to export records from this project' }); return null; }
+  return access;
+}
+
+/**
+ * POST /projects/:pid/export/start (62.md) — enqueue a durable async export job and return
+ * 202 + jobId immediately. The export worker computes capped CV off the event loop and
+ * streams the file; the client polls GET …/export/jobs/:id, then downloads when ready.
+ */
+export async function startExport(req, res) {
+  try {
+    const access = await gateExport(req, res); if (!access) return;
+    const settings = await getMetaSiftSettings();
+    if (!settings.allowExport) return res.status(403).json({ error: 'Export is currently disabled by the administrator' });
+
+    const reqFmt = req.body?.format || req.query.format;
+    const reqFilter = req.body?.filter || req.query.filter;
+    const fmt = ['csv', 'json', 'ris'].includes(reqFmt) ? reqFmt : 'csv';
+    const filter = ['all', 'include', 'exclude', 'maybe', 'undecided'].includes(reqFilter) ? reqFilter : 'all';
+
+    const job = await enqueueExportJob(access.project.id, {
+      createdById: req.user.id,
+      createdByName: req.user.name || req.user.email || '',
+      format: fmt, filter, includeAiCv: true,
+    });
+    recordUsage({ type: USAGE.EXPORT, userId: req.user.id, screenProjectId: access.project.id, format: fmt, meta: { filter, async: true } });
+    res.status(202).json({ ok: true, jobId: job.id, status: job.status, format: fmt, filter });
+  } catch (err) {
+    console.error('[screening] startExport:', err.message);
+    res.status(500).json({ error: 'Failed to start export' });
+  }
+}
+
+/** GET /projects/:pid/export/jobs/:jobId (62.md) — poll async export progress/status. */
+export async function getExportJob(req, res) {
+  try {
+    const access = await gateExport(req, res); if (!access) return;
+    const job = await prisma.screenExportJob.findUnique({ where: { id: req.params.jobId } });
+    if (!job || job.projectId !== access.project.id) return res.status(404).json({ error: 'Export job not found' });
+
+    const ready = job.status === 'completed' && !!job.resultPath;
+    res.json({
+      id: job.id, status: job.status, stage: job.stage, format: job.format, filter: job.filter,
+      totalRecords: job.totalRecords, processedRecords: job.processedRecords,
+      progress: job.totalRecords > 0 ? Math.min(100, Math.round((job.processedRecords / job.totalRecords) * 100)) : (ready ? 100 : 0),
+      cvStatus: job.cvStatus, error: job.error, filename: job.filename, bytes: job.resultBytes,
+      ready, createdAt: job.createdAt, completedAt: job.completedAt,
+      downloadUrl: ready ? `/api/screening/projects/${access.project.id}/export/jobs/${job.id}/download` : null,
+    });
+  } catch (err) {
+    console.error('[screening] getExportJob:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * GET /projects/:pid/export/jobs/:jobId/download (62.md) — stream the finished export file.
+ * Permission is RE-checked here and the job must belong to this project — a jobId is NOT a
+ * capability token, so files never leak across users/projects.
+ */
+export async function downloadExport(req, res) {
+  try {
+    const access = await gateExport(req, res); if (!access) return;
+    const settings = await getMetaSiftSettings();
+    if (!settings.allowExport) return res.status(403).json({ error: 'Export is currently disabled by the administrator' });
+
+    const job = await prisma.screenExportJob.findUnique({ where: { id: req.params.jobId } });
+    if (!job || job.projectId !== access.project.id) return res.status(404).json({ error: 'Export job not found' });
+    if (job.status !== 'completed' || !job.resultPath) return res.status(409).json({ error: 'Export is not ready yet', status: job.status });
+    if (!fs.existsSync(job.resultPath)) return res.status(410).json({ error: 'This export has expired — please run it again.' });
+
+    const { type } = exportContentType(job.format);
+    res.setHeader('Content-Type', type);
+    res.setHeader('Content-Disposition', `attachment; filename="${job.filename || `sift-export.${job.format}`}"`);
+    if (job.resultBytes > 0) res.setHeader('Content-Length', String(job.resultBytes));
+    const stream = fs.createReadStream(job.resultPath);
+    stream.on('error', (e) => {
+      console.error('[screening] downloadExport stream:', e.message);
+      if (!res.headersSent) res.status(500).json({ error: 'Download failed' }); else res.destroy();
+    });
+    stream.pipe(res);
+  } catch (err) {
+    console.error('[screening] downloadExport:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: 'Download failed' });
   }
 }
 

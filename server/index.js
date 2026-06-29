@@ -52,6 +52,9 @@ import { backfillUserNumbers } from './services/userNumber.js';
 import { backfillProjectActivity } from './store.js';
 import { startImportWorker } from './services/screeningImportWorker.js';
 import { startPecanSearchWorker } from './pecanSearch/pecanSearchWorker.js';
+// 62.md — durable, off-event-loop workers for AI scoring + large async exports.
+import { startAiJobsWorker } from './services/screeningAiJobs.js';
+import { startExportWorker } from './services/screeningExportWorker.js';
 import { applySqlitePragmas } from './db/client.js';
 import { seedAdmins } from './auth/seedAdmins.js';
 import { getVersion } from './version.js';
@@ -450,6 +453,11 @@ const server = app.listen(PORT, () => {
       // p1.md — start the durable Pecan Search Engine worker. Re-queues any search
       // job a crash left mid-flight (resumes from each source's cursor), then drains.
       startPecanSearchWorker().catch(err => console.error('[pecan-search-worker] start failed:', err.message));
+      // 62.md — start the durable AI-scoring worker (manual runs + decision rescores run
+      // here, off the request thread, with crash recovery) and the async export worker
+      // (large exports stream to a file instead of buffering in one request → no 504).
+      startAiJobsWorker().catch(err => console.error('[ai-worker] start failed:', err.message));
+      startExportWorker().catch(err => console.error('[export-worker] start failed:', err.message));
     });
 
   // prompt48 — fail-safe waitlist config check. If the betaWaitlist flag is ON but
@@ -474,5 +482,15 @@ const server = app.listen(PORT, () => {
     } catch { /* non-fatal */ }
   })();
 });
+
+// 62.md — defense-in-depth HTTP timeouts. The real fix for the scoring/export freeze is
+// to stop blocking the event loop (durable workers + worker_thread compute above); these
+// timeouts just ensure a genuinely slow request fails CLEANLY instead of hanging until a
+// silent upstream 504. Set requestTimeout ≥ the reverse-proxy timeout (REQUEST_TIMEOUT_MS,
+// default 120s) and keepAliveTimeout below it. Heavy work no longer rides a long request,
+// so this should rarely trigger.
+server.requestTimeout = Number(process.env.REQUEST_TIMEOUT_MS) || 120000;
+server.headersTimeout = (Number(process.env.REQUEST_TIMEOUT_MS) || 120000) + 5000;
+server.keepAliveTimeout = Number(process.env.KEEPALIVE_TIMEOUT_MS) || 75000;
 
 export default app;

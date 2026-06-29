@@ -123,7 +123,10 @@ r.delete('/projects/:pid/records/:rid/pdf/:aid',         PDF.deletePdf);
 r.post('/projects/:pid/import',              S.importRecords);   // synchronous (small files)
 r.post('/projects/:pid/import/start',        S.startImport);     // prompt50 WS2 — durable async job
 r.get('/projects/:pid/import/jobs/:jobId',   S.getImportJob);    // prompt50 WS2 — poll progress
-r.get('/projects/:pid/export',               S.exportRecords);
+r.get('/projects/:pid/export',               S.exportRecords);   // synchronous (small projects); 413→async over cap
+r.post('/projects/:pid/export/start',              S.startExport);    // 62.md — durable async export job
+r.get('/projects/:pid/export/jobs/:jobId',         S.getExportJob);   // 62.md — poll export progress
+r.get('/projects/:pid/export/jobs/:jobId/download', S.downloadExport); // 62.md — stream finished file
 
 // Open-access PDF retrieval + uploaded-PDF matching (roadmap 1.4)
 r.post('/projects/:pid/oa-retrieve',     OA.oaRetrieve);   // flag-gated (autoPdfRetrieval, default OFF)

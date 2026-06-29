@@ -68,6 +68,12 @@ export const screeningApi = {
     const qs = new URLSearchParams(params).toString();
     return `${BASE}/projects/${pid}/export${qs ? '?' + qs : ''}`;
   },
+  // 62.md — durable async export for large projects. The sync GET /export answers 413
+  // { useAsync:true } over the size cap; the client then starts a job, polls getExportJob
+  // until { ready:true }, and downloads from exportDownloadUrl. Mirrors the import job API.
+  startExport:   (pid, body)        => req('POST', `/projects/${pid}/export/start`, body),
+  getExportJob:  (pid, jobId)       => req('GET',  `/projects/${pid}/export/jobs/${jobId}`),
+  exportDownloadUrl: (pid, jobId)   => `${BASE}/projects/${pid}/export/jobs/${jobId}/download`,
 
   // Decisions
   saveDecision:  (pid, rid, body) => req('POST', `/projects/${pid}/records/${rid}/decision`, body),
