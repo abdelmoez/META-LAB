@@ -51,13 +51,14 @@ function useFocusTrap(active, onClose) {
 }
 
 /* ─── Modal ───────────────────────────────────────────────────────────────── */
-export function StitchModal({ open, onClose, title, children, footer, width = 480, labelledBy }) {
+export function StitchModal({ open, onClose, title, children, footer, width = 480, labelledBy, name }) {
   const ref = useFocusTrap(open, onClose);
   const titleId = useId();
   if (!open) return null;
   if (typeof document === 'undefined') return null;
   return createPortal(
     <div
+      data-testid="stitch-modal-backdrop"
       style={{
         position: 'fixed', inset: 0, zIndex: 2147482000, display: 'flex',
         alignItems: 'center', justifyContent: 'center', padding: 20,
@@ -69,6 +70,8 @@ export function StitchModal({ open, onClose, title, children, footer, width = 48
         ref={ref}
         role="dialog" aria-modal="true" aria-labelledby={labelledBy || (title ? titleId : undefined)}
         tabIndex={-1}
+        data-testid="stitch-modal"
+        data-modal={name || undefined}
         className="stitch-scale-in stitch-scope"
         style={{
           width: '100%', maxWidth: width, maxHeight: 'calc(100vh - 40px)', display: 'flex', flexDirection: 'column',
@@ -77,8 +80,8 @@ export function StitchModal({ open, onClose, title, children, footer, width = 48
       >
         {title ? (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, padding: '18px 20px', borderBottom: `1px solid ${salpha(S.outlineVariant, 0.5)}` }}>
-            <h2 id={titleId} style={{ fontSize: 17, fontWeight: 700, color: S.textPrimary, margin: 0 }}>{title}</h2>
-            <button type="button" aria-label="Close dialog" onClick={onClose} className="stitch-focusable"
+            <h2 id={titleId} data-testid="stitch-modal-title" style={{ fontSize: 17, fontWeight: 700, color: S.textPrimary, margin: 0 }}>{title}</h2>
+            <button type="button" data-testid="stitch-modal-close" aria-label="Close dialog" onClick={onClose} className="stitch-focusable"
               style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: S.textMuted, display: 'inline-flex', padding: 4, borderRadius: 6 }}>
               <Icon name="menu" size={18} style={{ display: 'none' }} />
               <span aria-hidden="true" style={{ fontSize: 20, lineHeight: 1 }}>×</span>
@@ -293,7 +296,7 @@ export function StitchToastProvider({ children }) {
           {items.map((it) => {
             const t = TOAST_TONES[it.tone] || TOAST_TONES.info;
             return (
-              <div key={it.id} role="status" className="stitch-scale-in" style={{
+              <div key={it.id} role="status" data-testid="stitch-toast" data-tone={it.tone} className="stitch-scale-in" style={{
                 display: 'flex', alignItems: 'flex-start', gap: 10, padding: '12px 14px', background: S.card,
                 border: `1px solid ${salpha(S.outlineVariant, 0.5)}`, borderLeft: `3px solid ${t.color}`,
                 borderRadius: 10, boxShadow: S.shadow2,

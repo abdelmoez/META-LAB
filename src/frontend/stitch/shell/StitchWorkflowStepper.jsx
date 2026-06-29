@@ -36,7 +36,7 @@ const toneColor = (tone) => (TONE_COLOR[tone] || TONE_COLOR.muted)();
 const DISABLED_HINT = 'Available once screening is set up for this project';
 
 /** A numbered workflow step: pip (always the NUMBER) + continuous connector. */
-function StepRow({ step, active, connAbove, connBelow, onNavigate }) {
+function StepRow({ step, active, connAbove, connBelow, onNavigate, testId }) {
   const disabled = !step.href;
   const meta = step.status ? statusMeta(step.status) : null;
   const tone = meta ? toneColor(meta.tone) : S.textMuted;
@@ -53,6 +53,9 @@ function StepRow({ step, active, connAbove, connBelow, onNavigate }) {
     <button
       type="button"
       className="stitch-focusable"
+      data-testid={testId}
+      data-status={step.status || 'empty'}
+      data-disabled={disabled ? 'true' : 'false'}
       aria-current={active ? 'step' : undefined}
       aria-label={`Step ${step.num}: ${step.label}${meta ? ` — ${meta.label}` : ''}${step.count ? ` (${step.count})` : ''}${disabled ? ` — ${DISABLED_HINT}` : ''}`}
       aria-disabled={disabled || undefined}
@@ -111,12 +114,14 @@ function StepRow({ step, active, connAbove, connBelow, onNavigate }) {
 }
 
 /** A non-step utility row (icon · label) — no pip, no connector. */
-function UtilityRow({ step, active, onNavigate }) {
+function UtilityRow({ step, active, onNavigate, testId }) {
   const disabled = !step.href;
   const row = (
     <button
       type="button"
       className="stitch-focusable"
+      data-testid={testId}
+      data-disabled={disabled ? 'true' : 'false'}
       aria-current={active ? 'page' : undefined}
       aria-label={`${step.label}${disabled ? ` — ${DISABLED_HINT}` : ''}`}
       aria-disabled={disabled || undefined}
@@ -163,16 +168,16 @@ export default function StitchWorkflowStepper({ steps, activeKey, ariaLabel = 'W
   const go = onNavigate || ((step) => { if (step.href) navigate(step.href); });
   if (!Array.isArray(steps) || !steps.length) return null;
   return (
-    <nav aria-label={ariaLabel}>
+    <nav aria-label={ariaLabel} data-testid="stitch-workflow-stepper">
       {/* gap:0 so the rows touch and the connector segments (row-bottom of one step
           → row-top of the next) join into ONE continuous line with no break. */}
       <ol style={{ display: 'flex', flexDirection: 'column', gap: 0, margin: 0, padding: 0 }}>
         {steps.map((step, i) => {
           const active = activeKey === step.key;
-          if (step.num == null) return <UtilityRow key={step.key} step={step} active={active} onNavigate={go} />;
+          if (step.num == null) return <UtilityRow key={step.key} testId={`stitch-stepper-step-${step.key}`} step={step} active={active} onNavigate={go} />;
           const connAbove = i > 0 && steps[i - 1].num != null;
           const connBelow = i < steps.length - 1 && steps[i + 1].num != null;
-          return <StepRow key={step.key} step={step} active={active} connAbove={connAbove} connBelow={connBelow} onNavigate={go} />;
+          return <StepRow key={step.key} testId={`stitch-stepper-step-${step.key}`} step={step} active={active} connAbove={connAbove} connBelow={connBelow} onNavigate={go} />;
         })}
       </ol>
     </nav>

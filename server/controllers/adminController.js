@@ -1563,6 +1563,79 @@ export async function updateThemeSettings(req, res) {
   }
 }
 
+// ── Design (Stitch UI rollout) settings ───────────────────────────────────────
+// prompt61 — admin read/write for the Stitch UI rollout, surfaced in Ops ›
+// Appearance. `allowAllUsers` lifts the admin-only gate so every user can use the
+// Stitch UI; `defaultMode` is the design a user with no saved preference gets.
+// Read publicly via GET /api/settings/public and consumed by resolveDesignMode()
+// on the frontend. The canonical default lives in DEFAULTS.designSettings in
+// server/controllers/settingsController.js — this literal mirrors it (kept local
+// because that DEFAULTS object is not exported); keep the two in sync.
+const DESIGN_SETTINGS_DEFAULT = { allowAllUsers: true, defaultMode: 'stitch' };
+
+// ── GET /api/admin/design-settings ────────────────────────────────────────────
+
+export async function getDesignSettings(req, res) {
+  try {
+    const row = await prisma.siteSetting.findUnique({ where: { key: 'designSettings' } });
+    let stored = {};
+    if (row) { try { stored = JSON.parse(row.value); } catch { stored = {}; } }
+    // Stored row wins; default backfills any missing field.
+    return res.json({ ...DESIGN_SETTINGS_DEFAULT, ...(stored && typeof stored === 'object' ? stored : {}) });
+  } catch (err) {
+    console.error('[admin] getDesignSettings error:', err.message);
+    // Never break the rollout gate — degrade to the shipped default rather than 500.
+    return res.json({ ...DESIGN_SETTINGS_DEFAULT });
+  }
+}
+
+// ── PUT /api/admin/design-settings ────────────────────────────────────────────
+
+export async function updateDesignSettings(req, res) {
+  try {
+    const body = req.body || {};
+
+    // Strict, partial validation — only the provided fields are checked + merged.
+    const patch = {};
+    if (body.allowAllUsers !== undefined) {
+      if (typeof body.allowAllUsers !== 'boolean') {
+        return res.status(400).json({ error: 'allowAllUsers must be a boolean' });
+      }
+      patch.allowAllUsers = body.allowAllUsers;
+    }
+    if (body.defaultMode !== undefined) {
+      if (body.defaultMode !== 'legacy' && body.defaultMode !== 'stitch') {
+        return res.status(400).json({ error: "defaultMode must be 'legacy' or 'stitch'" });
+      }
+      patch.defaultMode = body.defaultMode;
+    }
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({ error: 'No valid design settings provided' });
+    }
+
+    // Merge the patch over the existing stored value (partial update); default underneath.
+    let stored = {};
+    try {
+      const row = await prisma.siteSetting.findUnique({ where: { key: 'designSettings' } });
+      if (row) stored = JSON.parse(row.value);
+    } catch { /* keep {} */ }
+
+    const before = { ...DESIGN_SETTINGS_DEFAULT, ...(stored && typeof stored === 'object' ? stored : {}) };
+    const value = { ...before, ...patch };
+    await upsertSetting('designSettings', value, req.user.id);
+
+    await logAdminAction(req, 'DESIGN_SETTINGS_UPDATED', 'SiteSetting', 'designSettings', {
+      oldAllowAllUsers: before.allowAllUsers, oldDefaultMode: before.defaultMode,
+      newAllowAllUsers: value.allowAllUsers, newDefaultMode: value.defaultMode,
+    });
+
+    return res.json(value);
+  } catch (err) {
+    console.error('[admin] updateDesignSettings error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 // ── GET /api/admin/audit-log ──────────────────────────────────────────────────
 
 // Build a validated Prisma createdAt range from from/to query params. Returns

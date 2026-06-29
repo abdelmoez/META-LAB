@@ -59,3 +59,8 @@ export function assertSafeTarget(): void {
 /** Where authenticated storage states are written by global-setup. */
 export const AUTH_DIR = path.join(HERE, '..', '.auth');
 export const adminStatePath = path.join(AUTH_DIR, 'admin.json');
+export const modStatePath = path.join(AUTH_DIR, 'mod.json');
+export const normalStatePath = path.join(AUTH_DIR, 'normal.json');
+
+/** A fixed password for the programmatically-seeded mod/normal E2E users. */
+export const SEED_PASSWORD = process.env.E2E_SEED_PASSWORD || 'E2e-Seed-Pw!2025';

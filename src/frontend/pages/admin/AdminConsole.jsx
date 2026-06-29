@@ -66,7 +66,7 @@ function Spinner({ size = 14, color = C.acc }) {
   );
 }
 
-function SaveButton({ onClick, status, label = 'Save Changes', disabled = false }) {
+function SaveButton({ onClick, status, label = 'Save Changes', disabled = false, testId }) {
   const map = {
     idle:   { bg: C.acc2,  text: label,     icon: null },
     saving: { bg: C.muted, text: 'Saving…', icon: <Spinner size={12} color={C.accText} /> },
@@ -75,7 +75,7 @@ function SaveButton({ onClick, status, label = 'Save Changes', disabled = false 
   };
   const s = map[status] || map.idle;
   return (
-    <button onClick={onClick} disabled={disabled || status === 'saving'} style={{
+    <button onClick={onClick} disabled={disabled || status === 'saving'} data-testid={testId} style={{
       display: 'inline-flex', alignItems: 'center', gap: 6,
       padding: '8px 18px', background: s.bg, border: 'none',
       borderRadius: 7, color: C.accText, fontSize: 13, fontWeight: 600,
@@ -143,9 +143,9 @@ function DataTable({ columns, rows, loading, emptyMessage = 'No data.', onRowCli
   );
 }
 
-function Toggle({ checked, onChange, disabled = false }) {
+function Toggle({ checked, onChange, disabled = false, testId }) {
   return (
-    <div onClick={() => !disabled && onChange(!checked)} style={{ width: 40, height: 22, borderRadius: 11, background: checked ? C.acc2 : C.brd2, position: 'relative', cursor: disabled ? 'not-allowed' : 'pointer', transition: 'background 0.2s', flexShrink: 0, opacity: disabled ? 0.5 : 1 }}>
+    <div onClick={() => !disabled && onChange(!checked)} data-testid={testId} style={{ width: 40, height: 22, borderRadius: 11, background: checked ? C.acc2 : C.brd2, position: 'relative', cursor: disabled ? 'not-allowed' : 'pointer', transition: 'background 0.2s', flexShrink: 0, opacity: disabled ? 0.5 : 1 }}>
       <div style={{ position: 'absolute', top: 3, left: checked ? 21 : 3, width: 16, height: 16, borderRadius: '50%', background: '#fff', transition: 'left 0.2s', boxShadow: `0 1px 4px ${C.shadow}` }} />
     </div>
   );
@@ -4427,15 +4427,15 @@ function SettingsSection() {
 
       <SectionCard title="Platform">
         <div style={{ padding: '14px 20px 0', borderBottom: `1px solid ${C.brd}` }}>
-          <Field label="App Name"><input type="text" value={form.appName ?? ''} onChange={e => setForm(f => ({ ...f, appName: e.target.value }))} style={{ ...inputStyle, maxWidth: 320 }} /></Field>
+          <Field label="App Name"><input type="text" data-testid="settings-appname" value={form.appName ?? ''} onChange={e => setForm(f => ({ ...f, appName: e.target.value }))} style={{ ...inputStyle, maxWidth: 320 }} /></Field>
           <Field label="Default Theme" note="Theme for first-visit users with no saved preference. Per-user choices always win.">
-            <select value={form.defaultTheme === 'day' ? 'day' : 'night'} onChange={e => setForm(f => ({ ...f, defaultTheme: e.target.value }))} style={{ ...inputStyle, maxWidth: 160 }}>
+            <select data-testid="settings-defaulttheme" value={form.defaultTheme === 'day' ? 'day' : 'night'} onChange={e => setForm(f => ({ ...f, defaultTheme: e.target.value }))} style={{ ...inputStyle, maxWidth: 160 }}>
               <option value="night">Night</option>
               <option value="day">Day</option>
             </select>
           </Field>
         </div>
-        <Row label="Registration Open" note="Allow new users to register."><Toggle checked={!!form.registrationOpen} onChange={v => setForm(f => ({ ...f, registrationOpen: v }))} /></Row>
+        <Row label="Registration Open" note="Allow new users to register."><Toggle checked={!!form.registrationOpen} onChange={v => setForm(f => ({ ...f, registrationOpen: v }))} testId="settings-registration" /></Row>
         <Row label="Maintenance Mode" note={form.maintenanceMode ? '⚠ Users cannot log in.' : 'Put the site in maintenance mode.'}><Toggle checked={!!form.maintenanceMode} onChange={v => setForm(f => ({ ...f, maintenanceMode: v }))} /></Row>
         <div style={{ padding: '14px 20px 0', borderBottom: `1px solid ${C.brd}` }}>
           <Field label="Maintenance Message" note="Shown to users while maintenance mode is on.">
@@ -4522,7 +4522,7 @@ function SettingsSection() {
         </Row>
       </SectionCard>
 
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}><SaveButton onClick={save} status={status} disabled={loadFailed} /></div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}><SaveButton onClick={save} status={status} disabled={loadFailed} testId="settings-save" /></div>
     </div>
   );
 }
@@ -4610,6 +4610,13 @@ function StyleSection() {
   const [loading, setLoading]   = useState(true);
   const [updatedAt, setUpdatedAt] = useState(null);
 
+  // prompt61 — Stitch UI rollout controls (the 'designSettings' SiteSetting — a
+  // separate concern from the brand theme above; has its own Save). Seeded from the
+  // shipped default so the toggle never flashes before the server record loads.
+  const [design, setDesign]               = useState({ allowAllUsers: true, defaultMode: 'stitch' });
+  const [designSaved, setDesignSaved]     = useState({ allowAllUsers: true, defaultMode: 'stitch' });
+  const [designStatus, setDesignStatus]   = useState('idle');
+
   // Initialize from the server record (falls back to the live context brand).
   useEffect(() => {
     let alive = true;
@@ -4624,6 +4631,19 @@ function StyleSection() {
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load the current Stitch UI rollout settings (degrades silently to the default).
+  useEffect(() => {
+    let alive = true;
+    adminApi.design.get()
+      .then(d => {
+        if (!alive || !d) return;
+        const next = { allowAllUsers: !!d.allowAllUsers, defaultMode: d.defaultMode === 'legacy' ? 'legacy' : 'stitch' };
+        setDesign(next); setDesignSaved(next);
+      })
+      .catch(() => { /* keep the shipped default */ });
+    return () => { alive = false; };
+  }, []);
 
   const normalized = normalizeHex(hexInput);
   const valid = !!normalized;
@@ -4676,6 +4696,18 @@ function StyleSection() {
     } catch { setStatus('error'); setTimeout(() => setStatus('idle'), 3000); }
   }
 
+  const designDirty = design.allowAllUsers !== designSaved.allowAllUsers || design.defaultMode !== designSaved.defaultMode;
+
+  async function saveDesign() {
+    setDesignStatus('saving');
+    try {
+      const d = await adminApi.design.save({ allowAllUsers: design.allowAllUsers, defaultMode: design.defaultMode });
+      const next = { allowAllUsers: !!d.allowAllUsers, defaultMode: d.defaultMode === 'legacy' ? 'legacy' : 'stitch' };
+      setDesign(next); setDesignSaved(next);
+      setDesignStatus('saved'); setTimeout(() => setDesignStatus('idle'), 3000);
+    } catch { setDesignStatus('error'); setTimeout(() => setDesignStatus('idle'), 3000); }
+  }
+
   if (loading) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={20} /></div>;
 
   const diagColor = lvl => (lvl === 'good' ? C.grn : lvl === 'warn' ? C.yel : C.red);
@@ -4717,7 +4749,7 @@ function StyleSection() {
         <div style={{ padding: '16px 20px', display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
           <input type="color" value={normalized || '#000000'} onChange={e => pickHex(e.target.value)}
             style={{ width: 44, height: 38, padding: 0, border: `1px solid ${C.brd2}`, borderRadius: 8, background: 'transparent', cursor: 'pointer' }} aria-label="Pick a brand color" />
-          <input type="text" value={hexInput} onChange={e => pickHex(e.target.value)} placeholder="#4f46e5" spellCheck={false}
+          <input type="text" data-testid="appearance-hex-input" value={hexInput} onChange={e => pickHex(e.target.value)} placeholder="#4f46e5" spellCheck={false}
             style={{ ...inputStyle, maxWidth: 160, fontFamily: MONO, textTransform: 'lowercase' }} aria-label="Brand color hex" />
           {!valid && <span style={{ fontSize: 12, color: C.red, fontWeight: 500 }}>Invalid hex — use #RRGGBB.</span>}
           {valid && <span style={{ fontSize: 12, color: C.muted }}>{preset === 'custom' ? 'Custom color' : PRESETS.find(p => p.id === preset)?.name}</span>}
@@ -4753,9 +4785,33 @@ function StyleSection() {
         <button onClick={resetDefault} style={{ padding: '9px 16px', borderRadius: 8, border: `1px solid ${C.brd2}`, background: 'transparent', color: C.txt2, fontSize: 13, fontWeight: 500, fontFamily: FONT, cursor: 'pointer' }}>Reset to default</button>
         {updatedAt && <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>Last changed {fmtDate(updatedAt)}</span>}
         <div style={{ marginLeft: 'auto' }}>
-          <SaveButton onClick={save} status={status} label={diag && diag.hasWarnings ? 'Save anyway' : 'Save theme'} disabled={!valid || !dirty} />
+          <SaveButton onClick={save} status={status} label={diag && diag.hasWarnings ? 'Save anyway' : 'Save theme'} disabled={!valid || !dirty} testId="appearance-save" />
         </div>
       </div>
+
+      {/* prompt61 — Stitch UI rollout. A separate SiteSetting ('designSettings') from the
+          brand theme above; persisted via the admin design-settings endpoint and read
+          publicly by resolveDesignMode(). Independent Save — does not touch the brand. */}
+      <SectionCard title="Stitch UI rollout">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', borderBottom: `1px solid ${C.brd}`, gap: 20 }}>
+          <div>
+            <div style={{ fontSize: 13, color: C.txt, fontWeight: 500 }}>Enable the Stitch UI for all users</div>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>When off, only admins can switch to the new Stitch interface. When on, every user can use it.</div>
+          </div>
+          <Toggle checked={!!design.allowAllUsers} onChange={v => setDesign(d => ({ ...d, allowAllUsers: v }))} testId="design-allow-all-toggle" />
+        </div>
+        <div style={{ padding: '14px 20px 4px' }}>
+          <Field label="Default UI" note="The interface a user with no saved preference gets.">
+            <select data-testid="design-default-mode" value={design.defaultMode} onChange={e => setDesign(d => ({ ...d, defaultMode: e.target.value }))} style={{ ...inputStyle, maxWidth: 200 }}>
+              <option value="legacy">Legacy</option>
+              <option value="stitch">Stitch</option>
+            </select>
+          </Field>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '4px 20px 16px' }}>
+          <SaveButton onClick={saveDesign} status={designStatus} label="Save rollout" disabled={!designDirty} testId="design-settings-save" />
+        </div>
+      </SectionCard>
     </div>
   );
 }
@@ -4815,12 +4871,12 @@ function FlagsSection() {
                 </div>
               )}
             </div>
-            <Toggle checked={!!flags[f.key]} onChange={v => setFlags(fl => ({ ...fl, [f.key]: v }))} />
+            <Toggle checked={!!flags[f.key]} onChange={v => setFlags(fl => ({ ...fl, [f.key]: v }))} testId={`flag-toggle-${f.key}`} />
           </div>
           );
         })}
       </SectionCard>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}><SaveButton onClick={save} status={status} /></div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}><SaveButton onClick={save} status={status} testId="flags-save" /></div>
     </div>
   );
 }
@@ -8130,14 +8186,14 @@ export default function AdminConsole() {
           const isActive = active === sec.id;
           const badge = sec.id === 'messages' && unread > 0 ? unread : null;
           return (
-            <button key={sec.id} onClick={() => setActive(sec.id)} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '9px 16px', background: isActive ? alpha(C.acc, '14') : 'transparent', border: 'none', borderLeft: `3px solid ${isActive ? C.acc : 'transparent'}`, cursor: 'pointer', fontFamily: FONT, fontSize: 13, color: isActive ? C.acc : C.txt2, fontWeight: isActive ? 600 : 400, textAlign: 'left', transition: 'all 0.15s' }}
+            <button key={sec.id} data-testid={`nav-${sec.id}`} onClick={() => setActive(sec.id)} style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '9px 16px', background: isActive ? alpha(C.acc, '14') : 'transparent', border: 'none', borderLeft: `3px solid ${isActive ? C.acc : 'transparent'}`, cursor: 'pointer', fontFamily: FONT, fontSize: 13, color: isActive ? C.acc : C.txt2, fontWeight: isActive ? 600 : 400, textAlign: 'left', transition: 'all 0.15s' }}
               onMouseEnter={e => { if (!isActive) { e.currentTarget.style.background = alpha(C.acc, '08'); e.currentTarget.style.color = C.txt; } }}
               onMouseLeave={e => { if (!isActive) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = C.txt2; } }}
             >
               <span style={{ width: 20, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><Icon name={sec.icon} size={14} /></span>
               <span style={{ flex: 1 }}>{sec.label}</span>
               {badge && (
-                <span style={{ background: C.ylw, color: C.bg, borderRadius: 8, padding: '1px 6px', fontSize: 10, fontFamily: MONO, fontWeight: 700 }}>{badge}</span>
+                <span data-testid="messages-unread-badge" style={{ background: C.ylw, color: C.bg, borderRadius: 8, padding: '1px 6px', fontSize: 10, fontFamily: MONO, fontWeight: 700 }}>{badge}</span>
               )}
             </button>
           );

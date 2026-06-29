@@ -27,6 +27,8 @@ import {
   updateAdminSettings,
   getAdminThemeSettings,
   updateThemeSettings,
+  getDesignSettings,
+  updateDesignSettings,
   getLandingContent,
   updateLandingContent,
   getFeatureFlags,
@@ -201,6 +203,11 @@ router.put('/settings', requireAdmin, updateAdminSettings);
 // settings handling; PATCH validates strictly + audits APP_THEME_UPDATED.
 router.get('/settings/theme', requireAdmin, getAdminThemeSettings);
 router.patch('/settings/theme', requireAdmin, updateThemeSettings);
+
+// prompt61 — Stitch UI rollout settings (admin only). Read default merge lives in
+// the controller; PUT validates strictly + audits DESIGN_SETTINGS_UPDATED.
+router.get('/design-settings', requireAdmin, getDesignSettings);
+router.put('/design-settings', requireAdmin, updateDesignSettings);
 
 router.get('/landing-content', requireAdmin, getLandingContent);
 router.put('/landing-content', requireAdmin, updateLandingContent);

@@ -24,6 +24,7 @@ export default defineConfig({
   timeout: 60_000,
   expect: { timeout: 10_000 },
   globalSetup: './e2e/global-setup.ts',
+  globalTeardown: './e2e/global-teardown.ts',
   reporter: [
     ['list'],
     ['html', { outputFolder: 'playwright-report', open: 'never' }],

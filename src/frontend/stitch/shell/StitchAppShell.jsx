@@ -65,7 +65,7 @@ export default function StitchAppShell({
     <StitchToastProvider>
       <StitchStyle />
       <style>{RESPONSIVE_CSS}</style>
-      <div className="stitch-scope" style={{ display: 'flex', height: '100vh', width: '100%', overflow: 'hidden', background: S.surface, fontFamily: S.font, color: S.textPrimary }}>
+      <div className="stitch-scope" data-testid="stitch-app-shell" style={{ display: 'flex', height: '100vh', width: '100%', overflow: 'hidden', background: S.surface, fontFamily: S.font, color: S.textPrimary }}>
         {/* Desktop rails */}
         {coordinatedNav ? (
           // 56.md §2 — the rail + white submenu are ONE coordinated region; the
@@ -93,7 +93,7 @@ export default function StitchAppShell({
         {/* Main column */}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', height: '100%' }}>
           <StitchTopHeader onOpenNav={() => setNavOpen(true)} breadcrumb={breadcrumb} topPresence={topPresence} />
-          <main className="stitch-scope" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden' }}>
+          <main className="stitch-scope" data-testid="stitch-main-content" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden' }}>
             <div style={{ maxWidth, margin: '0 auto', padding: contentPad ? '24px' : 0, width: '100%' }}>
               {children}
             </div>

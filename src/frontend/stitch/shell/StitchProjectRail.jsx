@@ -62,12 +62,14 @@ function RailStatusGlyph({ status }) {
 }
 
 /** A plain category row (Overview, Project Control, Reference). */
-function CategoryRow({ cat, active, status, onClick }) {
+function CategoryRow({ cat, active, status, onClick, testId }) {
   const meta = status ? statusMeta(status) : null;
   return (
     <button
       type="button"
       className="stitch-focusable"
+      data-testid={testId}
+      data-status={status || 'empty'}
       aria-label={meta ? `${cat.label} — ${meta.label}` : cat.label}
       aria-current={active ? 'page' : undefined}
       onClick={onClick}
@@ -98,7 +100,7 @@ function CategoryRow({ cat, active, status, onClick }) {
  * (done), an alert (needs attention) or the step number, plus the accessible
  * status label. `first`/`last` clip the connector at the ends.
  */
-function StepRow({ cat, active, status, first, last, onClick }) {
+function StepRow({ cat, active, status, first, last, onClick, testId }) {
   const meta = statusMeta(status);
   const p = pipOf(status);
   const connectorAbove = !first;
@@ -109,6 +111,8 @@ function StepRow({ cat, active, status, first, last, onClick }) {
     <button
       type="button"
       className="stitch-focusable"
+      data-testid={testId}
+      data-status={status || 'empty'}
       aria-current={active ? 'step' : undefined}
       aria-label={`${cat.stepNum ? `Step ${cat.stepNum}: ` : ''}${cat.label} — ${meta.label}`}
       onClick={onClick}
@@ -183,6 +187,9 @@ export default function StitchProjectRail({
   return (
     <nav
       aria-label="Project workflow"
+      data-testid="stitch-project-rail"
+      data-pinned={pinned ? 'true' : 'false'}
+      data-active-stage={activeStage}
       className={`stitch-prail${isStatic ? ' stitch-prail-static' : ''}`}
       style={{ display: 'flex', flexDirection: 'column', height: '100%', width: '100%', background: isStatic ? STITCH_RAIL.bg : 'transparent' }}
     >
@@ -200,6 +207,7 @@ export default function StitchProjectRail({
             <button
               type="button"
               className="stitch-focusable"
+              data-testid="stitch-pin-control"
               aria-label={pinned ? 'Unpin navigation (collapse when not in use)' : 'Pin navigation open'}
               aria-pressed={pinned}
               title={pinned ? 'Unpin sidebar' : 'Pin sidebar open'}
@@ -216,6 +224,7 @@ export default function StitchProjectRail({
       {/* Back to Projects — directly above Overview (collapsed + expanded) */}
       <button
         type="button" className="stitch-focusable"
+        data-testid="stitch-back-to-projects"
         aria-label="Back to Projects"
         onClick={() => navigate(projectsHref())}
         onMouseEnter={(e) => { e.currentTarget.style.background = salpha('#ffffff', 0.08); }}
@@ -242,6 +251,7 @@ export default function StitchProjectRail({
               group.stepper ? (
                 <StepRow
                   key={cat.id}
+                  testId={`stitch-workflow-step-${cat.id}`}
                   cat={cat}
                   active={activeCategory === cat.id}
                   status={statusFor(cat)}
@@ -252,6 +262,7 @@ export default function StitchProjectRail({
               ) : (
                 <CategoryRow
                   key={cat.id}
+                  testId={`stitch-project-category-${cat.id}`}
                   cat={cat}
                   active={activeCategory === cat.id}
                   status={statusFor(cat)}

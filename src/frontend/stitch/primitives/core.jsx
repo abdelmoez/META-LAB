@@ -330,7 +330,8 @@ export function StitchProgressBar({ value = 0, max = 100, tone = 'brand', height
         </div>
       ) : null}
       <div
-        role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100} aria-label={label}
+        role="progressbar" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100}
+        aria-label={label || 'Progress'} aria-valuetext={`${Math.round(pct)}%`}
         style={{ height, background: S.surfaceHigh, borderRadius: S.radiusPill, overflow: 'hidden' }}
       >
         <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: S.radiusPill, transition: 'width 0.4s ease' }} />

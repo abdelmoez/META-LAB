@@ -91,3 +91,7 @@ scripts/pecan-harness-live.log
 e2e/.auth/
 playwright-report/
 test-results/
+
+# Playwright E2E discovery run logs (artifacts, not source)
+e2e/.discovery/*.log
+e2e/.discovery/server.*

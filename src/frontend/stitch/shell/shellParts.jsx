@@ -34,11 +34,12 @@ import { useInvitations } from './useInvitations.js';
 function isStaff(user) { return !!user && (user.role === 'admin' || user.role === 'mod'); }
 
 /* ─── Shared rail button (icon + accessible name + tooltip while collapsed) ─── */
-function RailButton({ icon, label, active, onClick, badge, tooltipPlacement = 'right' }) {
+function RailButton({ icon, label, active, onClick, badge, tooltipPlacement = 'right', testId }) {
   return (
     <StitchTooltip label={label} placement={tooltipPlacement}>
       <button
         type="button"
+        data-testid={testId}
         aria-label={badge ? `${label} (${badge} pending)` : label}
         aria-current={active ? 'page' : undefined}
         onClick={onClick}
@@ -96,13 +97,13 @@ export function StitchPrimaryRail({ activeKey }) {
   const profileActive = location.pathname.startsWith('/profile');
 
   return (
-    <nav aria-label="Primary" style={{
+    <nav aria-label="Primary" data-testid="stitch-primary-rail" style={{
       width: 72, flexShrink: 0, background: STITCH_RAIL.bg, display: 'flex', flexDirection: 'column',
       alignItems: 'center', padding: '20px 12px', gap: 6, height: '100%',
     }}>
       {/* PecanRev monogram (brand anchor) */}
       <button
-        type="button" onClick={() => navigate('/app')} aria-label="PecanRev home" title="PecanRev"
+        type="button" data-testid="stitch-home-button" onClick={() => navigate('/app')} aria-label="PecanRev home" title="PecanRev"
         style={{ width: 40, height: 40, borderRadius: 12, background: '#fff', border: 'none', cursor: 'pointer',
           display: 'flex', alignItems: 'center', justifyContent: 'center', color: STITCH_RAIL.bg, marginBottom: 14,
           flexShrink: 0, fontFamily: S.font, fontWeight: 800, fontSize: 15, letterSpacing: '-0.02em' }}
@@ -114,6 +115,7 @@ export function StitchPrimaryRail({ activeKey }) {
         {GLOBAL_NAV.map((item) => (
           <RailButton
             key={item.key}
+            testId={`stitch-global-nav-item-${item.key}`}
             icon={item.icon}
             label={item.label}
             active={activeGlobal === item.key}
@@ -127,7 +129,7 @@ export function StitchPrimaryRail({ activeKey }) {
       <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
         <StitchTooltip label="Profile & settings" placement="right">
           <button
-            type="button" aria-label="Profile & settings" aria-current={profileActive ? 'page' : undefined}
+            type="button" data-testid="stitch-profile-button" aria-label="Profile & settings" aria-current={profileActive ? 'page' : undefined}
             onClick={() => navigate('/profile')}
             onMouseEnter={(e) => { if (!profileActive) e.currentTarget.style.background = salpha('#ffffff', 0.1); }}
             onMouseLeave={(e) => { if (!profileActive) e.currentTarget.style.background = 'transparent'; }}
@@ -148,7 +150,7 @@ export function StitchPrimaryRail({ activeKey }) {
 /* ─── Context rail (generic 280px white column; collapsible) ───────────────── */
 export function StitchContextRail({ title, subtitle, action, children, footer, onCollapse }) {
   return (
-    <aside aria-label={title || 'Context navigation'} className="stitch-scope" style={{
+    <aside aria-label={title || 'Context navigation'} data-testid="stitch-context-rail" className="stitch-scope" style={{
       width: 280, flexShrink: 0, background: S.card, borderRight: `1px solid ${salpha(S.outlineVariant, 0.5)}`,
       display: 'flex', flexDirection: 'column', height: '100%',
     }}>
@@ -156,7 +158,7 @@ export function StitchContextRail({ title, subtitle, action, children, footer, o
         <div style={{ padding: '20px 18px', borderBottom: `1px solid ${salpha(S.outlineVariant, 0.45)}` }}>
           <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8 }}>
             <div style={{ minWidth: 0 }}>
-              {title ? <h1 style={{ fontSize: 18, fontWeight: 700, color: S.textPrimary, margin: 0 }}>{title}</h1> : null}
+              {title ? <h1 data-testid="stitch-context-rail-title" style={{ fontSize: 18, fontWeight: 700, color: S.textPrimary, margin: 0 }}>{title}</h1> : null}
               {subtitle ? <p style={{ fontSize: 12, color: S.textSecondary, margin: '3px 0 0' }}>{subtitle}</p> : null}
             </div>
             {onCollapse ? (
@@ -193,8 +195,8 @@ export function StitchAccountMenu() {
   const name = user.name || user.email;
   const staff = isStaff(user);
 
-  const Item = ({ icon, label, onClick, danger }) => (
-    <button type="button" role="menuitem" className="stitch-focusable" onClick={() => { setOpen(false); onClick?.(); }}
+  const Item = ({ icon, label, onClick, danger, testId }) => (
+    <button type="button" role="menuitem" data-testid={testId} className="stitch-focusable" onClick={() => { setOpen(false); onClick?.(); }}
       onMouseEnter={(e) => { e.currentTarget.style.background = S.surfaceLow; }}
       onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
       style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', padding: '9px 12px', border: 'none',
@@ -207,13 +209,13 @@ export function StitchAccountMenu() {
 
   return (
     <div ref={ref} style={{ position: 'relative' }}>
-      <button type="button" className="stitch-focusable" aria-haspopup="menu" aria-expanded={open}
+      <button type="button" data-testid="stitch-account-button" className="stitch-focusable" aria-haspopup="menu" aria-expanded={open} aria-label="Account menu"
         onClick={() => setOpen((v) => !v)}
         style={{ display: 'flex', alignItems: 'center', gap: 8, border: 'none', background: 'transparent', cursor: 'pointer', padding: 3, borderRadius: 9999 }}>
         <StitchAvatar name={name} size={32} />
       </button>
       {open ? (
-        <div role="menu" className="stitch-scale-in stitch-scope" style={{
+        <div role="menu" data-testid="stitch-account-menu" className="stitch-scale-in stitch-scope" style={{
           position: 'absolute', top: 'calc(100% + 8px)', right: 0, minWidth: 244, background: S.card,
           border: `1px solid ${salpha(S.outlineVariant, 0.5)}`, borderRadius: 12, boxShadow: S.shadow2, padding: 8, zIndex: 100, fontFamily: S.font,
         }}>
@@ -223,8 +225,8 @@ export function StitchAccountMenu() {
             {user.role === 'admin' ? <div style={{ marginTop: 6 }}><StitchBadge tone="brand" icon="shield">Administrator</StitchBadge></div>
               : user.role === 'mod' ? <div style={{ marginTop: 6 }}><StitchBadge tone="info" icon="shield">Moderator</StitchBadge></div> : null}
           </div>
-          <Item icon="user" label="Profile & settings" onClick={() => navigate('/profile')} />
-          <Item icon={theme === 'night' ? 'sun' : 'moon'} label={theme === 'night' ? 'Light theme' : 'Dark theme'} onClick={toggleTheme} />
+          <Item testId="stitch-account-menu-item-profile" icon="user" label="Profile & settings" onClick={() => navigate('/profile')} />
+          <Item testId="stitch-account-menu-item-theme" icon={theme === 'night' ? 'sun' : 'moon'} label={theme === 'night' ? 'Light theme' : 'Dark theme'} onClick={toggleTheme} />
           {/* Administrative section — only for staff who can actually reach Ops. The
               route + server remain authoritative; hiding the item is presentation. */}
           {staff ? (
@@ -233,11 +235,11 @@ export function StitchAccountMenu() {
               <div style={{ padding: '2px 12px 4px', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', color: S.textMuted }}>
                 Administration
               </div>
-              <Item icon="sliders" label="Ops Console" onClick={() => navigate('/ops')} />
+              <Item testId="stitch-account-menu-item-ops-console" icon="sliders" label="Ops Console" onClick={() => navigate('/ops')} />
             </>
           ) : null}
           <Divider />
-          <Item icon="logout" label="Sign out" danger onClick={async () => { await logout(); navigate('/login'); }} />
+          <Item testId="stitch-account-menu-item-signout" icon="logout" label="Sign out" danger onClick={async () => { await logout(); navigate('/login'); }} />
         </div>
       ) : null}
     </div>
@@ -252,12 +254,12 @@ export function StitchAccountMenu() {
 export function StitchTopHeader({ onOpenNav, breadcrumb, topPresence = null }) {
   const { theme, toggleTheme } = useTheme();
   return (
-    <header style={{
+    <header data-testid="stitch-top-header" style={{
       display: 'flex', alignItems: 'center', gap: 12, padding: '10px 24px', minHeight: 56,
       borderBottom: `1px solid ${salpha(S.outlineVariant, 0.4)}`, background: salpha(S.surface, 0.85),
       backdropFilter: 'blur(6px)', position: 'sticky', top: 0, zIndex: 30,
     }}>
-      <button type="button" aria-label="Open navigation" onClick={onOpenNav} className="stitch-focusable stitch-mobile-only"
+      <button type="button" data-testid="stitch-drawer-toggle" aria-label="Open navigation" onClick={onOpenNav} className="stitch-focusable stitch-mobile-only"
         style={{ border: 'none', background: 'transparent', cursor: 'pointer', color: S.textSecondary, display: 'none', padding: 4 }}>
         <Icon name="menu" size={22} />
       </button>

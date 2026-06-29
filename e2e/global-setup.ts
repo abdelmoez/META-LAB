@@ -3,11 +3,13 @@
  *
  *  1. Refuses to run against a non-local target (safety).
  *  2. Waits for the app (client + API) to be reachable.
- *  3. Logs in the seeded admin via the API, persists Stitch as their UI design mode,
- *     and saves a browser storageState (cookie + localStorage `metalab_ui_design`)
- *     so every test starts authenticated as an admin in Stitch with no per-test login.
- *  4. Seeds one shared read-only project and records its id for tests that need an
- *     existing project without creating their own.
+ *  3. Logs in the seeded admin, persists Stitch, ENABLES the engine feature flags
+ *     so gated areas (AI screening, RoB, NMA, search) are testable, and saves the
+ *     admin browser storageState.
+ *  4. Programmatically creates a MOD and a NORMAL user (per-run unique emails) and
+ *     saves their storageStates, so permission/role specs need no manual seeding.
+ *  5. Seeds a few projects (incl. a long-name one) so the dashboard is populated,
+ *     and records every id/credential in `.auth/seed.json` for the fixtures.
  *
  * The admin credentials come from server/.env (ADMIN_EMAIL_1 + ADMIN_SEED_PASSWORD),
  * loaded by helpers/env.ts — the same dev seed the server uses. Never printed.
@@ -16,10 +18,13 @@ import { chromium, request as playwrightRequest, FullConfig } from '@playwright/
 import fs from 'node:fs';
 import path from 'node:path';
 import {
-  assertSafeTarget, BASE_URL, API_URL, ADMIN_EMAIL, ADMIN_PASSWORD, AUTH_DIR, adminStatePath,
+  assertSafeTarget, BASE_URL, API_URL, ADMIN_EMAIL, ADMIN_PASSWORD, SEED_PASSWORD,
+  AUTH_DIR, adminStatePath, modStatePath, normalStatePath,
 } from './helpers/env';
-import { login, setDesignMode, createProject } from './helpers/api';
-import { STITCH_STORAGE_KEY } from './helpers/stitch';
+import {
+  login, setDesignMode, createProject, register, updateUserRole, enableEngineFlags, setOnboardingEnabled,
+} from './helpers/api';
+import { captureStorageState } from './helpers/sessions';
 
 async function waitForUp(url: string, label: string, timeoutMs = 60000): Promise<void> {
   const ctx = await playwrightRequest.newContext();
@@ -52,52 +57,98 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
 
   fs.mkdirSync(AUTH_DIR, { recursive: true });
 
-  // Authenticate the admin and persist Stitch as their design mode (server-side).
-  const apiCtx = await playwrightRequest.newContext({ baseURL: API_URL });
-  const admin = await login(apiCtx, ADMIN_EMAIL, ADMIN_PASSWORD);
+  // ── Admin API context (baseURL = API origin; cookie scoped to :3001) ──────────
+  const adminApi = await playwrightRequest.newContext({ baseURL: API_URL });
+  const admin = await login(adminApi, ADMIN_EMAIL, ADMIN_PASSWORD);
   if (admin.role !== 'admin') {
     throw new Error(`[e2e] ${ADMIN_EMAIL} is not an admin (role=${admin.role}). Stitch mode requires an admin.`);
   }
-  const persisted = await setDesignMode(apiCtx, 'stitch');
-  if (!persisted) console.warn('[e2e] PUT /api/profile {uiDesignMode:stitch} did not persist (continuing — localStorage will still force Stitch).');
+  await setDesignMode(adminApi, 'stitch');
 
-  // Seed a shared project for read-only tests.
+  // Turn ON the engine flags once for the whole run so gated specs can exercise
+  // them (others skip with a clear reason). Best-effort: a flag failure must not
+  // sink the whole suite.
+  let enabledFlags: Record<string, boolean> = {};
+  try { enabledFlags = await enableEngineFlags(adminApi); }
+  catch (e: any) { console.warn('[e2e] could not enable engine flags:', e?.message || e); }
+
+  // Disable the onboarding gate so seeded + mid-test users land on the app instead
+  // of being trapped on /onboarding by required questions. globalTeardown restores it.
+  try { await setOnboardingEnabled(adminApi, false); }
+  catch (e: any) { console.warn('[e2e] could not disable onboarding gate:', e?.message || e); }
+
+  // ── Seed projects (admin-owned) so the dashboard is never empty ───────────────
+  const runTag = Date.now();
   let seedProjectId = '';
+  let longNameProjectId = '';
+  const extraProjectIds: string[] = [];
   try {
-    const p = await createProject(apiCtx, `E2E Seed Project ${Date.now()}`);
-    seedProjectId = p.id;
+    seedProjectId = (await createProject(adminApi, `E2E Seed Project ${runTag}`)).id;
+    longNameProjectId = (await createProject(
+      adminApi,
+      `E2E Very Long Project Name That Should Ellipsize Gracefully In Every Header And Card Without Breaking The Layout ${runTag}`,
+    )).id;
+    for (let i = 1; i <= 2; i++) extraProjectIds.push((await createProject(adminApi, `E2E Dashboard Project ${i} ${runTag}`)).id);
   } catch (e: any) {
-    console.warn('[e2e] could not seed a shared project:', e?.message || e);
+    console.warn('[e2e] could not seed projects:', e?.message || e);
   }
-  await apiCtx.dispose();
 
-  // Capture a real browser storageState. We log in via the PAGE's own fetch so Chromium
-  // sets + owns the session cookie (an injected sameSite=Strict cookie is not reliably
-  // sent on the SPA's getMe). localStorage forces Stitch on first paint.
+  // ── Create a MOD and a NORMAL user, then promote the mod ──────────────────────
+  const modEmail = `e2e-mod-${runTag}@pecanrev.test`;
+  const normalEmail = `e2e-normal-${runTag}@pecanrev.test`;
+  let modReady = false;
+  let normalReady = false;
+  try {
+    const reg = await playwrightRequest.newContext({ baseURL: API_URL });
+    const modUser = await register(reg, { email: modEmail, password: SEED_PASSWORD, name: 'E2E Mod' });
+    await updateUserRole(adminApi, modUser.id, 'mod');
+    modReady = true;
+    await reg.dispose();
+
+    const reg2 = await playwrightRequest.newContext({ baseURL: API_URL });
+    await register(reg2, { email: normalEmail, password: SEED_PASSWORD, name: 'E2E Normal' });
+    normalReady = true;
+    await reg2.dispose();
+  } catch (e: any) {
+    console.warn('[e2e] could not create mod/normal users:', e?.message || e);
+  }
+
+  await adminApi.dispose();
+
+  // ── Capture browser storageStates (cookie owned by the CLIENT origin) ─────────
   const browser = await chromium.launch();
-  const context = await browser.newContext({ baseURL: BASE_URL });
-  const page = await context.newPage();
-  await page.addInitScript((key) => { try { window.localStorage.setItem(key, 'stitch'); } catch { /* noop */ } }, STITCH_STORAGE_KEY);
-  await page.goto(`${BASE_URL}/login`);
-  await page.waitForLoadState('domcontentloaded');
-  const loginStatus = await page.evaluate(async ({ api, email, password }) => {
-    const r = await fetch(`${api}/api/auth/login`, {
-      method: 'POST', credentials: 'include',
-      headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, password }),
-    });
-    return r.status;
-  }, { api: API_URL, email: ADMIN_EMAIL, password: ADMIN_PASSWORD });
-  if (loginStatus >= 400) throw new Error(`[e2e] in-page admin login failed (status ${loginStatus}).`);
-  await page.goto(`${BASE_URL}/app`);
-  await page.waitForLoadState('domcontentloaded');
-  await page.evaluate((key) => { try { window.localStorage.setItem(key, 'stitch'); } catch { /* noop */ } }, STITCH_STORAGE_KEY);
-  await context.storageState({ path: adminStatePath });
-  await browser.close();
+  try {
+    await captureStorageState(browser, { baseURL: BASE_URL, email: ADMIN_EMAIL, password: ADMIN_PASSWORD, statePath: adminStatePath });
+    if (modReady) {
+      try { await captureStorageState(browser, { baseURL: BASE_URL, email: modEmail, password: SEED_PASSWORD, statePath: modStatePath }); }
+      catch (e: any) { console.warn('[e2e] mod storageState failed:', e?.message || e); modReady = false; }
+    }
+    if (normalReady) {
+      try { await captureStorageState(browser, { baseURL: BASE_URL, email: normalEmail, password: SEED_PASSWORD, statePath: normalStatePath }); }
+      catch (e: any) { console.warn('[e2e] normal storageState failed:', e?.message || e); normalReady = false; }
+    }
+  } finally {
+    await browser.close();
+  }
 
   fs.writeFileSync(
     path.join(AUTH_DIR, 'seed.json'),
-    JSON.stringify({ seedProjectId, adminEmail: ADMIN_EMAIL, baseURL: BASE_URL, apiURL: API_URL }, null, 2),
+    JSON.stringify({
+      seedProjectId,
+      longNameProjectId,
+      extraProjectIds,
+      adminEmail: ADMIN_EMAIL,
+      mod: modReady ? { email: modEmail, password: SEED_PASSWORD } : null,
+      normal: normalReady ? { email: normalEmail, password: SEED_PASSWORD } : null,
+      enabledFlags,
+      baseURL: BASE_URL,
+      apiURL: API_URL,
+    }, null, 2),
   );
 
-  console.log(`[e2e] global-setup ok — admin=${ADMIN_EMAIL}, stitch persisted, seedProjectId=${seedProjectId || '(none)'}`);
+  console.log(
+    `[e2e] global-setup ok — admin=${ADMIN_EMAIL}, stitch persisted, ` +
+    `flags=[${Object.keys(enabledFlags).filter((k) => enabledFlags[k]).join(',')}], ` +
+    `seedProjectId=${seedProjectId || '(none)'}, mod=${modReady ? modEmail : 'none'}, normal=${normalReady ? normalEmail : 'none'}`,
+  );
 }

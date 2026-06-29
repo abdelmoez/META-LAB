@@ -108,6 +108,14 @@ export const adminApi = {
     save:         (body)     => req(`${BASE}/settings/theme`, { method: 'PATCH', ...json(body) }),
   },
 
+  // ── Stitch UI rollout (prompt61, admin only) ─────────────────────────────────
+  // get → { allowAllUsers, defaultMode }; save(body) PUTs a partial
+  // { allowAllUsers?, defaultMode? } → the merged record. Validated server-side.
+  design: {
+    get:          ()         => req(`${BASE}/design-settings`),
+    save:         (body)     => req(`${BASE}/design-settings`, { method: 'PUT', ...json(body) }),
+  },
+
   landingContent: {
     get:          ()         => req(`${BASE}/landing-content`),
     save:         (body)     => req(`${BASE}/landing-content`, { method: 'PUT', ...json(body) }),
