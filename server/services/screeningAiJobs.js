@@ -199,8 +199,12 @@ export function scheduleRescore(projectId, { stage = 'title_abstract', actor, de
   const fire = () => {
     debounceTimers.delete(key);
     liveUpdateAllowed(projectId)
-      .then(ok => { if (ok) return ensureRescoreJob(projectId, stage, actor).then(() => kickAiWorker()); })
-      .catch(() => {});
+      .then(ok => {
+        if (ok) return ensureRescoreJob(projectId, stage, actor).then(() => kickAiWorker());
+        // Observable why a queued rescore silently stopped (flag off / project gone) — 62.md rec round.
+        console.debug?.('[ai-worker] rescore skipped for project %s (AI disabled or project removed)', projectId);
+      })
+      .catch(e => console.debug?.('[ai-worker] liveUpdateAllowed check failed:', e?.message));
   };
   const wait = Number.isFinite(debounceMs) ? debounceMs : null;
   if (wait != null) {
@@ -288,15 +292,36 @@ export async function recoverStuckAiJobs(now = Date.now(), maxAttempts = DEFAULT
   return { requeued: retry.length, failed: giveUp.length };
 }
 
+// Terminal AI-job rows older than this are pruned at boot. The decision-triggered
+// rescorer appends a row per coalesced burst, so without pruning the table grows
+// unbounded over a project's life (62.md rec round). 30-day default keeps recent history
+// for observability; tunable via env.
+const JOB_RETENTION_MS = (Number(process.env.AI_JOB_RETENTION_HOURS) || 720) * 60 * 60 * 1000;
+
+/**
+ * cleanupOldAiJobs — prune terminal (completed/failed/superseded/cancelled) job rows older
+ * than the retention window. Never touches queued/running rows. Pure DB; returns the count.
+ */
+export async function cleanupOldAiJobs(now = Date.now()) {
+  const cutoff = new Date(now - JOB_RETENTION_MS);
+  const res = await prisma.screenAiJob.deleteMany({
+    where: { status: { in: ['completed', 'failed', 'superseded', 'cancelled'] }, createdAt: { lt: cutoff } },
+  });
+  return res.count;
+}
+
 /**
  * startAiJobsWorker — boot hook. Recovers any job left `running` by a crash (re-queue
- * under the retry cap, permanently fail over it), then drains. Idempotent.
+ * under the retry cap, permanently fail over it), prunes old terminal rows, then drains.
+ * Idempotent.
  */
 export async function startAiJobsWorker() {
   try {
     const { requeued, failed } = await recoverStuckAiJobs();
     if (requeued) console.log(`[ai-worker] re-queued ${requeued} stuck AI job(s)`);
     if (failed) console.warn(`[ai-worker] failed ${failed} AI job(s) over the retry cap (${DEFAULT_MAX_JOB_ATTEMPTS})`);
+    const pruned = await cleanupOldAiJobs();
+    if (pruned) console.log(`[ai-worker] pruned ${pruned} old AI job row(s)`);
   } catch (e) {
     console.error('[ai-worker] startup requeue failed:', e?.message);
   }

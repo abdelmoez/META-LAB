@@ -1266,7 +1266,13 @@ export async function getExportJob(req, res) {
   try {
     const access = await gateExport(req, res); if (!access) return;
     const job = await prisma.screenExportJob.findUnique({ where: { id: req.params.jobId } });
-    if (!job || job.projectId !== access.project.id) return res.status(404).json({ error: 'Export job not found' });
+    // 62.md rec round (CRITICAL): an export is PERSONAL — its per-reviewer decision columns
+    // reflect the CREATOR. A jobId is NOT a shareable handle: only the creator may poll or
+    // download it, else one reviewer's decisions/notes/ratings could leak to another member
+    // who also has export permission. 404 (not 403) so the job's existence is never revealed.
+    if (!job || job.projectId !== access.project.id || job.createdById !== req.user.id) {
+      return res.status(404).json({ error: 'Export job not found' });
+    }
 
     const ready = job.status === 'completed' && !!job.resultPath;
     res.json({
@@ -1295,7 +1301,11 @@ export async function downloadExport(req, res) {
     if (!settings.allowExport) return res.status(403).json({ error: 'Export is currently disabled by the administrator' });
 
     const job = await prisma.screenExportJob.findUnique({ where: { id: req.params.jobId } });
-    if (!job || job.projectId !== access.project.id) return res.status(404).json({ error: 'Export job not found' });
+    // CRITICAL (62.md rec round): creator-only — a jobId is NOT a capability token; the file
+    // carries the creator's per-reviewer decisions, so only the creator may download it.
+    if (!job || job.projectId !== access.project.id || job.createdById !== req.user.id) {
+      return res.status(404).json({ error: 'Export job not found' });
+    }
     if (job.status !== 'completed' || !job.resultPath) return res.status(409).json({ error: 'Export is not ready yet', status: job.status });
     if (!fs.existsSync(job.resultPath)) return res.status(410).json({ error: 'This export has expired — please run it again.' });
 

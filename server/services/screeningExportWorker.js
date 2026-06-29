@@ -14,15 +14,17 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { prisma } from '../db/client.js';
-import { emitToProjectMembers } from '../realtime/bus.js';
 import { DEFAULT_MAX_JOB_ATTEMPTS, partitionStuckJobs } from '../utils/jobRetry.js';
 import {
   computeExportCvScores, streamExportToSink, exportContentType,
 } from './screeningExportService.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Same convention as screeningPdfController: server/storage/<subdir>.
-export const EXPORT_DIR = path.join(__dirname, '..', 'storage', 'exports');
+// Default: server/storage/<subdir> (same convention as screeningPdfController). Override
+// with SCREEN_EXPORT_DIR so a containerized / multi-instance deploy can point at a shared
+// persistent mount — otherwise a finished export on one instance 404s from another (62.md
+// rec round: documented single-node limitation, made tunable).
+export const EXPORT_DIR = process.env.SCREEN_EXPORT_DIR || path.join(__dirname, '..', 'storage', 'exports');
 
 // A processing job whose last heartbeat is older than this is treated as abandoned (crash).
 const STUCK_MS = 15 * 60 * 1000;
@@ -120,7 +122,9 @@ async function processJob(job) {
       resultPath: filePath, resultBytes: bytes, filename,
       cvStatus: result.cvStatus, completedAt: new Date(),
     });
-    emitToProjectMembers(job.projectId, { type: 'export.completed', jobId: job.id }, { exclude: job.createdById });
+    // No realtime broadcast: an export is PERSONAL (creator-only). Broadcasting the jobId to
+    // other project members would expose a handle to the creator's private decisions. The
+    // creator's own client polls GET …/export/jobs/:id for completion (62.md rec round).
   } catch (e) {
     try { fs.unlinkSync(filePath); } catch { /* may not exist */ }
     console.error('[export-worker] processJob:', e?.message);

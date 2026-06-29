@@ -5,7 +5,7 @@
  * dialog is the format chooser); the SERVER still generates the file — run()
  * keeps the anchor-click on screeningApi.exportUrl exactly as before.
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { C, MONO } from '../ui/theme.js';
 import { Loading, ErrorBanner, Button, StatTile, Card } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
@@ -33,6 +33,10 @@ export default function ExportTab({ pid }) {
   const [filter, setFilter] = useState('all');
   const [note, setNote]     = useState('');
   const [expItem, setExpItem] = useState(null);
+  // 62.md rec round: stop the async-export poll loop if the tab unmounts (navigating away
+  // shouldn't leave a 12-minute background polling loop running).
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
 
   const load = useCallback(async () => {
     setError(null);
@@ -77,6 +81,7 @@ export default function ExportTab({ pid }) {
         const started = await screeningApi.startExport(pid, { format, filter: chosenFilter });
         const jobId = started.jobId;
         for (let i = 0; i < 600; i++) { // ~12 min ceiling at 1.2s/poll
+          if (!mountedRef.current) return; // tab unmounted → stop polling (job continues server-side)
           const st = await screeningApi.getExportJob(pid, jobId);
           if (st.status === 'failed') throw new Error(st.error || 'Export failed.');
           if (st.ready) {

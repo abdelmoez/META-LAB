@@ -160,17 +160,19 @@ export function useScreeningAi(pid, stage = 'title_abstract') {
     let n = 0; let live = true;
     // 62.md — cap covers a multi-minute large run as a FALLBACK; realtime ai.updated is
     // still the primary completion signal.
+    const finish = async () => {
+      // Refresh scores/status when the run leaves flight — even without a realtime event
+      // (tab reopened, SSE dropped). Position-preserving — the queue isn't yanked.
+      explCache.current.clear();
+      await Promise.all([loadScores(), loadStatus()]);
+      if (mounted.current) setRankingsAvailable(true);
+    };
     const id = setInterval(async () => {
-      if (!live || ++n > 120) { clearInterval(id); return; }
+      // 62.md rec round: on hitting the fallback cap, still do a final refresh so a run that
+      // outlived the poller (or whose realtime event was missed) isn't stuck "updating…".
+      if (!live || ++n > 120) { clearInterval(id); if (live) await finish(); return; }
       const js = await loadJobStatus();
-      if (js && js.state === 'idle') {
-        clearInterval(id);
-        // Background scoring finished: refresh scores/status even without a realtime event
-        // (tab reopened, SSE dropped). Position-preserving — the queue isn't yanked.
-        explCache.current.clear();
-        await Promise.all([loadScores(), loadStatus()]);
-        if (mounted.current) setRankingsAvailable(true);
-      }
+      if (js && js.state === 'idle') { clearInterval(id); await finish(); }
     }, 2500);
     return () => { live = false; clearInterval(id); };
   }, [enabled, jobStatus.state, loadJobStatus, loadScores, loadStatus]);

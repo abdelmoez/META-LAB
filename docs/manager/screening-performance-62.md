@@ -77,3 +77,10 @@ Export: 1.2MB CSV streamed with only ~2.9MB RSS growth (memory bounded to one pa
 - **Single node only** (matches current deploy). For multi-node, swap the in-memory debounce/`withRunLock` for a DB advisory lock or shared queue — the durable rows make that migration clean. A separate worker dyno is an optional future step, not needed to stop the 504.
 - Set `REQUEST_TIMEOUT_MS` ≥ the reverse-proxy timeout; `EXPORT_SYNC_MAX` / `EXPORT_CV_MAX` tune the sync-vs-async threshold.
 - The worker_thread serialises a project's records to/from the thread (~hundreds of ms one-time for very large N); this is the only residual main-thread cost and is far below the old multi-second freeze.
+
+## 7. Rec-round hardening (adversarial review of the first commit)
+- **CRITICAL — export is now creator-only.** An async export bakes in the *creator's* per-reviewer decision columns. `getExportJob` + `downloadExport` now require `job.createdById === req.user.id` (404 otherwise), and the worker no longer broadcasts the `export.completed` jobId to other members — so one reviewer's decisions/notes can never leak to another member who also has export permission.
+- **Configurable export dir** — `SCREEN_EXPORT_DIR` env override (default `server/storage/exports`) lets a containerized/multi-instance deploy point at a shared persistent mount.
+- **Bounded AI-job growth** — `cleanupOldAiJobs` prunes terminal `ScreenAiJob` rows older than `AI_JOB_RETENTION_HOURS` (default 30d) at boot (the rescorer appends a row per burst).
+- **Frontend robustness** — the AI poller does a final score refresh if it hits its fallback cap; the export poll loop stops if the tab unmounts (no 12-min background polling); skipped rescores now log at debug level.
+- Accepted-with-doc (low risk): single global compute worker serialises heavy compute (throughput ceiling, not a freeze); `drain()` relies on SQLite `busy_timeout` + Prisma pool timeouts; orphaned export files are reaped by the 24h TTL regardless of project deletion.
