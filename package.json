@@ -1,6 +1,6 @@
 {
   "name": "meta-lab",
-  "version": "3.50.0",
+  "version": "3.51.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -42,6 +42,7 @@
     "react-router-dom": "^7.17.0"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@playwright/test": "^1.61.1",
     "@types/node": "^26.0.0",
     "@vitejs/plugin-react": "^4.3.1",
