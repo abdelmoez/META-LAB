@@ -192,8 +192,8 @@ Returns all projects accessible to the caller (owned + shared). By default retur
 | `_archived`      | boolean        | `true` when the project is archived |
 | `_archivedAt`    | string \| null | ISO-8601 timestamp of archival, or `null` |
 | `_studyCount`    | number         | Count of entries in the `data.studies` blob array |
-| `_recordCount`   | number         | Count of entries in the `data.records` blob array |
-| `_linkedMetaSift`| object \| null | Enriched with `{ id, title, progressStatus, recordCount, memberCount }` (previously `{ id, title }` only) |
+| `_recordCount`   | number         | Imported-record count. For a project **linked** to a screening workspace this mirrors the linked `recordCount` (63.md — studies === imported records); otherwise the `data.records` blob array length |
+| `_linkedMetaSift`| object \| null | Uniform for owned **and** shared projects: `{ id, title, progressStatus, recordCount, memberCount, decidedCount, onlineCount }` (63.md — was `{ id, title }` only on the shared path). `decidedCount` = records with a terminal decision (drives the real progress ratio); `onlineCount` = users currently present in the workspace |
 
 ---
 
