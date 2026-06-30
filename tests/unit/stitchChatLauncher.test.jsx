@@ -62,6 +62,13 @@ describe('deriveChatLauncherState — enabled vs greyed decision', () => {
     expect(s.tipLabel).toBe('Project chat');
   });
 
+  it('a failed access probe (non-404 error) is greyed but NOT blamed on a person', () => {
+    const s = state({ status: 'error', canChat: false, isLeader: false });
+    expect(s.enabled).toBe(false);
+    expect(s.disabledReason).toBe('Chat is unavailable right now');
+    expect(s.disabledReason).not.toBe('Chat is restricted by a project owner or leader');
+  });
+
   it('active tip falls back to a neutral label when the project name is unknown', () => {
     const s = state({ status: 'linked', canChat: true, projectName: '' });
     expect(s.enabled).toBe(true);

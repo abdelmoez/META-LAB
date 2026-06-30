@@ -34,6 +34,7 @@ import { S, salpha } from '../../stitch/theme/stitchTokens.js';
 import { Icon } from '../icons.jsx';
 import { StitchTooltip } from '../../stitch/primitives/overlay.jsx';
 import { screeningApi } from '../../screening/api-client/screeningApi.js';
+import { useRealtime } from '../../hooks/useRealtime.js';
 import ChatDrawer from './ChatDrawer.jsx';
 
 /**
@@ -41,7 +42,7 @@ import ChatDrawer from './ChatDrawer.jsx';
  * the heart of the feature (enabled vs greyed, and WHY). Exported so the decision
  * can be unit-tested without a DOM or network.
  *
- *   status: 'idle' (no project) | 'probing' | 'linked' | 'unlinked'
+ *   status: 'idle' (no project) | 'probing' | 'linked' | 'unlinked' | 'error' (probe failed)
  *   mayParticipate === the server write-gate canWriteChat(access) = isLeader || canChat
  *
  * Returns { mayParticipate, enabled, disabledReason, tipLabel }. `enabled` ⇒ the
@@ -54,6 +55,9 @@ export function deriveChatLauncherState({ projectId, status, canChat, isLeader, 
   let disabledReason = null;
   if (!projectId) disabledReason = 'Open a project to use chat';
   else if (status === 'probing' || status === 'idle') disabledReason = 'Project chat';
+  // A failed probe must NOT be blamed on a person — keep it neutral (the genuine
+  // leader/owner restriction is the LAST branch, only on a resolved 'linked' gate).
+  else if (status === 'error') disabledReason = 'Chat is unavailable right now';
   else if (status === 'unlinked') disabledReason = 'Link a Screening project to enable chat';
   else if (!mayParticipate) disabledReason = 'Chat is restricted by a project owner or leader';
   const tipLabel = enabled
@@ -65,42 +69,61 @@ export function deriveChatLauncherState({ projectId, status, canChat, isLeader, 
 export default function StitchChatLauncher({ projectId = null, projectName = '' }) {
   const [open, setOpen] = useState(false);
   const [unread, setUnread] = useState(0);
-  // 'idle' (no project) | 'probing' | 'linked' | 'unlinked'
+  // 'idle' (no project) | 'probing' | 'linked' | 'unlinked' | 'error' (probe failed)
   const [status, setStatus] = useState('idle');
   const [canChat, setCanChat] = useState(false);
   const [chatRestricted, setChatRestricted] = useState(false);
   const [isLeader, setIsLeader] = useState(false);
 
-  // Probe the metalab chat door once per project: resolve link status + the chat
-  // write-gates WITHOUT loading history (since=now → zero messages, but the access
-  // fields are returned unconditionally). 404 ⇒ no linked Screening workspace.
-  useEffect(() => {
-    if (!projectId) {
-      setStatus('idle'); setCanChat(false); setChatRestricted(false); setIsLeader(false);
-      setUnread(0); setOpen(false);
-      return undefined;
-    }
-    let cancelled = false;
-    setStatus('probing'); setOpen(false);
-    screeningApi.metalabListChat(projectId, new Date().toISOString())
+  // Current project id + a monotonic probe-sequence guard so a re-probe (project
+  // change OR a live permissions.changed poke) supersedes any in-flight response,
+  // and we never setState after unmount.
+  const idRef = useRef(projectId);
+  idRef.current = projectId;
+  const probeSeq = useRef(0);
+  const mountedRef = useRef(true);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+
+  // Probe the metalab chat door: resolve link status + the chat write-gates WITHOUT
+  // loading history (since=now → zero messages, but canChat/chatRestricted/isLeader
+  // are returned unconditionally). 404 ⇒ no linked Screening workspace; any other
+  // error ⇒ 'error' (greyed with a NEUTRAL reason — never blamed on a leader).
+  const runProbe = useCallback((opts = {}) => {
+    const pid = idRef.current;
+    if (!pid) return;
+    const seq = ++probeSeq.current;
+    if (opts.initial) setStatus('probing');  // re-probes keep the current state until resolved (no flash)
+    screeningApi.metalabListChat(pid, new Date().toISOString())
       .then((d) => {
-        if (cancelled) return;
+        if (!mountedRef.current || seq !== probeSeq.current) return;
         setStatus('linked');
         setCanChat(!!d?.canChat);
         setChatRestricted(!!d?.chatRestricted);
         setIsLeader(!!d?.isLeader);
       })
       .catch((e) => {
-        if (cancelled) return;
-        if (e?.status === 404) {
-          setStatus('unlinked');
-        } else {
-          // Fail-safe: a non-404 error leaves the icon greyed (cannot prove access).
-          setStatus('linked'); setCanChat(false); setChatRestricted(false); setIsLeader(false);
-        }
+        if (!mountedRef.current || seq !== probeSeq.current) return;
+        setCanChat(false); setChatRestricted(false); setIsLeader(false);
+        setStatus(e?.status === 404 ? 'unlinked' : 'error');
       });
-    return () => { cancelled = true; };
-  }, [projectId]);
+  }, []);
+
+  // (Re)probe when the project changes; reset to the no-project state otherwise.
+  useEffect(() => {
+    setOpen(false);
+    if (!projectId) {
+      probeSeq.current++; // cancel any in-flight probe
+      setStatus('idle'); setCanChat(false); setChatRestricted(false); setIsLeader(false); setUnread(0);
+      return;
+    }
+    runProbe({ initial: true });
+  }, [projectId, runProbe]);
+
+  // Live permission changes — a leader granting/restricting a member's chat, or
+  // flipping the project-wide chatRestricted flag — emit a user-targeted
+  // 'permissions.changed' poke. Re-probe so the icon's gate self-heals in BOTH
+  // directions without a navigation/reload (the server is already authoritative).
+  useRealtime({ 'permissions.changed': () => { if (idRef.current) runProbe(); } });
 
   // Metalab adapter — the six drawer operations over /metalab/:mlpid/chat*.
   const api = useMemo(() => ({
@@ -112,9 +135,8 @@ export default function StitchChatLauncher({ projectId = null, projectName = '' 
     remove:      (id)    => screeningApi.metalabDeleteChat(projectId, id),
   }), [projectId]);
 
-  // SSE poke match — chat.message pokes carry metaLabProjectId when linked.
-  const idRef = useRef(projectId);
-  idRef.current = projectId;
+  // SSE poke match — chat.message pokes carry metaLabProjectId when linked (idRef
+  // is defined above, alongside the probe guard).
   const realtimeMatch = useCallback(
     (ev) => ev?.type === 'chat.message' && ev?.metaLabProjectId === idRef.current,
     [],
