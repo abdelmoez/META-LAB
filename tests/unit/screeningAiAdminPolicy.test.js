@@ -68,6 +68,13 @@ describe('coerceAiScreeningSettings', () => {
     expect(out.retrainDebounceMs).toBe(8000);
   });
 
+  it('only accepts a known engine config version (screeningEngine.md task 3)', () => {
+    const cur = base();
+    expect(coerceAiScreeningSettings({ engineConfigVersion: 'evil-version' }, cur).engineConfigVersion).toBe(cur.engineConfigVersion);
+    expect(coerceAiScreeningSettings({ engineConfigVersion: 'v1-hybrid-legacy' }, cur).engineConfigVersion).toBe('v1-hybrid-legacy');
+    expect(coerceAiScreeningSettings({ engineConfigVersion: 'v2-lexical-tuned' }, cur).engineConfigVersion).toBe('v2-lexical-tuned');
+  });
+
   it('tolerates a non-object patch', () => {
     const cur = base();
     expect(coerceAiScreeningSettings(null, cur)).toEqual(cur);

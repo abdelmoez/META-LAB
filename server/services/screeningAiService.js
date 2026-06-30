@@ -17,7 +17,11 @@ import {
   computeValidation,
   createEmbeddingProvider,
   resolveConfig,
+  resolveEngineConfig,
+  ENGINE_CONFIG_VERSIONS,
+  ENGINE_CONFIG_DEFAULT_VERSION,
   fitCalibrator,
+  heldOutCalibrationMetrics,
   applyCalibrator,
   evaluateStopping,
   retrospectiveStopping,
@@ -64,6 +68,10 @@ export const AI_GLOBAL_DEFAULTS = Object.freeze({
   // Below this the API withholds scores and the UI shows progress toward it. Admins
   // can bypass per-request with ?showBelowThreshold=1 for testing.
   minScreenedDecisions: 50,
+  // screeningEngine.md task 3 — named engine config version a run is scored under
+  // (v2-lexical-tuned by default; v1-hybrid-legacy preserved for rollback). Projects
+  // may override; a rollback pins the target run's version.
+  engineConfigVersion: ENGINE_CONFIG_DEFAULT_VERSION,
 });
 
 /** Per-project AI policy defaults (stored on ScreenProject.aiSettings JSON). */
@@ -74,6 +82,7 @@ export const AI_PROJECT_DEFAULTS = Object.freeze({
   includeThreshold: 0.65,
   excludeThreshold: 0.35,
   minScreenedDecisions: 50, // 58.md §8 — per-project override of the visibility threshold
+  engineConfigVersion: null, // null → inherit the global engine config version
 });
 
 function safeParse(s, fallback) {
@@ -139,7 +148,20 @@ export function getProjectAiSettings(project, global) {
     blindFromAi: p.blindFromAi ?? AI_PROJECT_DEFAULTS.blindFromAi,
     includeThreshold: p.includeThreshold ?? g.includeThreshold ?? AI_PROJECT_DEFAULTS.includeThreshold,
     excludeThreshold: p.excludeThreshold ?? g.excludeThreshold ?? AI_PROJECT_DEFAULTS.excludeThreshold,
+    // Engine config version: project override → global → registry default. Unknown ids
+    // fall back to the default inside resolveEngineConfig, so a stale value is safe.
+    engineConfigVersion: (ENGINE_CONFIG_VERSIONS[p.engineConfigVersion] ? p.engineConfigVersion : null)
+      ?? (ENGINE_CONFIG_VERSIONS[g.engineConfigVersion] ? g.engineConfigVersion : null)
+      ?? ENGINE_CONFIG_DEFAULT_VERSION,
   };
+}
+
+/** Catalogue of selectable engine config versions (id + label + summary), with the
+ *  registry default flagged. Surfaced in status + admin so a leader can pick/roll back. */
+export function listEngineConfigVersions() {
+  return Object.entries(ENGINE_CONFIG_VERSIONS).map(([id, v]) => ({
+    id, label: v.label, summary: v.summary, isDefault: id === ENGINE_CONFIG_DEFAULT_VERSION,
+  }));
 }
 
 /**
@@ -296,12 +318,18 @@ async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger
   }
   report({ phase: 'scoring', processed: 0, total: records.length });
 
-  const config = {
+  // screeningEngine.md task 3 — resolve the engine config VERSION (rollback pin →
+  // project/global setting), then build the fully-populated config under that version
+  // with the run's embedding provider overlaid. The version id is stamped on the run so
+  // it is reproducible and rollback-able; v1-hybrid-legacy stays available untouched.
+  const engineConfigVersion =
+    (pinnedConfig && ENGINE_CONFIG_VERSIONS[pinnedConfig.engineConfigVersion] ? pinnedConfig.engineConfigVersion : null)
+    || aiProject.engineConfigVersion || ENGINE_CONFIG_DEFAULT_VERSION;
+  const config = resolveEngineConfig(engineConfigVersion, {
     // se2.md §11 — a rollback pins the prior version's embedding provider; otherwise the
     // current global setting governs.
     provider: { embedding: (pinnedConfig && pinnedConfig.provider && pinnedConfig.provider.embedding) || global.embeddingProvider || 'lexical' },
-    hybrid: {},
-  };
+  });
 
   // Embedding provider: 'lexical' (default, no vectors), 'hashing' (in-process dense),
   // or 'hosted' (env-configured external service). Best-effort: any failure → no
@@ -391,8 +419,22 @@ async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger
   const cfg = resolveConfig(config);
   let calibration = { method: 'none', params: null, metrics: null, reason: 'Calibration needs held-out predictions from cross-validation (not enough labels yet).' };
   if (cfg.calibration?.enabled && metrics.crossVal?.oof?.scores?.length) {
-    try { calibration = fitCalibrator(metrics.crossVal.oof.scores, metrics.crossVal.oof.labels, cfg.calibration); }
-    catch { /* keep 'none' on any calibration failure — scores remain usable */ }
+    try {
+      const oof = metrics.crossVal.oof;
+      // The PRODUCTION calibrator is fit on ALL out-of-fold pairs (best use of the data
+      // for mapping every record's score → P(include)). Keep that as-is.
+      calibration = fitCalibrator(oof.scores, oof.labels, cfg.calibration);
+      // screeningEngine.md task 4 — but the panel must show HELD-OUT calibration quality,
+      // not the apparent ECE≈0 (isotonic scored on its own fit points). Recompute the
+      // reported ECE/slope/intercept via NESTED CV and surface THOSE; keep the apparent
+      // numbers under `apparentMetrics` for provenance. Only the measurement changes.
+      if (calibration.method !== 'none') {
+        const heldOut = heldOutCalibrationMetrics(oof.scores, oof.labels, cfg.calibration);
+        calibration.apparentMetrics = calibration.metrics;
+        calibration.metrics = heldOut;
+        calibration.heldOut = true;
+      }
+    } catch { /* keep 'none'/apparent on any calibration failure — scores remain usable */ }
   }
   for (const s of result.scores) {
     s.calibratedProba = calibration.method === 'none' ? null : applyCalibrator(calibration.params, s.score);
@@ -469,7 +511,7 @@ async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger
         nFeatures: result.meta.nFeatures,
         labelCountsJson: JSON.stringify(result.meta.labelCounts || {}),
         modelInfoJson: JSON.stringify(result.meta.modelInfo || {}),
-        configJson: JSON.stringify({ provider: config.provider, embeddingProviderUsed, includeThreshold: aiProject.includeThreshold }),
+        configJson: JSON.stringify({ provider: config.provider, embeddingProviderUsed, includeThreshold: aiProject.includeThreshold, engineConfigVersion }),
         metricsJson: JSON.stringify(metrics),
         triggeredById: actor?.id || null,
         triggeredByName: actor?.name || actor?.email || '',
@@ -561,7 +603,10 @@ export async function rollbackToRun({ projectId, runId, actor, stage = 'title_ab
   const cfg = safeParse(target.configJson, {});
   const out = await runScoring({
     projectId, stage, actor, trigger: 'rollback',
-    pinnedConfig: { provider: cfg.provider || { embedding: 'lexical' } },
+    // Pin BOTH the embedding provider and the engine config version of the target run,
+    // so a rollback restores the exact prior model configuration (screeningEngine.md
+    // task 3 — current/legacy version stays reachable).
+    pinnedConfig: { provider: cfg.provider || { embedding: 'lexical' }, engineConfigVersion: cfg.engineConfigVersion || null },
     rollbackFromRunId: runId,
   });
   return { ...out, rolledBackFrom: runId };
@@ -577,19 +622,25 @@ export async function listModelVersions(projectId, stage = 'title_abstract', lim
     select: {
       id: true, status: true, mode: true, isActive: true, supersededAt: true, parentRunId: true,
       rollbackFromRunId: true, snapshotHash: true, nScored: true, trigger: true,
-      triggeredByName: true, metricsJson: true, driftJson: true, createdAt: true,
+      triggeredByName: true, metricsJson: true, driftJson: true, configJson: true, createdAt: true,
     },
   });
   return runs.map(r => {
     const drift = safeParse(r.driftJson, {});
     const metrics = safeParse(r.metricsJson, {});
+    const config = safeParse(r.configJson, {});
     const cv = metrics.crossVal && metrics.crossVal.heldOut ? metrics.crossVal : metrics;
+    const ecv = config.engineConfigVersion;
     return {
       id: r.id, status: r.status, mode: r.mode, isActive: r.isActive,
       supersededAt: r.supersededAt, parentRunId: r.parentRunId, rollbackFromRunId: r.rollbackFromRunId,
       snapshotHash: r.snapshotHash, nScored: r.nScored, trigger: r.trigger, by: r.triggeredByName,
       auc: typeof cv.auc === 'number' ? cv.auc : null,
       wss95: typeof cv.wss95 === 'number' ? cv.wss95 : null,
+      // screeningEngine.md task 3 — the engine config version this run was scored under,
+      // so the model-history UI can show and roll back to a specific configuration.
+      engineConfigVersion: ecv || null,
+      engineConfigLabel: (ecv && ENGINE_CONFIG_VERSIONS[ecv]?.label) || null,
       driftWarnings: drift.drift?.warnings || [],
       createdAt: r.createdAt,
     };
@@ -677,6 +728,13 @@ export async function getStatus(projectId, stage = 'title_abstract') {
     enabled: global.enabled && aiProject.enabled,
     project: aiProject,
     global: { embeddingProvider: global.embeddingProvider, requireHumanFinalDecision: global.requireHumanFinalDecision, allowReviewersToRun: global.allowReviewersToRun },
+    // screeningEngine.md task 3 — the active engine config version + the catalogue, so
+    // the panel/admin can display and (for leaders) switch which engine scores the project.
+    engineConfig: {
+      active: aiProject.engineConfigVersion,
+      activeLabel: ENGINE_CONFIG_VERSIONS[aiProject.engineConfigVersion]?.label || aiProject.engineConfigVersion,
+      versions: listEngineConfigVersions(),
+    },
     scoreCount,
     latestRun: latestRun ? {
       id: latestRun.id,

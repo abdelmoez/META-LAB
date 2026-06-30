@@ -229,6 +229,75 @@ export function calibrationMetrics(probs, labels, opts = {}) {
 }
 
 /**
+ * heldOutCalibrationMetrics — HONEST calibration quality via NESTED cross-validation
+ * (screeningEngine.md task 4). The metrics returned by fitCalibrator are APPARENT:
+ * they score the calibrator on the very out-of-fold pairs it was fit on, so ECE ≈ 0
+ * by construction (an isotonic map fit on its own points reproduces their bin means).
+ * That optimistic number is what the panel showed.
+ *
+ * Here we instead partition the OOF (score,label) pairs into k stratified folds; for
+ * each fold we fit a calibrator (the SAME method production uses) on the OTHER folds
+ * and map the held-out fold's scores through it. Pooling the held-out calibrated
+ * probabilities yields an ECE / slope / intercept the calibrator never saw — the
+ * number that belongs in the panel (typically ~0.02–0.03, worse on small reviews).
+ *
+ * The production calibrator itself (fit on ALL OOF pairs) is unchanged — only the
+ * MEASUREMENT changes, exactly as the task requires.
+ *
+ * @param {number[]} oofScores — out-of-fold ranking scores (NOT in-sample)
+ * @param {number[]} oofLabels — 1 = include, 0 = exclude
+ * @param {object} [cfg] — config.calibration
+ * @param {number} [k=5] — nested fold count
+ * @returns {{ heldOut:true, method, n, nPos, nNeg, ece, slope, intercept, brier,
+ *             logLoss, reliability, reason }}
+ */
+export function heldOutCalibrationMetrics(oofScores, oofLabels, cfg = {}, k = 5) {
+  const scores = (oofScores || []).map(Number);
+  const labels = (oofLabels || []).map((y) => (y ? 1 : 0));
+  const n = labels.length;
+  let nPos = 0; for (const y of labels) if (y) nPos++;
+  const nNeg = n - nPos;
+
+  const sel = selectCalibrationMethod(nPos, nNeg, cfg);
+  // Need ≥ 2 of each class in every held-out fold for the metric to mean anything.
+  if (sel.method === 'none' || nPos < 2 * k || nNeg < 2 * k) {
+    return {
+      heldOut: true, method: sel.method, n, nPos, nNeg,
+      ece: null, slope: null, intercept: null, brier: null, logLoss: null, reliability: null,
+      reason: sel.method === 'none'
+        ? sel.reason
+        : `Not enough labels per class for held-out (nested) calibration (have ${nPos} includes / ${nNeg} excludes; need ≥ ${2 * k} of each). Showing fitted calibration only.`,
+    };
+  }
+
+  // Deterministic stratified split: within each class, foldOf = positionInClass % k.
+  // No RNG needed (the OOF pairs already arrive in a fixed, score-uncorrelated order),
+  // so the held-out metric is fully reproducible — same inputs → same ECE.
+  const foldOf = new Array(n);
+  let pc = 0, nc = 0;
+  for (let i = 0; i < n; i++) foldOf[i] = labels[i] === 1 ? (pc++) % k : (nc++) % k;
+
+  const heldProbs = [], heldLabels = [];
+  for (let f = 0; f < k; f++) {
+    const trS = [], trL = [], teIdx = [];
+    for (let i = 0; i < n; i++) {
+      if (foldOf[i] === f) teIdx.push(i);
+      else { trS.push(scores[i]); trL.push(labels[i]); }
+    }
+    const cal = sel.method === 'platt' ? fitPlatt(trS, trL) : fitIsotonic(trS, trL);
+    for (const i of teIdx) { heldProbs.push(applyCalibrator(cal, scores[i])); heldLabels.push(labels[i]); }
+  }
+
+  const m = calibrationMetrics(heldProbs, heldLabels, cfg);
+  return {
+    heldOut: true, method: sel.method, n, nPos, nNeg,
+    ece: m.ece, slope: m.slope, intercept: m.intercept, brier: m.brier, logLoss: m.logLoss,
+    reliability: m.reliability,
+    reason: `Held-out ${k}-fold nested calibration (${sel.method}).`,
+  };
+}
+
+/**
  * selectCalibrationMethod — choose a calibration strategy from the available
  * sample size (se2.md §8: Platt is stable on small data; isotonic needs more).
  * @returns {{method:'none'|'platt'|'isotonic', reason:string}}

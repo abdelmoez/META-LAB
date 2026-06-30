@@ -7,7 +7,10 @@
  *
  * See screening-ai-engine.md for the architecture and model documentation.
  */
-export { DEFAULT_AI_CONFIG, resolveConfig } from './config.js';
+export {
+  DEFAULT_AI_CONFIG, resolveConfig,
+  ENGINE_CONFIG_VERSIONS, ENGINE_CONFIG_DEFAULT_VERSION, resolveEngineConfig,
+} from './config.js';
 export { tokenize, ngrams, recordFeatures, recordText, hasUsableText, splitKeywordField } from './text.js';
 export { buildVectorizer, transform, dot, cosine } from './vectorizer.js';
 export { trainLogReg, predictProba, sigmoid, topWeightedFeatures } from './logreg.js';
@@ -29,7 +32,7 @@ export {
 } from './validation.js';
 export {
   fitCalibrator, applyCalibrator, fitPlatt, fitIsotonic, fit1DLogistic,
-  calibrationMetrics, brierScore, logLoss, expectedCalibrationError,
+  calibrationMetrics, heldOutCalibrationMetrics, brierScore, logLoss, expectedCalibrationError,
   reliabilityBins, calibrationSlopeIntercept, selectCalibrationMethod,
 } from './calibration.js';
 export {

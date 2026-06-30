@@ -361,6 +361,12 @@ function ReliabilityCurve({ bins }) {
 function CalibrationBlock({ cal }) {
   if (!cal) return null;
   const m = cal.metrics || {};
+  // Metrics are now measured on HELD-OUT predictions (nested CV) — honest, not the
+  // optimistic apparent ECE≈0. When the sample is too small for a nested split the
+  // engine returns null metrics with a reason; the calibrator is still applied.
+  const heldOut = !!(cal.heldOut || m.heldOut);
+  const heldOutUncomputed = heldOut && m.ece == null;
+  const suffix = heldOut ? ' (held-out)' : '';
   return (
     <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 8 }}>
       <SubHeader>Probability calibration</SubHeader>
@@ -369,14 +375,22 @@ function CalibrationBlock({ cal }) {
       ) : (
         <>
           <KV label="Method" value={cal.method === 'platt' ? 'Platt scaling' : 'Isotonic regression'} />
-          <KV label="Brier score" value={numFmt(m.brier, 3)} title="Mean squared error of the calibrated probabilities (lower is better)." />
-          <KV label="Log loss" value={numFmt(m.logLoss, 3)} />
-          <KV label="ECE" value={numFmt(m.ece, 3)} title="Expected calibration error — mean gap between predicted and observed inclusion rate." color={m.ece > 0.15 ? C.gold : C.txt} />
-          <KV label="Calibration slope" value={numFmt(m.slope, 2)} title="≈1 is well-calibrated; <1 over-confident." />
-          <KV label="Calibration intercept" value={numFmt(m.intercept, 2)} title="≈0 is unbiased." />
-          <ReliabilityCurve bins={m.reliability} />
+          {heldOutUncomputed ? (
+            <div style={{ fontSize: 11.5, color: C.gold, lineHeight: 1.5, marginTop: 2 }}>{m.reason || 'Not enough labels for a held-out calibration estimate yet.'}</div>
+          ) : (
+            <>
+              <KV label="Brier score" value={numFmt(m.brier, 3)} title="Mean squared error of the calibrated probabilities (lower is better)." />
+              <KV label="Log loss" value={numFmt(m.logLoss, 3)} />
+              <KV label={`ECE${suffix}`} value={numFmt(m.ece, 3)} title="Expected calibration error — mean gap between predicted and observed inclusion rate, measured on held-out predictions (nested cross-validation)." color={m.ece > 0.15 ? C.gold : C.txt} />
+              <KV label={`Calibration slope${suffix}`} value={numFmt(m.slope, 2)} title="≈1 is well-calibrated; <1 over-confident." />
+              <KV label={`Calibration intercept${suffix}`} value={numFmt(m.intercept, 2)} title="≈0 is unbiased." />
+              <ReliabilityCurve bins={m.reliability} />
+            </>
+          )}
           <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.4 }}>
-            Fitted on out-of-fold predictions ({cal.n ?? '—'} labels). Apparent calibration can be optimistic on small sets.
+            {heldOut
+              ? `Calibrator fitted on out-of-fold predictions (${cal.n ?? '—'} labels); ECE/slope measured on held-out predictions via nested cross-validation (honest, not in-sample).`
+              : `Fitted on out-of-fold predictions (${cal.n ?? '—'} labels).`}
           </div>
         </>
       )}

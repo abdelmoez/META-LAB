@@ -33,11 +33,17 @@ export function sigmoid(z) {
  *            nPos:number, nNeg:number }}
  */
 export function trainLogReg(samples, dim, cfg = {}) {
-  const l2 = cfg.l2 ?? 1e-4;
   const lr = cfg.learningRate ?? 0.5;
   const maxEpochs = cfg.epochs ?? 200;
   const tol = cfg.tolerance ?? 1e-5;
   const classWeightMode = cfg.classWeight ?? 'balanced';
+  // Polyak heavy-ball momentum. Full-batch GD with a fixed step crawls on the
+  // ill-conditioned TF-IDF objective (hundreds–thousands of epochs to reach the
+  // regularised optimum a solver like liblinear finds exactly). Momentum reaches it
+  // in a fraction of the epochs, which is what makes the converged C=1.0 config
+  // production-viable. DETERMINISTIC. momentum=0 ⇒ v = −lr·g ⇒ byte-identical to the
+  // original plain-GD update, so the legacy version is unchanged.
+  const mu = (Number.isFinite(cfg.momentum) && cfg.momentum > 0 && cfg.momentum < 1) ? cfg.momentum : 0;
 
   const weights = new Float64Array(dim);
   let bias = 0;
@@ -46,6 +52,16 @@ export function trainLogReg(samples, dim, cfg = {}) {
   let nPos = 0;
   for (const s of samples) if (s.y === 1) nPos++;
   const nNeg = n - nPos;
+
+  // L2 strength. Two parameterisations:
+  //   cInverseReg (C): sklearn-style inverse regularisation. The engine minimises the
+  //     MEAN class-weighted loss + (l2/2)·‖w‖²; sklearn minimises C·Σ loss + ½‖w‖².
+  //     Dividing sklearn's objective by (C·n) gives the engine's form with
+  //     l2 = 1/(C·n) — so cInverseReg=C reproduces LogisticRegression(C=C).
+  //   l2: the raw penalty coefficient (legacy/default path).
+  const l2 = (Number.isFinite(cfg.cInverseReg) && cfg.cInverseReg > 0 && n > 0)
+    ? 1 / (cfg.cInverseReg * n)
+    : (cfg.l2 ?? 1e-4);
 
   // Cost-sensitive class weights (sklearn 'balanced' formula): n/(2*n_class).
   let wPos = 1, wNeg = 1;
@@ -75,6 +91,10 @@ export function trainLogReg(samples, dim, cfg = {}) {
   }
   const active = Int32Array.from(activeSet);
   const grad = new Float64Array(dim);
+  // Velocity buffers for momentum (mu=0 → these just hold −lr·g each step, leaving the
+  // update identical to plain GD). Allocated once; only `active` weights are touched.
+  const vel = new Float64Array(dim);
+  let vBias = 0;
 
   let converged = false;
   let epoch = 0;
@@ -94,19 +114,23 @@ export function trainLogReg(samples, dim, cfg = {}) {
     }
 
     // L2 on weights only (not bias), averaged over samples. Active features only.
+    // Heavy-ball update: v ← mu·v − lr·g ; w ← w + v. maxStep tracks the ACTUAL weight
+    // change |v| (the convergence signal), which equals |lr·g| when mu=0.
     let maxStep = 0;
     const inv = n > 0 ? 1 / n : 1;
     for (let a = 0; a < active.length; a++) {
       const j = active[a];
       const g = grad[j] * inv + l2 * weights[j];
-      const step = lr * g;
-      weights[j] -= step;
-      const av = step < 0 ? -step : step;
+      const v = mu * vel[j] - lr * g;
+      vel[j] = v;
+      weights[j] += v;
+      const av = v < 0 ? -v : v;
       if (av > maxStep) maxStep = av;
     }
-    const bStep = lr * gBias * inv;
-    bias -= bStep;
-    const aB = bStep < 0 ? -bStep : bStep;
+    const gB = gBias * inv;
+    vBias = mu * vBias - lr * gB;
+    bias += vBias;
+    const aB = vBias < 0 ? -vBias : vBias;
     if (aB > maxStep) maxStep = aB;
 
     if (maxStep < tol) { converged = true; epoch++; break; }

@@ -5,7 +5,8 @@
  */
 import { prisma } from '../db/client.js';
 import { logAdminAction } from '../utils/audit.js';
-import { AI_SETTINGS_KEY, AI_GLOBAL_DEFAULTS, getRawGlobalAiSettings } from '../services/screeningAiService.js';
+import { AI_SETTINGS_KEY, AI_GLOBAL_DEFAULTS, getRawGlobalAiSettings, listEngineConfigVersions } from '../services/screeningAiService.js';
+import { ENGINE_CONFIG_VERSIONS } from '../../src/research-engine/screening/ai/config.js';
 
 const ALLOWED_PROVIDERS = new Set(['lexical', 'hashing', 'hosted']);
 const ALLOWED_POLICIES = new Set(['assist', 'prioritize', 'auto_after_human']);
@@ -32,6 +33,9 @@ export function coerceAiScreeningSettings(patch, current) {
   if (typeof p.liveUpdateEnabled === 'boolean') out.liveUpdateEnabled = p.liveUpdateEnabled;
   if (Number.isFinite(p.retrainDebounceMs)) out.retrainDebounceMs = Math.min(60000, Math.max(500, Math.round(p.retrainDebounceMs)));
   if (typeof p.killSwitch === 'boolean') out.killSwitch = p.killSwitch;
+  // screeningEngine.md task 3 — global default engine config version (validated against
+  // the registry so an unknown id can never be persisted).
+  if (typeof p.engineConfigVersion === 'string' && ENGINE_CONFIG_VERSIONS[p.engineConfigVersion]) out.engineConfigVersion = p.engineConfigVersion;
   return out;
 }
 
@@ -53,7 +57,7 @@ export function diffAiScreeningSettings(current, next) {
 export async function getAiScreeningSettings(req, res) {
   try {
     const settings = await getRawGlobalAiSettings();
-    res.json({ settings, defaults: AI_GLOBAL_DEFAULTS });
+    res.json({ settings, defaults: AI_GLOBAL_DEFAULTS, engineConfigVersions: listEngineConfigVersions() });
   } catch (e) {
     console.error('getAiScreeningSettings', e);
     res.status(500).json({ error: 'Internal server error' });

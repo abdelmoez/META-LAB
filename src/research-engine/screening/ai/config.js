@@ -136,3 +136,72 @@ function deepMerge(base, override) {
 export function resolveConfig(override = {}) {
   return deepMerge(DEFAULT_AI_CONFIG, override || {});
 }
+
+// ── Named engine config versions (screeningEngine.md task 3) ──────────────────
+// A run's model "version" already lives in ScreenAiRun (active/parent/rollback
+// lineage). This registry adds the ENGINE-CONFIG dimension to that: a named, frozen
+// set of tunables a run is scored under, recorded on the run so it is reproducible
+// and rollback-able. v1 is the original deployed engine, kept BYTE-FOR-BYTE so a
+// rollback restores the exact prior behaviour; v2 is the tuned lexical config.
+//
+// Each entry's `config` is a partial override deep-merged over DEFAULT_AI_CONFIG.
+export const ENGINE_CONFIG_DEFAULT_VERSION = 'v2-lexical-tuned';
+
+export const ENGINE_CONFIG_VERSIONS = Object.freeze({
+  // v1 — the original deployed engine. EMPTY override == DEFAULT_AI_CONFIG, so this
+  // is a faithful, untouched baseline available for rollback at any time.
+  'v1-hybrid-legacy': Object.freeze({
+    label: 'Hybrid v1 (legacy)',
+    summary: 'Original deployed engine: title×3 + abstract + keywords/MeSH + journal features; '
+      + 'relevance fuses classifier 0.55 / cold-start 0.20 / semantic 0.15 / keyword 0.10.',
+    config: Object.freeze({}),
+  }),
+
+  // v2 — tuned config (screeningEngine.md). The ONE change from v1 is the optimiser:
+  // the deployed full-batch GD under-fit the TF-IDF objective, leaving the classifier
+  // short of the regularised optimum a solver like liblinear reaches. v2 adds heavy-ball
+  // momentum (deterministic) so it CONVERGES, plus sklearn-style inverse regularisation
+  // (C). Validated on Cohen 2006 by scripts/screening-benchmark.mjs:
+  //     v1 (deployed)            AUC 0.848 / WSS@95 0.310
+  //     v2 (this)                AUC 0.858 / WSS@95 0.303   ← matches/beats the published
+  //     reference TF-IDF+LR      AUC 0.855 / WSS@95 0.319      sklearn benchmark on AUC.
+  // The feature set + hybrid fusion are UNCHANGED: dropping MeSH/keywords (the reference's
+  // "base" config) raises AUC slightly but drops WSS@95 below the 0.30 target in this
+  // engine, and the existing features add no NEW fetch cost — so they are retained.
+  // Cold-start behaviour before a model can be trained is identical to v1.
+  'v2-lexical-tuned': Object.freeze({
+    label: 'Lexical tuned v2',
+    summary: 'Deployed feature set + hybrid, with the logistic regression converged to the '
+      + 'regularised optimum (heavy-ball momentum + sklearn-style C, class-balanced). '
+      + 'Higher AUC (≈0.858, matching the published TF-IDF+LR benchmark) at equal recall.',
+    config: Object.freeze({
+      classifier: {
+        // sklearn-style inverse regularisation: effective L2 λ = 1/(C·nEff). C=8 is a
+        // touch weaker than the deployed l2 — it holds WSS@95 while momentum lifts AUC.
+        cInverseReg: 8.0,
+        momentum: 0.9,        // heavy-ball: reaches the optimum the plain-GD config missed
+        learningRate: 1.0,
+        epochs: 300,
+        tolerance: 1e-6,
+        classWeight: 'balanced',
+      },
+    }),
+  }),
+});
+
+/**
+ * resolveEngineConfig — resolve a named engine config version (+ optional further
+ * override) into a fully-populated config. Unknown/empty version → the default
+ * version. The chosen version id is stamped on the result as `engineConfigVersion`
+ * for run provenance.
+ * @param {string} [version]
+ * @param {object} [override]
+ * @returns {typeof DEFAULT_AI_CONFIG & {engineConfigVersion:string}}
+ */
+export function resolveEngineConfig(version, override = {}) {
+  const id = ENGINE_CONFIG_VERSIONS[version] ? version : ENGINE_CONFIG_DEFAULT_VERSION;
+  const base = ENGINE_CONFIG_VERSIONS[id].config || {};
+  const merged = deepMerge(deepMerge(DEFAULT_AI_CONFIG, base), override || {});
+  merged.engineConfigVersion = id;
+  return merged;
+}
