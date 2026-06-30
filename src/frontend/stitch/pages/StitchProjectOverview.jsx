@@ -189,7 +189,10 @@ export default function StitchProjectOverview() {
   const topPresence = linkedId ? (
     <StitchProjectPresence spId={linkedId} location="Project overview" totalMembers={totalMembersOf(project, members)} />
   ) : null;
-  const shellProps = { activeKey: 'dashboard', renderPrimaryRail, contextRail: null, coordinatedNav: true, pinned, topPresence };
+  // Header project chat (all Stitch pages): the launcher self-probes access for the
+  // META·LAB project id (route param), so it works even before the blob resolves.
+  const chatContext = { projectId, projectName: project?.name || '' };
+  const shellProps = { activeKey: 'dashboard', renderPrimaryRail, contextRail: null, coordinatedNav: true, pinned, topPresence, chatContext };
 
   /* ── loading / error ── */
   if (loading) {

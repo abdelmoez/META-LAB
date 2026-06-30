@@ -22,6 +22,7 @@ import { useAuth } from '../../context/AuthContext.jsx';
 import { useTheme } from '../../theme/ThemeContext.jsx';
 import { Icon } from '../../components/icons.jsx';
 import NotificationsBell from '../../components/NotificationsBell.jsx';
+import StitchChatLauncher from '../../components/chat/StitchChatLauncher.jsx';
 import { S, salpha, STITCH_RAIL, STITCH_MONO } from '../theme/stitchTokens.js';
 import { StitchAvatar, StitchBadge, StitchIconButton } from '../primitives/core.jsx';
 import { StitchTooltip } from '../primitives/overlay.jsx';
@@ -251,7 +252,7 @@ export function StitchAccountMenu() {
 // notification bell — never in the side navigation or duplicated in page content.
 // `topPresence` is the project-scoped PresenceIndicator (or null when there is no
 // project / no online members); a thin divider separates it from the utilities.
-export function StitchTopHeader({ onOpenNav, breadcrumb, topPresence = null }) {
+export function StitchTopHeader({ onOpenNav, breadcrumb, topPresence = null, chatContext = null }) {
   const { theme, toggleTheme } = useTheme();
   return (
     <header data-testid="stitch-top-header" style={{
@@ -274,6 +275,9 @@ export function StitchTopHeader({ onOpenNav, breadcrumb, topPresence = null }) {
           </>
         ) : null}
         <AdminDesignSwitch variant="inline" />
+        {/* Project chat — available on every Stitch page; greyed + unclickable when
+            there is no project in context or a leader/owner has restricted chat. */}
+        <StitchChatLauncher projectId={chatContext?.projectId || null} projectName={chatContext?.projectName || ''} />
         <NotificationsBell />
         <StitchIconButton icon={theme === 'night' ? 'sun' : 'moon'} label={theme === 'night' ? 'Light theme' : 'Dark theme'} onClick={toggleTheme} />
         <StitchAccountMenu />

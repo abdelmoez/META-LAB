@@ -102,6 +102,11 @@ async function listMessagesCore(access, req, res) {
       isMe: m.senderId === req.user.id,
     })),
     canChat: access.canChat,
+    // isLeader is the SECOND half of the server write-gate (canWriteChat =
+    // isLeader || canChat). The META·LAB chat door carries no other channel for
+    // it, so surfacing it here lets a header launcher decide "may participate"
+    // (and keep a leader out of read-only) from this one access probe. Additive.
+    isLeader: access.isLeader,
     chatRestricted: access.project.chatRestricted,
     typing: activeTypers(access.project.id, req.user.id),
     serverTime: new Date().toISOString(),

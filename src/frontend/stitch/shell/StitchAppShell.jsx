@@ -45,7 +45,7 @@ const RESPONSIVE_CSS = `
 
 export default function StitchAppShell({
   activeKey, contextRail, contextRailMobile, breadcrumb, children, maxWidth = 1320, contentPad = true,
-  renderPrimaryRail, topPresence = null, coordinatedNav = false, pinned = false,
+  renderPrimaryRail, topPresence = null, coordinatedNav = false, pinned = false, chatContext = null,
 }) {
   const [navOpen, setNavOpen] = useState(false);
 
@@ -92,7 +92,7 @@ export default function StitchAppShell({
 
         {/* Main column */}
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', height: '100%' }}>
-          <StitchTopHeader onOpenNav={() => setNavOpen(true)} breadcrumb={breadcrumb} topPresence={topPresence} />
+          <StitchTopHeader onOpenNav={() => setNavOpen(true)} breadcrumb={breadcrumb} topPresence={topPresence} chatContext={chatContext} />
           <main className="stitch-scope" data-testid="stitch-main-content" style={{ flex: 1, minWidth: 0, overflowY: 'auto', overflowX: 'hidden' }}>
             <div style={{ maxWidth, margin: '0 auto', padding: contentPad ? '24px' : 0, width: '100%' }}>
               {children}

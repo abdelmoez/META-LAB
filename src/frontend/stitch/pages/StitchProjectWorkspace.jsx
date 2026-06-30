@@ -169,10 +169,14 @@ function DeepToolPage({ stage }) {
     <PresenceIndicator users={users} locks={locks} totalMembers={totalMembers} myUserId={user?.id} />
   ) : null;
 
+  // Header project chat (all Stitch pages): the launcher self-probes access for the
+  // META·LAB project id (route param), so it works even before the doc resolves.
+  const chatContext = { projectId, projectName: project?.name || '' };
   const shellProps = {
     activeKey: 'dashboard', renderPrimaryRail, contextRail,
     coordinatedNav: true, pinned,
     topPresence, maxWidth: fullbleed ? 100000 : 1560, contentPad: !fullbleed,
+    chatContext,
   };
 
   const breadcrumb = (
