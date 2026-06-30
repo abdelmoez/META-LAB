@@ -1,13 +1,15 @@
 /**
  * StitchChatLauncher.jsx — the Stitch-header project-chat launcher.
  *
- * Rendered ONCE inside StitchTopHeader (stitch/shell/shellParts.jsx) beside the
- * notification bell, so the chat icon is present on EVERY Stitch page. Chat is
- * project-scoped, so the launcher is driven by an optional project context the
- * page threads down (StitchAppShell `chatContext` → StitchTopHeader → here):
+ * Rendered inside StitchTopHeader (stitch/shell/shellParts.jsx) beside the
+ * notification bell — but ONLY within a project. The header mounts it only when a
+ * project context is present (chatContext.projectId), so the chat icon never shows
+ * on global pages (dashboard / profile / activity / ops). Chat is project-scoped,
+ * driven by the project context the page threads down (StitchAppShell `chatContext`
+ * → StitchTopHeader → here):
  *
- *   • No project in context (global pages: dashboard, profile, …) → the icon is
- *     GREYED + unclickable ("Open a project to use chat").
+ *   • No project in context → the launcher is not mounted (defensive: if mounted
+ *     with projectId=null it still renders the greyed "Open a project" state).
  *   • Project in context → probe the META·LAB chat door ONCE — metalabListChat
  *     with since=now: zero message payload, but the server returns the access
  *     write-gates (canChat / chatRestricted / isLeader) from the resolved scope:

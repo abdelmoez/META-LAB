@@ -275,9 +275,12 @@ export function StitchTopHeader({ onOpenNav, breadcrumb, topPresence = null, cha
           </>
         ) : null}
         <AdminDesignSwitch variant="inline" />
-        {/* Project chat — available on every Stitch page; greyed + unclickable when
-            there is no project in context or a leader/owner has restricted chat. */}
-        <StitchChatLauncher projectId={chatContext?.projectId || null} projectName={chatContext?.projectName || ''} />
+        {/* Project chat — shown ONLY within a project (never on dashboard/profile/ops/
+            other global pages). Inside a project it is greyed + unclickable when a
+            leader/owner has restricted chat or no Screening workspace is linked. */}
+        {chatContext?.projectId ? (
+          <StitchChatLauncher projectId={chatContext.projectId} projectName={chatContext.projectName || ''} />
+        ) : null}
         <NotificationsBell />
         <StitchIconButton icon={theme === 'night' ? 'sun' : 'moon'} label={theme === 'night' ? 'Light theme' : 'Dark theme'} onClick={toggleTheme} />
         <StitchAccountMenu />
