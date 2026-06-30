@@ -46,6 +46,10 @@ function linkedSiftSummary(linked) {
     title: linked.title || '',
     progressStatus: linked.progressStatus ?? null,
     recordCount: linked.recordCount ?? 0,
+    // 63.md M6 — duplicate-free screening pool (the REAL progress denominator,
+    // mirrors screeningOverviewController's `records.filter(r => !r.isDuplicate)`).
+    // recordCount stays the raw "studies imported" KPI; falls back to recordCount.
+    screenablePool: linked.screenablePool ?? linked.recordCount ?? 0,
     memberCount: linked.memberCount ?? 0,
     decidedCount: linked.decidedCount ?? 0,
     onlineCount: linked.onlineCount ?? 0,
@@ -192,12 +196,21 @@ async function screenProjectSummaries(ids, { by = 'linked', ownerId } = {}) {
 async function enrichSummaryCounts(summary) {
   if (!summary) return null;
   let decidedCount = 0;
+  // 63.md M6 — duplicate-free screening pool (same denominator as the list +
+  // the Overview). Defaults to recordCount so list and detail agree even if the
+  // count fails. recordCount stays the raw "studies imported" KPI.
+  let screenablePool = summary.recordCount ?? 0;
   try {
     decidedCount = await prisma.screenRecord.count({
       where: { projectId: summary.id, finalStatus: { in: DECIDED_FINAL_STATUSES } },
     });
   } catch { /* best-effort — a count failure must never break getProject */ }
-  return { ...summary, decidedCount, onlineCount: onlineCountsFor([summary.id])[summary.id] || 0 };
+  try {
+    screenablePool = await prisma.screenRecord.count({
+      where: { projectId: summary.id, isDuplicate: false },
+    });
+  } catch { /* best-effort — fall back to recordCount */ }
+  return { ...summary, decidedCount, screenablePool, onlineCount: onlineCountsFor([summary.id])[summary.id] || 0 };
 }
 
 /**
@@ -316,6 +329,21 @@ export async function listProjects(req, res) {
       decidedByScreenId = classifyDecided(decidedRows);
     }
 
+    // 63.md M6 — ONE batched duplicate-free pool count for the WHOLE list, keyed
+    // by ScreenProject id. screenablePool = ScreenRecords with isDuplicate:false —
+    // the REAL progress denominator (mirrors screeningOverviewController's
+    // `records.filter(r => !r.isDuplicate)`). recordCount stays the raw "studies
+    // imported" KPI. Same groupBy shape as `decided` above (no N+1).
+    let screenablePoolByScreenId = new Map();
+    if (allScreenProjectIds.length) {
+      const poolRows = await prisma.screenRecord.groupBy({
+        by: ['projectId'],
+        where: { projectId: { in: allScreenProjectIds }, isDuplicate: false },
+        _count: { _all: true },
+      });
+      screenablePoolByScreenId = classifyDecided(poolRows);
+    }
+
     // 63.md AREA 4 — per-ScreenProject online counts from the in-memory presence
     // rooms (sync, cheap, never throws). Keyed by ScreenProject id.
     const onlineByScreenId = onlineCountsFor(allScreenProjectIds);
@@ -325,6 +353,9 @@ export async function listProjects(req, res) {
     const withCounts = (summary) => summary && {
       ...summary,
       decidedCount: decidedByScreenId.get(summary.id) || 0,
+      // 63.md M6 — duplicate-free pool; default to the raw recordCount (then 0)
+      // when no rows came back, so the denominator is never below the numerator.
+      screenablePool: screenablePoolByScreenId.get(summary.id) ?? summary.recordCount ?? 0,
       onlineCount: onlineByScreenId[summary.id] || 0,
     };
 

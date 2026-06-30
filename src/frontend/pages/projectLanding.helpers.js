@@ -99,22 +99,30 @@ export function projectStatsOf(p) {
 /** Real screening progress as a 0..100 percentage.
  *  Formula: null when the project has no linked workspace OR recordCount === 0
  *  (no studies to screen yet → no meaningful bar); 100 when progressStatus is
- *  'done'; otherwise round(decidedCount / recordCount * 100) clamped to 0..100.
+ *  'done'; otherwise round(decidedCount / denom * 100) clamped to 0..100. The
+ *  denominator prefers ms.screenablePool (the duplicate-free screenable pool the
+ *  server computes) and falls back to recordCount when it is absent, so the bar
+ *  matches the project Overview and nothing breaks on older payloads.
  *  This is a REAL decided/imported ratio — NOT the old hardcoded 50. */
 export function progressOf(p) {
   const ms = p && p._linkedMetaSift;
   if (!ms) return null;
   if (ms.progressStatus === 'done') return 100;
   const { recordCount, decidedCount } = projectStatsOf(p);
-  if (recordCount === 0) return null; // nothing imported → no fake bar
-  const pct = Math.round((decidedCount / recordCount) * 100);
+  const denom = (ms.screenablePool != null) ? ms.screenablePool : (recordCount ?? 0);
+  if (denom === 0) return null; // nothing imported → no fake bar
+  const pct = Math.round((decidedCount / denom) * 100);
   return Math.max(0, Math.min(100, pct));
 }
 
 /** "Active now" display: "<online> / <total>" when the project has members,
  *  else "0 members" (never a misleading number when presence is unavailable). */
 export function onlineTotalLabel(online, total) {
-  return total > 0 ? (online + ' / ' + total) : '0 members';
+  if (total > 0) {
+    const o = Math.max(0, Math.min(Number(online) || 0, total));
+    return o + ' / ' + total;
+  }
+  return '0 members';
 }
 
 /* ════════════════════════════════════════════════════════════════════════

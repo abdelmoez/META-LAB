@@ -334,6 +334,23 @@ describe('progressOf', () => {
     const fresh = { _linkedMetaSift: { progressStatus: 'in_progress', recordCount: 80, decidedCount: 0 } };
     expect(progressOf(fresh)).toBe(0);
   });
+
+  it('uses screenablePool as the denominator when present (duplicate-free)', () => {
+    // 30 decided of a 60-record import, but only 50 are unique/screenable →
+    // 30/50 = 60% (NOT 30/60 = 50%) so it agrees with the project Overview.
+    const p = { _linkedMetaSift: { progressStatus: 'in_progress', recordCount: 60, decidedCount: 30, screenablePool: 50 } };
+    expect(progressOf(p)).toBe(60);
+  });
+
+  it('falls back to recordCount when screenablePool is absent', () => {
+    const p = { _linkedMetaSift: { progressStatus: 'in_progress', recordCount: 200, decidedCount: 60 } };
+    expect(progressOf(p)).toBe(30);
+  });
+
+  it('returns null when screenablePool is 0 (nothing screenable yet)', () => {
+    const p = { _linkedMetaSift: { progressStatus: 'in_progress', recordCount: 5, decidedCount: 0, screenablePool: 0 } };
+    expect(progressOf(p)).toBeNull();
+  });
 });
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -380,6 +397,16 @@ describe('onlineTotalLabel', () => {
   it('returns "0 members" when total is 0 (never a misleading number)', () => {
     expect(onlineTotalLabel(0, 0)).toBe('0 members');
     expect(onlineTotalLabel(3, 0)).toBe('0 members');
+  });
+
+  it('clamps online to total so it can never read more online than members', () => {
+    expect(onlineTotalLabel(2, 1)).toBe('1 / 1');
+    expect(onlineTotalLabel(99, 5)).toBe('5 / 5');
+  });
+
+  it('clamps a negative/NaN online up to 0', () => {
+    expect(onlineTotalLabel(-3, 4)).toBe('0 / 4');
+    expect(onlineTotalLabel(NaN, 4)).toBe('0 / 4');
   });
 });
 

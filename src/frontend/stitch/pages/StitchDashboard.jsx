@@ -238,7 +238,7 @@ function ProjectRow({ p, onOpen, onAction }) {
       </div>
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: '2px 14px', fontSize: 12, color: S.textMuted, fontWeight: 500 }}>
         {p._linkedMetaSift ? <span>{stats.recordCount} records</span> : null}
-        {p._linkedMetaSift ? <span>{stats.decidedCount}/{stats.recordCount} screened</span> : null}
+        {p._linkedMetaSift ? <span>{stats.decidedCount}/{stats.recordCount} finalized</span> : null}
         {p._linkedMetaSift ? <span>{onlineTotalLabel(stats.onlineCount, stats.memberCount)}</span> : null}
         <span>updated {relTime(p.updatedAt)}</span>
       </div>
@@ -280,6 +280,7 @@ function ProjectListRow({ p, onOpen, onAction }) {
         </div>
       </td>
       <td style={cell} data-th="Status">
+        <span style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>{'Status: '}</span>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
           <StitchBadge tone={statusTone(status)} dot>{sm.label || status}</StitchBadge>
           {pct != null ? (
@@ -290,15 +291,19 @@ function ProjectListRow({ p, onOpen, onAction }) {
         </div>
       </td>
       <td style={{ ...cell, fontSize: 12.5, color: S.textSecondary, whiteSpace: 'nowrap' }} data-th="Members">
+        <span style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>{'Members: '}</span>
         {p._linkedMetaSift ? onlineTotalLabel(stats.onlineCount, stats.memberCount) : '—'}
       </td>
-      <td style={{ ...cell, fontSize: 12.5, color: S.textSecondary, whiteSpace: 'nowrap' }} data-th="Records">
+      <td style={{ ...cell, fontSize: 12.5, color: S.textSecondary, whiteSpace: 'nowrap' }} data-th="Finalized">
+        <span style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>{'Finalized: '}</span>
         {p._linkedMetaSift ? `${stats.decidedCount}/${stats.recordCount}` : '—'}
       </td>
       <td style={{ ...cell, fontSize: 12.5, color: S.textMuted, whiteSpace: 'nowrap' }} data-th="Updated">
+        <span style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>{'Updated: '}</span>
         {relTime(p.updatedAt)}
       </td>
       <td style={cell} data-th="Role">
+        <span style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>{'Role: '}</span>
         <StitchBadge tone="neutral">{ROLE_LABEL[roleOf(p)] || 'Owner'}</StitchBadge>
       </td>
       <td style={{ ...cell, textAlign: 'right', whiteSpace: 'nowrap' }} data-th="Actions">
@@ -318,12 +323,13 @@ function ProjectList({ projects, onOpen, onAction }) {
   return (
     <StitchCard style={{ padding: 0, overflowX: 'auto' }}>
       <table className="stitch-projlist" style={{ width: '100%', borderCollapse: 'collapse', fontFamily: S.font }}>
+        <caption style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>Projects</caption>
         <thead>
           <tr>
             <th style={th}>Project</th>
             <th style={th}>Status</th>
             <th style={th}>Members</th>
-            <th style={th}>Records</th>
+            <th style={th}>Finalized</th>
             <th style={th}>Updated</th>
             <th style={th}>Role</th>
             <th style={{ ...th, textAlign: 'right' }}>Actions</th>
@@ -334,6 +340,16 @@ function ProjectList({ projects, onOpen, onAction }) {
         </tbody>
       </table>
     </StitchCard>
+  );
+}
+
+/* ─── Cards/List view toggle (M4 — shared by overview + archived views) ─────── */
+function ViewToggle({ viewMode, onChange }) {
+  return (
+    <div role="group" aria-label="View as" style={{ display: 'inline-flex', gap: 4, padding: 3, borderRadius: 10, background: S.surfaceLow, border: `1px solid ${S.outlineVariant}` }}>
+      <StitchButton size="sm" icon="grid" variant={viewMode === 'cards' ? 'primary' : 'ghost'} aria-pressed={viewMode === 'cards'} aria-label="Card view" onClick={() => onChange('cards')} />
+      <StitchButton size="sm" icon="table" variant={viewMode === 'table' ? 'primary' : 'ghost'} aria-pressed={viewMode === 'table'} aria-label="List view" onClick={() => onChange('table')} />
+    </div>
   );
 }
 
@@ -409,18 +425,23 @@ export default function StitchDashboard() {
   const [action, setAction] = useState(null); // {type:'rename'|'archive'|'unarchive'|'delete', project}
   const [viewMode, setViewMode] = useState('cards'); // 'cards' (default) | 'table'
 
-  // Hydrate the saved Cards/List choice ONCE per user (guarded so later writes
-  // don't re-trigger). Persist on every change to localStorage AND, when the
-  // profile endpoint exists, the server so it follows the user across devices.
-  const prefsHydrated = useRef(false);
+  // Hydrate the saved Cards/List choice once the authenticated user is known,
+  // and RE-hydrate whenever user?.id actually changes (so getMe resolving after
+  // mount, or an account switch, applies the right saved view). Persistence is
+  // gated on an explicit user-intent `dirty` flag so the mount-time hydration
+  // can never clobber the stored value with the default. `setViewModeIntent`
+  // is the only path that marks intent; it's wired to the toggle controls.
+  const hydratedFor = useRef(null);
+  const dirty = useRef(false);
+  const setViewModeIntent = useCallback((v) => { dirty.current = true; setViewMode(v); }, []);
   useEffect(() => {
-    if (prefsHydrated.current) return;
-    prefsHydrated.current = true;
+    if (hydratedFor.current === user?.id) return;
+    hydratedFor.current = user?.id;
     const v = readDashboardPrefs(user?.id).view;
     if (v) setViewMode(v);
   }, [user?.id]);
   useEffect(() => {
-    if (!prefsHydrated.current) return;
+    if (!dirty.current) return;
     writeDashboardPrefs(user?.id, { view: viewMode });
     if (api.profile?.update) api.profile.update({ dashboardPreferences: { view: viewMode } }).catch(() => {});
   }, [viewMode, user?.id]);
@@ -515,13 +536,18 @@ export default function StitchDashboard() {
         {loading ? <StitchLoadingState label="Loading archived projects…" />
           : error ? <StitchErrorState title="Couldn't load projects" desc={error} onRetry={reload} />
             : archivedProjects.length ? (
-              viewMode === 'table' ? (
-                <ProjectList projects={archivedProjects} onOpen={openProject} onAction={setAction} />
-              ) : (
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16 }}>
-                {archivedProjects.map((p) => <ProjectRow key={p.id} p={p} onOpen={openProject} onAction={setAction} />)}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <ViewToggle viewMode={viewMode} onChange={setViewModeIntent} />
+                </div>
+                {viewMode === 'table' ? (
+                  <ProjectList projects={archivedProjects} onOpen={openProject} onAction={setAction} />
+                ) : (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16 }}>
+                  {archivedProjects.map((p) => <ProjectRow key={p.id} p={p} onOpen={openProject} onAction={setAction} />)}
+                </div>
+                )}
               </div>
-              )
             ) : (
               <StitchCard><StitchEmptyState icon="layers" title="No archived projects"
                 desc="Projects you archive from the dashboard will appear here. Archiving keeps a project's data but removes it from your active list." /></StitchCard>
@@ -561,7 +587,7 @@ export default function StitchDashboard() {
                 </div>
                 <div style={{ fontSize: 12, color: S.textSecondary, marginTop: 3 }}>
                   {kpis.done > 0 ? `${kpis.done} completed · ` : ''}
-                  {(kpis.records || 0).toLocaleString()} record{kpis.records === 1 ? '' : 's'} screened
+                  {(kpis.records || 0).toLocaleString()} record{kpis.records === 1 ? '' : 's'} finalized
                 </div>
               </div>
             </div>
@@ -608,10 +634,7 @@ export default function StitchDashboard() {
               })}
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <div role="group" aria-label="View as" style={{ display: 'inline-flex', gap: 4, padding: 3, borderRadius: 10, background: S.surfaceLow, border: `1px solid ${S.outlineVariant}` }}>
-                <StitchButton size="sm" icon="grid" variant={viewMode === 'cards' ? 'primary' : 'ghost'} aria-pressed={viewMode === 'cards'} aria-label="Card view" onClick={() => setViewMode('cards')} />
-                <StitchButton size="sm" icon="table" variant={viewMode === 'table' ? 'primary' : 'ghost'} aria-pressed={viewMode === 'table'} aria-label="List view" onClick={() => setViewMode('table')} />
-              </div>
+              <ViewToggle viewMode={viewMode} onChange={setViewModeIntent} />
               <div style={{ width: 240, maxWidth: '100%' }}>
                 <StitchSearchInput value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search projects…" />
               </div>
