@@ -40,7 +40,14 @@ const MEASURE = {
   MD: { label: 'Mean difference (MD)', kind: 'mean' },
   COR: { label: 'Correlation (r)', kind: 'fisherz' },
   PROP: { label: 'Proportion', kind: 'prop' },
+  DIAG: { label: 'Diagnostic odds ratio (DOR)', kind: 'ratio' },
 };
+
+/** Total participants across a study subset; flags when some studies lack a size. */
+function participantTotal(subset) {
+  const sizes = subset.map(sampleSize).filter((n) => n != null && n > 0);
+  return { total: sizes.reduce((a, n) => a + n, 0), partial: sizes.length < subset.length };
+}
 
 function backTransform(x, kind) {
   if (x == null || !Number.isFinite(x)) return null;
@@ -114,16 +121,19 @@ export function buildSummaryOfFindingsTable(project, opts = {}) {
 
   const rows = [];
   const warnings = [];
+  let anyPartial = false;
   for (const pair of pairs) {
     const subset = filterStudiesForOutcome(studies, pair);
     const res = subset.length >= 2 ? runMeta(subset, opts.model || 'random') : null;
     const measure = MEASURE[pair.esType] || { label: pair.esType || 'Effect size', kind: 'mean' };
-    const participants = subset.reduce((a, s) => a + (sampleSize(s) || 0), 0);
+    const { total: participants, partial } = participantTotal(subset);
+    if (partial && participants) anyPartial = true;
+    const participantsCell = participants ? `${participants}${partial ? '*' : ''}` : '';
     if (!res) {
       rows.push({
         outcome: pair.label,
         nStudies: String(subset.length),
-        nParticipants: participants ? String(participants) : '',
+        nParticipants: participantsCell,
         measure: measure.label,
         estimate: subset.length < 2 ? '[<2 studies — not pooled]' : '',
         ci: '',
@@ -144,7 +154,7 @@ export function buildSummaryOfFindingsTable(project, opts = {}) {
     rows.push({
       outcome: pair.label,
       nStudies: String(res.k),
-      nParticipants: participants ? String(participants) : '',
+      nParticipants: participantsCell,
       measure: measure.label,
       estimate: fmt(pe),
       ci: lo != null && hi != null ? `${fmt(lo)} to ${fmt(hi)}` : '',
@@ -171,13 +181,14 @@ export function buildSummaryOfFindingsTable(project, opts = {}) {
   const finalCols = columns.filter((c) => c.key !== 'nParticipants' || rows.some((r) => clean(r.nParticipants)));
 
   if (!rows.length) warnings.push('No outcomes with effect estimates available for synthesis.');
+  if (anyPartial) warnings.push('Participant totals marked * count only studies that reported a sample size.');
 
   return {
     id: 'summary_of_findings_table',
     title: 'Summary of findings',
     columns: finalCols,
     rows,
-    note: 'Pooled estimates from the meta-analysis engine. Ratio measures are back-transformed for presentation. Verify against the Analysis tab before submission.',
+    note: 'Pooled estimates from the meta-analysis engine. Ratio measures are back-transformed for presentation. Participant totals marked * include only studies with a reported sample size. Verify against the Analysis tab before submission.',
     warnings,
     available: rows.length > 0,
     generatedFrom: 'analysis',

@@ -29,10 +29,10 @@ export async function forestPng(result, opts = {}) {
  * @returns {Promise<{blob:Blob,width:number,height:number,svg:string}>}
  */
 export async function prismaPng(prismaResultOrShape, opts = {}) {
-  const shape = prismaResultOrShape && prismaResultOrShape.counts
-    ? countsToPrismaShape(prismaResultOrShape)
-    : (prismaResultOrShape || {});
-  const built = buildPrismaSVG(shape, { title: opts.title || '' });
+  const isResult = prismaResultOrShape && prismaResultOrShape.counts;
+  const shape = isResult ? countsToPrismaShape(prismaResultOrShape) : (prismaResultOrShape || {});
+  const resolved = isResult ? prismaResultOrShape.counts : undefined;
+  const built = buildPrismaSVG(shape, { title: opts.title || '', resolved });
   if (!built || !built.svg) return null;
   const targetWidthPx = opts.targetWidthPx || 900;
   const blob = await rasterizeSvg(built.svg, built.W, built.H, { targetWidthPx, background: '#ffffff' });
@@ -48,10 +48,10 @@ export function forestSvg(result, opts = {}) {
 
 /** PRISMA SVG string (no rasterization) for the repro bundle. */
 export function prismaSvg(prismaResultOrShape, opts = {}) {
-  const shape = prismaResultOrShape && prismaResultOrShape.counts
-    ? countsToPrismaShape(prismaResultOrShape)
-    : (prismaResultOrShape || {});
-  const built = buildPrismaSVG(shape, { title: opts.title || '' });
+  const isResult = prismaResultOrShape && prismaResultOrShape.counts;
+  const shape = isResult ? countsToPrismaShape(prismaResultOrShape) : (prismaResultOrShape || {});
+  const resolved = isResult ? prismaResultOrShape.counts : undefined;
+  const built = buildPrismaSVG(shape, { title: opts.title || '', resolved });
   return built ? built.svg : null;
 }
 

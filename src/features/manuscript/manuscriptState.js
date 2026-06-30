@@ -6,10 +6,16 @@
  */
 import {
   readManuscripts, makeManuscriptDraft, migrateLegacyManuscript, normalizeDraft, SECTION_IDS,
+  JOURNAL_TEMPLATES,
 } from '../../research-engine/manuscript/model.js';
 import { computeBlockHashes } from '../../research-engine/manuscript/sourceHash.js';
 
 export const nowIso = () => new Date().toISOString();
+
+/** Journal template lookup by id (null when unknown). Pure. */
+export function templateById(id) {
+  return JOURNAL_TEMPLATES.find((t) => t.id === id) || null;
+}
 
 /** Ensure a project has ≥1 draft; seeds from the legacy blob on first use. */
 export function ensureDrafts(project) {

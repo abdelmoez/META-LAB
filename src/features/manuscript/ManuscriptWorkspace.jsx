@@ -91,7 +91,7 @@ export function ManuscriptWorkspace({ project, upd }) {
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: 14, flexWrap: 'wrap', marginBottom: 14 }}>
         {m.drafts.length > 1 && (
           <Labeled label="Draft">
-            <Select value={m.activeId || ''} onChange={(e) => m.setActiveId(e.target.value)}>
+            <Select value={m.activeId || ''} onChange={(e) => { if (m.flush) m.flush(); m.setActiveId(e.target.value); }}>
               {m.drafts.map((d, i) => <option key={d.id} value={d.id}>{d.title || `Draft ${i + 1}`}</option>)}
             </Select>
           </Labeled>

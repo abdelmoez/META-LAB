@@ -10,6 +10,8 @@
  * to the verbatim string rather than mangling an ambiguous name.
  */
 
+import { SECTION_IDS } from './model.js';
+
 const clean = (s) => String(s == null ? '' : s).trim();
 
 /**
@@ -114,14 +116,15 @@ export function normalizeReference(raw, idHint) {
   };
 }
 
-/** Build references from a project's included studies (numeric ES first, then any with a title). Pure. */
-export function referencesFromProject(project, opts = {}) {
+/**
+ * Build references from a project's included studies. The `studies[]` array IS the
+ * included/extraction set, so we collect every study carrying citation metadata
+ * (title/authors) regardless of whether it has a numeric effect size — a study can
+ * be included in the review without entering the meta-analysis. Pure.
+ */
+export function referencesFromProject(project /* , opts */) {
   const studies = Array.isArray(project && project.studies) ? project.studies : [];
-  const onlyIncluded = opts.onlyIncluded !== false;
-  const pool = onlyIncluded
-    ? studies.filter((s) => s && (s.es !== '' && s.es != null && !isNaN(+s.es)) || (s && clean(s.title)))
-    : studies;
-  const refs = pool
+  const refs = studies
     .filter((s) => s && (clean(s.title) || clean(s.authors) || clean(s.author)))
     .map((s, i) => normalizeReference(s, s.id || `ref_${i + 1}`));
   return dedupeReferences(refs);
@@ -139,11 +142,12 @@ export function dedupeReferences(refs) {
     const key = keyDoi || keyPmid || keyTitle;
     if (!key) { out.push(r); continue; }
     if (seen.has(key)) {
-      // merge: keep the more complete record
+      // merge: keep the more complete record (backfill any field the first copy lacks)
       const existing = seen.get(key);
-      for (const f of ['journal', 'volume', 'issue', 'pages', 'doi', 'pmid', 'url']) {
+      for (const f of ['title', 'year', 'journal', 'volume', 'issue', 'pages', 'doi', 'pmid', 'url']) {
         if (!existing[f] && r[f]) existing[f] = r[f];
       }
+      if ((r.authorsList || []).length > (existing.authorsList || []).length) existing.authorsList = r.authorsList;
       continue;
     }
     seen.set(key, r);
@@ -201,6 +205,111 @@ export function formatCitation(ref, style = 'vancouver') {
 }
 
 /**
+ * Format a reference as styled SEGMENTS [{text, italics}] so renderers (docx/UI)
+ * can apply real per-style emphasis. This is where Vancouver and JAMA genuinely
+ * DIFFER: JAMA/AMA italicise the journal name (Vancouver does not); APA italicises
+ * the journal + volume. The plain-text formatCitation() above is the un-emphasised
+ * form used for clipboard/BibTeX. Pure.
+ */
+export function formatCitationSegments(ref, style = 'vancouver') {
+  const r = normalizeReference(ref, ref && ref.id);
+  const authors = formatAuthorList(r.authorsList, style);
+  const segs = [];
+  const push = (text, italics) => { if (clean(text)) segs.push({ text, italics: !!italics }); };
+
+  if (style === 'apa') {
+    push(`${authors}${authors ? ' ' : ''}`);
+    push(r.year ? `(${r.year}). ` : '');
+    push(r.title ? `${r.title}. ` : '');
+    let jr = r.journal || '';
+    if (r.volume) jr += `${jr ? ', ' : ''}${r.volume}`;
+    push(jr, true); // journal + volume italic
+    let tail = '';
+    if (r.issue) tail += `(${r.issue})`;
+    if (r.pages) tail += `${tail || jr ? ', ' : ''}${r.pages}`;
+    if (jr || tail) tail += '. ';
+    push(tail);
+    if (r.doi) push(`https://doi.org/${r.doi}`);
+    return segs;
+  }
+
+  // vancouver / jama / ama
+  const journalItalic = (style === 'jama' || style === 'ama');
+  push(authors ? `${authors}. ` : '');
+  push(r.title ? `${r.title}. ` : '');
+  push(r.journal ? `${r.journal}. ` : '', journalItalic);
+  let cite = '';
+  if (r.year) cite += r.year;
+  if (r.volume) cite += `;${r.volume}`;
+  if (r.issue) cite += `(${r.issue})`;
+  if (r.pages) cite += `:${r.pages}`;
+  if (cite) cite += '. ';
+  push(cite);
+  push(r.doi ? `doi:${r.doi}` : (r.pmid ? `PMID: ${r.pmid}` : ''));
+  return segs;
+}
+
+/* ── Inline citations: stable [[cite:<refId>]] tokens, auto-numbered by order of
+   first appearance across the manuscript (Vancouver/JAMA numeric style). ── */
+export const CITATION_TOKEN_RE = /\[\[cite:([^\]\s]+)\]\]/g;
+
+/** Build the stable token a user inserts at the cursor. Pure. */
+export function citationToken(refId) {
+  return `[[cite:${clean(refId)}]]`;
+}
+
+/**
+ * Scan ordered section texts for [[cite:id]] tokens; return
+ * { orderMap: Map(id→1-based index), orderedIds: [id...] } by first appearance. Pure.
+ */
+export function collectCitationOrder(texts) {
+  const orderMap = new Map();
+  const orderedIds = [];
+  for (const t of (texts || [])) {
+    const s = String(t == null ? '' : t);
+    const re = new RegExp(CITATION_TOKEN_RE.source, 'g');
+    let m;
+    while ((m = re.exec(s)) !== null) {
+      const id = m[1];
+      if (!orderMap.has(id)) { orderMap.set(id, orderMap.size + 1); orderedIds.push(id); }
+    }
+  }
+  return { orderMap, orderedIds };
+}
+
+/** The ordered section texts of a draft (canonical section order). Pure. */
+export function draftSectionTexts(draft) {
+  if (!draft || !draft.sections) return [];
+  return SECTION_IDS.map((id) => draft.sections[id] && draft.sections[id].content);
+}
+
+/** Replace [[cite:id]] tokens with numeric markers via orderMap. Unknown ids → [?]. Pure. */
+export function renderInlineMarkers(text, orderMap, style = 'vancouver') {
+  const re = new RegExp(CITATION_TOKEN_RE.source, 'g');
+  return String(text == null ? '' : text).replace(re, (_full, id) => {
+    const n = orderMap && orderMap.get(id);
+    return n ? inlineMarker(n, style) : '[?]';
+  });
+}
+
+/**
+ * Order a manuscript's references by inline-citation appearance, then append any
+ * uncited references at the end. If the draft has no inline citations, returns the
+ * list unchanged (inclusion order). Pure.
+ */
+export function orderReferencesForManuscript(draft, refs) {
+  const list = Array.isArray(refs) ? refs : [];
+  const { orderedIds } = collectCitationOrder(draftSectionTexts(draft));
+  if (!orderedIds.length) return list;
+  const byId = new Map(list.map((r) => [r.id, r]));
+  const ordered = [];
+  const used = new Set();
+  for (const id of orderedIds) { if (byId.has(id) && !used.has(id)) { ordered.push(byId.get(id)); used.add(id); } }
+  for (const r of list) { if (!used.has(r.id)) ordered.push(r); }
+  return ordered;
+}
+
+/**
  * Generate a numbered reference list. Returns an array of { index, id, ref, text }
  * in the supplied order (order of appearance / inclusion). Pure.
  */
@@ -211,6 +320,7 @@ export function generateReferenceList(refs, style = 'vancouver') {
     id: r.id,
     ref: r,
     text: formatCitation(r, style),
+    segments: formatCitationSegments(r, style),
   }));
 }
 
@@ -226,7 +336,13 @@ export function inlineMarker(index, style = 'vancouver') {
 /** BibTeX export for a set of references. Pure. */
 export function toBibTeX(refs) {
   const list = dedupeReferences(refs);
-  const esc = (s) => clean(s).replace(/[{}]/g, '');
+  // Escape LaTeX/BibTeX specials so titles like "A & B in 50%…" produce valid .bib.
+  const esc = (s) => clean(s)
+    .replace(/\\/g, '\\textbackslash{}')
+    .replace(/[{}]/g, '')
+    .replace(/([&%$#_])/g, '\\$1')
+    .replace(/~/g, '\\textasciitilde{}')
+    .replace(/\^/g, '\\textasciicircum{}');
   return list.map((r, i) => {
     const first = (r.authorsList[0] && (r.authorsList[0].family || r.authorsList[0].raw)) || 'ref';
     const key = `${esc(first).replace(/[^A-Za-z0-9]/g, '')}${r.year || ''}${i + 1}`;
@@ -261,9 +377,9 @@ export function toRIS(refs) {
     if (r.volume) lines.push(`VL  - ${r.volume}`);
     if (r.issue) lines.push(`IS  - ${r.issue}`);
     if (r.pages) {
-      const [sp, ep] = String(r.pages).split(/[-–]/);
-      if (sp) lines.push(`SP  - ${clean(sp)}`);
-      if (ep) lines.push(`EP  - ${clean(ep)}`);
+      const pg = String(r.pages).split(/[-–]+/).filter(Boolean); // collapse double-hyphen ranges
+      if (pg[0]) lines.push(`SP  - ${clean(pg[0])}`);
+      if (pg[1]) lines.push(`EP  - ${clean(pg[1])}`);
     }
     if (r.doi) lines.push(`DO  - ${r.doi}`);
     if (r.pmid) lines.push(`AN  - ${r.pmid}`);
@@ -295,8 +411,14 @@ export default {
   referencesFromProject,
   dedupeReferences,
   formatCitation,
+  formatCitationSegments,
   generateReferenceList,
   inlineMarker,
+  citationToken,
+  collectCitationOrder,
+  draftSectionTexts,
+  renderInlineMarkers,
+  orderReferencesForManuscript,
   toBibTeX,
   toRIS,
   auditReferences,

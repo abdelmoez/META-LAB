@@ -84,7 +84,7 @@ export const JOURNAL_TEMPLATES = [
   {
     id: 'jama',
     label: 'JAMA-style',
-    abstractFormat: 'structured',
+    abstractFormat: 'jama',
     citationStyle: 'jama',
     requiredStatements: ['funding', 'conflicts', 'dataAvailability', 'acknowledgments', 'registration'],
     note: 'Structured Importance/Objective/Data Sources… abstract and JAMA reference style.',
@@ -100,7 +100,7 @@ export const JOURNAL_TEMPLATES = [
   {
     id: 'lancet',
     label: 'Lancet-style',
-    abstractFormat: 'structured',
+    abstractFormat: 'lancet',
     citationStyle: 'vancouver',
     requiredStatements: ['funding', 'conflicts', 'dataAvailability', 'registration'],
     note: 'Lancet-aligned Background/Methods/Findings/Interpretation/Funding abstract.',

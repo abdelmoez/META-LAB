@@ -20,6 +20,10 @@ import {
   buildSearchStrategyTable,
   generateReferenceList,
   referencesFromProject,
+  orderReferencesForManuscript,
+  collectCitationOrder,
+  draftSectionTexts,
+  renderInlineMarkers,
   primaryAnalysis,
 } from '../../../research-engine/manuscript/index.js';
 import { SECTION_TYPES, STATEMENT_TYPES } from '../../../research-engine/manuscript/model.js';
@@ -127,10 +131,12 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
     rob: buildRobTable(project, opts.robOpts || {}),
     search: buildSearchStrategyTable(project, opts.searchOpts || {}),
   };
-  const refList = opts.references || generateReferenceList(
-    (draft.references && draft.references.length) ? draft.references : referencesFromProject(project),
-    draft.citationStyle,
-  );
+  const baseRefs = (draft.references && draft.references.length) ? draft.references : referencesFromProject(project);
+  const refList = opts.references || generateReferenceList(orderReferencesForManuscript(draft, baseRefs), draft.citationStyle);
+
+  // Inline-citation numbering: map [[cite:id]] tokens → [n] by order of appearance.
+  const { orderMap } = collectCitationOrder(draftSectionTexts(draft));
+  const secMd = (id) => renderInlineMarkers((draft.sections[id] && draft.sections[id].content) || '', orderMap, draft.citationStyle);
 
   const children = [];
 
@@ -151,7 +157,7 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
 
   /* Abstract + keywords */
   children.push(h1('Abstract', D));
-  children.push(...markdownToParagraphs(draft.sections.abstract && draft.sections.abstract.content, D));
+  children.push(...markdownToParagraphs(secMd('abstract'), D));
   if (draft.keywords && draft.keywords.length) {
     children.push(new Paragraph({ spacing: { before: 120 }, children: [new TextRun({ text: 'Keywords: ', bold: true }), new TextRun({ text: draft.keywords.join(', ') })] }));
   }
@@ -163,7 +169,7 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
     const sect = draft.sections[id];
     children.push(h1(meta ? meta.label : id, D));
     const content = sect && sect.content.trim();
-    if (content) children.push(...markdownToParagraphs(content, D));
+    if (content) children.push(...markdownToParagraphs(secMd(id), D));
     else children.push(note(`[${meta ? meta.label : id} not yet drafted]`, D));
   }
 
@@ -181,7 +187,10 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
   children.push(h1('References', D, { pageBreak: true }));
   if (refList.length) {
     for (const r of refList) {
-      children.push(new Paragraph({ spacing: { after: 60 }, children: [new TextRun({ text: `${r.index}. `, bold: true }), ...parseInline(r.text, D)] }));
+      const runs = [new TextRun({ text: `${r.index}. `, bold: true })];
+      const segs = (r.segments && r.segments.length) ? r.segments : [{ text: r.text }];
+      for (const seg of segs) runs.push(new TextRun({ text: seg.text, italics: !!seg.italics }));
+      children.push(new Paragraph({ spacing: { after: 60 }, children: runs }));
     }
   } else {
     children.push(note('[No references — add included studies or import citation metadata]', D));
@@ -210,24 +219,32 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
   let figNo = 0;
   const figParas = [];
   if (opts.includeFigures !== false) {
+    // PRISMA 2020 diagram. ImageRun REQUIRES `type` in docx v9 — omitting it writes
+    // a media part with an undefined content type → a corrupt .docx that Word must
+    // "repair". On failure we leave an honest in-document note rather than silently
+    // dropping the figure.
     try {
       const pr = await prismaPng(prismaResult, { title: '' });
       if (pr && pr.blob) {
         figNo += 1;
         figParas.push(caption(`Figure ${figNo}. PRISMA 2020 flow diagram`, D));
-        figParas.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new ImageRun({ data: await blobToU8(pr.blob), transformation: { width: 560, height: Math.round((pr.height / pr.width) * 560) } })] }));
+        figParas.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new ImageRun({ type: 'png', data: await blobToU8(pr.blob), transformation: { width: 560, height: Math.round((pr.height / pr.width) * 560) } })] }));
       }
-    } catch { /* figures are best-effort; skip on failure */ }
+    } catch {
+      figParas.push(note('[PRISMA 2020 diagram could not be generated for this export — open the Figures tab to verify, then re-export.]', D));
+    }
     try {
       if (primary && primary.result) {
         const fp = await forestPng(primary.result, { esType: primary.pair.esType, title: primary.pair.label || '', prec });
         if (fp && fp.blob) {
           figNo += 1;
           figParas.push(caption(`Figure ${figNo}. Forest plot — ${primary.pair.label || 'primary outcome'}`, D));
-          figParas.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new ImageRun({ data: await blobToU8(fp.blob), transformation: { width: 600, height: Math.round((fp.height / fp.width) * 600) } })] }));
+          figParas.push(new Paragraph({ alignment: AlignmentType.CENTER, children: [new ImageRun({ type: 'png', data: await blobToU8(fp.blob), transformation: { width: 600, height: Math.round((fp.height / fp.width) * 600) } })] }));
         }
       }
-    } catch { /* skip */ }
+    } catch {
+      figParas.push(note('[Forest plot could not be generated for this export — verify in the Figures tab, then re-export.]', D));
+    }
   }
   if (figParas.length) {
     children.push(h1('Figures', D, { pageBreak: true }));
@@ -242,11 +259,10 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
     creator: 'PecanRev',
     title,
     description: 'Systematic review manuscript generated by PecanRev (P3 Manuscript engine).',
+    // No custom 'Title' paragraph style — `HeadingLevel.TITLE` already emits docx's
+    // built-in Title style; redefining the same styleId produced a duplicate w:styleId.
     styles: {
       default: { document: { run: { font: 'Calibri', size: 22 } } },
-      paragraphStyles: [
-        { id: 'Title', name: 'Title', basedOn: 'Normal', next: 'Normal', run: { size: 40, bold: true } },
-      ],
     },
     sections: [{
       properties: { page: { margin: { top: 1440, bottom: 1440, left: 1440, right: 1440 } } },

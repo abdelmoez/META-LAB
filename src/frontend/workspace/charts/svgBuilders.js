@@ -73,8 +73,15 @@ export function liveSvgToString(svgId, { background = null, stripBgRect = false 
 export function buildPrismaSVG(prisma,opts){
   const o=opts||{};
   const n=k=>{const v=+prisma[k];return isNaN(v)?0:v;};
-  const dbs=n("dbs"),reg=n("reg"),other=n("other"),total=dbs+reg+other;
-  const dedupe=n("dedupe"),screened=total-dedupe,excTA=n("excTA"),ftRet=screened-excTA,excFull=n("excFull"),included=ftRet-excFull;
+  // opts.resolved (optional) lets a caller supply already-resolved flow counts
+  // (e.g. the manuscript engine, which applies manual overrides) so the diagram
+  // matches the table/narrative. Absent → recompute by subtraction as before
+  // (backward-compatible: the PRISMA tab / journal export pass no `resolved`).
+  const r=o.resolved||{};
+  const rn=(k,fallback)=>{const v=r[k];return (v!=null && Number.isFinite(+v))?+v:fallback;};
+  const dbs=n("dbs"),reg=n("reg"),other=n("other");
+  const total=rn("identified",dbs+reg+other);
+  const dedupe=n("dedupe"),screened=rn("screened",total-dedupe),excTA=n("excTA"),ftRet=rn("reportsAssessed",screened-excTA),excFull=n("excFull"),included=rn("included",ftRet-excFull);
   const reasons=(prisma.reasons||[]).filter(r=>r.r&&r.n);
   const W=720, colL=40, colMain=250, boxW=300, sideW=250, sideX=colL+boxW+60;
   const INK="#111", GREY="#555", LINE="#333", FF="Georgia,'Times New Roman',serif";

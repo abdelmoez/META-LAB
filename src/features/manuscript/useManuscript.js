@@ -5,6 +5,17 @@
  * exposes engine-derived data (prisma counts, tables, references, readiness,
  * insights, staleness) to the panels.
  *
+ * Persistence correctness (P3 review round 2): `upd(field, value)` does a WHOLESALE
+ * replace of `project.data[field]` from a value precomputed by the caller. To avoid
+ * lost updates and a re-render flush loop we:
+ *   - read the FRESHEST committed project via a ref (projectRef) at mutation time,
+ *     not a stale render closure, and merge by draft id (upsertDraft);
+ *   - debounce high-frequency edits as FIELD PATCHES (not whole-draft snapshots),
+ *     so a pending edit can never clobber a concurrently-generated/refreshed draft;
+ *   - flush pending patches BEFORE any structural mutation (generate/refresh/meta)
+ *     so the never-overwrite-user-edits rule sees the in-flight typing;
+ *   - flush exactly once on real unmount (empty-deps effect + ref), nulling timers.
+ *
  * Parity: the SAME runMeta the Analysis/Forest tabs use (monolithStats) is threaded
  * into every engine call, so manuscript numbers can never drift from the figures.
  */
@@ -15,7 +26,7 @@ import {
   computePrismaCounts,
   buildStudyCharacteristicsTable, buildSummaryOfFindingsTable, buildPrismaCountsTable,
   buildRobTable, buildSearchStrategyTable,
-  generateReferenceList, referencesFromProject,
+  generateReferenceList, referencesFromProject, orderReferencesForManuscript,
   computeReadiness, smartInsights,
   evaluateStaleness, primaryAnalysis,
 } from '../../research-engine/manuscript/index.js';
@@ -25,49 +36,96 @@ import * as MS from './manuscriptState.js';
 export function useManuscript(project, upd) {
   const drafts = useMemo(() => readManuscripts(project), [project]);
   const [activeId, setActiveId] = useState(null);
+  const [localSeed, setLocalSeed] = useState(null); // read-only fallback (upd is a no-op)
   const [saveState, setSaveState] = useState('saved'); // 'saved' | 'saving'
-  const saveTimer = useRef(null);
-  const pendingDraft = useRef(null);
 
-  // Ensure ≥1 draft (seed from legacy on first use); keep activeId valid.
+  // Refs to the freshest committed values (avoid stale-closure writes).
+  const projectRef = useRef(project);
+  const activeIdRef = useRef(activeId);
+  useEffect(() => { projectRef.current = project; });
+  useEffect(() => { activeIdRef.current = activeId; });
+
+  // Pending debounced field patches for ONE draft at a time: { draftId, fields:Map }.
+  const pending = useRef(null);
+  const timer = useRef(null);
+  const flushRef = useRef(() => {});
+
+  const applyPatches = useCallback((draft, fields) => {
+    let d = draft;
+    for (const [k, v] of fields) {
+      const idx = k.indexOf(':');
+      const kind = k.slice(0, idx);
+      const key = k.slice(idx + 1);
+      if (kind === 'section') d = MS.setSection(d, key, v);
+      else if (kind === 'statement') d = MS.setStatement(d, key, v);
+      else if (kind === 'meta') d = MS.setMeta(d, { [key]: v });
+    }
+    return d;
+  }, []);
+
+  const flushPending = useCallback(() => {
+    if (timer.current) { clearTimeout(timer.current); timer.current = null; }
+    const p = pending.current;
+    pending.current = null;
+    if (!p) return;
+    const list = readManuscripts(projectRef.current);
+    const base = list.find((d) => d.id === p.draftId);
+    if (!base) { setSaveState('saved'); return; }
+    const next = applyPatches(base, p.fields);
+    upd('manuscripts', MS.upsertDraft(list, next));
+    setSaveState('saved');
+  }, [applyPatches, upd]);
+  flushRef.current = flushPending;
+
+  // Flush exactly once on real unmount.
+  useEffect(() => () => { flushRef.current(); }, []);
+
+  const queueEdit = useCallback((draftId, kind, key, value) => {
+    if (!draftId) return;
+    if (pending.current && pending.current.draftId !== draftId) flushPending();
+    if (!pending.current) pending.current = { draftId, fields: new Map() };
+    pending.current.fields.set(`${kind}:${key}`, value);
+    setSaveState('saving');
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => flushPending(), 600);
+  }, [flushPending]);
+
+  // Structural (immediate) mutation against the FRESHEST active draft, after
+  // flushing any pending typing so user edits are never lost.
+  const mutateActive = useCallback((mutator) => {
+    flushPending();
+    const list = readManuscripts(projectRef.current);
+    const active = list.find((d) => d.id === activeIdRef.current) || list[0];
+    if (!active) return null;
+    const next = mutator(active, list);
+    if (!next) return null;
+    upd('manuscripts', MS.upsertDraft(list, next));
+    setSaveState('saved');
+    return next;
+  }, [flushPending, upd]);
+
+  // Ensure ≥1 draft (seed from legacy on first use); keep activeId valid. Holds a
+  // local seed for read-only projects where upd is a no-op so viewers still see it.
   useEffect(() => {
     if (!drafts.length) {
-      const { drafts: seeded } = MS.ensureDrafts(project);
-      upd('manuscripts', seeded);
-      setActiveId(seeded[0].id);
-    } else if (!activeId || !drafts.find((d) => d.id === activeId)) {
-      setActiveId(drafts[0].id);
+      if (!localSeed) {
+        const { drafts: seeded } = MS.ensureDrafts(project);
+        setLocalSeed(seeded[0]);
+        setActiveId(seeded[0].id);
+        upd('manuscripts', seeded);
+      }
+    } else {
+      if (localSeed) setLocalSeed(null);
+      if (!activeId || !drafts.find((d) => d.id === activeId)) setActiveId(drafts[0].id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drafts.length]);
 
+  const effectiveDrafts = drafts.length ? drafts : (localSeed ? [localSeed] : []);
   const activeDraft = useMemo(
-    () => drafts.find((d) => d.id === activeId) || drafts[0] || null,
-    [drafts, activeId],
+    () => effectiveDrafts.find((d) => d.id === activeId) || effectiveDrafts[0] || null,
+    [effectiveDrafts, activeId],
   );
-
-  const persistNow = useCallback((nextDraft) => {
-    const arr = MS.upsertDraft(readManuscripts(project), nextDraft);
-    upd('manuscripts', arr);
-    setSaveState('saved');
-  }, [project, upd]);
-
-  // Debounced persist for high-frequency edits (typing). Structural changes use persistNow.
-  const persistDebounced = useCallback((nextDraft) => {
-    pendingDraft.current = nextDraft;
-    setSaveState('saving');
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
-      if (pendingDraft.current) persistNow(pendingDraft.current);
-      pendingDraft.current = null;
-    }, 600);
-  }, [persistNow]);
-
-  // Flush pending edits on unmount.
-  useEffect(() => () => {
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    if (pendingDraft.current) persistNow(pendingDraft.current);
-  }, [persistNow]);
 
   const genOpts = useMemo(() => ({ runMeta, prec: project && project.analysisPrecision }), [project]);
 
@@ -87,7 +145,10 @@ export function useManuscript(project, upd) {
   const references = useMemo(() => {
     const refs = (activeDraft && activeDraft.references && activeDraft.references.length)
       ? activeDraft.references : referencesFromProject(project);
-    return generateReferenceList(refs, (activeDraft && activeDraft.citationStyle) || 'vancouver');
+    const style = (activeDraft && activeDraft.citationStyle) || 'vancouver';
+    // order by inline-citation appearance when the draft uses inline citations
+    const ordered = activeDraft ? orderReferencesForManuscript(activeDraft, refs) : refs;
+    return generateReferenceList(ordered, style);
   }, [project, activeDraft]);
   const readiness = useMemo(
     () => (activeDraft ? computeReadiness(project, activeDraft, { ...genOpts, prismaCounts, primary }) : null),
@@ -104,53 +165,83 @@ export function useManuscript(project, upd) {
 
   /* ── mutations ── */
   const updateSection = useCallback((id, content) => {
+    if (activeDraft) queueEdit(activeDraft.id, 'section', id, content);
+  }, [activeDraft, queueEdit]);
+
+  const setStatement = useCallback((id, val) => {
+    if (activeDraft) queueEdit(activeDraft.id, 'statement', id, val);
+  }, [activeDraft, queueEdit]);
+
+  // Debounced meta edits (free-text/number fields: keywords, prismaOverrides).
+  const setMetaDebounced = useCallback((patch) => {
     if (!activeDraft) return;
-    persistDebounced(MS.setSection(activeDraft, id, content));
-  }, [activeDraft, persistDebounced]);
+    for (const k of Object.keys(patch)) queueEdit(activeDraft.id, 'meta', k, patch[k]);
+  }, [activeDraft, queueEdit]);
+
+  // Immediate meta edits (dropdowns: template/citationStyle/status). Changing the
+  // journal template also adopts that template's default citation style.
+  const setMeta = useCallback((patch) => {
+    mutateActive((d) => {
+      let p = patch;
+      if (patch.templateId && patch.citationStyle === undefined) {
+        const tpl = MS.templateById(patch.templateId);
+        if (tpl && tpl.citationStyle) p = { ...patch, citationStyle: tpl.citationStyle };
+      }
+      return MS.setMeta(d, p);
+    });
+  }, [mutateActive]);
 
   const generate = useCallback((opts = {}) => {
-    if (!activeDraft) return { skipped: [] };
-    const generated = generateDraft(project, { ...genOpts, prismaCounts, primary });
-    const { draft, skipped } = MS.applyGeneratedSections(activeDraft, generated, opts);
-    persistNow(draft);
+    let skipped = [];
+    mutateActive((active) => {
+      const generated = generateDraft(project, {
+        ...genOpts, prismaCounts, primary, templateId: active.templateId,
+      });
+      const res = MS.applyGeneratedSections(active, generated, opts);
+      skipped = res.skipped;
+      return res.draft;
+    });
     return { skipped };
-  }, [activeDraft, project, genOpts, prismaCounts, primary, persistNow]);
+  }, [mutateActive, project, genOpts, prismaCounts, primary]);
 
   const refreshBlock = useCallback((blockId) => {
-    if (!activeDraft) return;
-    persistNow(MS.markBlockRefreshed(activeDraft, blockId, project));
-  }, [activeDraft, project, persistNow]);
+    mutateActive((d) => MS.markBlockRefreshed(d, blockId, projectRef.current));
+  }, [mutateActive]);
 
   const refreshAllBlocks = useCallback(() => {
-    if (!activeDraft) return;
-    persistNow(MS.markAllBlocksRefreshed(activeDraft, project));
-  }, [activeDraft, project, persistNow]);
+    mutateActive((d) => MS.markAllBlocksRefreshed(d, projectRef.current));
+  }, [mutateActive]);
 
-  const setMeta = useCallback((patch) => { if (activeDraft) persistNow(MS.setMeta(activeDraft, patch)); }, [activeDraft, persistNow]);
-  const setStatement = useCallback((id, val) => { if (activeDraft) persistDebounced(MS.setStatement(activeDraft, id, val)); }, [activeDraft, persistDebounced]);
-  const updateDraft = useCallback((nextDraft) => persistNow(nextDraft), [persistNow]);
+  const updateDraft = useCallback((nextDraft) => {
+    flushPending();
+    const list = readManuscripts(projectRef.current);
+    upd('manuscripts', MS.upsertDraft(list, nextDraft));
+    setSaveState('saved');
+  }, [flushPending, upd]);
 
   const addDraft = useCallback((opts = {}) => {
+    flushPending();
     const d = MS.newDraft(project, opts);
-    const arr = MS.upsertDraft(readManuscripts(project), d);
-    upd('manuscripts', arr);
+    upd('manuscripts', MS.upsertDraft(readManuscripts(projectRef.current), d));
     setActiveId(d.id);
     return d;
-  }, [project, upd]);
+  }, [flushPending, project, upd]);
 
   const removeDraft = useCallback((id) => {
-    const arr = readManuscripts(project).filter((d) => d.id !== id);
+    flushPending();
+    const arr = readManuscripts(projectRef.current).filter((d) => d.id !== id);
     upd('manuscripts', arr);
-    if (id === activeId) setActiveId(arr[0] ? arr[0].id : null);
-  }, [project, upd, activeId]);
+    if (id === activeIdRef.current) setActiveId(arr[0] ? arr[0].id : null);
+  }, [flushPending, upd]);
 
   return {
-    drafts, activeDraft, activeId, setActiveId,
+    drafts: effectiveDrafts, activeDraft, activeId, setActiveId,
     saveState,
     runMeta,
     prismaCounts, primary, tables, references, readiness, insights, staleness,
     updateSection, generate, refreshBlock, refreshAllBlocks,
-    setMeta, setStatement, updateDraft, addDraft, removeDraft,
+    setMeta, setMetaDebounced, setStatement, updateDraft, addDraft, removeDraft,
+    flush: flushPending,
   };
 }
 

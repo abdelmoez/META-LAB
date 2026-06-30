@@ -66,8 +66,14 @@ export function computePrismaCounts(project, opts = {}) {
   let identified = null;
   const idParts = [dbs, reg, other].filter((x) => x != null);
   if (toNum(ov.identified) != null) { identified = toNum(ov.identified); provenance.identified = 'override'; }
-  else if (idParts.length) { identified = idParts.reduce((a, b) => a + b, 0); provenance.identified = (dbs != null && (reg != null || other != null)) ? 'derived' : provenance.dbs; }
-  else if (toNum(sc.identified) != null) { identified = toNum(sc.identified); provenance.identified = 'computed'; }
+  else if (idParts.length) {
+    identified = idParts.reduce((a, b) => a + b, 0);
+    // ≥2 source counts → a genuine sum (derived); a single source → inherit that
+    // source's provenance so identified is never labelled "missing" when it is known.
+    provenance.identified = idParts.length >= 2
+      ? 'derived'
+      : (dbs != null ? provenance.dbs : (reg != null ? provenance.reg : provenance.other));
+  } else if (toNum(sc.identified) != null) { identified = toNum(sc.identified); provenance.identified = 'computed'; }
   else { provenance.identified = 'missing'; }
 
   const dedupe = pick('dedupe', 'dedupe', null) ?? (

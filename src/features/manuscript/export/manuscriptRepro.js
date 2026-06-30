@@ -24,7 +24,7 @@ import { buildStudyTableCSV, getOutcomePairs, filterStudiesForOutcome } from '..
 import { zipFiles } from '../../../frontend/components/exportCore.js';
 import { prismaChecklistCsv, prismaSChecklistCsv } from './checklistExport.js';
 import { buildManuscriptDocx } from './manuscriptDocx.js';
-import { forestPng, prismaSvg } from './figures.js';
+import { forestPng, forestSvg, prismaSvg } from './figures.js';
 
 const csvCell = (v) => {
   let s = String(v == null ? '' : v);
@@ -44,11 +44,13 @@ function tableCsv(tbl) {
 function analysisDatasetCsv(project) {
   const studies = Array.isArray(project && project.studies) ? project.studies : [];
   const pairs = getOutcomePairs(studies);
-  const header = ['outcome', 'timepoint', 'effect_measure', 'study', 'year', 'es', 'ci_lower', 'ci_upper', 'n'].map(csvCell).join(',');
+  const header = ['outcome', 'timepoint', 'effect_measure', 'study', 'year', 'es', 'ci_lower', 'ci_upper', 'n_exp', 'n_ctrl', 'n_total'].map(csvCell).join(',');
   const lines = [];
   for (const pair of pairs) {
     for (const s of filterStudiesForOutcome(studies, pair)) {
-      lines.push([pair.outcome, pair.timepoint, pair.esType, s.author || (s.authors || '').split(/[,;]/)[0] || s.title, s.year, s.es, s.lo, s.hi, s.n || s.nExp || ''].map(csvCell).join(','));
+      const study = s.author || (s.authors || '').split(/[,;]/)[0] || s.title;
+      const nTotal = s.n || (((Number(s.nExp) || 0) + (Number(s.nCtrl) || 0)) || '');
+      lines.push([pair.outcome, pair.timepoint, pair.esType, study, s.year, s.es, s.lo, s.hi, s.nExp || '', s.nCtrl || '', nTotal].map(csvCell).join(','));
     }
   }
   return '﻿' + [header, ...lines].join('\n') + '\n';
@@ -90,15 +92,15 @@ export async function buildReproPackage(project, draft, opts = {}) {
     if (pr && pr.blob) entries.push({ name: 'prisma/prisma_2020.png', blob: pr.blob });
   } catch { warnings.push('PRISMA PNG could not be rasterized in this environment.'); }
 
-  // Forest plot (SVG + PNG) when an analysis exists
+  // Forest plot (SVG + PNG) when an analysis exists. The vector SVG comes from the
+  // PURE builder so it survives even if PNG rasterization (DOM canvas) fails.
   if (primary && primary.result) {
+    const fsvg = forestSvg(primary.result, { esType: primary.pair.esType, title: primary.pair.label, prec: opts.prec });
+    if (fsvg) entries.push({ name: 'figures/forest_plot.svg', text: fsvg });
     try {
       const fp = await forestPng(primary.result, { esType: primary.pair.esType, title: primary.pair.label, prec: opts.prec });
-      if (fp) {
-        entries.push({ name: 'figures/forest_plot.svg', text: fp.svg });
-        if (fp.blob) entries.push({ name: 'figures/forest_plot.png', blob: fp.blob });
-      }
-    } catch { warnings.push('Forest plot could not be rasterized.'); }
+      if (fp && fp.blob) entries.push({ name: 'figures/forest_plot.png', blob: fp.blob });
+    } catch { warnings.push('Forest plot PNG could not be rasterized in this environment (SVG included).'); }
   } else {
     warnings.push('No pooled meta-analysis available — forest plot omitted.');
   }

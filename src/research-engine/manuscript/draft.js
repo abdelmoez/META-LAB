@@ -15,6 +15,7 @@ import { getOutcomePairs, filterStudiesForOutcome } from '../import-export/journ
 import { fmtES, fmtNum } from '../format/precision.js';
 import { buildMethodsMarkdown } from '../docs/methodsText.js';
 import { computePrismaCounts } from './prismaCounts.js';
+import { JOURNAL_TEMPLATES } from './model.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 const PH = (label) => `[${label}]`;
@@ -27,7 +28,13 @@ const MEASURE = {
   MD: { label: 'mean difference (MD)', kind: 'mean' },
   COR: { label: 'correlation (r)', kind: 'fisherz' },
   PROP: { label: 'pooled proportion', kind: 'prop' },
+  DIAG: { label: 'diagnostic odds ratio (DOR)', kind: 'ratio' },
 };
+
+function abstractFormatFor(templateId) {
+  const tpl = JOURNAL_TEMPLATES.find((t) => t.id === templateId);
+  return (tpl && tpl.abstractFormat) || 'structured';
+}
 const bt = (x, kind) => {
   if (x == null || !Number.isFinite(x)) return null;
   if (kind === 'ratio') return Math.exp(x);
@@ -118,27 +125,70 @@ function effectSentence(primary, prec) {
   return `Across ${r.k} studies, the pooled ${m.label} for ${primary.pair.label || 'the primary outcome'} was ${fmt(pe)} (95% CI ${fmt(lo)} to ${fmt(hi)}; ${p}; I² = ${fmtNum(r.I2, prec)}%).`;
 }
 
-/** Generate the structured Abstract (Background/Objectives/Methods/Results/Conclusions). */
+/**
+ * Generate the Abstract. Structure is TEMPLATE-DRIVEN: generic/BMJ/Cochrane use a
+ * Background/Methods/Results/Conclusions structured abstract; JAMA uses the JAMA SR
+ * format (Importance/Objective/Data Sources/…); Lancet uses Background/Methods/
+ * Findings/Interpretation/Funding. opts.templateId (or opts.abstractFormat) selects.
+ */
 export function generateAbstract(project, opts = {}) {
   const pico = (project && project.pico) || {};
   const pc = opts.prismaCounts || computePrismaCounts(project, opts);
   const primary = opts.primary || primaryAnalysis(project, opts);
   const eff = effectSentence(primary, opts.prec);
   const inc = pc.counts.included;
-  const out = [];
-  out.push('**Background.** ' + (clean(pico.question)
-    ? `${clean(pico.question)} ${PH('Add 1–2 sentences of rationale')}`
-    : PH('State the rationale and the gap this review addresses')));
-  out.push('');
-  out.push('**Objectives.** ' + (clean(pico.question) ? `To systematically review and meta-analyse ${clean(pico.question)}` : PH('State the review objective (PICO)')) + '.');
-  out.push('');
   const dbs = Object.keys((project.search && project.search.dbs) || {}).filter((k) => project.search.dbs[k]);
-  out.push('**Methods.** We searched ' + (dbs.length ? dbs.join(', ') : PH('databases not selected')) +
-    (clean(project.search && project.search.date) ? ` (last searched ${clean(project.search.date)})` : ` ${PH('Search date not entered')}`) +
-    `. ${primary && primary.result ? 'Effect estimates were pooled using a ' + ((primary.model || 'random') === 'fixed' ? 'fixed-effect' : 'random-effects (DerSimonian–Laird)') + ' model; heterogeneity was assessed with I².' : PH('Describe the synthesis approach')}`);
+  const dbText = dbs.length ? dbs.join(', ') : PH('databases not selected');
+  const dateText = clean(project.search && project.search.date) ? ` (last searched ${clean(project.search.date)})` : ` ${PH('Search date not entered')}`;
+  const modelText = primary && primary.result
+    ? `Effect estimates were pooled using a ${(primary.model || 'random') === 'fixed' ? 'fixed-effect' : 'random-effects (DerSimonian–Laird)'} model; heterogeneity was assessed with I².`
+    : PH('Describe the synthesis approach');
+  const incText = inc != null ? `${inc} studies were included` : PH('Number of included studies unavailable');
+  const resultText = eff ? `${incText}. ${eff}` : `${incText}. ${PH('Add the main pooled result once an analysis is available')}`;
+  const objective = clean(pico.question) ? `To systematically review and meta-analyse ${clean(pico.question)}` : PH('State the review objective (PICO)');
+  const fmt = opts.abstractFormat || abstractFormatFor(opts.templateId);
+  const out = [];
+
+  if (fmt === 'jama') {
+    out.push('**Importance.** ' + (clean(pico.question) ? `${clean(pico.question)} ${PH('Add the clinical importance')}` : PH('State the importance of the question')));
+    out.push('');
+    out.push('**Objective.** ' + objective + '.');
+    out.push('');
+    out.push(`**Data Sources.** ${dbText}${dateText}.`);
+    out.push('');
+    out.push('**Study Selection.** ' + PH('State the eligibility criteria and how many studies were selected') + (inc != null ? ` (${inc} included).` : '.'));
+    out.push('');
+    out.push('**Data Extraction and Synthesis.** Two reviewers extracted data; ' + modelText);
+    out.push('');
+    out.push('**Main Outcomes and Measures.** ' + (clean(pico.O) ? clean(pico.O) : PH('State the primary outcome')) + '.');
+    out.push('');
+    out.push('**Results.** ' + resultText);
+    out.push('');
+    out.push('**Conclusions and Relevance.** ' + PH('State the main conclusion and its relevance, cautiously'));
+    return out.join('\n');
+  }
+
+  if (fmt === 'lancet') {
+    out.push('**Background.** ' + (clean(pico.question) ? `${clean(pico.question)} ${PH('Add 1–2 sentences of rationale')}` : PH('State the rationale and the knowledge gap')));
+    out.push('');
+    out.push(`**Methods.** We searched ${dbText}${dateText}. ${modelText} ${PH('State eligibility and registration')}`);
+    out.push('');
+    out.push('**Findings.** ' + resultText);
+    out.push('');
+    out.push('**Interpretation.** ' + PH('State what the findings mean for practice and research, cautiously'));
+    out.push('');
+    out.push('**Funding.** ' + PH('State the funding source, or “None.”'));
+    return out.join('\n');
+  }
+
+  // generic / structured (also BMJ, Cochrane)
+  out.push('**Background.** ' + (clean(pico.question) ? `${clean(pico.question)} ${PH('Add 1–2 sentences of rationale')}` : PH('State the rationale and the gap this review addresses')));
   out.push('');
-  out.push('**Results.** ' + (inc != null ? `${inc} studies were included` : PH('Number of included studies unavailable')) +
-    (eff ? `. ${eff}` : `. ${PH('Add the main pooled result once an analysis is available')}`));
+  out.push('**Objectives.** ' + objective + '.');
+  out.push('');
+  out.push(`**Methods.** We searched ${dbText}${dateText}. ${modelText}`);
+  out.push('');
+  out.push('**Results.** ' + resultText);
   out.push('');
   out.push('**Conclusions.** ' + PH('State the main conclusion, cautiously, based on the certainty of evidence'));
   return out.join('\n');

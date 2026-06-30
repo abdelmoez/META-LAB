@@ -5,13 +5,14 @@
  * `useManuscript` hook + pure engine; this file owns ZERO business logic. Styled with
  * the legacy token system only (Stitch auto-remaps --t-*), so it renders in both shells.
  */
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { C, btnS, inp, tagS } from '../../frontend/workspace/ui/styles.js';
 import { InfoBox, ProgressBar } from '../../frontend/workspace/ui/primitives.jsx';
 import { Icon } from '../../frontend/components/icons.jsx';
 import { alpha } from '../../frontend/theme/tokens.js';
 import {
-  SECTION_TYPES, STATEMENT_TYPES, CITATION_STYLES, JOURNAL_TEMPLATES, sectionStatus,
+  SECTION_TYPES, SECTION_IDS, STATEMENT_TYPES, CITATION_STYLES, JOURNAL_TEMPLATES, sectionStatus,
+  citationToken, collectCitationOrder, draftSectionTexts, renderInlineMarkers,
 } from '../../research-engine/manuscript/index.js';
 
 /* ════════════ shared bits ════════════ */
@@ -78,8 +79,9 @@ export function mdToHtml(md) {
   return out.join('\n');
 }
 
-export function MdPreview({ markdown }) {
-  const html = useMemo(() => mdToHtml(markdown), [markdown]);
+export function MdPreview({ markdown, orderMap, style }) {
+  const rendered = orderMap ? renderInlineMarkers(markdown, orderMap, style) : markdown;
+  const html = useMemo(() => mdToHtml(rendered), [rendered]);
   if (!String(markdown || '').trim()) {
     return <div style={{ color: C.muted, fontSize: 12.5, fontStyle: 'italic' }}>Nothing to preview yet.</div>;
   }
@@ -276,6 +278,34 @@ export function EditorPanel({ m }) {
   useEffect(() => { setKw((m.activeDraft.keywords || []).join(', ')); }, [m.activeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onType = (val) => { setBuf(val); m.updateSection(sel, val); };
+
+  const taRef = useRef(null);
+  const style = m.activeDraft.citationStyle || 'vancouver';
+  const citeRefs = m.references || [];
+  const refLabel = (r) => {
+    const a = r.ref && r.ref.authorsList && r.ref.authorsList[0];
+    const fam = a ? (a.family || a.raw) : ((r.ref && r.ref.title) || 'ref');
+    return `${fam}${r.ref && r.ref.year ? ` ${r.ref.year}` : ''}`;
+  };
+  // inline-citation numbering for the live preview (includes the unsaved buffer)
+  const orderMap = useMemo(() => {
+    const texts = draftSectionTexts(m.activeDraft).map((t, i) => (SECTION_IDS[i] === sel ? buf : t));
+    return collectCitationOrder(texts).orderMap;
+  }, [m.activeDraft, sel, buf]);
+  const insertCitation = (refId) => {
+    if (!refId) return;
+    const token = citationToken(refId);
+    const ta = taRef.current;
+    let next;
+    if (ta && typeof ta.selectionStart === 'number') {
+      next = `${buf.slice(0, ta.selectionStart)}${token}${buf.slice(ta.selectionEnd)}`;
+    } else { next = `${buf}${token}`; }
+    setBuf(next);
+    m.updateSection(sel, next);
+  };
+  // flush any pending debounced edit before changing section so resync reads fresh content
+  const switchTo = (id) => { if (m.flush) m.flush(); setSel(id); };
+
   const doGenerate = (only) => {
     const res = m.generate(only ? { only } : {});
     if (res && res.skipped && res.skipped.length) setGenNotice({ only: only || null, skipped: res.skipped });
@@ -300,7 +330,7 @@ export function EditorPanel({ m }) {
             const st = sectionStatus((m.activeDraft.sections && m.activeDraft.sections[s.id]) || {});
             const active = s.id === sel;
             return (
-              <button key={s.id} onClick={() => setSel(s.id)}
+              <button key={s.id} onClick={() => switchTo(s.id)}
                 data-testid={`stitch-manuscript-section-${s.id}`}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 9, textAlign: 'left', cursor: 'pointer',
@@ -335,7 +365,16 @@ export function EditorPanel({ m }) {
             {status === 'ai-draft' && <span style={tagS('yellow')}>AI draft — verify</span>}
             {status === 'edited' && <span style={tagS('green')}>Edited</span>}
           </div>
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+            {!isTitle && citeRefs.length > 0 && (
+              <select value="" onChange={(e) => { insertCitation(e.target.value); e.target.value = ''; }}
+                title="Insert a numbered citation at the cursor"
+                data-testid="stitch-manuscript-insert-citation"
+                style={{ ...inp, width: 'auto', cursor: 'pointer', fontSize: 11, paddingRight: 22 }}>
+                <option value="">+ Cite…</option>
+                {citeRefs.map((r) => <option key={r.id} value={r.id}>{refLabel(r)}</option>)}
+              </select>
+            )}
             <button onClick={() => setShowPreview((v) => !v)} style={{ ...btnS('ghost'), fontSize: 11 }}>
               <Icon name="eye" size={12} /> {showPreview ? 'Hide preview' : 'Preview'}
             </button>
@@ -367,18 +406,18 @@ export function EditorPanel({ m }) {
             </Labeled>
             <Labeled label="Keywords (comma-separated)">
               <input value={kw}
-                onChange={(e) => { setKw(e.target.value); m.setMeta({ keywords: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) }); }}
+                onChange={(e) => { setKw(e.target.value); m.setMetaDebounced({ keywords: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) }); }}
                 placeholder="e.g. systematic review, meta-analysis, …"
                 style={inp} />
             </Labeled>
           </div>
         ) : showPreview ? (
           <div style={{ border: `1px solid ${C.brd}`, borderRadius: 10, padding: 16, background: C.card, minHeight: 380 }}>
-            <MdPreview markdown={buf} />
+            <MdPreview markdown={buf} orderMap={orderMap} style={style} />
           </div>
         ) : (
-          <textarea value={buf} onChange={(e) => onType(e.target.value)}
-            placeholder="Write or generate this section. Markdown is supported (#, ##, **bold**, *italic*, - bullets)."
+          <textarea ref={taRef} value={buf} onChange={(e) => onType(e.target.value)}
+            placeholder="Write or generate this section. Markdown supported (#, ##, **bold**, *italic*, - bullets). Use “+ Cite…” to insert a numbered citation."
             style={{ ...inp, minHeight: 380, fontFamily: 'IBM Plex Mono, monospace', fontSize: 12.5, whiteSpace: 'pre', lineHeight: 1.6, resize: 'vertical' }} />
         )}
       </div>
@@ -534,7 +573,7 @@ export function PrismaPanel({ m, exporters }) {
     const next = { ...overrides };
     if (raw === '' || raw == null) delete next[k];
     else { const n = Number(raw); if (Number.isFinite(n)) next[k] = n; }
-    m.setMeta({ prismaOverrides: next });
+    m.setMetaDebounced({ prismaOverrides: next });
   };
 
   const provRows = (pt && pt.rowsWithProvenance) || [];
