@@ -6,7 +6,7 @@
  * Mirrors the reference Python harness (.claude/screening/DEV screening engine/
  * screening_benchmark.py) but drives the ACTUAL deterministic engine primitives
  * (recordFeatures / buildVectorizer / trainLogReg / predictProba / trainAndScore /
- * fitCalibrator), so the numbers it prints are the engine's own — not an
+ * heldOutCalibrationMetrics), so the numbers it prints are the engine's own — not an
  * independent reimplementation.
  *
  * PROTOCOL (out-of-sample only, screeningEngine.md "Validation protocol"):
@@ -51,10 +51,7 @@ import {
   stratifiedFolds,
   rocAuc,
   wssAtRecall,
-  fitCalibrator,
-  applyCalibrator,
-  expectedCalibrationError,
-  calibrationSlopeIntercept,
+  heldOutCalibrationMetrics,
 } from '../src/research-engine/screening/ai/index.js';
 import { ENGINE_CONFIG_VERSIONS, resolveEngineConfig } from '../src/research-engine/screening/ai/config.js';
 
@@ -160,22 +157,15 @@ function oofScores(records, mode, cfgVersion) {
   return oof;
 }
 
-// ── Held-out (nested) ECE: fit isotonic on calib split, evaluate on held-out split ──
+// ── Held-out (nested) ECE — the SAME estimator the deployed panel uses ──────────
+// Uses the engine's heldOutCalibrationMetrics (nested k-fold: fit a calibrator on the
+// other folds, evaluate on the held-out fold) so the benchmark reports exactly what
+// screeningAiService surfaces in the calibration panel — not a one-off 50/50 proxy.
 function heldOutEce(records, oof) {
-  // Split the labelled OOF pairs into two stratified halves: fit a calibrator on the
-  // first, measure ECE/slope on the second (never on the points used to fit) — the
-  // honest measurement screeningEngine.md task 4 requires.
-  const pairs = records.map((r, i) => ({ s: oof[i], y: r.label })).filter(p => p.s != null);
-  const pos = pairs.filter(p => p.y === 1), neg = pairs.filter(p => p.y === 0);
-  const calib = [], evalSet = [];
-  pos.forEach((p, i) => (i % 2 === 0 ? calib : evalSet).push(p));
-  neg.forEach((p, i) => (i % 2 === 0 ? calib : evalSet).push(p));
-  if (calib.length < 10 || evalSet.length < 10) return { ece: null, slope: null };
-  const cal = fitCalibrator(calib.map(p => p.s), calib.map(p => p.y), { minSamplesToCalibrate: 20, isotonicMinSamples: 100, eceBins: 10 });
-  if (cal.method === 'none') return { ece: null, slope: null };
-  const probs = evalSet.map(p => applyCalibrator(cal.params, p.s));
-  const labels = evalSet.map(p => p.y);
-  return { ece: expectedCalibrationError(probs, labels, 10), slope: calibrationSlopeIntercept(probs, labels).slope };
+  const scores = [], labels = [];
+  records.forEach((r, i) => { if (oof[i] != null) { scores.push(oof[i]); labels.push(r.label); } });
+  const ho = heldOutCalibrationMetrics(scores, labels, { eceBins: 10 }, 5);
+  return { ece: ho.ece, slope: ho.slope };
 }
 
 function mean(xs) { const v = xs.filter(x => x != null && Number.isFinite(x)); return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null; }

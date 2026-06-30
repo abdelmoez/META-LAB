@@ -471,7 +471,8 @@ function ModelHistory({ ai }) {
             <span style={{ width: 7, height: 7, borderRadius: '50%', background: v.isActive ? C.grn : C.brd2, flexShrink: 0 }} />
             <span style={{ fontFamily: MONO, color: v.isActive ? C.grn : C.muted, width: 52 }}>{v.isActive ? 'active' : v.status}</span>
             <span style={{ color: C.muted, fontFamily: MONO, fontSize: 10 }}>{(v.snapshotHash || v.id).slice(0, 8)}</span>
-            <span style={{ color: C.txt2 }}>{v.mode === 'supervised' ? 'trained' : 'cold'}{v.auc != null ? ` · AUC ${v.auc.toFixed(2)}` : ''}</span>
+            <span style={{ color: C.txt2 }}>{v.mode === 'supervised' ? 'trained' : 'cold'}{v.auc != null ? ` · AUC ${v.auc.toFixed(2)}` : ''}{v.wss95 != null ? ` · WSS ${v.wss95.toFixed(2)}` : ''}</span>
+            {v.engineConfigLabel && <span title="Engine config version this run was scored under" style={{ color: C.muted, fontSize: 10 }}>{v.engineConfigLabel}</span>}
             {v.trigger === 'rollback' && <Chip color={C.teal}>rollback</Chip>}
             {v.driftWarnings?.length > 0 && <span title={v.driftWarnings.join('\n')} style={{ color: C.gold }}>⚠{v.driftWarnings.length}</span>}
             <span style={{ flex: 1 }} />
@@ -518,6 +519,9 @@ export function AiStatusPanel({ ai }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <Chip color={run?.mode === 'supervised' ? C.grn : C.yel}>{run ? (run.mode === 'supervised' ? 'Trained model' : 'Cold-start') : 'Not run'}</Chip>
         {s?.scoreCount > 0 && <span style={{ fontSize: 11, color: C.muted }}>{s.scoreCount} scored</span>}
+        {s?.canConfigure && s?.engineConfig?.activeLabel && (
+          <span title="Active screening engine config version" style={{ fontSize: 10.5, color: C.muted, fontFamily: MONO }}>· {s.engineConfig.activeLabel}</span>
+        )}
         <span style={{ flex: 1 }} />
         {s?.canRun && (() => {
           const aiBusy = ai.running || ai.jobStatus?.running || ai.jobStatus?.state === 'updating' || ai.jobStatus?.state === 'queued';

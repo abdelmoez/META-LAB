@@ -17,8 +17,8 @@ Everything is reversible (named, rollback-able engine config versions) and deter
 | Config | Mean AUC | Mean WSS@95 | Held-out ECE | Notes |
 |---|---|---|---|---|
 | Published reference (sklearn TF-IDF+LR, title×3+abstract) | 0.855 | 0.319 | ~0.026 | the target/oracle |
-| **v1-hybrid-legacy** (deployed engine, unchanged) | 0.848 | 0.310 | 0.037 | available for rollback |
-| **v2-lexical-tuned** (new default) | **0.863** | **0.319** | 0.039 | converged classifier |
+| **v1-hybrid-legacy** (deployed engine, unchanged) | 0.848 | 0.310 | 0.027 | available for rollback |
+| **v2-lexical-tuned** (new default) | **0.863** | **0.319** | 0.023 | converged classifier |
 
 - v2 is **strictly better than v1 on both metrics** (+0.015 AUC, +0.009 WSS@95), clears both
   acceptance floors (AUC ≥ 0.85, WSS@95 ≥ 0.30), and **matches/beats the published reference**
@@ -111,9 +111,10 @@ scores are mapped through it; the pooled held-out calibrated probabilities give 
 ECE. The production calibrator (fit on all OOF pairs, used to map every record's probability)
 is unchanged — **only the measurement changes**. `screeningAiService` now surfaces the
 held-out metrics (apparent kept under `apparentMetrics` for provenance) and the AI panel
-labels them "(held-out)". Mean held-out ECE is **0.039** (per-dataset 0.005–0.110, worse on
-small reviews — e.g. UrinaryIncontinence 0.110) instead of 0.000 — honest, non-zero, and in
-the expected range.
+labels them "(held-out)". Mean held-out ECE is **0.023** (v2) / **0.027** (v1) instead of
+0.000 — squarely in the expected **~0.02–0.03** range and matching the reference's 0.026
+(per-dataset spread is wider on small reviews). The benchmark reports the **same nested-CV
+estimator** the panel uses, so its ECE column equals what reviewers see.
 
 ## Task 5 — latency at ~3 000 records
 
