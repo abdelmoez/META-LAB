@@ -15,8 +15,9 @@
    formatter fmtES; the engine-owned METHODS_CONTENT catalogue. `fmtDate` is a
    verbatim copy of the monolith module-local helper (same as the sibling tab
    files keep their own copy). */
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, lazy, Suspense } from "react";
 import { alpha as themeAlpha } from "../../theme/tokens.js";
+import { manuscriptEditorFlagEnabled } from "../../../features/manuscript/flag.js";
 import { Icon } from "../../components/icons.jsx";
 import { METHODS_CONTENT, NOT_IMPLEMENTED } from "../../../research-engine/docs/methods-content.js";
 import { fmtES } from "../../../research-engine/format/precision.js";
@@ -241,7 +242,7 @@ export function GRADETab({project,upd}){
 }
 
 /* ════════════ TAB: AI MANUSCRIPT DRAFTER ════════════ */
-export function ManuscriptTab({project,upd}){
+function LegacyManuscriptTab({project,upd}){
   const{pico,search,prisma,studies}=project;
   const persistedM = project.manuscript || {};
   const drafts = persistedM.drafts || {};
@@ -392,6 +393,35 @@ Output ONLY the section text — no labels, no preamble, no markdown headers. Us
 
     <InfoBox>💡 {AI_FEATURES_ENABLED?"The drafter pulls from your PICO, search strategy, PRISMA numbers, study data, and analysis results. Always verify numbers, citations, and claims before submitting. Generate sections in order (Methods → Results → Discussion → Abstract) for best coherence.":"Draft sections in order (Methods → Results → Discussion → Abstract) for best coherence, and verify every number, citation, and claim against your analysis before submitting."}</InfoBox>
   </div>);
+}
+
+/* 64.md (P3) — Manuscript tab dispatcher. Both shells (legacy Workspace.jsx and
+   Stitch StitchProjectWorkspace.jsx) import THIS ManuscriptTab, so gating here is
+   the single rollout switch. When the `manuscriptEditor` flag is ON, render the
+   full structured manuscript workspace (editor + data-linked tables + citations +
+   inline PRISMA 2020 + .docx/.zip export); otherwise fall back to the legacy
+   textarea drafter so the flag-OFF path is 100% unchanged. The heavy workspace
+   (and the docx library it pulls) is lazy-loaded so it never enters the main
+   bundle while the flag is off. */
+const ManuscriptWorkspaceLazy = lazy(() =>
+  import("../../../features/manuscript/ManuscriptWorkspace.jsx").then((m) => ({ default: m.ManuscriptWorkspace })));
+
+export function ManuscriptTab(props){
+  const [flag, setFlag] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    manuscriptEditorFlagEnabled().then((v) => { if (alive) setFlag(v); }).catch(() => { if (alive) setFlag(false); });
+    return () => { alive = false; };
+  }, []);
+  if (flag === null) return <div style={{padding:24,color:C.muted,fontSize:13}}>Loading manuscript…</div>;
+  if (flag) {
+    return (
+      <Suspense fallback={<div style={{padding:24,color:C.muted,fontSize:13}}>Loading manuscript editor…</div>}>
+        <ManuscriptWorkspaceLazy {...props}/>
+      </Suspense>
+    );
+  }
+  return <LegacyManuscriptTab {...props}/>;
 }
 
 /* ════════════ METHODS & EQUATIONS TAB (prompt6 Task 13) ════════════ */

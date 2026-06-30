@@ -19,19 +19,19 @@ describe('INITIAL_VERSION', () => {
 });
 
 describe('ENGINES catalog', () => {
-  it('has exactly 11 engines', () => {
-    expect(ENGINES).toHaveLength(11);
-    expect(ENGINE_IDS).toHaveLength(11);
+  it('has exactly 12 engines', () => {
+    expect(ENGINES).toHaveLength(12);
+    expect(ENGINE_IDS).toHaveLength(12);
   });
   it('all ids are unique', () => {
-    expect(new Set(ENGINE_IDS).size).toBe(11);
+    expect(new Set(ENGINE_IDS).size).toBe(12);
   });
   it('all ids are kebab-case', () => {
     for (const id of ENGINE_IDS) {
       expect(id).toMatch(/^[a-z][a-z0-9-]*$/);
     }
   });
-  it('contains the expected 11 ids', () => {
+  it('contains the expected 12 ids', () => {
     expect(ENGINE_IDS).toEqual([
       'screening',
       'screening-ai',
@@ -44,6 +44,7 @@ describe('ENGINES catalog', () => {
       'data-extraction',
       'import-export',
       'validation',
+      'manuscript',
     ]);
   });
   it('every engine has a displayName, description, valid status, non-empty ownership', () => {

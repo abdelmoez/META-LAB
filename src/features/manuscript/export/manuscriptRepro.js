@@ -1,0 +1,144 @@
+/**
+ * features/manuscript/export/manuscriptRepro.js — 64.md (P3). One-click
+ * reproducibility package (.zip), assembled CLIENT-side (reuses the in-repo
+ * zero-dependency STORE zip writer). Bundles the manuscript, PRISMA diagram +
+ * checklists, datasets, analysis settings, methods text, and a manifest:
+ *
+ *   manuscript.docx
+ *   prisma/prisma_2020.png, prisma/prisma_2020.svg
+ *   prisma/prisma_checklist.csv, prisma/prisma_s_checklist.csv
+ *   data/included_studies.csv, data/extraction_data.csv, data/analysis_dataset.csv
+ *   data/risk_of_bias.csv, search/search_strategy.csv
+ *   methods/methods.txt, settings/analysis_settings.json, manifest.json
+ *
+ * Missing data is represented honestly (empty CSVs carry a header + note; figures
+ * are skipped when no analysis exists) — never fabricated.
+ */
+import {
+  computePrismaCounts,
+  buildStudyCharacteristicsTable, buildSummaryOfFindingsTable,
+  buildRobTable, buildSearchStrategyTable,
+  primaryAnalysis, analysisSettings, buildReproManifest, generateMethods,
+} from '../../../research-engine/manuscript/index.js';
+import { buildStudyTableCSV, getOutcomePairs, filterStudiesForOutcome } from '../../../research-engine/import-export/journalSubmission.js';
+import { zipFiles } from '../../../frontend/components/exportCore.js';
+import { prismaChecklistCsv, prismaSChecklistCsv } from './checklistExport.js';
+import { buildManuscriptDocx } from './manuscriptDocx.js';
+import { forestPng, prismaSvg } from './figures.js';
+
+const csvCell = (v) => {
+  let s = String(v == null ? '' : v);
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+};
+
+/** Generic table-builder result → CSV string (UTF-8 BOM). */
+function tableCsv(tbl) {
+  if (!tbl || !tbl.columns) return '';
+  const header = tbl.columns.map((c) => csvCell(c.label)).join(',');
+  const rows = (tbl.rows || []).map((r) => tbl.columns.map((c) => csvCell(r[c.key])).join(','));
+  return '﻿' + [header, ...rows].join('\n') + '\n';
+}
+
+/** Analysis dataset CSV: one row per study × outcome with the inputs that drive the pool. */
+function analysisDatasetCsv(project) {
+  const studies = Array.isArray(project && project.studies) ? project.studies : [];
+  const pairs = getOutcomePairs(studies);
+  const header = ['outcome', 'timepoint', 'effect_measure', 'study', 'year', 'es', 'ci_lower', 'ci_upper', 'n'].map(csvCell).join(',');
+  const lines = [];
+  for (const pair of pairs) {
+    for (const s of filterStudiesForOutcome(studies, pair)) {
+      lines.push([pair.outcome, pair.timepoint, pair.esType, s.author || (s.authors || '').split(/[,;]/)[0] || s.title, s.year, s.es, s.lo, s.hi, s.n || s.nExp || ''].map(csvCell).join(','));
+    }
+  }
+  return '﻿' + [header, ...lines].join('\n') + '\n';
+}
+
+/**
+ * Build the reproducibility package Blob (.zip).
+ * @param {object} project   Project.data blob
+ * @param {object} draft     normalized manuscript draft
+ * @param {object} [opts]    { runMeta, prec, appVersion, engineVersions, generatedAt, generatedBy, software }
+ * @returns {Promise<Blob>}
+ */
+export async function buildReproPackage(project, draft, opts = {}) {
+  const warnings = [];
+  const prismaResult = computePrismaCounts(project, { overrides: draft.prismaOverrides });
+  warnings.push(...(prismaResult.warnings || []));
+  const primary = primaryAnalysis(project, { runMeta: opts.runMeta });
+
+  const studyTbl = buildStudyCharacteristicsTable(project, {});
+  const robTbl = buildRobTable(project, {});
+  const searchTbl = buildSearchStrategyTable(project, {});
+
+  const entries = [];
+
+  // manuscript.docx (best-effort; never blocks the bundle)
+  try {
+    const docxBlob = await buildManuscriptDocx(project, draft, { runMeta: opts.runMeta, prec: opts.prec, prismaResult, primary, includeFigures: true });
+    entries.push({ name: 'manuscript.docx', blob: docxBlob });
+  } catch (e) {
+    warnings.push(`Manuscript .docx could not be generated for the bundle: ${e && e.message}`);
+  }
+
+  // PRISMA diagram (PNG + SVG)
+  const svg = prismaSvg(prismaResult, {});
+  if (svg) entries.push({ name: 'prisma/prisma_2020.svg', text: svg });
+  try {
+    const { prismaPng } = await import('./figures.js');
+    const pr = await prismaPng(prismaResult, {});
+    if (pr && pr.blob) entries.push({ name: 'prisma/prisma_2020.png', blob: pr.blob });
+  } catch { warnings.push('PRISMA PNG could not be rasterized in this environment.'); }
+
+  // Forest plot (SVG + PNG) when an analysis exists
+  if (primary && primary.result) {
+    try {
+      const fp = await forestPng(primary.result, { esType: primary.pair.esType, title: primary.pair.label, prec: opts.prec });
+      if (fp) {
+        entries.push({ name: 'figures/forest_plot.svg', text: fp.svg });
+        if (fp.blob) entries.push({ name: 'figures/forest_plot.png', blob: fp.blob });
+      }
+    } catch { warnings.push('Forest plot could not be rasterized.'); }
+  } else {
+    warnings.push('No pooled meta-analysis available — forest plot omitted.');
+  }
+
+  // Checklists
+  entries.push({ name: 'prisma/prisma_checklist.csv', text: prismaChecklistCsv(project, draft) });
+  entries.push({ name: 'prisma/prisma_s_checklist.csv', text: prismaSChecklistCsv(project) });
+
+  // Datasets
+  entries.push({ name: 'data/included_studies.csv', text: buildStudyTableCSV(project.studies || []) });
+  entries.push({ name: 'data/extraction_data.csv', text: tableCsv(studyTbl) });
+  entries.push({ name: 'data/analysis_dataset.csv', text: analysisDatasetCsv(project) });
+  entries.push({ name: 'data/risk_of_bias.csv', text: tableCsv(robTbl) });
+  entries.push({ name: 'search/search_strategy.csv', text: tableCsv(searchTbl) });
+
+  // Methods text
+  entries.push({ name: 'methods/methods.txt', text: (draft.sections.methods && draft.sections.methods.content) || generateMethods(project, { prismaCounts: prismaResult, primary, software: opts.software }) });
+
+  // Analysis settings
+  const settings = analysisSettings(project, { primary, software: opts.software, outcomes: getOutcomePairs(project.studies || []).map((p) => p.label) });
+  entries.push({ name: 'settings/analysis_settings.json', text: JSON.stringify(settings, null, 2) });
+
+  // Manifest LAST so it lists every file
+  const manifest = buildReproManifest({
+    projectId: project.id,
+    projectName: project.name,
+    manuscriptId: draft.id,
+    generatedAt: opts.generatedAt || null,
+    generatedBy: opts.generatedBy || null,
+    appVersion: opts.appVersion || null,
+    engineVersions: opts.engineVersions || null,
+    citationStyle: draft.citationStyle,
+    templateId: draft.templateId,
+    analysisSettings: settings,
+    files: entries.map((e) => e.name),
+    warnings,
+  });
+  entries.push({ name: 'manifest.json', text: JSON.stringify(manifest, null, 2) });
+
+  return zipFiles(entries, opts.date ? { date: opts.date } : {});
+}
+
+export default { buildReproPackage };

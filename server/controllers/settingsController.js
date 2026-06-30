@@ -100,6 +100,15 @@ const DEFAULTS = {
     // inconsistency, contribution matrix). The deterministic engine runs server-side
     // on user-supplied arm/contrast data (no project data leaves the server).
     networkMetaAnalysis: false,
+    // 64.md (P3) — Manuscript Editor + one-click Word export + auto-PRISMA +
+    // updatable tables. Default OFF: the project "Manuscript" tab keeps rendering
+    // the legacy textarea drafter. When ON, the tab renders the full manuscript
+    // workspace (structured IMRAD editor, data-linked tables, citation engine,
+    // inline PRISMA 2020 diagram, .docx export, PRISMA/PRISMA-S checklists and a
+    // reproducibility .zip). All artifacts are generated client-side from the
+    // project's live data — no manuscript content leaves the browser and no heavy
+    // export work runs on the server. Surfaces in Ops › Flags automatically.
+    manuscriptEditor: false,
   }),
   // screeningEngin.md — global (admin) AI screening policy. Surfaced in Ops ›
   // AI Screening. Additive SiteSetting; merged with AI_GLOBAL_DEFAULTS server-side.

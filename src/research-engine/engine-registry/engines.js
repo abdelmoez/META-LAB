@@ -174,6 +174,17 @@ export const ENGINES = [
       'server/routes/validation.js',
     ],
   },
+  {
+    id: 'manuscript',
+    displayName: 'Manuscript',
+    description:
+      'P3 manuscript authoring: structured IMRAD draft generation, data-linked tables (study characteristics / summary-of-findings / PRISMA / RoB / search), citation engine (Vancouver/JAMA/BibTeX/RIS), inline PRISMA 2020 diagram, one-click .docx export, PRISMA & PRISMA-S checklists, and a reproducibility .zip bundle.',
+    status: 'beta',
+    ownership: [
+      'src/research-engine/manuscript/**',
+      'src/features/manuscript/**',
+    ],
+  },
 ];
 
 /** Ordered list of engine ids. */
