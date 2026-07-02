@@ -156,10 +156,13 @@ build + e2e smoke results are recorded in the commit that ships this report.
    filters still use the in-memory path because their my-decision semantics
    (first row in array order across stages) can't be reproduced exactly by a
    relational predicate; needs a product decision on stage precedence first.
-5. **Manuscript e2e spec** — unit/component coverage is strong; a Playwright
-   flow behind the `manuscriptEditor` flag (flag-flip via fixtures) is the
-   natural next e2e increment, along with the documented skips (AI-threshold
-   UI seeding, populated NMA, PDF fixture, per-role sessions).
+5. ~~Manuscript e2e spec~~ — CLOSED in the round-2 commit: `e2e/manuscript/`
+   (5 tests: WYSIWYG surface, no-raw-tokens typing+bold, generate-all headings +
+   structured abstract, real `.docx` download, flag-OFF legacy gate). Writing it
+   caught and fixed a real section-switch staleness bug (the keyed editor
+   mounted from the lagging local buffer). Remaining e2e increments: the
+   documented skips (AI-threshold UI seeding, populated NMA, PDF fixture,
+   per-role sessions).
 6. **Blind-mode export ordinals are project-stable** — a reader can track
    "Reviewer 2" across records (identity still hidden). If stricter blinding
    is wanted, per-record shuffled ordinals are the alternative.

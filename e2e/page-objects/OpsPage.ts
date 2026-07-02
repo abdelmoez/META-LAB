@@ -70,7 +70,9 @@ export class OpsPage {
   // ── Appearance ('style') tab ─────────────────────────────────────────────────
   get appearanceHexInput(): Locator { return this.page.getByTestId('appearance-hex-input'); }
   get appearanceSave(): Locator { return this.page.getByTestId('appearance-save'); }
-  get designAllowAllToggle(): Locator { return this.page.getByTestId('design-allow-all-toggle'); }
+  // 65.md — the retired allow-all toggle was replaced by the legacy-fallback
+  // control (Stitch is the product default; legacy is the Ops-governed escape).
+  get designLegacyFallbackToggle(): Locator { return this.page.getByTestId('design-legacy-fallback-toggle'); }
   get designDefaultMode(): Locator { return this.page.getByTestId('design-default-mode'); }
   get designSettingsSave(): Locator { return this.page.getByTestId('design-settings-save'); }
 

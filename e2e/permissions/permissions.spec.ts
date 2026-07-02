@@ -59,10 +59,11 @@ test.describe('Permission boundaries — route & chrome gating', () => {
   });
 
   test('the account menu shows "Ops Console" only to staff (admin yes, normal no) @smoke', async ({ page, request, normalContext }) => {
-    // A normal user renders the Stitch shell (and its account menu) only when the Ops
-    // design rollout allows all users — the suite's documented run-config default.
+    // 65.md — Stitch is the product UI for everyone; a normal user renders the
+    // Stitch shell unless Ops flips designSettings.defaultMode to legacy. Guard
+    // on that (rare, emergency-only) run config, not the retired allow-all gate.
     const ds = await api.getDesignSettings(request).catch(() => null);
-    test.skip(!ds?.allowAllUsers, 'TODO: a normal user only renders the Stitch account menu when designSettings.allowAllUsers is true (the rollout default).');
+    test.skip(ds?.defaultMode === 'legacy', 'Ops has flipped defaultMode to legacy (emergency fallback) — the Stitch account menu is not rendered.');
 
     // Admin: the Ops Console item IS present.
     const adminNav = new ShellNav(page);

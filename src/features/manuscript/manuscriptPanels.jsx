@@ -404,6 +404,12 @@ export function EditorPanel({ m, exporters }) {
   // remount (→ re-render from props) ONLY when the section identity changes or it
   // is (re)generated — typing never remounts, so the caret is never fought.
   const resetKey = `${m.activeId}:${sel}:${lastGen || ''}`;
+  // MOUNT value for the one-time-render editors. This must be the DRAFT content
+  // (fresh in the same render as a section switch or a generate), NOT `buf`: the
+  // buf-resync effect runs AFTER the keyed remount, so an editor mounted from buf
+  // would show the PREVIOUS section's (or pre-generation) text forever. `buf`
+  // keeps serving the live views (orderMap, outline, title input).
+  const pageValue = ((m.activeDraft.sections || {})[sel] || {}).content || '';
 
   return (
     <div data-testid="stitch-manuscript-editor" style={{ display: 'flex', gap: 18, alignItems: 'flex-start', flexWrap: 'wrap' }}>
@@ -517,10 +523,10 @@ export function EditorPanel({ m, exporters }) {
                 </div>
               </div>
             ) : isAbstract ? (
-              <AbstractEditor value={buf} templateId={m.activeDraft.templateId} orderMap={orderMap}
+              <AbstractEditor value={pageValue} templateId={m.activeDraft.templateId} orderMap={orderMap}
                 resetKey={resetKey} onChange={onType} onActivate={setActive} />
             ) : (
-              <RichSectionEditor key={resetKey} ref={mainApi} value={buf} orderMap={orderMap}
+              <RichSectionEditor key={resetKey} ref={mainApi} value={pageValue} orderMap={orderMap}
                 onChange={onType} onActivate={setActive}
                 ariaLabel={(SECTION_TYPES.find((s) => s.id === sel) || {}).label || 'Section'}
                 placeholder="Write this section here, or generate it from your project data. Use the toolbar for headings, lists and citations." />
