@@ -67,15 +67,19 @@ describe('55.md — submenu visibility (Overview/Control/Reference reclaim width
     expect(submenuForCategory('reference', CTX)).toBeNull();
   });
   it('shows the white submenu for multi-child categories', () => {
-    for (const id of ['plan', 'screen', 'extract', 'analyze', 'report']) {
+    for (const id of ['plan', 'search', 'screen', 'extract', 'analyze', 'report']) {
       expect(categoryShowsSubmenu(id)).toBe(true);
     }
   });
-  // prompt60 — Search is now a SINGLE-destination category (the unified Search wizard),
-  // so it no longer opens a white submenu; its one child is the `search` stage.
-  it('treats Search as a single destination (no submenu) after the search+discovery merge', () => {
-    expect(categoryShowsSubmenu('search')).toBe(false);
-    expect(submenuForCategory('search', CTX).map((i) => i.key)).toEqual(['search']);
+  // prompt60 folded discovery into the unified Search wizard (single child);
+  // 66.md P6 adds the Living Review dashboard beside it, so Search opens a white
+  // submenu again: Search wizard + Living Review (the latter is NOT a numbered
+  // workflow step — same append pattern as PRISMA Flow inside Screen).
+  it('search = Search wizard + Living Review (66.md P6)', () => {
+    expect(categoryShowsSubmenu('search')).toBe(true);
+    const items = submenuForCategory('search', CTX);
+    expect(items.map((i) => i.key)).toEqual(['search', 'living']);
+    expect(items[1].href).toBe('/app/project/p1?tab=living');
   });
 });
 

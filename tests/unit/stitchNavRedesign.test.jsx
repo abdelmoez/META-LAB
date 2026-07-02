@@ -118,9 +118,9 @@ describe('navConfig — active-route matching (preserve deep links)', () => {
     expect(activeProjectStage('?tab=screening')).toBe('screening');
     expect(activeProjectStage('')).toBe('overview');
   });
-  it('collapses the Search category submenu to a single Search entry', () => {
+  it('search submenu = unified Search wizard + Living Review (66.md P6)', () => {
     const items = submenuForCategory('search', { projectId: 'p1' });
-    expect(items.map((i) => i.key)).toEqual(['search']);
+    expect(items.map((i) => i.key)).toEqual(['search', 'living']);
   });
 });
 

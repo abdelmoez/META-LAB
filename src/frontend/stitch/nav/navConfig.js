@@ -290,6 +290,7 @@ export function categoryForStage(stageId) {
   if (!stageId || stageId === 'overview') return 'overview';
   if (stageId === 'control') return 'control';
   if (stageId === 'methods') return 'reference';
+  if (stageId === 'living') return 'search'; // 66.md P6 — Living Review lives in Search
   if (stageId === 'screening' || stageId === 'prisma') return 'screen';
   const t = TABS.find((x) => x.id === stageId);
   if (t && t.phase && PHASE_TO_CATEGORY[t.phase]) return PHASE_TO_CATEGORY[t.phase];
@@ -336,7 +337,7 @@ export function submenuForCategory(categoryId, ctx = {}) {
   }
 
   // A workflow phase → its TABS, in order.
-  return TABS.filter((t) => t.phase === cat.phase).map((t) => ({
+  const items = TABS.filter((t) => t.phase === cat.phase).map((t) => ({
     key: t.id,
     label: t.label,
     icon: t.icon,
@@ -345,6 +346,27 @@ export function submenuForCategory(categoryId, ctx = {}) {
     countKey: null,
     screening: false,
   }));
+
+  // 66.md P6 — the Living Review dashboard joins the Search submenu (it re-runs the
+  // saved search over time). Deliberately NOT a phase-numbered workflow TAB: like the
+  // Screen category's PRISMA Flow append above, it navigates without joining the
+  // progress denominator / "Next step" walker (the feature is flag-gated OFF by
+  // default, so a permanently-empty mandatory step would misread as unfinished work).
+  if (cat.id === 'search') {
+    const living = TABS.find((t) => t.id === 'living');
+    if (living) {
+      items.push({
+        key: 'living',
+        label: living.label,
+        icon: living.icon,
+        href: projectStageHref('living', ctx),
+        completionKey: 'living',
+        countKey: null,
+        screening: false,
+      });
+    }
+  }
+  return items;
 }
 
 /** True when a category opens a persistent white submenu (has >1 navigable child). */
