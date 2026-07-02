@@ -71,12 +71,13 @@
           for (var k in map) if (HEX.test(side[k] || '')) document.documentElement.style.setProperty(map[k], side[k]);
         }
       } catch (e) { /* no brand info → stylesheet default indigo */ }
-      // Design-mode bootstrap (design.md) — set data-ui-design before first paint
-      // so an admin's chosen UI (legacy | stitch) is correct on the very first
-      // frame (no flash). Priority: ?ui= override > localStorage cache > legacy.
-      // This only sets an attribute; the Stitch stylesheet + bundle activate later
-      // and ONLY for an authenticated admin (DesignModeProvider re-resolves and
-      // forces legacy for everyone else), so this can never expose the preview.
+      // Design-mode bootstrap (65.md) — set data-ui-design before first paint so
+      // the correct UI paints on the very first frame (no flash). Priority:
+      // ?ui= override > localStorage saved mode > cached designSettings.defaultMode
+      // > stitch (the product UI). This only sets an attribute — the
+      // DesignModeProvider re-resolves authoritatively after auth (non-admins
+      // always get the Ops-governed default unless legacy fallback is enabled),
+      // so pre-paint can safely trust the cache.
       try {
         var uiVALID = { legacy: 1, stitch: 1 };
         var uiMode = null;
@@ -88,8 +89,14 @@
           var uiSaved = localStorage.getItem('metalab_ui_design');
           if (uiSaved && uiVALID[uiSaved]) uiMode = uiSaved;
         }
-        document.documentElement.dataset.uiDesign = uiMode || 'legacy';
-      } catch (e) { document.documentElement.dataset.uiDesign = 'legacy'; }
+        if (!uiMode) {
+          try {
+            var uiDS = JSON.parse(localStorage.getItem('metalab_design_settings') || 'null');
+            if (uiDS && uiVALID[uiDS.defaultMode]) uiMode = uiDS.defaultMode;
+          } catch (e3) {}
+        }
+        document.documentElement.dataset.uiDesign = uiMode || 'stitch';
+      } catch (e) { document.documentElement.dataset.uiDesign = 'stitch'; }
     </script>
     <style>
       *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }

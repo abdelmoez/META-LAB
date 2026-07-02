@@ -191,6 +191,9 @@ export function trainAndScore(args = {}) {
   const denseIncludedVecs = [];
   const denseExcludedVecs = [];
   const includedExamples = [];
+  // 65.md SCR-6 — symmetric excluded-example pool so the explanation can show
+  // "similar EXCLUDED records" too (same cap, same cached-vector cost profile).
+  const excludedExamples = [];
   records.forEach((r, i) => {
     const y = decisionToLabel(labelByRecordId[r.id], cfg);
     if (y === null) return;
@@ -204,6 +207,9 @@ export function trainAndScore(args = {}) {
     } else {
       excludedVecs.push(vectors[i]);
       if (dense && dense[r.id]) denseExcludedVecs.push(dense[r.id]);
+      if (excludedExamples.length < NEIGHBOR_EXAMPLE_CAP) {
+        excludedExamples.push({ recordId: r.id, title: r.title || '', vector: vectors[i] });
+      }
     }
   });
 
@@ -290,14 +296,19 @@ export function trainAndScore(args = {}) {
     // Nearest already-included records (bounded by NEIGHBOR_EXAMPLE_CAP). Vectors
     // from `transform` are L2-normalized, so cosine == dot — use the cheaper dot
     // (cosine re-normalizes with two extra dot products per call).
-    const neighbors = [];
-    for (const ex of includedExamples) {
-      if (ex.recordId === r.id) continue;
-      const sim = dot(vector, ex.vector);
-      if (sim > 0) neighbors.push({ recordId: ex.recordId, title: ex.title, similarity: sim });
-    }
-    neighbors.sort((a, b) => b.similarity - a.similarity);
-    const topNeighbors = neighbors.slice(0, 3);
+    const topOf = (examples) => {
+      const out = [];
+      for (const ex of examples) {
+        if (ex.recordId === r.id) continue;
+        const sim = dot(vector, ex.vector);
+        if (sim > 0) out.push({ recordId: ex.recordId, title: ex.title, similarity: sim });
+      }
+      out.sort((a, b) => b.similarity - a.similarity);
+      return out.slice(0, 3);
+    };
+    const topNeighbors = topOf(includedExamples);
+    // 65.md SCR-6 — symmetric top EXCLUDED neighbours (same cached-vector path).
+    const topExcludedNeighbors = topOf(excludedExamples);
 
     const picoMean = cs.signals.pico ? cs.signals.pico.mean : null;
 
@@ -316,7 +327,7 @@ export function trainAndScore(args = {}) {
 
     const explanation = buildExplanation({
       coldStart: cs, hybrid, model, terms: vec.terms, vector,
-      neighbors: topNeighbors, missingAbstract,
+      neighbors: topNeighbors, excludedNeighbors: topExcludedNeighbors, missingAbstract,
       reviewerSignals: reviewer.hasSignals ? reviewer : null,
     });
 
@@ -351,6 +362,8 @@ export function trainAndScore(args = {}) {
         prioritization,
       },
       similar: topNeighbors,
+      // 65.md SCR-6 — symmetric "similar excluded records" for the Why panel.
+      similarExcluded: topExcludedNeighbors,
       explanation,
     };
   }).filter(Boolean); // drop records skipped by scoreIdSet (lean CV path only)

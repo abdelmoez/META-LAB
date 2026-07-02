@@ -20,6 +20,7 @@
  * children; the shell only provides chrome.
  */
 import { useState } from 'react';
+import { useDocumentTitle } from '../../hooks/useDocumentTitle.js';
 import StitchStyle from '../theme/StitchStyle.jsx';
 import { S } from '../theme/stitchTokens.js';
 import { StitchToastProvider } from '../primitives/overlay.jsx';
@@ -46,8 +47,17 @@ const RESPONSIVE_CSS = `
 export default function StitchAppShell({
   activeKey, contextRail, contextRailMobile, breadcrumb, children, maxWidth = 1320, contentPad = true,
   renderPrimaryRail, topPresence = null, coordinatedNav = false, pinned = false, chatContext = null,
+  docTitle = null,
 }) {
   const [navOpen, setNavOpen] = useState(false);
+
+  // 65.md NAV-2 — per-route tab titles. Pages that know more (project workspace)
+  // pass `docTitle`; otherwise a string breadcrumb ("Dashboard · Projects") is a
+  // good tab label; the bare suffix is the safe floor.
+  const titleParts = docTitle != null
+    ? (Array.isArray(docTitle) ? docTitle : [docTitle])
+    : (typeof breadcrumb === 'string' ? [breadcrumb] : []);
+  useDocumentTitle(...titleParts);
 
   // The primary rail is pluggable: global pages use the default global rail; the
   // project workspace passes its own collapsible workflow rail. `variant` lets the

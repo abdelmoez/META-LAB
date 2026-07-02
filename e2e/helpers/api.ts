@@ -56,7 +56,10 @@ export async function logout(request: APIRequestContext): Promise<void> {
   await request.post('/api/auth/logout', { data: {} });
 }
 
-/** PUT /api/profile — persist the UI design mode (admin-only; 403 for non-admins). */
+/** PUT /api/profile — persist a PERSONAL UI design mode. 65.md: ADMIN-ONLY for
+ *  BOTH values — any non-admin attempt (stitch OR legacy) is a 403
+ *  (UI_DESIGN_ADMIN_ONLY); non-admins always render the Ops-governed default.
+ *  Returns res.ok(), so callers can assert the 403 by expecting `false`. */
 export async function setDesignMode(request: APIRequestContext, mode: 'stitch' | 'legacy'): Promise<boolean> {
   const res = await request.put('/api/profile', { data: { uiDesignMode: mode } });
   return res.ok();
@@ -145,9 +148,13 @@ export async function enableEngineFlags(request: APIRequestContext): Promise<Rec
   return setFeatureFlags(request, ENGINE_FLAGS);
 }
 
-/* ─── Admin: design (Stitch rollout) settings ──────────────────────────────── */
+/* ─── Admin: design (Ops-governed UI) settings ─────────────────────────────── */
 
-export interface DesignSettings { allowAllUsers: boolean; defaultMode: 'legacy' | 'stitch' }
+// 65.md — `defaultMode` is the interface every non-admin renders;
+// `allowLegacyFallback` re-enables ?ui=legacy links + saved prefs for non-admins
+// (emergency escape, default false); `allowAllUsers` is storage back-compat only
+// and no longer gates rendering.
+export interface DesignSettings { allowAllUsers: boolean; defaultMode: 'legacy' | 'stitch'; allowLegacyFallback: boolean }
 
 export async function getDesignSettings(request: APIRequestContext): Promise<DesignSettings> {
   const res = await request.get('/api/admin/design-settings');

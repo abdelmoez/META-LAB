@@ -9,7 +9,9 @@
  * through the real endpoint and deep-links to the project. No fake/empty page.
  */
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../../../context/AuthContext.jsx';
 import { notificationsApi } from '../../../api-client/notificationsApi.js';
+import { isStaffUser } from '../../../components/notificationTarget.js';
 import { relTime } from '../../../pages/projectLanding.helpers.js';
 import { useInvitations } from '../../shell/useInvitations.js';
 import {
@@ -17,20 +19,23 @@ import {
   StitchLoadingState, StitchAvatar, S, salpha,
 } from '../../primitives';
 
-function targetUrl(n) {
+function targetUrl(n, staff) {
   // design4: prefer the unified PecanRev workspace; a screening notification on a
-  // LINKED project opens the embedded screening engine in-shell, while a standalone
-  // screening project (no PecanRev parent) keeps the engine route.
+  // LINKED project opens the embedded screening engine in-shell. 65.md NAV-1: the
+  // standalone engine route is STAFF-ONLY (404-cloaked) — non-staff rows without a
+  // workspace parent render without navigation instead of deep-linking to a 404.
   if (n.relatedMetaLabProjectId) {
     const base = `/app/project/${encodeURIComponent(n.relatedMetaLabProjectId)}`;
     return n.relatedScreenProjectId ? `${base}?tab=screening` : base;
   }
-  if (n.relatedScreenProjectId) return `/sift-beta/projects/${encodeURIComponent(n.relatedScreenProjectId)}`;
+  if (n.relatedScreenProjectId && staff) return `/sift-beta/projects/${encodeURIComponent(n.relatedScreenProjectId)}`;
   return null;
 }
 
 export default function InvitationsView() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const staff = isStaffUser(user);
   const { items, loading, reload } = useInvitations();
 
   if (loading) return <StitchLoadingState label="Loading your invitations…" />;
@@ -39,7 +44,7 @@ export default function InvitationsView() {
   const seen = items.filter((n) => n.readAt || n.dismissedAt);
 
   const open = async (n) => {
-    const url = targetUrl(n);
+    const url = targetUrl(n, staff);
     try { if (!n.readAt) { await notificationsApi.opened(n.id); reload(true); } } catch { /* non-fatal */ }
     if (url) navigate(url);
   };

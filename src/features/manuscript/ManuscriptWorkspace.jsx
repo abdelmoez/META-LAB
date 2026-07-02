@@ -8,7 +8,7 @@
  * legacy token system (Stitch auto-remaps --t-*).
  */
 import { useState, useCallback } from 'react';
-import { C, btnS, tagS } from '../../frontend/workspace/ui/styles.js';
+import { C, btnS } from '../../frontend/workspace/ui/styles.js';
 import { SectionHeader, InfoBox } from '../../frontend/workspace/ui/primitives.jsx';
 import { Icon } from '../../frontend/components/icons.jsx';
 import { alpha } from '../../frontend/theme/tokens.js';
@@ -16,6 +16,7 @@ import { CITATION_STYLES, JOURNAL_TEMPLATES } from '../../research-engine/manusc
 import { useManuscript } from './useManuscript.js';
 import {
   Select, OverviewPanel, EditorPanel, TablesPanel, FiguresPanel, ReferencesPanel, PrismaPanel, ExportPanel,
+  SaveStatusPill,
 } from './manuscriptPanels.jsx';
 
 const SUBTABS = [
@@ -84,7 +85,9 @@ export function ManuscriptWorkspace({ project, upd }) {
   }
 
   return (
-    <div data-testid="stitch-manuscript-workspace" style={{ maxWidth: 900, margin: '0 auto', padding: '4px 2px' }}>
+    // The Editor's 3-panel layout (outline · page · tools, 65.md MS-3) needs the
+    // full width; the other sub-tabs keep the calmer 900px column.
+    <div data-testid="stitch-manuscript-workspace" style={{ maxWidth: tab === 'editor' ? 1440 : 900, margin: '0 auto', padding: '4px 2px' }}>
       <SectionHeader icon="pencil" title="Manuscript" desc="Generate, edit and export a submission-ready manuscript from your project data." />
 
       {/* top control row */}
@@ -109,9 +112,8 @@ export function ManuscriptWorkspace({ project, upd }) {
           </Select>
         </Labeled>
 
-        <span data-testid="stitch-manuscript-save-status"
-          style={{ ...tagS(m.saveState === 'saving' ? 'yellow' : 'green'), marginLeft: 'auto' }}>
-          {m.saveState === 'saving' ? 'Saving…' : 'Saved'}
+        <span style={{ marginLeft: 'auto' }}>
+          <SaveStatusPill saveState={m.saveState} lastError={m.lastError} onRetry={m.retry} />
         </span>
       </div>
 
@@ -138,7 +140,7 @@ export function ManuscriptWorkspace({ project, upd }) {
 
       {/* panels */}
       {tab === 'overview' && <OverviewPanel m={m} exporters={exporters} />}
-      {tab === 'editor' && <EditorPanel m={m} />}
+      {tab === 'editor' && <EditorPanel m={m} exporters={exporters} />}
       {tab === 'tables' && <TablesPanel m={m} />}
       {tab === 'figures' && <FiguresPanel m={m} />}
       {tab === 'references' && <ReferencesPanel m={m} />}

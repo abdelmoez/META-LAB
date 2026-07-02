@@ -25,6 +25,7 @@ import { useScreeningAi } from '../ai/useScreeningAi.js';
 import { AiScoreCard, AiQueueBar, AiStatusPanel, ScoreBadge } from '../ai/AiAssist.jsx';
 import { rankItems } from '../../../research-engine/screening/ai/ranking.js';
 import { parseScreeningShortcuts, DEFAULT_SCREENING_SHORTCUTS, keyLabel } from '../screeningShortcuts.js';
+import { shouldWindow, computeListWindow, measuredRowHeight, DEFAULT_ROW_HEIGHT } from '../lib/listWindow.js';
 import { api } from '../../api-client/apiClient.js';
 import Tooltip from '../../components/Tooltip.jsx';
 
@@ -605,6 +606,49 @@ function LeftColumn({
   ai, queueMode, onQueueMode, aiBand, onAiBand, onRefreshRankings,
 }) {
   const k = shortcutPrefs?.keys ?? DEFAULT_SCREENING_SHORTCUTS.keys;
+
+  // 65.md SCR-5 — windowed rendering of the ACCUMULATED array. "Load more" keeps
+  // appending records, but only a slice around the scroll position is in the DOM;
+  // spacer blocks preserve the scroll height so the scrollbar behaves as if every
+  // row were rendered. Small lists (≤ WINDOW_MIN_COUNT) render exactly as before.
+  const scrollRef = useRef(null);
+  const rowsRef = useRef(null);
+  const scrollRaf = useRef(0);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportH, setViewportH] = useState(600);
+  const [rowH, setRowH] = useState(DEFAULT_ROW_HEIGHT);
+  const windowed = shouldWindow(records.length);
+  const win = windowed
+    ? computeListWindow({ count: records.length, scrollTop, viewportHeight: viewportH, rowHeight: rowH })
+    : null;
+  const visibleRecords = windowed ? records.slice(win.start, win.end) : records;
+
+  const onListScroll = useCallback(() => {
+    if (scrollRaf.current) return; // coalesce to one state update per frame
+    scrollRaf.current = requestAnimationFrame(() => {
+      scrollRaf.current = 0;
+      const el = scrollRef.current;
+      if (!el) return;
+      setScrollTop(el.scrollTop);
+      setViewportH(el.clientHeight || 600);
+    });
+  }, []);
+  useEffect(() => () => { if (scrollRaf.current) cancelAnimationFrame(scrollRaf.current); }, []);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return undefined;
+    const measure = () => setViewportH(el.clientHeight || 600);
+    measure();
+    window.addEventListener('resize', measure);
+    return () => window.removeEventListener('resize', measure);
+  }, []);
+  // Refine the row-height estimate from the really-rendered slice (threshold-gated,
+  // so this cannot re-render in a loop).
+  useEffect(() => {
+    if (!windowed || !rowsRef.current || !visibleRecords.length) return;
+    setRowH(prev => measuredRowHeight(rowsRef.current.offsetHeight, visibleRecords.length, prev));
+  }, [windowed, visibleRecords.length, records.length, scrollTop]);
+
   return (
     <div style={{ width: 300, flexShrink: 0, borderRight: `1px solid ${C.brd}`, display: 'flex', flexDirection: 'column', background: C.surf, overflow: 'hidden', minHeight: 0 }}>
       {/* Sticky search + filter header */}
@@ -650,8 +694,8 @@ function LeftColumn({
         </div>
       )}
 
-      {/* List */}
-      <div className="sift-rl" style={{ flex: 1, overflowY: 'auto', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+      {/* List — windowed above WINDOW_MIN_COUNT rows (65.md SCR-5) */}
+      <div ref={scrollRef} onScroll={windowed ? onListScroll : undefined} className="sift-rl" style={{ flex: 1, overflowY: 'auto', minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         {loading ? (
           <div style={{ padding: '14px 16px' }}><Loading label="Loading records…" /></div>
         ) : listError ? (
@@ -664,9 +708,13 @@ function LeftColumn({
           </div>
         ) : (
           <>
-            {records.map(r => (
-              <RecordRow key={r.id} record={r} selected={r.id === selectedId} onClick={() => onSelect(r.id)} blindMode={blindMode} scoreInfo={ai?.enabled ? (r.aiScore || ai.scores[r.id]) : null} />
-            ))}
+            {windowed && <div aria-hidden="true" style={{ height: win.topPad, flexShrink: 0 }} />}
+            <div ref={rowsRef} style={{ flexShrink: 0 }}>
+              {visibleRecords.map(r => (
+                <RecordRow key={r.id} record={r} selected={r.id === selectedId} onClick={() => onSelect(r.id)} blindMode={blindMode} scoreInfo={ai?.enabled ? (r.aiScore || ai.scores[r.id]) : null} />
+              ))}
+            </div>
+            {windowed && <div aria-hidden="true" style={{ height: win.bottomPad, flexShrink: 0 }} />}
             {hasMore && (
               <div style={{ position: 'sticky', bottom: 0, background: C.surf, borderTop: `1px solid ${C.brd}`, padding: '10px 14px', textAlign: 'center', flexShrink: 0 }}>
                 <Button variant="ghost" onClick={onLoadMore} disabled={loadingMore} full style={{ fontSize: 12, padding: '7px 14px' }}>

@@ -21,42 +21,10 @@ function BetaBadge() {
   );
 }
 
-// ── Client-side sniff: extract up to 5 preview records from raw text ──────────
-function sniffRecords(format, text) {
-  const previews = [];
-
-  if (format === 'ris') {
-    const entries = text.split(/\nER\s*-/).filter(e => e.trim());
-    for (let i = 0; i < Math.min(5, entries.length); i++) {
-      const entry = entries[i];
-      const title  = (entry.match(/^TI\s*-\s*(.+)$/m)  || entry.match(/^T1\s*-\s*(.+)$/m))?.[1]?.trim() || '';
-      const author = (entry.match(/^AU\s*-\s*(.+)$/m)  || entry.match(/^A1\s*-\s*(.+)$/m))?.[1]?.trim() || '';
-      const year   = (entry.match(/^PY\s*-\s*(\d{4})/) || entry.match(/^Y1\s*-\s*(\d{4})/))?.[1] || '';
-      if (title || author) previews.push({ title, author, year });
-    }
-  } else if (format === 'bibtex') {
-    const entries = text.split(/@\w+\{/).slice(1);
-    for (let i = 0; i < Math.min(5, entries.length); i++) {
-      const entry = entries[i];
-      const title  = entry.match(/title\s*=\s*\{([^}]+)\}/i)?.[1]?.trim() || '';
-      const author = entry.match(/author\s*=\s*\{([^}]+)\}/i)?.[1]?.trim() || '';
-      const year   = entry.match(/year\s*=\s*\{?(\d{4})\}?/i)?.[1] || '';
-      if (title || author) previews.push({ title, author, year });
-    }
-  } else if (format === 'nbib') {
-    const entries = text.split(/\n\n+/).filter(e => e.includes('PMID-') || e.includes('TI  -'));
-    for (let i = 0; i < Math.min(5, entries.length); i++) {
-      const entry = entries[i];
-      const title  = entry.match(/^TI\s*-\s*(.+(?:\n\s+.+)*)/m)?.[1]?.replace(/\s+/g, ' ').trim() || '';
-      const author = entry.match(/^FAU\s*-\s*(.+)$/m)?.[1]?.trim() ||
-                     entry.match(/^AU\s*-\s*(.+)$/m)?.[1]?.trim() || '';
-      const year   = entry.match(/^DP\s*-\s*(\d{4})/m)?.[1] || '';
-      if (title || author) previews.push({ title, author, year });
-    }
-  }
-
-  return previews;
-}
+// 65.md SCR-10 — the preview runs SERVER-side through the real parser registry
+// (POST …/import/preview). Only this much text is sent (the server parses at most
+// the same amount); enough for detection + a 5-record sample.
+const PREVIEW_MAX_CHARS = 256 * 1024;
 
 // ── Count entries roughly ──────────────────────────────────────────────────
 function countEntries(format, text) {
@@ -89,7 +57,9 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
   const [format,     setFormat]     = useState('auto');
   const [content,    setContent]    = useState('');
   const [filename,   setFilename]   = useState('');
-  const [previews,   setPreviews]   = useState([]);
+  // 65.md SCR-10 — server-parsed preview: { detectedFormat, sample, counts, decisionColumnDetected, truncated }
+  const [preview,    setPreview]    = useState(null);
+  const [previewing, setPreviewing] = useState(false);
   const [previewDone,setPreviewDone]= useState(false);
   const [importing,  setImporting]  = useState(false);
   const [result,     setResult]     = useState(null);  // { imported, duplicateRecords, rejectedRecords, ... }
@@ -108,13 +78,30 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
     setResult(null);
     setError(null);
     setDuplicate(null);
-    setPreviews([]);
+    setPreview(null);
   }
 
-  function handlePreview() {
-    const p = sniffRecords(format, content);
-    setPreviews(p);
-    setPreviewDone(true);
+  // 65.md SCR-10 — the preview uses the REAL server parser registry (the same code
+  // path the import runs), so what you preview is what will import.
+  async function handlePreview() {
+    if (previewing || !content.trim()) return;
+    setPreviewing(true);
+    setError(null);
+    try {
+      const p = await screeningApi.previewImport(pid, {
+        format,
+        content: content.slice(0, PREVIEW_MAX_CHARS),
+        filename: filename || undefined,
+      });
+      setPreview(p);
+      setPreviewDone(true);
+    } catch (e) {
+      setPreview(null);
+      setPreviewDone(true);
+      setError(e.message || 'Preview failed');
+    } finally {
+      setPreviewing(false);
+    }
   }
 
   // Map a file extension to a format HINT. The server still content-detects, so
@@ -177,6 +164,8 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
           batchId: job.batchId,
           format: job.detectedFormat,
           withWarnings: job.status === 'completed_with_warnings',
+          // 65.md SCR-3 — per-row reject/invalid-decision reasons (capped server-side).
+          errorReport: Array.isArray(job.errorReport) ? job.errorReport : [],
         });
       }
     } catch (e) {
@@ -324,13 +313,15 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
             {content.trim() && (
               <button
                 onClick={handlePreview}
+                disabled={previewing}
                 style={{
                   background: 'transparent', border: `1px solid ${C.brd2}`,
                   color: C.txt2, fontSize: 12, fontFamily: FONT,
-                  padding: '7px 16px', borderRadius: 6, cursor: 'pointer',
+                  padding: '7px 16px', borderRadius: 6, cursor: previewing ? 'wait' : 'pointer',
+                  opacity: previewing ? 0.6 : 1,
                 }}
               >
-                Preview first 5
+                {previewing ? 'Previewing…' : 'Preview first 5'}
               </button>
             )}
             <button
@@ -351,16 +342,34 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
           </div>
         </div>
 
-        {/* Preview table */}
+        {/* Preview table — server-parsed via the real parser registry (65.md SCR-10) */}
         {previewDone && (
           <div style={{
             background: C.card, border: `1px solid ${C.brd}`,
             borderRadius: 8, padding: '16px 18px', marginBottom: 20,
           }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: '0.08em', marginBottom: 12, fontFamily: MONO, textTransform: 'uppercase' }}>
-              Preview — First {previews.length} records
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, flexWrap: 'wrap', marginBottom: 12 }}>
+              <span style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: '0.08em', fontFamily: MONO, textTransform: 'uppercase' }}>
+                Preview — First {preview?.sample?.length || 0} records
+              </span>
+              {preview?.detectedFormat && (
+                <span style={{ fontSize: 10.5, fontFamily: MONO, color: C.teal }}>
+                  detected: {preview.detectedFormat}
+                </span>
+              )}
+              {preview?.counts && (
+                <span style={{ fontSize: 10.5, fontFamily: MONO, color: C.muted }}>
+                  {preview.counts.parsed} parsed{preview.counts.rejected > 0 ? ` · ${preview.counts.rejected} unusable` : ''}{preview.truncated ? ' · first 256KB' : ''}
+                </span>
+              )}
+              {preview?.decisionColumnDetected && (
+                <span title="A screening-decision column was found — labelled records will import already screened."
+                  style={{ fontSize: 10.5, fontFamily: MONO, color: C.grn }}>
+                  decision column detected
+                </span>
+              )}
             </div>
-            {previews.length === 0 ? (
+            {!preview || (preview.sample || []).length === 0 ? (
               <div style={{ fontSize: 12, color: C.muted }}>
                 Could not parse preview. Check that the format matches the selected type and the content is valid.
               </div>
@@ -376,14 +385,14 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
                   </tr>
                 </thead>
                 <tbody>
-                  {previews.map((rec, i) => (
+                  {preview.sample.map((rec, i) => (
                     <tr key={i}>
                       <td style={{ padding: '6px 8px', color: C.muted, fontFamily: MONO, fontSize: 10 }}>{i + 1}</td>
                       <td title={rec.title || undefined} style={{ padding: '6px 8px', color: C.txt2, maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {rec.title || <span style={{ fontStyle: 'italic', color: C.muted }}>No title</span>}
                       </td>
-                      <td title={rec.author || undefined} style={{ padding: '6px 8px', color: C.muted, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {rec.author || '—'}
+                      <td title={rec.authors || undefined} style={{ padding: '6px 8px', color: C.muted, maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {rec.authors || '—'}
                       </td>
                       <td style={{ padding: '6px 8px', color: C.muted, fontFamily: MONO }}>{rec.year || '—'}</td>
                     </tr>
@@ -491,6 +500,25 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
                 return parts.length ? ` (${parts.join(' · ')})` : '';
               })()}.
             </div>
+            {/* 65.md SCR-3 — readable per-row issue list (rejects + invalid decisions) */}
+            {result.errorReport?.length > 0 && (
+              <details style={{ marginBottom: 14 }}>
+                <summary style={{ fontSize: 12, color: C.ylw, cursor: 'pointer', userSelect: 'none' }}>
+                  {result.errorReport.length} row issue{result.errorReport.length === 1 ? '' : 's'} — view details
+                </summary>
+                <div style={{ marginTop: 8, maxHeight: 180, overflowY: 'auto', border: `1px solid ${C.brd}`, borderRadius: 6, background: C.surf }}>
+                  {result.errorReport.map((e, i) => (
+                    <div key={i} style={{ display: 'flex', gap: 8, padding: '5px 10px', fontSize: 11.5, color: C.txt2, borderBottom: i < result.errorReport.length - 1 ? `1px solid ${C.brd}` : 'none' }}>
+                      <span style={{ fontFamily: MONO, color: C.muted, flexShrink: 0 }}>#{e.index}</span>
+                      <span title={e.title || undefined} style={{ minWidth: 0, maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: C.txt }}>
+                        {e.title || <span style={{ fontStyle: 'italic', color: C.muted }}>(untitled)</span>}
+                      </span>
+                      <span style={{ color: C.muted }}>{e.reason}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
             <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
               <button
                 onClick={goToDuplicates}
@@ -505,7 +533,7 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
                 {preparing ? 'Preparing duplicate review…' : 'Continue to Duplicates →'}
               </button>
               <button
-                onClick={() => { setContent(''); setResult(null); setPreviews([]); setPreviewDone(false); setFilename(''); }}
+                onClick={() => { setContent(''); setResult(null); setPreview(null); setPreviewDone(false); setFilename(''); }}
                 style={{
                   background: 'transparent', border: `1px solid ${alpha(C.grn, '50')}`,
                   color: C.grn, fontSize: 12, fontFamily: FONT,

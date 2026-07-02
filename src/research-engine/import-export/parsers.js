@@ -66,10 +66,15 @@ export function mkRecord(r) {
 // 59.md Change 1 — accepted screening-decision labels (the four states export writes).
 export const IMPORT_DECISIONS = ["include", "exclude", "maybe", "undecided"];
 // Lenient synonyms → canonical state; anything else is treated as INVALID (returns "").
+// POLICY (65.md SCR-9): 'conflict' maps to 'maybe' — a per-reviewer decision can never
+// BE 'conflict' (conflict is a derived, between-reviewers state), so an exported
+// conflict cell is imported as the closest per-reviewer state: needs another look.
 const DECISION_ALIASES = {
   include: "include", included: "include", yes: "include", accept: "include", accepted: "include", relevant: "include",
+  in: "include", keep: "include", eligible: "include",
   exclude: "exclude", excluded: "exclude", no: "exclude", reject: "exclude", rejected: "exclude", irrelevant: "exclude",
-  maybe: "maybe", unsure: "maybe", uncertain: "maybe", "?": "maybe",
+  out: "exclude", "not relevant": "exclude", ineligible: "exclude",
+  maybe: "maybe", unsure: "maybe", uncertain: "maybe", unclear: "maybe", conflict: "maybe", "?": "maybe",
   undecided: "undecided", "": "undecided", pending: "undecided", unscreened: "undecided", none: "undecided",
 };
 

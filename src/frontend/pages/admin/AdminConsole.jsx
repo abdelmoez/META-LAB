@@ -6,6 +6,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Component, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext.jsx';
+import { useDocumentTitle } from '../../hooks/useDocumentTitle.js';
 import { adminApi, fetchVersion } from './adminApiClient.js';
 import UserMenu from '../../components/UserMenu.jsx';
 import NotificationsBell from '../../components/NotificationsBell.jsx';
@@ -1223,7 +1224,7 @@ function OverviewSection({ onNavigate, isAdmin = true }) {
               { label: 'Notifs Clicked',    value: m.notificationsStats?.clicked,      color: C.teal },
               { label: 'Notifs Dismissed',  value: m.notificationsStats?.dismissed,    color: C.muted },
               { label: 'Projects Deleted',  value: m.lifecycle?.projectsDeleted,       color: C.red },
-              { label: 'SIFT Deleted',      value: m.lifecycle?.siftProjectsDeleted,   color: C.red },
+              { label: 'Screening Deleted', value: m.lifecycle?.siftProjectsDeleted,   color: C.red },
               { label: 'Members Left',      value: m.lifecycle?.membersLeft,           color: C.muted },
               { label: 'Emails Sent',       value: m.emailStats?.sent,                 color: C.grn },
               { label: 'Emails Failed',     value: m.emailStats?.failed,               color: C.red },
@@ -4610,11 +4611,13 @@ function StyleSection() {
   const [loading, setLoading]   = useState(true);
   const [updatedAt, setUpdatedAt] = useState(null);
 
-  // prompt61 — Stitch UI rollout controls (the 'designSettings' SiteSetting — a
+  // 65.md — Ops-governed design controls (the 'designSettings' SiteSetting — a
   // separate concern from the brand theme above; has its own Save). Seeded from the
-  // shipped default so the toggle never flashes before the server record loads.
-  const [design, setDesign]               = useState({ allowAllUsers: true, defaultMode: 'stitch' });
-  const [designSaved, setDesignSaved]     = useState({ allowAllUsers: true, defaultMode: 'stitch' });
+  // shipped default so the controls never flash before the server record loads.
+  // `allowAllUsers` is carried through for storage back-compat but has no control
+  // here — it no longer gates rendering.
+  const [design, setDesign]               = useState({ allowAllUsers: true, defaultMode: 'stitch', allowLegacyFallback: false });
+  const [designSaved, setDesignSaved]     = useState({ allowAllUsers: true, defaultMode: 'stitch', allowLegacyFallback: false });
   const [designStatus, setDesignStatus]   = useState('idle');
 
   // Initialize from the server record (falls back to the live context brand).
@@ -4632,13 +4635,17 @@ function StyleSection() {
     return () => { alive = false; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Load the current Stitch UI rollout settings (degrades silently to the default).
+  // Load the current design settings (degrades silently to the default).
   useEffect(() => {
     let alive = true;
     adminApi.design.get()
       .then(d => {
         if (!alive || !d) return;
-        const next = { allowAllUsers: !!d.allowAllUsers, defaultMode: d.defaultMode === 'legacy' ? 'legacy' : 'stitch' };
+        const next = {
+          allowAllUsers: !!d.allowAllUsers,
+          defaultMode: d.defaultMode === 'legacy' ? 'legacy' : 'stitch',
+          allowLegacyFallback: !!d.allowLegacyFallback,
+        };
         setDesign(next); setDesignSaved(next);
       })
       .catch(() => { /* keep the shipped default */ });
@@ -4696,13 +4703,18 @@ function StyleSection() {
     } catch { setStatus('error'); setTimeout(() => setStatus('idle'), 3000); }
   }
 
-  const designDirty = design.allowAllUsers !== designSaved.allowAllUsers || design.defaultMode !== designSaved.defaultMode;
+  const designDirty = design.allowLegacyFallback !== designSaved.allowLegacyFallback || design.defaultMode !== designSaved.defaultMode;
 
   async function saveDesign() {
     setDesignStatus('saving');
     try {
-      const d = await adminApi.design.save({ allowAllUsers: design.allowAllUsers, defaultMode: design.defaultMode });
-      const next = { allowAllUsers: !!d.allowAllUsers, defaultMode: d.defaultMode === 'legacy' ? 'legacy' : 'stitch' };
+      // Partial PUT — allowAllUsers is untouched (kept server-side for back-compat).
+      const d = await adminApi.design.save({ defaultMode: design.defaultMode, allowLegacyFallback: design.allowLegacyFallback });
+      const next = {
+        allowAllUsers: !!d.allowAllUsers,
+        defaultMode: d.defaultMode === 'legacy' ? 'legacy' : 'stitch',
+        allowLegacyFallback: !!d.allowLegacyFallback,
+      };
       setDesign(next); setDesignSaved(next);
       setDesignStatus('saved'); setTimeout(() => setDesignStatus('idle'), 3000);
     } catch { setDesignStatus('error'); setTimeout(() => setDesignStatus('idle'), 3000); }
@@ -4789,24 +4801,28 @@ function StyleSection() {
         </div>
       </div>
 
-      {/* prompt61 — Stitch UI rollout. A separate SiteSetting ('designSettings') from the
-          brand theme above; persisted via the admin design-settings endpoint and read
-          publicly by resolveDesignMode(). Independent Save — does not touch the brand. */}
-      <SectionCard title="Stitch UI rollout">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', borderBottom: `1px solid ${C.brd}`, gap: 20 }}>
-          <div>
-            <div style={{ fontSize: 13, color: C.txt, fontWeight: 500 }}>Enable the Stitch UI for all users</div>
-            <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>When off, only admins can switch to the new Stitch interface. When on, every user can use it.</div>
-          </div>
-          <Toggle checked={!!design.allowAllUsers} onChange={v => setDesign(d => ({ ...d, allowAllUsers: v }))} testId="design-allow-all-toggle" />
-        </div>
+      {/* 65.md — Ops-governed interface design. A separate SiteSetting ('designSettings')
+          from the brand theme above; persisted via the admin design-settings endpoint and
+          read publicly by resolveDesignMode(). Independent Save — does not touch the brand. */}
+      <SectionCard title="Interface design">
         <div style={{ padding: '14px 20px 4px' }}>
-          <Field label="Default UI" note="The interface a user with no saved preference gets.">
+          <Field label="Default UI" note="The interface every user gets. Admins can preview either UI with ?ui= regardless of this setting.">
             <select data-testid="design-default-mode" value={design.defaultMode} onChange={e => setDesign(d => ({ ...d, defaultMode: e.target.value }))} style={{ ...inputStyle, maxWidth: 200 }}>
               <option value="legacy">Legacy</option>
               <option value="stitch">Stitch</option>
             </select>
           </Field>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', borderTop: `1px solid ${C.brd}`, gap: 20 }}>
+          <div>
+            <div style={{ fontSize: 13, color: C.txt, fontWeight: 500 }}>Allow legacy fallback</div>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 3, maxWidth: 560, lineHeight: 1.5 }}>
+              Off (the default): every non-admin user always gets the default UI above — ?ui=legacy links and saved
+              preferences are ignored. On: users may reach the classic UI via ?ui=legacy links and saved preferences.
+              Use as an emergency escape if the default UI misbehaves.
+            </div>
+          </div>
+          <Toggle checked={!!design.allowLegacyFallback} onChange={v => setDesign(d => ({ ...d, allowLegacyFallback: v }))} testId="design-legacy-fallback-toggle" />
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '4px 20px 16px' }}>
           <SaveButton onClick={saveDesign} status={designStatus} label="Save rollout" disabled={!designDirty} testId="design-settings-save" />
@@ -8055,6 +8071,7 @@ const roleSections = r => (r === 'admin' ? NAV_SECTIONS.map(s => s.id) : MOD_SEC
 export default function AdminConsole() {
   const { user }   = useAuth();
   const navigate   = useNavigate();
+  useDocumentTitle('Ops Console'); // 65.md NAV-2 — per-route tab title
   // Session role from AuthContext as a UX bootstrap — anything not verifiably
   // admin starts from the MINIMAL mod set; the /console fetch replaces it.
   const sessionRole = user?.role === 'admin' ? 'admin' : 'mod';

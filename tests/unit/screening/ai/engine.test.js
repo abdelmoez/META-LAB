@@ -91,6 +91,28 @@ describe('trainAndScore orchestration', () => {
     expect(inc.similar[0].recordId.startsWith('inc')).toBe(true);
   });
 
+  // 65.md SCR-6 — symmetric excluded-side neighbours + score provenance.
+  it('produces similar-EXCLUDED neighbours symmetric to the included side', () => {
+    const res = trainAndScore({ records, labelByRecordId: labels, picoSnapshot });
+    const exc = res.scores.find(s => s.recordId === 'exc11'); // held-out exclude-like record
+    expect(exc.similarExcluded.length).toBeGreaterThan(0);
+    expect(exc.similarExcluded[0].recordId.startsWith('exc')).toBe(true);
+    // The explanation carries both lists + the provenance marker for the UI.
+    expect(exc.explanation.similarExcluded.length).toBeGreaterThan(0);
+    expect(exc.explanation.scoreProvenance).toBe('live_in_sample');
+    const inc = res.scores.find(s => s.recordId === 'inc7');
+    expect(Array.isArray(inc.explanation.similar)).toBe(true);
+    expect(Array.isArray(inc.explanation.similarExcluded)).toBe(true);
+  });
+
+  it('neighbour lists never include the record itself', () => {
+    const res = trainAndScore({ records, labelByRecordId: labels, picoSnapshot });
+    for (const s of res.scores) {
+      expect(s.similar.every(n => n.recordId !== s.recordId)).toBe(true);
+      expect(s.similarExcluded.every(n => n.recordId !== s.recordId)).toBe(true);
+    }
+  });
+
   it('flags missing-abstract records as low confidence', () => {
     const recs = [...records, { id: 'noabs', title: 'HF', abstract: '' }];
     const res = trainAndScore({ records: recs, labelByRecordId: labels, picoSnapshot });

@@ -1563,15 +1563,17 @@ export async function updateThemeSettings(req, res) {
   }
 }
 
-// ── Design (Stitch UI rollout) settings ───────────────────────────────────────
-// prompt61 — admin read/write for the Stitch UI rollout, surfaced in Ops ›
-// Appearance. `allowAllUsers` lifts the admin-only gate so every user can use the
-// Stitch UI; `defaultMode` is the design a user with no saved preference gets.
-// Read publicly via GET /api/settings/public and consumed by resolveDesignMode()
-// on the frontend. The canonical default lives in DEFAULTS.designSettings in
+// ── Design (Ops-governed UI) settings ─────────────────────────────────────────
+// 65.md — admin read/write for the Ops-governed design, surfaced in Ops ›
+// Appearance. `defaultMode` is the interface every non-admin renders;
+// `allowLegacyFallback` re-enables ?ui=legacy links + saved preferences for
+// non-admins (emergency escape, default OFF); `allowAllUsers` is retained for
+// storage back-compat only and no longer gates rendering. Read publicly via
+// GET /api/settings/public and consumed by resolveDesignMode() on the frontend.
+// The canonical default lives in DEFAULTS.designSettings in
 // server/controllers/settingsController.js — this literal mirrors it (kept local
 // because that DEFAULTS object is not exported); keep the two in sync.
-const DESIGN_SETTINGS_DEFAULT = { allowAllUsers: true, defaultMode: 'stitch' };
+const DESIGN_SETTINGS_DEFAULT = { allowAllUsers: true, defaultMode: 'stitch', allowLegacyFallback: false };
 
 // ── GET /api/admin/design-settings ────────────────────────────────────────────
 
@@ -1609,6 +1611,12 @@ export async function updateDesignSettings(req, res) {
       }
       patch.defaultMode = body.defaultMode;
     }
+    if (body.allowLegacyFallback !== undefined) {
+      if (typeof body.allowLegacyFallback !== 'boolean') {
+        return res.status(400).json({ error: 'allowLegacyFallback must be a boolean' });
+      }
+      patch.allowLegacyFallback = body.allowLegacyFallback;
+    }
     if (Object.keys(patch).length === 0) {
       return res.status(400).json({ error: 'No valid design settings provided' });
     }
@@ -1625,8 +1633,8 @@ export async function updateDesignSettings(req, res) {
     await upsertSetting('designSettings', value, req.user.id);
 
     await logAdminAction(req, 'DESIGN_SETTINGS_UPDATED', 'SiteSetting', 'designSettings', {
-      oldAllowAllUsers: before.allowAllUsers, oldDefaultMode: before.defaultMode,
-      newAllowAllUsers: value.allowAllUsers, newDefaultMode: value.defaultMode,
+      oldAllowAllUsers: before.allowAllUsers, oldDefaultMode: before.defaultMode, oldAllowLegacyFallback: before.allowLegacyFallback,
+      newAllowAllUsers: value.allowAllUsers, newDefaultMode: value.defaultMode, newAllowLegacyFallback: value.allowLegacyFallback,
     });
 
     return res.json(value);

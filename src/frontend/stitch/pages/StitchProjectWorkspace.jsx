@@ -295,7 +295,8 @@ function DeepToolPage({ stage }) {
     : { background: S.card, borderRadius: 16, border: `1px solid ${salpha(S.outlineVariant, 0.45)}`, padding: 20, minHeight: 400 };
 
   return (
-    <StitchAppShell {...shellProps} breadcrumb={breadcrumb}>
+    <StitchAppShell {...shellProps} breadcrumb={breadcrumb}
+      docTitle={[STAGE_LABEL[stage] || 'Workspace', project.name]}>
       <div style={wrapperStyle}>
         <div style={headerWrapStyle}>{headerRow}</div>
         <div className={fullbleed ? undefined : 'stitch-tool-body'} style={bodyWrapStyle}>

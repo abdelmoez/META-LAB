@@ -92,14 +92,26 @@ async function processJob(job) {
       },
     });
 
+    // 65.md SCR-3 — invalid decision labels are warnings too (the record imported,
+    // its decision cell did not apply); the per-row detail lands in errorReport.
+    // Serialize under a byte budget by dropping WHOLE entries (never truncating the
+    // JSON mid-string — the reader must always parse).
+    const warnings = result.rejected + (result.invalidDecisions || 0);
+    let report = Array.isArray(result.errorReport) ? result.errorReport : [];
+    let reportJson = JSON.stringify(report);
+    while (reportJson.length > 100000 && report.length > 0) {
+      report = report.slice(0, Math.floor(report.length / 2));
+      reportJson = JSON.stringify(report);
+    }
     await patch(job.id, {
       stage: 'done',
-      status: result.rejected > 0 ? 'completed_with_warnings' : 'completed',
+      status: warnings > 0 ? 'completed_with_warnings' : 'completed',
       processedRecords: result.keptCount,
       importedRecords: result.imported,
       duplicateRecords: result.skippedDuplicates,
       rejectedRecords: result.rejected,
-      warningCount: result.rejected,
+      warningCount: warnings,
+      errorReport: reportJson,
       batchId: result.batchId,
       content: '',
       completedAt: new Date(),

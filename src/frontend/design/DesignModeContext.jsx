@@ -1,19 +1,22 @@
 /**
- * DesignModeContext.jsx — runtime wiring for the parallel design-mode system.
+ * DesignModeContext.jsx — runtime wiring for the design-mode system.
  *
- * Resolves the effective UI design (`legacy` | `stitch`) from the authenticated
- * user, a `?ui=` override, and the persisted preference, then publishes it to the
- * tree AND to <html data-ui-design> (so the scoped Stitch stylesheet activates).
+ * Resolves the effective UI design (`stitch` | `legacy`) from the authenticated
+ * user, a `?ui=` override, the persisted preference, and the Ops `designSettings`
+ * record, then publishes it to the tree AND to <html data-ui-design> (so the
+ * scoped Stitch stylesheet activates).
  *
- * Persistence mirrors the theme system exactly (ThemeContext): the explicit
- * local choice (localStorage) wins for instant, no-flash rendering, and the
- * server value (user.uiDesignMode, returned by getMe) is the cross-device source.
- * Writes go to BOTH localStorage and `PUT /api/profile` (best-effort).
+ * GOVERNANCE (65.md): the theme is Ops-governed for users. Every code path
+ * funnels through resolveDesignMode(): a non-admin ALWAYS renders
+ * designSettings.defaultMode (shipped: stitch) — their ?ui= links and saved
+ * preferences are ignored unless Ops enables `allowLegacyFallback`. Only ADMINS
+ * keep a personal preference (setMode/toggle no-op for everyone else), persisted
+ * to localStorage + `PUT /api/profile` (the server 403s non-admin writes).
  *
- * SECURITY: every code path funnels through resolveDesignMode(), which forces
- * `legacy` for anyone who is not an admin — so a non-admin can never land on the
- * Stitch UI even by crafting localStorage or a `?ui=stitch` deep link. The server
- * additionally refuses to persist `stitch` for a non-admin.
+ * NO-FLASH RULE: the pre-fetch seed is the SHIPPED default (stitch) or the
+ * localStorage-cached designSettings from the previous visit — never legacy — and
+ * the saved preference is never cleared before /api/settings/public has resolved,
+ * so a normal user never sees a legacy first paint.
  */
 import { createContext, useContext, useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
@@ -21,11 +24,17 @@ import { useAuth } from '../context/AuthContext.jsx';
 import {
   resolveDesignMode, readQueryOverride, getSavedDesignMode, saveDesignMode,
   clearSavedDesignMode, applyDesignAttr, isDesignAdmin, isValidMode, DEFAULT_MODE,
+  getCachedDesignSettings, cacheDesignSettings,
 } from './designMode.js';
+
+// Shipped defaults — MUST mirror DEFAULTS.designSettings in
+// server/controllers/settingsController.js so the pre-fetch seed and the server
+// agree (Stitch for everyone, legacy fallback off).
+const SHIPPED_DESIGN_SETTINGS = { allowAllUsers: true, defaultMode: DEFAULT_MODE, allowLegacyFallback: false };
 
 const DesignModeContext = createContext({
   mode: DEFAULT_MODE,
-  isStitch: false,
+  isStitch: true,
   isAdmin: false,
   ready: false,
   setMode: () => {},
@@ -53,25 +62,28 @@ export function DesignModeProvider({ children }) {
   const admin = isDesignAdmin(user);
   const override = readQueryOverride(location.search);
 
-  // prompt61 — Ops-governed rollout: { allowAllUsers, defaultMode } from
-  // /api/settings/public. Until it loads we keep the legacy/admin-only behaviour.
-  const [design, setDesign] = useState({ allowAllUsers: false, defaultMode: DEFAULT_MODE });
+  // Ops-governed record from /api/settings/public. Seeded from the previous
+  // visit's cache (or the shipped Stitch default) so the pre-fetch resolution
+  // already matches what the server will say — no legacy flash while it loads.
+  const [design, setDesign] = useState(() => getCachedDesignSettings() || SHIPPED_DESIGN_SETTINGS);
+  const [settingsReady, setSettingsReady] = useState(false);
   useEffect(() => {
     let dead = false;
     fetch('/api/settings/public', { credentials: 'include' })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => {
         const ds = (d && d.designSettings) || {};
-        if (!dead) setDesign({
+        const next = {
           allowAllUsers: !!ds.allowAllUsers,
           defaultMode: isValidMode(ds.defaultMode) ? ds.defaultMode : DEFAULT_MODE,
-        });
+          allowLegacyFallback: ds.allowLegacyFallback === true,
+        };
+        cacheDesignSettings(next); // next pre-paint bootstrap reads this
+        if (!dead) { setDesign(next); setSettingsReady(true); }
       })
-      .catch(() => { /* keep defaults */ });
+      .catch(() => { /* keep the seed; never mark ready on failure */ });
     return () => { dead = true; };
   }, []);
-  const allowAll = design.allowAllUsers;
-  const canStitch = allowAll || admin; // who may render Stitch
 
   // Seed from the pre-paint value already on <html> (bootstrap) so the first
   // React render matches what the user is looking at — no flash.
@@ -83,31 +95,35 @@ export function DesignModeProvider({ children }) {
     return getSavedDesignMode() || DEFAULT_MODE;
   });
 
-  // Tracks the last override we auto-persisted so a deep link (?ui=stitch) sticks
-  // exactly once instead of re-writing on every render.
+  // Tracks the last override we auto-persisted so an admin deep link (?ui=legacy)
+  // sticks exactly once instead of re-writing on every render.
   const persistedOverrideRef = useRef(null);
 
   // ── Resolve + apply whenever the inputs change ─────────────────────────────
   useEffect(() => {
-    // Until auth settles, don't fight the bootstrap value: a signed-out first
-    // paint is already legacy, and a returning admin's cached localStorage is
-    // honored by the seed above. Once loading clears we resolve authoritatively.
+    // Until auth settles, don't fight the bootstrap value: the pre-paint chain
+    // (?ui= → saved → cached defaultMode → stitch) already painted the best
+    // guess. Once loading clears we resolve authoritatively.
     if (loading) return;
 
     const savedMode = getSavedDesignMode() ?? (user ? user.uiDesignMode : null);
-    const resolved = resolveDesignMode({ user, savedMode, queryOverride: override, allowAll, defaultMode: design.defaultMode });
+    const resolved = resolveDesignMode({ user, savedMode, queryOverride: override, settings: design });
 
-    // Fail-safe hygiene: when Stitch is NOT available to this viewer, never carry a
-    // stitch preference around (mirrors the original admin-only guard).
-    if (!canStitch && getSavedDesignMode()) clearSavedDesignMode();
+    // Hygiene: a non-admin's saved mode is inert while fallback is off, but a
+    // stale `legacy` would still mis-paint the pre-auth bootstrap frame on the
+    // NEXT visit — drop it. ONLY after the authoritative settings fetch has
+    // resolved (never on the seed, which could wrongly discard a valid pref).
+    if (settingsReady && !admin && !design.allowLegacyFallback && getSavedDesignMode()) {
+      clearSavedDesignMode();
+    }
 
     applyDesignAttr(resolved);
     setModeState(resolved);
 
-    // A valid ?ui= override from an admin becomes the persisted preference (so it
-    // survives dropping the param / refresh). Emergency `?ui=legacy` therefore
-    // also "sticks" the user safely back on legacy.
-    if (canStitch && isValidMode(override) && persistedOverrideRef.current !== override) {
+    // A valid ?ui= override becomes the persisted preference for ADMINS ONLY (so
+    // it survives dropping the param / refresh). Non-admin overrides are never
+    // persisted — the server would 403 the write anyway.
+    if (admin && isValidMode(override) && persistedOverrideRef.current !== override) {
       persistedOverrideRef.current = override;
       if (getSavedDesignMode() !== override) {
         saveDesignMode(override);
@@ -115,29 +131,26 @@ export function DesignModeProvider({ children }) {
       }
     }
     if (!isValidMode(override)) persistedOverrideRef.current = null;
-  }, [loading, user, admin, override, allowAll, canStitch, design.defaultMode]);
+  }, [loading, user, admin, override, design, settingsReady]);
 
-  // ── Imperative switch (used by AdminDesignSwitch + error-boundary escape) ───
+  // ── Imperative switch (Ops-governed: personal preference is ADMIN-ONLY) ────
   const setMode = useCallback((next) => {
-    if (!canStitch) return; // server also enforces; this is the client guard
+    if (!admin) return; // non-admin setMode is a no-op; server also enforces
     if (!isValidMode(next)) next = DEFAULT_MODE;
     applyDesignAttr(next);
     setModeState(next);
     saveDesignMode(next);
     persistToServer(next);
-  }, [canStitch]);
+  }, [admin]);
 
   const toggle = useCallback(() => {
     setMode(mode === 'stitch' ? 'legacy' : 'stitch');
   }, [mode, setMode]);
 
-  // Viewers without Stitch access always report legacy regardless of any seeded state.
-  const effectiveMode = canStitch ? mode : DEFAULT_MODE;
-
   return (
     <DesignModeContext.Provider value={{
-      mode: effectiveMode,
-      isStitch: effectiveMode === 'stitch',
+      mode,
+      isStitch: mode === 'stitch',
       isAdmin: admin,
       ready: !loading,
       setMode,

@@ -10,7 +10,9 @@
  */
 import { useEffect, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../../../context/AuthContext.jsx';
 import { notificationsApi } from '../../../api-client/notificationsApi.js';
+import { isStaffUser } from '../../../components/notificationTarget.js';
 import { relTime } from '../../../pages/projectLanding.helpers.js';
 import {
   StitchCard, StitchSectionHeader, StitchButton, StitchEmptyState,
@@ -23,20 +25,23 @@ const TYPE_ICON = {
 };
 function iconFor(type) { return TYPE_ICON[type] || 'clock'; }
 
-function targetUrl(n) {
+function targetUrl(n, staff) {
   // design4: prefer the unified PecanRev workspace. A screening-related notification
-  // on a LINKED project lands directly on the embedded screening engine in-shell;
-  // a standalone screening project (no PecanRev parent) keeps the engine route.
+  // on a LINKED project lands directly on the embedded screening engine in-shell.
+  // 65.md NAV-1: the standalone engine route is STAFF-ONLY (404-cloaked AdminRoute)
+  // — a non-staff row without a workspace parent renders without navigation.
   if (n.relatedMetaLabProjectId) {
     const base = `/app/project/${encodeURIComponent(n.relatedMetaLabProjectId)}`;
     return n.relatedScreenProjectId ? `${base}?tab=screening` : base;
   }
-  if (n.relatedScreenProjectId) return `/sift-beta/projects/${encodeURIComponent(n.relatedScreenProjectId)}`;
+  if (n.relatedScreenProjectId && staff) return `/sift-beta/projects/${encodeURIComponent(n.relatedScreenProjectId)}`;
   return null;
 }
 
 export default function ActivityView() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const staff = isStaffUser(user);
   const [items, setItems] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -62,7 +67,7 @@ export default function ActivityView() {
   };
 
   const open = async (n) => {
-    const url = targetUrl(n);
+    const url = targetUrl(n, staff);
     try { if (!n.readAt) await notificationsApi.opened(n.id); } catch { /* non-fatal */ }
     if (url) navigate(url);
   };
@@ -82,7 +87,7 @@ export default function ActivityView() {
       {items && items.length ? (
         <div style={{ display: 'flex', flexDirection: 'column' }}>
           {items.map((n, i) => {
-            const url = targetUrl(n);
+            const url = targetUrl(n, staff);
             const unreadRow = !n.readAt && !n.dismissedAt;
             return (
               <button

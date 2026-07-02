@@ -9,11 +9,13 @@ const DEFAULTS = {
   // admin client and stored verbatim (every value strictly validated as hex).
   // Default = the original indigo, palette null (frontend uses stylesheet base).
   themeSettings: JSON.stringify(defaultThemeSettings()),
-  // prompt61 — UI design-mode rollout, controlled from Ops › Appearance. `allowAllUsers`
-  // lifts the admin-only gate so EVERY user can use the Stitch UI; `defaultMode` is the
-  // design a user with no explicit preference gets. Shipped defaulting to Stitch for
-  // everyone (the new product default); flip either field in Ops without a redeploy.
-  designSettings: JSON.stringify({ allowAllUsers: true, defaultMode: 'stitch' }),
+  // 65.md — Ops-governed UI design. `defaultMode` is the interface EVERY non-admin
+  // renders (admins keep a personal ?ui=/saved chain). `allowLegacyFallback` OFF
+  // (default) means users can never reach legacy — ON re-enables ?ui=legacy links +
+  // saved preferences as an emergency escape. `allowAllUsers` is retained for
+  // storage back-compat only and no longer gates rendering. Controlled from
+  // Ops › Appearance; changes take effect without a redeploy.
+  designSettings: JSON.stringify({ allowAllUsers: true, defaultMode: 'stitch', allowLegacyFallback: false }),
   appSettings: JSON.stringify({
     appName: 'PecanRev',
     registrationOpen: true,
@@ -242,6 +244,13 @@ export async function getPublicSettings(req, res) {
     // created still surface (with their default value) to the frontend — same
     // reasoning as appSettings above. Stored flags win.
     result.featureFlags = { ...defaultFeatureFlags(), ...(result.featureFlags || {}) };
+
+    // 65.md — merge designSettings defaults under the stored row so fields added
+    // after the row was created (allowLegacyFallback) always reach the frontend
+    // resolver with their shipped default. Stored values win.
+    let designDefaults = {};
+    try { designDefaults = JSON.parse(DEFAULTS.designSettings); } catch { /* keep {} */ }
+    result.designSettings = { ...designDefaults, ...(result.designSettings || {}) };
 
     // prompt9 — additive top-level conveniences for the frontend ThemeContext
     // and maintenance banner (existing consumers of the nested keys unaffected).

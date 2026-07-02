@@ -14,7 +14,7 @@
  */
 import { useState, useEffect, useCallback } from 'react';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
-import { Loading, ErrorBanner, Button, Badge, Card, EmptyState } from '../ui/components.jsx';
+import { Loading, ErrorBanner, Button, Badge, Card, EmptyState, Modal } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -74,6 +74,12 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
   const [resolving, setResolving]   = useState({}); // { [gid]: bool }
   const [resolveErr, setResolveErr] = useState({}); // { [gid]: string }
   const [showResolved, setShowResolved] = useState(false);
+
+  // 65.md SCR-4 — bulk "resolve all exact duplicates" (confirm → run → counts).
+  const [bulkConfirm, setBulkConfirm] = useState(false);
+  const [bulkBusy, setBulkBusy]       = useState(false);
+  const [bulkResult, setBulkResult]   = useState(null); // { resolvedGroups, flaggedDuplicates, mergedFieldCount, skippedGroups }
+  const [bulkErr, setBulkErr]         = useState(null);
 
   const isLeader = !!access.isLeader;
 
@@ -160,8 +166,28 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
     }
   }, [pid, resolving, load, refreshProject]);
 
+  // 65.md SCR-4 — bulk-resolve every all-exact group server-side (non-destructive:
+  // primaries kept + blank-filled, the rest only flagged as duplicates).
+  const handleResolveExact = useCallback(async () => {
+    if (bulkBusy) return;
+    setBulkBusy(true);
+    setBulkErr(null);
+    try {
+      const r = await screeningApi.resolveExactDuplicates(pid);
+      setBulkResult(r);
+      setBulkConfirm(false);
+      await load();
+      if (refreshProject) await refreshProject();
+    } catch (e) {
+      setBulkErr(e?.message || 'Bulk resolution failed.');
+    } finally {
+      setBulkBusy(false);
+    }
+  }, [pid, bulkBusy, load, refreshProject]);
+
   const unresolved = groups.filter(g => !g.resolved);
   const resolved   = groups.filter(g => g.resolved);
+  const exactUnresolved = unresolved.filter(g => g.dupType === 'exact_duplicate').length;
 
   // ── Loading / error (first paint) ──
   if (loading && groups.length === 0) {
@@ -194,17 +220,59 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
 
         {isLeader && (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8, flexShrink: 0 }}>
-            <Button variant="primary" onClick={handleDetect} disabled={detecting}>
-              {detecting ? 'Detecting…' : '⟳ Detect Duplicates'}
-            </Button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+              {exactUnresolved > 0 && (
+                <Button
+                  variant="ghost"
+                  onClick={() => { setBulkErr(null); setBulkConfirm(true); }}
+                  disabled={bulkBusy}
+                  title="Resolve every group whose records share an exact DOI/PMID — keeps the most complete record, flags the rest"
+                >
+                  {bulkBusy ? 'Resolving…' : `Resolve ${exactUnresolved} exact group${exactUnresolved === 1 ? '' : 's'}`}
+                </Button>
+              )}
+              <Button variant="primary" onClick={handleDetect} disabled={detecting}>
+                {detecting ? 'Detecting…' : '⟳ Detect Duplicates'}
+              </Button>
+            </div>
             {detectResult && (
               <div style={{ fontSize: 11.5, fontFamily: MONO, color: C.grn }}>
                 {detectResult.found} group{detectResult.found === 1 ? '' : 's'} / {detectResult.created} new
               </div>
             )}
+            {bulkResult && (
+              <div style={{ fontSize: 11.5, fontFamily: MONO, color: C.grn, textAlign: 'right' }}>
+                {bulkResult.resolvedGroups} group{bulkResult.resolvedGroups === 1 ? '' : 's'} resolved · {bulkResult.flaggedDuplicates} flagged
+                {bulkResult.mergedFieldCount > 0 ? ` · ${bulkResult.mergedFieldCount} field${bulkResult.mergedFieldCount === 1 ? '' : 's'} filled` : ''}
+                {bulkResult.skippedGroups > 0 ? ` · ${bulkResult.skippedGroups} left for review` : ''}
+              </div>
+            )}
+            {bulkErr && !bulkConfirm && (
+              <div style={{ fontSize: 11, fontFamily: MONO, color: C.red }}>{bulkErr}</div>
+            )}
           </div>
         )}
       </div>
+
+      {/* 65.md SCR-4 — bulk-resolve confirmation */}
+      {bulkConfirm && (
+        <Modal onClose={() => !bulkBusy && setBulkConfirm(false)} width={460} label="Resolve all exact duplicates">
+          <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 10 }}>Resolve all exact duplicates?</div>
+          <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.6, marginBottom: 6 }}>
+            This resolves <strong style={{ color: C.txt }}>{exactUnresolved}</strong> group{exactUnresolved === 1 ? '' : 's'} whose
+            records share an <strong style={{ color: C.txt }}>exact DOI or PMID</strong>. In each group the most complete record is
+            kept as primary (missing abstract/DOI/PMID are filled from the copies — existing values are never overwritten) and the
+            other copies are flagged as duplicates. Nothing is deleted; probable/possible groups stay for human review.
+          </div>
+          {bulkErr && <div style={{ fontSize: 12, color: C.red, marginBottom: 6 }}>{bulkErr}</div>}
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 20 }}>
+            <Button variant="ghost" onClick={() => setBulkConfirm(false)} disabled={bulkBusy}>Cancel</Button>
+            <Button variant="primary" onClick={handleResolveExact} disabled={bulkBusy}>
+              {bulkBusy ? 'Resolving…' : 'Resolve exact duplicates'}
+            </Button>
+          </div>
+        </Modal>
+      )}
 
       {/* ───────── Error ───────── */}
       {error && (

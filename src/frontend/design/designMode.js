@@ -1,19 +1,19 @@
 /**
- * designMode.js — pure, dependency-free core of the parallel design-mode system.
+ * designMode.js — pure, dependency-free core of the design-mode system.
  *
  * PecanRev ships TWO presentation layers over ONE shared application (same APIs,
  * routes, data, permissions, business logic):
- *   - `legacy` — the existing, production interface. ALWAYS the default.
- *   - `stitch` — the new "Vivid Enterprise" research-OS design (admin preview).
+ *   - `stitch` — the product UI. ALWAYS the default for every user.
+ *   - `legacy` — the classic interface, kept as an admin/Ops-governed fallback.
  *
- * HARD RULES encoded here (the security/safety contract):
- *   1. Only an ADMIN (user.role === 'admin') may ever resolve to `stitch`.
- *      Non-admins, signed-out visitors, and mods ALWAYS get `legacy`. This is the
- *      authoritative client gate; the server independently refuses to PERSIST
- *      `stitch` for a non-admin (profileController), so neither layer can be
- *      tricked into showing the preview to a normal user.
- *   2. Any invalid / unknown saved value FAILS SAFE to `legacy`.
- *   3. A `?ui=legacy` query override is the emergency escape hatch and always wins.
+ * HARD RULES encoded here (65.md — the governance contract):
+ *   1. The theme is Ops-governed for users: a NON-ADMIN always renders
+ *      `settings.defaultMode` (shipped: stitch). Their ?ui= override and any saved
+ *      preference are IGNORED unless Ops flips `settings.allowLegacyFallback` on —
+ *      the emergency escape that re-enables ?ui=legacy links + saved preferences.
+ *   2. An ADMIN (user.role === 'admin') keeps the personal chain:
+ *      ?ui= override → saved preference → settings.defaultMode.
+ *   3. Any invalid / unknown value FAILS SAFE to `stitch` (the product UI).
  *
  * This module has NO imports, NO React, NO DOM beyond the tiny localStorage/dataset
  * helpers (each individually guarded) — so it is trivially unit-testable and safe to
@@ -21,8 +21,13 @@
  */
 
 export const DESIGN_MODES = ['legacy', 'stitch'];
-export const DEFAULT_MODE = 'legacy';
+export const DEFAULT_MODE = 'stitch';
 export const STORAGE_KEY = 'metalab_ui_design';
+/** localStorage cache of the public `designSettings` record — lets the index.html
+ *  pre-paint bootstrap (and the provider's pre-fetch seed) know the Ops-governed
+ *  defaultMode before /api/settings/public resolves, so there is never a
+ *  wrong-theme first paint for returning visitors. */
+export const SETTINGS_CACHE_KEY = 'metalab_design_settings';
 /** dataset key on <html> (document.documentElement.dataset.uiDesign) → attr data-ui-design */
 export const ROOT_DATASET_KEY = 'uiDesign';
 
@@ -31,15 +36,15 @@ export function isValidMode(mode) {
   return typeof mode === 'string' && DESIGN_MODES.includes(mode);
 }
 
-/** Coerce anything to a supported mode, failing safe to legacy. */
+/** Coerce anything to a supported mode, failing safe to the product UI (stitch). */
 export function normalizeMode(mode) {
   return isValidMode(mode) ? mode : DEFAULT_MODE;
 }
 
 /**
- * The single source of truth for "is this user allowed to use the Stitch UI".
+ * The single source of truth for "may this user hold a PERSONAL design preference".
  * Mirrors AdminRoute's staff check but is STRICTER: mods are staff for the Ops
- * console, but the design switch is admin-only (design.md §5: "Do not allow
+ * console, but design governance is admin-only (design.md §5: "Do not allow
  * moderators to obtain admin-only design controls.").
  */
 export function isDesignAdmin(user) {
@@ -69,26 +74,30 @@ export function readQueryOverride(search) {
  * Resolve the effective design mode from all inputs. This is the function the
  * provider (and the unit tests) rely on; the ordering IS the contract:
  *
- *   non-admin / signed-out      → ALWAYS legacy (rule 1)
- *   ?ui=<valid> override        → wins (rule 3 — emergency hatch + deep-link preview)
- *   saved preference (validated)→ used
- *   anything else / invalid     → legacy (rule 2)
+ *   admin                          → ?ui= override → saved preference → settings.defaultMode
+ *   non-admin, fallback ENABLED    → same chain (Ops opted users into the escape hatch)
+ *   non-admin, fallback OFF (norm) → ALWAYS settings.defaultMode — override + saved IGNORED
+ *
+ * `settings` = { defaultMode = 'stitch', allowLegacyFallback = false } — the Ops
+ * `designSettings` SiteSetting. The pre-61 call shape (top-level `defaultMode`)
+ * is still accepted so stale callers degrade gracefully instead of crashing.
  *
  * @param {object}  args
  * @param {object?} args.user           current user (or null)
  * @param {string?} args.savedMode      persisted preference (localStorage or server)
  * @param {string?} args.queryOverride  already-parsed ?ui= value (or null)
+ * @param {object?} args.settings       Ops designSettings { defaultMode, allowLegacyFallback }
  */
-export function resolveDesignMode({ user, savedMode, queryOverride, allowAll, defaultMode } = {}) {
-  // prompt61 — availability + default are governed by the Ops `designSettings`
-  // SiteSetting (allowAllUsers + defaultMode), not hardcoded. When `allowAll` is on,
-  // ANY visitor may use Stitch; otherwise it stays admin-only (the original rule).
-  // `defaultMode` (default 'legacy') is used when there is no saved preference.
-  const dflt = isValidMode(defaultMode) ? defaultMode : DEFAULT_MODE;
-  const canStitch = !!allowAll || isDesignAdmin(user);
-  if (!canStitch) return DEFAULT_MODE;
+export function resolveDesignMode({ user, savedMode, queryOverride, settings, defaultMode } = {}) {
+  const s = settings && typeof settings === 'object' ? settings : {};
+  const dflt = isValidMode(s.defaultMode) ? s.defaultMode
+    : isValidMode(defaultMode) ? defaultMode // legacy call shape (prompt61)
+    : DEFAULT_MODE;
+  const personalChain = isDesignAdmin(user) || s.allowLegacyFallback === true;
+  if (!personalChain) return dflt;
   if (isValidMode(queryOverride)) return queryOverride;
-  return normalizeMode(savedMode || dflt);
+  if (isValidMode(savedMode)) return savedMode;
+  return dflt;
 }
 
 /* ─── localStorage persistence (each call individually guarded) ───────────── */
@@ -118,11 +127,43 @@ export function clearSavedDesignMode() {
   }
 }
 
+/* ─── designSettings cache (pre-paint seed for the Ops-governed default) ────── */
+
+/** Read the cached public designSettings, or null when absent/corrupt. */
+export function getCachedDesignSettings() {
+  try {
+    const raw = localStorage.getItem(SETTINGS_CACHE_KEY);
+    const obj = raw ? JSON.parse(raw) : null;
+    if (!obj || typeof obj !== 'object') return null;
+    return {
+      allowAllUsers: !!obj.allowAllUsers,
+      defaultMode: isValidMode(obj.defaultMode) ? obj.defaultMode : DEFAULT_MODE,
+      allowLegacyFallback: obj.allowLegacyFallback === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Cache the fetched public designSettings for the next pre-paint bootstrap. */
+export function cacheDesignSettings(settings) {
+  try {
+    if (!settings || typeof settings !== 'object') return;
+    localStorage.setItem(SETTINGS_CACHE_KEY, JSON.stringify({
+      allowAllUsers: !!settings.allowAllUsers,
+      defaultMode: isValidMode(settings.defaultMode) ? settings.defaultMode : DEFAULT_MODE,
+      allowLegacyFallback: settings.allowLegacyFallback === true,
+    }));
+  } catch {
+    /* non-fatal */
+  }
+}
+
 /* ─── DOM application (sets the CSS-isolation root attribute) ──────────────── */
 
 /**
  * Set <html data-ui-design="..."> so the scoped Stitch stylesheet activates.
- * Always normalizes — a bad value paints legacy, never an undefined attr.
+ * Always normalizes — a bad value paints the product UI, never an undefined attr.
  * No-ops outside the browser.
  */
 export function applyDesignAttr(mode) {

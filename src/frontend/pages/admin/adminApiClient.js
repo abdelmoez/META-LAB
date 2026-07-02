@@ -108,9 +108,10 @@ export const adminApi = {
     save:         (body)     => req(`${BASE}/settings/theme`, { method: 'PATCH', ...json(body) }),
   },
 
-  // ── Stitch UI rollout (prompt61, admin only) ─────────────────────────────────
-  // get → { allowAllUsers, defaultMode }; save(body) PUTs a partial
-  // { allowAllUsers?, defaultMode? } → the merged record. Validated server-side.
+  // ── Ops-governed UI design (65.md, admin only) ───────────────────────────────
+  // get → { allowAllUsers, defaultMode, allowLegacyFallback }; save(body) PUTs a
+  // partial { allowAllUsers?, defaultMode?, allowLegacyFallback? } → the merged
+  // record. Validated server-side. allowAllUsers is storage back-compat only.
   design: {
     get:          ()         => req(`${BASE}/design-settings`),
     save:         (body)     => req(`${BASE}/design-settings`, { method: 'PUT', ...json(body) }),

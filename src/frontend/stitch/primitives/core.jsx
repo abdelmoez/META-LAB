@@ -268,7 +268,10 @@ export function StitchPageHeader({ title, subtitle, eyebrow, actions, icon, styl
         ) : null}
         <div style={{ minWidth: 0 }}>
           {eyebrow ? <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.06em', textTransform: 'uppercase', color: S.brand, marginBottom: 4 }}>{eyebrow}</div> : null}
-          <h1 style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.02em', lineHeight: 1.15, color: S.textPrimary, margin: 0 }}>{title}</h1>
+          {/* overflowWrap:'anywhere' — a long unbroken title (pasted DOI-like
+              string) must wrap inside the header instead of overflowing it. */}
+          <h1 title={typeof title === 'string' ? title : undefined}
+            style={{ fontSize: 28, fontWeight: 700, letterSpacing: '-0.02em', lineHeight: 1.15, color: S.textPrimary, margin: 0, overflowWrap: 'anywhere' }}>{title}</h1>
           {subtitle ? <p style={{ fontSize: 14, color: S.textSecondary, margin: '4px 0 0' }}>{subtitle}</p> : null}
         </div>
       </div>

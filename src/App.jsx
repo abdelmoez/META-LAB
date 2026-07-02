@@ -6,7 +6,6 @@ import { ThemeProvider } from './frontend/theme/ThemeContext.jsx';
 import { DesignModeProvider } from './frontend/design/DesignModeContext.jsx';
 import DesignRoute from './frontend/design/DesignRoute.jsx';
 import ForceLegacyDesign from './frontend/design/ForceLegacyDesign.jsx';
-import AdminDesignSwitch from './frontend/design/AdminDesignSwitch.jsx';
 import ProtectedRoute from './frontend/components/ProtectedRoute.jsx';
 import PublicRoute    from './frontend/components/PublicRoute.jsx';
 import AdminRoute     from './frontend/components/AdminRoute.jsx';
@@ -32,6 +31,7 @@ const VerifyEmail   = lazy(() => import('./frontend/pages/VerifyEmail.jsx'));
 const Onboarding    = lazy(() => import('./frontend/pages/Onboarding.jsx'));
 const RobPage       = lazy(() => import('./frontend/rob/RobPage.jsx'));
 const Terms         = lazy(() => import('./frontend/pages/Terms.jsx'));
+const NotFound      = lazy(() => import('./frontend/pages/NotFound.jsx'));
 // prompt48 — Beta Waitlist preview route (noindex). The live homepage swap is
 // handled by BetaWaitlistGate on `/`; this route renders the page regardless of
 // the flag so admins can preview it safely.
@@ -167,10 +167,8 @@ export default function App() {
     <AuthProvider>
     <DesignModeProvider>
       <GlobalPresence />
-      {/* design.md §5/§6 — admin-only design switch, mounted as a floating overlay
-          beside (never inside) the legacy header. Renders nothing for non-admins
-          and only in legacy mode; the Stitch header hosts its own inline switch. */}
-      <AdminDesignSwitch variant="floating" />
+      {/* 65.md — the in-app design switch is gone: Stitch is the product UI for
+          everyone. Admins control the theme from Ops › Appearance + ?ui= only. */}
       <Suspense fallback={<RouteFallback />}>
       <Routes>
         {/* Public landing page. prompt48 — when the betaWaitlist flag is ON,
@@ -237,8 +235,10 @@ export default function App() {
         <Route path="/rob"             element={<ProtectedRoute><OnboardingGate><RobPage /></OnboardingGate></ProtectedRoute>} />
         <Route path="/rob/:projectId"  element={<ProtectedRoute><OnboardingGate><RobPage /></OnboardingGate></ProtectedRoute>} />
 
-        {/* Fallback */}
-        <Route path="*"         element={<Navigate to="/" replace />} />
+        {/* 65.md UX-7 — unknown routes get a real 404 page instead of a silent
+            bounce to the marketing landing (stale/mistyped in-app links were
+            dropping signed-in researchers on the public page with no explanation). */}
+        <Route path="*"         element={<NotFound />} />
       </Routes>
       </Suspense>
     </DesignModeProvider>

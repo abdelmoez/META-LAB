@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { prisma } from '../db/client.js';
 import { DEFAULT_MAX_JOB_ATTEMPTS, partitionStuckJobs } from '../utils/jobRetry.js';
 import {
-  computeExportCvScores, streamExportToSink, exportContentType,
+  computeExportCvScores, streamExportToSink, exportContentType, EXPORT_CV_MAX_ASYNC,
 } from './screeningExportService.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -93,9 +93,12 @@ async function processJob(job) {
 
     // Capped CV, OFF the event loop (worker_thread). Above the cap it returns blank with a
     // status so the export stays fast and the CSV schema is unchanged (62.md RC-1).
+    // 65.md SCR-8 — the WORKER path uses the higher async cap (default 20000, env
+    // EXPORT_CV_MAX_ASYNC): CV runs fold-by-fold inside the compute worker_thread, so a
+    // 10k-record validation project gets real held-out scores instead of blank columns.
     await patch(job.id, { stage: 'cvscoring', heartbeatAt: new Date() });
     const cv = job.includeAiCv
-      ? await computeExportCvScores(job.projectId)
+      ? await computeExportCvScores(job.projectId, { cap: EXPORT_CV_MAX_ASYNC })
       : { meta: { scoreType: '', status: 'disabled', reason: 'AI columns not requested' }, byRecordId: new Map(), generatedAt: new Date().toISOString() };
 
     await patch(job.id, { stage: 'rendering', cvStatus: cv.meta?.status || '', heartbeatAt: new Date() });

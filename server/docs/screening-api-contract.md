@@ -757,3 +757,97 @@ across all projects (records where `handoffStatus != ''`, newest first, limit 10
   `missing:true` when the linked META·LAB project is gone, soft-deleted, or not owned by the workspace
   owner; `canOpen` = caller is workspace owner (and target live) or member with `canViewMetaLab`.
   All pre-existing fields are byte-identical.
+
+---
+
+## 65.md additions (2026-07-01)
+
+### List records — fast path (SCR-1, no shape change)
+
+- `GET /projects/:pid/records` now serves the SAFE subset — no `search`, no `keywords`,
+  no `hasAbstract`, no `aiQueue`/`aiBand` (or their defaults), and `filter` in
+  `all | unopened_me | opened_me` — via a paged DB query (Prisma WHERE + orderBy +
+  skip/take + count) instead of loading the whole project per page request.
+  The response shape is **byte-identical in structure**; ordering stays `createdAt asc`
+  (with a deterministic `id` tiebreak on the fast path so skip/take pagination is stable).
+  Decision filters (`undecided`/`included`/…), text search, keyword filters and AI-queue
+  ordering keep the existing in-memory path unchanged.
+
+### Import preview (SCR-10)
+
+- `POST /projects/:pid/import/preview` — body `{ format?, content, filename? }`. Runs the
+  REAL parser registry (`parseImportContent`) over at most the first **256 KB** of `content`
+  and returns:
+
+```json
+{
+  "detectedFormat": "RIS",
+  "sample": [ { "title": "…", "authors": "…", "year": "…", "journal": "…", "doi": "…", "decision": "undecided" } ],
+  "counts": { "parsed": 120, "rejected": 2 },
+  "decisionColumnDetected": false,
+  "truncated": false
+}
+```
+
+  Read-only (nothing inserted; the admin `allowImport` switch does not apply). Permission
+  gate mirrors import: outsider 404, member without `canImportRecords` 403. 400 when
+  `content` is empty. `sample` is the first 5 parsed records; `rejected` counts records
+  with no usable title/DOI/PMID; `truncated:true` means counts describe only the head.
+
+### Import row-issue reporting (SCR-3)
+
+- `dedupeAndInsertRecords` now collects per-row reasons — rejected rows (no title/DOI/PMID)
+  and unrecognised decision values — capped at **200** entries (`ERROR_REPORT_CAP`).
+- `POST /projects/:pid/import` response gains the additive field
+  `errorReport: [{ index, title, reason }]` (`index` = 1-based position in the parsed file).
+- The async worker persists the same list to `ScreenImportJob.errorReport`; the job now
+  reaches `completed_with_warnings` when there are rejects **or** invalid decision labels
+  (`warningCount` = both).
+- `GET /projects/:pid/import/jobs/:jobId` gains the additive field `errorReport` (parsed array).
+- `GET /projects/:pid/import-batches/:batchId/error-report` (NEW, member-visible like the
+  batch list) → `{ batchId, rejectedCount, warningCount, errorReport }`. Batches imported
+  before this feature (or synchronously) return an empty `errorReport`.
+
+### Export completeness (SCR-2, append-only columns)
+
+- CSV/JSON exports (`GET /projects/:pid/export` and the async job) APPEND new columns after
+  the AI CV columns — existing columns never move:
+  `conflict_status` (authoritative consensus state from title/abstract decisions:
+  `awaiting_screening | awaiting_second_reviewer | agreement_included | agreement_excluded |
+  agreement_other | conflict`), `duplicate_group_id`, `is_primary`, `my_decided_at`, then
+  `reviewer_N_name / reviewer_N_decision / reviewer_N_decided_at` for N = 1…6
+  (`EXPORT_REVIEWER_CAP`; fixed schema — blank families beyond the project's reviewers).
+- Reviewer ordinals are project-wide and deterministic (reviewerId ascending), so
+  `reviewer_1` is the same person on every row of one export.
+- Identity mirrors the listRecords policy: names are exported only when the project is not
+  blind OR the requester is a leader/owner; otherwise `reviewer_N_name` is the anonymous
+  ordinal `Reviewer N`. Per-reviewer decisions are the title/abstract-stage decisions
+  (the same visibility the workbench already gives every member).
+
+### Export CV cap (SCR-8)
+
+- The synchronous export keeps `EXPORT_CV_MAX` (default 5000). The ASYNC export job now
+  computes cross-validated AI scores up to `EXPORT_CV_MAX_ASYNC` (default **20000**, env
+  override) — the CV runs fold-by-fold inside the compute worker_thread, off the event
+  loop. Beyond the async cap the honest `too_large` status still blanks the CV columns.
+
+### Duplicates (SCR-4)
+
+- `POST /projects/:pid/duplicates/resolve-exact` (NEW; same permission gate as detect) —
+  bulk-resolves every unresolved group whose records **all pairwise classify as
+  `exact_duplicate`** (hard DOI/PMID match). Non-destructive: keeps the most
+  metadata-complete record as primary (deterministic choice), flags the rest
+  `isDuplicate`, and fills the primary's BLANK fields (doi/pmid/abstract/authors/year/
+  journal/keywords) from the discarded copies — never overwriting non-empty values.
+  Response: `{ resolvedGroups, flaggedDuplicates, mergedFieldCount, skippedGroups }`.
+  Each group is audited `DUPLICATE_GROUP_RESOLVED` with `{ bulk, mergedFields, filledFrom }`.
+- `POST /projects/:pid/duplicates/:gid/resolve` (primary path) now applies the same
+  fill-blank-only merge to the chosen primary and gains the additive response field
+  `mergedFields: string[]`. 400 when `primaryId` is not in the group.
+
+### Decision import aliases (SCR-9)
+
+- `normalizeImportedDecision` additionally accepts vendor labels: `in/keep/eligible` →
+  include; `out/not relevant/ineligible` → exclude; `unclear` → maybe. POLICY:
+  `conflict` → `maybe` — a per-reviewer decision can never BE `conflict` (that is a
+  derived between-reviewers state), so exported conflict cells import as "needs another look".

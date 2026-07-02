@@ -5,6 +5,7 @@
  * with valid structure and the expected entries.
  */
 import { describe, it, expect } from 'vitest';
+import JSZip from 'jszip';
 import { buildManuscriptDocx } from '../../../src/features/manuscript/export/manuscriptDocx.js';
 import { buildReproPackage } from '../../../src/features/manuscript/export/manuscriptRepro.js';
 import { prismaChecklistCsv, prismaSChecklistCsv } from '../../../src/features/manuscript/export/checklistExport.js';
@@ -87,5 +88,83 @@ describe('manuscript export — checklists', () => {
     expect(c1).toContain('Item ID,Section');
     const c2 = prismaSChecklistCsv(project);
     expect(c2).toContain('Item ID,Group');
+  });
+});
+
+/* ── 65.md MS-4: converter parity — the docx path renders the SAME markdown
+      subset as the WYSIWYG editor (real numbered lists, real tables, links,
+      never raw tokens). Structure asserted by unzipping the OOXML. ── */
+describe('manuscript export — MS-4 markdown subset parity', () => {
+  // Empty-ish project → no data tables, so any <w:tbl> comes from the markdown.
+  const emptyProject = () => ({ id: 'e', name: 'Parity', pico: {}, search: { dbs: {} }, prisma: {}, studies: [] });
+
+  function subsetDraft() {
+    const d = normalizeDraft(makeManuscriptDraft({ title: 'Parity' }));
+    d.sections.methods.content = [
+      '# Analysis steps',
+      '',
+      '1. first step',
+      '2. second step',
+      '',
+      'Later, a separate list:',
+      '',
+      '1. alpha step',
+      '',
+      'See [the protocol](https://example.com/protocol) and evidence [[cite:s1]].',
+      '',
+      '| Item | Value |',
+      '| --- | --- |',
+      '| AlphaCell | 0.05 |',
+    ].join('\n');
+    return d;
+  }
+
+  async function unpack(project, draft) {
+    const blob = await buildManuscriptDocx(project, draft, {});
+    const zip = await JSZip.loadAsync(Buffer.from(await blob.arrayBuffer()));
+    const read = async (name) => (zip.file(name) ? zip.file(name).async('string') : '');
+    return {
+      doc: await read('word/document.xml'),
+      rels: await read('word/_rels/document.xml.rels'),
+      numbering: await read('word/numbering.xml'),
+    };
+  }
+
+  it('renders ordered lists as real Word numbering (no literal "1. ")', async () => {
+    const { doc, numbering } = await unpack(emptyProject(), subsetDraft());
+    expect(doc).toContain('<w:numPr>');
+    expect(doc).toContain('first step');
+    expect(doc).not.toContain('1. first step');
+    // decimal "%1." level definition exists once in numbering.xml
+    expect(numbering).toMatch(/w:numFmt w:val="decimal"/);
+    expect(numbering).toContain('%1.');
+    // two separate lists → two concrete numbering instances (each restarts at 1)
+    const numIds = new Set([...doc.matchAll(/<w:numId w:val="(\d+)"\/>/g)].map((m) => m[1]));
+    expect(numIds.size).toBeGreaterThanOrEqual(2);
+  });
+
+  it('renders pipe tables as real docx tables', async () => {
+    const { doc } = await unpack(emptyProject(), subsetDraft());
+    expect(doc).toContain('<w:tbl>');
+    expect(doc).toContain('AlphaCell');
+    expect(doc).not.toContain('| AlphaCell |');
+  });
+
+  it('renders links as hyperlinks with a relationship', async () => {
+    const { doc, rels } = await unpack(emptyProject(), subsetDraft());
+    expect(doc).toContain('<w:hyperlink');
+    expect(doc).toContain('the protocol');
+    expect(rels).toContain('https://example.com/protocol');
+    expect(doc).not.toContain('](https://example.com/protocol)');
+  });
+
+  it('never leaks raw cite tokens or emphasis markers', async () => {
+    const project = fixtureProject();
+    const d = draftFor(project);
+    d.sections.results.content += '\n\nEvidence [[cite:s1]] and [[cite:s2]].';
+    const { doc } = await unpack(project, d);
+    expect(doc).not.toContain('[[cite:');
+    expect(doc).toContain('[1]');
+    expect(doc).not.toContain('**');
   });
 });

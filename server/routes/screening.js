@@ -62,6 +62,8 @@ r.post('/projects/:pid/link',     S.linkMetaLab);
 
 // 58.md §5 — import batches (Import History): list (members) + delete (owner/admin).
 r.get('/projects/:pid/import-batches',              IB.listImportBatches);
+// 65.md SCR-3 — per-row issue list for a finished import (from its job row).
+r.get('/projects/:pid/import-batches/:batchId/error-report', S.getImportBatchErrorReport);
 r.delete('/projects/:pid/import-batches/:batchId',  IB.deleteImportBatch);
 
 // Presence + field locking (prompt23 Tasks 5/13/14/15) — ephemeral, member-gated.
@@ -121,6 +123,7 @@ r.delete('/projects/:pid/records/:rid/pdf/:aid',         PDF.deletePdf);
 
 // Import / Export
 r.post('/projects/:pid/import',              S.importRecords);   // synchronous (small files)
+r.post('/projects/:pid/import/preview',      S.previewImport);   // 65.md SCR-10 — real-parser preview (read-only)
 r.post('/projects/:pid/import/start',        S.startImport);     // prompt50 WS2 — durable async job
 r.get('/projects/:pid/import/jobs/:jobId',   S.getImportJob);    // prompt50 WS2 — poll progress
 r.get('/projects/:pid/export',               S.exportRecords);   // synchronous (small projects); 413→async over cap
@@ -163,6 +166,8 @@ r.post('/projects/:pid/conflicts/:cid/resolve',      S.resolveConflict);
 // Duplicates
 r.get('/projects/:pid/duplicates',                   S.listDuplicates);
 r.post('/projects/:pid/duplicates/detect',           S.detectDuplicates);
+// 65.md SCR-4 — bulk-resolve every all-exact (DOI/PMID) group, non-destructive.
+r.post('/projects/:pid/duplicates/resolve-exact',    S.resolveAllExactDuplicates);
 r.post('/projects/:pid/duplicates/:gid/resolve',     S.resolveDuplicateGroup);
 
 // Labels

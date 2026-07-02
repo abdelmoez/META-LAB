@@ -141,6 +141,14 @@ export default function ExportTab({ pid }) {
         {note && <span style={{ fontSize: 12, color: C.grn }}>{note}</span>}
       </div>
 
+      {/* 65.md SCR-2 — what the CSV/JSON export now carries (columns are append-only). */}
+      <div style={{ marginTop: 14, fontSize: 11.5, color: C.muted, lineHeight: 1.6, maxWidth: 640 }}>
+        CSV/JSON exports include the record metadata, <strong style={{ color: C.txt2 }}>your</strong> decision with its
+        timestamp, per-reviewer decisions and timestamps (reviewer names are replaced by anonymous ordinals under
+        blind mode), the record's conflict/consensus status, duplicate group id + primary flag, and — for validation
+        studies — cross-validated (held-out) AI relevance columns. Existing columns never move; new ones are appended.
+      </div>
+
       <ExportDialog open={!!expItem} onClose={() => setExpItem(null)} item={expItem} />
     </div>
   );

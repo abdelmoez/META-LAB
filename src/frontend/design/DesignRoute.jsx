@@ -8,11 +8,13 @@
  *
  *   <DesignRoute legacy={<AppWorkspace />} stitch={<StitchWorkspace />} />
  *
- * Resolution: render `stitch` only when an admin has the Stitch UI active AND a
- * Stitch presentation was provided; otherwise render `legacy`. Anything the Stitch
- * subtree throws is caught by StitchErrorBoundary, which offers a route back to
- * legacy. The Stitch element is expected to be a lazily-imported component, so
- * non-admin/legacy users never download the Stitch bundle.
+ * Resolution: render `stitch` when the resolved design mode is Stitch (65.md: the
+ * product default for everyone) AND a Stitch presentation was provided; otherwise
+ * render `legacy` (Ops-enabled fallback / admin preference / routes without a
+ * Stitch page yet). Anything the Stitch subtree throws is caught by
+ * StitchErrorBoundary (reload / back to dashboard; classic-UI escape is
+ * admin-only). The Stitch element is a lazily-imported component, so legacy
+ * sessions never download the Stitch bundle.
  */
 import { Suspense } from 'react';
 import { useDesignMode } from './DesignModeContext.jsx';

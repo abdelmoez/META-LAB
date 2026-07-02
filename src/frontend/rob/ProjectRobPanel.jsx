@@ -30,6 +30,9 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
   const [creatingFor, setCreatingFor] = useState(null); // study being created-for
   const [studies, setStudies] = useState([]);          // prompt46 #4 — merged study universe (screening + manual)
   const [showAddStudy, setShowAddStudy] = useState(false);
+  // 65.md UX-12 — { study, count } while the force-remove confirm modal is open
+  // (replaces window.confirm; assessments are kept either way).
+  const [confirmRemove, setConfirmRemove] = useState(null);
 
   // prompt39 Task 3 — tell the host when the per-study assessment workspace is open
   // so it can hide the RoB overview intro header (focus mode inside the tool).
@@ -80,19 +83,22 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
     try { await robApi.remove(id); await reload(); } catch (e) { setError(e.message); }
   }
   // prompt46 #4 — delete a MANUAL study (creator/owner/leader). If it has
-  // assessments the server replies 409; confirm to force (assessments are kept).
+  // assessments the server replies 409; a styled confirm modal (65.md UX-12)
+  // gates the force-remove (assessments are kept).
   async function removeManualStudy(study) {
     try {
       await robApi.removeManualStudy(projectId, study.id);
       await reload();
     } catch (e) {
       if (e && e.status === 409) {
-        const n = e.body && e.body.assessmentCount;
-        if (window.confirm(`This study has ${n || 'existing'} risk-of-bias assessment(s). Remove the manual study anyway? Its assessments are kept.`)) {
-          try { await robApi.removeManualStudy(projectId, study.id, { force: true }); await reload(); } catch (e2) { setError(e2.message); }
-        }
+        setConfirmRemove({ study, count: (e.body && e.body.assessmentCount) || null });
       } else { setError(e.message); }
     }
+  }
+  async function forceRemoveManualStudy(study) {
+    setConfirmRemove(null);
+    try { await robApi.removeManualStudy(projectId, study.id, { force: true }); await reload(); }
+    catch (e2) { setError(e2.message); }
   }
   async function addManualStudy(body) {
     try { await robApi.createManualStudy(projectId, body); setShowAddStudy(false); await reload(); } catch (e) { setError(e.message); }
@@ -188,6 +194,12 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
       )}
 
       {showAddStudy && <ManualStudyModal onClose={() => setShowAddStudy(false)} onAdd={addManualStudy} />}
+      {confirmRemove && (
+        <ConfirmRemoveStudyModal
+          study={confirmRemove.study} count={confirmRemove.count}
+          onCancel={() => setConfirmRemove(null)}
+          onConfirm={() => forceRemoveManualStudy(confirmRemove.study)} />
+      )}
 
       {orphans.length > 0 && (
         <div style={{ ...card, marginTop: 18, borderColor: alpha(C.yel, '50'), background: alpha(C.yel, '08') }}>
@@ -328,6 +340,33 @@ function ManualStudyModal({ onClose, onAdd }) {
     </div>
   );
 }
+// 65.md UX-12 — styled confirm for the destructive force-remove (was window.confirm).
+function ConfirmRemoveStudyModal({ study, count, onCancel, onConfirm }) {
+  return (
+    <div onClick={onCancel} role="dialog" aria-modal="true" aria-label="Remove manual study"
+      style={{ position: 'fixed', inset: 0, background: '#00000099', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20 }}>
+      <div onClick={e => e.stopPropagation()} style={{ ...card, width: '100%', maxWidth: 440 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+          <Icon name="alertTriangle" size={15} />
+          <h3 style={{ fontSize: 15.5, fontWeight: 800, margin: 0 }}>Remove this manual study?</h3>
+        </div>
+        <p style={{ fontSize: 12.5, color: C.txt2, margin: '0 0 6px', lineHeight: 1.55 }}>
+          <strong style={{ color: C.txt }}>{study.title || study.authors || 'This study'}</strong> has{' '}
+          {count || 'existing'} risk-of-bias assessment{count === 1 ? '' : 's'}.
+        </p>
+        <p style={{ fontSize: 12.5, color: C.muted, margin: '0 0 16px', lineHeight: 1.55 }}>
+          The study entry is removed from this list; its assessments are kept and will appear under
+          &ldquo;assessments without a study&rdquo;.
+        </p>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button onClick={onCancel} autoFocus style={ghost}>Cancel</button>
+          <button onClick={onConfirm} style={{ ...ghost, background: C.red, color: '#fff', border: `1px solid ${C.red}` }}>Remove study</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ModalField({ label, children }) {
   return <div style={{ marginBottom: 10 }}><label style={{ display: 'block', fontSize: 11.5, color: C.txt2, fontWeight: 600, marginBottom: 4 }}>{label}</label>{children}</div>;
 }

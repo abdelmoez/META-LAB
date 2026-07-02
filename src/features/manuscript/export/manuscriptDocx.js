@@ -27,50 +27,118 @@ import {
   primaryAnalysis,
 } from '../../../research-engine/manuscript/index.js';
 import { SECTION_TYPES, STATEMENT_TYPES } from '../../../research-engine/manuscript/model.js';
+import { parsePipeTable } from '../richEditor/mdDom.js';
 import { forestPng, prismaPng } from './figures.js';
 
 const AI_DISCLAIMER = 'AI draft — verify all content, numbers, and citations against your extracted data before submission.';
+
+/** Numbering reference for markdown ordered lists (defined once on the Document). */
+export const MD_OL_REF = 'md-ordered-list';
 
 async function blobToU8(blob) {
   const buf = await blob.arrayBuffer();
   return new Uint8Array(buf);
 }
 
-/* ── markdown (limited subset) → docx paragraphs ────────────────────────────── */
-function parseInline(text, D) {
-  const { TextRun } = D;
+/* ── markdown (WYSIWYG subset, 65.md MS-4) → docx runs/paragraphs — kept
+      symmetric with richEditor/mdDom.js so the editor and the export can never
+      disagree on what a construct means. ─────────────────────────────────── */
+function parseInline(text, D, base = {}) {
+  const { TextRun, ExternalHyperlink } = D;
   const runs = [];
-  const re = /(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g;
+  const plain = (t, extra = {}) => { if (t) runs.push(new TextRun({ text: t, ...base, ...extra })); };
+  const re = /(\*\*\*[^*]+\*\*\*|\*\*(?:[^*]|\*(?!\*))+?\*\*|\*[^*]+\*|`[^`]+`|\[[^\]]*\]\((?:https?:\/\/|mailto:)[^)\s]+\))/g;
   let last = 0;
   let m;
   const s = String(text == null ? '' : text);
   while ((m = re.exec(s)) !== null) {
-    if (m.index > last) runs.push(new TextRun({ text: s.slice(last, m.index) }));
+    if (m.index > last) plain(s.slice(last, m.index));
     const tok = m[0];
-    if (tok.startsWith('**')) runs.push(new TextRun({ text: tok.slice(2, -2), bold: true }));
-    else if (tok.startsWith('`')) runs.push(new TextRun({ text: tok.slice(1, -1), font: 'Consolas' }));
-    else runs.push(new TextRun({ text: tok.slice(1, -1), italics: true }));
+    if (tok.startsWith('***')) plain(tok.slice(3, -3), { bold: true, italics: true });
+    else if (tok.startsWith('**')) {
+      // bold segment may contain *italic* runs: **a *b* c**
+      const inner = tok.slice(2, -2);
+      const ire = /\*([^*]+)\*/g;
+      let il = 0;
+      let im;
+      while ((im = ire.exec(inner)) !== null) {
+        if (im.index > il) plain(inner.slice(il, im.index), { bold: true });
+        plain(im[1], { bold: true, italics: true });
+        il = ire.lastIndex;
+      }
+      if (il < inner.length) plain(inner.slice(il), { bold: true });
+    } else if (tok.startsWith('`')) plain(tok.slice(1, -1), { font: 'Consolas' });
+    else if (tok.startsWith('[')) {
+      const lm = tok.match(/^\[([^\]]*)\]\(((?:https?:\/\/|mailto:)[^)\s]+)\)$/);
+      if (lm && ExternalHyperlink) {
+        runs.push(new ExternalHyperlink({
+          link: lm[2],
+          children: [new TextRun({ text: lm[1] || lm[2], ...base, color: '0563C1', underline: {} })],
+        }));
+      } else if (lm) plain(`${lm[1] || lm[2]} (${lm[2]})`);
+      else plain(tok);
+    } else plain(tok.slice(1, -1), { italics: true });
     last = re.lastIndex;
   }
-  if (last < s.length) runs.push(new TextRun({ text: s.slice(last) }));
-  if (!runs.length) runs.push(new TextRun({ text: '' }));
+  if (last < s.length) plain(s.slice(last));
+  if (!runs.length) runs.push(new TextRun({ text: '', ...base }));
   return runs;
 }
 
-function markdownToParagraphs(md, D) {
+/** Pipe-table markdown → a real docx Table (same look as the data tables). */
+function mdTableToDocx(lines, D) {
+  const { Table, TableRow, TableCell, Paragraph, WidthType, BorderStyle, AlignmentType } = D;
+  const { header, rows } = parsePipeTable(lines);
+  const width = Math.max(header ? header.length : 0, ...rows.map((r) => r.length), 1);
+  const pad = (cells) => { const c = cells.slice(); while (c.length < width) c.push(''); return c; };
+  const border = { style: BorderStyle.SINGLE, size: 4, color: '999999' };
+  const borders = { top: border, bottom: border, left: border, right: border, insideHorizontal: border, insideVertical: border };
+  const cell = (text, bold) => new TableCell({
+    margins: { top: 40, bottom: 40, left: 80, right: 80 },
+    children: [new Paragraph({ children: parseInline(text === '' ? '—' : text, D, { bold, size: 18 }) })],
+  });
+  const trs = [];
+  if (header) trs.push(new TableRow({ tableHeader: true, children: pad(header).map((h) => cell(h, true)) }));
+  for (const r of rows) trs.push(new TableRow({ children: pad(r).map((v) => cell(v, false)) }));
+  return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, borders, rows: trs, alignment: AlignmentType.CENTER });
+}
+
+/**
+ * Markdown subset → docx blocks. `ctx.listInstance` is SHARED across every call
+ * for one document so each ordered list gets a fresh numbering instance (restarts
+ * at 1). Heading mapping mirrors mdDom: # → H2, ## → H3, ### → H4 (sections
+ * themselves are H1). Exported for the MS-4 parity tests.
+ */
+export function markdownToParagraphs(md, D, ctx) {
   const { Paragraph, HeadingLevel } = D;
+  const c = ctx || { listInstance: 0 };
   const out = [];
   const lines = String(md == null ? '' : md).split('\n');
+  let tableBuf = null;
+  let inOl = false;
+  const flushTable = () => { if (tableBuf) { out.push(mdTableToDocx(tableBuf, D)); tableBuf = null; } };
   for (const raw of lines) {
     const line = raw.replace(/\s+$/, '');
-    if (!line.trim()) { continue; }
-    if (/^###\s+/.test(line)) { out.push(new Paragraph({ heading: HeadingLevel.HEADING_3, children: parseInline(line.replace(/^###\s+/, ''), D), spacing: { before: 120, after: 60 } })); continue; }
-    if (/^##\s+/.test(line)) { out.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: parseInline(line.replace(/^##\s+/, ''), D), spacing: { before: 160, after: 80 } })); continue; }
-    if (/^#\s+/.test(line)) { out.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: parseInline(line.replace(/^#\s+/, ''), D), spacing: { before: 160, after: 80 } })); continue; }
-    if (/^[-*]\s+/.test(line)) { out.push(new Paragraph({ bullet: { level: 0 }, children: parseInline(line.replace(/^[-*]\s+/, ''), D) })); continue; }
-    if (/^\d+\.\s+/.test(line)) { out.push(new Paragraph({ children: parseInline(line, D) })); continue; }
+    const isTable = /^\s*\|/.test(line);
+    if (tableBuf && !isTable) flushTable();
+    if (isTable) { inOl = false; if (!tableBuf) tableBuf = []; tableBuf.push(line); continue; }
+    if (!line.trim()) { inOl = false; continue; }
+    if (/^###\s+/.test(line)) { inOl = false; out.push(new Paragraph({ heading: HeadingLevel.HEADING_4, children: parseInline(line.replace(/^###\s+/, ''), D), spacing: { before: 120, after: 60 } })); continue; }
+    if (/^##\s+/.test(line)) { inOl = false; out.push(new Paragraph({ heading: HeadingLevel.HEADING_3, children: parseInline(line.replace(/^##\s+/, ''), D), spacing: { before: 140, after: 70 } })); continue; }
+    if (/^#\s+/.test(line)) { inOl = false; out.push(new Paragraph({ heading: HeadingLevel.HEADING_2, children: parseInline(line.replace(/^#\s+/, ''), D), spacing: { before: 160, after: 80 } })); continue; }
+    if (/^[-*]\s+/.test(line)) { inOl = false; out.push(new Paragraph({ bullet: { level: 0 }, children: parseInline(line.replace(/^[-*]\s+/, ''), D) })); continue; }
+    if (/^\d+\.\s+/.test(line)) {
+      if (!inOl) { c.listInstance = (c.listInstance || 0) + 1; inOl = true; }
+      out.push(new Paragraph({
+        numbering: { reference: MD_OL_REF, level: 0, instance: c.listInstance },
+        children: parseInline(line.replace(/^\d+\.\s+/, ''), D),
+      }));
+      continue;
+    }
+    inOl = false;
     out.push(new Paragraph({ children: parseInline(line, D), spacing: { after: 120 }, alignment: D.AlignmentType.JUSTIFIED }));
   }
+  flushTable();
   if (!out.length) out.push(new Paragraph({ children: parseInline('', D) }));
   return out;
 }
@@ -137,6 +205,9 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
   // Inline-citation numbering: map [[cite:id]] tokens → [n] by order of appearance.
   const { orderMap } = collectCitationOrder(draftSectionTexts(draft));
   const secMd = (id) => renderInlineMarkers((draft.sections[id] && draft.sections[id].content) || '', orderMap, draft.citationStyle);
+  // One shared markdown context per document → every ordered list gets a unique
+  // numbering instance (each restarts at 1 in Word).
+  const mdCtx = { listInstance: 0 };
 
   const children = [];
 
@@ -157,7 +228,7 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
 
   /* Abstract + keywords */
   children.push(h1('Abstract', D));
-  children.push(...markdownToParagraphs(secMd('abstract'), D));
+  children.push(...markdownToParagraphs(secMd('abstract'), D, mdCtx));
   if (draft.keywords && draft.keywords.length) {
     children.push(new Paragraph({ spacing: { before: 120 }, children: [new TextRun({ text: 'Keywords: ', bold: true }), new TextRun({ text: draft.keywords.join(', ') })] }));
   }
@@ -169,7 +240,7 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
     const sect = draft.sections[id];
     children.push(h1(meta ? meta.label : id, D));
     const content = sect && sect.content.trim();
-    if (content) children.push(...markdownToParagraphs(secMd(id), D));
+    if (content) children.push(...markdownToParagraphs(secMd(id), D, mdCtx));
     else children.push(note(`[${meta ? meta.label : id} not yet drafted]`, D));
   }
 
@@ -179,7 +250,7 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
     children.push(h1('Declarations', D));
     for (const st of filledStatements) {
       children.push(new Paragraph({ heading: HeadingLevel.HEADING_2, text: st.label, spacing: { before: 120, after: 40 } }));
-      children.push(...markdownToParagraphs(draft.statements[st.id], D));
+      children.push(...markdownToParagraphs(draft.statements[st.id], D, mdCtx));
     }
   }
 
@@ -263,6 +334,20 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
     // built-in Title style; redefining the same styleId produced a duplicate w:styleId.
     styles: {
       default: { document: { run: { font: 'Calibri', size: 22 } } },
+    },
+    // Real ordered lists for the markdown subset (65.md MS-4): one abstract
+    // numbering definition; each list block instantiates it (restart at 1).
+    numbering: {
+      config: [{
+        reference: MD_OL_REF,
+        levels: [{
+          level: 0,
+          format: D.LevelFormat.DECIMAL,
+          text: '%1.',
+          alignment: D.AlignmentType.START,
+          style: { paragraph: { indent: { left: 720, hanging: 360 } } },
+        }],
+      }],
     },
     sections: [{
       properties: { page: { margin: { top: 1440, bottom: 1440, left: 1440, right: 1440 } } },

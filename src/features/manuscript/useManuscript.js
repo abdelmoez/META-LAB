@@ -37,7 +37,8 @@ export function useManuscript(project, upd) {
   const drafts = useMemo(() => readManuscripts(project), [project]);
   const [activeId, setActiveId] = useState(null);
   const [localSeed, setLocalSeed] = useState(null); // read-only fallback (upd is a no-op)
-  const [saveState, setSaveState] = useState('saved'); // 'saved' | 'saving'
+  const [saveState, setSaveState] = useState('saved'); // 'saved' | 'saving' | 'error' (UX-6)
+  const [lastError, setLastError] = useState(null);
 
   // Refs to the freshest committed values (avoid stale-closure writes).
   const projectRef = useRef(project);
@@ -49,6 +50,41 @@ export function useManuscript(project, upd) {
   const pending = useRef(null);
   const timer = useRef(null);
   const flushRef = useRef(() => {});
+  // The last manuscripts list a persist attempt FAILED on (for retry()).
+  const lastFailed = useRef(null);
+
+  // UX-6 honesty: every write goes through here so a throwing/rejecting upd shows
+  // 'Save failed' + Retry instead of a lying 'Saved'. NOTE: the autosave path
+  // behind upd (useStitchProjectDoc/store) may swallow network errors internally —
+  // those cannot be observed from here (seam noted in 65.md report).
+  const persist = useCallback((list) => {
+    try {
+      const r = upd('manuscripts', list);
+      if (r && typeof r.then === 'function') {
+        r.then(() => { lastFailed.current = null; setSaveState('saved'); setLastError(null); })
+          .catch((e) => {
+            lastFailed.current = list;
+            setSaveState('error');
+            setLastError((e && e.message) || 'Could not save changes.');
+          });
+        return;
+      }
+      lastFailed.current = null;
+      setSaveState('saved');
+      setLastError(null);
+    } catch (e) {
+      lastFailed.current = list;
+      setSaveState('error');
+      setLastError((e && e.message) || 'Could not save changes.');
+    }
+  }, [upd]);
+
+  const retry = useCallback(() => {
+    const list = lastFailed.current;
+    if (!list) { setSaveState('saved'); setLastError(null); return; }
+    setSaveState('saving');
+    persist(list);
+  }, [persist]);
 
   const applyPatches = useCallback((draft, fields) => {
     let d = draft;
@@ -72,9 +108,8 @@ export function useManuscript(project, upd) {
     const base = list.find((d) => d.id === p.draftId);
     if (!base) { setSaveState('saved'); return; }
     const next = applyPatches(base, p.fields);
-    upd('manuscripts', MS.upsertDraft(list, next));
-    setSaveState('saved');
-  }, [applyPatches, upd]);
+    persist(MS.upsertDraft(list, next));
+  }, [applyPatches, persist]);
   flushRef.current = flushPending;
 
   // Flush exactly once on real unmount.
@@ -99,10 +134,9 @@ export function useManuscript(project, upd) {
     if (!active) return null;
     const next = mutator(active, list);
     if (!next) return null;
-    upd('manuscripts', MS.upsertDraft(list, next));
-    setSaveState('saved');
+    persist(MS.upsertDraft(list, next));
     return next;
-  }, [flushPending, upd]);
+  }, [flushPending, persist]);
 
   // Ensure ≥1 draft (seed from legacy on first use); keep activeId valid. Holds a
   // local seed for read-only projects where upd is a no-op so viewers still see it.
@@ -215,28 +249,27 @@ export function useManuscript(project, upd) {
   const updateDraft = useCallback((nextDraft) => {
     flushPending();
     const list = readManuscripts(projectRef.current);
-    upd('manuscripts', MS.upsertDraft(list, nextDraft));
-    setSaveState('saved');
-  }, [flushPending, upd]);
+    persist(MS.upsertDraft(list, nextDraft));
+  }, [flushPending, persist]);
 
   const addDraft = useCallback((opts = {}) => {
     flushPending();
     const d = MS.newDraft(project, opts);
-    upd('manuscripts', MS.upsertDraft(readManuscripts(projectRef.current), d));
+    persist(MS.upsertDraft(readManuscripts(projectRef.current), d));
     setActiveId(d.id);
     return d;
-  }, [flushPending, project, upd]);
+  }, [flushPending, project, persist]);
 
   const removeDraft = useCallback((id) => {
     flushPending();
     const arr = readManuscripts(projectRef.current).filter((d) => d.id !== id);
-    upd('manuscripts', arr);
+    persist(arr);
     if (id === activeIdRef.current) setActiveId(arr[0] ? arr[0].id : null);
-  }, [flushPending, upd]);
+  }, [flushPending, persist]);
 
   return {
     drafts: effectiveDrafts, activeDraft, activeId, setActiveId,
-    saveState,
+    saveState, lastError, retry,
     runMeta,
     prismaCounts, primary, tables, references, readiness, insights, staleness,
     updateSection, generate, refreshBlock, refreshAllBlocks,

@@ -140,9 +140,13 @@ app.post(CSP_REPORT_PATH, cspReportLimiter, (req, res, next) => {
 });
 
 // ── Rate limiter for auth routes (20 req / 15 min in production; relaxed in dev/test) ──
+// Dev cap sized for the FULL vitest suite: 3k+ tests register/login hundreds of
+// throwaway users per run, and back-to-back runs share one 15-min window — at
+// 1000 the tail-end integration files were 429ed (registrations fail → the
+// follow-up logins 401), which read as flaky tests (65.md QA).
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === 'production' ? 20 : 1000,
+  max: process.env.NODE_ENV === 'production' ? 20 : 5000,
   message: { error: 'Too many requests, please try again later' },
   standardHeaders: true,
   legacyHeaders: false,

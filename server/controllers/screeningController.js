@@ -7,18 +7,19 @@ import { detectDuplicatesInProject, recordDuplicateLabels, getDuplicateEvaluatio
 import { syncConflicts } from '../services/screeningConflictService.js';
 import { touchProjectActivity } from '../store.js';
 import {
-  parseImportContent, dedupeAndInsertRecords,
+  parseImportContent, dedupeAndInsertRecords, hasUsableIdentity,
   MAX_RECORDS_PER_IMPORT, DEFAULT_MAX_RECORDS_PER_PROJECT,
 } from '../services/screeningImportService.js';
 import { kickImportWorker } from '../services/screeningImportWorker.js';
 import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../screening/access.js';
 import { rankItems } from '../../src/research-engine/screening/ai/ranking.js';
+import { fastListEligible, buildFastListQuery } from '../../src/research-engine/screening/recordListQuery.js';
 import { aiFlagEnabled } from '../services/screeningAiService.js';
 // 62.md — export logic moved into a shared service so the sync route + the async export
 // worker share one CSV schema and one row mapping. CV is now capped + run off the event
 // loop; large projects stream via the durable job instead of buffering in one request.
 import {
-  EXPORT_SYNC_MAX, EXPORT_COLUMNS, buildExportRow, renderRisBlock, renderCsvRow,
+  EXPORT_SYNC_MAX, EXPORT_COLUMNS, buildExportRow, buildExportContext, renderRisBlock, renderCsvRow,
   computeExportCvScores, exportContentType,
 } from '../services/screeningExportService.js';
 import { enqueueExportJob } from '../services/screeningExportWorker.js';
@@ -28,7 +29,10 @@ import { getMetaSiftSettings, getEffectiveQuorum } from '../screening/settings.j
 import { resolveScreeningUploadLimit } from '../screening/uploadLimit.js';
 import { snapshotPico } from '../screening/picoSnapshot.js';
 import { screeningCountSelect } from '../utils/screeningCounts.js';
-import { scorePair, normalizeTitle, classifyPair, DUP_TYPES } from '../../src/research-engine/screening/deduplication.js';
+import {
+  scorePair, normalizeTitle, classifyPair, DUP_TYPES,
+  isExactDuplicateGroup, pickBulkPrimary, mergeFillBlanks,
+} from '../../src/research-engine/screening/deduplication.js';
 import fs from 'node:fs';
 
 // Human-readable label per duplicate type (se2.md §10), shown in the UI.
@@ -660,28 +664,22 @@ export async function listRecords(req, res) {
     const filter      = req.query.filter || req.query.decision || 'all';
     const hasAbstract = req.query.hasAbstract;
 
-    const where = { projectId: p.id };
-    if (search) {
-      where.OR = [
-        { title: { contains: search } },
-        { authors: { contains: search } },
-        { abstract: { contains: search } },
-        { doi: { contains: search } },
-        { pmid: { contains: search } },
-      ];
-    }
+    // Server-side AI integration flags (feature flag: aiScreening) — resolved up
+    // front because BOTH list paths need them: (1) AI-ordered/filtered queues force
+    // the in-memory path; (2) the returned PAGE gets inline scores either way.
+    // Respect AI-blinding: a non-leader reviewer on a blindFromAi project must not
+    // get AI scores or an AI-ordered worklist (both leak the model's opinion before
+    // independent screening). Leaders are exempt.
+    const aiQueue = String(req.query.aiQueue || '');
+    const aiBand = String(req.query.aiBand || '');
+    let aiBlind = false;
+    try { aiBlind = !!JSON.parse(p.aiSettings || '{}').blindFromAi; } catch { /* default false */ }
+    const aiBlocked = aiBlind && !access.isLeader;
+    const aiStage = req.query.aiStage === 'full_text' ? 'full_text' : 'title_abstract';
+    const aiOn = !aiBlocked && await aiFlagEnabled();
 
-    // Pull all decisions (for reviewer indicators + quorum) and this user's open-state.
-    const records = await prisma.screenRecord.findMany({
-      where,
-      orderBy: { createdAt: 'asc' },
-      include: {
-        decisions: true,
-        openStates: { where: { userId: me } },
-      },
-    });
-
-    const shaped = records.map((r, idx) => {
+    // One shaping function for both paths (identical response structure).
+    const shapeRecord = (r) => {
       const myDecision = r.decisions.find(d => d.reviewerId === me) || null;
       const taDecisions = r.decisions.filter(d => d.stage === 'title_abstract' && d.decision !== 'undecided');
       const includeCount = r.decisions.filter(d => d.stage === 'title_abstract' && d.decision === 'include').length;
@@ -715,7 +713,88 @@ export async function listRecords(req, res) {
         disputed,
         createdAt: r.createdAt,
       };
+    };
+
+    // Attach the FULL persisted AI score + explanation to a page (bounded by limit)
+    // → instant Layer-1 "Why this score?" with no extra request (se2.md §5).
+    const attachAiScores = async (paged) => {
+      if (!aiOn || !paged.length) return paged;
+      const ids = paged.map(r => r.id);
+      const full = await prisma.screenAiScore.findMany({ where: { projectId: p.id, stage: aiStage, recordId: { in: ids } } });
+      const fMap = new Map(full.map(s => [s.recordId, s]));
+      const parse = (s) => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
+      return paged.map(r => {
+        const s = fMap.get(r.id);
+        if (!s) return r;
+        return {
+          ...r,
+          aiScore: {
+            recordId: s.recordId, score: s.score, proba: s.proba, calibratedProba: s.calibratedProba ?? null,
+            band: s.band, prediction: s.prediction,
+            confidence: s.confidence, uncertainty: s.uncertainty, mode: s.mode, lowConfidence: s.lowConfidence,
+            missingAbstract: s.missingAbstract, picoMean: s.picoMean,
+            subScores: parse(s.subScoresJson), signals: parse(s.signalsJson), explanation: parse(s.explanationJson),
+            updatedAt: s.updatedAt,
+          },
+        };
+      });
+    };
+
+    // ── FAST PATH (65.md SCR-1) — no search / keywords / AI ordering / hasAbstract
+    // and a filter the DB can evaluate exactly: push WHERE + orderBy + skip/take into
+    // Prisma so the whole project is never loaded per page request. Response shape is
+    // identical to the in-memory path. Decision filters stay in-memory (see
+    // recordListQuery.js for why).
+    if (fastListEligible({ search, filter, hasAbstract, keywords: req.query.keywords, aiQueue, aiBand })) {
+      const fast = buildFastListQuery({ projectId: p.id, userId: me, filter });
+      const [total, pageRows] = await Promise.all([
+        prisma.screenRecord.count({ where: fast.where }),
+        prisma.screenRecord.findMany({
+          where: fast.where,
+          orderBy: fast.orderBy,
+          skip: (page - 1) * limit,
+          take: limit,
+          include: {
+            decisions: true,
+            openStates: { where: { userId: me } },
+          },
+        }),
+      ]);
+      const paged = await attachAiScores(pageRows.map(shapeRecord));
+      return res.json({
+        records: paged,
+        total,
+        page,
+        pages: Math.ceil(total / limit) || 1,
+        blindMode: p.blindMode,
+        isLeader: access.isLeader,
+      });
+    }
+
+    // ── IN-MEMORY PATH — text search, keyword filters, decision filters, and
+    // AI-queue ordering need the whole pool before pagination (unchanged).
+    const where = { projectId: p.id };
+    if (search) {
+      where.OR = [
+        { title: { contains: search } },
+        { authors: { contains: search } },
+        { abstract: { contains: search } },
+        { doi: { contains: search } },
+        { pmid: { contains: search } },
+      ];
+    }
+
+    // Pull all decisions (for reviewer indicators + quorum) and this user's open-state.
+    const records = await prisma.screenRecord.findMany({
+      where,
+      orderBy: { createdAt: 'asc' },
+      include: {
+        decisions: true,
+        openStates: { where: { userId: me } },
+      },
     });
+
+    const shaped = records.map(shapeRecord);
 
     // Filtering (the workbench left-column filter set).
     let filtered = shaped;
@@ -745,24 +824,9 @@ export async function listRecords(req, res) {
       filtered = filterRecordsByKeywords(filtered, selectedKeywords, { mode });
     }
 
-    // Server-side AI integration (feature flag: aiScreening). Two parts:
-    //   (1) AI-ordered/filtered queue — only when the client requests aiQueue/aiBand,
-    //       ordering/filtering the WHOLE pool before pagination.
-    //   (2) Inline AI score + persisted explanation on the returned PAGE (≤ limit),
-    //       so the "Why this score?" panel renders instantly with no round-trip
-    //       (se2.md §5). The default screening path stays byte-identical when the
-    //       feature flag is OFF (no aiScore field).
-    const aiQueue = String(req.query.aiQueue || '');
-    const aiBand = String(req.query.aiBand || '');
-    // Respect AI-blinding: a non-leader reviewer on a blindFromAi project must not
-    // get AI scores or an AI-ordered worklist (both leak the model's opinion before
-    // independent screening). Leaders are exempt.
-    let aiBlind = false;
-    try { aiBlind = !!JSON.parse(p.aiSettings || '{}').blindFromAi; } catch { /* default false */ }
-    const aiBlocked = aiBlind && !access.isLeader;
-    const aiStage = req.query.aiStage === 'full_text' ? 'full_text' : 'title_abstract';
-    const aiOn = !aiBlocked && await aiFlagEnabled();
-
+    // AI-ordered/filtered queue — only when the client requests aiQueue/aiBand,
+    // ordering/filtering the WHOLE pool before pagination. The default screening
+    // path stays byte-identical when the feature flag is OFF (no aiScore field).
     if (aiOn && ((aiQueue && aiQueue !== 'default') || (aiBand && aiBand !== 'all'))) {
       const scoreRows = await prisma.screenAiScore.findMany({
         where: { projectId: p.id, stage: aiStage },
@@ -790,31 +854,7 @@ export async function listRecords(req, res) {
 
     const total = filtered.length;
     const start = (page - 1) * limit;
-    let paged = filtered.slice(start, start + limit);
-
-    // Attach the FULL persisted AI score + explanation to the page (bounded by limit)
-    // → instant Layer-1 "Why this score?" with no extra request (se2.md §5).
-    if (aiOn && paged.length) {
-      const ids = paged.map(r => r.id);
-      const full = await prisma.screenAiScore.findMany({ where: { projectId: p.id, stage: aiStage, recordId: { in: ids } } });
-      const fMap = new Map(full.map(s => [s.recordId, s]));
-      const parse = (s) => { try { return JSON.parse(s || '{}'); } catch { return {}; } };
-      paged = paged.map(r => {
-        const s = fMap.get(r.id);
-        if (!s) return r;
-        return {
-          ...r,
-          aiScore: {
-            recordId: s.recordId, score: s.score, proba: s.proba, calibratedProba: s.calibratedProba ?? null,
-            band: s.band, prediction: s.prediction,
-            confidence: s.confidence, uncertainty: s.uncertainty, mode: s.mode, lowConfidence: s.lowConfidence,
-            missingAbstract: s.missingAbstract, picoMean: s.picoMean,
-            subScores: parse(s.subScoresJson), signals: parse(s.signalsJson), explanation: parse(s.explanationJson),
-            updatedAt: s.updatedAt,
-          },
-        };
-      });
-    }
+    const paged = await attachAiScores(filtered.slice(start, start + limit));
 
     res.json({
       records: paged,
@@ -1015,10 +1055,58 @@ export async function importRecords(req, res) {
       total: result.total,
       batchId: result.batchId,
       format: detectedFormat,
+      // 65.md SCR-3 — per-row reject/invalid-decision reasons (capped; additive field).
+      errorReport: result.errorReport || [],
     });
   } catch (err) {
     console.error('[screening] importRecords:', err.message);
     res.status(500).json({ error: 'Import failed: ' + err.message });
+  }
+}
+
+// 65.md SCR-10 — only this much of the pasted/uploaded text is parsed for a preview.
+// Enough for format detection + a 5-record sample without shipping a whole library.
+const IMPORT_PREVIEW_MAX_CHARS = 256 * 1024;
+
+/**
+ * POST /projects/:pid/import/preview (65.md SCR-10) — run the REAL parser registry
+ * over (at most) the first 256KB of the text and return what an import WOULD see:
+ * detected format, the first 5 parsed records, parse/reject counts, and whether a
+ * screening-decision column was detected. Read-only — nothing is inserted, so the
+ * admin allowImport switch does not apply (permission gate mirrors import).
+ */
+export async function previewImport(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    const canImport = access.isOwner || (access.active && (access.isLeader || access.perms.canImportRecords));
+    if (!canImport) return res.status(403).json({ error: 'You do not have permission to import records in this project' });
+
+    const { format = 'auto', content = '', filename = '' } = req.body || {};
+    if (!String(content).trim()) return res.status(400).json({ error: 'content is required' });
+
+    const truncated = String(content).length > IMPORT_PREVIEW_MAX_CHARS;
+    const head = String(content).slice(0, IMPORT_PREVIEW_MAX_CHARS);
+    const { records, detectedFormat } = parseImportContent(head, { format, filename });
+
+    const rejected = records.filter((r) => !hasUsableIdentity(r)).length;
+    // A decision column "exists" when any record carries a non-neutral decision —
+    // including an unrecognised value (normalised to '' so the import can warn).
+    const decisionColumnDetected = records.some((r) => r.decision !== 'undecided');
+    res.json({
+      detectedFormat,
+      sample: records.slice(0, 5).map((r) => ({
+        title: r.title || '', authors: r.authors || '', year: r.year || '',
+        journal: r.journal || '', doi: r.doi || '', decision: r.decision,
+      })),
+      counts: { parsed: records.length, rejected },
+      decisionColumnDetected,
+      // Counts describe only the previewed head when the file was larger.
+      truncated,
+    });
+  } catch (err) {
+    console.error('[screening] previewImport:', err.message);
+    res.status(500).json({ error: 'Preview failed' });
   }
 }
 
@@ -1109,6 +1197,8 @@ export async function getImportJob(req, res) {
       totalRecords: job.totalRecords, processedRecords: job.processedRecords,
       importedRecords: job.importedRecords, duplicateRecords: job.duplicateRecords,
       rejectedRecords: job.rejectedRecords, warningCount: job.warningCount,
+      // 65.md SCR-3 — per-row reject/invalid-decision reasons (capped; additive field).
+      errorReport: parseJsonObjectList(job.errorReport),
       error: job.error, batchId: job.batchId,
       createdAt: job.createdAt, startedAt: job.startedAt, completedAt: job.completedAt,
       progress: job.totalRecords > 0
@@ -1117,6 +1207,44 @@ export async function getImportJob(req, res) {
     });
   } catch (err) {
     console.error('[screening] getImportJob:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// Parse a JSON array of objects, tolerating legacy/blank values.
+function parseJsonObjectList(json) {
+  try { const v = JSON.parse(json || '[]'); return Array.isArray(v) ? v : []; }
+  catch { return []; }
+}
+
+/**
+ * GET /projects/:pid/import-batches/:batchId/error-report (65.md SCR-3) — the per-row
+ * issue list for a finished import, read from the ScreenImportJob that produced the
+ * batch. Member-visible (same audience as the Import History list). Older batches
+ * imported synchronously (no job row) return an empty report.
+ */
+export async function getImportBatchErrorReport(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    const batch = await prisma.screenImportBatch.findFirst({
+      where: { id: req.params.batchId, projectId: access.project.id },
+      select: { id: true, rejectedCount: true },
+    });
+    if (!batch) return res.status(404).json({ error: 'Import batch not found' });
+    const job = await prisma.screenImportJob.findFirst({
+      where: { projectId: access.project.id, batchId: batch.id },
+      orderBy: { createdAt: 'desc' },
+      select: { errorReport: true, warningCount: true },
+    });
+    res.json({
+      batchId: batch.id,
+      rejectedCount: batch.rejectedCount,
+      warningCount: job?.warningCount ?? batch.rejectedCount,
+      errorReport: parseJsonObjectList(job?.errorReport),
+    });
+  } catch (err) {
+    console.error('[screening] getImportBatchErrorReport:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }
@@ -1187,9 +1315,12 @@ export async function exportRecords(req, res) {
     // researcher can recompute WSS@95 / AUC / calibration / Brier offline (leakage-free).
     // 62.md — capped + computed in a worker_thread so it never freezes the event loop.
     const aiCv = await computeExportCvScores(p.id);
+    // 65.md SCR-2 — per-reviewer/consensus column context (identity permission-safe).
+    const exportCtx = await buildExportContext(p.id, req.user.id);
 
-    // Build + filter rows (shared row mapping; CSV schema unchanged).
-    const rows = records.map(r => buildExportRow(r, req.user.id, aiCv));
+    // Build + filter rows (shared row mapping; existing columns unchanged, new
+    // review/consensus columns appended).
+    const rows = records.map(r => buildExportRow(r, req.user.id, aiCv, exportCtx));
     const filtered = filter === 'all' ? rows : rows.filter(r => r.decision === filter);
 
     // Usage metric (prompt9) — every export, every format. Best-effort, fire-and-forget.
@@ -1686,16 +1817,86 @@ export async function resolveDuplicateGroup(req, res) {
 
     // Reviewer confirmed these ARE the same record → label every pair 'duplicate'.
     await labelPairs('duplicate');
+    // 65.md SCR-4(b) — fill-blank-only metadata merge: the reviewer confirmed these
+    // are one record, so the kept copy inherits any metadata it is MISSING (abstract/
+    // DOI/PMID/…) from the discarded copies. Never overwrites a non-empty field.
+    const groupRecs = await prisma.screenRecord.findMany({
+      where: { duplicateGroupId: group.id },
+      select: { id: true, title: true, authors: true, year: true, journal: true, doi: true, pmid: true, abstract: true, keywords: true, createdAt: true },
+    });
+    const primaryRec = groupRecs.find(r => r.id === primaryId);
+    if (!primaryRec) return res.status(400).json({ error: 'primaryId is not in this duplicate group' });
+    const { patch, filledFrom } = mergeFillBlanks(primaryRec, groupRecs.filter(r => r.id !== primaryId));
     // Mark all in group as duplicate, except primary
     await prisma.screenRecord.updateMany({ where: { duplicateGroupId: group.id }, data: { isDuplicate: true, isPrimary: false } });
-    await prisma.screenRecord.update({ where: { id: primaryId }, data: { isDuplicate: false, isPrimary: true } });
+    await prisma.screenRecord.update({ where: { id: primaryId }, data: { isDuplicate: false, isPrimary: true, ...patch } });
     await prisma.screenDuplicateGroup.update({ where: { id: group.id }, data: { resolvedAt: new Date(), primaryId } });
-    await writeAudit(p.id, req.user, 'DUPLICATE_GROUP_RESOLVED', { entityType: 'duplicateGroup', entityId: group.id, primaryId });
+    await writeAudit(p.id, req.user, 'DUPLICATE_GROUP_RESOLVED', {
+      entityType: 'duplicateGroup', entityId: group.id, primaryId,
+      details: { mergedFields: Object.keys(patch), filledFrom },
+    });
     emitToProjectMembers(p.id, { type: 'project.updated' }, { exclude: req.user.id });
 
-    res.json({ resolved: true, primaryId });
+    res.json({ resolved: true, primaryId, mergedFields: Object.keys(patch) });
   } catch (err) {
     console.error('[screening] resolveDuplicateGroup:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /projects/:pid/duplicates/resolve-exact (65.md SCR-4a) — bulk-resolve every
+ * unresolved group whose members ALL pairwise-classify as exact_duplicate (hard
+ * DOI/PMID identifier match, confidence .99). Non-destructive: the most complete
+ * record is kept as primary (with a fill-blank metadata merge), the rest are only
+ * FLAGGED isDuplicate — nothing is deleted. Fuzzy/related groups are skipped for
+ * human review.
+ */
+export async function resolveAllExactDuplicates(req, res) {
+  try {
+    // Same guard as detectDuplicates: outsider 404, member without permission 403.
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    const canManage = access.isOwner || (access.active && (access.isLeader || access.perms.canManageDuplicates));
+    if (!canManage) return res.status(403).json({ error: 'You do not have permission to manage duplicates in this project' });
+    const p = access.project;
+
+    const groups = await prisma.screenDuplicateGroup.findMany({
+      where: { projectId: p.id, resolvedAt: null },
+      include: { records: { select: {
+        id: true, title: true, authors: true, year: true, journal: true,
+        doi: true, pmid: true, abstract: true, keywords: true, createdAt: true,
+      } } },
+    });
+
+    let resolvedGroups = 0, flaggedDuplicates = 0, mergedFieldCount = 0, skippedGroups = 0;
+    for (const group of groups) {
+      const recs = group.records || [];
+      if (recs.length < 2 || !isExactDuplicateGroup(recs)) { skippedGroups += 1; continue; }
+      const primary = pickBulkPrimary(recs);
+      const others = recs.filter(r => r.id !== primary.id);
+      const { patch, filledFrom } = mergeFillBlanks(primary, others);
+
+      // Accrue reviewer-confirmed labels (best-effort — must never block the resolve).
+      try { await recordDuplicateLabels({ projectId: p.id, records: recs, label: 'duplicate', reviewerId: req.user.id, prisma }); }
+      catch (e) { console.error('[screening] duplicate label accrual failed:', e.message); }
+
+      await prisma.screenRecord.updateMany({ where: { duplicateGroupId: group.id }, data: { isDuplicate: true, isPrimary: false } });
+      await prisma.screenRecord.update({ where: { id: primary.id }, data: { isDuplicate: false, isPrimary: true, ...patch } });
+      await prisma.screenDuplicateGroup.update({ where: { id: group.id }, data: { resolvedAt: new Date(), primaryId: primary.id } });
+      await writeAudit(p.id, req.user, 'DUPLICATE_GROUP_RESOLVED', {
+        entityType: 'duplicateGroup', entityId: group.id, primaryId: primary.id,
+        details: { bulk: 'resolve-exact', mergedFields: Object.keys(patch), filledFrom },
+      });
+      resolvedGroups += 1;
+      flaggedDuplicates += others.length;
+      mergedFieldCount += Object.keys(patch).length;
+    }
+
+    if (resolvedGroups > 0) emitToProjectMembers(p.id, { type: 'project.updated' }, { exclude: req.user.id });
+    res.json({ resolvedGroups, flaggedDuplicates, mergedFieldCount, skippedGroups });
+  } catch (err) {
+    console.error('[screening] resolveAllExactDuplicates:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }

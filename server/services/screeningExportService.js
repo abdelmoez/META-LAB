@@ -17,13 +17,30 @@ import { prisma } from '../db/client.js';
 import { aiFlagEnabled, loadEngineInput, getGlobalAiSettings } from './screeningAiService.js';
 import { runCrossValidatePerRecord } from './aiCompute.js';
 import { cvRowFields, AI_CV_COLUMNS, CV_SCORE_TYPES } from '../../src/research-engine/screening/ai/index.js';
+import { consensusState } from '../../src/research-engine/screening/conflicts.js';
 import { csvRow } from '../utils/csv.js';
 
+// 65.md SCR-2 — hard cap on the per-reviewer column families. Fixed so the CSV schema
+// is stable regardless of how many reviewers a project has (extra reviewers beyond the
+// cap are omitted; a systematic review very rarely has more than 6 screeners).
+export const EXPORT_REVIEWER_CAP = 6;
+
+// 65.md SCR-2 — appended per-reviewer / consensus / duplicate provenance columns.
+// Reviewer ordinals are PROJECT-WIDE and deterministic (reviewerId ascending), so
+// reviewer_1 means the same person on every row of one export.
+export const EXPORT_REVIEW_COLUMNS = [
+  'conflict_status', 'duplicate_group_id', 'is_primary', 'my_decided_at',
+  ...Array.from({ length: EXPORT_REVIEWER_CAP }, (_, i) => [
+    `reviewer_${i + 1}_name`, `reviewer_${i + 1}_decision`, `reviewer_${i + 1}_decided_at`,
+  ]).flat(),
+];
+
 // Existing CSV columns + order are UNCHANGED for backwards compatibility; the AI
-// validation columns are APPENDED (existing consumers ignore trailing columns).
+// validation columns and (65.md SCR-2) the review/consensus columns are APPENDED
+// (existing consumers ignore trailing columns). NEVER reorder or remove entries.
 export const EXPORT_COLUMNS = [
   'title', 'authors', 'year', 'journal', 'doi', 'pmid', 'decision', 'exclusionReason',
-  'notes', 'rating', 'isDuplicate', 'abstract', ...AI_CV_COLUMNS,
+  'notes', 'rating', 'isDuplicate', 'abstract', ...AI_CV_COLUMNS, ...EXPORT_REVIEW_COLUMNS,
 ];
 
 // Above this many records the synchronous GET /export route refuses (413 → use async).
@@ -33,6 +50,11 @@ export const EXPORT_SYNC_MAX = Number(process.env.EXPORT_SYNC_MAX) || 5000;
 // SKIPPED — it is the dominant CPU cost and the #1 cause of export 504s (62.md RC-1).
 // The CV columns then export blank with a clear status, so the CSV schema is unchanged.
 export const EXPORT_CV_MAX = Number(process.env.EXPORT_CV_MAX) || 5000;
+// 65.md SCR-8 — the ASYNC (worker) export path already runs CV off the event loop in a
+// worker_thread, fold by fold, so it can afford a much higher ceiling: 10k-record
+// validation projects get real held-out scores instead of blank columns. The sync path
+// keeps EXPORT_CV_MAX; beyond THIS cap the honest 'too_large' status still applies.
+export const EXPORT_CV_MAX_ASYNC = Number(process.env.EXPORT_CV_MAX_ASYNC) || 20000;
 
 const PAGE = 1000; // records per DB page in the streaming path (bounded memory)
 
@@ -72,6 +94,9 @@ export async function computeExportCvScores(projectId, { cap = EXPORT_CV_MAX } =
       // 59.md Change 3 — centralised "≥ 50 screened" gate; imported include/exclude labels
       // count toward it (they are real settled screening decisions).
       minLabeledToScore: global.minScreenedDecisions ?? 50,
+      // 65.md SCR-8 — align the engine's own perf guard with the caller's cap so an
+      // env-raised async cap is not silently undercut by the engine default (20000).
+      maxRecordsForCv: cap > 0 ? cap : undefined,
     });
     return { meta: cv.meta, byRecordId: cv.byRecordId, generatedAt };
   } catch (err) {
@@ -80,9 +105,70 @@ export async function computeExportCvScores(projectId, { cap = EXPORT_CV_MAX } =
   }
 }
 
+// Neutral context when a caller has no project context: reviewer columns stay blank
+// and identity is NEVER shown (fail-closed), consensus uses the 2-reviewer default.
+const NEUTRAL_EXPORT_CTX = Object.freeze({ canSeeIdentity: false, reviewers: [], requiredReviewers: 2 });
+
+/**
+ * buildExportContext — 65.md SCR-2: everything the per-reviewer export columns need,
+ * resolved ONCE per export (not per row). Reviewer identity mirrors the listRecords
+ * policy: names are visible unless the project is blind AND the requester is not a
+ * leader/owner — otherwise reviewers export as anonymous ordinals. Fail-closed: any
+ * lookup failure returns the neutral context (blank reviewer columns, no identity).
+ */
+export async function buildExportContext(projectId, userId) {
+  try {
+    const project = await prisma.screenProject.findUnique({
+      where: { id: projectId },
+      select: { ownerId: true, blindMode: true, requiredScreeningReviewers: true },
+    });
+    if (!project) return { ...NEUTRAL_EXPORT_CTX };
+    const member = userId
+      ? await prisma.screenProjectMember.findFirst({ where: { projectId, userId }, select: { role: true } })
+      : null;
+    // Mirrors server/screening/access.js isLeader semantics.
+    const isLeader = project.ownerId === userId || member?.role === 'leader' || member?.role === 'owner';
+    const canSeeIdentity = !project.blindMode || isLeader;
+    // Deterministic project-wide reviewer ordering (reviewerId asc), capped.
+    const rows = await prisma.screenDecision.findMany({
+      where: { projectId },
+      select: { reviewerId: true, reviewerName: true },
+      distinct: ['reviewerId'],
+      orderBy: { reviewerId: 'asc' },
+      take: EXPORT_REVIEWER_CAP,
+    });
+    return {
+      canSeeIdentity,
+      reviewers: rows.map(r => ({ reviewerId: r.reviewerId, name: r.reviewerName || '' })),
+      requiredReviewers: project.requiredScreeningReviewers ?? 2,
+    };
+  } catch (err) {
+    console.error('[screening] buildExportContext failed:', err.message);
+    return { ...NEUTRAL_EXPORT_CTX };
+  }
+}
+
+const isoOrBlank = (d) => {
+  if (!d) return '';
+  try { return new Date(d).toISOString(); } catch { return ''; }
+};
+
 /** Build one export row object for a record (shared by the sync route and the worker). */
-export function buildExportRow(r, userId, cv) {
+export function buildExportRow(r, userId, cv, ctx = NEUTRAL_EXPORT_CTX) {
   const myDec = (r.decisions || []).find(d => d.reviewerId === userId);
+  // 65.md SCR-2 — per-reviewer columns use the title/abstract-stage decision (one row
+  // per reviewer via @@unique([recordId, reviewerId, stage])); conflict_status derives
+  // from the same stage via the authoritative consensus matrix.
+  const taDecisions = (r.decisions || []).filter(d => d.stage === 'title_abstract');
+  const reviewerCols = {};
+  for (let i = 0; i < EXPORT_REVIEWER_CAP; i++) {
+    const rev = (ctx.reviewers || [])[i];
+    const d = rev ? taDecisions.find(x => x.reviewerId === rev.reviewerId) : null;
+    // Identity only when permission-safe (blind mode → anonymous ordinal).
+    reviewerCols[`reviewer_${i + 1}_name`] = rev ? (ctx.canSeeIdentity ? (rev.name || `Reviewer ${i + 1}`) : `Reviewer ${i + 1}`) : '';
+    reviewerCols[`reviewer_${i + 1}_decision`] = d ? (d.decision || 'undecided') : '';
+    reviewerCols[`reviewer_${i + 1}_decided_at`] = d ? isoOrBlank(d.updatedAt || d.createdAt) : '';
+  }
   return {
     id: r.id,
     title: r.title,
@@ -101,6 +187,12 @@ export function buildExportRow(r, userId, cv) {
     sourceDb: r.sourceDb,
     // Appended AI validation columns (blank + status when not out-of-sample).
     ...cvRowFields(cv.byRecordId.get(r.id), cv.meta, cv.generatedAt),
+    // Appended consensus / duplicate-provenance / per-reviewer columns (65.md SCR-2).
+    conflict_status: consensusState(taDecisions, ctx.requiredReviewers ?? 2),
+    duplicate_group_id: r.duplicateGroupId || '',
+    is_primary: r.isPrimary,
+    my_decided_at: myDec ? isoOrBlank(myDec.updatedAt || myDec.createdAt) : '',
+    ...reviewerCols,
   };
 }
 
@@ -167,8 +259,10 @@ async function* pageRecords(projectId) {
  * @param {(chunk:string)=>Promise<void>|void} o.write
  * @param {(p:{processed:number,total:number,emitted:number})=>Promise<void>|void} [o.onProgress]
  */
-export async function streamExportToSink({ projectId, userId, format = 'csv', filter = 'all', cv, write, onProgress }) {
+export async function streamExportToSink({ projectId, userId, format = 'csv', filter = 'all', cv, ctx, write, onProgress }) {
   const total = await prisma.screenRecord.count({ where: { projectId } });
+  // 65.md SCR-2 — reviewer/consensus context resolved once for the whole export.
+  const rowCtx = ctx || await buildExportContext(projectId, userId);
   const match = (row) => filter === 'all' || row.decision === filter;
   let processed = 0, emitted = 0;
 
@@ -180,7 +274,7 @@ export async function streamExportToSink({ projectId, userId, format = 'csv', fi
     await write('[');
     let first = true;
     for await (const rec of pageRecords(projectId)) {
-      const row = buildExportRow(rec, userId, cv);
+      const row = buildExportRow(rec, userId, cv, rowCtx);
       processed++;
       if (match(row)) { await write((first ? '' : ',') + JSON.stringify(row)); first = false; emitted++; }
       await tick();
@@ -189,7 +283,7 @@ export async function streamExportToSink({ projectId, userId, format = 'csv', fi
   } else if (format === 'ris') {
     let first = true;
     for await (const rec of pageRecords(projectId)) {
-      const row = buildExportRow(rec, userId, cv);
+      const row = buildExportRow(rec, userId, cv, rowCtx);
       processed++;
       if (match(row)) { await write((first ? '' : '\n\n') + renderRisBlock(row)); first = false; emitted++; }
       await tick();
@@ -198,7 +292,7 @@ export async function streamExportToSink({ projectId, userId, format = 'csv', fi
   } else { // csv — header then '\n'+row per record (≡ [header, ...rows].join('\n'))
     await write(EXPORT_COLUMNS.join(','));
     for await (const rec of pageRecords(projectId)) {
-      const row = buildExportRow(rec, userId, cv);
+      const row = buildExportRow(rec, userId, cv, rowCtx);
       processed++;
       if (match(row)) { await write('\n' + renderCsvRow(row)); emitted++; }
       await tick();

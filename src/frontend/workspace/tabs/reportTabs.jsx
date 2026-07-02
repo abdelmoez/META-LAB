@@ -324,7 +324,13 @@ Output ONLY the section text — no labels, no preamble, no markdown headers. Us
       const newDrafts = {...drafts, [secId]: text};
       const newKeys = {...sourceKeys, [secId]: currentDataKey};
       saveManuscript({drafts: newDrafts, sourceKeys: newKeys, generatedAt: new Date().toISOString()});
-    } catch(e){setError(`Error: ${e.message}`);}
+    } catch(e){
+      console.error("[ManuscriptDrafter] Error:", e);
+      // 65.md UX-3 — calm copy only; the raw error stays in the console above.
+      setError(e && e.name === "TypeError"
+        ? "Could not reach the server. Check your connection and try again."
+        : (e && e.message) || "The section could not be drafted. Please try again.");
+    }
     setLoading(null);
   };
 

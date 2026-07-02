@@ -25,14 +25,18 @@ beforeAll(async () => {
 }, 30000);
 
 describe('META·SIFT prompt4 server-ready upgrade (integration)', () => {
-  it('T6: GET /api/version returns name/version/commit/buildDate (public)', async () => {
+  // 52.md header-fingerprinting hardening (publicVersion): build metadata
+  // (commit hash, commit/build dates) is deliberately NOT public — anonymous
+  // callers get the release identifier only.
+  it('T6: GET /api/version returns name/version publicly — and NO build fingerprint', async () => {
     if (!up) return;
     const r = await fetch(BASE + '/version'); const v = await r.json();
     expect(r.status).toBe(200);
     expect(v.name).toBeTruthy();
     expect(v.version).toMatch(/\d+\.\d+\.\d+/);
-    expect(v.commit).toBeTruthy();
-    expect(v.buildDate).toBeTruthy();
+    expect(v.commit).toBeUndefined();
+    expect(v.commitDate).toBeUndefined();
+    expect(v.buildDate).toBeUndefined();
   });
 
   it('T8/T9: creator is owner with full perms; presets set module permissions; leader cannot edit owner', async () => {

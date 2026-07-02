@@ -67,22 +67,22 @@ export async function updateProfile(req, res) {
     if (projectSidebarPinned !== undefined && projectSidebarPinned !== null && typeof projectSidebarPinned !== 'boolean') {
       return res.status(400).json({ error: 'projectSidebarPinned must be a boolean or null' });
     }
-    // design.md §5/§ADMIN — parallel UI design mode: "legacy" | "stitch" (null clears
-    // to legacy). The switch is ADMIN-ONLY and protected HERE at the authorization
-    // layer (not merely hidden in the UI): persisting "stitch" requires a
-    // DB-verified admin role, so a non-admin can never store the preview preference
-    // (and therefore never resolves into the Stitch UI on any device). "legacy" is
-    // always allowed — it is the safe default and the emergency reset value.
+    // 65.md — UI design mode: "legacy" | "stitch" (null clears). A PERSONAL design
+    // preference is ADMIN-ONLY for BOTH values, protected HERE at the authorization
+    // layer (not merely hidden in the UI): non-admins always render the Ops-governed
+    // designSettings.defaultMode, so persisting any per-user mode for them would be
+    // dead state at best and a legacy-strand at worst. The role is DB-verified.
     let uiDesignPatch = {};
     if (uiDesignMode !== undefined) {
       if (uiDesignMode !== null && !['legacy', 'stitch'].includes(uiDesignMode)) {
         return res.status(400).json({ error: 'uiDesignMode must be "legacy", "stitch", or null' });
       }
-      if (uiDesignMode === 'stitch') {
-        const actor = await prisma.user.findUnique({ where: { id: req.user.id }, select: { role: true, suspended: true } });
-        if (!actor || actor.suspended || actor.role !== 'admin') {
-          return res.status(403).json({ error: 'The Stitch design preview is available to administrators only' });
-        }
+      const actor = await prisma.user.findUnique({ where: { id: req.user.id }, select: { role: true, suspended: true } });
+      if (!actor || actor.suspended || actor.role !== 'admin') {
+        return res.status(403).json({
+          error: 'The interface design is managed by your administrators (Ops › Appearance)',
+          code: 'UI_DESIGN_ADMIN_ONLY',
+        });
       }
       uiDesignPatch = { uiDesignMode: uiDesignMode || null };
     }

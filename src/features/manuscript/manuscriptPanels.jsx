@@ -12,8 +12,11 @@ import { Icon } from '../../frontend/components/icons.jsx';
 import { alpha } from '../../frontend/theme/tokens.js';
 import {
   SECTION_TYPES, SECTION_IDS, STATEMENT_TYPES, CITATION_STYLES, JOURNAL_TEMPLATES, sectionStatus,
-  citationToken, collectCitationOrder, draftSectionTexts, renderInlineMarkers,
+  collectCitationOrder, draftSectionTexts, studySelectionParagraph,
 } from '../../research-engine/manuscript/index.js';
+import { RichSectionEditor, RichToolbar, RICH_EDITOR_CSS } from './richEditor/RichSectionEditor.jsx';
+import { AbstractEditor } from './richEditor/AbstractEditor.jsx';
+import { extractOutline } from './richEditor/mdDom.js';
 
 /* ════════════ shared bits ════════════ */
 
@@ -35,8 +38,8 @@ export function Labeled({ label, children, style }) {
   );
 }
 
-function Card({ children, style }) {
-  return <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 12, padding: 16, ...style }}>{children}</div>;
+function Card({ children, style, ...rest }) {
+  return <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 12, padding: 16, ...style }} {...rest}>{children}</div>;
 }
 
 function Block({ title, children, right, desc }) {
@@ -52,45 +55,8 @@ function Block({ title, children, right, desc }) {
   );
 }
 
-/* ── safe, tiny markdown → HTML (escape FIRST, then format a small subset) ── */
-export function escapeHtml(s) {
-  return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-export function mdToHtml(md) {
-  const esc = escapeHtml(md);
-  const inline = (t) => t
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    .replace(/`([^`]+)`/g, '<code>$1</code>');
-  const lines = esc.split(/\r?\n/);
-  const out = [];
-  let inList = false;
-  const closeList = () => { if (inList) { out.push('</ul>'); inList = false; } };
-  for (const line of lines) {
-    if (/^###\s+/.test(line)) { closeList(); out.push(`<h4>${inline(line.replace(/^###\s+/, ''))}</h4>`); continue; }
-    if (/^##\s+/.test(line)) { closeList(); out.push(`<h3>${inline(line.replace(/^##\s+/, ''))}</h3>`); continue; }
-    if (/^#\s+/.test(line)) { closeList(); out.push(`<h2>${inline(line.replace(/^#\s+/, ''))}</h2>`); continue; }
-    if (/^\s*-\s+/.test(line)) { if (!inList) { out.push('<ul>'); inList = true; } out.push(`<li>${inline(line.replace(/^\s*-\s+/, ''))}</li>`); continue; }
-    if (!line.trim()) { closeList(); continue; }
-    closeList();
-    out.push(`<p>${inline(line)}</p>`);
-  }
-  closeList();
-  return out.join('\n');
-}
-
-export function MdPreview({ markdown, orderMap, style }) {
-  const rendered = orderMap ? renderInlineMarkers(markdown, orderMap, style) : markdown;
-  const html = useMemo(() => mdToHtml(rendered), [rendered]);
-  if (!String(markdown || '').trim()) {
-    return <div style={{ color: C.muted, fontSize: 12.5, fontStyle: 'italic' }}>Nothing to preview yet.</div>;
-  }
-  return (
-    <div className="ms-md-preview"
-      style={{ fontSize: 13, color: C.txt2, lineHeight: 1.7, wordBreak: 'break-word' }}
-      dangerouslySetInnerHTML={{ __html: html }} />
-  );
-}
+/* The WYSIWYG converters (markdown ⇄ HTML, escape-first) live in
+   ./richEditor/mdDom.js — the editor IS the preview (65.md MS-CORE). */
 
 /* ── generic engine-table renderer ── */
 const cellTh = { padding: '8px 12px', textAlign: 'left', fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: C.muted, background: C.bg, borderBottom: `1px solid ${C.brd}`, whiteSpace: 'nowrap' };
@@ -247,6 +213,10 @@ export function OverviewPanel({ m, exporters }) {
         {tpl && tpl.note && <InfoBox color={C.acc}>{tpl.note}</InfoBox>}
       </Block>
 
+      <Block title="Authors & affiliations" desc="Appears on the exported title page. Corresponding author is marked in the Word export.">
+        <AuthorshipCard m={m} />
+      </Block>
+
       <Block title="Export" desc="Generate a submission-ready Word manuscript, a reproducibility bundle, or reporting checklists.">
         <ExportButtons exporters={exporters} canonical />
         {exporters.exportError && <InfoBox color={C.red}>{exporters.exportError}</InfoBox>}
@@ -255,13 +225,91 @@ export function OverviewPanel({ m, exporters }) {
   );
 }
 
-/* ════════════ 2. EDITOR ════════════ */
+/* ── MS-6: authorship editor (persists to draft.authorship via setMetaDebounced;
+      the docx title page already consumes authors/affiliations/corresponding). ── */
+function normalizeAuthorship(a) {
+  return {
+    authors: Array.isArray(a && a.authors) ? a.authors.map((x) => ({
+      name: (x && x.name) || '',
+      affiliation: (x && x.affiliation) || '',
+      email: (x && x.email) || '',
+      corresponding: !!(x && x.corresponding),
+    })) : [],
+    affiliations: Array.isArray(a && a.affiliations) ? a.affiliations.slice() : [],
+    correspondingNote: (a && a.correspondingNote) || '',
+  };
+}
+
+function AuthorshipCard({ m }) {
+  const [buf, setBuf] = useState(() => normalizeAuthorship(m.activeDraft.authorship));
+  useEffect(() => { setBuf(normalizeAuthorship(m.activeDraft && m.activeDraft.authorship)); }, [m.activeId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const commit = (next) => { setBuf(next); m.setMetaDebounced({ authorship: next }); };
+  const setAuthor = (i, patch) => commit({ ...buf, authors: buf.authors.map((a, j) => (j === i ? { ...a, ...patch } : a)) });
+  const removeAuthor = (i) => commit({ ...buf, authors: buf.authors.filter((_a, j) => j !== i) });
+  const addAuthor = () => commit({ ...buf, authors: [...buf.authors, { name: '', affiliation: '', email: '', corresponding: buf.authors.length === 0 }] });
+
+  return (
+    <Card data-testid="stitch-manuscript-authorship">
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }} data-testid="stitch-manuscript-authorship-list">
+        {buf.authors.length === 0 && (
+          <div style={{ fontSize: 11.5, color: C.muted }}>No authors yet — add the author list for the title page.</div>
+        )}
+        {buf.authors.map((au, i) => (
+          <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+            <input value={au.name} onChange={(e) => setAuthor(i, { name: e.target.value })}
+              placeholder="Full name" aria-label={`Author ${i + 1} name`}
+              style={{ ...inp, flex: '2 1 150px', width: 'auto' }} />
+            <input value={au.affiliation} onChange={(e) => setAuthor(i, { affiliation: e.target.value })}
+              placeholder="Affiliation №(s)" aria-label={`Author ${i + 1} affiliation`}
+              title="Affiliation number(s) from the list below, or free text"
+              style={{ ...inp, flex: '1 1 100px', width: 'auto' }} />
+            <input value={au.email} onChange={(e) => setAuthor(i, { email: e.target.value })}
+              placeholder="Email" aria-label={`Author ${i + 1} email`}
+              style={{ ...inp, flex: '1 1 130px', width: 'auto' }} />
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: C.txt2, whiteSpace: 'nowrap', cursor: 'pointer' }}>
+              <input type="checkbox" checked={au.corresponding}
+                onChange={(e) => setAuthor(i, { corresponding: e.target.checked })}
+                aria-label={`Author ${i + 1} is corresponding author`} />
+              Corresponding
+            </label>
+            <button onClick={() => removeAuthor(i)} aria-label={`Remove author ${i + 1}`} title="Remove author"
+              style={{ ...btnS('ghost'), padding: '4px 9px', fontSize: 12 }}>
+              ×
+            </button>
+          </div>
+        ))}
+        <div>
+          <button onClick={addAuthor} data-testid="stitch-manuscript-add-author" style={{ ...btnS('ghost'), fontSize: 11 }}>
+            <Icon name="plus" size={12} /> Add author
+          </button>
+        </div>
+        <Labeled label="Affiliations (one per line, numbered in order)">
+          <textarea value={buf.affiliations.join('\n')}
+            onChange={(e) => commit({ ...buf, affiliations: e.target.value.split('\n') })}
+            onBlur={() => commit({ ...buf, affiliations: buf.affiliations.map((s) => s.trim()).filter(Boolean) })}
+            placeholder={'1. Department of …, University of …\n2. …'}
+            rows={3} aria-label="Affiliations"
+            style={{ ...inp, resize: 'vertical', lineHeight: 1.6 }} />
+        </Labeled>
+        <Labeled label="Corresponding-author note (optional)">
+          <input value={buf.correspondingNote}
+            onChange={(e) => commit({ ...buf, correspondingNote: e.target.value })}
+            placeholder="e.g. These authors contributed equally…"
+            style={inp} />
+        </Labeled>
+      </div>
+    </Card>
+  );
+}
+
+/* ════════════ 2. EDITOR (65.md MS-CORE/MS-3) — outline · paper page · tools ════════════ */
 const dotColor = (st) => (st === 'edited' ? C.grn : st === 'ai-draft' ? C.yel : C.dim);
 
-export function EditorPanel({ m }) {
+export function EditorPanel({ m, exporters }) {
   const [sel, setSel] = useState('title');
-  const [showPreview, setShowPreview] = useState(false);
   const [genNotice, setGenNotice] = useState(null); // { only:null|[id], skipped:[...] }
+  const [toolsOpen, setToolsOpen] = useState(true);
 
   const section = (m.activeDraft.sections && m.activeDraft.sections[sel]) || {};
   const lastGen = section.lastGeneratedAt || null;
@@ -279,32 +327,60 @@ export function EditorPanel({ m }) {
 
   const onType = (val) => { setBuf(val); m.updateSection(sel, val); };
 
-  const taRef = useRef(null);
-  const style = m.activeDraft.citationStyle || 'vancouver';
+  // The rich editor that last held the caret (main section field OR one of the
+  // abstract subsection fields) — the shared toolbar/tools act on it.
+  const mainApi = useRef(null);
+  const activeApi = useRef(null);
+  const setActive = (api) => { activeApi.current = api; };
+  const getApi = () => activeApi.current || mainApi.current;
+
+  const pageRef = useRef(null);
+  const pendingScroll = useRef(null);
+
   const citeRefs = m.references || [];
   const refLabel = (r) => {
     const a = r.ref && r.ref.authorsList && r.ref.authorsList[0];
     const fam = a ? (a.family || a.raw) : ((r.ref && r.ref.title) || 'ref');
     return `${fam}${r.ref && r.ref.year ? ` ${r.ref.year}` : ''}`;
   };
-  // inline-citation numbering for the live preview (includes the unsaved buffer)
+  // inline-citation numbering (includes the unsaved buffer)
   const orderMap = useMemo(() => {
     const texts = draftSectionTexts(m.activeDraft).map((t, i) => (SECTION_IDS[i] === sel ? buf : t));
     return collectCitationOrder(texts).orderMap;
   }, [m.activeDraft, sel, buf]);
-  const insertCitation = (refId) => {
-    if (!refId) return;
-    const token = citationToken(refId);
-    const ta = taRef.current;
-    let next;
-    if (ta && typeof ta.selectionStart === 'number') {
-      next = `${buf.slice(0, ta.selectionStart)}${token}${buf.slice(ta.selectionEnd)}`;
-    } else { next = `${buf}${token}`; }
-    setBuf(next);
-    m.updateSection(sel, next);
-  };
+
+  // MS-11: derive sub-entries from headings at render time — no model change.
+  const outline = useMemo(() => {
+    const map = {};
+    for (const s of SECTION_TYPES) {
+      if (s.id === 'title') continue;
+      const md = s.id === sel ? buf : (((m.activeDraft.sections || {})[s.id] || {}).content || '');
+      const entries = extractOutline(md).filter((h) => h.level <= 2);
+      if (entries.length) map[s.id] = entries;
+    }
+    return map;
+  }, [m.activeDraft, buf, sel]);
+
   // flush any pending debounced edit before changing section so resync reads fresh content
-  const switchTo = (id) => { if (m.flush) m.flush(); setSel(id); };
+  const switchTo = (id) => { if (m.flush) m.flush(); activeApi.current = null; setSel(id); };
+
+  const scrollToHeading = (idx) => {
+    const el = pageRef.current;
+    if (!el || typeof el.querySelectorAll !== 'function') return;
+    const h = el.querySelectorAll('h2,h3,h4')[idx];
+    if (h && h.scrollIntoView) h.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  };
+  const jumpTo = (secId, headingIndex) => {
+    if (secId === sel) { scrollToHeading(headingIndex); return; }
+    pendingScroll.current = headingIndex;
+    switchTo(secId);
+  };
+  useEffect(() => {
+    if (pendingScroll.current == null) return;
+    const idx = pendingScroll.current;
+    pendingScroll.current = null;
+    scrollToHeading(idx);
+  }, [sel]);
 
   const doGenerate = (only) => {
     const res = m.generate(only ? { only } : {});
@@ -318,37 +394,62 @@ export function EditorPanel({ m }) {
     setGenNotice(null);
   };
 
+  const insertCitation = (refId) => { const api = getApi(); if (api && refId) api.insertCitation(refId); };
+  // MS-8: insert the generated study-selection paragraph as normal editable text
+  const insertPrisma = () => { const api = getApi(); if (api) api.insertMarkdown(studySelectionParagraph(m.prismaCounts)); };
+
   const status = sectionStatus(section);
   const isTitle = sel === 'title';
+  const isAbstract = sel === 'abstract';
+  // remount (→ re-render from props) ONLY when the section identity changes or it
+  // is (re)generated — typing never remounts, so the caret is never fought.
+  const resetKey = `${m.activeId}:${sel}:${lastGen || ''}`;
 
   return (
     <div data-testid="stitch-manuscript-editor" style={{ display: 'flex', gap: 18, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-      {/* section list */}
-      <div style={{ width: 210, flexShrink: 0, minWidth: 180 }}>
+      <style>{RICH_EDITOR_CSS}</style>
+
+      {/* ── left: outline ── */}
+      <div style={{ width: 216, flexShrink: 0, minWidth: 180, flex: '0 1 216px' }}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
           {SECTION_TYPES.map((s) => {
             const st = sectionStatus((m.activeDraft.sections && m.activeDraft.sections[s.id]) || {});
             const active = s.id === sel;
+            const subs = outline[s.id] || [];
             return (
-              <button key={s.id} onClick={() => switchTo(s.id)}
-                data-testid={`stitch-manuscript-section-${s.id}`}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 9, textAlign: 'left', cursor: 'pointer',
-                  padding: '8px 10px', borderRadius: 8, fontSize: 12.5, fontFamily: 'inherit',
-                  border: `1px solid ${active ? alpha(C.acc, '40') : 'transparent'}`,
-                  background: active ? alpha(C.acc, '12') : 'transparent',
-                  color: active ? C.txt : C.txt2, fontWeight: active ? 600 : 500,
-                }}>
-                <span style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor(st), flexShrink: 0, border: st === 'empty' ? `1px solid ${C.brd2}` : 'none' }} />
-                {s.label}
-              </button>
+              <div key={s.id}>
+                <button onClick={() => switchTo(s.id)}
+                  data-testid={`stitch-manuscript-section-${s.id}`}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 9, textAlign: 'left', cursor: 'pointer',
+                    width: '100%', padding: '8px 10px', borderRadius: 8, fontSize: 12.5, fontFamily: 'inherit',
+                    border: `1px solid ${active ? alpha(C.acc, '40') : 'transparent'}`,
+                    background: active ? alpha(C.acc, '12') : 'transparent',
+                    color: active ? C.txt : C.txt2, fontWeight: active ? 600 : 500,
+                  }}>
+                  <span style={{ width: 8, height: 8, borderRadius: '50%', background: dotColor(st), flexShrink: 0, border: st === 'empty' ? `1px solid ${C.brd2}` : 'none' }} />
+                  {s.label}
+                </button>
+                {subs.length > 0 && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 1, margin: '1px 0 3px' }}>
+                    {subs.map((h) => (
+                      <button key={`${s.id}-${h.headingIndex}`} onClick={() => jumpTo(s.id, h.headingIndex)}
+                        title={h.text}
+                        data-testid={`stitch-manuscript-outline-${s.id}-${h.headingIndex}`}
+                        style={{
+                          textAlign: 'left', cursor: 'pointer', border: 'none', background: 'transparent',
+                          color: C.muted, fontSize: 11, fontFamily: 'inherit', lineHeight: 1.5,
+                          padding: `2px 8px 2px ${h.level === 1 ? 27 : 39}px`,
+                          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+                        }}>
+                        {h.text}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             );
           })}
-        </div>
-        <div style={{ marginTop: 12 }}>
-          <button onClick={() => doGenerate(null)} data-testid="stitch-manuscript-generate" style={{ ...btnS('primary'), width: '100%', justifyContent: 'center' }}>
-            <Icon name="sigma" size={13} /> Generate all sections
-          </button>
         </div>
         <div style={{ marginTop: 10, fontSize: 10.5, color: C.muted, lineHeight: 1.6 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: C.grn }} /> Edited</span>{'  '}
@@ -357,31 +458,20 @@ export function EditorPanel({ m }) {
         </div>
       </div>
 
-      {/* editor area */}
-      <div style={{ flex: 1, minWidth: 280 }}>
+      {/* ── center: paper page ── */}
+      <div style={{ flex: '1 1 460px', minWidth: 300 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.txt }}>{(SECTION_TYPES.find((s) => s.id === sel) || {}).label}</h3>
             {status === 'ai-draft' && <span style={tagS('yellow')}>AI draft — verify</span>}
             {status === 'edited' && <span style={tagS('green')}>Edited</span>}
           </div>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            {!isTitle && citeRefs.length > 0 && (
-              <select value="" onChange={(e) => { insertCitation(e.target.value); e.target.value = ''; }}
-                title="Insert a numbered citation at the cursor"
-                data-testid="stitch-manuscript-insert-citation"
-                style={{ ...inp, width: 'auto', cursor: 'pointer', fontSize: 11, paddingRight: 22 }}>
-                <option value="">+ Cite…</option>
-                {citeRefs.map((r) => <option key={r.id} value={r.id}>{refLabel(r)}</option>)}
-              </select>
-            )}
-            <button onClick={() => setShowPreview((v) => !v)} style={{ ...btnS('ghost'), fontSize: 11 }}>
-              <Icon name="eye" size={12} /> {showPreview ? 'Hide preview' : 'Preview'}
-            </button>
-            <button onClick={() => doGenerate([sel])} style={{ ...btnS('ghost'), fontSize: 11 }}>
-              <Icon name="refresh" size={12} /> Generate this section
-            </button>
-          </div>
+          <button onClick={() => setToolsOpen((v) => !v)} aria-label={toolsOpen ? 'Hide tools panel' : 'Show tools panel'}
+            title={toolsOpen ? 'Hide tools panel' : 'Show tools panel'}
+            data-testid="stitch-manuscript-tools-toggle"
+            style={{ ...btnS('ghost'), fontSize: 11 }}>
+            <Icon name="layers" size={12} /> {toolsOpen ? 'Hide tools' : 'Tools'}
+          </button>
         </div>
 
         {genNotice && (
@@ -398,30 +488,153 @@ export function EditorPanel({ m }) {
           </div>
         )}
 
-        {isTitle ? (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-            <Labeled label="Manuscript title">
-              <input value={buf} onChange={(e) => onType(e.target.value)} placeholder="Full manuscript title…"
-                style={{ ...inp, fontSize: 14 }} />
-            </Labeled>
-            <Labeled label="Keywords (comma-separated)">
-              <input value={kw}
-                onChange={(e) => { setKw(e.target.value); m.setMetaDebounced({ keywords: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) }); }}
-                placeholder="e.g. systematic review, meta-analysis, …"
-                style={inp} />
-            </Labeled>
+        {!isTitle && <RichToolbar getApi={getApi} citeRefs={citeRefs} refLabel={refLabel} />}
+
+        <div style={{ display: 'flex', justifyContent: 'center' }}>
+          <div ref={pageRef} className="ms-paper" data-testid="stitch-manuscript-page"
+            style={{ width: '100%', maxWidth: 760, padding: '44px 52px 56px', minHeight: 480, boxSizing: 'border-box' }}>
+            {isTitle ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
+                <input value={buf} onChange={(e) => onType(e.target.value)} placeholder="Full manuscript title…"
+                  aria-label="Manuscript title" data-testid="stitch-manuscript-title-input"
+                  style={{
+                    width: '100%', border: 'none', outline: 'none', background: 'transparent',
+                    color: '#1c2330', fontFamily: "Georgia,'Times New Roman',serif",
+                    fontSize: 22, fontWeight: 700, lineHeight: 1.45, textAlign: 'center', boxSizing: 'border-box',
+                  }} />
+                <div style={{ borderTop: '1px solid #e2e6ee', paddingTop: 18 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: '#98a1b3', letterSpacing: 0.6, textTransform: 'uppercase', fontFamily: "'IBM Plex Sans',sans-serif", marginBottom: 6 }}>
+                    Keywords (comma-separated)
+                  </div>
+                  <input value={kw}
+                    onChange={(e) => { setKw(e.target.value); m.setMetaDebounced({ keywords: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) }); }}
+                    placeholder="e.g. systematic review, meta-analysis, …"
+                    aria-label="Keywords"
+                    style={{
+                      width: '100%', border: 'none', outline: 'none', background: 'transparent',
+                      color: '#1c2330', fontFamily: "Georgia,'Times New Roman',serif", fontSize: 14, boxSizing: 'border-box',
+                    }} />
+                </div>
+              </div>
+            ) : isAbstract ? (
+              <AbstractEditor value={buf} templateId={m.activeDraft.templateId} orderMap={orderMap}
+                resetKey={resetKey} onChange={onType} onActivate={setActive} />
+            ) : (
+              <RichSectionEditor key={resetKey} ref={mainApi} value={buf} orderMap={orderMap}
+                onChange={onType} onActivate={setActive}
+                ariaLabel={(SECTION_TYPES.find((s) => s.id === sel) || {}).label || 'Section'}
+                placeholder="Write this section here, or generate it from your project data. Use the toolbar for headings, lists and citations." />
+            )}
           </div>
-        ) : showPreview ? (
-          <div style={{ border: `1px solid ${C.brd}`, borderRadius: 10, padding: 16, background: C.card, minHeight: 380 }}>
-            <MdPreview markdown={buf} orderMap={orderMap} style={style} />
-          </div>
-        ) : (
-          <textarea ref={taRef} value={buf} onChange={(e) => onType(e.target.value)}
-            placeholder="Write or generate this section. Markdown supported (#, ##, **bold**, *italic*, - bullets). Use “+ Cite…” to insert a numbered citation."
-            style={{ ...inp, minHeight: 380, fontFamily: 'IBM Plex Mono, monospace', fontSize: 12.5, whiteSpace: 'pre', lineHeight: 1.6, resize: 'vertical' }} />
-        )}
+        </div>
       </div>
+
+      {/* ── right: tools (collapsible; stacks below on narrow screens via wrap) ── */}
+      {toolsOpen && (
+        <div data-testid="stitch-manuscript-tools" style={{ width: 264, minWidth: 220, flex: '0 1 264px', display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <Card style={{ padding: 12 }}>
+            <ToolsLabel>Save status</ToolsLabel>
+            <SaveStatusPill saveState={m.saveState} lastError={m.lastError} onRetry={m.retry} />
+          </Card>
+
+          <Card style={{ padding: 12 }}>
+            <ToolsLabel>Generate</ToolsLabel>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              <button onClick={() => doGenerate([sel])} style={{ ...btnS('ghost'), justifyContent: 'center' }}>
+                <Icon name="refresh" size={12} /> Generate this section
+              </button>
+              <button onClick={() => doGenerate(null)} data-testid="stitch-manuscript-generate" style={{ ...btnS('primary'), justifyContent: 'center' }}>
+                <Icon name="sigma" size={13} /> Generate all sections
+              </button>
+              <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5 }}>Sections you edited are preserved — you are asked before anything is overwritten.</div>
+            </div>
+          </Card>
+
+          <Card style={{ padding: 12 }}>
+            <ToolsLabel>Insert</ToolsLabel>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {citeRefs.length > 0 ? (
+                <select value="" disabled={isTitle}
+                  aria-label="Insert citation" title="Insert a numbered citation at the cursor"
+                  data-testid="stitch-manuscript-tools-cite"
+                  onChange={(e) => { insertCitation(e.target.value); e.target.value = ''; }}
+                  style={{ ...inp, cursor: isTitle ? 'default' : 'pointer', fontSize: 11, paddingRight: 22, opacity: isTitle ? 0.5 : 1 }}>
+                  <option value="">+ Insert citation…</option>
+                  {citeRefs.map((r) => <option key={r.id} value={r.id}>{refLabel(r)}</option>)}
+                </select>
+              ) : (
+                <div style={{ fontSize: 10.5, color: C.muted }}>References appear here once your project has included studies.</div>
+              )}
+              <button onClick={insertPrisma} disabled={isTitle}
+                aria-label="Insert PRISMA study-selection summary at the cursor"
+                title="Insert the PRISMA study-selection paragraph (from your live counts) as editable text"
+                data-testid="stitch-manuscript-insert-prisma"
+                style={{ ...btnS('ghost'), justifyContent: 'center', opacity: isTitle ? 0.5 : 1 }}>
+                <Icon name="flow" size={12} /> Insert PRISMA summary
+              </button>
+            </div>
+          </Card>
+
+          {m.insights && m.insights.length > 0 && (
+            <Card style={{ padding: 12 }}>
+              <ToolsLabel>Smart insights</ToolsLabel>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {m.insights.slice(0, 3).map((ins) => (
+                  <div key={ins.key} style={{ fontSize: 11, color: C.txt2, lineHeight: 1.5, display: 'flex', gap: 6 }}>
+                    <span style={{ color: ins.severity === 'warning' ? C.yel : C.acc, fontWeight: 700, flexShrink: 0 }}>
+                      {ins.severity === 'warning' ? 'Check' : 'Note'}
+                    </span>
+                    <span>{ins.message}</span>
+                  </div>
+                ))}
+                {m.insights.length > 3 && (
+                  <div style={{ fontSize: 10.5, color: C.muted }}>+{m.insights.length - 3} more in Overview</div>
+                )}
+              </div>
+            </Card>
+          )}
+
+          {exporters && (
+            <Card style={{ padding: 12 }}>
+              <ToolsLabel>Export</ToolsLabel>
+              <ExportButtons exporters={exporters} />
+              {exporters.exportError && <InfoBox color={C.red}>{exporters.exportError}</InfoBox>}
+            </Card>
+          )}
+        </div>
+      )}
     </div>
+  );
+}
+
+function ToolsLabel({ children }) {
+  return (
+    <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 8 }}>
+      {children}
+    </div>
+  );
+}
+
+/** UX-6: honest save pill — 'error' shows the failure and offers a retry. */
+export function SaveStatusPill({ saveState, lastError, onRetry }) {
+  if (saveState === 'error') {
+    return (
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <span data-testid="stitch-manuscript-save-status" title={lastError || 'Could not save changes.'} style={tagS('red')}>
+          Save failed
+        </span>
+        {onRetry && (
+          <button onClick={onRetry} aria-label="Retry saving" style={{ ...btnS('danger'), fontSize: 10.5, padding: '3px 10px' }}>
+            Retry
+          </button>
+        )}
+      </span>
+    );
+  }
+  return (
+    <span data-testid="stitch-manuscript-save-status" style={tagS(saveState === 'saving' ? 'yellow' : 'green')}>
+      {saveState === 'saving' ? 'Saving…' : 'Saved'}
+    </span>
   );
 }
 

@@ -9,8 +9,8 @@
  *   StitchContextRail   — generic 280px contextual white column (collapsible).
  *   StitchAccountMenu   — avatar dropdown (profile, theme, Ops Console for staff,
  *                          sign out). design2.md Part 3.
- *   StitchTopHeader     — slim utility bar (notification bell, admin design switch,
- *                          theme toggle, account menu).
+ *   StitchTopHeader     — slim utility bar (notification bell, theme toggle,
+ *                          account menu).
  *
  * Navigation is the SAME app routes the legacy UI uses — only the presentation
  * differs. The nav model itself is centralized in nav/navConfig.js (design2.md
@@ -26,7 +26,6 @@ import StitchChatLauncher from '../../components/chat/StitchChatLauncher.jsx';
 import { S, salpha, STITCH_RAIL, STITCH_MONO } from '../theme/stitchTokens.js';
 import { StitchAvatar, StitchBadge, StitchIconButton } from '../primitives/core.jsx';
 import { StitchTooltip } from '../primitives/overlay.jsx';
-import AdminDesignSwitch from '../../design/AdminDesignSwitch.jsx';
 import { GLOBAL_NAV, globalHref, activeGlobalKey } from '../nav/navConfig.js';
 import { useAppVersion } from './useAppVersion.js';
 import { useInvitations } from './useInvitations.js';
@@ -274,7 +273,6 @@ export function StitchTopHeader({ onOpenNav, breadcrumb, topPresence = null, cha
             <span aria-hidden="true" style={{ width: 1, height: 24, background: salpha(S.outlineVariant, 0.6) }} />
           </>
         ) : null}
-        <AdminDesignSwitch variant="inline" />
         {/* Project chat — shown ONLY within a project (never on dashboard/profile/ops/
             other global pages). Inside a project it is greyed + unclickable when a
             leader/owner has restricted chat or no Screening workspace is linked. */}

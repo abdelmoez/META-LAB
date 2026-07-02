@@ -769,7 +769,15 @@ describe('prompt6 T9/T10/T12 — ops metrics (unique logins, lastActive, done-to
     const s1 = (await api('/admin/screening/metrics', { cookie: adminCookie })).data;
     expect(s1.doneToday).toBe(s0.doneToday + 1);       // distinct by project, not by event
     expect(s1.doneToday).toBeLessThanOrEqual(s1.doneThisWeek);
-    expect(s1.doneThisWeek).toBeLessThanOrEqual(s1.doneThisMonth);
+    // week ⊆ month does NOT hold on the 1st-6th of a month: the calendar week
+    // (Sunday start) can begin in the PREVIOUS month, while the month bucket
+    // resets on the 1st — so only assert it when the week started this month.
+    const nowD = new Date();
+    const weekStart = new Date(nowD); weekStart.setDate(weekStart.getDate() - weekStart.getDay()); weekStart.setHours(0, 0, 0, 0);
+    if (weekStart.getMonth() === nowD.getMonth()) {
+      expect(s1.doneThisWeek).toBeLessThanOrEqual(s1.doneThisMonth);
+    }
+    expect(s1.doneToday).toBeLessThanOrEqual(s1.doneThisMonth); // day ⊆ month always
 
     // Admin status PATCH validation (Task 12 admin side).
     const bad = await api(`/admin/screening/projects/${pid}/status`, { method: 'PATCH', cookie: adminCookie, body: { progressStatus: 'bogus' } });
@@ -818,7 +826,11 @@ describe('prompt6 T11 — ops console linked columns + SIFT progress drill-in', 
     const mlRows = await api(`/admin/projects?search=${encodeURIComponent(`Ops ${r}`)}`, { cookie: adminCookie });
     const row = (mlRows.data.projects || []).find(p => p.id === mlId);
     expect(row).toBeTruthy();
-    expect(row.linkedMetaSift).toEqual({ id: spid, title: `Ops ${r}` });
+    // prompt50 WS1 enriched linkedMetaSift with progressStatus + stage — assert
+    // the identity fields and the presence of the additive ops fields.
+    expect(row.linkedMetaSift).toMatchObject({ id: spid, title: `Ops ${r}` });
+    expect('progressStatus' in row.linkedMetaSift).toBe(true);
+    expect('stage' in row.linkedMetaSift).toBe(true);
     expect(row.workspaceId).toBe(spid);
     expect(row.owner?.email).toBe(a.email);
     expect(row.status).toBe('active');

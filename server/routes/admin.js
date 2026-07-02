@@ -157,8 +157,12 @@ router.get('/users', requireAdminOrMod, getUsers);
 router.get('/users/countries', requireAdmin, getUserCountries);
 // prompt25 Task 1 — live activity summary (admin only). Specific path BEFORE :id.
 router.get('/users/activity-summary', requireAdmin, getUserActivitySummary);
-router.get('/users/:id', requireAdminOrMod, getUserById);
-router.get('/users/:id/projects', requireAdminOrMod, getUserProjects);
+// 65.md PERM-06 — full-record + project-list reads are target-gated like the
+// mutations: a mod may not inspect an admin/mod account (the Ops UI already
+// renders staff rows locked for mods; this makes the API agree). The list
+// summary (GET /users) stays mod-readable for support triage.
+router.get('/users/:id', requireAdminOrMod, requireTargetEditable, getUserById);
+router.get('/users/:id/projects', requireAdminOrMod, requireTargetEditable, getUserProjects);
 // prompt25 Task 1 — per-user live location/online (mod cannot target admin/mod).
 router.get('/users/:id/activity', requireAdminOrMod, requireTargetEditable, getUserActivity);
 router.patch('/users/:id', requireAdminOrMod, requireTargetEditable, updateUser);

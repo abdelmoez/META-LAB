@@ -3,7 +3,7 @@
  * user's sort/filter/view/show-archived choice across refresh & logout/login, keyed
  * per user, and re-validates stored values so stale/garbage data falls back safely.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import { readDashboardPrefs, writeDashboardPrefs } from '../../src/frontend/pages/projectLanding.helpers.js';
 
 beforeEach(() => {
@@ -14,6 +14,12 @@ beforeEach(() => {
     removeItem: (k) => store.delete(k),
     clear: () => store.clear(),
   });
+});
+
+// vi.stubGlobal leaks past the file under singleFork (isolate:false) unless
+// explicitly unstubbed — a stray fake localStorage must not reach later files.
+afterAll(() => {
+  vi.unstubAllGlobals();
 });
 
 describe('dashboard preferences persistence', () => {

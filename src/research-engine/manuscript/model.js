@@ -86,6 +86,9 @@ export const JOURNAL_TEMPLATES = [
     label: 'JAMA-style',
     abstractFormat: 'jama',
     citationStyle: 'jama',
+    // abstractWordLimit is a formatting AID (65.md MS-5) — verify against the
+    // journal's current author instructions; it is NOT persisted per draft.
+    abstractWordLimit: 350,
     requiredStatements: ['funding', 'conflicts', 'dataAvailability', 'acknowledgments', 'registration'],
     note: 'Structured Importance/Objective/Data Sources… abstract and JAMA reference style.',
   },
@@ -94,6 +97,7 @@ export const JOURNAL_TEMPLATES = [
     label: 'BMJ-style',
     abstractFormat: 'structured',
     citationStyle: 'vancouver',
+    abstractWordLimit: 400,
     requiredStatements: ['funding', 'conflicts', 'dataAvailability', 'ethics', 'registration'],
     note: 'BMJ-aligned structured abstract with explicit "what this study adds".',
   },
@@ -102,6 +106,7 @@ export const JOURNAL_TEMPLATES = [
     label: 'Lancet-style',
     abstractFormat: 'lancet',
     citationStyle: 'vancouver',
+    abstractWordLimit: 300,
     requiredStatements: ['funding', 'conflicts', 'dataAvailability', 'registration'],
     note: 'Lancet-aligned Background/Methods/Findings/Interpretation/Funding abstract.',
   },
@@ -110,6 +115,7 @@ export const JOURNAL_TEMPLATES = [
     label: 'Cochrane-style review',
     abstractFormat: 'structured',
     citationStyle: 'vancouver',
+    abstractWordLimit: 700,
     requiredStatements: ['funding', 'conflicts', 'dataAvailability', 'registration'],
     note: 'Plain-language-summary friendly, certainty-of-evidence (GRADE) forward.',
   },

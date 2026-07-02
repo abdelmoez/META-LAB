@@ -11,7 +11,7 @@
  * so mocks don't bleed between tests.
  */
 
-import { describe, it, expect, vi, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterEach, afterAll } from 'vitest';
 
 /* ── Shared storage reference ─────────────────────────────────────────── */
 
@@ -45,6 +45,14 @@ beforeAll(async () => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+// restoreAllMocks does NOT undo vi.stubGlobal — without this, the stubbed
+// `fetch` (a vi.fn() resolving undefined) and fake `window` LEAK to every
+// file that runs after this one in the fork (singleFork implies isolate:false),
+// which broke live-server integration tests downstream (65.md QA root-cause).
+afterAll(() => {
+  vi.unstubAllGlobals();
 });
 
 /* ── Helper: build a minimal fetch mock ──────────────────────────────── */

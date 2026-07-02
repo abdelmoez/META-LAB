@@ -5,7 +5,7 @@
  * translucent tints use alpha() (CSS color-mix) instead of hex+alpha suffixes.
  * Consistency: 1px C.brd borders, 8–10px radii, C.shadow for elevation.
  */
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { C, FONT, MONO, alpha, DECISION_COLORS, DECISION_GLYPH, GLOBAL_CSS } from './theme.js';
 
 /** Inject fonts + keyframes once at the shell root. */
@@ -231,16 +231,60 @@ export function Avatar({ name, size = 26 }) {
   );
 }
 
-export function Modal({ children, onClose, width = 480 }) {
+/**
+ * Modal — 65.md UX-8: full dialog a11y (role="dialog", aria-modal, labelled title,
+ * focus trap, focus restore on close, body scroll lock). Mirrors the StitchModal
+ * patterns WITHOUT importing Stitch code into the screening layer. `label` names
+ * the dialog for assistive tech; callers rendering their own heading should pass
+ * a matching label (the visual title stays in children, unchanged).
+ */
+export function Modal({ children, onClose, width = 480, label = 'Dialog' }) {
+  const ref = useRef(null);
+  const prevFocus = useRef(null);
   useEffect(() => {
-    const onKey = e => { if (e.key === 'Escape') onClose?.(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    prevFocus.current = document.activeElement;
+    const node = ref.current;
+    const sel = 'a[href],button:not([disabled]),textarea,input,select,[tabindex]:not([tabindex="-1"])';
+    // Move focus INTO the dialog (first focusable, else the dialog itself) so
+    // keyboard/AT users land inside; deferred so autoFocus children win.
+    const t = setTimeout(() => {
+      const already = node && node.contains(document.activeElement);
+      if (already) return;
+      const f = node?.querySelectorAll(sel);
+      if (f && f.length) f[0].focus();
+      else node?.focus();
+    }, 0);
+    const onKey = e => {
+      if (e.key === 'Escape') { e.stopPropagation(); onClose?.(); return; }
+      if (e.key !== 'Tab') return;
+      // Cyclic focus trap over the dialog's visible focusables.
+      const f = Array.from(node?.querySelectorAll(sel) || []).filter(el => el.offsetParent !== null);
+      if (!f.length) return;
+      const first = f[0], last = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
+    document.addEventListener('keydown', onKey, true);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener('keydown', onKey, true);
+      document.body.style.overflow = prevOverflow;
+      try { prevFocus.current?.focus?.(); } catch { /* detached node */ }
+    };
   }, [onClose]);
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 1000, background: alpha(C.bg, 0.82), display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 24, animation: 'sift-fade 0.15s ease' }}
       onClick={e => { if (e.target === e.currentTarget) onClose?.(); }}>
-      <div style={{ background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 10, padding: '24px 26px', width: '100%', maxWidth: width, boxShadow: `0 20px 60px ${C.shadow}`, maxHeight: '88vh', overflowY: 'auto' }}>
+      <div
+        ref={ref}
+        role="dialog"
+        aria-modal="true"
+        aria-label={label}
+        tabIndex={-1}
+        style={{ background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 10, padding: '24px 26px', width: '100%', maxWidth: width, boxShadow: `0 20px 60px ${C.shadow}`, maxHeight: '88vh', overflowY: 'auto', outline: 'none' }}
+      >
         {children}
       </div>
     </div>

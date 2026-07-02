@@ -441,7 +441,10 @@ D | [study-design filter clause]
       setActiveDB("__combined__");
     }catch(e){
       console.error("[SearchTab AI] Error:",e);
-      setAiError(`${e.name||"Error"}: ${e.message||String(e)}`);
+      // 65.md UX-3 — calm copy only; the raw error stays in the console above.
+      setAiError(e && e.name === "TypeError"
+        ? "Could not reach the server. Check your connection and try again."
+        : (e && e.message) || "The search strategy could not be generated. Please try again.");
     }
     setLoading(false);setProgress({done:0,total:0});
   };
@@ -1184,7 +1187,10 @@ D | [study-design / publication-type filter clause]
       setActiveDB("__combined__");
     } catch(e){
       console.error("[MeSH] Full error:", e, "name:", e.name);
-      setError(`${e.name||"Error"}: ${e.message||String(e)}`);
+      // 65.md UX-3 — calm copy only; the raw error stays in the console above.
+      setError(e && e.name === "TypeError"
+        ? "Could not reach the server. Check your connection and try again."
+        : (e && e.message) || "MeSH terms could not be generated. Please try again.");
     }
     setLoading(false);
     setProgress({done:0,total:0});
@@ -1416,7 +1422,10 @@ Begin now with ## TITLE.`;
       setPicoSnapshot(currentPicoKey);
     } catch(e){
       console.error("[PROSPERO] Full error:", e, "name:", e.name, "stack:", e.stack);
-      setGenError((e.name||"Error") + ": " + (e.message || String(e)));
+      // 65.md UX-3 — calm copy only; the raw error stays in the console above.
+      setGenError(e && e.name === "TypeError"
+        ? "Could not reach the server. Check your connection and try again."
+        : (e && e.message) || "The protocol draft could not be generated. Please try again.");
       setProgress(0);
     }
     setGenerating(false);

@@ -23,8 +23,11 @@ server/.env
 
 # local SQLite databases — NEVER commit (contain user emails, password hashes,
 # contact messages). Found tracked during the prompt7 security review.
+# -shm/-wal are the WAL-mode sidecars of the same PII database (65.md hygiene).
 server/prisma/*.db
 server/prisma/*.db-journal
+server/prisma/*.db-shm
+server/prisma/*.db-wal
 server/prisma/*.db.bak*
 *.sqlite
 *.sqlite3
@@ -35,6 +38,8 @@ server/prisma/*.db.bak*
 # same convention as the main client which is also never committed).
 server/prisma/waitlist/*.db
 server/prisma/waitlist/*.db-journal
+server/prisma/waitlist/*.db-shm
+server/prisma/waitlist/*.db-wal
 server/prisma/generated/
 
 # runtime data (JSON file store — superseded by Postgres)

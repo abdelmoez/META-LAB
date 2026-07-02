@@ -6,8 +6,8 @@
  *   T4    linked META·LAB member access (shared projects in /api/projects, edit vs
  *         read-only enforcement, cross-module visibility)
  *   T6    META·SIFT list visibility gated by module permission
- *   T7    version endpoint full string
- *   T9    per-staff ops contact-message read receipts (badge clears per user)
+ *   T7    version endpoint (fingerprint-free public payload; staff build metadata)
+ *   T9    GLOBAL ops contact-message read state (prompt49; was per-staff)
  * Live API at http://127.0.0.1:3001 (npm run server); self-skips when down.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -177,44 +177,55 @@ describe('META·SIFT prompt5 — roles / linked access / version / ops read (int
     await api(`/projects/${mlId}`, { method: 'DELETE', cookie: a.cookie });
   });
 
-  it('T7: GET /api/version returns commitDate + a human-readable full string', async () => {
+  // 52.md header-fingerprinting hardening (publicVersion): the anonymous payload
+  // is name+version ONLY; commit/build dates are build fingerprinting. The build
+  // metadata is still available to staff via GET /api/admin/health.
+  it('T7: GET /api/version is fingerprint-free publicly; admin health carries build metadata', async () => {
     if (!up) return;
     const r = await fetch(BASE + '/version'); const v = await r.json();
-    expect(v.full).toMatch(/^v\d+\.\d+\.\d+/);
-    expect(v.commit).toBeTruthy();
-    expect('commitDate' in v).toBe(true);
+    expect(v.version).toMatch(/\d+\.\d+\.\d+/);
+    expect(v.commit).toBeUndefined();
+    expect(v.commitDate).toBeUndefined();
+    expect(v.full).toBeUndefined();
+    if (adminCookie) {
+      const a = await api('/admin/health', { cookie: adminCookie });
+      expect(a.status).toBe(200);
+      expect(a.data.version).toMatch(/\d+\.\d+\.\d+/);
+      expect(a.data.commit).toBeTruthy();
+      expect(a.data.buildDate).toBeTruthy();
+    }
   });
 
-  it('T9: ops contact-message read state is per-staff and clears the badge for that staff only', async () => {
+  // prompt49 REPLACED the per-staff read receipts this test originally covered
+  // with a GLOBAL shared read state (readAt is identical for every staff member;
+  // opening marks it read for EVERYONE). Assertions target the message row via
+  // ?search= (the shared dev DB holds hundreds of accumulated messages — the
+  // default page must not be assumed to contain the fresh one).
+  it('T9: ops contact-message read state is GLOBAL — one staff opening clears it for all staff', async () => {
     if (!up) return;
     if (!adminCookie) { console.warn('  ↪ ops read test skipped (no admin cookie)'); return; }
     const r = rnd();
     const subject = `PingS ${r}`;
-    await api('/contact', { method: 'POST', body: { email: `vis_${r}@t.local`, name: 'Visitor', subject, message: 'hello ops' } });
+    const posted = await api('/contact', { method: 'POST', body: { email: `vis_${r}@t.local`, name: 'Visitor', subject, message: 'hello ops' } });
+    if (posted.status === 429) { console.warn('  ↪ ops read test skipped (contact form rate-limited)'); return; }
 
-    // admin unread count includes the new message
-    const cnt1 = await api('/admin/contact-messages/unread-count', { cookie: adminCookie });
-    expect(typeof cnt1.data.unread).toBe('number');
-    const unreadList = await api('/admin/contact-messages?box=unread', { cookie: adminCookie });
-    const msg = unreadList.data.messages.find(m => m.subject === subject);
+    const unreadList = await api(`/admin/contact-messages?box=unread&search=${subject.replace(' ', '+')}`, { cookie: adminCookie });
+    const msg = (unreadList.data.messages || []).find(m => m.subject === subject);
     expect(msg).toBeTruthy();
     expect(msg.readByMe).toBe(false);
 
-    // admin opens / marks it read → per-staff unread drops by one
+    // admin opens / marks it read → globally read
     const mark = await api(`/admin/contact-messages/${msg.id}/mark-read`, { method: 'POST', cookie: adminCookie, body: {} });
     expect(mark.status).toBe(200);
-    expect(mark.data.unread).toBe(cnt1.data.unread - 1);
-    const cnt2 = await api('/admin/contact-messages/unread-count', { cookie: adminCookie });
-    expect(cnt2.data.unread).toBe(cnt1.data.unread - 1);
+    const readList = await api(`/admin/contact-messages?box=read&search=${subject.replace(' ', '+')}`, { cookie: adminCookie });
+    expect((readList.data.messages || []).find(m => m.id === msg.id)).toBeTruthy();
 
-    // re-listing shows it as read FOR THIS ADMIN
-    const readList = await api('/admin/contact-messages?box=read', { cookie: adminCookie });
-    expect(readList.data.messages.find(m => m.id === msg.id)).toBeTruthy();
-
-    // a DIFFERENT staff member (ops@) still sees it unread (per-staff independence)
+    // EVERY staff member now sees it read (global shared state, prompt49)
     if (opsCookie) {
-      const opsUnread = await api('/admin/contact-messages?box=unread', { cookie: opsCookie });
-      expect(opsUnread.data.messages.find(m => m.id === msg.id)).toBeTruthy();
+      const opsRead = await api(`/admin/contact-messages?box=read&search=${subject.replace(' ', '+')}`, { cookie: opsCookie });
+      const opsRow = (opsRead.data.messages || []).find(m => m.id === msg.id);
+      expect(opsRow).toBeTruthy();
+      expect(opsRow.readByMe).toBe(true);
     }
 
     // cleanup: delete the test message (admin-only)
@@ -315,24 +326,30 @@ describe('META·SIFT prompt5 — security hardening (review fixes)', () => {
     await api(`/projects/${mlId}`, { method: 'DELETE', cookie: a.cookie });
   });
 
-  it('SEC4: the admin Overview unread metric is per-staff (one admin reading does not drop another’s)', async () => {
+  // prompt49 REPLACED per-staff read receipts with a GLOBAL shared read state, so
+  // the unread metric is the same for every staff member and one admin reading a
+  // message clears it for all. Count arithmetic is avoided (the shared dev DB
+  // receives concurrent writes); the assertion targets the message row itself.
+  it('SEC4: the admin Overview unread state is GLOBAL — one admin reading clears it for all staff', async () => {
     if (!up) return;
     if (!adminCookie || !opsCookie) { console.warn('  ↪ SEC4 skipped (need both admin cookies)'); return; }
     const r = rnd();
     const subject = `MetricS ${r}`;
-    await api('/contact', { method: 'POST', body: { email: `m_${r}@t.local`, subject, message: 'metric' } });
+    const posted = await api('/contact', { method: 'POST', body: { email: `m_${r}@t.local`, subject, message: 'metric' } });
+    if (posted.status === 429) { console.warn('  ↪ SEC4 skipped (contact form rate-limited)'); return; }
 
-    const opsBefore = (await api('/admin/metrics', { cookie: opsCookie })).data.contactMessages.unread;
-    const adminBefore = (await api('/admin/metrics', { cookie: adminCookie })).data.contactMessages.unread;
-    // admin opens the message
-    const unreadList = await api('/admin/contact-messages?box=unread', { cookie: adminCookie });
-    const msg = unreadList.data.messages.find(m => m.subject === subject);
+    // both staff see the fresh message as unread
+    const q = `search=${subject.replace(' ', '+')}`;
+    const adminUnread = await api(`/admin/contact-messages?box=unread&${q}`, { cookie: adminCookie });
+    const msg = (adminUnread.data.messages || []).find(m => m.subject === subject);
+    expect(msg).toBeTruthy();
+    const opsUnread = await api(`/admin/contact-messages?box=unread&${q}`, { cookie: opsCookie });
+    expect((opsUnread.data.messages || []).find(m => m.id === msg.id)).toBeTruthy();
+
+    // admin opens the message → read for EVERY staff member (global state)
     await api(`/admin/contact-messages/${msg.id}/mark-read`, { method: 'POST', cookie: adminCookie, body: {} });
-
-    const adminAfter = (await api('/admin/metrics', { cookie: adminCookie })).data.contactMessages.unread;
-    const opsAfter = (await api('/admin/metrics', { cookie: opsCookie })).data.contactMessages.unread;
-    expect(adminAfter).toBe(adminBefore - 1);   // admin's own count drops
-    expect(opsAfter).toBe(opsBefore);           // ops is unaffected (per-staff)
+    const opsAfter = await api(`/admin/contact-messages?box=unread&${q}`, { cookie: opsCookie });
+    expect((opsAfter.data.messages || []).find(m => m.id === msg.id)).toBeUndefined();
 
     await api(`/admin/contact-messages/${msg.id}`, { method: 'DELETE', cookie: adminCookie });
   });

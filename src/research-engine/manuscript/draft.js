@@ -217,6 +217,23 @@ export function generateMethods(project, opts = {}) {
   return methodsBody(buildMethodsMarkdown(methodsCtx(project, opts)));
 }
 
+/**
+ * The PRISMA study-selection paragraph (counts narrative + Figure 1 pointer).
+ * Shared by generateResults and the editor's "Insert PRISMA summary" button
+ * (65.md MS-8), so the inserted text can never drift from the generated one.
+ * @param {object} pc normalized result of computePrismaCounts
+ */
+export function studySelectionParagraph(pc) {
+  const c = (pc && pc.counts) || {};
+  return [
+    c.identified != null ? `${c.identified} records were identified` : `${PH('Number of records identified unavailable')}`,
+    c.duplicatesRemoved != null ? `, of which ${c.duplicatesRemoved} duplicates were removed` : '',
+    c.screened != null ? `; ${c.screened} records were screened` : '',
+    c.reportsAssessed != null ? `, ${c.reportsAssessed} reports were assessed for eligibility` : '',
+    c.included != null ? `, and ${c.included} studies met the inclusion criteria.` : '.',
+  ].join('') + ' The study-selection process is shown in the PRISMA 2020 flow diagram (Figure 1).';
+}
+
 export function generateResults(project, opts = {}) {
   const pc = opts.prismaCounts || computePrismaCounts(project, opts);
   const primary = opts.primary || primaryAnalysis(project, opts);
@@ -224,14 +241,7 @@ export function generateResults(project, opts = {}) {
   const out = [];
 
   out.push('## Study selection');
-  const c = pc.counts;
-  out.push([
-    c.identified != null ? `${c.identified} records were identified` : `${PH('Number of records identified unavailable')}`,
-    c.duplicatesRemoved != null ? `, of which ${c.duplicatesRemoved} duplicates were removed` : '',
-    c.screened != null ? `; ${c.screened} records were screened` : '',
-    c.reportsAssessed != null ? `, ${c.reportsAssessed} reports were assessed for eligibility` : '',
-    c.included != null ? `, and ${c.included} studies met the inclusion criteria.` : '.',
-  ].join('') + ' The study-selection process is shown in the PRISMA 2020 flow diagram (Figure 1).');
+  out.push(studySelectionParagraph(pc));
   out.push('');
 
   out.push('## Study characteristics');
@@ -349,6 +359,7 @@ export function generateDraft(project, opts = {}) {
 export default {
   primaryAnalysis,
   generateDraft,
+  studySelectionParagraph,
   generateTitle,
   generateAbstract,
   generateIntroduction,

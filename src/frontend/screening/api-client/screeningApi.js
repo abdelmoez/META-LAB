@@ -54,6 +54,11 @@ export const screeningApi = {
   // applies). Thrown errors carry .status and .data (the parsed JSON body).
   importRecords: (pid, body, { force = false } = {}) =>
     req('POST', `/projects/${pid}/import`, force ? { ...body, force: true } : body),
+  // 65.md SCR-10 — server-side preview through the REAL parser registry. body
+  // { format, content, filename }; the server parses at most the first 256KB and
+  // returns { detectedFormat, sample, counts:{parsed,rejected}, decisionColumnDetected,
+  // truncated }. Read-only (nothing is inserted).
+  previewImport: (pid, body) => req('POST', `/projects/${pid}/import/preview`, body),
   // prompt50 WS2 — durable async import. startImport returns 202 { jobId } (or
   // 409 duplicate_import like the sync path); poll getImportJob until the status
   // is completed / completed_with_warnings / failed. The browser need not stay open.
@@ -94,6 +99,9 @@ export const screeningApi = {
   listDuplicates:        (pid)            => req('GET',  `/projects/${pid}/duplicates`),
   detectDuplicates:      (pid)            => req('POST', `/projects/${pid}/duplicates/detect`, {}),
   resolveDuplicateGroup: (pid, gid, body) => req('POST', `/projects/${pid}/duplicates/${gid}/resolve`, body),
+  // 65.md SCR-4 — bulk-resolve every all-exact (DOI/PMID) duplicate group.
+  // Returns { resolvedGroups, flaggedDuplicates, mergedFieldCount, skippedGroups }.
+  resolveExactDuplicates: (pid)           => req('POST', `/projects/${pid}/duplicates/resolve-exact`, {}),
 
   // Labels
   listLabels:  (pid)       => req('GET',    `/projects/${pid}/labels`),
@@ -111,6 +119,8 @@ export const screeningApi = {
   getAudit:    (pid) => req('GET', `/projects/${pid}/audit`),
   // 58.md §5 — import history (datasets) + owner/admin batch deletion.
   listImportBatches: (pid)          => req('GET',    `/projects/${pid}/import-batches`),
+  // 65.md SCR-3 — per-row issue list for a finished import (empty for legacy batches).
+  getImportBatchErrorReport: (pid, batchId) => req('GET', `/projects/${pid}/import-batches/${batchId}/error-report`),
   deleteImportBatch: (pid, batchId, confirm) => req('DELETE', `/projects/${pid}/import-batches/${batchId}`, { confirm }),
 
   // Members (Part 4)

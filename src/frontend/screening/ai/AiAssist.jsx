@@ -213,17 +213,15 @@ export function AiScoreCard({ ai, record, decided }) {
               <ReasonList title="Reasons to include" color={C.grn} reasons={e.reasonsInclude} />
               <ReasonList title="Reasons to exclude" color={C.red} reasons={e.reasonsExclude} />
               <PicoMatch breakdown={e.picoBreakdown} />
-              {e.similar?.length > 0 && (
-                <div>
-                  <div style={{ fontSize: 10.5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>Similar included records</div>
-                  {e.similar.map(s => (
-                    <div key={s.recordId} style={{ fontSize: 12, color: C.txt2, display: 'flex', gap: 6, padding: '2px 0' }}>
-                      <span style={{ fontFamily: MONO, color: C.teal, fontSize: 10 }}>{Math.round(s.similarity * 100)}%</span>
-                      <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title || s.recordId}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+              <SimilarList title="Similar included records" color={C.teal} items={e.similar} />
+              {/* 65.md SCR-6 — symmetric counter-examples from the excluded side. */}
+              <SimilarList title="Similar excluded records" color={C.red} items={e.similarExcluded} />
+              {/* 65.md SCR-6 — score provenance: honest about in-sample vs held-out. */}
+              <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, borderTop: `1px solid ${C.brd}`, paddingTop: 8 }}>
+                This is the live model score, computed on the project's current decisions (in-sample).
+                Validation-grade held-out (cross-validated) scores are included in the CSV export.
+                {ai.status?.engineConfig?.activeLabel ? <> Engine config: <span style={{ fontFamily: MONO }}>{ai.status.engineConfig.activeLabel}</span>.</> : null}
+              </div>
             </>
           )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
@@ -234,6 +232,22 @@ export function AiScoreCard({ ai, record, decided }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/** Nearest labelled neighbours (included or excluded side) — 65.md SCR-6. */
+function SimilarList({ title, color, items }) {
+  if (!items || !items.length) return null;
+  return (
+    <div>
+      <div style={{ fontSize: 10.5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>{title}</div>
+      {items.map(s => (
+        <div key={s.recordId} style={{ fontSize: 12, color: C.txt2, display: 'flex', gap: 6, padding: '2px 0' }}>
+          <span style={{ fontFamily: MONO, color, fontSize: 10 }}>{Math.round(s.similarity * 100)}%</span>
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.title || s.recordId}</span>
+        </div>
+      ))}
     </div>
   );
 }

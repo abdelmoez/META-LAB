@@ -41,10 +41,27 @@ async function loginAs(email, password = 'Password123!') {
 function tokenFromLink(link) { const m = String(link || '').match(/[?&]token=([^&]+)/); return m ? decodeURIComponent(m[1]) : ''; }
 
 beforeAll(async () => {
-  try { const r = await fetch(BASE + '/health'); up = r.ok; } catch { up = false; }
+  // Reachability probe + admin login with SPACED retries: at the tail of a long
+  // suite run the client can transiently fail to open sockets for a second or
+  // two (Windows ephemeral-port churn after thousands of requests) — the
+  // anti-vacuous guard (T1) should fail on a DOWN server, not on that hiccup.
+  for (let attempt = 0; attempt < 5 && !up; attempt++) {
+    if (attempt) await new Promise(r => setTimeout(r, 1000));
+    try { const r = await fetch(BASE + '/health'); up = r.ok; } catch { up = false; }
+  }
   if (up) {
-    const r = await api('/auth/login', { method: 'POST', body: { email: 'admin@metalab.local', password: process.env.ADMIN_SEED_PASSWORD || 'MetaLabAdmin2026!' } });
-    adminCookie = r.status === 200 ? r.cookie : '';
+    // BOTH candidate passwords are tried: earlier files in the same fork can
+    // import server code that loads server/.env into process.env (dotenv), and
+    // ADMIN_SEED_PASSWORD there may differ from the DB admin's actual password
+    // (seedAdmins never resets an existing admin) — the literal is the dev seed.
+    const candidates = [...new Set([process.env.ADMIN_SEED_PASSWORD, 'MetaLabAdmin2026!'].filter(Boolean))];
+    for (const password of candidates) {
+      if (adminCookie) break;
+      try {
+        const r = await api('/auth/login', { method: 'POST', body: { email: 'admin@metalab.local', password } });
+        adminCookie = r.status === 200 ? r.cookie : '';
+      } catch { adminCookie = ''; }
+    }
     if (adminCookie) {
       const me = await api('/auth/me', { cookie: adminCookie });
       adminId = me.data?.user?.id || '';

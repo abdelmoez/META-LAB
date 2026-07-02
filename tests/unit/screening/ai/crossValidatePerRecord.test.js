@@ -186,6 +186,21 @@ describe('crossValidatePerRecord — out-of-sample scoring', () => {
     expect(cvOk.meta.scoreType).toBe('cross_validated');
     expect(cvOk.byRecordId.get('inc0').scoreType).toBe('cross_validated');
   });
+
+  // 65.md SCR-8 — the caller-provided cap governs the perf guard, so the async
+  // export path can raise it (env EXPORT_CV_MAX_ASYNC) while staying honest above it.
+  it('honours maxRecordsForCv: over the cap → too-large status; a raised cap scores', () => {
+    const records = makeRecords({ nInc: 30, nExc: 30 }); // 60 records
+    const labels = labelsFor(records);
+
+    const capped = crossValidatePerRecord({ records, labelByRecordId: labels, picoSnapshot, k: 5, maxRecordsForCv: 50 });
+    expect(capped.meta.status).toBe('project_too_large_for_cv');
+    expect([...capped.byRecordId.values()].every((x) => x.scoreType === 'not_available' && x.scoreRaw === null)).toBe(true);
+
+    const raised = crossValidatePerRecord({ records, labelByRecordId: labels, picoSnapshot, k: 5, maxRecordsForCv: 100 });
+    expect(raised.meta.scoreType).toBe('cross_validated');
+    expect(raised.byRecordId.get('inc0').scoreType).toBe('cross_validated');
+  });
 });
 
 describe('CSV export shape (cvRowFields + AI_CV_COLUMNS)', () => {

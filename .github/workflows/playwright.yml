@@ -1,0 +1,49 @@
+name: Playwright Tests
+# Manual-dispatch E2E run. The suite needs a full app stack (client :3000 + API
+# :3001 with a seeded admin), so this workflow provisions an ephemeral SQLite
+# database and boots the dev servers via Playwright's webServer (npm run dev).
+# It is NOT wired to push/PR on purpose: the deploy gate stays `npm run test:ci`
+# (deploy.yml); run this on demand or wire a schedule once it is proven green.
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    env:
+      # Ephemeral CI-only database + credentials (never a real deployment).
+      DATABASE_URL: 'file:./dev.db'
+      BETA_WAITLIST_DATABASE_URL: 'file:./waitlist.db'
+      JWT_SECRET: 'ci-only-jwt-secret-not-used-anywhere-real'
+      ADMIN_EMAIL_1: ${{ secrets.E2E_ADMIN_EMAIL || 'e2e-admin-1@example.com' }}
+      ADMIN_EMAIL_2: 'e2e-admin-2@example.com'
+      ADMIN_SEED_PASSWORD: ${{ secrets.E2E_ADMIN_PASSWORD || 'ci-only-seed-password-123' }}
+      E2E_ADMIN_EMAIL: ${{ secrets.E2E_ADMIN_EMAIL || 'e2e-admin-1@example.com' }}
+      E2E_ADMIN_PASSWORD: ${{ secrets.E2E_ADMIN_PASSWORD || 'ci-only-seed-password-123' }}
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: lts/*
+    - name: Install root dependencies
+      run: npm ci
+    - name: Install server dependencies (generates Prisma clients)
+      run: npm ci
+      working-directory: server
+    - name: Create database schema
+      run: npx prisma db push --schema=prisma/schema.prisma --skip-generate
+      working-directory: server
+    - name: Create waitlist database schema
+      run: npx prisma db push --schema=prisma/waitlist/schema.prisma --skip-generate
+      working-directory: server
+    - name: Install Playwright Browsers
+      run: npx playwright install --with-deps chromium
+    - name: Run Playwright tests (deterministic serial mode)
+      run: npx playwright test --project=chromium --workers=1
+    - uses: actions/upload-artifact@v4
+      if: ${{ !cancelled() }}
+      with:
+        name: playwright-report
+        path: playwright-report/
+        retention-days: 30

@@ -48,12 +48,13 @@ export function termContributions(model, terms, vector, k = 6) {
  * @param {ReturnType<import('./logreg.js').trainLogReg>|null} [args.model]
  * @param {string[]} [args.terms]
  * @param {Record<number,number>} [args.vector]
- * @param {Array<{recordId,title,similarity}>} [args.neighbors]
+ * @param {Array<{recordId,title,similarity}>} [args.neighbors] — similar INCLUDED records
+ * @param {Array<{recordId,title,similarity}>} [args.excludedNeighbors] — similar EXCLUDED records (65.md SCR-6)
  * @param {boolean} [args.missingAbstract]
  * @returns {object}
  */
 export function buildExplanation(args = {}) {
-  const { coldStart, hybrid, model = null, terms = [], vector = null, neighbors = [], missingAbstract = false, reviewerSignals = null } = args;
+  const { coldStart, hybrid, model = null, terms = [], vector = null, neighbors = [], excludedNeighbors = [], missingAbstract = false, reviewerSignals = null } = args;
   const sig = (coldStart && coldStart.signals) || {};
   const supervised = hybrid && hybrid.mode === 'supervised';
 
@@ -104,8 +105,10 @@ export function buildExplanation(args = {}) {
     };
   }
 
-  // Similar included records.
+  // Similar included records — and (65.md SCR-6) the symmetric excluded side, so the
+  // panel can show the model's nearest counter-examples too.
   const similar = (neighbors || []).filter(n => n && n.similarity > 0).slice(0, 5);
+  const similarExcluded = (excludedNeighbors || []).filter(n => n && n.similarity > 0).slice(0, 5);
 
   // Honest uncertainty note.
   let uncertaintyNote = '';
@@ -130,7 +133,12 @@ export function buildExplanation(args = {}) {
     studyDesign: sig.studyDesign || null,
     studyDesignMatch: sig.studyDesignMatch ?? null,
     similar,
+    similarExcluded,
     reviewer,
+    // 65.md SCR-6 — score provenance: the displayed score is the LIVE model score
+    // (fit on current decisions, in-sample); validation-grade held-out scores live in
+    // the export's cross-validated columns. The UI renders this honestly.
+    scoreProvenance: 'live_in_sample',
     uncertaintyNote,
   };
 }

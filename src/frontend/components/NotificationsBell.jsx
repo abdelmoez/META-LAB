@@ -32,6 +32,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { notificationsApi } from '../api-client/notificationsApi.js';
+import { notificationTarget, isStaffUser } from './notificationTarget.js';
 import { useRealtime } from '../hooks/useRealtime.js';
 import Icon from './icons.jsx';
 // Theme-aware tokens (prompt7): C values are `var(--t-*)` strings — hex+alpha
@@ -63,13 +64,9 @@ function fmtAgo(iso) {
   return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
-// Deep-link target for a notification (META·LAB wins when both ids are set).
-function targetUrl(n) {
-  if (n.relatedMetaLabProjectId) return `/app?project=${n.relatedMetaLabProjectId}`;
-  const sift = n.relatedScreenProjectId || n.relatedMetaSiftProjectId;
-  if (sift) return `/sift-beta/projects/${sift}`;
-  return null;
-}
+// Deep-link resolution lives in notificationTarget.js (65.md NAV-1): /sift-beta
+// is staff-only + 404-cloaked, so non-staff rows without a workspace id render
+// without navigation instead of deep-linking members onto a 404.
 
 export default function NotificationsBell({ fixed = false, right = 16 }) {
   const { user } = useAuth();
@@ -167,8 +164,10 @@ export default function NotificationsBell({ fixed = false, right = 16 }) {
   // Full-reload navigations (same-path /app?project=) abort in-flight fetches,
   // so opened() is awaited — bounded by a short timeout so a slow server
   // never blocks navigation. SPA navigations let it run concurrently.
+  const staff = isStaffUser(user);
+
   const openNotification = useCallback(async (n) => {
-    const url = targetUrl(n);
+    const url = notificationTarget(n, { staff });
     const alreadyDismissed = !!n.dismissedAt;
     const wasUnread = !n.readAt && !alreadyDismissed;
 
@@ -197,7 +196,7 @@ export default function NotificationsBell({ fixed = false, right = 16 }) {
     const fullReload = window.location.pathname === url.split('?')[0];
     if (fullReload) await opened; // otherwise the unload aborts the request
     go(url);
-  }, [go, refreshCount]);
+  }, [go, refreshCount, staff]);
 
   const markAllRead = useCallback(async () => {
     setClearing(true);
@@ -283,7 +282,7 @@ export default function NotificationsBell({ fixed = false, right = 16 }) {
               </div>
             ) : (
               items.map(n => (
-                <NotificationRow key={n.id} n={n} history={showHistory} onOpen={() => openNotification(n)} />
+                <NotificationRow key={n.id} n={n} history={showHistory} staff={staff} onOpen={() => openNotification(n)} />
               ))
             )}
           </div>
@@ -307,13 +306,13 @@ export default function NotificationsBell({ fixed = false, right = 16 }) {
   );
 }
 
-function NotificationRow({ n, history = false, onOpen }) {
+function NotificationRow({ n, history = false, staff = false, onOpen }) {
   const [hover, setHover] = useState(false);
   const dismissed = !!n.dismissedAt;
   const unread = !n.readAt && !dismissed;
   const app = APP_META[n.app];
   const actor = n.actorName || n.actorEmail || '';
-  const hasTarget = !!targetUrl(n);
+  const hasTarget = !!notificationTarget(n, { staff });
   // Whole-row click always does something on active rows (opened + dismiss,
   // even without a target); dismissed history rows only react with a target.
   const clickable = hasTarget || !dismissed;

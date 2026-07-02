@@ -3,7 +3,9 @@
  *
  *  1. Refuses to run against a non-local target (safety).
  *  2. Waits for the app (client + API) to be reachable.
- *  3. Logs in the seeded admin, persists Stitch, ENABLES the engine feature flags
+ *  3. Logs in the seeded admin, persists the admin's Stitch preference (65.md:
+ *     Stitch is the default for everyone; only ADMINS may persist a personal
+ *     mode, so this pins the admin explicitly), ENABLES the engine feature flags
  *     so gated areas (AI screening, RoB, NMA, search) are testable, and saves the
  *     admin browser storageState.
  *  4. Programmatically creates a MOD and a NORMAL user (per-run unique emails) and
@@ -61,8 +63,11 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
   const adminApi = await playwrightRequest.newContext({ baseURL: API_URL });
   const admin = await login(adminApi, ADMIN_EMAIL, ADMIN_PASSWORD);
   if (admin.role !== 'admin') {
-    throw new Error(`[e2e] ${ADMIN_EMAIL} is not an admin (role=${admin.role}). Stitch mode requires an admin.`);
+    throw new Error(`[e2e] ${ADMIN_EMAIL} is not an admin (role=${admin.role}). The suite needs admin APIs.`);
   }
+  // Pin the admin's PERSONAL mode to Stitch (admin-only write — a 403 here would
+  // mean the account is not really an admin). Normal-user fixtures need no design
+  // priming: Stitch is the Ops-governed default for every non-admin.
   await setDesignMode(adminApi, 'stitch');
 
   // Turn ON the engine flags once for the whole run so gated specs can exercise

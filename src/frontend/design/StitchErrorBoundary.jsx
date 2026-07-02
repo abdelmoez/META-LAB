@@ -1,26 +1,30 @@
 /**
  * StitchErrorBoundary.jsx — failure containment for the Stitch presentation layer.
  *
- * design.md §"ERROR BOUNDARIES" + §6 (EMERGENCY FALLBACK): if any Stitch page or
- * the Stitch shell throws while rendering, we must NOT show a silent white screen.
- * Instead an admin gets a calm recovery panel whose primary action returns them to
- * the always-working legacy UI — independent of the (possibly broken) header switch.
+ * design.md §"ERROR BOUNDARIES" + 65.md: if any Stitch page or the Stitch shell
+ * throws while rendering, we must NOT show a silent white screen. Every user gets
+ * a calm recovery panel — reload the page, or go back to the dashboard. Both are
+ * hard navigations, so they work even when React state is wedged, and neither can
+ * trigger a destructive backend operation.
  *
- * The escape is deliberately low-level: it persists `legacy`, sets the root attr,
- * and hard-navigates to the same route with `?ui=legacy`. That works even if React
- * state is wedged, and it can never trigger a destructive backend operation — it
- * only changes a presentation preference.
+ * The "Switch to classic UI" escape is ADMIN-ONLY (Stitch is the sole normal-user
+ * experience — sending a non-admin to legacy would strand them somewhere the
+ * provider immediately resolves them out of, and the server 403s the persist).
+ * For an admin it persists `legacy`, sets the root attr, and hard-navigates with
+ * `?ui=legacy` — deliberately low-level so it works independent of React.
  *
  * A presentation crash must never corrupt data or preferences, so the only state
- * this touches is the design-mode preference itself.
+ * this touches is the (admin's) design-mode preference itself.
  */
 import { Component } from 'react';
 import { saveDesignMode, applyDesignAttr } from './designMode.js';
+import { useDesignMode } from './DesignModeContext.jsx';
 
 function escapeToLegacy() {
   try { saveDesignMode('legacy'); } catch { /* ignore */ }
   try { applyDesignAttr('legacy'); } catch { /* ignore */ }
   // Best-effort cross-device persist; never block the escape on the network.
+  // (Admin-only path — the server rejects this write for anyone else.)
   try {
     fetch('/api/profile', {
       method: 'PUT', credentials: 'include',
@@ -37,7 +41,21 @@ function escapeToLegacy() {
   }
 }
 
-export default class StitchErrorBoundary extends Component {
+const primaryBtn = {
+  width: '100%', background: '#5d509b', color: '#fff', border: 'none',
+  borderRadius: 8, padding: '12px 16px', fontSize: 14, fontWeight: 700,
+  cursor: 'pointer', fontFamily: 'inherit',
+};
+
+const secondaryBtn = {
+  width: '100%', marginTop: 10, background: 'transparent', color: '#464555',
+  border: '1px solid #c7c4d8', borderRadius: 8, padding: '10px 16px',
+  fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
+};
+
+/** The class boundary itself — `isAdmin` arrives as a prop from the wrapper below
+ *  (class components cannot read the DesignModeContext hook). Exported for tests. */
+export class StitchErrorBoundaryClass extends Component {
   constructor(props) {
     super(props);
     this.state = { error: null };
@@ -50,7 +68,7 @@ export default class StitchErrorBoundary extends Component {
   componentDidCatch(error, info) {
     // Route through the project's existing console error channel (no new infra).
     // eslint-disable-next-line no-console
-    console.error('[stitch] presentation error — falling back to legacy is available:', error, info?.componentStack);
+    console.error('[stitch] presentation error:', error, info?.componentStack);
   }
 
   render() {
@@ -72,34 +90,33 @@ export default class StitchErrorBoundary extends Component {
             alignItems: 'center', justifyContent: 'center', fontSize: 24, fontWeight: 700,
           }} aria-hidden="true">!</div>
           <h1 style={{ fontSize: 20, fontWeight: 700, margin: '0 0 8px' }}>
-            The new design hit a snag
+            Something went wrong
           </h1>
           <p style={{ fontSize: 14, lineHeight: 1.6, color: '#464555', margin: '0 0 20px' }}>
-            Something in the Stitch preview failed to render. Your work and data are safe —
-            nothing was changed. You can return to the classic interface and keep going.
+            This page could not be displayed. Your work and data are safe — nothing was
+            changed. Reload the page to continue, or return to your dashboard.
           </p>
-          <button
-            onClick={escapeToLegacy}
-            style={{
-              width: '100%', background: '#5d509b', color: '#fff', border: 'none',
-              borderRadius: 8, padding: '12px 16px', fontSize: 14, fontWeight: 700,
-              cursor: 'pointer', fontFamily: 'inherit',
-            }}
-          >
-            Return to Legacy UI
+          <button onClick={() => window.location.reload()} style={primaryBtn}>
+            Reload page
           </button>
-          <button
-            onClick={() => { try { this.setState({ error: null }); } catch { window.location.reload(); } }}
-            style={{
-              width: '100%', marginTop: 10, background: 'transparent', color: '#464555',
-              border: '1px solid #c7c4d8', borderRadius: 8, padding: '10px 16px',
-              fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit',
-            }}
-          >
-            Try again
+          <button onClick={() => window.location.assign('/app')} style={secondaryBtn}>
+            Back to dashboard
           </button>
+          {this.props.isAdmin ? (
+            <button onClick={escapeToLegacy} style={secondaryBtn}>
+              Switch to classic UI
+            </button>
+          ) : null}
         </div>
       </div>
     );
   }
+}
+
+/** Hook-level wrapper: reads isAdmin from the design context and feeds the class.
+ *  The wrapper renders OUTSIDE the guarded subtree, so a child crash is still
+ *  caught by the class while the admin gate stays live. */
+export default function StitchErrorBoundary({ children }) {
+  const { isAdmin } = useDesignMode();
+  return <StitchErrorBoundaryClass isAdmin={isAdmin}>{children}</StitchErrorBoundaryClass>;
 }

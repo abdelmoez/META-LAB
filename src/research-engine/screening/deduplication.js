@@ -405,6 +405,84 @@ export function classifyPair(a = {}, b = {}, cfg = {}) {
   return verdict(DUP_TYPES.NOT, Math.round(f.titleSim * 100), 0.9);
 }
 
+// ── Duplicate-group resolution helpers (65.md SCR-4) ─────────────────────────
+//
+// Pure logic behind "resolve all exact duplicates" + the fill-blank metadata merge,
+// kept here so the controller stays a thin adapter and the rules are unit-testable.
+
+/** Metadata fields the fill-blank merge may copy from discarded copies. */
+export const MERGE_FILL_FIELDS = Object.freeze(['doi', 'pmid', 'abstract', 'authors', 'year', 'journal', 'keywords']);
+
+const blank = (v) => String(v == null ? '' : v).trim() === '';
+
+/**
+ * mergeFillBlanks — fill the primary record's EMPTY fields from the other records
+ * in its duplicate group. Never overwrites a non-empty field (non-destructive by
+ * contract); the first record (in the given order) holding a value wins.
+ *
+ * @param {object} primary
+ * @param {object[]} others
+ * @param {string[]} [fields]
+ * @returns {{ patch: object, filledFrom: Record<string,string> }}
+ *   patch — only the fields to write ({} when nothing to fill)
+ *   filledFrom — field → donor record id (provenance for the audit log)
+ */
+export function mergeFillBlanks(primary, others, fields = MERGE_FILL_FIELDS) {
+  const patch = {};
+  const filledFrom = {};
+  for (const field of fields) {
+    if (!blank(primary?.[field])) continue;
+    for (const o of others || []) {
+      if (o && !blank(o[field])) { patch[field] = o[field]; filledFrom[field] = o.id; break; }
+    }
+  }
+  return { patch, filledFrom };
+}
+
+// Completeness score for primary selection: count of filled key fields.
+const PRIMARY_FIELDS = Object.freeze(['title', 'abstract', 'doi', 'pmid', 'authors', 'year', 'journal']);
+
+/**
+ * pickBulkPrimary — deterministic canonical-record choice for bulk resolution:
+ * the most metadata-complete record wins; ties break to the earliest createdAt,
+ * then to the smallest id (total order → same input, same primary, every run).
+ *
+ * @param {object[]} records
+ * @returns {object|null}
+ */
+export function pickBulkPrimary(records) {
+  const recs = (records || []).filter(Boolean);
+  if (!recs.length) return null;
+  const completeness = (r) => PRIMARY_FIELDS.reduce((n, f) => n + (blank(r[f]) ? 0 : 1), 0);
+  return [...recs].sort((a, b) => {
+    const dc = completeness(b) - completeness(a);
+    if (dc !== 0) return dc;
+    const ta = a.createdAt ? new Date(a.createdAt).getTime() : Infinity;
+    const tb = b.createdAt ? new Date(b.createdAt).getTime() : Infinity;
+    if (ta !== tb) return ta - tb;
+    return String(a.id) < String(b.id) ? -1 : 1;
+  })[0];
+}
+
+/**
+ * isExactDuplicateGroup — true only when EVERY pair in the group classifies as
+ * exact_duplicate (hard DOI/PMID identifier match, confidence .99). Strictly
+ * conservative: a group mixing an exact pair with a fuzzy member is NOT bulk-safe
+ * and stays for human review.
+ *
+ * @param {object[]} records
+ */
+export function isExactDuplicateGroup(records) {
+  const recs = (records || []).filter(Boolean);
+  if (recs.length < 2) return false;
+  for (let i = 0; i < recs.length; i++) {
+    for (let j = i + 1; j < recs.length; j++) {
+      if (classifyPair(recs[i], recs[j]).type !== DUP_TYPES.EXACT) return false;
+    }
+  }
+  return true;
+}
+
 /**
  * evaluateDuplicateLabels — evaluation harness (se2.md §10). Given reviewer-labelled
  * pairs, score the classifier so the team can decide whether to flip `verified:false`.

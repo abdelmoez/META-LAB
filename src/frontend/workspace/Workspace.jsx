@@ -611,7 +611,11 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
       const remapped=incoming.map(p=>({...p,id:uid(),name:(p.name||"Imported")+(projects.some(x=>x.name===p.name)?" (imported)":""),modified:now()}));
       const next=[...remapped,...projects];
       setProjects(next);setActiveId(remapped[0].id);save(next);
-    }catch(err){ alert&&alert("Import failed: "+err.message); }
+    }catch(err){
+      // 65.md UX-3 — in-UI banner instead of a native alert; raw detail → console.
+      console.error("[Workspace] Project import failed:", err);
+      setCreateWarning("That file couldn't be imported — it doesn't look like a PecanRev project export (.json). Pick a file exported from Projects › Export.");
+    }
     if(importRef.current)importRef.current.value="";
   };
 

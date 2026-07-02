@@ -33,8 +33,17 @@ export const MAX_RECORDS_PER_IMPORT = 200000;
 /** Default per-project record ceiling when the admin setting is unset. */
 export const DEFAULT_MAX_RECORDS_PER_PROJECT = 100000;
 
+// 65.md SCR-3 — ScreenImportJob.errorReport holds at most this many per-row entries
+// (JSON [{ index, title, reason }]); beyond the cap the counts stay authoritative.
+export const ERROR_REPORT_CAP = 200;
+
 const truthyId = (r) =>
   String(r.title || '').trim() || String(r.doi || '').trim() || String(r.pmid || '').trim();
+
+/** True when a parsed record carries enough identity to import (title/DOI/PMID). */
+export function hasUsableIdentity(r) {
+  return !!truthyId(r || {});
+}
 
 /**
  * parseImportContent(content, { format, filename })
@@ -91,13 +100,25 @@ export async function dedupeAndInsertRecords(projectId, records, opts = {}) {
   const kept = [];
   let skippedDuplicates = 0;
   let rejected = 0;
-  for (const r of incoming) {
-    if (!truthyId(r)) { rejected += 1; continue; } // no title/doi/pmid → unusable
+  // 65.md SCR-3 — per-row reject/invalid-decision reasons (capped), persisted to
+  // ScreenImportJob.errorReport by the worker and surfaced in the import UI.
+  // `index` is the record's 1-based position in the parsed file.
+  const errorReport = [];
+  const reportRow = (idx, r, reason) => {
+    if (errorReport.length >= ERROR_REPORT_CAP) return;
+    errorReport.push({ index: idx + 1, title: String(r.title || '').slice(0, 200), reason });
+  };
+  for (let idx = 0; idx < incoming.length; idx++) {
+    const r = incoming[idx];
+    if (!truthyId(r)) { rejected += 1; reportRow(idx, r, 'No usable title, DOI, or PMID'); continue; }
     const { doi, pmid, nt } = keysOf(r);
     if ((doi && seenDois.has(doi)) || (pmid && seenPmids.has(pmid)) || (nt && seenTitles.has(nt))) {
       skippedDuplicates += 1;
       continue;
     }
+    // Invalid-decision warning only for records that will actually be inserted
+    // (a duplicate-skipped row's decision cell never applies anyway).
+    if (r.decision === '') reportRow(idx, r, 'Unrecognised screening decision value — record imported unscreened');
     if (doi) seenDois.add(doi);
     if (pmid) seenPmids.add(pmid);
     if (nt) seenTitles.add(nt);
@@ -192,5 +213,5 @@ export async function dedupeAndInsertRecords(projectId, records, opts = {}) {
     }
   }
 
-  return { imported, skippedDuplicates, rejected, batchId: batch.id, total: incoming.length, keptCount: kept.length, decisionsApplied, invalidDecisions };
+  return { imported, skippedDuplicates, rejected, batchId: batch.id, total: incoming.length, keptCount: kept.length, decisionsApplied, invalidDecisions, errorReport };
 }

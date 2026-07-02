@@ -22,6 +22,24 @@ describe('59.md Change 1 — normalizeImportedDecision', () => {
     expect(normalizeImportedDecision('rejected')).toBe('exclude');
     expect(normalizeImportedDecision('unsure')).toBe('maybe');
   });
+  // 65.md SCR-9 — vendor labels + the conflict policy.
+  it('maps common vendor labels (accept/reject, in/out, relevance wording)', () => {
+    expect(normalizeImportedDecision('accept')).toBe('include');
+    expect(normalizeImportedDecision('in')).toBe('include');
+    expect(normalizeImportedDecision('keep')).toBe('include');
+    expect(normalizeImportedDecision('eligible')).toBe('include');
+    expect(normalizeImportedDecision('relevant')).toBe('include');
+    expect(normalizeImportedDecision('reject')).toBe('exclude');
+    expect(normalizeImportedDecision('out')).toBe('exclude');
+    expect(normalizeImportedDecision('irrelevant')).toBe('exclude');
+    expect(normalizeImportedDecision('Not Relevant')).toBe('exclude');
+    expect(normalizeImportedDecision('ineligible')).toBe('exclude');
+    expect(normalizeImportedDecision('unclear')).toBe('maybe');
+  });
+  it("policy: 'conflict' → maybe (per-reviewer decisions cannot be a between-reviewers state)", () => {
+    expect(normalizeImportedDecision('conflict')).toBe('maybe');
+    expect(normalizeImportedDecision('  CONFLICT ')).toBe('maybe');
+  });
   it('empty / missing → undecided (neutral, never invalid)', () => {
     expect(normalizeImportedDecision('')).toBe('undecided');
     expect(normalizeImportedDecision('   ')).toBe('undecided');

@@ -331,6 +331,7 @@ export default function MembersTab({ pid, project, access, refreshProject, prese
                       member={m}
                       canManage={canManage}
                       amOwner={amOwner}
+                      isSelf={isSelf}
                       busy={!!busy[m.id]}
                       saved={!!savedFlash[m.id]}
                       expanded={expandedIds.has(m.id)}
@@ -364,7 +365,7 @@ export default function MembersTab({ pid, project, access, refreshProject, prese
       {confirmRemove && (() => {
         const isInvite = confirmRemove.status === 'pending';
         return (
-          <Modal onClose={() => setConfirmRemove(null)} width={420}>
+          <Modal onClose={() => setConfirmRemove(null)} width={420} label={isInvite ? 'Revoke invite' : 'Remove member'}>
             <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 10 }}>
               {isInvite ? 'Revoke invite' : 'Remove member'}
             </div>
@@ -402,7 +403,7 @@ export default function MembersTab({ pid, project, access, refreshProject, prese
 
       {/* Leave-project confirm modal (prompt9 — own row, non-owner) */}
       {confirmLeave && (
-        <Modal onClose={() => !leaving && setConfirmLeave(false)} width={420}>
+        <Modal onClose={() => !leaving && setConfirmLeave(false)} width={420} label="Leave project">
           <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 10 }}>Leave project</div>
           <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.6, marginBottom: 6 }}>
             You will lose access to this workspace — its records, your screening view,
@@ -433,7 +434,7 @@ function LockNote({ children }) {
   );
 }
 
-function MemberRow({ member, canManage, amOwner, busy, saved, expanded, onToggleExpand, rowErr, activity, onPatch, onRemove, onLeave }) {
+function MemberRow({ member, canManage, amOwner, isSelf, busy, saved, expanded, onToggleExpand, rowErr, activity, onPatch, onRemove, onLeave }) {
   const m = member;
   // prompt23 Task 14 — live activity: green dot + current location (+ field being edited).
   const pres = activity?.presence || null;
@@ -451,14 +452,18 @@ function MemberRow({ member, canManage, amOwner, busy, saved, expanded, onToggle
   const status = STATUS_META[m.status] || STATUS_META.inactive;
   const roleColor = ROLE_COLOR[m.role] || C.muted;
 
-  // Row lock rules (Task 2):
+  // Row lock rules (Task 2 + 65.md PERM-05):
   //   • Owner row is locked for everyone (use a transfer-ownership flow instead).
   //   • Leader row is locked unless the CURRENT user is the owner.
+  //   • A non-owner delegate's OWN row is locked — the server 403s self-edits, so
+  //     showing live controls here only produced failing toggles.
   //   • Members/viewers are editable by anyone who can manage members.
-  const locked = isOwnerRow || (isLeaderRow && !amOwner);
+  const locked = isOwnerRow || (isLeaderRow && !amOwner) || (isSelf && !amOwner);
   const lockMsg = isOwnerRow
     ? 'Owner permissions cannot be changed here.'
-    : 'Only the owner can change leader permissions.';
+    : isLeaderRow
+      ? 'Only the owner can change leader permissions.'
+      : 'You cannot change your own role or permissions.';
   const editable = canManage && !locked;
   // User-facing role options: Owner can assign Leader/Reviewer/Viewer; leaders
   // can only assign Reviewer/Viewer (minting leaders is owner-only, server-enforced).

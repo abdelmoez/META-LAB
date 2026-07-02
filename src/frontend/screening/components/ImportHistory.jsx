@@ -25,6 +25,23 @@ export default function ImportHistory({ pid, onChanged }) {
   const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);
   const [delErr, setDelErr] = useState(null);
+  // 65.md SCR-3 — lazily fetched per-batch issue lists: { [batchId]: { loading, error, rows } }
+  const [issues, setIssues] = useState({});
+
+  const toggleIssues = useCallback(async (batchId) => {
+    // Second click hides; first click fetches once, then shows the cached rows.
+    if (issues[batchId] && !issues[batchId].loading) {
+      setIssues((s) => { const n = { ...s }; delete n[batchId]; return n; });
+      return;
+    }
+    setIssues((s) => ({ ...s, [batchId]: { loading: true, error: null, rows: [] } }));
+    try {
+      const r = await screeningApi.getImportBatchErrorReport(pid, batchId);
+      setIssues((s) => ({ ...s, [batchId]: { loading: false, error: null, rows: Array.isArray(r?.errorReport) ? r.errorReport : [] } }));
+    } catch (e) {
+      setIssues((s) => ({ ...s, [batchId]: { loading: false, error: e?.message || 'Could not load issues.', rows: [] } }));
+    }
+  }, [pid, issues]);
 
   const load = useCallback(async () => {
     setState((s) => ({ ...s, loading: true, error: null }));
@@ -98,19 +115,47 @@ export default function ImportHistory({ pid, onChanged }) {
               <div style={{ display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap' }}>
                 <Stat label="Identified" value={fmt(b.preDedupCount || b.recordCount)} />
                 <Stat label="Duplicates" value={fmt(b.duplicateCount)} color={n(b.duplicateCount) > 0 ? C.gold : C.txt2} />
+                <Stat label="Rejected" value={fmt(b.rejectedCount)} color={n(b.rejectedCount) > 0 ? C.ylw : C.txt2} />
                 <Stat label="Imported" value={fmt(b.recordCount)} color={C.grn} />
                 <Stat label="Remaining" value={fmt(b.remainingCount)} color={C.txt2} />
+                {n(b.rejectedCount) > 0 && (
+                  <Button variant="ghost" onClick={() => toggleIssues(b.id)} title="Show which rows were rejected and why">
+                    {issues[b.id] ? (issues[b.id].loading ? 'Loading…' : 'Hide issues') : 'View issues'}
+                  </Button>
+                )}
                 {state.canDelete && (
                   <Button variant="danger" onClick={() => openDelete(b)} title="Delete this dataset and all its studies">Delete</Button>
                 )}
               </div>
             </div>
+            {/* 65.md SCR-3 — readable per-row reject/invalid-decision reasons */}
+            {issues[b.id] && !issues[b.id].loading && (
+              issues[b.id].error ? (
+                <div style={{ marginTop: 10, fontSize: 12, color: C.red }}>{issues[b.id].error}</div>
+              ) : issues[b.id].rows.length === 0 ? (
+                <div style={{ marginTop: 10, fontSize: 12, color: C.muted }}>
+                  No per-row detail is available for this dataset (imported before issue reporting, or synchronously).
+                </div>
+              ) : (
+                <div style={{ marginTop: 10, maxHeight: 180, overflowY: 'auto', border: `1px solid ${C.brd}`, borderRadius: 6, background: C.surf }}>
+                  {issues[b.id].rows.map((e, i) => (
+                    <div key={i} style={{ display: 'flex', gap: 8, padding: '5px 10px', fontSize: 11.5, color: C.txt2, borderBottom: i < issues[b.id].rows.length - 1 ? `1px solid ${C.brd}` : 'none' }}>
+                      <span style={{ fontFamily: MONO, color: C.muted, flexShrink: 0 }}>#{e.index}</span>
+                      <span title={e.title || undefined} style={{ minWidth: 0, maxWidth: 260, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: C.txt }}>
+                        {e.title || <span style={{ fontStyle: 'italic', color: C.muted }}>(untitled)</span>}
+                      </span>
+                      <span style={{ color: C.muted }}>{e.reason}</span>
+                    </div>
+                  ))}
+                </div>
+              )
+            )}
           </Card>
         ))}
       </div>
 
       {target && (
-        <Modal onClose={closeDelete} width={500}>
+        <Modal onClose={closeDelete} width={500} label="Delete dataset">
           <div style={{ fontFamily: FONT, color: C.txt }}>
             <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Delete dataset?</div>
             <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.6, marginBottom: 12 }}>

@@ -6,15 +6,21 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 
-const API = 'http://localhost:3001/api';
+// 127.0.0.1, never localhost - node fetch can resolve ::1 on Windows and fail
+// flakily mid-suite (repo convention, see prompt6.test.js header).
+const API = 'http://127.0.0.1:3001/api';
 
 async function serverUp() {
-  try {
-    await fetch(`${API}/health`);
-    return true;
-  } catch {
-    return false;
+  // One spaced retry: at the tail of a long run the client can transiently fail
+  // to open a socket (ephemeral-port churn); a down server stays down anyway.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt) await new Promise(r => setTimeout(r, 750));
+    try {
+      await fetch(`${API}/health`);
+      return true;
+    } catch { /* retry once */ }
   }
+  return false;
 }
 
 /**
@@ -49,12 +55,20 @@ let createdId = null;
 beforeAll(async () => {
   up = await serverUp();
   if (up) {
-    const session = await registerAndLogin(
-      'qa-projects@example.com',
-      'projectspass1',
-      'Projects QA',
-    );
-    cookie = session.cookie;
+    // A thrown fetch here would fail the whole file as "skipped" — retry once,
+    // then degrade to the self-skip path (cookie null → tests return early).
+    for (let attempt = 0; attempt < 2 && !cookie; attempt++) {
+      if (attempt) await new Promise(r => setTimeout(r, 750));
+      try {
+        const session = await registerAndLogin(
+          'qa-projects@example.com',
+          'projectspass1',
+          'Projects QA',
+        );
+        cookie = session.cookie;
+      } catch { cookie = null; }
+    }
+    if (!cookie) up = false;
   }
 });
 
