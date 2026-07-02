@@ -16,6 +16,8 @@ import {
 } from '../living/livingService.js';
 import { pecanSearchEnabled } from '../pecanSearch/runService.js';
 import { diffSnapshots } from '../../src/research-engine/living/snapshotDiff.js';
+// 67.md — product-tier enforcement (admins/mods bypass inside the service).
+import { requireEntitlement, requireLimit, sendTierLimit } from '../services/entitlementService.js';
 
 function safeParse(s, fallback) {
   try { const v = JSON.parse(s ?? ''); return v ?? fallback; } catch { return fallback; }
@@ -80,6 +82,16 @@ export async function postSearch(req, res) {
   const access = await gate(req, res); if (!access) return;
   try {
     if (!canManage(access)) return res.status(403).json({ error: 'Managing saved searches is not permitted' });
+    // 67.md — tier gates: the feature itself, the saved-search quota, and the
+    // scheduler (a non-manual cadence) are separate entitlements.
+    try {
+      await requireEntitlement(req.user, 'livingReview.enabled');
+      const count = await prisma.livingSavedSearch.count({ where: { metaLabProjectId: access.project.id } });
+      await requireLimit(req.user, 'livingReview.maxSavedSearches', count + 1);
+      if (req.body?.cadence && req.body.cadence !== 'manual') {
+        await requireEntitlement(req.user, 'livingReview.scheduler');
+      }
+    } catch (e) { if (sendTierLimit(res, e)) return; throw e; }
     const search = await createSavedSearch(access.project.id, req.body || {}, req.user);
     res.json({ ok: true, search });
   } catch (e) {
@@ -93,6 +105,11 @@ export async function putSearch(req, res) {
   const access = await gate(req, res); if (!access) return;
   try {
     if (!canManage(access)) return res.status(403).json({ error: 'Managing saved searches is not permitted' });
+    try {
+      if (req.body?.cadence && req.body.cadence !== 'manual') {
+        await requireEntitlement(req.user, 'livingReview.scheduler');
+      }
+    } catch (e) { if (sendTierLimit(res, e)) return; throw e; }
     const search = await updateSavedSearch(access.project.id, req.params.sid, req.body || {});
     res.json({ ok: true, search });
   } catch (e) {
@@ -118,6 +135,8 @@ export async function postRunNow(req, res) {
   const access = await gate(req, res); if (!access) return;
   try {
     if (!canManage(access)) return res.status(403).json({ error: 'Running searches is not permitted' });
+    try { await requireEntitlement(req.user, 'livingReview.enabled'); }
+    catch (e) { if (sendTierLimit(res, e)) return; throw e; }
     const row = await prisma.livingSavedSearch.findFirst({ where: { id: req.params.sid, metaLabProjectId: access.project.id } });
     if (!row) return res.status(404).json({ error: 'Saved search not found' });
     const run = await runSavedSearch(row, { actorId: req.user.id, reason: 'manual' });

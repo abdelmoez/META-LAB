@@ -27,6 +27,9 @@ import { scheduleRescore } from '../services/screeningAiJobs.js';
 import { emitToProjectMembers, emitToMetaLabProject } from '../realtime/bus.js';
 import { getMetaSiftSettings, getEffectiveQuorum } from '../screening/settings.js';
 import { resolveScreeningUploadLimit } from '../screening/uploadLimit.js';
+// 67.md — product-tier enforcement (admins/mods bypass inside the service). The
+// per-project record cap binds to the PROJECT OWNER's tier, not the acting member's.
+import { requireEntitlement, requireLimit, sendTierLimit, loadUserForTier } from '../services/entitlementService.js';
 import { snapshotPico } from '../screening/picoSnapshot.js';
 import { screeningCountSelect } from '../utils/screeningCounts.js';
 import {
@@ -992,6 +995,23 @@ export async function importRecords(req, res) {
     const settings = await getMetaSiftSettings();
     if (!settings.allowImport) return res.status(403).json({ error: 'Import is currently disabled by the administrator' });
 
+    // 67.md — product-tier gates: the import feature (caller's tier) + the
+    // per-project record cap (the OWNER's tier governs project capacity). The
+    // admin-configured hard cap below still applies on top.
+    try {
+      await requireEntitlement(req.user, 'screening.import');
+      const owner = await loadUserForTier(p.ownerId);
+      if (owner) {
+        const current = await prisma.screenRecord.count({ where: { projectId: p.id } });
+        await requireLimit(owner, 'screening.maxRecordsPerProject', current + 1, {
+          message: 'This project has reached its plan record limit.',
+        });
+      }
+    } catch (tierErr) {
+      if (sendTierLimit(res, tierErr)) return;
+      throw tierErr;
+    }
+
     const { format = 'ris', content = '', filename = 'import', force } = req.body || {};
     if (!content.trim()) return res.status(400).json({ error: 'content is required' });
 
@@ -1128,6 +1148,21 @@ export async function startImport(req, res) {
 
     const settings = await getMetaSiftSettings();
     if (!settings.allowImport) return res.status(403).json({ error: 'Import is currently disabled by the administrator' });
+
+    // 67.md — same product-tier gates as the sync import path.
+    try {
+      await requireEntitlement(req.user, 'screening.import');
+      const owner = await loadUserForTier(p.ownerId);
+      if (owner) {
+        const current = await prisma.screenRecord.count({ where: { projectId: p.id } });
+        await requireLimit(owner, 'screening.maxRecordsPerProject', current + 1, {
+          message: 'This project has reached its plan record limit.',
+        });
+      }
+    } catch (tierErr) {
+      if (sendTierLimit(res, tierErr)) return;
+      throw tierErr;
+    }
 
     const { format = 'auto', content = '', filename = 'import', force } = req.body || {};
     if (!String(content).trim()) return res.status(400).json({ error: 'content is required' });
@@ -1364,6 +1399,9 @@ async function gateExport(req, res) {
   if (!access) { res.status(404).json({ error: 'Project not found' }); return null; }
   const canExport = access.isOwner || (access.active && (access.isLeader || access.perms.canExportRecords));
   if (!canExport) { res.status(403).json({ error: 'You do not have permission to export records from this project' }); return null; }
+  // 67.md — product-tier gate on top of the project permission (both must pass).
+  try { await requireEntitlement(req.user, 'screening.export'); }
+  catch (e) { if (sendTierLimit(res, e)) return null; throw e; }
   return access;
 }
 

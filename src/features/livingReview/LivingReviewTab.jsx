@@ -24,6 +24,10 @@ import { pecanSearchApi, loadCanonicalQuery } from '../pecanSearch/pecanSearchAp
 import {
   Card, StatTile, StatusPill, Note, EmptyState, Btn, Toggle, formatWhen,
 } from '../pecanSearch/components/parts.jsx';
+// 67.md — product-tier gate. Living reviews are a Pro-plan feature; the server
+// enforces access, so this is UX-only (fail-open) locked-state messaging.
+import { useEntitlements, LockedFeatureCard } from '../../frontend/entitlements';
+import { requiredTierFor } from '../../shared/entitlements.js';
 
 const CADENCE_LABEL = {
   manual: 'Manual', daily: 'Daily', weekly: 'Weekly', monthly: 'Monthly',
@@ -52,6 +56,7 @@ function renderPlain(canonical) {
 
 export default function LivingReviewTab({ projectId }) {
   const [flagOn, setFlagOn] = useState(null); // null = loading
+  const ent = useEntitlements();
   useEffect(() => {
     let alive = true;
     fetch('/api/settings/public', { credentials: 'include' })
@@ -63,6 +68,15 @@ export default function LivingReviewTab({ projectId }) {
 
   if (flagOn === null) return <div style={{ padding: 24, color: C.muted }}>Loading…</div>;
   if (!flagOn) return <DisabledNote />;
+  // 67.md — flag ON but the plan doesn't include living reviews: show the honest
+  // locked-feature card instead of the dashboard. Fail-open while entitlements load.
+  if (!ent.loading && !ent.has('livingReview.enabled')) {
+    return (
+      <div style={{ padding: 8 }}>
+        <LockedFeatureCard title="Living Reviews" requiredTier={requiredTierFor('livingReview.enabled')} />
+      </div>
+    );
+  }
   return <Dashboard projectId={projectId} />;
 }
 

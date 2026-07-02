@@ -31,6 +31,9 @@ import { countryNameForCode, COUNTRY_OPTIONS } from '../../../shared/countries.j
 import { describeAuditEvent, describeSecurityEvent, parseDetails, SEVERITY_ORDER } from '../../../shared/auditFormat.js';
 // prompt48 — Beta Waitlist domain constants (shared with the public form + server).
 import { WAITLIST_ROLES, WAITLIST_STATUSES, WAITLIST_STATUS_LABELS, applicantRoleLabel, applicantDisplayName } from '../../../shared/betaWaitlist.js';
+// 67.md — product-tier model (shared client+server). UNLIMITED (-1) drives the
+// "Unlimited" checkbox in the entitlement editor; tierDisplayName labels rows.
+import { UNLIMITED, tierDisplayName } from '../../../shared/entitlements.js';
 // Real world-country geometry (pre-projected equirectangular paths, no map lib)
 // for the Ops users-by-country choropleth (prompt20 Task 6).
 import { WORLD_COUNTRIES, WORLD_VIEWBOX } from './worldGeo.js';
@@ -5030,6 +5033,317 @@ function LivingReviewsSection() {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+   SECTION: TIERS (67.md) — product tiers + per-user assignment. Tiers are a
+   SEPARATE access axis from app roles (admin/mod/user — which BYPASS tiers) and
+   project roles (Owner/Leader/Reviewer/Viewer). This section is the single admin
+   surface for: the enforcement kill-switch + default tier, each tier's display
+   fields + entitlement matrix, and assigning individual users to a tier.
+   ════════════════════════════════════════════════════════════════════════ */
+
+/** One tier's editable card: display fields, active toggle, entitlement matrix. */
+function TierCard({ tier, keys, isDefault, onSave }) {
+  // Local working copy — seeded from the RESOLVED entitlement map so every key has
+  // an explicit value, and saved back as a FULL override map (behavior is explicit).
+  const [displayName, setDisplayName] = useState(tier.displayName || tier.id);
+  const [description, setDescription] = useState(tier.description || '');
+  const [isActive, setIsActive] = useState(tier.isActive !== false);
+  const [ents, setEnts] = useState(() => ({ ...(tier.entitlements || {}) }));
+  const [status, setStatus] = useState('idle');
+  const [error, setError] = useState('');
+
+  // Re-seed when the upstream tier object changes (after a save reloads the list).
+  useEffect(() => {
+    setDisplayName(tier.displayName || tier.id);
+    setDescription(tier.description || '');
+    setIsActive(tier.isActive !== false);
+    setEnts({ ...(tier.entitlements || {}) });
+  }, [tier]);
+
+  const groups = useMemo(() => {
+    const by = new Map();
+    for (const k of keys) {
+      if (!by.has(k.group)) by.set(k.group, []);
+      by.get(k.group).push(k);
+    }
+    return [...by.entries()];
+  }, [keys]);
+
+  const setBool = (key, v) => setEnts(e => ({ ...e, [key]: v }));
+  const setLimit = (key, v) => setEnts(e => ({ ...e, [key]: v }));
+
+  async function save() {
+    setStatus('saving'); setError('');
+    // Send the FULL resolved map back as overrides so behavior is explicit and
+    // future default changes never silently alter this tier.
+    const overrides = {};
+    for (const k of keys) {
+      const v = ents[k.key];
+      if (k.kind === 'boolean') overrides[k.key] = v === true;
+      else overrides[k.key] = (v === UNLIMITED) ? UNLIMITED : Math.max(0, Math.round(Number(v) || 0));
+    }
+    try {
+      await onSave(tier.id, { displayName: displayName.trim() || tier.id, description, isActive, entitlements: overrides });
+      setStatus('saved'); setTimeout(() => setStatus('idle'), 3000);
+    } catch (e) {
+      setError(e.message || 'Save failed'); setStatus('error'); setTimeout(() => setStatus('idle'), 4000);
+    }
+  }
+
+  const labelStyle = { fontSize: 11, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 6, display: 'block' };
+  const smallInput = { ...inputStyle, width: 110, padding: '6px 9px', fontSize: 12.5 };
+
+  return (
+    <SectionCard>
+      <div style={{ padding: '16px 20px', borderBottom: `1px solid ${C.brd}` }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
+          <Badge text={tier.id} color={C.acc} />
+          {isDefault && <Badge text="Site default" color={C.teal} />}
+          <span style={{ flex: 1 }} />
+          <span style={{ fontSize: 12, color: C.muted }}>{tier.assignedUsers || 0} user{(tier.assignedUsers || 0) === 1 ? '' : 's'} assigned</span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 16, alignItems: 'start' }}>
+          <div>
+            <label style={labelStyle}>Display name</label>
+            <input value={displayName} onChange={e => setDisplayName(e.target.value)} style={inputStyle} data-testid={`tier-name-${tier.id}`} />
+          </div>
+          <div>
+            <label style={labelStyle}>Description</label>
+            <input value={description} onChange={e => setDescription(e.target.value)} style={inputStyle} data-testid={`tier-desc-${tier.id}`} />
+          </div>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 14 }}>
+          <Toggle checked={isActive} onChange={setIsActive} testId={`tier-active-${tier.id}`} />
+          <span style={{ fontSize: 12.5, color: C.txt2 }}>
+            Active {isDefault && <span style={{ color: C.yel }}>— the site default tier cannot be deactivated.</span>}
+          </span>
+        </div>
+      </div>
+
+      {/* Entitlement matrix, grouped by registry group. */}
+      <div style={{ padding: '4px 20px 8px' }}>
+        {groups.map(([group, items]) => (
+          <div key={group} style={{ padding: '12px 0', borderBottom: `1px solid ${C.brd}` }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: C.txt, letterSpacing: '0.02em', marginBottom: 8 }}>{group}</div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {items.map(k => {
+                const v = ents[k.key];
+                const unlimited = v === UNLIMITED;
+                return (
+                  <div key={k.key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 }}>
+                    <span style={{ fontSize: 12.5, color: C.txt2 }}>{k.label}</span>
+                    {k.kind === 'boolean' ? (
+                      <Toggle checked={v === true} onChange={val => setBool(k.key, val)} testId={`ent-${tier.id}-${k.key}`} />
+                    ) : (
+                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 12 }}>
+                        <input type="number" min={0} disabled={unlimited}
+                          value={unlimited ? '' : (Number.isFinite(Number(v)) ? Number(v) : 0)}
+                          onChange={e => setLimit(k.key, Math.max(0, Math.round(Number(e.target.value) || 0)))}
+                          style={{ ...smallInput, opacity: unlimited ? 0.5 : 1 }}
+                          data-testid={`ent-${tier.id}-${k.key}`} placeholder={unlimited ? '∞' : ''} />
+                        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.muted, cursor: 'pointer' }}>
+                          <input type="checkbox" checked={unlimited}
+                            onChange={e => setLimit(k.key, e.target.checked ? UNLIMITED : 0)}
+                            data-testid={`ent-${tier.id}-${k.key}-unlimited`} />
+                          Unlimited
+                        </label>
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 20px' }}>
+        {error && <span style={{ fontSize: 12, color: C.red }}>{error}</span>}
+        <span style={{ flex: 1 }} />
+        <SaveButton onClick={save} status={status} label="Save tier" testId={`tier-save-${tier.id}`} />
+      </div>
+    </SectionCard>
+  );
+}
+
+/** Search + assign a single user to a tier (or reset to the site default). */
+function TierUserAssignPanel({ tiers, defaultTierId, onAssigned }) {
+  const [q, setQ] = useState('');
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [searched, setSearched] = useState(false);
+  const [sel, setSel] = useState({});   // userId -> { tierId, reason, status }
+
+  const activeTiers = tiers.filter(t => t.isActive !== false);
+
+  async function search() {
+    setLoading(true); setSearched(true);
+    try {
+      const data = await adminApi.users.list({ search: q.trim(), limit: 20 });
+      setRows(data.users || []);
+    } catch { setRows([]); }
+    finally { setLoading(false); }
+  }
+
+  async function assign(u) {
+    const s = sel[u.id] || {};
+    setSel(m => ({ ...m, [u.id]: { ...s, status: 'saving' } }));
+    try {
+      const body = { tierId: s.tierId === '__default__' || !s.tierId ? null : s.tierId, reason: s.reason || undefined };
+      await adminApi.tiers.assignUser(u.id, body);
+      setSel(m => ({ ...m, [u.id]: { ...s, status: 'saved' } }));
+      // Reflect the new assignment inline.
+      setRows(rs => rs.map(r => r.id === u.id ? { ...r, tierId: body.tierId } : r));
+      onAssigned?.();
+      setTimeout(() => setSel(m => ({ ...m, [u.id]: { ...(m[u.id] || {}), status: 'idle' } })), 2500);
+    } catch (e) {
+      setSel(m => ({ ...m, [u.id]: { ...s, status: 'error', error: e.message } }));
+    }
+  }
+
+  const sel2 = { fontFamily: FONT, fontSize: 12.5, color: C.txt, background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 7, padding: '6px 9px' };
+
+  return (
+    <SectionCard title="Assign users to a tier">
+      <div style={{ padding: '16px 20px' }}>
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 12, lineHeight: 1.5 }}>
+          Assigning a tier changes a user's product entitlements only — it does not change their app role or any project membership.
+          Admins and mods always bypass tiers.
+        </div>
+        <form onSubmit={e => { e.preventDefault(); search(); }} style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
+          <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search users by email or name…"
+            style={{ ...inputStyle, flex: 1 }} data-testid="tier-user-search" />
+          <button type="submit" style={{ padding: '9px 18px', background: C.acc2, border: 'none', borderRadius: 7, color: C.accText, fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: FONT }}>Search</button>
+        </form>
+
+        {loading ? (
+          <div style={{ padding: 24, textAlign: 'center' }}><Spinner size={18} /></div>
+        ) : searched && rows.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: C.muted, padding: '8px 0' }}>No users matched.</div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {rows.map(u => {
+              const staff = u.role && u.role !== 'user';
+              const s = sel[u.id] || {};
+              const currentTier = u.tierId || '__default__';
+              return (
+                <div key={u.id} style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', padding: '10px 12px', background: C.card2, borderRadius: 9, border: `1px solid ${C.brd}` }}>
+                  <div style={{ minWidth: 0, flex: '1 1 220px' }}>
+                    <div style={{ fontSize: 13, color: C.txt, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{u.email}</div>
+                    <div style={{ fontSize: 11, color: C.muted, marginTop: 2, display: 'flex', alignItems: 'center', gap: 6 }}>
+                      <Badge text={u.role || 'user'} color={staff ? C.purp : C.muted} />
+                      {!staff && <span>Current: <span style={{ fontFamily: MONO }}>{u.tierId ? tierDisplayName(u.tierId) : `default (${defaultTierId ? tierDisplayName(defaultTierId) : '—'})`}</span></span>}
+                    </div>
+                  </div>
+                  {staff ? (
+                    <span style={{ fontSize: 12, color: C.muted, fontStyle: 'italic' }}>{u.role} — bypasses tiers</span>
+                  ) : (
+                    <>
+                      <select value={s.tierId ?? currentTier} onChange={e => setSel(m => ({ ...m, [u.id]: { ...s, tierId: e.target.value } }))} style={sel2} data-testid={`tier-assign-select-${u.id}`}>
+                        <option value="__default__">Site default</option>
+                        {activeTiers.map(t => <option key={t.id} value={t.id}>{t.displayName || t.id}</option>)}
+                      </select>
+                      <input value={s.reason || ''} onChange={e => setSel(m => ({ ...m, [u.id]: { ...s, reason: e.target.value } }))}
+                        placeholder="Reason (optional)" style={{ ...inputStyle, flex: '1 1 160px', width: 'auto', padding: '6px 9px', fontSize: 12.5 }} />
+                      <SaveButton onClick={() => assign(u)} status={s.status || 'idle'} label="Assign" testId={`tier-assign-${u.id}`} />
+                      {s.status === 'error' && <span style={{ fontSize: 11, color: C.red, width: '100%' }}>{s.error}</span>}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </SectionCard>
+  );
+}
+
+function TiersSection() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const [settings, setSettings] = useState({ enforcementEnabled: true, defaultTierId: null });
+  const [setStatus, setSetStatus] = useState('idle');
+
+  const load = useCallback(async () => {
+    try {
+      const d = await adminApi.tiers.get();
+      setData(d);
+      setSettings({
+        enforcementEnabled: d.settings?.enforcementEnabled !== false,
+        defaultTierId: d.defaultTierId || d.settings?.defaultTierId || null,
+      });
+      setErr('');
+    } catch (e) { setErr(e.message || 'Could not load tiers.'); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  const saveTier = useCallback(async (id, body) => {
+    await adminApi.tiers.saveTier(id, body);
+    await load();
+  }, [load]);
+
+  async function saveSettings() {
+    setSetStatus('saving');
+    try {
+      const res = await adminApi.tiers.saveSettings(settings);
+      setSettings(s => ({ ...s, ...(res.settings || {}), defaultTierId: res.defaultTierId ?? s.defaultTierId }));
+      setSetStatus('saved'); setTimeout(() => setSetStatus('idle'), 3000);
+      await load();
+    } catch { setSetStatus('error'); setTimeout(() => setSetStatus('idle'), 3000); }
+  }
+
+  if (err && !data) return <div style={{ padding: 20 }}><ErrorBox msg={err} /></div>;
+  if (!data) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={20} /></div>;
+
+  const tiers = [...(data.tiers || [])].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
+  const keys = data.keys || [];
+  const defaultTierId = settings.defaultTierId;
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 8px' }}>Tiers</h2>
+      <p style={{ fontSize: 12.5, color: C.muted, margin: '0 0 20px', maxWidth: 720, lineHeight: 1.6 }}>{data.note}</p>
+
+      {/* Enforcement + default tier settings. */}
+      <SectionCard title="Enforcement">
+        <div style={{ padding: '16px 20px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 20, marginBottom: 6 }}>
+            <div>
+              <div style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>Enforce tier limits</div>
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 3, maxWidth: 560 }}>
+                When off, every user is unrestricted — no feature or usage limit is applied anywhere. Turn on to enforce the tiers below for normal users.
+              </div>
+            </div>
+            <Toggle checked={settings.enforcementEnabled} onChange={v => setSettings(s => ({ ...s, enforcementEnabled: v }))} testId="tier-enforce" />
+          </div>
+          {!settings.enforcementEnabled && (
+            <NoticeBox msg="Enforcement is OFF — all users currently have unrestricted access to every feature regardless of their assigned tier." />
+          )}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 12 }}>
+            <span style={{ fontSize: 12.5, color: C.txt2 }}>Default tier for users with no explicit assignment</span>
+            <select value={defaultTierId || ''} onChange={e => setSettings(s => ({ ...s, defaultTierId: e.target.value || null }))}
+              style={{ fontFamily: FONT, fontSize: 12.5, color: C.txt, background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 7, padding: '6px 9px' }} data-testid="tier-default-select">
+              {tiers.filter(t => t.isActive !== false).map(t => <option key={t.id} value={t.id}>{t.displayName || t.id}</option>)}
+            </select>
+          </div>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '4px 20px 16px' }}>
+          <SaveButton onClick={saveSettings} status={setStatus} label="Save enforcement" testId="tier-settings-save" />
+        </div>
+      </SectionCard>
+
+      {/* One card per tier. */}
+      {tiers.map(t => (
+        <TierCard key={t.id} tier={t} keys={keys} isDefault={t.id === defaultTierId} onSave={saveTier} />
+      ))}
+
+      {/* Per-user assignment. */}
+      <TierUserAssignPanel tiers={tiers} defaultTierId={defaultTierId} onAssigned={load} />
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
    SECTION: AI SCREENING ENGINE (screeningEngin.md / se2.md §4) — global policy,
    run health + audit. This is the SINGLE source of truth for the AI policy; it
    renders as the "AI Policy" sub-tab of the Screening Ops section (it used to be
@@ -8186,6 +8500,7 @@ const NAV_SECTIONS = [
   { id: 'settings',   icon: 'settings',  label: 'Settings'      },
   { id: 'style',      icon: 'eye',       label: 'Appearance'    },
   { id: 'flags',      icon: 'sliders',   label: 'Flags'         },
+  { id: 'tiers',      icon: 'award',     label: 'Tiers'         },
   { id: 'extractionAi',   icon: 'clipboard', label: 'Extraction AI'  },
   { id: 'livingReviews',  icon: 'activity',  label: 'Living Reviews' },
   { id: 'messages',   icon: 'mail',      label: 'Messages'      },
@@ -8264,6 +8579,7 @@ export default function AdminConsole() {
     settings:   <SettingsSection />,
     style:      <StyleSection />,
     flags:      <FlagsSection />,
+    tiers:      <TiersSection />,
     extractionAi:  <ExtractionAiSection />,
     livingReviews: <LivingReviewsSection />,
     messages:   <MessagesSection onUnreadChange={setUnread} />,

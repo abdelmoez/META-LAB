@@ -17,6 +17,9 @@ import { getMetaSiftSettings } from '../screening/settings.js';
 import { isEmailConfigured, sendEmail, renderInviteEmail } from '../services/emailService.js';
 import { isValidEmail } from '../utils/validators.js';
 import { recordUsage, USAGE } from '../utils/usage.js';
+// 67.md — product-tier enforcement: the member quota binds to the PROJECT
+// OWNER's tier (a leader adding members shares the owner's plan capacity).
+import { requireLimit, sendTierLimit, loadUserForTier } from '../services/entitlementService.js';
 
 /** Read the admin appSettings blob — best-effort, defaults to {}. */
 async function getAppSettings() {
@@ -157,6 +160,22 @@ export async function addMember(req, res) {
       where: { projectId: req.params.pid, email: normEmail },
     });
     if (existing) return res.status(409).json({ error: 'That email is already a member of this project' });
+
+    // 67.md — product-tier member quota (the owner's plan governs; admin/mod and
+    // disabled enforcement bypass inside the service). Counts existing member
+    // rows (active + pending invites) plus the one being added.
+    try {
+      const owner = await loadUserForTier(access.project.ownerId);
+      if (owner) {
+        const memberCount = await prisma.screenProjectMember.count({ where: { projectId: req.params.pid } });
+        await requireLimit(owner, 'projects.maxMembersPerProject', memberCount + 1, {
+          message: 'This project has reached its plan member limit.',
+        });
+      }
+    } catch (tierErr) {
+      if (sendTierLimit(res, tierErr)) return;
+      throw tierErr;
+    }
 
     // Resolve the permission preset → role + module flags (prompt4 Task 9).
     const { role, perms } = resolvePreset(presetName);

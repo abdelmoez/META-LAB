@@ -137,6 +137,24 @@ export const adminApi = {
     save:         (body)     => req(`${BASE}/living-review/settings`, { method: 'PUT', ...json(body) }),
   },
 
+  // 67.md — product tiers / entitlements (admin-only). Tiers are a SEPARATE axis
+  // from app roles (admin/mod/user, which bypass tiers) and project roles.
+  //  get()                → { tiers:[{ id, displayName, description, isActive,
+  //    sortOrder, entitlements (RESOLVED full map), storedOverrides,
+  //    isDefaultDefinition, assignedUsers }], unassignedUsers, settings:
+  //    { enforcementEnabled, defaultTierId }, defaultTierId, keys (registry), note }.
+  //  saveTier(id, body)   PUTs { displayName?, description?, isActive?, sortOrder?,
+  //    entitlements? (FULL override map) } → { ok, tier }. May 400 when deactivating
+  //    the site default tier — surface the returned error.
+  //  saveSettings(body)   PUTs { enforcementEnabled?, defaultTierId? } → { ok, settings }.
+  //  assignUser(id, body) PATCHes a user's tier: { tierId|null, reason? } → { ok, user }.
+  tiers: {
+    get:          ()         => req(`${BASE}/tiers`),
+    saveTier:     (id, body) => req(`${BASE}/tiers/${id}`, { method: 'PUT', ...json(body) }),
+    saveSettings: (body)     => req(`${BASE}/tier-settings`, { method: 'PUT', ...json(body) }),
+    assignUser:   (id, body) => req(`${BASE}/users/${id}/tier`, { method: 'PATCH', ...json(body) }),
+  },
+
   screening: {
     getSettings:  ()         => req(`${BASE}/screening/settings`),
     saveSettings: (body)     => req(`${BASE}/screening/settings`, { method: 'PUT', ...json(body) }),

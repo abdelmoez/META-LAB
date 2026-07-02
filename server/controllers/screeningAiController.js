@@ -21,6 +21,8 @@ import {
 } from '../services/screeningAiService.js';
 import { getJobStatus, enqueueManualRun, enqueueCitationEnrichment } from '../services/screeningAiJobs.js';
 import { getCitationStatus } from '../services/citationEnrichmentService.js';
+// 67.md — product-tier enforcement (admins/mods bypass inside the service).
+import { requireEntitlement, sendTierLimit } from '../services/entitlementService.js';
 
 /** Shared gate: flag → access. Returns access or null (response already sent). */
 async function gate(req, res) {
@@ -69,6 +71,9 @@ export async function postAiRun(req, res) {
     const global = await getGlobalAiSettings();
     if (!global.enabled) return res.status(403).json({ error: 'AI screening is disabled by the administrator' });
     if (!canRunAi(access, global)) return res.status(403).json({ error: 'You do not have permission to run AI scoring' });
+    // 67.md — product tier AND project permission must both pass.
+    try { await requireEntitlement(req.user, 'screening.aiScoring'); }
+    catch (e) { if (sendTierLimit(res, e)) return; throw e; }
     const stage = stageOf(req);
     const job = await enqueueManualRun(req.params.pid, { stage, actor: req.user });
     res.status(202).json({ ok: true, jobId: job.id, status: job.status, stage });
@@ -162,6 +167,8 @@ export async function getAiValidation(req, res) {
   const access = await gate(req, res); if (!access) return;
   try {
     if (!access.isLeader) return res.status(403).json({ error: 'Validation metrics are leader-only' });
+    try { await requireEntitlement(req.user, 'screening.validationMetrics'); }
+    catch (e) { if (sendTierLimit(res, e)) return; throw e; }
     const stage = stageOf(req);
     const val = await getValidation(req.params.pid, stage);
     if (!val) return res.status(404).json({ error: 'No completed AI run yet' });
@@ -225,6 +232,8 @@ export async function postAiCitationEnrichment(req, res) {
     const global = await getGlobalAiSettings();
     if (!global.enabled) return res.status(403).json({ error: 'AI screening is disabled by the administrator' });
     if (!canRunAi(access, global)) return res.status(403).json({ error: 'You do not have permission to run citation enrichment' });
+    try { await requireEntitlement(req.user, 'screening.aiScoring'); }
+    catch (e) { if (sendTierLimit(res, e)) return; throw e; }
     const job = await enqueueCitationEnrichment(req.params.pid, { stage: stageOf(req), actor: req.user });
     res.status(202).json({ ok: true, jobId: job.id, status: job.status });
   } catch (e) {

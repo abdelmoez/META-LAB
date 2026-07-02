@@ -83,6 +83,13 @@ import {
 } from '../controllers/researchOpsAdminController.js';
 
 import {
+  getTiersAdmin,
+  updateTierAdmin,
+  updateTierSettingsAdmin,
+  updateUserTierAdmin,
+} from '../controllers/tierAdminController.js';
+
+import {
   adminListQuestions,
   adminCreateQuestion,
   adminUpdateQuestion,
@@ -273,6 +280,12 @@ router.get('/extraction-ai/settings', requireAdmin, getExtractionAiAdminSettings
 router.put('/extraction-ai/settings', requireAdmin, updateExtractionAiAdminSettings);
 router.get('/living-review/settings', requireAdmin, getLivingReviewAdminSettings);
 router.put('/living-review/settings', requireAdmin, updateLivingReviewAdminSettings);
+
+// 67.md — product tiers / entitlements (admin only; tiers are separate from roles)
+router.get('/tiers',            requireAdmin, getTiersAdmin);
+router.put('/tiers/:id',        requireAdmin, updateTierAdmin);
+router.put('/tier-settings',    requireAdmin, updateTierSettingsAdmin);
+router.patch('/users/:id/tier', requireAdmin, updateUserTierAdmin);
 
 // ── Onboarding questions (prompt32 Task 7) — admin only ─────────────────────────
 router.get('/onboarding-settings',              requireAdmin, getOnboardingSettings);

@@ -37,6 +37,8 @@ import MyWorkView from './dashboard/MyWorkView.jsx';
 import ActivityView from './dashboard/ActivityView.jsx';
 import InvitationsView from './dashboard/InvitationsView.jsx';
 import ResourcesView from './dashboard/ResourcesView.jsx';
+// 67.md — recognise a tier-limit 403 on project creation and show its human message.
+import { tierErrorMessage } from '../../entitlements';
 
 const FILTERS = [
   { key: 'all', label: 'All', test: () => true },
@@ -77,7 +79,9 @@ function CreateProjectModal({ open, onClose, onCreated }) {
       onCreated?.(res);
       setName(''); setDescription('');
     } catch (e2) {
-      setErr(e2.message || 'Could not create the project.');
+      // A tier-limit 403 carries a human message in the response body; surface it
+      // verbatim rather than the raw TIER_LIMIT_EXCEEDED key.
+      setErr(tierErrorMessage(e2) || e2.message || 'Could not create the project.');
       setBusy(false);
     }
   };

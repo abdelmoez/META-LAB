@@ -41,6 +41,7 @@ import searchEngineRouter  from './routes/searchEngine.js';
 import pecanSearchRouter    from './routes/pecanSearch.js';
 import extractionRouter     from './routes/extraction.js';
 import livingReviewRouter   from './routes/livingReview.js';
+import entitlementsRouter   from './routes/entitlements.js';
 import waitlistRouter       from './routes/waitlist.js';
 import { waitlistCount }    from './controllers/waitlistController.js';
 import citationRouter       from './routes/citation.js';
@@ -405,6 +406,11 @@ app.use('/api/extraction', requireAuth, extractionRouter);
 // re-runs go through the existing Pecan Search engine + durable worker.
 app.use('/api/living', requireAuth, livingReviewRouter);
 
+// ── Product-tier entitlements (67.md) — the signed-in user's resolved plan.
+// Own mount (never under the rate-limited /api/auth); enforcement itself lives
+// in each endpoint via entitlementService.require*.
+app.use('/api/entitlements', requireAuth, entitlementsRouter);
+
 // ── SPA serving with server-injected theme (prompt37 follow-up) ────────────────
 // When a production build exists (or SERVE_SPA=true), serve dist/ assets and the
 // index.html with the live brand palette injected pre-paint, so the admin's
@@ -481,6 +487,11 @@ const server = app.listen(PORT, () => {
       import('./living/scheduler.js')
         .then(m => m.startLivingScheduler())
         .catch(err => console.error('[living-scheduler] start failed:', err.message));
+      // 67.md — seed the default product-tier rows (create-if-missing; admin
+      // edits are never overwritten). Idempotent.
+      import('./services/entitlementService.js')
+        .then(m => m.seedProductTiers())
+        .catch(err => console.error('[tiers] seed failed:', err.message));
     });
 
   // prompt48 — fail-safe waitlist config check. If the betaWaitlist flag is ON but

@@ -12,6 +12,8 @@ import { getMetaLabMemberAccess, listSharedMetaLabAccess } from '../screening/me
 import { createLinkedScreenProject } from '../screening/createScreenProject.js';
 import { emitToMetaLabProject, emitToProjectMembers } from '../realtime/bus.js';
 import { writeAudit } from '../screening/access.js';
+// 67.md — product-tier enforcement (admin/mod bypass inside the service).
+import { requireEntitlement, requireLimit, sendTierLimit } from '../services/entitlementService.js';
 import { recordUsage, USAGE } from '../utils/usage.js';
 import { screeningCountSelect, DECIDED_FINAL_STATUSES, classifyDecided } from '../utils/screeningCounts.js';
 import { onlineCountsFor } from '../realtime/presence.js';
@@ -403,6 +405,16 @@ export async function createProject(req, res) {
     const { name, createLinkedSift } = req.body || {};
     if (!name || typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ error: 'name is required' });
+    }
+    // 67.md — product-tier gate (admins/mods bypass inside the service). The
+    // active-project limit counts live (non-deleted) projects the user owns.
+    try {
+      await requireEntitlement(req.user, 'projects.create');
+      const activeCount = await prisma.project.count({ where: { userId: req.user.id, deletedAt: null } });
+      await requireLimit(req.user, 'projects.maxActiveProjects', activeCount + 1);
+    } catch (tierErr) {
+      if (sendTierLimit(res, tierErr)) return;
+      throw tierErr;
     }
     const project = mkProject(name.trim());
     const saved = await save(project, req.user.id);

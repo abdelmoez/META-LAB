@@ -38,6 +38,15 @@ model User {
   // epoch stays bumped, so old tokens never become valid again). Additive default 0.
   sessionEpoch                  Int                      @default(0)
   suspendedAt                   DateTime? // when the account was last suspended (audit/forensics)
+  // 67.md — PRODUCT TIER (separate from the app/system `role` above and from
+  // per-project roles on ScreenProjectMember; the three systems never mix).
+  // null → the user resolves to the site default tier at READ time (config/env),
+  // so existing users need no backfill and flipping the default is instant.
+  // Admins/mods bypass tier limits entirely (enforced in entitlementService).
+  tierId                        String? // ProductTier id ('free'|'plus'|'pro'|custom)
+  tierAssignedAt                DateTime?
+  tierAssignedBy                String? // admin user id (audit; AdminAuditLog carries the rest)
+  tierOverrideReason            String? // optional note recorded at assignment
   passwordChangedAt             DateTime? // when the password last changed (session-revocation forensics)
   createdAt                     DateTime                 @default(now())
   updatedAt                     DateTime                 @updatedAt
@@ -1729,4 +1738,22 @@ model EvidenceShiftAlert {
   createdAt        DateTime  @default(now())
 
   @@index([metaLabProjectId, status, createdAt])
+}
+
+// 67.md — PRODUCT TIER definitions (the entitlement plans normal users are
+// assigned to). Brand-new table (db-push additive-safe). Rows are seeded from
+// the code defaults in src/shared/entitlements.js at boot (create-if-missing,
+// never overwrite) and are ADMIN-EDITABLE from Ops -> Tiers; the resolver merges
+// code defaults UNDER a row's entitlements JSON so new keys ship without
+// migrations. Billing integration fields are deliberately deferred.
+model ProductTier {
+  id           String   @id // stable machine id: 'free' | 'plus' | 'pro' | custom
+  name         String
+  displayName  String
+  description  String   @default("")
+  isActive     Boolean  @default(true)
+  sortOrder    Int      @default(0)
+  entitlements String   @default("{}") // JSON { "screening.aiScoring": true, "projects.maxActiveProjects": 3, ... } (-1 = unlimited)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }

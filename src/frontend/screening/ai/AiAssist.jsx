@@ -10,6 +10,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { QUEUE_MODES } from '../../../research-engine/screening/ai/ranking.js';
+// 67.md — product-tier gate. AI screening is a Plus-and-above feature; the server
+// enforces it, so this is UX-only (fail-open) — hide dead controls, explain why.
+import { useEntitlements, TierLimitNotice } from '../../entitlements';
+
+const AI_SCORING_LOCKED_MSG = 'AI Screening is available on the Plus plan and above.';
 
 const pct = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
 
@@ -360,6 +365,8 @@ function ProvenanceChips({ ai }) {
 
 /** Active-learning queue selector + Run control for the list header. */
 export function AiQueueBar({ ai, mode, onMode, band, onBand, onRefreshRankings }) {
+  const ent = useEntitlements();
+  const aiScoringLocked = !ent.loading && !ent.has('screening.aiScoring');
   if (!ai.enabled) return null;
   // AI-blinding: a non-leader reviewer must not get AI-ordered/filtered worklists
   // (the order leaks the model's opinion). Server enforces this too; leaders exempt.
@@ -388,7 +395,8 @@ export function AiQueueBar({ ai, mode, onMode, band, onBand, onRefreshRankings }
         const aiBusy = ai.running || ai.jobStatus?.running || ai.jobStatus?.state === 'updating' || ai.jobStatus?.state === 'queued';
         const pct = ai.jobStatus?.total > 0 ? ai.jobStatus.progress : null;
         return (
-          <MiniBtn onClick={() => ai.run()} disabled={aiBusy} title="Train on current decisions and re-score all records (runs in the background)">
+          <MiniBtn onClick={() => ai.run()} disabled={aiBusy || aiScoringLocked}
+            title={aiScoringLocked ? AI_SCORING_LOCKED_MSG : 'Train on current decisions and re-score all records (runs in the background)'}>
             {aiBusy ? (pct != null ? `Scoring… ${pct}%` : 'Scoring…') : 'Run AI scoring'}
           </MiniBtn>
         );
@@ -754,6 +762,10 @@ function ValidationSampleBlock({ ai, canConfigure, unbiasedCV }) {
 export function AiStatusPanel({ ai }) {
   const [val, setVal] = useState(null);
   const [citation, setCitation] = useState(null);
+  const ent = useEntitlements();
+  // Fail-open: `has` is true while loading / on error / for tier-bypass users, so the
+  // notice + disabled-Run appear only when we KNOW the plan lacks AI scoring.
+  const aiScoringLocked = !ent.loading && !ent.has('screening.aiScoring');
   const s = ai.status;
 
   useEffect(() => {
@@ -796,9 +808,12 @@ export function AiStatusPanel({ ai }) {
         {s?.canRun && (() => {
           const aiBusy = ai.running || ai.jobStatus?.running || ai.jobStatus?.state === 'updating' || ai.jobStatus?.state === 'queued';
           const pct = ai.jobStatus?.total > 0 ? ai.jobStatus.progress : null;
-          return <MiniBtn onClick={() => ai.run()} disabled={aiBusy}>{aiBusy ? (pct != null ? `Scoring… ${pct}%` : 'Scoring…') : 'Run scoring'}</MiniBtn>;
+          return <MiniBtn onClick={() => ai.run()} disabled={aiBusy || aiScoringLocked} title={aiScoringLocked ? AI_SCORING_LOCKED_MSG : undefined}>{aiBusy ? (pct != null ? `Scoring… ${pct}%` : 'Scoring…') : 'Run scoring'}</MiniBtn>;
         })()}
       </div>
+
+      {/* 67.md — plan gate for AI screening (server-enforced; this is honest UX). */}
+      {aiScoringLocked && <TierLimitNotice message={AI_SCORING_LOCKED_MSG} />}
 
       {ai.error && <div style={{ fontSize: 11.5, color: C.red }}>{ai.error}</div>}
 

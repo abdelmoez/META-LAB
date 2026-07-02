@@ -17,6 +17,11 @@ import {
 import { RichSectionEditor, RichToolbar, RICH_EDITOR_CSS } from './richEditor/RichSectionEditor.jsx';
 import { AbstractEditor } from './richEditor/AbstractEditor.jsx';
 import { extractOutline } from './richEditor/mdDom.js';
+// 67.md — Word (.docx) export is a Plus-plan feature (server-enforced). This is
+// UX-only, fail-open: only disable the button once we KNOW the plan lacks it.
+import { useEntitlements } from '../../frontend/entitlements';
+
+const WORD_EXPORT_LOCKED_MSG = 'Word export is available on the Plus plan and above.';
 
 /* ════════════ shared bits ════════════ */
 
@@ -123,13 +128,16 @@ function SvgBox({ svg }) {
 /* ── reusable export-button group ── */
 export function ExportButtons({ exporters, canonical }) {
   const { onExportWord, onExportRepro, onPrismaChecklist, onPrismaSChecklist, exporting } = exporters;
+  const ent = useEntitlements();
+  const wordLocked = !ent.loading && !ent.has('manuscript.wordExport');
   const busy = (k) => exporting === k;
   const lbl = (k, base) => (busy(k) ? 'Generating…' : base);
   return (
     <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
-      <button onClick={onExportWord} disabled={!!exporting}
+      <button onClick={onExportWord} disabled={!!exporting || wordLocked}
+        title={wordLocked ? WORD_EXPORT_LOCKED_MSG : undefined}
         data-testid={canonical ? 'stitch-manuscript-export-word' : undefined}
-        style={{ ...btnS('primary'), opacity: exporting ? 0.6 : 1 }}>
+        style={{ ...btnS('primary'), opacity: (exporting || wordLocked) ? 0.6 : 1, cursor: wordLocked ? 'not-allowed' : undefined }}>
         <Icon name="fileText" size={13} /> {lbl('word', 'Export Word')}
       </button>
       <button onClick={onExportRepro} disabled={!!exporting}

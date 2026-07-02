@@ -66,6 +66,8 @@ const USER_DETAIL_SELECT = {
   // prompt35 — canonical institution linkage (display-only in Ops; never secret).
   institutionCanonicalName: true, institutionRorId: true, institutionCountryName: true,
   institutionSource: true, institutionNeedsReview: true,
+  // 67.md — product tier (display + filter in the users table; null → site default).
+  tierId: true, tierAssignedAt: true,
   _count: { select: { projects: true } },
 };
 function formatUserDetail(u) {
@@ -2510,7 +2512,7 @@ export async function restoreProject(req, res) {
 export async function getConsole(req, res) {
   const role = req.user?.role || 'user';
   const sections = role === 'admin'
-    ? ['overview', 'users', 'projects', 'sift', 'rob', 'searchProviders', 'waitlist', 'onboarding', 'content', 'settings', 'style', 'flags', 'extractionAi', 'livingReviews', 'messages', 'security', 'health', 'engineVersions']
+    ? ['overview', 'users', 'projects', 'sift', 'rob', 'searchProviders', 'waitlist', 'onboarding', 'content', 'settings', 'style', 'flags', 'extractionAi', 'livingReviews', 'tiers', 'messages', 'security', 'health', 'engineVersions']
     : role === 'mod'
       ? ['users', 'messages']
       : [];

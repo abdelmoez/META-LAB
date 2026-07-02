@@ -9,6 +9,8 @@
  */
 import { validateNetwork, runNetworkMetaAnalysis, SUPPORTED_MEASURES } from '../../src/research-engine/statistics/nma/index.js';
 import { getEffectiveFeatureFlags } from './settingsController.js';
+// 67.md — product-tier enforcement (admins/mods bypass inside the service).
+import { requireEntitlement, sendTierLimit } from '../services/entitlementService.js';
 
 const MAX_STUDIES = 2000;     // resource-aware bound (not a methodological cap)
 const MAX_TREATMENTS = 200;
@@ -53,6 +55,9 @@ export async function nmaValidate(req, res) {
 /** POST /api/nma/run — full frequentist NMA. Body: { dataset, model?, reference? }. */
 export async function nmaRun(req, res) {
   if (!(await flagOn())) return res.status(404).json({ error: 'Not found' });
+  // 67.md — product-tier gate (admins/mods bypass inside the service).
+  try { await requireEntitlement(req.user, 'metaAnalysis.nma'); }
+  catch (e) { if (sendTierLimit(res, e)) return; throw e; }
   const s = sanitizeDataset(req.body || {});
   if (s.error) return res.status(400).json({ error: s.error });
   const model = req.body?.model === 'common' ? 'common' : 'random';

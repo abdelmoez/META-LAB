@@ -26,6 +26,8 @@ import {
   consensusToStudyPatch,
 } from '../../src/research-engine/extraction/index.js';
 import { suggestWithExternalLlm, extractionLlmInfo } from '../services/extractionLlmClient.js';
+// 67.md — product-tier enforcement (admins/mods bypass inside the service).
+import { requireEntitlement, sendTierLimit } from '../services/entitlementService.js';
 
 function safeParse(s, fallback) {
   try { const v = JSON.parse(s ?? ''); return v ?? fallback; } catch { return fallback; }
@@ -299,6 +301,11 @@ export async function postAssign(req, res) {
     const projectId = access.project.id;
     const { studyId } = req.params;
     const b = req.body || {};
+    // 67.md — assigning a SECOND extractor is the dual-extraction feature.
+    if (b.extractor2Id) {
+      try { await requireEntitlement(req.user, 'extraction.dualExtraction'); }
+      catch (e) { if (sendTierLimit(res, e)) return; throw e; }
+    }
     const data = {
       extractor1Id: b.extractor1Id ? String(b.extractor1Id) : null,
       extractor2Id: b.extractor2Id ? String(b.extractor2Id) : null,
@@ -436,6 +443,9 @@ export async function postAiSuggest(req, res) {
     if (!access.canEdit) return res.status(403).json({ error: 'Extraction editing is not permitted' });
     const settings = await getExtractionAiSettings();
     if (!settings.enabled) return res.status(403).json({ error: 'AI extraction assist is disabled by the administrator' });
+    // 67.md — product tier check (in addition to the project permission above).
+    try { await requireEntitlement(req.user, 'extraction.aiAssist'); }
+    catch (e) { if (sendTierLimit(res, e)) return; throw e; }
     const projectId = access.project.id;
     const { studyId } = req.params;
     const study = blobStudies(access.project).find(s => s.id === studyId);
@@ -516,6 +526,8 @@ export async function postTable(req, res) {
     if (!access.canEdit) return res.status(403).json({ error: 'Extraction editing is not permitted' });
     const settings = await getExtractionAiSettings();
     if (settings.tableParsingEnabled === false) return res.status(403).json({ error: 'Table parsing is disabled by the administrator' });
+    try { await requireEntitlement(req.user, 'extraction.tableParsing'); }
+    catch (e) { if (sendTierLimit(res, e)) return; throw e; }
     const b = req.body || {};
     const content = String(b.content || '');
     if (!content.trim()) return res.status(400).json({ error: 'No table content supplied' });

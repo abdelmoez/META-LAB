@@ -18,6 +18,9 @@ import { prisma } from '../db/client.js';
 import {
   livingReviewEnabled, getLivingSettings, runSavedSearch, reconcileSearch, notifyLeaders,
 } from './livingService.js';
+// 67.md — scheduled runs execute on the CREATOR's behalf, so their product tier
+// must still include the scheduler at fire time (a downgrade stops the schedule).
+import { requireEntitlement, loadUserForTier, TierLimitError } from '../services/entitlementService.js';
 
 const TICK_MS = Number(process.env.LIVING_SCHEDULER_TICK_MS) || 5 * 60 * 1000;
 
@@ -43,9 +46,20 @@ export async function livingSchedulerTick(now = new Date()) {
     });
     for (const search of due) {
       try {
+        // 67.md — verify the creator's plan still includes scheduled re-runs.
+        const creator = await loadUserForTier(search.createdById);
+        if (creator) await requireEntitlement(creator, 'livingReview.scheduler');
         await runSavedSearch(search, { reason: 'scheduled' });
         out.started++;
       } catch (e) {
+        if (e instanceof TierLimitError) {
+          // Not a failure — pause the schedule quietly until the plan allows it.
+          await prisma.livingSavedSearch.update({
+            where: { id: search.id },
+            data: { enabled: false, lastError: 'Scheduled re-runs are not included in the creator’s current plan — schedule paused.' },
+          }).catch(() => {});
+          continue;
+        }
         out.failed++;
         await prisma.livingSavedSearch.update({
           where: { id: search.id },
