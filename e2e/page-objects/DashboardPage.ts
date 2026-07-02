@@ -115,8 +115,10 @@ export class DashboardPage {
   get openButtons(): Locator { return this.main.getByRole('button', { name: 'Open', exact: true }); }
   async projectCount(): Promise<number> { return this.openButtons.count(); }
 
-  /** Project card titles (a `[title]` attr is exclusive to grid cards within main). */
-  get cardTitles(): Locator { return this.main.locator('[title]'); }
+  /** Project card/list-row titles — scoped to the dedicated testid so aggregate
+   *  widgets (progress ring, metric cards) that also carry a `[title]` tooltip
+   *  never inflate the card count. */
+  get cardTitles(): Locator { return this.main.getByTestId('dashboard-project-title'); }
   /** Grid card titles whose text contains `name`. */
   cardTitle(name: string | RegExp): Locator { return this.cardTitles.filter({ hasText: name }); }
 

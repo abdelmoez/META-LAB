@@ -231,7 +231,7 @@ function ProjectRow({ p, onOpen, onAction }) {
     <StitchCard interactive style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 10 }}>
         <div style={{ minWidth: 0 }}>
-          <div title={p.name} style={{ fontSize: 15, fontWeight: 700, color: S.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: '-0.01em' }}>
+          <div data-testid="dashboard-project-title" title={p.name} style={{ fontSize: 15, fontWeight: 700, color: S.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: '-0.01em' }}>
             {p.name || 'Untitled project'}
           </div>
           <div style={{ display: 'flex', gap: 6, marginTop: 6, flexWrap: 'wrap' }}>
@@ -279,7 +279,7 @@ function ProjectListRow({ p, onOpen, onAction }) {
       onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
       style={{ transition: 'background 0.15s ease' }}>
       <td style={{ ...cell, minWidth: 0 }} data-th="Project">
-        <div title={p.name} style={{ fontSize: 14, fontWeight: 700, color: S.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320 }}>
+        <div data-testid="dashboard-project-title" title={p.name} style={{ fontSize: 14, fontWeight: 700, color: S.textPrimary, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 320 }}>
           {p.name || 'Untitled project'}
         </div>
       </td>

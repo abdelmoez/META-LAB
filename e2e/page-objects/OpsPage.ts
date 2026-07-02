@@ -26,6 +26,8 @@ import { Page, Locator, expect } from '@playwright/test';
 export const OPS_SECTION_IDS = [
   'overview', 'users', 'onboarding', 'projects', 'sift', 'rob',
   'searchProviders', 'waitlist', 'content', 'settings', 'style', 'flags',
+  // 66.md P5/P6 + 67.md — extraction-AI, living-review policy, product tiers.
+  'extractionAi', 'livingReviews', 'tiers',
   'messages', 'security', 'health', 'engineVersions',
 ] as const;
 
@@ -51,6 +53,9 @@ export class OpsPage {
     settings: /App Settings/i,
     style: /^Appearance$/i,
     flags: /Feature Flags/i,
+    extractionAi: /Extraction AI/i,
+    livingReviews: /Living Reviews/i,
+    tiers: /^Tiers$/i,
     messages: /Contact Messages/i,
     security: /Security/i,
     health: /System Health/i,

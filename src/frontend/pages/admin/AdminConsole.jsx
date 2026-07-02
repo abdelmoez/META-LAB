@@ -8662,7 +8662,10 @@ export default function AdminConsole() {
       </div>
 
       {/* ── Sidebar ──────────────────────────────────────────────────── */}
-      <div style={{ position: 'fixed', top: TOPBAR_H, left: 0, width: SIDEBAR_W, bottom: 0, background: C.surf, borderRight: `1px solid ${C.brd}`, overflowY: 'auto', zIndex: 200, paddingTop: 12 }}>
+      <div style={{ position: 'fixed', top: TOPBAR_H, left: 0, width: SIDEBAR_W, bottom: 0, background: C.surf, borderRight: `1px solid ${C.brd}`, zIndex: 200, display: 'flex', flexDirection: 'column' }}>
+        {/* Scrollable nav list — flex:1 so the footer below it never overlaps the
+            last items (regression when the section count grew past the fold). */}
+        <div style={{ flex: 1, overflowY: 'auto', minHeight: 0, paddingTop: 12 }}>
         {visibleNav.map(sec => {
           const isActive = active === sec.id;
           const badge = sec.id === 'messages' && unread > 0 ? unread : null;
@@ -8679,9 +8682,11 @@ export default function AdminConsole() {
             </button>
           );
         })}
+        </div>
 
-        {/* Sidebar footer — back to dashboard link + version line */}
-        <div style={{ position: 'absolute', bottom: 0, left: 0, right: 0, padding: '12px 16px', borderTop: `1px solid ${C.brd}`, background: C.surf }}>
+        {/* Sidebar footer — back to dashboard link + version line. Normal flow
+            (flexShrink:0) so it sits BELOW the scrollable list, never over it. */}
+        <div style={{ flexShrink: 0, padding: '12px 16px', borderTop: `1px solid ${C.brd}`, background: C.surf }}>
           <button onClick={() => navigate('/app')} style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '7px 10px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT, transition: 'all 0.15s' }}
             onMouseEnter={e => { e.currentTarget.style.borderColor = C.acc; e.currentTarget.style.color = C.acc; }}
             onMouseLeave={e => { e.currentTarget.style.borderColor = C.brd2; e.currentTarget.style.color = C.txt2; }}

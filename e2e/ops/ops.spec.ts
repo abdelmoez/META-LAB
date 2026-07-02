@@ -34,7 +34,7 @@ test.describe('Ops console — admin', () => {
     }
   });
 
-  test('every one of the 16 nav sections is reachable and renders its content', async ({ page }) => {
+  test('every one of the 19 nav sections is reachable and renders its content', async ({ page }) => {
     const ops = new OpsPage(page);
     await ops.goto();
 
