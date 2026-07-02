@@ -5172,17 +5172,22 @@ function TierUserAssignPanel({ tiers, defaultTierId, onAssigned }) {
   const [loading, setLoading] = useState(false);
   const [searched, setSearched] = useState(false);
   const [sel, setSel] = useState({});   // userId -> { tierId, reason, status }
+  // 67.md — filter loaded results by tier ('' = all, '__default__' = unassigned).
+  const [tierFilter, setTierFilter] = useState('');
 
   const activeTiers = tiers.filter(t => t.isActive !== false);
 
   async function search() {
     setLoading(true); setSearched(true);
     try {
-      const data = await adminApi.users.list({ search: q.trim(), limit: 20 });
+      const data = await adminApi.users.list({ search: q.trim(), limit: 50 });
       setRows(data.users || []);
     } catch { setRows([]); }
     finally { setLoading(false); }
   }
+  const visibleRows = tierFilter
+    ? rows.filter(u => (tierFilter === '__default__' ? !u.tierId : u.tierId === tierFilter))
+    : rows;
 
   async function assign(u) {
     const s = sel[u.id] || {};
@@ -5212,16 +5217,21 @@ function TierUserAssignPanel({ tiers, defaultTierId, onAssigned }) {
         <form onSubmit={e => { e.preventDefault(); search(); }} style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
           <input value={q} onChange={e => setQ(e.target.value)} placeholder="Search users by email or name…"
             style={{ ...inputStyle, flex: 1 }} data-testid="tier-user-search" />
+          <select value={tierFilter} onChange={e => setTierFilter(e.target.value)} style={sel2} data-testid="tier-user-filter" title="Filter results by tier">
+            <option value="">All tiers</option>
+            <option value="__default__">Default (unassigned)</option>
+            {activeTiers.map(t => <option key={t.id} value={t.id}>{t.displayName || t.id}</option>)}
+          </select>
           <button type="submit" style={{ padding: '9px 18px', background: C.acc2, border: 'none', borderRadius: 7, color: C.accText, fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: FONT }}>Search</button>
         </form>
 
         {loading ? (
           <div style={{ padding: 24, textAlign: 'center' }}><Spinner size={18} /></div>
-        ) : searched && rows.length === 0 ? (
+        ) : searched && visibleRows.length === 0 ? (
           <div style={{ fontSize: 12.5, color: C.muted, padding: '8px 0' }}>No users matched.</div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {rows.map(u => {
+            {visibleRows.map(u => {
               const staff = u.role && u.role !== 'user';
               const s = sel[u.id] || {};
               const currentTier = u.tierId || '__default__';
