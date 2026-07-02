@@ -22,6 +22,12 @@ import {
   resolveProjectAccess, getModuleState, patchModuleState, recordWorkflowAudit,
 } from '../services/workflowState.js';
 import { emitToMetaLabProject } from '../realtime/bus.js';
+import {
+  snapshotVersion, listVersions, getVersion, restoreVersion, setFinal,
+  loadLiveStrategy, recentRunCounts,
+} from './searchVersionService.js';
+import { diffStrategies } from '../../src/research-engine/searchBuilder/versionDiff.js';
+import { buildSearchMethodsText } from '../../src/research-engine/searchBuilder/methodsText.js';
 
 const SEARCH_MODULE = 'search';
 
@@ -209,6 +215,178 @@ export async function putSearch(req, res) {
     return res.json({ ok: true, revision: out.ok ? out.result.revision : undefined });
   } catch (err) {
     console.error('[searchEngine] putSearch error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── Search-strategy VERSIONS (69.md §7 — reproducible, restorable snapshots) ───
+// All version endpoints share getSearch/putSearch's access + flag gate. WRITES
+// (snapshot / restore / mark-final) require canEdit — the same right putSearch needs.
+
+export async function postSearchVersion(req, res) {
+  try {
+    const access = await gate(req, res);
+    if (!access) return;
+    if (!access.canEdit) return res.status(403).json({ error: 'Read-only access' });
+
+    const body = req.body || {};
+    const out = await snapshotVersion(prisma, {
+      projectId: req.params.projectId, name: body.name, note: body.note, user: req.user,
+    });
+    if (out.error === 'no_strategy') {
+      return res.status(400).json({ error: 'No saved search strategy to snapshot yet.' });
+    }
+    await recordWorkflowAudit({
+      projectId: req.params.projectId, moduleKey: SEARCH_MODULE, action: 'SEARCH_VERSION_SAVED',
+      revision: out.row.version, user: req.user,
+      details: { versionId: out.row.id, version: out.row.version, name: out.row.name },
+    });
+    return res.status(201).json(out.row);
+  } catch (err) {
+    console.error('[searchEngine] postSearchVersion error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+export async function getSearchVersions(req, res) {
+  try {
+    const access = await gate(req, res);
+    if (!access) return;
+    const out = await listVersions(prisma, req.params.projectId);
+    return res.json(out); // { versions[], currentMatch, currentHash }
+  } catch (err) {
+    console.error('[searchEngine] getSearchVersions error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+export async function getSearchVersion(req, res) {
+  try {
+    const access = await gate(req, res);
+    if (!access) return;
+    const out = await getVersion(prisma, req.params.projectId, req.params.vid);
+    if (!out) return res.status(404).json({ error: 'Version not found' });
+    return res.json(out);
+  } catch (err) {
+    console.error('[searchEngine] getSearchVersion error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+export async function postSearchVersionRestore(req, res) {
+  try {
+    const access = await gate(req, res);
+    if (!access) return;
+    if (!access.canEdit) return res.status(403).json({ error: 'Read-only access' });
+
+    const out = await restoreVersion(prisma, {
+      projectId: req.params.projectId, versionId: req.params.vid, user: req.user,
+    });
+    if (out.error === 'not_found') return res.status(404).json({ error: 'Version not found' });
+    if (out.error) return res.status(500).json({ error: 'Restore failed' });
+
+    await recordWorkflowAudit({
+      projectId: req.params.projectId, moduleKey: SEARCH_MODULE, action: 'SEARCH_VERSION_RESTORED',
+      revision: out.revision, user: req.user,
+      details: { versionId: req.params.vid, version: out.version },
+    });
+    // Same live-sync poke putSearch emits, so collaborators' Search Builders refetch.
+    emitToMetaLabProject(
+      req.params.projectId, access.ownerId,
+      { type: 'search.updated', revision: out.revision },
+      { exclude: req.user.id },
+    );
+    return res.json({ ok: true, revision: out.revision });
+  } catch (err) {
+    console.error('[searchEngine] postSearchVersionRestore error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+export async function postSearchVersionFinal(req, res) {
+  try {
+    const access = await gate(req, res);
+    if (!access) return;
+    if (!access.canEdit) return res.status(403).json({ error: 'Read-only access' });
+
+    const isFinal = req.body ? req.body.isFinal !== false : true; // default true
+    const out = await setFinal(prisma, {
+      projectId: req.params.projectId, versionId: req.params.vid, isFinal,
+    });
+    if (out.error === 'not_found') return res.status(404).json({ error: 'Version not found' });
+
+    await recordWorkflowAudit({
+      projectId: req.params.projectId, moduleKey: SEARCH_MODULE, action: 'SEARCH_VERSION_FINAL_SET',
+      revision: out.row.version, user: req.user,
+      details: { versionId: req.params.vid, version: out.row.version, isFinal: !!isFinal },
+    });
+    return res.json(out.row);
+  } catch (err) {
+    console.error('[searchEngine] postSearchVersionFinal error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+export async function getSearchVersionsCompare(req, res) {
+  try {
+    const access = await gate(req, res);
+    if (!access) return;
+    const aId = req.query && typeof req.query.a === 'string' ? req.query.a : '';
+    const bId = req.query && typeof req.query.b === 'string' ? req.query.b : '';
+    if (!aId || !bId) return res.status(400).json({ error: 'Both a and b version ids are required.' });
+
+    const [a, b] = await Promise.all([
+      getVersion(prisma, req.params.projectId, aId),
+      getVersion(prisma, req.params.projectId, bId),
+    ]);
+    if (!a || !b) return res.status(404).json({ error: 'Version not found' });
+
+    const diff = diffStrategies(a.strategy, b.strategy);
+    return res.json({
+      a: { id: a.id, version: a.version, name: a.name },
+      b: { id: b.id, version: b.version, name: b.name },
+      diff,
+    });
+  } catch (err) {
+    console.error('[searchEngine] getSearchVersionsCompare error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── Methods-paragraph export (69.md §8 — manuscript-ready, never fabricated) ────
+
+export async function getSearchMethodsText(req, res) {
+  try {
+    const access = await gate(req, res);
+    if (!access) return;
+
+    const [strategy, { versions }, runs] = await Promise.all([
+      loadLiveStrategy(prisma, req.params.projectId),
+      listVersions(prisma, req.params.projectId),
+      recentRunCounts(prisma, req.params.projectId),
+    ]);
+
+    // Shape recent runs into the { provider, date, count } the pure fn consumes. A
+    // pecan run aggregates per-source counts in `counts` (JSON); we surface the raw
+    // retrieved total per run keyed by the run name (a run spans multiple providers,
+    // so "provider" here is the run label — honest, not fabricated).
+    const runInputs = (runs || [])
+      .filter((r) => r.state === 'completed' || r.state === 'partial')
+      .map((r) => {
+        let count = null;
+        try {
+          const c = JSON.parse(r.counts || '{}');
+          if (Number.isFinite(Number(c.rawRetrieved))) count = Number(c.rawRetrieved);
+          else if (Number.isFinite(Number(c.imported))) count = Number(c.imported);
+        } catch { count = null; }
+        return { provider: r.name || 'search run', date: r.completedAt || r.createdAt, count };
+      })
+      .slice(0, 8);
+
+    const text = buildSearchMethodsText({ strategy, versions, runs: runInputs });
+    return res.json({ text });
+  } catch (err) {
+    console.error('[searchEngine] getSearchMethodsText error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

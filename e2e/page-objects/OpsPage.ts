@@ -45,7 +45,7 @@ export class OpsPage {
     projects: /^Projects$/i,
     sift: /Screening/i,
     rob: /Risk of Bias/i,
-    searchProviders: /Search Providers/i,
+    searchProviders: /Pecan Search Engine — Providers/i,
     waitlist: /Beta Waitlist/i,
     content: /Website Content Editor/i,
     settings: /App Settings/i,

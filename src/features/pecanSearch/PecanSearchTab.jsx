@@ -451,7 +451,7 @@ function Header() {
         <div aria-hidden="true" style={{ width: 36, height: 36, borderRadius: 10, color: C.acc, background: themeAlpha(C.acc, '16'), border: `1px solid ${themeAlpha(C.acc, '28')}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <Icon name="globe" size={16} />
         </div>
-        <h2 style={{ margin: 0, fontSize: 19, fontWeight: 700, color: C.txt, letterSpacing: -0.4 }}>Search &amp; Discovery</h2>
+        <h2 style={{ margin: 0, fontSize: 19, fontWeight: 700, color: C.txt, letterSpacing: -0.4 }}>Run search — Pecan Search Engine</h2>
       </div>
       <p style={{ margin: 0, paddingLeft: 48, fontSize: 12.5, color: C.muted, lineHeight: 1.7, maxWidth: 760 }}>
         Run your saved search strategy across multiple bibliographic databases, deduplicate the results, and hand the new records straight to screening — with a reproducible, PRISMA-S–ready record of exactly what ran.
@@ -463,12 +463,12 @@ function Header() {
 /* ════════════ (1) STRATEGY CARD ════════════ */
 function StrategyCard({ queryState, queryError, query, qSummary, pico }) {
   return (
-    <Card title="Search strategy" icon="search" desc="The canonical concept query you built in the Search Builder. Edit it there — this is the single source of truth.">
+    <Card title="Search strategy" icon="search" desc="The canonical concept query you built in the Strategy Builder. Edit it there — this is the single source of truth.">
       {queryState === 'loading' && <Skeleton height={56} />}
-      {queryState === 'error' && <Note tone="error" role="alert">Could not load your saved strategy: {queryError}. The Search &amp; Discovery tools need a strategy to run.</Note>}
+      {queryState === 'error' && <Note tone="error" role="alert">Could not load your saved strategy: {queryError}. The Pecan Search Engine needs a strategy to run.</Note>}
       {queryState === 'empty' && (
         <EmptyState icon="search" title="No saved search strategy yet">
-          Build your concept query in the <strong>Search Builder</strong> tab first. Once it is saved, it appears here ready to run across every database.
+          Build your concept query in the <strong>Strategy Builder</strong> step first. Once it is saved, it appears here ready to run across every database.
         </EmptyState>
       )}
       {queryState === 'ready' && query && (
@@ -495,12 +495,12 @@ function StrategyCard({ queryState, queryError, query, qSummary, pico }) {
             ))}
           </ol>
           <div style={{ marginTop: 12 }}>
-            <Note tone="info">Terms inside a concept are <strong>alternatives (OR)</strong> — any one of them matches; concepts are combined with <strong>AND</strong>. To change the strategy, open the <strong>Search Builder</strong> tab.</Note>
+            <Note tone="info">Terms inside a concept are <strong>alternatives (OR)</strong> — any one of them matches; concepts are combined with <strong>AND</strong>. To change the strategy, open the <strong>Strategy Builder</strong> step.</Note>
           </div>
           {literalBooleanTerms(query).length > 0 && (
             <div style={{ marginTop: 8 }}>
               <Note tone="warn">
-                {literalBooleanTerms(query).length === 1 ? 'One term contains' : `${literalBooleanTerms(query).length} terms contain`} a literal <strong>AND/OR/NOT</strong> and {literalBooleanTerms(query).length === 1 ? 'is' : 'are'} searched as text, not as an operator — e.g. “{literalBooleanTerms(query)[0].text}”. In the <strong>Search Builder</strong>, split {literalBooleanTerms(query).length === 1 ? 'it' : 'them'} into separate terms; synonyms in a concept are already combined for you.
+                {literalBooleanTerms(query).length === 1 ? 'One term contains' : `${literalBooleanTerms(query).length} terms contain`} a literal <strong>AND/OR/NOT</strong> and {literalBooleanTerms(query).length === 1 ? 'is' : 'are'} searched as text, not as an operator — e.g. “{literalBooleanTerms(query)[0].text}”. In the <strong>Strategy Builder</strong>, split {literalBooleanTerms(query).length === 1 ? 'it' : 'them'} into separate terms; synonyms in a concept are already combined for you.
               </Note>
             </div>
           )}
@@ -640,7 +640,7 @@ function RunReview({ sourceIds, providers, counts, caps, totalPreview, anyUnknow
   const ready = queryReady && sourceIds.length > 0 && !hasActiveRun;
   return (
     <Card title="Review &amp; run" icon="checkSquare" desc="Confirm what will run. Records land in this project's screening workspace.">
-      {!queryReady && <Note tone="warn">Save a search strategy first (Search Builder).</Note>}
+      {!queryReady && <Note tone="warn">Save a search strategy first (Strategy Builder).</Note>}
       {queryReady && sourceIds.length === 0 && <Note tone="warn">Select at least one available source above.</Note>}
       {hasActiveRun && <div style={{ marginBottom: 12 }}><Note tone="info">A search is already running for this project. Wait for it to finish (or cancel it) before starting another.</Note></div>}
 

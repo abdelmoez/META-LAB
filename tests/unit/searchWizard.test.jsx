@@ -19,9 +19,9 @@ describe('SearchWizard (SSR smoke)', () => {
     expect(html).toContain('Build');
     expect(html).toContain('Run');
     // Stage title + the embedded builder's loading state (effects don't run in SSR)
-    expect(html).toContain('>Search<');
+    expect(html).toContain('>Pecan Search Engine<');
     expect(html).toContain('Loading search');
-    // Default step is Define, so the run engine ("Search & Discovery") is NOT mounted yet
+    // Default step is Define, so the run engine (Pecan Search Engine — Automated Run) is NOT mounted yet
     expect(html).not.toContain('Review &amp; run');
   });
 

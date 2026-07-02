@@ -20,7 +20,7 @@ describe('PecanSearchTab (SSR smoke)', () => {
     const html = renderToStaticMarkup(
       createElement(PecanSearchTab, { projectId: 'proj-1', pico: { P: 'adults' }, readOnly: false }),
     );
-    expect(html).toContain('Search &amp; Discovery');
+    expect(html).toContain('Run search — Pecan Search Engine');
     // initial state shows the strategy + sources scaffolding (no live data yet)
     expect(html).toContain('Search strategy');
     expect(html).toContain('Sources');
@@ -31,7 +31,7 @@ describe('PecanSearchTab (SSR smoke)', () => {
       createElement(PecanSearchTab, { projectId: 'proj-2', pico: {}, readOnly: true }),
     );
     // read-only callers do not get the Review & run card
-    expect(html).toContain('Search &amp; Discovery');
+    expect(html).toContain('Run search — Pecan Search Engine');
     expect(html).not.toContain('Review &amp; run');
   });
 });

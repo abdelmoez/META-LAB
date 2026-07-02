@@ -1393,7 +1393,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
       {!embedded&&(
       <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14}}>
         <div>
-          <div style={{fontWeight:800,fontSize:16,letterSpacing:-.3}}>Search Builder</div>
+          <div style={{fontWeight:800,fontSize:16,letterSpacing:-.3}}>Strategy Builder — Pecan Search Engine</div>
           <div style={{fontSize:11,color:C.muted}}>Build once · render for PubMed, Embase &amp; Cochrane</div>
         </div>
         <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:14}}>

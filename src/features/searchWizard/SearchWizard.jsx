@@ -27,6 +27,10 @@ import { Icon } from '../../frontend/components/icons.jsx';
 import { SearchBuilderTab, searchBuilderApi, loadSearch, saveSearch } from '../searchBuilder/index.js';
 import PecanSearchTab from '../pecanSearch/PecanSearchTab.jsx';
 import { pecanSearchApi } from '../pecanSearch/pecanSearchApi.js';
+// 69.md — reproducibility/quality panels mounted into the wizard (Build + Run steps).
+import SearchQualityPanel from './SearchQualityPanel.jsx';
+import SearchVersionsPanel from './SearchVersionsPanel.jsx';
+import SearchExportPanel from './SearchExportPanel.jsx';
 
 const STEPS = [
   { id: 'define', n: 1, label: 'Define', hint: 'Pick your concepts, synonyms and limits' },
@@ -113,7 +117,7 @@ function BuildEstimates({ projectId, getLive, pecanEnabled }) {
   if (!pecanEnabled) {
     return (
       <div style={{ marginTop: 12, fontSize: 11.5, color: C.muted, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: '10px 12px' }}>
-        Live result estimates and the actual multi-database run need <strong style={{ color: C.txt2 }}>Search &amp; Discovery</strong> (enable it in Ops). You can still build and copy the strategy.
+        Live result estimates and the actual multi-database run need the <strong style={{ color: C.txt2 }}>Pecan Search Engine — Automated Run</strong> (enable it in Ops). You can still build and copy the strategy.
       </div>
     );
   }
@@ -159,6 +163,10 @@ export default function SearchWizard({ projectId, pico, readOnly, pecanEnabled }
   // once the builder reports concepts). It flips rarely, and is NOT a dependency of the
   // memoized builder element, so it never re-renders/remounts the heavy builder.
   const [hasConcepts, setHasConcepts] = useState(false);
+  // 69.md — bump to force the quality/versions panels to re-read the strategy (e.g. after a
+  // version restore) without touching the memoized heavy builder.
+  const [panelNonce, setPanelNonce] = useState(0);
+  const bumpPanels = useCallback(() => setPanelNonce((n) => n + 1), []);
   const onLiveQuery = useCallback((s) => {
     liveRef.current = s || liveRef.current;
     const hc = !!(s && Array.isArray(s.concepts) && s.concepts.length > 0);
@@ -202,7 +210,7 @@ export default function SearchWizard({ projectId, pico, readOnly, pecanEnabled }
           <div aria-hidden="true" style={{ width: 34, height: 34, borderRadius: 10, color: C.acc, background: alpha(C.acc, '16'), border: `1px solid ${alpha(C.acc, '28')}`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
             <Icon name="search" size={16} />
           </div>
-          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: C.txt, letterSpacing: -0.3 }}>Search</h2>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: C.txt, letterSpacing: -0.3 }}>Pecan Search Engine</h2>
         </div>
         <p style={{ margin: 0, paddingLeft: 46, fontSize: 12.5, color: C.muted, lineHeight: 1.6, maxWidth: 760 }}>
           Build one concept-based strategy, then run it across every database and send the de-duplicated results straight to screening — Define, Build, Run.
@@ -216,6 +224,16 @@ export default function SearchWizard({ projectId, pico, readOnly, pecanEnabled }
       <div style={{ display: step === 'run' ? 'none' : 'block' }}>
         {builderEl}
         {step === 'build' && <BuildEstimates projectId={projectId} getLive={getLive} pecanEnabled={pecanEnabled} />}
+        {/* 69.md — Search-quality breakdown + collapsible version history (Build step). Both
+            read the live strategy; the versions panel is soft (quiet when the flag is off).
+            `panelNonce` remounts them when the user (re)enters Build so they re-read the
+            current strategy without the heavy builder ever re-rendering. */}
+        {step === 'build' && (
+          <div style={{ marginTop: 12 }}>
+            <SearchQualityPanel key={`q-${panelNonce}`} projectId={projectId} getLive={getLive} />
+            <SearchVersionsPanel key={`v-${panelNonce}`} projectId={projectId} readOnly={readOnly} onAfterRestore={bumpPanels} />
+          </div>
+        )}
       </div>
 
       {step === 'run' && (
@@ -231,12 +249,18 @@ export default function SearchWizard({ projectId, pico, readOnly, pecanEnabled }
         ) : (
           <div style={{ maxWidth: 760, margin: '8px auto', padding: '40px 24px', textAlign: 'center' }}>
             <div aria-hidden="true" style={{ fontSize: 30, marginBottom: 10, color: C.muted }}>🌐</div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: C.txt, marginBottom: 8 }}>Running the search needs Search &amp; Discovery</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.txt, marginBottom: 8 }}>Running the search needs the Pecan Search Engine — Automated Run</div>
             <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: '16px 18px', fontSize: 13, lineHeight: 1.7, color: C.txt2 }}>
-              Steps 1–2 are ready and your strategy is saved. To execute it across PubMed, Europe PMC, ClinicalTrials.gov and the other open databases — and auto-import the de-duplicated results into screening — an administrator must enable the <strong style={{ color: C.txt }}>Pecan Search Engine</strong> in the Ops console. Until then, open <strong style={{ color: C.txt }}>Build</strong> to copy each database&apos;s strategy and run it externally, then import the results from the Screening stage.
+              Steps 1–2 are ready and your strategy is saved. To execute it across PubMed, Europe PMC, ClinicalTrials.gov and the other open databases — and auto-import the de-duplicated results into screening — an administrator must enable the <strong style={{ color: C.txt }}>Pecan Search Engine — Automated Run</strong> in the Ops console. Until then, open <strong style={{ color: C.txt }}>Build</strong> to copy each database&apos;s strategy and run it externally, then import the results from the Screening stage.
             </div>
           </div>
         )
+      )}
+
+      {/* 69.md — reproducibility export lives in the Run step (works from the saved strategy +
+          versions even when the automated run is off; per-run counts are added when enabled). */}
+      {step === 'run' && (
+        <SearchExportPanel projectId={projectId} getLive={getLive} pecanEnabled={pecanEnabled} readOnly={readOnly} />
       )}
 
       {/* Footer nav */}

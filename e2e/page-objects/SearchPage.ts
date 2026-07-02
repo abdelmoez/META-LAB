@@ -80,7 +80,7 @@ export class SearchPage {
 
   /* ── Search wizard chrome ────────────────────────────────────────────────── */
 
-  get wizardHeading(): Locator { return this.body.getByRole('heading', { name: 'Search', exact: true }); }
+  get wizardHeading(): Locator { return this.body.getByRole('heading', { name: 'Pecan Search Engine', exact: true }); }
 
   /** The 3 step pips — targeted by their unique hint text so they never collide
    *  with the footer Next/Run buttons (which also contain "Build"/"Run"). */
@@ -133,9 +133,9 @@ export class SearchPage {
 
   /* ── Run step (PecanSearchTab) ───────────────────────────────────────────── */
 
-  get pecanHeading(): Locator { return this.body.getByRole('heading', { name: /Search & Discovery/i }); }
+  get pecanHeading(): Locator { return this.body.getByRole('heading', { name: /Run search — Pecan Search Engine/i }); }
   /** The wizard's Run-disabled note — present ONLY when pecanSearch is off. */
-  get pecanRunDisabledNote(): Locator { return this.body.getByText(/enable the Pecan Search Engine in the Ops console/i); }
+  get pecanRunDisabledNote(): Locator { return this.body.getByText(/enable the Pecan Search Engine — Automated Run in the Ops console/i); }
 
   /** Advance Define → Build → Run, waiting for the concept gate to open first. */
   async openRunStep(): Promise<void> {

@@ -1899,3 +1899,22 @@ model FullTextRequest {
 
   @@unique([projectId, recordId])
 }
+
+// 69.md — Pecan Search Engine: named, restorable search-strategy VERSIONS
+// (systematic-review reproducibility: who changed what, when; one version can be
+// marked final for the manuscript). Brand-new table — db-push additive-safe.
+model SearchStrategyVersion {
+  id               String   @id @default(uuid())
+  metaLabProjectId String
+  version          Int
+  name             String   @default("")
+  strategy         String   @default("{}") // JSON: the full saved builder strategy snapshot
+  canonicalText    String   @default("") // human-readable rendered query at save time
+  isFinal          Boolean  @default(false)
+  note             String?
+  createdById      String?
+  createdByName    String?
+  createdAt        DateTime @default(now())
+
+  @@index([metaLabProjectId, version])
+}
