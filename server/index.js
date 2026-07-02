@@ -41,6 +41,9 @@ import searchEngineRouter  from './routes/searchEngine.js';
 import pecanSearchRouter    from './routes/pecanSearch.js';
 import extractionRouter     from './routes/extraction.js';
 import livingReviewRouter   from './routes/livingReview.js';
+import publicSynthesisRouter from './routes/publicSynthesis.js';
+import publicViewRouter      from './routes/publicView.js';
+import fullTextRouter        from './routes/fullText.js';
 import entitlementsRouter   from './routes/entitlements.js';
 import waitlistRouter       from './routes/waitlist.js';
 import { waitlistCount }    from './controllers/waitlistController.js';
@@ -58,12 +61,14 @@ import { startPecanSearchWorker } from './pecanSearch/pecanSearchWorker.js';
 // 62.md — durable, off-event-loop workers for AI scoring + large async exports.
 import { startAiJobsWorker } from './services/screeningAiJobs.js';
 import { startExportWorker } from './services/screeningExportWorker.js';
+// 68.md P9 — durable, off-event-loop worker for automated OA full-text retrieval.
+import { startFullTextWorker } from './fullText/fullTextWorker.js';
 import { applySqlitePragmas } from './db/client.js';
 import { seedAdmins } from './auth/seedAdmins.js';
 import { getVersion } from './version.js';
 import { resolveCorsAllowlist, corsOriginDelegate } from './config/cors.js';
 import { runStartupConfigCheck } from './config/validateConfig.js';
-import { cspMiddleware, cspMode, CSP_REPORT_PATH } from './security/csp.js';
+import { cspMiddleware, cspMode, cspHeaderName, CSP_REPORT_PATH } from './security/csp.js';
 import { cspReportHandler } from './security/cspReport.js';
 import { helmetOptions, apiNoStore, publicVersion } from './security/headers.js';
 import { verifyToken } from './auth/jwt.js';
@@ -113,6 +118,33 @@ app.set('trust proxy', resolveTrustProxy(process.env.TRUST_PROXY));
 // Disabling helmet's CSP here guarantees we never emit two conflicting policies.
 app.use(helmet(helmetOptions()));
 app.use(cspMiddleware());
+// ── Embeddable public-synthesis framing (68.md P8) ─────────────────────────────
+// helmet sets X-Frame-Options: DENY and cspMiddleware sets `frame-ancestors 'none'`
+// on EVERY response, which is correct for the whole app EXCEPT the intentionally
+// embeddable public-synthesis surface: the chrome-less SPA embed route
+// (/embed/synthesis/:token) and its public JSON API (/api/public/*). For ONLY those
+// paths we relax framing to allow any parent (frame-ancestors *) so a researcher can
+// <iframe> their published synthesis into a blog/lab site. Runs AFTER cspMiddleware
+// so it overwrites the header that middleware just set; leaves every other route's
+// strict framing untouched.
+app.use((req, res, next) => {
+  const p = req.path || '';
+  const isEmbed = p.startsWith('/embed/synthesis') || p.startsWith('/api/public/');
+  if (isEmbed) {
+    res.removeHeader('X-Frame-Options'); // drop helmet's DENY for this route only
+    const name = cspHeaderName(cspMode());
+    if (name) {
+      // Rebuild a strict policy but with frame-ancestors * (embeddable). API path
+      // is JSON-only so a minimal policy suffices; the SPA embed keeps default-src
+      // 'self' so its own bundle still loads.
+      const policy = p.startsWith('/api/')
+        ? "default-src 'none'; frame-ancestors *; base-uri 'none'; form-action 'none'"
+        : "default-src 'self'; frame-ancestors *; base-uri 'self'; object-src 'none'; form-action 'self'";
+      res.setHeader(name, policy);
+    }
+  }
+  next();
+});
 // Dynamic, often user-specific /api JSON must not be cached by shared/browser
 // caches (prompt 52). Download/PDF/SSE handlers set their own Cache-Control and
 // override this; static assets keep their long-lived cache headers.
@@ -229,6 +261,18 @@ const waitlistReadLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// ── Rate limiter for PUBLIC synthesis reads (68.md P8) — unauthenticated payload
+// /export /qr reads per IP. A shared page can be embedded and hit by many anonymous
+// visitors, so the budget is generous (120 req / 15 min in prod) but bounded to
+// blunt scraping/DoS. Relaxed in dev/test for the integration suite. ─────────────
+const publicSynthesisLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 120 : 2000,
+  message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // ── Core middleware ────────────────────────────────────────────────────────────
 // CORS is an EXPLICIT, env-driven allowlist (CORS_ORIGIN — one origin or a
 // comma-separated list for apex + www + a deliberate preview origin — unioned
@@ -339,6 +383,14 @@ app.use('/api/invites', inviteLimiter, invitesRouter);
 app.get('/api/waitlist/count', waitlistReadLimiter, waitlistCount);
 app.use('/api/waitlist', waitlistLimiter, waitlistRouter);
 
+// ── Public Synthesis public reads (68.md P8) — NO requireAuth (a shared token is
+// the only credential), a dedicated per-IP limiter, and the embed-framing exemption
+// applied above. Serves ONLY the frozen, pre-sanitized published payload; unknown or
+// unpublished tokens return a clean 404. MUST be mounted BEFORE the bare '/api'
+// importExport router below, which applies requireAuth at router level and would
+// otherwise 401 every unauthenticated public read (same reason as invites/waitlist).
+app.use('/api/public', publicSynthesisLimiter, publicViewRouter);
+
 app.use('/api',                      importExportRouter);  // /api/import/... and /api/export/...
 
 // ── Admin routes (requireAuth + requireAdmin applied inside admin router) ──────
@@ -405,6 +457,18 @@ app.use('/api/extraction', requireAuth, extractionRouter);
 // the `livingReview` flag (default OFF → 404) and project access. Scheduled
 // re-runs go through the existing Pecan Search engine + durable worker.
 app.use('/api/living', requireAuth, livingReviewRouter);
+
+// ── Public Synthesis authoring (68.md P8) — requireAuth at the mount; each handler
+// gates on the `publicSynthesis` flag (default OFF → 404) + project access. This is
+// the AUTHENTICATED side (publish/settings/preview/dashboard). The public read side
+// is mounted separately below WITHOUT auth.
+app.use('/api/synthesis', requireAuth, publicSynthesisRouter);
+
+// ── Automated OA full-text retrieval (68.md P9) — requireAuth at the mount; each
+// handler gates on the `fullTextRetrieval` flag (default OFF → 404) and screening
+// project access. Only legal open-access PDFs (Unpaywall / Europe PMC / OpenAlex)
+// are fetched; the durable worker runs off the request thread.
+app.use('/api/full-text', requireAuth, fullTextRouter);
 
 // ── Product-tier entitlements (67.md) — the signed-in user's resolved plan.
 // Own mount (never under the rate-limited /api/auth); enforcement itself lives
@@ -480,6 +544,10 @@ const server = app.listen(PORT, () => {
       // (large exports stream to a file instead of buffering in one request → no 504).
       startAiJobsWorker().catch(err => console.error('[ai-worker] start failed:', err.message));
       startExportWorker().catch(err => console.error('[export-worker] start failed:', err.message));
+      // 68.md P9 — start the durable full-text retrieval worker. Re-queues any job
+      // a crash left mid-flight (under the retry cap), then drains off the request
+      // thread. No-op unless the fullTextRetrieval flag + admin setting allow it.
+      startFullTextWorker().catch(err => console.error('[fulltext-worker] start failed:', err.message));
       // 66.md P6 — living-review scheduler: launches due saved searches through the
       // Pecan worker and reconciles finished update runs (notifications, AI
       // pre-scoring, automatic snapshots). No-ops unless the livingReview flag +

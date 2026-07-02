@@ -122,6 +122,14 @@ const DEFAULTS = {
     // re-runs additionally require pecanSearch (+ searchEngine); manual snapshots
     // and the dashboard work without them.
     livingReview: false,
+    // 68.md (P8) — public shareable synthesis pages + embeddable dashboards.
+    // Default OFF. Even when ON, every project is PRIVATE until its owner/leader
+    // explicitly publishes; public pages serve only a sanitized snapshot DTO.
+    publicSynthesis: false,
+    // 68.md (P9) — automated open-access full-text retrieval (Unpaywall /
+    // OpenAlex / Europe PMC / ClinicalTrials.gov) + bulk PDF upload matching.
+    // Default OFF. Only legal OA PDFs are fetched; no paywall bypassing.
+    fullTextRetrieval: false,
   }),
   // 66.md P5 — global (admin) AI-extraction policy. requireHumanValidation is a
   // hard product rule (suggestions can never auto-commit) surfaced here read-only.

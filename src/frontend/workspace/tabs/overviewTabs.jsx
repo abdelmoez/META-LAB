@@ -3,7 +3,7 @@
    AuditPanel, ProjectTitle, ProjectHeaderBar, ScreeningWorkspaceFrame,
    EmbeddedScreening, OverviewTab, ControlTab. No logic changes — only the
    imports below were added so the moved code resolves identically. */
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, lazy, Suspense } from "react";
 import { screeningApi } from "../../screening/api-client/screeningApi.js";
 import SiftProject from "../../screening/pages/SiftProject.jsx";
 import { useRealtime } from "../../hooks/useRealtime.js";
@@ -21,6 +21,11 @@ import { runMeta } from "../../../research-engine/statistics/monolithStats.js";
 import { C, btnS, inp, tagS } from "../ui/styles.js";
 import { SwitchToggle, SectionHeader, InfoBox, ProgressBar } from "../ui/primitives.jsx";
 import { TABS, readinessCheck, stepStatus, auditProject, projectPerms, linkedSiftId, CTRL_STATUS_OPTIONS } from "../projectHelpers.js";
+/* 68.md (P8) — the public-synthesis publish workflow, mounted at the END of Project
+   Control. Lazy so the chunk (and its lazily-pulled public page) never enters the
+   main bundle; flag-gated INTERNALLY so it renders null when `publicSynthesis` is
+   off, keeping this mount a minimal, flag-free append. */
+const PublishPanel = lazy(() => import("../../../features/publicSynthesis/PublishPanel.jsx"));
 
 /* fmtDate — verbatim copy of the monolith module-local helper (the monolith
    keeps its own copy for its other consumers). */
@@ -814,6 +819,12 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
         </div>
       </div>
     )}
+
+    {/* 68.md (P8) — Public synthesis page. Renders null when the `publicSynthesis`
+        flag is off or the viewer can't manage the project (quiet note otherwise). */}
+    <Suspense fallback={null}>
+      <PublishPanel projectId={project.id}/>
+    </Suspense>
   </div>);
 }
 

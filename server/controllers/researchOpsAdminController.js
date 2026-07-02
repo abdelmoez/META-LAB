@@ -8,6 +8,7 @@ import { prisma } from '../db/client.js';
 import { logAdminAction } from '../utils/audit.js';
 import { EXTRACTION_AI_DEFAULTS, getExtractionAiSettings } from '../extraction/access.js';
 import { LIVING_DEFAULTS, LIVING_SETTINGS_KEY, getLivingSettings } from '../living/livingService.js';
+import { FT_DEFAULTS, FT_SETTINGS_KEY, getFullTextSettings, coerceFullTextSettings } from '../fullText/fullTextService.js';
 
 const EXTRACTION_SETTINGS_KEY = 'extractionAiSettings';
 const ALLOWED_XAI_PROVIDERS = new Set(['heuristic', 'external']);
@@ -88,5 +89,23 @@ export async function updateLivingReviewAdminSettings(req, res) {
   } catch (e) { console.error('updateLivingReviewAdminSettings', e); res.status(500).json({ error: 'Internal server error' }); }
 }
 
+/** GET /api/admin/full-text/settings */
+export async function getFullTextAdminSettings(req, res) {
+  try {
+    res.json(await getFullTextSettings());
+  } catch (e) { console.error('getFullTextAdminSettings', e); res.status(500).json({ error: 'Internal server error' }); }
+}
+
+/** PUT /api/admin/full-text/settings */
+export async function updateFullTextAdminSettings(req, res) {
+  try {
+    const current = await getFullTextSettings();
+    const next = coerceFullTextSettings(req.body || {}, current);
+    await saveSetting(FT_SETTINGS_KEY, next, req.user?.id);
+    await logAdminAction(req, 'UPDATE_FULL_TEXT', 'SiteSetting', FT_SETTINGS_KEY, { next });
+    res.json(next);
+  } catch (e) { console.error('updateFullTextAdminSettings', e); res.status(500).json({ error: 'Internal server error' }); }
+}
+
 // Re-exported so tests can assert the defaults shape without importing services.
-export { EXTRACTION_AI_DEFAULTS, LIVING_DEFAULTS };
+export { EXTRACTION_AI_DEFAULTS, LIVING_DEFAULTS, FT_DEFAULTS };

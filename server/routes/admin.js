@@ -80,6 +80,8 @@ import {
   updateExtractionAiAdminSettings,
   getLivingReviewAdminSettings,
   updateLivingReviewAdminSettings,
+  getFullTextAdminSettings,
+  updateFullTextAdminSettings,
 } from '../controllers/researchOpsAdminController.js';
 
 import {
@@ -280,6 +282,10 @@ router.get('/extraction-ai/settings', requireAdmin, getExtractionAiAdminSettings
 router.put('/extraction-ai/settings', requireAdmin, updateExtractionAiAdminSettings);
 router.get('/living-review/settings', requireAdmin, getLivingReviewAdminSettings);
 router.put('/living-review/settings', requireAdmin, updateLivingReviewAdminSettings);
+
+// 68.md P9 — automated OA full-text retrieval global policy (admin only)
+router.get('/full-text/settings', requireAdmin, getFullTextAdminSettings);
+router.put('/full-text/settings', requireAdmin, updateFullTextAdminSettings);
 
 // 67.md — product tiers / entitlements (admin only; tiers are separate from roles)
 router.get('/tiers',            requireAdmin, getTiersAdmin);

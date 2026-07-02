@@ -16,7 +16,7 @@
  *
  * Props: pid, project, access ({ isLeader, canScreen, ..., blindMode }), refreshProject
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import {
   Loading, ErrorBanner, Button, Badge, DecisionChip, Card, EmptyState, Modal,
@@ -24,6 +24,9 @@ import {
 import { renderHighlighted } from '../ui/highlightRender.jsx';
 import PdfViewer from '../components/PdfViewer.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
+
+// 68.md P9 — full-text retrieval panel, lazy so the flag-off case pulls no chunk.
+const FullTextPanel = lazy(() => import('../../../features/fullText/FullTextPanel.jsx'));
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 const ABSTRACT_CLAMP = 420; // chars before "show more"
@@ -271,6 +274,11 @@ export default function SecondReviewTab({ pid, project, access = {}, refreshProj
           </div>
         </div>
       </div>
+
+      {/* 68.md P9 — full-text retrieval (flag off → renders null, no chunk cost) */}
+      <Suspense fallback={null}>
+        <FullTextPanel pid={pid} />
+      </Suspense>
 
       {/* Sub-tabs (Not Sent / Sent) + the Continue-to-Data-Extraction CTA */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 18, flexWrap: 'wrap', alignItems: 'flex-start' }}>

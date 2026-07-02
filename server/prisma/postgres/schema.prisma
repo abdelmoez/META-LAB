@@ -1771,3 +1771,125 @@ model ProductTier {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 68.md P8 — public shareable synthesis (flag `publicSynthesis`). Projects are
+// PRIVATE by default; a row here exists only after an explicit publish action.
+// Public pages serve ONLY the sanitized snapshot payload stored on a version —
+// never live private project data. All brand-new tables (db-push additive-safe).
+// ═══════════════════════════════════════════════════════════════════════════
+
+model PublicSynthesis {
+  id               String    @id @default(uuid())
+  metaLabProjectId String
+  shareToken       String // 256-bit hex, regenerable; the ONLY public lookup key
+  enabled          Boolean   @default(false) // false = unpublished (clean 404)
+  embedEnabled     Boolean   @default(false)
+  settings         String    @default("{}") // JSON section toggles + public title/summary + branding/download opts
+  currentVersionId String?
+  publishedById    String?
+  publishedByName  String?
+  publishedAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([metaLabProjectId])
+  @@unique([shareToken])
+}
+
+// Immutable published versions (reproducibility): each publish snapshots the
+// full SANITIZED public payload + provenance. Public reads always serve the
+// current version's payload — never recompute from private data.
+model PublicSynthesisVersion {
+  id                String   @id @default(uuid())
+  publicSynthesisId String
+  metaLabProjectId  String
+  version           Int
+  payload           String   @default("{}") // sanitized public DTO (JSON)
+  appVersion        String?
+  createdById       String?
+  createdByName     String?
+  createdAt         DateTime @default(now())
+
+  @@index([publicSynthesisId, version])
+  @@index([metaLabProjectId])
+}
+
+// Dashboard composer layouts (internal editing; the public page renders the
+// layout captured inside the published payload).
+model DashboardLayout {
+  id               String   @id @default(uuid())
+  metaLabProjectId String
+  name             String   @default("Main synthesis dashboard")
+  cards            String   @default("[]") // JSON [{id,type,title,dataSource,settings,order}]
+  isDefault        Boolean  @default(true)
+  createdById      String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([metaLabProjectId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 68.md P9 — automated full-text retrieval (flag `fullTextRetrieval`).
+// Fetched PDFs land in the EXISTING ScreenPdfAttachment store; these tables
+// hold the durable job + per-record provider provenance + request workflow.
+// ═══════════════════════════════════════════════════════════════════════════
+
+model FullTextRetrievalJob {
+  id            String    @id @default(uuid())
+  projectId     String // ScreenProject id
+  scope         String    @default("included") // included | selected | missing
+  recordIds     String    @default("[]") // JSON explicit selection (scope 'selected')
+  status        String    @default("queued") // queued | running | completed | failed | cancelled
+  stage         String    @default("queued")
+  attempts      Int       @default(0)
+  processed     Int       @default(0)
+  total         Int       @default(0)
+  counts        String    @default("{}") // JSON {found, fetched, alreadyHad, noOa, failed, linkOut}
+  error         String?
+  createdById   String?
+  createdByName String?
+  heartbeatAt   DateTime?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+
+  @@index([status, createdAt])
+  @@index([projectId, createdAt])
+}
+
+// One row per (record, provider) lookup result — the retrieval audit trail.
+model FullTextCandidate {
+  id         String   @id @default(uuid())
+  projectId  String
+  recordId   String
+  provider   String // unpaywall | openalex | europepmc | clinicaltrials
+  status     String   @default("found") // found | no_oa | not_found | failed
+  oaStatus   String? // gold | green | hybrid | bronze | closed …
+  license    String?
+  pdfUrl     String?
+  landingUrl String?
+  version    String? // publishedVersion | acceptedVersion | registry …
+  payload    String   @default("{}") // JSON provider extras (ids, host type…)
+  error      String?
+  fetchedAt  DateTime @default(now())
+
+  @@index([projectId, recordId])
+  @@index([recordId, provider])
+}
+
+// Link-out / request workflow for records with no OA copy (P9.7).
+model FullTextRequest {
+  id            String   @id @default(uuid())
+  projectId     String
+  recordId      String
+  status        String   @default("requested") // requested | received | none
+  note          String?
+  updatedById   String?
+  updatedByName String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([projectId, recordId])
+}

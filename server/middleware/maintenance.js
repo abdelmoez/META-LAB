@@ -50,7 +50,13 @@ function isExempt(path) {
     path === '/api/settings/theme' ||
     path.startsWith('/api/auth') ||
     path.startsWith('/api/admin') ||
-    path.startsWith('/api/events')
+    path.startsWith('/api/events') ||
+    // 68.md P8 — a published public synthesis is an EXTERNAL, shareable artifact
+    // (embedded on third-party sites, opened by anonymous readers). Its availability
+    // must not hinge on this app's internal maintenance state, so the public read
+    // side stays reachable during maintenance. The authenticated authoring side
+    // (/api/synthesis) is intentionally NOT exempt — it 503s like the rest of the app.
+    path.startsWith('/api/public/')
   );
 }
 

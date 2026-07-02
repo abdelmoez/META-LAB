@@ -32,6 +32,9 @@ const Onboarding    = lazy(() => import('./frontend/pages/Onboarding.jsx'));
 const RobPage       = lazy(() => import('./frontend/rob/RobPage.jsx'));
 const Terms         = lazy(() => import('./frontend/pages/Terms.jsx'));
 const NotFound      = lazy(() => import('./frontend/pages/NotFound.jsx'));
+// 68.md (P8) — the PUBLIC synthesis page. Unwrapped (no auth): serves both the
+// shareable public page and the chrome-less embed. Same component, `embed` prop.
+const PublicSynthesisPage = lazy(() => import('./features/publicSynthesis/PublicSynthesisPage.jsx'));
 // prompt48 — Beta Waitlist preview route (noindex). The live homepage swap is
 // handled by BetaWaitlistGate on `/`; this route renders the page regardless of
 // the flag so admins can preview it safely.
@@ -234,6 +237,14 @@ export default function App() {
         {/* META·LAB RoB — Risk-of-Bias workspace (rob.md; gated on rob_engine_v2) */}
         <Route path="/rob"             element={<ProtectedRoute><OnboardingGate><RobPage /></OnboardingGate></ProtectedRoute>} />
         <Route path="/rob/:projectId"  element={<ProtectedRoute><OnboardingGate><RobPage /></OnboardingGate></ProtectedRoute>} />
+
+        {/* 68.md (P8) — PUBLIC synthesis pages. Deliberately unwrapped (like
+            /invite/:token): a published synthesis must be readable by anyone with
+            the link, signed-in or not. The embed variant renders chrome-less. The
+            server serves a frozen, pre-sanitized payload; an unknown/unpublished
+            token yields a clean in-page "not available" state. */}
+        <Route path="/public/synthesis/:token" element={<PublicSynthesisPage />} />
+        <Route path="/embed/synthesis/:token"  element={<PublicSynthesisPage embed />} />
 
         {/* 65.md UX-7 — unknown routes get a real 404 page instead of a silent
             bounce to the marketing landing (stale/mistyped in-app links were
