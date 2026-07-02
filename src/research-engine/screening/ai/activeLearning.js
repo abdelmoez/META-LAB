@@ -20,6 +20,7 @@ import { buildVectorizer, transform, cosine, dot } from './vectorizer.js';
 import { cosineDense } from './embeddings.js';
 import { trainLogReg, predictProba } from './logreg.js';
 import { coldStartScore, picoConcepts } from './coldStart.js';
+import { buildCitationFeatures } from './citationSignals.js';
 import { hybridScore } from './hybrid.js';
 import { uncertainty, predictionLabel, scoreBand } from './ranking.js';
 import { buildExplanation } from './explain.js';
@@ -122,6 +123,9 @@ export function summarizeLabels(labelByRecordId, cfg) {
  * @param {string[]} [args.studyTypeFilter]
  * @param {object} [args.config] — partial AI config override
  * @param {Record<string,number[]>} [args.denseEmbeddings] — optional recordId → dense vector
+ * @param {Record<string,object>} [args.citationByRecordId] — optional recordId → citation
+ *   metadata (see citationSignals.js). Features are derived HERE from the run's own
+ *   labels, so cross-validation folds recompute them without label leakage.
  * @param {Record<string,Array<{reviewerId,decision,rating,notes}>>} [args.decisionsByRecordId]
  *   — per-record reviewer decisions WITH quality rating + note (prompt49 item 1).
  *   Used ONLY to derive separate reviewer-quality / note signals; the relevance
@@ -213,6 +217,14 @@ export function trainAndScore(args = {}) {
     }
   });
 
+  // Citation-graph features (66.md P4.3) — derived from THIS call's labels so the
+  // CV path (which strips held-out labels) stays leakage-free. Absent metadata →
+  // `available:false` → the hybrid fusion renormalizes the signal away.
+  const citation = (args.citationByRecordId && typeof args.citationByRecordId === 'object')
+    ? buildCitationFeatures({ records, labelByRecordId, citationByRecordId: args.citationByRecordId, config: cfg.citation })
+    : null;
+  const citationActive = !!(citation && citation.available);
+
   const labelSummary = summarizeLabels(labelByRecordId, cfg);
   const canTrain = samples.length >= cfg.activeLearning.minLabelsToTrain
     && labelSummary.positives >= cfg.activeLearning.minPositivesToTrain
@@ -273,12 +285,14 @@ export function trainAndScore(args = {}) {
       else semExc = excludedCentroid ? cosineWithNorm(vector, excludedCentroid, excNorm) : null;
     }
 
+    const cit = citationActive ? citation.byRecordId[r.id] : null;
     const hybrid = hybridScore({
       classifier: { available: !!model, proba: proba ?? 0 },
       coldStart: cs.score,
       semanticIncluded: semInc,
       semanticExcluded: semExc,
       keyword: null, // criteria/keyword signal already folded into coldStart (avoid double counting)
+      citation: cit && cit.signal != null ? cit.signal : null,
     }, cfg.hybrid);
 
     const missingAbstract = !hasUsableText(r);
@@ -329,6 +343,7 @@ export function trainAndScore(args = {}) {
       coldStart: cs, hybrid, model, terms: vec.terms, vector,
       neighbors: topNeighbors, excludedNeighbors: topExcludedNeighbors, missingAbstract,
       reviewerSignals: reviewer.hasSignals ? reviewer : null,
+      citation: cit,
     });
 
     return {
@@ -349,6 +364,8 @@ export function trainAndScore(args = {}) {
       subScores: hybrid.subScores,
       picoMean,
       semanticIncluded: semInc,
+      // Citation-graph signal + counts (66.md P4.3); null when unavailable.
+      citation: cit && cit.signal != null ? { signal: cit.signal, features: cit.features } : null,
       // The four separate concepts the engine now exposes:
       //   relevance (score) · methodologicalQuality · reviewerConfidence · prioritization
       methodologicalQuality: reviewer.methodologicalQuality,
@@ -375,6 +392,10 @@ export function trainAndScore(args = {}) {
       nRecords: records.length,
       nFeatures: vec.terms.length,
       vocabSize: vec.terms.length,
+      // Citation feature availability (66.md P4.3) — honest coverage reporting.
+      citation: citation
+        ? { available: citationActive, coverage: citation.coverage, nWithMetadata: citation.nWithMetadata }
+        : { available: false, coverage: 0, nWithMetadata: 0 },
       labelCounts: labelSummary,
       minLabelsToTrain: cfg.activeLearning.minLabelsToTrain,
       modelInfo: model ? {

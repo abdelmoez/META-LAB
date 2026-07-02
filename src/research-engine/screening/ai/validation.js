@@ -155,6 +155,69 @@ export function stageMetrics(scores, labels, fractions = [0.05, 0.1, 0.2, 0.4, 0
 }
 
 /**
+ * recallTargetedThreshold — choose the score threshold for a recall-first
+ * operating point (66.md P4.5). Screening is recall-critical: instead of a
+ * balanced 0.5 cut, pick the HIGHEST threshold whose recall on the supplied
+ * (score,label) pairs is ≥ targetRecall. Called with HELD-OUT (cross-validated)
+ * predictions so the threshold generalizes; the caller labels the provenance.
+ *
+ * Ties are handled pessimistically (same convention as rankedLabels): a
+ * threshold admits ALL records with score ≥ t, so within a tied score block the
+ * worst case is assumed.
+ *
+ * @param {number[]} scores
+ * @param {number[]} labels — 1 = include
+ * @param {{targetRecall?:number, minLabels?:number, minPositives?:number}} [opts]
+ * @returns {{ threshold:number, targetRecall:number, achievedRecall:number,
+ *            specificity:number|null, precision:number|null,
+ *            screenedFraction:number, workSavedFraction:number,
+ *            n:number, nPos:number, preliminary:boolean, reliable:boolean }|null}
+ */
+export function recallTargetedThreshold(scores, labels, opts = {}) {
+  const targetRecall = opts.targetRecall ?? 0.95;
+  const n = scores.length;
+  let nPos = 0;
+  for (const l of labels) if (l) nPos++;
+  if (n === 0 || nPos === 0) return null;
+
+  // Candidate thresholds = distinct scores, descending. Lowering the threshold
+  // monotonically raises recall, so scan until recall first reaches the target.
+  const idx = scores.map((s, i) => i).sort((a, b) => scores[b] - scores[a] || a - b);
+  const needed = Math.ceil(targetRecall * nPos);
+  let threshold = 0;
+  let i = 0;
+  let found = 0;
+  while (i < n) {
+    const t = scores[idx[i]];
+    // Consume the ENTIRE tied block at score t (threshold `>= t` admits all of it).
+    let j = i;
+    while (j < n && scores[idx[j]] === t) { found += labels[idx[j]] ? 1 : 0; j++; }
+    if (found >= needed) { threshold = t; break; }
+    i = j;
+  }
+  if (found < needed) threshold = Math.min(...scores); // degenerate: everything in
+
+  const confusion = confusionAt(scores, labels, threshold);
+  const m = metricsFromConfusion(confusion);
+  const screened = confusion.tp + confusion.fp;
+  const minLabels = opts.minLabels ?? 30;
+  const minPositives = opts.minPositives ?? 10;
+  const preliminary = n < minLabels || nPos < minPositives;
+  return {
+    threshold,
+    targetRecall,
+    achievedRecall: m.sensitivity ?? 0,
+    specificity: m.specificity,
+    precision: m.precision,
+    screenedFraction: n ? screened / n : 0,
+    workSavedFraction: n ? (confusion.tn + confusion.fn) / n - (1 - targetRecall) : 0,
+    n, nPos,
+    preliminary,
+    reliable: !preliminary,
+  };
+}
+
+/**
  * smallSampleWarning — honest caveat when the validation set is too small for
  * the metrics to be trustworthy.
  * @returns {{warn:boolean, reason:string}}
@@ -234,11 +297,20 @@ export function computeValidation(scores, labels, opts = {}) {
     sensitivity: bootstrapCI(scores, labels, (s, l) => metricsFromConfusion(confusionAt(s, l, threshold)).sensitivity, { iters: opts.bootstrapIters ?? 300, seed: opts.seed }),
   };
 
+  // Recall-targeted operating point (66.md P4.5) — the recall-first default cut,
+  // reported alongside the balanced-threshold confusion for transparency.
+  const operatingPoint = recallTargetedThreshold(scores, labels, {
+    targetRecall: opts.targetRecall ?? 0.95,
+    minLabels: opts.opMinLabels,
+    minPositives: opts.opMinPositives,
+  });
+
   return {
     n, nPos, nNeg, threshold,
     auc,
     confusion,
     ...metrics,
+    operatingPoint,
     recallAt10: recallAtK(scores, labels, 10),
     recallAt25: recallAtK(scores, labels, 25),
     recallAt50: recallAtK(scores, labels, 50),

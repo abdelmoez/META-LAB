@@ -17,8 +17,10 @@ import {
   aiFlagEnabled, getGlobalAiSettings, getProjectAiSettings,
   getScoresMap, getRecordExplanation, getStatus, getValidation, recordFeedback,
   rollbackToRun, listModelVersions,
+  createValidationSample, getValidationSampleStatus,
 } from '../services/screeningAiService.js';
-import { getJobStatus, enqueueManualRun } from '../services/screeningAiJobs.js';
+import { getJobStatus, enqueueManualRun, enqueueCitationEnrichment } from '../services/screeningAiJobs.js';
+import { getCitationStatus } from '../services/citationEnrichmentService.js';
 
 /** Shared gate: flag → access. Returns access or null (response already sent). */
 async function gate(req, res) {
@@ -198,6 +200,69 @@ export async function postAiRollback(req, res) {
   } catch (e) {
     console.error('postAiRollback', e);
     res.status(e.status || 500).json({ error: e.message || 'Rollback failed' });
+  }
+}
+
+/** GET /projects/:pid/ai/citation-status — enrichment coverage (66.md P4.3). */
+export async function getAiCitationStatus(req, res) {
+  const access = await gate(req, res); if (!access) return;
+  try {
+    res.json(await getCitationStatus(req.params.pid));
+  } catch (e) {
+    console.error('getAiCitationStatus', e);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /projects/:pid/ai/citation-enrichment — start a citation-metadata fetch
+ * job (202). Leader-gated like scoring runs; only public identifiers (DOI/PMID)
+ * are sent to the provider.
+ */
+export async function postAiCitationEnrichment(req, res) {
+  const access = await gate(req, res); if (!access) return;
+  try {
+    const global = await getGlobalAiSettings();
+    if (!global.enabled) return res.status(403).json({ error: 'AI screening is disabled by the administrator' });
+    if (!canRunAi(access, global)) return res.status(403).json({ error: 'You do not have permission to run citation enrichment' });
+    const job = await enqueueCitationEnrichment(req.params.pid, { stage: stageOf(req), actor: req.user });
+    res.status(202).json({ ok: true, jobId: job.id, status: job.status });
+  } catch (e) {
+    console.error('postAiCitationEnrichment', e);
+    res.status(e.status || 500).json({ error: e.message || 'Failed to start citation enrichment' });
+  }
+}
+
+/** GET /projects/:pid/ai/validation-sample — latest seed sample + progress (P4.6). */
+export async function getAiValidationSample(req, res) {
+  const access = await gate(req, res); if (!access) return;
+  try {
+    res.json(await getValidationSampleStatus(req.params.pid, stageOf(req)));
+  } catch (e) {
+    console.error('getAiValidationSample', e);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /projects/:pid/ai/validation-sample — generate a seeded random validation
+ * sample (leader/settings only; sampling method + seed are persisted).
+ */
+export async function postAiValidationSample(req, res) {
+  const access = await gate(req, res); if (!access) return;
+  try {
+    if (!access.isLeader && !access.canManageSettings) return res.status(403).json({ error: 'Creating validation samples is leader-only' });
+    const out = await createValidationSample({
+      projectId: req.params.pid,
+      stage: stageOf(req),
+      size: req.body?.size,
+      seed: req.body?.seed,
+      actor: req.user,
+    });
+    res.json(out);
+  } catch (e) {
+    console.error('postAiValidationSample', e);
+    res.status(e.status || 500).json({ error: e.message || 'Failed to create validation sample' });
   }
 }
 

@@ -1,0 +1,6 @@
+openalex_id,title,abstract,label_included,keywords,year
+W1,Statins reduce cardiovascular events,A randomized trial of statin therapy in adults.,1,cardiovascular; statin,2011
+W2,Cooking with cast iron pans,A lifestyle article unrelated to medicine.,0,cooking,2015
+W3,Beta blockers after myocardial infarction,Cohort study of beta blocker use post MI.,1,beta blocker; MI,2009
+W4,Travel guide to the Alps,Tourism piece about mountain hiking.,0,travel,2018
+W5,Aspirin for primary prevention,Meta-analysis of aspirin in primary prevention.,1,aspirin; prevention,2013

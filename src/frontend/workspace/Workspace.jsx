@@ -154,6 +154,8 @@ import { ScreeningModule, MetaSiftPrismaSync, PRISMATab, PrismaFigureExport } fr
    below. */
 import { RoBTab, LegacyRoBTab } from "./tabs/robTabs.jsx";
 import { NmaTab } from "./tabs/nmaTab.jsx";
+// 66.md P6 — Living Review dashboard (flag `livingReview`; lives in its own feature dir).
+import LivingReviewTab from "../../features/livingReview/LivingReviewTab.jsx";
 
 /* ════════════ TABS: ANALYSIS / FOREST / SENSITIVITY / SUBGROUP (extracted prompt46 Phase 6g — verbatim) ════════════
    AnalysisTab, DataBehindAnalysis, ResearchExport, ResultsWriteup, ForestTab,
@@ -1560,6 +1562,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           {tab==="sensitivity"&&<SensitivityTab project={project}/>}
           {tab==="subgroup"&&<SubgroupTab project={project}/>}
           {tab==="nma"&&<NmaTab project={project} updateProject={updateProject} activeId={activeId}/>}
+          {tab==="living"&&<LivingReviewTab projectId={activeId}/>}
           {tab==="grade"&&<GRADETab project={project} upd={upd}/>}
           {tab==="manuscript"&&<ManuscriptTab project={project} upd={upd}/>}
           {tab==="report"&&<ReportTab project={project} upd={upd}/>}

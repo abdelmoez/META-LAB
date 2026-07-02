@@ -51,10 +51,13 @@ export function termContributions(model, terms, vector, k = 6) {
  * @param {Array<{recordId,title,similarity}>} [args.neighbors] — similar INCLUDED records
  * @param {Array<{recordId,title,similarity}>} [args.excludedNeighbors] — similar EXCLUDED records (65.md SCR-6)
  * @param {boolean} [args.missingAbstract]
+ * @param {{signal:number|null, features:object, reasons:string[]}|null} [args.citation]
+ *   — citation-graph signal for this record (66.md P4.3); reasons are grounded in
+ *   actual citation links, never invented.
  * @returns {object}
  */
 export function buildExplanation(args = {}) {
-  const { coldStart, hybrid, model = null, terms = [], vector = null, neighbors = [], excludedNeighbors = [], missingAbstract = false, reviewerSignals = null } = args;
+  const { coldStart, hybrid, model = null, terms = [], vector = null, neighbors = [], excludedNeighbors = [], missingAbstract = false, reviewerSignals = null, citation = null } = args;
   const sig = (coldStart && coldStart.signals) || {};
   const supervised = hybrid && hybrid.mode === 'supervised';
 
@@ -105,6 +108,16 @@ export function buildExplanation(args = {}) {
     };
   }
 
+  // Citation-graph reasons (66.md P4.3) — each grounded in a real citation link.
+  let citationBlock = null;
+  if (citation && citation.signal != null) {
+    for (const text of (citation.reasons || [])) {
+      const towardExclude = /excluded than included/.test(text);
+      (towardExclude ? reasonsExclude : reasonsInclude).push({ kind: 'citation', text });
+    }
+    citationBlock = { signal: citation.signal, features: citation.features || null, reasons: citation.reasons || [] };
+  }
+
   // Similar included records — and (65.md SCR-6) the symmetric excluded side, so the
   // panel can show the model's nearest counter-examples too.
   const similar = (neighbors || []).filter(n => n && n.similarity > 0).slice(0, 5);
@@ -135,6 +148,7 @@ export function buildExplanation(args = {}) {
     similar,
     similarExcluded,
     reviewer,
+    citation: citationBlock,
     // 65.md SCR-6 — score provenance: the displayed score is the LIVE model score
     // (fit on current decisions, in-sample); validation-grade held-out scores live in
     // the export's cross-validated columns. The UI renders this honestly.

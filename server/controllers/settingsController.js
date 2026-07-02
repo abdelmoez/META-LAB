@@ -111,6 +111,34 @@ const DEFAULTS = {
     // project's live data — no manuscript content leaves the browser and no heavy
     // export work runs on the server. Surfaces in Ops › Flags automatically.
     manuscriptEditor: false,
+    // 66.md (P5) — structured data extraction: element forms, dual extraction with
+    // adjudication, provenance-first values, AI extraction ASSIST (suggestions only —
+    // human review is mandatory, nothing auto-commits). Default OFF: the Extraction
+    // tab keeps its classic table until an admin enables this.
+    extractionAssist: false,
+    // 66.md (P6) — living reviews: scheduled saved searches re-run through Pecan
+    // Search, "new since last run" screening queue with AI pre-scoring, versioned
+    // review snapshots and cautious evidence-shift alerts. Default OFF. Automated
+    // re-runs additionally require pecanSearch (+ searchEngine); manual snapshots
+    // and the dashboard work without them.
+    livingReview: false,
+  }),
+  // 66.md P5 — global (admin) AI-extraction policy. requireHumanValidation is a
+  // hard product rule (suggestions can never auto-commit) surfaced here read-only.
+  extractionAiSettings: JSON.stringify({
+    enabled: true,                 // master switch WITHIN the extractionAssist flag
+    provider: 'heuristic',         // heuristic (self-hosted, deterministic) | external (env-configured LLM)
+    requireHumanValidation: true,  // LOCKED true — AI suggestions never auto-commit
+    dualExtractionDefault: false,  // new studies default to single extraction
+    tableParsingEnabled: true,
+  }),
+  // 66.md P6 — global (admin) living-review policy.
+  livingReviewSettings: JSON.stringify({
+    schedulerEnabled: true,        // master switch WITHIN the livingReview flag
+    allowedCadences: ['manual', 'daily', 'weekly', 'monthly'],
+    maxSavedSearchesPerProject: 5,
+    snapshotRetention: 100,        // max snapshots kept per project (oldest pruned)
+    evidenceShift: { relEffectChange: 0.25, i2Change: 20, minK: 2 },
   }),
   // screeningEngin.md — global (admin) AI screening policy. Surfaced in Ops ›
   // AI Screening. Additive SiteSetting; merged with AI_GLOBAL_DEFAULTS server-side.

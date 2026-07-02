@@ -145,6 +145,11 @@ r.get('/projects/:pid/ai/job-status',                   AI.getAiJobStatus);
 r.post('/projects/:pid/ai/run',                         AI.postAiRun);
 r.get('/projects/:pid/ai/scores',                       AI.getAiScores);
 r.get('/projects/:pid/ai/validation',                   AI.getAiValidation);
+// 66.md P4 — citation enrichment (P4.3) + representative validation sample (P4.6)
+r.get('/projects/:pid/ai/citation-status',              AI.getAiCitationStatus);
+r.post('/projects/:pid/ai/citation-enrichment',         AI.postAiCitationEnrichment);
+r.get('/projects/:pid/ai/validation-sample',            AI.getAiValidationSample);
+r.post('/projects/:pid/ai/validation-sample',           AI.postAiValidationSample);
 r.get('/projects/:pid/ai/versions',                     AI.getAiModelVersions);
 r.post('/projects/:pid/ai/rollback',                    AI.postAiRollback);
 r.put('/projects/:pid/ai/settings',                     AI.putAiSettings);

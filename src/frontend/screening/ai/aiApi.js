@@ -39,4 +39,10 @@ export const aiApi = {
   updateSettings: (pid, body)      => req('PUT',  `/projects/${pid}/ai/settings`, body),
   explanation: (pid, rid, stage)   => req('GET',  `/projects/${pid}/records/${rid}/ai/explanation${qs(stage)}`),
   feedback:    (pid, rid, body)    => req('POST', `/projects/${pid}/records/${rid}/ai/feedback`, body),
+  // 66.md P4.3 — citation-graph enrichment coverage + a leader-triggered fetch job.
+  citationStatus:        (pid, stage)          => req('GET',  `/projects/${pid}/ai/citation-status${qs(stage)}`),
+  startCitationEnrichment: (pid, stage)        => req('POST', `/projects/${pid}/ai/citation-enrichment`, { stage }),
+  // 66.md P4.6 — representative (seeded random) validation sample + its labelling progress.
+  validationSample:      (pid, stage)          => req('GET',  `/projects/${pid}/ai/validation-sample${qs(stage)}`),
+  createValidationSample: (pid, body)          => req('POST', `/projects/${pid}/ai/validation-sample`, body),
 };

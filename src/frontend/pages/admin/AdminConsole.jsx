@@ -4850,6 +4850,8 @@ const FLAG_META = [
   { key: 'betaWaitlist',         label: 'Beta Waitlist Landing Page', desc: 'When ON, unauthenticated visitors to the homepage ( / ) see the Beta Waitlist sign-up page instead of the standard landing page. Signed-in users and the login/register pages are unaffected. The existing landing page is preserved and returns when this is OFF. Manage applicants in the Beta Waitlist tab. Preview at /beta-waitlist.' },
   { key: 'networkMetaAnalysis',  label: 'Network Meta-Analysis', desc: 'Enable the Network Meta-Analysis workspace tab: compare 3+ treatments via direct + indirect evidence (league table, P-score ranking, network geometry, node-split + global inconsistency, contribution matrix). Deterministic frequentist engine, validated against the pairwise engine; runs server-side via /api/nma. Off by default. Bayesian NMA is a planned follow-on.' },
   { key: 'manuscriptEditor',     label: 'Manuscript Editor (P3)', desc: 'Enable the full manuscript authoring workspace in the project Manuscript tab: structured IMRAD draft generation, data-linked tables (study characteristics / summary-of-findings / PRISMA / risk-of-bias / search), citation engine (Vancouver/JAMA + BibTeX/RIS) with inline citations, inline PRISMA 2020 diagram, one-click Word (.docx) export, PRISMA & PRISMA-S checklists, and a reproducibility .zip. All artifacts are generated in the browser from live project data. Off keeps the legacy textarea drafter. Off by default.' },
+  { key: 'extractionAssist',     label: 'Structured Extraction + AI Assist (P5)', desc: 'Enable the structured data-extraction workspace: data-element forms (templates for RCT / diagnostic / cohort / 2×2 / continuous / NMA arm-level), dual independent extraction with side-by-side adjudication, provenance-first values, table parsing, AI extraction suggestions (heuristic self-hosted by default; optional server-configured external LLM), and consensus → meta-analysis handoff. AI suggestions NEVER auto-commit — human review is mandatory. Off keeps the classic extraction table. Off by default. Configure the AI provider in Extraction AI.' },
+  { key: 'livingReview',         label: 'Living Reviews (P6)',   requires: 'pecanSearch', desc: 'Enable the Living Review module: saved searches with exact query snapshots, scheduled re-runs through the Pecan Search engine (requires Pecan Search + Search Builder flags), a "new since last update" screening queue pre-scored by the project AI model, versioned review snapshots, and cautious evidence-shift alerts. Manual snapshots work without Pecan Search; automated re-runs need it. Off by default. Configure the scheduler in Living Reviews.' },
 ];
 
 function FlagsSection() {
@@ -4894,6 +4896,135 @@ function FlagsSection() {
         })}
       </SectionCard>
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}><SaveButton onClick={save} status={status} testId="flags-save" /></div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   SECTION: EXTRACTION AI (66.md P5) — global policy for the structured
+   data-extraction assistant. The master `extractionAssist` flag lives in Flags;
+   this configures the engine that flag turns on. requireHumanValidation is a
+   HARD product rule (suggestions never auto-commit) and renders read-only.
+   ════════════════════════════════════════════════════════════════════════ */
+
+function ExtractionAiSection() {
+  const [s, setS] = useState(null);
+  const [status, setStatus] = useState('idle');
+
+  useEffect(() => { adminApi.extractionAi.get().then(setS).catch(() => setS({})); }, []);
+
+  async function save() {
+    setStatus('saving');
+    try { const next = await adminApi.extractionAi.save(s); setS(next); setStatus('saved'); setTimeout(() => setStatus('idle'), 3000); }
+    catch { setStatus('error'); setTimeout(() => setStatus('idle'), 3000); }
+  }
+
+  if (!s) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={20} /></div>;
+
+  const Row = ({ label, desc, children }) => (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', borderBottom: `1px solid ${C.brd}`, gap: 20 }}>
+      <div>
+        <div style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>{label}</div>
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 3, maxWidth: 560 }}>{desc}</div>
+      </div>
+      {children}
+    </div>
+  );
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 20px' }}>Extraction AI</h2>
+      <SectionCard>
+        <Row label="AI extraction assist" desc="Master switch within the extractionAssist flag. Off hides the AI suggestion panel everywhere.">
+          <Toggle checked={!!s.enabled} onChange={v => setS(x => ({ ...x, enabled: v }))} testId="xai-enabled" />
+        </Row>
+        <Row label="Suggestion provider" desc="heuristic = deterministic self-hosted pattern extractor (no data leaves the server). external = server-configured LLM endpoint (EXTRACTION_LLM_* env) — article text is sent to that endpoint.">
+          <select value={s.provider || 'heuristic'} onChange={e => setS(x => ({ ...x, provider: e.target.value }))}
+            style={{ background: C.surf2, color: C.txt, border: `1px solid ${C.brd2}`, borderRadius: 7, padding: '7px 28px 7px 10px', fontSize: 12.5 }}>
+            <option value="heuristic">heuristic (self-hosted)</option>
+            <option value="external">external (env-configured LLM)</option>
+          </select>
+        </Row>
+        <Row label="Human validation required" desc="Hard product rule: AI suggestions can never auto-commit into extraction values or consensus. Not configurable.">
+          <span style={{ fontSize: 12, fontWeight: 700, color: C.grn }}>Always on</span>
+        </Row>
+        <Row label="Dual extraction by default" desc="New studies start with two independent extractors expected before adjudication.">
+          <Toggle checked={!!s.dualExtractionDefault} onChange={v => setS(x => ({ ...x, dualExtractionDefault: v }))} testId="xai-dual" />
+        </Row>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', gap: 20 }}>
+          <div>
+            <div style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>Table parsing</div>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 3, maxWidth: 560 }}>Allow pasting/parsing CSV, TSV and HTML tables into the extraction workspace.</div>
+          </div>
+          <Toggle checked={s.tableParsingEnabled !== false} onChange={v => setS(x => ({ ...x, tableParsingEnabled: v }))} testId="xai-tables" />
+        </div>
+      </SectionCard>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}><SaveButton onClick={save} status={status} testId="xai-save" /></div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+   SECTION: LIVING REVIEWS (66.md P6) — global scheduler policy + evidence-shift
+   thresholds. The master `livingReview` flag lives in Flags.
+   ════════════════════════════════════════════════════════════════════════ */
+
+function LivingReviewsSection() {
+  const [s, setS] = useState(null);
+  const [status, setStatus] = useState('idle');
+
+  useEffect(() => { adminApi.livingReview.get().then(setS).catch(() => setS({})); }, []);
+
+  async function save() {
+    setStatus('saving');
+    try { const next = await adminApi.livingReview.save(s); setS(next); setStatus('saved'); setTimeout(() => setStatus('idle'), 3000); }
+    catch { setStatus('error'); setTimeout(() => setStatus('idle'), 3000); }
+  }
+
+  if (!s) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={20} /></div>;
+
+  const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
+  const shift = s.evidenceShift || {};
+  const inputStyle = { background: C.surf2, color: C.txt, border: `1px solid ${C.brd2}`, borderRadius: 7, padding: '7px 10px', fontSize: 12.5, width: 90 };
+  const Row = ({ label, desc, children }) => (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', borderBottom: `1px solid ${C.brd}`, gap: 20 }}>
+      <div>
+        <div style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>{label}</div>
+        <div style={{ fontSize: 11, color: C.muted, marginTop: 3, maxWidth: 560 }}>{desc}</div>
+      </div>
+      {children}
+    </div>
+  );
+
+  return (
+    <div>
+      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 20px' }}>Living Reviews</h2>
+      <SectionCard>
+        <Row label="Scheduler" desc="Master switch for scheduled saved-search re-runs (within the livingReview flag). Off leaves manual 'Run now' and snapshots available.">
+          <Toggle checked={s.schedulerEnabled !== false} onChange={v => setS(x => ({ ...x, schedulerEnabled: v }))} testId="lr-scheduler" />
+        </Row>
+        <Row label="Max saved searches per project" desc="Quota guard for scheduled searches per project.">
+          <input type="number" min={1} max={50} value={num(s.maxSavedSearchesPerProject, 5)}
+            onChange={e => setS(x => ({ ...x, maxSavedSearchesPerProject: num(e.target.value, 5) }))} style={inputStyle} data-testid="lr-max-searches" />
+        </Row>
+        <Row label="Snapshot retention" desc="Maximum snapshots kept per project; the oldest are pruned past this.">
+          <input type="number" min={5} max={1000} value={num(s.snapshotRetention, 100)}
+            onChange={e => setS(x => ({ ...x, snapshotRetention: num(e.target.value, 100) }))} style={inputStyle} data-testid="lr-retention" />
+        </Row>
+        <Row label="Evidence shift — relative effect change" desc="Flag a 'notable' shift when a pooled estimate moves by at least this relative fraction (0.25 = 25%). Direction/significance changes are always flagged as major.">
+          <input type="number" step="0.05" min={0.05} max={2} value={num(shift.relEffectChange, 0.25)}
+            onChange={e => setS(x => ({ ...x, evidenceShift: { ...shift, relEffectChange: num(e.target.value, 0.25) } }))} style={inputStyle} data-testid="lr-shift-rel" />
+        </Row>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', gap: 20 }}>
+          <div>
+            <div style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>Evidence shift — I² change (points)</div>
+            <div style={{ fontSize: 11, color: C.muted, marginTop: 3, maxWidth: 560 }}>Flag an informational shift when heterogeneity (I²) changes by at least this many percentage points.</div>
+          </div>
+          <input type="number" step="5" min={5} max={80} value={num(shift.i2Change, 20)}
+            onChange={e => setS(x => ({ ...x, evidenceShift: { ...shift, i2Change: num(e.target.value, 20) } }))} style={inputStyle} data-testid="lr-shift-i2" />
+        </div>
+      </SectionCard>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 4 }}><SaveButton onClick={save} status={status} testId="lr-save" /></div>
     </div>
   );
 }
@@ -8055,6 +8186,8 @@ const NAV_SECTIONS = [
   { id: 'settings',   icon: 'settings',  label: 'Settings'      },
   { id: 'style',      icon: 'eye',       label: 'Appearance'    },
   { id: 'flags',      icon: 'sliders',   label: 'Flags'         },
+  { id: 'extractionAi',   icon: 'clipboard', label: 'Extraction AI'  },
+  { id: 'livingReviews',  icon: 'activity',  label: 'Living Reviews' },
   { id: 'messages',   icon: 'mail',      label: 'Messages'      },
   { id: 'security',   icon: 'shield',    label: 'Security'      },
   { id: 'health',     icon: 'activity',  label: 'Health'        },
@@ -8131,6 +8264,8 @@ export default function AdminConsole() {
     settings:   <SettingsSection />,
     style:      <StyleSection />,
     flags:      <FlagsSection />,
+    extractionAi:  <ExtractionAiSection />,
+    livingReviews: <LivingReviewsSection />,
     messages:   <MessagesSection onUnreadChange={setUnread} />,
     security:   <SecuritySection />,
     health:     <HealthSection />,

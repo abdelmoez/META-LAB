@@ -209,6 +209,16 @@ export const TABS=[
   // engine (flag `pecanSearch`) is the wizard's Run step. Old deep links to the removed
   // `discovery` stage redirect to `search` (navConfig.activeProjectStage), so nothing 404s.
   {id:"search",     icon:"search",      label:"Search",               phase:"Search",  num:3},
+  // 66.md P6 — Living Review dashboard (flag `livingReview`). It re-runs the SAVED
+  // search over time, so it belongs conceptually to the Search phase. It is kept as a
+  // phase:null / group:"living" reference-style destination on purpose: adding it as a
+  // Search-phase workflow STEP would change the workflow-step count and the Search
+  // submenu, breaking the committed nav/stepper contracts (stitch55/56/57,
+  // stitchNavRedesign) which assert Search has exactly one stage. It resolves at
+  // ?tab=living via the Stitch/legacy SCOPE + tab branch; STAGE_LABEL reads its label
+  // from here. Promoting it to a visible Search-phase rail step is a follow-up that
+  // must update those test counts together.
+  {id:"living",     icon:"refresh",     label:"Living Review",        phase:null,  group:"living"},
   // prompt18 — Screening is now ONE in-project stage that embeds the full
   // META·SIFT engine (import → duplicates → title/abstract → conflicts → full
   // text). The old "Screening & PRISMA" tab is demoted to the PRISMA flow only.

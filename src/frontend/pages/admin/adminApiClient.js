@@ -127,6 +127,16 @@ export const adminApi = {
     save:         (body)     => req(`${BASE}/feature-flags`, { method: 'PUT', ...json(body) }),
   },
 
+  // 66.md P5/P6 — global extraction-AI + living-review policy (admin-only).
+  extractionAi: {
+    get:          ()         => req(`${BASE}/extraction-ai/settings`),
+    save:         (body)     => req(`${BASE}/extraction-ai/settings`, { method: 'PUT', ...json(body) }),
+  },
+  livingReview: {
+    get:          ()         => req(`${BASE}/living-review/settings`),
+    save:         (body)     => req(`${BASE}/living-review/settings`, { method: 'PUT', ...json(body) }),
+  },
+
   screening: {
     getSettings:  ()         => req(`${BASE}/screening/settings`),
     saveSettings: (body)     => req(`${BASE}/screening/settings`, { method: 'PUT', ...json(body) }),

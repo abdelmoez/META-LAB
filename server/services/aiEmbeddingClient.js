@@ -10,9 +10,63 @@
  * falls back to the in-process lexical (TF-IDF) semantic signal.
  */
 
+import crypto from 'node:crypto';
+
 const CHUNK = 96;                  // texts per request (provider limits)
 const cache = new Map();           // `${model}\n${text}` → embedding (bounded LRU, in-memory)
 const CACHE_MAX = 20000;
+
+// ── Persistent second-level cache (66.md P4.1) ────────────────────────────────
+// EmbeddingCacheEntry rows keyed (textHash, model) survive restarts so re-runs
+// never re-embed unchanged records. Strictly best-effort: any DB error degrades
+// to the HTTP path. The prisma client is imported lazily so this module stays
+// usable in tests without a database.
+let _prismaPromise = null;
+function getPrisma() {
+  if (!_prismaPromise) {
+    _prismaPromise = import('../db/client.js').then(m => m.prisma).catch(() => null);
+  }
+  return _prismaPromise;
+}
+function textHashOf(text) {
+  return crypto.createHash('sha1').update(String(text)).digest('hex');
+}
+async function dbCacheGet(model, texts) {
+  try {
+    const prisma = await getPrisma();
+    if (!prisma) return new Map();
+    const hashes = texts.map(textHashOf);
+    const rows = await prisma.embeddingCacheEntry.findMany({
+      where: { model, textHash: { in: hashes } },
+      select: { textHash: true, vector: true },
+    });
+    const byHash = new Map(rows.map(r => [r.textHash, r.vector]));
+    const out = new Map(); // text → vector
+    texts.forEach((t, i) => {
+      const raw = byHash.get(hashes[i]);
+      if (!raw) return;
+      try {
+        const v = JSON.parse(raw);
+        if (Array.isArray(v) && v.length && v.every(Number.isFinite)) out.set(t, v);
+      } catch { /* ignore corrupt row */ }
+    });
+    return out;
+  } catch { return new Map(); }
+}
+function dbCachePut(model, entries /* Array<[text, vector]> */) {
+  // Fire-and-forget write-behind; never blocks or throws into the embed path.
+  getPrisma().then(async (prisma) => {
+    if (!prisma) return;
+    for (const [text, vec] of entries) {
+      const textHash = textHashOf(text);
+      await prisma.embeddingCacheEntry.upsert({
+        where: { textHash_model: { textHash, model } },
+        create: { textHash, model, dims: vec.length, vector: JSON.stringify(vec) },
+        update: {},
+      }).catch(() => {});
+    }
+  }).catch(() => {});
+}
 
 // Keyed on the FULL text (not a 32-bit hash) so two distinct texts can never
 // collide and return each other's embedding. Map preserves insertion order →
@@ -81,15 +135,36 @@ export function buildEmbedFn(env = process.env, deps = {}) {
     throw lastErr;
   }
 
+  // Persistent cache is ON by default in production; OFF under test (same
+  // convention as aiCompute's inline mode) unless a test opts in explicitly.
+  const underTest = process.env.NODE_ENV === 'test' || !!process.env.VITEST;
+  const usePersistentCache = deps.persistentCache === true || (deps.persistentCache !== false && !underTest);
   return async function embed(texts) {
     const out = new Array(texts.length);
-    const miss = [];
-    const missIdx = [];
+    let miss = [];
+    let missIdx = [];
     texts.forEach((t, i) => {
       const key = cacheKey(model, t);
       if (cache.has(key)) out[i] = cache.get(key);
       else { miss.push(t); missIdx.push(i); }
     });
+    // Second-level persistent cache (survives restarts; best-effort).
+    if (usePersistentCache && miss.length) {
+      const dbHits = await dbCacheGet(model, miss);
+      if (dbHits.size) {
+        const stillMiss = [];
+        const stillIdx = [];
+        miss.forEach((t, j) => {
+          const v = dbHits.get(t);
+          if (v) {
+            out[missIdx[j]] = v;
+            cacheSet(cacheKey(model, t), v);
+          } else { stillMiss.push(t); stillIdx.push(missIdx[j]); }
+        });
+        miss = stillMiss; missIdx = stillIdx;
+      }
+    }
+    const fresh = [];
     for (let c = 0; c < miss.length; c += CHUNK) {
       const slice = miss.slice(c, c + CHUNK);
       const vecs = await embedChunk(slice);
@@ -97,8 +172,10 @@ export function buildEmbedFn(env = process.env, deps = {}) {
         const i = missIdx[c + j];
         out[i] = v;
         cacheSet(cacheKey(model, texts[i]), v);
+        fresh.push([texts[i], v]);
       });
     }
+    if (usePersistentCache && fresh.length) dbCachePut(model, fresh);
     return out;
   };
 }

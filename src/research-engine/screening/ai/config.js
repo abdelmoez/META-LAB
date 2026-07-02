@@ -53,8 +53,32 @@ export const DEFAULT_AI_CONFIG = Object.freeze({
       coldStart: 0.20,       // PICO/criteria/keyword prior
       semanticIncluded: 0.15,// similarity to already-included records
       keyword: 0.10,         // raw inclusion/exclusion keyword signal
+      // Citation-graph signal (66.md P4.3). ONLY active when citation metadata has
+      // actually been fetched for the project (renormalization drops it otherwise),
+      // so runs without enrichment score byte-identically to the pre-citation engine.
+      citation: 0.10,
     },
     semanticEnabled: true,   // use embedding/lexical neighbour similarity if available
+  },
+
+  // ── Citation-graph features (66.md P4.3) ────────────────────────────
+  // Direct citation links + bibliographic coupling against the labelled sets.
+  // Additional signal only — never required for screening; APIs failing simply
+  // leaves the signal absent.
+  citation: {
+    enabled: true,
+    minLabeledWithMetadata: 3, // need ≥ this many labelled records with metadata
+    saturationRefs: 8,         // reference-overlap saturation scale
+  },
+
+  // ── Recall-targeted operating point (66.md P4.5) ─────────────────────
+  // Screening is a recall-first task: the default decision threshold is chosen on
+  // held-out (cross-validated) predictions to achieve the target recall, NOT a
+  // balanced 0.5. Below minLabels the estimate is flagged preliminary.
+  operatingPoint: {
+    targetRecall: 0.95,
+    minLabels: 30,           // below this the threshold is 'preliminary'
+    minPositives: 10,
   },
 
   // ── Probability calibration (se2.md §8) ─────────────────────────────

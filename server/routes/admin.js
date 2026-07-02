@@ -76,6 +76,13 @@ import {
 } from '../controllers/screeningAiAdminController.js';
 
 import {
+  getExtractionAiAdminSettings,
+  updateExtractionAiAdminSettings,
+  getLivingReviewAdminSettings,
+  updateLivingReviewAdminSettings,
+} from '../controllers/researchOpsAdminController.js';
+
+import {
   adminListQuestions,
   adminCreateQuestion,
   adminUpdateQuestion,
@@ -260,6 +267,12 @@ router.patch('/screening/projects/:id/restore', requireAdmin, restoreScreeningPr
 router.get('/ai-screening/settings', requireAdmin, getAiScreeningSettings);
 router.put('/ai-screening/settings', requireAdmin, updateAiScreeningSettings);
 router.get('/ai-screening/runs',     requireAdmin, getAiRunLogs);
+
+// 66.md P5/P6 — extraction-AI + living-review global policy (admin only)
+router.get('/extraction-ai/settings', requireAdmin, getExtractionAiAdminSettings);
+router.put('/extraction-ai/settings', requireAdmin, updateExtractionAiAdminSettings);
+router.get('/living-review/settings', requireAdmin, getLivingReviewAdminSettings);
+router.put('/living-review/settings', requireAdmin, updateLivingReviewAdminSettings);
 
 // ── Onboarding questions (prompt32 Task 7) — admin only ─────────────────────────
 router.get('/onboarding-settings',              requireAdmin, getOnboardingSettings);

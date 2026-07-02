@@ -29,7 +29,9 @@ export {
 export {
   rocAuc, confusionAt, metricsFromConfusion, recallAtK,
   wssAtRecall, stageMetrics, smallSampleWarning, computeValidation, bootstrapCI,
+  recallTargetedThreshold,
 } from './validation.js';
+export { buildCitationFeatures } from './citationSignals.js';
 export {
   fitCalibrator, applyCalibrator, fitPlatt, fitIsotonic, fit1DLogistic,
   calibrationMetrics, heldOutCalibrationMetrics, brierScore, logLoss, expectedCalibrationError,

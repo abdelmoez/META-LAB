@@ -12,6 +12,14 @@ import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { QUEUE_MODES } from '../../../research-engine/screening/ai/ranking.js';
 
 const pct = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
+
+// 66.md P4.3 — citation reasons are duplicated into reasonsInclude/Exclude (kind:'citation')
+// AND the dedicated citation block; when the block is present we render them once as a
+// chips row, so strip the kind:'citation' entries out of the plain reason lists.
+const dropCitation = (reasons, citation) =>
+  (citation && (citation.reasons || []).length && Array.isArray(reasons))
+    ? reasons.filter(r => r.kind !== 'citation')
+    : reasons;
 const BAND_COLOR = {
   very_high: C.grn, high: C.grn, medium: C.yel, low: C.red, very_low: C.red, unscored: C.muted,
 };
@@ -210,12 +218,19 @@ export function AiScoreCard({ ai, record, decided }) {
           {e && (
             <>
               {e.uncertaintyNote && <div style={{ fontSize: 11.5, color: C.txt2, fontStyle: 'italic', lineHeight: 1.5 }}>{e.uncertaintyNote}</div>}
-              <ReasonList title="Reasons to include" color={C.grn} reasons={e.reasonsInclude} />
-              <ReasonList title="Reasons to exclude" color={C.red} reasons={e.reasonsExclude} />
+              {/* 66.md P4.3 — citation reasons already flow into reasonsInclude/Exclude
+                  (kind:'citation'); pull them out into a dedicated compact chips row so
+                  they aren't shown twice, and strip them from the plain reason lists. */}
+              <ReasonList title="Reasons to include" color={C.grn} reasons={dropCitation(e.reasonsInclude, e.citation)} />
+              <ReasonList title="Reasons to exclude" color={C.red} reasons={dropCitation(e.reasonsExclude, e.citation)} />
+              <CitationSignals citation={e.citation} />
+              <SubScoreBreakdown subScores={e.subScores} />
               <PicoMatch breakdown={e.picoBreakdown} />
               <SimilarList title="Similar included records" color={C.teal} items={e.similar} />
               {/* 65.md SCR-6 — symmetric counter-examples from the excluded side. */}
               <SimilarList title="Similar excluded records" color={C.red} items={e.similarExcluded} />
+              {/* 66.md P4.10 — which signals actually fed this project's scores. */}
+              <ProvenanceChips ai={ai} />
               {/* 65.md SCR-6 — score provenance: honest about in-sample vs held-out. */}
               <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, borderTop: `1px solid ${C.brd}`, paddingTop: 8 }}>
                 This is the live model score, computed on the project's current decisions (in-sample).
@@ -252,6 +267,47 @@ function SimilarList({ title, color, items }) {
   );
 }
 
+/** Compact "Citation signals" chips row (66.md P4.3). Each reason is grounded in a
+ *  real citation link; skipped entirely when there are none. */
+function CitationSignals({ citation }) {
+  const reasons = (citation && citation.reasons) || [];
+  if (!reasons.length) return null;
+  return (
+    <div>
+      <div style={{ fontSize: 10.5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>Citation signals</div>
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+        {reasons.slice(0, 4).map((r, i) => (
+          <Chip key={i} color={/excluded than included/.test(r) ? C.red : C.teal} title={r}>{r}</Chip>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** Named sub-score contributions (label + value) for the "why" breakdown. Only the
+ *  signals that actually contributed to this record are shown; `citation` included
+ *  when non-null (66.md P4.3). */
+const SUBSCORE_LABELS = { classifier: 'Trained model', coldStart: 'Criteria/PICO', semantic: 'Semantic', keyword: 'Keywords', citation: 'Citation graph' };
+function SubScoreBreakdown({ subScores }) {
+  if (!subScores || typeof subScores !== 'object') return null;
+  const rows = Object.keys(SUBSCORE_LABELS)
+    .filter(k => typeof subScores[k] === 'number' && Number.isFinite(subScores[k]))
+    .map(k => [SUBSCORE_LABELS[k], subScores[k]]);
+  if (!rows.length) return null;
+  return (
+    <div>
+      <div style={{ fontSize: 10.5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 4 }}>Signal breakdown</div>
+      {rows.map(([label, v]) => (
+        <div key={label} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '2px 0' }}>
+          <span style={{ fontSize: 11.5, color: C.txt2, width: 96, flexShrink: 0 }}>{label}</span>
+          <span style={{ flex: 1 }}><Bar value={v} color={C.acc} height={5} /></span>
+          <span style={{ fontFamily: MONO, fontSize: 10.5, color: C.muted, width: 34, textAlign: 'right' }}>{pct(v)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ReasonList({ title, color, reasons }) {
   if (!reasons || !reasons.length) return null;
   return (
@@ -278,6 +334,26 @@ function PicoMatch({ breakdown }) {
           </Chip>
         ))}
       </div>
+    </div>
+  );
+}
+
+/** Compact provenance chips (66.md P4.10) — which signals fed this project's scores.
+ *  Subtle, one muted row; each part is honest about whether it was actually applied. */
+function ProvenanceChips({ ai }) {
+  const s = ai?.status;
+  const emb = s?.embedding || {};
+  const semantic = emb.provider && emb.provider !== 'lexical' && (emb.configured || emb.endpointConfigured);
+  const citationAvail = !!s?.latestRun?.metrics?.citation?.available;
+  const calMethod = s?.latestRun?.metrics?.calibration?.method;
+  const calibrated = calMethod && calMethod !== 'none';
+  const parts = ['lexical'];
+  if (semantic) parts.push('+semantic (embeddings)');
+  if (citationAvail) parts.push('+citation');
+  if (calibrated) parts.push('calibrated');
+  return (
+    <div style={{ fontSize: 10, color: C.muted, fontFamily: MONO, letterSpacing: '.02em' }}>
+      Signals: {parts.join(' ')}
     </div>
   );
 }
@@ -503,9 +579,181 @@ function ModelHistory({ ai }) {
   );
 }
 
+/** Embedding provider + citation-enrichment status (66.md P4.3/P4.10). Sits inside
+ *  the model-status area; both signals degrade to nothing when unavailable. */
+function ModelSourcesBlock({ ai, embedding, citation, canRun }) {
+  const [busy, setBusy] = useState(false);
+  const [queued, setQueued] = useState(false);
+  const [err, setErr] = useState('');
+  const emb = embedding || {};
+  // hosted provider needs a configured endpoint to actually run; otherwise it silently
+  // falls back to the in-process lexical signal — say so honestly.
+  const hosted = emb.provider === 'hosted';
+  const hostedOk = hosted && !!(emb.configured || emb.endpointConfigured);
+  const providerLabel =
+    emb.provider === 'hosted' ? 'Hosted embeddings' :
+    emb.provider === 'hashing' ? 'Hashing embeddings' : 'Lexical (in-process)';
+
+  const c = citation || null;
+  const enriching = busy || ai.citationEnriching;
+  const doEnrich = async () => {
+    if (enriching) return;
+    setBusy(true); setErr('');
+    try { await ai.startCitationEnrichment(); setQueued(true); }
+    catch (e) { setErr(e.message || 'Could not start enrichment'); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 8 }}>
+      <SubHeader>Signal sources</SubHeader>
+      <KV label="Embeddings" value={providerLabel} title="Semantic similarity signal source. Lexical needs no external service; hosted uses a configured embedding endpoint." />
+      {hosted && (
+        <div style={{ fontSize: 10.5, color: hostedOk ? C.muted : C.gold, marginTop: 1, lineHeight: 1.4 }}>
+          {emb.model ? <span style={{ fontFamily: MONO }}>{emb.model}</span> : null}{emb.model ? ' · ' : ''}
+          {hostedOk ? 'configured' : 'not configured — using lexical fallback'}
+        </div>
+      )}
+      {c && (c.totalRecords || 0) > 0 && (
+        <>
+          <KV
+            label="Citation data"
+            value={`${c.enriched ?? c.withIdentifier ?? 0} of ${c.totalRecords} enriched (${pct(c.coverage)})`}
+            color={(c.coverage || 0) > 0 ? C.teal : C.muted}
+            title="Records with fetched citation-graph metadata (from public DOI/PMID lookups). Feeds the citation signal when a run scores."
+          />
+          {(c.pending || 0) > 0 && <div style={{ fontSize: 10.5, color: C.muted, marginTop: 1 }}>{c.pending} pending · {c.notFound || 0} not found</div>}
+        </>
+      )}
+      {c && (c.totalRecords || 0) > 0 && canRun && (
+        <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <MiniBtn color={C.teal} disabled={enriching} onClick={doEnrich}
+            title={c.mailtoConfigured === false ? 'Runs a public citation lookup (no contact email configured — some providers may throttle).' : 'Fetch citation-graph metadata for records with a DOI/PMID (only public identifiers are sent).'}>
+            {enriching ? 'Enrichment queued…' : 'Fetch citation data'}
+          </MiniBtn>
+          {queued && !enriching && <span style={{ fontSize: 11, color: C.teal }}>Queued — scores refresh when it finishes.</span>}
+        </div>
+      )}
+      {err && <div style={{ fontSize: 11, color: C.red, marginTop: 4 }}>{err}</div>}
+    </div>
+  );
+}
+
+/** Recall-targeted operating point (66.md P4.5). Screening is recall-first: when the
+ *  held-out operating point is reliable, predictions use this threshold. */
+function OperatingPointBlock({ op, metrics, predictionPolicy }) {
+  if (!op) return null;
+  const heldOut = !!(metrics?.crossVal?.heldOut);
+  const wss95 = metrics?.crossVal?.wss95;
+  return (
+    <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 8 }}>
+      <SubHeader>Operating point</SubHeader>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
+        <span style={{ fontSize: 12.5, color: C.txt2, fontWeight: 600 }}>Recall-targeted threshold</span>
+        <span style={{ flex: 1 }} />
+        <span style={{ fontFamily: MONO, color: C.acc, fontWeight: 700 }}>{op.threshold != null ? op.threshold.toFixed(2) : '—'}</span>
+        {op.preliminary && <Chip color={C.gold} title="Too few held-out labels for a stable estimate — expect this to move as you label more.">Preliminary estimate — label more records</Chip>}
+      </div>
+      <KV label="Estimated recall" value={op.achievedRecall != null ? `≥ ${pct(op.achievedRecall)} (target ${pct(op.targetRecall)})` : '—'} color={C.acc}
+        title="Fraction of eligible records the threshold is estimated to keep, judged on held-out predictions." />
+      {op.workSavedFraction != null && <KV label="Work saved at 95% recall" value={pct(op.workSavedFraction)} color={C.teal} />}
+      {typeof wss95 === 'number' && <KV label="WSS@95 (held-out)" value={numFmt(wss95, 2)} color={C.teal} title="Work saved over random screening at 95% recall, on held-out predictions." />}
+      {op.specificity != null && <KV label="Specificity" value={pct(op.specificity)} />}
+      {op.precision != null && <KV label="Precision" value={pct(op.precision)} />}
+      <div style={{ fontSize: 10, color: C.muted, marginTop: 4, lineHeight: 1.4 }}>
+        {heldOut ? 'Cross-validated (held-out) estimate. ' : ''}
+        {predictionPolicy === 'recall_targeted'
+          ? 'Predictions use this threshold.'
+          : 'Not enough held-out labels — conservative bands in use.'}
+      </div>
+    </div>
+  );
+}
+
+/** Representative validation sample (66.md P4.6). Prioritized screening biases
+ *  metrics; a seeded random sample yields unbiased estimates. */
+function ValidationSampleBlock({ ai, canConfigure, unbiasedCV }) {
+  const [data, setData] = useState(undefined);   // undefined = loading, null = none
+  const [size, setSize] = useState(100);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+
+  const load = useCallback(() => {
+    ai.getValidationSample().then(d => setData(d || null)).catch(() => setData(null));
+  }, [ai]);
+  useEffect(() => { load(); }, [ai.status?.latestRun?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (data === undefined) return null;                 // silent while first fetch is in flight
+  const sample = data?.sample || null;
+  const source = data?.validationSource || 'none';
+
+  const doGenerate = async () => {
+    if (busy) return;
+    setBusy(true); setErr('');
+    try { await ai.createValidationSample({ size: Math.max(10, Number(size) || 100) }); load(); }
+    catch (e) { setErr(e.message || 'Could not generate sample'); }
+    finally { setBusy(false); }
+  };
+
+  const sourceBadge =
+    source === 'random' ? <Chip color={C.grn} title="All labeled records come from a random sample — metrics are unbiased.">Unbiased</Chip> :
+    source === 'mixed' ? <Chip color={C.gold} title="Some labeled records are from the random sample, some from prioritized screening.">Mixed</Chip> :
+    source === 'prioritized' ? <Chip color={C.gold} title="Labels come from prioritized (AI-ordered) screening — metrics may be optimistic.">Prioritized — may be biased</Chip> :
+    null;
+
+  return (
+    <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <span style={{ fontSize: 10.5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em' }}>Representative validation</span>
+        <span style={{ flex: 1 }} />
+        {sourceBadge}
+      </div>
+      {!sample ? (
+        <>
+          <div style={{ fontSize: 11.5, color: C.txt2, lineHeight: 1.5 }}>
+            Label a random sample first to obtain unbiased model estimates. Metrics from prioritized screening may be biased.
+          </div>
+          {canConfigure && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+              <label style={{ fontSize: 11.5, color: C.muted, display: 'flex', alignItems: 'center', gap: 5 }}>
+                Size
+                <input type="number" min={10} value={size} disabled={busy}
+                  onChange={e => setSize(e.target.value)}
+                  style={{ width: 62, fontFamily: MONO, fontSize: 12, color: C.txt, background: C.card, border: `1px solid ${C.brd}`, borderRadius: 6, padding: '3px 6px' }} />
+              </label>
+              <MiniBtn color={C.acc} disabled={busy} onClick={doGenerate}>{busy ? 'Generating…' : 'Generate random sample'}</MiniBtn>
+            </div>
+          )}
+        </>
+      ) : (
+        <>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 11, color: C.muted, marginBottom: 3 }}>
+            <span>{sample.labeled}/{sample.size} sample records labeled</span>
+            <span>{pct(sample.size ? sample.labeled / sample.size : 0)}</span>
+          </div>
+          <Bar value={sample.size ? sample.labeled / sample.size : 0} color={source === 'random' ? C.grn : C.acc} />
+          <div style={{ fontSize: 10, color: C.muted, marginTop: 5, lineHeight: 1.4 }}>
+            seed <span style={{ fontFamily: MONO }}>{sample.seed}</span> · {sample.method}
+            {sample.createdAt ? ` · ${new Date(sample.createdAt).toLocaleDateString()}` : ''}
+            {sample.createdByName ? ` · ${sample.createdByName}` : ''}
+          </div>
+          {unbiasedCV && (unbiasedCV.auc != null || unbiasedCV.wss95 != null) && (
+            <div style={{ marginTop: 6 }}>
+              {unbiasedCV.auc != null && <KV label="Unbiased (random-sample) AUC" value={numFmt(unbiasedCV.auc)} color={C.grn} title="AUC cross-validated within the random sample only — free of prioritized-screening bias." />}
+              {unbiasedCV.wss95 != null && <KV label="Unbiased (random-sample) WSS@95" value={numFmt(unbiasedCV.wss95, 2)} color={C.grn} />}
+            </div>
+          )}
+        </>
+      )}
+      {err && <div style={{ fontSize: 11, color: C.red, marginTop: 4 }}>{err}</div>}
+    </div>
+  );
+}
+
 /** RightColumn section: model status, training summary, validation, policy. */
 export function AiStatusPanel({ ai }) {
   const [val, setVal] = useState(null);
+  const [citation, setCitation] = useState(null);
   const s = ai.status;
 
   useEffect(() => {
@@ -513,6 +761,14 @@ export function AiStatusPanel({ ai }) {
     if (s && s.canConfigure) ai.getValidation().then(v => { if (live && v) setVal(v); });
     return () => { live = false; };
   }, [s?.latestRun?.id, s?.canConfigure]); // eslint-disable-line
+
+  // 66.md P4.3 — citation-enrichment coverage. Prefer the fresh dedicated endpoint
+  // over status.citation (which can be stale between runs); both fail silently.
+  useEffect(() => {
+    let live = true;
+    if (s && s.enabled) ai.getCitationStatus().then(c => { if (live && c) setCitation(c); });
+    return () => { live = false; };
+  }, [s?.enabled, s?.latestRun?.id, ai.citationEnriching]); // eslint-disable-line
 
   if (!ai.ready) return null;
   if (!ai.enabled) return null;
@@ -580,9 +836,20 @@ export function AiStatusPanel({ ai }) {
         );
       })()}
 
+      {/* 66.md P4.3/P4.10 — embedding provider + citation-enrichment status. Visible
+          to anyone who can see the panel; the fetch button itself is gated by canRun. */}
+      <ModelSourcesBlock ai={ai} embedding={s?.embedding} citation={citation || s?.citation} canRun={!!s?.canRun} />
+
+      {/* 66.md P4.5 — recall-targeted operating point (leader view). */}
+      {s?.canConfigure && m.operatingPoint && <OperatingPointBlock op={m.operatingPoint} metrics={m} predictionPolicy={m.predictionPolicy} />}
+
       {s?.canConfigure && m.drift?.warnings?.length > 0 && <DriftWarnings drift={m.drift} />}
       {s?.canConfigure && m.calibration && <CalibrationBlock cal={m.calibration} />}
       {s?.canConfigure && m.stopping && <StoppingBlock stop={m.stopping} />}
+
+      {/* 66.md P4.6 — representative validation sample + unbiased metrics (leader view). */}
+      {s?.canConfigure && <ValidationSampleBlock ai={ai} canConfigure={!!s?.canConfigure} unbiasedCV={m.crossValUnbiased} />}
+
       {s?.canConfigure && <ModelHistory ai={ai} />}
 
       {s?.canConfigure && <AiPolicyControls ai={ai} />}

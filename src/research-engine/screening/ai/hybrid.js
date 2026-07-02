@@ -20,6 +20,7 @@ function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
  * @param {number|null} [signals.semanticIncluded] — cosine sim to included centroid [0,1]
  * @param {number|null} [signals.semanticExcluded] — cosine sim to excluded centroid [0,1]
  * @param {number|null} [signals.keyword] — raw inclusion/exclusion keyword signal [0,1]
+ * @param {number|null} [signals.citation] — citation-graph signal [0,1] (66.md P4.3)
  * @param {object} hybridCfg — config.hybrid
  * @returns {{ score:number, mode:'supervised'|'cold_start', subScores:object,
  *            weights:object }}
@@ -70,6 +71,16 @@ export function hybridScore(signals = {}, hybridCfg = {}) {
     components.push(['keyword', W.keyword ?? 0.10, v]);
   } else {
     subScores.keyword = null;
+  }
+
+  // Citation-graph signal (66.md P4.3) — present only when citation metadata was
+  // actually enriched for the project, so its absence leaves scores untouched.
+  if (signals.citation != null) {
+    const v = clamp01(signals.citation);
+    subScores.citation = v;
+    components.push(['citation', W.citation ?? 0.10, v]);
+  } else {
+    subScores.citation = null;
   }
 
   // Renormalize over active components.

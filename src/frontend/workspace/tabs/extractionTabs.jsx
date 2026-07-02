@@ -5,8 +5,13 @@
    resolves identically. `uid` and `fmtDate` are verbatim copies of the
    monolith module-local helpers (the monolith keeps its own copies for its
    other consumers; projectHelpers.js does NOT export `uid`). */
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect, lazy, Suspense } from "react";
 import { alpha as themeAlpha } from "../../theme/tokens.js";
+// 66.md (P5) — structured-extraction workspace behind the `extractionAssist` flag.
+// Flag helper is eager (tiny); the heavy workspace chunk is lazy so it is only
+// fetched when a user actually opens the structured mode.
+import { extractionAssistFlagEnabled } from "../../../features/extraction/flag.js";
+const ExtractionWorkspace = lazy(() => import("../../../features/extraction/ExtractionWorkspace.jsx"));
 import { downloadBlob } from "../../components/exportCore.js";
 import { fmtES } from "../../../research-engine/format/precision.js";
 import { orderStudies, EXTRACTION_SORTS, DEFAULT_EXTRACTION_SORT } from "../../pages/extractionOrder.js";
@@ -550,6 +555,12 @@ function ExtractionTab({project,updateProject,activeId}){
   // prompt6 Task 5 — read-only viewers: hide the affirmative edit controls.
   // (updateProject already no-ops every write for read-only projects; this is polish.)
   const readOnly=!!((project._permissions&&project._permissions.readOnly)||project._readOnly);
+  // 66.md (P5) — offer the structured-extraction workspace when the `extractionAssist`
+  // flag is on. The flag is probed once (state-held); until then / when off, this tab
+  // renders exactly its classic body. mode: "classic" | "structured".
+  const[extractionAssistOn,setExtractionAssistOn]=useState(false);
+  const[extractionMode,setExtractionMode]=useState("classic");
+  useEffect(()=>{let dead=false;extractionAssistFlagEnabled().then(on=>{if(!dead)setExtractionAssistOn(on);});return()=>{dead=true;};},[]);
   const addStudy=()=>updateProject(activeId,p=>({...p,studies:[...p.studies,mkStudy()]}));
   const addStudyObj=(st)=>updateProject(activeId,p=>({...p,studies:[...p.studies,st]}));
   const updStudy=(id,k,v)=>updateProject(activeId,p=>({...p,studies:p.studies.map(s=>s.id===id?{...s,[k]:v,updatedAt:new Date().toISOString()}:s)}));
@@ -735,8 +746,34 @@ ${paperText.slice(0,15000)}`;
     <input value={s[k]||""} onChange={e=>updStudy(s.id,k,e.target.value)} placeholder={ph||""}
       style={{...inp,fontSize:11,padding:"3px 5px",width:w||"100%",fontFamily:["es","lo","hi","n","nExp","nCtrl"].includes(k)?"'IBM Plex Mono',monospace":"inherit"}}/></td>);
 
+  // 66.md (P5) — the structured-extraction workspace replaces the tab body when the
+  // flag is on AND the user has switched into it. A small header lets them switch back
+  // to the classic table. Everything else (the classic body below) is untouched.
+  const extractionModeToggle = extractionAssistOn ? (
+    <div style={{display:"flex",border:`1px solid ${C.brd}`,borderRadius:6,overflow:"hidden"}}>
+      {[["classic","Classic table"],["structured","Structured extraction (beta)"]].map(([m,label])=>(
+        <button key={m} onClick={()=>setExtractionMode(m)} style={{padding:"6px 12px",border:"none",cursor:"pointer",fontSize:11,fontWeight:600,
+          background:extractionMode===m?C.acc:"transparent",color:extractionMode===m?C.accText:C.muted}}>{label}</button>
+      ))}
+    </div>
+  ) : null;
+
+  if(extractionAssistOn && extractionMode==="structured"){
+    return(<div>
+      <div style={{display:"flex",justifyContent:"flex-end",marginBottom:12}}>{extractionModeToggle}</div>
+      <Suspense fallback={<div style={{padding:24,color:C.muted,fontSize:12}}>Loading the structured extraction workspace…</div>}>
+        <ExtractionWorkspace projectId={project.id}/>
+      </Suspense>
+    </div>);
+  }
+
   return(<div>
-    <SectionHeader icon="table" title="Data Extraction" desc="Capture study-level data with the right template for your outcome type. Validation runs as you type; raw inputs are saved so every number is auditable." badge={`${studies.length} studies`}/>
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,flexWrap:"wrap"}}>
+      <div style={{flex:1,minWidth:0}}>
+        <SectionHeader icon="table" title="Data Extraction" desc="Capture study-level data with the right template for your outcome type. Validation runs as you type; raw inputs are saved so every number is auditable." badge={`${studies.length} studies`}/>
+      </div>
+      {extractionModeToggle}
+    </div>
 
     {AI_FEATURES_ENABLED && showAI && (
       <div style={{position:"fixed",inset:0,background:"#00000099",zIndex:998,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>

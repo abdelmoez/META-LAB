@@ -39,6 +39,8 @@ import institutionsRouter from './routes/institutions.js';
 import workflowStateRouter from './routes/workflowState.js';
 import searchEngineRouter  from './routes/searchEngine.js';
 import pecanSearchRouter    from './routes/pecanSearch.js';
+import extractionRouter     from './routes/extraction.js';
+import livingReviewRouter   from './routes/livingReview.js';
 import waitlistRouter       from './routes/waitlist.js';
 import { waitlistCount }    from './controllers/waitlistController.js';
 import citationRouter       from './routes/citation.js';
@@ -393,6 +395,16 @@ app.use('/api/search-builder', requireAuth, searchEngineLimiter, searchEngineRou
 // META·LAB project access. External provider calls + API keys stay server-side.
 app.use('/api/pecan-search', requireAuth, pecanSearchLimiter, pecanSearchRouter);
 
+// ── Structured Data Extraction (66.md P5) — requireAuth at the mount; each
+// handler gates on the `extractionAssist` flag (default OFF → 404) and the
+// caller's META·LAB project access. AI suggestions never auto-commit.
+app.use('/api/extraction', requireAuth, extractionRouter);
+
+// ── Living Reviews (66.md P6) — requireAuth at the mount; each handler gates on
+// the `livingReview` flag (default OFF → 404) and project access. Scheduled
+// re-runs go through the existing Pecan Search engine + durable worker.
+app.use('/api/living', requireAuth, livingReviewRouter);
+
 // ── SPA serving with server-injected theme (prompt37 follow-up) ────────────────
 // When a production build exists (or SERVE_SPA=true), serve dist/ assets and the
 // index.html with the live brand palette injected pre-paint, so the admin's
@@ -462,6 +474,13 @@ const server = app.listen(PORT, () => {
       // (large exports stream to a file instead of buffering in one request → no 504).
       startAiJobsWorker().catch(err => console.error('[ai-worker] start failed:', err.message));
       startExportWorker().catch(err => console.error('[export-worker] start failed:', err.message));
+      // 66.md P6 — living-review scheduler: launches due saved searches through the
+      // Pecan worker and reconciles finished update runs (notifications, AI
+      // pre-scoring, automatic snapshots). No-ops unless the livingReview flag +
+      // admin setting allow it; interval is unref'd.
+      import('./living/scheduler.js')
+        .then(m => m.startLivingScheduler())
+        .catch(err => console.error('[living-scheduler] start failed:', err.message));
     });
 
   // prompt48 — fail-safe waitlist config check. If the betaWaitlist flag is ON but

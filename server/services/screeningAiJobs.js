@@ -21,6 +21,7 @@
 import { prisma } from '../db/client.js';
 import { emitToProjectMembers } from '../realtime/bus.js';
 import { aiFlagEnabled, getGlobalAiSettings, getProjectAiSettings, runScoring } from './screeningAiService.js';
+import { enrichProjectCitations } from './citationEnrichmentService.js';
 import { DEFAULT_MAX_JOB_ATTEMPTS, partitionStuckJobs } from '../utils/jobRetry.js';
 
 const debounceTimers = new Map(); // key → Timeout (rescore debounce; in-memory optimisation only)
@@ -85,6 +86,37 @@ async function processJob(job) {
     const actor = job.createdById
       ? { id: job.createdById, name: job.createdByName || '' }
       : { id: 'system', name: 'auto-rescore' };
+
+    // 66.md P4.3 — citation-enrichment job: fetch + cache citation metadata for the
+    // project's records (rate-limited, non-blocking), then chain a rescore so the
+    // new features flow into scores. Enrichment failure NEVER blocks screening.
+    if (job.kind === 'enrich') {
+      let lastBeat = 0;
+      const summary = await enrichProjectCitations(job.projectId, {
+        onProgress: ({ processed = 0, total = 0 } = {}) => {
+          const now = Date.now();
+          if (now - lastBeat < 750) return;
+          lastBeat = now;
+          prisma.screenAiJob.update({
+            where: { id: job.id },
+            data: { processed: processed | 0, total: total | 0, heartbeatAt: new Date() },
+          }).catch(() => {});
+        },
+      });
+      await prisma.screenAiJob.update({
+        where: { id: job.id },
+        data: {
+          status: 'completed',
+          nScored: summary.fetched + summary.cached,
+          processed: summary.fetched, total: summary.uniqueKeys,
+          completedAt: new Date(), durationMs: Date.now() - startMs,
+        },
+      });
+      emitToProjectMembers(job.projectId, { type: 'ai.updated' });
+      // Chain a rescore so citation features reach the live scores.
+      scheduleRescore(job.projectId, { stage: job.stage, actor, debounceMs: 100 });
+      return;
+    }
 
     let lastPatch = 0;
     const out = await runScoring({
@@ -161,6 +193,26 @@ export async function enqueueManualRun(projectId, { stage = 'title_abstract', ac
   const job = await prisma.screenAiJob.create({
     data: {
       projectId, stage, kind: 'train', status: 'queued', trigger: 'manual',
+      createdById: actor?.id || null, createdByName: actor?.name || actor?.email || '',
+    },
+  });
+  kickAiWorker();
+  return job;
+}
+
+/**
+ * enqueueCitationEnrichment — durable citation-metadata fetch job (66.md P4.3).
+ * Reuses any queued/running enrich job for the project (no duplicate API storms).
+ */
+export async function enqueueCitationEnrichment(projectId, { stage = 'title_abstract', actor } = {}) {
+  const existing = await prisma.screenAiJob.findFirst({
+    where: { projectId, stage, kind: 'enrich', status: { in: ['queued', 'running'] } },
+    orderBy: { createdAt: 'desc' },
+  });
+  if (existing) { kickAiWorker(); return existing; }
+  const job = await prisma.screenAiJob.create({
+    data: {
+      projectId, stage, kind: 'enrich', status: 'queued', trigger: 'manual',
       createdById: actor?.id || null, createdByName: actor?.name || actor?.email || '',
     },
   });

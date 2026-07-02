@@ -30,7 +30,10 @@ import {
   computeDrift,
   chunk,
 } from '../../src/research-engine/screening/ai/index.js';
-import { buildEmbedFn } from './aiEmbeddingClient.js';
+import { buildEmbedFn, embeddingModelInfo } from './aiEmbeddingClient.js';
+// 66.md P4.3/P4.6 — citation-graph enrichment + representative validation samples.
+import { loadCitationByRecordId, getCitationStatus } from './citationEnrichmentService.js';
+import { mulberry32 } from '../../src/research-engine/screening/sampling.js';
 // 62.md — the two CPU-heavy phases (trainAndScore + cross-validation) now run in a
 // worker_thread (with an inline fallback) so a large run never blocks the HTTP event
 // loop. Results are identical (deterministic engine, same inputs).
@@ -353,10 +356,17 @@ async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger
     }
   } catch { denseEmbeddings = undefined; }
 
+  // 66.md P4.3 — citation-graph metadata (from the enrichment cache; {} when the
+  // project was never enriched). Passed as RAW metadata: the pure engine derives
+  // the actual features from each call's own labels, keeping CV leakage-free.
+  const citationByRecordId = await loadCitationByRecordId(records);
+  const hasCitationData = Object.keys(citationByRecordId).length > 0;
+
   let result;
   try {
     result = await runTrainAndScore({
       records,
+      citationByRecordId: hasCitationData ? citationByRecordId : undefined,
       labelByRecordId: input.labelByRecordId,
       decisionsByRecordId: input.decisionsByRecordId,
       // Blind review → suppress reviewer signals so one reviewer's hidden
@@ -401,6 +411,7 @@ async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger
     try {
       const cv = await runCrossValidate({
         records,
+        citationByRecordId: hasCitationData ? citationByRecordId : undefined,
         labelByRecordId: input.labelByRecordId,
         picoSnapshot: input.picoSnapshot,
         inclusionKeywords: input.inclusionKeywords,
@@ -411,6 +422,49 @@ async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger
       metrics.crossVal = cv;
     } catch { /* CV is best-effort; in-sample metrics still stand */ }
   }
+
+  // ── Representative-sample validation split (66.md P4.6) ─────────────────────
+  // Prioritized screening biases validation labels. When a random validation seed
+  // sample exists, ALSO cross-validate on the sample's labels alone (unbiased
+  // protocol: train+test inside the random sample) and label the provenance of
+  // every metric set: random | prioritized | mixed.
+  try {
+    const sample = await prisma.screenValidationSample.findFirst({
+      where: { projectId, stage }, orderBy: { createdAt: 'desc' },
+    });
+    const labeledIds = Object.keys(input.labelByRecordId);
+    if (sample) {
+      const sampleIds = new Set(safeArray(sample.recordIds));
+      const inSample = labeledIds.filter(id => sampleIds.has(id));
+      const outSample = labeledIds.length - inSample.length;
+      metrics.validationSource = inSample.length > 0 ? (outSample === 0 ? 'random' : 'mixed') : 'prioritized';
+      metrics.validationSample = {
+        sampleId: sample.id, size: sampleIds.size, labeled: inSample.length,
+        includes: inSample.filter(id => input.labelByRecordId[id] === 'include').length,
+      };
+      if (inSample.length >= 10) {
+        const sampleLabels = {};
+        for (const id of inSample) sampleLabels[id] = input.labelByRecordId[id];
+        try {
+          const cvU = await runCrossValidate({
+            records,
+            citationByRecordId: hasCitationData ? citationByRecordId : undefined,
+            labelByRecordId: sampleLabels,
+            picoSnapshot: input.picoSnapshot,
+            inclusionKeywords: input.inclusionKeywords,
+            exclusionKeywords: input.exclusionKeywords,
+            studyTypeFilter: input.studyTypeFilter,
+            config,
+          });
+          // Strip the bulky OOF arrays — only the unbiased metric summary is kept.
+          if (cvU && cvU.oof) delete cvU.oof;
+          metrics.crossValUnbiased = { ...cvU, source: 'random_sample', nSampleLabels: inSample.length };
+        } catch { /* unbiased CV is best-effort */ }
+      }
+    } else {
+      metrics.validationSource = labeledIds.length ? 'prioritized' : 'none';
+    }
+  } catch { /* sample lookup is best-effort */ }
 
   // ── Probability calibration (se2.md §8) ──────────────────────────────────────
   // Fit the calibrator on the OUT-OF-FOLD CV predictions (never in-sample), then map
@@ -441,6 +495,27 @@ async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger
   }
   // Persist calibration metadata + params (not the per-point reliability arrays twice).
   metrics.calibration = calibration;
+
+  // ── Recall-targeted operating point (66.md P4.5) ─────────────────────────────
+  // Screening is recall-first: when the CROSS-VALIDATED operating point is reliable
+  // (enough held-out labels), per-record predictions use the recall-targeted
+  // threshold instead of the conservative fixed bands. Provenance is stamped on the
+  // run so the UI can say exactly which policy produced each prediction.
+  const op = (metrics.crossVal && metrics.crossVal.operatingPoint) || null;
+  let predictionPolicy = 'conservative_bands';
+  if (op && op.reliable) {
+    predictionPolicy = 'recall_targeted';
+    for (const s of result.scores) {
+      s.prediction = s.score >= op.threshold ? 'include' : 'exclude';
+    }
+  }
+  metrics.operatingPoint = op
+    ? { ...op, applied: predictionPolicy === 'recall_targeted', source: 'cross_validated' }
+    : null;
+  metrics.predictionPolicy = predictionPolicy;
+
+  // Citation feature availability for this run (66.md P4.3) — honest coverage.
+  metrics.citation = result.meta.citation || { available: false, coverage: 0, nWithMetadata: 0 };
 
   // ── Stopping-rule estimate (se2.md §9) ───────────────────────────────────────
   // Σ calibrated P(include) over UNSCREENED records = estimated remaining eligible.
@@ -511,7 +586,7 @@ async function _runScoring({ projectId, stage = 'title_abstract', actor, trigger
         nFeatures: result.meta.nFeatures,
         labelCountsJson: JSON.stringify(result.meta.labelCounts || {}),
         modelInfoJson: JSON.stringify(result.meta.modelInfo || {}),
-        configJson: JSON.stringify({ provider: config.provider, embeddingProviderUsed, includeThreshold: aiProject.includeThreshold, engineConfigVersion }),
+        configJson: JSON.stringify({ provider: config.provider, embeddingProviderUsed, includeThreshold: aiProject.includeThreshold, engineConfigVersion, predictionPolicy, citationFeatures: !!(result.meta.citation && result.meta.citation.available) }),
         metricsJson: JSON.stringify(metrics),
         triggeredById: actor?.id || null,
         triggeredByName: actor?.name || actor?.email || '',
@@ -724,9 +799,16 @@ export async function getStatus(projectId, stage = 'title_abstract') {
     prisma.screenProject.findUnique({ where: { id: projectId } }),
   ]);
   const aiProject = getProjectAiSettings(project, global);
+  // 66.md P4.10 — model status card: embedding provider + citation enrichment,
+  // both best-effort (a status failure must never break the panel).
+  const embedding = { provider: global.embeddingProvider || 'lexical', ...embeddingModelInfo(process.env) };
+  let citationStatus = null;
+  try { citationStatus = await getCitationStatus(projectId); } catch { citationStatus = null; }
   return {
     enabled: global.enabled && aiProject.enabled,
     project: aiProject,
+    embedding,
+    citation: citationStatus,
     global: { embeddingProvider: global.embeddingProvider, requireHumanFinalDecision: global.requireHumanFinalDecision, allowReviewersToRun: global.allowReviewersToRun },
     // screeningEngine.md task 3 — the active engine config version + the catalogue, so
     // the panel/admin can display and (for leaders) switch which engine scores the project.
@@ -764,6 +846,86 @@ export async function getValidation(projectId, stage = 'title_abstract') {
     completedAt: run.completedAt,
     labelCounts: safeParse(run.labelCountsJson, {}),
     metrics: safeParse(run.metricsJson, {}),
+  };
+}
+
+// ── Representative validation seed samples (66.md P4.6) ──────────────────────
+
+/**
+ * createValidationSample — draw a seeded uniform-random sample of the project's
+ * records for unbiased model validation. The seed + method + membership are
+ * persisted so the sample (and every metric computed on it) is reproducible.
+ *
+ * @param {object} args {projectId, stage, size, seed, actor}
+ */
+export async function createValidationSample({ projectId, stage = 'title_abstract', size, seed, actor }) {
+  const records = await prisma.screenRecord.findMany({
+    where: { projectId },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],   // deterministic base order
+    select: { id: true },
+  });
+  if (!records.length) throw Object.assign(new Error('No records to sample'), { status: 400 });
+  const n = Math.max(10, Math.min(Number(size) || 100, records.length));
+  const s = Number.isFinite(Number(seed)) ? (Number(seed) >>> 0) : (Math.floor(Math.random() * 2 ** 31) >>> 0);
+
+  // Seeded Fisher–Yates partial shuffle → first n ids form the sample.
+  const ids = records.map(r => r.id);
+  const rng = mulberry32(s);
+  for (let i = ids.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+  }
+  const sampleIds = ids.slice(0, n);
+
+  const sample = await prisma.screenValidationSample.create({
+    data: {
+      projectId, stage, seed: s, method: 'uniform_random', size: n,
+      recordIds: JSON.stringify(sampleIds),
+      createdById: actor?.id || null,
+      createdByName: actor?.name || actor?.email || '',
+    },
+  });
+  writeAudit(projectId, actor, 'AI_VALIDATION_SAMPLE_CREATED', {
+    entityType: 'ScreenValidationSample', entityId: sample.id,
+    details: { size: n, seed: s, method: 'uniform_random', stage },
+  });
+  return getValidationSampleStatus(projectId, stage);
+}
+
+/**
+ * getValidationSampleStatus — latest sample + labelling progress, plus the
+ * provenance summary the UI needs ("Current validation set: random/prioritized/
+ * mixed"). Returns { sample: null } when no sample exists.
+ */
+export async function getValidationSampleStatus(projectId, stage = 'title_abstract') {
+  const sample = await prisma.screenValidationSample.findFirst({
+    where: { projectId, stage }, orderBy: { createdAt: 'desc' },
+  });
+  const input = await loadEngineInput(projectId, stage);
+  const labeledIds = input ? Object.keys(input.labelByRecordId) : [];
+  if (!sample) {
+    return {
+      sample: null,
+      validationSource: labeledIds.length ? 'prioritized' : 'none',
+      totalLabeled: labeledIds.length,
+    };
+  }
+  const sampleIds = new Set(safeArray(sample.recordIds));
+  const inSample = labeledIds.filter(id => sampleIds.has(id));
+  return {
+    sample: {
+      id: sample.id, size: sample.size, seed: sample.seed, method: sample.method,
+      createdAt: sample.createdAt, createdByName: sample.createdByName,
+      recordIds: [...sampleIds],
+      labeled: inSample.length,
+      remaining: Math.max(0, sample.size - inSample.length),
+      includes: inSample.filter(id => input.labelByRecordId[id] === 'include').length,
+      excludes: inSample.filter(id => input.labelByRecordId[id] === 'exclude').length,
+    },
+    validationSource: inSample.length > 0
+      ? (labeledIds.length === inSample.length ? 'random' : 'mixed')
+      : (labeledIds.length ? 'prioritized' : 'none'),
+    totalLabeled: labeledIds.length,
   };
 }
 

@@ -115,6 +115,22 @@ export function useScreeningAi(pid, stage = 'title_abstract') {
 
   const getValidation = useCallback(() => aiApi.validation(pid, stage).catch(() => null), [pid, stage]);
 
+  // 66.md P4.3 — citation-graph enrichment. Status is best-effort; the fetch job is
+  // leader-gated server-side. `citationEnriching` keeps the button busy between the
+  // 202 and the next status refresh so it can't be double-triggered.
+  const [citationEnriching, setCitationEnriching] = useState(false);
+  const getCitationStatus = useCallback(() => aiApi.citationStatus(pid, stage).catch(() => null), [pid, stage]);
+  const startCitationEnrichment = useCallback(async () => {
+    setCitationEnriching(true);
+    try { return await aiApi.startCitationEnrichment(pid, stage); }
+    catch (e) { if (mounted.current) setCitationEnriching(false); throw e; }
+  }, [pid, stage]);
+
+  // 66.md P4.6 — representative validation sample (seeded random). Creation is
+  // leader-gated server-side; both calls fail silently so the panel still renders.
+  const getValidationSample = useCallback(() => aiApi.validationSample(pid, stage).catch(() => null), [pid, stage]);
+  const createValidationSample = useCallback((body) => aiApi.createValidationSample(pid, { stage, ...(body || {}) }), [pid, stage]);
+
   // se2.md §11 — model version history + rollback.
   const getVersions = useCallback(() => aiApi.versions(pid, stage).catch(() => null), [pid, stage]);
   const rollback = useCallback(async (runId) => {
@@ -182,6 +198,9 @@ export function useScreeningAi(pid, stage = 'title_abstract') {
     gate, override, setOverride, // 58.md §8 — score-visibility threshold + admin override
     run, getExplanation, refreshExplanation, sendFeedback, updateSettings, getValidation,
     getVersions, rollback,
+    // 66.md P4.3/P4.6 — citation enrichment + representative validation sample.
+    getCitationStatus, startCitationEnrichment, citationEnriching,
+    getValidationSample, createValidationSample,
     refresh: loadScores,
     jobStatus, loadJobStatus, onScoresUpdated, rankingsAvailable, clearRankingsAvailable,
   };

@@ -1495,3 +1495,238 @@ model ProcessedEngineChange {
   @@unique([changeKey, engineId])
   @@index([changeKey])
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 66.md P4 — AI screening upgrade: citation enrichment, embedding cache,
+// representative validation samples. ALL brand-new tables (db-push additive-safe;
+// @@unique is fine on empty tables). Scope keys are BARE id strings by repo
+// convention (audit-survival: rows outlive the entities they describe).
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Global cache of PUBLIC citation metadata keyed by identifier (doi:… / pmid:… /
+// oa:W…). Deliberately NOT project-scoped: the payload is public bibliographic
+// data (OpenAlex), so cross-project reuse leaks nothing and saves API calls.
+model CitationMetadata {
+  id        String   @id @default(uuid())
+  key       String // normalized identifier: "doi:10.…" | "pmid:12345" | "oa:W…"
+  workId    String? // provider work id (OpenAlex W…)
+  source    String   @default("openalex")
+  status    String   @default("ok") // ok | not_found | error
+  payload   String   @default("{}") // JSON {citedByCount, referenceCount, year, refs[], concepts[]}
+  fetchedAt DateTime @default(now())
+  error     String?
+
+  @@unique([key])
+  @@index([workId])
+  @@index([fetchedAt])
+}
+
+// Persistent embedding cache: (text hash, model) → vector. Backs the in-memory
+// LRU in aiEmbeddingClient so re-runs / restarts never re-embed unchanged records.
+model EmbeddingCacheEntry {
+  id        String   @id @default(uuid())
+  textHash  String // FNV-1a/sha of the exact embedding text
+  model     String
+  dims      Int
+  vector    String // JSON number[]
+  createdAt DateTime @default(now())
+
+  @@unique([textHash, model])
+  @@index([model])
+}
+
+// Representative random validation seed sample (66.md P4.6). Stores the sampling
+// seed + method + membership so unbiased-vs-prioritized label provenance is
+// reconstructable and the CV metrics can be split honestly.
+model ScreenValidationSample {
+  id            String   @id @default(uuid())
+  projectId     String // ScreenProject id (bare scope key)
+  stage         String   @default("title_abstract")
+  seed          Int
+  method        String   @default("uniform_random") // uniform_random (stratified later)
+  size          Int
+  recordIds     String   @default("[]") // JSON string[] of ScreenRecord ids
+  createdById   String?
+  createdByName String?
+  createdAt     DateTime @default(now())
+
+  @@index([projectId, stage, createdAt])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 66.md P5 — structured data extraction with dual extraction + adjudication +
+// provenance + AI assist (flag `extractionAssist`). projectId here is the
+// META·LAB Project id (extraction lives on the project workspace); studyId is
+// the in-blob 8-char study uid (same convention as RobAssessment.studyId).
+// armKey is "" for study-level values (never NULL inside a unique key).
+// ═══════════════════════════════════════════════════════════════════════════
+
+model ExtractionForm {
+  id          String   @id @default(uuid())
+  projectId   String
+  name        String   @default("Extraction form")
+  templateKey String? // template it was seeded from
+  elements    String   @default("[]") // JSON element definitions (research-engine/extraction/model.js)
+  version     Int      @default(1)
+  isActive    Boolean  @default(true)
+  createdById String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([projectId, isActive])
+}
+
+// One extractor value for one element (and arm) of one study. Extractor rows
+// are NEVER overwritten by adjudication — consensus lives in its own table.
+model ExtractionValue {
+  id           String   @id @default(uuid())
+  projectId    String
+  formId       String
+  studyId      String
+  elementId    String
+  armKey       String   @default("") // "" = study-level
+  userId       String
+  userName     String?
+  value        String   @default("{}") // JSON canonical value object
+  provenance   String   @default("{}") // JSON {type, excerpt, location, page, table, row, col}
+  origin       String   @default("manual") // manual | ai_accepted | ai_edited
+  suggestionId String? // AiExtractionSuggestion id when AI-assisted
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([projectId, studyId, elementId, armKey, userId])
+  @@index([projectId, studyId])
+  @@index([projectId, userId])
+}
+
+model ExtractionAssignment {
+  id            String   @id @default(uuid())
+  projectId     String
+  studyId       String
+  extractor1Id  String?
+  extractor2Id  String?
+  adjudicatorId String?
+  status        String   @default("single") // single | dual | adjudicating | consensus
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([projectId, studyId])
+  @@index([projectId])
+}
+
+// The adjudicated/agreed FINAL value per element+arm of a study. Audit fields
+// record who resolved it and from which side; extractor rows stay untouched.
+model ExtractionConsensus {
+  id             String   @id @default(uuid())
+  projectId      String
+  studyId        String
+  elementId      String
+  armKey         String   @default("")
+  value          String   @default("{}") // JSON canonical value object
+  source         String   @default("agreement") // agreement | accept_a | accept_b | adjudicated
+  aiAssisted     Boolean  @default(false)
+  note           String?
+  provenance     String   @default("{}")
+  resolvedById   String?
+  resolvedByName String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@unique([projectId, studyId, elementId, armKey])
+  @@index([projectId, studyId])
+}
+
+// AI extraction suggestions — proposals ONLY; they can never auto-commit into
+// ExtractionValue/ExtractionConsensus (human review is mandatory, 66.md P5.4).
+model AiExtractionSuggestion {
+  id          String   @id @default(uuid())
+  projectId   String
+  studyId     String
+  provider    String   @default("heuristic") // heuristic | external
+  model       String? // provider model/version for the audit trail
+  payload     String   @default("[]") // JSON [{elementId, armKey, value, confidence, provenance, notFound, ambiguity}]
+  status      String   @default("proposed") // proposed | reviewed
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@index([projectId, studyId, createdAt])
+}
+
+model ParsedTable {
+  id          String   @id @default(uuid())
+  projectId   String
+  studyId     String?
+  name        String? // caption / user label
+  source      String   @default("paste") // paste | html | csv | pdf
+  page        Int?
+  data        String   @default("[]") // JSON string[][] rows
+  quality     Float? // 0..1 parse-quality score
+  createdById String?
+  createdAt   DateTime @default(now())
+
+  @@index([projectId, studyId])
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 66.md P6 — living reviews (flag `livingReview`): scheduled saved searches,
+// reproducible review snapshots, evidence-shift alerts. metaLabProjectId is the
+// Project id (bare scope key, same convention as PecanSearchRun).
+// ═══════════════════════════════════════════════════════════════════════════
+
+model LivingSavedSearch {
+  id               String    @id @default(uuid())
+  metaLabProjectId String
+  name             String    @default("Living search")
+  providerIds      String    @default("[]") // JSON provider ids subset (pecan providers)
+  canonicalQuery   String    @default("{}") // JSON canonical query AST snapshot — the EXACT re-runnable query
+  canonicalText    String    @default("") // human-readable rendering of the query at save time
+  cadence          String    @default("manual") // manual | daily | weekly | monthly
+  enabled          Boolean   @default(true)
+  nextRunAt        DateTime?
+  lastRunAt        DateTime?
+  lastRunId        String? // PecanSearchRun id
+  lastRunState     String? // completed | partial | failed | cancelled
+  lastResultCount  Int?
+  lastNewCount     Int?
+  lastError        String?
+  notes            String?
+  createdById      String?
+  createdByName    String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([metaLabProjectId])
+  @@index([enabled, nextRunAt])
+}
+
+// Reproducible review snapshot: summary-only (references + derived counts + MA
+// results), never a full data copy — snapshots stay small on large projects.
+model ReviewSnapshot {
+  id               String   @id @default(uuid())
+  metaLabProjectId String
+  kind             String   @default("manual") // manual | update
+  label            String?
+  runId            String? // PecanSearchRun that triggered an update snapshot
+  appVersion       String?
+  summary          String   @default("{}") // JSON summary (living/snapshotDiff.js shape)
+  createdById      String?
+  createdByName    String?
+  createdAt        DateTime @default(now())
+
+  @@index([metaLabProjectId, createdAt])
+}
+
+model EvidenceShiftAlert {
+  id               String    @id @default(uuid())
+  metaLabProjectId String
+  snapshotId       String
+  prevSnapshotId   String?
+  severity         String    @default("info") // info | notable | major
+  shifts           String    @default("[]") // JSON detectEvidenceShift().shifts
+  status           String    @default("open") // open | acknowledged
+  acknowledgedById String?
+  acknowledgedAt   DateTime?
+  createdAt        DateTime  @default(now())
+
+  @@index([metaLabProjectId, status, createdAt])
+}

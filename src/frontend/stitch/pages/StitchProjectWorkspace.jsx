@@ -71,6 +71,8 @@ const LazyManuscript  = lazy(() => import('../../workspace/tabs/reportTabs.jsx')
 const LazyReport      = lazy(() => import('../../workspace/tabs/reportTabs.jsx').then((m) => ({ default: m.ReportTab })));
 const LazyMethods     = lazy(() => import('../../workspace/tabs/reportTabs.jsx').then((m) => ({ default: m.MethodsTab })));
 const LazyNma         = lazy(() => import('../../workspace/tabs/nmaTab.jsx').then((m) => ({ default: m.NmaTab })));
+// 66.md P6 — Living Review dashboard (flag `livingReview`; its own feature dir).
+const LazyLiving      = lazy(() => import('../../../features/livingReview/LivingReviewTab.jsx'));
 const LazyExportDialog = lazy(() => import('../../components/ExportDialog.jsx'));
 
 // Every workflow stage that has a native page here. Anything not in this set falls
@@ -78,7 +80,7 @@ const LazyExportDialog = lazy(() => import('../../components/ExportDialog.jsx'))
 const SCOPE = new Set([
   // prompt60 — 'discovery' folded into 'search'; ?tab=discovery normalizes to 'search'
   // (activeProjectStage) so it still resolves inside this scope.
-  'control', 'pico', 'prospero', 'search', 'screening', 'prisma',
+  'control', 'pico', 'prospero', 'search', 'living', 'screening', 'prisma',
   'extraction', 'rob', 'analysis', 'forest', 'sensitivity', 'subgroup', 'nma', 'grade',
   'manuscript', 'report', 'methods',
 ]);
@@ -272,6 +274,8 @@ function DeepToolPage({ stage }) {
     body = (<LazySubgroup project={project} />);
   } else if (stage === 'nma') {
     body = (<LazyNma project={project} updateProject={doc.updateProject} activeId={projectId} />);
+  } else if (stage === 'living') {
+    body = (<LazyLiving projectId={projectId} />);
   } else if (stage === 'grade') {
     body = (<LazyGrade project={project} upd={doc.upd} />);
   } else if (stage === 'manuscript') {
