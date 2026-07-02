@@ -61,6 +61,13 @@ anonTest.describe('a11y axe — public surfaces', () => {
 
 test.describe('a11y axe — authenticated surfaces', () => {
   test('the /app dashboard main content has no serious/critical violations', async ({ page }, testInfo) => {
+    // The dashboard scans the FULL project grid, and axe's expensive rules
+    // (color-contrast in particular) run over every card. On an account that has
+    // accumulated many projects the scan legitimately takes ~85-90s, exceeding the
+    // default 60s test timeout — mark it slow (×3 = 180s) rather than weakening the
+    // assertion or disabling color-contrast. (The single-project overview scan below
+    // is fast and does not need this.)
+    test.slow();
     const nav = new ShellNav(page);
     await nav.goto('/app?view=overview');
     await nav.expectShell();
