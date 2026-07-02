@@ -52,7 +52,10 @@ export const searchVersionsApi = {
       const d = await jfetch(`${BASE}/${pid(projectId)}/versions`);
       return {
         versions: Array.isArray(d && d.versions) ? d.versions : [],
-        currentMatchesVersion: d && d.currentMatchesVersion != null ? d.currentMatchesVersion : null,
+        // The server names this `currentMatch` (version id whose snapshot equals the
+        // live draft); accept the older documented alias too.
+        currentMatchesVersion: d && (d.currentMatch ?? d.currentMatchesVersion) != null
+          ? (d.currentMatch ?? d.currentMatchesVersion) : null,
         available: true,
       };
     } catch (e) {
