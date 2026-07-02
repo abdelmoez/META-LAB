@@ -180,15 +180,15 @@ export async function downloadAndAttach(record, candidate, opts = {}) {
 
   const hash = sha256(buf);
 
-  // Dedupe: the ScreenPdfAttachment model has no content-hash column, so we skip
-  // re-storing when this record already has an attachment fetched from the SAME
-  // source URL (a re-run of the same candidate). This is the cheap, race-safe
-  // guard that avoids duplicating the identical OA PDF on a repeated retrieval.
+  // Dedupe (round 2): CONTENT-level first — ScreenPdfAttachment.fileHash stores the
+  // sha256 of the bytes, so the identical PDF is never stored twice for a record
+  // even when two providers hand out different URLs for the same file. Legacy rows
+  // have a null hash, so the sourceUrl match stays as the fallback guard.
   const existing = await prisma.screenPdfAttachment.findMany({
     where: { projectId, recordId: record.id },
-    select: { id: true, sourceUrl: true },
+    select: { id: true, sourceUrl: true, fileHash: true },
   });
-  const dupe = existing.find(a => a.sourceUrl && a.sourceUrl === pdfUrl);
+  const dupe = existing.find(a => (a.fileHash && a.fileHash === hash) || (a.sourceUrl && a.sourceUrl === pdfUrl));
   if (dupe) return { ok: true, alreadyHad: true, attachmentId: dupe.id, hash };
 
   const { storedName, fileSize } = savePdf(projectId, buf);
@@ -209,6 +209,7 @@ export async function downloadAndAttach(record, candidate, opts = {}) {
       matchedBy: 'oa-retrieval',
       matchConfidence: 1,
       retrievalAttemptedAt: new Date(),
+      fileHash: hash,
     },
   });
   return { ok: true, attachmentId: att.id, hash };

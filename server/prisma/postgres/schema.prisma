@@ -813,6 +813,12 @@ model ScreenPdfAttachment {
   matchConfidence      Float?
   retrievalAttemptedAt DateTime?
   retrievalError       String?
+  // 68.md P9 round 2 — sha256 of the file bytes for content-level dedupe (the OA
+  // worker previously deduped by sourceUrl only). Nullable + plain index: additive
+  // db-push-safe on this EXISTING table; legacy rows stay null.
+  fileHash             String?
+
+  @@index([fileHash])
 }
 
 model ScreenRecordOpenState {
