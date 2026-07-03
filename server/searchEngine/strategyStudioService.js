@@ -28,6 +28,9 @@ const MAX_ITERATIONS_CEILING = 6;
 const OPTIMIZE_DEADLINE_MS = 25000;        // synchronous but time-guarded (well under a proxy 504)
 const DEFAULT_DATABASES = ['pubmed', 'openalex'];
 const MAX_DATABASES = 7;
+// 'probe' recall issues one external membership query PER seed, so hard-cap how many
+// a single request may probe — bounds external calls (prefer 'run' mode for big sets).
+const PROBE_MAX_SEEDS = 25;
 
 /* ── small utils ─────────────────────────────────────────────────────────── */
 const str = (v) => String(v == null ? '' : v);
@@ -393,6 +396,8 @@ export async function estimateRecallFor(pid, { source = 'run', runId = null, str
   if (!seeds.length) return { error: 'no_seeds' };
 
   let retrieved = [];
+  let probeCapped = false;
+  let probedCount = 0;
   if (source === 'run') {
     if (!runId) return { error: 'run_required' };
     const run = await prisma.pecanSearchRun.findUnique({
@@ -408,8 +413,11 @@ export async function estimateRecallFor(pid, { source = 'run', runId = null, str
     if (!finalStr) return { error: 'no_strategy' };
     const countFetcher = injected.countFetcher || await makeDefaultCountFetcher();
     // Per-seed membership: does the strategy (restricted to that PMID) return a hit?
-    for (const seed of seeds) {
-      if (!seed.pmid) continue; // probe requires a PMID
+    // Hard-capped at PROBE_MAX_SEEDS to bound external calls per request.
+    const probeable = seeds.filter((s) => s.pmid);
+    probeCapped = probeable.length > PROBE_MAX_SEEDS;
+    for (const seed of probeable.slice(0, PROBE_MAX_SEEDS)) {
+      probedCount += 1;
       const probeQuery = `(${finalStr}) AND ${seed.pmid}[uid]`;
       let c;
       try { c = await countFetcher('pubmed', probeQuery); } catch { c = null; }
@@ -446,7 +454,7 @@ export async function estimateRecallFor(pid, { source = 'run', runId = null, str
     },
   });
 
-  return { ...est, foundCount, source, suggestions };
+  return { ...est, foundCount, source, suggestions, probeCapped, probedCount, probeMax: PROBE_MAX_SEEDS };
 }
 
 /* ── PRISMA-S search documentation (extended report incl. the strategy trail) ─ */
