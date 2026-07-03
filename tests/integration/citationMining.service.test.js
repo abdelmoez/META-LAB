@@ -195,4 +195,27 @@ describe('P15 service — bounded citation chase', () => {
     const stillOpen = await prisma.citationCandidate.count({ where: { id: { in: cands.map((c) => c.id) }, imported: false } });
     expect(stillOpen).toBe(0);
   });
+
+  it('resolving a seed makes its references importable candidates (source=reference)', async () => {
+    // P15 recs — a resolved seed reference becomes a source:'reference' candidate
+    // so a seed review's own references import through the SAME path as chase
+    // candidates (closes the "references not directly importable" gap).
+    const ing = await ingestSeed(project.id, { title: 'ref-import-seed', filename: 'r.pdf', text: 'Root R. Anchor study. J Ref. 10.5555/refimp (2019).', user });
+    await resolveSeed(ing.seed.id, { resolver: makeStubResolver() });
+
+    const refCands = await prisma.citationCandidate.findMany({ where: { seedReviewId: ing.seed.id, source: 'reference' } });
+    expect(refCands.length).toBeGreaterThan(0);
+    expect(refCands[0].chaseJobId).toBeNull();               // came from resolution, not a chase
+    expect(refCands.some((c) => c.doi)).toBe(true);          // carries the resolved identity
+
+    // Re-resolving does NOT duplicate the reference candidate.
+    await resolveSeed(ing.seed.id, { resolver: makeStubResolver(), onlyPending: false });
+    const after = await prisma.citationCandidate.count({ where: { seedReviewId: ing.seed.id, source: 'reference' } });
+    expect(after).toBe(refCands.length);
+
+    // And it imports through the shared path.
+    const out = await importCandidates(project.id, refCands.map((c) => c.id), user);
+    expect(out.source).toBe('citation-mining');
+    expect(out.imported + out.skippedDuplicates).toBeGreaterThan(0);
+  });
 });

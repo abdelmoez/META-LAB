@@ -259,6 +259,44 @@ export async function resolveSeed(seedReviewId, opts = {}) {
         resolvedJson: JSON.stringify(res || {}).slice(0, 8000),
       },
     }).catch(() => { /* row vanished mid-run — ignore */ });
+
+    // P15 recs — a RESOLVED seed reference becomes an importable CitationCandidate
+    // (source 'reference'), so a seed review's own references can be deduped +
+    // imported through the SAME path as chase candidates (no separate import route).
+    if (status === 'resolved') {
+      const doi = normalizeDoi((res && res.doi) || '').slice(0, 200);
+      const pmid = normalizePmid((res && res.pmid) || '').slice(0, 50);
+      const oaId = bareOaId((res && res.openAlexId) || '').slice(0, 80);
+      const title = String((res && res.title) || r.title || '').slice(0, 1000);
+      const identity = doi || pmid || oaId || title.trim();
+      if (identity) {
+        const dup = await prisma.citationCandidate.findFirst({
+          where: {
+            metaLabProjectId: r.metaLabProjectId, seedReviewId, source: 'reference',
+            OR: [doi ? { doi } : null, pmid ? { pmid } : null, oaId ? { openAlexId: oaId } : null].filter(Boolean),
+          },
+          select: { id: true },
+        }).catch(() => null);
+        if (!dup) {
+          await prisma.citationCandidate.create({
+            data: {
+              id: uuid(),
+              metaLabProjectId: r.metaLabProjectId,
+              chaseJobId: null,
+              seedReviewId,
+              doi, pmid, openAlexId: oaId, title,
+              abstract: String((res && res.abstract) || '').slice(0, 6000),
+              year: String((res && res.year) || r.year || '').slice(0, 20),
+              journal: String((res && res.journal) || r.journal || '').slice(0, 300),
+              authorsJson: JSON.stringify(asArray((res && res.authors) || safeJson(r.authors, []))).slice(0, 4000),
+              publicationType: String((res && res.publicationType) || '').slice(0, 80),
+              source: 'reference',
+              provenanceJson: JSON.stringify({ fromReference: r.id, seedReviewId, origin: 'seed-reference' }).slice(0, 2000),
+            },
+          }).catch(() => {});
+        }
+      }
+    }
   }
   return summary;
 }

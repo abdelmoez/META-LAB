@@ -61,6 +61,8 @@ export default function ReferenceReview({ pid, seedId, readOnly, onChaseSeeds })
   const [summary, setSummary] = useState(null);       // last resolve summary
   const [dedup, setDedup] = useState(null);           // { [refId]: dedupStatus }
   const [sel, setSel] = useState(() => new Set());
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
 
   const load = useCallback(async () => {
     if (!seedId) return;
@@ -111,6 +113,21 @@ export default function ReferenceReview({ pid, seedId, readOnly, onChaseSeeds })
     finally { setChecking(false); }
   }, [pid, refs]);
 
+  // Import this seed review's RESOLVED references directly into screening. Resolving
+  // a reference creates a source:'reference' citation candidate server-side, so we
+  // land those through the same import path as chase candidates.
+  const importResolved = useCallback(async () => {
+    setImporting(true); setError(''); setImportResult(null);
+    try {
+      const d = await citationMiningApi.listCandidates(pid, { seedReviewId: seedId, imported: false });
+      const ids = ((d && d.candidates) || []).filter((c) => c.source === 'reference').map((c) => c.id);
+      if (!ids.length) { setError('No resolved references to import yet — resolve references first.'); return; }
+      const out = await citationMiningApi.importCandidates(pid, ids);
+      setImportResult(out);
+    } catch (e) { setError(e.status === 503 ? 'The citation-mining engine is not available.' : (e.message || 'Import failed.')); }
+    finally { setImporting(false); }
+  }, [pid, seedId]);
+
   const resolvedSelectable = useMemo(() => (refs || []).filter((r) => r.resolutionStatus === 'resolved'), [refs]);
   const toggle = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const selCount = sel.size;
@@ -130,6 +147,9 @@ export default function ReferenceReview({ pid, seedId, readOnly, onChaseSeeds })
           <Btn variant="primary" busy={resolving} onClick={resolve} disabled={!counts.pending}>
             <Icon name="refresh" size={13} /> Resolve references{counts.pending ? ` (${counts.pending})` : ''}
           </Btn>
+          <Btn variant="secondary" busy={importing} onClick={importResolved} disabled={!counts.resolved}>
+            <Icon name="download" size={13} /> Import resolved → screening{counts.resolved ? ` (${counts.resolved})` : ''}
+          </Btn>
         </div>
       ) : null}>
 
@@ -144,6 +164,12 @@ export default function ReferenceReview({ pid, seedId, readOnly, onChaseSeeds })
       {summary ? (
         <Note tone={summary.error ? 'warn' : 'success'}>
           Resolved {summary.resolved} of {summary.total} · {summary.notFound} not found · {summary.error} error{summary.error === 1 ? '' : 's'}.
+        </Note>
+      ) : null}
+
+      {importResult ? (
+        <Note tone="success">
+          Imported {importResult.imported} into screening · {importResult.skippedDuplicates} duplicate{importResult.skippedDuplicates === 1 ? '' : 's'} skipped{importResult.rejected ? ` · ${importResult.rejected} rejected` : ''}.
         </Note>
       ) : null}
 
