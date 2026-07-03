@@ -182,7 +182,7 @@ function h1(text, D, opts = {}) {
  * Build the manuscript .docx Blob.
  * @param {object} project   Project.data blob
  * @param {object} draft     normalized manuscript draft
- * @param {object} [opts]    { runMeta, prec, software, appVersion, includeFigures, tables, references, prismaResult, primary }
+ * @param {object} [opts]    { runMeta, prec, software, appVersion, includeFigures, tables, references, prismaResult, primary, gradeByOutcome }
  * @returns {Promise<Blob>}
  */
 export async function buildManuscriptDocx(project, draft, opts = {}) {
@@ -194,7 +194,9 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
   const primary = opts.primary || primaryAnalysis(project, { runMeta: opts.runMeta });
   const tables = opts.tables || {
     study: buildStudyCharacteristicsTable(project, { robByStudyId: opts.robByStudyId }),
-    sof: buildSummaryOfFindingsTable(project, { runMeta: opts.runMeta, prec }),
+    // P12 — thread the per-outcome GRADE certainty map so the SoF gains its Certainty
+    // (GRADE) column. Undefined when the gradeCertainty flag is off → column stays blank.
+    sof: buildSummaryOfFindingsTable(project, { runMeta: opts.runMeta, prec, gradeByOutcome: opts.gradeByOutcome }),
     prisma: buildPrismaCountsTable(prismaResult),
     rob: buildRobTable(project, opts.robOpts || {}),
     search: buildSearchStrategyTable(project, opts.searchOpts || {}),

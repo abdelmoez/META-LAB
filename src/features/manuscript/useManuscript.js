@@ -31,6 +31,7 @@ import {
   evaluateStaleness, primaryAnalysis,
 } from '../../research-engine/manuscript/index.js';
 import { generateDraft } from '../../research-engine/manuscript/draft.js';
+import { gradeCertaintyEnabled, sofCertaintyMap } from '../../frontend/workspace/gradeApi.js';
 import * as MS from './manuscriptState.js';
 
 export function useManuscript(project, upd) {
@@ -161,7 +162,30 @@ export function useManuscript(project, upd) {
     [effectiveDrafts, activeId],
   );
 
-  const genOpts = useMemo(() => ({ runMeta, prec: project && project.analysisPrecision }), [project]);
+  // P12 — GRADE Summary-of-Findings certainty per outcome. When the `gradeCertainty`
+  // flag is ON we fetch the SoF once and flatten it to a plain { [pair.key]: certainty }
+  // map that the SoF table builder reads (opts.gradeByOutcome). When the flag is OFF the
+  // endpoint 404s / we never fetch, so `gradeByOutcome` stays null and the certainty
+  // column is left blank — identical to the pre-P12 behaviour.
+  const [gradeByOutcome, setGradeByOutcome] = useState(null);
+  const pid = project && project.id;
+  useEffect(() => {
+    let alive = true;
+    if (!pid) { setGradeByOutcome(null); return undefined; }
+    (async () => {
+      try {
+        if (!(await gradeCertaintyEnabled())) { if (alive) setGradeByOutcome(null); return; }
+        const { map } = await sofCertaintyMap(pid);
+        if (alive) setGradeByOutcome(map && Object.keys(map).length ? map : null);
+      } catch { if (alive) setGradeByOutcome(null); }
+    })();
+    return () => { alive = false; };
+  }, [pid]);
+
+  const genOpts = useMemo(
+    () => ({ runMeta, prec: project && project.analysisPrecision, ...(gradeByOutcome ? { gradeByOutcome } : {}) }),
+    [project, gradeByOutcome],
+  );
 
   /* ── derived engine data for the panels ── */
   const prismaCounts = useMemo(
@@ -271,6 +295,7 @@ export function useManuscript(project, upd) {
     drafts: effectiveDrafts, activeDraft, activeId, setActiveId,
     saveState, lastError, retry,
     runMeta,
+    gradeByOutcome,
     prismaCounts, primary, tables, references, readiness, insights, staleness,
     updateSection, generate, refreshBlock, refreshAllBlocks,
     setMeta, setMetaDebounced, setStatement, updateDraft, addDraft, removeDraft,

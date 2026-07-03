@@ -2097,3 +2097,61 @@ model SearchRecallReport {
 
   @@index([metaLabProjectId])
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P12 — GRADE certainty of evidence + Summary of Findings (flag `gradeCertainty`,
+// OFF). A per-OUTCOME, audited, lockable certainty layer that sits ALONGSIDE the
+// legacy blob-based (primary-outcome-only) GRADE tab — the legacy tab is untouched
+// when the flag is off. Each row is one GRADE assessment for one outcome pair
+// (getOutcomePairs key = "outcome|||timepoint"). Domain ratings are stored engine-
+// agnostically (CINeMA-ready) as JSON; the pure engine (src/research-engine/grade)
+// computes the certainty level. Suggestions are NEVER auto-final — a domain becomes
+// authoritative only when a human SAVES it (source:'manual'). Every save / lock /
+// unlock writes a GradeAuditLog row; lock is reversible + logged. Brand-new empty
+// tables → `prisma db push` additive-safe; bare-string ids (no cross-project FKs);
+// all non-key columns nullable or @default; JSON stored as String.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// One GRADE certainty assessment for one outcome of one META·LAB project. Unique per
+// (project, outcomeKey). `domainsJson` holds the per-domain ratings the reviewer has
+// confirmed (source:'manual') or that were carried from an engine suggestion
+// (source:'auto'); the certainty level is recomputed by the pure engine on every save.
+model GradeOutcomeAssessment {
+  id               String    @id @default(uuid())
+  metaLabProjectId String
+  outcomeKey       String // stable per-outcome key (getOutcomePairs: "outcome|||timepoint")
+  outcomeLabel     String    @default("")
+  startLevel       Int       @default(4) // numeric start (4=High/RCT … 2=Low/observational)
+  startLevelSource String    @default("") // e.g. "design:RCT" | "manual"
+  domainsJson      String    @default("{}") // JSON: { [domainId]: { rating, source:'auto'|'manual', note } }
+  suggestionsJson  String    @default("{}") // JSON: engine suggestion snapshot at save time (provenance)
+  certaintyLevel   String    @default("") // e.g. "high" | "moderate" | "low" | "very_low"
+  certaintyNumeric Int? // 1..4 (null until computed)
+  robSignature     String    @default("") // RoB→GRADE staleness signature captured at save time
+  locked           Boolean   @default(false)
+  lockedById       String?
+  lockedByName     String?
+  lockedAt         DateTime?
+  notes            String    @default("")
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([metaLabProjectId, outcomeKey])
+  @@index([metaLabProjectId])
+}
+
+// Append-only audit trail for every GRADE change (save / lock / unlock). before/after
+// snapshots make each certainty decision fully reconstructable.
+model GradeAuditLog {
+  id               String   @id @default(uuid())
+  metaLabProjectId String
+  outcomeKey       String   @default("")
+  action           String   @default("") // SAVE | LOCK | UNLOCK
+  beforeJson       String   @default("{}")
+  afterJson        String   @default("{}")
+  changedById      String?
+  changedByName    String?
+  createdAt        DateTime @default(now())
+
+  @@index([metaLabProjectId])
+}

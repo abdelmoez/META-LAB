@@ -52,16 +52,16 @@ export function ManuscriptWorkspace({ project, upd }) {
   const onExportWord = useCallback(() => runExport('word', async () => {
     const { buildManuscriptDocx } = await import('./export/manuscriptDocx.js');
     const { downloadBlob } = await import('../../frontend/components/exportCore.js');
-    const blob = await buildManuscriptDocx(project, m.activeDraft, { runMeta: m.runMeta });
+    const blob = await buildManuscriptDocx(project, m.activeDraft, { runMeta: m.runMeta, gradeByOutcome: m.gradeByOutcome });
     downloadBlob(blob, `${safeName(project.name)}.docx`);
-  }), [runExport, project, m.activeDraft, m.runMeta]);
+  }), [runExport, project, m.activeDraft, m.runMeta, m.gradeByOutcome]);
 
   const onExportRepro = useCallback(() => runExport('repro', async () => {
     const { buildReproPackage } = await import('./export/manuscriptRepro.js');
     const { downloadBlob } = await import('../../frontend/components/exportCore.js');
-    const blob = await buildReproPackage(project, m.activeDraft, { runMeta: m.runMeta, appVersion: window.__APP_VERSION__ });
+    const blob = await buildReproPackage(project, m.activeDraft, { runMeta: m.runMeta, appVersion: window.__APP_VERSION__, gradeByOutcome: m.gradeByOutcome });
     downloadBlob(blob, `${safeName(project.name)}-reproducibility.zip`);
-  }), [runExport, project, m.activeDraft, m.runMeta]);
+  }), [runExport, project, m.activeDraft, m.runMeta, m.gradeByOutcome]);
 
   const onPrismaChecklist = useCallback(() => runExport('prisma', async () => {
     const cx = await import('./export/checklistExport.js');

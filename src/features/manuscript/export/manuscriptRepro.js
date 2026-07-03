@@ -60,7 +60,7 @@ function analysisDatasetCsv(project) {
  * Build the reproducibility package Blob (.zip).
  * @param {object} project   Project.data blob
  * @param {object} draft     normalized manuscript draft
- * @param {object} [opts]    { runMeta, prec, appVersion, engineVersions, generatedAt, generatedBy, software }
+ * @param {object} [opts]    { runMeta, prec, appVersion, engineVersions, generatedAt, generatedBy, software, gradeByOutcome }
  * @returns {Promise<Blob>}
  */
 export async function buildReproPackage(project, draft, opts = {}) {
@@ -75,9 +75,10 @@ export async function buildReproPackage(project, draft, opts = {}) {
 
   const entries = [];
 
-  // manuscript.docx (best-effort; never blocks the bundle)
+  // manuscript.docx (best-effort; never blocks the bundle). P12 — forward the GRADE
+  // certainty map so the bundled manuscript's SoF gets its Certainty (GRADE) column.
   try {
-    const docxBlob = await buildManuscriptDocx(project, draft, { runMeta: opts.runMeta, prec: opts.prec, prismaResult, primary, includeFigures: true });
+    const docxBlob = await buildManuscriptDocx(project, draft, { runMeta: opts.runMeta, prec: opts.prec, prismaResult, primary, includeFigures: true, gradeByOutcome: opts.gradeByOutcome });
     entries.push({ name: 'manuscript.docx', blob: docxBlob });
   } catch (e) {
     warnings.push(`Manuscript .docx could not be generated for the bundle: ${e && e.message}`);

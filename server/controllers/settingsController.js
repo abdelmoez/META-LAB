@@ -155,6 +155,16 @@ const DEFAULTS = {
     // requires all three ON, so it is inert without its dependencies regardless of how
     // the flags are toggled. Surfaces in Ops › Flags automatically.
     searchStrategyStudio: false,
+    // P12 — GRADE certainty of evidence + Summary of Findings. Default OFF: the
+    // /api/grade/projects/:pid/* endpoints 404 (existence-hidden) and the new
+    // per-outcome GRADE surfaces are hidden — the legacy blob-based (primary-outcome
+    // only) GRADE tab is unaffected. When ON, each outcome gets its own audited,
+    // lockable certainty assessment: the deterministic engine SUGGESTS domain ratings
+    // (risk of bias, inconsistency, indirectness, imprecision, publication bias) from
+    // the meta-analysis + RoB, but nothing is final until a reviewer saves it, and a
+    // Summary-of-Findings table can be exported (json/csv/html). Surfaces in Ops ›
+    // Flags automatically.
+    gradeCertainty: false,
   }),
   // 66.md P5 — global (admin) AI-extraction policy. requireHumanValidation is a
   // hard product rule (suggestions can never auto-commit) surfaced here read-only.

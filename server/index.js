@@ -22,6 +22,7 @@ import studiesRouter     from './routes/studies.js';
 import recordsRouter     from './routes/records.js';
 import metaRouter        from './routes/meta.js';
 import nmaRouter         from './routes/nma.js';
+import gradeRouter       from './routes/grade.js';
 import validationRouter  from './routes/validation.js';
 import importExportRouter from './routes/importExport.js';
 import profileRouter     from './routes/profile.js';
@@ -363,6 +364,10 @@ app.use('/api/projects/:id/studies', studiesRouter);
 app.use('/api/projects/:id/records', recordsRouter);
 app.use('/api/meta',                 metaRouter);
 app.use('/api/nma',                  nmaRouter);
+// ── P12 GRADE certainty + Summary of Findings (grade.md). requireAuth at the mount;
+// each handler additionally gates on the `gradeCertainty` flag (default OFF → 404)
+// and enforces project permission. The pure engine loads lazily → 503 if absent.
+app.use('/api/grade',                requireAuth, gradeRouter);
 app.use('/api/validation',           validationRouter);
 // Bell polling endpoint — own mount, NEVER under the rate-limited /api/auth
 // or /api/admin routers (requireAuth applied inside the router).

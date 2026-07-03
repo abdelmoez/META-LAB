@@ -29,6 +29,7 @@ import { AI_FEATURES_ENABLED, callClaude } from "../../services/aiService.js";
 import { C, btnS, inp, tagS } from "../ui/styles.js";
 import { SectionHeader, InfoBox, ProgressBar, MATH_FONT } from "../ui/primitives.jsx";
 import { GRADE_OPTIONS, gradeSuggestions } from "../projectHelpers.js";
+import { gradeCertaintyEnabled } from "../gradeApi.js";
 
 /* fmtDate — verbatim copy of the monolith module-local helper (the monolith
    keeps its own; this copy keeps the moved code self-contained). */
@@ -73,8 +74,38 @@ export function ReportTab({project,upd}){
 }
 
 /* ════════════ TAB: GRADE ════════════ */
-/* GRADE_OPTIONS + gradeSuggestions live in projectHelpers.js (imported above). */
-export function GRADETab({project,upd}){
+/* GRADE_OPTIONS + gradeSuggestions live in projectHelpers.js (imported above).
+
+   P12 dispatcher: `GRADETab` (exported, consumed by both the legacy Workspace and
+   the Stitch shell) self-detects the `gradeCertainty` flag. Flag OFF → render the
+   EXISTING legacy body (`LegacyGRADETab`) 100% unchanged (primary-outcome-only,
+   blob-based, RoB-synced). Flag ON → render the NEW per-outcome, API-driven
+   `GradeCertaintyPanel` (lazy-loaded so it — and the grade engine it pulls — never
+   enter the main bundle while the flag is off). The legacy code path below is
+   untouched. */
+const GradeCertaintyPanelLazy = lazy(() =>
+  import("./gradeCertainty/GradeCertaintyPanel.jsx").then((m) => ({ default: m.GradeCertaintyPanel })));
+
+export function GRADETab(props){
+  const [flag, setFlag] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    gradeCertaintyEnabled().then((v) => { if (alive) setFlag(v); }).catch(() => { if (alive) setFlag(false); });
+    return () => { alive = false; };
+  }, []);
+  if (flag === null) return <div style={{padding:24,color:C.muted,fontSize:13}}>Loading GRADE…</div>;
+  if (flag) {
+    return (
+      <Suspense fallback={<div style={{padding:24,color:C.muted,fontSize:13}}>Loading GRADE…</div>}>
+        <GradeCertaintyPanelLazy {...props}/>
+      </Suspense>
+    );
+  }
+  return <LegacyGRADETab {...props}/>;
+}
+
+/* ── Legacy GRADE body (flag OFF) — unchanged from the original GRADETab. ── */
+function LegacyGRADETab({project,upd}){
   const grade=project.grade||{};
   const prec=project?.analysisPrecision;
   const robSync=grade.robSync||null;
