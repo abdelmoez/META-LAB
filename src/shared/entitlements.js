@@ -37,12 +37,12 @@ export const ENTITLEMENT_KEYS = [
   { key: 'screening.import',              kind: 'boolean', group: 'Screening',      label: 'Import records' },
   { key: 'screening.maxRecordsPerProject',kind: 'limit',   group: 'Screening',      label: 'Max records per project' },
   { key: 'screening.export',              kind: 'boolean', group: 'Screening',      label: 'Export records' },
-  { key: 'screening.aiScoring',           kind: 'boolean', group: 'Screening',      label: 'AI screening' },
+  { key: 'screening.aiScoring',           kind: 'boolean', group: 'Screening',      label: 'Guided screening' },
   { key: 'screening.validationMetrics',   kind: 'boolean', group: 'Screening',      label: 'Validation metrics' },
   { key: 'screening.benchmarkTools',      kind: 'boolean', group: 'Screening',      label: 'Benchmark tools' },
   // Extraction
   { key: 'extraction.manual',             kind: 'boolean', group: 'Extraction',     label: 'Manual extraction' },
-  { key: 'extraction.aiAssist',           kind: 'boolean', group: 'Extraction',     label: 'AI extraction assist' },
+  { key: 'extraction.aiAssist',           kind: 'boolean', group: 'Extraction',     label: 'Extraction assist' },
   { key: 'extraction.dualExtraction',     kind: 'boolean', group: 'Extraction',     label: 'Dual extraction + adjudication' },
   { key: 'extraction.tableParsing',       kind: 'boolean', group: 'Extraction',     label: 'Table parsing' },
   // Meta-analysis
@@ -101,7 +101,7 @@ export const DEFAULT_TIERS = [
     id: 'plus',
     name: 'plus',
     displayName: 'Plus',
-    description: 'For active researchers: AI screening, structured extraction and team collaboration.',
+    description: 'For active researchers: guided screening, structured extraction and team collaboration.',
     sortOrder: 1,
     entitlements: {
       'projects.maxActiveProjects': 10,

@@ -29,7 +29,7 @@ import ElementsEditor from './ElementsEditor.jsx';
 import ValidationReportModal from './ValidationReportModal.jsx';
 
 const SAVE_DEBOUNCE_MS = 800;
-const RIGHT_TABS = [['ai', 'AI assist'], ['tables', 'Tables'], ['consensus', 'Consensus']];
+const RIGHT_TABS = [['ai', 'Assist'], ['tables', 'Tables'], ['consensus', 'Consensus']];
 
 export default function ExtractionWorkspace({ projectId }) {
   const mlpid = projectId;
@@ -227,7 +227,7 @@ export default function ExtractionWorkspace({ projectId }) {
       setRejectedKeys(new Set());
       refreshOverview();
     } catch (e) {
-      setAiError(e.message || 'AI suggestion failed');
+      setAiError(e.message || 'Suggestion failed');
     } finally {
       setAiLoading(false);
     }
@@ -372,12 +372,12 @@ export default function ExtractionWorkspace({ projectId }) {
         <div>
           <div style={{ fontSize: 16, fontWeight: 800, color: C.txt }}>Structured extraction</div>
           <div style={{ fontSize: 12, color: C.muted, marginTop: 2 }}>
-            Element-based extraction with provenance, dual review, and AI assist. Nothing AI-suggested is saved until you accept it.
+            Element-based extraction with provenance, dual review, and guided assist. Nothing suggested is saved until you accept it.
           </div>
         </div>
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
           {canAdjudicate && (
-            <button onClick={() => setShowReport(true)} style={{ ...btnS('ghost'), fontSize: 11.5 }} title="How AI suggestions compare to human consensus">AI accuracy report</button>
+            <button onClick={() => setShowReport(true)} style={{ ...btnS('ghost'), fontSize: 11.5 }} title="How suggestions compare to human consensus">Accuracy report</button>
           )}
           {hasForm && canEdit && (
             <button onClick={() => { setFormProblems(null); setShowForm(true); }} style={{ ...btnS('ghost'), fontSize: 12 }}>Form</button>
@@ -474,7 +474,7 @@ export default function ExtractionWorkspace({ projectId }) {
             </div>
             <div style={{ overflowY: 'auto', flex: 1, minHeight: 0, paddingRight: 2 }}>
               {!selectedId ? (
-                <div style={{ fontSize: 12, color: C.dim }}>Select a study to use AI assist, tables, and consensus.</div>
+                <div style={{ fontSize: 12, color: C.dim }}>Select a study to use guided assist, tables, and consensus.</div>
               ) : rightTab === 'ai' ? (
                 <AiAssistPanel
                   elementsById={elementsById}

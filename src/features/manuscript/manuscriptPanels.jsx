@@ -467,7 +467,7 @@ export function EditorPanel({ m, exporters }) {
         </div>
         <div style={{ marginTop: 10, fontSize: 10.5, color: C.muted, lineHeight: 1.6 }}>
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: C.grn }} /> Edited</span>{'  '}
-          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginLeft: 8 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: C.yel }} /> AI draft</span>{'  '}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginLeft: 8 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: C.yel }} /> Auto-draft</span>{'  '}
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, marginLeft: 8 }}><span style={{ width: 8, height: 8, borderRadius: '50%', background: C.dim, border: `1px solid ${C.brd2}` }} /> Empty</span>
         </div>
       </div>
@@ -477,7 +477,7 @@ export function EditorPanel({ m, exporters }) {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <h3 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.txt }}>{(SECTION_TYPES.find((s) => s.id === sel) || {}).label}</h3>
-            {status === 'ai-draft' && <span style={tagS('yellow')}>AI draft — verify</span>}
+            {status === 'ai-draft' && <span style={tagS('yellow')}>Auto-draft — verify</span>}
             {status === 'edited' && <span style={tagS('green')}>Edited</span>}
           </div>
           <button onClick={() => setToolsOpen((v) => !v)} aria-label={toolsOpen ? 'Hide tools panel' : 'Show tools panel'}

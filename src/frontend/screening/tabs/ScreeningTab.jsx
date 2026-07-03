@@ -1252,7 +1252,7 @@ function RightColumn({
 
       {/* AI Screening (feature flag: aiScreening) */}
       {ai?.enabled && (
-        <Section title="AI Screening" open={open.ai} onToggle={() => toggle('ai')}>
+        <Section title="Guided Screening" open={open.ai} onToggle={() => toggle('ai')}>
           <AiStatusPanel ai={ai} />
         </Section>
       )}

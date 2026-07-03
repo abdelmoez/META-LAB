@@ -33,14 +33,14 @@ export function predictionLabel(score, opts = {}) {
 }
 
 export const QUEUE_MODES = Object.freeze([
-  { key: 'default', label: 'Manual order', help: 'Import order (no AI reordering).' },
-  { key: 'ai_relevance', label: 'Most likely include', help: 'Highest AI relevance first.' },
+  { key: 'default', label: 'Manual order', help: 'Import order (no automated reordering).' },
+  { key: 'ai_relevance', label: 'Most likely include', help: 'Highest relevance first.' },
   { key: 'ai_uncertain', label: 'Most informative', help: 'Most uncertain records first (active learning).' },
   { key: 'exclusion_triage', label: 'Exclusion triage', help: 'Likely excludes grouped for fast review.' },
   { key: 'conflicts_first', label: 'Conflicts first', help: 'Reviewer disagreements first.' },
   { key: 'duplicates_first', label: 'Duplicates first', help: 'Likely duplicates first.' },
   { key: 'pico_gap', label: 'PICO gaps', help: 'Weakest PICO match first — hardest calls.' },
-  { key: 'missing_abstract', label: 'Missing abstract', help: 'Records the AI cannot read well.' },
+  { key: 'missing_abstract', label: 'Missing abstract', help: 'Records the engine cannot read well.' },
 ]);
 
 const COMPARATORS = {

@@ -87,7 +87,7 @@ export function AiReviewBanner() {
       borderLeft: `3px solid ${C.yel}`, borderRadius: 8, padding: '9px 12px', marginBottom: 12,
       fontSize: 11.5, color: C.txt, lineHeight: 1.5,
     }}>
-      <strong style={{ color: C.yel }}>⚠ AI suggestions require human review</strong> — nothing is saved until you accept.
+      <strong style={{ color: C.yel }}>⚠ Suggestions require human review</strong> — nothing is saved until you accept.
     </div>
   );
 }

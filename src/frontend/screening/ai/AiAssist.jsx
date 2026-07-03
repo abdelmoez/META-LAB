@@ -14,7 +14,7 @@ import { QUEUE_MODES } from '../../../research-engine/screening/ai/ranking.js';
 // enforces it, so this is UX-only (fail-open) — hide dead controls, explain why.
 import { useEntitlements, TierLimitNotice } from '../../entitlements';
 
-const AI_SCORING_LOCKED_MSG = 'AI Screening is available on the Plus plan and above.';
+const AI_SCORING_LOCKED_MSG = 'Guided Screening is available on the Plus plan and above.';
 
 const pct = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
 
@@ -64,11 +64,11 @@ export function ScoreBadge({ score, band, prediction }) {
   if (score == null) return null;
   const color = BAND_COLOR[band] || C.muted;
   return (
-    <span title={`AI relevance ${pct(score)}${prediction ? ` · ${PRED_LABEL[prediction] || prediction}` : ''}`}
+    <span title={`Relevance ${pct(score)}${prediction ? ` · ${PRED_LABEL[prediction] || prediction}` : ''}`}
       style={{
         fontFamily: MONO, fontSize: 10, fontWeight: 700, color, background: alpha(color, 0.14),
         border: `1px solid ${alpha(color, 0.45)}`, borderRadius: 5, padding: '1px 5px', letterSpacing: '.02em',
-      }}>AI {Math.round(score * 100)}</span>
+      }}>{Math.round(score * 100)}</span>
   );
 }
 
@@ -115,13 +115,13 @@ export function AiScoreCard({ ai, record, decided }) {
   const card = (children) => (
     <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: 14, fontFamily: FONT }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
-        <span style={{ fontFamily: MONO, fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase', color: C.acc, fontWeight: 700 }}>AI relevance</span>
+        <span style={{ fontFamily: MONO, fontSize: 11, letterSpacing: '.08em', textTransform: 'uppercase', color: C.acc, fontWeight: 700 }}>Relevance</span>
         <span style={{ flex: 1 }} />
         {/* 58.md §8 — clearly flag (+ allow reverting) the admin testing override that
             shows scores below the 50-screened threshold. */}
         {ai.gate?.overrideApplied ? (
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            <Chip color={C.gold} title="An admin is previewing AI scores before the threshold is reached (testing).">Admin preview</Chip>
+            <Chip color={C.gold} title="An admin is previewing relevance scores before the threshold is reached (testing).">Admin preview</Chip>
             <button type="button" onClick={() => ai.setOverride?.(false)}
               title="Re-apply the threshold and hide scores again"
               style={{ background: 'none', border: 'none', color: C.muted, fontSize: 11, fontFamily: FONT, cursor: 'pointer', textDecoration: 'underline' }}>Hide</button>
@@ -138,7 +138,7 @@ export function AiScoreCard({ ai, record, decided }) {
   if (ai.gate?.scoresHidden) {
     return card(
       <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.5 }}>
-        AI relevance scores appear once {ai.gate.threshold} articles have been screened — they
+        Relevance scores appear once {ai.gate.threshold} articles have been screened — they
         need enough human decisions to be reliable.
         <span style={{ fontFamily: MONO, color: C.acc, fontWeight: 700 }}> {ai.gate.screenedCount}/{ai.gate.threshold} screened.</span>
         {ai.gate.canOverride ? (
@@ -154,7 +154,7 @@ export function AiScoreCard({ ai, record, decided }) {
   if (blind && !decided) {
     return card(
       <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.5 }}>
-        AI suggestions are hidden until you record your own decision (independent screening is enabled for this project).
+        Suggestions are hidden until you record your own decision (independent screening is enabled for this project).
       </div>
     );
   }
@@ -162,7 +162,7 @@ export function AiScoreCard({ ai, record, decided }) {
   if (!score) {
     return card(
       <div style={{ fontSize: 12.5, color: C.muted }}>
-        No AI score yet. {ai.status?.canRun ? 'Run AI scoring from the AI Screening panel.' : 'Ask a project leader to run AI scoring.'}
+        No relevance score yet. {ai.status?.canRun ? 'Run scoring from the Guided Screening panel.' : 'Ask a project leader to run scoring.'}
       </div>
     );
   }
@@ -377,11 +377,11 @@ export function AiQueueBar({ ai, mode, onMode, band, onBand, onRefreshRankings }
   };
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-      <span style={{ fontFamily: MONO, fontSize: 10, color: C.acc, letterSpacing: '.06em' }}>AI QUEUE</span>
-      <select value={mode} onChange={e => onMode(e.target.value)} style={sel} title="Reorder the worklist by AI signal">
+      <span style={{ fontFamily: MONO, fontSize: 10, color: C.acc, letterSpacing: '.06em' }}>QUEUE</span>
+      <select value={mode} onChange={e => onMode(e.target.value)} style={sel} title="Reorder the worklist by relevance">
         {QUEUE_MODES.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
       </select>
-      <select value={band || 'all'} onChange={e => onBand(e.target.value)} style={sel} title="Filter loaded records by AI score band">
+      <select value={band || 'all'} onChange={e => onBand(e.target.value)} style={sel} title="Filter loaded records by relevance band">
         <option value="all">All scores</option>
         <option value="very_high">Very high (80+)</option>
         <option value="high">High (60–80)</option>
@@ -397,7 +397,7 @@ export function AiQueueBar({ ai, mode, onMode, band, onBand, onRefreshRankings }
         return (
           <MiniBtn onClick={() => ai.run()} disabled={aiBusy || aiScoringLocked}
             title={aiScoringLocked ? AI_SCORING_LOCKED_MSG : 'Train on current decisions and re-score all records (runs in the background)'}>
-            {aiBusy ? (pct != null ? `Scoring… ${pct}%` : 'Scoring…') : 'Run AI scoring'}
+            {aiBusy ? (pct != null ? `Scoring… ${pct}%` : 'Scoring…') : 'Run scoring'}
           </MiniBtn>
         );
       })()}
@@ -706,7 +706,7 @@ function ValidationSampleBlock({ ai, canConfigure, unbiasedCV }) {
   const sourceBadge =
     source === 'random' ? <Chip color={C.grn} title="All labeled records come from a random sample — metrics are unbiased.">Unbiased</Chip> :
     source === 'mixed' ? <Chip color={C.gold} title="Some labeled records are from the random sample, some from prioritized screening.">Mixed</Chip> :
-    source === 'prioritized' ? <Chip color={C.gold} title="Labels come from prioritized (AI-ordered) screening — metrics may be optimistic.">Prioritized — may be biased</Chip> :
+    source === 'prioritized' ? <Chip color={C.gold} title="Labels come from prioritized (model-ordered) screening — metrics may be optimistic.">Prioritized — may be biased</Chip> :
     null;
 
   return (
@@ -870,7 +870,7 @@ export function AiStatusPanel({ ai }) {
       {s?.canConfigure && <AiPolicyControls ai={ai} />}
 
       <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, borderTop: `1px solid ${C.brd}`, paddingTop: 8 }}>
-        AI suggestions are assistive. Every record still requires the project's normal human review — the engine never includes or excludes on its own.
+        Suggestions are assistive. Every record still requires the project's normal human review — the engine never includes or excludes on its own.
       </div>
     </div>
   );
@@ -884,14 +884,14 @@ function AiPolicyControls({ ai }) {
 
   return (
     <div style={{ borderTop: `1px solid ${C.brd}`, paddingTop: 8 }}>
-      <div style={{ fontSize: 10.5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>Project AI policy</div>
+      <div style={{ fontSize: 10.5, color: C.muted, textTransform: 'uppercase', letterSpacing: '.05em', marginBottom: 6 }}>Project screening policy</div>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: C.txt2, marginBottom: 6, cursor: 'pointer' }}>
         <input type="checkbox" checked={!!p.enabled} disabled={busy} onChange={e => set({ enabled: e.target.checked })} />
-        AI screening enabled for this project
+        Guided screening enabled for this project
       </label>
       <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: C.txt2, marginBottom: 6, cursor: 'pointer' }}>
         <input type="checkbox" checked={!!p.blindFromAi} disabled={busy} onChange={e => set({ blindFromAi: e.target.checked })} />
-        Hide AI scores until the reviewer decides (independent screening)
+        Hide relevance scores until the reviewer decides (independent screening)
       </label>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: C.txt2 }}>
         <span>Policy</span>

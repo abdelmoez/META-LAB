@@ -179,7 +179,7 @@ export function crossValidatePerRecord(args = {}) {
   }
   if (labeled.length < minLabeledToScore) {
     return allNotAvailable('below_min_screened',
-      `AI relevance scores become available after ${minLabeledToScore} screened (include/exclude) records — currently ${labeled.length}.`);
+      `Relevance scores become available after ${minLabeledToScore} screened (include/exclude) records — currently ${labeled.length}.`);
   }
 
   // Fold count: clamp to class sizes, then require every TRAINING split to still

@@ -37,7 +37,7 @@ export default function ConsensusPanel({ consensus, elementsById }) {
                 {c.armKey ? <span style={{ color: C.dim, fontWeight: 400 }}> · {c.armKey}</span> : null}
               </span>
               <Chip tone={SOURCE_TONE[c.source] || 'muted'}>{SOURCE_LABEL[c.source] || c.source}</Chip>
-              {c.aiAssisted && <Chip tone="amber" title="Derived, at least in part, from an AI suggestion">AI-assisted</Chip>}
+              {c.aiAssisted && <Chip tone="amber" title="Derived, at least in part, from a suggestion">Assisted</Chip>}
             </div>
             <div style={{ fontSize: 13, fontFamily: "'IBM Plex Mono',monospace", color: C.acc }}>
               {el ? renderValue(el, c.value) : JSON.stringify(c.value)}

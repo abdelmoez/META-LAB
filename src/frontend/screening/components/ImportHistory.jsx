@@ -160,7 +160,7 @@ export default function ImportHistory({ pid, onChanged }) {
             <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 10 }}>Delete dataset?</div>
             <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.6, marginBottom: 12 }}>
               This permanently removes the dataset <strong style={{ color: C.txt }}>{target.filename || '(unnamed)'}</strong> and all
-              of its studies. Their screening decisions, conflicts, duplicate-group memberships and AI scores are deleted too. PRISMA
+              of its studies. Their screening decisions, conflicts, duplicate-group memberships and relevance scores are deleted too. PRISMA
               counts and screening analytics will be recalculated. <strong style={{ color: C.red }}>This cannot be undone.</strong>
             </div>
             <div style={{ background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '10px 13px', marginBottom: 14, fontSize: 12, color: C.txt2 }}>

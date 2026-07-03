@@ -84,7 +84,7 @@ export default function StudyList({ studies, selectedId, onSelect, loading, requ
                   {row.myValueCount > 0 && <Chip tone="blue" title="Values I have entered">mine: {row.myValueCount}</Chip>}
                   {row.consensusCount > 0 && <Chip tone="green" title="Consensus values">consensus: {row.consensusCount}</Chip>}
                   {row.suggestionsPending > 0 && (
-                    <Chip tone="purple" title="Unreviewed AI suggestions">AI: {row.suggestionsPending}</Chip>
+                    <Chip tone="purple" title="Unreviewed suggestions">suggested: {row.suggestionsPending}</Chip>
                   )}
                 </div>
               </button>

@@ -81,7 +81,7 @@ export default function AiAssistPanel({
 
       {!aiEnabled && (
         <div style={{ fontSize: 12, color: C.muted, lineHeight: 1.5 }}>
-          AI extraction assist is disabled by the administrator. You can still extract values manually in the form.
+          Extraction assist is disabled by the administrator. You can still extract values manually in the form.
         </div>
       )}
 
@@ -101,7 +101,7 @@ export default function AiAssistPanel({
             disabled={disabled || loading}
             style={{ ...btnS('primary'), fontSize: 12, opacity: (disabled || loading) ? 0.6 : 1 }}
           >
-            {loading ? 'Generating…' : 'Suggest values (AI)'}
+            {loading ? 'Generating…' : 'Suggest values'}
           </button>
         </>
       )}
@@ -138,7 +138,7 @@ export default function AiAssistPanel({
 
       {aiEnabled && !loading && payload.length === 0 && !error && (
         <div style={{ fontSize: 11.5, color: C.dim, lineHeight: 1.5, marginTop: 2 }}>
-          No suggestions yet. Click <strong>Suggest values (AI)</strong> to generate a set to review.
+          No suggestions yet. Click <strong>Suggest values</strong> to generate a set to review.
         </div>
       )}
     </div>

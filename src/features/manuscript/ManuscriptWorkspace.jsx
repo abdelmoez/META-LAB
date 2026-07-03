@@ -124,7 +124,7 @@ export function ManuscriptWorkspace({ project, upd }) {
         display: 'flex', gap: 10, alignItems: 'center',
       }}>
         <Icon name="alertTriangle" size={15} />
-        <span><strong style={{ color: C.yel }}>AI draft</strong> — verify all content and numbers against your extracted data before submission.</span>
+        <span><strong style={{ color: C.yel }}>Auto-draft</strong> — verify all content and numbers against your extracted data before submission.</span>
       </div>
 
       {/* sub-tab bar */}

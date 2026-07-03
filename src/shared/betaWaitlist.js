@@ -76,7 +76,7 @@ export const WAITLIST_INTERESTS = [
   'Meta-analysis & forest plots',
   'Team collaboration',
   'Reporting & export (PRISMA)',
-  'AI-assisted screening',
+  'Guided screening',
 ];
 
 export const PRIMARY_USES = [

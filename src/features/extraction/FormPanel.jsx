@@ -101,7 +101,7 @@ function FieldRow({ element, armKey, armLabel, entry, disabled, onChange, onProv
       </div>
       {isAi && (
         <span style={{ fontSize: 10, color: C.purp }}>
-          {entry.origin === 'ai_accepted' ? 'From an accepted AI suggestion' : 'Edited from an AI suggestion'}
+          {entry.origin === 'ai_accepted' ? 'From an accepted suggestion' : 'Edited from a suggestion'}
         </span>
       )}
       {showProv && (

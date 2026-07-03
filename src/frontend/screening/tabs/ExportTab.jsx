@@ -146,7 +146,7 @@ export default function ExportTab({ pid }) {
         CSV/JSON exports include the record metadata, <strong style={{ color: C.txt2 }}>your</strong> decision with its
         timestamp, per-reviewer decisions and timestamps (reviewer names are replaced by anonymous ordinals under
         blind mode), the record's conflict/consensus status, duplicate group id + primary flag, and — for validation
-        studies — cross-validated (held-out) AI relevance columns. Existing columns never move; new ones are appended.
+        studies — cross-validated (held-out) relevance columns. Existing columns never move; new ones are appended.
       </div>
 
       <ExportDialog open={!!expItem} onClose={() => setExpItem(null)} item={expItem} />

@@ -53,7 +53,7 @@ export class OpsPage {
     settings: /App Settings/i,
     style: /^Appearance$/i,
     flags: /Feature Flags/i,
-    extractionAi: /Extraction AI/i,
+    extractionAi: /Extraction Assist/i,
     livingReviews: /Living Reviews/i,
     tiers: /^Tiers$/i,
     messages: /Contact Messages/i,

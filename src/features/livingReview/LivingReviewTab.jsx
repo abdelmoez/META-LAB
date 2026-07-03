@@ -87,7 +87,7 @@ export function DisabledNote() {
       <div style={{ fontWeight: 700, color: C.txt, fontSize: 16, marginBottom: 8 }}>Living Review</div>
       <p style={{ margin: 0, lineHeight: 1.6 }}>
         Keep a completed review current — re-run your saved search on a cadence, pre-score new
-        records with this project's AI model, take reproducible snapshots, and get cautious alerts
+        records with this project's screening model, take reproducible snapshots, and get cautious alerts
         when the pooled evidence may have shifted enough to warrant a re-read.
       </p>
       <p style={{ margin: '12px 0 0', lineHeight: 1.6 }}>
@@ -168,7 +168,7 @@ function IntroHeader() {
         <div>
           <h2 style={{ margin: 0, fontSize: 18, fontWeight: 800, color: C.txt, letterSpacing: '-0.02em' }}>Living Review</h2>
           <div style={{ fontSize: 12.5, color: C.muted, marginTop: 2 }}>
-            Keep this review current with scheduled searches, AI pre-scoring, reproducible snapshots and cautious evidence-shift alerts.
+            Keep this review current with scheduled searches, automated pre-scoring, reproducible snapshots and cautious evidence-shift alerts.
           </div>
         </div>
       </div>
@@ -486,7 +486,7 @@ function UpdateQueue({ projectId, queue }) {
   const screenHref = `/app/project/${encodeURIComponent(projectId)}?tab=screening`;
   return (
     <Card title="New since last update" icon="filter"
-      desc="Records found by living-review runs that no reviewer has decided yet, ordered by AI priority.">
+      desc="Records found by living-review runs that no reviewer has decided yet, ordered by relevance priority.">
       {records.length === 0 ? (
         <EmptyState icon="filter" title="No unscreened update records.">
           When a scheduled search finds new studies, they appear here — pre-scored by this project's model —
@@ -503,7 +503,7 @@ function UpdateQueue({ projectId, queue }) {
               <thead>
                 <tr>
                   <th style={qTh}>Study</th>
-                  <th style={{ ...qTh, textAlign: 'center', width: 120 }}>AI score</th>
+                  <th style={{ ...qTh, textAlign: 'center', width: 120 }}>Relevance score</th>
                   <th style={{ ...qTh, textAlign: 'center', width: 120 }}>Prediction</th>
                 </tr>
               </thead>

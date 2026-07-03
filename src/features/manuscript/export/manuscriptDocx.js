@@ -30,7 +30,7 @@ import { SECTION_TYPES, STATEMENT_TYPES } from '../../../research-engine/manuscr
 import { parsePipeTable } from '../richEditor/mdDom.js';
 import { forestPng, prismaPng } from './figures.js';
 
-const AI_DISCLAIMER = 'AI draft — verify all content, numbers, and citations against your extracted data before submission.';
+const AI_DISCLAIMER = 'Auto-draft — verify all content, numbers, and citations against your extracted data before submission.';
 
 /** Numbering reference for markdown ordered lists (defined once on the Document). */
 export const MD_OL_REF = 'md-ordered-list';

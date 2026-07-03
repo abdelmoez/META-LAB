@@ -49,7 +49,7 @@ describe('AiAssistPanel — mandatory review banner + suggestions', () => {
       onSuggest: () => {}, onAccept: () => {}, onEdit: () => {}, onReject: () => {}, onMarkReviewed: () => {},
       rejectedKeys: new Set(),
     }));
-    expect(html).toContain('AI suggestions require human review');
+    expect(html).toContain('Suggestions require human review');
     expect(html).toContain('nothing is saved until you accept');
     expect(html).toContain('heuristic-v1');
   });
@@ -67,7 +67,7 @@ describe('AiAssistPanel — mandatory review banner + suggestions', () => {
       rejectedKeys: new Set(),
     }));
     // The mandatory banner is still present alongside the suggestion.
-    expect(html).toContain('AI suggestions require human review');
+    expect(html).toContain('Suggestions require human review');
     expect(html).toContain('Total sample size (N)');
     expect(html).toContain('210');
     expect(html).toContain('medium confidence');

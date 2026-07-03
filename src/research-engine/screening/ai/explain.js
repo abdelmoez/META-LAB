@@ -126,7 +126,7 @@ export function buildExplanation(args = {}) {
   // Honest uncertainty note.
   let uncertaintyNote = '';
   if (missingAbstract) {
-    uncertaintyNote = 'No usable abstract — the AI is working from the title alone, so this score is low-confidence.';
+    uncertaintyNote = 'No usable abstract — the engine is working from the title alone, so this score is low-confidence.';
   } else if (!supervised) {
     uncertaintyNote = coldStart && coldStart.lowConfidence
       ? 'No eligibility criteria or PICO configured yet, and too few human decisions to train a model — this is a neutral prior, not a prediction.'

@@ -3442,7 +3442,7 @@ function ProjectDetailPanel({ project, onClose, onAction }) {
                   ['Open conflicts', `${detail.screening.conflictsOpen} / ${detail.screening.conflictsTotal}`],
                   ['Duplicate groups', detail.screening.duplicateGroups],
                   ['PDFs', `${detail.screening.pdfCount} (${fmtBytes(detail.screening.pdfBytes)})`],
-                  ['AI runs', detail.screening.ai ? `${detail.screening.ai.engineVersion} · ${detail.screening.ai.nScored} scored` : '—'],
+                  ['Scoring runs', detail.screening.ai ? `${detail.screening.ai.engineVersion} · ${detail.screening.ai.nScored} scored` : '—'],
                 ].map(([label, value]) => (
                   <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, padding: '4px 0', borderBottom: `1px solid ${C.brd}` }}>
                     <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</span>
@@ -4849,7 +4849,7 @@ const FLAG_META = [
   { key: 'guidedRobAppraisal',   label: 'Guided RoB Appraisal (P14)', requires: 'rob_engine_v2', desc: 'Enable guided risk-of-bias appraisal on top of the RoB workspace: adds ROBINS-I (for non-randomized studies) alongside RoB 2, reads a study\'s abstract/full text to SUGGEST per-domain signalling answers with a quoted supporting sentence, source location and confidence, and proposes a domain judgment — always as a reviewer suggestion that never overwrites a human judgment (accept / modify / reject). Includes a validation view comparing suggestions to human decisions (domain agreement + weighted kappa) and traffic-light visuals. Requires Risk of Bias (RoB 2). Off by default.' },
   { key: 'serverBackedWorkflowState', label: 'Server-Backed Workflow State', desc: 'Persist migrated workflow modules (Protocol, Search Builder) server-side with revision-based conflict detection. Off keeps the legacy whole-project autosave.' },
   { key: 'searchEngine',         label: 'Pecan Search Engine — Strategy Builder', desc: 'The Strategy Builder layer of the Pecan Search Engine: the concept→multi-database strategy builder (MeSH lookup + live PubMed counts via the NLM proxy). One of the two layers of a single product — this builds the strategy, the Automated Run executes it. Off keeps the legacy in-app search builder.' },
-  { key: 'aiScreening',          label: 'AI Screening Engine',   desc: 'Enable the PecanRev Screening Intelligence Engine: deterministic TF-IDF + active-learning relevance scoring, ranking, explanations, and validation metrics inside the screening workbench. Assistive only — human decisions are never automated. Off by default until validated. Configure global policy in Screening → AI Policy.' },
+  { key: 'aiScreening',          label: 'Screening Engine',   desc: 'Enable the PecanRev Screening Intelligence Engine: deterministic TF-IDF + active-learning relevance scoring, ranking, explanations, and validation metrics inside the screening workbench. Assistive only — human decisions are never automated. Off by default until validated. Configure global policy in Screening → Engine policy.' },
   { key: 'eligibilityScreening', label: 'Criteria Screener (P10)', desc: 'Enable the criteria-based Eligibility Screener in the screening workbench: reviewers define structured yes/no inclusion/exclusion questions and the engine evaluates each record against them (suggested answer + confidence + quoted evidence sentence), with reviewer adjudication and an optional governed auto-apply that never overwrites a human decision. Deterministic and zero-training — designed for cold-start before enough labels exist. Off by default. Configure the global policy in Screening → Eligibility.' },
   { key: 'pecanSearch',          label: 'Pecan Search Engine — Automated Run',   requires: 'searchEngine', desc: 'The Automated Run layer of the Pecan Search Engine — the second of the two layers of a single product. Requires the Strategy Builder (above), which it runs. Executes the strategy across multiple databases (PubMed, Europe PMC, ClinicalTrials.gov, Crossref, DOAJ, OpenAlex, Semantic Scholar) with query translation, count previews, deduplicated runs, and exportable reports. Off by default until provisioned. Configure providers, caps, concurrency, and queue health in Search Providers.' },
   { key: 'searchStrategyStudio', label: 'Strategy Studio (P11)',  requires: 'pecanSearch', desc: 'Enable the guided Boolean Strategy Studio: turn PICO concepts into database-specific search strategies, test them with real PubMed/OpenAlex hit counts in a generate → critic → refine loop, keep every iteration, estimate recall against seed studies, and export PRISMA-S search documentation. Requires the Pecan Search Engine (Strategy Builder + Automated Run). Off by default.' },
@@ -4859,8 +4859,8 @@ const FLAG_META = [
   { key: 'citationMining',       label: 'Citation Mining & Study Maps (P15)', desc: 'Enable bibliomine citation mining + study visualizations: upload seed-review PDFs to extract their reference list, resolve references via CrossRef/PubMed/OpenAlex, deduplicate and import them into screening with seed provenance, chase backward/forward citations through the OpenAlex graph (queued, depth/limit-capped, cancellable), and visualize included studies on a choropleth map plus characteristic histograms (study type, sample size, year, region, design, risk of bias). Reuses the existing database connectors and dedup engine. Off by default.' },
   { key: 'manuscriptEditor',     label: 'Manuscript Editor (P3)', desc: 'Enable the full manuscript authoring workspace in the project Manuscript tab: structured IMRAD draft generation, data-linked tables (study characteristics / summary-of-findings / PRISMA / risk-of-bias / search), citation engine (Vancouver/JAMA + BibTeX/RIS) with inline citations, inline PRISMA 2020 diagram, one-click Word (.docx) export, PRISMA & PRISMA-S checklists, and a reproducibility .zip. All artifacts are generated in the browser from live project data. Off keeps the legacy textarea drafter. Off by default.' },
   { key: 'gradeCertainty',       label: 'GRADE Certainty Workspace (P12)', desc: 'Enable the per-outcome GRADE certainty-of-evidence workspace: it prefills domain suggestions (risk of bias, inconsistency, indirectness, imprecision, publication bias) from the data the app already computes (RoB summary, I², effect/CI, Egger), requires human confirmation for the final High/Moderate/Low/Very-low rating, records an audit trail, supports locking a finalized judgment, and generates a Summary-of-Findings table (with footnotes) that also populates the manuscript SoF certainty column. Suggestions are never final without reviewer confirmation. Off keeps the existing single-outcome GRADE tab unchanged. Off by default.' },
-  { key: 'extractionAssist',     label: 'Structured Extraction + AI Assist (P5)', desc: 'Enable the structured data-extraction workspace: data-element forms (templates for RCT / diagnostic / cohort / 2×2 / continuous / NMA arm-level), dual independent extraction with side-by-side adjudication, provenance-first values, table parsing, AI extraction suggestions (heuristic self-hosted by default; optional server-configured external LLM), and consensus → meta-analysis handoff. AI suggestions NEVER auto-commit — human review is mandatory. Off keeps the classic extraction table. Off by default. Configure the AI provider in Extraction AI.' },
-  { key: 'livingReview',         label: 'Living Reviews (P6)',   requires: 'pecanSearch', desc: 'Enable the Living Review module: saved searches with exact query snapshots, scheduled re-runs through the Pecan Search engine (requires Pecan Search + Search Builder flags), a "new since last update" screening queue pre-scored by the project AI model, versioned review snapshots, and cautious evidence-shift alerts. Manual snapshots work without Pecan Search; automated re-runs need it. Off by default. Configure the scheduler in Living Reviews.' },
+  { key: 'extractionAssist',     label: 'Structured Extraction + Guided Assist (P5)', desc: 'Enable the structured data-extraction workspace: data-element forms (templates for RCT / diagnostic / cohort / 2×2 / continuous / NMA arm-level), dual independent extraction with side-by-side adjudication, provenance-first values, table parsing, guided extraction suggestions (heuristic self-hosted by default; optional server-configured external LLM), and consensus → meta-analysis handoff. Suggestions NEVER auto-commit — human review is mandatory. Off keeps the classic extraction table. Off by default. Configure the suggestion provider in Extraction Assist.' },
+  { key: 'livingReview',         label: 'Living Reviews (P6)',   requires: 'pecanSearch', desc: 'Enable the Living Review module: saved searches with exact query snapshots, scheduled re-runs through the Pecan Search engine (requires Pecan Search + Search Builder flags), a "new since last update" screening queue pre-scored by the project screening model, versioned review snapshots, and cautious evidence-shift alerts. Manual snapshots work without Pecan Search; automated re-runs need it. Off by default. Configure the scheduler in Living Reviews.' },
   { key: 'publicSynthesis',      label: 'Public Synthesis Pages (P8)', desc: 'Enable shareable, embeddable, read-only public synthesis pages: project owners/leaders can explicitly publish a sanitized snapshot (PRISMA, included studies, interactive forest plots, risk-of-bias summary) to a stable tokenized URL with QR code and iframe embed. Every project stays PRIVATE until published; unpublishing takes effect immediately. Off by default.' },
   { key: 'fullTextRetrieval',    label: 'Full-Text Retrieval (P9)', desc: 'Enable automated open-access full-text retrieval for screening records: one action resolves DOIs/PMIDs against Unpaywall, OpenAlex, Europe PMC and ClinicalTrials.gov, fetches legally available OA PDFs into the record PDF store with provenance, and provides a link-out/request workflow for paywalled items. Bulk PDF upload with auto-matching included. No paywall bypassing — ever. Off by default.' },
 ];
@@ -4944,9 +4944,9 @@ function ExtractionAiSection() {
 
   return (
     <div>
-      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 20px' }}>Extraction AI</h2>
+      <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 20px' }}>Extraction Assist</h2>
       <SectionCard>
-        <Row label="AI extraction assist" desc="Master switch within the extractionAssist flag. Off hides the AI suggestion panel everywhere.">
+        <Row label="Extraction assist" desc="Master switch within the extractionAssist flag. Off hides the suggestion panel everywhere.">
           <Toggle checked={!!s.enabled} onChange={v => setS(x => ({ ...x, enabled: v }))} testId="xai-enabled" />
         </Row>
         <Row label="Suggestion provider" desc="heuristic = deterministic self-hosted pattern extractor (no data leaves the server). external = server-configured LLM endpoint (EXTRACTION_LLM_* env) — article text is sent to that endpoint.">
@@ -4956,7 +4956,7 @@ function ExtractionAiSection() {
             <option value="external">external (env-configured LLM)</option>
           </select>
         </Row>
-        <Row label="Human validation required" desc="Hard product rule: AI suggestions can never auto-commit into extraction values or consensus. Not configurable.">
+        <Row label="Human validation required" desc="Hard product rule: suggestions can never auto-commit into extraction values or consensus. Not configurable.">
           <span style={{ fontSize: 12, fontWeight: 700, color: C.grn }}>Always on</span>
         </Row>
         <Row label="Dual extraction by default" desc="New studies start with two independent extractors expected before adjudication.">
@@ -5418,7 +5418,7 @@ function AiScreeningSection() {
     } catch { setStatus('error'); setTimeout(() => setStatus('idle'), 3000); }
   }
 
-  if (loadErr) return <div style={{ padding: 24, fontSize: 13, color: C.red }}>Could not load AI screening policy. Check that you have admin access and retry.</div>;
+  if (loadErr) return <div style={{ padding: 24, fontSize: 13, color: C.red }}>Could not load screening engine policy. Check that you have admin access and retry.</div>;
   if (!s) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={20} /></div>;
 
   const set = (k, v) => setS(p => ({ ...p, [k]: v }));
@@ -5438,30 +5438,30 @@ function AiScreeningSection() {
     <div>
       <p style={{ fontSize: 12.5, color: C.muted, margin: '0 0 14px', lineHeight: 1.6, maxWidth: 760 }}>
         Authoritative global policy for the PecanRev Screening Intelligence Engine. The deterministic engine
-        runs in-process with no external calls under the default <code>lexical</code> provider. AI is
+        runs in-process with no external calls under the default <code>lexical</code> provider. The engine is
         assistive only — it never finalises a screening decision. Every change here is recorded in the audit
         history below.
       </p>
 
       {flagOn === false && (
         <AiPolicyBanner tone="warn">
-          The <strong>AI Screening Engine</strong> feature flag is currently <strong>OFF</strong> (Ops → Flags).
+          The <strong>Screening Engine</strong> feature flag is currently <strong>OFF</strong> (Ops → Flags).
           These settings are saved but the engine stays inactive until the flag is enabled.
         </AiPolicyBanner>
       )}
       {s.killSwitch && (
         <AiPolicyBanner tone="danger">
-          <strong>Emergency kill switch is ENGAGED.</strong> AI scoring is force-disabled everywhere,
+          <strong>Emergency kill switch is ENGAGED.</strong> Automated scoring is force-disabled everywhere,
           overriding the toggles below, until the kill switch is turned off.
         </AiPolicyBanner>
       )}
 
       <Sub>Global policy</Sub>
       <SectionCard>
-        <Row label="AI screening enabled" desc="Master switch within the feature flag (per-project opt-in still applies).">
+        <Row label="Screening engine enabled" desc="Master switch within the feature flag (per-project opt-in still applies).">
           <Toggle checked={!!s.enabled} onChange={v => set('enabled', v)} />
         </Row>
-        <Row label="Require human final decision" desc="AI may never finalise an include/exclude. Strongly recommended on.">
+        <Row label="Require human final decision" desc="The engine may never finalise an include/exclude. Strongly recommended on.">
           <Toggle checked={!!s.requireHumanFinalDecision} onChange={v => set('requireHumanFinalDecision', v)} />
         </Row>
         <Row label="Allow reviewers to run scoring" desc="Off = only project leaders/owners may trigger scoring.">
@@ -5517,7 +5517,7 @@ function AiScreeningSection() {
 
       <Sub>Emergency kill switch</Sub>
       <div style={{ border: `1px solid ${alpha(C.red, '50')}`, borderRadius: 10, background: alpha(C.red, '08'), overflow: 'hidden' }}>
-        <Row label="Force-disable all AI scoring" desc="Immediately disables AI scoring everywhere, overriding every toggle above. Use during an incident.">
+        <Row label="Force-disable all automated scoring" desc="Immediately disables automated scoring everywhere, overriding every toggle above. Use during an incident.">
           <Toggle checked={!!s.killSwitch} onChange={v => set('killSwitch', v)} />
         </Row>
       </div>
@@ -5526,7 +5526,7 @@ function AiScreeningSection() {
 
       <Sub>Validation &amp; health — recent runs {errorCount > 0 && <span style={{ color: C.red, fontSize: 11, fontWeight: 600 }}>· {errorCount} failed</span>}</Sub>
       <SectionCard>
-        {runs && runs.length === 0 && <div style={{ padding: 18, fontSize: 12.5, color: C.muted }}>No AI runs yet.</div>}
+        {runs && runs.length === 0 && <div style={{ padding: 18, fontSize: 12.5, color: C.muted }}>No scoring runs yet.</div>}
         {runs && runs.map((r, i) => (
           <div key={r.id} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 18px', borderBottom: i < runs.length - 1 ? `1px solid ${C.brd}` : 'none', fontSize: 12 }}>
             <span style={{ fontFamily: MONO, color: r.status === 'failed' ? C.red : C.grn, width: 70 }}>{r.status}</span>
@@ -6304,7 +6304,7 @@ const SIFT_TABS = [
   { id: 'projects', label: 'Projects'  },
   { id: 'members',  label: 'Members'   },
   { id: 'settings', label: 'Settings'  },
-  { id: 'aiPolicy', label: 'AI Policy' },
+  { id: 'aiPolicy', label: 'Engine policy' },
   { id: 'eligibility', label: 'Eligibility' },
   { id: 'handoff',  label: 'Handoff'   },
   { id: 'audit',    label: 'Audit'     },
@@ -8633,7 +8633,7 @@ const NAV_SECTIONS = [
   { id: 'style',      icon: 'eye',       label: 'Appearance'    },
   { id: 'flags',      icon: 'sliders',   label: 'Flags'         },
   { id: 'tiers',      icon: 'award',     label: 'Tiers'         },
-  { id: 'extractionAi',   icon: 'clipboard', label: 'Extraction AI'  },
+  { id: 'extractionAi',   icon: 'clipboard', label: 'Extraction Assist'  },
   { id: 'livingReviews',  icon: 'activity',  label: 'Living Reviews' },
   { id: 'messages',   icon: 'mail',      label: 'Messages'      },
   { id: 'security',   icon: 'shield',    label: 'Security'      },
