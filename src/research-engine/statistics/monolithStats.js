@@ -9,6 +9,12 @@
 import { ADJUST_LABEL, DATA_NATURE_LABEL } from "../project-model/monolithConstants.js";
 import { isNonPrimary } from "../import-export/referenceParsers.js";
 
+/* P13 — meta-regression + bubble plots. Re-exported from the pure engine so the
+   UI (and server export) import it from the same barrel as runMeta/subgroupAnalysis.
+   The engine itself lives in ./metaRegression.js (pure, deterministic, no deps
+   beyond nma/linalg + math-helpers). */
+export { metaRegression, ENGINE_VERSION as META_REGRESSION_ENGINE_VERSION } from "./metaRegression.js";
+
 /* ════════════ STATISTICS ════════════ */
 export const Z975 = 1.959963984540054; // qnorm(0.975), exact
 export function normalCDF(z) {

@@ -19,9 +19,16 @@ import { fmtNum, fmtES, fmtP, fmtPct, fmtI2, fmtWeight, normalizePrecision, DECI
 import { isNonPrimary } from "../../../research-engine/import-export/referenceParsers.js";
 import { ES_TYPES, DATA_NATURE_LABEL, ADJUST_LABEL, SOURCE_LABEL } from "../../../research-engine/project-model/monolithConstants.js";
 import { normalCDF, runMeta, eggersTest, leaveOneOut, trimFill, influenceDiagnostics, subgroupAnalysis, analysisTypeWarnings, CONVERSIONS, checkPoolability } from "../../../research-engine/statistics/monolithStats.js";
+// P13 — the meta-regression engine ships in the SAME barrel as subgroupAnalysis
+// above, but lands CONCURRENTLY. A namespace import keeps `npm run build` green
+// whether or not `metaRegression` is present yet (a missing NAMED export would
+// break the bundle); MetaRegression reads it off the namespace at runtime and
+// degrades gracefully until the engine is wired in. Once landed it "just works".
+import * as MonolithStats from "../../../research-engine/statistics/monolithStats.js";
 import { openExportDialog } from "../exportDialogBridge.js";
 import { SVG_XML_HEADER, presetTag, liveSvgToString, buildPubForestSVG } from "../charts/svgBuilders.js";
 import { ForestPlot, FunnelPlot } from "../charts/charts.jsx";
+import { BubblePlot, buildBubbleSVG } from "../BubblePlot.jsx";
 import { C, btnS, inp, th, tagS } from "../ui/styles.js";
 import { SectionHeader, InfoBox, HelpTip } from "../ui/primitives.jsx";
 import { interpretResult } from "../projectHelpers.js";
@@ -1259,5 +1266,373 @@ export function SubgroupTab({project}){
       )}
     </>)}
     <InfoBox>💡 Pre-specify subgroups in your protocol. Post-hoc subgroup analyses should be labelled as exploratory. Subgroups with k&lt;5 studies are statistically unreliable.</InfoBox>
+    {/* P13 — CONTINUOUS sibling of subgroup analysis. Additive + self-gating: it
+        renders nothing unless the `metaRegression` flag is ON, so this tab is
+        byte-for-byte unchanged when the flag is off. */}
+    <MetaRegression project={project}/>
+  </div>);
+}
+
+/* ════════════ TAB SECTION: META-REGRESSION (P13) ════════════
+   Explores heterogeneity with a study-level covariate — the continuous
+   complement to SubgroupTab. Additive + flag-gated (`metaRegression`); renders
+   null when the flag is off so SubgroupTab is unchanged. Engine is the SAME
+   `metaRegression` in the monolithStats barrel (read via the MonolithStats
+   namespace so the bundle builds even before the engine lands). */
+
+// Effect/variance/count/identity columns that must NEVER be offered as a
+// covariate (they ARE the outcome or its raw inputs, or are free-text labels).
+// Everything else is judged data-drivenly below, so free-text fields with many
+// distinct values (title/abstract/notes/author) drop out automatically.
+const MR_BLOCK = new Set([
+  "id", "es", "lo", "hi", "estype", "se", "ci", "cilo", "cihi", "pval", "z", "weight",
+  "a", "b", "c", "d", "events", "total", "nexp", "nctrl", "meanexp", "sdexp", "meanctrl", "sdctrl",
+  "tp", "fp", "fn", "tn", "source", "converted", "conversions", "flags", "datanature", "adjustednote",
+  "needsreview", "rob", "snapshot", "title", "authors", "author", "journal", "doi", "pmid", "pmcid",
+  "abstract", "outcome", "primaryoutcome", "secondaryoutcomes", "populationdef", "interventiondef",
+  "comparatordef", "funding", "enrollperiod", "notes", "note", "url", "fulltext", "tags", "decision",
+]);
+
+const MR_FIELD_LABEL = {
+  year: "Year", n: "Sample size", country: "Country/Region", design: "Study design",
+  drugClass: "Drug class", followup: "Follow-up", timepoint: "Time point", adjusted: "Adjustment",
+  dataSource: "Data source", meanAge: "Mean age", dose: "Dose", baselineRisk: "Baseline risk",
+  region: "Region",
+};
+
+function mrPretty(field) {
+  if (!field) return "Covariate";
+  if (MR_FIELD_LABEL[field]) return MR_FIELD_LABEL[field];
+  const spaced = String(field).replace(/([a-z])([A-Z])/g, "$1 $2").replace(/[_-]+/g, " ").trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+function mrTypeLabel(t) {
+  return { continuous: "Continuous", binary: "Binary", categorical: "Categorical", ordinal: "Ordinal" }[t] || t;
+}
+function mrIsNum(v) { return v !== "" && v != null && isFinite(Number(v)); }
+function mrPctish(v, prec) {
+  if (v == null || !isFinite(Number(v))) return "—";
+  const n = Number(v);
+  const pct = Math.abs(n) <= 1.0000001 ? n * 100 : n;
+  return `${fmtNum(pct, prec)}%`;
+}
+
+/* Auto-detect candidate covariates from the study rows: numeric → continuous
+   (binary if only 2 distinct), few distinct strings → categorical/binary, free
+   text → dropped. Users can override the detected type. */
+export function detectCovariates(studies) {
+  if (!Array.isArray(studies) || !studies.length) return [];
+  const keys = new Set();
+  studies.forEach((s) => { if (s && typeof s === "object") Object.keys(s).forEach((k) => keys.add(k)); });
+  const out = [];
+  keys.forEach((k) => {
+    if (k.startsWith("_") || MR_BLOCK.has(String(k).toLowerCase())) return;
+    const values = studies
+      .map((s) => (s ? s[k] : undefined))
+      .filter((v) => v !== "" && v != null && typeof v !== "object");
+    if (values.length < 3) return; // too sparse to regress on
+    const numeric = values.filter(mrIsNum).length;
+    const numFrac = numeric / values.length;
+    const distinct = new Set(values.map((v) => String(v).trim().toLowerCase())).size;
+    let type;
+    if (numFrac >= 0.8) {
+      if (distinct === 2) type = "binary";
+      else if (distinct >= 3) type = "continuous";
+      else return; // constant
+    } else if (distinct === 2) type = "binary";
+    else if (distinct >= 2 && distinct <= 12) type = "categorical";
+    else return; // free text
+    out.push({ field: k, type, coverage: values.length, distinct, numeric: numFrac >= 0.8 });
+  });
+  const order = { continuous: 0, ordinal: 1, binary: 2, categorical: 3 };
+  out.sort((a, b) => (order[a.type] - order[b.type]) || (b.coverage - a.coverage) || a.field.localeCompare(b.field));
+  return out;
+}
+
+/* Dominant effect-measure across studies with a numeric ES (mirrors AnalysisTab). */
+export function detectRegressionMeasure(studies) {
+  if (!Array.isArray(studies)) return "";
+  const types = studies.filter((s) => s && s.es !== "" && !isNaN(+s.es)).map((s) => s.esType).filter(Boolean);
+  if (!types.length) return "";
+  return types.slice().sort((a, b) => types.filter((t) => t === b).length - types.filter((t) => t === a).length)[0];
+}
+
+/* Manuscript-ready text (association-only wording — never causal, never "AI"). */
+export function buildMetaRegNarrative({ result, measure, covLabel, type, method, prec }) {
+  const isLog = !!(measure && ES_TYPES[measure] && ES_TYPES[measure].log);
+  const measureName = (ES_TYPES[measure] && ES_TYPES[measure].label) || "effect size";
+  const ratioName = ((ES_TYPES[measure] && ES_TYPES[measure].scale) || "effect size").replace("ln", "");
+  const est = method === "REML" ? "restricted maximum likelihood (REML)" : "method-of-moments";
+  const mods = Array.isArray(result.moderators) ? result.moderators : [];
+  const primary = mods.length === 1 ? mods[0] : null;
+  const perUnit = type === "continuous" || type === "ordinal";
+  const resid = result.residual || {};
+  const qeStr = resid.QE != null
+    ? `Q_E = ${fmtNum(resid.QE, prec)}, df = ${resid.df}, ${resid.QEp < 0.001 ? "P < 0.001" : "P = " + fmtNum(resid.QEp, prec)}`
+    : "not available";
+  const coefSentence = primary
+    ? `The regression coefficient ${perUnit ? `for each one-unit increase in ${covLabel}` : `for ${primary.name || covLabel}`} was ${fmtNum(primary.coef, prec)} (95% CI ${fmtNum(primary.ciLo, prec)} to ${fmtNum(primary.ciHi, prec)}), ${primary.pval < 0.001 ? "P < 0.001" : "P = " + fmtNum(primary.pval, prec)}${isLog ? ` (a ${ratioName} ratio of ${fmtES(Math.exp(primary.coef), prec)} per unit)` : ""}. ${(primary.pval != null && primary.pval < 0.05) ? "" : "The confidence interval included the null, so this covariate did not explain a statistically detectable amount of heterogeneity. "}`
+    : "Coefficients for each moderator level are reported in the results table. ";
+  const results = `A ${est} random-effects meta-regression related the ${measureName.toLowerCase()}${isLog ? " (natural-log scale)" : ""} to ${covLabel} across ${result.k} studies${result.kDropped ? ` (${result.kDropped} excluded for missing ${covLabel})` : ""}. ${coefSentence}The covariate explained ${mrPctish(result.R2, prec)} of the between-study variance (τ² ${fmtNum(result.tau2Before, prec)} → ${fmtNum(result.tau2, prec)}); residual heterogeneity was I² = ${mrPctish(result.I2resid, prec)} (${qeStr}). Because meta-regression is observational, this describes an association across studies and does not establish that ${covLabel} causes the difference in effect.`;
+  const methods = `Between-study heterogeneity was explored using ${est} random-effects meta-regression, with ${covLabel} entered as a ${type} moderator of the ${measureName.toLowerCase()}${isLog ? ", modelled on the natural-log scale" : ""}. Regression coefficients with 95% confidence intervals, the residual-heterogeneity test (Q_E), and the proportion of between-study variance explained (R²) are reported. Meta-regression associations are study-level and observational and were interpreted as hypothesis-generating rather than causal; approximately ten studies per covariate are recommended, so results based on fewer studies were treated with caution. [State software here — e.g. analyses were verified in R using the metafor package.]`;
+  const manuscript = `${results} These meta-regression findings are exploratory: with ${result.k} studies power is limited, aggregate (study-level) covariates are susceptible to ecological bias, and evaluating multiple covariates inflates the false-positive rate.`;
+  return { results, methods, manuscript };
+}
+
+/* Presentational results block (exported for SSR tests). Given a non-null engine
+   result it renders guardrail warnings, the coefficient table, the heterogeneity
+   summary, the bubble plot, and the export/copy actions. ok:false → warnings only,
+   never a chart. */
+export function MetaRegressionResults({ result, measure, covLabel, type, method, prec }) {
+  const [copied, setCopied] = useState("");
+  const copy = (t, id) => { try { navigator.clipboard.writeText(t).then(() => { setCopied(id); setTimeout(() => setCopied(""), 1600); }); } catch { /* clipboard unavailable */ } };
+  if (!result) return null;
+
+  const isLog = !!(measure && ES_TYPES[measure] && ES_TYPES[measure].log);
+  const rawScale = (ES_TYPES[measure] && ES_TYPES[measure].scale) || "Effect size";
+  const measureName = (ES_TYPES[measure] && ES_TYPES[measure].label) || "effect size";
+
+  const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+  const Warnings = () => (warnings.length > 0 ? (
+    <div style={{ marginBottom: 16 }}>
+      {warnings.map((w, i) => {
+        const err = w && (w.type === "error" || w.severity === "error");
+        return (<div key={i} style={{ background: err ? "var(--t-red-bg)" : "var(--t-yel-bg)", border: `1px solid ${themeAlpha(err ? C.red : C.yel, "55")}`, borderLeft: `4px solid ${err ? C.red : C.yel}`, borderRadius: 8, padding: "10px 14px", marginBottom: 8 }}>
+          <div style={{ fontSize: 12, color: C.txt, lineHeight: 1.6 }}>
+            <strong style={{ color: err ? C.red : C.yel }}>{err ? "⛔ " : "⚠ "}</strong>{(w && (w.message || w.msg)) || "Check this analysis before relying on it."}
+          </div>
+        </div>);
+      })}
+    </div>
+  ) : null);
+
+  if (!result.ok) {
+    return (<div>
+      <Warnings />
+      <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: 28, textAlign: "center", color: C.muted }}>
+        <div style={{ fontSize: 30, marginBottom: 8 }}>📈</div>
+        Meta-regression could not be computed for this covariate{warnings.length ? " — see the notes above." : ". Add more studies with the covariate recorded."}
+      </div>
+    </div>);
+  }
+
+  const terms = [
+    { name: "Intercept", ...(result.intercept || {}) },
+    ...((result.moderators || []).map((m) => ({ name: (m.name || covLabel) + (m.level ? `: ${m.level}` : ""), ...m }))),
+  ];
+  const cols = isLog ? ["Term", "Coef (ln)", "exp(coef)", "SE", "95% CI (ln)", "z", "p"] : ["Term", "Coefficient", "SE", "95% CI", "z", "p"];
+
+  const bubble = result.bubble;
+  const hasBubble = bubble && Array.isArray(bubble.points) && bubble.points.filter((p) => p && isFinite(Number(p.x)) && isFinite(Number(p.y))).length >= 1;
+  const isCategoricalView = type === "categorical" && !(bubble && bubble.line);
+
+  // ---- exports ----
+  const esc = (v) => { const x = String(v == null ? "" : v).replace(/"/g, '""'); return /[",\n]/.test(x) ? `"${x}"` : x; };
+  const csvBody = terms.map((t) => [t.name, t.coef, t.se, t.ciLo, t.ciHi, t.z, t.pval].map(esc).join(","));
+  const resid = result.residual || {};
+  const meta = [
+    "",
+    ["Model", method === "REML" ? "REML random-effects meta-regression" : "Method-of-moments random-effects meta-regression"].map(esc).join(","),
+    ["Effect measure", measureName + (isLog ? " (natural-log scale)" : "")].map(esc).join(","),
+    ["Covariate", covLabel + ` (${mrTypeLabel(type)})`].map(esc).join(","),
+    ["Studies included (k)", result.k].map(esc).join(","),
+    ["Studies dropped (missing covariate)", result.kDropped].map(esc).join(","),
+    ["tau2 before", result.tau2Before].map(esc).join(","),
+    ["tau2 after", result.tau2].map(esc).join(","),
+    ["tau2 reduction", result.tau2Reduction].map(esc).join(","),
+    ["R2 (variance explained)", result.R2].map(esc).join(","),
+    ["Residual I2", result.I2resid].map(esc).join(","),
+    ["Residual QE", resid.QE].map(esc).join(","),
+    ["Residual QE df", resid.df].map(esc).join(","),
+    ["Residual QE p", resid.QEp].map(esc).join(","),
+  ].join("\n");
+  const csv = "﻿" + [["Term", "Coefficient", "SE", "CI_lower", "CI_upper", "z", "p_value"].join(","), ...csvBody].join("\n") + "\n" + meta;
+  const tsv = [["Term", "Coefficient", "SE", "95% CI", "z", "p"].join("\t"), ...terms.map((t) => [t.name, fmtNum(t.coef, prec), fmtNum(t.se, prec), `${fmtNum(t.ciLo, prec)} to ${fmtNum(t.ciHi, prec)}`, fmtNum(t.z, prec), fmtP(t.pval, prec)].join("\t"))].join("\n");
+  const narr = buildMetaRegNarrative({ result, measure, covLabel, type, method, prec });
+  const blocks = [
+    { id: "results", label: "Results paragraph", icon: "📊", text: narr.results },
+    { id: "methods", label: "Statistical methods", icon: "🔬", text: narr.methods },
+    { id: "manuscript", label: "Manuscript paragraph (with caveats)", icon: "✍️", text: narr.manuscript },
+  ];
+  const svgTitle = `Meta-regression: ${isLog ? "ln(" + rawScale.replace("ln", "") + ")" : rawScale} vs ${covLabel}`;
+  const doSvg = () => { const b = buildBubbleSVG(bubble, { measure, covariateLabel: covLabel, title: svgTitle }); if (b) downloadText(SVG_XML_HEADER + b.svg, "meta-regression_bubble.svg", "image/svg+xml;charset=utf-8"); };
+  const doPng = async () => { const b = buildBubbleSVG(bubble, { measure, covariateLabel: covLabel, title: svgTitle }); if (!b) return; const blob = await rasterizeSvg(b.svg, b.W, b.H, { targetWidthPx: 1280, background: "#0e1420" }); downloadBlob(blob, "meta-regression_bubble.png"); };
+
+  return (<div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+    <Warnings />
+
+    {/* COEFFICIENT TABLE */}
+    <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: 16, overflowX: "auto" }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 1, marginBottom: 12 }}>REGRESSION COEFFICIENTS{isLog ? " — ON THE LOG SCALE" : ""}</div>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+        <thead><tr>{cols.map((h, i) => (<th key={h} style={{ ...th, textAlign: i === 0 ? "left" : "right" }}>{h}</th>))}</tr></thead>
+        <tbody>
+          {terms.map((t, i) => (
+            <tr key={i} style={{ borderBottom: `1px solid ${C.brd}` }}>
+              <td style={{ padding: "6px 10px", fontWeight: i === 0 ? 700 : 500, color: i === 0 ? C.muted : C.txt }}>{t.name}</td>
+              <td style={{ padding: "6px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono',monospace", fontWeight: 700 }}>{fmtNum(t.coef, prec)}</td>
+              {isLog && <td style={{ padding: "6px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono',monospace", color: C.muted }}>{t.coef == null ? "—" : fmtES(Math.exp(t.coef), prec)}</td>}
+              <td style={{ padding: "6px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono',monospace", color: C.muted }}>{fmtNum(t.se, prec)}</td>
+              <td style={{ padding: "6px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono',monospace", color: C.muted }}>[{fmtNum(t.ciLo, prec)}, {fmtNum(t.ciHi, prec)}]</td>
+              <td style={{ padding: "6px 10px", textAlign: "right", fontFamily: "'IBM Plex Mono',monospace", color: C.muted }}>{fmtNum(t.z, prec)}</td>
+              <td style={{ padding: "6px 10px", textAlign: "right", color: (t.pval != null && t.pval < 0.05) ? C.grn : C.muted, fontWeight: (t.pval != null && t.pval < 0.05) ? 700 : 400 }}>{fmtP(t.pval, prec)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {isLog && <div style={{ fontSize: 11, color: C.dim, marginTop: 8, lineHeight: 1.5 }}>Coefficients are on the natural-log scale; exp(coef) is the multiplicative change in the {rawScale.replace("ln", "")} per one-unit change in {covLabel}.</div>}
+    </div>
+
+    {/* HETEROGENEITY SUMMARY */}
+    <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: 16 }}>
+      <div style={{ fontSize: 10, fontWeight: 700, color: C.acc, letterSpacing: 1, marginBottom: 12 }}>HETEROGENEITY EXPLAINED</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: 14 }}>
+        {[
+          { label: "R² (variance explained)", value: mrPctish(result.R2, prec), note: "share of τ² the covariate accounts for", color: C.grn },
+          { label: "τ² before → after", value: `${fmtNum(result.tau2Before, prec)} → ${fmtNum(result.tau2, prec)}`, note: `reduction ${mrPctish(result.tau2Reduction, prec)}`, color: C.txt },
+          { label: "Residual I²", value: mrPctish(result.I2resid, prec), note: "heterogeneity left unexplained", color: (Number(result.I2resid) > (Number(result.I2resid) <= 1 ? 0.5 : 50)) ? C.yel : C.txt },
+          { label: "Residual Q_E", value: resid.QE != null ? fmtNum(resid.QE, prec) : "—", note: resid.QE != null ? `df = ${resid.df} · p ${resid.QEp < 0.001 ? "< 0.001" : "= " + fmtNum(resid.QEp, prec)}` : "", color: C.txt },
+          { label: "Studies (k)", value: `${result.k}`, note: result.kDropped ? `${result.kDropped} dropped (missing covariate)` : "all with covariate", color: (result.k < 10) ? C.yel : C.txt },
+        ].map((m) => (
+          <div key={m.label} style={{ background: C.bg, border: `1px solid ${C.brd}`, borderRadius: 8, padding: "10px 12px" }}>
+            <div style={{ fontSize: 10, color: C.muted, marginBottom: 4 }}>{m.label}</div>
+            <div style={{ fontSize: 17, fontWeight: 800, fontFamily: "'IBM Plex Mono',monospace", color: m.color }}>{m.value}</div>
+            {m.note && <div style={{ fontSize: 10, color: C.dim, marginTop: 3 }}>{m.note}</div>}
+          </div>
+        ))}
+      </div>
+      {result.k < 10 && <div style={{ marginTop: 12, fontSize: 11, color: C.yel, lineHeight: 1.5 }}>⚠ Fewer than ~10 studies per covariate — the coefficient and R² are unstable. Treat this as exploratory.</div>}
+    </div>
+
+    {/* BUBBLE PLOT */}
+    <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 1 }}>BUBBLE PLOT</div>
+        {hasBubble && <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={doSvg} style={{ ...btnS("ghost"), fontSize: 11, padding: "5px 10px" }}>⬇ SVG</button>
+          <button onClick={doPng} style={{ ...btnS("ghost"), fontSize: 11, padding: "5px 10px" }}>⬇ PNG</button>
+        </div>}
+      </div>
+      {hasBubble ? (<>
+        <BubblePlot bubble={bubble} measure={measure} covariateLabel={covLabel} />
+        <div style={{ fontSize: 11, color: C.dim, marginTop: 8, lineHeight: 1.5 }}>
+          Each bubble is a study (radius ∝ weight); x = {covLabel}, y = effect estimate{isLog ? " on the log scale (axis ticks back-transformed)" : ""}.{(bubble && bubble.line) ? " The line is the fitted regression with its 95% confidence band." : isCategoricalView ? " Points are grouped by level; for categorical moderators the coefficient table above is the primary output." : ""}
+        </div>
+      </>) : (
+        <div style={{ fontSize: 12, color: C.muted, padding: "8px 0" }}>No bubble plot for this covariate — the coefficient table above is the primary output.</div>
+      )}
+    </div>
+
+    {/* EXPORTS */}
+    <div style={{ background: C.card, border: `1px solid ${themeAlpha(C.acc, "55")}`, borderRadius: 8, padding: 16 }}>
+      <div style={{ fontSize: 12, fontWeight: 800, color: C.acc, letterSpacing: 0.5, marginBottom: 10 }}>📤 EXPORT META-REGRESSION</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
+        <button onClick={() => copy(tsv, "clip")} style={btnS("primary")}>{copied === "clip" ? "✓ Copied table" : "📋 Copy table"}</button>
+        <button onClick={() => downloadBlob(new Blob([csv], { type: "text/csv;charset=utf-8;" }), "meta-regression_results.csv")} style={btnS("ghost")}>⬇ Download CSV</button>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {blocks.map((b) => (
+          <div key={b.id} style={{ background: C.bg, border: `1px solid ${C.brd}`, borderRadius: 6, padding: "12px 14px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <span style={{ fontSize: 12, fontWeight: 700 }}>{b.icon} {b.label}</span>
+              <button onClick={() => copy(b.text, b.id)} style={{ ...btnS("ghost"), fontSize: 10, padding: "3px 10px" }}>{copied === b.id ? "✓ Copied" : "📋 Copy"}</button>
+            </div>
+            <div style={{ fontSize: 12.5, color: C.txt, lineHeight: 1.7 }}>{b.text}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  </div>);
+}
+
+export function MetaRegression({ project }) {
+  const studies = (project && Array.isArray(project.studies)) ? project.studies : [];
+  const prec = project && project.analysisPrecision;
+  const [flagOn, setFlagOn] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/settings/public", { credentials: "include" })
+      .then((r) => r.json())
+      .then((s) => { if (alive) setFlagOn(!!(s && s.featureFlags && s.featureFlags.metaRegression)); })
+      .catch(() => { if (alive) setFlagOn(false); });
+    return () => { alive = false; };
+  }, []);
+
+  const candidates = useMemo(() => detectCovariates(studies), [studies]);
+  const [covariate, setCovariate] = useState("");
+  const [typeOverride, setTypeOverride] = useState("");
+  const [method, setMethod] = useState("MM");
+  // Pick a sensible default covariate once candidates are known (prefer year,
+  // then any continuous field, then the first candidate).
+  useEffect(() => {
+    if (candidates.length && (!covariate || !candidates.find((c) => c.field === covariate))) {
+      const pick = candidates.find((c) => c.field === "year") || candidates.find((c) => c.type === "continuous") || candidates[0];
+      setCovariate(pick.field); setTypeOverride("");
+    }
+  }, [candidates, covariate]);
+
+  const active = candidates.find((c) => c.field === covariate) || null;
+  const type = typeOverride || (active && active.type) || "continuous";
+  const measure = useMemo(() => detectRegressionMeasure(studies), [studies]);
+  const covLabel = mrPretty(covariate);
+  const engineFn = MonolithStats.metaRegression;
+  const engineReady = typeof engineFn === "function";
+
+  const result = useMemo(() => {
+    if (!engineReady || !covariate) return null;
+    try { return engineFn(studies, { covariate, type, method, measure }); }
+    catch (e) { return { ok: false, warnings: [{ type: "error", message: "Meta-regression could not run: " + ((e && e.message) || e) }] }; }
+  }, [engineReady, engineFn, studies, covariate, type, method, measure]);
+
+  if (flagOn !== true) return null; // additive no-op: flag off or still loading
+
+  return (<div style={{ marginTop: 32, paddingTop: 26, borderTop: `1px solid ${C.brd}` }}>
+    <SectionHeader icon="activity" title="Meta-Regression" desc="Test whether a study-level covariate explains heterogeneity by regressing each study's effect on that covariate — the continuous complement to subgroup analysis." badge={result && result.ok ? `k = ${result.k}` : undefined} />
+
+    <div style={{ background: "var(--t-yel-bg)", border: `1px solid ${themeAlpha(C.yel, "44")}`, borderLeft: `3px solid ${C.yel}`, borderRadius: 6, padding: "10px 14px", marginBottom: 14, fontSize: 12, color: C.muted, lineHeight: 1.6 }}>
+      <strong style={{ color: C.yel }}>⚠ Use meta-regression responsibly.</strong> Aim for at least ~10 studies per covariate; with fewer, estimates are unstable. Covariates should be <strong>pre-specified</strong>. Associations here are <strong>observational and study-level</strong> — they can be confounded and are prone to ecological bias, so do not read them as causal, and remember that testing several covariates inflates false positives.
+    </div>
+
+    {candidates.length === 0 ? (
+      <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: 32, textAlign: "center", color: C.muted }}>
+        <div style={{ fontSize: 32, marginBottom: 8 }}>📈</div>No usable covariate found. Add study-level fields (e.g. year, sample size, mean age, region) in Data Extraction to run a meta-regression.
+      </div>
+    ) : (<>
+      <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: 14, marginBottom: 16, display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end" }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.6 }}>COVARIATE</span>
+          <select value={covariate} onChange={(e) => { setCovariate(e.target.value); setTypeOverride(""); }} style={{ ...inp, width: "auto", minWidth: 200, fontSize: 12, padding: "6px 10px" }}>
+            {candidates.map((c) => (<option key={c.field} value={c.field}>{mrPretty(c.field)} · {mrTypeLabel(c.type)} (k={c.coverage})</option>))}
+          </select>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.6, display: "inline-flex", alignItems: "center" }}>TREAT AS<HelpTip text="Auto-detected from the data (numeric → continuous, a few repeated labels → categorical). Override if the field means something different — e.g. a numeric dose you want treated as ordered categories." /></span>
+          <select value={type} onChange={(e) => setTypeOverride(e.target.value)} style={{ ...inp, width: "auto", fontSize: 12, padding: "6px 10px" }}>
+            {["continuous", "binary", "categorical", "ordinal"].map((t) => (<option key={t} value={t}>{mrTypeLabel(t)}{active && active.type === t ? " (auto)" : ""}</option>))}
+          </select>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+          <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.6 }}>ESTIMATOR</span>
+          <div style={{ display: "flex", gap: 6 }}>
+            {[["MM", "Method of moments"], ["REML", "REML"]].map(([m, label]) => (
+              <button key={m} onClick={() => setMethod(m)} style={{ ...btnS(method === m ? "primary" : "ghost"), fontSize: 11, padding: "6px 12px" }}>{label}</button>
+            ))}
+          </div>
+        </div>
+        {measure && (
+          <div style={{ marginLeft: "auto", fontSize: 11, color: C.muted, alignSelf: "center", lineHeight: 1.5, maxWidth: 240 }}>
+            Measure: <strong style={{ color: C.txt }}>{(ES_TYPES[measure] && ES_TYPES[measure].label) || measure}</strong>{(ES_TYPES[measure] && ES_TYPES[measure].log) ? ` — modelled on the log scale; the y-axis and coefficients are on ln(${((ES_TYPES[measure] && ES_TYPES[measure].scale) || "").replace("ln", "")}).` : "."}
+          </div>
+        )}
+      </div>
+
+      {!engineReady ? (
+        <InfoBox color={C.muted}>The meta-regression engine is not available in this build yet. The covariate picker and settings above are ready; results will appear here once the engine is enabled.</InfoBox>
+      ) : !result ? (
+        <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: 28, textAlign: "center", color: C.muted }}>Select a covariate above to run the regression.</div>
+      ) : (
+        <MetaRegressionResults result={result} measure={measure} covLabel={covLabel} type={type} method={method} prec={prec} />
+      )}
+    </>)}
   </div>);
 }

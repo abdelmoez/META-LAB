@@ -12,6 +12,10 @@ import {
   influenceDiagnostics,
   subgroupAnalysis,
 } from '../../src/research-engine/statistics/meta-analysis.js';
+// P13 — meta-regression + bubble plots. Pure deterministic engine; gated behind
+// the `metaRegression` feature flag (default OFF → 404), mirroring the NMA route.
+import { metaRegression } from '../../src/research-engine/statistics/metaRegression.js';
+import { getEffectiveFeatureFlags } from './settingsController.js';
 
 /**
  * POST /api/meta/run
@@ -108,4 +112,48 @@ export function runTrimFill(req, res) {
   }
 
   res.json(result);
+}
+
+/**
+ * POST /api/meta/metareg  (P13 — meta-regression + bubble plots)
+ * Feature-flag gated: `metaRegression` OFF (default) → 404 (existence-hidden),
+ * matching the NMA route convention. Stateless like runMetaAnalysis — the
+ * deterministic engine runs on the supplied studies; nothing is persisted.
+ *
+ * Body: {
+ *   studies: Study[],                 // each carries es + (se|variance|lo/hi) + covariate value(s)
+ *   covariate?: string,               // single covariate name (shorthand)
+ *   covariates?: ({name,type}|string)[], // multivariable-ready alternative
+ *   type?: 'continuous'|'binary'|'categorical'|'ordinal',
+ *   method?: 'MM'|'REML',
+ *   measure?: string,
+ * }
+ * Returns: MetaRegressionResult (ok:false with warnings for degenerate/under-powered input).
+ */
+export async function runMetaRegression(req, res) {
+  const flags = await getEffectiveFeatureFlags();
+  if (!flags.metaRegression) return res.status(404).json({ error: 'Not found' });
+
+  const { studies, covariate, covariates, type, method = 'MM', measure } = req.body || {};
+
+  if (!Array.isArray(studies) || studies.length === 0) {
+    return res.status(400).json({ error: 'studies array is required and must not be empty' });
+  }
+  if (!covariate && !(Array.isArray(covariates) && covariates.length)) {
+    return res.status(400).json({ error: 'a covariate (or covariates[]) is required' });
+  }
+
+  try {
+    const result = metaRegression(studies, { covariate, covariates, type, method, measure });
+    // The engine returns ok:false (with warnings) rather than throwing for
+    // degenerate / under-powered inputs — surface it as 422 so the client can
+    // show the guardrail messages, mirroring runMeta's "not analysable" case.
+    if (!result.ok) {
+      return res.status(422).json({ error: 'Meta-regression is not analysable for these inputs', ...result });
+    }
+    return res.json(result);
+  } catch (err) {
+    console.error('[meta] metareg error:', err.message);
+    return res.status(500).json({ error: 'Meta-regression failed' });
+  }
 }

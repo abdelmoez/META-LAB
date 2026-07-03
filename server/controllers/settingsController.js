@@ -165,6 +165,15 @@ const DEFAULTS = {
     // Summary-of-Findings table can be exported (json/csv/html). Surfaces in Ops ›
     // Flags automatically.
     gradeCertainty: false,
+    // P13 — meta-regression + bubble plots. Default OFF: the /api/meta/metareg
+    // endpoint 404s (existence-hidden) and the meta-regression analysis surface is
+    // hidden. When ON, a random-effects (mixed-effects) meta-regression runs
+    // server-side on the project's studies + a study-level covariate (method of
+    // moments / DerSimonian–Laird residual or REML), returning coefficients, τ²
+    // reduction, R², residual heterogeneity and bubble-plot geometry (points +
+    // regression line + 95% CI band). Deterministic pure engine; no project data
+    // leaves the server. Surfaces in Ops › Flags automatically.
+    metaRegression: false,
   }),
   // 66.md P5 — global (admin) AI-extraction policy. requireHumanValidation is a
   // hard product rule (suggestions can never auto-commit) surfaced here read-only.
