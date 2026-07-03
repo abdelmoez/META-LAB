@@ -21,6 +21,7 @@ import { loadSearch } from '../searchBuilder/index.js';
 import { searchVersionsApi } from './searchVersionsApi.js';
 import { pecanSearchApi } from '../pecanSearch/pecanSearchApi.js';
 import { reproLogToJson, reproLogFilename } from './reproLog.js';
+import { strategyStudioApi } from './strategyStudioApi.js';
 
 /** Pure leaf: the methods-paragraph modal. Exported for unit tests. */
 export function MethodsModal({ text, status, onCopy, onClose, copied }) {
@@ -50,7 +51,27 @@ export function MethodsModal({ text, status, onCopy, onClose, copied }) {
   );
 }
 
-export default function SearchExportPanel({ projectId, getLive, pecanEnabled, readOnly }) {
+/** Pure leaf: the PRISMA-S search-documentation export links (json/csv/html). Exported for tests. */
+export function PrismaSExport({ projectId }) {
+  return (
+    <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.brd}` }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: C.txt, marginBottom: 4 }}>Search documentation (PRISMA-S)</div>
+      <div style={{ fontSize: 11.5, color: C.muted, marginBottom: 10, lineHeight: 1.5 }}>
+        Download the PRISMA-S search-reporting record — every database, its query, and the limits applied — to attach to your protocol or manuscript.
+      </div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        {['json', 'csv', 'html'].map((fmt) => (
+          <a key={fmt} href={strategyStudioApi.prismaSUrl(projectId, fmt)} target="_blank" rel="noopener noreferrer"
+            style={{ ...btn(), textDecoration: 'none', display: 'inline-block' }}>
+            Download {fmt.toUpperCase()}
+          </a>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export default function SearchExportPanel({ projectId, getLive, pecanEnabled, readOnly, strategyStudioEnabled }) {
   const [busy, setBusy] = useState('');       // '' | 'log' | 'methods'
   const [note, setNote] = useState('');       // transient status line
   const [modal, setModal] = useState(null);   // { text, status } | null
@@ -111,6 +132,8 @@ export default function SearchExportPanel({ projectId, getLive, pecanEnabled, re
         </button>
       </div>
       {note && <div style={{ marginTop: 10, fontSize: 11.5, color: C.txt2 }}>{note}</div>}
+
+      {strategyStudioEnabled && <PrismaSExport projectId={projectId} />}
 
       {modal && (
         <MethodsModal

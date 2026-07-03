@@ -146,6 +146,15 @@ const DEFAULTS = {
     // opt-in AND the global killSwitch to be off; it never overwrites a human
     // decision. Surfaces in Ops › Flags automatically.
     eligibilityScreening: false,
+    // P11 — Guided Boolean search-strategy Studio (generator↔critic loop with REAL
+    // per-DB hit counts + seed-based recall estimation + PRISMA-S search
+    // documentation). Default OFF: the /api/search-builder/projects/:pid/strategy/*,
+    // /seed-studies, /recall-estimate and /strategy/prisma-s endpoints 404
+    // (existence-hidden). This flag FUNCTIONALLY DEPENDS ON `searchEngine` (stored
+    // concepts) + `pecanSearch` (the real connector hit counts): the studio gate
+    // requires all three ON, so it is inert without its dependencies regardless of how
+    // the flags are toggled. Surfaces in Ops › Flags automatically.
+    searchStrategyStudio: false,
   }),
   // 66.md P5 — global (admin) AI-extraction policy. requireHumanValidation is a
   // hard product rule (suggestions can never auto-commit) surfaced here read-only.

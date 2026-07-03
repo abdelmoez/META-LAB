@@ -21,7 +21,7 @@
  * requires `searchEngine`). When it is off, Run shows a clear "enable in Ops" note
  * instead of mounting the engine (no silent 404).
  */
-import { useState, useRef, useCallback, useMemo } from 'react';
+import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { C, FONT, alpha } from '../../frontend/theme/tokens.js';
 import { Icon } from '../../frontend/components/icons.jsx';
 import { SearchBuilderTab, searchBuilderApi, loadSearch, saveSearch } from '../searchBuilder/index.js';
@@ -31,6 +31,11 @@ import { pecanSearchApi } from '../pecanSearch/pecanSearchApi.js';
 import SearchQualityPanel from './SearchQualityPanel.jsx';
 import SearchVersionsPanel from './SearchVersionsPanel.jsx';
 import SearchExportPanel from './SearchExportPanel.jsx';
+// P11 — guided Strategy Studio (generator↔critic) + recall check. Additive; the panels
+// only mount when the flag trio (searchStrategyStudio && searchEngine && pecanSearch) is on.
+import StrategyStudioPanel from './StrategyStudioPanel.jsx';
+import RecallReportPanel from './RecallReportPanel.jsx';
+import { strategyStudioFlagEnabled } from './strategyStudioFlag.js';
 
 const STEPS = [
   { id: 'define', n: 1, label: 'Define', hint: 'Pick your concepts, synonyms and limits' },
@@ -167,6 +172,20 @@ export default function SearchWizard({ projectId, pico, readOnly, pecanEnabled }
   // version restore) without touching the memoized heavy builder.
   const [panelNonce, setPanelNonce] = useState(0);
   const bumpPanels = useCallback(() => setPanelNonce((n) => n + 1), []);
+  // P11 — one public-settings read to decide whether the guided Strategy Studio panels
+  // mount. INERT unless searchStrategyStudio && searchEngine && pecanSearch are ALL on
+  // (fail-closed on any error). Effects never run under SSR, so the wizard renders exactly
+  // as before when the flag is off / undetermined.
+  const [studioEnabled, setStudioEnabled] = useState(false);
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      let on = false;
+      try { on = await strategyStudioFlagEnabled(); } catch { on = false; }
+      if (!dead) setStudioEnabled(!!on);
+    })();
+    return () => { dead = true; };
+  }, []);
   const onLiveQuery = useCallback((s) => {
     liveRef.current = s || liveRef.current;
     const hc = !!(s && Array.isArray(s.concepts) && s.concepts.length > 0);
@@ -232,6 +251,8 @@ export default function SearchWizard({ projectId, pico, readOnly, pecanEnabled }
           <div style={{ marginTop: 12 }}>
             <SearchQualityPanel key={`q-${panelNonce}`} projectId={projectId} getLive={getLive} />
             <SearchVersionsPanel key={`v-${panelNonce}`} projectId={projectId} readOnly={readOnly} onAfterRestore={bumpPanels} />
+            {/* P11 — guided generator↔critic workspace (Build step), gated on the flag trio. */}
+            {studioEnabled && <StrategyStudioPanel key={`s-${panelNonce}`} projectId={projectId} readOnly={readOnly} />}
           </div>
         )}
       </div>
@@ -258,9 +279,15 @@ export default function SearchWizard({ projectId, pico, readOnly, pecanEnabled }
       )}
 
       {/* 69.md — reproducibility export lives in the Run step (works from the saved strategy +
-          versions even when the automated run is off; per-run counts are added when enabled). */}
+          versions even when the automated run is off; per-run counts are added when enabled).
+          P11 — the PRISMA-S search-documentation section inside it is gated on the flag trio. */}
       {step === 'run' && (
-        <SearchExportPanel projectId={projectId} getLive={getLive} pecanEnabled={pecanEnabled} readOnly={readOnly} />
+        <SearchExportPanel projectId={projectId} getLive={getLive} pecanEnabled={pecanEnabled} readOnly={readOnly} strategyStudioEnabled={studioEnabled} />
+      )}
+
+      {/* P11 — recall check (seed studies + estimate) in the Run step, gated on the flag trio. */}
+      {step === 'run' && studioEnabled && (
+        <RecallReportPanel projectId={projectId} readOnly={readOnly} pecanEnabled={pecanEnabled} />
       )}
 
       {/* Footer nav */}

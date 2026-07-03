@@ -2029,3 +2029,71 @@ model EligibilityProjectSetting {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P11 — Guided Boolean search-strategy Studio (flag `searchStrategyStudio`, OFF;
+// functionally depends on `searchEngine` + `pecanSearch`). A generator↔critic loop
+// refines a per-database Boolean strategy using the REAL per-DB hit counts already
+// produced by the Pecan Search connectors. Every iteration's provenance (the exact
+// string evaluated, its live hit count, the critic's assessment, what changed, and
+// the timestamp) is persisted so the refinement trail is fully reproducible. Recall
+// is estimated against a NEW project-scoped seed-study (known-included) set — the gap
+// this feature closes. All brand-new empty tables → `prisma db push` additive-safe.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// One generator↔critic iteration for one database. Persisted per loop step so the
+// full optimisation trail (executed string + hit count + critic notes + changes) is
+// auditable and never reconstructed approximately.
+model SearchStrategyIteration {
+  id                String   @id @default(uuid())
+  metaLabProjectId  String
+  strategyVersionId String? // optional link to a frozen SearchStrategyVersion
+  iteration         Int      @default(1) // 1-based loop step
+  database          String   @default("")
+  searchString      String   @default("") // the exact query string evaluated this step
+  hitCount          Int? // real per-DB count (null when unavailable/timeout/unsupported)
+  hitKind           String   @default("") // exact | estimate | unavailable | timeout | unsupported
+  criticJson        String   @default("{}") // JSON: critic assessment (issues/score/suggestedEdits)
+  changesJson       String   @default("{}") // JSON: what changed vs the previous step
+  profile           String   @default("") // generator profile/label for this DB
+  createdById       String?
+  createdAt         DateTime @default(now())
+
+  @@index([metaLabProjectId])
+}
+
+// A project's known-included / seed studies used for recall estimation. This is the
+// GAP P11 closes — no prior per-project seed set existed. Identifiers are all optional
+// (a seed may be known only by title); recall matching prefers DOI/PMID/OpenAlex id.
+model SearchSeedStudy {
+  id               String   @id @default(uuid())
+  metaLabProjectId String
+  title            String   @default("")
+  doi              String?
+  pmid             String?
+  openAlexId       String?
+  source           String   @default("manual") // manual | import | run
+  addedById        String?
+  addedByName      String?
+  createdAt        DateTime @default(now())
+
+  @@index([metaLabProjectId])
+}
+
+// A persisted recall estimate: seed coverage of a completed run's retrieved set
+// (source 'run') OR a per-seed membership probe against PubMed (source 'probe').
+// estimatedRecall is nullable (undefined when seedTotal = 0). missingJson carries the
+// not-found seeds plus query-improvement suggestions.
+model SearchRecallReport {
+  id                String   @id @default(uuid())
+  metaLabProjectId  String
+  strategyVersionId String?
+  runId             String?
+  seedTotal         Int      @default(0)
+  foundCount        Int      @default(0)
+  estimatedRecall   Float?
+  missingJson       String   @default("[]") // JSON: { notFound[], suggestions[] }
+  createdAt         DateTime @default(now())
+
+  @@index([metaLabProjectId])
+}

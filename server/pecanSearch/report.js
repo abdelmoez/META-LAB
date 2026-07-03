@@ -159,3 +159,180 @@ function escapeHtml(v) {
 }
 function formatDate(d) { try { return new Date(d).toISOString(); } catch { return String(d || ''); } }
 function safe(s, dflt) { try { return JSON.parse(s || ''); } catch { return dflt; } }
+
+// ── P11 — PRISMA-S search-strategy DOCUMENTATION ──────────────────────────────
+// Extends the per-run report with the search-strategy Studio provenance: the final
+// (or latest) strategy version, the per-database FINAL executed string + live hit
+// count, the full iteration/change trail, the applied filters, seed/recall summary,
+// and — when a run is supplied — the run's PRISMA identification counts + per-source
+// detail. Every number derives from persisted rows (never reconstructed).
+
+/**
+ * buildSearchDocumentation({ projectId, runId? }) — the reproducible search-strategy
+ * documentation payload for a project. `runId` is optional; when present and it belongs
+ * to the project, its PRISMA-S run report is embedded (records retrieved per source).
+ */
+export async function buildSearchDocumentation({ projectId, runId = null }) {
+  // Optional run report (records retrieved / per-source), scoped to this project.
+  let base = null;
+  if (runId) {
+    const run = await prisma.pecanSearchRun.findUnique({ where: { id: runId }, select: { metaLabProjectId: true } });
+    if (run && run.metaLabProjectId === projectId) base = await buildReport(runId);
+  }
+
+  // Final (isFinal) strategy version, else the most recent snapshot.
+  const finalVersion = (await prisma.searchStrategyVersion.findFirst({
+    where: { metaLabProjectId: projectId, isFinal: true }, orderBy: { version: 'desc' },
+  })) || (await prisma.searchStrategyVersion.findFirst({
+    where: { metaLabProjectId: projectId }, orderBy: { version: 'desc' },
+  }));
+
+  // Iteration trail grouped by database (latest per DB = the final executed string).
+  const iterations = await prisma.searchStrategyIteration.findMany({
+    where: { metaLabProjectId: projectId }, orderBy: [{ createdAt: 'asc' }],
+  });
+  const byDb = new Map();
+  for (const it of iterations) {
+    const arr = byDb.get(it.database) || [];
+    arr.push(it);
+    byDb.set(it.database, arr);
+  }
+  const perDatabase = [];
+  for (const [db, arr] of byDb.entries()) {
+    const last = arr[arr.length - 1];
+    perDatabase.push({
+      database: db,
+      finalSearchString: last.searchString,
+      hitCount: last.hitCount,
+      hitKind: last.hitKind,
+      iterations: arr.length,
+      profile: last.profile || '',
+      trail: arr.map((r) => ({
+        iteration: r.iteration,
+        hitCount: r.hitCount,
+        hitKind: r.hitKind,
+        criticScore: (safe(r.criticJson, {}) || {}).score ?? null,
+        changes: safe(r.changesJson, {}),
+        at: r.createdAt,
+      })),
+    });
+  }
+
+  // Applied filters (from the live 'search' module) + seed/recall summary.
+  let filters = {};
+  try {
+    const mod = await prisma.workflowModuleState.findUnique({ where: { projectId_moduleKey: { projectId, moduleKey: 'search' } } });
+    if (mod) filters = safe(mod.stateJson, {}).filters || {};
+  } catch { filters = {}; }
+  const seedTotal = await prisma.searchSeedStudy.count({ where: { metaLabProjectId: projectId } });
+  const latestRecall = await prisma.searchRecallReport.findFirst({
+    where: { metaLabProjectId: projectId }, orderBy: { createdAt: 'desc' },
+  });
+
+  return {
+    project: projectId,
+    generatedAt: new Date().toISOString(),
+    searchDate: base ? base.runDate : (finalVersion ? finalVersion.createdAt : null),
+    engineVersion: base ? base.engineVersion : null,
+    finalStrategy: finalVersion ? {
+      version: finalVersion.version,
+      name: finalVersion.name || '',
+      isFinal: !!finalVersion.isFinal,
+      canonicalText: finalVersion.canonicalText || '',
+      createdAt: finalVersion.createdAt,
+    } : null,
+    perDatabase,
+    filters,
+    seedTotal,
+    recall: latestRecall ? {
+      seedTotal: latestRecall.seedTotal,
+      foundCount: latestRecall.foundCount,
+      estimatedRecall: latestRecall.estimatedRecall,
+      at: latestRecall.createdAt,
+    } : null,
+    prismaCounts: base ? base.counts : null,
+    run: base ? {
+      runId: base.runId, searchName: base.searchName, state: base.state,
+      perSource: base.perSource,
+    } : null,
+  };
+}
+
+/** CSV export of the per-database strategy documentation (formula-injection guarded). */
+export function searchDocToCsv(doc) {
+  const d = doc || {};
+  const cols = ['database', 'finalSearchString', 'hitCount', 'hitKind', 'iterations', 'profile'];
+  const head = cols.join(',');
+  const rows = (d.perDatabase || []).map((s) => cols.map((c) => csvCell(s[c])).join(','));
+  const fs = d.finalStrategy || {};
+  const meta = [
+    `# PRISMA-S search strategy documentation,${csvCell(d.project)}`,
+    `# Search date,${csvCell(d.searchDate)}`,
+    `# Final strategy version,${csvCell(fs.version)}`,
+    `# Final strategy name,${csvCell(fs.name)}`,
+    `# Canonical strategy,${csvCell(fs.canonicalText)}`,
+    `# Seed studies,${csvCell(d.seedTotal)}`,
+    `# Estimated recall,${csvCell(d.recall ? d.recall.estimatedRecall : '')}`,
+    `# Records identified,${csvCell(d.prismaCounts ? d.prismaCounts.recordsIdentified : '')}`,
+  ];
+  return [...meta, '', head, ...rows].join('\n');
+}
+
+/** Print-friendly, self-contained HTML export of the strategy documentation. */
+export function searchDocToHtml(doc) {
+  const d = doc || {};
+  const e = escapeHtml;
+  const fs = d.finalStrategy;
+  const dbRows = (d.perDatabase || []).map((s) => `
+    <tr>
+      <td>${e(s.database)}</td>
+      <td><code>${e(s.finalSearchString)}</code></td>
+      <td class="num">${s.hitCount == null ? '—' : e(s.hitCount)}${s.hitKind ? ` <span class="badge">${e(s.hitKind)}</span>` : ''}</td>
+      <td class="num">${e(s.iterations)}</td>
+      <td>${e(s.profile)}</td>
+    </tr>`).join('');
+  const trailRows = (d.perDatabase || []).flatMap((s) => (s.trail || []).map((t) => `
+    <tr>
+      <td>${e(s.database)}</td>
+      <td class="num">${e(t.iteration)}</td>
+      <td class="num">${t.hitCount == null ? '—' : e(t.hitCount)}</td>
+      <td class="num">${t.criticScore == null ? '—' : e(t.criticScore)}</td>
+      <td>${e(t.changes && t.changes.reason ? t.changes.reason : (t.changes && t.changes.edits ? (Array.isArray(t.changes.edits) ? t.changes.edits.join('; ') : String(t.changes.edits)) : '—'))}</td>
+    </tr>`)).join('');
+  const filters = d.filters || {};
+  const filterBits = [];
+  if (filters.dateFrom || filters.dateTo) filterBits.push(`Dates ${e(filters.dateFrom || '…')}–${e(filters.dateTo || '…')}`);
+  if (Array.isArray(filters.languages) && filters.languages.length) filterBits.push(`Languages: ${filters.languages.map(e).join(', ')}`);
+  if (Array.isArray(filters.pubTypes) && filters.pubTypes.length) filterBits.push(`Publication types: ${filters.pubTypes.map(e).join(', ')}`);
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8">
+<title>PRISMA-S search strategy documentation</title>
+<style>
+ body{font:14px/1.5 -apple-system,Segoe UI,Roboto,sans-serif;color:#1a2330;max-width:980px;margin:24px auto;padding:0 16px}
+ h1{font-size:20px;margin:0 0 4px} h2{font-size:15px;margin:22px 0 6px} .sub{color:#5b6b7f;margin:0 0 18px}
+ table{border-collapse:collapse;width:100%;margin:8px 0;font-size:13px}
+ th,td{border:1px solid #d8e0ea;padding:6px 8px;text-align:left;vertical-align:top}
+ th{background:#f3f6fa} .num{text-align:right;font-variant-numeric:tabular-nums}
+ code{font:12px/1.4 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+ .badge{display:inline-block;background:#e6eefb;color:#2b5cb8;border-radius:4px;padding:0 6px;font-size:11px}
+ .counts{display:flex;gap:18px;flex-wrap:wrap;margin:10px 0;padding:10px 14px;background:#f7f9fc;border:1px solid #e3e9f1;border-radius:8px}
+ .counts div b{display:block;font-size:18px}
+</style></head><body>
+<h1>PRISMA-S search strategy documentation</h1>
+<p class="sub">Project ${e(d.project)} · search date ${e(formatDate(d.searchDate))} · generated ${e(d.generatedAt)}</p>
+${fs ? `<p><strong>Final strategy:</strong> v${e(fs.version)}${fs.name ? ` — ${e(fs.name)}` : ''}${fs.isFinal ? ' <span class="badge">final</span>' : ''}</p>
+<p><code>${e(fs.canonicalText)}</code></p>` : '<p class="sub">No saved strategy version yet.</p>'}
+<div class="counts">
+  <div><b>${e(d.seedTotal || 0)}</b>seed studies</div>
+  <div><b>${d.recall && d.recall.estimatedRecall != null ? e((d.recall.estimatedRecall * 100).toFixed(0)) + '%' : '—'}</b>estimated recall</div>
+  <div><b>${d.prismaCounts ? e(d.prismaCounts.recordsIdentified) : '—'}</b>records identified</div>
+</div>
+${filterBits.length ? `<p class="sub">Limits: ${filterBits.join(' · ')}</p>` : ''}
+<h2>Final executed strategy per database</h2>
+<table><thead><tr><th>Database</th><th>Executed query</th><th class="num">Hits</th><th class="num">Iterations</th><th>Profile</th></tr></thead>
+<tbody>${dbRows || '<tr><td colspan="5" class="sub">No optimisation iterations recorded yet.</td></tr>'}</tbody></table>
+<h2>Refinement trail</h2>
+<table><thead><tr><th>Database</th><th class="num">Iteration</th><th class="num">Hits</th><th class="num">Critic</th><th>Change</th></tr></thead>
+<tbody>${trailRows || '<tr><td colspan="5" class="sub">No iterations recorded.</td></tr>'}</tbody></table>
+<p class="sub">Generated by PecanRev. Every value derives from stored strategy, iteration and run data.</p>
+</body></html>`;
+}

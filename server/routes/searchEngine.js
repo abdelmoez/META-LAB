@@ -10,6 +10,14 @@ import {
   postSearchVersion, getSearchVersions, getSearchVersion, postSearchVersionRestore,
   postSearchVersionFinal, getSearchVersionsCompare, getSearchMethodsText,
 } from '../searchEngine/searchEngineController.js';
+// P11 — Guided Boolean search-strategy Studio (flag `searchStrategyStudio`, which also
+// requires searchEngine + pecanSearch). Namespaced under /projects/ so the paths never
+// collide with the catch-all GET|PUT /:projectId or the /:projectId/versions block.
+import {
+  postGenerate, postOptimize, getIterations,
+  getSeedStudies, postSeedStudies, deleteSeedStudy,
+  postRecallEstimate, getPrismaS,
+} from '../controllers/strategyStudioController.js';
 
 const router = Router();
 
@@ -17,6 +25,16 @@ const router = Router();
 router.post('/mesh', postMesh);
 router.post('/mesh-suggest', postMeshSuggest);
 router.post('/count', postCount);
+
+// ── P11 Strategy Studio (own flag; leader/owner for mutations) ─────────────────
+router.post('/projects/:pid/strategy/generate', postGenerate);
+router.post('/projects/:pid/strategy/optimize', postOptimize);
+router.get('/projects/:pid/strategy/iterations', getIterations);
+router.get('/projects/:pid/strategy/prisma-s', getPrismaS);
+router.get('/projects/:pid/seed-studies', getSeedStudies);
+router.post('/projects/:pid/seed-studies', postSeedStudies);
+router.delete('/projects/:pid/seed-studies/:sid', deleteSeedStudy);
+router.post('/projects/:pid/recall-estimate', postRecallEstimate);
 
 // ── Per-project strategy VERSIONS + reproducibility (69.md §7/§8) ──────────────
 // Registered BEFORE the catch-all `GET|PUT /:projectId` so the extra path segment
