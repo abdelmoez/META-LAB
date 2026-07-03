@@ -16,6 +16,10 @@ import { Spinner } from '../ui/components.jsx';
 const pct = (x) => (x == null ? '—' : `${Math.round(x * 100)}%`);
 const num = (x, d = 2) => (typeof x === 'number' && Number.isFinite(x) ? x.toFixed(d) : '—');
 
+// Below this many decided records the metrics are too small to be stable, so we
+// label them preliminary instead of presenting them as a settled baseline.
+const PRELIM_MIN = 30;
+
 function Metric({ label, value, color }) {
   return (
     <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '9px 11px' }}>
@@ -48,8 +52,20 @@ export function ValidationMetricsView({ metrics, csvUrl }) {
   }
   const cm = metrics.confusionMatrix || {};
   const per = Array.isArray(metrics.perCriterion) ? metrics.perCriterion : [];
+  const preliminary = metrics.n < PRELIM_MIN;
   return (
     <div style={{ fontFamily: FONT, display: 'flex', flexDirection: 'column', gap: 14 }}>
+      {preliminary && (
+        <div style={{
+          fontSize: 11, color: C.txt2, fontFamily: FONT, lineHeight: 1.5,
+          background: alpha(C.yel, 0.09), border: `1px solid ${alpha(C.yel, 0.4)}`,
+          borderRadius: 8, padding: '8px 11px',
+        }}>
+          <strong style={{ color: C.txt }}>Preliminary</strong> — based on only {metrics.n} decided
+          record{metrics.n === 1 ? '' : 's'}. Record about {PRELIM_MIN - metrics.n} more include/exclude
+          decision{PRELIM_MIN - metrics.n === 1 ? '' : 's'} for a more stable comparison.
+        </div>
+      )}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO }}>{metrics.n} decided record{metrics.n === 1 ? '' : 's'}</span>
         <span style={{ flex: 1 }} />
