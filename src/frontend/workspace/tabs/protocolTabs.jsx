@@ -20,6 +20,7 @@ import { workflowStateFlagEnabled } from "../../../services/workflowState/api.js
 import { searchEngineFlagEnabled } from "../../../features/searchBuilder/index.js";
 import { pecanSearchFlagEnabled } from "../../../features/pecanSearch/index.js";
 import { SearchWizard } from "../../../features/searchWizard/index.js";
+import { SearchWorkspace, searchWorkspaceV2FlagEnabled } from "../../../features/searchWorkspace/index.js";
 
 /* fmtDate — verbatim copy of the monolith module-local helper (the monolith
    keeps its own copy for its other consumers). */
@@ -257,20 +258,28 @@ function PICODispatcher({project,updNested,upd,lockCtx,activeId}){
                                                 note instead of a silent 404.
      · both ON                                → full wizard incl. the live run + import.
    pecanSearchFlagEnabled() already enforces the pecanSearch→searchEngine co-dependency,
-   so `pecan` here is true only when the run can actually execute. */
+   so `pecan` here is true only when the run can actually execute.
+
+   71.md — additive REDESIGN branch. When `searchWorkspaceV2` is ON (and searchEngine ON),
+   the new staged SearchWorkspace renders instead of SearchWizard; both compose the same
+   engines, so this is a safe, reversible arrangement swap. When the flag is OFF (default),
+   the SearchWizard path below is byte-identical. The legacy searchEngine-OFF SearchTab path
+   is untouched. searchWorkspaceV2FlagEnabled() already requires searchEngine. */
 function SearchWizardDispatcher({project,activeId,updNested,upd,readOnly}){
-  const[flags,setFlags]=useState(null); // null=checking; {searchEngine,pecan}
+  const[flags,setFlags]=useState(null); // null=checking; {searchEngine,pecan,workspaceV2}
   useEffect(()=>{let dead=false;
     (async()=>{
-      let se=false,ps=false;
+      let se=false,ps=false,wv2=false;
       try{ se=await searchEngineFlagEnabled(); }catch{ se=false; }
       try{ ps=await pecanSearchFlagEnabled(); }catch{ ps=false; }
-      if(!dead) setFlags({searchEngine:!!se,pecan:!!ps});
+      try{ wv2=await searchWorkspaceV2FlagEnabled(); }catch{ wv2=false; }
+      if(!dead) setFlags({searchEngine:!!se,pecan:!!ps,workspaceV2:!!wv2});
     })();
     return()=>{dead=true;};
   },[]);
   if(flags===null) return <div style={{padding:40,textAlign:"center",color:C.muted,fontSize:13}}>Loading Search…</div>;
   if(!flags.searchEngine) return <SearchTab project={project} updNested={updNested} upd={upd}/>;
+  if(flags.workspaceV2) return <SearchWorkspace projectId={activeId} pico={project.pico} readOnly={readOnly} pecanEnabled={flags.pecan}/>;
   return <SearchWizard projectId={activeId} pico={project.pico} readOnly={readOnly} pecanEnabled={flags.pecan}/>;
 }
 
