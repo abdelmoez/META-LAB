@@ -13,6 +13,7 @@ import {
   isReachable,
   proposeDomain,
   proposeOverall,
+  weightedKappa,
 } from '../../src/research-engine/rob/index.js';
 
 const J = (d, a) => judgeDomain(d, a).judgment;
@@ -277,5 +278,36 @@ describe('ROBINS-I via the generic engine (dispatch)', () => {
   it('proposeOverall dispatches to the ROBINS-I roll-up (5-level)', () => {
     const inst = getInstrument('ROBINS-I');
     expect(proposeOverall(inst, { D1: 'low', D2: 'critical' }).judgment).toBe('critical');
+  });
+});
+
+// ── judgmentOrder for ordinal analyses (weighted κ) — P14 recs-round regression ──
+// Guards the adversarial-verification fix: the non-ordinal "No information" (ni)
+// must NOT sit at the top of the severity scale, or weighted-κ disagreement weights
+// invert. `judgmentOrder` is severity-ASCENDING (ni between moderate and serious)
+// and deliberately differs from the `judgmentLevels` DISPLAY order.
+describe('ROBINS-I judgmentOrder (weighted-κ category order)', () => {
+  it('is severity-ascending with ni ranked between moderate and serious', () => {
+    expect(ROBINSI.judgmentOrder).toEqual(['low', 'moderate', 'ni', 'serious', 'critical']);
+    // ni is NOT last (it is last in the display order judgmentLevels) — proving the
+    // two orders are intentionally different.
+    const display = ROBINSI.judgmentLevels.map(l => l.value);
+    expect(display[display.length - 1]).toBe('ni');
+    expect(ROBINSI.judgmentOrder[ROBINSI.judgmentOrder.length - 1]).toBe('critical');
+  });
+
+  it('weighted κ treats critical-vs-ni as a large disagreement, not near-agreement', () => {
+    const cats = ROBINSI.judgmentOrder; // correct ordinal order
+    // Two raters: one says critical, the other ni — a genuine, severe disagreement.
+    // Perfect agreement on other cells; the critical↔ni cell should pull κ well down.
+    const a = ['critical', 'low', 'moderate', 'serious'];
+    const b = ['ni',       'low', 'moderate', 'serious'];
+    const good = weightedKappa(a, b, { categories: cats, weights: 'linear' });
+    // If ni were (wrongly) ordered last (adjacent to critical), the same data would
+    // score much higher agreement. With the correct order critical(idx4)↔ni(idx2)
+    // is a 2-step disagreement, so κ is meaningfully reduced.
+    const wrongCats = ROBINSI.judgmentLevels.map(l => l.value); // ni last (index 4)
+    const bad = weightedKappa(a, b, { categories: wrongCats, weights: 'linear' });
+    expect(good.kappa).toBeLessThan(bad.kappa);
   });
 });
