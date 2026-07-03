@@ -358,16 +358,23 @@ function assembleOutcome({ project, pair, allRob, storedRow, engine, model }) {
 
 // ── Public service API ────────────────────────────────────────────────────────
 
+// Each outcome runs its own runMeta + eggersTest; cap how many a single request
+// re-pools so a pathological project (hundreds of outcome pairs) can't tie up the
+// event loop. Realistic reviews have well under this; truncation is signalled.
+const MAX_OUTCOMES_PER_LIST = 200;
+
 /** List every outcome with its meta summary, suggestions, and stored assessment. */
 export async function listOutcomes(project, { model = 'random' } = {}) {
   const engine = await loadGradeEngine();
   const studies = Array.isArray(project.studies) ? project.studies : [];
-  const pairs = getOutcomePairs(studies);
+  const allPairs = getOutcomePairs(studies);
+  const truncated = allPairs.length > MAX_OUTCOMES_PER_LIST;
+  const pairs = truncated ? allPairs.slice(0, MAX_OUTCOMES_PER_LIST) : allPairs;
   const allRob = await loadRobAssessments(project.id);
   const rows = await prisma.gradeOutcomeAssessment.findMany({ where: { metaLabProjectId: project.id } }).catch(() => []);
   const byKey = new Map(rows.map((r) => [r.outcomeKey, r]));
   const outcomes = pairs.map((pair) => assembleOutcome({ project, pair, allRob, storedRow: byKey.get(pair.key) || null, engine, model }));
-  return { outcomes, count: outcomes.length };
+  return { outcomes, count: outcomes.length, totalOutcomes: allPairs.length, truncated };
 }
 
 /** Single outcome by key. Falls back to a stored-only view if the outcome no longer has studies. */
