@@ -5564,6 +5564,118 @@ function AiScreeningSection() {
 }
 
 /* ════════════════════════════════════════════════════════════════════════
+   SECTION: CRITERIA SCREENER / ELIGIBILITY POLICY (P10) — global default policy
+   for the deterministic, criteria-based eligibility engine. Mirrors AiScreeningSection:
+   reads/writes the global settings via adminApi and reflects the master
+   `eligibilityScreening` feature flag (Ops → Flags). Renders as the "Eligibility"
+   sub-tab of the Screening Ops section. NO user-facing "AI" wording — this is the
+   Criteria Screener (guided, criteria-based eligibility). Assistive only: it never
+   finalises a screening decision.
+   ════════════════════════════════════════════════════════════════════════ */
+
+function EligibilityPolicySection() {
+  const [s, setS] = useState(null);
+  const [loadErr, setLoadErr] = useState(false);
+  const [flagOn, setFlagOn] = useState(null);   // master eligibilityScreening feature flag
+  const [status, setStatus] = useState('idle');
+
+  useEffect(() => {
+    adminApi.eligibilityScreening.getSettings().then(d => { setS(d.settings); setLoadErr(false); }).catch(() => { setS(null); setLoadErr(true); });
+    adminApi.featureFlags.get().then(d => setFlagOn(!!d.eligibilityScreening)).catch(() => setFlagOn(null));
+  }, []);
+
+  async function save() {
+    setStatus('saving');
+    try {
+      const d = await adminApi.eligibilityScreening.saveSettings(s);
+      setS(d.settings); setStatus('saved'); setTimeout(() => setStatus('idle'), 3000);
+    } catch { setStatus('error'); setTimeout(() => setStatus('idle'), 3000); }
+  }
+
+  if (loadErr) return <div style={{ padding: 24, fontSize: 13, color: C.red }}>Could not load the Criteria Screener policy. Check that you have admin access and retry.</div>;
+  if (!s) return <div style={{ padding: 40, textAlign: 'center' }}><Spinner size={20} /></div>;
+
+  const set = (k, v) => setS(p => ({ ...p, [k]: v }));
+  const setNum = (k, raw, dflt = 0) => { const v = parseFloat(raw); set(k, Number.isFinite(v) ? v : dflt); };
+  const inp = { background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 6, padding: '6px 9px', color: C.txt, fontSize: 13, width: 160 };
+  const Row = ({ label, desc, children }) => (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 20px', borderBottom: `1px solid ${C.brd}`, gap: 20 }}>
+      <div><div style={{ fontSize: 13, color: C.txt, fontWeight: 600 }}>{label}</div>{desc && <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>{desc}</div>}</div>
+      {children}
+    </div>
+  );
+  const Sub = ({ children }) => (
+    <h3 style={{ fontSize: 12.5, fontWeight: 700, color: C.txt2, textTransform: 'uppercase', letterSpacing: '0.06em', margin: '24px 0 8px' }}>{children}</h3>
+  );
+
+  return (
+    <div>
+      <p style={{ fontSize: 12.5, color: C.muted, margin: '0 0 14px', lineHeight: 1.6, maxWidth: 760 }}>
+        Authoritative global policy for the <strong>Criteria Screener</strong> — the deterministic, criteria-based
+        eligibility engine. It matches each project&apos;s structured inclusion/exclusion questions against a
+        record and reports a suggested eligibility with honest confidence. It runs in-process with no external
+        calls and is <strong>assistive only</strong> — a reviewer always records the final include/exclude decision.
+      </p>
+
+      {flagOn === false && (
+        <AiPolicyBanner tone="warn">
+          The <strong>Criteria Screener</strong> feature flag is currently <strong>OFF</strong> (Ops → Flags).
+          These settings are saved but the engine stays inactive until the flag is enabled.
+        </AiPolicyBanner>
+      )}
+      {s.killSwitch && (
+        <AiPolicyBanner tone="danger">
+          <strong>Emergency kill switch is ENGAGED.</strong> The Criteria Screener is force-disabled everywhere,
+          overriding the toggles below, until the kill switch is turned off.
+        </AiPolicyBanner>
+      )}
+
+      <Sub>Global policy</Sub>
+      <SectionCard>
+        <Row label="Criteria Screener enabled" desc="Master switch within the feature flag (per-project opt-in still applies).">
+          <Toggle checked={!!s.enabled} onChange={v => set('enabled', v)} />
+        </Row>
+        <Row label="Default project policy" desc="assist = suggest only · auto = auto-apply high-confidence suggestions (governed; reviewers can undo).">
+          <select value={s.defaultPolicy} onChange={e => set('defaultPolicy', e.target.value)} style={inp}>
+            <option value="assist">assist</option><option value="auto">auto</option>
+          </select>
+        </Row>
+        <Row label="Max records per run" desc="Upper bound on records assessed in a single run.">
+          <input type="number" min={10} max={100000} value={s.maxRecordsPerRun} onChange={e => set('maxRecordsPerRun', parseInt(e.target.value, 10) || 0)} style={inp} />
+        </Row>
+        <Row label="Inline (foreground) limit" desc="Runs at or below this size return immediately; larger runs go to a background job.">
+          <input type="number" min={1} max={10000} value={s.inlineMaxRecords} onChange={e => set('inlineMaxRecords', parseInt(e.target.value, 10) || 0)} style={inp} />
+        </Row>
+      </SectionCard>
+
+      <Sub>Confidence thresholds</Sub>
+      <SectionCard>
+        <Row label="Include confidence" desc="An include criterion must answer “yes” at or above this confidence to count as met.">
+          <input type="number" min={0} max={1} step={0.01} value={s.includeConfidence} onChange={e => setNum('includeConfidence', e.target.value, 0.65)} style={inp} />
+        </Row>
+        <Row label="Exclude confidence" desc="An exclusion criterion answering “yes” at or above this confidence suggests exclusion.">
+          <input type="number" min={0} max={1} step={0.01} value={s.excludeConfidence} onChange={e => setNum('excludeConfidence', e.target.value, 0.65)} style={inp} />
+        </Row>
+        <div style={{ padding: '12px 20px', fontSize: 11.5, color: C.muted, lineHeight: 1.6 }}>
+          These gate when a criterion is confident enough to influence the suggested eligibility. Under the
+          <code> auto</code> policy, only suggestions at or above these gates are auto-applied — and every
+          auto-apply is governed and reversible.
+        </div>
+      </SectionCard>
+
+      <Sub>Emergency kill switch</Sub>
+      <div style={{ border: `1px solid ${alpha(C.red, '50')}`, borderRadius: 10, background: alpha(C.red, '08'), overflow: 'hidden' }}>
+        <Row label="Force-disable the Criteria Screener" desc="Immediately disables the Criteria Screener everywhere, overriding every toggle above. Use during an incident.">
+          <Toggle checked={!!s.killSwitch} onChange={v => set('killSwitch', v)} />
+        </Row>
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}><SaveButton onClick={save} status={status} /></div>
+    </div>
+  );
+}
+
+/* ════════════════════════════════════════════════════════════════════════
    SECTION: SEARCH PROVIDERS (Pecan Search Engine) — provider state, non-secret
    policy (caps/concurrency/retry/timeouts/preview throttle/institutional mode),
    queue + worker health, recent sanitized failures + safe requeue.
@@ -6187,6 +6299,7 @@ const SIFT_TABS = [
   { id: 'members',  label: 'Members'   },
   { id: 'settings', label: 'Settings'  },
   { id: 'aiPolicy', label: 'AI Policy' },
+  { id: 'eligibility', label: 'Eligibility' },
   { id: 'handoff',  label: 'Handoff'   },
   { id: 'audit',    label: 'Audit'     },
 ];
@@ -6916,6 +7029,7 @@ function SiftAdminSection() {
     members:  <SiftMembers />,
     settings: <SiftSettings />,
     aiPolicy: <AiScreeningSection />,
+    eligibility: <EligibilityPolicySection />,
     handoff:  <SiftHandoff />,
     audit:    <SiftAudit />,
   };

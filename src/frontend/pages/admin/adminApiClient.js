@@ -191,6 +191,16 @@ export const adminApi = {
     getRuns:      (p)        => req(`${BASE}/ai-screening/runs?${new URLSearchParams(p || {})}`),
   },
 
+  // ── Criteria Screener / Eligibility (P10, admin only) ────────────────────────
+  // Global default policy: getSettings → { settings:{ enabled, defaultPolicy:
+  //   'assist'|'auto', includeConfidence, excludeConfidence, maxRecordsPerRun,
+  //   inlineMaxRecords, killSwitch }, defaults:{...} }. saveSettings(body) PUTs it.
+  // The master `eligibilityScreening` feature flag lives in featureFlags.
+  eligibilityScreening: {
+    getSettings:  ()         => req(`${BASE}/eligibility-screening/settings`),
+    saveSettings: (body)     => req(`${BASE}/eligibility-screening/settings`, { method: 'PUT', ...json(body) }),
+  },
+
   // ── Pecan Search Engine providers (admin only) ───────────────────────────────
   // getSettings() → { engine, defaults, settings (editable non-secret policy block),
   //   providers:[{ id, label, platform, enabled, requiresCredentials, configured

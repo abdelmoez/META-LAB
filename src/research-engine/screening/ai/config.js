@@ -57,6 +57,10 @@ export const DEFAULT_AI_CONFIG = Object.freeze({
       // actually been fetched for the project (renormalization drops it otherwise),
       // so runs without enrichment score byte-identically to the pre-citation engine.
       citation: 0.10,
+      // Criteria-based eligibility signal (P10). ONLY active when the project has
+      // eligibility criteria AND the record was assessed against them; absent, the
+      // renormalization drops it so runs without eligibility data score byte-identically.
+      eligibility: 0.10,
     },
     semanticEnabled: true,   // use embedding/lexical neighbour similarity if available
   },
@@ -117,6 +121,22 @@ export const DEFAULT_AI_CONFIG = Object.freeze({
     prevalenceShift: 0.1,
     psiLarge: 0.25,
     collapseFraction: 0.9,
+  },
+
+  // ── Criteria-based eligibility screening (P10) ──────────────────────
+  // Deterministic, zero-training assessment of a record against explicit inclusion/
+  // exclusion criteria (see ai/eligibility.js). Decision SUPPORT only — never
+  // finalises a screening decision. Tunables document the confidence/decision mapping.
+  eligibility: {
+    includeConfidence: 0.65,     // an include criterion counts as satisfied only at/above this
+    excludeConfidence: 0.65,     // an exclude criterion triggers exclusion only at/above this
+    unclearBand: [0.15, 0.6],    // match strength ≤ lo → absent, ≥ hi → present, between → unclear
+    minConfidence: 0.5,          // confidence floor at a band edge
+    maxConfidence: 0.98,         // confidence ceiling at full concept coverage
+    absenceConfidenceCap: 0.75,  // absence-of-evidence can never be as certain as presence
+    titleOnlyFactor: 0.85,       // discount an 'absent' verdict read from the title alone
+    minCriteria: 1,              // below this many criteria → 'unclear' (nothing to decide on)
+    autoApply: { enabled: false, minDecisionConfidence: 0.9, requireNoBlockers: true },
   },
 
   // ── Provider abstraction (resolved server-side; pure layer only knows the shape) ─
@@ -209,6 +229,30 @@ export const ENGINE_CONFIG_VERSIONS = Object.freeze({
         tolerance: 1e-6,
         classWeight: 'balanced',
       },
+    }),
+  }),
+
+  // v3 — v2's tuned classifier PLUS criteria-based eligibility (P10) as an ADDITIVE
+  // hybrid signal. The eligibility signal only participates when the project has
+  // eligibility criteria and the record was assessed; when it is absent the hybrid
+  // renormalizes it away, so a run without eligibility data scores byte-identically
+  // to v2. NOT the default version (v2 remains default) — selectable / rollback-able.
+  'v3-eligibility-lexical': Object.freeze({
+    label: 'Eligibility + lexical v3',
+    summary: 'v2 lexical-tuned classifier plus deterministic criteria-based eligibility '
+      + 'screening as an additive, renormalizable hybrid signal. Identical to v2 on any '
+      + 'run without eligibility criteria; adds an eligibility signal + assist suggestions '
+      + 'when criteria are configured.',
+    config: Object.freeze({
+      classifier: Object.freeze({
+        cInverseReg: 8.0,
+        momentum: 0.9,
+        learningRate: 1.0,
+        epochs: 300,
+        tolerance: 1e-6,
+        classWeight: 'balanced',
+      }),
+      hybrid: Object.freeze({ weights: Object.freeze({ eligibility: 0.10 }) }),
     }),
   }),
 });

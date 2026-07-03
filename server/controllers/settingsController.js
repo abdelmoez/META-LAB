@@ -1,6 +1,13 @@
 import { prisma } from '../db/client.js';
 import { ROB_DEFAULTS } from './robAdminController.js';
 import { defaultThemeSettings } from '../utils/themeValidate.js';
+// P10 — global (admin) eligibility-screening policy. Handlers below mirror the AI
+// screening admin GET/PUT (screeningAiAdminController.js) and reuse the service's
+// defaults + coercion. The two routes are mounted in server/routes/admin.js.
+import {
+  ELIGIBILITY_SETTINGS_KEY, ELIGIBILITY_GLOBAL_DEFAULTS,
+  getGlobalEligibilitySettings, saveGlobalEligibilitySettings,
+} from '../services/screeningEligibilityService.js';
 
 // Default settings keys and their initial JSON-serialised values
 const DEFAULTS = {
@@ -130,6 +137,15 @@ const DEFAULTS = {
     // OpenAlex / Europe PMC / ClinicalTrials.gov) + bulk PDF upload matching.
     // Default OFF. Only legal OA PDFs are fetched; no paywall bypassing.
     fullTextRetrieval: false,
+    // P10 — Criteria-based eligibility screening. Default OFF: the
+    // /api/screening/projects/:pid/eligibility/* endpoints 404 (existence-hidden)
+    // and the eligibility surfaces are hidden. When ON, a project defines versioned
+    // inclusion/exclusion CRITERIA and a deterministic engine answers each per record
+    // (yes/no/unclear + evidence) and proposes include/exclude — reviewable,
+    // reversible, audited. Governed auto-apply additionally requires a per-project
+    // opt-in AND the global killSwitch to be off; it never overwrites a human
+    // decision. Surfaces in Ops › Flags automatically.
+    eligibilityScreening: false,
   }),
   // 66.md P5 — global (admin) AI-extraction policy. requireHumanValidation is a
   // hard product rule (suggestions can never auto-commit) surfaced here read-only.
@@ -162,6 +178,21 @@ const DEFAULTS = {
     liveUpdateEnabled: true,          // se2.md §6 — rescore on new decisions
     retrainDebounceMs: 4000,
     killSwitch: false,                // se2.md §4 — emergency global disable
+  }),
+  // P10 — global (admin) eligibility-screening policy (Ops › Eligibility). Governs
+  // whether governed auto-apply may run and the confidence gates it requires. The
+  // engine never commits a human decision; auto-apply is additionally per-project
+  // opt-in and can be killed globally here. Additive SiteSetting; merged with
+  // ELIGIBILITY_GLOBAL_DEFAULTS server-side (see screeningEligibilityService.js).
+  eligibilityScreeningSettings: JSON.stringify({
+    enabled: true,                 // master switch WITHIN the eligibilityScreening flag
+    defaultPolicy: 'assist',       // assist (suggest only) | auto (governed auto-apply)
+    includeConfidence: 0.85,       // min decisionConfidence to auto-apply an INCLUDE
+    excludeConfidence: 0.85,       // min decisionConfidence to auto-apply an EXCLUDE
+    autoApplyRequiresNoHumanDecision: true, // never auto-apply over a human decision
+    maxRecordsPerRun: 5000,
+    inlineMaxRecords: 25,          // scopes at/under this size may evaluate inline (else queued)
+    killSwitch: false,             // emergency global disable of governed auto-apply
   }),
   // p1.md — Pecan Search Engine non-secret policy block (Ops › Search Providers).
   // API keys NEVER live here — they stay in server env (redacted). Additive
@@ -321,5 +352,39 @@ export async function getThemeSettings(req, res) {
     console.error('[settings] getThemeSettings error:', err.message);
     // Never break theming — degrade to the default rather than 500.
     return res.json(defaultThemeSettings());
+  }
+}
+
+/**
+ * GET /api/admin/eligibility-screening/settings  (admin-only)
+ * P10 — the global eligibility-screening policy. Mirrors getAiScreeningSettings.
+ * Mount in server/routes/admin.js:
+ *   router.get('/eligibility-screening/settings', requireAdmin, getEligibilityScreeningSettings);
+ *   router.put('/eligibility-screening/settings', requireAdmin, updateEligibilityScreeningSettings);
+ */
+export async function getEligibilityScreeningSettings(req, res) {
+  try {
+    const settings = await getGlobalEligibilitySettings();
+    return res.json({ settings, defaults: ELIGIBILITY_GLOBAL_DEFAULTS });
+  } catch (err) {
+    console.error('[settings] getEligibilityScreeningSettings error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/** PUT /api/admin/eligibility-screening/settings  (admin-only) */
+export async function updateEligibilityScreeningSettings(req, res) {
+  try {
+    const before = await getGlobalEligibilitySettings();
+    const settings = await saveGlobalEligibilitySettings(req.body || {}, req.user?.id || null);
+    try {
+      const { logAdminAction } = await import('../utils/audit.js');
+      const changed = Object.keys(settings).filter(k => before[k] !== settings[k]);
+      await logAdminAction(req, 'UPDATE_ELIGIBILITY_SCREENING', 'SiteSetting', ELIGIBILITY_SETTINGS_KEY, { changed });
+    } catch { /* audit best-effort */ }
+    return res.json({ ok: true, settings });
+  } catch (err) {
+    console.error('[settings] updateEligibilityScreeningSettings error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
   }
 }

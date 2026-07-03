@@ -45,3 +45,7 @@ export {
   scoreHistogram, populationStabilityIndex, detectClassCollapse,
   runDriftSnapshot, computeDrift, DRIFT_DEFAULTS,
 } from './drift.js';
+export {
+  evaluateEligibility, eligibilityScoreFromAssessment, computeEligibilityValidation,
+  DEFAULT_ELIGIBILITY_CONFIG, ENGINE_VERSION as ELIGIBILITY_ENGINE_VERSION,
+} from './eligibility.js';

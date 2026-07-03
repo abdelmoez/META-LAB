@@ -23,6 +23,12 @@ import { useRealtime } from '../../hooks/useRealtime.js';
 import { useScreeningShortcuts } from '../hooks/useScreeningShortcuts.js';
 import { useScreeningAi } from '../ai/useScreeningAi.js';
 import { AiScoreCard, AiQueueBar, AiStatusPanel, ScoreBadge } from '../ai/AiAssist.jsx';
+// P10 Criteria Screener (feature flag: eligibilityScreening) — self-detecting hook,
+// renders nothing + makes no network calls when the flag is off (no-op for today).
+import { useEligibility } from '../eligibility/useEligibility.js';
+import CriteriaBuilder from '../eligibility/CriteriaBuilder.jsx';
+import EligibilityCard from '../eligibility/EligibilityCard.jsx';
+import EligibilityValidationPanel from '../eligibility/EligibilityValidationPanel.jsx';
 import { rankItems } from '../../../research-engine/screening/ai/ranking.js';
 import { parseScreeningShortcuts, DEFAULT_SCREENING_SHORTCUTS, keyLabel } from '../screeningShortcuts.js';
 import { shouldWindow, computeListWindow, measuredRowHeight, DEFAULT_ROW_HEIGHT } from '../lib/listWindow.js';
@@ -206,6 +212,9 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
   // Self-detecting hook: when the flag is off it reports { enabled:false } and
   // every AI surface below renders nothing, so behaviour is identical to today.
   const ai = useScreeningAi(pid, 'title_abstract');
+  // P10 Criteria Screener — self-detecting; { enabled:false } (silent) when the
+  // `eligibilityScreening` flag is off, so nothing below renders or network-calls.
+  const elig = useEligibility(pid);
   const [queueMode, setQueueMode] = useState('default');
   const [aiBand, setAiBand] = useState('all');
 
@@ -548,6 +557,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
         onPrev={() => moveSelection(-1)} onNext={() => moveSelection(1)}
         shortcutPrefs={shortcutPrefs}
         ai={ai}
+        elig={elig}
       />
 
       {uiPrefs.rightCollapsed ? (
@@ -570,6 +580,7 @@ export default function ScreeningTab({ pid, project, access, refreshProject, use
           shownCount={total} projectTotal={kwStats.total}
           onCollapse={() => setPanel('rightCollapsed', true)}
           ai={ai}
+          elig={elig}
         />
       )}
     </div>
@@ -848,7 +859,7 @@ function MiddleColumn({
   reasons, setReasons, labels, chosenLabels, toggleLabel,
   onDecisionClick, onUndo, onSaveDetails, saving, saveMsg, decErr,
   recordIndex, recordCount, totalCount, onPrev, onNext,
-  shortcutPrefs, ai,
+  shortcutPrefs, ai, elig,
 }) {
   const k = shortcutPrefs?.keys ?? DEFAULT_SCREENING_SHORTCUTS.keys;
   const shortcutsOn = shortcutPrefs?.enabled !== false;
@@ -926,6 +937,13 @@ function MiddleColumn({
         {ai?.enabled && (
           <div style={{ margin: '4px 0 16px' }}>
             <AiScoreCard ai={ai} record={record} decided={record.myDecision?.decision} />
+          </div>
+        )}
+
+        {/* ── Criteria Screener eligibility (feature flag: eligibilityScreening) ─ */}
+        {elig?.enabled && (
+          <div style={{ margin: '4px 0 16px' }}>
+            <EligibilityCard elig={elig} record={record} canScreen={canScreen} />
           </div>
         )}
 
@@ -1206,10 +1224,10 @@ function RightColumn({
   showInclusion, setShowInclusion, showExclusion, setShowExclusion,
   labels, setLabels, reasons, setReasons, blindMode,
   kwStats, loadKwStats, selectedIncl, setSelectedIncl, selectedExcl, setSelectedExcl,
-  clearKeywordFilters, shownCount, projectTotal, onCollapse, ai,
+  clearKeywordFilters, shownCount, projectTotal, onCollapse, ai, elig,
 }) {
   const [open, setOpen] = useState({
-    ai: true, pico: true, keywords: true,
+    ai: true, eligibility: true, pico: true, keywords: true,
     studyTypes: false, labels: false, reasons: false,
   });
   const toggle = key => setOpen(o => ({ ...o, [key]: !o[key] }));
@@ -1236,6 +1254,13 @@ function RightColumn({
       {ai?.enabled && (
         <Section title="AI Screening" open={open.ai} onToggle={() => toggle('ai')}>
           <AiStatusPanel ai={ai} />
+        </Section>
+      )}
+
+      {/* Criteria Screener / Eligibility (feature flag: eligibilityScreening) */}
+      {elig?.enabled && (
+        <Section title="Eligibility criteria" open={open.eligibility} onToggle={() => toggle('eligibility')}>
+          <EligibilityCriteria elig={elig} canEdit={isLeader} />
         </Section>
       )}
 
@@ -1323,6 +1348,38 @@ function Section({ title, open, onToggle, children, noPad }) {
         <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO, transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}>›</span>
       </button>
       {open && <div style={{ padding: noPad ? 0 : '0 16px 16px' }}>{children}</div>}
+    </div>
+  );
+}
+
+// ── Criteria Screener panel (P10) — build/edit eligibility criteria, run the
+// screener over undecided records, and (leaders) review validation. All copy is
+// criteria-based; no user-facing "AI". Renders only when the flag self-detects on.
+function EligibilityCriteria({ elig, canEdit }) {
+  const [showValidation, setShowValidation] = useState(false);
+  return (
+    <div>
+      <CriteriaBuilder
+        criteria={elig.criteria}
+        version={elig.criteriaVersion}
+        canEdit={canEdit}
+        onSave={elig.saveCriteria}
+        onRun={() => elig.evaluate('undecided')}
+        running={elig.running}
+        jobStatus={elig.jobStatus}
+        summary={elig.summary}
+        canRun={canEdit}
+      />
+      {canEdit && (
+        <div style={{ marginTop: 14, paddingTop: 12, borderTop: `1px solid ${C.brd}` }}>
+          <button
+            onClick={() => setShowValidation(v => !v)}
+            style={{ background: 'none', border: 'none', color: C.acc, fontSize: 11.5, fontFamily: FONT, cursor: 'pointer', padding: 0 }}>
+            {showValidation ? '▾ Hide validation' : '▸ Show validation vs reviewer decisions'}
+          </button>
+          {showValidation && <div style={{ marginTop: 12 }}><EligibilityValidationPanel elig={elig} /></div>}
+        </div>
+      )}
     </div>
   );
 }

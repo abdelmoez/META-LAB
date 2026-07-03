@@ -75,6 +75,12 @@ import {
   getAiRunLogs,
 } from '../controllers/screeningAiAdminController.js';
 
+// 70.md P10 — global Criteria/Eligibility Screener policy (admin only).
+import {
+  getEligibilityScreeningSettings,
+  updateEligibilityScreeningSettings,
+} from '../controllers/settingsController.js';
+
 import {
   getExtractionAiAdminSettings,
   updateExtractionAiAdminSettings,
@@ -276,6 +282,10 @@ router.patch('/screening/projects/:id/restore', requireAdmin, restoreScreeningPr
 router.get('/ai-screening/settings', requireAdmin, getAiScreeningSettings);
 router.put('/ai-screening/settings', requireAdmin, updateAiScreeningSettings);
 router.get('/ai-screening/runs',     requireAdmin, getAiRunLogs);
+
+// 70.md P10 — global default policy for the criteria-based Eligibility Screener.
+router.get('/eligibility-screening/settings', requireAdmin, getEligibilityScreeningSettings);
+router.put('/eligibility-screening/settings', requireAdmin, updateEligibilityScreeningSettings);
 
 // 66.md P5/P6 — extraction-AI + living-review global policy (admin only)
 router.get('/extraction-ai/settings', requireAdmin, getExtractionAiAdminSettings);

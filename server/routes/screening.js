@@ -18,6 +18,7 @@ import * as OA from '../controllers/screeningOaController.js';
 import * as IB from '../controllers/screeningImportBatchController.js';
 import * as PR from '../controllers/presenceController.js';
 import * as AI from '../controllers/screeningAiController.js';
+import * as EL from '../controllers/screeningEligibilityController.js';
 
 const r = Router();
 const prisma = new PrismaClient();
@@ -155,6 +156,21 @@ r.post('/projects/:pid/ai/rollback',                    AI.postAiRollback);
 r.put('/projects/:pid/ai/settings',                     AI.putAiSettings);
 r.get('/projects/:pid/records/:rid/ai/explanation',     AI.getAiExplanation);
 r.post('/projects/:pid/records/:rid/ai/feedback',       AI.postAiFeedback);
+
+// P10 — Criteria-based eligibility screening (feature flag: eligibilityScreening;
+// each handler 404s when off — existence hiding). Criteria are versioned + audited;
+// bulk evaluation is a durable job (small scopes run inline); governed auto-apply
+// never overwrites a human decision.
+r.get('/projects/:pid/eligibility',                     EL.getEligibility);
+r.put('/projects/:pid/eligibility/criteria',            EL.putCriteria);
+r.post('/projects/:pid/eligibility/evaluate',           EL.postEvaluate);
+r.get('/projects/:pid/eligibility/job-status',          EL.getEligibilityJobStatus);
+r.get('/projects/:pid/eligibility/assessments',         EL.getAssessments);
+r.get('/projects/:pid/eligibility/validation',          EL.getEligibilityValidation);
+r.put('/projects/:pid/eligibility/settings',            EL.putEligibilitySettings);
+r.get('/records/:rid/eligibility',                      EL.getRecordEligibility);
+r.put('/records/:rid/eligibility/adjudicate',           EL.putAdjudicate);
+r.put('/records/:rid/eligibility/undo',                 EL.putUndoAutoApply);
 
 // Second Review (full-text stage) + META·LAB handoff (Parts 3/12)
 r.get('/projects/:pid/second-review',            RV.listSecondReview);

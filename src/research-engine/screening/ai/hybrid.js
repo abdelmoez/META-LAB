@@ -21,6 +21,7 @@ function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
  * @param {number|null} [signals.semanticExcluded] — cosine sim to excluded centroid [0,1]
  * @param {number|null} [signals.keyword] — raw inclusion/exclusion keyword signal [0,1]
  * @param {number|null} [signals.citation] — citation-graph signal [0,1] (66.md P4.3)
+ * @param {number|null} [signals.eligibility] — criteria-based eligibility signal [0,1] (P10)
  * @param {object} hybridCfg — config.hybrid
  * @returns {{ score:number, mode:'supervised'|'cold_start', subScores:object,
  *            weights:object }}
@@ -81,6 +82,17 @@ export function hybridScore(signals = {}, hybridCfg = {}) {
     components.push(['citation', W.citation ?? 0.10, v]);
   } else {
     subScores.citation = null;
+  }
+
+  // Criteria-based eligibility signal (P10) — present only when the record was
+  // assessed against project eligibility criteria, so its absence (like citation)
+  // leaves the fused score byte-identical to the pre-eligibility engine.
+  if (signals.eligibility != null) {
+    const v = clamp01(signals.eligibility);
+    subScores.eligibility = v;
+    components.push(['eligibility', W.eligibility ?? 0.10, v]);
+  } else {
+    subScores.eligibility = null;
   }
 
   // Renormalize over active components.

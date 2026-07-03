@@ -61,6 +61,7 @@ import { startPecanSearchWorker } from './pecanSearch/pecanSearchWorker.js';
 // 62.md — durable, off-event-loop workers for AI scoring + large async exports.
 import { startAiJobsWorker } from './services/screeningAiJobs.js';
 import { startExportWorker } from './services/screeningExportWorker.js';
+import { startEligibilityJobsWorker } from './services/screeningEligibilityService.js';
 // 68.md P9 — durable, off-event-loop worker for automated OA full-text retrieval.
 import { startFullTextWorker } from './fullText/fullTextWorker.js';
 import { applySqlitePragmas } from './db/client.js';
@@ -544,6 +545,9 @@ const server = app.listen(PORT, () => {
       // (large exports stream to a file instead of buffering in one request → no 504).
       startAiJobsWorker().catch(err => console.error('[ai-worker] start failed:', err.message));
       startExportWorker().catch(err => console.error('[export-worker] start failed:', err.message));
+      // 70.md P10 — start the durable Eligibility-Screener bulk-eval worker (crash
+      // recovery of stuck jobs, then drains criteria evaluations off the request thread).
+      startEligibilityJobsWorker().catch(err => console.error('[eligibility-worker] start failed:', err.message));
       // 68.md P9 — start the durable full-text retrieval worker. Re-queues any job
       // a crash left mid-flight (under the retry cap), then drains off the request
       // thread. No-op unless the fullTextRetrieval flag + admin setting allow it.

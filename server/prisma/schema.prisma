@@ -1904,3 +1904,128 @@ model SearchStrategyVersion {
 
   @@index([metaLabProjectId, version])
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// P10 — Criteria-based eligibility screening (flag `eligibilityScreening`, OFF).
+// A project defines an ordered, versioned set of inclusion/exclusion CRITERIA; a
+// deterministic engine answers each criterion per record (yes/no/unclear +
+// confidence + evidence quote) and proposes include/exclude/unclear. Nothing ever
+// commits a human decision unless BOTH the project policy AND the global policy
+// enable governed auto-apply (killSwitch-guarded, reversible, fully audited).
+// All brand-new empty tables → `prisma db push` additive-safe.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// One eligibility criterion (question) for a project. Ordered + versioned; the whole
+// set is replaced atomically and its `version` bumped on every edit so an assessment
+// can record exactly which criteria version produced it.
+model EligibilityCriterion {
+  id         String   @id @default(uuid())
+  projectId  String
+  key        String   @default("") // stable slug used by the engine + evidence map
+  category   String   @default("") // population | intervention | comparator | outcome | studyDesign | other
+  question   String   @default("") // human-readable eligibility question
+  kind       String   @default("include") // include | exclude
+  required   Boolean  @default(false) // a failed REQUIRED criterion blocks inclusion
+  polarity   String   @default("positive") // positive | negative (how a 'yes' maps to eligibility)
+  orderIndex Int      @default(0)
+  version    Int      @default(1) // criteria-set version this row belongs to
+  active     Boolean  @default(true)
+  notes      String   @default("")
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([projectId])
+}
+
+// Append-only edit history of a project's criteria set (who changed what, when).
+model EligibilityCriterionAudit {
+  id            String   @id @default(uuid())
+  projectId     String
+  version       Int      @default(1) // resulting criteria-set version
+  changeType    String   @default("replace") // replace | create | delete
+  beforeJson    String   @default("[]") // criteria set before the change (JSON)
+  afterJson     String   @default("[]") // criteria set after the change (JSON)
+  changedById   String?
+  changedByName String   @default("")
+  createdAt     DateTime @default(now())
+
+  @@index([projectId])
+}
+
+// One eligibility assessment per (project, record): the engine's per-criterion answers
+// + suggested decision, plus governed auto-apply / reviewer-override provenance. Every
+// value is reviewable, reversible, and traceable.
+model EligibilityAssessment {
+  id                 String    @id @default(uuid())
+  projectId          String
+  recordId           String
+  stage              String    @default("title_abstract")
+  answersJson        String    @default("[]") // per-criterion answers (answer/confidence/evidenceQuote/sourceField)
+  blockersJson       String    @default("[]") // failed required criteria that block inclusion
+  suggestedDecision  String    @default("unclear") // include | exclude | unclear
+  decisionConfidence Float?
+  engineVersion      String    @default("") // provenance: engine version that produced it
+  configVersion      String    @default("") // provenance: engine config version
+  criteriaVersion    Int       @default(1) // provenance: criteria-set version scored against
+  autoApplied        Boolean   @default(false) // did governed auto-apply write a decision?
+  autoApplyPolicy    String    @default("") // policy in force at eval time (assist | auto)
+  autoAppliedAt      DateTime? // provenance: when auto-apply fired
+  reviewerDecision   String    @default("") // include | exclude — human adjudication
+  reviewerId         String?
+  reviewerName       String    @default("")
+  overrideReason     String    @default("")
+  decidedAt          DateTime? // when a reviewer (or governed auto-apply) settled it
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  @@unique([projectId, recordId])
+  @@index([projectId])
+}
+
+// P10 bulk-evaluation jobs — a durable, crash-recoverable background worker mirroring
+// ScreenAiJob (atomic claim, attempts cap, heartbeat, progress). Kept PARALLEL to the AI
+// job table (separate ownership surface); the eligibility compute lives in the eligibility
+// service. Bare projectId scope key (audit-survival precedent, like ScreenAiJob).
+model ScreenEligibilityJob {
+  id            String    @id @default(uuid())
+  projectId     String
+  stage         String    @default("title_abstract")
+  scope         String    @default("undecided") // all | undecided | ids
+  recordIdsJson String    @default("[]") // explicit ids when scope = ids
+  autoApply     Boolean   @default(false) // whether governed auto-apply may run this batch
+  status        String    @default("queued") // queued | running | completed | failed | superseded | cancelled
+  trigger       String    @default("manual") // manual | api
+  reason        String    @default("") // failure reason (no article text)
+  nAssessed     Int       @default(0)
+  nAutoApplied  Int       @default(0)
+  attempts      Int       @default(0)
+  processed     Int       @default(0)
+  total         Int       @default(0)
+  durationMs    Int?
+  heartbeatAt   DateTime?
+  createdById   String?
+  createdByName String    @default("")
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([projectId, createdAt])
+  @@index([projectId, status])
+  @@index([status, createdAt])
+}
+
+// Per-project eligibility policy (owner/leader editable). Kept in its own table (one
+// row per project) so the whole schema change stays an EOF append — mirrors the role
+// of ScreenProject.aiSettings without editing that model. Governs whether governed
+// auto-apply may run for the project and its confidence gates (bounded by the global
+// policy + killSwitch). Brand-new empty table → `prisma db push` additive-safe.
+model EligibilityProjectSetting {
+  id           String   @id @default(uuid())
+  projectId    String   @unique
+  settingsJson String   @default("{}") // { enabled, policy, includeConfidence, excludeConfidence }
+  updatedById  String?
+  updatedByName String  @default("")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
