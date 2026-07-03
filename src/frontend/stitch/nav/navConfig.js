@@ -291,6 +291,7 @@ export function categoryForStage(stageId) {
   if (stageId === 'control') return 'control';
   if (stageId === 'methods') return 'reference';
   if (stageId === 'living') return 'search'; // 66.md P6 — Living Review lives in Search
+  if (stageId === 'citation') return 'search'; // P15 — Citation Mining lives in Search
   if (stageId === 'screening' || stageId === 'prisma') return 'screen';
   const t = TABS.find((x) => x.id === stageId);
   if (t && t.phase && PHASE_TO_CATEGORY[t.phase]) return PHASE_TO_CATEGORY[t.phase];
@@ -361,6 +362,23 @@ export function submenuForCategory(categoryId, ctx = {}) {
         icon: living.icon,
         href: projectStageHref('living', ctx),
         completionKey: 'living',
+        countKey: null,
+        screening: false,
+      });
+    }
+    // P15 — Citation Mining joins the Search submenu ONLY when the flag is ON. The pure
+    // model reads a boolean from ctx (StitchProjectSubnav supplies it via a flag hook);
+    // when ctx.citationMiningEnabled is absent/false the entry is not appended, so the
+    // workspace is UNCHANGED with the flag off (no new tab). Like Living Review it is a
+    // non-numbered navigable entry (excluded from the progress denominator / walker).
+    const citation = ctx.citationMiningEnabled ? TABS.find((t) => t.id === 'citation') : null;
+    if (citation) {
+      items.push({
+        key: 'citation',
+        label: citation.label,
+        icon: citation.icon,
+        href: projectStageHref('citation', ctx),
+        completionKey: 'citation',
         countKey: null,
         screening: false,
       });

@@ -30,6 +30,7 @@ const STEP_DESC = {
   prospero: 'Register the review protocol',
   search: 'Build and run your multi-database search',
   living: 'Schedule search updates & track evidence shifts',
+  citation: 'Mine references & chase citations',
   extraction: 'Extract study + outcome data',
   rob: 'Assess risk of bias per study',
   analysis: 'Pool effect sizes (meta-analysis)',

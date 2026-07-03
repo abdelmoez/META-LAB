@@ -185,6 +185,18 @@ const DEFAULTS = {
     // regression line + 95% CI band). Deterministic pure engine; no project data
     // leaves the server. Surfaces in Ops › Flags automatically.
     metaRegression: false,
+    // P15 — Bibliomine citation mining. Default OFF: the /api/citation-mining/*
+    // endpoints 404 (existence-hidden) and the citation-mining surfaces are hidden.
+    // When ON, a project can upload prior reviews' reference lists (client-extracted
+    // text), parse + resolve those references against public bibliographic providers,
+    // chase backward (cited references) and forward (citing works) citations through
+    // a bounded, cancellable durable worker, and import the deduplicated candidates
+    // into screening with full provenance (a source:'citation-mining' import batch).
+    // Only legal metadata / open-access sources are used (no paywall bypass). Live
+    // external resolution is additionally gated by CITATION_MINING_LIVE_RESOLVE=1
+    // (default off → deterministic offline resolution, no external calls). Surfaces
+    // in Ops › Flags automatically.
+    citationMining: false,
   }),
   // 66.md P5 — global (admin) AI-extraction policy. requireHumanValidation is a
   // hard product rule (suggestions can never auto-commit) surfaced here read-only.

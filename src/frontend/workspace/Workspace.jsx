@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef, memo } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, memo, lazy, Suspense } from "react";
 import { createPortal } from "react-dom";
 import { METHODS_CONTENT, NOT_IMPLEMENTED } from "../../research-engine/docs/methods-content.js";
 import { screeningApi } from "../screening/api-client/screeningApi.js";
@@ -156,6 +156,10 @@ import { RoBTab, LegacyRoBTab } from "./tabs/robTabs.jsx";
 import { NmaTab } from "./tabs/nmaTab.jsx";
 // 66.md P6 — Living Review dashboard (flag `livingReview`; lives in its own feature dir).
 import LivingReviewTab from "../../features/livingReview/LivingReviewTab.jsx";
+// P15 Bibliomine — Citation Mining panel (flag `citationMining`; lives in its own feature dir).
+// LAZY-loaded so its viz chunk (incl. the shared worldGeo geometry) only loads when the
+// citation tab is actually opened — the legacy workspace bundle is otherwise unchanged.
+const CitationMiningPanel = lazy(() => import("../../features/citationMining/CitationMiningPanel.jsx"));
 
 /* ════════════ TABS: ANALYSIS / FOREST / SENSITIVITY / SUBGROUP (extracted prompt46 Phase 6g — verbatim) ════════════
    AnalysisTab, DataBehindAnalysis, ResearchExport, ResultsWriteup, ForestTab,
@@ -1563,6 +1567,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           {tab==="subgroup"&&<SubgroupTab project={project}/>}
           {tab==="nma"&&<NmaTab project={project} updateProject={updateProject} activeId={activeId}/>}
           {tab==="living"&&<LivingReviewTab projectId={activeId}/>}
+          {tab==="citation"&&<Suspense fallback={<div style={{padding:24,color:C.muted}}>Loading…</div>}><CitationMiningPanel projectId={activeId} project={project} readOnly={projectPerms(project).readOnly}/></Suspense>}
           {tab==="grade"&&<GRADETab project={project} upd={upd}/>}
           {tab==="manuscript"&&<ManuscriptTab project={project} upd={upd}/>}
           {tab==="report"&&<ReportTab project={project} upd={upd}/>}

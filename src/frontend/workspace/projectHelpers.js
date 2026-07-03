@@ -217,6 +217,13 @@ export const TABS=[
   // navigable project navigation at ?tab=living, and categoryForStage('living')
   // highlights the Search rail category.
   {id:"living",     icon:"refresh",     label:"Living Review",        phase:null,  group:"living"},
+  // P15 Bibliomine — Citation Mining (flag `citationMining`, default OFF). Like Living
+  // Review it is phase:null + group-tagged so it stays OUT of the numbered workflow map,
+  // the progress denominator and the "Next step" walker. It is surfaced ONLY when the
+  // flag is ON: navConfig appends it to the SEARCH category's white submenu (behind
+  // ctx.citationMiningEnabled) and categoryForStage('citation') highlights Search. The
+  // legacy sidebar (workflow + reference groups) never renders it — matching Living Review.
+  {id:"citation",   icon:"link",        label:"Citation Mining",      phase:null,  group:"citation"},
   // prompt18 — Screening is now ONE in-project stage that embeds the full
   // META·SIFT engine (import → duplicates → title/abstract → conflicts → full
   // text). The old "Screening & PRISMA" tab is demoted to the PRISMA flow only.

@@ -40,6 +40,7 @@ import institutionsRouter from './routes/institutions.js';
 import workflowStateRouter from './routes/workflowState.js';
 import searchEngineRouter  from './routes/searchEngine.js';
 import pecanSearchRouter    from './routes/pecanSearch.js';
+import citationMiningRouter from './routes/citationMining.js';
 import extractionRouter     from './routes/extraction.js';
 import livingReviewRouter   from './routes/livingReview.js';
 import publicSynthesisRouter from './routes/publicSynthesis.js';
@@ -59,6 +60,7 @@ import { backfillUserNumbers } from './services/userNumber.js';
 import { backfillProjectActivity } from './store.js';
 import { startImportWorker } from './services/screeningImportWorker.js';
 import { startPecanSearchWorker } from './pecanSearch/pecanSearchWorker.js';
+import { startCitationChaseWorker } from './citationMining/citationChaseWorker.js';
 // 62.md — durable, off-event-loop workers for AI scoring + large async exports.
 import { startAiJobsWorker } from './services/screeningAiJobs.js';
 import { startExportWorker } from './services/screeningExportWorker.js';
@@ -454,6 +456,12 @@ app.use('/api/search-builder', requireAuth, searchEngineLimiter, searchEngineRou
 // META·LAB project access. External provider calls + API keys stay server-side.
 app.use('/api/pecan-search', requireAuth, pecanSearchLimiter, pecanSearchRouter);
 
+// ── Bibliomine citation mining (P15) — requireAuth at the mount; each handler
+// gates on the `citationMining` flag (default OFF → 404) and the caller's META·LAB
+// project access. Uploads carry client-extracted TEXT only; external resolution +
+// citation chasing reuse the Pecan connectors (server-side, bounded, cancellable).
+app.use('/api/citation-mining', requireAuth, pecanSearchLimiter, citationMiningRouter);
+
 // ── Structured Data Extraction (66.md P5) — requireAuth at the mount; each
 // handler gates on the `extractionAssist` flag (default OFF → 404) and the
 // caller's META·LAB project access. AI suggestions never auto-commit.
@@ -545,6 +553,9 @@ const server = app.listen(PORT, () => {
       // p1.md — start the durable Pecan Search Engine worker. Re-queues any search
       // job a crash left mid-flight (resumes from each source's cursor), then drains.
       startPecanSearchWorker().catch(err => console.error('[pecan-search-worker] start failed:', err.message));
+      // P15 — start the durable citation-chase worker. Re-queues any chase job a
+      // crash left mid-flight (under the retry cap), then drains off the request thread.
+      startCitationChaseWorker().catch(err => console.error('[citation-chase-worker] start failed:', err.message));
       // 62.md — start the durable AI-scoring worker (manual runs + decision rescores run
       // here, off the request thread, with crash recovery) and the async export worker
       // (large exports stream to a file instead of buffering in one request → no 504).

@@ -2158,3 +2158,117 @@ model GradeAuditLog {
 
   @@index([metaLabProjectId])
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// P15 — Bibliomine citation mining. ALL brand-new tables (db-push additive-safe;
+// @@index is fine on empty tables). Every non-key column is nullable / defaulted;
+// ids are BARE strings (no cross-project FKs) by repo convention so provenance
+// rows outlive the entities they describe (audit survival). JSON stored as String.
+// Gated by the `citationMining` feature flag (default OFF → endpoints 404).
+// ═══════════════════════════════════════════════════════════════════════════
+
+// An uploaded "seed review" (a prior systematic review / PDF) whose reference list
+// is mined. Only client-extracted TEXT reaches the server (no file bytes stored);
+// fileHash lets a re-upload of the same document be recognised.
+model SeedReview {
+  id               String   @id @default(uuid())
+  metaLabProjectId String
+  title            String   @default("")
+  filename         String   @default("")
+  fileHash         String   @default("")
+  uploadedById     String?
+  uploadedByName   String?
+  referenceCount   Int      @default(0)
+  textChars        Int?
+  createdAt        DateTime @default(now())
+
+  @@index([metaLabProjectId])
+}
+
+// One parsed bibliographic reference extracted from a SeedReview's reference list.
+// `parseConfidence` is the pure engine's confidence; the `resolved*` columns hold
+// the outcome of resolving the reference to a canonical record (DOI/PMID/OpenAlex).
+model ExtractedReference {
+  id                 String   @id @default(uuid())
+  seedReviewId       String
+  metaLabProjectId   String   @default("")
+  orderIndex         Int      @default(0)
+  raw                String   @default("")
+  authors            String   @default("")
+  title              String   @default("")
+  journal            String   @default("")
+  year               String   @default("")
+  doi                String   @default("")
+  pmid               String   @default("")
+  url                String   @default("")
+  parseConfidence    Float?
+  resolutionStatus   String   @default("pending") // pending|resolved|not_found|error
+  resolvedJson       String   @default("{}")
+  resolvedSource     String   @default("") // reference|crossref|openalex|pubmed
+  resolvedDoi        String   @default("")
+  resolvedPmid       String   @default("")
+  resolvedOpenAlexId String   @default("")
+  createdAt          DateTime @default(now())
+
+  @@index([seedReviewId])
+  @@index([metaLabProjectId])
+}
+
+// Durable, crash-resumable citation-chase job. Cloned from the PecanSearchJob
+// pattern: a boot hook re-queues jobs left 'processing' beyond the heartbeat lease
+// (under a retry cap → poison pills fail permanently, never loop). Bounded by
+// `depth` (≤3) and `maxCandidates` so external fan-out can never run away.
+model CitationChaseJob {
+  id               String    @id @default(uuid())
+  metaLabProjectId String    @default("")
+  direction        String    @default("backward") // backward (cited-by references) | forward (citing works)
+  depth            Int       @default(1)
+  maxCandidates    Int       @default(500)
+  seedIdsJson      String    @default("[]") // JSON string[] of ExtractedReference ids
+  status           String    @default("queued") // queued|processing|completed|failed|cancelled
+  progress         Int       @default(0) // 0..100
+  total            Int?
+  nFound           Int       @default(0)
+  attempts         Int       @default(0)
+  heartbeatAt      DateTime?
+  leaseUntil       DateTime?
+  claimedBy        String    @default("") // worker instance id (future multi-node lease)
+  cancelRequested  Boolean   @default(false)
+  errorText        String    @default("")
+  createdById      String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([status, createdAt])
+  @@index([metaLabProjectId])
+  @@index([heartbeatAt])
+}
+
+// A candidate record surfaced by citation mining (a resolved reference, a backward
+// citation, or a forward citing work) BEFORE it is imported into screening.
+// `provenanceJson` records which seed/study/job produced it; `imported` flips once
+// it lands as a ScreenRecord (via a source:'citation-mining' ScreenImportBatch).
+model CitationCandidate {
+  id               String   @id @default(uuid())
+  metaLabProjectId String   @default("")
+  chaseJobId       String?
+  seedReviewId     String?
+  doi              String   @default("")
+  pmid             String   @default("")
+  openAlexId       String   @default("")
+  title            String   @default("")
+  abstract         String   @default("")
+  year             String   @default("")
+  journal          String   @default("")
+  authorsJson      String   @default("[]")
+  publicationType  String   @default("")
+  source           String   @default("") // reference|backward|forward
+  provenanceJson   String   @default("{}")
+  dedupStatus      String   @default("") // new|existing_match|exact_dup|fuzzy_dup|ambiguous
+  matchedRecordId  String   @default("")
+  imported         Boolean  @default(false)
+  createdAt        DateTime @default(now())
+
+  @@index([metaLabProjectId])
+  @@index([chaseJobId])
+}
