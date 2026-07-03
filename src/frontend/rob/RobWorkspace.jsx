@@ -15,13 +15,14 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo } from 'react';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import Icon from '../components/icons.jsx';
-import { robApi, getRobSettings } from './robApi.js';
-import { judgmentStyle, JUDGMENT_LEGEND } from './judgmentStyle.js';
+import { robApi, getRobSettings, guidedRobAppraisalEnabled } from './robApi.js';
+import { judgmentStyle, legendFor } from './judgmentStyle.js';
 import RobTrafficLight from './RobTrafficLight.jsx';
 import RobPdfPanel from './RobPdfPanel.jsx';
 import { screeningApi } from '../screening/api-client/screeningApi.js';
+import { extractStudyFullText } from './robFullText.js';
 import {
-  ROB2, isReachable, proposeDomain, proposeOverall, completeness,
+  ROB2, getInstrument, isReachable, proposeDomain, proposeOverall, completeness,
 } from '../../research-engine/rob/index.js';
 
 const RESPONSE_KEYS = ['Y', 'PY', 'PN', 'N', 'NI'];
@@ -320,14 +321,14 @@ function SegmentedControl({ qid, value, onChange }) {
 // Renders the D1–D5 + Summary navigator either as a vertical side-rail (wide pane)
 // or a compact horizontal strip (narrow pane). Same data + handlers; only the
 // arrangement changes so the questions always get a comfortable, readable width.
-function DomainNav({ mode, active, setActive, setFocusedQ, completeness, dotJudgment, overriddenByDomain }) {
+function DomainNav({ mode, active, setActive, setFocusedQ, completeness, dotJudgment, overriddenByDomain, domains = ROB2.domains, legend = legendFor('RoB2') }) {
   const go = (id) => { setActive(id); setFocusedQ(null); };
 
   if (mode === 'top') {
     return (
       <nav aria-label="RoB domains" style={{ borderBottom: `1px solid ${C.brd}`, background: C.surf, padding: '10px 16px', minHeight: 0, display: 'flex', flexDirection: 'column', gap: 9 }}>
         <div style={{ display: 'flex', gap: 8, overflowX: 'auto', paddingBottom: 2 }}>
-          {ROB2.domains.map((d) => {
+          {domains.map((d) => {
             const comp = completeness.perDomain[d.id]; const on = active === d.id;
             return (
               <button key={d.id} onClick={() => go(d.id)} aria-current={on} title={`${d.id} · ${d.shortLabel}`} style={navChip(on)}>
@@ -344,7 +345,7 @@ function DomainNav({ mode, active, setActive, setFocusedQ, completeness, dotJudg
           </button>
         </div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 14px', alignItems: 'center' }}>
-          {JUDGMENT_LEGEND.map(l => (
+          {legend.map(l => (
             <span key={l.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <span style={{ width: 10, height: 10, borderRadius: '50%', background: l.hex }} />
               <span style={{ fontSize: 10, color: C.txt2 }}>{l.label}</span>
@@ -358,7 +359,7 @@ function DomainNav({ mode, active, setActive, setFocusedQ, completeness, dotJudg
   // Side rail (wide pane) — more padding than before for breathing room.
   return (
     <nav aria-label="RoB domains" style={{ borderRight: `1px solid ${C.brd}`, padding: '16px 12px', background: C.surf, overflowY: 'auto', minHeight: 0 }}>
-      {ROB2.domains.map((d) => {
+      {domains.map((d) => {
         const comp = completeness.perDomain[d.id];
         const on = active === d.id;
         return (
@@ -378,7 +379,7 @@ function DomainNav({ mode, active, setActive, setFocusedQ, completeness, dotJudg
       </button>
       <div style={{ marginTop: 16, padding: '0 6px' }}>
         <div style={{ fontSize: 9, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Legend</div>
-        {JUDGMENT_LEGEND.map(l => (
+        {legend.map(l => (
           <div key={l.key} style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 5 }}>
             <span style={{ width: 11, height: 11, borderRadius: '50%', background: l.hex }} />
             <Icon name={l.icon} size={12} />
@@ -431,6 +432,27 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
   answersRef.current = answers;        // always-fresh mirror so flush() never reads a stale closure
   const mounted = useRef(true);
 
+  // ── Instrument-awareness (P14) ──────────────────────────────────────────────
+  // The workspace is driven by the assessment's OWN instrument (RoB 2 for
+  // randomised trials, ROBINS-I for non-randomised studies) instead of a hardcoded
+  // ROB2. The pure engine dispatches by instrument, so the SAME client code drives
+  // both. Falls back to RoB 2 until the assessment view loads / for an unknown id.
+  const instrument = useMemo(() => {
+    try { return getInstrument(view?.instrumentId || 'RoB2'); } catch { return ROB2; }
+  }, [view?.instrumentId]);
+  const domainIds = useMemo(() => instrument.domains.map(d => d.id), [instrument]);
+  const legend = useMemo(() => legendFor(instrument.id), [instrument]);
+
+  // ── Guided appraisal (P14, flag-gated) ──────────────────────────────────────
+  // When the guidedRobAppraisal flag is OFF, none of this renders and the
+  // workspace behaves EXACTLY as today (RoB 2 only, no appraisal).
+  const [appraisalOn, setAppraisalOn] = useState(false);
+  const [appraisal, setAppraisal] = useState(null);      // server /appraise result
+  const [appraising, setAppraising] = useState(false);
+  const [appraiseError, setAppraiseError] = useState('');
+  // Per-question disposition of a suggestion: 'accepted' | 'rejected' (absent = pending).
+  const [suggestionState, setSuggestionState] = useState({});
+
   const load = useCallback(async () => {
     setLoading(true); setError('');
     try {
@@ -457,6 +479,14 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
     return () => { alive = false; };
   }, []);
 
+  // P14 — is the guided-appraisal layer enabled? Gates the "Run guided appraisal"
+  // action + the per-question suggestion cards. Fail-safe OFF.
+  useEffect(() => {
+    let alive = true;
+    guidedRobAppraisalEnabled().then(v => { if (alive) setAppraisalOn(!!v); }).catch(() => { /* stays OFF */ });
+    return () => { alive = false; };
+  }, []);
+
   // prompt32 Task 2 — single study-record resolution (one network call). Runs once
   // the assessment is loaded (it needs view.projectId + view.studyId). The result
   // drives the persistent article header, the Article Information tab, and the PDF
@@ -477,20 +507,21 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
   useEffect(() => { resolveStudyRecord(); }, [resolveStudyRecord]);
 
   // ── Live (client-side) reachability + proposals from the SAME engine module ──
+  // Uses the SELECTED instrument object, which the pure engine dispatches by id.
   const liveProposals = useMemo(() => {
     const out = {};
-    for (const d of ROB2.domains) out[d.id] = proposeDomain(ROB2, d.id, answers[d.id] || {});
+    for (const d of instrument.domains) out[d.id] = proposeDomain(instrument, d.id, answers[d.id] || {});
     return out;
-  }, [answers]);
+  }, [answers, instrument]);
   const liveOverall = useMemo(() => {
     const resolved = {};
-    for (const d of ROB2.domains) {
+    for (const d of instrument.domains) {
       const dv = (view?.domains || []).find(x => x.domainId === d.id);
       resolved[d.id] = (dv && dv.overridden && dv.finalJudgment) ? dv.finalJudgment : liveProposals[d.id].judgment;
     }
-    return proposeOverall(ROB2, resolved);
-  }, [liveProposals, view]);
-  const liveCompleteness = useMemo(() => completeness(ROB2, { answersByDomain: answers }), [answers]);
+    return proposeOverall(instrument, resolved);
+  }, [liveProposals, view, instrument]);
+  const liveCompleteness = useMemo(() => completeness(instrument, { answersByDomain: answers }), [answers, instrument]);
 
   const overriddenByDomain = useMemo(() => {
     const m = {};
@@ -520,7 +551,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
     pending.current = { answers: {}, meta: {} };
     const items = [];
     for (const qid of qids) {
-      const domainId = ROB2.domains.find(d => d.questions.some(q => q.id === qid))?.id;
+      const domainId = instrument.domains.find(d => d.questions.some(q => q.id === qid))?.id;
       // Meta-only (rationale/evidence) edits must NOT wipe the saved answer: read
       // the CURRENT response from answersRef (always fresh — never a stale closure);
       // default to 'NA' only when the question is genuinely unanswered.
@@ -550,7 +581,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
       if (mounted.current) { setSaveState('error'); setError(e.message); }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [assessmentId, onChanged]);
+  }, [assessmentId, onChanged, instrument]);
 
   function queueSave() {
     clearTimeout(saveTimer.current);
@@ -581,11 +612,12 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
       if (tag === 'input' || tag === 'textarea' || tag === 'select' || e.metaKey || e.ctrlKey || e.altKey) return;
       if (override) return; // the override modal owns the keyboard while open
       if (active === 'summary') {
-        if (e.key === '[' || e.key === 'p') { setActive('D5'); e.preventDefault(); }
+        if (e.key === '[' || e.key === 'p') { setActive(domainIds[domainIds.length - 1]); e.preventDefault(); }
         return;
       }
-      const di = DOMAIN_IDS.indexOf(active);
-      const reachable = ROB2.domains[di].questions.filter(q => isReachable(q, answers[active] || {}));
+      const di = domainIds.indexOf(active);
+      if (di < 0) return; // active is not a domain of this instrument (guard during load)
+      const reachable = instrument.domains[di].questions.filter(q => isReachable(q, answers[active] || {}));
       const fi = reachable.findIndex(q => q.id === focusedQ);
       if (e.key >= '1' && e.key <= '5' && focusedQ && editable) {
         // Only answer when the focused question actually belongs to (and is reachable
@@ -598,9 +630,9 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
       } else if (e.key === 'p') {
         const prev = reachable[Math.max(0, (fi < 0 ? 0 : fi - 1))]; if (prev) setFocusedQ(prev.id); e.preventDefault();
       } else if (e.key === ']') {
-        setActive(di < DOMAIN_IDS.length - 1 ? DOMAIN_IDS[di + 1] : 'summary'); setFocusedQ(null); e.preventDefault();
+        setActive(di < domainIds.length - 1 ? domainIds[di + 1] : 'summary'); setFocusedQ(null); e.preventDefault();
       } else if (e.key === '[') {
-        if (di > 0) { setActive(DOMAIN_IDS[di - 1]); setFocusedQ(null); } e.preventDefault();
+        if (di > 0) { setActive(domainIds[di - 1]); setFocusedQ(null); } e.preventDefault();
       } else if (e.key === 'o' && editable) {
         setOverride({ target: 'domain', domainId: active, current: resolvedDomain(active) }); e.preventDefault();
       } else if (e.key === '?') {
@@ -614,7 +646,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, focusedQ, answers, finalised, readOnly, override]);
+  }, [active, focusedQ, answers, finalised, readOnly, override, domainIds, instrument, editable]);
 
   async function doOverride({ finalJudgment, justification, clear }) {
     try {
@@ -647,14 +679,76 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
     } catch (e) { setError(e.message); }
   }
 
+  // ── Guided appraisal actions (P14) ──────────────────────────────────────────
+  const domainOfQid = useCallback(
+    (qid) => instrument.domains.find(d => d.questions.some(q => q.id === qid))?.id,
+    [instrument],
+  );
+
+  // Obtain the study's full text CLIENT-SIDE (best-effort — reuses the existing
+  // pdf.js pipeline + screening PDF routes) and POST it to /appraise. The server
+  // appraises title + abstract itself and saves suggestions as PROPOSED answers
+  // only; nothing here becomes a final judgement without a human accepting it.
+  async function runAppraisal(force = false) {
+    if (!editable || appraising) return;
+    setAppraising(true); setAppraiseError('');
+    try {
+      const ft = await extractStudyFullText({ screenProjectId: studyRecord.screenProjectId, recordId: studyRecord.recordId });
+      const res = await robApi.appraise(assessmentId, { fullText: ft.text || '', force });
+      setAppraisal(res);
+      setSuggestionState({}); // a fresh run resets every suggestion to pending
+    } catch (e) {
+      setAppraiseError(e?.message || 'Guided appraisal is unavailable right now.');
+    } finally {
+      setAppraising(false);
+    }
+  }
+
+  // Accept a suggestion → write it as an ANSWER via the existing autosave (PUT
+  // /answers): the deterministic engine then re-proposes the judgement, and the
+  // human still sets the FINAL judgement via the override flow. Accepting never
+  // finalises anything on its own.
+  function acceptSuggestion(qid, response, evidenceQuote) {
+    const domainId = domainOfQid(qid);
+    if (!domainId || !response || !editable) return;
+    setAnswer(domainId, qid, response);
+    if (evidenceQuote) setQMeta(qid, { evidenceQuote });
+    setSuggestionState(s => ({ ...s, [qid]: 'accepted' }));
+  }
+  function rejectSuggestion(qid) {
+    setSuggestionState(s => ({ ...s, [qid]: 'rejected' }));
+  }
+  function clearAppraisal() { setAppraisal(null); setSuggestionState({}); setAppraiseError(''); }
+
+  const suggestionByQid = useMemo(() => {
+    const m = {};
+    if (appraisal && Array.isArray(appraisal.domains)) {
+      for (const d of appraisal.domains) for (const q of (d.questions || [])) m[q.questionId] = q;
+    }
+    return m;
+  }, [appraisal]);
+  const appraisalActive = appraisalOn && !!appraisal;
+  // Suggestions still awaiting the reviewer's decision (not yet accepted/rejected).
+  const pendingSuggestions = useMemo(
+    () => Object.keys(suggestionByQid).filter(qid => !suggestionState[qid]).length,
+    [suggestionByQid, suggestionState],
+  );
+  function jumpToFirstSuggestion() {
+    const firstQid = Object.keys(suggestionByQid).find(qid => !suggestionState[qid]);
+    if (!firstQid) return;
+    const domainId = domainOfQid(firstQid);
+    if (domainId) { setActive(domainId); setFocusedQ(firstQid); }
+  }
+
   if (loading) return <div style={shell}><div style={{ padding: 60, textAlign: 'center', color: C.muted, fontFamily: FONT }}>Loading assessment…</div></div>;
   if (error && !view) return <div style={shell}><div style={{ padding: 40 }}><ErrorBox msg={error} /><button onClick={onClose} style={ghostBtn}>Back</button></div></div>;
   if (!view) return null;
 
   const allComplete = liveCompleteness.overall.complete;
   const summaryOverall = (allComplete || view.overall.overridden) ? (finalised ? view.overall.resolvedOverall : liveOverall.judgment) : 'na';
-  const single = { domains: ROB2.domains.map(d => ({ id: d.id, shortLabel: d.shortLabel })), rows: [{ id: view.id, label: view.resultLabel || view.studyId, cells: ROB2.domains.map(d => ({ domainId: d.id, judgment: dotJudgment(d.id) })), overall: summaryOverall }] };
-  const completedDomains = ROB2.domains.filter(d => domainComplete(d.id)).length;
+  // `instrumentId` on the matrix makes the traffic-light legend match the plot.
+  const single = { instrumentId: instrument.id, domains: instrument.domains.map(d => ({ id: d.id, shortLabel: d.shortLabel })), rows: [{ id: view.id, label: view.resultLabel || view.studyId, cells: instrument.domains.map(d => ({ domainId: d.id, judgment: dotJudgment(d.id) })), overall: summaryOverall }] };
+  const completedDomains = instrument.domains.filter(d => domainComplete(d.id)).length;
 
   // prompt34 Task 4 — the PDF column is shown when admin-enabled AND not collapsed
   // by the "Hide source" toggle. (prompt41 Task 3 — the cluttered article header was
@@ -688,7 +782,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
             <Icon name="arrowLeft" size={15} /> Back to Risk of Bias
           </button>
           <span title="Assessment tool" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '4px 10px', borderRadius: 7, background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '38')}`, color: C.acc, fontSize: 11, fontFamily: MONO, fontWeight: 700, flexShrink: 0 }}>
-            <Icon name="scale" size={13} /> {view?.instrumentLabel || 'RoB 2'} · {view?.variant === 'adherence' ? 'effect of adherence' : 'effect of assignment'}
+            <Icon name="scale" size={13} /> {view?.instrumentLabel || 'RoB 2'} · {instrument.id === 'ROBINS-I' ? 'non-randomised studies' : (view?.variant === 'adherence' ? 'effect of adherence' : 'effect of assignment')}
           </span>
           {/* Study title + single open-study link (the only metadata kept). */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '1 1 220px', minWidth: 0 }}>
@@ -751,19 +845,37 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
         <div style={{ flex: 1, minWidth: 150 }}>
           <div style={{ fontSize: 14.5, fontWeight: 800, color: C.txt, fontFamily: FONT, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{view.resultLabel || 'Risk-of-bias assessment'}</div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 5, flexWrap: 'wrap' }}>
-            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, whiteSpace: 'nowrap' }}>{completedDomains}/{ROB2.domains.length} domains</span>
+            <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, whiteSpace: 'nowrap' }}>{completedDomains}/{instrument.domains.length} domains</span>
             <span aria-hidden style={{ flex: 1, maxWidth: 140, height: 4, borderRadius: 4, background: C.brd, overflow: 'hidden' }}>
-              <span style={{ display: 'block', height: '100%', width: `${(completedDomains / ROB2.domains.length) * 100}%`, background: allComplete ? C.grn : C.acc, transition: reduced ? 'none' : 'width 0.3s ease' }} />
+              <span style={{ display: 'block', height: '100%', width: `${(completedDomains / instrument.domains.length) * 100}%`, background: allComplete ? C.grn : C.acc, transition: reduced ? 'none' : 'width 0.3s ease' }} />
             </span>
             {/* prompt46 #3 — who started this assessment (creator visibility). */}
             {view.reviewerName && <span style={{ fontSize: 10, color: C.muted, whiteSpace: 'nowrap' }}>· Started by {view.reviewerName}</span>}
           </div>
         </div>
+        {/* P14 — guided appraisal action (flag ON, editable, not finalised). It
+            suggests answers from the study text; the reviewer accepts/edits each. */}
+        {appraisalOn && editable && !finalised && (
+          <button onClick={() => runAppraisal(!!appraisal)} disabled={appraising}
+            title={appraisal ? 'Re-run the guided appraisal from the study text' : 'Suggest signalling answers from the study text — you review and accept each one'}
+            style={{ ...ghostBtn, flexShrink: 0, background: appraising ? C.surf : alpha(C.acc, '12'), color: appraising ? C.muted : C.acc, borderColor: alpha(C.acc, '45'), cursor: appraising ? 'progress' : 'pointer' }}>
+            <Icon name="clipboard" size={14} /> {appraising ? 'Appraising…' : appraisal ? 'Re-run appraisal' : 'Run guided appraisal'}
+          </button>
+        )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Overall</span>
           <JudgmentPill judgment={finalised ? view.overall.resolvedOverall : liveOverall.judgment} size="md" provisional={!liveCompleteness.overall.complete && !finalised} />
         </div>
       </div>
+
+      {/* P14 — guided-appraisal status: coverage + warnings, stated calmly, with an
+          explicit reminder that these are SUGGESTIONS a human must review. */}
+      {appraisalOn && (appraisalActive || appraiseError) && (
+        <AppraisalStatusBar
+          appraisal={appraisal} error={appraiseError} pending={pendingSuggestions}
+          onClear={clearAppraisal} onJumpFirst={jumpToFirstSuggestion}
+        />
+      )}
 
       {error && <div style={{ padding: '8px 20px 0', flexShrink: 0 }}><ErrorBox msg={error} /></div>}
 
@@ -777,6 +889,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
           : { gridTemplateColumns: '216px minmax(0, 1fr)' }) }}>
         <DomainNav
           mode={railTop ? 'top' : 'side'}
+          domains={instrument.domains} legend={legend}
           active={active} setActive={setActive} setFocusedQ={setFocusedQ}
           completeness={liveCompleteness} dotJudgment={dotJudgment} overriddenByDomain={overriddenByDomain}
         />
@@ -784,12 +897,12 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
         {/* ── Assessment pane / Summary (scrolls internally) ─────────────── */}
         <main style={{ padding: railTop ? '20px clamp(16px, 4vw, 40px)' : '22px clamp(20px, 2.4vw, 36px)', overflowY: 'auto', minHeight: 0 }}>
           {active === 'summary' ? (
-            <SummaryStep view={view} live={{ proposals: liveProposals, overall: liveOverall, completeness: liveCompleteness, resolvedDomain: dotJudgment }}
+            <SummaryStep view={view} instrument={instrument} live={{ proposals: liveProposals, overall: liveOverall, completeness: liveCompleteness, resolvedDomain: dotJudgment }}
               single={single} finalised={finalised} editable={editable} onExport={exportAs}
               onOverrideOverall={() => setOverride({ target: 'overall', current: view.overall.resolvedOverall })} onJump={setActive} />
           ) : (
             <DomainPane
-              domain={ROB2.domains[DOMAIN_IDS.indexOf(active)]}
+              domain={instrument.domains[domainIds.indexOf(active)]}
               answers={answers[active] || {}}
               meta={meta}
               proposal={liveProposals[active]}
@@ -801,6 +914,10 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
               onAnswer={(qid, r) => setAnswer(active, qid, r)}
               onMeta={setQMeta}
               onOverride={() => setOverride({ target: 'domain', domainId: active, current: resolvedDomain(active) })}
+              suggestions={appraisalActive ? suggestionByQid : null}
+              suggestionState={suggestionState}
+              onAcceptSuggestion={acceptSuggestion}
+              onRejectSuggestion={rejectSuggestion}
             />
           )}
         </main>
@@ -809,7 +926,7 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
       {/* ── Sticky action footer (Task 2/7) — always visible without page scroll.
           Carries autosave state, domain nav, and the primary next action. ── */}
       <WorkspaceFooter
-        active={active} setActive={setActive} setFocusedQ={setFocusedQ}
+        active={active} setActive={setActive} setFocusedQ={setFocusedQ} domainIds={domainIds}
         allComplete={allComplete} finalised={finalised} readOnly={readOnly} editable={editable}
         saving={saveState === 'saving'} saveState={saveState}
         onFinalise={doFinalise} onReopen={doReopen} onContinue={onContinue}
@@ -818,22 +935,25 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
     </div>
 
     {override && (
-      <OverrideModal info={override} onCancel={() => setOverride(null)} onSubmit={doOverride} />
+      <OverrideModal info={override} judgmentLevels={instrument.judgmentLevels} onCancel={() => setOverride(null)} onSubmit={doOverride} />
     )}
     </div>
   );
 }
 
 // ── Sticky action footer (Task 2/7) — domain nav + primary action, always visible.
-export function WorkspaceFooter({ active, setActive, setFocusedQ, allComplete, finalised, readOnly, editable = true, saving, saveState, onFinalise, onReopen, onContinue }) {
+// `domainIds` defaults to RoB 2's D1–D5 so the SSR test (which renders this in
+// isolation) still nav-labels correctly; the workspace passes the active
+// instrument's domain ids (RoB 2 → 5, ROBINS-I → 7).
+export function WorkspaceFooter({ active, setActive, setFocusedQ, domainIds = DOMAIN_IDS, allComplete, finalised, readOnly, editable = true, saving, saveState, onFinalise, onReopen, onContinue }) {
   const go = (target) => { setActive(target); setFocusedQ(null); };
   const onSummary = active === 'summary';
-  const di = DOMAIN_IDS.indexOf(active);
-  const lastDomain = DOMAIN_IDS[DOMAIN_IDS.length - 1];
-  const prevTarget = onSummary ? lastDomain : (di > 0 ? DOMAIN_IDS[di - 1] : null);
-  const isLast = di >= DOMAIN_IDS.length - 1;
-  const nextTarget = onSummary ? null : (isLast ? 'summary' : DOMAIN_IDS[di + 1]);
-  const nextLabel = onSummary ? '' : (isLast ? 'Summary' : `${DOMAIN_IDS[di + 1]}`);
+  const di = domainIds.indexOf(active);
+  const lastDomain = domainIds[domainIds.length - 1];
+  const prevTarget = onSummary ? lastDomain : (di > 0 ? domainIds[di - 1] : null);
+  const isLast = di >= domainIds.length - 1;
+  const nextTarget = onSummary ? null : (isLast ? 'summary' : domainIds[di + 1]);
+  const nextLabel = onSummary ? '' : (isLast ? 'Summary' : `${domainIds[di + 1]}`);
   const saveText = readOnly ? 'view only' : finalised ? '✓ finalised' : saving ? 'saving…' : saveState === 'saved' ? '✓ saved' : saveState === 'error' ? 'save failed' : 'autosaves';
   return (
     <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', padding: '11px 18px', borderTop: `1px solid ${C.brd}`, background: C.card }}>
@@ -959,7 +1079,7 @@ function articleDecisionBadge(record) {
 }
 
 // ── Domain pane ───────────────────────────────────────────────────────────────
-function DomainPane({ domain, answers, meta, proposal, resolved, overrideInfo, focusedQ, setFocusedQ, guidanceOpen, setGuidanceOpen, reduced, finalised, editable, onAnswer, onMeta, onOverride }) {
+function DomainPane({ domain, answers, meta, proposal, resolved, overrideInfo, focusedQ, setFocusedQ, guidanceOpen, setGuidanceOpen, reduced, finalised, editable, onAnswer, onMeta, onOverride, suggestions, suggestionState, onAcceptSuggestion, onRejectSuggestion }) {
   const reachable = domain.questions.filter(q => isReachable(q, answers));
   return (
     <div>
@@ -1016,6 +1136,15 @@ function DomainPane({ domain, answers, meta, proposal, resolved, overrideInfo, f
                       {m.evidenceQuote ? `“${m.evidenceQuote}”` : m.rationale}
                     </div>
                   )}
+                  {suggestions && suggestions[q.id] && suggestions[q.id].suggestedResponse && (
+                    <SuggestionCard
+                      suggestion={suggestions[q.id]}
+                      state={suggestionState && suggestionState[q.id]}
+                      editable={editable}
+                      onAccept={(resp, ev) => onAcceptSuggestion(q.id, resp, ev)}
+                      onReject={() => onRejectSuggestion(q.id)}
+                    />
+                  )}
                 </div>
               </div>
             </div>
@@ -1055,7 +1184,7 @@ function DomainPane({ domain, answers, meta, proposal, resolved, overrideInfo, f
 }
 
 // ── Summary step ──────────────────────────────────────────────────────────────
-function SummaryStep({ view, live, single, finalised, editable, onExport, onOverrideOverall, onJump }) {
+function SummaryStep({ view, instrument = ROB2, live, single, finalised, editable, onExport, onOverrideOverall, onJump }) {
   const complete = live.completeness.overall.complete;
   return (
     <div>
@@ -1079,7 +1208,7 @@ function SummaryStep({ view, live, single, finalised, editable, onExport, onOver
 
       {/* Per-domain rationale */}
       <div style={{ display: 'grid', gap: 8, marginBottom: 20 }}>
-        {ROB2.domains.map(d => {
+        {instrument.domains.map(d => {
           const dv = (view.domains || []).find(x => x.domainId === d.id) || {};
           const reasons = live.proposals[d.id].reasons;
           return (
@@ -1114,8 +1243,18 @@ function SummaryStep({ view, live, single, finalised, editable, onExport, onOver
 }
 
 // ── Override modal ────────────────────────────────────────────────────────────
-function OverrideModal({ info, onCancel, onSubmit }) {
-  const [judgment, setJudgment] = useState(info.current && info.current !== 'na' ? info.current : 'some');
+// `judgmentLevels` come from the assessment's instrument: RoB 2 → low/some/high
+// (default), ROBINS-I → low/moderate/serious/critical/ni. The human's final
+// judgement can be any level the instrument defines.
+function OverrideModal({ info, judgmentLevels, onCancel, onSubmit }) {
+  const levels = (Array.isArray(judgmentLevels) && judgmentLevels.length)
+    ? judgmentLevels.map(l => (typeof l === 'string' ? l : l.value))
+    : ['low', 'some', 'high'];
+  const [judgment, setJudgment] = useState(
+    info.current && info.current !== 'na' && levels.includes(info.current)
+      ? info.current
+      : (levels[1] || levels[0]),
+  );
   const [justification, setJustification] = useState('');
   const valid = justification.trim().length > 0;
   // Escape closes; focus returns to the element that opened the modal on unmount.
@@ -1130,12 +1269,12 @@ function OverrideModal({ info, onCancel, onSubmit }) {
       <div onClick={e => e.stopPropagation()} style={{ background: C.card, borderRadius: 14, border: `1px solid ${C.brd}`, padding: 22, width: 460, maxWidth: '100%', boxShadow: C.shadow }}>
         <h3 style={{ margin: '0 0 4px', fontSize: 16, fontWeight: 800, color: C.txt, fontFamily: FONT }}>Override {info.target === 'overall' ? 'overall' : info.domainId} judgement</h3>
         <p style={{ margin: '0 0 16px', fontSize: 12.5, color: C.muted }}>This deviates from the algorithm. A justification is required and will be logged.</p>
-        <div style={{ display: 'flex', gap: 8, marginBottom: 14 }}>
-          {['low', 'some', 'high'].map(j => {
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap' }}>
+          {levels.map(j => {
             const st = judgmentStyle(j); const on = judgment === j;
             return (
-              <button key={j} onClick={() => setJudgment(j)} style={{ flex: 1, padding: '9px 8px', borderRadius: 9, cursor: 'pointer', fontFamily: FONT, fontWeight: 700, fontSize: 12.5, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: on ? st.bg : C.surf, color: on ? st.fg : C.txt2, border: `1px solid ${on ? alpha(st.hex, 0.6) : C.brd2}` }}>
-                <Icon name={st.icon} size={14} /> {st.label}
+              <button key={j} onClick={() => setJudgment(j)} style={{ flex: '1 1 90px', minWidth: 90, padding: '9px 8px', borderRadius: 9, cursor: 'pointer', fontFamily: FONT, fontWeight: 700, fontSize: 12.5, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 6, background: on ? st.bg : C.surf, color: on ? st.fg : C.txt2, border: `1px solid ${on ? alpha(st.hex, 0.6) : C.brd2}` }}>
+                <Icon name={st.icon} size={14} /> {st.short || st.label}
               </button>
             );
           })}
@@ -1157,6 +1296,120 @@ function OverrideModal({ info, onCancel, onSubmit }) {
 
 function ErrorBox({ msg }) {
   return <div style={{ padding: '9px 13px', background: alpha(C.red, '12'), border: `1px solid ${alpha(C.red, '40')}`, borderRadius: 8, color: C.red, fontSize: 12.5, marginBottom: 10, fontFamily: FONT }}>{msg}</div>;
+}
+
+// ── Guided appraisal (P14) ────────────────────────────────────────────────────
+// A per-question SUGGESTION card. A suggestion is a reviewer suggestion the human
+// accepts / modifies / rejects — it NEVER becomes a final judgement on its own.
+// Accepting writes an ANSWER (the deterministic engine then re-proposes the
+// judgement); the human still sets the final judgement via the override flow.
+const SUGGESTION_SRC_LABEL = { title: 'title', abstract: 'abstract', fullText: 'full text' };
+
+function SuggestionCard({ suggestion, state, editable, onAccept, onReject }) {
+  const [mode, setMode] = useState('view');
+  const [resp, setResp] = useState(suggestion.suggestedResponse);
+  const [ev, setEv] = useState(suggestion.evidenceQuote || '');
+  const conf = Math.round((Number(suggestion.confidence) || 0) * 100);
+  const where = suggestion.evidenceLocator && suggestion.evidenceLocator.where;
+  const srcLabel = SUGGESTION_SRC_LABEL[where] || (where || 'the study text');
+
+  if (state === 'accepted') {
+    return (
+      <div style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 11.5, color: C.grn, fontFamily: FONT }}>
+        <Icon name="check" size={13} /> Suggestion accepted — confirm or override the final judgement below.
+      </div>
+    );
+  }
+  if (state === 'rejected') {
+    return (
+      <div style={{ marginTop: 12, display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: C.muted, fontFamily: FONT }}>
+        <Icon name="x" size={12} /> Suggestion dismissed.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ marginTop: 14, border: `1px dashed ${alpha(C.acc, '50')}`, borderRadius: 10, background: alpha(C.acc, '08'), padding: '12px 14px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: suggestion.evidenceQuote || suggestion.rationale ? 8 : 10 }}>
+        <span style={{ fontSize: 9.5, fontFamily: MONO, fontWeight: 700, color: C.acc, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Suggested</span>
+        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 9px', borderRadius: 20, background: alpha(C.acc, '16'), border: `1px solid ${alpha(C.acc, '40')}`, color: C.acc, fontSize: 11.5, fontWeight: 700, fontFamily: FONT }}>
+          {RESPONSE_LABELS[suggestion.suggestedResponse] || suggestion.suggestedResponse}
+          <span style={{ fontFamily: MONO, fontSize: 9.5, opacity: 0.7 }}>{suggestion.suggestedResponse}</span>
+        </span>
+        <span style={{ fontSize: 10.5, fontFamily: MONO, color: C.muted }}>confidence {conf}%</span>
+        <span aria-hidden style={{ flex: 1 }} />
+        <span style={{ fontSize: 9.5, color: C.muted, fontStyle: 'italic' }}>Suggestion — review before it counts</span>
+      </div>
+      {suggestion.evidenceQuote ? (
+        <div style={{ margin: '0 0 8px', padding: '8px 11px', borderLeft: `3px solid ${alpha(C.acc, '45')}`, background: C.surf, borderRadius: 6, fontSize: 12.5, color: C.txt2, fontStyle: 'italic', lineHeight: 1.55 }}>
+          “{suggestion.evidenceQuote}”
+          <span style={{ display: 'block', marginTop: 4, fontStyle: 'normal', fontSize: 10.5, color: C.muted, fontFamily: MONO }}>— from the {srcLabel}</span>
+        </div>
+      ) : (
+        <div style={{ fontSize: 12, color: C.muted, marginBottom: 8, fontStyle: 'italic' }}>No supporting quote was found in the provided text.</div>
+      )}
+      {suggestion.rationale && <div style={{ fontSize: 12, color: C.txt2, marginBottom: 10, lineHeight: 1.5 }}>{suggestion.rationale}</div>}
+
+      {mode === 'modify' ? (
+        <div>
+          <div style={{ marginBottom: 8 }}>
+            <SegmentedControl qid={suggestion.questionId} value={resp} onChange={r => setResp(r || resp)} />
+          </div>
+          <textarea value={ev} onChange={e => setEv(e.target.value)} rows={2} placeholder="Evidence quote (edit before saving)" style={{ ...taStyle, marginBottom: 8, fontStyle: 'italic' }} />
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button onClick={() => onAccept(resp, ev)} style={primaryBtn(false)}><Icon name="check" size={13} /> Save answer</button>
+            <button onClick={() => setMode('view')} style={ghostBtn}>Cancel</button>
+          </div>
+        </div>
+      ) : (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button disabled={!editable} onClick={() => onAccept(suggestion.suggestedResponse, suggestion.evidenceQuote || '')} style={primaryBtn(!editable)}><Icon name="check" size={13} /> Accept</button>
+          <button disabled={!editable} onClick={() => { setResp(suggestion.suggestedResponse); setEv(suggestion.evidenceQuote || ''); setMode('modify'); }} style={{ ...ghostBtn, opacity: editable ? 1 : 0.5 }}><Icon name="pencil" size={12} /> Modify</button>
+          <button disabled={!editable} onClick={onReject} style={{ ...ghostBtn, opacity: editable ? 1 : 0.5 }}><Icon name="x" size={12} /> Reject</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Calm status strip: coverage + warnings + the standing reminder that these are
+// suggestions requiring review. No "AI" framing — this is a deterministic,
+// text-cue appraisal the reviewer confirms.
+function AppraisalStatusBar({ appraisal, error, pending, onClear, onJumpFirst }) {
+  const cov = appraisal && appraisal.coverage;
+  const warnings = (appraisal && appraisal.warnings) || [];
+  return (
+    <div style={{ padding: '10px 20px', borderBottom: `1px solid ${C.brd}`, background: alpha(C.acc, '06'), display: 'flex', flexDirection: 'column', gap: 8, flexShrink: 0 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 10, fontFamily: MONO, color: C.acc, fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Guided appraisal</span>
+        {error ? (
+          <span style={{ fontSize: 12, color: C.red }}>{error}</span>
+        ) : (
+          <>
+            <span style={{ fontSize: 11.5, color: C.txt2 }}>
+              {pending > 0 ? `${pending} suggestion${pending === 1 ? '' : 's'} to review` : 'All suggestions reviewed'}
+              {cov ? ` · ${cov.hasFullText ? 'full text' : 'title/abstract only'} · ${cov.domainsWithEvidence} domain${cov.domainsWithEvidence === 1 ? '' : 's'} with evidence` : ''}
+            </span>
+            {pending > 0 && <button onClick={onJumpFirst} style={linkBtn}>Go to first suggestion</button>}
+          </>
+        )}
+        <span aria-hidden style={{ flex: 1 }} />
+        <button onClick={onClear} style={{ ...linkBtn, color: C.muted }}><Icon name="x" size={12} /> Clear</button>
+      </div>
+      {warnings.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          {warnings.map((w, i) => (
+            <div key={i} style={{ fontSize: 11.5, color: C.txt2, display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+              <Icon name="info" size={12} /> <span>{w.message}</span>
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ fontSize: 10.5, color: C.muted, fontStyle: 'italic' }}>
+        These are suggestions drawn from the study text — each must be reviewed and accepted; nothing is decided for you.
+      </div>
+    </div>
+  );
 }
 
 // ── styles ────────────────────────────────────────────────────────────────────

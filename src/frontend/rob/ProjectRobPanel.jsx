@@ -14,7 +14,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import Icon from '../components/icons.jsx';
 import { api } from '../api-client/apiClient.js';
-import { robApi } from './robApi.js';
+import { robApi, guidedRobAppraisalEnabled } from './robApi.js';
 import RobWorkspace from './RobWorkspace.jsx';
 import RobTrafficLight from './RobTrafficLight.jsx';
 import { judgmentStyle } from './judgmentStyle.js';
@@ -33,6 +33,14 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
   // 65.md UX-12 — { study, count } while the force-remove confirm modal is open
   // (replaces window.confirm; assessments are kept either way).
   const [confirmRemove, setConfirmRemove] = useState(null);
+  // P14 — guided-appraisal flag. When OFF this panel behaves EXACTLY as today
+  // (RoB 2 only, no instrument selector at creation, no validation card).
+  const [appraisalOn, setAppraisalOn] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    guidedRobAppraisalEnabled().then(v => { if (alive) setAppraisalOn(!!v); }).catch(() => { /* stays OFF */ });
+    return () => { alive = false; };
+  }, []);
 
   // prompt39 Task 3 — tell the host when the per-study assessment workspace is open
   // so it can hide the RoB overview intro header (focus mode inside the tool).
@@ -71,9 +79,13 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
   // project); standalone falls back to the project's stored choice or the default.
   const selectedTool = normalizeRobTool(robTool != null ? robTool : project?.robTool);
 
-  async function createFor(study, resultLabel) {
+  async function createFor(study, resultLabel, instrumentId) {
     try {
-      const res = await robApi.createAssessment({ projectId, studyId: study.id, resultLabel: resultLabel || '' });
+      const body = { projectId, studyId: study.id, resultLabel: resultLabel || '' };
+      // Only send an instrument when guided appraisal is ON; when OFF the server
+      // defaults to RoB 2 (behaviour identical to today).
+      if (appraisalOn && instrumentId) body.instrumentId = instrumentId;
+      const res = await robApi.createAssessment(body);
       setCreatingFor(null);
       await reload();
       setOpenId(res.assessment.id);
@@ -122,13 +134,13 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
     <div>
       {error && <div style={{ marginBottom: 14 }}><ErrorBox msg={error} onRetry={reload} /></div>}
 
-      <ToolSelector selected={selectedTool} canEdit={canEdit} onSelect={onSelectTool} />
+      <ToolSelector selected={selectedTool} canEdit={canEdit} onSelect={onSelectTool} appraisalOn={appraisalOn} />
 
       <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap', margin: '4px 0 16px' }}>
         <div>
           <h2 style={{ fontSize: 18, fontWeight: 800, margin: '0 0 2px' }}>{project.name}</h2>
           <p style={{ fontSize: 12.5, color: C.txt2, margin: 0 }}>
-            {assessments.length} assessment{assessments.length === 1 ? '' : 's'} · RoB 2 (effect of assignment) · per result
+            {assessments.length} assessment{assessments.length === 1 ? '' : 's'} · {appraisalOn ? 'RoB 2 / ROBINS-I' : 'RoB 2 (effect of assignment)'} · per result
           </p>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
@@ -148,9 +160,12 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
       {assessments.length > 0 && (
         <div style={{ ...card, marginBottom: 22 }}>
           <div style={{ fontSize: 12, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 12 }}>Summary (traffic light)</div>
-          <RobTrafficLight matrix={matrix} title={`${project.name} — Risk of bias (RoB 2)`} />
+          <RobTrafficLight matrix={matrix} title={`${project.name} — Risk of bias${matrix && matrix.instrumentId === 'ROBINS-I' ? ' (ROBINS-I)' : ' (RoB 2)'}`} />
         </div>
       )}
+
+      {/* P14 — guided-vs-reviewer agreement (flag ON). Endpoint 404s when OFF. */}
+      {appraisalOn && <RobValidationCard projectId={projectId} />}
 
       {studies.length === 0 ? (
         <Center>This project has no studies yet. Add studies in <strong>Data Extraction</strong>, or use <strong>Add manual study</strong> above to assess a study directly here.</Center>
@@ -178,7 +193,7 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
                   )}
                 </div>
 
-                {canEdit && creatingFor === s.id && <CreateForm onCancel={() => setCreatingFor(null)} onCreate={label2 => createFor(s, label2)} />}
+                {canEdit && creatingFor === s.id && <CreateForm onCancel={() => setCreatingFor(null)} onCreate={(label2, inst) => createFor(s, label2, inst)} appraisalOn={appraisalOn} defaultInstrument={selectedTool} />}
 
                 {list.length > 0 ? (
                   <div style={{ marginTop: 10, display: 'grid', gap: 6 }}>
@@ -218,7 +233,9 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
 }
 
 // ── RoB tool selector (prompt28 Part 4) ────────────────────────────────────────
-function ToolSelector({ selected, canEdit, onSelect }) {
+// P14 — ROBINS-I only becomes selectable when the guided-appraisal flag is ON; with
+// it OFF the panel offers RoB 2 only (behaviour identical to before P14).
+function ToolSelector({ selected, canEdit, onSelect, appraisalOn }) {
   const interactive = canEdit && typeof onSelect === 'function';
   return (
     <div style={{ ...card, marginBottom: 18 }}>
@@ -228,7 +245,8 @@ function ToolSelector({ selected, canEdit, onSelect }) {
       </div>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
         {ROB_TOOLS.map(t => {
-          const active = isRobToolActive(t.id);
+          // RoB 2 is always available; ROBINS-I only when guided appraisal is ON.
+          const active = isRobToolActive(t.id) && (t.id === 'RoB2' || appraisalOn);
           const on = selected === t.id;
           const clickable = interactive && active;
           return (
@@ -261,7 +279,9 @@ function ToolSelector({ selected, canEdit, onSelect }) {
         })}
       </div>
       <div style={{ fontSize: 11, color: C.muted, marginTop: 9, lineHeight: 1.5 }}>
-        Only <strong style={{ color: C.txt2 }}>RoB 2</strong> is available today; other instruments are in development. Your choice is saved for this project.
+        {appraisalOn
+          ? <><strong style={{ color: C.txt2 }}>RoB 2</strong> (randomised trials) and <strong style={{ color: C.txt2 }}>ROBINS-I</strong> (non-randomised studies) are available; other instruments are in development. Your choice is saved for this project.</>
+          : <>Only <strong style={{ color: C.txt2 }}>RoB 2</strong> is available today; other instruments are in development. Your choice is saved for this project.</>}
       </div>
     </div>
   );
@@ -372,17 +392,187 @@ function ModalField({ label, children }) {
 }
 const modalInp = { width: '100%', boxSizing: 'border-box', padding: '8px 11px', background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 8, color: C.txt, fontSize: 13, fontFamily: FONT };
 
-function CreateForm({ onCancel, onCreate }) {
+// P14 — the two guided-appraisal instruments offered at assessment creation.
+const INSTRUMENT_CHOICES = [
+  { id: 'RoB2', label: 'RoB 2', sublabel: 'Randomised trials' },
+  { id: 'ROBINS-I', label: 'ROBINS-I', sublabel: 'Non-randomised studies' },
+];
+
+function CreateForm({ onCancel, onCreate, appraisalOn, defaultInstrument }) {
   const [label, setLabel] = useState('');
+  // Instrument selector only when guided appraisal is ON; otherwise RoB 2 (omitted
+  // → server default) exactly as today.
+  const [instrument, setInstrument] = useState(
+    appraisalOn ? (normalizeRobTool(defaultInstrument) || 'RoB2') : 'RoB2',
+  );
+  const submit = () => onCreate(label, appraisalOn ? instrument : undefined);
   return (
-    <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-      <input autoFocus value={label} onChange={e => setLabel(e.target.value)} placeholder="Result / outcome being assessed (e.g. Mortality at 6 months)"
-        onKeyDown={e => { if (e.key === 'Enter') onCreate(label); if (e.key === 'Escape') onCancel(); }}
-        style={{ flex: 1, minWidth: 240, padding: '8px 11px', background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 8, color: C.txt, fontSize: 13, fontFamily: FONT }} />
-      <button onClick={() => onCreate(label)} style={{ ...ghost, background: C.acc, color: C.accText, border: `1px solid ${C.acc}` }}>Start assessment</button>
-      <button onClick={onCancel} style={ghost}>Cancel</button>
+    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {appraisalOn && (
+        <div>
+          <div style={{ fontSize: 10.5, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>Instrument</div>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {INSTRUMENT_CHOICES.map(ci => {
+              const on = instrument === ci.id;
+              return (
+                <button key={ci.id} type="button" onClick={() => setInstrument(ci.id)} aria-pressed={on} title={ci.sublabel}
+                  style={{ textAlign: 'left', padding: '7px 11px', borderRadius: 9, cursor: 'pointer', fontFamily: FONT,
+                    background: on ? alpha(C.acc, '14') : C.surf, border: `1px solid ${on ? alpha(C.acc, '60') : C.brd2}` }}>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 800, color: on ? C.acc : C.txt }}>{ci.label}</span>
+                    {on && <Icon name="check" size={12} />}
+                  </span>
+                  <span style={{ fontSize: 10.5, color: C.muted }}>{ci.sublabel}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input autoFocus value={label} onChange={e => setLabel(e.target.value)} placeholder="Result / outcome being assessed (e.g. Mortality at 6 months)"
+          onKeyDown={e => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') onCancel(); }}
+          style={{ flex: 1, minWidth: 240, padding: '8px 11px', background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 8, color: C.txt, fontSize: 13, fontFamily: FONT }} />
+        <button onClick={submit} style={{ ...ghost, background: C.acc, color: C.accText, border: `1px solid ${C.acc}` }}>Start assessment</button>
+        <button onClick={onCancel} style={ghost}>Cancel</button>
+      </div>
     </div>
   );
+}
+
+// ── P14 — Guided vs reviewer agreement ────────────────────────────────────────
+// Weighted-κ agreement between the guided SUGGESTIONS (proposed answers) and the
+// reviewer's FINAL judgements, per domain, with a disagreement queue and a CSV
+// export. Endpoint 404s when the guidedRobAppraisal flag is OFF → the card hides
+// itself (returns null) so nothing regresses.
+function RobValidationCard({ projectId }) {
+  const [state, setState] = useState({ loading: true, data: null, hidden: false, error: '' });
+
+  const load = useCallback(async () => {
+    setState(s => ({ ...s, loading: true, error: '' }));
+    try {
+      const data = await robApi.robValidation(projectId);
+      setState({ loading: false, data, hidden: false, error: '' });
+    } catch (e) {
+      // 404 = flag off / not available → hide entirely; other errors → inline retry.
+      if (e && e.status === 404) setState({ loading: false, data: null, hidden: true, error: '' });
+      else setState({ loading: false, data: null, hidden: false, error: e.message || 'Could not load agreement' });
+    }
+  }, [projectId]);
+  useEffect(() => { load(); }, [load]);
+
+  async function exportCsv() {
+    try {
+      const res = await fetch(robApi.robValidationCsvUrl(projectId), { credentials: 'include' });
+      if (!res.ok) throw new Error('Export failed');
+      const text = await res.text();
+      const blob = new Blob([text], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      try {
+        const a = document.createElement('a'); a.href = url; a.download = 'rob-guided-vs-reviewer.csv';
+        document.body.appendChild(a); a.click(); a.remove();
+      } finally { URL.revokeObjectURL(url); }
+    } catch { setState(s => ({ ...s, error: 'Export failed' })); }
+  }
+
+  if (state.hidden) return null;
+
+  const d = state.data;
+  const overall = d && d.overall;
+  const kap = (k) => (k == null || Number.isNaN(k) ? '—' : Number(k).toFixed(2));
+  const pct = (p) => (p == null ? '—' : `${Math.round(Number(p) * 100)}%`);
+
+  return (
+    <div style={{ ...card, marginBottom: 22 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        <Icon name="activity" size={14} />
+        <span style={{ fontSize: 12, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Guided vs reviewer agreement</span>
+        <span aria-hidden style={{ flex: 1 }} />
+        {d && d.n > 0 && <button onClick={exportCsv} style={ghost}><Icon name="download" size={13} /> Export CSV</button>}
+      </div>
+
+      {state.loading ? (
+        <div style={{ fontSize: 12.5, color: C.muted }}>Loading agreement…</div>
+      ) : state.error ? (
+        <ErrorBox msg={state.error} onRetry={load} />
+      ) : !d || !d.n ? (
+        <p style={{ fontSize: 12.5, color: C.muted, margin: 0, lineHeight: 1.6 }}>
+          No paired guided-vs-reviewer judgements yet. Run a guided appraisal, accept some suggestions, and finalise an
+          assessment — the weighted-κ agreement between the suggestions and your final judgements appears here.
+        </p>
+      ) : (
+        <div style={{ display: 'grid', gap: 14 }}>
+          {/* Overall weighted κ + interpretation */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ fontSize: 26, fontWeight: 800, color: C.txt, fontFamily: MONO }}>{kap(overall && overall.kappa)}</div>
+              <div style={{ fontSize: 10.5, color: C.muted, fontFamily: MONO }}>weighted κ</div>
+            </div>
+            <div style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.55 }}>
+              {overall && overall.interpretation && <div><strong style={{ color: C.txt }}>{overall.interpretation}</strong> agreement</div>}
+              <div style={{ color: C.muted }}>
+                {overall && overall.ciLo != null && overall.ciHi != null ? `95% CI ${kap(overall.ciLo)}–${kap(overall.ciHi)} · ` : ''}
+                {pct(d.percentAgreement)} exact agreement over {d.n} judgement{d.n === 1 ? '' : 's'}
+              </div>
+            </div>
+          </div>
+
+          {/* Per-domain agreement */}
+          {Array.isArray(d.byDomain) && d.byDomain.length > 0 && (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ textAlign: 'left', color: C.muted, fontFamily: MONO }}>
+                    <th style={vth}>Domain</th><th style={vth}>κ</th><th style={vth}>Exact agreement</th><th style={vth}>n</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {d.byDomain.map(row => (
+                    <tr key={row.domainId} style={{ borderTop: `1px solid ${C.brd}` }}>
+                      <td style={vtd}>{row.domainId}</td>
+                      <td style={{ ...vtd, fontFamily: MONO }}>{kap(row.kappa)}</td>
+                      <td style={vtd}>{pct(row.agreementPct)}</td>
+                      <td style={{ ...vtd, fontFamily: MONO, color: C.muted }}>{row.n}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {/* Disagreement queue */}
+          {Array.isArray(d.disagreements) && d.disagreements.length > 0 && (
+            <div>
+              <div style={{ fontSize: 10.5, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>
+                Disagreements ({d.disagreements.length})
+              </div>
+              <div style={{ display: 'grid', gap: 6 }}>
+                {d.disagreements.slice(0, 40).map((dz, i) => {
+                  const sa = judgmentStyle(dz.a); const sb = judgmentStyle(dz.b);
+                  return (
+                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '7px 11px', borderRadius: 8, background: C.surf, border: `1px solid ${C.brd}`, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 11.5, fontFamily: MONO, color: C.txt2 }}>{dz.domainId}</span>
+                      {dz.studyId && <span style={{ fontSize: 11, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 220 }}>{dz.studyId}</span>}
+                      <span aria-hidden style={{ flex: 1 }} />
+                      <span title="Suggested" style={vChip(sa)}>Suggested: {sa.label}</span>
+                      <Icon name="arrowRight" size={12} />
+                      <span title="Reviewer final" style={vChip(sb)}>Final: {sb.label}</span>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+const vth = { padding: '4px 10px 8px', fontSize: 10.5, fontWeight: 700, letterSpacing: '0.04em' };
+const vtd = { padding: '7px 10px', color: C.txt2 };
+function vChip(st) {
+  return { display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 9px', borderRadius: 20, fontSize: 11, fontWeight: 700, fontFamily: FONT, color: st.fg, background: st.bg, border: `1px solid ${alpha(st.hex, 0.5)}`, whiteSpace: 'nowrap' };
 }
 
 function OwnerOnlyNotice() {

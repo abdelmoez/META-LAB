@@ -21,8 +21,8 @@ export const ROB_TOOLS = Object.freeze([
     id: 'ROBINS-I',
     label: 'ROBINS-I',
     sublabel: 'Non-randomised studies of interventions',
-    status: 'coming-soon',
-    description: 'Risk Of Bias In Non-randomised Studies of Interventions. Planned.',
+    status: 'active',
+    description: 'Risk Of Bias In Non-randomised Studies of Interventions (Sterne 2016). Seven domains, signalling questions, algorithm-proposed five-level judgements (Low / Moderate / Serious / Critical / No information).',
   },
   {
     id: 'QUADAS-2',

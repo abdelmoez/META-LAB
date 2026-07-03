@@ -70,6 +70,17 @@ const DEFAULTS = {
     // /api/rob endpoints 404 and the workspace UI is hidden until an admin
     // enables this from Ops › Feature Flags after the evaluation gate passes.
     rob_engine_v2: false,
+    // P14 — Guided RoB appraisal (RoB 2 + ROBINS-I). Default OFF. When ON, the
+    // /api/rob/assessments/:id/appraise and /api/rob/projects/:pid/rob-validation
+    // endpoints activate: a DETERMINISTIC engine reads the study text (linked
+    // screening title/abstract + client-supplied full text) and SUGGESTS each
+    // signalling-question answer with an evidence quote + confidence — a machine
+    // PROPOSAL only. Suggestions are stored on RobAnswer (aiSuggested) and drive
+    // RobDomainJudgment.proposedJudgment; they NEVER overwrite a human decision
+    // (finalJudgment / overridden). FUNCTIONALLY DEPENDS ON `rob_engine_v2`: both
+    // must be ON, so this flag is inert while the RoB engine is off. Surfaces in
+    // Ops › Flags automatically.
+    guidedRobAppraisal: false,
     // prompt38 — server-backed per-module workflow state. Default OFF: the
     // /api/workspaces/:id/modules/:key/state endpoints 404 and the monolith keeps
     // using the whole-project blob autosave. When ON, migrated modules (protocol)

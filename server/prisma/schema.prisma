@@ -901,8 +901,10 @@ model RobAssessment {
 
 // One row per signalling-question answer. response ∈ Y|PY|PN|N|NI|NA. Optional
 // rationale + evidence quote/locator (PDF page/offset reserved for later). The
-// ai* columns reserve space for an AI-suggested answer (model + version) — never
-// auto-applied. @@unique([assessmentId, questionId]) enables a clean upsert and
+// ai* columns hold a GUIDED-appraisal suggested answer (model + version +
+// confidence, P14) — the suggestion is a machine PROPOSAL only and is NEVER a
+// human decision (human judgements live in RobDomainJudgment.finalJudgment /
+// overridden). @@unique([assessmentId, questionId]) enables a clean upsert and
 // is additive-safe on a brand-new table.
 model RobAnswer {
   id              String        @id @default(uuid())
@@ -914,9 +916,10 @@ model RobAnswer {
   rationale       String?
   evidenceQuote   String?
   evidenceLocator String? // PDF page/offset etc. (reserved)
-  aiSuggested     Boolean? // was the response AI-suggested?
+  aiSuggested     Boolean? // was the response machine-suggested (guided appraisal)?
   aiModel         String?
   aiModelVersion  String?
+  aiConfidence    Float? // P14 — guided-appraisal suggestion confidence (0..1); null for human answers
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 

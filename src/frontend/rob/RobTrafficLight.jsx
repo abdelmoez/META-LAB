@@ -10,9 +10,14 @@
 import { useMemo, useState } from 'react';
 import { C, FONT, MONO } from '../theme/tokens.js';
 import { rasterizeSvg, downloadBlob, downloadText } from '../components/exportCore.js';
-import { judgmentStyle, JUDGMENT_LEGEND } from './judgmentStyle.js';
+import { judgmentStyle, legendFor } from './judgmentStyle.js';
 
-const SYMBOL = { low: '+', some: '!', high: '×', na: '?' }; // + ! × ?
+// Redundant, colour-free symbols. RoB 2: low '+' · some '!' · high '×'.
+// ROBINS-I (severity-ordered, all Basic-Latin/Latin-1 so the export rasteriser
+// never renders tofu): low '+' · moderate '-' · serious '!' · critical '×'.
+// "No information" (ni) and "Not assessed" (na) both use '?' — they differ by
+// colour (sky-blue vs grey) and legend label.
+const SYMBOL = { low: '+', some: '!', high: '×', moderate: '-', serious: '!', critical: '×', na: '?', ni: '?' };
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -26,6 +31,9 @@ function esc(s) {
 export function buildTrafficLightSVG(matrix, { title = 'Risk of bias (RoB 2)' } = {}) {
   const domains = matrix?.domains || [];
   const rows = matrix?.rows || [];
+  // Instrument-aware legend: ROBINS-I → 5-level; else RoB 2 → 3-level. summaryMatrix
+  // stamps `instrumentId` onto the matrix so the legend always matches the plot.
+  const legend = legendFor(matrix?.instrumentId);
   const cols = [...domains.map(d => ({ id: d.id, label: d.id })), { id: '__overall', label: 'Overall' }];
 
   // ── Geometry ────────────────────────────────────────────────────────────────
@@ -43,7 +51,7 @@ export function buildTrafficLightSVG(matrix, { title = 'Risk of bias (RoB 2)' } 
   // The legend is laid out left→right from padL; pre-measure its extent so the
   // canvas is ALWAYS wide enough to contain it (the historic clipping bug).
   let legendExtent = padL;
-  JUDGMENT_LEGEND.forEach(l => { legendExtent += 40 + l.label.length * CHARW; });
+  legend.forEach(l => { legendExtent += 40 + l.label.length * CHARW; });
   legendExtent += padR;
   // Title at 15px bold sits at x=padL; keep it on-canvas too.
   const titleExtent = padL + title.length * 8.2 + padR;
@@ -81,7 +89,7 @@ export function buildTrafficLightSVG(matrix, { title = 'Risk of bias (RoB 2)' } 
   // Legend
   const ly = padT + rows.length * rowH + 28;
   let lx = padL;
-  JUDGMENT_LEGEND.forEach(l => {
+  legend.forEach(l => {
     parts.push(`<circle cx="${lx + 8}" cy="${ly - 4}" r="8" fill="${l.hex}"/>`);
     parts.push(`<text x="${lx + 8}" y="${ly - 0.5}" font-family="${FONT}" font-size="11" font-weight="800" fill="#fff" text-anchor="middle">${esc(SYMBOL[l.key])}</text>`);
     parts.push(`<text x="${lx + 22}" y="${ly}" font-family="${FONT}" font-size="11.5" fill="#333">${esc(l.label)}</text>`);

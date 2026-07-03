@@ -25,16 +25,36 @@ import {
   completeness as engineCompleteness,
   summaryMatrix,
   RESPONSES,
+  // P14 — guided appraisal (deterministic text → suggested answers) + agreement.
+  appraiseFromText,
+  ROB_APPRAISAL_VERSION,
+  robDomainAgreement,
 } from '../../src/research-engine/rob/index.js';
 
-const INSTRUMENT = getInstrument('RoB2');
+// ── Instrument awareness (P14) ────────────────────────────────────────────────
+// The RoB service was hardcoded to RoB2. It is now instrument-aware: each
+// assessment carries its own `instrumentId` (RoB2 | ROBINS-I) and every judgement
+// path derives its instrument + valid judgement set + question→domain map from
+// THAT instrument. Responses (Y/PY/PN/N/NI/NA) are identical across instruments,
+// so VALID_RESPONSES stays shared. The RoB2 path is byte-identical to before.
 const VALID_RESPONSES = new Set(RESPONSES);
-const VALID_JUDGMENTS = new Set(['low', 'some', 'high']);
-const QUESTION_DOMAIN = (() => {
+const SUPPORTED_INSTRUMENTS = ['RoB2', 'ROBINS-I'];
+
+/** The instrument for a loaded assessment (defaults to RoB2 → unchanged path). */
+function instrumentFor(a) {
+  return getInstrument((a && a.instrumentId) || 'RoB2');
+}
+/** Valid FINAL/override judgement values for an instrument (RoB2: low/some/high;
+ *  ROBINS-I: low/moderate/serious/critical/ni). */
+function validJudgments(instrument) {
+  return new Set((instrument.judgmentLevels || []).map(l => l.value));
+}
+/** questionId → domainId map for an instrument. */
+function questionDomainMap(instrument) {
   const map = {};
-  for (const d of INSTRUMENT.domains) for (const q of d.questions) map[q.id] = d.id;
+  for (const d of instrument.domains) for (const q of d.questions) map[q.id] = d.id;
   return map;
-})();
+}
 
 // ── Feature flag ──────────────────────────────────────────────────────────────
 // Default OFF: enabled ONLY when featureFlags.rob_engine_v2 === true. Missing /
@@ -46,6 +66,21 @@ async function robEnabled() {
     if (!row) return false;
     const flags = JSON.parse(row.value || '{}');
     return flags.rob_engine_v2 === true;
+  } catch {
+    return false;
+  }
+}
+
+// P14 — the GUIDED APPRAISAL sub-feature (appraise + validation endpoints). It is
+// gated behind its OWN flag `guidedRobAppraisal` AND functionally depends on
+// `rob_engine_v2` (there is nothing to appraise without the RoB engine on). Both
+// must be true; either off → 404 (existence hidden), exactly like robEnabled().
+async function guidedAppraisalEnabled() {
+  try {
+    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
+    if (!row) return false;
+    const flags = JSON.parse(row.value || '{}');
+    return flags.rob_engine_v2 === true && flags.guidedRobAppraisal === true;
   } catch {
     return false;
   }
@@ -134,9 +169,9 @@ function resolvedDomain(dj) {
 }
 
 /** Group flat RobAnswer rows into { [domainId]: { [questionId]: response } }. */
-function answersByDomainFrom(answers) {
+function answersByDomainFrom(instrument, answers) {
   const out = {};
-  for (const d of INSTRUMENT.domains) out[d.id] = {};
+  for (const d of instrument.domains) out[d.id] = {};
   for (const ans of answers) {
     if (!out[ans.domainId]) out[ans.domainId] = {};
     out[ans.domainId][ans.questionId] = ans.response;
@@ -147,14 +182,15 @@ function answersByDomainFrom(answers) {
 /**
  * Recompute every PROPOSED judgement from the current answers and persist them,
  * PRESERVING any human override (final + overridden). Returns the fresh proposals.
+ * `instrument` is the assessment's instrument (RoB2 default).
  */
-async function recomputeAndPersist(assessmentId) {
+async function recomputeAndPersist(assessmentId, instrument = getInstrument('RoB2')) {
   const answers = await prisma.robAnswer.findMany({ where: { assessmentId } });
-  const abd = answersByDomainFrom(answers);
-  const proposals = proposeAllDomains(INSTRUMENT, abd); // { D1:{judgment,reasons}, ... }
+  const abd = answersByDomainFrom(instrument, answers);
+  const proposals = proposeAllDomains(instrument, abd); // { D1:{judgment,reasons}, ... }
 
   // Upsert each domain's proposedJudgment (final/overridden untouched).
-  for (const d of INSTRUMENT.domains) {
+  for (const d of instrument.domains) {
     const proposed = proposals[d.id].judgment;
     await prisma.robDomainJudgment.upsert({
       where: { assessmentId_domainId: { assessmentId, domainId: d.id } },
@@ -167,11 +203,14 @@ async function recomputeAndPersist(assessmentId) {
   const djs = await prisma.robDomainJudgment.findMany({ where: { assessmentId } });
   const resolvedByDomain = {};
   for (const dj of djs) resolvedByDomain[dj.domainId] = resolvedDomain(dj);
-  const overall = proposeOverall(INSTRUMENT, resolvedByDomain);
+  const overall = proposeOverall(instrument, resolvedByDomain);
+  // multiSomeConcernsFlag is RoB2-specific; ROBINS-I overall returns no such flag →
+  // coerce to a real boolean (false) so the non-nullable column is always set.
+  const multiFlag = !!overall.multiSomeConcernsFlag;
   await prisma.robOverall.upsert({
     where: { assessmentId },
-    update: { proposedOverall: overall.judgment, multiSomeConcernsFlag: overall.multiSomeConcernsFlag },
-    create: { assessmentId, proposedOverall: overall.judgment, multiSomeConcernsFlag: overall.multiSomeConcernsFlag },
+    update: { proposedOverall: overall.judgment, multiSomeConcernsFlag: multiFlag },
+    create: { assessmentId, proposedOverall: overall.judgment, multiSomeConcernsFlag: multiFlag },
   });
 
   return { proposals, overall };
@@ -188,14 +227,15 @@ async function buildView(assessmentId) {
     include: { answers: true, domainJudgments: true, overall: true },
   });
   if (!a) return null;
-  const abd = answersByDomainFrom(a.answers);
+  const inst = instrumentFor(a);
+  const abd = answersByDomainFrom(inst, a.answers);
 
   const djByDomain = {};
   for (const dj of a.domainJudgments) djByDomain[dj.domainId] = dj;
 
-  const domains = INSTRUMENT.domains.map(d => {
+  const domains = inst.domains.map(d => {
     const dj = djByDomain[d.id] || { proposedJudgment: '', finalJudgment: null, overridden: false, overrideJustification: null };
-    const prop = proposeDomain(INSTRUMENT, d.id, abd[d.id] || {});
+    const prop = proposeDomain(inst, d.id, abd[d.id] || {});
     return {
       domainId: d.id,
       proposedJudgment: prop.judgment,
@@ -209,7 +249,7 @@ async function buildView(assessmentId) {
 
   const resolvedByDomain = {};
   for (const d of domains) resolvedByDomain[d.domainId] = d.resolvedJudgment;
-  const overallProp = proposeOverall(INSTRUMENT, resolvedByDomain);
+  const overallProp = proposeOverall(inst, resolvedByDomain);
   const ov = a.overall || {};
   const overall = {
     proposedOverall: overallProp.judgment,
@@ -221,7 +261,7 @@ async function buildView(assessmentId) {
     resolvedOverall: (ov.overridden && ov.finalOverall) ? ov.finalOverall : overallProp.judgment,
   };
 
-  const comp = engineCompleteness(INSTRUMENT, { answersByDomain: abd });
+  const comp = engineCompleteness(inst, { answersByDomain: abd });
 
   return {
     id: a.id,
@@ -232,7 +272,7 @@ async function buildView(assessmentId) {
     instrumentId: a.instrumentId,
     instrumentVersion: a.instrumentVersion,
     instrumentLabel: getRobTool(a.instrumentId)?.label || a.instrumentId || 'Tool unknown', // prompt46 #5 — human tool label (e.g. "RoB 2")
-    instrumentName: INSTRUMENT.name,
+    instrumentName: inst.name,
     variant: a.variant,
     reviewerId: a.reviewerId,
     reviewerName: a.reviewerName,
@@ -243,6 +283,11 @@ async function buildView(assessmentId) {
     answerMeta: a.answers.map(x => ({
       domainId: x.domainId, questionId: x.questionId, response: x.response,
       rationale: x.rationale || null, evidenceQuote: x.evidenceQuote || null, evidenceLocator: x.evidenceLocator || null,
+      // P14 — guided-appraisal provenance (a machine SUGGESTION, never a decision).
+      aiSuggested: x.aiSuggested === true,
+      aiConfidence: x.aiConfidence != null ? x.aiConfidence : null,
+      aiModel: x.aiModel || null,
+      aiModelVersion: x.aiModelVersion || null,
     })),
     domains,
     overall,
@@ -250,20 +295,40 @@ async function buildView(assessmentId) {
   };
 }
 
-// ── GET /api/rob/instruments/rob2 ─────────────────────────────────────────────
+// ── GET /api/rob/instruments/:id  (rob2 | robins-i) ───────────────────────────
+// Serves the serialisable instrument definition for a data-driven UI. `/rob2`
+// keeps working (RoB2 default); `/robins-i` serves the 7-domain, 5-level tool.
+const INSTRUMENT_URL_IDS = { rob2: 'RoB2', 'robins-i': 'ROBINS-I', robinsi: 'ROBINS-I' };
 export async function getRobInstrument(req, res) {
   if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
-  return res.json({ instrument: INSTRUMENT });
+  const raw = String(req.params.id || 'rob2').toLowerCase();
+  const instrumentId = INSTRUMENT_URL_IDS[raw];
+  if (!instrumentId) return res.status(404).json({ error: 'Unknown instrument' });
+  return res.json({ instrument: getInstrument(instrumentId) });
 }
 
 // ── POST /api/rob/assessments ─────────────────────────────────────────────────
 export async function createAssessment(req, res) {
   try {
     if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
-    const { projectId, studyId, outcomeId, resultLabel } = req.body || {};
+    const { projectId, studyId, outcomeId, resultLabel, instrumentId } = req.body || {};
     if (!projectId || !studyId) {
       return res.status(400).json({ error: 'projectId and studyId are required' });
     }
+    // Instrument selection (P14): RoB2 (default, unchanged) or ROBINS-I. Any other
+    // value is rejected rather than silently coerced (an unsupported tool must never
+    // be stored). The version + variant are taken from the instrument definition.
+    const wantInstrumentId = instrumentId ? String(instrumentId) : 'RoB2';
+    if (!SUPPORTED_INSTRUMENTS.includes(wantInstrumentId)) {
+      return res.status(400).json({ error: `instrumentId must be one of: ${SUPPORTED_INSTRUMENTS.join(', ')}` });
+    }
+    // Any non-RoB2 instrument (ROBINS-I) is part of the guided-appraisal feature, so
+    // it may only be created when `guidedRobAppraisal` is ON. With the flag OFF the
+    // workspace stays RoB2-only exactly as before (a stray ROBINS-I request → 400).
+    if (wantInstrumentId !== 'RoB2' && !(await guidedAppraisalEnabled())) {
+      return res.status(400).json({ error: 'ROBINS-I requires the Guided RoB Appraisal feature, which is not enabled.' });
+    }
+    const instrument = getInstrument(wantInstrumentId);
     const access = await resolveRobAccess(projectId, req.user.id);
     if (!access) return res.status(404).json({ error: 'Not found' });
     if (!access.canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
@@ -282,14 +347,17 @@ export async function createAssessment(req, res) {
         projectId, studyId,
         outcomeId: outcomeId ? String(outcomeId) : null,
         resultLabel: resultLabel ? String(resultLabel).slice(0, 300) : null,
+        instrumentId: instrument.id,
+        instrumentVersion: instrument.instrumentVersion,
+        variant: instrument.variant,
         reviewerId: req.user.id,
         reviewerName: me?.name || me?.email || '',
         status: 'draft',
       },
     });
-    await recomputeAndPersist(a.id); // initialise provisional proposals
+    await recomputeAndPersist(a.id, instrument); // initialise provisional proposals
     await audit(projectId, a.id, { ...req.user, name: me?.name }, 'ROB_CREATE', {
-      entityType: 'RobAssessment', entityId: a.id, details: { studyId, outcomeId: outcomeId || null },
+      entityType: 'RobAssessment', entityId: a.id, details: { studyId, outcomeId: outcomeId || null, instrumentId: instrument.id },
     });
     const view = await buildView(a.id);
     return res.status(201).json({ assessment: view });
@@ -309,7 +377,7 @@ export async function getAssessment(req, res) {
     // edit/delete for non-creators (the server still enforces it on every write).
     const view = await buildView(a.id);
     view.canMutate = canMutateAssessment(a, permsFor(a), req.user.id);
-    return res.json({ assessment: view, instrument: INSTRUMENT });
+    return res.json({ assessment: view, instrument: instrumentFor(a) });
   } catch (err) {
     console.error('[rob] getAssessment error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
@@ -357,9 +425,19 @@ export async function listProjectAssessments(req, res) {
       };
     });
 
+    // The traffic-light matrix is per-instrument (RoB2 has 5 domains, ROBINS-I 7).
+    // A single project SHOULD use one instrument; if assessments mix instruments we
+    // fall back to RoB2's shape rather than dropping/misaligning domains. (The
+    // validation endpoint strictly scopes agreement by instrument.)
+    const distinctInstruments = [...new Set(rows.map(r => r.instrumentId || 'RoB2'))];
+    const matrixInstrument = getInstrument(
+      distinctInstruments.length === 1 && SUPPORTED_INSTRUMENTS.includes(distinctInstruments[0])
+        ? distinctInstruments[0]
+        : 'RoB2',
+    );
     const matrix = summaryMatrix(
       assessments.map(a => ({ id: a.id, label: a.label, domainJudgments: a.domainJudgments, overall: a.overall })),
-      INSTRUMENT,
+      matrixInstrument,
     );
     return res.json({ assessments, matrix });
   } catch (err) {
@@ -381,9 +459,11 @@ export async function upsertAnswers(req, res) {
     const list = Array.isArray(req.body?.answers) ? req.body.answers : null;
     if (!list || list.length === 0) return res.status(400).json({ error: 'answers[] is required' });
 
+    const instrument = instrumentFor(a);
+    const questionDomain = questionDomainMap(instrument);
     for (const item of list) {
       const questionId = String(item.questionId || '');
-      const domainId = QUESTION_DOMAIN[questionId];
+      const domainId = questionDomain[questionId];
       if (!domainId) return res.status(400).json({ error: `Unknown questionId: ${questionId}` });
       const response = String(item.response || '');
       if (!VALID_RESPONSES.has(response)) return res.status(400).json({ error: `Invalid response for ${questionId}: ${response}` });
@@ -394,16 +474,20 @@ export async function upsertAnswers(req, res) {
           rationale: item.rationale != null ? String(item.rationale).slice(0, 4000) : undefined,
           evidenceQuote: item.evidenceQuote != null ? String(item.evidenceQuote).slice(0, 4000) : undefined,
           evidenceLocator: item.evidenceLocator != null ? String(item.evidenceLocator).slice(0, 500) : undefined,
+          // A human answering/editing this question clears any machine-suggestion
+          // provenance (P14): the row is now a HUMAN answer, not a suggestion.
+          aiSuggested: false, aiConfidence: null, aiModel: null, aiModelVersion: null,
         },
         create: {
           assessmentId: a.id, domainId, questionId, response,
           rationale: item.rationale != null ? String(item.rationale).slice(0, 4000) : null,
           evidenceQuote: item.evidenceQuote != null ? String(item.evidenceQuote).slice(0, 4000) : null,
           evidenceLocator: item.evidenceLocator != null ? String(item.evidenceLocator).slice(0, 500) : null,
+          aiSuggested: false,
         },
       });
     }
-    await recomputeAndPersist(a.id);
+    await recomputeAndPersist(a.id, instrument);
     await prisma.robAssessment.update({ where: { id: a.id }, data: { updatedAt: new Date() } });
     await audit(a.projectId, a.id, req.user, 'ROB_ANSWER', { entityType: 'RobAnswer', entityId: a.id, details: { count: list.length } });
     return res.json({ assessment: await buildView(a.id) });
@@ -426,12 +510,14 @@ export async function overrideJudgment(req, res) {
     // (mirrors upsertAnswers; without this the finalise lock is defeated).
     if (a.status === 'complete') return res.status(409).json({ error: 'Assessment is finalised; re-open to edit' });
 
+    const instrument = instrumentFor(a);
+    const validJ = validJudgments(instrument);
     const { target, domainId, finalJudgment, justification, clear } = req.body || {};
     const wantClear = clear === true || finalJudgment == null || finalJudgment === '';
 
     if (!wantClear) {
-      if (!VALID_JUDGMENTS.has(finalJudgment)) {
-        return res.status(400).json({ error: "finalJudgment must be 'low', 'some', or 'high'" });
+      if (!validJ.has(finalJudgment)) {
+        return res.status(400).json({ error: `finalJudgment must be one of: ${[...validJ].join(', ')}` });
       }
       if (typeof justification !== 'string' || !justification.trim()) {
         return res.status(400).json({ error: 'A justification is required to override the algorithm' });
@@ -439,7 +525,7 @@ export async function overrideJudgment(req, res) {
     }
 
     if (target === 'domain') {
-      if (!domainId || !INSTRUMENT.domains.some(d => d.id === domainId)) {
+      if (!domainId || !instrument.domains.some(d => d.id === domainId)) {
         return res.status(400).json({ error: `Unknown domainId: ${domainId}` });
       }
       await prisma.robDomainJudgment.upsert({
@@ -448,8 +534,8 @@ export async function overrideJudgment(req, res) {
           ? { overridden: false, finalJudgment: null, overrideJustification: null }
           : { overridden: true, finalJudgment, overrideJustification: justification.trim().slice(0, 4000) },
         create: wantClear
-          ? { assessmentId: a.id, domainId, proposedJudgment: proposeDomain(INSTRUMENT, domainId, {}).judgment }
-          : { assessmentId: a.id, domainId, proposedJudgment: proposeDomain(INSTRUMENT, domainId, {}).judgment, overridden: true, finalJudgment, overrideJustification: justification.trim().slice(0, 4000) },
+          ? { assessmentId: a.id, domainId, proposedJudgment: proposeDomain(instrument, domainId, {}).judgment }
+          : { assessmentId: a.id, domainId, proposedJudgment: proposeDomain(instrument, domainId, {}).judgment, overridden: true, finalJudgment, overrideJustification: justification.trim().slice(0, 4000) },
       });
     } else if (target === 'overall') {
       await prisma.robOverall.upsert({
@@ -465,7 +551,7 @@ export async function overrideJudgment(req, res) {
       return res.status(400).json({ error: "target must be 'domain' or 'overall'" });
     }
 
-    await recomputeAndPersist(a.id); // overall reflects override-aware resolved domains
+    await recomputeAndPersist(a.id, instrument); // overall reflects override-aware resolved domains
     await audit(a.projectId, a.id, req.user, 'ROB_OVERRIDE', {
       entityType: target === 'domain' ? 'RobDomainJudgment' : 'RobOverall',
       entityId: a.id,
@@ -552,9 +638,11 @@ export async function exportAssessment(req, res) {
     if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
+    const inst = instrumentFor(a);
     const view = await buildView(a.id);
     const format = String(req.query.format || 'json').toLowerCase();
-    const base = `rob2_${a.studyId}${a.resultLabel ? '_' + a.resultLabel.replace(/[^a-z0-9]+/gi, '-').toLowerCase() : ''}`;
+    const filePrefix = inst.id === 'RoB2' ? 'rob2' : 'robins-i';
+    const base = `${filePrefix}_${a.studyId}${a.resultLabel ? '_' + a.resultLabel.replace(/[^a-z0-9]+/gi, '-').toLowerCase() : ''}`;
 
     if (format === 'json') {
       return res.json({ format, filename: `${base}.json`, mime: 'application/json', content: view });
@@ -564,7 +652,7 @@ export async function exportAssessment(req, res) {
       for (const d of view.domains) {
         const ans = view.answersByDomain[d.domainId] || {};
         const meta = view.answerMeta.filter(m => m.domainId === d.domainId);
-        const qids = INSTRUMENT.domains.find(x => x.id === d.domainId).questions.map(q => q.id);
+        const qids = inst.domains.find(x => x.id === d.domainId).questions.map(q => q.id);
         for (const qid of qids) {
           const m = meta.find(x => x.questionId === qid);
           rows.push([d.domainId, qid, ans[qid] || '', (m?.rationale || '').replace(/\s+/g, ' '), d.proposedJudgment, d.resolvedJudgment]);
@@ -574,9 +662,16 @@ export async function exportAssessment(req, res) {
       return res.json({ format, filename: `${base}.csv`, mime: 'text/csv', content: csv });
     }
     if (format === 'robvis') {
-      // robvis "data" CSV: Study, D1..D5, Overall, Weight (one row).
-      const header = ['Study', ...INSTRUMENT.domains.map(d => d.id), 'Overall', 'Weight'];
-      const judgeChar = j => ({ low: 'Low', some: 'Some concerns', high: 'High' }[j] || 'No information');
+      // robvis "data" CSV: Study, D1..Dn, Overall, Weight (one row). The judgement
+      // labels are the exact strings robvis expects, per instrument (RoB2 3-level;
+      // ROBINS-I 5-level) — RoB2 labels are byte-identical to before.
+      const ROBVIS_LABELS = {
+        RoB2: { low: 'Low', some: 'Some concerns', high: 'High' },
+        'ROBINS-I': { low: 'Low', moderate: 'Moderate', serious: 'Serious', critical: 'Critical', ni: 'No information' },
+      };
+      const labelSet = ROBVIS_LABELS[inst.id] || ROBVIS_LABELS.RoB2;
+      const header = ['Study', ...inst.domains.map(d => d.id), 'Overall', 'Weight'];
+      const judgeChar = j => (labelSet[j] || 'No information');
       const row = [
         view.resultLabel || view.studyId,
         ...view.domains.map(d => judgeChar(d.resolvedJudgment)),
@@ -677,6 +772,199 @@ export async function deleteManualStudy(req, res) {
     return res.json({ ok: true });
   } catch (err) {
     console.error('[rob] deleteManualStudy error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── P14 — Guided appraisal + validation ───────────────────────────────────────
+
+/**
+ * Resolve title + abstract for a RoB study from its linked screening RECORD.
+ * The server has NO PDF-text extractor, so the ONLY server-side text is the
+ * screening record's title/abstract (full text comes from the client body).
+ * Mirrors screeningController.getMetaLabStudyRecord's workspace resolution
+ * (own workspace preferred, else active membership). Best-effort → null when
+ * there is no linked record (e.g. a manual study). Never throws.
+ */
+async function resolveStudyText(projectId, studyId, userId) {
+  try {
+    const candidates = await prisma.screenProject.findMany({
+      where: { linkedMetaLabProjectId: projectId, deletedAt: null },
+      orderBy: { updatedAt: 'desc' },
+    });
+    let sp = candidates.find(x => x.ownerId === userId) || null;
+    if (!sp && candidates.length) {
+      const membership = await prisma.screenProjectMember.findFirst({
+        where: { projectId: { in: candidates.map(x => x.id) }, userId, status: 'active' },
+        select: { projectId: true },
+      });
+      if (membership) sp = candidates.find(x => x.id === membership.projectId) || null;
+    }
+    if (!sp || !studyId) return null;
+    const rec = await prisma.screenRecord.findFirst({
+      where: { projectId: sp.id, handoffStudyId: String(studyId) },
+      select: { title: true, abstract: true },
+    });
+    return rec || null;
+  } catch {
+    return null;
+  }
+}
+
+// ── POST /api/rob/assessments/:id/appraise ────────────────────────────────────
+// Gated behind `guidedRobAppraisal` (+ rob_engine_v2). Body: { fullText?, force? }.
+// Runs the DETERMINISTIC guided-appraisal engine over the study's text (linked
+// screening title/abstract + client-supplied fullText) and writes each suggested
+// signalling answer to RobAnswer as a MACHINE SUGGESTION (aiSuggested=true,
+// aiModel/aiModelVersion/aiConfidence + evidence). It writes ONLY questions with
+// no existing HUMAN answer (unless force=true), then recomputes the PROPOSED
+// judgements. It NEVER writes finalJudgment / overridden / overrideJustification —
+// human decisions are untouched. Mutate access required (creator/owner/leader).
+export async function appraiseAssessment(req, res) {
+  try {
+    if (!(await guidedAppraisalEnabled())) return res.status(404).json({ error: 'Not found' });
+    const a = await loadAssessment(req.params.id, req.user.id);
+    if (!a) return res.status(404).json({ error: 'Not found' });
+    if (!canMutateAssessment(a, permsFor(a), req.user.id)) return res.status(403).json({ error: 'Only the assessment creator, a project leader, or the owner can run a guided appraisal for this assessment.' });
+    if (a.status === 'complete') return res.status(409).json({ error: 'Assessment is finalised; re-open to edit' });
+
+    const instrument = instrumentFor(a);
+    const force = req.body?.force === true;
+    const fullText = typeof req.body?.fullText === 'string' ? req.body.fullText : '';
+
+    // Server-side text = linked screening record title/abstract (best-effort) +
+    // client-supplied full text. No project data leaves the server.
+    const rec = await resolveStudyText(a.projectId, a.studyId, req.user.id);
+    const title = rec?.title || '';
+    const abstract = rec?.abstract || '';
+
+    const appraisal = appraiseFromText({ instrument, title, abstract, text: fullText });
+
+    // SAFETY-CRITICAL: never overwrite a human answer. A row is a human answer when
+    // aiSuggested !== true (upsertAnswers stamps aiSuggested=false on human edits;
+    // legacy rows created before P14 have null → also treated as human). Unless
+    // force, those questions are skipped entirely.
+    const existing = await prisma.robAnswer.findMany({ where: { assessmentId: a.id } });
+    const humanAnswered = new Set(existing.filter(x => x.aiSuggested !== true && x.response).map(x => x.questionId));
+
+    let written = 0;
+    let skipped = 0;
+    for (const d of appraisal.domains) {
+      for (const q of d.questions) {
+        if (humanAnswered.has(q.questionId) && !force) { skipped += 1; continue; }
+        const locator = q.evidenceLocator ? JSON.stringify(q.evidenceLocator) : null;
+        const suggestion = {
+          domainId: d.domainId,
+          response: q.suggestedResponse,
+          evidenceQuote: q.evidenceQuote || null,
+          evidenceLocator: locator,
+          rationale: q.rationale || null,
+          aiSuggested: true,
+          aiModel: 'pecan-rob-appraisal',
+          aiModelVersion: ROB_APPRAISAL_VERSION,
+          aiConfidence: q.confidence,
+        };
+        await prisma.robAnswer.upsert({
+          where: { assessmentId_questionId: { assessmentId: a.id, questionId: q.questionId } },
+          update: suggestion,
+          create: { assessmentId: a.id, questionId: q.questionId, ...suggestion },
+        });
+        written += 1;
+      }
+    }
+
+    // Recompute PROPOSED judgements only (finalJudgment / overridden untouched).
+    await recomputeAndPersist(a.id, instrument);
+    await prisma.robAssessment.update({ where: { id: a.id }, data: { updatedAt: new Date() } });
+    await audit(a.projectId, a.id, req.user, 'ROB_APPRAISE', {
+      entityType: 'RobAssessment', entityId: a.id,
+      details: {
+        instrumentId: instrument.id, written, skipped, force,
+        hasFullText: appraisal.coverage.hasFullText, textChars: appraisal.coverage.textChars,
+        version: ROB_APPRAISAL_VERSION,
+      },
+    });
+    return res.json({ appraisal, written, skipped, assessment: await buildView(a.id) });
+  } catch (err) {
+    console.error('[rob] appraiseAssessment error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── GET /api/rob/projects/:projectId/rob-validation ───────────────────────────
+// Gated behind `guidedRobAppraisal`. View access is enough. Measures agreement
+// between the MACHINE-proposed per-domain judgement and the HUMAN judgement
+// (finalJudgment — set only on override or finalise) for every assessment in the
+// project, via weighted κ (robDomainAgreement). Agreement is STRICTLY SCOPED to
+// one instrument (?instrumentId=RoB2|ROBINS-I, default RoB2) because the 3-level
+// RoB2 scale and the 5-level ROBINS-I scale must NEVER be pooled into one κ.
+// `?format=csv` returns a per-domain + overall summary CSV.
+export async function robValidation(req, res) {
+  try {
+    if (!(await guidedAppraisalEnabled())) return res.status(404).json({ error: 'Not found' });
+    const access = await resolveRobAccess(req.params.projectId, req.user.id);
+    if (!access) return res.status(404).json({ error: 'Not found' });
+
+    const instrumentId = SUPPORTED_INSTRUMENTS.includes(String(req.query.instrumentId))
+      ? String(req.query.instrumentId)
+      : 'RoB2';
+    const instrument = getInstrument(instrumentId);
+    // Ordinal, severity-ASCENDING categories for weighted κ. Use the instrument's
+    // explicit `judgmentOrder` when present (ROBINS-I: low<moderate<ni<serious<
+    // critical — `ni` is NOT most-severe); RoB2's judgmentLevels order already IS
+    // its severity order, so it falls back cleanly.
+    const categories = instrument.judgmentOrder || instrument.judgmentLevels.map(l => l.value);
+
+    const rows = await prisma.robAssessment.findMany({
+      where: { projectId: req.params.projectId, deletedAt: null, instrumentId },
+      include: { domainJudgments: true },
+    });
+
+    // One pair per (study, domain) where a machine proposal exists AND the human
+    // made an EXPLICIT judgement (`overridden` = they actively set finalJudgment —
+    // whether it agrees with or differs from the proposal). We deliberately EXCLUDE
+    // non-overridden domains: `finaliseAssessment` auto-copies proposedJudgment into
+    // finalJudgment for those, which would otherwise manufacture guaranteed-agreement
+    // pairs and inflate κ. So this measures agreement over domains the reviewer
+    // independently judged (see `n`), not auto-accepted defaults.
+    const pairs = [];
+    for (const a of rows) {
+      for (const dj of a.domainJudgments) {
+        const proposed = dj.proposedJudgment || '';
+        const human = dj.finalJudgment || '';
+        if (!proposed || !dj.overridden || !human) continue;
+        pairs.push({ studyId: a.studyId, domainId: dj.domainId, a: proposed, b: human });
+      }
+    }
+
+    const report = robDomainAgreement(pairs, { categories });
+
+    if (String(req.query.format || '').toLowerCase() === 'csv') {
+      const esc = c => `"${String(c ?? '').replace(/"/g, '""')}"`;
+      const lines = [['scope', 'domainId', 'n', 'kappa', 'agreementPct'].map(esc).join(',')];
+      const ov = report.overall;
+      lines.push(['overall', '', report.n, ov ? ov.kappa.toFixed(4) : '', (report.percentAgreement).toFixed(4)].map(esc).join(','));
+      for (const d of report.byDomain) {
+        lines.push(['domain', d.domainId, d.n, d.kappa != null ? d.kappa.toFixed(4) : '', d.agreementPct.toFixed(4)].map(esc).join(','));
+      }
+      return res.json({
+        format: 'csv', filename: `rob-validation_${instrumentId}.csv`, mime: 'text/csv',
+        content: lines.join('\n'),
+      });
+    }
+
+    return res.json({
+      instrumentId,
+      categories,
+      n: report.n,
+      percentAgreement: report.percentAgreement,
+      overall: report.overall,
+      byDomain: report.byDomain,
+      disagreements: report.disagreements,
+      appraisalVersion: ROB_APPRAISAL_VERSION,
+    });
+  } catch (err) {
+    console.error('[rob] robValidation error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

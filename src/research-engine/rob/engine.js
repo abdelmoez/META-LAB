@@ -7,18 +7,61 @@
  * (ROBINS-I, QUADAS-2, …) that follow the same data shape reuse all of this.
  *
  * Answers map shape: { [questionId]: 'Y'|'PY'|'PN'|'N'|'NI'|'NA' } (a bare code,
- * or an object { response } — see _answerCode). The engine is the SINGLE SOURCE
+ * or an object { response } — see answerCode). The engine is the SINGLE SOURCE
  * OF TRUTH for judgements; the API and UI never re-implement the algorithm.
+ *
+ * INSTRUMENT DISPATCH: the engine is instrument-AGNOSTIC. Each supported
+ * instrument registers (a) its serialisable definition in INSTRUMENTS and (b) its
+ * own pure judgement algorithm (judgeDomain / judgeOverall) in ALGORITHMS, keyed
+ * by instrument id. proposeDomain / proposeAllDomains / proposeOverall dispatch to
+ * the instrument's OWN algorithm — they are NOT hardcoded to any one instrument.
+ * For RoB2 the dispatched functions ARE the original rob2.js functions, so RoB2
+ * output is byte-identical to before this refactor (proven by tests/unit/rob2-*).
  */
-import { ROB2, judgeDomain, judgeOverall, _answerCode } from './instruments/rob2.js';
+import {
+  ROB2,
+  judgeDomain as rob2JudgeDomain,
+  judgeOverall as rob2JudgeOverall,
+} from './instruments/rob2.js';
+import {
+  ROBINSI,
+  judgeDomain as robinsJudgeDomain,
+  judgeOverall as robinsJudgeOverall,
+} from './instruments/robinsI.js';
 
-const INSTRUMENTS = { RoB2: ROB2 };
+const INSTRUMENTS = { RoB2: ROB2, 'ROBINS-I': ROBINSI };
 
-/** Return a frozen instrument definition by id (only RoB2 in v1). */
+// Per-instrument judgement algorithms. Keyed by instrument id so the generic
+// engine dispatches to the right one instead of importing a single instrument's
+// functions directly.
+const ALGORITHMS = {
+  RoB2: { judgeDomain: rob2JudgeDomain, judgeOverall: rob2JudgeOverall },
+  'ROBINS-I': { judgeDomain: robinsJudgeDomain, judgeOverall: robinsJudgeOverall },
+};
+
+/** Return a frozen instrument definition by id (RoB2 or ROBINS-I). */
 export function getInstrument(id = 'RoB2') {
   const inst = INSTRUMENTS[id];
   if (!inst) throw new Error(`Unknown RoB instrument: ${id}`);
   return inst;
+}
+
+/** Return the pure judgement algorithm { judgeDomain, judgeOverall } for an instrument. */
+function getAlgorithm(instrument) {
+  const algo = instrument && ALGORITHMS[instrument.id];
+  if (!algo) throw new Error(`No judgement algorithm registered for instrument ${instrument && instrument.id}`);
+  return algo;
+}
+
+/**
+ * Coerce a stored answer to a bare response code (string) or undefined. Generic
+ * across instruments (they share the Y/PY/PN/N/NI/NA answer shape). Accepts either
+ * a bare code ('Y') or an object { response: 'Y' }.
+ */
+function answerCode(answers, qid) {
+  const v = answers ? answers[qid] : undefined;
+  if (v == null) return undefined;
+  return typeof v === 'string' ? v : v.response;
 }
 
 function findDomain(instrument, domainId) {
@@ -29,7 +72,7 @@ function findDomain(instrument, domainId) {
 
 /** Evaluate one branch clause { q, in:[...] } against the answers. */
 function clauseHolds(clause, answers) {
-  const v = _answerCode(answers, clause.q);
+  const v = answerCode(answers, clause.q);
   return v != null && clause.in.includes(v);
 }
 
@@ -59,6 +102,7 @@ export function nextQuestions(instrument, domainId, answers) {
  */
 export function proposeDomain(instrument, domainId, answers) {
   findDomain(instrument, domainId); // validates the id
+  const { judgeDomain } = getAlgorithm(instrument);
   const { judgment, reasons } = judgeDomain(domainId, answers || {});
   return { domainId, judgment, reasons };
 }
@@ -78,7 +122,7 @@ export function proposeAllDomains(instrument, answersByDomain) {
  * @returns {{ judgment, reasons: string[], multiSomeConcernsFlag: boolean }}
  */
 export function proposeOverall(instrument, domainJudgments) {
-  return judgeOverall(domainJudgments);
+  return getAlgorithm(instrument).judgeOverall(domainJudgments);
 }
 
 /**
@@ -97,7 +141,7 @@ export function completeness(instrument, assessment) {
     const reachable = d.questions.filter(q => isReachable(q, answers));
     const missing = reachable
       .filter(q => {
-        const v = _answerCode(answers, q.id);
+        const v = answerCode(answers, q.id);
         return v == null || v === 'NA';
       })
       .map(q => q.id);

@@ -128,6 +128,14 @@ export {
   proposeOverall as robProposeOverall,
   completeness as robCompleteness,
   summaryMatrix as robSummaryMatrix,
+  // P14 — ROBINS-I instrument, guided appraisal, and weighted-κ agreement.
+  ROBINSI as ROBINSI_INSTRUMENT,
+  robinsJudgeDomain,
+  robinsJudgeOverall,
+  appraiseFromText as robAppraiseFromText,
+  weightedKappa as robWeightedKappa,
+  cohenKappaRob as robCohenKappa,
+  robDomainAgreement,
 } from './rob/index.js';
 
 // ── Project model: factories & utilities ─────────────────────────────────────
