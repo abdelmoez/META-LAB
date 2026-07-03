@@ -37,7 +37,7 @@ import { createResolver, bareOaId } from './resolver.js';
 // product-tier entitlement + record-limit (67.md).
 import { getMetaSiftSettings } from '../screening/settings.js';
 import { resolveScreeningUploadLimit } from '../screening/uploadLimit.js';
-import { requireEntitlement, requireLimit, loadUserForTier } from '../services/entitlementService.js';
+import { requireEntitlement, requireLimit, loadUserForTier, planRecordLimitFor } from '../services/entitlementService.js';
 
 // ── Bounds (hard caps — a user request can never exceed these) ─────────────────
 export const MAX_DEPTH = 3;                 // BFS depth ceiling (external fan-out guard)
@@ -382,8 +382,11 @@ export async function importCandidates(metaLabProjectId, ids, user) {
     }
   }
   // 3) Layered per-project hard cap (per-user → workspace → tier → Ops default →
-  //    ceiling) — dedupeAndInsertRecords enforces it and throws CAPACITY.
-  const maxRecords = resolveScreeningUploadLimit({ settings });
+  //    ceiling) — dedupeAndInsertRecords enforces it and throws CAPACITY. 72.md —
+  //    the tier layer is wired from the OWNER's tier record cap (null when the
+  //    owner is missing / bypass / UNLIMITED, so the global default still governs).
+  const planLimit = proj?.userId ? await planRecordLimitFor(proj.userId) : null;
+  const maxRecords = resolveScreeningUploadLimit({ settings, planLimit });
 
   const records = candidates.map((c) => ({
     // Provenance FIRST so it survives dedupeAndInsertRecords' 2000-char rawData

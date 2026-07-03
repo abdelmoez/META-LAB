@@ -56,6 +56,20 @@ export const ENTITLEMENT_KEYS = [
   { key: 'livingReview.enabled',          kind: 'boolean', group: 'Living reviews', label: 'Living reviews' },
   { key: 'livingReview.maxSavedSearches', kind: 'limit',   group: 'Living reviews', label: 'Max saved searches' },
   { key: 'livingReview.scheduler',        kind: 'boolean', group: 'Living reviews', label: 'Scheduled re-runs' },
+  // 72.md — subscription-foundation placeholders. The DATA MODEL supports these
+  // now (per-tier values + Ops editor); full enforcement is wired incrementally
+  // (see entitlementService + uploadLimit for the first connected limit).
+  { key: 'projects.maxCollaborators',     kind: 'limit',   group: 'Projects',       label: 'Max collaborators' },
+  { key: 'exports.maxPerMonth',           kind: 'limit',   group: 'Exports',        label: 'Max exports per month' },
+  { key: 'search.maxRunsPerMonth',        kind: 'limit',   group: 'Search',         label: 'Max search runs per month' },
+  { key: 'screening.maxRunsPerMonth',     kind: 'limit',   group: 'Screening',      label: 'Max screening runs per month' },
+  { key: 'screening.guided',              kind: 'boolean', group: 'Screening',      label: 'Guided screening' },
+  { key: 'citation.mining',               kind: 'boolean', group: 'Screening',      label: 'Citation mining' },
+  { key: 'storage.maxMb',                 kind: 'limit',   group: 'Storage',        label: 'Max storage (MB)' },
+  { key: 'synthesis.advanced',            kind: 'boolean', group: 'Meta-analysis',  label: 'Advanced synthesis' },
+  { key: 'dashboard.sharing',             kind: 'boolean', group: 'Dashboard',      label: 'Dashboard sharing' },
+  { key: 'support.priorityQueue',         kind: 'boolean', group: 'Support',        label: 'Priority queue access' },
+  { key: 'support.level',                 kind: 'limit',   group: 'Support',        label: 'Support level (0 community · 1 standard · 2 priority)' },
 ];
 
 export const ENTITLEMENT_KEY_SET = new Set(ENTITLEMENT_KEYS.map((e) => e.key));
@@ -95,6 +109,18 @@ export const DEFAULT_TIERS = [
       'livingReview.enabled': false,
       'livingReview.maxSavedSearches': 0,
       'livingReview.scheduler': false,
+      // 72.md placeholders — free baseline (every key MUST be defined here).
+      'projects.maxCollaborators': 2,
+      'exports.maxPerMonth': 5,
+      'search.maxRunsPerMonth': 10,
+      'screening.maxRunsPerMonth': 5,
+      'screening.guided': false,
+      'citation.mining': false,
+      'storage.maxMb': 200,
+      'synthesis.advanced': false,
+      'dashboard.sharing': false,
+      'support.priorityQueue': false,
+      'support.level': 0,
     },
   },
   {
@@ -116,6 +142,17 @@ export const DEFAULT_TIERS = [
       'manuscript.wordExport': true,
       'livingReview.enabled': true,
       'livingReview.maxSavedSearches': 3,
+      // 72.md placeholders — Plus raises limits + unlocks guided/advanced/sharing.
+      'projects.maxCollaborators': 8,
+      'exports.maxPerMonth': 50,
+      'search.maxRunsPerMonth': 100,
+      'screening.maxRunsPerMonth': 50,
+      'screening.guided': true,
+      'citation.mining': true,
+      'storage.maxMb': 5000,
+      'synthesis.advanced': true,
+      'dashboard.sharing': true,
+      'support.level': 1,
     },
   },
   {
@@ -140,6 +177,18 @@ export const DEFAULT_TIERS = [
       'livingReview.enabled': true,
       'livingReview.maxSavedSearches': UNLIMITED,
       'livingReview.scheduler': true,
+      // 72.md placeholders — Pro is unlimited scale + full priority support.
+      'projects.maxCollaborators': UNLIMITED,
+      'exports.maxPerMonth': UNLIMITED,
+      'search.maxRunsPerMonth': UNLIMITED,
+      'screening.maxRunsPerMonth': UNLIMITED,
+      'screening.guided': true,
+      'citation.mining': true,
+      'storage.maxMb': UNLIMITED,
+      'synthesis.advanced': true,
+      'dashboard.sharing': true,
+      'support.priorityQueue': true,
+      'support.level': 2,
     },
   },
 ];

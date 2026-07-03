@@ -229,4 +229,229 @@ export function sendTierLimit(res, err) {
   return false;
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 72.md — tier ASSIGNMENT HISTORY + analytics + backfill.
+//
+// The authoritative "current tier" stays on User.tierId (67.md read-time
+// resolution is unchanged). UserTierAssignment is the append-only audit trail:
+// exactly one row per user is `isCurrent = true`. recordTierAssignment writes the
+// history row AND (by default) the User.tier* fields in ONE transaction, so the
+// two never drift. Every admin mutation + the boot backfill funnels through here.
+// ═══════════════════════════════════════════════════════════════════════════
+
+const VALID_CHANGE_TYPES = Object.freeze([
+  'manual', 'promotion', 'downgrade', 'trial_start', 'trial_end', 'beta_access',
+  'institution', 'payment', 'support_override', 'correction', 'backfill', 'other',
+]);
+export function isValidChangeType(t) { return VALID_CHANGE_TYPES.includes(t); }
+export function coerceChangeType(t) { return VALID_CHANGE_TYPES.includes(t) ? t : 'manual'; }
+
+const MS_PER_DAY = 86400000;
+
+/** Direction of a tier move by sortOrder. Pure. `orderById` = Map<tierId, sortOrder>. */
+export function tierMoveDirection(prevTierId, nextTierId, orderById) {
+  if (!prevTierId) return 'initial';
+  if (prevTierId === nextTierId) return 'lateral';
+  const a = orderById?.get?.(prevTierId);
+  const b = orderById?.get?.(nextTierId);
+  if (typeof a === 'number' && typeof b === 'number') {
+    if (b > a) return 'promotion';
+    if (b < a) return 'downgrade';
+  }
+  return 'lateral';
+}
+
+/** Whole days elapsed since `effectiveFrom` (>= 0). Pure. */
+export function daysInTier(effectiveFrom, now = new Date()) {
+  if (!effectiveFrom) return 0;
+  const from = new Date(effectiveFrom).getTime();
+  const t = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  if (!Number.isFinite(from) || !Number.isFinite(t)) return 0;
+  return Math.max(0, Math.floor((t - from) / MS_PER_DAY));
+}
+
+/** Percentage (one decimal place). Pure. */
+export function pctOf(count, total) {
+  if (!total || total <= 0) return 0;
+  return Math.round((count / total) * 1000) / 10;
+}
+
+/** Whether `effectiveUntil` falls within the next `withinDays` (and not already past). Pure. */
+export function isExpiringSoon(effectiveUntil, now = new Date(), withinDays = 30) {
+  if (!effectiveUntil) return false;
+  const until = new Date(effectiveUntil).getTime();
+  const t = now instanceof Date ? now.getTime() : new Date(now).getTime();
+  if (!Number.isFinite(until)) return false;
+  return until >= t && until <= t + withinDays * MS_PER_DAY;
+}
+
+function parseDateOrNull(v) {
+  if (v == null || v === '') return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+/**
+ * recordTierAssignment — the ONE writer for a tier change.
+ * Flips any prior `isCurrent` rows to false, inserts a new current
+ * UserTierAssignment, and (when touchUser) updates the User.tier* fields — all in
+ * a single transaction. Reused by the admin controller, the revert path and the
+ * boot backfill.
+ *
+ * @param {object} o
+ * @param {string} o.userId
+ * @param {string} o.tierId            concrete tier stored ON the assignment (required)
+ * @param {string|null} [o.userTierId] what to write to User.tierId (default = tierId;
+ *                                     pass null to keep the user on read-time default)
+ * @param {string|null} [o.previousTierId]
+ * @param {string} [o.changeType]
+ * @param {string} [o.reason]
+ * @param {string} [o.notes]
+ * @param {Date|string|null} [o.effectiveFrom]
+ * @param {Date|string|null} [o.effectiveUntil]
+ * @param {string|null} [o.assignedById]
+ * @param {string|null} [o.assignedByName]
+ * @param {object|null} [o.meta]
+ * @param {boolean} [o.touchUser]      also update the User.tier* fields (default true)
+ * @returns {Promise<object>} the created assignment row
+ */
+export async function recordTierAssignment(o) {
+  const {
+    userId, tierId, previousTierId = null, changeType = 'manual',
+    reason = '', notes = '', effectiveFrom = null, effectiveUntil = null,
+    assignedById = null, assignedByName = null, meta = null, touchUser = true,
+  } = o || {};
+  if (!userId) throw new Error('recordTierAssignment: userId required');
+  if (!tierId) throw new Error('recordTierAssignment: tierId required');
+  const userTierId = o.userTierId === undefined ? tierId : o.userTierId;
+  const effFrom = parseDateOrNull(effectiveFrom) || new Date();
+  const effUntil = parseDateOrNull(effectiveUntil);
+  const data = {
+    userId,
+    tierId: String(tierId),
+    previousTierId: previousTierId ?? null,
+    assignedById: assignedById ?? null,
+    assignedByName: assignedByName ? String(assignedByName).slice(0, 200) : null,
+    changeType: coerceChangeType(changeType),
+    reason: reason ? String(reason).slice(0, 500) : '',
+    notes: notes ? String(notes).slice(0, 2000) : '',
+    effectiveFrom: effFrom,
+    effectiveUntil: effUntil,
+    isCurrent: true,
+    metaJson: JSON.stringify(meta && typeof meta === 'object' ? meta : {}),
+  };
+  return prisma.$transaction(async (tx) => {
+    await tx.userTierAssignment.updateMany({ where: { userId, isCurrent: true }, data: { isCurrent: false } });
+    const row = await tx.userTierAssignment.create({ data });
+    if (touchUser) {
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          tierId: userTierId ?? null,
+          tierAssignedAt: effFrom,
+          tierAssignedBy: assignedById ?? null,
+          tierOverrideReason: reason ? String(reason).slice(0, 500) : null,
+        },
+      });
+    }
+    return row;
+  });
+}
+
+/**
+ * revertTierAssignment — undo a prior assignment: mark it reverted and restore its
+ * `previousTierId` as the new current tier (writes a fresh 'correction' history
+ * row). Returns { reverted, current }.
+ */
+export async function revertTierAssignment(userId, assignmentId, admin = null) {
+  const target = await prisma.userTierAssignment.findUnique({ where: { id: String(assignmentId || '') } });
+  if (!target || target.userId !== userId) { const e = new Error('Assignment not found for this user'); e.code = 'NOT_FOUND'; throw e; }
+  if (target.reverted) { const e = new Error('This assignment has already been reverted'); e.code = 'ALREADY_REVERTED'; throw e; }
+
+  const restoredTierId = target.previousTierId; // may be null → follow read-time default
+  const defaultId = await getDefaultTierId();
+  const now = new Date();
+  await prisma.userTierAssignment.update({
+    where: { id: target.id },
+    data: { reverted: true, revertedAt: now, revertedById: admin?.id || null, isCurrent: false },
+  });
+  const current = await recordTierAssignment({
+    userId,
+    tierId: restoredTierId || defaultId,
+    userTierId: restoredTierId ?? null,
+    previousTierId: target.tierId,
+    changeType: 'correction',
+    reason: `Reverted assignment ${target.id}`,
+    assignedById: admin?.id || null,
+    assignedByName: admin?.name || admin?.email || null,
+    meta: { revertOf: target.id },
+  });
+  return { reverted: { id: target.id, revertedAt: now }, current };
+}
+
+/**
+ * planRecordLimitFor — the tier record-cap that governs a project's capacity,
+ * resolved from the OWNER's tier `screening.maxRecordsPerProject` entitlement.
+ * Returns a positive integer, or null when there is no cap to apply (owner
+ * missing, admin/mod or enforcement-off bypass, or an UNLIMITED grant) so the
+ * layered upload resolver simply falls through to the global Ops default.
+ */
+export async function planRecordLimitFor(ownerUserId) {
+  try {
+    const owner = await loadUserForTier(ownerUserId);
+    if (!owner) return null;
+    const ctx = await resolveUserEntitlements(owner);
+    if (ctx.bypass) return null;
+    const v = ctx.entitlements?.['screening.maxRecordsPerProject'];
+    if (v === UNLIMITED || v == null) return null;
+    return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.floor(v) : null;
+  } catch { return null; }
+}
+
+/**
+ * backfillUserTiers — one-time idempotent boot hook: give every user WITHOUT any
+ * assignment history an initial 'backfill' row + a concrete User.tierId. Normal
+ * users get the site default tier; admins/mods get an internal tier if one exists
+ * (none by default → they get the default too, and bypass tiers regardless).
+ * Idempotent: a user that already has ANY assignment row is skipped. Returns the
+ * number of users backfilled.
+ */
+export async function backfillUserTiers() {
+  const settings = await getTierSettings();
+  const defaultId = await getDefaultTierId(settings);
+  const tiers = await listTiers();
+  const activeIds = new Set(tiers.filter(t => t.isActive).map(t => t.id));
+  const internalTierId = ['internal', 'staff', 'admin'].find(id => activeIds.has(id)) || null;
+
+  let withHistory = [];
+  try { withHistory = await prisma.userTierAssignment.findMany({ select: { userId: true }, distinct: ['userId'] }); }
+  catch { withHistory = []; }
+  const has = new Set(withHistory.map(r => r.userId));
+
+  let users = [];
+  try { users = await prisma.user.findMany({ select: { id: true, role: true, tierId: true } }); }
+  catch { return 0; }
+
+  let n = 0;
+  for (const u of users) {
+    if (has.has(u.id)) continue;
+    const targetTier = (isSystemBypassUser(u) && internalTierId) ? internalTierId : defaultId;
+    try {
+      await recordTierAssignment({
+        userId: u.id,
+        tierId: targetTier,
+        userTierId: targetTier,
+        previousTierId: u.tierId ?? null,
+        changeType: 'backfill',
+        reason: 'Initial tier backfill',
+        assignedByName: 'system',
+        meta: { system: true },
+      });
+      n++;
+    } catch (e) { console.error('[tiers] backfill failed for', u.id, e?.message); }
+  }
+  return n;
+}
+
+export { VALID_CHANGE_TYPES };
 export { UNLIMITED, hasEntitlement, limitOf, withinLimit, requiredTierFor, tierDisplayName };

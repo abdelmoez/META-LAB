@@ -95,6 +95,13 @@ import {
   updateTierAdmin,
   updateTierSettingsAdmin,
   updateUserTierAdmin,
+  getTierAnalytics,
+  getUserTierHistory,
+  getUsersInTier,
+  exportUsersInTier,
+  revertUserTier,
+  getUserSubscription,
+  updateUserSubscription,
 } from '../controllers/tierAdminController.js';
 
 import {
@@ -298,10 +305,21 @@ router.get('/full-text/settings', requireAdmin, getFullTextAdminSettings);
 router.put('/full-text/settings', requireAdmin, updateFullTextAdminSettings);
 
 // 67.md — product tiers / entitlements (admin only; tiers are separate from roles)
-router.get('/tiers',            requireAdmin, getTiersAdmin);
-router.put('/tiers/:id',        requireAdmin, updateTierAdmin);
-router.put('/tier-settings',    requireAdmin, updateTierSettingsAdmin);
-router.patch('/users/:id/tier', requireAdmin, updateUserTierAdmin);
+// 72.md — tier MANAGEMENT: analytics, per-user history, users-in-tier (+CSV),
+// revert, and the subscription placeholder. Specific paths (/tiers/analytics,
+// /tiers/:id/users/export) are declared BEFORE the more generic ones so they are
+// never shadowed.
+router.get('/tiers/analytics',          requireAdmin, getTierAnalytics);
+router.get('/tiers',                    requireAdmin, getTiersAdmin);
+router.put('/tiers/:id',                requireAdmin, updateTierAdmin);
+router.put('/tier-settings',            requireAdmin, updateTierSettingsAdmin);
+router.get('/tiers/:id/users/export',   requireAdmin, exportUsersInTier);
+router.get('/tiers/:id/users',          requireAdmin, getUsersInTier);
+router.get('/users/:id/tier-history',   requireAdmin, getUserTierHistory);
+router.post('/users/:id/tier/revert',   requireAdmin, revertUserTier);
+router.patch('/users/:id/tier',         requireAdmin, updateUserTierAdmin);
+router.get('/users/:id/subscription',   requireAdmin, getUserSubscription);
+router.put('/users/:id/subscription',   requireAdmin, updateUserSubscription);
 
 // ── Onboarding questions (prompt32 Task 7) — admin only ─────────────────────────
 router.get('/onboarding-settings',              requireAdmin, getOnboardingSettings);

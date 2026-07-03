@@ -576,10 +576,16 @@ const server = app.listen(PORT, () => {
         .then(m => m.startLivingScheduler())
         .catch(err => console.error('[living-scheduler] start failed:', err.message));
       // 67.md — seed the default product-tier rows (create-if-missing; admin
-      // edits are never overwritten). Idempotent.
+      // edits are never overwritten). Idempotent. 72.md — then backfill an initial
+      // tier-assignment history row for any user that has none (concrete User.tierId
+      // + one 'backfill' row). Both idempotent; a no-op once seeded/backfilled.
       import('./services/entitlementService.js')
-        .then(m => m.seedProductTiers())
-        .catch(err => console.error('[tiers] seed failed:', err.message));
+        .then(async (m) => {
+          await m.seedProductTiers();
+          const n = await m.backfillUserTiers();
+          if (n) console.log(`[tiers] backfilled initial tier assignment for ${n} user(s)`);
+        })
+        .catch(err => console.error('[tiers] seed/backfill failed:', err.message));
     });
 
   // prompt48 — fail-safe waitlist config check. If the betaWaitlist flag is ON but

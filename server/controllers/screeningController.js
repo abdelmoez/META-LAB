@@ -29,7 +29,7 @@ import { getMetaSiftSettings, getEffectiveQuorum } from '../screening/settings.j
 import { resolveScreeningUploadLimit } from '../screening/uploadLimit.js';
 // 67.md — product-tier enforcement (admins/mods bypass inside the service). The
 // per-project record cap binds to the PROJECT OWNER's tier, not the acting member's.
-import { requireEntitlement, requireLimit, sendTierLimit, loadUserForTier } from '../services/entitlementService.js';
+import { requireEntitlement, requireLimit, sendTierLimit, loadUserForTier, planRecordLimitFor } from '../services/entitlementService.js';
 import { snapshotPico } from '../screening/picoSnapshot.js';
 import { screeningCountSelect } from '../utils/screeningCounts.js';
 import {
@@ -1048,9 +1048,11 @@ export async function importRecords(req, res) {
       return res.status(413).json({ error: `This file holds ${records.length} records, above the ${MAX_RECORDS_PER_IMPORT.toLocaleString()} single-import safety limit. Split it into smaller files or use the async import.` });
     }
     // 58.md §3/§5 — resolve the limit through the ONE layered resolver (per-user →
-    // workspace → tier → global Ops default → ceiling) so future paid tiers drop in
-    // without touching this call site.
-    const maxRecords = resolveScreeningUploadLimit({ settings });
+    // workspace → tier → global Ops default → ceiling). 72.md — the tier layer is
+    // now wired: planLimit = the OWNER's tier screening.maxRecordsPerProject
+    // (UNLIMITED / bypass → null so it never lowers the global default).
+    const planLimit = await planRecordLimitFor(p.ownerId);
+    const maxRecords = resolveScreeningUploadLimit({ settings, planLimit });
 
     let result;
     try {

@@ -148,11 +148,43 @@ export const adminApi = {
   //    the site default tier — surface the returned error.
   //  saveSettings(body)   PUTs { enforcementEnabled?, defaultTierId? } → { ok, settings }.
   //  assignUser(id, body) PATCHes a user's tier: { tierId|null, reason? } → { ok, user }.
+  //
+  // 72.md — User Tier Management extends this axis with analytics, users-in-tier
+  // browsing/export, a richer change flow, per-user assignment history + revert,
+  // and a subscription placeholder (future billing — no payments are processed).
+  //  analytics()               → { totalUsers, byTier:[{tierId,displayName,count,pct}],
+  //    unassigned, avgDaysInCurrentTier, recentChanges:[{userId,email,from,to,
+  //    changeType,at,byName}], recentPromotions:[…], recentDowngrades:[…],
+  //    trialUsers:[…], expiringSoon:[{userId,email,tierId,effectiveUntil}],
+  //    newByTier:[{tierId,count}] }.
+  //  usersInTier(id,{skip,take,q}) → { users:[{ id,email,name,role,tierId,dateEntered,
+  //    daysInTier,previousTierId,changeType,assignedByName,reason,createdAt,
+  //    lastActive,status }], total }.
+  //  exportUsersUrl(id)        → CSV download URL (open via <a download>, credentials cookie).
+  //  userHistory(userId)       → { history:[{ id,tierId,previousTierId,changeType,
+  //    reason,notes,assignedByName,effectiveFrom,effectiveUntil,isCurrent,reverted,
+  //    revertedAt,createdAt }] }.
+  //  revertUserTier(userId,{assignmentId}) POSTs a revert of the current change → { ok, current:{tierId} }.
+  //  getSubscription(userId)   → { subscription:{ status,provider,providerCustomerId,
+  //    providerSubscriptionId,priceId,planId,currentPeriodStart,currentPeriodEnd,
+  //    trialStart,trialEnd,cancelAtPeriodEnd,lastPaymentAt,nextRenewalAt,failedPaymentCount } }.
+  //  saveSubscription(userId, body) PUTs the same subscription shape → { ok }.
+  //  changeUserTier(userId, body) PATCHes the EXTENDED per-user tier change:
+  //    { tierId|null, changeType, reason, effectiveUntil? (ISO|null), notes? } → { ok, user }.
+  //    (assignUser is kept for the simple { tierId, reason } inline flow.)
   tiers: {
-    get:          ()         => req(`${BASE}/tiers`),
-    saveTier:     (id, body) => req(`${BASE}/tiers/${id}`, { method: 'PUT', ...json(body) }),
-    saveSettings: (body)     => req(`${BASE}/tier-settings`, { method: 'PUT', ...json(body) }),
-    assignUser:   (id, body) => req(`${BASE}/users/${id}/tier`, { method: 'PATCH', ...json(body) }),
+    get:            ()         => req(`${BASE}/tiers`),
+    saveTier:       (id, body) => req(`${BASE}/tiers/${id}`, { method: 'PUT', ...json(body) }),
+    saveSettings:   (body)     => req(`${BASE}/tier-settings`, { method: 'PUT', ...json(body) }),
+    assignUser:     (id, body) => req(`${BASE}/users/${id}/tier`, { method: 'PATCH', ...json(body) }),
+    changeUserTier: (id, body) => req(`${BASE}/users/${id}/tier`, { method: 'PATCH', ...json(body) }),
+    analytics:      ()         => req(`${BASE}/tiers/analytics`),
+    usersInTier:    (id, p)    => req(`${BASE}/tiers/${id}/users${qs(p)}`),
+    exportUsersUrl: (id)       => `${BASE}/tiers/${id}/users/export`,
+    userHistory:    (userId)   => req(`${BASE}/users/${userId}/tier-history`),
+    revertUserTier: (userId, body) => req(`${BASE}/users/${userId}/tier/revert`, { method: 'POST', ...json(body) }),
+    getSubscription:  (userId)       => req(`${BASE}/users/${userId}/subscription`),
+    saveSubscription: (userId, body) => req(`${BASE}/users/${userId}/subscription`, { method: 'PUT', ...json(body) }),
   },
 
   screening: {

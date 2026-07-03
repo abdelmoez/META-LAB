@@ -5050,7 +5050,7 @@ function LivingReviewsSection() {
    ════════════════════════════════════════════════════════════════════════ */
 
 /** One tier's editable card: display fields, active toggle, entitlement matrix. */
-function TierCard({ tier, keys, isDefault, onSave }) {
+function TierCard({ tier, keys, isDefault, onSave, onViewUsers }) {
   // Local working copy — seeded from the RESOLVED entitlement map so every key has
   // an explicit value, and saved back as a FULL override map (behavior is explicit).
   const [displayName, setDisplayName] = useState(tier.displayName || tier.id);
@@ -5109,6 +5109,12 @@ function TierCard({ tier, keys, isDefault, onSave }) {
           {isDefault && <Badge text="Site default" color={C.teal} />}
           <span style={{ flex: 1 }} />
           <span style={{ fontSize: 12, color: C.muted }}>{tier.assignedUsers || 0} user{(tier.assignedUsers || 0) === 1 ? '' : 's'} assigned</span>
+          {onViewUsers && (
+            <button onClick={() => onViewUsers(tier.id)} data-testid={`tier-view-users-${tier.id}`}
+              style={{ padding: '5px 12px', background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '40')}`, borderRadius: 6, color: C.acc, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: FONT }}>
+              View users
+            </button>
+          )}
         </div>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 16, alignItems: 'start' }}>
           <div>
@@ -5175,7 +5181,7 @@ function TierCard({ tier, keys, isDefault, onSave }) {
 }
 
 /** Search + assign a single user to a tier (or reset to the site default). */
-function TierUserAssignPanel({ tiers, defaultTierId, onAssigned }) {
+function TierUserAssignPanel({ tiers, defaultTierId, onAssigned, onAdvanced, onHistory }) {
   const [q, setQ] = useState('');
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -5264,6 +5270,8 @@ function TierUserAssignPanel({ tiers, defaultTierId, onAssigned }) {
                       <input value={s.reason || ''} onChange={e => setSel(m => ({ ...m, [u.id]: { ...s, reason: e.target.value } }))}
                         placeholder="Reason (optional)" style={{ ...inputStyle, flex: '1 1 160px', width: 'auto', padding: '6px 9px', fontSize: 12.5 }} />
                       <SaveButton onClick={() => assign(u)} status={s.status || 'idle'} label="Assign" testId={`tier-assign-${u.id}`} />
+                      {onAdvanced && <button onClick={() => onAdvanced(u)} style={tierMiniBtn} data-testid={`tier-advanced-${u.id}`}>Advanced…</button>}
+                      {onHistory && <button onClick={() => onHistory(u)} style={tierMiniBtn} data-testid={`tier-history-${u.id}`}>History</button>}
                       {s.status === 'error' && <span style={{ fontSize: 11, color: C.red, width: '100%' }}>{s.error}</span>}
                     </>
                   )}
@@ -5277,11 +5285,450 @@ function TierUserAssignPanel({ tiers, defaultTierId, onAssigned }) {
   );
 }
 
+/* ────────────────────────────────────────────────────────────────────────
+   72.md — USER TIER MANAGEMENT (extends the 67.md Tiers section).
+   Additive: analytics dashboard, users-in-tier browsing/export, a richer
+   per-user change flow, per-user assignment history + revert, and a
+   subscription placeholder (future billing — no payments processed).
+   No user-facing "AI" wording. Reuses this console's Card/table/button idioms.
+   ──────────────────────────────────────────────────────────────────────── */
+
+// The audit-able reasons a user's tier changes. Mirrors the server enum.
+export const TIER_CHANGE_TYPES = [
+  { value: 'manual',           label: 'Manual' },
+  { value: 'promotion',        label: 'Promotion' },
+  { value: 'downgrade',        label: 'Downgrade' },
+  { value: 'trial_start',      label: 'Trial start' },
+  { value: 'trial_end',        label: 'Trial end' },
+  { value: 'beta_access',      label: 'Beta access' },
+  { value: 'institution',      label: 'Institution' },
+  { value: 'payment',          label: 'Payment' },
+  { value: 'support_override', label: 'Support override' },
+  { value: 'correction',       label: 'Correction' },
+  { value: 'other',            label: 'Other' },
+];
+
+// Subscription record fields (future billing — placeholder, no payments processed).
+const SUBSCRIPTION_FIELDS = [
+  { key: 'status',                 label: 'Status',               type: 'text' },
+  { key: 'provider',               label: 'Provider',             type: 'text' },
+  { key: 'providerCustomerId',     label: 'Customer ID',          type: 'text' },
+  { key: 'providerSubscriptionId', label: 'Subscription ID',      type: 'text' },
+  { key: 'priceId',                label: 'Price ID',             type: 'text' },
+  { key: 'planId',                 label: 'Plan ID',              type: 'text' },
+  { key: 'currentPeriodStart',     label: 'Current period start', type: 'date' },
+  { key: 'currentPeriodEnd',       label: 'Current period end',   type: 'date' },
+  { key: 'trialStart',             label: 'Trial start',          type: 'date' },
+  { key: 'trialEnd',               label: 'Trial end',            type: 'date' },
+  { key: 'lastPaymentAt',          label: 'Last payment',         type: 'date' },
+  { key: 'nextRenewalAt',          label: 'Next renewal',         type: 'date' },
+  { key: 'failedPaymentCount',     label: 'Failed payments',      type: 'number' },
+];
+
+const tierLabelStyle = { fontSize: 11, fontFamily: MONO, color: C.muted, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 6, display: 'block' };
+const tierCancelBtn  = { padding: '8px 16px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 13, cursor: 'pointer', fontFamily: FONT };
+const tierMiniBtn    = { padding: '4px 10px', background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 11.5, cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap' };
+const tierLinkBtn    = { padding: '5px 12px', background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '40')}`, borderRadius: 6, color: C.acc, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: FONT, whiteSpace: 'nowrap' };
+const tierEmptyStyle = { fontSize: 12, color: C.muted, padding: '8px 0' };
+
+// 'YYYY-MM-DD' for a <input type=date> from an ISO string / Date / null.
+function toDateInput(v) {
+  if (!v) return '';
+  const s = String(v);
+  return s.length >= 10 ? s.slice(0, 10) : s;
+}
+// A (tierId) → display-name resolver seeded from a tiers/byTier list; falls back
+// to the shared default-tier names, then the raw id.
+function makeTierName(list) {
+  const map = new Map();
+  for (const t of (list || [])) map.set(t.tierId ?? t.id, t.displayName || t.name || t.tierId || t.id);
+  return (id) => {
+    if (id == null || id === '') return '—';
+    return map.get(id) || tierDisplayName(id) || String(id);
+  };
+}
+const humanizeChangeType = (v) => (v ? String(v).replace(/_/g, ' ') : '');
+
+/* ── Analytics dashboard (pure — data via props) ─────────────────────────── */
+export function TierAnalyticsDashboard({ data }) {
+  if (!data) return null;
+  const nameOf = makeTierName(data.byTier);
+  const byTier = data.byTier || [];
+  const num = (n) => Number(n ?? 0).toLocaleString();
+  return (
+    <div style={{ marginBottom: 20 }} data-testid="tier-analytics">
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
+        <StatTile label="Total users" value={num(data.totalUsers)} color={C.txt} />
+        {byTier.map(t => (
+          <StatTile key={t.tierId} label={t.displayName || nameOf(t.tierId)} value={num(t.count)} sub={`${t.pct ?? 0}% of users`} color={C.acc} />
+        ))}
+        <StatTile label="Unassigned" value={num(data.unassigned)} color={C.yel} />
+        <StatTile label="Avg days in tier" value={data.avgDaysInCurrentTier ?? '—'} sub="current tier" color={C.teal} />
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
+        <TierChangeList title="Recent tier changes" rows={data.recentChanges} nameOf={nameOf} empty="No recent changes." />
+        <TierChangeList title="Recent promotions" rows={data.recentPromotions} nameOf={nameOf} empty="No recent promotions." />
+        <TierChangeList title="Recent downgrades" rows={data.recentDowngrades} nameOf={nameOf} empty="No recent downgrades." />
+        <TierUserMiniList title="Trial users" rows={data.trialUsers} nameOf={nameOf} empty="No trial users." untilColor={C.teal} />
+        <TierUserMiniList title="Expiring soon" rows={data.expiringSoon} nameOf={nameOf} empty="Nothing expiring soon." untilColor={C.yel} />
+      </div>
+    </div>
+  );
+}
+
+function TierChangeList({ title, rows, nameOf, empty }) {
+  return (
+    <SectionCard title={title}>
+      <div style={{ padding: '6px 16px 12px' }}>
+        {(!rows || rows.length === 0) ? <div style={tierEmptyStyle}>{empty}</div> : rows.map((r, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: i < rows.length - 1 ? `1px solid ${C.brd}` : 'none', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, color: C.txt, fontWeight: 600, minWidth: 0, flex: '1 1 140px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.email}>{r.email}</span>
+            <span style={{ fontSize: 11.5, color: C.muted, fontFamily: MONO }}>{nameOf(r.from)} → {nameOf(r.to)}</span>
+            {r.changeType && <Badge text={humanizeChangeType(r.changeType)} color={C.acc} />}
+            <span style={{ fontSize: 11, color: C.muted }}>{fmtAgo(r.at)}</span>
+            {r.byName && <span style={{ fontSize: 11, color: C.muted }}>· {r.byName}</span>}
+          </div>
+        ))}
+      </div>
+    </SectionCard>
+  );
+}
+
+function TierUserMiniList({ title, rows, nameOf, empty, untilColor = C.muted }) {
+  return (
+    <SectionCard title={title}>
+      <div style={{ padding: '6px 16px 12px' }}>
+        {(!rows || rows.length === 0) ? <div style={tierEmptyStyle}>{empty}</div> : rows.map((r, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: i < rows.length - 1 ? `1px solid ${C.brd}` : 'none', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, color: C.txt, fontWeight: 600, minWidth: 0, flex: '1 1 140px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.email}>{r.email || r.name || r.userId}</span>
+            {r.tierId != null && <Badge text={nameOf(r.tierId)} color={C.teal} />}
+            {r.effectiveUntil && <span style={{ fontSize: 11, color: untilColor }}>until {fmtDate(r.effectiveUntil)}</span>}
+          </div>
+        ))}
+      </div>
+    </SectionCard>
+  );
+}
+
+// Container: loads analytics on mount; degrades gracefully if the endpoint is
+// not live yet (additive — never breaks the rest of the Tiers section).
+function TierAnalyticsSection() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    let alive = true;
+    adminApi.tiers.analytics()
+      .then(d => { if (alive) { setData(d); setErr(''); } })
+      .catch(e => { if (alive) setErr(e.message || 'unavailable'); });
+    return () => { alive = false; };
+  }, []);
+  if (err && !data) {
+    return <SectionCard title="Tier analytics"><div style={{ padding: '14px 20px', fontSize: 12, color: C.muted, lineHeight: 1.6 }}>Tier analytics are not available yet.</div></SectionCard>;
+  }
+  if (!data) return <SectionCard title="Tier analytics"><div style={{ padding: 28, textAlign: 'center' }}><Spinner size={18} /></div></SectionCard>;
+  return <TierAnalyticsDashboard data={data} />;
+}
+
+/* ── Users-in-tier table (pure — data via props) ─────────────────────────── */
+export function TierUsersTable({ users, total = 0, page = 1, perPage = 20, onPage, q = '', onQ, onSearch, csvUrl, loading, tierName, onChangeTier, onHistory, onSubscription }) {
+  const ell = { display: 'inline-block', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'bottom' };
+  const columns = [
+    { key: 'email', label: 'User', render: (v, r) => (
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: 12.5, color: C.txt, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.email}</div>
+        <div style={{ fontSize: 11, color: C.muted }}>{r.name || '—'} · {r.role || 'user'}</div>
+      </div>
+    ) },
+    { key: 'dateEntered',     label: 'Entered',     render: v => fmtDate(v) },
+    { key: 'daysInTier',      label: 'Days',        render: v => (v ?? '—') },
+    { key: 'previousTierId',  label: 'Previous',    render: v => (v ? (tierName ? tierName(v) : v) : '—') },
+    { key: 'changeType',      label: 'How',         render: v => (v ? <Badge text={humanizeChangeType(v)} color={C.acc} /> : '—') },
+    { key: 'assignedByName',  label: 'By',          render: v => (v || '—') },
+    { key: 'reason',          label: 'Reason',      render: v => (v ? <span title={v} style={ell}>{v}</span> : '—') },
+    { key: 'lastActive',      label: 'Last active', render: v => fmtAgo(v) },
+    { key: 'status',          label: 'Status',      render: v => (v || '—') },
+    { key: '_actions',        label: '',            render: (v, r) => (
+      <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+        {onChangeTier   && <button onClick={() => onChangeTier(r)}   style={tierMiniBtn} data-testid={`tier-users-change-${r.id}`}>Change tier</button>}
+        {onHistory      && <button onClick={() => onHistory(r)}      style={tierMiniBtn} data-testid={`tier-users-history-${r.id}`}>History</button>}
+        {onSubscription && <button onClick={() => onSubscription(r)} style={tierMiniBtn} data-testid={`tier-users-sub-${r.id}`}>Subscription</button>}
+      </div>
+    ) },
+  ];
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        <form onSubmit={e => { e.preventDefault(); onSearch?.(); }} style={{ display: 'flex', gap: 8, flex: '1 1 260px' }}>
+          <input value={q} onChange={e => onQ?.(e.target.value)} placeholder="Search users in this tier…" style={{ ...inputStyle, flex: 1 }} data-testid="tier-users-search" />
+          <button type="submit" style={{ padding: '9px 16px', background: C.acc2, border: 'none', borderRadius: 7, color: C.accText, fontSize: 13, fontWeight: 600, cursor: 'pointer', fontFamily: FONT }}>Search</button>
+        </form>
+        {csvUrl && (
+          <a href={csvUrl} download data-testid="tier-users-export"
+            style={{ display: 'inline-flex', alignItems: 'center', gap: 6, padding: '9px 14px', background: C.surf, border: `1px solid ${C.brd2}`, borderRadius: 7, color: C.txt2, fontSize: 12.5, fontWeight: 600, textDecoration: 'none', fontFamily: FONT }}>
+            Export CSV
+          </a>
+        )}
+      </div>
+      <SectionCard>
+        <DataTable columns={columns} rows={users || []} loading={loading} emptyMessage="No users in this tier." />
+      </SectionCard>
+      <Pagination page={page} total={total} perPage={perPage} onPage={onPage} />
+    </div>
+  );
+}
+
+// Container modal for a tier's users (paginated + searchable + CSV export).
+function TierUsersModal({ tierId, tierName, tierNameOf, onClose, onChangeTier, onHistory, onSubscription }) {
+  const [rows, setRows] = useState([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [q, setQ] = useState('');
+  const [qInput, setQInput] = useState('');
+  const [loading, setLoading] = useState(true);
+  const perPage = 20;
+  const load = useCallback(() => {
+    setLoading(true);
+    adminApi.tiers.usersInTier(tierId, { skip: (page - 1) * perPage, take: perPage, q })
+      .then(d => { setRows(d.users || []); setTotal(d.total || 0); })
+      .catch(() => { setRows([]); setTotal(0); })
+      .finally(() => setLoading(false));
+  }, [tierId, page, q]);
+  useEffect(() => { load(); }, [load]);
+  return (
+    <TierOverlay title={`Users — ${tierName}`} subtitle={`${total} user${total === 1 ? '' : 's'} in this tier`} onClose={onClose} width={1000}>
+      <TierUsersTable
+        users={rows} total={total} page={page} perPage={perPage} onPage={setPage}
+        q={qInput} onQ={setQInput} onSearch={() => { setPage(1); setQ(qInput.trim()); }}
+        csvUrl={adminApi.tiers.exportUsersUrl(tierId)} loading={loading} tierName={tierNameOf}
+        onChangeTier={onChangeTier} onHistory={onHistory} onSubscription={onSubscription}
+      />
+    </TierOverlay>
+  );
+}
+
+/* ── Richer per-user tier editor (pure form + modal container) ───────────── */
+export function UserTierEditorForm({ tiers, value, onChange, currentTierLabel }) {
+  const activeTiers = (tiers || []).filter(t => t.isActive !== false);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }} data-testid="tier-editor-form">
+      {currentTierLabel && (
+        <div style={{ fontSize: 12, color: C.muted }}>Current tier: <span style={{ fontFamily: MONO, color: C.txt2 }}>{currentTierLabel}</span></div>
+      )}
+      <div>
+        <label style={tierLabelStyle}>New tier</label>
+        <select value={value.tierId || ''} onChange={e => onChange({ tierId: e.target.value })} style={inputStyle} data-testid="tier-editor-tier">
+          <option value="">Site default</option>
+          {activeTiers.map(t => <option key={t.id} value={t.id}>{t.displayName || t.id}</option>)}
+        </select>
+      </div>
+      <div>
+        <label style={tierLabelStyle}>Change type</label>
+        <select value={value.changeType} onChange={e => onChange({ changeType: e.target.value })} style={inputStyle} data-testid="tier-editor-changetype">
+          {TIER_CHANGE_TYPES.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      </div>
+      <div>
+        <label style={tierLabelStyle}>Reason <span style={{ color: C.red }}>*</span></label>
+        <input value={value.reason || ''} onChange={e => onChange({ reason: e.target.value })} placeholder="Why is this tier changing?" style={inputStyle} data-testid="tier-editor-reason" />
+      </div>
+      <div>
+        <label style={tierLabelStyle}>Effective until <span style={{ textTransform: 'none', letterSpacing: 0, color: C.muted }}>(optional — for trials / temporary access)</span></label>
+        <input type="date" value={toDateInput(value.effectiveUntil)} onChange={e => onChange({ effectiveUntil: e.target.value })} style={inputStyle} data-testid="tier-editor-until" />
+      </div>
+      <div>
+        <label style={tierLabelStyle}>Notes <span style={{ textTransform: 'none', letterSpacing: 0, color: C.muted }}>(optional)</span></label>
+        <textarea value={value.notes || ''} onChange={e => onChange({ notes: e.target.value })} rows={3} style={{ ...inputStyle, resize: 'vertical' }} data-testid="tier-editor-notes" />
+      </div>
+    </div>
+  );
+}
+
+function UserTierEditorModal({ user, tiers, defaultTierId, onClose, onSaved }) {
+  const [value, setValue] = useState(() => ({ tierId: user.tierId || '', changeType: 'manual', reason: '', effectiveUntil: '', notes: '' }));
+  const [status, setStatus] = useState('idle');
+  const [error, setError] = useState('');
+  const change = (patch) => setValue(v => ({ ...v, ...patch }));
+  async function submit() {
+    if (!value.reason.trim()) { setError('A reason is required.'); return; }
+    setStatus('saving'); setError('');
+    try {
+      const body = {
+        tierId: value.tierId ? value.tierId : null,
+        changeType: value.changeType,
+        reason: value.reason.trim(),
+        effectiveUntil: value.effectiveUntil ? new Date(value.effectiveUntil).toISOString() : null,
+        notes: value.notes.trim() || undefined,
+      };
+      await adminApi.tiers.changeUserTier(user.id, body);
+      setStatus('saved'); onSaved?.();
+      setTimeout(() => onClose?.(), 600);
+    } catch (e) { setError(e.message || 'Save failed'); setStatus('error'); setTimeout(() => setStatus('idle'), 3000); }
+  }
+  const currentLabel = user.tierId ? tierDisplayName(user.tierId) : (defaultTierId ? `default (${tierDisplayName(defaultTierId)})` : 'default');
+  return (
+    <TierOverlay title="Change tier" subtitle={user.email} onClose={onClose} width={560}>
+      <UserTierEditorForm tiers={tiers} value={value} onChange={change} currentTierLabel={currentLabel} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 18 }}>
+        {error && <span style={{ fontSize: 12, color: C.red }}>{error}</span>}
+        <span style={{ flex: 1 }} />
+        <button onClick={onClose} style={tierCancelBtn}>Cancel</button>
+        <SaveButton onClick={submit} status={status} label="Save tier change" testId="tier-editor-save" />
+      </div>
+    </TierOverlay>
+  );
+}
+
+/* ── Per-user tier history timeline (pure) + modal container ─────────────── */
+export function TierHistoryTimeline({ history, tierName = tierDisplayName, onRevert, reverting }) {
+  if (!history || history.length === 0) return <div style={tierEmptyStyle}>No tier history for this user yet.</div>;
+  return (
+    <div data-testid="tier-history">
+      {history.map((h, i) => {
+        const canRevert = h.isCurrent && !h.reverted && !!onRevert;
+        return (
+          <div key={h.id ?? i} style={{ display: 'flex', gap: 12, padding: '12px 0', borderBottom: i < history.length - 1 ? `1px solid ${C.brd}` : 'none' }}>
+            <div style={{ flexShrink: 0, width: 10, height: 10, marginTop: 5, borderRadius: '50%', background: h.isCurrent ? C.grn : (h.reverted ? C.muted : C.acc) }} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12.5, color: C.txt, fontFamily: MONO }}>{h.previousTierId ? `${tierName(h.previousTierId)} → ` : ''}{tierName(h.tierId)}</span>
+                {h.changeType && <Badge text={humanizeChangeType(h.changeType)} color={C.acc} />}
+                {h.isCurrent && <Badge text="Current" color={C.grn} />}
+                {h.reverted && <Badge text="Reverted" color={C.muted} />}
+              </div>
+              {h.reason && <div style={{ fontSize: 12, color: C.txt2, marginTop: 4 }}>{h.reason}</div>}
+              <div style={{ fontSize: 11, color: C.muted, marginTop: 4 }}>
+                {h.assignedByName ? `by ${h.assignedByName}` : ''}
+                {h.effectiveFrom ? ` · from ${fmtDate(h.effectiveFrom)}` : ''}
+                {h.effectiveUntil ? ` · until ${fmtDate(h.effectiveUntil)}` : ''}
+                {h.createdAt ? ` · ${fmtAgo(h.createdAt)}` : ''}
+              </div>
+              {h.notes && <div style={{ fontSize: 11.5, color: C.muted, marginTop: 4, fontStyle: 'italic' }}>{h.notes}</div>}
+            </div>
+            {canRevert && (
+              <button onClick={() => onRevert(h)} disabled={reverting} data-testid={`tier-history-revert-${h.id}`}
+                style={{ ...tierLinkBtn, alignSelf: 'flex-start', opacity: reverting ? 0.5 : 1, cursor: reverting ? 'not-allowed' : 'pointer' }}>
+                Revert
+              </button>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function TierHistoryModal({ user, tiers, onClose, onReverted }) {
+  const [history, setHistory] = useState(null);
+  const [reverting, setReverting] = useState(false);
+  const [err, setErr] = useState('');
+  const nameOf = makeTierName((tiers || []).map(t => ({ tierId: t.id, displayName: t.displayName })));
+  const load = useCallback(() => {
+    adminApi.tiers.userHistory(user.id).then(d => setHistory(d.history || [])).catch(() => setHistory([]));
+  }, [user.id]);
+  useEffect(() => { load(); }, [load]);
+  async function revert(entry) {
+    setReverting(true); setErr('');
+    try { await adminApi.tiers.revertUserTier(user.id, { assignmentId: entry.id }); onReverted?.(); load(); }
+    catch (e) { setErr(e.message || 'Revert failed'); }
+    finally { setReverting(false); }
+  }
+  return (
+    <TierOverlay title="Tier history" subtitle={user.email} onClose={onClose} width={620}>
+      {err && <ErrorBox msg={err} />}
+      {history === null
+        ? <div style={{ padding: 28, textAlign: 'center' }}><Spinner size={18} /></div>
+        : <TierHistoryTimeline history={history} tierName={nameOf} onRevert={revert} reverting={reverting} />}
+    </TierOverlay>
+  );
+}
+
+/* ── Subscription placeholder (pure panel + modal container) ─────────────── */
+export function SubscriptionPanel({ subscription, onChange, editable = true }) {
+  const sub = subscription || {};
+  const set = (k, val) => onChange?.({ ...sub, [k]: val });
+  return (
+    <div data-testid="subscription-panel">
+      <NoticeBox color={C.yel} msg="Subscription (future billing — placeholder, no payments processed). These fields are internal record-keeping only." />
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 14 }}>
+        {SUBSCRIPTION_FIELDS.map(f => (
+          <div key={f.key}>
+            <label style={tierLabelStyle}>{f.label}</label>
+            <input
+              type={f.type === 'number' ? 'number' : (f.type === 'date' ? 'date' : 'text')}
+              value={f.type === 'date' ? toDateInput(sub[f.key]) : (sub[f.key] ?? '')}
+              onChange={e => set(f.key, f.type === 'number' ? Number(e.target.value) : e.target.value)}
+              disabled={!editable} style={{ ...inputStyle, opacity: editable ? 1 : 0.7 }} data-testid={`sub-${f.key}`} />
+          </div>
+        ))}
+        <div>
+          <label style={tierLabelStyle}>Cancel at period end</label>
+          <Toggle checked={!!sub.cancelAtPeriodEnd} onChange={v => set('cancelAtPeriodEnd', v)} disabled={!editable} testId="sub-cancelAtPeriodEnd" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SubscriptionModal({ user, onClose }) {
+  const [sub, setSub] = useState(null);
+  const [status, setStatus] = useState('idle');
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    adminApi.tiers.getSubscription(user.id).then(d => setSub(d.subscription || {})).catch(() => setSub({}));
+  }, [user.id]);
+  async function save() {
+    setStatus('saving'); setErr('');
+    try { await adminApi.tiers.saveSubscription(user.id, sub); setStatus('saved'); setTimeout(() => setStatus('idle'), 2500); }
+    catch (e) { setErr(e.message || 'Save failed'); setStatus('error'); setTimeout(() => setStatus('idle'), 3000); }
+  }
+  return (
+    <TierOverlay title="Subscription" subtitle={user.email} onClose={onClose} width={640}>
+      {sub === null ? <div style={{ padding: 28, textAlign: 'center' }}><Spinner size={18} /></div> : (
+        <>
+          {err && <ErrorBox msg={err} />}
+          <SubscriptionPanel subscription={sub} onChange={setSub} editable />
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 12, marginTop: 16 }}>
+            <button onClick={onClose} style={tierCancelBtn}>Close</button>
+            <SaveButton onClick={save} status={status} label="Save subscription" testId="sub-save" />
+          </div>
+        </>
+      )}
+    </TierOverlay>
+  );
+}
+
+/* ── Shared overlay for the tier-management modals (reuses console idioms) ── */
+function TierOverlay({ title, subtitle, onClose, children, width = 720 }) {
+  return (
+    <div role="dialog" aria-modal="true" aria-label={title} onClick={onClose}
+      style={{ position: 'fixed', inset: 0, zIndex: 1000, background: alpha('#000', 0.5), display: 'flex', alignItems: 'flex-start', justifyContent: 'center', padding: '40px 20px', overflowY: 'auto' }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 12, width: '100%', maxWidth: width, boxShadow: `0 24px 64px ${C.shadow}` }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, padding: '16px 20px', borderBottom: `1px solid ${C.brd}` }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: C.txt }}>{title}</div>
+            {subtitle && <div style={{ fontSize: 12, color: C.muted, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis' }}>{subtitle}</div>}
+          </div>
+          <button onClick={onClose} aria-label="Close" style={{ flexShrink: 0, background: 'transparent', border: 'none', color: C.muted, cursor: 'pointer', padding: 4, display: 'inline-flex' }}>
+            <Icon name="x" size={18} />
+          </button>
+        </div>
+        <div style={{ padding: '16px 20px' }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
 function TiersSection() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
   const [settings, setSettings] = useState({ enforcementEnabled: true, defaultTierId: null });
   const [setStatus, setSetStatus] = useState('idle');
+  // 72.md — tier-management overlays (users-in-tier, richer editor, history, subscription).
+  const [usersTier, setUsersTier]   = useState(null);   // tier id
+  const [editUser, setEditUser]     = useState(null);   // user row
+  const [historyUser, setHistoryUser] = useState(null); // user row
+  const [subUser, setSubUser]       = useState(null);   // user row
 
   const load = useCallback(async () => {
     try {
@@ -5317,11 +5764,15 @@ function TiersSection() {
   const tiers = [...(data.tiers || [])].sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0));
   const keys = data.keys || [];
   const defaultTierId = settings.defaultTierId;
+  const tierNameOf = makeTierName(tiers.map(t => ({ tierId: t.id, displayName: t.displayName })));
 
   return (
     <div>
       <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 8px' }}>Tiers</h2>
       <p style={{ fontSize: 12.5, color: C.muted, margin: '0 0 20px', maxWidth: 720, lineHeight: 1.6 }}>{data.note}</p>
+
+      {/* 72.md — analytics dashboard at the top of the section. */}
+      <TierAnalyticsSection />
 
       {/* Enforcement + default tier settings. */}
       <SectionCard title="Enforcement">
@@ -5353,11 +5804,31 @@ function TiersSection() {
 
       {/* One card per tier. */}
       {tiers.map(t => (
-        <TierCard key={t.id} tier={t} keys={keys} isDefault={t.id === defaultTierId} onSave={saveTier} />
+        <TierCard key={t.id} tier={t} keys={keys} isDefault={t.id === defaultTierId} onSave={saveTier} onViewUsers={setUsersTier} />
       ))}
 
-      {/* Per-user assignment. */}
-      <TierUserAssignPanel tiers={tiers} defaultTierId={defaultTierId} onAssigned={load} />
+      {/* Per-user assignment (search-and-pick kept intact; richer flows are additive). */}
+      <TierUserAssignPanel tiers={tiers} defaultTierId={defaultTierId} onAssigned={load}
+        onAdvanced={setEditUser} onHistory={setHistoryUser} />
+
+      {/* 72.md — tier-management overlays. */}
+      {usersTier && (
+        <TierUsersModal
+          tierId={usersTier} tierName={tierNameOf(usersTier)} tierNameOf={tierNameOf}
+          onClose={() => setUsersTier(null)}
+          onChangeTier={setEditUser} onHistory={setHistoryUser} onSubscription={setSubUser} />
+      )}
+      {editUser && (
+        <UserTierEditorModal user={editUser} tiers={tiers} defaultTierId={defaultTierId}
+          onClose={() => setEditUser(null)} onSaved={load} />
+      )}
+      {historyUser && (
+        <TierHistoryModal user={historyUser} tiers={tiers}
+          onClose={() => setHistoryUser(null)} onReverted={load} />
+      )}
+      {subUser && (
+        <SubscriptionModal user={subUser} onClose={() => setSubUser(null)} />
+      )}
     </div>
   );
 }

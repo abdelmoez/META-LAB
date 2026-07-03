@@ -2272,3 +2272,75 @@ model CitationCandidate {
   @@index([metaLabProjectId])
   @@index([chaseJobId])
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 72.md — User Tier Management infrastructure (EXTENDS 67.md's ProductTier +
+// entitlement backbone; the two never mix with app/system role or project role).
+//
+// THREE clean concepts stay SEPARATE (never one messy field):
+//   - Tier         : what level of access a user has (User.tierId → ProductTier)
+//   - Entitlement  : the features/limits a tier grants (src/shared/entitlements)
+//   - Subscription : the billing/payment lifecycle (TierSubscription — PLACEHOLDER)
+//
+// UserTierAssignment is the append-only HISTORY of every tier a user has been in
+// (who/why/when/how). Exactly one row per user is `isCurrent = true`. The
+// authoritative "which tier is the user in NOW" stays on User.tierId; each
+// mutation writes BOTH in lock-step (see entitlementService.recordTierAssignment).
+// All fields additive/nullable/defaulted so `prisma db push` stays safe.
+// ═══════════════════════════════════════════════════════════════════════════
+model UserTierAssignment {
+  id             String    @id @default(uuid())
+  userId         String
+  tierId         String // concrete ProductTier id this assignment placed the user in
+  previousTierId String? // the tier they were in before (null = no prior / initial)
+  assignedById   String? // admin user id who made the change (null = system/backfill)
+  assignedByName String? // denormalised display name for the history table
+  // manual | promotion | downgrade | trial_start | trial_end | beta_access |
+  // institution | payment | support_override | correction | backfill | other
+  changeType     String    @default("manual")
+  reason         String    @default("")
+  notes          String    @default("")
+  effectiveFrom  DateTime  @default(now())
+  effectiveUntil DateTime? // optional scheduled expiry (e.g. trial ends later)
+  isCurrent      Boolean   @default(true)
+  reverted       Boolean   @default(false)
+  revertedAt     DateTime?
+  revertedById   String?
+  metaJson       String    @default("{}") // JSON: { system, followDefault, revertOf, ... }
+  createdAt      DateTime  @default(now())
+
+  @@index([userId])
+  @@index([tierId])
+  @@index([userId, isCurrent])
+}
+
+// TierSubscription — BILLING PLACEHOLDER (no payment processing yet). One row per
+// user (upserted). Fields mirror a generic provider (Stripe-shaped) so a future
+// billing integration can populate them WITHOUT touching the tier/entitlement
+// engine. status defaults to "none" (no subscription). Never exposed to normal
+// users; admin-only read/write.
+model TierSubscription {
+  id                     String    @id @default(uuid())
+  userId                 String
+  tierId                 String?
+  provider               String? // e.g. "stripe" (future)
+  providerCustomerId     String?
+  providerSubscriptionId String?
+  priceId                String?
+  planId                 String?
+  status                 String    @default("none") // none | trialing | active | past_due | canceled
+  currentPeriodStart     DateTime?
+  currentPeriodEnd       DateTime?
+  trialStart             DateTime?
+  trialEnd               DateTime?
+  cancelAtPeriodEnd      Boolean   @default(false)
+  lastPaymentAt          DateTime?
+  nextRenewalAt          DateTime?
+  failedPaymentCount     Int       @default(0)
+  notes                  String    @default("")
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+
+  @@unique([userId])
+  @@index([userId])
+}

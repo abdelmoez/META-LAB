@@ -271,6 +271,38 @@ describe('tierDisplayName', () => {
   });
 });
 
+describe('72.md subscription-foundation placeholder keys', () => {
+  const KEYS_72 = [
+    'projects.maxCollaborators', 'exports.maxPerMonth', 'search.maxRunsPerMonth',
+    'screening.maxRunsPerMonth', 'screening.guided', 'citation.mining',
+    'storage.maxMb', 'synthesis.advanced', 'dashboard.sharing',
+    'support.priorityQueue', 'support.level',
+  ];
+  it('every 72.md key is in the registry with a value on every tier', () => {
+    for (const key of KEYS_72) {
+      expect(ENTITLEMENT_KEY_SET.has(key), `${key} in registry`).toBe(true);
+      for (const t of DEFAULT_TIERS) expect(resolveEntitlements(t.id)).toHaveProperty(key);
+    }
+  });
+  it('boolean placeholders unlock free→plus, and pro is unlimited on the limits', () => {
+    const free = resolveEntitlements('free');
+    const plus = resolveEntitlements('plus');
+    const pro = resolveEntitlements('pro');
+    expect(free['screening.guided']).toBe(false);
+    expect(plus['screening.guided']).toBe(true);
+    expect(free['synthesis.advanced']).toBe(false);
+    expect(plus['synthesis.advanced']).toBe(true);
+    expect(free['dashboard.sharing']).toBe(false);
+    expect(pro['support.priorityQueue']).toBe(true);
+    // limits escalate and pro is UNLIMITED.
+    expect(limitOf(free, 'exports.maxPerMonth')).toBe(5);
+    expect(limitOf(plus, 'exports.maxPerMonth')).toBe(50);
+    expect(limitOf(pro, 'exports.maxPerMonth')).toBe(Infinity);
+    expect(limitOf(pro, 'storage.maxMb')).toBe(Infinity);
+    expect(pro['support.level']).toBe(2);
+  });
+});
+
 describe('buildTierLimitError — the structured 403 body contract', () => {
   it('produces the canonical shape with the given fields', () => {
     const body = buildTierLimitError({
