@@ -614,6 +614,38 @@ export default function AppPdfViewer({
   );
 }
 
+/* Resolve the character offset within a text-layer span's ORIGINAL text (dataset.t) at a
+   screen point. Highlight passes replace a span's single text node with text + <mark>
+   nodes, but the concatenated textContent still equals dataset.t, so we sum node lengths in
+   DFS order up to the caret node. Returns null when the point is not inside the span text. */
+function caretOffsetInSpan(span, clientX, clientY) {
+  let node = null, off = 0;
+  try {
+    if (document.caretPositionFromPoint) {
+      const pos = document.caretPositionFromPoint(clientX, clientY);
+      if (pos && span.contains(pos.offsetNode)) { node = pos.offsetNode; off = pos.offset; }
+    }
+    if (!node && document.caretRangeFromPoint) {
+      const r = document.caretRangeFromPoint(clientX, clientY);
+      if (r && span.contains(r.startContainer)) { node = r.startContainer; off = r.startOffset; }
+    }
+  } catch { return null; }
+  if (!node) return null;
+  let total = 0, done = false;
+  const walk = (n) => {
+    if (done) return;
+    if (n === node) {
+      if (n.nodeType === 3) total += off;
+      else for (let i = 0; i < off && i < n.childNodes.length; i++) total += (n.childNodes[i].textContent || '').length;
+      done = true; return;
+    }
+    if (n.nodeType === 3) { total += (n.textContent || '').length; return; }
+    for (const c of n.childNodes) { walk(c); if (done) return; }
+  };
+  walk(span);
+  return done ? total : null;
+}
+
 /* ── A single continuous page: canvas + real text layer + match highlighting ─── */
 function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOptions, currentLocal, onDims, interaction = null, overlay = null }) {
   const canvasRef = useRef(null);
@@ -731,13 +763,31 @@ function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOption
   }
 
   function onTextClickCapture(e) {
-    if (!clickable || !interaction.onTextClick) return;
+    if (!clickable) return;
     // Only react to a click that lands on a text span (has text), not empty gaps.
     const span = e.target.closest && e.target.closest('span');
     const str = span ? (span.dataset.t != null ? span.dataset.t : span.textContent) : '';
-    if (!str || !str.trim()) return;
+    if (!str || !str.trim()) {
+      // e1 — feedback on a miss (gap click / scanned page) instead of a silent no-op.
+      if (interaction.onTextMiss) { e.preventDefault(); e.stopPropagation(); interaction.onTextMiss({ page: pageNumber }); }
+      return;
+    }
     e.preventDefault(); e.stopPropagation();
-    interaction.onTextClick({ page: pageNumber, str: String(str).trim() });
+    // Resolve WHERE in the run the user clicked so the consumer can snap to the FULL
+    // number token under the cursor (not just the first number of the whole run). This is
+    // the core click-assign fix. Payload is additive — old callers reading {page,str} are
+    // unaffected.
+    const offset = caretOffsetInSpan(span, e.clientX, e.clientY);
+    const host = e.currentTarget.getBoundingClientRect();
+    const user = cssToUser(e.clientX - host.left, e.clientY - host.top);
+    let spanBox = null;
+    try {
+      const r = span.getBoundingClientRect();
+      const tl = cssToUser(r.left - host.left, r.top - host.top);
+      const br = cssToUser(r.right - host.left, r.bottom - host.top);
+      spanBox = { x0: Math.min(tl.x, br.x), y0: Math.min(tl.y, br.y), x1: Math.max(tl.x, br.x), y1: Math.max(tl.y, br.y) };
+    } catch { /* noop */ }
+    interaction.onTextClick({ page: pageNumber, str: String(str), offset: offset == null ? null : offset, user, spanBox });
   }
 
   function onRegionDown(e) {

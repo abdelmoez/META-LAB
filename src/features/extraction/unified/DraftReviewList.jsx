@@ -106,16 +106,21 @@ function MethodChip({ method }) {
 
 /* ── one draft card ──────────────────────────────────────────────────────── */
 
-function DraftCard({ d, outcomes, onConfirm, onDismiss, onPark, onEditField }) {
+function DraftCard({ d, outcomes, compact, onConfirm, onDismiss, onPark, onEditField }) {
   const scope = d.scope && typeof d.scope === "object" ? d.scope : {};
   const completeness = recordCompleteness(d);
   const confColor = CONFIDENCE_COLOR[d.confidence] || C.red;
   const selectedOutcomeId = outcomes.some((o) => o.id === scope.outcomeId) ? scope.outcomeId : "";
+  // Protocol-scoping gate: a draft only joins the analysable dataset once it is tagged to
+  // a primary/secondary outcome with a name, so it can never pool under the "(unnamed)"
+  // bucket. The escape hatch for genuinely off-protocol values is "Not in this review".
+  const scopeReady = (scope.level === "primary" || scope.level === "secondary") && has(d.outcome);
 
   const changeScope = (id) => {
     if (!onEditField) return;
     if (!id) {
-      onEditField(d.id, "scope", { level: "other", outcomeId: "", canonical: false, name: "" });
+      // "Off-protocol / unassigned" — do NOT pass a name (that would erase the outcome text).
+      onEditField(d.id, "scope", { level: "other", outcomeId: "", canonical: false });
       return;
     }
     const o = outcomes.find((x) => x.id === id);
@@ -123,6 +128,7 @@ function DraftCard({ d, outcomes, onConfirm, onDismiss, onPark, onEditField }) {
     onEditField(d.id, "scope", {
       level: o.level, outcomeId: o.id,
       canonical: o.canonical !== undefined ? o.canonical : true,
+      canonicalName: o.canonical || o.name,
       name: o.name,
     });
   };
@@ -187,7 +193,9 @@ function DraftCard({ d, outcomes, onConfirm, onDismiss, onPark, onEditField }) {
             style={{ ...smallInp, width: "100%" }} />
         </div>
         <div style={{ flex: 1 }} />
-        <button onClick={() => onConfirm && onConfirm(d.id)} style={smallBtn("success")}>
+        <button onClick={() => scopeReady && onConfirm && onConfirm(d.id)} disabled={!scopeReady}
+          title={scopeReady ? "" : "Assign this draft to a protocol outcome first (or park it as 'Not in this review')."}
+          style={{ ...smallBtn("success"), ...(scopeReady ? {} : { opacity: 0.5, cursor: "not-allowed" }) }}>
           ✓ Confirm → adds to studies
         </button>
         <button onClick={() => onPark && onPark(d.id)} style={smallBtn("ghost")}>
@@ -253,7 +261,7 @@ function ParkedRow({ rec, outcomes, pickedId, onPick, onUnpark, onDismiss }) {
 /* ── main list ───────────────────────────────────────────────────────────── */
 
 export default function DraftReviewList({
-  drafts = [], parked = [], outcomes = [],
+  drafts = [], parked = [], outcomes = [], compact = false,
   onConfirm, onDismiss, onPark, onUnpark, onEditField,
 }) {
   // parked-row outcome picks (recordId → outcomeId); stale keys are harmless.
@@ -269,20 +277,22 @@ export default function DraftReviewList({
   if (!safeDrafts.length && !safeParked.length) return null;
 
   return (
-    <div style={{ marginBottom: 18 }}>
+    <div style={{ marginBottom: compact ? 0 : 18 }}>
       {safeDrafts.length > 0 && (
         <div style={{ marginBottom: safeParked.length ? 16 : 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
             <span style={{ ...lbl, marginBottom: 0 }}>Draft extractions</span>
             <span style={chipS(C.yel)}>{safeDrafts.length} awaiting review</span>
           </div>
-          <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, lineHeight: 1.5 }}>
-            Automated and assisted suggestions captured from the paper. A reviewer must
-            verify every value against the source — nothing joins the analysis until you confirm it.
-          </div>
+          {!compact && (
+            <div style={{ fontSize: 11, color: C.muted, marginBottom: 8, lineHeight: 1.5 }}>
+              Automated and assisted suggestions captured from the paper. A reviewer must
+              verify every value against the source — nothing joins the analysis until you confirm it.
+            </div>
+          )}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {safeDrafts.map((d) => (
-              <DraftCard key={d.id} d={d} outcomes={safeOutcomes}
+              <DraftCard key={d.id} d={d} outcomes={safeOutcomes} compact={compact}
                 onConfirm={onConfirm} onDismiss={onDismiss} onPark={onPark} onEditField={onEditField} />
             ))}
           </div>

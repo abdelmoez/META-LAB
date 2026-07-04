@@ -153,10 +153,22 @@ export function mkExtractionRecord(partial = {}, idFn = DEFAULT_ID_FN) {
     timepoint: valStr(p.timepoint),
     comparison: valStr(p.comparison),
     esType: valStr(p.esType),
+    // sourceStudyId — the study a draft ORIGINATED from (so confirm can inherit that
+    // study's citation instead of whatever row is currently selected). '' = none.
+    sourceStudyId: valStr(p.sourceStudyId),
+    // extractedBy — who captured this record; bridged onto study.extractedBy (fill-only).
+    extractedBy: valStr(p.extractedBy),
     scope: {
       level: SCOPE_LEVELS.includes(scope.level) ? scope.level : 'other',
       outcomeId: strOr(scope.outcomeId, ''),
+      // Back-compat boolean flag (truthy when a canonical outcome name was supplied)…
       canonical: !!scope.canonical,
+      // …plus the distinct canonical outcome NAME string (autoExtract passes the
+      // outcome's canonical here; the boolean above no longer clobbers it).
+      canonicalName: strOr(
+        scope.canonicalName,
+        typeof scope.canonical === 'string' ? scope.canonical : '',
+      ),
     },
     values: outValues,
     provenance: {
@@ -231,6 +243,9 @@ export function recordToStudy(record, base = null) {
   // Source mapping — fills only an empty source; 'manual' maps to nothing.
   const mapped = SOURCE_BY_METHOD[rec.provenance.method];
   if (mapped && !valStr(study.source)) study.source = mapped;
+
+  // extractedBy — fill only when the study has none (never overwrite a real name).
+  if (isFilled(rec.extractedBy) && !valStr(study.extractedBy)) study.extractedBy = rec.extractedBy;
 
   // Carry scope + provenance onto the study.
   study.scope = deepCopy(rec.scope);
@@ -340,6 +355,8 @@ export function parkRecord(state = {}, draftId, opts = {}) {
     level: 'other',
     outcomeId: rec.scope && typeof rec.scope === 'object' ? strOr(rec.scope.outcomeId, '') : '',
     canonical: !!(rec.scope && rec.scope.canonical),
+    // Preserve the canonical outcome NAME through the park round-trip.
+    canonicalName: rec.scope && typeof rec.scope === 'object' ? strOr(rec.scope.canonicalName, '') : '',
   };
   rec.parkedAt = strOr(o.at, '');
   parked.push(rec);
@@ -383,6 +400,11 @@ export function unparkToDraft(state = {}, recordId, opts = {}) {
     canonical: typeof scope.canonical === 'boolean'
       ? scope.canonical
       : !!(rec.scope && rec.scope.canonical),
+    // Prefer a supplied canonicalName, else preserve the parked record's.
+    canonicalName: strOr(
+      scope.canonicalName,
+      rec.scope && typeof rec.scope === 'object' ? strOr(rec.scope.canonicalName, '') : '',
+    ),
   };
   delete rec.parkedAt;
   drafts.push(rec);

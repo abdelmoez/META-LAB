@@ -131,4 +131,81 @@ describe('autoExtract', () => {
     expect(a.drafts[0].provenance.page).toBe(4);
     expect(a.drafts).toEqual(b.drafts);
   });
+
+  it('never silently drops OFF-protocol mean ± SD pairs — it parks them', () => {
+    const protocol = protocolOutcomes(project); // mortality / MI / HbA1c only
+    const abstract = 'Systolic blood pressure was 130 ± 10 in the treated arm and 145 ± 12 in controls.';
+    const r = autoExtract({ protocol, abstract, at: '2026-07-04T00:00:00.000Z', idFn: pinnedIds() });
+    expect(r.drafts.length).toBe(0);
+    expect(r.alsoReported.length).toBe(1);           // parked, NOT lost (was 0/0 before)
+    const p = r.alsoReported[0];
+    expect(p.scope.level).toBe('other');
+    expect(p.values.meanExp).toBe('130');
+    expect(p.values.sdExp).toBe('10');
+    expect(p.values.meanCtrl).toBe('145');
+    expect(p.values.sdCtrl).toBe('12');
+    expect(p.values.es).toBe('');                    // no n's → no computed effect (as designed)
+  });
+
+  it('auto-computes a log-OR effect + conversions entry on a 2×2 draft', () => {
+    const protocol = protocolOutcomes(project);
+    const abstract = 'Myocardial infarction occurred in 12/150 versus 25/148 patients.';
+    const r = autoExtract({ protocol, abstract, at: '2026-07-04T00:00:00.000Z', idFn: pinnedIds() });
+    expect(r.drafts.length).toBe(1);
+    const d = r.drafts[0];
+    expect(d.esType).toBe('OR');
+    // log OR for a=12,b=138,c=25,d=123
+    const lnOR = Math.log((12 * 123) / (138 * 25));
+    expect(Number(d.values.es)).toBeCloseTo(lnOR, 6);
+    expect(d.values.a).toBe('12');
+    expect(d.values.d).toBe('123');
+    const conv = d.conversions.find((c) => c.type === 'es_from_2x2');
+    expect(conv).toBeTruthy();
+    expect(conv.inputs).toMatchObject({ a: 12, b: 138, c: 25, d: 123 });
+    expect(Number(conv.result.es)).toBeCloseTo(lnOR, 6);
+    expect(d.needsReview).toBe(true);
+  });
+
+  it('passes the canonical outcome NAME through scope.canonicalName', () => {
+    const protocol = protocolOutcomes(project);
+    const abstract = 'All-cause mortality was lower with treatment (HR 0.75, 95% CI 0.60 to 0.94).';
+    const r = autoExtract({ protocol, abstract, idFn: pinnedIds() });
+    expect(r.drafts.length).toBe(1);
+    expect(r.drafts[0].scope.canonicalName).toBe('all-cause mortality 12 month');
+    expect(r.drafts[0].scope.canonical).toBe(true);
+  });
+
+  it('populates detectedOutcomes even when the protocol has NO outcomes', () => {
+    const emptyProtocol = { source: 'none', outcomes: [] };
+    const abstract = 'Systolic blood pressure was 130 ± 10 versus 145 ± 12. Quality of life improved (OR 1.80, 95% CI 1.20 to 2.70).';
+    const r = autoExtract({ protocol: emptyProtocol, abstract, idFn: pinnedIds() });
+    expect(r.drafts.length).toBe(0);
+    expect(r.detectedOutcomes.length).toBeGreaterThanOrEqual(2);
+    const labels = r.detectedOutcomes.map((d) => d.label.toLowerCase());
+    expect(labels.some((l) => l.includes('blood pressure'))).toBe(true);
+    expect(labels.some((l) => l.includes('quality of life'))).toBe(true);
+    for (const d of r.detectedOutcomes) {
+      expect(typeof d.excerpt).toBe('string');
+      expect(typeof d.statPreview).toBe('string');
+      expect(DETECT_OK.has(d.kind)).toBe(true);
+    }
+    // deterministic
+    const r2 = autoExtract({ protocol: emptyProtocol, abstract, idFn: pinnedIds() });
+    expect(r2.detectedOutcomes).toEqual(r.detectedOutcomes);
+  });
+
+  it('lowers confidence + flags review when TWO protocol outcomes share one sentence', () => {
+    const protocol = protocolOutcomes(project);
+    // One effect estimate, but BOTH mortality and MI are named → attribution ambiguous.
+    const abstract = 'All-cause mortality and myocardial infarction were both reduced (HR 0.80, 95% CI 0.70 to 0.91).';
+    const r = autoExtract({ protocol, abstract, idFn: pinnedIds() });
+    expect(r.drafts.length).toBe(1);
+    const d = r.drafts[0];
+    expect(d.confidence).toBe('low');
+    expect(d.needsReview).toBe(true);
+    expect(d.notes).toMatch(/Multiple outcomes named/i);
+  });
 });
+
+// Statistic kinds that may appear in a detectedOutcomes descriptor.
+const DETECT_OK = new Set(['ratioCI', 'eventsTotal', 'meanSd', 'percent', 'ci']);

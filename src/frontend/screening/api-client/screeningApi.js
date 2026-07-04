@@ -207,5 +207,8 @@ export const screeningApi = {
   // uses the signed-in user's account email as the OA provider's polite-pool
   // identifier (server-side). Pass recordIds to target specific records.
   oaRetrieve: (pid, recordIds) => req('POST', `/projects/${pid}/oa-retrieve`, recordIds ? { recordIds } : {}),
+  // Single-record OA retrieval for the extraction workspace (e1). bypassCache re-hits the
+  // providers instead of replaying a stale 24h NOT_FOUND.
+  oaRetrieveOne: (pid, rid, opts) => req('POST', `/projects/${pid}/records/${rid}/oa-retrieve`, opts || {}),
   matchPdfs:  (pid, pdfs)      => req('POST', `/projects/${pid}/match-pdfs`, { pdfs }),
 };

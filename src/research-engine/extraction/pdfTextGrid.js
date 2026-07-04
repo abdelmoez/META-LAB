@@ -335,6 +335,283 @@ export function looksNumericColumn(cells, colIdx) {
   return numeric / nonEmpty >= 0.6;
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   ADDITIVE TABLE-SHAPE SUPPORT (RoadMap/1.md e1 — result-table mapping)
+   Pure, dependency-free helpers layered on top of the grid primitives above.
+   None of the existing exports (NUMERIC_CELL_PATTERNS, detectColumns, buildGrid,
+   gridFromRegion, looksNumericColumn) are touched — these are strictly new.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * Cell-text patterns that count as a CONFIDENCE-INTERVAL / RANGE token:
+ *   0.99–1.03 · 0.99-1.03 · 0.99 to 1.03 · (0.95, 1.08) · [0.90–1.07]
+ * Unicode dashes (en U+2013, em U+2014, minus U+2212) are all accepted. A token
+ * MUST carry two numbers separated by a range separator, so a plain negative
+ * number ('-0.4') or a thousands value ('1,234') never matches.
+ */
+export const CI_CELL_PATTERNS = [
+  // bare range: two numbers with a dash / "to" separator
+  /^[-+]?\d[\d,]*(?:\.\d+)?\s*(?:to|[-–—−])\s*[-+]?\d[\d,]*(?:\.\d+)?$/i,
+  // bracketed range: (0.95, 1.08) · [0.95–1.08] · {0.95 to 1.08}
+  /^[([{]\s*[-+]?\d[\d,]*(?:\.\d+)?\s*(?:,|to|[-–—−])\s*[-+]?\d[\d,]*(?:\.\d+)?\s*[)\]}]$/i,
+];
+
+/** Header text that names a 95% confidence interval (used only by merge/shape). */
+const CI_HEADER_RE = /95\s*%?\s*c\.?\s*i\.?|confidence\s*interval/i;
+
+/** Footnote / caption leader that must never be mistaken for a data row. */
+const FOOTNOTE_RE = /^\s*[*†‡§¶a-d]\s|^Note|^Abbrev|^CI[,: ]|^Values are|^Data are/i;
+
+/** true when a cell reads as a data value (number-ish) OR a CI/range token. */
+function cellLooksData(cell) {
+  const s = (typeof cell === 'string' ? cell : cell == null ? '' : String(cell)).trim();
+  if (!s) return false;
+  return NUMERIC_CELL_PATTERNS.some((re) => re.test(s)) || CI_CELL_PATTERNS.some((re) => re.test(s));
+}
+
+/** true when a cell is a plain signed number (no %, no range, no slash). */
+function isPlainNumber(cell) {
+  const s = (typeof cell === 'string' ? cell : cell == null ? '' : String(cell)).trim();
+  return /^[-+]?\d[\d,]*(?:\.\d+)?$/.test(s);
+}
+
+/**
+ * looksCiColumn(cells, colIdx) — true when ≥60% of the column's NON-EMPTY cells
+ * read as a CI/range token (see CI_CELL_PATTERNS). Mirrors looksNumericColumn's
+ * contract: an out-of-range index or a column with no non-empty cells is false.
+ *
+ * @param {string[][]} cells
+ * @param {number} colIdx
+ * @returns {boolean}
+ */
+export function looksCiColumn(cells, colIdx) {
+  if (!Array.isArray(cells)) return false;
+  const idx = Number(colIdx);
+  if (!Number.isInteger(idx) || idx < 0) return false;
+
+  let nonEmpty = 0;
+  let ci = 0;
+  for (const row of cells) {
+    if (!Array.isArray(row) || idx >= row.length) continue;
+    const raw = row[idx];
+    const cell = (typeof raw === 'string' ? raw : raw == null ? '' : String(raw)).trim();
+    if (!cell) continue;
+    nonEmpty++;
+    if (CI_CELL_PATTERNS.some((re) => re.test(cell))) ci++;
+  }
+  if (!nonEmpty) return false;
+  return ci / nonEmpty >= 0.6;
+}
+
+/**
+ * detectHeaderSpan(cells) — how many leading rows form the header, plus a
+ * per-column combined header name. A row is a header row while fewer than 50%
+ * of its non-empty cells read as data (number / CI token); scanning stops at the
+ * first data-heavy row or after 3 rows (a two-tier header rarely runs deeper).
+ * headerText[col] is the header cells for that column joined top-to-bottom, so a
+ * two-tier "Intervention" / "Events" stack yields "Intervention Events".
+ *
+ * @param {string[][]} cells
+ * @returns {{ headerRows: number, headerText: string[] }}
+ */
+export function detectHeaderSpan(cells) {
+  const rows = Array.isArray(cells) ? cells : [];
+  const nCols = rows.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0);
+  const CAP = 3;
+
+  let headerRows = 0;
+  for (let r = 0; r < rows.length && r < CAP; r++) {
+    const row = Array.isArray(rows[r]) ? rows[r] : [];
+    const nonEmpty = row
+      .map((c) => (c == null ? '' : String(c)).trim())
+      .filter((s) => s.length > 0);
+    if (!nonEmpty.length) break; // a fully-blank row ends the header span
+    const dataLike = nonEmpty.filter((c) => cellLooksData(c)).length;
+    if (dataLike / nonEmpty.length < 0.5) headerRows++;
+    else break;
+  }
+
+  const headerText = new Array(nCols).fill('');
+  for (let c = 0; c < nCols; c++) {
+    const parts = [];
+    for (let r = 0; r < headerRows; r++) {
+      const v = rows[r] && rows[r][c] != null ? String(rows[r][c]).trim() : '';
+      if (v) parts.push(v);
+    }
+    headerText[c] = parts.join(' ');
+  }
+  return { headerRows, headerText };
+}
+
+/**
+ * partitionRows(cells) — classify every row as header, body, or footnote.
+ * A footnote/caption row concentrates its content in column 0 (at most one other
+ * non-empty cell) AND its column-0 text matches a footnote leader (*, †, a-d
+ * markers, "Note", "Abbrev", "CI, …", "Values are", "Data are"). Everything after
+ * the header span that is not a footnote is body.
+ *
+ * @param {string[][]} cells
+ * @returns {{ headerRows: number, bodyRowIdx: number[], footnoteRowIdx: number[] }}
+ */
+export function partitionRows(cells) {
+  const rows = Array.isArray(cells) ? cells : [];
+  const { headerRows } = detectHeaderSpan(cells);
+  const bodyRowIdx = [];
+  const footnoteRowIdx = [];
+  for (let r = headerRows; r < rows.length; r++) {
+    const row = Array.isArray(rows[r]) ? rows[r] : [];
+    const trimmed = row.map((c) => (c == null ? '' : String(c)).trim());
+    const col0 = trimmed[0] || '';
+    const others = trimmed.slice(1).filter((s) => s.length > 0);
+    const concentrates = col0.length > 0 && others.length <= 1;
+    if (concentrates && FOOTNOTE_RE.test(col0)) footnoteRowIdx.push(r);
+    else bodyRowIdx.push(r);
+  }
+  return { headerRows, bodyRowIdx, footnoteRowIdx };
+}
+
+/**
+ * mergeContinuationColumns({cells, boxes}) — deterministic post-pass that
+ * collapses adjacent column PAIRS when, across ≥60% of body rows, the two cells
+ * belong together:
+ *   • CI / range continuation — the joined text is one CI token ('0.99' + '–1.03'
+ *     → '0.99–1.03'), OR both cells are plain numbers sitting under a "95% CI"
+ *     header (lower / upper bound → 'low–high').
+ *   • label continuation — the left cell ends with a comma ('Age,' + 'years'), OR
+ *     the right column is non-numeric text that only ever appears alongside a
+ *     left-column label.
+ * The input is never mutated; a fresh grid is returned along with `merges`
+ * (original-index descriptions of every collapse performed).
+ *
+ * @param {{cells:string[][], boxes?:Array}} input
+ * @returns {{cells:string[][], boxes:Array, merges:Array<{leftCol:number,rightCol:number,kind:'ci'|'label'}>}}
+ */
+export function mergeContinuationColumns(input) {
+  const cellsIn = input && Array.isArray(input.cells) ? input.cells : [];
+  const boxesIn = input && Array.isArray(input.boxes) ? input.boxes : [];
+  const nCols = cellsIn.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0);
+
+  // Rectangularized, string-normalized VIEW — never mutate the caller's arrays.
+  const cells = cellsIn.map((r) => {
+    const row = Array.isArray(r) ? r.map((v) => (v == null ? '' : String(v))) : [];
+    while (row.length < nCols) row.push('');
+    return row;
+  });
+  const boxes = cellsIn.map((_, ri) => {
+    const b = Array.isArray(boxesIn[ri]) ? boxesIn[ri].slice() : [];
+    while (b.length < nCols) b.push(null);
+    return b;
+  });
+
+  if (nCols < 2) {
+    return { cells: cells.map((r) => r.slice()), boxes: boxes.map((r) => r.slice()), merges: [] };
+  }
+
+  const { bodyRowIdx } = partitionRows(cells);
+  const { headerText } = detectHeaderSpan(cells);
+  const bodyView = bodyRowIdx.map((i) => cells[i]);
+  const total = bodyRowIdx.length;
+
+  const classifyPair = (c) => {
+    if (total === 0) return null;
+    const leftHdr = headerText[c] || '';
+    const pairHeader = `${leftHdr} ${headerText[c + 1] || ''}`;
+    // Header-based CI merge only when the CI header actually covers the LEFT
+    // column (its own header is blank or CI-ish) — so 'aOR' | '95% CI' never
+    // swallows the effect column, but 'Lower' | 'Upper' under one CI header does.
+    const ciHeaderApplies =
+      CI_HEADER_RE.test(pairHeader) && (leftHdr === '' || CI_HEADER_RE.test(leftHdr));
+
+    let ciCount = 0;
+    let labelCount = 0;
+    let rightNonEmpty = 0;
+    let rightTextCount = 0;
+    let rightImpliesLeft = true;
+    for (const r of bodyRowIdx) {
+      const left = (cells[r][c] || '').trim();
+      const right = (cells[r][c + 1] || '').trim();
+      if (right) {
+        rightNonEmpty++;
+        if (!left) rightImpliesLeft = false;
+        if (!cellLooksData(right)) rightTextCount++;
+      }
+      if (left && right) {
+        const direct = (left + right).replace(/\s+/g, '');
+        if (CI_CELL_PATTERNS.some((re) => re.test(direct))) ciCount++;
+        else if (ciHeaderApplies && isPlainNumber(left) && isPlainNumber(right)) ciCount++;
+      }
+      if (left && left.endsWith(',') && right) labelCount++;
+    }
+    if (ciCount / total >= 0.6) return 'ci';
+    if (labelCount / total >= 0.6) return 'label';
+    // Pure text continuation: a non-numeric right column that only co-occurs with
+    // a non-numeric left label column (e.g. a units column split off the label).
+    if (
+      rightNonEmpty > 0 &&
+      rightImpliesLeft &&
+      rightTextCount === rightNonEmpty &&
+      rightNonEmpty / total >= 0.6 &&
+      !looksNumericColumn(bodyView, c) &&
+      !looksNumericColumn(bodyView, c + 1)
+    ) {
+      return 'label';
+    }
+    return null;
+  };
+
+  const mergeKind = new Array(nCols).fill(null);
+  const consumed = new Array(nCols).fill(false);
+  for (let c = 0; c < nCols - 1; c++) {
+    if (consumed[c]) continue;
+    const kind = classifyPair(c);
+    if (kind) {
+      mergeKind[c] = kind;
+      consumed[c + 1] = true;
+    }
+  }
+
+  const outCells = cells.map(() => []);
+  const outBoxes = cells.map(() => []);
+  const merges = [];
+  for (let c = 0; c < nCols; c++) {
+    if (consumed[c]) continue; // folded into the previous column
+    if (mergeKind[c]) {
+      merges.push({ leftCol: c, rightCol: c + 1, kind: mergeKind[c] });
+      for (let r = 0; r < cells.length; r++) {
+        outCells[r].push(joinContinuation(cells[r][c] || '', cells[r][c + 1] || '', mergeKind[c]));
+        outBoxes[r].push(unionMaybe(boxes[r][c], boxes[r][c + 1]));
+      }
+    } else {
+      for (let r = 0; r < cells.length; r++) {
+        outCells[r].push(cells[r][c]);
+        outBoxes[r].push(boxes[r][c]);
+      }
+    }
+  }
+  return { cells: outCells, boxes: outBoxes, merges };
+}
+
+/** Join a merged pair per its detected kind (both trimmed; empty side passes through). */
+function joinContinuation(left, right, kind) {
+  const l = String(left).trim();
+  const r = String(right).trim();
+  if (!l) return r;
+  if (!r) return l;
+  if (kind === 'ci') {
+    const direct = (l + r).replace(/\s+/g, ' ').trim();
+    if (CI_CELL_PATTERNS.some((re) => re.test(direct.replace(/\s+/g, '')))) return direct;
+    return `${l}–${r}`; // header-based lower/upper bound pair
+  }
+  return `${l} ${r}`; // label continuation
+}
+
+/** Box union that tolerates null on either side. */
+function unionMaybe(a, b) {
+  if (!a) return b || null;
+  if (!b) return a;
+  return unionBox(a, b);
+}
+
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
 
 /** median(values) — middle value (mean of the two middles for even counts). */

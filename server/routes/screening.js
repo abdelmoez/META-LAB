@@ -134,6 +134,9 @@ r.get('/projects/:pid/export/jobs/:jobId/download', S.downloadExport); // 62.md 
 
 // Open-access PDF retrieval + uploaded-PDF matching (roadmap 1.4)
 r.post('/projects/:pid/oa-retrieve',     OA.oaRetrieve);   // flag-gated (autoPdfRetrieval, default OFF)
+// Single-record OA retrieval for the extraction workspace (same flag/auth/email/
+// rate-limit as the bulk path). body: { bypassCache?: boolean }.
+r.post('/projects/:pid/records/:rid/oa-retrieve', OA.oaRetrieveOne);
 r.post('/projects/:pid/match-pdfs',      OA.matchPdfs);    // suggestion-only, no side effects
 
 // Decisions

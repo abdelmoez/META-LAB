@@ -1559,7 +1559,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           {tab==="prospero"&&<PlanProtocolDispatcher project={project} activeId={activeId} upd={upd}/>}
           {tab==="search"&&<SearchWizardDispatcher project={project} activeId={activeId} updNested={updNested} upd={upd} readOnly={projectPerms(project).readOnly}/>}
           {tab==="prisma"&&<PRISMATab project={project} updNested={updNested} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
-          {tab==="extraction"&&<ExtractionTab project={project} updateProject={updateProject} activeId={activeId}/>}
+          {tab==="extraction"&&<ExtractionTab project={project} updateProject={updateProject} activeId={activeId} setTab={setTab}/>}
           {tab==="rob"&&<RoBTab project={project} updateProject={updateProject} activeId={activeId} setTab={setTab} onWorkspaceChange={setRobInWorkspace}/>}
           {tab==="analysis"&&<AnalysisTab project={project} updateProject={fn=>updateProject(activeId,fn)} onApplyPrecisionToAll={prec=>projects.forEach(p=>updateProject(p.id,x=>({...x,analysisPrecision:prec})))}/>}
           {tab==="forest"&&<ForestTab project={project}/>}

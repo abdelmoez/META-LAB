@@ -57,7 +57,7 @@ describe('mkExtractionRecord', () => {
     expect(r.timepoint).toBe('');
     expect(r.comparison).toBe('');
     expect(r.esType).toBe('');
-    expect(r.scope).toEqual({ level: 'other', outcomeId: '', canonical: false });
+    expect(r.scope).toEqual({ level: 'other', outcomeId: '', canonical: false, canonicalName: '' });
     expect(Object.keys(r.values).sort()).toEqual([...VALUE_FIELDS].sort());
     for (const f of VALUE_FIELDS) expect(r.values[f]).toBe('');
     expect(r.provenance).toEqual({ method: 'manual', page: null, region: null, excerpt: '', at: '' });
@@ -136,6 +136,31 @@ describe('mkExtractionRecord', () => {
     expect(PROVENANCE_METHODS).toContain('manual');
     expect(CONFIDENCE_LEVELS).toEqual(['high', 'medium', 'low']);
   });
+
+  it('carries sourceStudyId and extractedBy (default empty)', () => {
+    const bare = mkExtractionRecord({}, () => 'a');
+    expect(bare.sourceStudyId).toBe('');
+    expect(bare.extractedBy).toBe('');
+    const filled = mkExtractionRecord({ sourceStudyId: 'src9', extractedBy: 'Reviewer A' }, () => 'a');
+    expect(filled.sourceStudyId).toBe('src9');
+    expect(filled.extractedBy).toBe('Reviewer A');
+  });
+
+  it('preserves scope.canonicalName (the outcome NAME) alongside the boolean flag', () => {
+    // A string canonical sets BOTH the boolean (truthy) and the distinct name field.
+    const fromString = mkExtractionRecord({ scope: { level: 'primary', outcomeId: 'p1', canonical: 'all-cause mortality' } }, () => 'a');
+    expect(fromString.scope.canonical).toBe(true);
+    expect(fromString.scope.canonicalName).toBe('all-cause mortality');
+
+    // An explicit canonicalName wins and coexists with a boolean canonical.
+    const both = mkExtractionRecord({ scope: { level: 'primary', outcomeId: 'p1', canonical: true, canonicalName: 'stroke' } }, () => 'a');
+    expect(both.scope.canonical).toBe(true);
+    expect(both.scope.canonicalName).toBe('stroke');
+
+    // A boolean-only canonical yields an empty name (no fabrication).
+    const boolOnly = mkExtractionRecord({ scope: { level: 'primary', outcomeId: 'p1', canonical: true } }, () => 'a');
+    expect(boolOnly.scope.canonicalName).toBe('');
+  });
 });
 
 describe('recordToStudy', () => {
@@ -162,7 +187,7 @@ describe('recordToStudy', () => {
     // provenance carry
     expect(study.needsReview).toBe(true);
     expect(study.extractedAt).toBe('2026-07-03T10:00:00.000Z');
-    expect(study.scope).toEqual({ level: 'primary', outcomeId: 'out1', canonical: true });
+    expect(study.scope).toEqual({ level: 'primary', outcomeId: 'out1', canonical: true, canonicalName: '' });
     expect(study.provenance.method).toBe('table');
     expect(study.conversions).toEqual([{ id: 'cv1', target: 'es', method: 'log(OR)' }]);
     expect(study.converted).toBe(true);
@@ -237,6 +262,22 @@ describe('recordToStudy', () => {
     expect(overwrites).toEqual([]);
     expect(study.needsReview).toBe(true);
     expect(study.es).toBe('');
+  });
+
+  it('writes extractedBy onto the study but never overwrites a non-empty existing value', () => {
+    // Empty base extractedBy → filled from the record.
+    const fill = recordToStudy(mkDraft({ extractedBy: 'Reviewer A' }), { id: 's1', extractedBy: '' });
+    expect(fill.study.extractedBy).toBe('Reviewer A');
+    // Non-empty base extractedBy → kept (record does not clobber it).
+    const keep = recordToStudy(mkDraft({ extractedBy: 'Reviewer A' }), { id: 's1', extractedBy: 'Original Curator' });
+    expect(keep.study.extractedBy).toBe('Original Curator');
+  });
+
+  it('preserves scope.canonicalName through the study bridge', () => {
+    const draft = mkDraft({ scope: { level: 'primary', outcomeId: 'p1', canonical: 'stroke' } });
+    const { study } = recordToStudy(draft);
+    expect(study.scope.canonicalName).toBe('stroke');
+    expect(study.scope.canonical).toBe(true);
   });
 });
 
@@ -345,7 +386,7 @@ describe('parkRecord / unparkToDraft', () => {
     expect(out.parked).toHaveLength(0);
     expect(out.drafts).toHaveLength(1);
     expect(out.drafts[0].draft).toBe(true);
-    expect(out.drafts[0].scope).toEqual({ level: 'secondary', outcomeId: 'out7', canonical: true });
+    expect(out.drafts[0].scope).toEqual({ level: 'secondary', outcomeId: 'out7', canonical: true, canonicalName: '' });
     expect(out.drafts[0]).not.toHaveProperty('parkedAt');
   });
 

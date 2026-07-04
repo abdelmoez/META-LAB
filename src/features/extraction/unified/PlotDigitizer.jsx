@@ -58,17 +58,49 @@ const slotsFor = (t) => {
   if (need.y) out.push("y1", "y2");
   return out;
 };
+// Plain-language axis names (no jargon, no coordinates).
 const axisName = (t, axis) => {
-  if (axis === "x") return t === "forest" ? "value (effect-size) axis" : t === "km" ? "time (x) axis" : "x axis";
-  return t === "km" ? "survival (y) axis" : t === "scatter" ? "y axis" : "value (y) axis";
+  if (axis === "x") return t === "forest" ? "effect-size" : t === "km" ? "time" : "horizontal";
+  return t === "km" ? "survival" : t === "scatter" ? "vertical" : "value";
 };
-const slotTitle = (k, t) => `${axisName(t, k[0])} — point ${k[1]}`;
+const slotTitle = (k, t) => `${axisName(t, k[0])} reference point ${k[1]}`;
+
+// One clear, worked instruction for the currently-active calibration point.
+function calExample(t, slot) {
+  const axis = slot[0], n = slot[1];
+  if (t === "km") {
+    if (axis === "x") return n === "1"
+      ? "On the TIME axis, click where time = 0 (the left edge), then type 0."
+      : "Click a later time you can read off the axis — e.g. a tick at 12 — then type that number.";
+    return n === "1"
+      ? "On the SURVIVAL axis, click where survival = 1 (100%, the top), then confirm the value 1 below."
+      : "Click where survival = 0 (0%, the bottom), then confirm the value 0 below.";
+  }
+  if (t === "forest") return n === "1"
+    ? "Click a labelled tick on the effect-size axis (often the line of no effect = 1), then type its value."
+    : "Click a second labelled tick (e.g. 2), then type its value.";
+  if (t === "bar" || t === "box") return n === "1"
+    ? "Click a labelled tick on the vertical value axis (e.g. 0), then type its value."
+    : "Click a second labelled tick higher up (e.g. 10), then type its value.";
+  // scatter
+  return axis === "x"
+    ? (n === "1" ? "Click a labelled tick on the horizontal axis, then type its value." : "Click a second labelled tick on the horizontal axis, then type its value.")
+    : (n === "1" ? "Click a labelled tick on the vertical axis, then type its value." : "Click a second labelled tick on the vertical axis, then type its value.");
+}
 
 const emptyCalPts = () => ({
   x1: { px: null, py: null, value: "" },
   x2: { px: null, py: null, value: "" },
   y1: { px: null, py: null, value: "" },
   y2: { px: null, py: null, value: "" },
+});
+// Sensible defaults for Kaplan–Meier: survival runs 1→0, time starts at 0. The user still
+// clicks WHERE those values sit on the axes; only the values are pre-filled.
+const kmCalPts = () => ({
+  x1: { px: null, py: null, value: "0" },
+  x2: { px: null, py: null, value: "" },
+  y1: { px: null, py: null, value: "1" },
+  y2: { px: null, py: null, value: "0" },
 });
 const mkArm = (i) => ({ id: uid(), label: `Arm ${i}`, n: "", top: null, cap: null });
 const emptyKmArm = () => ({ trace: [], atRisk: "", totalEvents: "" });
@@ -135,6 +167,27 @@ function drawTrace(ctx, trace, color) {
     ctx.globalAlpha = 1;
   }
   trace.forEach((p, i) => drawDot(ctx, p.px, p.py, i + 1, color, 7));
+}
+/* Back-project a reconstructed KM step-function [{t,s}] onto the canvas via the calibration
+   so the user sees the digitized curve tracking the printed one. */
+function drawStepCurve(ctx, pts, cal, color) {
+  if (!cal || !pts || pts.length < 2) return;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2.25;
+  ctx.setLineDash([5, 3]);
+  ctx.globalAlpha = 0.95;
+  ctx.beginPath();
+  let prev = null;
+  for (const p of pts) {
+    const c = cal.toPx({ x: p.t, y: p.s });
+    if (!c || !Number.isFinite(c.px) || !Number.isFinite(c.py)) continue;
+    if (prev == null) ctx.moveTo(c.px, c.py);
+    else { ctx.lineTo(prev.px, c.py); ctx.lineTo(c.px, c.py); } // step: vertical then horizontal
+    prev = c;
+  }
+  ctx.stroke();
+  ctx.restore();
 }
 
 /* ════════════ COMPONENT ════════════ */
@@ -233,16 +286,23 @@ export default function PlotDigitizer({ imageUrl, onCancel, onApply }) {
     } else if (figureType === "km") {
       drawTrace(ctx, km.A.trace, ARM_COLORS[0]);
       drawTrace(ctx, km.B.trace, ARM_COLORS[1]);
+      // Live overlay: the reconstructed step-function back-projected onto the figure so the
+      // reviewer can confirm the digitized curve tracks the printed one.
+      const cal = calRef.current;
+      if (kmIpd && cal) {
+        try { drawStepCurve(ctx, kmFromIPD(kmIpd.A), cal, ARM_COLORS[0]); } catch { /* noop */ }
+        try { drawStepCurve(ctx, kmFromIPD(kmIpd.B), cal, ARM_COLORS[1]); } catch { /* noop */ }
+      }
     } else if (figureType === "scatter") {
       sClicks.forEach((c, i) => drawDot(ctx, c.px, c.py, i + 1, MARK_COLOR));
     }
-  }, [imgState, dims, figureType, calPts, fClicks, arms, bClicks, km, sClicks, step]);
+  }, [imgState, dims, figureType, calPts, fClicks, arms, bClicks, km, sClicks, step, kmIpd]);
 
   /* ── type selection (step 1) resets everything downstream ── */
   const chooseType = (t) => {
     if (t === figureType) return;
     setFigureType(t);
-    setCalPts(emptyCalPts());
+    setCalPts(t === "km" ? kmCalPts() : emptyCalPts());
     setActiveCal(null);
     setCalErr("");
     setLogX(t === "forest");
@@ -518,8 +578,8 @@ export default function PlotDigitizer({ imageUrl, onCancel, onApply }) {
     step === 1 ? "Choose the figure type you are digitizing."
     : step === 2
       ? activeCal
-        ? `Click the ${slotTitle(activeCal, figureType)} on the figure (e.g. an axis tick with a known value), then type its value below.`
-        : "All calibration points set — edit the values below, or press a Re-click button to move a point."
+        ? calExample(figureType, activeCal)
+        : "All reference points are set — you can adjust a value below, or re-click a point to move it. Then press Next."
     : step === 3
       ? figureType === "forest" ? "Click 3 points on the row: (1) the point estimate, (2) the LOWER CI whisker end, (3) the UPPER CI whisker end."
       : figureType === "bar" ? "Select an arm, click its bar top, then (optionally) its error-bar cap. Set SD/SE and each arm's n below."
@@ -616,34 +676,50 @@ export default function PlotDigitizer({ imageUrl, onCancel, onApply }) {
           </div>
         )}
 
-        {/* ── STEP 2: axis calibration ── */}
+        {/* ── STEP 2: axis calibration — one reference point at a time, no pixels ── */}
         {step === 2 && (
           <div style={{ marginBottom: 12 }}>
-            <div style={secTitle}>Axis calibration — two known points per axis</div>
-            {slotsFor(figureType).map((k) => {
-              const p = calPts[k];
-              const isActive = activeCal === k;
-              return (
-                <div key={k} style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
-                  <button onClick={() => setActiveCal(k)} style={{
-                    ...btnS("ghost"), padding: "4px 10px", fontSize: 11,
-                    ...(isActive ? { border: `1px solid ${C.acc}`, color: C.acc } : {}),
+            <div style={secTitle}>Tell the digitizer where two known values sit on each axis</div>
+            {/* progress chips: each reference point, plainly labelled, click to (re)set */}
+            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+              {slotsFor(figureType).map((k) => {
+                const p = calPts[k];
+                const isActive = activeCal === k;
+                const set = p.px != null;
+                const label = p.value !== "" ? `${axisName(figureType, k[0])} = ${p.value}` : slotTitle(k, figureType);
+                return (
+                  <button key={k} onClick={() => setActiveCal(k)} style={{
+                    display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 10px", borderRadius: 99, cursor: "pointer",
+                    fontSize: 11, fontWeight: 600, fontFamily: "inherit",
+                    background: isActive ? themeAlpha(C.acc, "18") : set ? themeAlpha(C.grn, "12") : C.card,
+                    border: `1px solid ${isActive ? C.acc : set ? themeAlpha(C.grn, "44") : C.brd}`,
+                    color: isActive ? C.acc : set ? C.grn : C.muted,
                   }}>
-                    {p.px == null ? "Click point" : "Re-click"}
+                    <span>{set ? "✓" : "•"}</span>{label}
                   </button>
-                  <span style={{ fontSize: 11, color: C.muted, width: 165 }}>{slotTitle(k, figureType)}</span>
-                  <span style={{ fontSize: 10, fontFamily: MONO, color: p.px == null ? C.dim : C.txt, width: 84 }}>
-                    {p.px == null ? "not set" : `(${Math.round(p.px)}, ${Math.round(p.py)})`}
-                  </span>
-                  <input
-                    value={p.value}
-                    onChange={(e) => setCalPts((prev) => ({ ...prev, [k]: { ...prev[k], value: e.target.value } }))}
-                    placeholder="axis value"
-                    style={{ ...smallInp, width: 110 }}
-                  />
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
+            {/* the active point's value input (prominent). The worked instruction is in the banner above. */}
+            {activeCal ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", background: C.bg, border: `1px solid ${themeAlpha(C.acc, "33")}`, borderRadius: 8, padding: "10px 12px" }}>
+                <span style={{ fontSize: 12, color: C.txt, fontWeight: 600 }}>
+                  {calPts[activeCal].px == null ? "① Click the point on the figure" : "① Point marked ✓"} · ② its value =
+                </span>
+                <input
+                  value={calPts[activeCal].value}
+                  onChange={(e) => setCalPts((prev) => ({ ...prev, [activeCal]: { ...prev[activeCal], value: e.target.value } }))}
+                  placeholder="value"
+                  autoFocus
+                  style={{ ...smallInp, width: 90, fontSize: 13 }}
+                />
+                {calPts[activeCal].px != null && (
+                  <button onClick={() => setCalPts((prev) => ({ ...prev, [activeCal]: { ...prev[activeCal], px: null, py: null } }))} style={{ ...btnS("ghost"), padding: "4px 10px", fontSize: 11 }}>Re-click</button>
+                )}
+              </div>
+            ) : (
+              <div style={{ fontSize: 11.5, color: C.grn }}>All reference points set — press Next to start capturing.</div>
+            )}
             {figureType === "forest" && (
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: C.muted, marginTop: 6, cursor: "pointer" }}>
                 <input type="checkbox" checked={logX} onChange={(e) => setLogX(e.target.checked)} />
@@ -777,29 +853,37 @@ export default function PlotDigitizer({ imageUrl, onCancel, onApply }) {
                     </div>
                   ))}
                 </div>
+                <div style={{ fontSize: 10.5, color: C.dim, marginBottom: 8, lineHeight: 1.5 }}>
+                  The hazard ratio is reported as <b>Arm B vs Arm A</b> — trace the comparator as Arm A and the intervention as Arm B (or note which is which; you can flip it later).
+                </div>
                 <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                  <button onClick={() => computeKm("cox")} style={btnS("primary")}>Compute HR (Cox)</button>
-                  <button onClick={() => computeKm("logrank")} style={btnS("ghost")}>Log-rank (Peto) fallback</button>
-                  {kmIpd && !kmResult && <span style={{ fontSize: 10.5, color: C.dim }}>IPD reconstructed — pick a method above.</span>}
+                  <button onClick={() => computeKm("cox")} style={btnS("primary")}>Compute HR</button>
+                  <button onClick={() => computeKm("logrank")} style={btnS("ghost")}>Alternative estimate</button>
+                  {kmIpd && !kmResult && <span style={{ fontSize: 10.5, color: C.dim }}>Curve reconstructed — pick a method above.</span>}
                 </div>
                 {kmErr && <div style={{ ...errTxt, marginTop: 8 }}>{kmErr}</div>}
                 {kmResult && (
                   <div style={{ background: C.bg, border: `1px solid ${themeAlpha(C.grn, "44")}`, borderRadius: 6, padding: 10, marginTop: 8 }}>
-                    <div style={{ fontSize: 12.5, fontFamily: MONO, color: C.grn, marginBottom: 4 }}>
-                      HR = {fmt(kmResult.est)} [{fmt(kmResult.lo)}, {fmt(kmResult.hi)}]
+                    <div style={{ fontSize: 13, fontFamily: MONO, color: C.grn, marginBottom: 4 }}>
+                      HR (Arm B vs Arm A) = {fmt(kmResult.est)} [{fmt(kmResult.lo)}, {fmt(kmResult.hi)}]
                     </div>
-                    <div style={{ fontSize: 10.5, color: C.muted }}>Method: {kmResult.methodLabel} on Guyot-reconstructed pseudo-IPD.</div>
-                    {kmDiag && (
-                      <div style={{ fontSize: 10, fontFamily: MONO, color: C.dim, marginTop: 6, lineHeight: 1.7 }}>
-                        {["A", "B"].map((key) => (
-                          <div key={key}>
-                            arm {key}: n={kmDiag[key].n}, events={kmDiag[key].events}, at-risk error={fmt(kmDiag[key].atRiskError)},
-                            {" "}final S reconstructed {fmt(kmDiag[key].reconFinalS)} vs digitized {fmt(kmDiag[key].digitFinalS)}
-                          </div>
-                        ))}
-                      </div>
-                    )}
                     {(kmResult.warnings || []).map((w, i) => <div key={i} style={warnBox}>{w}</div>)}
+                    {kmDiag && (
+                      <details style={{ marginTop: 6 }}>
+                        <summary style={{ fontSize: 10.5, color: C.muted, cursor: "pointer" }}>Method &amp; reconstruction details</summary>
+                        <div style={{ fontSize: 10, color: C.dim, marginTop: 4, lineHeight: 1.6 }}>
+                          {kmResult.methodLabel} on Guyot (2012) reconstructed pseudo-individual-patient data.
+                        </div>
+                        <div style={{ fontSize: 10, fontFamily: MONO, color: C.dim, marginTop: 4, lineHeight: 1.7 }}>
+                          {["A", "B"].map((key) => (
+                            <div key={key}>
+                              arm {key}: n={kmDiag[key].n}, events={kmDiag[key].events}, at-risk error={fmt(kmDiag[key].atRiskError)},
+                              {" "}final S reconstructed {fmt(kmDiag[key].reconFinalS)} vs digitized {fmt(kmDiag[key].digitFinalS)}
+                            </div>
+                          ))}
+                        </div>
+                      </details>
+                    )}
                   </div>
                 )}
               </div>

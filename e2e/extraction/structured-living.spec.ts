@@ -10,23 +10,30 @@ import { test, expect } from '../fixtures/stitch-test';
 import { gotoStitch } from '../helpers/stitch';
 
 test.describe('structured extraction (flag extractionAssist)', () => {
-  test('flag OFF → classic extraction tab only, no structured toggle', async ({ page, tmpProject, setFlags }) => {
+  // e1.md retired the Classic/Structured mode toggle: the split-screen assisted workspace
+  // IS the main extraction interface, and the 66.md structured dual-review workspace is
+  // reachable behind a discreet, flag-gated "Dual-review workspace" button (its data +
+  // reconciliation path preserved). These tests track that new surface.
+  test('flag OFF → extraction tab only, no structured/dual-review affordance', async ({ page, tmpProject, setFlags }) => {
     await setFlags({ extractionAssist: false });
     await gotoStitch(page, `/app/project/${tmpProject.id}?tab=extraction`);
     await expect(page.getByText('Data Extraction').first()).toBeVisible();
     await expect(page.getByRole('button', { name: /Structured extraction/i })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /Dual-review workspace/i })).toHaveCount(0);
   });
 
-  test('flag ON → toggle appears and opens the structured workspace setup state', async ({ page, tmpProject, setFlags }) => {
+  test('flag ON → a "Dual-review workspace" button opens the structured workspace and back', async ({ page, tmpProject, setFlags }) => {
     await setFlags({ extractionAssist: true });
     await gotoStitch(page, `/app/project/${tmpProject.id}?tab=extraction`);
-    const toggle = page.getByRole('button', { name: /Structured extraction \(beta\)/i });
-    await expect(toggle).toBeVisible();
-    await toggle.click();
+    // The retired Classic/Structured toggle must be gone.
+    await expect(page.getByRole('button', { name: /Structured extraction \(beta\)/i })).toHaveCount(0);
+    const open = page.getByRole('button', { name: /Dual-review workspace/i });
+    await expect(open).toBeVisible();
+    await open.click();
     // Empty project → the form-setup empty state (template picker) renders.
     await expect(page.getByText('No extraction form yet')).toBeVisible();
-    // Switch back to the classic table — nothing lost.
-    await page.getByRole('button', { name: /Classic table/i }).click();
+    // Return to the main extraction surface — nothing lost.
+    await page.getByRole('button', { name: /Back to extraction/i }).click();
     await expect(page.getByText('Data Extraction').first()).toBeVisible();
   });
 });

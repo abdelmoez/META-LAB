@@ -557,16 +557,18 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
     </div>)}
   </div>);
 }
-function ExtractionTab({project,updateProject,activeId}){
+function ExtractionTab({project,updateProject,activeId,setTab}){
   const{studies}=project;
   // prompt6 Task 5 — read-only viewers: hide the affirmative edit controls.
   // (updateProject already no-ops every write for read-only projects; this is polish.)
   const readOnly=!!((project._permissions&&project._permissions.readOnly)||project._readOnly);
-  // 66.md (P5) — offer the structured-extraction workspace when the `extractionAssist`
-  // flag is on. The flag is probed once (state-held); until then / when off, this tab
-  // renders exactly its classic body. mode: "classic" | "structured".
+  // e1.md — the split-screen assisted workspace IS the main extraction interface; the
+  // old "Classic table / Structured (beta)" mode toggle is retired. The 66.md
+  // structured dual-review workspace (server-backed elements/consensus) is preserved but
+  // demoted to a discreet, flag-gated "advanced" surface so its data + the only
+  // inter-reviewer reconciliation path survive.
   const[extractionAssistOn,setExtractionAssistOn]=useState(false);
-  const[extractionMode,setExtractionMode]=useState("classic");
+  const[showStructured,setShowStructured]=useState(false);   // advanced dual-review workspace (flag-gated)
   useEffect(()=>{let dead=false;extractionAssistFlagEnabled().then(on=>{if(!dead)setExtractionAssistOn(on);});return()=>{dead=true;};},[]);
   const addStudy=()=>updateProject(activeId,p=>({...p,studies:[...p.studies,mkStudy()]}));
   const addStudyObj=(st)=>updateProject(activeId,p=>({...p,studies:[...p.studies,st]}));
@@ -603,7 +605,14 @@ function ExtractionTab({project,updateProject,activeId}){
     extractionParked:(p.extractionParked||[]).filter(d=>d.id!==id)}));
   const editDraftField=(id,key,value)=>updateProject(activeId,p=>({...p,extractionDrafts:(p.extractionDrafts||[]).map(d=>{
     if(d.id!==id) return d;
-    if(key==="scope") return {...d,scope:{level:value.level,outcomeId:value.outcomeId,canonical:value.canonical},outcome:value.name!=null?value.name:d.outcome};
+    if(key==="scope"){
+      const scope={level:value.level,outcomeId:value.outcomeId,canonical:value.canonical};
+      if(value.canonicalName!=null) scope.canonicalName=value.canonicalName;
+      // Only replace the outcome NAME when a real (non-empty) one is supplied. Passing
+      // name:'' (e.g. "unassigned") must NOT erase the outcome text auto-extract captured.
+      const outcome=(typeof value.name==="string"&&value.name.trim())?value.name:d.outcome;
+      return {...d,scope,outcome};
+    }
     return {...d,[key]:value};
   })}));
   // Confirming a draft APPENDS a new per-outcome study row that inherits the source
@@ -611,7 +620,12 @@ function ExtractionTab({project,updateProject,activeId}){
   // study×outcome×timepoint is its own row, matching the Analysis pooling model.)
   const confirmDraftById=(id)=>updateProject(activeId,p=>{
     const at=new Date().toISOString();
-    const res=confirmDraftPure({studies:p.studies||[],drafts:p.extractionDrafts||[]},id,{at,citationBaseId:selectedStudyId||null});
+    // Prefer the draft's own origin study (captured at creation) over whatever study
+    // happens to be selected now, so a confirmed draft never inherits the wrong
+    // citation metadata if the reviewer switched studies between generating and confirming.
+    const d=(p.extractionDrafts||[]).find(x=>x.id===id);
+    const citationBaseId=(d&&d.sourceStudyId)||selectedStudyId||null;
+    const res=confirmDraftPure({studies:p.studies||[],drafts:p.extractionDrafts||[]},id,{at,citationBaseId});
     if(!res.ok) return p;
     return {...p,studies:res.studies,extractionDrafts:res.drafts};
   });
@@ -640,7 +654,6 @@ function ExtractionTab({project,updateProject,activeId}){
   const[view,setView]=useState("cards");   // cards | table
   const[showQC,setShowQC]=useState(false);
   // RoadMap/1.md — the unified assisted workspace + protocol-scoped drafts.
-  const[showAssisted,setShowAssisted]=useState(false);
   const[selectedStudyId,setSelectedStudyId]=useState("");
   const drafts=project.extractionDrafts||[];
   const parked=project.extractionParked||[];
@@ -798,21 +811,23 @@ ${paperText.slice(0,15000)}`;
     <input value={s[k]||""} onChange={e=>updStudy(s.id,k,e.target.value)} placeholder={ph||""}
       style={{...inp,fontSize:11,padding:"3px 5px",width:w||"100%",fontFamily:["es","lo","hi","n","nExp","nCtrl"].includes(k)?"'IBM Plex Mono',monospace":"inherit"}}/></td>);
 
-  // 66.md (P5) — the structured-extraction workspace replaces the tab body when the
-  // flag is on AND the user has switched into it. A small header lets them switch back
-  // to the classic table. Everything else (the classic body below) is untouched.
-  const extractionModeToggle = extractionAssistOn ? (
-    <div style={{display:"flex",border:`1px solid ${C.brd}`,borderRadius:6,overflow:"hidden"}}>
-      {[["classic","Classic table"],["structured","Structured extraction (beta)"]].map(([m,label])=>(
-        <button key={m} onClick={()=>setExtractionMode(m)} style={{padding:"6px 12px",border:"none",cursor:"pointer",fontSize:11,fontWeight:600,
-          background:extractionMode===m?C.acc:"transparent",color:extractionMode===m?C.accText:C.muted}}>{label}</button>
-      ))}
-    </div>
+  // e1.md — the Classic/Structured mode toggle is retired. The 66.md structured
+  // dual-review workspace stays reachable behind a discreet, flag-gated "advanced"
+  // button (its server data + the only inter-reviewer reconciliation path are preserved),
+  // but it no longer competes with the split-screen for the primary surface.
+  const advancedStructuredBtn = extractionAssistOn ? (
+    <button onClick={()=>setShowStructured(v=>!v)} style={{...btnS(showStructured?"primary":"ghost"),fontSize:12}}
+      title="Blinded dual extraction + adjudication (advanced)">
+      {showStructured?"← Back to extraction":"⚖ Dual-review workspace"}
+    </button>
   ) : null;
 
-  if(extractionAssistOn && extractionMode==="structured"){
+  if(extractionAssistOn && showStructured){
     return(<div>
-      <div style={{display:"flex",justifyContent:"flex-end",marginBottom:12}}>{extractionModeToggle}</div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12,gap:12}}>
+        <div style={{fontSize:13,fontWeight:700,color:C.txt}}>⚖ Dual-review extraction (advanced)</div>
+        {advancedStructuredBtn}
+      </div>
       <Suspense fallback={<div style={{padding:24,color:C.muted,fontSize:12}}>Loading the structured extraction workspace…</div>}>
         <ExtractionWorkspace projectId={project.id}/>
       </Suspense>
@@ -822,10 +837,41 @@ ${paperText.slice(0,15000)}`;
   return(<div>
     <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:12,flexWrap:"wrap"}}>
       <div style={{flex:1,minWidth:0}}>
-        <SectionHeader icon="table" title="Data Extraction" desc="Capture study-level data with the right template for your outcome type. Validation runs as you type; raw inputs are saved so every number is auditable." badge={`${studies.length} studies`}/>
+        <SectionHeader icon="table" title="Data Extraction" desc="Read the article on the left and capture its data on the right. Auto-generate, pick a table/figure, click a number, or type it — every value is protocol-scoped, provenance-tracked and editable." badge={`${studies.length} studies`}/>
       </div>
-      {extractionModeToggle}
+      {advancedStructuredBtn}
     </div>
+
+    {/* e1.md — the split-screen assisted workspace IS the main extraction interface
+        (PDF left, methods/form right, sticky). It renders once at least one study exists;
+        the classic records table below is where the data accumulates and is edited by hand. */}
+    {studies.length>0&&!readOnly&&(
+      <Suspense fallback={<div style={{padding:20,color:C.muted,fontSize:12,border:`1px solid ${C.brd}`,borderRadius:10,marginBottom:14}}>Loading the extraction workspace…</div>}>
+        <AssistedExtractionPanel
+          projectId={project.id}
+          studies={studies}
+          outcomes={protocolOuts}
+          protocol={protocol}
+          selectedStudyId={selectedStudyId}
+          onSelectStudy={setSelectedStudyId}
+          onAddBlankStudy={addBlankAndSelect}
+          onAddDrafts={addDrafts}
+          onAddParked={addParked}
+          onPatchStudy={patchStudy}
+          drafts={drafts}
+          parked={parked}
+          onConfirmDraft={confirmDraftById}
+          onDismissDraft={dismissDraft}
+          onParkDraft={parkDraft}
+          onUnparkRecord={unparkRecord}
+          onEditDraftField={editDraftField}
+          onNextStudy={()=>{const ordered=orderStudies(studies,sortKey);if(!ordered.length)return;const i=ordered.findIndex(s=>s.id===selectedStudyId);const next=ordered[(i+1)%ordered.length];if(next)setSelectedStudyId(next.id);}}
+          onViewRecords={()=>{setView("cards");if(typeof document!=="undefined"){setTimeout(()=>{const el=document.getElementById("extraction-records");if(el)el.scrollIntoView({behavior:"smooth",block:"start"});},0);}}}
+          onContinueToRob={setTab?()=>setTab("rob"):null}
+          readOnly={readOnly}
+        />
+      </Suspense>
+    )}
 
     {AI_FEATURES_ENABLED && showAI && (
       <div style={{position:"fixed",inset:0,background:"#00000099",zIndex:998,display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
@@ -909,9 +955,10 @@ ${paperText.slice(0,15000)}`;
 
     {showAdd && <AddStudyModal onClose={()=>setShowAdd(false)} onAdd={addStudyObj}/>}
 
-    {/* Toolbar */}
-    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,gap:10,flexWrap:"wrap"}}>
+    {/* Toolbar — top of the extracted-records area (scroll target for "View records"). */}
+    <div id="extraction-records" style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14,gap:10,flexWrap:"wrap",scrollMarginTop:12}}>
       <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+        {studies.length>0&&<div style={{fontSize:12,fontWeight:700,color:C.txt}}>Extracted records</div>}
         <div style={{fontSize:12,color:C.muted}}>{withES} of {studies.length} studies have an effect size</div>
         {studies.length>0&&(()=>{const e=qc.errs.length,w=qc.warns.length,d=qc.dupIds.length;
           return(<div style={{display:"flex",gap:6}}>
@@ -928,7 +975,6 @@ ${paperText.slice(0,15000)}`;
               background:view===v?C.acc:"transparent",color:view===v?C.accText:C.muted}}>{label}</button>
           ))}
         </div>
-        {!readOnly&&<button onClick={()=>setShowAssisted(v=>!v)} style={{...btnS(showAssisted?"primary":"ghost"),fontSize:12}} title="Inline PDF viewer + auto / pick-a-source / click-assign extraction">🔬 Assisted workspace</button>}
         {studies.length>0&&<button onClick={()=>setShowQC(!showQC)} style={{...btnS(showQC?"primary":"ghost"),fontSize:12}}>🔍 Data Quality Check</button>}
         {studies.length>0&&<button onClick={openExtractionExport} style={{...btnS("ghost"),fontSize:12}}>⤓ Export CSV</button>}
         {AI_FEATURES_ENABLED&&!readOnly&&<button onClick={()=>setShowAI(true)} style={{...btnS(),color:C.purp,borderColor:themeAlpha(C.purp,'55'),fontSize:12}}>✦ AI Extract</button>}
@@ -936,27 +982,11 @@ ${paperText.slice(0,15000)}`;
       </div>
     </div>
 
-    {/* RoadMap/1.md — the unified assisted workspace (inline PDF + four methods). */}
-    {showAssisted&&!readOnly&&(
-      <Suspense fallback={<div style={{padding:20,color:C.muted,fontSize:12,border:`1px solid ${C.brd}`,borderRadius:10,marginBottom:14}}>Loading the assisted extraction workspace…</div>}>
-        <AssistedExtractionPanel
-          projectId={project.id}
-          studies={studies}
-          outcomes={protocolOuts}
-          protocol={protocol}
-          selectedStudyId={selectedStudyId}
-          onSelectStudy={setSelectedStudyId}
-          onAddBlankStudy={addBlankAndSelect}
-          onAddDrafts={addDrafts}
-          onAddParked={addParked}
-          onPatchStudy={patchStudy}
-          readOnly={readOnly}
-        />
-      </Suspense>
-    )}
-
-    {/* Drafts to review + "Also reported (not in this review)" parked list. */}
-    {(drafts.length>0||parked.length>0)&&(
+    {/* Drafts to review + "Also reported (not in this review)" parked list. When the
+        assisted workspace is on screen it owns the draft list inside its sticky panel;
+        this standalone copy only renders when the panel is hidden (read-only viewers, or
+        before any study exists) so drafts stay visible everywhere. */}
+    {(readOnly||studies.length===0)&&(drafts.length>0||parked.length>0)&&(
       <DraftReviewList
         drafts={drafts}
         parked={parked}

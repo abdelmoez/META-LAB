@@ -100,3 +100,6 @@ test-results/
 # Playwright E2E discovery run logs (artifacts, not source)
 e2e/.discovery/*.log
 e2e/.discovery/server.*
+
+# Local OCR (text-recognition) assets — staged at build via scripts/stage-ocr-assets.mjs
+public/tess/

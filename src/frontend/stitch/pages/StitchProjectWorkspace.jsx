@@ -261,7 +261,7 @@ function DeepToolPage({ stage }) {
   } else if (stage === 'prisma') {
     body = (<LazyPrisma project={project} updNested={doc.updNested} updateProject={doc.updateProject} activeId={projectId} setTab={goStage} />);
   } else if (stage === 'extraction') {
-    body = (<LazyExtraction project={project} updateProject={doc.updateProject} activeId={projectId} />);
+    body = (<LazyExtraction project={project} updateProject={doc.updateProject} activeId={projectId} setTab={goStage} />);
   } else if (stage === 'rob') {
     body = (<LazyRob project={project} updateProject={doc.updateProject} activeId={projectId} setTab={goStage} onWorkspaceChange={setRobInWorkspace} />);
   } else if (stage === 'analysis') {

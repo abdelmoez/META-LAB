@@ -57,7 +57,13 @@ import { mkStudy } from '../../src/research-engine/project-model/defaults.js';
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const ANTHROPIC_VERSION = '2023-06-01';
 const DEFAULT_MODEL = 'claude-sonnet-5';
-const MAX_TOKENS = 2500;
+// DEFAULT_MODEL runs ADAPTIVE (extended) thinking by default, which spends the
+// output budget on reasoning tokens and truncates the strict-JSON answer. This
+// task is a deterministic fixed-format extraction with no reasoning payoff, so
+// thinking is explicitly DISABLED in the request body (see requestOnce). With
+// thinking off the whole 6000-token budget is available for the JSON object —
+// a comfortable headroom over the ~600-token contract even with long notes.
+const MAX_TOKENS = 6000;
 const TEXT_CAP = 24000;
 const TIMEOUT_MS = () => parseInt(process.env.AI_EXTRACT_TIMEOUT_MS, 10) || 60000;
 
@@ -160,6 +166,11 @@ export async function extractStudyFromDocument({ pdfBase64 = null, text = null, 
           body: JSON.stringify({
             model,
             max_tokens: MAX_TOKENS,
+            // Strict deterministic JSON output — no reasoning benefit; keeping
+            // thinking on would eat the token budget and truncate the answer.
+            // (Do NOT add temperature/top_p — Sonnet 5 rejects non-default
+            // sampling while thinking is configured.)
+            thinking: { type: 'disabled' },
             messages: [{ role: 'user', content: buildContent(nudge) }],
           }),
           signal: ctrl.signal,
@@ -174,6 +185,13 @@ export async function extractStudyFromDocument({ pdfBase64 = null, text = null, 
       if (!res.ok) {
         const msg = data?.error?.message || `HTTP ${res.status}`;
         throw new Error(`Model provider error: ${msg}`);
+      }
+      // Truncation is NOT malformed JSON — detect it explicitly so the retry
+      // (which only helps genuine JSON-formatting slips) is not wasted and the
+      // user gets an actionable message instead of "not valid JSON". Checked
+      // BEFORE any parse/retry.
+      if (data?.stop_reason === 'max_tokens') {
+        throw new Error('Model output was truncated (max_tokens) — try the text-paste option or a shorter document');
       }
       const out = Array.isArray(data?.content)
         ? data.content.map(b => (b && typeof b.text === 'string' ? b.text : '')).join('').trim()

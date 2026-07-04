@@ -16,7 +16,8 @@ import { getProjectAccess, writeAudit } from '../screening/access.js';
 import { getMetaSiftSettings } from '../screening/settings.js';
 import { createOaResolver, loadOaConfig, OA_STATUS } from '../services/oaPdfResolver.js';
 import { savePdf, deletePdfFile, isPdfBuffer, MAX_PDF_BYTES } from '../screening/pdfStorage.js';
-import { bestPdfMatch } from '../../src/research-engine/screening/pdfMatching.js';
+import { bestPdfMatch, normalizeDoi } from '../../src/research-engine/screening/pdfMatching.js';
+import { pmidToDoi } from '../services/pmidToDoi.js';
 
 const MAX_PER_CALL = 25;   // bound request time (no job queue); client paginates
 const MAX_MATCH = 200;
@@ -117,6 +118,99 @@ export async function oaRetrieve(req, res) {
     res.json({ attached, notFound, skipped, failed, processed: records.length, results });
   } catch (err) {
     console.error('[screening] oaRetrieve:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * POST /projects/:pid/records/:rid/oa-retrieve — single-record OA retrieval for
+ * the extraction workspace. Same flag / rate-limit / email / auth as the bulk
+ * path; resolves the one record's DOI (falling back to PMID→DOI when only a PMID
+ * exists), reuses the shared resolver + fetchOaPdf + savePdf, persists a
+ * ScreenPdfAttachment with source 'oa_<provider>' + provenance, and NEVER
+ * overwrites a manual upload.
+ *
+ * body: { bypassCache?: boolean }  — bypassCache forces a fresh provider lookup
+ *   so a user-initiated retry is not stuck behind the resolver's 24h NOT_FOUND
+ *   cache entry.
+ * returns: { status, provider?, attachmentId?, sourceUrl?, error? }
+ */
+export async function oaRetrieveOne(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    if (!access.canScreen && !access.isLeader) {
+      return res.status(403).json({ error: 'You do not have permission to attach files in this project' });
+    }
+    const settings = await getMetaSiftSettings();
+    const cfg = loadOaConfig(process.env, settings);
+    if (!cfg.enabled) {
+      return res.status(403).json({ error: 'Open-access PDF retrieval is disabled by the administrator', status: OA_STATUS.SKIPPED_FEATURE_DISABLED });
+    }
+    // Same polite-pool identifier rule as the bulk path: the requesting user's
+    // account email, env fallback.
+    const userEmail = (req.user && req.user.email) || cfg.unpaywallEmail || '';
+    if (!userEmail) {
+      return res.status(400).json({ error: 'Your account has no email on file, which the open-access provider requires. Add an email to your account and try again.' });
+    }
+
+    const projectId = access.project.id;
+    const rec = await prisma.screenRecord.findFirst({
+      where: { id: req.params.rid, projectId },
+      select: { id: true, doi: true, pmid: true },
+    });
+    if (!rec) return res.status(404).json({ error: 'Record not found' });
+
+    // Never overwrite a manually-uploaded PDF (mirrors the bulk skip rule).
+    const manual = await prisma.screenPdfAttachment.findFirst({
+      where: { projectId, recordId: rec.id, source: 'manual_upload' }, select: { id: true },
+    });
+    if (manual) return res.json({ status: 'skipped_manual' });
+
+    // Resolve the DOI: prefer the record's own DOI, else convert its PMID.
+    let doi = normalizeDoi(rec.doi);
+    if (!doi && rec.pmid) {
+      const fromPmid = await pmidToDoi(rec.pmid, { fetch: globalThis.fetch });
+      if (fromPmid) doi = normalizeDoi(fromPmid);
+    }
+    if (!doi) return res.json({ status: OA_STATUS.SKIPPED_NO_DOI });
+
+    // Cache-bypass: drop any cached result for this DOI so a retry re-hits the
+    // providers instead of replaying a stale NOT_FOUND for up to 24h.
+    if (req.body && req.body.bypassCache && resolver._cache && typeof resolver._cache.delete === 'function') {
+      resolver._cache.delete(doi);
+    }
+
+    const r = await resolver.resolve(doi, { email: userEmail, enabled: true });
+    if (r.status !== OA_STATUS.FOUND) {
+      return res.json({ status: r.status });
+    }
+
+    const dl = await fetchOaPdf(r.url, globalThis.fetch, MAX_PDF_BYTES);
+    if (!dl.ok) {
+      return res.json({ status: 'failed', error: dl.error, sourceUrl: r.url || null, provider: r.provider || null });
+    }
+
+    // Replace any prior OA attachment for this record (manual was skipped above).
+    const prev = await prisma.screenPdfAttachment.findMany({ where: { recordId: rec.id } });
+    for (const old of prev) deletePdfFile(projectId, old.storedName);
+    await prisma.screenPdfAttachment.deleteMany({ where: { recordId: rec.id } });
+
+    const { storedName, fileSize } = savePdf(projectId, dl.buffer);
+    const att = await prisma.screenPdfAttachment.create({
+      data: {
+        projectId, recordId: rec.id,
+        fileName: `${String(r.doi || 'oa').replace(/[^\w.-]/g, '_')}.pdf`.slice(0, 255),
+        storedName, fileSize, mimeType: 'application/pdf', uploadedBy: req.user.id,
+        source: `oa_${r.provider}`, oaStatus: OA_STATUS.FOUND, sourceUrl: r.url,
+        resolvedDoi: r.doi, matchedBy: 'doi', matchConfidence: 0.99, retrievalAttemptedAt: new Date(),
+      },
+    });
+    await writeAudit(projectId, req.user, 'PDF_OA_ATTACHED', { entityType: 'record', entityId: rec.id, details: { provider: r.provider, doi: r.doi, single: true } });
+
+    return res.json({ status: 'attached', provider: r.provider, attachmentId: att.id, sourceUrl: r.url });
+  } catch (err) {
+    console.error('[screening] oaRetrieveOne:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }
