@@ -85,6 +85,11 @@ test.describe('Search / PICO / Protocol', () => {
       const flags = await publicFlags(request);
       // searchEngine OFF would render the legacy SearchTab (no wizard at all).
       test.skip(!flags.searchEngine, 'TODO: searchEngine OFF → legacy SearchTab, no Define/Build/Run wizard');
+      // searchWorkspaceV2 ON renders the STAGED workspace instead of this wizard.
+      // Locally (parallel workers) searchWorkspace.spec.ts flips that GLOBAL flag
+      // within its serial scope, so skip honestly instead of failing on the
+      // workspace UI; on CI (workers=1) the flip can never overlap this file.
+      test.skip(flags.searchWorkspaceV2 === true, 'searchWorkspaceV2 ON → staged workspace renders; covered by searchWorkspace.spec.ts');
     });
 
     test('@smoke renders the 3-step Define → Build → Run flow with Define active', async ({ page, tmpProject }) => {

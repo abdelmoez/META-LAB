@@ -1,7 +1,7 @@
 /**
  * searchWorkspace.spec.ts — 74.md: the staged Search Workspace's MODE-SCOPED workflow
- * (flag `searchWorkspaceV2`, OFF by default — flipped ON per test via the `setFlags`
- * fixture, which snapshots and restores the original flags on teardown).
+ * (flag `searchWorkspaceV2`, OFF by default — flipped ON once in beforeAll via a
+ * dedicated admin request context and FORCED back OFF in afterAll; see Flag note).
  *
  * What 74.md demands and this spec drives end-to-end in a real browser:
  *   - the selected search mode controls the ENTIRE visible workflow: automated mode
@@ -161,6 +161,46 @@ test.describe.serial('74.md — mode-scoped staged Search Workspace (searchWorks
     await openWorkspace(sp, tmpProject.id);
     await expect(modeBadge(sp)).toContainText('Automated search');
     await expect(dbStrategiesPip(sp)).toHaveCount(0);
+  });
+
+  test('the Send-to-Screening ready marker survives builder edits (two-writer clobber fixed)', async ({ page, request, tmpProject }) => {
+    const sp = new SearchPage(page);
+    await openWorkspace(sp, tmpProject.id);
+    const getReady = async () => {
+      const r = await request.get(`/api/search-builder/${encodeURIComponent(tmpProject.id)}`);
+      if (!r.ok()) return null;
+      const b = await r.json().catch(() => null);
+      return b?.readyForScreening ?? null;
+    };
+
+    // Mark the strategy ready on the Send to Screening stage (single-key save).
+    const sendPip = rail(sp).getByRole('button', { name: /Send to Screening/ });
+    await expect(sendPip).toBeEnabled({ timeout: 15_000 }); // opens once the builder reports concepts
+    await sendPip.click();
+    const markBtn = sp.page.getByRole('button', { name: /Mark strategy ready for screening import/ });
+    await expect(markBtn).toBeEnabled({ timeout: 15_000 });
+    await markBtn.click();
+    await expect.poll(getReady, { timeout: 15_000, message: 'ready marker never persisted' }).toBe(true);
+
+    // Now edit the strategy — the builder's debounced FULL-shape autosave fires…
+    await rail(sp).getByRole('button', { name: /Concepts/ }).click();
+    const term = `readykeep${Date.now()}`;
+    await sp.addKeyword('Population', term);
+    await expect
+      .poll(async () => {
+        const r = await request.get(`/api/search-builder/${encodeURIComponent(tmpProject.id)}`);
+        if (!r.ok()) return false;
+        const b = await r.json().catch(() => null);
+        const terms: string[] = Array.isArray(b?.concepts)
+          ? b.concepts.flatMap((c: any) => (Array.isArray(c?.terms) ? c.terms.map((t: any) => t?.text) : []))
+          : [];
+        return terms.includes(term);
+      }, { timeout: 15_000, message: 'builder never autosaved the keyword' })
+      .toBe(true);
+
+    // …and the ready marker is STILL true (the autosave no longer re-emits its
+    // stale mount-time copy over the Screening-stage toggle).
+    expect(await getReady()).toBe(true);
   });
 
   test('the mode selector is a keyboard radio group: roving tabindex + arrows move selection AND focus', async ({ page, tmpProject }) => {

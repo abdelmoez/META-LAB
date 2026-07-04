@@ -1103,7 +1103,14 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     setLoaded(true);
   })();},[projectId]); // eslint-disable-line
 
-  /* ── INTEGRATION: autosave whenever the search changes (debounced) ──────── */
+  /* ── INTEGRATION: autosave whenever the search changes (debounced) ────────
+     74.md recs round — readyForScreening stays in the SIGNATURE (change detection +
+     no phantom PUT on load, since serializeSearchState always coerces the key) but
+     is deliberately NOT in the PUT payload: it is an advisory marker with a second
+     writer (the workspace's Send-to-Screening toggle saves it single-key), and
+     re-emitting this component's mount-time copy from the bulk autosave silently
+     reverted that toggle. The step-5 button below persists it single-key instead;
+     the server keeps whichever writer acted last. */
   const saveTimer=useRef(null);
   useEffect(()=>{
     if(!loaded||!saveSearch||!projectId) return;
@@ -1113,7 +1120,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     clearTimeout(saveTimer.current);
     saveTimer.current=setTimeout(async()=>{
       try{
-        const res=await saveSearch(projectId,{concepts,overrides,ignored,databases:selectedDbs,readyForScreening,dismissedWarnings,filters});
+        const res=await saveSearch(projectId,{concepts,overrides,ignored,databases:selectedDbs,dismissedWarnings,filters});
         lastSavedRef.current=sig;
         if(res&&typeof res.revision==="number") revisionRef.current=res.revision;
       }catch(e){ console.error("saveSearch failed",e); }
@@ -1910,7 +1917,13 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
             <div style={{display:"flex",flexWrap:"wrap",gap:8,marginTop:12,alignItems:"center"}}>
               <button onClick={()=>copyOut(allStrategies,"Copied all strategies")} style={{...btn("primary"),fontSize:11}}>Copy all strategies</button>
               <button onClick={()=>copyOut(strategyTableText(concepts),"Copied strategy table")} style={{...btn("solid"),fontSize:11}}>Copy strategy table</button>
-              <button onClick={()=>setReadyForScreening(r=>!r)} style={{...btn(readyForScreening?"primary":"ghost"),fontSize:11}}>
+              <button onClick={async()=>{
+                // single-key save (74.md recs round) — never rides the bulk autosave,
+                // so it can't clobber (or be clobbered by) the other writer's value.
+                const next=!readyForScreening;
+                setReadyForScreening(next);
+                if(saveSearch&&projectId){ try{ const ok=await saveSearch(projectId,{readyForScreening:next}); if(!ok) throw new Error("save failed"); }catch{ setReadyForScreening(!next); } }
+              }} style={{...btn(readyForScreening?"primary":"ghost"),fontSize:11}}>
                 {readyForScreening?"✓ Ready for Screening Import":"Mark ready for Screening Import"}
               </button>
               {exportMsg&&<span style={{fontSize:11,color:C.grn,fontWeight:600}}>{exportMsg}</span>}

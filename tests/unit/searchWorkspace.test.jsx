@@ -279,6 +279,21 @@ describe('SearchWorkspace — 74.md: one workflow visible at a time', () => {
     const html = render('screening', false, 'automated');
     expect(html).not.toContain('Database Strategies');
     expect(html).toContain('change the search mode');
+    // recs round — the interactive affordance is for editors only; read-only viewers
+    // get the plain status without an action they cannot perform.
+    const ro = render('screening', false, 'automated', true);
+    expect(ro).not.toContain('change the search mode');
+    expect(ro).toContain('Pecan Search Engine — Automated Run');
+  });
+
+  it('a mode switch is announced to screen readers (polite status with the new stage count)', () => {
+    const auto = render('question', true, 'automated');
+    expect(auto).toContain('search-mode-announcement');
+    expect(auto).toContain('Automated search selected. The workflow now has 8 stages.');
+    const manual = render('question', true, 'manual');
+    expect(manual).toContain('Manual search selected. The workflow now has 9 stages.');
+    // No mode → no badge, no announcement region.
+    expect(render('question', true, undefined)).not.toContain('search-mode-announcement');
   });
 
   it('mode cards form ONE tab stop via roving tabindex', () => {
@@ -403,11 +418,13 @@ describe('persistSearchModeMerged — 73.md P5 (recs round: single-key save)', (
 });
 
 describe('SearchWorkspace — wording rule: never says "AI"', () => {
-  it('renders no user-facing "AI" across the stages (both modes)', () => {
-    for (const stage of ['question', 'concepts', 'terms', 'mode', 'strategy', 'refine', 'results', 'documentation', 'screening']) {
-      for (const mode of [undefined, 'manual', 'automated']) {
+  it('renders no user-facing "AI" across each mode\'s OWN stage list', () => {
+    // recs round — iterate stagesFor(mode) so every reachable (stage, mode) cell is
+    // exercised exactly once (a 'strategy'×automated seed would just remap to refine).
+    for (const mode of [undefined, 'manual', 'automated']) {
+      for (const s of stagesFor(mode == null ? null : mode)) {
         const html = renderToStaticMarkup(
-          h(SearchWorkspace, { projectId: 'p1', pico: PICO, readOnly: false, pecanEnabled: true, initialStage: stage, initialSearchMode: mode }),
+          h(SearchWorkspace, { projectId: 'p1', pico: PICO, readOnly: false, pecanEnabled: true, initialStage: s.id, initialSearchMode: mode }),
         );
         expect(html).not.toMatch(/\bAI\b/);
       }

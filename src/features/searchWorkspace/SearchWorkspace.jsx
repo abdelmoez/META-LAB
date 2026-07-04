@@ -430,7 +430,7 @@ function ModeCard({ id, checked, onChoose, onArrow, title, tagline, body, benefi
   );
 }
 
-function ModeStage({ searchMode, onSelect, busy, err, pecanEnabled }) {
+function ModeStage({ searchMode, onSelect, err, pecanEnabled }) {
   // Live provider names when the automated engine is on (soft — static copy otherwise).
   const [providerNames, setProviderNames] = useState(null);
   useEffect(() => {
@@ -460,8 +460,8 @@ function ModeStage({ searchMode, onSelect, busy, err, pecanEnabled }) {
           cardRef={manualRef}
           checked={searchMode === 'manual'}
           tabIndex={searchMode === 'automated' ? -1 : 0}
-          onChoose={() => !busy && onSelect('manual')}
-          onArrow={() => { if (!busy) { onSelect('automated'); focusCard(automatedRef); } }}
+          onChoose={() => onSelect('manual')}
+          onArrow={() => { onSelect('automated'); focusCard(automatedRef); }}
           title="Manual search"
           tagline="You run each database yourself"
           body={<>PecanRev builds a database-specific search strategy for every database in your protocol. You review, copy or export each strategy and run it in the database yourself. Works with all {allDbCount} databases (incl. Embase, Scopus, Web of Science, CINAHL…). Results come back into PecanRev via Screening import.</>}
@@ -475,8 +475,8 @@ function ModeStage({ searchMode, onSelect, busy, err, pecanEnabled }) {
           cardRef={automatedRef}
           checked={searchMode === 'automated'}
           tabIndex={searchMode === 'automated' ? 0 : -1}
-          onChoose={() => !busy && onSelect('automated')}
-          onArrow={() => { if (!busy) { onSelect('manual'); focusCard(manualRef); } }}
+          onChoose={() => onSelect('automated')}
+          onArrow={() => { onSelect('manual'); focusCard(manualRef); }}
           title="Automated search"
           tagline="PecanRev runs its connected databases for you"
           body={<>PecanRev runs the strategy for you against its connected databases ({autoChips.join(', ')}), retrieves and de-duplicates records, and hands them to Screening automatically.</>}
@@ -645,15 +645,22 @@ function SendToScreeningStage({ projectId, pecanEnabled, readOnly, searchMode, g
       </Card>
 
       {/* 74.md — never point an automated-mode user at manual-only stages: the way
-          forward is enabling the engine, or changing the search mode. */}
+          forward is enabling the engine, or changing the search mode. Recs round —
+          the interactive affordance (and its "run it yourself" instruction) is for
+          editors only; read-only viewers get the plain status. */}
       {automated && !pecanEnabled && (
         <Note tone="info">
           The automated multi-database run needs the <strong>Pecan Search Engine — Automated Run</strong> (an administrator enables it in
-          Ops). Until then, you can{' '}
-          <button type="button" onClick={goMode} style={{ background: 'none', border: 'none', color: C.acc, cursor: 'pointer', fontSize: 'inherit', fontFamily: 'inherit', textDecoration: 'underline', padding: 0 }}>
-            change the search mode
-          </button>{' '}
-          to Manual search and run each database yourself.
+          Ops).
+          {!readOnly && (
+            <>
+              {' '}Until then, you can{' '}
+              <button type="button" onClick={goMode} style={{ background: 'none', border: 'none', color: C.acc, cursor: 'pointer', fontSize: 'inherit', fontFamily: 'inherit', textDecoration: 'underline', padding: 0 }}>
+                change the search mode
+              </button>{' '}
+              to Manual search and run each database yourself.
+            </>
+          )}
         </Note>
       )}
     </>
@@ -769,20 +776,31 @@ export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnable
     })();
     return () => { dead = true; };
   }, [projectId]); // eslint-disable-line
-  const changeMode = useCallback(async (mode) => {
+  // 74.md recs round — a mode change is never blocked by an in-flight save: the UI
+  // updates instantly (selection, rail, stage remap) and the single-key PUTs are
+  // SERIALIZED through a promise chain, so user-action order === server write order
+  // and the last choice always wins. `modeBusy` stays as advisory UI state only.
+  const modeSaveChainRef = useRef(Promise.resolve());
+  const modePendingRef = useRef(0);
+  const changeMode = useCallback((mode) => {
     modeChosenRef.current = true;
-    setModeBusy(true); setModeErr('');
+    setModeErr('');
     setSearchMode(mode); // local state reflects immediately; persistence is soft-fail
     // 74.md — the interface updates in the SAME render: if the new mode's rail no
     // longer contains the active stage, land on the nearest surviving stage.
     setStage((cur) => stageAfterModeChange(cur, mode));
-    try {
-      await persistSearchModeMerged(loadSearch, saveSearch, projectId, mode);
-    } catch {
-      setModeErr('Could not save the search mode — it will apply for this session, but try again to keep it for your team.');
-    } finally {
-      setModeBusy(false);
-    }
+    modePendingRef.current += 1;
+    setModeBusy(true);
+    modeSaveChainRef.current = modeSaveChainRef.current.then(async () => {
+      try {
+        await persistSearchModeMerged(loadSearch, saveSearch, projectId, mode);
+      } catch {
+        setModeErr('Could not save the search mode — it will apply for this session, but try again to keep it for your team.');
+      } finally {
+        modePendingRef.current -= 1;
+        if (modePendingRef.current === 0) setModeBusy(false);
+      }
+    });
   }, [projectId]);
 
   // ── 73.md P3 — hit-state snapshots + the registered "refresh now" trigger ──
@@ -883,6 +901,15 @@ export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnable
               {modeLabel} <span style={{ color: C.muted, fontWeight: 500 }}>· Change</span>
             </button>
           )}
+          {/* 74.md recs round — the rail silently restructures on a mode switch, so a
+              visually-hidden polite live region tells screen-reader users what changed.
+              Text is stable per mode, so ordinary re-renders never re-announce. */}
+          {modeLabel && (
+            <span role="status" aria-live="polite" data-testid="search-mode-announcement"
+              style={{ position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0 0 0 0)', whiteSpace: 'nowrap', border: 0 }}>
+              {modeLabel} selected. The workflow now has {stages.length} stages.
+            </span>
+          )}
         </div>
         <p style={{ margin: 0, paddingLeft: 46, fontSize: 12.5, color: C.muted, lineHeight: 1.6, maxWidth: 820 }}>
           Build one concept-based strategy, test and refine it, then run it — yourself or automatically — and hand the de-duplicated
@@ -953,7 +980,7 @@ export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnable
                     <Note tone="info">{modeLabel ? `This project uses ${modeLabel.toLowerCase()}.` : 'No search mode has been chosen yet.'}</Note>
                   </Card>
                 )
-                : <ModeStage searchMode={searchMode} onSelect={changeMode} busy={modeBusy} err={modeErr} pecanEnabled={pecanEnabled} />}
+                : <ModeStage searchMode={searchMode} onSelect={changeMode} err={modeErr} pecanEnabled={pecanEnabled} />}
             </>
           )}
 
