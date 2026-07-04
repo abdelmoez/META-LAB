@@ -130,6 +130,8 @@ export function normalizeOcrWords(words, opts = {}) {
  */
 export function cacheKey(parts) {
   const p = parts && typeof parts === 'object' ? parts : {};
-  const field = (v) => (v == null ? '' : String(v));
+  // Percent-encode each field so an in-field '|' (or any delimiter) cannot alias two
+  // distinct part-sets to the same key — the join stays injective and deterministic.
+  const field = (v) => encodeURIComponent(v == null ? '' : String(v));
   return ['ocr', field(p.pdfFingerprint), field(p.page), field(p.mode), field(p.tessVersion), field(p.scale)].join('|');
 }

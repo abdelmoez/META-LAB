@@ -55,6 +55,45 @@ describe('autoCalibrateAxis — deterministic axis auto-calibration (§22.1–22
     expect(fit.auto).toBe(true);
   });
 
+  it('does NOT auto-accept a byte-perfect LINEAR axis as log under ratioMeasure (F15)', () => {
+    // A perfectly even linear axis (e.g. a zoomed forest region: 1.0 / 1.1 / 1.2)
+    // must stay linear even with the ratioMeasure log prior — a byte-perfect
+    // linear fit (R²=1) must win over a merely-very-good log tie-break.
+    const fit = autoCalibrateAxis(
+      [{ px: 0, value: 1.0 }, { px: 50, value: 1.1 }, { px: 100, value: 1.2 }],
+      { ratioMeasure: true },
+    );
+    expect(fit).not.toBeNull();
+    expect(fit.scale).toBe('linear');
+    expect(fit.r2).toBeCloseTo(1, 9);
+    expect(fit.auto).toBe(true);
+    expect(fit.warnings).toEqual([]);
+    // the real forest decade case must still classify as log
+    expect(autoCalibrateAxis(LOG_TICKS, { ratioMeasure: true }).scale).toBe('log');
+    expect(autoCalibrateAxis(LOG_TICKS, { ratioMeasure: true }).auto).toBe(true);
+  });
+
+  it('auto-accepts a byte-perfect LOG axis with a 1-5-10-50-100 tick pattern (F16)', () => {
+    // ln(value) = a·px + b holds exactly (R²=1); the round tick labels sit at
+    // legitimately non-uniform pixel gaps, which must NOT trip the near-even
+    // spacing gate for a log fit.
+    const fit = autoCalibrateAxis(
+      [1, 5, 10, 50, 100].map((v) => ({ px: 100 * Math.log10(v), value: v })),
+      { ratioMeasure: true },
+    );
+    expect(fit).not.toBeNull();
+    expect(fit.scale).toBe('log');
+    expect(fit.r2).toBeCloseTo(1, 9);
+    expect(fit.auto).toBe(true);
+    expect(fit.warnings).toEqual([]);
+    // an uneven LINEAR axis must still be flagged (the spacing gate stays live)
+    expect(autoCalibrateAxis([
+      { px: 0, value: 0 },
+      { px: 10, value: 10 },
+      { px: 100, value: 100 },
+    ]).auto).toBe(false);
+  });
+
   it('round-trips pxToValue ↔ valueToPx on both scales', () => {
     const lin = autoCalibrateAxis(LINEAR_TICKS);
     expect(valueToPx(lin, pxToValue(lin, 33))).toBeCloseTo(33, 9);

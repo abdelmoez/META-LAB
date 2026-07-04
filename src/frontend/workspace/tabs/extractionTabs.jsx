@@ -635,6 +635,14 @@ function ExtractionTab({project,updateProject,activeId,setTab}){
   // Confirming a draft APPENDS a new per-outcome study row that inherits the source
   // study's citation metadata — it never overwrites another outcome's data. (Each
   // study×outcome×timepoint is its own row, matching the Analysis pooling model.)
+  // recordResolved(p, rec) — remember a draft's source identity once it is confirmed,
+  // parked, or dismissed, so a later machine rerun does not resurrect it as a fresh
+  // duplicate (4.md §4.4). extractionDismissed is the "already-resolved" identity set.
+  const withResolved=(p,rec)=>{
+    const sid=rec?identityOf(rec):"";
+    const dismissed=p.extractionDismissed||[];
+    return (sid&&!dismissed.includes(sid))?[...dismissed,sid]:dismissed;
+  };
   const confirmDraftById=(id)=>updateProject(activeId,p=>{
     const at=new Date().toISOString();
     // Prefer the draft's own origin study (captured at creation) over whatever study
@@ -644,12 +652,13 @@ function ExtractionTab({project,updateProject,activeId,setTab}){
     const citationBaseId=(d&&d.sourceStudyId)||selectedStudyId||null;
     const res=confirmDraftPure({studies:p.studies||[],drafts:p.extractionDrafts||[]},id,{at,citationBaseId});
     if(!res.ok) return p;
-    return {...p,studies:res.studies,extractionDrafts:res.drafts};
+    return {...p,studies:res.studies,extractionDrafts:res.drafts,extractionDismissed:withResolved(p,d)};
   });
   const parkDraft=(id)=>updateProject(activeId,p=>{
+    const d=(p.extractionDrafts||[]).find(x=>x.id===id);
     const res=parkRecordPure({drafts:p.extractionDrafts||[],parked:p.extractionParked||[]},id,{at:new Date().toISOString()});
     if(!res.ok) return p;
-    return {...p,extractionDrafts:res.drafts,extractionParked:res.parked};
+    return {...p,extractionDrafts:res.drafts,extractionParked:res.parked,extractionDismissed:withResolved(p,d)};
   });
   const unparkRecord=(id,scope)=>updateProject(activeId,p=>{
     const res=unparkPure({parked:p.extractionParked||[],drafts:p.extractionDrafts||[]},id,{scope});

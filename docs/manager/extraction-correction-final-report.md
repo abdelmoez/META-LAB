@@ -1,8 +1,14 @@
 # Extraction Correction & Reliability Rebuild — Final Report (RoadMap/4.md)
 
-**Version:** v3.71.2 → v3.72.0
-**Baseline suite:** 3951 unit tests → **4064 unit tests** (281 files), zero regressions. Production build green.
+**Version:** v3.72.0 (initial) → **v3.72.2** (after adversarial recs round)
+**Baseline suite:** 3951 unit tests → **4064** (initial commit) → **4090+** after the recs round, zero regressions. Production build green.
 **Plan:** `docs/manager/extraction-correction-plan.md` (living doc; §7 deliverable).
+**Commits:** `7935d1f` (v3.72.0, engine + wiring) then the recs-round commit (v3.72.2). A concurrent session's 74.md work (`d1bec77`/`c1f840c`, search-only, no extraction overlap) interleaved in history.
+
+## Adversarial recs round (post-commit)
+
+A 50-agent review (4 dimensions → findings → 2 independent refuters each, 2.76 M tokens) surfaced 23 findings; every confirmed-real one was fixed WITH a regression test. Highlights: **2 CRITICAL data-integrity bugs** in the new code — reconcile collapsing distinct table rows from one region (data loss), and `buildTableGrid`'s indent-collapse destroying a combined "aOR (95% CI)" effect column — plus a CRITICAL `pageLayout` mis-classification and HIGH identity-stability / footnote-stripping / snapToken / axis-fit defects. The reconcile identity was redesigned to stamp-at-creation from immutable source facts + a values fingerprint (so re-scoping/editing a draft no longer breaks dedup, and distinct rows never collapse); confirm/park now record resolved identities so reruns don't resurrect them. See the plan's verification log entry [7] for the full 23-item list and fixes.
+
 
 ---
 
@@ -64,7 +70,7 @@ Legend: ✅ Passed · 🟡 Partial (engine done, UI/wiring remains) · ⬜ Not s
 | WS1 grid | Khoury fixture: arms-in-columns, wrapped label, indented children, Paik values | ✅ (synthetic) / 🔵 (real PDF) | `fixtures.integration.test.js` |
 | §13 grammar | `parseCell` all kinds + never-throw + raw preserved | ✅ | `cellGrammar.test.js` (20) |
 | §13 grammar | `snapToken` composite/n=64/percent/p-inequality/nearest | ✅ | `cellGrammar.test.js` |
-| §13 grammar | delete `firstNumber` | 🟡 | still used as a no-offset fallback in the panel; migration to `snapToken` is the remaining step |
+| §13 grammar | delete `firstNumber`; click-assign uses `snapToken` | ✅ | `AssistedExtractionPanel` now resolves clicks through `cellGrammar.snapToken`; `firstNumber` retired (only a doc comment remains) |
 | §14 shape | 5-shape vocab + evidence + alternates + PICO arm match | ✅ | `tableShape.test.js` (+6), `armMatch.test.js` (6) |
 | WS2 mapper | side-by-side crop + faithful replica + hover sync | ⬜ | engine (`buildTableGrid`, `renderRegion`) ready; UI rebuild not done |
 | WS2 mapper | shape-specific completion (no Events/Total gate for effect-per-row) | 🟡 | detector distinguishes shapes; mapper still uses direct/twoarm modes |

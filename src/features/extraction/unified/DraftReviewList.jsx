@@ -55,10 +55,11 @@ function compactValues(rec) {
   if (has(v.es)) {
     const f = formatEffect(v.es, has(v.lo) ? v.lo : null, has(v.hi) ? v.hi : null, rec.esType || "", { dash: "?" });
     // formatEffect prefixes the measure label when esType is set; add a generic "ES"
-    // label when the draft has no measure yet (identity scale, shown verbatim).
+    // label when the draft has no measure yet. Use the FORMATTED strings (estText/ciText),
+    // never the raw display numbers, so a non-numeric bound shows "?" (honoring dash) and
+    // the 2-dp convention is applied — not "null" or a full-precision float.
     if (rec.esType) return f.text;
-    const ci = has(v.lo) && has(v.hi) ? ` [${f.lo}, ${f.hi}]` : "";
-    return `ES ${f.est}${ci}`;
+    return f.ciText ? `ES ${f.estText} ${f.ciText}` : `ES ${f.estText}`;
   }
   if (["a", "b", "c", "d"].some((k) => has(v[k])))
     return `2×2  a=${v.a || "?"}  b=${v.b || "?"}  c=${v.c || "?"}  d=${v.d || "?"}`;

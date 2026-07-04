@@ -6,8 +6,9 @@
  *
  * Evidence-based, NEVER a fixed pixel threshold:
  *   • an x-position histogram of item spans across the page — a wide vertical
- *     whitespace CHANNEL near the page middle, crossed by fewer than ~10% of
- *     items, is the two-column signal (findGutter);
+ *     whitespace CHANNEL near the page middle, crossed by only a small fraction
+ *     of the page's ROWS (a dense one-column body is crossed by nearly every
+ *     row), is the two-column signal (findGutter);
  *   • a single dominant start-x cluster + wide line widths → one column;
  *   • a baseline row whose ink physically covers the channel center is a
  *     'full-width' band even on a two-column page (so a spanning title or table
@@ -26,8 +27,18 @@ import { normalizeItems, buildLines } from './pdfTextGrid.js';
 /** Number of histogram bins swept across the page width when hunting the gutter. */
 const GUTTER_BINS = 96;
 
-/** Max fraction of items allowed to cross the whitespace channel (titles do). */
-const MAX_CROSS_FRAC = 0.1;
+/** Max fraction of ROWS allowed to cross the whitespace channel (spanning titles /
+ *  full-width table bands do). Normalizing by rows — not by total item count — is
+ *  what keeps a dense one-column page (whose every row physically covers the middle)
+ *  from reading as an all-gutter page. Set above the handful of legitimate full-width
+ *  bands a two-column page carries, yet far below the ~100% of rows a one-column body
+ *  crosses. */
+const MAX_CROSS_FRAC = 0.2;
+
+/** Above this item count a page is treated as one column WITHOUT the histogram sweep:
+ *  the sweep is wasted work at that scale, and spreading such arrays into
+ *  Math.min/Math.max would overflow the call stack (RangeError). */
+const MAX_ITEMS = 20000;
 
 /** The channel center must sit inside this middle band of the page width. */
 const CENTER_BAND = [0.25, 0.75];
@@ -42,23 +53,41 @@ const MIN_ROWS = 4;
  * findGutter(spans, bounds, opts?) — locate a vertical whitespace channel (the
  * column gutter) from an x-coverage histogram of item spans.
  *
- * Sweeps GUTTER_BINS bin centers across [bounds.x0, bounds.x1] counting how many
- * spans cross each center, then takes the WIDEST contiguous run of bins crossed
- * by ≤ maxCrossFrac of the spans whose center lies in the middle band of the
- * page and whose width clears minWidth (so word gaps never read as a gutter).
- * Both sides of the channel must carry at least minSideCount spans.
+ * Sweeps GUTTER_BINS bin centers across [bounds.x0, bounds.x1] counting, at each
+ * center, how many ROWS have ink covering it (a row crosses a bin when ANY of its
+ * spans covers that center — an item-level count would let a dense one-column body,
+ * whose every row is stitched from many narrow words, read as low-crossing at every
+ * bin). It then takes the WIDEST contiguous run of bins crossed by ≤ maxCrossFrac of
+ * the ROWS whose center lies in the middle band of the page and whose width clears
+ * minWidth (so word gaps never read as a gutter). Both sides of the channel must
+ * carry at least minSideCount spans.
+ *
+ * Rows are supplied via opts.rowOf — a parallel array giving each span's row id.
+ * With no rowOf every span is its own row, so the bare-span callers (and their
+ * tests) keep counting exactly as before.
  *
  * @param {Array<{x0:number, x1:number}>} spans  item extents (x .. x+w)
  * @param {{x0:number, x1:number}} bounds  page text extent
- * @param {{maxCrossFrac?:number, minWidth?:number, minSideCount?:number}} [opts]
+ * @param {{maxCrossFrac?:number, minWidth?:number, minSideCount?:number,
+ *          rowOf?:number[]}} [opts]
  * @returns {{x0:number, x1:number, center:number, crossFrac:number,
  *            leftCount:number, rightCount:number}|null}  null = no credible gutter
+ *   crossFrac is the fraction of ROWS whose ink covers the channel center.
  */
 export function findGutter(spans, bounds, opts = {}) {
   const o = opts && typeof opts === 'object' ? opts : {};
-  const ls = Array.isArray(spans)
-    ? spans.filter((s) => s && Number.isFinite(s.x0) && Number.isFinite(s.x1) && s.x1 >= s.x0)
-    : [];
+  const rowOf = Array.isArray(o.rowOf) ? o.rowOf : null;
+  // Keep every accepted span tagged with its ROW id: caller-supplied grouping via
+  // rowOf, else each span is its own row.
+  const ls = [];
+  if (Array.isArray(spans)) {
+    for (let i = 0; i < spans.length; i++) {
+      const s = spans[i];
+      if (!s || !Number.isFinite(s.x0) || !Number.isFinite(s.x1) || s.x1 < s.x0) continue;
+      const row = rowOf && Number.isFinite(rowOf[i]) ? rowOf[i] : i;
+      ls.push({ x0: s.x0, x1: s.x1, row });
+    }
+  }
   if (
     !bounds ||
     !Number.isFinite(bounds.x0) ||
@@ -70,20 +99,34 @@ export function findGutter(spans, bounds, opts = {}) {
   const minSideCount = Number.isFinite(o.minSideCount) ? o.minSideCount : MIN_SIDE_COUNT;
   if (ls.length < 2 * minSideCount) return null;
 
+  // Group spans by row so each row contributes AT MOST ONCE to any bin's crossing.
+  const byRow = new Map();
+  for (const s of ls) {
+    let arr = byRow.get(s.row);
+    if (!arr) { arr = []; byRow.set(s.row, arr); }
+    arr.push(s);
+  }
+  const nRows = byRow.size;
+
   const width = bounds.x1 - bounds.x0;
   const maxCrossFrac = Number.isFinite(o.maxCrossFrac) ? o.maxCrossFrac : MAX_CROSS_FRAC;
   const minWidth = Number.isFinite(o.minWidth) ? o.minWidth : 0.02 * width;
   const binW = width / GUTTER_BINS;
 
+  // Per-bin count of ROWS whose ink covers the bin center.
   const cross = new Array(GUTTER_BINS).fill(0);
-  for (const s of ls) {
-    for (let b = 0; b < GUTTER_BINS; b++) {
-      const c = bounds.x0 + (b + 0.5) * binW;
-      if (s.x0 < c && s.x1 > c) cross[b]++;
+  for (const arr of byRow.values()) {
+    const covered = new Uint8Array(GUTTER_BINS);
+    for (const s of arr) {
+      for (let b = 0; b < GUTTER_BINS; b++) {
+        const c = bounds.x0 + (b + 0.5) * binW;
+        if (s.x0 < c && s.x1 > c) covered[b] = 1;
+      }
     }
+    for (let b = 0; b < GUTTER_BINS; b++) if (covered[b]) cross[b]++;
   }
 
-  const limit = maxCrossFrac * ls.length;
+  const limit = maxCrossFrac * nRows;
   let best = null;
   let runStart = -1;
   for (let b = 0; b <= GUTTER_BINS; b++) {
@@ -107,22 +150,28 @@ export function findGutter(spans, bounds, opts = {}) {
   if (!best) return null;
 
   const cx = (best.x0 + best.x1) / 2;
+  // Side counts stay ITEM-level: a two-column baseline row merges a left and a right
+  // span into ONE row, so a per-row split would credit neither side. The crossing
+  // GUARD, by contrast, is per-row to match the row-normalized limit.
   let leftCount = 0;
   let rightCount = 0;
-  let crossers = 0;
   for (const s of ls) {
-    if (s.x0 < cx && s.x1 > cx) crossers++;
+    if (s.x0 < cx && s.x1 > cx) continue; // crosser — counted per-row below
     else if (s.x1 <= cx) leftCount++;
     else rightCount++;
   }
+  let crossRows = 0;
+  for (const arr of byRow.values()) {
+    if (arr.some((s) => s.x0 < cx && s.x1 > cx)) crossRows++;
+  }
   if (leftCount < minSideCount || rightCount < minSideCount) return null;
-  if (crossers > limit) return null;
+  if (crossRows > limit) return null;
 
   return {
     x0: best.x0,
     x1: best.x1,
     center: cx,
-    crossFrac: ls.length ? crossers / ls.length : 0,
+    crossFrac: nRows ? crossRows / nRows : 0,
     leftCount,
     rightCount,
   };

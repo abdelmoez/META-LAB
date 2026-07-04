@@ -38,8 +38,11 @@ const CANONICAL_SHAPE = {
   unknown: 'unknown',
 };
 
-/** A header cell that looks like a STUDY label (author + year, "et al", bracket ref). */
-const STUDY_HEADER_RE = /et al|\[\d+\]|\(\d{4}\)|\b(19|20)\d{2}\b/i;
+/** A header cell that looks like a STUDY label (author + year, "et al", bracket ref).
+ *  A bare 4-digit year must be preceded by whitespace / start-of-string, so a sample
+ *  size written "(n=2043)" is NOT mistaken for the year 2043 (fixes the two-arm →
+ *  arms-in-columns misclassification). */
+const STUDY_HEADER_RE = /et al|\[\d+\]|\((?:19|20)\d{2}\)|(?:^|\s)(?:19|20)\d{2}\b/i;
 
 /* ── Header keyword vocabulary ───────────────────────────────────────────────
    Checked against each column's COMBINED (top-to-bottom) header text. */
@@ -235,11 +238,22 @@ export function detectTableShape(input, pico = null) {
   // two-arm table. Only attempted when the caller passed PICO strings.
   let armAssignment = null;
   if (pico && (pico.intervention || pico.comparator)) {
-    const candidates = armsInColumns
-      ? headerText.filter((h, i) => i > 0 && STUDY_HEADER_RE.test(h))
-      : headerText.filter((h) => h && !/^(study|variable|characteristic|outcome)$/i.test(h.trim()));
-    armAssignment = matchArms(candidates, pico);
-    if (armAssignment && armAssignment.evidence) evidence.push(...armAssignment.evidence);
+    // Keep each candidate's ORIGINAL grid-column index so the returned assignment points
+    // at a real table column, not a position in the filtered candidate list (§14.8).
+    const candCols = [];
+    headerText.forEach((h, col) => {
+      const keep = armsInColumns
+        ? (col > 0 && STUDY_HEADER_RE.test(h))
+        : (h && !/^(study|variable|characteristic|outcome)$/i.test(h.trim()));
+      if (keep) candCols.push({ label: h, col });
+    });
+    const res = matchArms(candCols.map((c) => c.label), pico);
+    if (res) {
+      const remap = (a) => (a && Number.isFinite(a.index) && candCols[a.index]
+        ? { ...a, index: candCols[a.index].col } : a);
+      armAssignment = { ...res, intervention: remap(res.intervention), comparator: remap(res.comparator) };
+      if (armAssignment.evidence) evidence.push(...armAssignment.evidence);
+    }
   }
 
   return { shape, canonicalShape, columnTags: tags, rowKind, headerRows, confidence, evidence, alternates, armAssignment };

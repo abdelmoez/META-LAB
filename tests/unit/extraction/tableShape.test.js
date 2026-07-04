@@ -272,6 +272,29 @@ describe('detectTableShape — §14 canonical shapes, evidence, alternates, arm 
   it('backward compatible: pico is optional (armAssignment null when absent)', () => {
     expect(detectTableShape(gridOf(DIRECT_CELLS)).armAssignment).toBeNull();
   });
+
+  it('a sample size like "(n=2043)" is NOT read as a study year (regression F11)', () => {
+    const twoArm = [
+      ['Outcome', 'Intervention (n=2043)', 'Control (n=1987)', 'P value'],
+      ['Death', '120/2043', '150/1987', '0.04'],
+      ['MI', '88/2043', '99/1987', '0.21'],
+    ];
+    expect(detectTableShape(gridOf(twoArm)).canonicalShape).not.toBe('arms-in-columns');
+  });
+
+  it('armAssignment.index points at a real grid column, not the filtered list (regression F13)', () => {
+    const t = [
+      ['Outcome', 'EUS-BD (n=30)', 'ERCP (n=28)'],
+      ['Technical success', '0.94', '0.90'],
+      ['Adverse events', '0.12', '0.18'],
+    ];
+    const s = detectTableShape(gridOf(t), { intervention: 'EUS-BD', comparator: 'ERCP' });
+    if (s.armAssignment && s.armAssignment.confident) {
+      // EUS-BD is column 1, ERCP is column 2 (column 0 is the outcome label)
+      expect(s.armAssignment.intervention.index).toBe(1);
+      expect(s.armAssignment.comparator.index).toBe(2);
+    }
+  });
 });
 
 describe('existing-behaviour smoke: buildGrid unchanged', () => {

@@ -27,11 +27,14 @@
  */
 
 /** Fields whose value contributes to a draft's source identity. Order fixed.
- *  `discriminator` is an optional trailing part (prose excerpt / value fingerprint)
- *  used to separate region-less findings; empty for table/figure/click drafts. */
+ *  Identity is built from IMMUTABLE SOURCE facts only — deliberately NOT the mutable
+ *  destination fields (outcomeId / timepoint), so re-scoping a draft in the review UI
+ *  does not change its identity and thus does not break dedup or dismissal (§10.5).
+ *  `discriminator` (a captured-values fingerprint + a source-excerpt slice) is ALWAYS
+ *  present so two distinct rows/findings from the same region never collapse. */
 const IDENTITY_PARTS = [
-  'pdfFingerprint', 'page', 'region', 'rowIndex', 'colIndexes',
-  'method', 'outcomeId', 'timepoint', 'parserVersion', 'discriminator',
+  'pdfFingerprint', 'sourceStudyId', 'page', 'region', 'rowIndex', 'colIndexes',
+  'method', 'parserVersion', 'discriminator',
 ];
 
 /** valuesFingerprint(record) — a compact, deterministic string of a record's captured
@@ -87,27 +90,50 @@ export function identityOf(record) {
   if (!record || typeof record !== 'object') return '';
   const prov = record.provenance && typeof record.provenance === 'object' ? record.provenance : {};
   if (typeof prov.sourceIdentity === 'string' && prov.sourceIdentity) return prov.sourceIdentity;
-  // Manual records with no source facts get no synthetic identity (they never dedupe).
-  if (prov.method === 'manual' || (prov.page == null && !prov.region && prov.rowIndex == null)) return '';
+  // ONLY a truly manual record with no source facts at all gets no identity (never dedupes).
+  // Machine drafts — auto/table/figure/click/ai/prose — always resolve an identity so reruns
+  // dedupe and dismissal blocks them. (An AI draft with page==null but a captured excerpt/values
+  // still gets one via the discriminator below.)
+  const hasSource = prov.page != null || prov.region || prov.rowIndex != null ||
+    (prov.method && prov.method !== 'manual');
+  if (prov.method === 'manual' || !hasSource) return '';
+  // The discriminator is ALWAYS included: the captured-values fingerprint plus a source
+  // excerpt slice. This keeps two DISTINCT rows/findings from the same table region (same
+  // region, possibly no rowIndex) from collapsing into one identity — the data-loss bug —
+  // while an identical deterministic rerun still produces the SAME discriminator → dedup.
   const parts = {
     pdfFingerprint: prov.pdfFingerprint,
+    sourceStudyId: record.sourceStudyId,
     page: prov.page,
     region: prov.region,
     rowIndex: prov.rowIndex,
     colIndexes: prov.colIndexes,
     method: prov.method,
-    outcomeId: record.scope && record.scope.outcomeId,
-    timepoint: record.timepoint,
     parserVersion: prov.parserVersion,
+    discriminator: `${valuesFingerprint(record)}#${String(prov.excerpt || '').slice(0, 80)}`,
   };
-  // Prose findings carry no region/row — two distinct sentences on one page for the
-  // same outcome+timepoint would collide. Fold a stable discriminator (the source
-  // excerpt, else the captured value payload) into the identity so genuinely-different
-  // findings stay distinct while deterministic reruns still match byte-for-byte.
-  if (!prov.region && prov.rowIndex == null) {
-    parts.discriminator = String(prov.excerpt || '').slice(0, 80) || valuesFingerprint(record);
-  }
   return mkSourceIdentity(parts);
+}
+
+/**
+ * stampIdentity(record) — return a COPY of the record with a frozen
+ * provenance.sourceIdentity, computed once from its (original) source facts + values.
+ * Stamp at the moment a draft is first added so later human edits to its values or its
+ * destination outcome do NOT change its identity — that keeps dedup and dismissal stable
+ * across reruns (§10.5 / addresses the "human edits break dedup" flaw). Idempotent: a
+ * record that already carries a sourceIdentity is returned unchanged. A record with no
+ * derivable identity (purely manual) is returned unchanged.
+ *
+ * @param {object} record
+ * @returns {object}
+ */
+export function stampIdentity(record) {
+  if (!record || typeof record !== 'object') return record;
+  const prov = record.provenance && typeof record.provenance === 'object' ? record.provenance : null;
+  if (prov && typeof prov.sourceIdentity === 'string' && prov.sourceIdentity) return record;
+  const id = identityOf(record);
+  if (!id) return record;
+  return { ...record, provenance: { ...(prov || {}), sourceIdentity: id } };
 }
 
 /**
@@ -145,7 +171,10 @@ export function reconcileDrafts(existing, incoming, opts = {}) {
   const skipped = [];
   const suppressed = [];
 
-  for (const rec of inc) {
+  for (const raw of inc) {
+    // Freeze the incoming draft's identity now (from its ORIGINAL values), so a later
+    // human edit to its value/scope cannot change it and cause a duplicate on the next run.
+    const rec = stampIdentity(raw);
     const id = identityOf(rec);
     if (id && dismissed.has(id)) { suppressed.push(rec); continue; }
     if (id && byId.has(id)) {

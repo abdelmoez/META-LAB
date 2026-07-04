@@ -97,6 +97,23 @@ describe('normalizeOcr — cacheKey (§24.5) + OCR_MODES (§24.3)', () => {
     expect(cacheKey({ ...parts, scale: 2 })).not.toBe(base);
   });
 
+  it('is injective: an in-field "|" cannot alias two distinct part-sets (F18)', () => {
+    // Both fold to the same naive 'ocr|abc||text|5|2' if fields are joined un-encoded,
+    // but they are genuinely different inputs and MUST produce different keys.
+    const a = cacheKey({ pdfFingerprint: 'abc|', page: '', mode: 'text', tessVersion: '5', scale: 2 });
+    const b = cacheKey({ pdfFingerprint: 'abc', page: '|text', mode: '5', tessVersion: '', scale: 2 });
+    expect(a).not.toBe(b);
+
+    // Shifting where the '|' falls across the fingerprint/page boundary changes the key.
+    const c = cacheKey({ ...parts, pdfFingerprint: 'x|', page: 'y' });
+    const d = cacheKey({ ...parts, pdfFingerprint: 'x', page: '|y' });
+    expect(c).not.toBe(d);
+
+    // Determinism and per-part sensitivity still hold under encoding.
+    expect(cacheKey({ ...parts, pdfFingerprint: 'abc|' })).toBe(cacheKey({ ...parts, pdfFingerprint: 'abc|' }));
+    expect(cacheKey({ ...parts, pdfFingerprint: 'abc|' })).not.toBe(cacheKey({ ...parts, pdfFingerprint: 'abc' }));
+  });
+
   it('never throws on missing/malformed parts', () => {
     expect(() => cacheKey(null)).not.toThrow();
     expect(() => cacheKey(undefined)).not.toThrow();

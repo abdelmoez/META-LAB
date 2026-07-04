@@ -359,14 +359,22 @@ export const CI_CELL_PATTERNS = [
 /** Header text that names a 95% confidence interval (used only by merge/shape). */
 const CI_HEADER_RE = /95\s*%?\s*c\.?\s*i\.?|confidence\s*interval/i;
 
+/** An effect estimate carrying a parenthetical CI in ONE cell: "1.24 (0.99–1.03)" /
+ *  "2.10 (1.50, 2.94)". Counts as a data cell so a body row of these is not mistaken
+ *  for a header row. */
+const EFFECT_CI_CELL_RE = /^[-+]?\d[\d,]*(?:\.\d+)?\s*[([]\s*[-+]?\d[\d,]*(?:\.\d+)?\s*(?:,|to|[-–—−])\s*[-+]?\d[\d,]*(?:\.\d+)?\s*[)\]]$/i;
+
 /** Footnote / caption leader that must never be mistaken for a data row. */
 const FOOTNOTE_RE = /^\s*[*†‡§¶a-d]\s|^Note|^Abbrev|^CI[,: ]|^Values are|^Data are/i;
 
-/** true when a cell reads as a data value (number-ish) OR a CI/range token. */
+/** true when a cell reads as a data value (number-ish) OR a CI/range token OR an
+ *  effect+CI composite ("1.24 (0.99–1.03)"). */
 function cellLooksData(cell) {
   const s = (typeof cell === 'string' ? cell : cell == null ? '' : String(cell)).trim();
   if (!s) return false;
-  return NUMERIC_CELL_PATTERNS.some((re) => re.test(s)) || CI_CELL_PATTERNS.some((re) => re.test(s));
+  return NUMERIC_CELL_PATTERNS.some((re) => re.test(s)) ||
+    CI_CELL_PATTERNS.some((re) => re.test(s)) ||
+    EFFECT_CI_CELL_RE.test(s);
 }
 
 /** true when a cell is a plain signed number (no %, no range, no slash). */
@@ -699,7 +707,21 @@ export function buildLines(items, { yTol } = {}) {
 }
 
 const CAPTION_RE = /^(TABLE|Table|TABLA|Tab\.)\s*\d+[.:]?/;
-const FOOTNOTE_LEADER_RE = /^\s*([*†‡§¶]|[a-d]\s|Note|Abbreviation|CI[,: ]|Values are|Data are|SD,|Adapted|Source)/i;
+// Footnote leaders. A symbol marker (*,†,‡,§,¶) or a LOWERCASE letter marker (a-d, case
+// SENSITIVE) at the very start, OR a prose leader word (case-insensitive). Lowercase-only
+// letter markers keep real data labels "A"/"B"/"C" (e.g. Child-Pugh class rows) as data.
+const FOOTNOTE_MARKER_RE = /^\s*(?:[*†‡§¶]|[a-d]\s)/; // no /i — 'A ' is a data label, 'a ' a marker
+const FOOTNOTE_PROSE_RE = /^(?:Note|Abbreviation|CI[,: ]|Values are|Data are|SD,|Adapted|Source)/i;
+const FOOTNOTE_LEADER_RE = { test: (s) => FOOTNOTE_MARKER_RE.test(s) || FOOTNOTE_PROSE_RE.test(s) };
+/** A line that carries a numeric data token beyond its label — never a footnote. */
+function lineHasDataToken(text) {
+  return String(text || '')
+    .split(/\s{2,}|\t|\s+/)
+    .some((tok) => {
+      const t = tok.trim();
+      return t && (NUMERIC_CELL_PATTERNS.some((re) => re.test(t)) || CI_CELL_PATTERNS.some((re) => re.test(t)));
+    });
+}
 
 /**
  * stripCaptionAndFootnotes(lines) — §12.3. Split a table's lines into caption, body,
@@ -721,12 +743,14 @@ export function stripCaptionAndFootnotes(lines) {
   if (CAPTION_RE.test(ls[0].text)) {
     captionParts.push(ls[0].text);
     bodyStart = 1;
-    // Absorb continuation lines that are clearly NOT columnar: a single run with no
-    // numeric content (a wrapped caption clause), never a 2+ column data/header row.
+    // Absorb continuation lines that clearly CONTINUE the caption prose: a single run,
+    // no digits, AND starting lowercase (a wrapped caption clause like "and complications").
+    // A Title-Case single run — e.g. a spanning group header "Outcomes" — is NOT absorbed.
     while (
       bodyStart < ls.length && bodyStart < 3 &&
       ls[bodyStart].items.length <= 1 &&
       !/\d/.test(ls[bodyStart].text) &&
+      /^[a-z]/.test(ls[bodyStart].text) &&
       !CAPTION_RE.test(ls[bodyStart].text)
     ) {
       captionParts.push(ls[bodyStart].text);
@@ -747,6 +771,9 @@ export function stripCaptionAndFootnotes(lines) {
     const bigGap = gap > 1.5 * (bodyFontMedian || ln.h || 10);
     const smallFont = ln.h > 0 && bodyFontMedian > 0 && ln.h < 0.9 * bodyFontMedian;
     const hasLeader = FOOTNOTE_LEADER_RE.test(ln.text);
+    // A line carrying a numeric DATA token is a data row, never a footnote — this stops a
+    // Child-Pugh "A 10 (33) …" row (leader-like "A ") being stripped as a footnote.
+    if (lineHasDataToken(ln.text)) break;
     if (hasLeader || (bigGap && (smallFont || hasLeader))) {
       footnotes.unshift(ln.text);
       end = i;
@@ -796,11 +823,11 @@ export function mergeWrappedRows(cells, boxes) {
     const row = rows[i];
     const label = String(row[0] || '').trim();
     const prev = merged[merged.length - 1];
-    const wrapUp =
-      prev &&
-      !hasData(row) && // no numbers of its own
-      label &&
-      (String(prev.cells[0]).trim().endsWith('-') || (!hasData(prev.cells) && merged.length && row.slice(1).every((c) => !String(c || '').trim())));
+    // Merge a continuation ONLY on the unambiguous hyphenated-word-wrap signal ("ob-" +
+    // "struction"). A label-only row that does NOT continue a hyphenated word (e.g. a
+    // sub-section header "Early"/"Late") is left as its own row — merging it would corrupt
+    // the hierarchy (§12.6). Real hierarchy is expressed via indentLevel/parentRow below.
+    const wrapUp = prev && !hasData(row) && label && String(prev.cells[0]).trim().endsWith('-');
     if (wrapUp) {
       const prevLabel = String(prev.cells[0]).trim();
       prev.cells[0] = prevLabel.endsWith('-') ? prevLabel.slice(0, -1) + label : `${prevLabel} ${label}`.trim();
@@ -859,13 +886,32 @@ export function buildTableGrid(items, opts = {}) {
   if (cols.length < 2) { warnings.push('fewer than two columns detected'); return null; }
   let grid = buildGrid(bodyRows, cols);
   // Indented row labels (a child row's label sits further right — "EUS-BD" under
-  // "Patients, n") can spawn a phantom label column, mis-shifting the data. Collapse any
-  // leading NON-numeric columns before the first numeric column into ONE label column so
-  // the hierarchy is preserved instead of fragmenting the grid (§12.4/§12.6).
-  let firstNumeric = -1;
-  for (let c = 0; c < cols.length; c++) { if (looksNumericColumn(grid.cells, c)) { firstNumeric = c; break; } }
-  if (firstNumeric > 1) {
-    cols = [cols[0], ...cols.slice(firstNumeric)];
+  // "Patients, n") can spawn a PHANTOM label column, mis-shifting the data. Such a phantom
+  // column has a tell-tale signature: it is populated ONLY on rows where column 0 is empty
+  // (mutually-exclusive occupancy — the child's label lives in col1 while col0 holds the
+  // parent). Collapse ONLY those columns into the label column. A genuine second data
+  // column (e.g. a combined "aOR (95% CI)" effect column) co-occurs WITH col0 on the same
+  // rows and is therefore never collapsed — fixing the effect-column-destruction bug.
+  const bodyOnly = grid.cells.slice(detectHeaderSpan(grid.cells).headerRows);
+  const phantom = [];
+  for (let c = 1; c < cols.length; c++) {
+    let coOccur = 0;
+    let exclusive = 0;
+    let populated = 0;
+    for (const r of bodyOnly) {
+      const here = String((r && r[c]) || '').trim();
+      const col0 = String((r && r[0]) || '').trim();
+      if (!here) continue;
+      populated++;
+      if (col0) coOccur++; else exclusive++;
+    }
+    // A phantom indent column: populated, and never (or almost never) co-occurring with a
+    // col-0 label — i.e. it only appears on rows whose col0 is empty.
+    if (populated > 0 && coOccur === 0 && exclusive > 0) phantom.push(c);
+    else break; // stop at the first genuine (co-occurring) column
+  }
+  if (phantom.length) {
+    cols = cols.filter((_, i) => !phantom.includes(i));
     grid = buildGrid(bodyRows, cols);
     warnings.push('collapsed indented label sub-columns into one label column');
   }

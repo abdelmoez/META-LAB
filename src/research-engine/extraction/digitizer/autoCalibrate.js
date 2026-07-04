@@ -30,6 +30,10 @@ const R2_GATE = 0.999;
 /** Near-tie margin for the linear-vs-log choice (§22.4). */
 const LOG_TIE_MARGIN = 0.002;
 
+/** R² at/above which a fit is treated as byte-perfect (a perfect linear fit
+ *  must never be overridden by the modest log prior, §22.4). */
+const NEAR_PERFECT_R2 = 1 - 1e-9;
+
 /** Max relative deviation of a px gap from the mean gap ("near-even" spacing). */
 const SPACING_TOLERANCE = 0.3;
 
@@ -163,8 +167,13 @@ export function autoCalibrateAxis(ticks, opts = {}) {
   let useLog;
   if (!log) useLog = false;
   else if (!lin) useLog = true;
-  else if (o.ratioMeasure) useLog = log.r2 >= lin.r2 - LOG_TIE_MARGIN;
-  else useLog = log.r2 > lin.r2 + LOG_TIE_MARGIN;
+  else if (o.ratioMeasure) {
+    // Modest log prior (§22.4): prefer log only when it is genuinely at least
+    // as good as linear (within the tie margin) AND linear is not itself a
+    // byte-perfect fit — a perfect linear axis (e.g. a zoomed forest region)
+    // must never be silently auto-accepted as log (F15).
+    useLog = log.r2 >= lin.r2 - LOG_TIE_MARGIN && lin.r2 < NEAR_PERFECT_R2;
+  } else useLog = log.r2 > lin.r2 + LOG_TIE_MARGIN;
 
   const fit = useLog ? log : lin;
   const scale = useLog ? 'log' : 'linear';
@@ -173,7 +182,17 @@ export function autoCalibrateAxis(ticks, opts = {}) {
   if (fit.r2 < R2_GATE) warnings.push(`R² ${fit.r2.toFixed(6)} is below the 0.999 acceptance gate`);
   if (!strictlyMonotonic(pxs)) warnings.push('tick pixels are not monotonic');
   if (!strictlyMonotonic(vals)) warnings.push('tick values are not monotonic');
-  if (!nearEvenSpacing(pxs)) warnings.push('tick spacing is uneven in the fitted domain');
+  // Near-even spacing is a gate on the FITTED domain (§22.5). For a linear fit
+  // that domain is px, so uneven px gaps genuinely signal irregular ticks. For
+  // a log fit the fitted quantity is ln(value); round log tick labels
+  // (e.g. 1,5,10,50,100 — a common two-ticks-per-decade pattern) sit at
+  // legitimately non-uniform pixel gaps, so a raw px gap test would wrongly
+  // reject a byte-perfect log axis (F16). A perfect log fit already places
+  // every tick at its fitted position, and the monotonic + R² gates still
+  // guard log fits, so the raw-gap heuristic is only applied to linear axes.
+  if (scale === 'linear' && !nearEvenSpacing(pxs)) {
+    warnings.push('tick spacing is uneven in the fitted domain');
+  }
 
   const auto = warnings.length === 0;
   const domain = [Math.min.apply(null, vals), Math.max.apply(null, vals)];

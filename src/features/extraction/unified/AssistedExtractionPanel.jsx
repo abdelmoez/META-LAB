@@ -26,7 +26,8 @@ import TableRegionMapper from './TableRegionMapper.jsx';
 import DraftReviewList from './DraftReviewList.jsx';
 import { autoExtract } from '../../../research-engine/extraction/autoExtract.js';
 import { normalizeItems, itemsToRows, detectColumns, buildGrid } from '../../../research-engine/extraction/pdfTextGrid.js';
-import { snapNumberToken } from '../../../research-engine/extraction/numberTokens.js';
+import { snapToken } from '../../../research-engine/extraction/cellGrammar.js';
+import { findNumberTokens } from '../../../research-engine/extraction/numberTokens.js';
 import { mkExtractionRecord } from '../../../research-engine/extraction/records.js';
 import { decideWrite } from '../../../research-engine/extraction/valuePrecedence.js';
 import { aiExtractStatus, aiExtract } from '../../../frontend/services/aiExtractService.js';
@@ -48,12 +49,17 @@ const ASSIGN_FIELDS = [
   ['events', 'events'], ['total', 'total'], ['n', 'Total N'],
 ];
 
-// Fallback for older payloads that only carry the whole run string (no offset): grab the
-// first full number token. The rich path uses snapNumberToken(runStr, offset).
-const firstNumber = (s) => {
-  const m = String(s || '').replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
-  return m ? m[0] : null;
+// 4.md §13.3/§21.2 — ONE shared grammar: clicks resolve through cellGrammar.snapToken
+// (numberTokens geometry + p-value awareness). The old firstNumber "grab the run's
+// first number" fallback is retired: a legacy no-offset payload is used only when the
+// run holds exactly ONE token (zero guessing), otherwise we ask for a direct click.
+const onlyToken = (s) => {
+  const toks = findNumberTokens(String(s || ''));
+  return toks.length === 1 ? toks[0] : null;
 };
+/** The primary numeric component of a token (est for composites, a for pairs…). */
+const tokenPrimary = (t) =>
+  t == null ? null : t.value != null ? t.value : t.est != null ? t.est : t.a != null ? t.a : t.lo != null ? t.lo : null;
 
 const PANE_H = 'calc(100vh - 230px)';   // both panes share a fixed height with their own scroll
 
@@ -96,11 +102,24 @@ export default function AssistedExtractionPanel({
   const assignFromClick = useCallback((payload) => {
     if (!study) { setStatus('Pick a study first.'); return; }
     const runStr = payload.str || '';
-    const token = (payload.offset != null) ? snapNumberToken(runStr, payload.offset) : null;
-    // When the caret couldn't be resolved (no offset) and the run holds several numbers,
-    // refuse to guess — assigning the run's FIRST number could be a confident wrong value.
-    if (!token && payload.offset == null && (runStr.match(/-?\d[\d.,]*/g) || []).length > 1) {
-      setStatus('Could not pinpoint which number you clicked — zoom in and click directly on it.'); return;
+    // 4.md §21.2 — resolve through the SHARED grammar. With a caret offset, snapToken
+    // (nearest-window snap + p-value awareness); a click that resolves NO token means
+    // the user clicked plain text — refuse rather than grab an unrelated number (§4.2).
+    // Legacy payloads with no offset use the run's token only when it is unambiguous.
+    const token = (payload.offset != null) ? snapToken(runStr, payload.offset) : onlyToken(runStr);
+    if (!token) {
+      const n = findNumberTokens(runStr).length;
+      setStatus(n === 0
+        ? `"${runStr}" has no number to capture.`
+        : 'Could not pinpoint which number you clicked — zoom in and click directly on it.');
+      return;
+    }
+    // A p-value is not an effect estimate: in Smart mode refuse it plainly instead of
+    // silently logging it into es (§4.2). A specific field chosen by the user still takes
+    // the numeric value deliberately.
+    if (assignField === 'smart' && token.kind === 'p') {
+      setStatus('That looks like a p-value — click the effect estimate or its confidence interval instead.');
+      return;
     }
     // es/lo/hi are stored on the ANALYSIS scale: ln for ratio measures (OR/RR/HR/IRR).
     // Click-assign must honour that, matching the table/figure paths — never write a raw ratio.
@@ -129,17 +148,15 @@ export default function AssistedExtractionPanel({
       else if (token && token.kind === 'pair') { patch.events = String(token.a); patch.total = String(token.b); }
       else if (token && token.kind === 'meanSd') { patch.meanExp = String(token.a); patch.sdExp = String(token.b); }
       else {
-        const raw = token && token.value != null ? token.value : firstNumber(runStr);
+        const raw = tokenPrimary(token);
         if (raw == null) { setStatus(`"${runStr}" has no number to capture.`); return; }
         const e = esFields(Number(raw), null, null); if (!e) { setStatus('That value is ≤ 0, which a ratio measure cannot take on the log scale.'); return; }
         Object.assign(patch, e);
       }
     } else {
-      // A specific field is chosen: take the number FROM the snapped token under the cursor
-      // (its primary component), only falling back to the run's first number if no token.
-      const n = token
-        ? (token.value != null ? token.value : token.est != null ? token.est : token.a != null ? token.a : token.lo != null ? token.lo : firstNumber(runStr))
-        : firstNumber(runStr);
+      // A specific field is chosen: take the snapped token's primary component (est for
+      // composites, count for pairs) — never a blind first-number grab (§13.3).
+      const n = tokenPrimary(token);
       if (n == null) { setStatus(`"${runStr}" has no number to capture.`); return; }
       patch[assignField] = String(n);
     }
@@ -175,23 +192,26 @@ export default function AssistedExtractionPanel({
   // Resolve a held overwrite decision. 'replace' applies the whole captured patch;
   // 'keep' drops only the conflicting value fields (empty/agreeing fields still write).
   const resolvePendingAssign = useCallback((mode) => {
-    setPendingAssign((pending) => {
-      if (!pending) return null;
-      let patch = pending.patch;
-      if (mode === 'keep') {
-        const drop = new Set(pending.conflicts.map((c) => c.field));
-        patch = Object.fromEntries(Object.entries(pending.patch).filter(([k]) => !drop.has(k)));
-        // If nothing but meta remains, don't churn the study.
-        if (!Object.keys(patch).some((k) => !PATCH_META_FIELDS.includes(k))) {
-          setStatus('Kept the existing value(s).');
-          return null;
-        }
+    const pending = pendingAssign;
+    if (!pending) return;
+    let patch = pending.patch;
+    if (mode === 'keep') {
+      const drop = new Set(pending.conflicts.map((c) => c.field));
+      patch = Object.fromEntries(Object.entries(pending.patch).filter(([k]) => !drop.has(k)));
+      // Drop the ratio-log conversion audit entry when its effect value (es) was declined,
+      // so the study's conversion trail never references a value the user did not accept.
+      if (drop.has('es')) { delete patch.conversions; delete patch.converted; }
+      // If nothing but meta remains, don't churn the study.
+      if (!Object.keys(patch).some((k) => !PATCH_META_FIELDS.includes(k))) {
+        setPendingAssign(null);
+        setStatus('Kept the existing value(s).');
+        return;
       }
-      onPatchStudy && onPatchStudy(pending.studyId, patch);
-      setStatus(mode === 'replace' ? 'Replaced with the clicked value(s).' : 'Kept existing; filled the empty field(s).');
-      return null;
-    });
-  }, [onPatchStudy]);
+    }
+    onPatchStudy && onPatchStudy(pending.studyId, patch);
+    setPendingAssign(null);
+    setStatus(mode === 'replace' ? 'Replaced with the clicked value(s).' : 'Kept existing; filled the empty field(s).');
+  }, [pendingAssign, onPatchStudy]);
 
   const interaction = useMemo(() => {
     if (readOnly || !pdf.url) return null;

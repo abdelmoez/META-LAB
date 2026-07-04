@@ -66,6 +66,25 @@ describe('cellGrammar.parseCell — discriminated ParsedCell (§13.1)', () => {
     expect(parseCell('-3').kind).toBe('INT');
   });
 
+  it('EFFECT_CI: an estimate with a parenthetical CI is one composite cell', () => {
+    expect(parseCell('2.24 (1.40-3.57)')).toMatchObject({ kind: 'EFFECT_CI', est: 2.24, low: 1.40, high: 3.57 });
+    expect(parseCell('1.05 (95% CI 0.89 to 1.24)')).toMatchObject({ kind: 'EFFECT_CI', est: 1.05, low: 0.89, high: 1.24 });
+  });
+
+  it('a bracketed thousands integer is NOT a CI (regression F21)', () => {
+    // "(1,240)" must not read as {low:1, high:240}
+    const c = parseCell('(1,240)');
+    if (c) expect(c.kind).not.toBe('CI');
+    // a genuine space-separated bracketed pair still parses as CI
+    expect(parseCell('(1.40, 3.57)')).toMatchObject({ kind: 'CI', low: 1.40, high: 3.57 });
+  });
+
+  it('P false positives rejected (regression F22): "p2" and "=64" are not p-values', () => {
+    expect(parseCell('p2')).not.toMatchObject({ kind: 'P' });
+    const eq = parseCell('=64');
+    if (eq) expect(eq.kind).not.toBe('P');
+  });
+
   it('null / non-string / unparseable → null, never throws', () => {
     expect(parseCell(null)).toBeNull();
     expect(parseCell(undefined)).toBeNull();
@@ -108,10 +127,15 @@ describe('cellGrammar.snapToken — click-assign (§13.3)', () => {
     expect(t.hi).toBe(3.57);
   });
 
-  it('clicking inside "n=64" snaps to 64', () => {
-    const s = 'n=64';
-    const t = snapToken(s, 3);
+  it('clicking inside "n=64" snaps to the NUMBER 64, not a p-value (regression F19)', () => {
+    const t = snapToken('n=64', 3);
     expect(t).toMatchObject({ value: 64 });
+    expect(t.kind).toBe('number'); // '=' after 'n' must NOT upgrade to a p-value
+  });
+
+  it('"OR=1.05" and "age > 65" keep their numeric kind, not p (regression F19)', () => {
+    expect(snapToken('OR=1.05', 4).kind).toBe('number');
+    expect(snapToken('age > 65', 7).kind).toBe('number');
   });
 
   it('thousands separators: 1,024 → 1024', () => {

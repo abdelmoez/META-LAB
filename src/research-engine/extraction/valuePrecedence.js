@@ -88,9 +88,15 @@ export function decideWrite({ existingValue, existingOrigin, incoming, incomingO
     return { action: 'keep-existing', reason: 'identical value already present', existing: existingValue, incoming };
   }
 
-  // A human is writing (typed or correcting): the reviewer's action always wins.
+  // A human is writing (typed / correcting / confirming). It overrides any MACHINE value,
+  // and any WEAKER-or-equal human origin, but NEVER silently overrides a STRONGER human
+  // value (a user-confirmed draft must not clobber a value the user typed by hand) — that
+  // is proposed instead, honouring the §4.3 ladder.
   if (incomingIsHuman) {
-    return { action: 'write', reason: `human write (${inOrigin}) overrides existing`, existing: existingValue, incoming };
+    if (inRank <= exRank) {
+      return { action: 'write', reason: `human write (${inOrigin}) overrides existing (${exOrigin})`, existing: existingValue, incoming };
+    }
+    return { action: 'propose-replace', reason: `incoming ${inOrigin} is weaker than existing ${exOrigin} — confirmation required`, existing: existingValue, incoming };
   }
 
   // Incoming is a MACHINE value that differs from a non-empty existing value.

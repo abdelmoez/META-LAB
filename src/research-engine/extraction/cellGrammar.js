@@ -79,9 +79,17 @@ const RE_N_OF_N_SLASH = new RegExp('^(' + SIGN + '\\d[\\d,]*)\\s*/\\s*(\\d[\\d,]
 const RE_N_OF_N_WORD = new RegExp('^(\\d[\\d,]*)\\s+of\\s+(\\d[\\d,]*)$', 'i');
 const RE_MEAN_SD = new RegExp('^(' + NUMBER_SRC + ')\\s*(?:\\u00b1|\\+/[-\\u2212])\\s*(' + NUMBER_SRC + ')$');
 const RE_CI_BARE = new RegExp('^(' + NUMBER_SRC + ')\\s*(?:' + DASH_CLASS + '|to)\\s*(' + NUMBER_SRC + ')$', 'i');
-const RE_CI_BRACKET = new RegExp('^[\\(\\[\\{]\\s*(' + NUMBER_SRC + ')\\s*(?:,|;|' + DASH_CLASS + '|to)\\s*(' + NUMBER_SRC + ')\\s*[\\)\\]\\}]$', 'i');
-const RE_P = new RegExp('^p\\s*(<=|>=|≤|≥|<|>|=)?\\s*(' + NUMBER_SRC + ')$', 'i');
-const RE_P_BARE_OP = new RegExp('^(<=|>=|≤|≥|<|>|=)\\s*(' + NUMBER_SRC + ')$'); // "<0.001" with no leading p
+// Bracketed CI. A COMMA separator must be flanked by whitespace ("(1.40, 3.57)") so a
+// thousands comma inside a single bracketed integer ("(1,240)") is NOT read as a bound
+// pair; a dash / "to" separator needs no space.
+const RE_CI_BRACKET = new RegExp('^[\\(\\[\\{]\\s*(' + NUMBER_SRC + ')\\s*(?:\\s[,;]\\s|[,;]\\s|\\s[,;]|' + DASH_CLASS + '|to)\\s*(' + NUMBER_SRC + ')\\s*[\\)\\]\\}]$', 'i');
+// Effect estimate + parenthetical CI: "2.24 (1.40–3.57)" / "1.05 (95% CI 0.89 to 1.24)".
+const RE_EFFECT_CI = new RegExp('^(' + NUMBER_SRC + ')\\s*[\\(\\[]\\s*(?:\\d{1,2}(?:\\.\\d+)?\\s*%\\s*(?:CI|C\\.I\\.|confidence\\s+interval)s?\\b[\\s:,]*)?(' + NUMBER_SRC + ')\\s*(?:' + DASH_CLASS + '|to|,)\\s*(' + NUMBER_SRC + ')\\s*[\\)\\]]$', 'i');
+// P value: an operator is REQUIRED unless the number is a decimal &lt; 1 (the p-value shape),
+// so "p2" (integer, no op) and "=64" are not misread as p-values.
+const RE_P = new RegExp('^p\\s*(<=|>=|≤|≥|<|>|=)\\s*(' + NUMBER_SRC + ')$', 'i');
+const RE_P_IMPLICIT = new RegExp('^p\\s*=?\\s*(0?\\.\\d+)$', 'i'); // "p 0.03" / "p.03" / "p=.03"
+const RE_P_BARE_OP = new RegExp('^(<=|>=|≤|≥|<|>)\\s*(0?\\.\\d+)$'); // "<0.001" — operator + decimal &lt;1
 
 /** normalizeOp(op) — fold operator spellings to a single glyph; '' = plain equality. */
 function normalizeOp(op) {
@@ -127,6 +135,18 @@ export function parseCell(raw) {
     if (count !== null && pct !== null) return { kind: 'PCT', pct, count, raw: rawStr };
   }
 
+  // Effect + CI composite: "2.24 (1.40–3.57)" / "1.05 (95% CI 0.89 to 1.24)".
+  if ((m = s.match(RE_EFFECT_CI))) {
+    const est = toNum(m[1]);
+    const low2 = toNum(m[2]);
+    const high2 = toNum(m[3]);
+    if (est !== null && low2 !== null && high2 !== null) {
+      const cell = { kind: 'EFFECT_CI', est, low: low2, high: high2, raw: rawStr };
+      if (low2 > high2) cell.warning = 'lower bound exceeds upper bound';
+      return cell;
+    }
+  }
+
   // CI bracketed: "(1.40, 3.57)" / "[1.40–3.57]" / "{1.40 to 3.57}".
   if ((m = s.match(RE_CI_BRACKET))) {
     const low2 = toNum(m[1]);
@@ -150,11 +170,19 @@ export function parseCell(raw) {
     if (mean !== null && sd !== null) return { kind: 'MEAN_SD', mean, sd, raw: rawStr };
   }
 
-  // P value: "p<0.001" / "P = 0.03" / "<0.001" / "0.032".
-  if ((m = s.match(RE_P)) || (m = s.match(RE_P_BARE_OP))) {
-    const operator = normalizeOp(m[1]);
+  // P value: "p<0.001" / "P = 0.03" / "<0.001". Requires an operator, or a "p" with a
+  // decimal &lt;1 — so "p2" and "=64" are NOT misread as p-values.
+  if ((m = s.match(RE_P))) {
     const value = toNum(m[2]);
-    if (value !== null) return { kind: 'P', operator, value, raw: rawStr };
+    if (value !== null) return { kind: 'P', operator: normalizeOp(m[1]), value, raw: rawStr };
+  }
+  if ((m = s.match(RE_P_IMPLICIT))) {
+    const value = toNum(m[1]);
+    if (value !== null) return { kind: 'P', operator: '', value, raw: rawStr };
+  }
+  if ((m = s.match(RE_P_BARE_OP))) {
+    const value = toNum(m[2]);
+    if (value !== null) return { kind: 'P', operator: normalizeOp(m[1]), value, raw: rawStr };
   }
 
   // PCT bare: "9.6%".
@@ -249,16 +277,20 @@ export function snapToken(str, clickOffset, selectionRange) {
   return best ? upgradeP(str, best) : null;
 }
 
-/** upgradeP(str, tok) — if a bare-number token is immediately preceded by a p-value
- *  operator ("<0.001", "p<0.001", "≤0.05"), annotate it as a P token so click-assign
- *  keeps the inequality. Returns the token (possibly with pOperator set). */
+/** upgradeP(str, tok) — annotate a token as a P-value ONLY when it is a genuine
+ *  p-value context: an operator that is at the very start of the run or preceded by a
+ *  'p'/'P' (e.g. "<0.001", "p<0.001", "P = .03", "≤0.05"). A stray operator after
+ *  arbitrary text ("n=64", "OR=1.05", "age > 65") does NOT upgrade — those keep their
+ *  numeric kind (fixes the mis-classification bug). */
 function upgradeP(str, tok) {
-  if (!tok || (tok.kind !== 'number' && tok.kind !== 'percent')) return tok;
+  if (!tok || tok.kind !== 'number') return tok; // percents are never p-values
   const before = str.slice(0, tok.start);
-  const m = before.match(/(<=|>=|≤|≥|<|>|=)\s*(?:p\s*)?$/i) || before.match(/p\s*(<=|>=|≤|≥|<|>|=)?\s*$/i);
-  if (m && m[1]) {
-    return { ...tok, kind: 'p', pOperator: normalizeOp(m[1]), value: tok.value };
-  }
+  // Case A: "p" then optional operator right before the number ("p<", "p =", "P").
+  const withP = before.match(/(?:^|[^A-Za-z0-9])[pP]\s*(<=|>=|≤|≥|<|>|=)?\s*$/);
+  if (withP) return { ...tok, kind: 'p', pOperator: normalizeOp(withP[1] || ''), value: tok.value };
+  // Case B: a bare operator that IS the whole preceding run — "<0.001" at run start.
+  const startOp = before.match(/^\s*(<=|>=|≤|≥|<|>|=)\s*$/);
+  if (startOp) return { ...tok, kind: 'p', pOperator: normalizeOp(startOp[1]), value: tok.value };
   return tok;
 }
 
