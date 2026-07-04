@@ -119,6 +119,44 @@ describe('pageLayout — column layout detection (§19.1)', () => {
     const items = [itm('T', 40, 750, 530), ...twoColPage()];
     expect(JSON.stringify(detectPageLayout(items))).toBe(JSON.stringify(detectPageLayout(items)));
   });
+
+  // F14 (CRITICAL): a DENSE one-column page — every row is a chain of many narrow
+  // words spanning most of the width. An item-count normalizer sees a low crossing
+  // fraction at every bin (each word straddles few bin centers) and reads the whole
+  // page as a gutter → two columns. Normalizing crossings by ROWS fixes it: nearly
+  // every row physically covers the middle, so no channel survives.
+  it('classifies a DENSE ragged one-column page as one column (F14)', () => {
+    const wordWidths = [34, 46, 28, 52, 39, 30, 48, 26, 44, 36, 50, 32]; // varied widths
+    const items = [];
+    for (let r = 0; r < 40; r++) {
+      let x = 40;
+      const y = 720 - r * 13;
+      // Ragged rows: rotate the starting width per row so gaps never line up in one column.
+      for (let w = 0; w < 12; w++) {
+        const width = wordWidths[(r + w) % wordWidths.length];
+        items.push(itm(`w${r}_${w}`, x, y, width, 10));
+        x += width + 3; // small inter-word space; ink stays continuous across the middle
+      }
+    }
+    const r = detectPageLayout(items);
+    expect(r.columns).toBe(1);
+    expect(r.regions).toHaveLength(1);
+    expect(r.regions[0].role).toBe('column');
+    expect(r.readingOrder).toEqual([0]);
+  });
+
+  // F17 (LOW): detectPageLayout must never throw on a pathologically large item array
+  // (a 200k-item spread into Math.min/Math.max overflows the argument stack → RangeError).
+  it('never throws on a very large item array and returns one column (F17)', () => {
+    const N = 200000;
+    const items = new Array(N);
+    for (let i = 0; i < N; i++) items[i] = itm(`t${i}`, (i % 500), 700 - (i % 900), 8, 10);
+    let r;
+    expect(() => { r = detectPageLayout(items); }).not.toThrow();
+    expect(r.columns).toBe(1);
+    expect(r.regions).toHaveLength(1);
+    expect(r.readingOrder).toEqual([0]);
+  });
 });
 
 describe('findGutter — whitespace-channel helper', () => {

@@ -204,22 +204,36 @@ export function detectPageLayout(items, opts = {}) {
     return { columns: 1, regions: [], confidence: 0, readingOrder: [], warnings: ['no usable text items'] };
   }
 
-  const x0 = Math.min(...norm.map((i) => i.x));
-  const x1 = Math.max(...norm.map((i) => i.x + i.w));
+  // Extents via a loop, NOT Math.min(...spread): a 200k-item page overflows the
+  // argument stack and throws RangeError (F17).
+  const x0 = minOf(norm, (i) => i.x);
+  const x1 = maxOf(norm, (i) => i.x + i.w);
   const width = x1 - x0;
   if (!(width > 0)) {
     return {
       columns: 1,
-      regions: [{ x0, x1, role: 'column', y0: Math.min(...norm.map((i) => i.y)), y1: Math.max(...norm.map((i) => i.y)) }],
+      regions: [{ x0, x1, role: 'column', y0: minOf(norm, (i) => i.y), y1: maxOf(norm, (i) => i.y) }],
       confidence: 0,
       readingOrder: [0],
       warnings: ['degenerate page width — treated as one column'],
     };
   }
 
+  // F17: pathologically large pages skip the histogram sweep (and every downstream
+  // spread) entirely and return the safe one-column default.
+  if (norm.length > MAX_ITEMS) {
+    return {
+      columns: 1,
+      regions: [{ x0, x1, role: 'column', y0: minOf(norm, (i) => i.y), y1: maxOf(norm, (i) => i.y) }],
+      confidence: 0.1,
+      readingOrder: [0],
+      warnings: [`very large page (${norm.length} items) — treated as one column`],
+    };
+  }
+
   const rows = buildLines(norm);
-  const yTop = Math.max(...rows.map((r) => r.y));
-  const yBot = Math.min(...rows.map((r) => r.y));
+  const yTop = maxOf(rows, (r) => r.y);
+  const yBot = minOf(rows, (r) => r.y);
 
   const minLines = Number.isFinite(o.minLines) ? o.minLines : MIN_ROWS;
   if (rows.length < minLines) {
@@ -234,14 +248,24 @@ export function detectPageLayout(items, opts = {}) {
   }
 
   /* ── Two-column evidence: a whitespace channel in the item-span histogram ──
-     Item level, NOT line level: buildLines merges same-baseline items across
-     columns, which would make every two-column row look full-width. */
+     Spans carry their ROW id (rowOf) so the channel's crossing fraction is measured
+     per row, NOT per item: buildLines merges same-baseline items across columns, and
+     a dense one-column body is a long chain of narrow words — an item-count normalizer
+     reads BOTH as low-crossing and mislabels a one-column page two-column (F14). */
   const medianH = median(norm.map((i) => i.h));
-  const spans = norm.map((i) => ({ x0: i.x, x1: i.x + i.w }));
+  const spans = [];
+  const rowOf = [];
+  rows.forEach((row, ri) => {
+    for (const it of row.items) {
+      spans.push({ x0: it.x, x1: it.x + it.w });
+      rowOf.push(ri);
+    }
+  });
   const gutter = findGutter(spans, { x0, x1 }, {
     maxCrossFrac: Number.isFinite(o.maxCrossFrac) ? o.maxCrossFrac : MAX_CROSS_FRAC,
     minWidth: Math.max(0.025 * width, 1.2 * medianH),
     minSideCount: MIN_SIDE_COUNT,
+    rowOf,
   });
 
   if (!gutter) {
@@ -293,8 +317,8 @@ export function detectPageLayout(items, opts = {}) {
           x0,
           x1,
           role: 'full-width',
-          y0: Math.min(...run.rows.map((r) => r.y)),
-          y1: Math.max(...run.rows.map((r) => r.y)),
+          y0: minOf(run.rows, (r) => r.y),
+          y1: maxOf(run.rows, (r) => r.y),
         }) - 1
       );
       continue;
@@ -309,12 +333,12 @@ export function detectPageLayout(items, opts = {}) {
     }
     if (leftYs.length) {
       readingOrder.push(
-        regions.push({ x0, x1: gutter.x0, role: 'column', y0: Math.min(...leftYs), y1: Math.max(...leftYs) }) - 1
+        regions.push({ x0, x1: gutter.x0, role: 'column', y0: minOf(leftYs), y1: maxOf(leftYs) }) - 1
       );
     }
     if (rightYs.length) {
       readingOrder.push(
-        regions.push({ x0: gutter.x1, x1, role: 'column', y0: Math.min(...rightYs), y1: Math.max(...rightYs) }) - 1
+        regions.push({ x0: gutter.x1, x1, role: 'column', y0: minOf(rightYs), y1: maxOf(rightYs) }) - 1
       );
     }
   }
@@ -332,6 +356,26 @@ export function detectPageLayout(items, opts = {}) {
     readingOrder,
     warnings,
   };
+}
+
+/** minOf/maxOf(arr, fn?) — loop-based extent (fn defaults to identity). Used instead
+ *  of Math.min/Math.max(...spread) so a very large array never overflows the argument
+ *  stack (RangeError). Empty input yields ±Infinity — callers guard length first. */
+function minOf(arr, fn) {
+  let m = Infinity;
+  for (const v of arr) {
+    const n = fn ? fn(v) : v;
+    if (n < m) m = n;
+  }
+  return m;
+}
+function maxOf(arr, fn) {
+  let m = -Infinity;
+  for (const v of arr) {
+    const n = fn ? fn(v) : v;
+    if (n > m) m = n;
+  }
+  return m;
 }
 
 /** median(arr) — deterministic median of a numeric array (0 when empty). */
