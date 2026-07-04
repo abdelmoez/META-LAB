@@ -9,8 +9,8 @@ describe('wos compiler', () => {
   it('compiles the fixture to the exact Web of Science string with PY + LA limits', () => {
     const r = compileStrategy(FIXTURE, 'wos');
     expect(r.query).toBe(
-      '((TS=("Heart Failure") OR TS=("cardiac failure") OR TI=(chf))'
-      + ' AND TS=(sglt2*) OR TS=(placebo)) AND PY=(2010-2025) AND LA=(English)',
+      '(((TS=("Heart Failure") OR TS=("cardiac failure") OR TI=(chf))'
+      + ' AND TS=(sglt2*)) OR TS=(placebo)) AND PY=(2010-2025) AND LA=(English)',
     );
     expect(r.filtersApplied).toBe(true);
   });

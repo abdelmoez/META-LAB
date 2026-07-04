@@ -8,7 +8,7 @@ import { FIXTURE } from './fixture.js';
 describe('opengrey compiler', () => {
   it('compiles the fixture to simple boolean + quoted phrases', () => {
     const r = compileStrategy(FIXTURE, 'opengrey');
-    expect(r.query).toBe('("Heart Failure" OR "cardiac failure" OR chf) AND sglt2 OR placebo');
+    expect(r.query).toBe('((("Heart Failure" OR "cardiac failure" OR chf) AND sglt2) OR placebo)');
     expect(r.syntaxLevel).toBe('approximate');
     expect(r.filtersApplied).toBe(false);
   });

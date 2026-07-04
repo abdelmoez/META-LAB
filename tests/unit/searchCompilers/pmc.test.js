@@ -9,8 +9,8 @@ describe('pmc compiler', () => {
   it('compiles the fixture using [Title]/[Abstract]/[MeSH Terms] with limits', () => {
     const r = compileStrategy(FIXTURE, 'pmc');
     expect(r.query).toBe(
-      '(("Heart Failure"[MeSH Terms] OR ("cardiac failure"[Title] OR "cardiac failure"[Abstract]) OR chf[Title])'
-      + ' AND (sglt2*[Title] OR sglt2*[Abstract]) OR (placebo[Title] OR placebo[Abstract]))'
+      '((("Heart Failure"[MeSH Terms] OR ("cardiac failure"[Title] OR "cardiac failure"[Abstract]) OR chf[Title])'
+      + ' AND (sglt2*[Title] OR sglt2*[Abstract])) OR (placebo[Title] OR placebo[Abstract]))'
       + ' AND ("2010/01/01"[Publication Date] : "2025/12/31"[Publication Date])'
       + ' AND English[Language] AND "Randomized Controlled Trial"[Publication Type]',
     );

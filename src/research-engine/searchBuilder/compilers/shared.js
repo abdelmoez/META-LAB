@@ -159,12 +159,36 @@ export function orGroup(clauses) {
 export function composeConcepts(blocks, joiner) {
   const surv = blocks.filter((b) => b.q);
   if (!surv.length) return '';
+  // When the chain MIXES AND and OR, make the intended left-to-right evaluation
+  // EXPLICIT with left-associative parentheses: `G1 AND G2 OR G3` becomes
+  // `((G1 AND G2) OR G3)`. PubMed evaluates strictly left-to-right so this is
+  // identical there — but Scopus/WoS/EBSCO/etc. apply their own AND-before-OR
+  // precedence, under which the bare string silently means `G1 AND (G2 OR G3)`.
+  // A single-operator chain (the overwhelmingly common all-AND case) stays
+  // unwrapped, byte-for-byte as the legacy renderer produced it.
+  const ops = surv.slice(0, -1).map((b) => b.op || 'AND');
+  const mixed = new Set(ops).size > 1;
   let full = surv[0].q;
   for (let i = 1; i < surv.length; i++) {
     const op = surv[i - 1].op || 'AND';
-    full += (joiner ? joiner(op) : ` ${op} `) + surv[i].q;
+    const joined = (joiner ? joiner(op) : ` ${op} `) + surv[i].q;
+    full = mixed ? `(${full}${joined})` : full + joined;
   }
   return full;
+}
+
+/** True when the whole expression is a single balanced (...) group (so a
+ *  mixed-operator concept chain, already fully parenthesized by composeConcepts,
+ *  is not double-wrapped before its filter limits are appended). */
+export function isFullyParenthesized(q) {
+  const s = String(q || '');
+  if (s.length < 2 || s[0] !== '(' || s[s.length - 1] !== ')') return false;
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '(') depth++;
+    else if (s[i] === ')') { depth--; if (depth === 0 && i < s.length - 1) return false; }
+  }
+  return depth === 0;
 }
 
 /* ── vocab accumulator ───────────────────────────────────────────────────────── */
@@ -214,7 +238,10 @@ export function runRenderer(ir, cap, hooks) {
   const wrap = hooks.wrapConcepts !== false;
   let query = conceptExpr;
   if (filterClauses.length) {
-    const base = wrap && blockCount > 1 && conceptExpr ? `(${conceptExpr})` : conceptExpr;
+    // A mixed-operator chain is already one fully-parenthesized group; don't
+    // double-wrap it before appending the filter limits.
+    const needsWrap = wrap && blockCount > 1 && conceptExpr && !isFullyParenthesized(conceptExpr);
+    const base = needsWrap ? `(${conceptExpr})` : conceptExpr;
     query = [base, ...filterClauses].filter(Boolean).join(` ${andTok} `);
   }
 

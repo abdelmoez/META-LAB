@@ -9,8 +9,8 @@ describe('cinahl compiler', () => {
   it('compiles the fixture to the exact CINAHL string with PY/LA/PT limits', () => {
     const r = compileStrategy(FIXTURE, 'cinahl');
     expect(r.query).toBe(
-      '(((MH "Heart Failure+") OR (TI "cardiac failure" OR AB "cardiac failure") OR TI chf)'
-      + ' AND (TI sglt2* OR AB sglt2*) OR (TI placebo OR AB placebo))'
+      '((((MH "Heart Failure+") OR (TI "cardiac failure" OR AB "cardiac failure") OR TI chf)'
+      + ' AND (TI sglt2* OR AB sglt2*)) OR (TI placebo OR AB placebo))'
       + ' AND (PY 2010-2025) AND (LA English) AND (PT "Randomized Controlled Trial")',
     );
     expect(r.filtersApplied).toBe(true);

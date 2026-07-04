@@ -9,8 +9,8 @@ describe('acm compiler', () => {
   it('compiles the fixture to Title:()/Abstract:() groups', () => {
     const r = compileStrategy(FIXTURE, 'acm');
     expect(r.query).toBe(
-      '(AllField:("Heart Failure") OR (Title:("cardiac failure") OR Abstract:("cardiac failure")) OR Title:(chf))'
-      + ' AND (Title:(sglt2*) OR Abstract:(sglt2*)) OR (Title:(placebo) OR Abstract:(placebo))',
+      '(((AllField:("Heart Failure") OR (Title:("cardiac failure") OR Abstract:("cardiac failure")) OR Title:(chf))'
+      + ' AND (Title:(sglt2*) OR Abstract:(sglt2*))) OR (Title:(placebo) OR Abstract:(placebo)))',
     );
     expect(r.filtersApplied).toBe(false);
   });

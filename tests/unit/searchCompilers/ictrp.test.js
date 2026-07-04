@@ -8,7 +8,7 @@ import { FIXTURE } from './fixture.js';
 describe('ictrp compiler', () => {
   it('compiles the fixture to plain AND/OR with quoted phrases only', () => {
     const r = compileStrategy(FIXTURE, 'ictrp');
-    expect(r.query).toBe('("Heart Failure" OR "cardiac failure" OR chf) AND sglt2 OR placebo');
+    expect(r.query).toBe('((("Heart Failure" OR "cardiac failure" OR chf) AND sglt2) OR placebo)');
     expect(r.filtersApplied).toBe(false);
   });
 

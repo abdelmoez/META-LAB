@@ -9,7 +9,7 @@ describe('cochrane compiler', () => {
   it('compiles the fixture to the exact CENTRAL string (no in-string limits)', () => {
     const r = compileStrategy(FIXTURE, 'cochrane');
     expect(r.query).toBe(
-      '([mh "Heart Failure"] OR "cardiac failure":ti,ab,kw OR chf:ti) AND sglt2*:ti,ab,kw OR placebo:ti,ab,kw',
+      '((([mh "Heart Failure"] OR "cardiac failure":ti,ab,kw OR chf:ti) AND sglt2*:ti,ab,kw) OR placebo:ti,ab,kw)',
     );
     expect(r.syntaxLevel).toBe('native');
     expect(r.filtersApplied).toBe(false);

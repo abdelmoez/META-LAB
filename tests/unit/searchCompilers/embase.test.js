@@ -9,7 +9,7 @@ describe('embase compiler', () => {
   it('compiles the fixture to the exact Embase string', () => {
     const r = compileStrategy(FIXTURE, 'embase');
     expect(r.query).toBe(
-      "(('heart failure'/exp OR 'cardiac failure':ti,ab OR chf:ti) AND sglt2*:ti,ab OR placebo:ti,ab)"
+      "((('heart failure'/exp OR 'cardiac failure':ti,ab OR chf:ti) AND sglt2*:ti,ab) OR placebo:ti,ab)"
       + ' AND [2010-2025]/py AND [english]/lim',
     );
     expect(r.syntaxLevel).toBe('native');

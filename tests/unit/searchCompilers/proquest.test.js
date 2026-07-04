@@ -9,8 +9,8 @@ describe('proquest compiler', () => {
   it('compiles the fixture to TI,AB() groups with an approximate MAINSUBJECT', () => {
     const r = compileStrategy(FIXTURE, 'proquest');
     expect(r.query).toBe(
-      '(MAINSUBJECT.EXACT("Heart Failure") OR TI,AB("cardiac failure") OR TI(chf))'
-      + ' AND TI,AB(sglt2*) OR TI,AB(placebo)',
+      '(((MAINSUBJECT.EXACT("Heart Failure") OR TI,AB("cardiac failure") OR TI(chf))'
+      + ' AND TI,AB(sglt2*)) OR TI,AB(placebo))',
     );
     expect(r.filtersApplied).toBe(false); // date/language use ProQuest's own limiters
   });

@@ -9,8 +9,8 @@ describe('scopus compiler', () => {
   it('compiles the fixture to the exact Scopus string with PUBYEAR + LANGUAGE limits', () => {
     const r = compileStrategy(FIXTURE, 'scopus');
     expect(r.query).toBe(
-      '((INDEXTERMS("Heart Failure") OR TITLE-ABS-KEY("cardiac failure") OR TITLE(chf))'
-      + ' AND TITLE-ABS-KEY(sglt2*) OR TITLE-ABS-KEY(placebo))'
+      '(((INDEXTERMS("Heart Failure") OR TITLE-ABS-KEY("cardiac failure") OR TITLE(chf))'
+      + ' AND TITLE-ABS-KEY(sglt2*)) OR TITLE-ABS-KEY(placebo))'
       + ' AND (PUBYEAR > 2009 AND PUBYEAR < 2026) AND LANGUAGE(English)',
     );
     expect(r.filtersApplied).toBe(true);

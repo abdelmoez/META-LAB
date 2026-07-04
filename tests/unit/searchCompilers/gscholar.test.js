@@ -9,7 +9,7 @@ describe('gscholar compiler', () => {
   it('compiles the fixture with OR inside a concept and an implicit-AND space between', () => {
     const r = compileStrategy(FIXTURE, 'gscholar');
     // c1 AND(space) c2 OR c3 — Scholar joins AND concepts with a bare space.
-    expect(r.query).toBe('("Heart Failure" OR "cardiac failure" OR chf) sglt2 OR placebo');
+    expect(r.query).toBe('((("Heart Failure" OR "cardiac failure" OR chf) sglt2) OR placebo)');
     expect(r.warnings.map((w) => w.code)).toContain('TRUNCATION_UNSUPPORTED'); // Google auto-stems
     expect(r.syntaxLevel).toBe('approximate');
   });

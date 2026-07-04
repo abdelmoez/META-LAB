@@ -9,8 +9,8 @@ describe('europepmc compiler', () => {
   it('compiles the fixture to the exact Europe PMC string with PUB_YEAR/LANG/PUB_TYPE', () => {
     const r = compileStrategy(FIXTURE, 'europepmc');
     expect(r.query).toBe(
-      '((MESH:"Heart Failure" OR (TITLE:"cardiac failure" OR ABSTRACT:"cardiac failure") OR TITLE:chf)'
-      + ' AND (TITLE:sglt2* OR ABSTRACT:sglt2*) OR (TITLE:placebo OR ABSTRACT:placebo))'
+      '(((MESH:"Heart Failure" OR (TITLE:"cardiac failure" OR ABSTRACT:"cardiac failure") OR TITLE:chf)'
+      + ' AND (TITLE:sglt2* OR ABSTRACT:sglt2*)) OR (TITLE:placebo OR ABSTRACT:placebo))'
       + ' AND (PUB_YEAR:[2010 TO 2025]) AND (LANG:"eng") AND (PUB_TYPE:"Randomized Controlled Trial")',
     );
     expect(r.filtersApplied).toBe(true);
