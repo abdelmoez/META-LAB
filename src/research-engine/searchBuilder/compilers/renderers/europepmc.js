@@ -38,7 +38,7 @@ export const europepmc = {
       for (const l of filters.languages) {
         const code = langIso6392b(l);
         if (code) codes.push(code);
-        else warnings.push({ code: 'FILTER_NOT_EMBEDDABLE', message: `Language "${l}" could not be mapped to an Europe PMC ISO 639-2 code and was not applied.` });
+        else warnings.push({ code: 'FILTER_NOT_EMBEDDABLE', message: `Language "${l}" could not be mapped to a Europe PMC ISO 639-2 code and was not applied.` });
       }
       if (codes.length) { clauses.push(`(${uniq(codes).map((c) => `LANG:"${c}"`).join(' OR ')})`); applied = true; }
     }

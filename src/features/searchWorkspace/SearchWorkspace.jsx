@@ -101,25 +101,18 @@ export function findScrollableAncestor(el, getStyle) {
   return null;
 }
 
-/* 73.md P5 — persist the search mode via the SAME load→merge→save path the ready-
-   marker uses (no engine fork; the server merges shallowly, but we replay the full
-   known shape so a fresh save is always self-consistent). Injectable load/save for
-   unit tests. Throws when the save is rejected so callers can soft-fail. */
+/* 73.md P5 (recs round) — persist the search mode as a SINGLE-KEY save. The server
+   only overwrites the keys the body names (putSearch + shallow mergePatch), so this
+   can never clobber concepts/overrides the builder autosaved a moment earlier — and
+   there is no read-back that, on failure, could replay an empty strategy over the
+   saved one (the wipe bug the load→merge→save form had). `loadFn` is kept in the
+   signature for call-site compatibility but is intentionally unused.
+   Throws when the save is rejected so callers can soft-fail. */
 export async function persistSearchModeMerged(loadFn, saveFn, projectId, mode) {
-  const saved = await loadFn(projectId).catch(() => null);
-  const merged = {
-    concepts: (saved && saved.concepts) || [],
-    overrides: (saved && saved.overrides) || {},
-    ignored: (saved && saved.ignored) || [],
-    databases: (saved && saved.databases) || [],
-    dismissedWarnings: (saved && saved.dismissedWarnings) || [],
-    filters: (saved && saved.filters) || {},
-    readyForScreening: !!(saved && saved.readyForScreening),
-    searchMode: mode === 'manual' || mode === 'automated' ? mode : null,
-  };
-  const ack = await saveFn(projectId, merged);
+  const payload = { searchMode: mode === 'manual' || mode === 'automated' ? mode : null };
+  const ack = await saveFn(projectId, payload);
   if (!ack) throw new Error('save failed');
-  return merged;
+  return payload;
 }
 
 /* ════════════ 73.md P3 — PUBMED PULSE ════════════
@@ -343,14 +336,21 @@ function screeningImportHref() {
    catalogue when the Pecan engine is enabled. */
 const AUTOMATED_PROVIDER_FALLBACK = ['PubMed', 'Europe PMC', 'ClinicalTrials.gov', 'Crossref', 'DOAJ', 'OpenAlex', 'Semantic Scholar'];
 
-function ModeCard({ id, checked, onChoose, onArrow, title, tagline, body, benefit, limitation, next, chips, footNote }) {
+function ModeCard({ id, checked, onChoose, onArrow, title, tagline, body, benefit, limitation, next, chips, footNote, cardRef }) {
+  // recs round — a visible keyboard focus ring (the default outline is replaced, not
+  // removed) and arrow keys MOVE FOCUS to the sibling card as they move selection,
+  // matching native radio-group behaviour.
+  const [focused, setFocused] = useState(false);
   return (
     <div
+      ref={cardRef}
       role="radio"
       aria-checked={checked}
       tabIndex={0}
       data-testid={`search-mode-card-${id}`}
       onClick={onChoose}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onChoose(); }
         else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'ArrowUp' || e.key === 'ArrowDown') { e.preventDefault(); onArrow(); }
@@ -360,6 +360,7 @@ function ModeCard({ id, checked, onChoose, onArrow, title, tagline, body, benefi
         background: checked ? alpha(C.acc, '0c') : C.card,
         border: `2px solid ${checked ? C.acc : C.brd}`,
         outline: 'none', boxSizing: 'border-box',
+        boxShadow: focused ? `0 0 0 3px ${alpha(C.acc, '66')}` : 'none',
       }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 6 }}>
@@ -407,14 +408,19 @@ function ModeStage({ searchMode, onSelect, busy, err, pecanEnabled }) {
   const autoChips = providerNames || AUTOMATED_PROVIDER_FALLBACK;
   const allDbCount = DATABASE_CATALOG.length;
 
+  // recs round — arrow keys move BOTH selection and DOM focus (native radio behaviour).
+  const manualRef = useRef(null);
+  const automatedRef = useRef(null);
+  const focusCard = (ref) => { try { ref.current && ref.current.focus(); } catch { /* focus is best-effort */ } };
   return (
     <Card title="How do you want to run this search?" icon="settings" desc="Two paths to the same place: de-duplicated records in Screening. Your question, concepts, terms and limits are identical either way — this only decides who executes the search.">
       <div role="radiogroup" aria-label="Search mode" style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'stretch' }}>
         <ModeCard
           id="manual"
+          cardRef={manualRef}
           checked={searchMode === 'manual'}
           onChoose={() => !busy && onSelect('manual')}
-          onArrow={() => !busy && onSelect('automated')}
+          onArrow={() => { if (!busy) { onSelect('automated'); focusCard(automatedRef); } }}
           title="Manual search"
           tagline="You run each database yourself"
           body={<>PecanRev builds a database-specific search strategy for every database in your protocol. You review, copy or export each strategy and run it in the database yourself. Works with all {allDbCount} databases (incl. Embase, Scopus, Web of Science, CINAHL…). Results come back into PecanRev via Screening import.</>}
@@ -425,9 +431,10 @@ function ModeStage({ searchMode, onSelect, busy, err, pecanEnabled }) {
         />
         <ModeCard
           id="automated"
+          cardRef={automatedRef}
           checked={searchMode === 'automated'}
           onChoose={() => !busy && onSelect('automated')}
-          onArrow={() => !busy && onSelect('manual')}
+          onArrow={() => { if (!busy) { onSelect('manual'); focusCard(manualRef); } }}
           title="Automated search"
           tagline="PecanRev runs its connected databases for you"
           body={<>PecanRev runs the strategy for you against its connected databases ({autoChips.join(', ')}), retrieves and de-duplicates records, and hands them to Screening automatically.</>}
@@ -526,24 +533,15 @@ function SendToScreeningStage({ projectId, pecanEnabled, readOnly, searchMode })
     return () => { dead = true; };
   }, [projectId]);
 
-  // Toggle via load→merge→save through the existing search-builder API (no engine fork).
-  // Advisory single-writer: the Search Builder also owns this flag, so mark ready once the
-  // strategy is settled (going back to edit concepts re-triggers its autosave).
+  // Toggle as a SINGLE-KEY save (recs round): the server only overwrites the keys
+  // the body names, so this can never replay an empty strategy over the saved one
+  // (the old load→merge→save form wiped concepts when the read-back failed). The
+  // toggle direction comes from the `ready` state loaded on mount.
   const toggleReady = useCallback(async () => {
     setBusy(true); setErr('');
     try {
-      const saved = await loadSearch(projectId).catch(() => null);
-      const next = !(saved && saved.readyForScreening);
-      const merged = {
-        concepts: (saved && saved.concepts) || [],
-        overrides: (saved && saved.overrides) || {},
-        ignored: (saved && saved.ignored) || [],
-        databases: (saved && saved.databases) || [],
-        dismissedWarnings: (saved && saved.dismissedWarnings) || [],
-        filters: (saved && saved.filters) || {},
-        readyForScreening: next,
-      };
-      const ack = await saveSearch(projectId, merged);
+      const next = !ready;
+      const ack = await saveSearch(projectId, { readyForScreening: next });
       if (!ack) throw new Error('save failed');
       setReady(next);
     } catch {
@@ -551,7 +549,7 @@ function SendToScreeningStage({ projectId, pecanEnabled, readOnly, searchMode })
     } finally {
       setBusy(false);
     }
-  }, [projectId]);
+  }, [projectId, ready]);
 
   const automated = searchMode === 'automated';
   return (
@@ -698,17 +696,21 @@ export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnable
   );
   const [modeBusy, setModeBusy] = useState(false);
   const [modeErr, setModeErr] = useState('');
+  // recs round — once the user has picked a mode this session, a slow mount-load
+  // response must never revert the optimistic selection.
+  const modeChosenRef = useRef(false);
   useEffect(() => {
     let dead = false;
     (async () => {
       const saved = await loadSearch(projectId).catch(() => null);
       const m = saved && (saved.searchMode === 'manual' || saved.searchMode === 'automated') ? saved.searchMode : null;
       // The saved value is authoritative; a render-seed only survives when nothing is saved.
-      if (!dead && (m != null || initialSearchMode == null)) setSearchMode(m);
+      if (!dead && !modeChosenRef.current && (m != null || initialSearchMode == null)) setSearchMode(m);
     })();
     return () => { dead = true; };
   }, [projectId]); // eslint-disable-line
   const changeMode = useCallback(async (mode) => {
+    modeChosenRef.current = true;
     setModeBusy(true); setModeErr('');
     setSearchMode(mode); // local state reflects immediately; persistence is soft-fail
     try {
@@ -768,11 +770,13 @@ export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnable
     const idx = stages.findIndex((x) => x.id === s.id);
     return {
       active: s.id === stage,
-      done: idx < activeIdx,
+      // recs round — "done" is positional EXCEPT for the Search Mode decision stage,
+      // which is only done once a mode has actually been chosen.
+      done: idx < activeIdx && (s.id !== 'mode' || searchMode != null),
       disabled: stageDisabled(s),
       reason: DISABLED_REASON,
     };
-  }, [stages, stage, activeIdx, stageDisabled]);
+  }, [stages, stage, activeIdx, stageDisabled, searchMode]);
 
   // The persistent Search Builder. Its phase follows the active builder stage; on non-
   // builder stages it stays in 'build' (like the wizard) so stepping around never churns

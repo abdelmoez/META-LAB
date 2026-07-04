@@ -8502,11 +8502,28 @@ function WlBars({ title, items, color = C.acc }) {
   );
 }
 
-function WlConfigNeeded({ config }) {
+// recs round (73.md) — the server's diagnostics block pinpoints WHY the waitlist
+// data layer is down, so operators do not have to guess between the env var, a
+// stale generated client, and an unreachable database.
+const WL_DIAG_EXPLAIN = {
+  not_configured: 'The waitlist database URL is not set — set BETA_WAITLIST_DATABASE_URL (or POSTGRES_WAITLIST_DATABASE_URL) in the server environment and restart.',
+  client_unavailable: 'The generated waitlist database client is missing or broken on this server — re-run `npm ci` in server/ (postinstall regenerates both waitlist clients), then restart.',
+  query_failed: 'The URL is set and the client loaded, but the database did not answer — check that the database exists, is reachable, and its tables were pushed (`npm run db:ensure:waitlist` from server/).',
+};
+
+function WlConfigNeeded({ config, diagnostics }) {
+  const reason = diagnostics && diagnostics.reason && diagnostics.reason !== 'ok' ? diagnostics.reason : null;
   return (
     <div style={{ background: C.card, border: `1px dashed ${C.brd2}`, borderRadius: 12, padding: '28px 24px', textAlign: 'center', maxWidth: 640, margin: '24px auto' }}>
       <div style={{ width: 44, height: 44, borderRadius: 10, background: C.yelBg, color: C.yel, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginBottom: 14 }}><Icon name="alertTriangle" size={22} /></div>
-      <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 8 }}>Beta Waitlist database not configured</div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 8 }}>Beta Waitlist database unavailable</div>
+      {reason && (
+        <div data-testid="wl-diagnostics" style={{ fontSize: 12.5, color: C.txt2, lineHeight: 1.6, marginBottom: 12, background: C.card2, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '10px 14px', textAlign: 'left' }}>
+          <span style={{ fontFamily: MONO, color: C.yel }}>{reason}</span>
+          {diagnostics.provider && diagnostics.provider !== 'unknown' ? <span style={{ fontFamily: MONO, color: C.muted }}> · {diagnostics.provider}</span> : null}
+          <div style={{ marginTop: 4 }}>{WL_DIAG_EXPLAIN[reason] || 'See the server logs for detail.'}</div>
+        </div>
+      )}
       <div style={{ fontSize: 13.5, color: C.muted, lineHeight: 1.6, marginBottom: 14 }}>
         The waitlist uses a strictly-separate database. Set <code style={{ fontFamily: MONO, color: C.txt }}>BETA_WAITLIST_DATABASE_URL</code> in the server environment,
         then apply the schema:
@@ -8620,7 +8637,7 @@ function WaitlistSection() {
       {err && <div role="alert" style={{ margin: '0 0 14px', padding: '9px 12px', background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 8, color: C.red, fontSize: 12.5 }}>{err}</div>}
 
       {!configured && !loadingM ? (
-        <WlConfigNeeded config={data && data.config} />
+        <WlConfigNeeded config={data && data.config} diagnostics={data && data.diagnostics} />
       ) : (
         <>
           {/* ── Overview metrics (real data only) ─────────────────────────── */}

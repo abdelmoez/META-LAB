@@ -58,36 +58,48 @@ export function ManuscriptWorkspace({ project, upd }) {
     }
   }, []);
 
+  // recs round — flush any in-flight (≤600ms debounced) edit and export the FLUSHED
+  // draft, so a .docx/zip never misses the researcher's last-typed text.
+  const freshDraft = useCallback(() => {
+    const flushed = typeof m.flush === 'function' ? m.flush() : null;
+    if (flushed && m.activeDraft) {
+      const d = flushed.find((x) => x && x.id === m.activeDraft.id);
+      if (d) return d;
+    }
+    return m.activeDraft;
+  }, [m]);
+
   // Exports thread the SAME live-wired tables/counts the panels render
   // (screening PRISMA rollup, RoB v2 assessments, pecan per-source, GRADE map)
   // so what you download always matches what you saw on screen.
   const onExportWord = useCallback(() => runExport('word', async () => {
     const { buildManuscriptDocx } = await import('./export/manuscriptDocx.js');
     const { downloadBlob } = await import('../../frontend/components/exportCore.js');
-    const blob = await buildManuscriptDocx(project, m.activeDraft, {
+    const blob = await buildManuscriptDocx(project, freshDraft(), {
       runMeta: m.runMeta, gradeByOutcome: m.gradeByOutcome,
       prismaResult: m.prismaCounts, primary: m.primary, tables: m.tables,
     });
     downloadBlob(blob, `${safeName(project.name)}.docx`);
-  }), [runExport, project, m.activeDraft, m.runMeta, m.gradeByOutcome, m.prismaCounts, m.primary, m.tables]);
+  }), [runExport, project, freshDraft, m.runMeta, m.gradeByOutcome, m.prismaCounts, m.primary, m.tables]);
 
   const onExportRepro = useCallback(() => runExport('repro', async () => {
     const { buildReproPackage } = await import('./export/manuscriptRepro.js');
     const { downloadBlob } = await import('../../frontend/components/exportCore.js');
-    const blob = await buildReproPackage(project, m.activeDraft, {
+    const blob = await buildReproPackage(project, freshDraft(), {
       runMeta: m.runMeta, appVersion: window.__APP_VERSION__, gradeByOutcome: m.gradeByOutcome,
       screening: m.screening, screeningWorkflow: m.screeningWorkflow,
       searchMethodsText: m.searchMethodsText,
       robAssessments: m.robAssessments, robByStudyId: m.robByStudyId,
       perSource: m.perSource, analysis: m.genOpts && m.genOpts.analysis,
+      prec: project && project.analysisPrecision,
     });
     downloadBlob(blob, `${safeName(project.name)}-reproducibility.zip`);
-  }), [runExport, project, m.activeDraft, m.runMeta, m.gradeByOutcome, m.screening, m.screeningWorkflow, m.searchMethodsText, m.robAssessments, m.robByStudyId, m.perSource, m.genOpts]);
+  }), [runExport, project, freshDraft, m.runMeta, m.gradeByOutcome, m.screening, m.screeningWorkflow, m.searchMethodsText, m.robAssessments, m.robByStudyId, m.perSource, m.genOpts]);
 
   const onPrismaChecklist = useCallback(() => runExport('prisma', async () => {
     const cx = await import('./export/checklistExport.js');
-    cx.downloadPrismaChecklist(project, m.activeDraft);
-  }), [runExport, project, m.activeDraft]);
+    cx.downloadPrismaChecklist(project, freshDraft());
+  }), [runExport, project, freshDraft]);
 
   const onPrismaSChecklist = useCallback(() => runExport('prismaS', async () => {
     const cx = await import('./export/checklistExport.js');

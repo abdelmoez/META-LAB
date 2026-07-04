@@ -180,39 +180,45 @@ export async function putSearch(req, res) {
     if (!access.canEdit) return res.status(403).json({ error: 'Read-only access' });
 
     const body = req.body || {};
-    const value = {
-      concepts: Array.isArray(body.concepts) ? body.concepts : [],
-      overrides: body.overrides && typeof body.overrides === 'object' ? body.overrides : {},
-      // prompt40 Task 2/5 + prompt42 Task 2 — auto-suggestions the user deleted, so
-      // a PICO re-sync never re-adds them. Accept BOTH the legacy string[] form and
-      // the richer object[] form {text, field, label} (which preserves the PICO
-      // field for granular per-field restore). Normalized + capped to keep the row
-      // small; new fields are kept (not dropped).
-      ignored: sanitizeIgnored(body.ignored),
-      // SB3 Tab 3/5 — selected database ids ([] = use the catalogue defaults) and an
-      // advisory "ready for Screening Import" marker. Additive + optional, validated
-      // and capped so the row stays small; pre-SB3 searches simply omit them.
-      databases: Array.isArray(body.databases)
+    // 73.md recs round — EVERY key is written only when the client names it.
+    // patchModuleState's mergePatch is a shallow top-level merge, so a partial body
+    // (e.g. the workspace persisting only { searchMode }) can never reset the keys
+    // it omits to their defaults — previously a mode/ready toggle that failed to
+    // read the saved state back would replay `concepts: []` and wipe the strategy.
+    // Full-shape callers (the Search Builder autosave, version restore) still
+    // overwrite every key exactly as before.
+    const has = (k) => Object.prototype.hasOwnProperty.call(body, k);
+    const value = {};
+    if (has('concepts')) value.concepts = Array.isArray(body.concepts) ? body.concepts : [];
+    if (has('overrides')) value.overrides = body.overrides && typeof body.overrides === 'object' ? body.overrides : {};
+    // prompt40 Task 2/5 + prompt42 Task 2 — auto-suggestions the user deleted, so
+    // a PICO re-sync never re-adds them. Accept BOTH the legacy string[] form and
+    // the richer object[] form {text, field, label} (which preserves the PICO
+    // field for granular per-field restore). Normalized + capped to keep the row
+    // small; new fields are kept (not dropped).
+    if (has('ignored')) value.ignored = sanitizeIgnored(body.ignored);
+    // SB3 Tab 3/5 — selected database ids ([] = use the catalogue defaults) and an
+    // advisory "ready for Screening Import" marker. Additive + optional, validated
+    // and capped so the row stays small; pre-SB3 searches simply omit them.
+    if (has('databases')) {
+      value.databases = Array.isArray(body.databases)
         ? body.databases.filter((s) => typeof s === 'string').slice(0, 40)
-        : [],
-      readyForScreening: !!body.readyForScreening,
-      // SB4 — dismissed Search-Quality/duplicate warning keys (validated + capped).
-      dismissedWarnings: Array.isArray(body.dismissedWarnings)
-        ? body.dismissedWarnings.filter((s) => typeof s === 'string').slice(0, 200)
-        : [],
-      // prompt60 — search scope limits (date range / languages / publication types).
-      // The Pecan Search AST already reads this block but it was never persisted; the
-      // Search Wizard's Limits panel writes it here. JSON in WorkflowModuleState → no
-      // migration. Defensive clamp via sanitizeFilters.
-      filters: sanitizeFilters(body.filters),
-    };
-    // 73.md P5 — additive two-path marker ('manual' | 'automated' | null). ONLY
-    // written when the client names the key: patchModuleState's mergePatch is a
-    // shallow top-level merge, so a Search-Builder autosave that omits searchMode
-    // can never wipe a mode chosen in the workspace's Search Mode stage.
-    if (Object.prototype.hasOwnProperty.call(body, 'searchMode')) {
-      value.searchMode = sanitizeSearchMode(body.searchMode);
+        : [];
     }
+    if (has('readyForScreening')) value.readyForScreening = !!body.readyForScreening;
+    // SB4 — dismissed Search-Quality/duplicate warning keys (validated + capped).
+    if (has('dismissedWarnings')) {
+      value.dismissedWarnings = Array.isArray(body.dismissedWarnings)
+        ? body.dismissedWarnings.filter((s) => typeof s === 'string').slice(0, 200)
+        : [];
+    }
+    // prompt60 — search scope limits (date range / languages / publication types).
+    // The Pecan Search AST already reads this block but it was never persisted; the
+    // Search Wizard's Limits panel writes it here. JSON in WorkflowModuleState → no
+    // migration. Defensive clamp via sanitizeFilters.
+    if (has('filters')) value.filters = sanitizeFilters(body.filters);
+    // 73.md P5 — additive two-path marker ('manual' | 'automated' | null).
+    if (has('searchMode')) value.searchMode = sanitizeSearchMode(body.searchMode);
     // baseRevision null = overwrite (the contract's PUT is a full upsert; the
     // search builder is single-strategy-per-project so last-write-wins is fine).
     const out = await patchModuleState({
@@ -222,7 +228,7 @@ export async function putSearch(req, res) {
       await recordWorkflowAudit({
         projectId: req.params.projectId, moduleKey: SEARCH_MODULE, action: 'SEARCH_UPDATED',
         revision: out.result.revision, user: req.user,
-        details: { concepts: value.concepts.length },
+        details: { concepts: Array.isArray(value.concepts) ? value.concepts.length : undefined },
       });
       // Live sync (SE1 Task 5): poke the workspace's other online collaborators so
       // their Search Builder refetches without a manual refresh. Thin "poke, don't

@@ -47,8 +47,10 @@ export function mentionedEstimators(text) {
 }
 
 /* Bracketed placeholders (the PH convention), excluding inline citation tokens
-   [[cite:id]] and markdown links [text](url). */
-const PLACEHOLDER_RE = /\[(?!\[)(?!cite:)[^\][\n]{3,}\](?!\()/g;
+   [[cite:id]], markdown links [text](url), and — recs round — plain numeric
+   citation brackets like [2,3] / [12–15]: a real placeholder is prose, so require
+   a run of ≥3 letters inside the brackets. */
+const PLACEHOLDER_RE = /\[(?!\[)(?!cite:)(?=[^\][\n]*[A-Za-z]{3,})[^\][\n]{3,}\](?!\()/g;
 
 /**
  * @param {object} project  Project.data blob
@@ -79,16 +81,22 @@ export function checkConsistency(project, draft, opts = {}) {
     }
   }
 
-  // (b) PRISMA "included" disagrees with the number of studies carrying a
-  // numeric effect estimate (skipped when included was itself computed from them).
+  // (b) PRISMA "included" disagrees with the number of studies in extraction.
+  // recs round — compare against ALL extracted studies, not only those carrying a
+  // numeric effect estimate: reviews legitimately include studies that contribute
+  // to the qualitative synthesis only, and the old comparison nagged them forever.
+  // Skipped when the count was itself derived from the extraction table (self-
+  // comparison) — i.e. no override/manual/screening source supplied it.
   const pc = opts.prismaCounts
     || computePrismaCounts(project, { overrides: draft && draft.prismaOverrides, screening: opts.screening });
-  const numeric = studies.filter((s) => s && s.es !== '' && s.es != null && !isNaN(+s.es)).length;
-  if (pc.counts.included != null && studies.length > 0
-      && pc.provenance.included !== 'computed' && pc.counts.included !== numeric) {
+  const totalExtracted = studies.length;
+  const scIncluded = opts.screening && Number.isFinite(Number(opts.screening.included)) ? Number(opts.screening.included) : null;
+  const selfDerived = pc.provenance.included === 'computed' && scIncluded == null;
+  if (pc.counts.included != null && totalExtracted > 0
+      && !selfDerived && pc.counts.included !== totalExtracted) {
     out.push({
       id: 'included-vs-extracted', severity: 'warn', section: 'results',
-      message: `PRISMA reports ${pc.counts.included} included studies but ${numeric} extracted stud${numeric === 1 ? 'y has' : 'ies have'} a numeric effect estimate — reconcile the flow counts with extraction.`,
+      message: `PRISMA reports ${pc.counts.included} included studies but ${totalExtracted} stud${totalExtracted === 1 ? 'y is' : 'ies are'} in extraction — reconcile the flow counts with extraction.`,
     });
   }
 

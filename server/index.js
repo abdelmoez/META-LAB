@@ -617,9 +617,10 @@ const server = app.listen(PORT, () => {
       let flags = {};
       try { flags = JSON.parse(row?.value || '{}'); } catch { flags = {}; }
       if (flags.betaWaitlist && !isWaitlistDbConfigured()) {
-        console.warn('[waitlist] WARNING: betaWaitlist is ENABLED but BETA_WAITLIST_DATABASE_URL is not set. ' +
+        console.warn('[waitlist] WARNING: betaWaitlist is ENABLED but no waitlist DB URL is set ' +
+          '(BETA_WAITLIST_DATABASE_URL, or the POSTGRES_WAITLIST_DATABASE_URL fallback). ' +
           'The page will load, but submissions fail safe (503) and NEVER write to the user database. ' +
-          'Fix: set BETA_WAITLIST_DATABASE_URL, then `cd server && npx prisma db push --schema=prisma/waitlist/schema.prisma`.');
+          'Fix: set BETA_WAITLIST_DATABASE_URL, then `cd server && npm run db:ensure:waitlist` (or redeploy — postinstall runs it).');
       } else if (isWaitlistDbConfigured()) {
         console.log(`[waitlist] dedicated DB configured (${redactedDbTarget()}).`);
       }

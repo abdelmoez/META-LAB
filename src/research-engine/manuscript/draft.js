@@ -337,9 +337,12 @@ function secondaryNarration(a, prec) {
   const lines = [];
   const label = (a.pair && a.pair.label) || 'a further outcome';
   if (!a.result) {
-    lines.push(a.subset.length === 1
-      ? `${label} was reported by only one study and was not pooled.`
-      : `${label} had no studies with a numeric effect estimate and was not pooled.`);
+    // recs round — say exactly why nothing is pooled: the subset is already filtered
+    // to studies WITH numeric estimates, so "had no studies with a numeric effect
+    // estimate" was false whenever ≥2 such studies existed but pooling failed.
+    if (a.subset.length === 0) lines.push(`${label} had no studies with a numeric effect estimate and was not pooled.`);
+    else if (a.subset.length === 1) lines.push(`${label} was reported by only one study and was not pooled.`);
+    else lines.push(`${label} (${a.subset.length} studies) could not be pooled and is summarised narratively.`);
     return lines;
   }
   const m = MEASURE[a.pair.esType] || { label: 'effect size', kind: 'mean' };
@@ -433,11 +436,16 @@ export function generateResults(project, opts = {}) {
   }
   // τ² / estimator sentence for the primary — only under a NON-default estimator
   // or an explicit opts.analysis (keeps legacy DL output byte-identical).
+  // recs round — report the estimator the engine ACTUALLY used: with k = 2 or a
+  // non-converged iterative fit, runMeta falls back to DL (result.tau2Fallback),
+  // and stating the configured estimator would misdescribe the analysis.
   const analysisCfg = resolveAnalysis(project, opts);
   if (eff && primary && primary.result && analysisCfg.model !== 'fixed'
       && (analysisCfg.tau2Method !== 'DL' || (opts.analysis && opts.analysis.tau2Method))) {
-    const desc = describeSynthesisModel(analysisCfg);
-    out.push(`Between-study variance was τ² = ${fmtNum(primary.result.tau2, opts.prec)} (${desc.estimatorPhrase} estimator).`);
+    const usedMethod = primary.result.tau2Fallback === 'DL' ? 'DL' : (primary.result.tau2Method || analysisCfg.tau2Method);
+    const desc = describeSynthesisModel({ model: analysisCfg.model, tau2Method: usedMethod });
+    const fellBack = usedMethod !== analysisCfg.tau2Method;
+    out.push(`Between-study variance was τ² = ${fmtNum(primary.result.tau2, opts.prec)} (${desc.estimatorPhrase} estimator${fellBack ? `; the configured ${describeSynthesisModel(analysisCfg).estimatorPhrase} estimator was not estimable for this outcome and the engine fell back` : ''}).`);
   }
   for (const a of secondaries) {
     for (const ln of secondaryNarration(a, opts.prec)) out.push(ln);
@@ -491,7 +499,14 @@ export function generateLimitations(project, opts = {}) {
   } else {
     flags.push(PH('A quantitative synthesis was not available; describe the limits of the qualitative synthesis'));
   }
-  const robMissing = studies.filter((s) => (s.es !== '' && s.es != null && !isNaN(+s.es)) && (!s.rob || !Object.keys(s.rob).length)).length;
+  // recs round — a study counts as assessed when EITHER the legacy per-study rob map
+  // OR a structured RoB v2 assessment (opts.robAssessments, keyed by study id) exists;
+  // otherwise reviews assessed entirely in the RoB workspace were told their studies
+  // had "no risk-of-bias assessment" — a false, contradiction-inviting limitation.
+  const robAssessed = opts.robAssessments && typeof opts.robAssessments === 'object' ? opts.robAssessments : {};
+  const robMissing = studies.filter((s) => (s.es !== '' && s.es != null && !isNaN(+s.es))
+    && (!s.rob || !Object.keys(s.rob).length)
+    && !robAssessed[s.id]).length;
   if (robMissing) flags.push(`${robMissing} included stud${robMissing === 1 ? 'y has' : 'ies have'} no risk-of-bias assessment, limiting credibility judgements`);
 
   const out = [];

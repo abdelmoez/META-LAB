@@ -227,6 +227,11 @@ export function normalizeDraft(raw, nowIso = null) {
     if (Array.isArray(r.missing)) out.sections[s.id].missing = r.missing;
     if (typeof r.inputsHash === 'string' && r.inputsHash) out.sections[s.id].inputsHash = r.inputsHash;
     if (r.locked === true) out.sections[s.id].locked = true;
+    // recs round — the availability vector of the live sources the generation saw
+    // (guards OUTDATED detection against fetch blips). Optional + additive.
+    if (r.sourceAvailability && typeof r.sourceAvailability === 'object') {
+      out.sections[s.id].sourceAvailability = { ...r.sourceAvailability };
+    }
   }
   // statements
   out.statements = {};

@@ -308,10 +308,13 @@ function FirstDraftHero({ m }) {
       <p style={{ margin: '0 auto 16px', fontSize: 12.5, color: C.muted, lineHeight: 1.6, maxWidth: 460 }}>
         Draft every section — title to conclusions — from what this project already knows.
       </p>
+      {/* recs round — generation waits for the live-source fetches to settle so a
+          first draft is never built from empty pre-fetch data. */}
       <button onClick={() => m.generate({})}
         data-testid="stitch-manuscript-hero-generate"
-        style={{ ...btnS('primary'), fontSize: 12.5, padding: '9px 22px' }}>
-        <Icon name="sigma" size={14} /> Generate your first draft
+        disabled={m.sourcesSettled === false}
+        style={{ ...btnS('primary'), fontSize: 12.5, padding: '9px 22px', opacity: m.sourcesSettled === false ? 0.6 : 1 }}>
+        <Icon name="sigma" size={14} /> {m.sourcesSettled === false ? 'Loading project data…' : 'Generate your first draft'}
       </button>
       <ul style={{ listStyle: 'none', margin: '18px auto 0', padding: 0, maxWidth: 440, textAlign: 'left', display: 'flex', flexDirection: 'column', gap: 6 }}>
         {bullets.map((b) => (
@@ -330,6 +333,8 @@ function SectionGrid({ m, onOpenSection }) {
   const sections = (m.activeDraft && m.activeDraft.sections) || {};
   const outdatedMap = m.outdated || {};
   const rowGenerate = (id) => {
+    // recs round — never generate from pre-fetch (empty) live sources.
+    if (m.sourcesSettled === false) return;
     const res = m.generate({ only: [id] });
     if (res && res.skipped && res.skipped.length) setNotice({ only: [id], skipped: res.skipped });
     else setNotice(null);
@@ -651,6 +656,8 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
   }, [sel]);
 
   const doGenerate = (only) => {
+    // recs round — never generate from pre-fetch (empty) live sources.
+    if (m.sourcesSettled === false) return;
     const res = m.generate(only ? { only } : {});
     const skipped = (res && res.skipped) || [];
     const skippedLocked = (res && res.skippedLocked) || [];
@@ -851,6 +858,7 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
                     onChange={(e) => { setKw(e.target.value); m.setMetaDebounced({ keywords: e.target.value.split(',').map((s) => s.trim()).filter(Boolean) }); }}
                     placeholder="e.g. systematic review, meta-analysis, …"
                     aria-label="Keywords"
+                    disabled={locked}
                     style={{
                       width: '100%', border: 'none', outline: 'none', background: 'transparent',
                       color: '#1c2330', fontFamily: "Georgia,'Times New Roman',serif", fontSize: 14, boxSizing: 'border-box',

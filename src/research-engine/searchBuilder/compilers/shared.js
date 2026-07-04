@@ -97,7 +97,15 @@ export function fieldBody(term, opts = {}) {
   const minStem = opts.minStem || 0;
   const warnings = opts.warnings || [];
   const esc = quoteChar === "'" ? stripSingle : stripDouble;
-  let t = esc(S(term.text).trim());
+  const raw = S(term.text).trim();
+  let t = esc(raw);
+  // recs round — never SILENTLY alter a user's term: dropping the phrase delimiter
+  // from inside a term ("Parkinson's" → "Parkinsons") changes what is searched, so
+  // say so explicitly (once per affected term).
+  if (t !== raw) {
+    const ch = quoteChar === "'" ? 'apostrophes' : 'double quotes';
+    warnings.push({ code: 'CHARS_REMOVED', message: `${ch[0].toUpperCase()}${ch.slice(1)} cannot appear inside this database's ${quoteChar === "'" ? 'single' : 'double'}-quoted phrases — "${raw}" was searched as "${t}". Check the database's own handling if the term relies on it.` });
+  }
   const multi = /\s/.test(t);
   let truncated = false;
   if (term.truncate) {

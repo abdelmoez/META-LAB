@@ -96,6 +96,10 @@ export function applyGeneratedSections(draft, generated, opts = {}) {
         missing: Array.isArray(meta.missing) ? meta.missing : [],
         ...(typeof meta.inputsHash === 'string' && meta.inputsHash ? { inputsHash: meta.inputsHash } : {}),
       } : {}),
+      // recs round — remember WHICH live sources this generation saw, so OUTDATED
+      // detection only compares hashes computed under the same availability.
+      ...(opts.availability && typeof opts.availability === 'object'
+        ? { sourceAvailability: { ...opts.availability } } : {}),
     };
   }
   if (generated.title && !String(out.title || '').trim()) out.title = generated.title;
@@ -143,7 +147,7 @@ export function setSectionLocked(draft, id, locked) {
  * Sections without a stored hash (pre-existing drafts) are never flagged. Pure.
  * @returns {{ [sectionId]: true }}
  */
-export function computeOutdatedSections(draft, freshHashes) {
+export function computeOutdatedSections(draft, freshHashes, currentAvailability) {
   const out = {};
   if (!draft || !draft.sections || !freshHashes) return out;
   for (const id of SECTION_IDS) {
@@ -152,6 +156,16 @@ export function computeOutdatedSections(draft, freshHashes) {
     if (!String(s.content || '').trim()) continue;
     if (typeof s.inputsHash !== 'string' || !s.inputsHash) continue;
     if (!freshHashes[id]) continue;
+    // recs round — when the section remembers which live sources it was generated
+    // with (sourceAvailability) and the CURRENT availability differs (a source is
+    // temporarily unreachable, or newly appeared), the hash comparison is between
+    // unlike inputs — status is UNKNOWN, never "Outdated". Genuine data changes
+    // under identical availability still flag exactly as before.
+    if (s.sourceAvailability && currentAvailability) {
+      const keys = ['screening', 'search', 'rob', 'pecan'];
+      const same = keys.every((k) => !!s.sourceAvailability[k] === !!currentAvailability[k]);
+      if (!same) continue;
+    }
     if (s.inputsHash !== freshHashes[id]) out[id] = true;
   }
   return out;

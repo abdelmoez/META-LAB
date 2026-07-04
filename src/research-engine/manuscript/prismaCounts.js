@@ -101,11 +101,14 @@ export function computePrismaCounts(project, opts = {}) {
 
   const reportsExcluded = pick('reportsExcluded', 'excFull', null);
 
-  // included = reportsAssessed − reportsExcluded, OR manual `included`, OR #numeric studies
+  // included = reportsAssessed − reportsExcluded, OR manual `included`, OR the live
+  // screening include count (recs round — sc.included was documented but never read),
+  // OR #numeric studies as the last resort.
   let included = null;
   if (toNum(ov.included) != null) { included = toNum(ov.included); provenance.included = 'override'; }
   else if (toNum(p.included) != null) { included = toNum(p.included); provenance.included = 'manual'; }
   else if (reportsAssessed != null && reportsExcluded != null) { included = reportsAssessed - reportsExcluded; provenance.included = 'derived'; }
+  else if (toNum(sc.included) != null) { included = toNum(sc.included); provenance.included = 'computed'; }
   else if (studies.length) {
     const n = studies.filter((s) => s && s.es !== '' && s.es != null && !isNaN(+s.es)).length;
     if (n) { included = n; provenance.included = 'computed'; }

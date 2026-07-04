@@ -252,47 +252,32 @@ describe('findScrollableAncestor — 73.md P1 scroll model (pure walk, injectabl
   });
 });
 
-describe('persistSearchModeMerged — 73.md P5 load→merge→save persistence', () => {
-  const SAVED = {
-    concepts: [{ id: 'c1', label: 'Population', terms: [{ text: 'adults' }] }],
-    overrides: { pubmed: 'adults[tiab]' },
-    ignored: [{ text: 'x', field: '', label: '' }],
-    databases: ['pubmed', 'embase'],
-    dismissedWarnings: ['w1'],
-    filters: { dateFrom: '2010', dateTo: '', languages: ['en'], pubTypes: [] },
-    readyForScreening: true,
-    revision: 4,
-  };
-
-  it('merges the saved strategy and writes searchMode WITHOUT dropping any sibling key', async () => {
-    const loadFn = vi.fn(async () => SAVED);
+describe('persistSearchModeMerged — 73.md P5 (recs round: single-key save)', () => {
+  // recs round — persistence is now a SINGLE-KEY save ({ searchMode }); the server
+  // only overwrites named keys, so there is no read-merge that could replay an
+  // empty strategy over the saved one when the read-back fails.
+  it('writes ONLY searchMode and never reads the saved strategy back', async () => {
+    const loadFn = vi.fn(async () => { throw new Error('should not be called'); });
     const saveFn = vi.fn(async () => ({ ok: true, revision: 5 }));
     const merged = await persistSearchModeMerged(loadFn, saveFn, 'p1', 'automated');
-    expect(loadFn).toHaveBeenCalledWith('p1');
+    expect(loadFn).not.toHaveBeenCalled();
     expect(saveFn).toHaveBeenCalledTimes(1);
     const [pid, payload] = saveFn.mock.calls[0];
     expect(pid).toBe('p1');
-    expect(payload.searchMode).toBe('automated');
-    expect(payload.concepts).toEqual(SAVED.concepts);
-    expect(payload.overrides).toEqual(SAVED.overrides);
-    expect(payload.databases).toEqual(SAVED.databases);
-    expect(payload.dismissedWarnings).toEqual(SAVED.dismissedWarnings);
-    expect(payload.filters).toEqual(SAVED.filters);
-    expect(payload.readyForScreening).toBe(true);
+    expect(payload).toEqual({ searchMode: 'automated' });
+    expect(Object.keys(payload)).toEqual(['searchMode']);
     expect(merged.searchMode).toBe('automated');
   });
 
-  it('collapses a junk mode to null and tolerates a missing saved strategy', async () => {
+  it('collapses a junk mode to null', async () => {
     const saveFn = vi.fn(async () => ({ ok: true }));
     await persistSearchModeMerged(async () => null, saveFn, 'p2', 'evil');
     const [, payload] = saveFn.mock.calls[0];
-    expect(payload.searchMode).toBeNull();
-    expect(payload.concepts).toEqual([]);
-    expect(payload.readyForScreening).toBe(false);
+    expect(payload).toEqual({ searchMode: null });
   });
 
   it('throws when the save is rejected (caller soft-fails with an error Note)', async () => {
-    await expect(persistSearchModeMerged(async () => SAVED, async () => null, 'p3', 'manual'))
+    await expect(persistSearchModeMerged(async () => null, async () => null, 'p3', 'manual'))
       .rejects.toThrow('save failed');
   });
 });

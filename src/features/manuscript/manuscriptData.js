@@ -49,6 +49,30 @@ export function emptyManuscriptSources() {
   };
 }
 
+/**
+ * recs round — the boolean availability vector of the soft-fetched sources a
+ * generation actually saw. Stamped onto generated sections (sourceAvailability)
+ * and compared before OUTDATED detection: a hash computed WITH live screening
+ * counts must never be compared against one computed WITHOUT them (a fetch blip
+ * would otherwise flag every grounded section as outdated — and one click of
+ * "Regenerate" would replace real counts with placeholders).
+ */
+export function sourceAvailability(sources) {
+  const s = sources || {};
+  return {
+    screening: !!s.screening,
+    search: !!(typeof s.searchMethodsText === 'string' && s.searchMethodsText.trim()),
+    rob: !!(s.robAssessments && Object.keys(s.robAssessments).length),
+    pecan: !!s.perSource,
+  };
+}
+
+/** True when two availability vectors describe the same set of live sources. */
+export function availabilityEqual(a, b) {
+  if (!a || !b) return false;
+  return ['screening', 'search', 'rob', 'pecan'].every((k) => !!a[k] === !!b[k]);
+}
+
 /** Linked META·SIFT ScreenProject id (mirrors projectHelpers.linkedSiftId —
  *  duplicated here so the manuscript chunk never pulls the workspace helpers). */
 export function linkedScreenProjectId(project) {

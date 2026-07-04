@@ -16,6 +16,7 @@
 import { runMeta as defaultRunMeta } from '../statistics/meta-analysis.js';
 import { getOutcomePairs, filterStudiesForOutcome } from '../import-export/journalSubmission.js';
 import { fmtES, fmtNum } from '../format/precision.js';
+import { resolveAnalysis } from './analysisDescribe.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 const num = (x) => (x === '' || x == null || isNaN(+x) ? null : +x);
@@ -122,13 +123,18 @@ export function buildSummaryOfFindingsTable(project, opts = {}) {
   const runMeta = typeof opts.runMeta === 'function' ? opts.runMeta : defaultRunMeta;
   const prec = opts.prec;
   const pairs = getOutcomePairs(studies);
+  // recs round — pool with the SAME model + τ² estimator the narrative and the
+  // Analysis tab use (resolveAnalysis reads opts.analysis, then the project's
+  // persisted analysisSettings, then DL) so the SoF numbers can never disagree
+  // with the generated Results text.
+  const analysis = resolveAnalysis(project, opts);
 
   const rows = [];
   const warnings = [];
   let anyPartial = false;
   for (const pair of pairs) {
     const subset = filterStudiesForOutcome(studies, pair);
-    const res = subset.length >= 2 ? runMeta(subset, opts.model || 'random') : null;
+    const res = subset.length >= 2 ? runMeta(subset, analysis.model, { tau2Method: analysis.tau2Method }) : null;
     const measure = MEASURE[pair.esType] || { label: pair.esType || 'Effect size', kind: 'mean' };
     const { total: participants, partial } = participantTotal(subset);
     if (partial && participants) anyPartial = true;

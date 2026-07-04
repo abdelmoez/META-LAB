@@ -43,6 +43,7 @@ import { gradeCertaintyEnabled, sofCertaintyMap } from '../../frontend/workspace
 import * as MS from './manuscriptState.js';
 import {
   emptyManuscriptSources, fetchManuscriptSources, linkedScreenProjectId, composeGenOpts,
+  sourceAvailability,
 } from './manuscriptData.js';
 
 export function useManuscript(project, upd) {
@@ -111,16 +112,23 @@ export function useManuscript(project, upd) {
     return d;
   }, []);
 
+  // recs round — returns the just-persisted manuscripts list (or null when there
+  // was nothing to flush) so a structural mutation that follows synchronously can
+  // build on the flushed content: `projectRef.current` only catches up on the next
+  // render, and reading it right after a flush silently dropped the last ≤600ms of
+  // typing when e.g. locking a section or changing the template mid-edit.
   const flushPending = useCallback(() => {
     if (timer.current) { clearTimeout(timer.current); timer.current = null; }
     const p = pending.current;
     pending.current = null;
-    if (!p) return;
+    if (!p) return null;
     const list = readManuscripts(projectRef.current);
     const base = list.find((d) => d.id === p.draftId);
-    if (!base) { setSaveState('saved'); return; }
+    if (!base) { setSaveState('saved'); return null; }
     const next = applyPatches(base, p.fields);
-    persist(MS.upsertDraft(list, next));
+    const merged = MS.upsertDraft(list, next);
+    persist(merged);
+    return merged;
   }, [applyPatches, persist]);
   flushRef.current = flushPending;
 
@@ -138,10 +146,11 @@ export function useManuscript(project, upd) {
   }, [flushPending]);
 
   // Structural (immediate) mutation against the FRESHEST active draft, after
-  // flushing any pending typing so user edits are never lost.
+  // flushing any pending typing so user edits are never lost. recs round — the
+  // flushed list (when any) IS the freshest state; projectRef lags one render.
   const mutateActive = useCallback((mutator) => {
-    flushPending();
-    const list = readManuscripts(projectRef.current);
+    const flushed = flushPending();
+    const list = flushed || readManuscripts(projectRef.current);
     const active = list.find((d) => d.id === activeIdRef.current) || list[0];
     if (!active) return null;
     const next = mutator(active, list);
@@ -197,16 +206,22 @@ export function useManuscript(project, upd) {
   // in parallel once per project open, soft-fail (a missing flag / 404 / network
   // error can never block generation — legacy inputs remain the fallback).
   const [sources, setSources] = useState(() => emptyManuscriptSources());
+  // recs round — 'settled' = the parallel source fetches have RESOLVED (they never
+  // reject). Until then, generation would see empty sources and OUTDATED detection
+  // would compare hashes against unlike inputs — both are gated on this flag.
+  const [sourcesSettled, setSourcesSettled] = useState(false);
   const screenPid = linkedScreenProjectId(project);
   useEffect(() => {
     let alive = true;
     setSources(emptyManuscriptSources());
-    if (!pid) return undefined;
+    setSourcesSettled(false);
+    if (!pid) { setSourcesSettled(true); return undefined; }
     fetchManuscriptSources({ projectId: pid, screenProjectId: screenPid })
-      .then((r) => { if (alive && r) setSources(r); })
-      .catch(() => { /* orchestrator is soft-fail; belt-and-braces */ });
+      .then((r) => { if (alive) { if (r) setSources(r); setSourcesSettled(true); } })
+      .catch(() => { if (alive) setSourcesSettled(true); /* orchestrator is soft-fail; belt-and-braces */ });
     return () => { alive = false; };
   }, [pid, screenPid]);
+  const availability = useMemo(() => sourceAvailability(sources), [sources]);
 
   const genOpts = useMemo(
     () => composeGenOpts({ project, runMeta, gradeByOutcome, sources }),
@@ -253,15 +268,22 @@ export function useManuscript(project, upd) {
   // 73.md Part 9 — per-section OUTDATED detection: fresh input hashes computed
   // with the SAME opts generation uses (incl. the active draft's templateId +
   // prisma overrides), compared against the hash stamped at generation time.
+  // recs round — no fresh hashes until the source fetches settle (comparing a hash
+  // computed WITH live data against one computed from empty pre-fetch sources
+  // false-flagged Abstract/Methods/Results as outdated on every open), and no
+  // OUTDATED verdicts at all while any live source is in an error state (a network
+  // blip must read as "unknown", never as "your text is stale — regenerate").
+  const fetchDegraded = ['screening', 'search', 'rob', 'pecan']
+    .some((k) => sources.dataStatus && sources.dataStatus[k] === 'error');
   const freshHashes = useMemo(() => {
-    if (!activeDraft) return {};
+    if (!activeDraft || !sourcesSettled) return {};
     try {
       return computeSectionInputsHashes(project, { ...genOpts, prismaCounts, templateId: activeDraft.templateId });
     } catch { return {}; }
-  }, [project, genOpts, prismaCounts, activeDraft]);
+  }, [project, genOpts, prismaCounts, activeDraft, sourcesSettled]);
   const outdated = useMemo(
-    () => MS.computeOutdatedSections(activeDraft, freshHashes),
-    [activeDraft, freshHashes],
+    () => (fetchDegraded ? {} : MS.computeOutdatedSections(activeDraft, freshHashes, availability)),
+    [activeDraft, freshHashes, availability, fetchDegraded],
   );
 
   // 73.md Part 9 — cross-artefact consistency checks (also folded into
@@ -317,13 +339,15 @@ export function useManuscript(project, upd) {
       // applyGeneratedSections stamps generated.sectionMeta (sources/missing/
       // inputsHash) onto every written section, always skips locked sections,
       // and seeds generated.statements into EMPTY statements on a full generate.
-      const res = MS.applyGeneratedSections(active, generated, opts);
+      // recs round — also stamp WHICH live sources this generation saw, so
+      // OUTDATED detection only ever compares hashes of like inputs.
+      const res = MS.applyGeneratedSections(active, generated, { ...opts, availability });
       skipped = res.skipped;
       skippedLocked = res.skippedLocked || [];
       return res.draft;
     });
     return { skipped, skippedLocked };
-  }, [mutateActive, project, genOpts, prismaCounts, primary]);
+  }, [mutateActive, project, genOpts, prismaCounts, primary, availability]);
 
   const refreshBlock = useCallback((blockId) => {
     mutateActive((d) => MS.markBlockRefreshed(d, blockId, projectRef.current));
@@ -362,6 +386,7 @@ export function useManuscript(project, upd) {
     prismaCounts, primary, tables, references, readiness, insights, staleness,
     // 73.md Parts 8/9 — live data wiring + provenance/outdated/lock surface.
     genOpts,
+    sourcesSettled,
     dataStatus: sources.dataStatus,
     screening: sources.screening,
     screeningWorkflow: sources.screeningWorkflow,

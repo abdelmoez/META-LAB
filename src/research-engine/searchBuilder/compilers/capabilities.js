@@ -160,6 +160,7 @@ export const CAPABILITIES = {
     booleans: ['AND', 'OR'], filters: { date: false, language: false, pubType: false },
     syntaxLevel: 'approximate',
     notes: [
+      'OpenGrey itself was discontinued in 2020 (its records are archived at DANS) — the Open button targets BASE, a free index that covers grey literature.',
       'Grey-literature portals accept only simple AND/OR and quoted phrases — paste the string and expect a coarse match.',
       'There are no subject headings, field tags, truncation, or limits; screen the results manually.',
     ],

@@ -209,6 +209,11 @@ export async function restoreVersion(prisma, { projectId, versionId, user }) {
   if (!row || row.metaLabProjectId !== projectId) return { error: 'not_found' };
   let strategy = {};
   try { strategy = JSON.parse(row.strategy || '{}'); } catch { strategy = {}; }
+  // 73.md recs round — the two-path search mode is a workspace preference, not part
+  // of the strategy content (it is excluded from the version content hash for the
+  // same reason). Restoring an old snapshot must never flip the user's current mode,
+  // so strip it before writing; the shallow merge then leaves the live value intact.
+  if (strategy && typeof strategy === 'object') delete strategy.searchMode;
 
   const out = await patchModuleState({
     projectId, moduleKey: SEARCH_MODULE, patch: strategy, baseRevision: null, user,

@@ -637,7 +637,19 @@ export function DbStrategyPanel({res,cap,setOverride,hitState}){
   const homeUrl=homeUrlFor(dbId);
   const copy=()=>{ try{navigator.clipboard?.writeText(shown);}catch{/* clipboard unavailable */} setCopied(true); setTimeout(()=>setCopied(false),1500); };
   const startEdit=()=>{ setDraft(shown); setEditing(true); };
-  const saveEdit=()=>{ if(setOverride) setOverride(draft.trim()?draft:null); setEditing(false); };
+  const saveEdit=()=>{
+    // recs round — saving the editor without actually changing the compiled query
+    // must NOT freeze the strategy as a manual override (it would silently stop
+    // syncing with concept changes). Unchanged text on a non-overridden panel is a
+    // no-op close; emptied text always clears the override.
+    if(setOverride){
+      const t=draft.trim();
+      if(!t) setOverride(null);
+      else if(!(res&&res.overridden) && t===(shown||"").trim()) { /* unchanged — keep live sync */ }
+      else setOverride(draft);
+    }
+    setEditing(false);
+  };
   const revert=()=>{ if(setOverride) setOverride(null); setEditing(false); };
   const vocabLine=res.vocab&&res.vocab.system!=="none"&&(res.vocab.mapped||res.vocab.unmapped)
     ?`Subject headings (${res.vocab.system}): ${res.vocab.mapped} mapped${res.vocab.unmapped?`, ${res.vocab.unmapped} unmapped`:""}${res.vocab.approximate?" (approximate)":""}`
@@ -870,7 +882,11 @@ function DatabaseCatalogView({selected,onToggle}){
                   <span style={{display:"flex",flexDirection:"column",gap:3,minWidth:0}}>
                     <span style={{display:"flex",alignItems:"center",gap:6}}>
                       <span style={{fontSize:12,fontWeight:600,color:C.txt}}>{db.label}</span>
-                      {db.nativeSyntax&&<span title="The builder generates this database's exact search format" style={{fontSize:8,fontWeight:700,letterSpacing:.4,color:C.grn,textTransform:"uppercase",border:`1px solid ${alpha(C.grn,"55")}`,borderRadius:4,padding:"0 4px"}}>auto syntax</span>}
+                      {/* recs round — every catalogue database now has a compiler; badge by
+                          syntax fidelity instead of the legacy 3-db nativeSyntax flag. */}
+                      {db.syntaxLevel==="approximate"
+                        ?<span title="The builder generates a simplified strategy for this database — review its notes before running" style={{fontSize:8,fontWeight:700,letterSpacing:.4,color:C.yel,textTransform:"uppercase",border:`1px solid ${alpha(C.yel,"55")}`,borderRadius:4,padding:"0 4px"}}>auto syntax·approx</span>
+                        :<span title="The builder generates this database's exact search format" style={{fontSize:8,fontWeight:700,letterSpacing:.4,color:C.grn,textTransform:"uppercase",border:`1px solid ${alpha(C.grn,"55")}`,borderRadius:4,padding:"0 4px"}}>auto syntax</span>}
                     </span>
                     <span style={{fontSize:10.5,color:tcol}}>{ACCESS_TIERS[db.tier]}</span>
                   </span>
@@ -1256,9 +1272,15 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const countCache=useRef({});        // query string -> count (number|null)
   const countTimer=useRef(null);
   const pubmedQuery=useMemo(()=>{
-    const o=overrides.pubmed; const gen=renderSearch(concepts,"pubmed").full;
-    return o!=null?o:gen;
-  },[concepts,overrides]);
+    const o=overrides.pubmed;
+    if(o!=null) return o;
+    // recs round — count the SAME string the compiled PubMed panel displays
+    // (including embedded Limits), so the pulse/hit chip and the strategy
+    // workspace can never disagree about what "≈ N records" refers to. Falls
+    // back to the raw renderer (byte-identical when no filters are set).
+    try{ return compileStrategy({concepts,filters},"pubmed",{applyOverride:false}).query; }
+    catch{ return renderSearch(concepts,"pubmed").full; }
+  },[concepts,overrides,filters]);
   const pubHash=useMemo(()=>strategyHash(pubmedQuery),[pubmedQuery]);
 
   useEffect(()=>{

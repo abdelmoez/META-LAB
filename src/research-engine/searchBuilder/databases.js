@@ -84,7 +84,10 @@ const SYNTAX_META = {
   cinahl:         { syntaxLevel: 'native',      vocabSystem: 'cinahl', homeUrl: 'https://search.ebscohost.com' },
   psycinfo:       { syntaxLevel: 'native',      vocabSystem: 'apa',    homeUrl: 'https://www.apa.org/pubs/databases/psycinfo' },
   proquest:       { syntaxLevel: 'native',      vocabSystem: 'none',   homeUrl: 'https://www.proquest.com' },
-  opengrey:       { syntaxLevel: 'approximate', vocabSystem: 'none',   homeUrl: 'https://opengrey.eu' },
+  // recs round — OpenGrey was discontinued in 2020 (records archived at DANS); the
+  // catalogue entry represents the grey-literature slot, so send searchers to BASE,
+  // a live free index that covers grey literature. The compiler notes explain this.
+  opengrey:       { syntaxLevel: 'approximate', vocabSystem: 'none',   homeUrl: 'https://www.base-search.net' },
   europepmc:      { syntaxLevel: 'native',      vocabSystem: 'mesh',   openUrl: 'https://europepmc.org/search?query={q}' },
   pmc:            { syntaxLevel: 'native',      vocabSystem: 'mesh',   openUrl: 'https://www.ncbi.nlm.nih.gov/pmc/?term={q}' },
   ieee:           { syntaxLevel: 'native',      vocabSystem: 'none',   homeUrl: 'https://ieeexplore.ieee.org' },
