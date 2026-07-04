@@ -991,6 +991,7 @@ ${paperText.slice(0,15000)}`;
         drafts={drafts}
         parked={parked}
         outcomes={protocolOuts}
+        readOnly={readOnly}
         onConfirm={confirmDraftById}
         onDismiss={dismissDraft}
         onPark={parkDraft}

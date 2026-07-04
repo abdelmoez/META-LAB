@@ -80,12 +80,17 @@ function parseNumCell(raw) {
 }
 
 /** Split a combined CI cell into { lo, hi }. Handles "0.99–1.03", "(0.95, 1.08)",
-    "0.99 to 1.03" and unicode dashes. Pure string parsing — no statistics. */
+    "0.99 to 1.03" and unicode dashes. Pure string parsing — no statistics. A bare comma is
+    a separator ONLY inside brackets ("(0.95, 1.08)"); outside, "1,234" is a thousands number,
+    not a range, so the comma is not treated as a separator. Decimals use "." (app convention). */
 function splitCI(raw) {
-  const s = String(raw == null ? "" : raw).trim().replace(/^[([]|[)\]]$/g, "");
-  const m = s.match(/^(-?\d+(?:[.,]\d+)?)\s*(?:–|—|−|-|to|,)\s*(-?\d+(?:[.,]\d+)?)$/i);
+  const s0 = String(raw == null ? "" : raw).trim();
+  const bracketed = /^[([].*[)\]]$/.test(s0);
+  const s = s0.replace(/^[([]|[)\]]$/g, "");
+  const sep = bracketed ? "(?:–|—|−|-|to|,)" : "(?:–|—|−|-|to)";
+  const m = s.match(new RegExp(`^(-?\\d+(?:\\.\\d+)?)\\s*${sep}\\s*(-?\\d+(?:\\.\\d+)?)$`, "i"));
   if (!m) return null;
-  const lo = Number(m[1].replace(/,/g, "")); const hi = Number(m[2].replace(/,/g, ""));
+  const lo = Number(m[1]); const hi = Number(m[2]);
   if (!Number.isFinite(lo) || !Number.isFinite(hi)) return null;
   return { lo: Math.min(lo, hi), hi: Math.max(lo, hi) };
 }
@@ -124,9 +129,20 @@ function buildInitialState(grid) {
 
   const mode = shape.shape === "direct-effect" ? "direct" : "twoarm";
   const dataRows = cells.map((_, i) => i).filter((i) => i >= headerRows);
-  const measure = mode === "direct"
-    ? "HR"
-    : (roles.includes("mean") && roles.includes("sd")) ? "MD" : "OR";
+  // Pre-fill the measure from the effect column's own header (the detector already matched
+  // it), so a "aOR (95% CI)" table doesn't silently default to HR. Ambiguous → HR (overridable).
+  let measure;
+  if (mode === "direct") {
+    const effIdx = roles.indexOf("effect");
+    const h = (effIdx >= 0 && span.headerText && span.headerText[effIdx]) ? String(span.headerText[effIdx]).toLowerCase() : "";
+    measure = /\birr\b|rate ratio/.test(h) ? "IRR"
+      : /\bhr\b|hazard/.test(h) ? "HR"
+      : /\brr\b|risk ratio|relative risk/.test(h) ? "RR"
+      : /\ba?or\b|odds ratio/.test(h) ? "OR"
+      : "HR";
+  } else {
+    measure = (roles.includes("mean") && roles.includes("sd")) ? "MD" : "OR";
+  }
 
   return {
     cells, roles, headerRows, mode, measure, confidence: shape.confidence || 0,
@@ -204,8 +220,12 @@ function readDirectRow({ cells, colRoles, measure, r, at, idFn }) {
   const effCol = col("effect"), ciCol = col("ci"), loCol = col("ciLow"), hiCol = col("ciHigh");
   const est = effCol == null ? null : parseNumCell(cells[r][effCol]);
   let lo = null, hi = null;
-  if (loCol != null && hiCol != null) { lo = parseNumCell(cells[r][loCol]); hi = parseNumCell(cells[r][hiCol]); }
-  else if (ciCol != null) { const s = splitCI(cells[r][ciCol]); if (s) { lo = s.lo; hi = s.hi; } }
+  if (loCol != null && hiCol != null) {
+    // Normalise ordering (as splitCI does) — a table that prints upper-before-lower must not
+    // yield lo>hi (which downstream would give a negative SE / drop the study silently).
+    const a = parseNumCell(cells[r][loCol]); const b = parseNumCell(cells[r][hiCol]);
+    if (a != null && b != null) { lo = Math.min(a, b); hi = Math.max(a, b); }
+  } else if (ciCol != null) { const s = splitCI(cells[r][ciCol]); if (s) { lo = s.lo; hi = s.hi; } }
   if (est == null) return { ok: false, why: "no numeric effect estimate" };
   const problems = [];
   const ratio = RATIO.has(measure);

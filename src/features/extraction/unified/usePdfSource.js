@@ -53,6 +53,8 @@ export function usePdfSource(study, projectId) {
   const localUrlRef = useRef(null);
   const supersedeRef = useRef(0);   // bumped when a local file is chosen, so an in-flight resolve can bail
   const studyId = study && study.id;
+  const studyIdRef = useRef(studyId);
+  studyIdRef.current = studyId;     // always the currently-selected study, for in-flight guards
   const doi = (study && study.doi) || '';
   const pmid = (study && study.pmid) || '';
 
@@ -130,11 +132,21 @@ export function usePdfSource(study, projectId) {
   const retrieveOa = useCallback(async () => {
     const sp = resolved.screenProjectId, rid = resolved.recordId;
     if (!sp || !rid) { setError('This study is not linked to a screening record, so its PDF cannot be auto-retrieved. Upload it instead.'); return; }
+    // Guard the multi-second round-trip: if the reviewer switches study (or uploads a local
+    // PDF) while OA retrieval is in flight, its late result must NOT clobber the new study's
+    // view with the wrong document.
+    const startStudyId = studyIdRef.current;
+    const startToken = supersedeRef.current;
+    const stale = () => studyIdRef.current !== startStudyId || supersedeRef.current !== startToken;
     setRetrieving(true); setError('');
     try {
-      const r = await screeningApi.oaRetrieveOne(sp, rid, { bypassCache: true }).catch((e) => ({ status: 'failed', error: e.message }));
+      // Preserve the server's structured status through the API's throw-on-non-2xx (403 for a
+      // disabled feature) so the tailored messages below aren't collapsed to "Access denied.".
+      const r = await screeningApi.oaRetrieveOne(sp, rid, { bypassCache: true }).catch((e) => ({ status: (e && e.data && e.data.status) || 'failed', error: (e && e.message) || 'Retrieval failed.' }));
+      if (stale()) return;
       if (r && (r.status === 'attached' || r.attachmentId)) {
         const listing = await screeningApi.listPdf(sp, rid).catch(() => null);
+        if (stale()) return;
         const att = (listing && listing.attachments && listing.attachments[0]) || null;
         if (att) { supersedeRef.current += 1; revokeLocal(); setResolved({ url: screeningApi.pdfDownloadUrl(sp, rid, att.id), source: 'oa', screenProjectId: sp, recordId: rid }); }
       } else {

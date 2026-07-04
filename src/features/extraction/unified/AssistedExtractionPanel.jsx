@@ -87,24 +87,53 @@ export default function AssistedExtractionPanel({
     if (!study) { setStatus('Pick a study first.'); return; }
     const runStr = payload.str || '';
     const token = (payload.offset != null) ? snapNumberToken(runStr, payload.offset) : null;
+    // When the caret couldn't be resolved (no offset) and the run holds several numbers,
+    // refuse to guess — assigning the run's FIRST number could be a confident wrong value.
+    if (!token && payload.offset == null && (runStr.match(/-?\d[\d.,]*/g) || []).length > 1) {
+      setStatus('Could not pinpoint which number you clicked — zoom in and click directly on it.'); return;
+    }
+    // es/lo/hi are stored on the ANALYSIS scale: ln for ratio measures (OR/RR/HR/IRR).
+    // Click-assign must honour that, matching the table/figure paths — never write a raw ratio.
+    const isRatio = ['OR', 'RR', 'HR', 'IRR'].includes(study.esType);
+    const conv = [];
+    const esFields = (est, lo, hi) => {
+      if (isRatio) {
+        for (const v of [est, lo, hi]) if (v != null && !(v > 0)) return null; // non-positive ratio can't be logged
+        const out = {};
+        if (est != null) out.es = String(Math.log(est));
+        if (lo != null) out.lo = String(Math.log(lo));
+        if (hi != null) out.hi = String(Math.log(hi));
+        conv.push({ id: Math.random().toString(36).slice(2, 10), type: 'ratio_log', method: 'ln(estimate); CI on ln scale', reason: `click-assign (${study.esType})`, at: new Date().toISOString(), inputs: { est, lo, hi }, result: { ...out } });
+        return out;
+      }
+      const out = {};
+      if (est != null) out.es = String(est);
+      if (lo != null) out.lo = String(lo);
+      if (hi != null) out.hi = String(hi);
+      return out;
+    };
     const patch = {};
-    if (assignField === 'smart' && token) {
-      if (token.kind === 'ratioCI') { patch.es = String(token.est); patch.lo = String(token.lo); patch.hi = String(token.hi); }
-      else if (token.kind === 'range') { patch.lo = String(token.lo); patch.hi = String(token.hi); }
-      else if (token.kind === 'pair') { patch.events = String(token.a); patch.total = String(token.b); }
-      else if (token.kind === 'meanSd') { patch.meanExp = String(token.a); patch.sdExp = String(token.b); }
-      else if (token.value != null) { patch.es = String(token.value); }
-    } else if (assignField === 'smart') {
-      const n = firstNumber(runStr);
-      if (n != null) patch.es = n; else { setStatus(`"${runStr}" has no number to capture.`); return; }
+    if (assignField === 'smart') {
+      if (token && token.kind === 'ratioCI') { const e = esFields(token.est, token.lo, token.hi); if (!e) { setStatus('That estimate/CI is ≤ 0, which a ratio measure cannot take — check the value or the study’s measure.'); return; } Object.assign(patch, e); }
+      else if (token && token.kind === 'range') { const e = esFields(null, token.lo, token.hi); if (!e) { setStatus('That CI is ≤ 0, which a ratio measure cannot take — check the value or the study’s measure.'); return; } Object.assign(patch, e); }
+      else if (token && token.kind === 'pair') { patch.events = String(token.a); patch.total = String(token.b); }
+      else if (token && token.kind === 'meanSd') { patch.meanExp = String(token.a); patch.sdExp = String(token.b); }
+      else {
+        const raw = token && token.value != null ? token.value : firstNumber(runStr);
+        if (raw == null) { setStatus(`"${runStr}" has no number to capture.`); return; }
+        const e = esFields(Number(raw), null, null); if (!e) { setStatus('That value is ≤ 0, which a ratio measure cannot take on the log scale.'); return; }
+        Object.assign(patch, e);
+      }
     } else {
-      // A specific field is chosen: take the token's primary numeric (or the first number).
+      // A specific field is chosen: take the number FROM the snapped token under the cursor
+      // (its primary component), only falling back to the run's first number if no token.
       const n = token
-        ? (token.value != null ? String(token.value) : token.est != null ? String(token.est) : token.lo != null ? String(token.lo) : firstNumber(runStr))
+        ? (token.value != null ? token.value : token.est != null ? token.est : token.a != null ? token.a : token.lo != null ? token.lo : firstNumber(runStr))
         : firstNumber(runStr);
       if (n == null) { setStatus(`"${runStr}" has no number to capture.`); return; }
       patch[assignField] = String(n);
     }
+    if (conv.length) { patch.conversions = [...(Array.isArray(study.conversions) ? study.conversions : []), ...conv]; patch.converted = true; }
     if (!Object.keys(patch).length) { setStatus('Nothing captured — try clicking directly on the number.'); return; }
     // Provenance note (page + the source text) + needsReview so a click is always auditable.
     const prov = `[click${payload.page ? ` p${payload.page}` : ''}] ${runStr}`.trim();
@@ -169,10 +198,14 @@ export default function AssistedExtractionPanel({
     setError(''); setStatus(''); setBusy(true); setDetected([]);
     try {
       let pages = [];
+      let ocrPageSet = new Set();
+      let ocrCount = 0;
       if (pdf.url) {
         setStatus('Reading the PDF text…');
         const r = await pdf.extractPages();
         pages = r.pages;
+        ocrPageSet = new Set((r.pages || []).filter((p) => p.ocr).map((p) => p.page));
+        ocrCount = r.ocrPages || 0;
       }
       const abstract = (study && study.abstract) || '';
       if (!pages.length && !abstract) {
@@ -181,16 +214,27 @@ export default function AssistedExtractionPanel({
       }
       const at = new Date().toISOString();
       const { drafts: newDrafts, alsoReported, detectedOutcomes, log } = autoExtract({ pages, abstract, protocol, baseStudy: study, at });
-      // Tag every draft with its origin study so confirming it inherits the right citation.
-      const tagged = (newDrafts || []).map((d) => ({ ...d, sourceStudyId: (study && study.id) || '' }));
+      // Tag every draft with its origin study, and mark + de-confidence any draft whose text
+      // came from OCR ("text recognition") — a digit misread must be scrutinised, not trusted.
+      const markOcr = (d) => {
+        const rec = { ...d, sourceStudyId: (study && study.id) || '' };
+        if (d.provenance && ocrPageSet.has(d.provenance.page)) {
+          rec.confidence = 'low';
+          rec.provenance = { ...d.provenance, ocr: true };
+          rec.notes = [d.notes, 'From text recognition (OCR) — verify every digit against the page.'].filter(Boolean).join(' · ');
+        }
+        return rec;
+      };
+      const tagged = (newDrafts || []).map(markOcr);
       onAddDrafts && onAddDrafts(tagged);
-      onAddParked && onAddParked((alsoReported || []).map((d) => ({ ...d, sourceStudyId: (study && study.id) || '' })));
+      onAddParked && onAddParked((alsoReported || []).map(markOcr));
       // Anti-silent-fail: when the protocol has no outcomes, or nothing matched, offer the
       // outcomes the engine DID detect in the paper so the reviewer can choose.
       if ((!tagged.length) && Array.isArray(detectedOutcomes) && detectedOutcomes.length) {
         setDetected(detectedOutcomes);
       }
-      setStatus((log && log[log.length - 1]) || `Found ${tagged.length} draft(s).`);
+      const ocrNote = ocrCount ? ` (text recognition used on ${ocrCount} scanned page${ocrCount > 1 ? 's' : ''} — verify those digits)` : '';
+      setStatus(((log && log[log.length - 1]) || `Found ${tagged.length} draft(s).`) + ocrNote);
     } catch (e) {
       setError(e.message || 'Auto-extract failed.');
     } finally {
@@ -276,19 +320,24 @@ export default function AssistedExtractionPanel({
     // The mapper may return a single record ({esType, values, ...}) or several
     // (per-variable direct-effect tables → one record per selected row).
     const list = Array.isArray(payload) ? payload : [payload];
-    const recs = list.map((r) => mkExtractionRecord({
-      author: (study && study.author) || '', year: (study && study.year) || '', sourceStudyId: (study && study.id) || '',
-      outcome: r.outcome || '', timepoint: r.timepoint || '', comparison: r.comparison || '', esType: r.esType || '',
-      scope: r.scope,
-      values: r.values || {},
-      provenance: { method: 'table', page: tableModal && tableModal.page, region: tableModal && tableModal.region, excerpt: r.excerpt || 'Parsed from a selected table region.', at },
-      confidence: r.confidence || 'medium',
-      // Re-stamp the mapper's (pure, placeholder-timestamped) conversion audit with the real time + a unique id.
-      conversions: (r.conversions || []).map((cv, i) => ({ ...cv, at, id: `${Math.random().toString(36).slice(2, 8)}${i}` })),
+    const built = list.map((r) => ({
+      // Route by the mapper's EXPLICIT intent (input scope), not the record's defaulted
+      // scope: only a row the reviewer tagged out-of-scope (scope.level 'other') is parked;
+      // a two-arm record with no scope is an unassigned DRAFT, not "also reported".
+      park: !!(r.scope && r.scope.level === 'other'),
+      rec: mkExtractionRecord({
+        author: (study && study.author) || '', year: (study && study.year) || '', sourceStudyId: (study && study.id) || '',
+        outcome: r.outcome || '', timepoint: r.timepoint || '', comparison: r.comparison || '', esType: r.esType || '',
+        scope: r.scope,
+        values: r.values || {},
+        provenance: { method: 'table', page: tableModal && tableModal.page, region: tableModal && tableModal.region, excerpt: r.excerpt || 'Parsed from a selected table region.', at },
+        confidence: r.confidence || 'medium',
+        // Re-stamp the mapper's (pure, placeholder-timestamped) conversion audit with the real time + a unique id.
+        conversions: (r.conversions || []).map((cv, i) => ({ ...cv, at, id: `${Math.random().toString(36).slice(2, 8)}${i}` })),
+      }),
     }));
-    // Rows tagged out-of-scope go to "Also reported"; the rest are drafts to confirm.
-    const parkRecs = recs.filter((r) => r.scope && r.scope.level === 'other');
-    const draftRecs = recs.filter((r) => !(r.scope && r.scope.level === 'other'));
+    const draftRecs = built.filter((b) => !b.park).map((b) => b.rec);
+    const parkRecs = built.filter((b) => b.park).map((b) => b.rec);
     if (draftRecs.length) onAddDrafts && onAddDrafts(draftRecs);
     if (parkRecs.length) onAddParked && onAddParked(parkRecs);
     setTableModal(null);

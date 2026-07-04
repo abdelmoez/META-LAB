@@ -178,12 +178,16 @@ function drawStepCurve(ctx, pts, cal, color) {
   ctx.setLineDash([5, 3]);
   ctx.globalAlpha = 0.95;
   ctx.beginPath();
+  // kmFromIPD emits post-drop survival at each event time; a right-continuous KM curve HOLDS
+  // the higher (previous) level until the next event, then drops — so draw horizontal-then-
+  // vertical. Seed the leading S=1 plateau from t=0 when the first event is after 0.
+  const seq = (pts[0] && pts[0].t > 0) ? [{ t: 0, s: 1 }, ...pts] : pts;
   let prev = null;
-  for (const p of pts) {
+  for (const p of seq) {
     const c = cal.toPx({ x: p.t, y: p.s });
     if (!c || !Number.isFinite(c.px) || !Number.isFinite(c.py)) continue;
     if (prev == null) ctx.moveTo(c.px, c.py);
-    else { ctx.lineTo(prev.px, c.py); ctx.lineTo(c.px, c.py); } // step: vertical then horizontal
+    else { ctx.lineTo(c.px, prev.py); ctx.lineTo(c.px, c.py); } // hold previous level, then drop
     prev = c;
   }
   ctx.stroke();

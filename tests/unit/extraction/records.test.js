@@ -396,6 +396,25 @@ describe('parkRecord / unparkToDraft', () => {
     });
     expect(out.ok).toBe(false);
   });
+
+  it('unpark gives an off-protocol (empty-outcome) record the chosen outcome NAME so it is confirmable', () => {
+    // Auto-parked "also reported" stats carry outcome:'' — unparking must set the name.
+    const parkedRec = { ...mkDraft(), outcome: '', draft: false, parkedAt: at };
+    const out = unparkToDraft({ parked: [parkedRec], drafts: [] }, 'rec1', {
+      scope: { level: 'primary', outcomeId: 'out3', name: 'All-cause mortality' },
+    });
+    expect(out.ok).toBe(true);
+    expect(out.drafts[0].outcome).toBe('All-cause mortality');
+  });
+
+  it('unpark never erases an existing outcome when no name is supplied', () => {
+    const parkedRec = { ...mkDraft(), outcome: 'Kept outcome', draft: false, parkedAt: at };
+    const out = unparkToDraft({ parked: [parkedRec], drafts: [] }, 'rec1', {
+      scope: { level: 'secondary', outcomeId: 'out7' },
+    });
+    expect(out.ok).toBe(true);
+    expect(out.drafts[0].outcome).toBe('Kept outcome');
+  });
 });
 
 describe('recordCompleteness', () => {

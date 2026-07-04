@@ -106,15 +106,16 @@ function MethodChip({ method }) {
 
 /* ── one draft card ──────────────────────────────────────────────────────── */
 
-function DraftCard({ d, outcomes, compact, onConfirm, onDismiss, onPark, onEditField }) {
+function DraftCard({ d, outcomes, compact, readOnly, onConfirm, onDismiss, onPark, onEditField }) {
   const scope = d.scope && typeof d.scope === "object" ? d.scope : {};
   const completeness = recordCompleteness(d);
   const confColor = CONFIDENCE_COLOR[d.confidence] || C.red;
   const selectedOutcomeId = outcomes.some((o) => o.id === scope.outcomeId) ? scope.outcomeId : "";
-  // Protocol-scoping gate: a draft only joins the analysable dataset once it is tagged to
-  // a primary/secondary outcome with a name, so it can never pool under the "(unnamed)"
-  // bucket. The escape hatch for genuinely off-protocol values is "Not in this review".
-  const scopeReady = (scope.level === "primary" || scope.level === "secondary") && has(d.outcome);
+  // Confirm gate: a draft only joins the analysable dataset once it carries a non-empty
+  // outcome NAME, so it can never pool under the "(unnamed)" bucket. A protocol outcome is
+  // preferred (use the dropdown), but a named detected / off-protocol outcome is also
+  // confirmable; the escape hatch for values you don't want is "Not in this review".
+  const scopeReady = has(d.outcome);
 
   const changeScope = (id) => {
     if (!onEditField) return;
@@ -169,49 +170,55 @@ function DraftCard({ d, outcomes, compact, onConfirm, onDismiss, onPark, onEditF
       <Provenance prov={d.provenance} />
       {d.notes && <div style={{ fontSize: 10.5, color: C.dim, marginTop: 5 }}>{d.notes}</div>}
 
-      {/* scope correction + actions */}
-      <div style={{
-        display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap",
-        marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.brd}`,
-      }}>
-        <div style={{ minWidth: 200 }}>
-          <div style={microLbl}>Protocol outcome</div>
-          <select value={selectedOutcomeId} onChange={(e) => changeScope(e.target.value)}
-            style={{ ...smallInp, width: "100%" }}>
-            <option value="">
-              {outcomes.length ? "Off-protocol / unassigned" : "No protocol outcomes defined"}
-            </option>
-            {outcomes.map((o) => (
-              <option key={o.id} value={o.id}>{outcomeOptionLabel(o)}</option>
-            ))}
-          </select>
+      {/* scope correction + actions — hidden for read-only viewers (no dead controls). */}
+      {readOnly ? (
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.brd}`, fontSize: 10.5, color: C.dim }}>
+          View only{contextLine(d) ? ` — ${contextLine(d)}` : ""}.
         </div>
-        <div style={{ width: 110 }}>
-          <div style={microLbl}>Timepoint</div>
-          <input value={d.timepoint || ""} placeholder="e.g. 12 weeks"
-            onChange={(e) => onEditField && onEditField(d.id, "timepoint", e.target.value)}
-            style={{ ...smallInp, width: "100%" }} />
+      ) : (
+        <div style={{
+          display: "flex", alignItems: "flex-end", gap: 10, flexWrap: "wrap",
+          marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.brd}`,
+        }}>
+          <div style={{ minWidth: 200 }}>
+            <div style={microLbl}>Protocol outcome</div>
+            <select value={selectedOutcomeId} onChange={(e) => changeScope(e.target.value)}
+              style={{ ...smallInp, width: "100%" }}>
+              <option value="">
+                {outcomes.length ? "Off-protocol / unassigned" : "No protocol outcomes defined"}
+              </option>
+              {outcomes.map((o) => (
+                <option key={o.id} value={o.id}>{outcomeOptionLabel(o)}</option>
+              ))}
+            </select>
+          </div>
+          <div style={{ width: 110 }}>
+            <div style={microLbl}>Timepoint</div>
+            <input value={d.timepoint || ""} placeholder="e.g. 12 weeks"
+              onChange={(e) => onEditField && onEditField(d.id, "timepoint", e.target.value)}
+              style={{ ...smallInp, width: "100%" }} />
+          </div>
+          <div style={{ flex: 1 }} />
+          <button onClick={() => scopeReady && onConfirm && onConfirm(d.id)} disabled={!scopeReady}
+            title={scopeReady ? "" : "Give this draft an outcome name first (pick a protocol outcome, or keep its detected name), or park it as 'Not in this review'."}
+            style={{ ...smallBtn("success"), ...(scopeReady ? {} : { opacity: 0.5, cursor: "not-allowed" }) }}>
+            ✓ Confirm → adds to studies
+          </button>
+          <button onClick={() => onPark && onPark(d.id)} style={smallBtn("ghost")}>
+            Not in this review
+          </button>
+          <button onClick={() => onDismiss && onDismiss(d.id)} style={smallBtn("danger")}>
+            Dismiss
+          </button>
         </div>
-        <div style={{ flex: 1 }} />
-        <button onClick={() => scopeReady && onConfirm && onConfirm(d.id)} disabled={!scopeReady}
-          title={scopeReady ? "" : "Assign this draft to a protocol outcome first (or park it as 'Not in this review')."}
-          style={{ ...smallBtn("success"), ...(scopeReady ? {} : { opacity: 0.5, cursor: "not-allowed" }) }}>
-          ✓ Confirm → adds to studies
-        </button>
-        <button onClick={() => onPark && onPark(d.id)} style={smallBtn("ghost")}>
-          Not in this review
-        </button>
-        <button onClick={() => onDismiss && onDismiss(d.id)} style={smallBtn("danger")}>
-          Dismiss
-        </button>
-      </div>
+      )}
     </div>
   );
 }
 
 /* ── one parked row ──────────────────────────────────────────────────────── */
 
-function ParkedRow({ rec, outcomes, pickedId, onPick, onUnpark, onDismiss }) {
+function ParkedRow({ rec, outcomes, pickedId, readOnly, onPick, onUnpark, onDismiss }) {
   const o = outcomes.find((x) => x.id === pickedId) || null;
   return (
     <div style={{
@@ -237,23 +244,25 @@ function ParkedRow({ rec, outcomes, pickedId, onPick, onUnpark, onDismiss }) {
           </div>
         )}
       </div>
-      <select value={pickedId || ""} onChange={(e) => onPick(rec.id, e.target.value)}
-        style={{ ...smallInp, width: 190 }}>
-        <option value="">
-          {outcomes.length ? "Attach to outcome…" : "No protocol outcomes defined"}
-        </option>
-        {outcomes.map((x) => (
-          <option key={x.id} value={x.id}>{outcomeOptionLabel(x)}</option>
-        ))}
-      </select>
-      <button disabled={!o}
-        onClick={() => o && onUnpark && onUnpark(rec.id, { level: o.level, outcomeId: o.id, name: o.name })}
-        style={{ ...smallBtn("ghost"), ...(o ? { color: C.acc, borderColor: themeAlpha(C.acc, "40") } : { opacity: 0.5, cursor: "default" }) }}>
-        Bring into review
-      </button>
-      <button onClick={() => onDismiss && onDismiss(rec.id)} style={smallBtn("danger")}>
-        Dismiss
-      </button>
+      {!readOnly && (<>
+        <select value={pickedId || ""} onChange={(e) => onPick(rec.id, e.target.value)}
+          style={{ ...smallInp, width: 190 }}>
+          <option value="">
+            {outcomes.length ? "Attach to outcome…" : "No protocol outcomes defined"}
+          </option>
+          {outcomes.map((x) => (
+            <option key={x.id} value={x.id}>{outcomeOptionLabel(x)}</option>
+          ))}
+        </select>
+        <button disabled={!o}
+          onClick={() => o && onUnpark && onUnpark(rec.id, { level: o.level, outcomeId: o.id, name: o.name })}
+          style={{ ...smallBtn("ghost"), ...(o ? { color: C.acc, borderColor: themeAlpha(C.acc, "40") } : { opacity: 0.5, cursor: "default" }) }}>
+          Bring into review
+        </button>
+        <button onClick={() => onDismiss && onDismiss(rec.id)} style={smallBtn("danger")}>
+          Dismiss
+        </button>
+      </>)}
     </div>
   );
 }
@@ -261,7 +270,7 @@ function ParkedRow({ rec, outcomes, pickedId, onPick, onUnpark, onDismiss }) {
 /* ── main list ───────────────────────────────────────────────────────────── */
 
 export default function DraftReviewList({
-  drafts = [], parked = [], outcomes = [], compact = false,
+  drafts = [], parked = [], outcomes = [], compact = false, readOnly = false,
   onConfirm, onDismiss, onPark, onUnpark, onEditField,
 }) {
   // parked-row outcome picks (recordId → outcomeId); stale keys are harmless.
@@ -292,7 +301,7 @@ export default function DraftReviewList({
           )}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {safeDrafts.map((d) => (
-              <DraftCard key={d.id} d={d} outcomes={safeOutcomes} compact={compact}
+              <DraftCard key={d.id} d={d} outcomes={safeOutcomes} compact={compact} readOnly={readOnly}
                 onConfirm={onConfirm} onDismiss={onDismiss} onPark={onPark} onEditField={onEditField} />
             ))}
           </div>
@@ -311,7 +320,7 @@ export default function DraftReviewList({
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {safeParked.map((rec) => (
-              <ParkedRow key={rec.id} rec={rec} outcomes={parkTargets}
+              <ParkedRow key={rec.id} rec={rec} outcomes={parkTargets} readOnly={readOnly}
                 pickedId={picks[rec.id] || ""} onPick={pick}
                 onUnpark={onUnpark} onDismiss={onDismiss} />
             ))}

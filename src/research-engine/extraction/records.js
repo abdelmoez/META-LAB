@@ -406,6 +406,11 @@ export function unparkToDraft(state = {}, recordId, opts = {}) {
       rec.scope && typeof rec.scope === 'object' ? strOr(rec.scope.canonicalName, '') : '',
     ),
   };
+  // Give the unparked draft the chosen outcome NAME (parked off-protocol stats carry an
+  // empty outcome), so it is confirmable — the confirm gate requires a non-empty outcome.
+  // Only overwrite when a real name is supplied; never erase an existing one.
+  const nm = strOr(scope.name, '').trim() || strOr(scope.canonicalName, '').trim();
+  if (nm) rec.outcome = nm;
   delete rec.parkedAt;
   drafts.push(rec);
 

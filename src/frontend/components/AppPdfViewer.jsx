@@ -763,7 +763,7 @@ function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOption
   }
 
   function onTextClickCapture(e) {
-    if (!clickable) return;
+    if (!clickable || !interaction.onTextClick) return;
     // Only react to a click that lands on a text span (has text), not empty gaps.
     const span = e.target.closest && e.target.closest('span');
     const str = span ? (span.dataset.t != null ? span.dataset.t : span.textContent) : '';
