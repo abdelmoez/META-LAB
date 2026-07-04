@@ -7,6 +7,9 @@
  */
 
 import { Z975, normalCDF, chiSquareCDF, tCDF, tCrit } from './math-helpers.js';
+// RoadMap/2.md — opt-in τ² estimators (DL default; existing results byte-for-byte unchanged).
+import { estimateTau2, TAU2_METHODS } from './tau2.js';
+export { estimateTau2, TAU2_METHODS, TAU2_LABELS } from './tau2.js';
 
 /**
  * runMeta(studies, method)
@@ -21,7 +24,7 @@ import { Z975, normalCDF, chiSquareCDF, tCDF, tCrit } from './math-helpers.js';
  *   { studies, k, Q, Qpval, I2, I2desc, tau2, pES, pSE, lo95, hi95, pval, z,
  *     method, W, tau, fixed, random, hksj, predInt }
  */
-export function runMeta(studies, method = "random") {
+export function runMeta(studies, method = "random", opts = {}) {
   const valid = studies.filter(
     s => s.es !== "" && s.lo !== "" && s.hi !== "" &&
          !isNaN(+s.es) && !isNaN(+s.lo) && !isNaN(+s.hi)
@@ -41,8 +44,17 @@ export function runMeta(studies, method = "random") {
   const k = d.length;
   const I2 = k > 1 ? Math.max(0, ((Q - (k - 1)) / Q) * 100) : 0;
 
-  // τ² (DerSimonian–Laird) — always computed so both models can be reported
-  const tau2all = Math.max(0, (Q - (k - 1)) / (W - W2 / W));
+  // τ² (DerSimonian–Laird) — the DEFAULT, always computed so both models can be reported
+  const tau2dl = Math.max(0, (Q - (k - 1)) / (W - W2 / W));
+  // RoadMap/2.md — an OPT-IN estimator overrides only the random-effects τ² (DL stays the
+  // default so every existing call is byte-for-byte unchanged; HKSJ + PI use whatever τ²
+  // is chosen). Falls back to DL for small k / non-convergence (flagged in the result).
+  const reqTau2Method = (opts && TAU2_METHODS.includes(opts.tau2Method)) ? opts.tau2Method : "DL";
+  let tau2all = tau2dl, tau2Method = "DL", tau2Fallback = null, tau2Converged = true;
+  if (reqTau2Method !== "DL") {
+    const est = estimateTau2(d.map(x => x._es), d.map(x => x._se * x._se), { method: reqTau2Method });
+    tau2all = est.tau2; tau2Method = reqTau2Method; tau2Fallback = est.fallback; tau2Converged = est.converged;
+  }
 
   // random-effects weights (always available for side-by-side reporting)
   const rwAll = d.map(x => 1 / (x._se ** 2 + tau2all));
@@ -134,6 +146,7 @@ export function runMeta(studies, method = "random") {
     z,
     method, W,
     tau:    Math.sqrt(tau2all),
+    tau2Method, tau2Fallback, tau2Converged,
     fixed: {
       es: fixES, se: fixSE,
       lo: fixES - Z975 * fixSE,

@@ -41,10 +41,24 @@ export const ES_TYPES={
   MD:{label:"Mean Difference (raw units)",family:"continuous-raw",log:false,nullVal:0,scale:"MD"},
   OR:{label:"Odds Ratio (log scale)",family:"ratio",log:true,nullVal:0,scale:"lnOR"},
   RR:{label:"Risk Ratio (log scale)",family:"ratio",log:true,nullVal:0,scale:"lnRR"},
-  RD:{label:"Risk Difference (raw)",family:"ratio",log:false,nullVal:0,scale:"RD"},
+  // RD is a DIFFERENCE, not a ratio (family fixed from the earlier 'ratio' mislabel;
+  // log:false already routed it to the correct additive branch).
+  RD:{label:"Risk Difference (raw)",family:"difference",log:false,nullVal:0,scale:"RD"},
+  // RoadMap/2.md — Peto odds ratio (rare events / balanced arms). Log scale like OR.
+  PETO:{label:"Peto Odds Ratio (log scale)",family:"ratio",log:true,nullVal:0,scale:"lnOR"},
   HR:{label:"Hazard Ratio (log scale)",family:"ratio",log:true,nullVal:0,scale:"lnHR"},
+  // RoadMap/2.md — incidence rate ratio (events per person-time). Log scale.
+  IRR:{label:"Incidence Rate Ratio (log scale)",family:"ratio",log:true,nullVal:0,scale:"lnIRR"},
   COR:{label:"Correlation (Fisher z)",family:"correlation",log:false,nullVal:0,scale:"z"},
   PROP:{label:"Single-arm proportion (logit)",family:"proportion",log:false,nullVal:null,scale:"logit"},
+  // RoadMap/2.md — AUC / C-statistic pooled on the RAW 0–1 scale with its SE
+  // (null = 0.5, no discrimination). For logit pooling, enter as Generic (log-free).
+  AUC:{label:"AUC / C-statistic",family:"diagnostic-auc",log:false,nullVal:0.5,scale:"AUC"},
+  // RoadMap/2.md — regression coefficient (β) on its native additive scale.
+  BETA:{label:"Regression coefficient (β)",family:"regression",log:false,nullVal:0,scale:"β"},
+  // RoadMap/2.md — pre-computed / generic effect + CI, used verbatim on its own scale.
+  GENERIC:{label:"Generic effect (pre-computed)",family:"generic",log:false,nullVal:0,scale:"effect"},
+  GENERIC_LOG:{label:"Generic ratio (pre-computed, log scale)",family:"generic",log:true,nullVal:0,scale:"ln(ratio)"},
 };
 
 /* ════════════ CONSTANTS ════════════ */

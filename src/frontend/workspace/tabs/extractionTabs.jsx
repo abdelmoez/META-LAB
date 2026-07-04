@@ -62,13 +62,13 @@ function ESCalcInline({s,ch}){
     if(type==="HR"){ p.hr=s._hrVal; p.lo=s._hrLo; p.hi=s._hrHi; }
     // Honest, specific validation for the dichotomous 2×2 measures. A zero count
     // is valid clinical data and must never be rejected merely for being zero.
-    if(type==="OR"||type==="RR"||type==="RD"){
+    if(type==="OR"||type==="RR"||type==="RD"||type==="PETO"){
       const raw=[p.a,p.b,p.c,p.d];
       if(raw.some(v=>v===""||v==null)){ setRes(null); setErr("Enter all four 2×2 cells (a, b, c, d)."); return; }
       const nums=raw.map(Number);
       if(nums.some(v=>isNaN(v)||!isFinite(v))){ setRes(null); setErr("Counts must be numbers."); return; }
       if(nums.some(v=>v<0||!Number.isInteger(v))){ setRes(null); setErr("Counts must be non-negative integers."); return; }
-      if((type==="OR"||type==="RR")&&nums[0]===0&&nums[2]===0){
+      if((type==="OR"||type==="RR"||type==="PETO")&&nums[0]===0&&nums[2]===0){
         setRes(null);
         setErr(`Both event cells are zero — a double-zero study is not estimable as ${type} (no information about a relative effect). Use Risk Difference (RD), which can include zero-event studies.`);
         return;
@@ -96,6 +96,7 @@ function ESCalcInline({s,ch}){
         <option value="OR">Dichotomous → Odds Ratio</option>
         <option value="RR">Dichotomous → Risk Ratio</option>
         <option value="RD">Dichotomous → Risk Difference</option>
+        <option value="PETO">Dichotomous → Peto Odds Ratio</option>
         <option value="HR">Time-to-event → Hazard Ratio</option>
         <option value="COR">Correlation → Fisher's z</option>
         <option value="PROP">Single-arm → Proportion</option>
@@ -105,7 +106,7 @@ function ESCalcInline({s,ch}){
     <div style={{fontSize:10,color:C.dim,marginBottom:8,lineHeight:1.5}}>
       {type==="SMD"&&"Standardized mean difference — pool when studies use different scales for the same construct."}
       {type==="MD"&&"Raw mean difference — only when every study reports the same units."}
-      {(type==="OR"||type==="RR"||type==="RD")&&"2×2 counts. a = events in intervention, b = non-events intervention, c = events control, d = non-events control. Zero cells are valid clinical data — OR/RR apply a Haldane–Anscombe 0.5 correction when any cell is 0; RD needs none."}
+      {(type==="OR"||type==="RR"||type==="RD"||type==="PETO")&&"2×2 counts. a = events in intervention, b = non-events intervention, c = events control, d = non-events control. Zero cells are valid clinical data — OR/RR apply a Haldane–Anscombe 0.5 correction when any cell is 0; RD needs none; Peto (best for rare, balanced events) needs none."}
       {type==="HR"&&"Enter the reported hazard ratio and its 95% CI — they are log-transformed for pooling."}
       {type==="COR"&&"Pearson r and sample size → Fisher's z transform."}
       {type==="PROP"&&"Single group: number of events and group total → logit proportion."}
@@ -114,7 +115,7 @@ function ESCalcInline({s,ch}){
     {(type==="SMD"||type==="MD")&&<div style={{display:"grid",gridTemplateColumns:"repeat(6,1fr)",gap:8,marginBottom:8}}>
       {fi("meanExp","Mean Exp")}{fi("sdExp","SD Exp")}{fi("nExp","n Exp")}{fi("meanCtrl","Mean Ctrl")}{fi("sdCtrl","SD Ctrl")}{fi("nCtrl","n Ctrl")}
     </div>}
-    {(type==="OR"||type==="RR"||type==="RD")&&<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:8}}>{fi("a","a (event/Exp)")}{fi("b","b (no event/Exp)")}{fi("c","c (event/Ctrl)")}{fi("d","d (no event/Ctrl)")}</div>}
+    {(type==="OR"||type==="RR"||type==="RD"||type==="PETO")&&<div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:8,marginBottom:8}}>{fi("a","a (event/Exp)")}{fi("b","b (no event/Exp)")}{fi("c","c (event/Ctrl)")}{fi("d","d (no event/Ctrl)")}</div>}
     {type==="HR"&&<div style={{display:"grid",gridTemplateColumns:"repeat(3,1fr)",gap:8,marginBottom:8}}>
       <div><div style={{fontSize:9,color:C.dim,marginBottom:2}}>HR</div><input value={s._hrVal||""} onChange={e=>sp("_hrVal",e.target.value)} placeholder="HR" style={{...inp,fontSize:11,fontFamily:"'IBM Plex Mono',monospace",padding:"4px 6px"}}/></div>
       <div><div style={{fontSize:9,color:C.dim,marginBottom:2}}>95% CI Lower</div><input value={s._hrLo||""} onChange={e=>sp("_hrLo",e.target.value)} placeholder="lower" style={{...inp,fontSize:11,fontFamily:"'IBM Plex Mono',monospace",padding:"4px 6px"}}/></div>
@@ -129,7 +130,7 @@ function ESCalcInline({s,ch}){
       {err&&<span style={{fontSize:11,color:C.red}}>{err}</span>}
     </div>
     {note&&<div style={{fontSize:10.5,color:C.yel,marginTop:6,lineHeight:1.5}}>⚠ {note}</div>}
-    {res&&["OR","RR","HR","PROP","DIAG"].includes(type)&&<div style={{fontSize:10,color:C.dim,marginTop:6}}>✓ Stored on the analysis scale ({ES_TYPES[type]?.scale}). The forest plot and pooling use this transformed value; the readable value is shown above.</div>}
+    {res&&["OR","RR","HR","PROP","DIAG","PETO","IRR","GENERIC_LOG"].includes(type)&&<div style={{fontSize:10,color:C.dim,marginTop:6}}>✓ Stored on the analysis scale ({ES_TYPES[type]?.scale}). The forest plot and pooling use this transformed value; the readable value is shown above.</div>}
   </div>);
 }
 

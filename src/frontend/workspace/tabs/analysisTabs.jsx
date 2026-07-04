@@ -18,7 +18,7 @@ import { rasterizeSvg, downloadBlob, downloadText } from "../../components/expor
 import { fmtNum, fmtES, fmtP, fmtPct, fmtI2, fmtWeight, normalizePrecision, DECIMAL_OPTIONS } from "../../../research-engine/format/precision.js";
 import { isNonPrimary } from "../../../research-engine/import-export/referenceParsers.js";
 import { ES_TYPES, DATA_NATURE_LABEL, ADJUST_LABEL, SOURCE_LABEL } from "../../../research-engine/project-model/monolithConstants.js";
-import { normalCDF, runMeta, eggersTest, leaveOneOut, trimFill, influenceDiagnostics, subgroupAnalysis, analysisTypeWarnings, CONVERSIONS, checkPoolability } from "../../../research-engine/statistics/monolithStats.js";
+import { normalCDF, runMeta, eggersTest, leaveOneOut, trimFill, influenceDiagnostics, subgroupAnalysis, analysisTypeWarnings, CONVERSIONS, checkPoolability, TAU2_METHODS, TAU2_LABELS } from "../../../research-engine/statistics/monolithStats.js";
 // P13 — the meta-regression engine ships in the SAME barrel as subgroupAnalysis
 // above, but lands CONCURRENTLY. A namespace import keeps `npm run build` green
 // whether or not `metaRegression` is present yet (a missing NAMED export would
@@ -37,6 +37,8 @@ import { interpretResult } from "../projectHelpers.js";
 export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
   const{studies}=project;
   const[method,setMethod]=useState("random");
+  // RoadMap/2.md — opt-in τ² estimator (DerSimonian–Laird default keeps existing results).
+  const[tau2Method,setTau2Method]=useState("DL");
   const[showAudit,setShowAudit]=useState(false);
   const[forceShow,setForceShow]=useState(false);
   const[selectedKey,setSelectedKey]=useState("");
@@ -85,7 +87,7 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
   },[studies,activeOutcome]);
 
   const pool=useMemo(()=>checkPoolability(filteredStudies),[filteredStudies]);
-  const result=useMemo(()=>runMeta(filteredStudies,method),[filteredStudies,method]);
+  const result=useMemo(()=>runMeta(filteredStudies,method,{tau2Method}),[filteredStudies,method,tau2Method]);
   const valid=filteredStudies;
   const esType=useMemo(()=>{
     const types=valid.map(s=>s.esType).filter(Boolean);
@@ -94,7 +96,10 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
   const prec = project?.analysisPrecision;
   const interp=useMemo(()=>interpretResult(result,esType,filteredStudies,prec),[result,esType,filteredStudies,prec]);
   const typeWarn=useMemo(()=>analysisTypeWarnings(filteredStudies),[filteredStudies]);
-  const methodLabel=method==="random"?"Random-effects (DerSimonian–Laird)":"Fixed-effect (inverse-variance)";
+  // The estimator actually used (may differ from the request if it fell back to DL).
+  const usedTau2=result?.tau2Method||tau2Method;
+  const tauName=TAU2_LABELS[usedTau2]||"DerSimonian–Laird";
+  const methodLabel=method==="random"?`Random-effects (${tauName})`:"Fixed-effect (inverse-variance)";
 
   return(<div>
     <SectionHeader icon="sigma" title="Meta-Analysis" desc="Pool effect sizes by outcome. Select an outcome below — each outcome is analysed separately." badge={valid.length>0?`k = ${valid.length}`:undefined}/>
@@ -205,6 +210,17 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
         <button key={m} onClick={()=>setMethod(m)} style={btnS(method===m?"primary":"ghost")}>{label}</button>
       ))}
       <HelpTip text="Random-effects assumes the true effect varies across studies and is the safer default when studies differ. Fixed-effect assumes one common true effect — only justified when studies are very similar."/>
+      {/* RoadMap/2.md — τ² estimator selector (random-effects only; DL is the default). */}
+      {method==="random"&&(
+        <span style={{display:"inline-flex",alignItems:"center",gap:6}}>
+          <span style={{fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>τ² estimator:</span>
+          <select value={tau2Method} onChange={e=>setTau2Method(e.target.value)} style={{...inp,width:"auto",fontSize:11,padding:"3px 6px"}}>
+            {TAU2_METHODS.map(m=><option key={m} value={m}>{TAU2_LABELS[m]}</option>)}
+          </select>
+          <HelpTip text="How the between-study variance τ² is estimated. DerSimonian–Laird is the default (and what existing results use). REML and Paule–Mandel are common alternatives; small-k or non-converging estimators fall back to DL. Verify key results in R/metafor for regulatory use."/>
+          {result&&result.tau2Fallback==="DL"&&<span style={{fontSize:10.5,color:C.yel}}>fell back to DL</span>}
+        </span>
+      )}
       <span style={{marginLeft:"auto",fontSize:11,color:C.muted}}>{valid.length} of {studies.length} studies usable</span>
       {updateProject&&(()=>{const np=normalizePrecision(prec);return(<div style={{display:"flex",alignItems:"center",gap:8,marginLeft:8,paddingLeft:8,borderLeft:`1px solid ${themeAlpha(C.brd,'88')}`}}>
         <span style={{fontSize:11,color:C.muted,whiteSpace:"nowrap"}}>Decimal places:</span>
@@ -307,7 +323,7 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
           </div>);
         return(<div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
           <Cell title="COMMON / FIXED EFFECT" o={result.fixed} active={method==="fixed"}/>
-          <Cell title="RANDOM EFFECTS (DerSimonian–Laird)" o={result.random} active={method==="random"}/>
+          <Cell title={`RANDOM EFFECTS (${tauName})`} o={result.random} active={method==="random"}/>
           <div style={{flex:1,minWidth:200,display:"flex",alignItems:"center",fontSize:11,color:C.muted,lineHeight:1.5,padding:"0 4px"}}>
             {Math.abs(result.fixed.es-result.random.es)<1e-3
               ? "Both models agree closely — heterogeneity has little impact here."
@@ -391,13 +407,13 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
             <div style={{fontWeight:700,color:C.txt}}>Data used</div><div>{result.k} studies with a non-missing effect size and 95% CI{valid.length>result.k?` (${valid.length-result.k} more had an ES but no CI and were excluded from weighting)`:""}.</div>
             <div style={{fontWeight:700,color:C.txt}}>Effect measure</div><div>{esType?`${ES_TYPES[esType]?.label} — analysed on the ${ES_TYPES[esType]?.scale} scale.`:"Not explicitly set; values are pooled as raw effect sizes. Set an effect-measure type per study for safer pooling."}</div>
             <div style={{fontWeight:700,color:C.txt}}>Model</div><div>{methodLabel}.</div>
-            <div style={{fontWeight:700,color:C.txt}}>Weighting</div><div>{method==="random"?"Inverse-variance weights with τ² (DerSimonian–Laird method-of-moments) added to each study's variance.":"Inverse-variance weights (1/SE²)."} SE derived from each 95% CI as (upper − lower) / (2 × 1.96).</div>
+            <div style={{fontWeight:700,color:C.txt}}>Weighting</div><div>{method==="random"?`Inverse-variance weights with τ² (${tauName}) added to each study's variance.`:"Inverse-variance weights (1/SE²)."} SE derived from each 95% CI as (upper − lower) / (2 × 1.96).</div>
             <div style={{fontWeight:700,color:C.txt}}>Heterogeneity</div><div>Cochran's Q = Σwᵢ(yᵢ − ȳ)²; I² = max(0, (Q − df)/Q) × 100; τ² = max(0, (Q − df)/(ΣW − ΣW²/ΣW)).</div>
             <div style={{fontWeight:700,color:C.txt}}>Significance</div><div>z = pooled ES / SE; two-sided p from the standard normal distribution.</div>
             <div style={{fontWeight:700,color:C.txt}}>Transforms</div><div>{esType&&ES_TYPES[esType]?.log?"Ratio measures are pooled on the natural-log scale and back-transformed for display.":esType==="PROP"?"Proportions are pooled on the logit scale and back-transformed.":esType==="COR"?"Correlations are pooled as Fisher's z.":"No transform applied to the stored effect sizes."}</div>
             <div style={{fontWeight:700,color:C.txt}}>Excluded</div><div>{studies.length-result.k} of {studies.length} studies not in this pool ({studies.filter(s=>s.es==="").length} without an effect size{valid.length>result.k?", plus those missing a CI":""}).</div>
           </div>
-          <InfoBox color={C.dim}>Computation runs locally in your browser. For a regulatory submission, confirm key results in established software (R <em>metafor</em>, RevMan, or Stata). The DerSimonian–Laird estimator can underestimate uncertainty when k is small — consider this a planning/checking tool.</InfoBox>
+          <InfoBox color={C.dim}>Computation runs locally in your browser. For a regulatory submission, confirm key results in established software (R <em>metafor</em>, RevMan, or Stata). Random-effects τ² estimators can underestimate uncertainty when k is small — consider this a planning/checking tool.</InfoBox>
         </div>)}
       </div>
 
@@ -595,7 +611,7 @@ export function ResearchExport({result,esType,method,studies,prec}){
     "",
     esc("Meta-analysis summary"),
     `${esc("Effect measure")},${esc(measureName)}`,
-    `${esc("Model reported")},${esc(method==="fixed"?"Fixed/common effect":"Random effects (DerSimonian-Laird)")}`,
+    `${esc("Model reported")},${esc(method==="fixed"?"Fixed/common effect":`Random effects (${TAU2_LABELS[result.tau2Method||"DL"]})`)}`,
     `${esc("Transformation")},${esc(transform)}`,
     `${esc("Studies (k)")},${result.k}`,
     `${esc("Pooled common/fixed")},${esc(dispVal(fx.es))},${esc(dispVal(fx.lo))},${esc(dispVal(fx.hi))}`,
@@ -705,7 +721,7 @@ export function ResearchExport({result,esType,method,studies,prec}){
         </tbody>
       </table>
       <div style={{padding:"8px 10px",fontSize:11,color:C.muted,lineHeight:1.6,borderTop:`1px solid ${C.brd}`}}>
-        <strong style={{color:C.txt}}>Model:</strong> {method==="fixed"?"Fixed/common effect":"Random effects (DerSimonian–Laird)"} · <strong style={{color:C.txt}}>Transformation:</strong> {transform}<br/>
+        <strong style={{color:C.txt}}>Model:</strong> {method==="fixed"?"Fixed/common effect":`Random effects (${TAU2_LABELS[result.tau2Method||"DL"]})`} · <strong style={{color:C.txt}}>Transformation:</strong> {transform}<br/>
         <strong style={{color:C.txt}}>Heterogeneity:</strong> I² = {result.I2}% · τ² = {result.tau2} · Q = {result.Q} (df = {result.k-1}, p {result.Qpval<0.001?"< 0.001":"= "+result.Qpval}) · overall p {result.pval<0.001?"< 0.001":"= "+result.pval}
       </div>
     </div>)}
@@ -729,7 +745,7 @@ export function ResultsWriteup({result,interp,esType,method,methodLabel,studies,
     :`${fmtES(interp.pe,prec)} (95% CI ${fmtES(interp.lo,prec)} to ${fmtES(interp.hi,prec)})`;
   const pStr=result.pval<0.001?"P < 0.001":`P = ${fmtNum(result.pval,prec)}`;
 
-  const methods=`A ${method==="random"?"random-effects":"fixed-effect"} meta-analysis was performed using the ${method==="random"?"DerSimonian and Laird method":"inverse-variance method"}. Effect sizes were expressed as the ${measureName.toLowerCase()}${ES_TYPES[esType]?.log?", pooled on the natural-logarithmic scale and back-transformed for presentation":""}. Standard errors were derived from reported 95% confidence intervals. Statistical heterogeneity was quantified with the I² statistic and Cochran's Q test, with τ² estimating between-study variance.${result.hksj?" Confidence intervals for the random-effects estimate were additionally calculated using the Hartung-Knapp-Sidik-Jonkman (HKSJ) method, which is recommended when the number of studies is small.":""}${result.predInt?" A 95% prediction interval was calculated to describe the likely range of the true effect in a future study.":""} A two-sided P < 0.05 was considered statistically significant. [State software here — e.g. analyses were verified in R using the metafor package.]`;
+  const methods=`A ${method==="random"?"random-effects":"fixed-effect"} meta-analysis was performed using the ${method==="random"?`${TAU2_LABELS[result.tau2Method||"DL"]} estimator for the between-study variance`:"inverse-variance method"}. Effect sizes were expressed as the ${measureName.toLowerCase()}${ES_TYPES[esType]?.log?", pooled on the natural-logarithmic scale and back-transformed for presentation":""}. Standard errors were derived from reported 95% confidence intervals. Statistical heterogeneity was quantified with the I² statistic and Cochran's Q test, with τ² estimating between-study variance.${result.hksj?" Confidence intervals for the random-effects estimate were additionally calculated using the Hartung-Knapp-Sidik-Jonkman (HKSJ) method, which is recommended when the number of studies is small.":""}${result.predInt?" A 95% prediction interval was calculated to describe the likely range of the true effect in a future study.":""} A two-sided P < 0.05 was considered statistically significant. [State software here — e.g. analyses were verified in R using the metafor package.]`;
 
   const hkStr=result.hksj?`; HKSJ-adjusted 95% CI ${dispVal(result.hksj.lo)} to ${dispVal(result.hksj.hi)}, t(${result.hksj.df}) = ${fmtNum(result.hksj.t,prec)}, P ${result.hksj.pval<0.001?"< 0.001":"= "+fmtNum(result.hksj.pval,prec)}`:"";
   const piStr=result.predInt?` The 95% prediction interval was ${dispVal(result.predInt.lo)} to ${dispVal(result.predInt.hi)}.`:"";

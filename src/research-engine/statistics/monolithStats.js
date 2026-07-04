@@ -8,6 +8,9 @@
    modules — those are separate duplicates and re-pointing could drift behavior. */
 import { ADJUST_LABEL, DATA_NATURE_LABEL } from "../project-model/monolithConstants.js";
 import { isNonPrimary } from "../import-export/referenceParsers.js";
+// RoadMap/2.md — opt-in τ² estimators (DL stays the default; existing results unchanged).
+import { estimateTau2, TAU2_METHODS } from "./tau2.js";
+export { estimateTau2, TAU2_METHODS, TAU2_LABELS } from "./tau2.js";
 
 /* P13 — meta-regression + bubble plots. Re-exported from the pure engine so the
    UI (and server export) import it from the same barrel as runMeta/subgroupAnalysis.
@@ -24,7 +27,7 @@ export function normalCDF(z) {
   for(let i=4;i>=0;i--) poly=a[i]+t*poly;
   return 0.5*(1+sign*(1-poly*t*Math.exp(-za*za)));
 }
-export function runMeta(studies, method="random") {
+export function runMeta(studies, method="random", opts={}) {
   const valid=studies.filter(s=>s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi));
   if(valid.length<2) return null;
   const d=valid.map(s=>{
@@ -35,8 +38,17 @@ export function runMeta(studies, method="random") {
   const fixES=d.reduce((a,x)=>a+x._w*x._es,0)/W;
   const Q=d.reduce((a,x)=>a+x._w*(x._es-fixES)**2,0),k=d.length;
   const I2=k>1?Math.max(0,((Q-(k-1))/Q)*100):0;
-  // τ² (DerSimonian–Laird) — always computed so both models can be reported
-  const tau2all=Math.max(0,(Q-(k-1))/(W-W2/W));
+  // τ² (DerSimonian–Laird) — the DEFAULT, always computed so both models can be reported.
+  const tau2dl=Math.max(0,(Q-(k-1))/(W-W2/W));
+  // RoadMap/2.md — an OPT-IN τ² estimator overrides only the random-effects τ² (DL stays
+  // default so every existing call is byte-for-byte unchanged; HKSJ + PI use whatever τ²
+  // is chosen). Falls back to DL for small k / non-convergence (flagged in the result).
+  const reqTau2Method=(opts&&TAU2_METHODS.includes(opts.tau2Method))?opts.tau2Method:"DL";
+  let tau2all=tau2dl, tau2Method="DL", tau2Fallback=null, tau2Converged=true;
+  if(reqTau2Method!=="DL"){
+    const est=estimateTau2(d.map(x=>x._es),d.map(x=>x._se*x._se),{method:reqTau2Method});
+    tau2all=est.tau2; tau2Method=reqTau2Method; tau2Fallback=est.fallback; tau2Converged=est.converged;
+  }
   // random-effects weights (always available for side-by-side reporting)
   const rwAll=d.map(x=>1/(x._se**2+tau2all)),rWall=rwAll.reduce((a,w)=>a+w,0);
   // expose both fixed and random weight percentages on every study
@@ -88,6 +100,7 @@ export function runMeta(studies, method="random") {
     pES,pSE,lo95:pES-Z975*pSE,
     hi95:pES+Z975*pSE,pval,z,
     method,W,tau:Math.sqrt(tau2all),
+    tau2Method,tau2Fallback,tau2Converged,
     fixed:{es:fixES,se:fixSE,lo:fixES-Z975*fixSE,hi:fixES+Z975*fixSE},
     random:{es:ranES,se:ranSE,lo:ranES-Z975*ranSE,hi:ranES+Z975*ranSE,tau2:tau2all},
     hksj, predInt};
@@ -438,6 +451,66 @@ export function calcES(type,p) {
       const sens=tp/(tp+fn),spec=tn/(tn+fp);
       return{es:lnDOR,se:se,lo:lnDOR-1.96*se,hi:lnDOR+1.96*se,
         display:`Sens=${(sens*100).toFixed(1)}% Spec=${(spec*100).toFixed(1)}% · DOR=${Math.exp(lnDOR).toFixed(2)} [${Math.exp(lnDOR-1.96*se).toFixed(2)}, ${Math.exp(lnDOR+1.96*se).toFixed(2)}]`};
+    }
+    if(type==="PETO"){
+      // Peto one-step odds ratio (log scale) from a 2×2. a=event/exp, b=noevent/exp,
+      // c=event/ctrl, d=noevent/ctrl. Best for rare events / balanced arms; no
+      // continuity correction is needed (handles single zero cells). Yusuf/Peto 1985.
+      const raw=[p.a,p.b,p.c,p.d];
+      if(raw.some(v=>v===""||v==null)) return null;
+      const a=+p.a,b=+p.b,c=+p.c,d2=+p.d;
+      if([a,b,c,d2].some(v=>isNaN(v)||!isFinite(v)||v<0||!Number.isInteger(v))) return null;
+      const n1=a+b,n2=c+d2,N=n1+n2,ev=a+c;
+      if(N<2||n1<1||n2<1) return null;
+      if(ev===0||ev===N) return null;               // no events, or all events → not estimable
+      const O=a,E=n1*ev/N;
+      const V=(n1*n2*ev*(N-ev))/(N*N*(N-1));
+      if(!(V>0)) return null;                        // degenerate variance
+      const lnPeto=(O-E)/V,se=Math.sqrt(1/V);
+      return{es:lnPeto,se:se,lo:lnPeto-1.96*se,hi:lnPeto+1.96*se,
+        display:`Peto OR=${Math.exp(lnPeto).toFixed(3)} [${Math.exp(lnPeto-1.96*se).toFixed(3)}, ${Math.exp(lnPeto+1.96*se).toFixed(3)}]`};
+    }
+    if(type==="IRR"){
+      // Incidence rate ratio (log scale): (e1/t1)/(e2/t2); SE = sqrt(1/e1 + 1/e2).
+      const e1=+p.e1,t1=+p.t1,e2=+p.e2,t2=+p.t2;
+      if([e1,t1,e2,t2].some(isNaN))return null;
+      if(e1<=0||e2<=0||t1<=0||t2<=0) return null;    // person-time model needs events>0 both arms
+      const lnIRR=Math.log((e1/t1)/(e2/t2)),se=Math.sqrt(1/e1+1/e2);
+      return{es:lnIRR,se:se,lo:lnIRR-1.96*se,hi:lnIRR+1.96*se,
+        display:`IRR=${Math.exp(lnIRR).toFixed(3)} [${Math.exp(lnIRR-1.96*se).toFixed(3)}, ${Math.exp(lnIRR+1.96*se).toFixed(3)}]`};
+    }
+    if(type==="AUC"){
+      // AUC / C-statistic on the RAW 0–1 scale. Accept an SE, or derive it from a 95% CI.
+      const auc=+p.auc;
+      if(isNaN(auc)||auc<=0||auc>=1) return null;
+      let se=+p.se;
+      if(isNaN(se)&&p.lo!==""&&p.lo!=null&&p.hi!==""&&p.hi!=null){ const lo=+p.lo,hi=+p.hi; if(!isNaN(lo)&&!isNaN(hi)&&hi>lo) se=(hi-lo)/(2*1.96); }
+      if(isNaN(se)||!(se>0)) return null;
+      return{es:auc,se:se,lo:auc-1.96*se,hi:auc+1.96*se,
+        display:`AUC=${auc.toFixed(3)} [${(auc-1.96*se).toFixed(3)}, ${(auc+1.96*se).toFixed(3)}]`};
+    }
+    if(type==="BETA"){
+      // Regression coefficient on its native additive scale. SE, or from a 95% CI.
+      const beta=+p.beta;
+      if(isNaN(beta)) return null;
+      let se=+p.se;
+      if(isNaN(se)&&p.lo!==""&&p.lo!=null&&p.hi!==""&&p.hi!=null){ const lo=+p.lo,hi=+p.hi; if(!isNaN(lo)&&!isNaN(hi)&&hi>lo) se=(hi-lo)/(2*1.96); }
+      if(isNaN(se)||!(se>0)) return null;
+      return{es:beta,se:se,lo:beta-1.96*se,hi:beta+1.96*se,
+        display:`β=${beta} [${(beta-1.96*se).toFixed(4)}, ${(beta+1.96*se).toFixed(4)}]`};
+    }
+    if(type==="GENERIC"||type==="GENERIC_LOG"){
+      // Pre-computed effect + 95% CI, used verbatim. GENERIC_LOG log-transforms a ratio.
+      const est=+p.est,lo=+p.lo,hi=+p.hi;
+      if([est,lo,hi].some(isNaN)||hi<lo) return null;
+      if(type==="GENERIC_LOG"){
+        if(est<=0||lo<=0||hi<=0) return null;
+        const lnE=Math.log(est),se=(Math.log(hi)-Math.log(lo))/(2*1.96);
+        return{es:lnE,se:se,lo:Math.log(lo),hi:Math.log(hi),
+          display:`${est} [${lo}, ${hi}] (ln scale)`};
+      }
+      const se=(hi-lo)/(2*1.96);
+      return{es:est,se:se,lo:lo,hi:hi,display:`${est} [${lo}, ${hi}]`};
     }
   } catch(_){}
   return null;

@@ -31,7 +31,10 @@ All exports are also available from the barrel:
 
 | Export | Signature | Returns |
 |---|---|---|
-| `runMeta` | `(studies: Study[], method?: "fixed"\|"random") → MetaResult\|null` | Full pooled meta-analysis result (see shape below); null if < 2 valid studies |
+| `runMeta` | `(studies: Study[], method?: "fixed"\|"random", opts?: { tau2Method?: string }) → MetaResult\|null` | Full pooled meta-analysis result (see shape below); null if < 2 valid studies. `opts.tau2Method` selects the between-study variance estimator (default `"DL"` — existing results are byte-for-byte unchanged). |
+| `estimateTau2` | `(y: number[], v: number[], opts?: { method?: string, maxIter?: number, tol?: number }) → { tau2, method, converged, iterations, fallback }` | RoadMap/2.md between-study variance (τ²) estimator. Methods: DL (default), REML, ML, PM, EB, SJ, HO, HS. Iterative estimators fall back to DL for k<3 / non-convergence (`fallback:"DL"`). Re-exported from `statistics/tau2.js`. |
+| `TAU2_METHODS` | `string[]` | The eight supported τ² estimator keys (DL, REML, ML, PM, EB, SJ, HO, HS). |
+| `TAU2_LABELS` | `Record<string,string>` | Human-readable label per τ² estimator (e.g. `DL` → "DerSimonian–Laird"). |
 | `eggersTest` | `(studies: Study[]) → EggerResult\|null` | Canonical UNWEIGHTED OLS regression test for funnel asymmetry (Egger 1997 / metafor::regtest(model="lm")); null if k < 3 |
 | `leaveOneOut` | `(studies: Study[], method?: string) → LOOEntry[]` | Array of per-study LOO results; empty if k < 3 |
 | `trimFill` | `(studies: Study[], method?: string) → TrimFillResult\|null` | Trim-and-fill result with imputed studies and adjusted pooled estimate |
