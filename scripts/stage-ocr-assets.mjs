@@ -11,7 +11,7 @@
  * be fetched (offline build), OCR simply reports "text recognition is unavailable" at
  * runtime — the rest of extraction keeps working. See docs/manager/ocr-self-hosting.md.
  */
-import { mkdirSync, existsSync, copyFileSync, statSync } from 'node:fs';
+import { mkdirSync, existsSync, copyFileSync, statSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
@@ -19,13 +19,18 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const dest = join(root, 'public', 'tess');
 mkdirSync(dest, { recursive: true });
 
-const COPIES = [
-  ['node_modules/tesseract.js/dist/worker.min.js', 'worker.min.js'],
-  ['node_modules/tesseract.js-core/tesseract-core-simd.wasm', 'tesseract-core-simd.wasm'],
-  ['node_modules/tesseract.js-core/tesseract-core-simd.wasm.js', 'tesseract-core-simd.wasm.js'],
-  ['node_modules/tesseract.js-core/tesseract-core.wasm', 'tesseract-core.wasm'],
-  ['node_modules/tesseract.js-core/tesseract-core.wasm.js', 'tesseract-core.wasm.js'],
-];
+// Copy the worker + EVERY tesseract-core*.wasm/.wasm.js variant. tesseract.js picks the
+// core at runtime from the browser's capabilities AND the OEM (LSTM-only here selects the
+// *-lstm variants, e.g. tesseract-core-relaxedsimd-lstm.wasm.js) — staging only a subset
+// makes OCR fail on capable browsers with a "core failed to load" NetworkError. Staging the
+// whole set (~30 MB, gitignored, served same-origin) guarantees the selected core is present.
+const coreDir = join(root, 'node_modules', 'tesseract.js-core');
+const COPIES = [['node_modules/tesseract.js/dist/worker.min.js', 'worker.min.js']];
+try {
+  for (const f of readdirSync(coreDir)) {
+    if (/^tesseract-core.*\.wasm(\.js)?$/.test(f)) COPIES.push([join('node_modules', 'tesseract.js-core', f), f]);
+  }
+} catch { /* node_modules not installed yet — reported below */ }
 
 let copied = 0, missing = 0;
 for (const [from, to] of COPIES) {

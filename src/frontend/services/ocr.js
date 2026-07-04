@@ -109,10 +109,14 @@ async function getWorker(logger) {
       _worker = worker;
       return worker;
     } catch (e) {
-      // Most commonly a 404 on /tess/* (assets not staged) or a CSP block.
+      // Most commonly a 404 on /tess/* (a core variant not staged — tesseract.js selects the
+      // core from the browser's SIMD capability + OEM, so ALL tesseract-core*.wasm(.js)
+      // variants must be present) or a CSP block. Preserve the real cause for diagnosis.
       _worker = null;
       _workerInit = null;
-      throw new Error('Text recognition is unavailable (assets not installed).');
+      const err = new Error('Text recognition is unavailable (assets not installed).');
+      err.cause = e;
+      throw err;
     }
   })();
 

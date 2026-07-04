@@ -43,18 +43,22 @@ Stage these files (served at `/tess/…`) by copying them out of `node_modules`
 | Copy from `node_modules/…`                                   | To `public/tess/…`             | Purpose |
 | ------------------------------------------------------------ | ------------------------------ | ------- |
 | `tesseract.js/dist/worker.min.js`                            | `worker.min.js`                | Worker thread script |
-| `tesseract.js-core/tesseract-core-simd.wasm`                 | `tesseract-core-simd.wasm`     | SIMD wasm core (fast path) |
-| `tesseract.js-core/tesseract-core-simd.wasm.js`              | `tesseract-core-simd.wasm.js`  | Loader for the SIMD core |
-| `tesseract.js-core/tesseract-core.wasm`                      | `tesseract-core.wasm`          | Non-SIMD wasm core (fallback) |
-| `tesseract.js-core/tesseract-core.wasm.js`                   | `tesseract-core.wasm.js`       | Loader for the non-SIMD core |
+| `tesseract.js-core/tesseract-core*.wasm` **(all variants)**  | same names                     | wasm cores (see below) |
+| `tesseract.js-core/tesseract-core*.wasm.js` **(all variants)** | same names                   | core loaders (see below) |
 | `eng.traineddata.gz` (see below)                             | `eng.traineddata.gz`           | English LSTM language data (gzipped) |
 
 Notes:
 
-- `corePath` is a **directory**, so tesseract.js requests the matching
-  `tesseract-core-*.wasm.js` loader and its `.wasm` at runtime based on the
-  browser's SIMD support — ship **both** the SIMD and the plain core (`.wasm`
-  **and** its `.wasm.js` loader for each).
+- **Ship EVERY `tesseract-core*` variant, not a subset.** `corePath` is a
+  **directory**, so tesseract.js chooses the core at runtime from the browser's
+  SIMD capability **and** the OEM. `ocr.js` uses OEM 1 (LSTM-only), so a capable
+  browser selects an `-lstm` variant such as
+  `tesseract-core-relaxedsimd-lstm.wasm.js` — staging only `tesseract-core-simd`
+  + `tesseract-core` makes OCR fail with a `NetworkError` ("core failed to load").
+  The full set (both `.wasm` and its `.wasm.js` loader for each of
+  `tesseract-core`, `-lstm`, `-simd`, `-simd-lstm`, `-relaxedsimd`,
+  `-relaxedsimd-lstm`) is ~30 MB, gitignored, and served same-origin.
+  `scripts/stage-ocr-assets.mjs` copies them all automatically at build time.
 - `ocr.js` sets `gzip: true` (the default) and OEM 1 (LSTM-only), so it needs
   the **gzipped** `eng.traineddata.gz`, not the uncompressed `eng.traineddata`.
   `tesseract.js-core` does not bundle the traineddata; obtain
@@ -68,14 +72,14 @@ Notes:
 From the repo root, after `npm install`:
 
 ```sh
+# The build runs this for you (npm run build → node scripts/stage-ocr-assets.mjs).
+# Manual equivalent, from the repo root after `npm install`:
 mkdir -p public/tess
-cp node_modules/tesseract.js/dist/worker.min.js               public/tess/
-cp node_modules/tesseract.js-core/tesseract-core-simd.wasm    public/tess/
-cp node_modules/tesseract.js-core/tesseract-core-simd.wasm.js public/tess/
-cp node_modules/tesseract.js-core/tesseract-core.wasm         public/tess/
-cp node_modules/tesseract.js-core/tesseract-core.wasm.js      public/tess/
-# eng.traineddata.gz: fetch once from the pinned tessdata release, then:
-# cp <downloaded>/eng.traineddata.gz                          public/tess/
+cp node_modules/tesseract.js/dist/worker.min.js            public/tess/
+cp node_modules/tesseract.js-core/tesseract-core*.wasm     public/tess/   # ALL variants
+cp node_modules/tesseract.js-core/tesseract-core*.wasm.js  public/tess/   # ALL loaders
+# eng.traineddata.gz: fetched once from the pinned tessdata release by the
+# staging script; or copy a downloaded copy: cp eng.traineddata.gz public/tess/
 ```
 
 ## Verifying
