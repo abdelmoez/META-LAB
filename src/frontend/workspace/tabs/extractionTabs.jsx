@@ -606,9 +606,12 @@ function ExtractionTab({project,updateProject,activeId}){
     if(key==="scope") return {...d,scope:{level:value.level,outcomeId:value.outcomeId,canonical:value.canonical},outcome:value.name!=null?value.name:d.outcome};
     return {...d,[key]:value};
   })}));
+  // Confirming a draft APPENDS a new per-outcome study row that inherits the source
+  // study's citation metadata — it never overwrites another outcome's data. (Each
+  // study×outcome×timepoint is its own row, matching the Analysis pooling model.)
   const confirmDraftById=(id)=>updateProject(activeId,p=>{
     const at=new Date().toISOString();
-    const res=confirmDraftPure({studies:p.studies||[],drafts:p.extractionDrafts||[]},id,{at,baseStudyId:selectedStudyId||null});
+    const res=confirmDraftPure({studies:p.studies||[],drafts:p.extractionDrafts||[]},id,{at,citationBaseId:selectedStudyId||null});
     if(!res.ok) return p;
     return {...p,studies:res.studies,extractionDrafts:res.drafts};
   });

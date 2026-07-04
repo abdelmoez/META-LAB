@@ -71,25 +71,39 @@ export function autoExtract({ pages = [], abstract = '', protocol = { outcomes: 
       // Which protocol outcome (if any) does this sentence name?
       const match = matchOutcomeInText(excerpt, outcomes);
       const timepoint = firstFollowup(sStats);
-      // Preferred: a ratio measure with CI is the cleanest single-sentence effect.
-      const ratio = sStats.find((s) => s.kind === 'ratioCI');
+      const ratios = sStats.filter((s) => s.kind === 'ratioCI');
       const meanSds = sStats.filter((s) => s.kind === 'meanSd');
       const evTots = sStats.filter((s) => s.kind === 'eventsTotal');
 
       if (match) {
         const out = outcomes.find((o) => o.id === match.outcomeId);
         const scope = { level: out ? out.level : 'primary', outcomeId: match.outcomeId, canonical: out ? out.canonical : '' };
-        if (ratio) {
-          pushDraft(drafts, draftKeys, mkRatioDraft({ ratio, out, scope, match, unit, excerpt, timepoint, baseStudy, at, idFn }), log);
-        } else if (evTots.length >= 2) {
+        if (ratios.length) {
+          // A sentence can carry several ratios (a covariate HR, the outcome's HR, a
+          // second outcome's HR). Bind the ratio POSITIONALLY closest to the matched
+          // outcome mention — not blindly the first — so we don't attribute a
+          // covariate/other-outcome estimate (possibly sign-inverted) to this outcome.
+          const omIdx = sent.start + outcomeMentionIndex(excerpt, out); // full-text coord
+          const ratio = pickOutcomeRatio(ratios, omIdx);
+          // >1 ratio in one sentence → the pairing is inherently uncertain: keep the
+          // draft but drop confidence and attach an ambiguity note listing the others.
+          const ambiguous = ratios.length > 1;
+          const confidence = ambiguous ? 'low' : confidenceOf(match);
+          const ambNote = ambiguous
+            ? ` Multiple effect estimates in one sentence — verify this is the right one (others: ${ratios.filter((r) => r !== ratio).map((r) => `${r.value.measure} ${r.value.est}`).join('; ')}).`
+            : '';
+          pushDraft(drafts, draftKeys, mkRatioDraft({ ratio, out, scope, match, unit, excerpt, timepoint, baseStudy, at, idFn, confidence, ambNote }), log);
+        } else if (evTots.length === 2) {
+          // EXACTLY two arm pairs. More than two (e.g. baseline + outcome counts) is too
+          // ambiguous to assign arms → skip rather than guess wrong 2×2 cells.
           pushDraft(drafts, draftKeys, mkDichotomousDraft({ evTots, out, scope, match, unit, excerpt, timepoint, baseStudy, at, idFn }), log);
-        } else if (meanSds.length >= 2) {
+        } else if (meanSds.length === 2) {
           pushDraft(drafts, draftKeys, mkContinuousDraft({ meanSds, out, scope, match, unit, excerpt, timepoint, baseStudy, at, idFn }), log);
         }
-        // else: an outcome mention with no paired statistic — skip (do not guess).
-      } else if (ratio) {
+        // else: an outcome mention with no cleanly-pairable statistic — skip (never guess).
+      } else if (ratios.length) {
         // A clear effect estimate for an outcome NOT in the review → park it.
-        pushParked(alsoReported, parkedKeys, mkRatioDraft({ ratio, out: null, scope: { level: 'other', outcomeId: '', canonical: '' }, match: null, unit, excerpt, timepoint, baseStudy, at, idFn }), log);
+        pushParked(alsoReported, parkedKeys, mkRatioDraft({ ratio: ratios[0], out: null, scope: { level: 'other', outcomeId: '', canonical: '' }, match: null, unit, excerpt, timepoint, baseStudy, at, idFn, confidence: 'low', ambNote: '' }), log);
       }
     }
   }
@@ -100,7 +114,7 @@ export function autoExtract({ pages = [], abstract = '', protocol = { outcomes: 
 
 /* ── Draft builders ───────────────────────────────────────────────────────── */
 
-function mkRatioDraft({ ratio, out, scope, match, unit, excerpt, timepoint, baseStudy, at, idFn }) {
+function mkRatioDraft({ ratio, out, scope, match, unit, excerpt, timepoint, baseStudy, at, idFn, confidence, ambNote }) {
   const v = ratio.value;
   const esType = RATIO_MEASURES.has(v.measure) ? v.measure : '';
   return mkExtractionRecord({
@@ -113,14 +127,14 @@ function mkRatioDraft({ ratio, out, scope, match, unit, excerpt, timepoint, base
       es: String(Math.log(v.est)), lo: String(Math.log(v.lo)), hi: String(Math.log(v.hi)),
     },
     provenance: { method: 'auto', page: unit.page, region: null, excerpt, at },
-    confidence: match ? confidenceOf(match) : 'low',
+    confidence: confidence || (match ? confidenceOf(match) : 'low'),
     conversions: [{
       id: idFnOrDefault(idFn)(), type: 'ratio_log', method: 'ln(estimate); SE from CI',
       reason: 'auto-extracted ratio + 95% CI', at,
       inputs: { est: v.est, lo: v.lo, hi: v.hi, measure: v.measure },
       result: { es: Math.log(v.est), lo: Math.log(v.lo), hi: Math.log(v.hi) },
     }],
-    notes: `Auto-extracted ${v.adjusted ? 'adjusted ' : ''}${v.measure} ${v.est} [${v.lo}, ${v.hi}] — verify against the source.`,
+    notes: `Auto-extracted ${v.adjusted ? 'adjusted ' : ''}${v.measure} ${v.est} [${v.lo}, ${v.hi}] — verify against the source.${ambNote || ''}`,
   }, idFn);
 }
 
@@ -172,12 +186,57 @@ function pushParked(list, keys, rec, log) {
 }
 function draftKey(rec) {
   const v = rec.values;
-  return [rec.scope.outcomeId, rec.timepoint, rec.esType, v.es, v.a, v.c, v.meanExp, v.meanCtrl].join('|');
+  // Include the FULL value payload (denominators, CI bounds, SDs) + a slice of the
+  // provenance excerpt, so two genuinely-distinct estimates that merely share a point
+  // value (e.g. adjusted vs unadjusted HR, or two arms with equal events) never
+  // collapse into one and silently drop data.
+  return [
+    rec.scope.outcomeId, rec.timepoint, rec.esType,
+    v.es, v.lo, v.hi, v.a, v.b, v.c, v.d, v.meanExp, v.sdExp, v.meanCtrl, v.sdCtrl, v.events, v.total,
+    (rec.provenance && rec.provenance.excerpt ? rec.provenance.excerpt.slice(0, 60) : ''),
+  ].join('|');
 }
 
 /** matchOutcomeInText — try the whole sentence, then noun-ish chunks around 'in/of/for'. */
 function matchOutcomeInText(text, outcomes) {
   return matchOutcome(text, outcomes);
+}
+
+/** outcomeMentionIndex(excerpt, outcome) — char offset (within excerpt) of the outcome
+ *  mention: the earliest occurrence of the outcome's name, an alias, or a significant
+ *  (≥4-char) canonical token. Returns 0 if nothing is found (so nearestStat still runs). */
+function outcomeMentionIndex(excerpt, outcome) {
+  if (!outcome) return 0;
+  const lc = String(excerpt).toLowerCase();
+  const candidates = [];
+  if (outcome.name) candidates.push(String(outcome.name).toLowerCase());
+  if (Array.isArray(outcome.aliases)) for (const a of outcome.aliases) if (a) candidates.push(String(a).toLowerCase());
+  if (outcome.canonical) for (const tok of String(outcome.canonical).split(/\s+/)) if (tok.length >= 4) candidates.push(tok);
+  let best = -1;
+  for (const c of candidates) {
+    const i = lc.indexOf(c);
+    if (i >= 0 && (best === -1 || i < best)) best = i;
+  }
+  return best === -1 ? 0 : best;
+}
+
+/** nearestStat(stats, targetIdx) — the stat whose full-text index is closest to targetIdx. */
+function nearestStat(stats, targetIdx) {
+  let best = stats[0], bestD = Infinity;
+  for (const s of stats) {
+    const d = Math.abs(s.index - targetIdx);
+    if (d < bestD) { bestD = d; best = s; }
+  }
+  return best;
+}
+
+/** pickOutcomeRatio(ratios, omIdx) — clinical prose states the outcome THEN its effect
+ *  ("mortality was lower (HR 0.80)"), while covariate/adjustment estimates sit in a
+ *  preceding clause. Prefer the nearest ratio that appears AT/AFTER the outcome mention;
+ *  fall back to the nearest overall when none follows. */
+function pickOutcomeRatio(ratios, omIdx) {
+  const after = ratios.filter((r) => r.index >= omIdx);
+  return nearestStat(after.length ? after : ratios, omIdx);
 }
 
 function sentenceContaining(sentences, pos) {

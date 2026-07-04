@@ -57,6 +57,24 @@ export const VALUE_FIELDS = [
 /** provenance.method → mkStudy `source`. 'manual' maps to nothing (leave as-is). */
 const SOURCE_BY_METHOD = { table: 'table', figure: 'figure', click: 'text', auto: 'text', ai: 'text' };
 
+/** Study-level CITATION metadata inherited when a confirmed draft becomes a NEW
+ *  per-outcome row (never the outcome/value fields — each outcome×timepoint is its
+ *  own row, so a draft must not inherit another outcome's numbers). */
+const CITATION_FIELDS = [
+  'author', 'year', 'country', 'design', 'title', 'authors', 'journal', 'doi', 'pmid',
+  'abstract', 'dataSource', 'enrollPeriod', 'populationDef', 'interventionDef', 'funding',
+  'extractedBy', 'screeningRecordId', 'screeningProjectId',
+];
+
+/** citationTemplate(src) — a FRESH study (new id, empty value/outcome fields) that
+ *  carries only the citation metadata of `src`, so recordToStudy fills the draft's
+ *  values with no protection-rule conflict. */
+function citationTemplate(src) {
+  const t = mkStudy();
+  for (const f of CITATION_FIELDS) if (valStr(src[f]) !== '') t[f] = src[f];
+  return t;
+}
+
 /** Record fields bridged onto the study with the protection rule, in order. */
 const BRIDGED_FIELDS = [
   ['author', 'author'],
@@ -241,15 +259,21 @@ export function recordToStudy(record, base = null) {
  * list. Pure: the input arrays are never mutated (the returned arrays are deep
  * copies with the change applied).
  *
- * When opts.baseStudyId matches an existing study, the draft is merged into a
- * COPY of that study (empty fields filled; protection rule for the rest — see
- * recordToStudy). Otherwise a NEW mkStudy-shaped row is appended.
+ * Modes:
+ *   - opts.baseStudyId matches an existing study → the draft is MERGED into a COPY
+ *     of that row (empty fields filled; human values protected — see recordToStudy).
+ *     Use only when you truly mean to fill THAT row's outcome.
+ *   - opts.citationBaseId matches an existing study → a NEW per-outcome row is
+ *     APPENDED that inherits only the source study's CITATION metadata (not its
+ *     outcome/values). This is the safe default for confirming an auto/assisted
+ *     draft, since every study×outcome×timepoint is its own row — it can never
+ *     overwrite or discard another outcome's data.
+ *   - neither → a fresh mkStudy-shaped row is appended.
+ * baseStudyId takes precedence over citationBaseId if both are given.
  *
  * @param {{ studies?: object[], drafts?: object[] }} state
  * @param {string} draftId
- * @param {{ at?: string, baseStudyId?: (string|null) }} [opts]
- *   at — caller-supplied timestamp for addedAt/updatedAt (and extractedAt
- *   fallback when the draft's provenance carries none).
+ * @param {{ at?: string, baseStudyId?: (string|null), citationBaseId?: (string|null) }} [opts]
  * @returns {{ ok: boolean, studies: object[], drafts: object[], study: (object|null) }}
  */
 export function confirmDraft(state = {}, draftId, opts = {}) {
@@ -257,6 +281,7 @@ export function confirmDraft(state = {}, draftId, opts = {}) {
   const o = opts && typeof opts === 'object' ? opts : {};
   const at = strOr(o.at, '');
   const baseStudyId = o.baseStudyId === undefined ? null : o.baseStudyId;
+  const citationBaseId = o.citationBaseId === undefined ? null : o.citationBaseId;
 
   const studies = Array.isArray(s.studies) ? s.studies.map(deepCopy) : [];
   const drafts = Array.isArray(s.drafts) ? s.drafts.map(deepCopy) : [];
@@ -266,7 +291,12 @@ export function confirmDraft(state = {}, draftId, opts = {}) {
   const draft = drafts[idx];
 
   const baseIdx = baseStudyId != null ? studies.findIndex((st) => st && st.id === baseStudyId) : -1;
-  const base = baseIdx >= 0 ? studies[baseIdx] : null;
+  let base = baseIdx >= 0 ? studies[baseIdx] : null;
+  // Append-with-citation: inherit citation metadata into a NEW row (never replace).
+  if (baseIdx < 0 && citationBaseId != null) {
+    const src = studies.find((st) => st && st.id === citationBaseId);
+    if (src) base = citationTemplate(src);
+  }
 
   const { study } = recordToStudy(draft, base);
   if (!study.extractedAt && at) study.extractedAt = at;

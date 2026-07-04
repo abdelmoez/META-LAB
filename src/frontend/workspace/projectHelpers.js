@@ -79,9 +79,15 @@ export function interpretResult(result,esType,studies,prec){
     if(isProp){const e=Math.exp(x);return e/(1+e);}
     return x;
   };
-  const nullV=isRatio?1:(isProp?null:0);
+  // No-effect value. Ratio → 1 (display) / 0 (log analysis scale). Proportion → none.
+  // Other additive measures default to 0, but honour a measure-specific null (e.g. AUC
+  // has no-discrimination at 0.5) so "crosses null" / significance are judged correctly.
+  const analysisNull = isRatio ? 0 : (isProp ? null : (t.nullVal != null ? t.nullVal : 0));
+  const nullV=isRatio?1:(isProp?null:(t.nullVal!=null?t.nullVal:0));
   const pe=disp(result.pES),lo=disp(result.lo95),hi=disp(result.hi95);
-  const sigByCI = isRatio ? (result.lo95>0||result.hi95<0) : (result.lo95>0||result.hi95<0);
+  const sigByCI = isRatio ? (result.lo95>0||result.hi95<0)
+    : (analysisNull==null ? (result.lo95>0||result.hi95<0)
+       : (result.lo95>analysisNull||result.hi95<analysisNull));
   const scaleName=t.scale||esType||"effect size";
   // direction
   let direction;

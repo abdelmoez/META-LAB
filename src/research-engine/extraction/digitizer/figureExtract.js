@@ -107,8 +107,13 @@ export function barsFromClicks({ arms, zeroPx, cal, errorType } = {}) {
 
   const zPx = clickCoord(zeroPx, 'y');
   if (zPx !== null) {
-    const baseline = cal.y.toData(zPx);
-    if (Number.isFinite(baseline) && Math.abs(baseline) > 1e-6) {
+    // Compare in PIXEL space against where data-0 maps, with a few-pixel tolerance.
+    // An absolute DATA-space threshold (1e-6) false-alarmed on any axis whose
+    // units-per-pixel exceed it — i.e. essentially every real bar chart.
+    const zeroDataPx = cal.y.toPx(0);
+    const TOL_PX = 5;
+    if (Number.isFinite(zeroDataPx) && Math.abs(zPx - zeroDataPx) > TOL_PX) {
+      const baseline = cal.y.toData(zPx);
       warnings.push(
         `bar baseline maps to ${baseline} (not 0) — the value axis appears truncated; bar heights do not represent the means`
       );

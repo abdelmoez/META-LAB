@@ -38,7 +38,11 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
   const{studies}=project;
   const[method,setMethod]=useState("random");
   // RoadMap/2.md — opt-in τ² estimator (DerSimonian–Laird default keeps existing results).
-  const[tau2Method,setTau2Method]=useState("DL");
+  // PERSISTED to the project so every pooled view (forest diamond, sensitivity, subgroup,
+  // write-up) uses the SAME estimator — otherwise tabs would show contradicting CIs.
+  const[localTau2,setLocalTau2]=useState("DL");
+  const tau2Method=(project&&project.analysisSettings&&project.analysisSettings.tau2Method)||localTau2;
+  const setTau2Method=(v)=>{ setLocalTau2(v); if(updateProject) updateProject(ap=>({...ap,analysisSettings:{...(ap.analysisSettings||{}),tau2Method:v}})); };
   const[showAudit,setShowAudit]=useState(false);
   const[forceShow,setForceShow]=useState(false);
   const[selectedKey,setSelectedKey]=useState("");
@@ -157,7 +161,7 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
       try{
         const rows=outcomePairs.map(pr=>{
           const subset=studies.filter(s=>(s.outcome||"").trim()===pr.outcome&&(s.timepoint||"").trim()===pr.timepoint&&s.es!==""&&!isNaN(+s.es));
-          const r=runMeta(subset,method);
+          const r=runMeta(subset,method,{tau2Method});
           const et=subset.map(s=>s.esType).filter(Boolean)[0]||"";
           const tt=ES_TYPES[et]||{};const isLog=!!tt.log,isProp=et==="PROP";
           const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
@@ -788,6 +792,9 @@ export function ForestTab({project}){
   const{studies}=project;
   const{theme}=useTheme(); // prompt19 — live forest plot follows day/night
   const[method,setMethod]=useState("random");
+  // RoadMap/2.md recs — use the project-wide τ² estimator so the exported forest
+  // diamond matches the Meta-Analysis headline (they must never disagree).
+  const tau2Method=(project&&project.analysisSettings&&project.analysisSettings.tau2Method)||"DL";
   const[showCounts,setShowCounts]=useState(true);
   const[showWeights,setShowWeights]=useState(true);
   const[showPubPreview,setShowPubPreview]=useState(false);
@@ -833,7 +840,7 @@ export function ForestTab({project}){
   const[nullLine,setNullLine]=useState(0);
   const[touched,setTouched]=useState(false);
   useEffect(()=>{if(!touched)setEsLabel(autoLabel);},[autoLabel,touched]);
-  const result=useMemo(()=>runMeta(filteredStudies,method),[filteredStudies,method]);
+  const result=useMemo(()=>runMeta(filteredStudies,method,{tau2Method}),[filteredStudies,method,tau2Method]);
   const isLog=esType&&ES_TYPES[esType]?.log;
   const safeName=(project.name||"forest").replace(/[^a-z0-9]/gi,"_");
   const outcomeSafeName=(activeOutcome?.outcome||"outcome").replace(/[^a-z0-9]/gi,"_");
@@ -971,16 +978,18 @@ export function SensitivityTab({project}){
   const{studies}=project;
   const prec = project?.analysisPrecision;
   const[method,setMethod]=useState("random");
-  const result=useMemo(()=>runMeta(studies,method),[studies,method]);
-  const loo=useMemo(()=>leaveOneOut(studies,method),[studies,method]);
+  // RoadMap/2.md recs — sensitivity analyses use the project-wide τ² estimator too.
+  const tau2Method=(project&&project.analysisSettings&&project.analysisSettings.tau2Method)||"DL";
+  const result=useMemo(()=>runMeta(studies,method,{tau2Method}),[studies,method,tau2Method]);
+  const loo=useMemo(()=>leaveOneOut(studies,method,{tau2Method}),[studies,method,tau2Method]);
   const egger=useMemo(()=>eggersTest(studies),[studies]);
-  const tf=useMemo(()=>trimFill(studies,method),[studies,method]);
-  const influence=useMemo(()=>influenceDiagnostics(studies,method),[studies,method]);
+  const tf=useMemo(()=>trimFill(studies,method,{tau2Method}),[studies,method,tau2Method]);
+  const influence=useMemo(()=>influenceDiagnostics(studies,method,{tau2Method}),[studies,method,tau2Method]);
   const esType=useMemo(()=>{const t=studies.map(s=>s.esType).filter(Boolean);return t.length?t[0]:"";},[studies]);
   // Primary-data-only re-run (exclude converted / non-primary studies)
   const primaryStudies=useMemo(()=>studies.filter(s=>s.es!==""&&!isNaN(+s.es)&&!isNonPrimary(s)),[studies]);
   const nonPrimaryCount=useMemo(()=>studies.filter(s=>s.es!==""&&!isNaN(+s.es)&&isNonPrimary(s)).length,[studies]);
-  const primaryResult=useMemo(()=>runMeta(primaryStudies,method),[primaryStudies,method]);
+  const primaryResult=useMemo(()=>runMeta(primaryStudies,method,{tau2Method}),[primaryStudies,method,tau2Method]);
 
   if(!result) return (<div>
     <SectionHeader icon="activity" title="Sensitivity & Publication Bias" desc="Assess robustness and small-study effects. Needs ≥3 studies with effect sizes."/>
@@ -1212,8 +1221,10 @@ export function SubgroupTab({project}){
   const prec = project?.analysisPrecision;
   const[groupKey,setGroupKey]=useState("design");
   const[method,setMethod]=useState("random");
-  const result=useMemo(()=>subgroupAnalysis(studies,groupKey,method),[studies,groupKey,method]);
-  const overall=useMemo(()=>runMeta(studies,method),[studies,method]);
+  // RoadMap/2.md recs — subgroup pools use the project-wide τ² estimator too.
+  const tau2Method=(project&&project.analysisSettings&&project.analysisSettings.tau2Method)||"DL";
+  const result=useMemo(()=>subgroupAnalysis(studies,groupKey,method,{tau2Method}),[studies,groupKey,method,tau2Method]);
+  const overall=useMemo(()=>runMeta(studies,method,{tau2Method}),[studies,method,tau2Method]);
 
   const keys=[
     {id:"design",label:"Study Design"},

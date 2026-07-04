@@ -144,12 +144,12 @@ export function eggersTest(studies) {
 }
 
 /* Leave-one-out sensitivity analysis */
-export function leaveOneOut(studies, method) {
+export function leaveOneOut(studies, method, opts) {
   var valid = studies.filter(function(s){ return s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi); });
   if (valid.length < 3) return [];
   return valid.map(function(omitted, idx){
     var subset = valid.filter(function(_,i){ return i!==idx; });
-    var res = runMeta(subset, method||"random");
+    var res = runMeta(subset, method||"random", opts||{});
     return {
       omitted: (omitted.author||"Study")+(omitted.year?" "+omitted.year:""),
       omittedId: omitted.id,
@@ -173,11 +173,15 @@ export function leaveOneOut(studies, method) {
    always centred on the fixed-effect mean and ranked over the trimmed subset, so
    random-effects over-imputed — now fixed.)
    Ref: Duval S, Tweedie R. Biometrics 2000;56:455-463. */
-export function trimFill(studies, method){
+export function trimFill(studies, method, opts){
   var valid = studies.filter(function(s){ return s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi); });
   if (valid.length < 3) return null;
   var mdl = method||"random";
-  var base = runMeta(valid, mdl);
+  // The Duval–Tweedie L0 iteration uses its OWN closed-form DL moment estimator
+  // (the `pooled` helper below) — that is the trim-and-fill algorithm, independent of
+  // the reporting τ² estimator. Only the reported base/adjusted pooled estimates honour
+  // the selected estimator via opts.
+  var base = runMeta(valid, mdl, opts||{});
   if (!base) return null;
   // Z975 keeps the SE→CI round-trip exact with runMeta.
   var obs = valid.map(function(s){ var es=+s.es, se=(+s.hi-+s.lo)/(2*Z975); return {es:es, se:se}; });
@@ -232,20 +236,20 @@ export function trimFill(studies, method){
   var extreme = heavyRight ? asc.slice(k-k0) : asc.slice(0,k0);
   var imputed = extreme.map(function(x){ var mir=2*mu-x.es; return {es:mir, se:x.se, lo:mir-Z975*x.se, hi:mir+Z975*x.se, imputed:true}; });
   var augmented = valid.concat(imputed.map(function(x){ return {es:x.es, lo:x.lo, hi:x.hi}; }));
-  var adjusted = runMeta(augmented, mdl);
+  var adjusted = runMeta(augmented, mdl, opts||{});
   return {k0:k0, adjusted:adjusted, imputed:imputed, side:side, base:base};
 }
 
 /* Influence diagnostics: per-study leave-one-out tau², I², and a standardised
    influence score (how many pooled-SE units the estimate moves when omitted). */
-export function influenceDiagnostics(studies, method){
+export function influenceDiagnostics(studies, method, opts){
   var valid = studies.filter(function(s){ return s.es!==""&&s.lo!==""&&s.hi!==""&&!isNaN(+s.es)&&!isNaN(+s.lo)&&!isNaN(+s.hi); });
   if (valid.length < 3) return [];
-  var full = runMeta(valid, method||"random");
+  var full = runMeta(valid, method||"random", opts||{});
   if(!full) return [];
   return valid.map(function(omit, idx){
     var subset = valid.filter(function(_,i){ return i!==idx; });
-    var r = runMeta(subset, method||"random");
+    var r = runMeta(subset, method||"random", opts||{});
     if(!r) return null;
     var dffit = (full.pES - r.pES) / (full.pSE||1); // standardised shift
     return {
@@ -261,7 +265,7 @@ export function influenceDiagnostics(studies, method){
 }
 
 /* Subgroup meta-analysis */
-export function subgroupAnalysis(studies, groupKey, method) {
+export function subgroupAnalysis(studies, groupKey, method, opts) {
   var groups = {};
   studies.forEach(function(s){
     var k = (s[groupKey]||"Unspecified").toString().trim() || "Unspecified";
@@ -270,12 +274,12 @@ export function subgroupAnalysis(studies, groupKey, method) {
   });
   var results = [];
   Object.keys(groups).forEach(function(k){
-    var r = runMeta(groups[k], method||"random");
+    var r = runMeta(groups[k], method||"random", opts||{});
     if (r) results.push({ group:k, n:groups[k].length, ...r });
   });
   // Test for subgroup differences (Q-between)
   if (results.length < 2) return { groups: results, Qbetween: null, pBetween: null };
-  var overall = runMeta(studies, method||"random");
+  var overall = runMeta(studies, method||"random", opts||{});
   if (!overall) return { groups: results, Qbetween: null, pBetween: null };
   var Qw = 0;
   results.forEach(function(r){ Qw += r.Q; });

@@ -516,8 +516,10 @@ export default function AppPdfViewer({
           }}>{zoomLabel}</button>
         <TbIcon label="Zoom in" onClick={zoomIn} disabled={!canZoomIn}><PathPlus /></TbIcon>
         <Sep />
-        <TbIcon label="Rotate left" onClick={rotateLeft} disabled={loading || !!error}><PathRotateLeft /></TbIcon>
-        <TbIcon label="Rotate right" onClick={rotateRight} disabled={loading || !!error}><PathRotateRight /></TbIcon>
+        {/* Region-select reports coordinates in the UNROTATED page space, so rotation
+            is disabled while a region tool is armed to keep crops/tables aligned. */}
+        <TbIcon label="Rotate left" onClick={rotateLeft} disabled={loading || !!error || (interaction && interaction.mode === 'region')}><PathRotateLeft /></TbIcon>
+        <TbIcon label="Rotate right" onClick={rotateRight} disabled={loading || !!error || (interaction && interaction.mode === 'region')}><PathRotateRight /></TbIcon>
         <div style={{ flex: 1 }} />
         <TbIcon label="Previous page" onClick={prev} disabled={loading || !!error || pageNum <= 1}><PathChevronUp /></TbIcon>
         <span style={{ fontSize: 11, fontFamily: MONO, color: C.txt2, minWidth: 56, textAlign: 'center' }}>

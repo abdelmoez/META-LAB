@@ -149,7 +149,13 @@ export default function AssistedExtractionPanel({
       let pdfBase64 = null, text = null;
       if (pdf.url) {
         const res = await fetch(pdf.url, { credentials: 'include' });
+        if (!res.ok) throw new Error(`Could not download the PDF (HTTP ${res.status}).`);
         const buf = await res.arrayBuffer();
+        // Guard: never base64-encode and send an HTML/JSON error body (e.g. an expired
+        // session returns a login page) to the model. First bytes of a PDF are "%PDF-".
+        const head = new Uint8Array(buf.slice(0, 5));
+        const isPdf = head[0] === 0x25 && head[1] === 0x50 && head[2] === 0x44 && head[3] === 0x46 && head[4] === 0x2d;
+        if (!isPdf) throw new Error('The server did not return a PDF (your session may have expired). Reload the PDF and try again.');
         // btoa over a binary string; chunked to avoid call-stack limits on big files.
         let bin = ''; const bytes = new Uint8Array(buf);
         for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));

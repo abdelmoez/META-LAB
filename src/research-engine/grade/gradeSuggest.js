@@ -9,11 +9,17 @@
  * RoB→GRADE mapper (summariseRobForGrade) so the auto-suggestion stays consistent
  * with the Risk of Bias tab.
  *
+ * (RoadMap/2.md recs) The line of no effect is measure-specific: 0 on the analysis
+ * scale for log/additive measures, but 0.5 for an AUC / C-statistic (no
+ * discrimination). It is read from ES_TYPES.nullVal so imprecision is judged
+ * against the correct null.
+ *
  * Thresholds are standard, published GRADE operationalisations — documented per
  * domain below; nothing is invented.
  *
  * Pure: no Prisma / Express / React / Date.now() / randomness.
  */
+import { ES_TYPES } from '../project-model/monolithConstants.js';
 
 /** Deterministic p-value formatter for reason text (no rounding of the decision). */
 function fmtP(p) {
@@ -123,7 +129,11 @@ export function suggestImprecision(meta, esType) {
   }
   const k = Number(meta.k);
   const isProp = String(esType || '').toUpperCase() === 'PROP';
-  const crosses = !isProp && Number(meta.lo95) < 0 && Number(meta.hi95) > 0;
+  // Measure-specific line of no effect (0 for log/additive on the analysis scale;
+  // 0.5 for AUC). Unknown/blank measures keep the historical null of 0.
+  const meas = ES_TYPES[String(esType || '').toUpperCase()] || {};
+  const nv = (meas.nullVal != null) ? meas.nullVal : 0;
+  const crosses = !isProp && Number(meta.lo95) < nv && Number(meta.hi95) > nv;
   const fewStudies = k < 5;
   const oisNote = ' Formal imprecision also depends on the Optimal Information Size (total events/sample vs a target effect and minimally important difference) — confirm the information size before finalising.';
 

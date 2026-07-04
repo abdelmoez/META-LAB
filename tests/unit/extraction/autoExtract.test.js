@@ -78,6 +78,51 @@ describe('autoExtract', () => {
     expect(r.drafts.length).toBe(0);
   });
 
+  it('binds the outcome’s OWN effect, not a preceding covariate HR (recs #1)', () => {
+    const protocol = protocolOutcomes(project);
+    // A covariate HR precedes the outcome; the outcome’s HR follows it. The draft must
+    // take the OUTCOME’s HR (0.80 → protective), never the covariate’s (1.50).
+    const abstract = 'In models adjusted for diabetes (HR 1.50, 95% CI 1.20 to 1.90), all-cause mortality was lower with treatment (HR 0.80, 95% CI 0.70 to 0.91).';
+    const r = autoExtract({ protocol, abstract, idFn: pinnedIds() });
+    expect(r.drafts.length).toBe(1);
+    const d = r.drafts[0];
+    expect(Number(d.values.es)).toBeCloseTo(Math.log(0.80), 6);
+    expect(d.confidence).toBe('low');               // multiple ratios → uncertain
+    expect(d.notes).toMatch(/Multiple effect estimates/);
+  });
+
+  it('never crosses outcome↔effect in a two-outcome sentence (recs #1)', () => {
+    const protocol = protocolOutcomes(project);
+    const abstract = 'Myocardial infarction rose (HR 1.20, 95% CI 1.00 to 1.44), whereas all-cause mortality fell (HR 0.80, 95% CI 0.70 to 0.91).';
+    const r = autoExtract({ protocol, abstract, idFn: pinnedIds() });
+    // A sentence naming two protocol outcomes yields one draft (conservative coverage),
+    // but whichever it emits must pair the RIGHT outcome with the RIGHT effect — the
+    // covariate/other-outcome cross-attribution bug must not happen.
+    expect(r.drafts.length).toBe(1);
+    const d = r.drafts[0];
+    const expected = /mortality/i.test(d.outcome) ? Math.log(0.80) : Math.log(1.20);
+    expect(Number(d.values.es)).toBeCloseTo(expected, 6);
+  });
+
+  it('does NOT emit a 2×2 when more than two events/total pairs share a sentence (recs #2)', () => {
+    const protocol = protocolOutcomes(project);
+    // Sex counts (2 pairs) + MI counts (2 pairs) = 4 pairs → too ambiguous → skip.
+    const abstract = 'Myocardial infarction: men were 120/200 and 118/200; events occurred in 45/200 versus 60/200.';
+    const r = autoExtract({ protocol, abstract, idFn: pinnedIds() });
+    expect(r.drafts.length).toBe(0);
+  });
+
+  it('keeps two distinct ratio drafts that share a point estimate (recs #3 dedupe)', () => {
+    const protocol = protocolOutcomes(project);
+    const pages = [
+      { page: 1, text: 'All-cause mortality: unadjusted HR 0.80 (95% CI 0.60 to 0.99).' },
+      { page: 2, text: 'All-cause mortality: adjusted HR 0.80 (95% CI 0.70 to 0.91).' },
+    ];
+    const r = autoExtract({ protocol, pages, idFn: pinnedIds() });
+    // Same outcome + point estimate but DIFFERENT CIs → must not collapse to one.
+    expect(r.drafts.length).toBe(2);
+  });
+
   it('tags provenance page from the pages array and is deterministic across runs', () => {
     const protocol = protocolOutcomes(project);
     const pages = [{ page: 4, text: 'All-cause mortality: HR 0.80 (95% CI 0.65 to 0.98).' }];

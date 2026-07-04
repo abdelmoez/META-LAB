@@ -46,17 +46,20 @@ export function usePdfSource(study, projectId) {
   }, []);
   useEffect(() => () => revokeLocal(), [revokeLocal]);
 
-  // Resolve the screening-attached PDF whenever the selected study changes.
+  // Only the study IDENTITY + its screening-record link affect which PDF resolves —
+  // NOT its extraction values. Depending on the whole `study` object would re-resolve
+  // (and revoke a session-local upload / reload the screening PDF) on every field
+  // edit, e.g. each click-assign. Depend on these primitives instead.
+  const directSp = (study && study.screeningProjectId) || null;
+  const directRid = (study && study.screeningRecordId) || null;
+
+  // Resolve the screening-attached PDF whenever the selected study (identity) changes.
   useEffect(() => {
     let dead = false;
     revokeLocal();
     setResolved({ url: null, source: null, screenProjectId: null, recordId: null });
     setError('');
-    if (!study || !studyId) return undefined;
-
-    // Fast path: the study already knows its screening record.
-    const directSp = study.screeningProjectId || null;
-    const directRid = study.screeningRecordId || null;
+    if (!studyId) return undefined;
 
     (async () => {
       setResolving(true);
@@ -84,7 +87,7 @@ export function usePdfSource(study, projectId) {
       }
     })();
     return () => { dead = true; };
-  }, [studyId, projectId, study, revokeLocal]);
+  }, [studyId, projectId, directSp, directRid, revokeLocal]);
 
   const setLocalFile = useCallback((file) => {
     if (!file) return;
