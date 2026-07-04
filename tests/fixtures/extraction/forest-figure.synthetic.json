@@ -1,0 +1,64 @@
+{
+  "synthetic": true,
+  "describes": "forest plot log ticks with a misleading annotation",
+  "page": 9,
+  "items": [
+    {
+      "str": "0.1",
+      "x": 100,
+      "y": 80,
+      "w": 18,
+      "h": 8
+    },
+    {
+      "str": "1",
+      "x": 300,
+      "y": 80,
+      "w": 6,
+      "h": 8
+    },
+    {
+      "str": "10",
+      "x": 500,
+      "y": 80,
+      "w": 12,
+      "h": 8
+    },
+    {
+      "str": "p=0.03",
+      "x": 350,
+      "y": 250,
+      "w": 36,
+      "h": 8
+    },
+    {
+      "str": "HR 0.84",
+      "x": 320,
+      "y": 260,
+      "w": 42,
+      "h": 8
+    }
+  ],
+  "expected": {
+    "figureType": "forest",
+    "xTicks": [
+      {
+        "px": 100,
+        "value": 0.1
+      },
+      {
+        "px": 300,
+        "value": 1
+      },
+      {
+        "px": 500,
+        "value": 10
+      }
+    ],
+    "xScale": "log",
+    "nonTickAnnotations": [
+      "p=0.03",
+      "HR 0.84"
+    ]
+  }
+}

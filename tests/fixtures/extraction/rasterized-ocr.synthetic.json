@@ -1,0 +1,78 @@
+{
+  "synthetic": true,
+  "describes": "OCR word boxes for a text-less page (image pixel space)",
+  "page": 5,
+  "imageHeight": 800,
+  "viewport": {
+    "width": 600,
+    "height": 800,
+    "scale": 1
+  },
+  "words": [
+    {
+      "text": "Mortality",
+      "confidence": 94,
+      "bbox": {
+        "x0": 60,
+        "y0": 40,
+        "x1": 140,
+        "y1": 58
+      }
+    },
+    {
+      "text": "was",
+      "confidence": 91,
+      "bbox": {
+        "x0": 150,
+        "y0": 40,
+        "x1": 180,
+        "y1": 58
+      }
+    },
+    {
+      "text": "12",
+      "confidence": 88,
+      "bbox": {
+        "x0": 190,
+        "y0": 40,
+        "x1": 210,
+        "y1": 58
+      }
+    },
+    {
+      "text": "(9.6%)",
+      "confidence": 71,
+      "bbox": {
+        "x0": 215,
+        "y0": 40,
+        "x1": 270,
+        "y1": 58
+      }
+    },
+    {
+      "text": "HR",
+      "confidence": 90,
+      "bbox": {
+        "x0": 60,
+        "y0": 70,
+        "x1": 82,
+        "y1": 88
+      }
+    },
+    {
+      "text": "0.80",
+      "confidence": 86,
+      "bbox": {
+        "x0": 90,
+        "y0": 70,
+        "x1": 130,
+        "y1": 88
+      }
+    }
+  ],
+  "expected": {
+    "wordCount": 6,
+    "ambiguous": "(9.6%)",
+    "topWordMapsToLargeUserY": true
+  }
+}

@@ -222,6 +222,58 @@ describe('detectTableShape — three shapes', () => {
   });
 });
 
+describe('detectTableShape — §14 canonical shapes, evidence, alternates, arm matching', () => {
+  it('maps internal names to the 4.md canonical vocabulary', () => {
+    expect(detectTableShape(gridOf(DIRECT_CELLS)).canonicalShape).toBe('effect-per-row');
+    expect(detectTableShape(gridOf(DICH_CELLS)).canonicalShape).toBe('two-by-two');
+    expect(detectTableShape(gridOf(CONT_CELLS)).canonicalShape).toBe('mean-sd');
+  });
+
+  it('surfaces plain-language evidence for the chosen shape', () => {
+    const s = detectTableShape(gridOf(DIRECT_CELLS));
+    expect(Array.isArray(s.evidence)).toBe(true);
+    expect(s.evidence.join(' ')).toMatch(/effect-measure|CI/i);
+  });
+
+  it('detects a multi-study summary table as arms-in-columns (Khoury §14.2)', () => {
+    const khoury = [
+      ['Characteristic', 'Paik et al. [5]', 'Park 2018', 'Kim (2019)', 'Lee et al', 'Cho 2020'],
+      ['Patients, n', '125', '90', '110', '84', '77'],
+      ['Technical success, %', '94', '96', '92', '95', '93'],
+      ['Adverse events, %', '12', '9', '14', '11', '10'],
+    ];
+    const s = detectTableShape(gridOf(khoury));
+    expect(s.canonicalShape).toBe('arms-in-columns');
+    expect(s.evidence.join(' ')).toMatch(/multi-study/i);
+  });
+
+  it('offers a runner-up shape as an alternate when scores are close', () => {
+    // A table with BOTH a mean/SD and events signal can score two shapes closely.
+    const ambiguous = [
+      ['Study', 'Events', 'Total', 'Mean', 'SD'],
+      ['A', '18', '120', '5.2', '1.1'],
+      ['B', '25', '150', '6.0', '0.9'],
+    ];
+    const s = detectTableShape(gridOf(ambiguous));
+    expect(Array.isArray(s.alternates)).toBe(true);
+  });
+
+  it('performs PICO arm matching when pico is supplied', () => {
+    const armsTable = [
+      ['Outcome', 'EUS-BD', 'ERCP'],
+      ['Technical success', '0.94', '0.90'],
+      ['Adverse events', '0.12', '0.18'],
+    ];
+    const s = detectTableShape(gridOf(armsTable), { intervention: 'EUS-BD', comparator: 'ERCP' });
+    expect(s.armAssignment).toBeTruthy();
+    expect(s.armAssignment.confident).toBe(true);
+  });
+
+  it('backward compatible: pico is optional (armAssignment null when absent)', () => {
+    expect(detectTableShape(gridOf(DIRECT_CELLS)).armAssignment).toBeNull();
+  });
+});
+
 describe('existing-behaviour smoke: buildGrid unchanged', () => {
   it('grids a simple 2×2 into the same cell matrix', () => {
     const rows = [

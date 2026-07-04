@@ -88,6 +88,13 @@ function singularizeToken(tok) {
 }
 
 /**
+ * OUTCOME_SYNONYMS_VERSION — bump whenever the synonym table changes so callers can
+ * cache protocol-outcome matching by (protocol, synonymVersion) and invalidate cleanly
+ * (RoadMap/4.md §19.3 — the dictionary must be explicit, versioned, and testable).
+ */
+export const OUTCOME_SYNONYMS_VERSION = 2;
+
+/**
  * OUTCOME_SYNONYMS — curated clinical outcome synonym groups. Each group is an
  * array of NORMALIZED variants; membership of two labels in the same group means
  * they denote the same clinical outcome. Extend conservatively — a wrong grouping
@@ -127,6 +134,27 @@ export const OUTCOME_SYNONYMS = [
   ['falls', 'fall', 'fall rate'],
   ['remission', 'clinical remission'],
   ['response', 'response rate', 'response rates', 'orr', 'objective response rate'],
+  // v2 additions (RoadMap/4.md §19.3) — common SR/procedural outcomes.
+  ['acute kidney injury', 'aki', 'acute renal failure', 'acute renal injury'],
+  ['intensive care unit', 'icu', 'icu admission', 'critical care'],
+  ['technical success', 'technical success rate'],
+  ['clinical success', 'clinical success rate', 'treatment success'],
+  ['recurrence', 'recurrent', 'recurrence rate'],
+  ['bleeding', 'haemorrhage', 'hemorrhage', 'bleed', 'major bleeding'],
+  ['infection', 'infections', 'sepsis', 'infectious complication', 'infectious complications'],
+  ['complication', 'complications', 'morbidity', 'procedural complication'],
+  ['reintervention', 'reintervention rate', 're-intervention', 'reoperation', 'reoperation rate'],
+  ['pancreatitis', 'post-ercp pancreatitis', 'pep'],
+  ['cholangitis', 'biliary infection'],
+  ['perforation'],
+  ['stent patency', 'patency', 'stent occlusion'],
+  ['systemic inflammatory response syndrome', 'sirs'],
+  ['disease-free survival', 'disease free survival', 'dfs', 'recurrence-free survival'],
+  ['wound infection', 'surgical site infection', 'ssi'],
+  ['deep vein thrombosis', 'dvt', 'venous thromboembolism', 'vte'],
+  ['pulmonary embolism', 'pe'],
+  ['heart failure', 'chf', 'congestive heart failure'],
+  ['atrial fibrillation', 'af', 'afib', 'atrial fib'],
 ];
 
 /**

@@ -612,6 +612,312 @@ function unionMaybe(a, b) {
   return unionBox(a, b);
 }
 
+/* ════════════════════════════════════════════════════════════════════════════
+   STAGED TABLE PIPELINE (RoadMap/4.md §12) — additive, pure, dependency-free.
+   Each stage is exported and independently testable; buildTableGrid composes them
+   into the §10.2 grid contract. None of the existing exports above are altered.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+/** Parser version — bump on any behaviour change so cached grids invalidate (§10.2). */
+export const PARSER_VERSION = 'grid-2';
+
+/**
+ * repairTokens(items) — §12.1. Repair malformed pdf.js text segmentation BEFORE line
+ * and table inference: merge adjacent same-baseline runs whose horizontal gap is a
+ * small fraction of the local space width, so a mid-word split ("u"+"nivariate",
+ * "v"+"ariables") becomes one token. The gap threshold is derived from LOCAL font
+ * metrics (per-run character width), never a universal pixel constant, so true spaces
+ * between words survive and columns are not bridged.
+ *
+ * @param {Array} items  raw or normalized items
+ * @param {{gapRatio?:number}} [opts]  merge when gap < gapRatio × estimated space (0.33)
+ * @returns {Array<{str,x,y,w,h,srcIndexes:number[]}>}  repaired, normalized items
+ */
+export function repairTokens(items, { gapRatio = 0.33 } = {}) {
+  const norm = normalizeItems(items).map((it, i) => ({ ...it, srcIndexes: [i] }));
+  if (norm.length < 2) return norm;
+
+  const heights = norm.map((i) => i.h);
+  const yTol = Math.max(1, 0.4 * median(heights));
+
+  // Group by baseline (descending y), then walk left-to-right merging tight gaps.
+  const sorted = norm.slice().sort((a, b) => b.y - a.y || a.x - b.x);
+  const out = [];
+  let cur = null;
+  for (const it of sorted) {
+    if (!cur) { cur = clone(it); out.push(cur); continue; }
+    const sameLine = Math.abs(it.y - cur.y) <= yTol;
+    const curEnd = cur.x + cur.w;
+    const gap = it.x - curEnd;
+    // Estimate the local space width from the wider of the two runs' char widths.
+    const charW = Math.max(charWidthOf(cur), charWidthOf(it), 1);
+    const spaceW = charW; // one char width ≈ one space in most fonts
+    const bigFontJump = Math.abs(it.h - cur.h) > 0.5 * Math.max(it.h, cur.h);
+    if (sameLine && gap >= -charW * 0.5 && gap < gapRatio * spaceW && !bigFontJump) {
+      // Merge: no visible space, same baseline, same font size → one token.
+      cur.str += it.str;
+      cur.w = (it.x + it.w) - cur.x;
+      cur.h = Math.max(cur.h, it.h);
+      cur.srcIndexes.push(...it.srcIndexes);
+    } else {
+      cur = clone(it);
+      out.push(cur);
+    }
+  }
+  return out;
+}
+
+/** buildLines(items, opts?) — §12.2. Adaptive baseline clustering (tolerance =
+ *  0.5 × median item height, never a fixed pixel). Returns lines top→bottom with
+ *  per-line bbox and font stats, resisting obvious cross-column merges by baseline. */
+export function buildLines(items, { yTol } = {}) {
+  const norm = Array.isArray(items) && items.length && items[0] && 'srcIndexes' in items[0]
+    ? items
+    : normalizeItems(items);
+  if (!norm.length) return [];
+  const tol = Number.isFinite(yTol) && yTol > 0 ? yTol : Math.max(2, 0.5 * median(norm.map((i) => i.h)));
+  const sorted = norm.slice().sort((a, b) => b.y - a.y || a.x - b.x);
+  const lines = [];
+  let cur = null;
+  let sumY = 0;
+  for (const it of sorted) {
+    if (cur && Math.abs(it.y - sumY / cur.items.length) <= tol) {
+      cur.items.push(it); sumY += it.y;
+    } else {
+      cur = { y: it.y, items: [it] }; sumY = it.y; lines.push(cur);
+    }
+  }
+  for (const ln of lines) {
+    ln.items.sort((a, b) => a.x - b.x);
+    ln.y = ln.items.reduce((s, i) => s + i.y, 0) / ln.items.length;
+    ln.x0 = Math.min(...ln.items.map((i) => i.x));
+    ln.x1 = Math.max(...ln.items.map((i) => i.x + i.w));
+    ln.h = median(ln.items.map((i) => i.h));
+    ln.text = ln.items.map((i) => i.str).join(' ').replace(/\s+/g, ' ').trim();
+  }
+  return lines;
+}
+
+const CAPTION_RE = /^(TABLE|Table|TABLA|Tab\.)\s*\d+[.:]?/;
+const FOOTNOTE_LEADER_RE = /^\s*([*†‡§¶]|[a-d]\s|Note|Abbreviation|CI[,: ]|Values are|Data are|SD,|Adapted|Source)/i;
+
+/**
+ * stripCaptionAndFootnotes(lines) — §12.3. Split a table's lines into caption, body,
+ * and footnotes using combined evidence (leader regex, a large vertical gap before a
+ * trailing note block, and a smaller-than-body font). Never removes a genuine data row
+ * on font size alone — a footnote needs a leader OR a big gap.
+ *
+ * @param {Array} lines  buildLines() output
+ * @returns {{ caption:(string|null), body:Array, footnotes:string[], evidence:string[] }}
+ */
+export function stripCaptionAndFootnotes(lines) {
+  const evidence = [];
+  const ls = Array.isArray(lines) ? lines.slice() : [];
+  if (!ls.length) return { caption: null, body: [], footnotes: [], evidence };
+
+  // Caption: leading Table N line(s) until the first clearly columnar line.
+  let captionParts = [];
+  let bodyStart = 0;
+  if (CAPTION_RE.test(ls[0].text)) {
+    captionParts.push(ls[0].text);
+    bodyStart = 1;
+    // Absorb continuation lines that are clearly NOT columnar: a single run with no
+    // numeric content (a wrapped caption clause), never a 2+ column data/header row.
+    while (
+      bodyStart < ls.length && bodyStart < 3 &&
+      ls[bodyStart].items.length <= 1 &&
+      !/\d/.test(ls[bodyStart].text) &&
+      !CAPTION_RE.test(ls[bodyStart].text)
+    ) {
+      captionParts.push(ls[bodyStart].text);
+      bodyStart++;
+    }
+    evidence.push('caption anchored on a "Table N" line');
+  }
+
+  // Footnotes: trailing lines with a leader, or a note block after a large gap.
+  const bodyLines = ls.slice(bodyStart);
+  const bodyFontMedian = median(bodyLines.map((l) => l.h));
+  const footnotes = [];
+  let end = bodyLines.length;
+  for (let i = bodyLines.length - 1; i >= 1; i--) {
+    const ln = bodyLines[i];
+    const prev = bodyLines[i - 1];
+    const gap = prev.y - ln.y; // baseline distance (y grows up)
+    const bigGap = gap > 1.5 * (bodyFontMedian || ln.h || 10);
+    const smallFont = ln.h > 0 && bodyFontMedian > 0 && ln.h < 0.9 * bodyFontMedian;
+    const hasLeader = FOOTNOTE_LEADER_RE.test(ln.text);
+    if (hasLeader || (bigGap && (smallFont || hasLeader))) {
+      footnotes.unshift(ln.text);
+      end = i;
+    } else break;
+  }
+  if (footnotes.length) evidence.push(`${footnotes.length} trailing footnote line(s) separated`);
+
+  return {
+    caption: captionParts.length ? captionParts.join(' ') : null,
+    body: bodyLines.slice(0, end),
+    footnotes,
+    evidence,
+  };
+}
+
+/**
+ * mergeWrappedRows(rows) — §12.6. Merge visual continuation lines into logical rows,
+ * WITHOUT collapsing genuine hierarchical sub-rows. A line merges up when its label
+ * ends in a hyphen (a wrapped word: "ob-"+"struction") or it carries only a label cell
+ * that visually continues the row above and has NO numeric data of its own. Indented
+ * numeric sub-rows ("EUS-BD", "ERCP" under "Patients, n") stay independent and receive
+ * indentLevel/parentRow.
+ *
+ * @param {string[][]} cells  buildGrid() cells (body rows)
+ * @param {Array} [boxes]     matching boxes (used for indent detection)
+ * @returns {Array<{cells:string[], indentLevel:number, parentRow:(number|null)}>}
+ */
+export function mergeWrappedRows(cells, boxes) {
+  const rows = Array.isArray(cells) ? cells.map((r) => (Array.isArray(r) ? r.slice() : [])) : [];
+  if (!rows.length) return [];
+  const rowBoxes = Array.isArray(boxes) ? boxes : rows.map(() => []);
+
+  const isDataCell = (c) => {
+    const s = (c == null ? '' : String(c)).trim();
+    return !!s && (NUMERIC_CELL_PATTERNS.some((re) => re.test(s)) || CI_CELL_PATTERNS.some((re) => re.test(s)));
+  };
+  const hasData = (row) => row.slice(1).some(isDataCell);
+  const labelX = (i) => {
+    const b = rowBoxes[i] && rowBoxes[i][0];
+    return b && Number.isFinite(b.x0) ? b.x0 : null;
+  };
+
+  // First pass: merge hyphen-wrap and label-only continuation lines UP.
+  const merged = [];
+  const mergedBoxes = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const label = String(row[0] || '').trim();
+    const prev = merged[merged.length - 1];
+    const wrapUp =
+      prev &&
+      !hasData(row) && // no numbers of its own
+      label &&
+      (String(prev.cells[0]).trim().endsWith('-') || (!hasData(prev.cells) && merged.length && row.slice(1).every((c) => !String(c || '').trim())));
+    if (wrapUp) {
+      const prevLabel = String(prev.cells[0]).trim();
+      prev.cells[0] = prevLabel.endsWith('-') ? prevLabel.slice(0, -1) + label : `${prevLabel} ${label}`.trim();
+    } else {
+      merged.push({ cells: row.slice(), indentLevel: 0, parentRow: null });
+      mergedBoxes.push(rowBoxes[i] || []);
+    }
+  }
+
+  // Second pass: hierarchy — an indented row (label starts further right) whose parent
+  // above is a non-indented label becomes a child (parentRow set), numeric data kept.
+  const xs = merged.map((_, i) => {
+    const b = mergedBoxes[i] && mergedBoxes[i][0];
+    return b && Number.isFinite(b.x0) ? b.x0 : null;
+  });
+  // The BASE indent is the leftmost label x (top-level rows); a row indented past it is
+  // a child. Using the minimum (not the median) so a minority of children never shifts
+  // the baseline into themselves.
+  const present = xs.filter((x) => x != null);
+  const baseX = present.length ? Math.min(...present) : NaN;
+  for (let i = 0; i < merged.length; i++) {
+    const x = xs[i];
+    if (x == null || !Number.isFinite(baseX)) continue;
+    if (x > baseX + 4) {
+      merged[i].indentLevel = 1;
+      for (let j = i - 1; j >= 0; j--) {
+        if (merged[j].indentLevel === 0) { merged[i].parentRow = j; break; }
+      }
+    }
+  }
+  return merged;
+}
+
+/**
+ * buildTableGrid(items, opts?) — §12 top-level. Compose the staged pipeline into the
+ * §10.2 grid contract. Reuses the proven column/cell primitives (detectColumns/buildGrid)
+ * after token repair, caption/footnote stripping, and wrapped-row merging.
+ *
+ * @param {Array} items  raw pdf.js or normalized items for ONE table region
+ * @param {object} [opts]  { region } forwarded for bbox context (optional)
+ * @returns {{
+ *   caption, footnotes, headerRows, columns, rows, confidence, warnings, parserVersion
+ * } | null}  null when the region does not look like a table (§ contract).
+ */
+export function buildTableGrid(items, opts = {}) {
+  const warnings = [];
+  const repaired = repairTokens(items);
+  if (repaired.length < 2) return null;
+  const lines = buildLines(repaired);
+  const { caption, body, footnotes, evidence } = stripCaptionAndFootnotes(lines);
+  if (body.length < 2) { warnings.push('too few body lines for a table'); return null; }
+
+  // Column inference + cell assignment via the proven primitives.
+  const bodyRows = body.map((ln) => ({ y: ln.y, items: ln.items }));
+  let cols = detectColumns(bodyRows);
+  if (cols.length < 2) { warnings.push('fewer than two columns detected'); return null; }
+  let grid = buildGrid(bodyRows, cols);
+  // Indented row labels (a child row's label sits further right — "EUS-BD" under
+  // "Patients, n") can spawn a phantom label column, mis-shifting the data. Collapse any
+  // leading NON-numeric columns before the first numeric column into ONE label column so
+  // the hierarchy is preserved instead of fragmenting the grid (§12.4/§12.6).
+  let firstNumeric = -1;
+  for (let c = 0; c < cols.length; c++) { if (looksNumericColumn(grid.cells, c)) { firstNumeric = c; break; } }
+  if (firstNumeric > 1) {
+    cols = [cols[0], ...cols.slice(firstNumeric)];
+    grid = buildGrid(bodyRows, cols);
+    warnings.push('collapsed indented label sub-columns into one label column');
+  }
+  let { headerRows, headerText } = detectHeaderSpan(grid.cells);
+  // A genuine header row LABELS multiple columns (≥2 non-empty cells). Trim any leading
+  // "header" rows that populate only column 0 — those are wrapped multi-line data labels
+  // (e.g. "Cause of biliary ob-" / "struction"), not headers, and must reach the body so
+  // mergeWrappedRows can stitch them (§12.6).
+  const populatedCols = (r) => (grid.cells[r] || []).filter((c) => String(c || '').trim()).length;
+  while (headerRows > 1 && populatedCols(headerRows - 1) < 2) headerRows -= 1;
+  const wrapped = mergeWrappedRows(grid.cells.slice(headerRows), grid.boxes.slice(headerRows));
+
+  // Column alignment from body cells (right for numeric, decimal when dot-clustered).
+  const columns = cols.map((cx, ci) => ({
+    x0: ci === 0 ? cx : (cols[ci - 1] + cx) / 2,
+    x1: ci === cols.length - 1 ? cx : (cols[ci + 1] + cx) / 2,
+    align: looksNumericColumn(grid.cells.slice(headerRows), ci) ? 'right' : 'left',
+    headerPath: headerText[ci] ? headerText[ci].split(' ') : [],
+  }));
+
+  // Structural confidence (§12.8): rewards stable column count + clean parses.
+  const colConsistency = grid.cells.length
+    ? grid.cells.filter((r) => r.length === cols.length).length / grid.cells.length
+    : 0;
+  const confidence = clamp01Local(0.4 + 0.4 * colConsistency + (headerRows > 0 ? 0.2 : 0) - 0.1 * warnings.length);
+  if (caption) evidence.push('caption captured (not leaked into cells)');
+
+  return {
+    caption,
+    footnotes,
+    headerRows: headerRows > 0 ? Array.from({ length: headerRows }, (_, i) => i) : [],
+    columns,
+    rows: wrapped.map((w) => ({
+      cells: w.cells.map((raw) => ({ raw, value: null })),
+      indentLevel: w.indentLevel,
+      parentRow: w.parentRow,
+    })),
+    confidence,
+    warnings: warnings.concat(evidence),
+    parserVersion: PARSER_VERSION,
+  };
+}
+
+/* ── Staged-pipeline helpers ─────────────────────────────────────────────── */
+
+function clone(it) { return { ...it, srcIndexes: it.srcIndexes ? it.srcIndexes.slice() : [] }; }
+function charWidthOf(it) {
+  const len = typeof it.str === 'string' ? it.str.length : 0;
+  return len > 0 && Number.isFinite(it.w) && it.w > 0 ? it.w / len : FALLBACK_CHAR_WIDTH;
+}
+function clamp01Local(x) { return Number.isFinite(x) ? Math.max(0, Math.min(1, x)) : 0; }
+
 /* ── Helpers ──────────────────────────────────────────────────────────────── */
 
 /** median(values) — middle value (mean of the two middles for even counts). */

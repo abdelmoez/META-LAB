@@ -28,7 +28,16 @@ import { autoExtract } from '../../../research-engine/extraction/autoExtract.js'
 import { normalizeItems, itemsToRows, detectColumns, buildGrid } from '../../../research-engine/extraction/pdfTextGrid.js';
 import { snapNumberToken } from '../../../research-engine/extraction/numberTokens.js';
 import { mkExtractionRecord } from '../../../research-engine/extraction/records.js';
+import { decideWrite } from '../../../research-engine/extraction/valuePrecedence.js';
 import { aiExtractStatus, aiExtract } from '../../../frontend/services/aiExtractService.js';
+
+/** Study fields a click can fill (the value slots) — used by the overwrite guard. */
+const VALUE_PATCH_FIELDS = [
+  'es', 'lo', 'hi', 'a', 'b', 'c', 'd', 'nExp', 'meanExp', 'sdExp',
+  'nCtrl', 'meanCtrl', 'sdCtrl', 'events', 'total', 'n',
+];
+/** Patch keys that are bookkeeping, not user-visible captured values. */
+const PATCH_META_FIELDS = ['needsReview', 'notes', 'source', 'conversions', 'converted'];
 
 const ASSIGN_FIELDS = [
   ['smart', '✦ Smart (value + its 95% CI / events + total)'],
@@ -68,6 +77,7 @@ export default function AssistedExtractionPanel({
   const [aiAvailable, setAiAvailable] = useState(false);
   const [aiOn, setAiOn] = useState(false);            // OFF by default, per session
   const [detected, setDetected] = useState([]);       // detectedOutcomes chooser (empty/unmatched PICO)
+  const [pendingAssign, setPendingAssign] = useState(null); // held click-assign overwrite (§21.5)
   const docRef = useRef(null);
 
   const study = useMemo(() => studies.find((s) => s.id === selectedStudyId) || null, [studies, selectedStudyId]);
@@ -140,10 +150,48 @@ export default function AssistedExtractionPanel({
     patch.needsReview = true;
     patch.notes = study.notes ? `${study.notes} · ${prov}` : prov;
     if (!study.source) patch.source = 'text';
+
+    // Overwrite guard (§21.5): a click must NEVER silently replace a value already in a
+    // destination field. Existing study values are treated as human-origin; a differing
+    // machine (click) value against them is a conflict → ask before replacing, default keep.
+    const conflicts = [];
+    for (const field of VALUE_PATCH_FIELDS) {
+      if (!(field in patch)) continue;
+      const decision = decideWrite({
+        existingValue: study[field], existingOrigin: 'user-typed',
+        incoming: patch[field], incomingOrigin: 'click',
+      });
+      if (decision.action === 'propose-replace' || decision.action === 'add-alternative') {
+        conflicts.push({ field, existing: String(study[field]), incoming: String(patch[field]) });
+      }
+    }
+    if (conflicts.length) { setPendingAssign({ studyId: study.id, patch, conflicts }); setStatus(''); return; }
+
     onPatchStudy && onPatchStudy(study.id, patch);
-    const shown = Object.entries(patch).filter(([k]) => !['needsReview', 'notes', 'source'].includes(k)).map(([k, v]) => `${v}→${k}`).join(', ');
+    const shown = Object.entries(patch).filter(([k]) => !PATCH_META_FIELDS.includes(k)).map(([k, v]) => `${v}→${k}`).join(', ');
     setStatus(`Assigned ${shown}.`);
   }, [study, assignField, onPatchStudy]);
+
+  // Resolve a held overwrite decision. 'replace' applies the whole captured patch;
+  // 'keep' drops only the conflicting value fields (empty/agreeing fields still write).
+  const resolvePendingAssign = useCallback((mode) => {
+    setPendingAssign((pending) => {
+      if (!pending) return null;
+      let patch = pending.patch;
+      if (mode === 'keep') {
+        const drop = new Set(pending.conflicts.map((c) => c.field));
+        patch = Object.fromEntries(Object.entries(pending.patch).filter(([k]) => !drop.has(k)));
+        // If nothing but meta remains, don't churn the study.
+        if (!Object.keys(patch).some((k) => !PATCH_META_FIELDS.includes(k))) {
+          setStatus('Kept the existing value(s).');
+          return null;
+        }
+      }
+      onPatchStudy && onPatchStudy(pending.studyId, patch);
+      setStatus(mode === 'replace' ? 'Replaced with the clicked value(s).' : 'Kept existing; filled the empty field(s).');
+      return null;
+    });
+  }, [onPatchStudy]);
 
   const interaction = useMemo(() => {
     if (readOnly || !pdf.url) return null;
@@ -470,6 +518,27 @@ export default function AssistedExtractionPanel({
               </label>
               <div style={{ fontSize: 10.5, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>Sends the PDF (or abstract) to an external model. Off by default; nothing leaves the server unless you run it. The result is a draft you must verify.</div>
               {aiOn && <button onClick={runAi} disabled={busy} style={{ ...btnS('ghost'), color: C.purp, borderColor: themeAlpha(C.purp, '55'), fontSize: 12, marginTop: 8, opacity: busy ? 0.5 : 1 }}>{busy ? '⟳ Extracting…' : '✦ Run AI extraction'}</button>}
+            </div>
+          )}
+
+          {/* Overwrite guard (§21.5): a click that would replace an existing value asks first. */}
+          {pendingAssign && (
+            <div role="alertdialog" aria-label="Confirm replacing existing values"
+              style={{ border: `1.5px solid ${themeAlpha(C.yel, '66')}`, borderRadius: 8, padding: '10px 12px', background: themeAlpha(C.yel, '10') }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: C.txt, marginBottom: 6 }}>
+                This field already has a value
+              </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 8 }}>
+                {pendingAssign.conflicts.map((c) => (
+                  <div key={c.field} style={{ fontSize: 11.5, fontFamily: "'IBM Plex Mono',monospace", color: C.txt2 }}>
+                    Replace <b>{c.field}</b> {c.existing} with {c.incoming}?
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => resolvePendingAssign('keep')} style={{ ...btnS('ghost'), fontSize: 11 }}>Keep current</button>
+                <button onClick={() => resolvePendingAssign('replace')} style={{ ...btnS('danger'), fontSize: 11 }}>Replace</button>
+              </div>
             </div>
           )}
 

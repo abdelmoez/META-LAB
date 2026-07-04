@@ -18,6 +18,7 @@ const AssistedExtractionPanel = lazy(() => import("../../../features/extraction/
 import DraftReviewList from "../../../features/extraction/unified/DraftReviewList.jsx";
 import { protocolOutcomes } from "../../../research-engine/extraction/protocolOutcomes.js";
 import { confirmDraft as confirmDraftPure, parkRecord as parkRecordPure, unparkToDraft as unparkPure } from "../../../research-engine/extraction/records.js";
+import { reconcileDrafts, identityOf } from "../../../research-engine/extraction/draftReconcile.js";
 import { downloadBlob } from "../../components/exportCore.js";
 import { fmtES } from "../../../research-engine/format/precision.js";
 import { orderStudies, EXTRACTION_SORTS, DEFAULT_EXTRACTION_SORT } from "../../pages/extractionOrder.js";
@@ -595,14 +596,30 @@ function ExtractionTab({project,updateProject,activeId,setTab}){
       return {...p,studies:arr};
     });
   };
-  // ── Assisted-workspace draft handling (RoadMap/1.md) ─────────────────────────
+  // ── Assisted-workspace draft handling (RoadMap/1.md + 4.md §4.4/§10.5/§19.10) ──
   // Drafts/parked live additively on the project blob; never overwrite a human value.
-  const addDrafts=(recs)=>{ if(!recs||!recs.length) return; updateProject(activeId,p=>({...p,extractionDrafts:[...(p.extractionDrafts||[]),...recs]})); };
-  const addParked=(recs)=>{ if(!recs||!recs.length) return; updateProject(activeId,p=>({...p,extractionParked:[...(p.extractionParked||[]),...recs]})); };
-  // Dismiss removes the record by id from whichever list holds it (drafts or parked).
-  const dismissDraft=(id)=>updateProject(activeId,p=>({...p,
-    extractionDrafts:(p.extractionDrafts||[]).filter(d=>d.id!==id),
-    extractionParked:(p.extractionParked||[]).filter(d=>d.id!==id)}));
+  // Adds are RECONCILED by stable source identity so re-running a machine pass over
+  // unchanged source is idempotent (no duplicate drafts) and a previously-dismissed
+  // finding is not resurrected (extractionDismissed holds dismissed source identities).
+  const addDrafts=(recs)=>{ if(!recs||!recs.length) return; updateProject(activeId,p=>{
+    const { drafts }=reconcileDrafts(p.extractionDrafts||[],recs,{dismissedIdentities:p.extractionDismissed||[]});
+    return {...p,extractionDrafts:drafts};
+  }); };
+  const addParked=(recs)=>{ if(!recs||!recs.length) return; updateProject(activeId,p=>{
+    const { drafts }=reconcileDrafts(p.extractionParked||[],recs,{dismissedIdentities:p.extractionDismissed||[]});
+    return {...p,extractionParked:drafts};
+  }); };
+  // Dismiss removes the record by id from whichever list holds it (drafts or parked) and
+  // records its source identity so a later rerun does not bring the same finding back.
+  const dismissDraft=(id)=>updateProject(activeId,p=>{
+    const rec=(p.extractionDrafts||[]).find(d=>d.id===id)||(p.extractionParked||[]).find(d=>d.id===id)||null;
+    const sid=rec?identityOf(rec):"";
+    const dismissed=p.extractionDismissed||[];
+    return {...p,
+      extractionDrafts:(p.extractionDrafts||[]).filter(d=>d.id!==id),
+      extractionParked:(p.extractionParked||[]).filter(d=>d.id!==id),
+      extractionDismissed:(sid&&!dismissed.includes(sid))?[...dismissed,sid]:dismissed};
+  });
   const editDraftField=(id,key,value)=>updateProject(activeId,p=>({...p,extractionDrafts:(p.extractionDrafts||[]).map(d=>{
     if(d.id!==id) return d;
     if(key==="scope"){

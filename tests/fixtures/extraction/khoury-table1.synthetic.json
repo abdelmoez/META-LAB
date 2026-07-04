@@ -1,0 +1,221 @@
+{
+  "synthetic": true,
+  "describes": "Khoury 2024 Table 1 (structure only; not the real PDF)",
+  "page": 3,
+  "items": [
+    {
+      "str": "Table 1. Characteristics of included studies",
+      "x": 60,
+      "y": 760,
+      "w": 264,
+      "h": 10
+    },
+    {
+      "str": "Characteristic",
+      "x": 60,
+      "y": 742,
+      "w": 84,
+      "h": 10
+    },
+    {
+      "str": "Paik et al. [5]",
+      "x": 240,
+      "y": 742,
+      "w": 90,
+      "h": 10
+    },
+    {
+      "str": "Park 2018",
+      "x": 340,
+      "y": 742,
+      "w": 54,
+      "h": 10
+    },
+    {
+      "str": "Kim (2019)",
+      "x": 420,
+      "y": 742,
+      "w": 60,
+      "h": 10
+    },
+    {
+      "str": "Lee et al",
+      "x": 500,
+      "y": 742,
+      "w": 54,
+      "h": 10
+    },
+    {
+      "str": "Cho 2020",
+      "x": 560,
+      "y": 742,
+      "w": 48,
+      "h": 10
+    },
+    {
+      "str": "Cause of biliary ob-",
+      "x": 60,
+      "y": 730,
+      "w": 120,
+      "h": 10
+    },
+    {
+      "str": "struction",
+      "x": 60,
+      "y": 718,
+      "w": 54,
+      "h": 10
+    },
+    {
+      "str": "Patients, n",
+      "x": 60,
+      "y": 706,
+      "w": 66,
+      "h": 10
+    },
+    {
+      "str": "125",
+      "x": 240,
+      "y": 706,
+      "w": 18,
+      "h": 10
+    },
+    {
+      "str": "90",
+      "x": 340,
+      "y": 706,
+      "w": 12,
+      "h": 10
+    },
+    {
+      "str": "110",
+      "x": 420,
+      "y": 706,
+      "w": 18,
+      "h": 10
+    },
+    {
+      "str": "84",
+      "x": 500,
+      "y": 706,
+      "w": 12,
+      "h": 10
+    },
+    {
+      "str": "77",
+      "x": 560,
+      "y": 706,
+      "w": 12,
+      "h": 10
+    },
+    {
+      "str": "EUS-BD",
+      "x": 72,
+      "y": 694,
+      "w": 36,
+      "h": 10
+    },
+    {
+      "str": "64",
+      "x": 240,
+      "y": 694,
+      "w": 12,
+      "h": 10
+    },
+    {
+      "str": "61",
+      "x": 340,
+      "y": 694,
+      "w": 12,
+      "h": 10
+    },
+    {
+      "str": "55",
+      "x": 420,
+      "y": 694,
+      "w": 12,
+      "h": 10
+    },
+    {
+      "str": "40",
+      "x": 500,
+      "y": 694,
+      "w": 12,
+      "h": 10
+    },
+    {
+      "str": "38",
+      "x": 560,
+      "y": 694,
+      "w": 12,
+      "h": 10
+    },
+    {
+      "str": "ERCP",
+      "x": 72,
+      "y": 682,
+      "w": 24,
+      "h": 10
+    },
+    {
+      "str": "61",
+      "x": 240,
+      "y": 682,
+      "w": 12,
+      "h": 10
+    },
+    {
+      "str": "29",
+      "x": 340,
+      "y": 682,
+      "w": 12,
+      "h": 10
+    },
+    {
+      "str": "55",
+      "x": 420,
+      "y": 682,
+      "w": 12,
+      "h": 10
+    },
+    {
+      "str": "44",
+      "x": 500,
+      "y": 682,
+      "w": 12,
+      "h": 10
+    },
+    {
+      "str": "39",
+      "x": 560,
+      "y": 682,
+      "w": 12,
+      "h": 10
+    },
+    {
+      "str": "EUS-BD, endoscopic ultrasound-guided biliary drainage; ERCP, endoscopic retrograde cholangiopancreatography.",
+      "x": 60,
+      "y": 666,
+      "w": 648,
+      "h": 7
+    }
+  ],
+  "expected": {
+    "canonicalShape": "arms-in-columns",
+    "studyColumns": 5,
+    "wrappedLabel": "Cause of biliary obstruction",
+    "hierarchy": {
+      "parent": "Patients, n",
+      "children": [
+        "EUS-BD",
+        "ERCP"
+      ]
+    },
+    "paik": {
+      "patients": 125,
+      "eusbd": 64,
+      "ercp": 61
+    },
+    "footnoteExcluded": "endoscopic ultrasound"
+  }
+}

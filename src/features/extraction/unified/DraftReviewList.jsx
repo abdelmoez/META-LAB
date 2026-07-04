@@ -16,6 +16,7 @@ import { useState } from "react";
 import { C, btnS, inp, lbl } from "../../../frontend/workspace/ui/styles.js";
 import { alpha as themeAlpha } from "../../../frontend/theme/tokens.js";
 import { recordCompleteness } from "../../../research-engine/extraction/records.js";
+import { formatEffect } from "../../../research-engine/format/formatEffect.js";
 
 /* ── chips ───────────────────────────────────────────────────────────────── */
 
@@ -45,12 +46,19 @@ const CONFIDENCE_COLOR = { high: C.grn, medium: C.yel, low: C.red };
 
 const has = (v) => v !== "" && v !== null && v !== undefined;
 
-/** Compact one-line summary of the key extracted values. */
+/** Compact one-line summary of the key extracted values.
+ *  es/lo/hi are stored on the ANALYSIS scale (ln for ratio measures); formatEffect
+ *  back-transforms them so a reviewer sees "RR 1.12 [1.00, 1.26]", never the raw log
+ *  value labelled as a ratio (RoadMap/4.md §18). */
 function compactValues(rec) {
   const v = rec && rec.values && typeof rec.values === "object" ? rec.values : {};
   if (has(v.es)) {
-    const label = rec.esType || "ES";
-    return has(v.lo) && has(v.hi) ? `${label} ${v.es} [${v.lo}, ${v.hi}]` : `${label} ${v.es}`;
+    const f = formatEffect(v.es, has(v.lo) ? v.lo : null, has(v.hi) ? v.hi : null, rec.esType || "", { dash: "?" });
+    // formatEffect prefixes the measure label when esType is set; add a generic "ES"
+    // label when the draft has no measure yet (identity scale, shown verbatim).
+    if (rec.esType) return f.text;
+    const ci = has(v.lo) && has(v.hi) ? ` [${f.lo}, ${f.hi}]` : "";
+    return `ES ${f.est}${ci}`;
   }
   if (["a", "b", "c", "d"].some((k) => has(v[k])))
     return `2×2  a=${v.a || "?"}  b=${v.b || "?"}  c=${v.c || "?"}  d=${v.d || "?"}`;

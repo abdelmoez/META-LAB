@@ -22,6 +22,24 @@ import {
   detectHeaderSpan,
   partitionRows,
 } from './pdfTextGrid.js';
+import { matchArms } from './armMatch.js';
+
+/**
+ * CANONICAL_SHAPE — map the internal 3-way scoring to the RoadMap/4.md §14 shape
+ * vocabulary. Kept SEPARATE from the internal `shape` value so the mapper and the
+ * golden tests that key on the internal name stay byte-compatible while callers that
+ * want the 4.md names (effect-per-row / two-by-two / mean-sd / arms-in-columns /
+ * single-arm / unknown) read `canonicalShape`.
+ */
+const CANONICAL_SHAPE = {
+  'direct-effect': 'effect-per-row',
+  dichotomous: 'two-by-two',
+  continuous: 'mean-sd',
+  unknown: 'unknown',
+};
+
+/** A header cell that looks like a STUDY label (author + year, "et al", bracket ref). */
+const STUDY_HEADER_RE = /et al|\[\d+\]|\(\d{4}\)|\b(19|20)\d{2}\b/i;
 
 /* ── Header keyword vocabulary ───────────────────────────────────────────────
    Checked against each column's COMBINED (top-to-bottom) header text. */
@@ -41,21 +59,27 @@ const Q3_RE = /\bq3\b|75th|upper\s*quartile/i;
 const SLASH_RE = /^\d[\d,]*\s*\/\s*\d[\d,]*$/;
 
 /**
- * detectTableShape({cells, boxes}) — classify a grid and tag its columns.
+ * detectTableShape({cells, boxes}, pico?) — classify a grid and tag its columns.
  *
  * @param {{cells:string[][], boxes?:Array}} input  a buildGrid() result (ideally
  *   after mergeContinuationColumns so a split CI is a single column)
+ * @param {{intervention?:string, comparator?:string}} [pico]  protocol arm strings;
+ *   when supplied, arm columns/labels are matched to intervention/comparator (§14.8).
  * @returns {{
- *   shape:'direct-effect'|'dichotomous'|'continuous'|'unknown',
+ *   shape:'direct-effect'|'dichotomous'|'continuous'|'unknown',   // internal (stable)
+ *   canonicalShape:'effect-per-row'|'two-by-two'|'mean-sd'|'arms-in-columns'|'single-arm'|'unknown',
  *   columnTags:string[],
  *   rowKind:'per-variable'|'per-arm',
  *   headerRows:number,
- *   confidence:number
+ *   confidence:number,
+ *   evidence:string[],
+ *   alternates:Array<{shape:string, confidence:number}>,
+ *   armAssignment:(object|null)
  * }}
  *   columnTags[i] ∈ 'row-label','effect','ci','ciLow','ciHigh','pValue',
  *   'events','total','mean','sd','n','median','q1','q3','ignore'.
  */
-export function detectTableShape(input) {
+export function detectTableShape(input, pico = null) {
   const cellsIn = input && Array.isArray(input.cells) ? input.cells : [];
   const nCols = cellsIn.reduce((m, r) => Math.max(m, Array.isArray(r) ? r.length : 0), 0);
   const cells = cellsIn.map((r) => {
@@ -66,10 +90,14 @@ export function detectTableShape(input) {
 
   const empty = {
     shape: 'unknown',
+    canonicalShape: 'unknown',
     columnTags: new Array(nCols).fill('ignore'),
     rowKind: 'per-arm',
     headerRows: 0,
     confidence: 0,
+    evidence: [],
+    alternates: [],
+    armAssignment: null,
   };
   if (cells.length < 2 || nCols < 2) return empty;
 
@@ -170,7 +198,51 @@ export function detectTableShape(input) {
   const confidence = clamp01(topScore - 0.5 * secondScore);
   const rowKind = shape === 'direct-effect' ? 'per-variable' : 'per-arm';
 
-  return { shape, columnTags: tags, rowKind, headerRows, confidence };
+  /* ── §14 additive layer: canonicalShape, evidence, alternates, arm matching ─── */
+
+  // Multi-STUDY summary table (Khoury §14.2): ≥3 columns whose headers look like study
+  // labels, with per-row outcome labels. Recognized as arms-in-columns for callers that
+  // want it, WITHOUT changing the internal 3-way `shape` the mapper/tests depend on.
+  const studyHeaderCols = headerText.filter((h) => STUDY_HEADER_RE.test(h)).length;
+  const armsInColumns = studyHeaderCols >= 3 || (studyHeaderCols >= 2 && numColCount >= 3);
+
+  // Single-arm: exactly one value column and no comparator structure.
+  const singleArm = !armsInColumns && numColCount === 1 && shape === 'unknown';
+
+  let canonicalShape;
+  if (armsInColumns) canonicalShape = 'arms-in-columns';
+  else if (singleArm) canonicalShape = 'single-arm';
+  else canonicalShape = CANONICAL_SHAPE[shape] || 'unknown';
+
+  const evidence = [];
+  if (anyEffectHdr) evidence.push('an effect-measure header (OR/RR/HR/…) is present');
+  if (anyCiSignal) evidence.push('a 95% CI column or CI header is present');
+  if (anyP) evidence.push('a p-value column is present');
+  if (eventsSignal) evidence.push('events/total counts are present');
+  if (hasMean && hasSd) evidence.push('mean and SD columns are present');
+  if (armsInColumns) evidence.push(`${studyHeaderCols} study-labelled columns — a multi-study summary table`);
+  if (singleArm) evidence.push('a single value column with no comparator');
+  if (!evidence.length) evidence.push('no strong shape signals — manual mapping recommended');
+
+  // Alternates (§14.7): the runner-up shape when the top two scores are within 0.15.
+  const alternates = [];
+  if (topScore - secondScore < 0.15 && secondScore >= 0.35) {
+    alternates.push({ shape: CANONICAL_SHAPE[scored[1][0]] || 'unknown', confidence: clamp01(secondScore - 0.5 * topScore) });
+  }
+
+  // PICO-assisted arm matching (§14.8) — never a positional guess. Candidate arm labels
+  // come from study/group column headers (arms-in-columns) or the group-tier headers of a
+  // two-arm table. Only attempted when the caller passed PICO strings.
+  let armAssignment = null;
+  if (pico && (pico.intervention || pico.comparator)) {
+    const candidates = armsInColumns
+      ? headerText.filter((h, i) => i > 0 && STUDY_HEADER_RE.test(h))
+      : headerText.filter((h) => h && !/^(study|variable|characteristic|outcome)$/i.test(h.trim()));
+    armAssignment = matchArms(candidates, pico);
+    if (armAssignment && armAssignment.evidence) evidence.push(...armAssignment.evidence);
+  }
+
+  return { shape, canonicalShape, columnTags: tags, rowKind, headerRows, confidence, evidence, alternates, armAssignment };
 }
 
 /** Fraction of a column's non-empty body cells that read as an events/total slash. */

@@ -1,0 +1,189 @@
+{
+  "synthetic": true,
+  "describes": "Sujan 2018 Table 2 (structure only; not the real PDF)",
+  "page": 6,
+  "items": [
+    {
+      "str": "Table 2. Predictors of severe outcome (Test Cohort, n = 390)",
+      "x": 60,
+      "y": 760,
+      "w": 360,
+      "h": 10
+    },
+    {
+      "str": "Predictor v",
+      "x": 60,
+      "y": 742,
+      "w": 66,
+      "h": 10
+    },
+    {
+      "str": "ariables",
+      "x": 127.5,
+      "y": 742,
+      "w": 48,
+      "h": 10
+    },
+    {
+      "str": "aOR",
+      "x": 300,
+      "y": 742,
+      "w": 18,
+      "h": 10
+    },
+    {
+      "str": "95% CI",
+      "x": 360,
+      "y": 742,
+      "w": 36,
+      "h": 10
+    },
+    {
+      "str": "P value",
+      "x": 470,
+      "y": 742,
+      "w": 42,
+      "h": 10
+    },
+    {
+      "str": "SIRS",
+      "x": 60,
+      "y": 730,
+      "w": 24,
+      "h": 10
+    },
+    {
+      "str": "2.24",
+      "x": 300,
+      "y": 730,
+      "w": 24,
+      "h": 10
+    },
+    {
+      "str": "1.40-3.57",
+      "x": 360,
+      "y": 730,
+      "w": 54,
+      "h": 10
+    },
+    {
+      "str": "<0.001",
+      "x": 470,
+      "y": 730,
+      "w": 36,
+      "h": 10
+    },
+    {
+      "str": "Age, per year",
+      "x": 60,
+      "y": 718,
+      "w": 78,
+      "h": 10
+    },
+    {
+      "str": "1.02",
+      "x": 300,
+      "y": 718,
+      "w": 24,
+      "h": 10
+    },
+    {
+      "str": "0.99-1.03",
+      "x": 360,
+      "y": 718,
+      "w": 54,
+      "h": 10
+    },
+    {
+      "str": "0.34",
+      "x": 470,
+      "y": 718,
+      "w": 24,
+      "h": 10
+    },
+    {
+      "str": "Male sex",
+      "x": 60,
+      "y": 706,
+      "w": 48,
+      "h": 10
+    },
+    {
+      "str": "1.45",
+      "x": 300,
+      "y": 706,
+      "w": 24,
+      "h": 10
+    },
+    {
+      "str": "1.10-1.91",
+      "x": 360,
+      "y": 706,
+      "w": 54,
+      "h": 10
+    },
+    {
+      "str": "0.008",
+      "x": 470,
+      "y": 706,
+      "w": 30,
+      "h": 10
+    },
+    {
+      "str": "Elevated CRP",
+      "x": 60,
+      "y": 694,
+      "w": 72,
+      "h": 10
+    },
+    {
+      "str": "1.88",
+      "x": 300,
+      "y": 694,
+      "w": 24,
+      "h": 10
+    },
+    {
+      "str": "1.20-2.94",
+      "x": 360,
+      "y": 694,
+      "w": 54,
+      "h": 10
+    },
+    {
+      "str": "0.006",
+      "x": 470,
+      "y": 694,
+      "w": 30,
+      "h": 10
+    },
+    {
+      "str": "CI, confidence interval; aOR, adjusted odds ratio; SIRS, systemic inflammatory response syndrome.",
+      "x": 60,
+      "y": 678,
+      "w": 582,
+      "h": 7
+    }
+  ],
+  "expected": {
+    "canonicalShape": "effect-per-row",
+    "captionMatch": "Test Cohort, n = 390",
+    "noCaptionLeak": true,
+    "headerRepaired": [
+      "Predictor variables",
+      "aOR",
+      "95% CI",
+      "P value"
+    ],
+    "sirsRow": {
+      "effect": "2.24",
+      "ci": [
+        1.4,
+        3.57
+      ],
+      "p": 0.001,
+      "pOperator": "<"
+    },
+    "footnoteExcluded": "confidence interval"
+  }
+}
