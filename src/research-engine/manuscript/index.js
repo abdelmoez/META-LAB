@@ -14,3 +14,7 @@ export * from './draft.js';
 export * from './prismaChecklist.js';
 export * from './readiness.js';
 export * from './abstractSections.js';
+// 73.md Part 8 — synthesis-model wording, per-section provenance, consistency checks.
+export * from './analysisDescribe.js';
+export * from './sources.js';
+export * from './consistency.js';

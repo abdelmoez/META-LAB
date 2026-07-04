@@ -8,6 +8,9 @@
  *   - version endpoint responds (optionally matches EXPECT_COMMIT)
  *   - a protected route rejects unauthenticated callers (401)
  *   - public settings (the SPA's bootstrap) respond
+ *   - when the betaWaitlist flag is ON, the waitlist DB answers with a real
+ *     count (73.md Part 11 — {count:null} means the waitlist data layer is
+ *     down and public submits 503 even though the page renders)
  *
  * Usage:
  *   SMOKE_BASE=https://pecanrev.com [EXPECT_COMMIT=<sha>] node scripts/smoke-deploy.mjs
@@ -56,8 +59,26 @@ async function main() {
   catch (e) { rec('protected-route-guard', false, e.message); }
 
   // 5. Public settings (SPA bootstrap)
-  try { const { res } = await getJson('/api/settings/public'); rec('public-settings', res.ok); }
+  let publicSettings = null;
+  try { const { res, body } = await getJson('/api/settings/public'); publicSettings = body; rec('public-settings', res.ok); }
   catch (e) { rec('public-settings', false, e.message); }
+
+  // 6. Waitlist DB reachable whenever the betaWaitlist flag is ON. The public
+  //    count endpoint is deliberately 200-{count:null} on ANY DB failure, so a
+  //    null count with the flag ON is exactly the outage class this catches.
+  try {
+    if (!publicSettings || typeof publicSettings.featureFlags !== 'object') {
+      rec('waitlist-db', false, 'could not read featureFlags from /api/settings/public');
+    } else if (publicSettings.featureFlags.betaWaitlist !== true) {
+      rec('waitlist-db', true, 'skipped — betaWaitlist flag is OFF');
+    } else {
+      const { res, body } = await getJson('/api/waitlist/count');
+      const ok = res.ok && Number.isInteger(body?.count);
+      rec('waitlist-db', ok, ok
+        ? `count=${body.count}`
+        : 'waitlist DB unavailable while betaWaitlist flag is ON (GET /api/waitlist/count did not return an integer count)');
+    }
+  } catch (e) { rec('waitlist-db', false, e.message); }
 
   const passed = results.filter((r) => r.ok).length;
   for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? '  — ' + r.detail : ''}`);

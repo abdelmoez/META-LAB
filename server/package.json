@@ -10,7 +10,8 @@
     "db:migrate:postgres": "node scripts/migrate-db.mjs",
     "db:verify:postgres": "node scripts/verify-migration.mjs",
     "generate:waitlist": "prisma generate --schema=prisma/waitlist/schema.prisma",
-    "postinstall": "prisma generate --schema=prisma/waitlist/schema.prisma"
+    "db:ensure:waitlist": "node scripts/ensure-waitlist-db.mjs",
+    "postinstall": "node scripts/ensure-waitlist-db.mjs --with-generate"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

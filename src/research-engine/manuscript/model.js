@@ -154,6 +154,10 @@ export function makeManuscriptDraft(opts = {}) {
   const tpl = JOURNAL_TEMPLATES.find((t) => t.id === templateId) || JOURNAL_TEMPLATES[0];
   const citationStyle = CITATION_STYLE_IDS.includes(o.citationStyle) ? o.citationStyle : tpl.citationStyle;
 
+  // Optional per-section provenance fields (73.md Part 8) — {sources:[{key,label}],
+  // missing:[{field,hint}], inputsHash:string, locked:boolean} — are ADDITIVE and
+  // intentionally NOT initialized here (absent ≠ empty; normalizeDraft preserves
+  // them when present, and old blobs stay byte-identical).
   const sections = {};
   for (const s of SECTION_TYPES) {
     sections[s.id] = {
@@ -205,7 +209,10 @@ export function normalizeDraft(raw, nowIso = null) {
   out.templateId = JOURNAL_TEMPLATE_IDS.includes(raw.templateId) ? raw.templateId : base.templateId;
   out.citationStyle = CITATION_STYLE_IDS.includes(raw.citationStyle) ? raw.citationStyle : base.citationStyle;
   out.status = ['draft', 'reviewing', 'ready'].includes(raw.status) ? raw.status : 'draft';
-  // sections
+  // sections — the base shape stays schemaVersion 2; the 73.md Part 8 provenance
+  // fields ({sources, missing, inputsHash, locked}) are OPTIONAL and additive:
+  // they are preserved when a stored blob has them and simply absent otherwise,
+  // so old blobs normalize byte-identically and never need a migration.
   out.sections = {};
   for (const s of SECTION_TYPES) {
     const r = (raw.sections && raw.sections[s.id]) || {};
@@ -216,6 +223,10 @@ export function normalizeDraft(raw, nowIso = null) {
       lastGeneratedAt: r.lastGeneratedAt || null,
       updatedAt: r.updatedAt || null,
     };
+    if (Array.isArray(r.sources)) out.sections[s.id].sources = r.sources;
+    if (Array.isArray(r.missing)) out.sections[s.id].missing = r.missing;
+    if (typeof r.inputsHash === 'string' && r.inputsHash) out.sections[s.id].inputsHash = r.inputsHash;
+    if (r.locked === true) out.sections[s.id].locked = true;
   }
   // statements
   out.statements = {};

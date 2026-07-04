@@ -5,7 +5,8 @@ import { localMeshSuggestions, meshConfidence } from "../../research-engine/sear
 import { serializeSearchState, pickPersisted, remoteAdoptDecision, syncSearchBuilderFromPico,
   findFieldConcept, fieldHasTerm, conceptStatus, CONCEPT_STATUS_LABELS, PICO_FIELD_DEFS } from "../../research-engine/searchBuilder/searchState.js"; // SE1 + SE2 + SB3
 import { tokenizeForSelection } from "../../research-engine/searchBuilder/keywordSelection.js"; // SB3 Tab 1
-import { databaseGroups, defaultSelectedDatabases, getDatabase, ACCESS_TIERS, ACCESS_TOOLTIP } from "../../research-engine/searchBuilder/databases.js"; // SB3 Tab 3
+import { databaseGroups, defaultSelectedDatabases, getDatabase, ACCESS_TIERS, ACCESS_TOOLTIP, openUrlFor, homeUrlFor } from "../../research-engine/searchBuilder/databases.js"; // SB3 Tab 3 + 73.md P6
+import { compileStrategy, compileAll, capabilitiesFor } from "../../research-engine/searchBuilder/compilers/index.js"; // 73.md P6 — per-database strategy compiler (read-only consumer)
 import { detectCrossConceptDuplicates, searchQualityCheck, sensitivitySignal, termEquivalenceKey } from "../../research-engine/searchBuilder/crossConcept.js"; // SB4 Parts 4/8/9
 import { useRealtime } from "../../frontend/hooks/useRealtime.js"; // SE1 Task 5 — live collaborator sync (shared SSE poke channel)
 
@@ -82,6 +83,32 @@ export function normalizeIgnoredEntry(e){
 /* Normalize a whole persisted `ignored` array (string[] legacy OR object[]) → object[]. */
 export function normalizeIgnored(list){
   return (Array.isArray(list)?list:[]).map(normalizeIgnoredEntry).filter(Boolean);
+}
+
+/* 73.md P4 — which internal step panels an EMBEDDED phase shows. Three-way split:
+   'concepts' (step 1 + compact concept summary), 'terms' (step 2 full detail + limits),
+   'build' (steps 3+4). The legacy value 'define' stays a byte-identical alias for the
+   old combined concepts+terms view so the original SearchWizard is unchanged.
+   Returns null for a non-embedded phase value. Pure + exported for tests. */
+export function embeddedShowsStep(phase,n){
+  if(phase==="define") return n===1||n===2;   // legacy wizard alias — UNCHANGED
+  if(phase==="concepts") return n===1;
+  if(phase==="terms") return n===2;
+  if(phase==="build") return n===3||n===4;
+  return null;
+}
+
+/* 73.md P6 — one .txt with every selected database's compiled strategy (label +
+   syntax level + query + warnings). Pure + exported for tests. */
+export function allStrategiesExportText(results){
+  const blocks=(Array.isArray(results)?results:[]).map(r=>{
+    const lines=[`### ${r.label} (${r.syntaxLevel}${r.overridden?", manually edited":""})`];
+    lines.push(r.query||"(no terms)");
+    for(const w of (r.warnings||[])) lines.push(`! ${w.message}`);
+    for(const u of (r.unsupported||[])) lines.push(`- not supported: ${u.feature} — ${u.detail}`);
+    return lines.join("\n");
+  });
+  return blocks.join("\n\n");
 }
 
 
@@ -574,45 +601,64 @@ function SuggestBox({api,value,onChange,onPick,onCommitTyped,onEscape,onBlur,pla
   );
 }
 
-/* query output with live count (PubMed only) + edit override + plain English */
-function QueryOutput({dbId,concepts,override,setOverride,beginner,liveCount,countState,hitState}){
-  // prompt42 Task 1 — re-render the relative timestamp ("updated 2m ago") on a slow
-  // tick so it stays fresh without a fetch. Tick only matters once we have a time.
+/* 73.md P6 — client-side .txt download (single strategy or the full export). */
+function downloadText(filename,text){
+  try{
+    const blob=new Blob([String(text||"")],{type:"text/plain;charset=utf-8"});
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement("a");
+    a.href=url; a.download=filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }catch{/* download unavailable (non-browser env) */}
+}
+
+/* 73.md P6 — ONE database's compiled strategy panel. Replaces the legacy 3-tab
+   QueryOutput: every selected catalogue database gets real compiled syntax from the
+   strategy compiler (never a "generic" pseudo-string), plus structured diagnostics.
+   Overrides reuse the SAME persisted overrides map (overrides[dbId] now works for
+   every database). Presentational + exported for direct SSR tests. */
+export function DbStrategyPanel({res,cap,setOverride,hitState}){
+  // prompt42 Task 1 — keep the "updated Xm ago" stamp fresh on a slow tick.
   const [,setTick]=useState(0);
   useEffect(()=>{
     if(!hitState||hitState.status!=="updated"||hitState.lastUpdatedAt==null) return;
     const id=setInterval(()=>setTick(t=>t+1),15000);
     return ()=>clearInterval(id);
   },[hitState&&hitState.status,hitState&&hitState.lastUpdatedAt]);
-  const db=DBS.find(d=>d.id===dbId);
-  const {full,lines}=useMemo(()=>renderSearch(concepts,dbId),[concepts,dbId]);
-  const plain=useMemo(()=>plainSearch(concepts),[concepts]);
   const [copied,setCopied]=useState(false);
   const [editing,setEditing]=useState(false);
   const [draft,setDraft]=useState("");
-  const [showPlain,setShowPlain]=useState(false);
-
-  const edited=override!=null&&override!==full;
-  const shown=override!=null?override:full;
-  const copy=()=>{navigator.clipboard?.writeText(shown);setCopied(true);setTimeout(()=>setCopied(false),1500);};
-  const startEdit=()=>{setDraft(shown);setEditing(true);};
-  const saveEdit=()=>{setOverride&&setOverride(draft===full?null:draft);setEditing(false);};
-  const revert=()=>{setOverride&&setOverride(null);setEditing(false);};
-
-  if(!full) return <div style={{color:C.dim,fontSize:12,padding:14,fontStyle:"italic"}}>Add terms to see the {db.label} query…</div>;
+  const dbId=res.dbId;
+  const edited=!!res.overridden;
+  const shown=res.query;
+  const isNative=res.syntaxLevel==="native";
+  const openUrl=shown?openUrlFor(dbId,shown):null;
+  const homeUrl=homeUrlFor(dbId);
+  const copy=()=>{ try{navigator.clipboard?.writeText(shown);}catch{/* clipboard unavailable */} setCopied(true); setTimeout(()=>setCopied(false),1500); };
+  const startEdit=()=>{ setDraft(shown); setEditing(true); };
+  const saveEdit=()=>{ if(setOverride) setOverride(draft.trim()?draft:null); setEditing(false); };
+  const revert=()=>{ if(setOverride) setOverride(null); setEditing(false); };
+  const vocabLine=res.vocab&&res.vocab.system!=="none"&&(res.vocab.mapped||res.vocab.unmapped)
+    ?`Subject headings (${res.vocab.system}): ${res.vocab.mapped} mapped${res.vocab.unmapped?`, ${res.vocab.unmapped} unmapped`:""}${res.vocab.approximate?" (approximate)":""}`
+    :null;
+  const guidance=[...new Set([...(res.notes||[]),...((cap&&cap.notes)||[])])];
   return(
-    <div>
-      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
-        <span style={{width:9,height:9,borderRadius:3,background:db.color}}/>
-        <span style={{fontWeight:700,fontSize:13,color:C.txt}}>{db.label}</span>
-        {db.live
-          ? <span style={{fontSize:9,fontWeight:700,letterSpacing:.4,color:C.grn,background:`${alpha(C.grn,"18")}`,border:`1px solid ${alpha(C.grn,"55")}`,borderRadius:5,padding:"1px 6px"}}>● LIVE</span>
-          : <span style={{fontSize:9,fontWeight:700,letterSpacing:.4,color:C.muted,background:C.card2,border:`1px solid ${C.brd2}`,borderRadius:5,padding:"1px 6px"}}>MANUAL</span>}
-        {edited&&<span style={{fontSize:9.5,fontWeight:700,letterSpacing:.4,color:C.yel,background:`${alpha(C.yel,"1a")}`,border:`1px solid ${alpha(C.yel,"55")}`,borderRadius:5,padding:"1px 7px"}} title="Manually edited — no longer matches the concept builder">✎ EDITED</span>}
-        <span style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
-          {/* prompt42 Task 1 — live hit status lifecycle (PubMed). Non-blocking;
-              a failure shows a small inline message and never throws. */}
-          {!edited&&db.live&&hitState&&(()=>{
+    <div data-testid={`sb-db-strategy-${dbId}`} style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:"12px 14px",marginBottom:10}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",marginBottom:8}}>
+        <span style={{fontWeight:700,fontSize:13,color:C.txt}}>{res.label}</span>
+        <span title={isNative?"Real, runnable syntax for this database — paste and run as-is":"Approximate — this database's search is simplified and cannot express the full strategy"}
+          style={{fontSize:9,fontWeight:700,letterSpacing:.4,textTransform:"uppercase",borderRadius:5,padding:"1px 6px",
+            color:isNative?C.grn:C.yel,background:alpha(isNative?C.grn:C.yel,"14"),border:`1px solid ${alpha(isNative?C.grn:C.yel,"55")}`}}>
+          {res.syntaxLevel}
+        </span>
+        {dbId==="pubmed"&&<span style={{fontSize:9,fontWeight:700,letterSpacing:.4,color:C.grn,background:`${alpha(C.grn,"18")}`,border:`1px solid ${alpha(C.grn,"55")}`,borderRadius:5,padding:"1px 6px"}}>● LIVE</span>}
+        {edited
+          ? <span style={{fontSize:9.5,fontWeight:700,letterSpacing:.4,color:C.yel,background:`${alpha(C.yel,"1a")}`,border:`1px solid ${alpha(C.yel,"55")}`,borderRadius:5,padding:"1px 7px"}} title="Manually edited — not synced to concept changes">✎ EDITED</span>
+          : <span style={{fontSize:9.5,color:C.grn}} title="Generated from the live concept builder — always current">● in sync</span>}
+        <span style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap"}}>
+          {/* prompt42 Task 1 — live hit lifecycle (PubMed only). */}
+          {!edited&&dbId==="pubmed"&&hitState&&(()=>{
             const st=hitState.status;
             if(st==="updating"||st==="stale") return <span style={{fontFamily:MONO,fontSize:11,color:C.muted}} title="Refreshing PubMed hit count">Updating hits…</span>;
             if(st==="failed") return <span style={{fontFamily:MONO,fontSize:10.5,color:C.yel,maxWidth:200,whiteSpace:"normal",lineHeight:1.3}} title={hitState.errorMessage||"Hit count unavailable"}>⚠ hits unavailable</span>;
@@ -624,61 +670,67 @@ function QueryOutput({dbId,concepts,override,setOverride,beginner,liveCount,coun
             );
             return null;
           })()}
-          {/* Fallback for any future live db without a hitState (keeps old behavior). */}
-          {!edited&&db.live&&!hitState&&(
-            countState==="loading"
-              ? <span style={{fontFamily:MONO,fontSize:11,color:C.muted}}>counting…</span>
-              : liveCount!=null
-                ? <span style={{fontFamily:MONO,fontSize:12,color:C.acc,fontWeight:700}}>{fmtCount(liveCount)} <span style={{color:C.muted,fontWeight:400,fontSize:10}}>hits</span></span>
-                : null
+          {!editing&&setOverride&&shown&&<button onClick={startEdit} style={{...btn("ghost"),fontSize:10,padding:"3px 9px"}}>✎ Edit query</button>}
+          {shown&&<button onClick={copy} style={{...btn("ghost"),fontSize:10,padding:"3px 9px"}}>{copied?"✓ Copied":"Copy"}</button>}
+          {shown&&<button onClick={()=>downloadText(`${dbId}-strategy.txt`,allStrategiesExportText([res]))} title="Download this strategy as a .txt file" style={{...btn("ghost"),fontSize:10,padding:"3px 9px"}}>⤓ .txt</button>}
+          {(openUrl||homeUrl)&&(
+            <a href={openUrl||homeUrl} target="_blank" rel="noopener noreferrer"
+              title={openUrl?`Open ${res.label} with this strategy prefilled`:"Opens the database — paste your copied strategy"}
+              style={{...btn("ghost"),fontSize:10,padding:"3px 9px",textDecoration:"none"}}>Open {res.label} ↗</a>
           )}
-          {!editing&&setOverride&&<button onClick={startEdit} style={{...btn("ghost"),fontSize:10,padding:"3px 9px"}}>✎ Edit query</button>}
-          <button onClick={copy} style={{...btn("ghost"),fontSize:10,padding:"3px 9px"}}>{copied?"✓ Copied":"Copy"}</button>
         </span>
       </div>
 
       {edited&&!editing&&(
         <div style={{background:`${alpha(C.yel,"10")}`,border:`1px solid ${alpha(C.yel,"40")}`,borderRadius:7,padding:"7px 10px",marginBottom:8,fontSize:11,color:C.txt2,display:"flex",alignItems:"center",gap:10}}>
-          <span style={{flex:1}}>This query was hand-edited and no longer reflects the concept builder. Concept changes won't appear here until you revert.</span>
+          <span style={{flex:1}}>Manually edited — not synced to concept changes. Concept edits won&apos;t appear here until you revert.</span>
           <button onClick={()=>{setDraft(shown);setEditing(true);}} style={{...btn("ghost"),fontSize:10}}>Re-edit</button>
           <button onClick={revert} style={{...btn("solid"),fontSize:10}}>↺ Revert</button>
         </div>
       )}
 
-      {!editing&&!edited&&(
-        <div style={{marginBottom:8}}>
-          {lines.map(l=>(
-            <div key={l.n} style={{display:"flex",gap:8,fontFamily:MONO,fontSize:11,lineHeight:1.7,color:C.txt2,padding:"2px 0"}}>
-              <span style={{color:C.dim,minWidth:24}}>#{l.n}</span>
-              <span style={{flex:1,wordBreak:"break-word"}}>{l.q}{l.op&&<span style={{color:C.acc,fontWeight:700}}>  {l.op}</span>}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
       {editing?(
         <div>
-          <textarea autoFocus value={draft} onChange={e=>setDraft(e.target.value)}
+          <textarea autoFocus value={draft} onChange={e=>setDraft(e.target.value)} aria-label={`Edit the ${res.label} query`}
             style={{width:"100%",minHeight:120,background:C.bg,border:`1px solid ${alpha(C.acc,"66")}`,borderRadius:8,padding:12,fontFamily:MONO,fontSize:11,lineHeight:1.7,color:C.txt,boxSizing:"border-box",outline:"none",resize:"vertical"}}/>
           <div style={{display:"flex",gap:8,marginTop:8}}>
             <button onClick={saveEdit} style={{...btn("primary"),fontSize:11}}>Save edited query</button>
             <button onClick={()=>setEditing(false)} style={{...btn("ghost"),fontSize:11}}>Cancel</button>
-            <button onClick={()=>setDraft(full)} style={{...btn("ghost"),fontSize:11,marginLeft:"auto"}}>Reset to generated</button>
+            <button onClick={revert} style={{...btn("ghost"),fontSize:11,marginLeft:"auto"}}>Reset to generated</button>
           </div>
         </div>
-      ):(
+      ):shown?(
         <pre style={{background:C.bg,border:`1px solid ${edited?alpha(C.yel,"44"):C.brd}`,borderRadius:8,padding:12,fontFamily:MONO,fontSize:11,lineHeight:1.7,color:C.txt,whiteSpace:"pre-wrap",wordBreak:"break-word",margin:0,maxHeight:280,overflowY:"auto"}}>{shown}</pre>
+      ):(
+        <div style={{color:C.dim,fontSize:12,padding:"8px 0",fontStyle:"italic"}}>Add terms to see the {res.label} strategy…</div>
       )}
 
-      {!editing&&!edited&&plain&&(
+      {!openUrl&&homeUrl&&shown&&(
+        <div style={{fontSize:10,color:C.dim,marginTop:5}}>“Open” goes to the database&apos;s search page — paste your copied strategy there.</div>
+      )}
+
+      {(res.warnings||[]).length>0&&(
         <div style={{marginTop:8}}>
-          {!beginner&&<button onClick={()=>setShowPlain(s=>!s)} style={{...btn("ghost"),fontSize:10,padding:"3px 9px"}}>{showPlain?"Hide plain English":"Show in plain English"}</button>}
-          {(beginner||showPlain)&&(
-            <div style={{marginTop:6,background:`${alpha(C.grn,"0c")}`,border:`1px solid ${alpha(C.grn,"33")}`,borderRadius:8,padding:"10px 12px"}}>
-              <div style={{fontSize:9.5,fontWeight:700,color:C.grn,letterSpacing:.5,textTransform:"uppercase",marginBottom:6}}>In plain English, this finds:</div>
-              {plain.split("\n").map((line,i)=><div key={i} style={{fontSize:11.5,color:C.txt2,lineHeight:1.6,padding:"1px 0"}}>{line}</div>)}
+          {res.warnings.map((w,i)=>(
+            <div key={i} style={{display:"flex",gap:7,alignItems:"flex-start",fontSize:11,color:C.txt2,lineHeight:1.5,padding:"2px 0"}}>
+              <span aria-hidden="true" style={{color:C.yel,fontWeight:700}}>⚠</span><span>{w.message}</span>
             </div>
-          )}
+          ))}
+        </div>
+      )}
+      {(res.unsupported||[]).length>0&&(
+        <div style={{display:"flex",flexWrap:"wrap",gap:6,marginTop:8}}>
+          {res.unsupported.map((u,i)=>(
+            <span key={i} title={u.detail} style={{fontSize:9.5,fontWeight:600,color:C.muted,background:C.card2,border:`1px dashed ${C.brd2}`,borderRadius:5,padding:"1px 7px"}}>not supported: {u.feature}</span>
+          ))}
+        </div>
+      )}
+      {vocabLine&&<div style={{fontSize:10.5,color:C.muted,marginTop:8,fontFamily:MONO}}>{vocabLine}</div>}
+      {guidance.length>0&&(
+        <div style={{marginTop:8,borderTop:`1px solid ${C.brd}`,paddingTop:7}}>
+          {guidance.map((n,i)=>(
+            <div key={i} style={{fontSize:10.5,color:C.muted,lineHeight:1.55,padding:"1px 0"}}>· {n}</div>
+          ))}
         </div>
       )}
     </div>
@@ -750,6 +802,7 @@ function KeywordField({fieldKey,label,hint,text,accent,isSelected,onToggle,onAdd
             const sel=isSelected(tok.text);
             return(
               <span key={i}> <button onClick={()=>onToggle(fieldKey,tok.text)} title={sel?"Click to unselect":"Click to select as a keyword"}
+                aria-pressed={sel} className="sbkw-token"
                 style={{cursor:"pointer",fontFamily:SANS,fontSize:12.5,padding:"2px 8px",borderRadius:7,margin:"0 1px",
                   border:sel?`1px solid ${accent}`:`1px ${tok.suggested?"solid":"dashed"} ${tok.suggested?alpha(accent,"66"):C.brd2}`,
                   background:sel?`${alpha(accent,"22")}`:tok.suggested?`${alpha(accent,"0c")}`:"transparent",
@@ -831,16 +884,11 @@ function DatabaseCatalogView({selected,onToggle}){
   );
 }
 
-/* Generic (database-agnostic) keyword strategy — used for selected databases that
-   don't have a verified native-syntax renderer. No field tags, no fabricated syntax. */
-function genericStrategyString(concepts){ return renderSearch(concepts,"__generic__").full; }
-
-/* The final query string for one database: the verified native syntax (honouring a
-   user override) for PubMed/Embase/Cochrane, else the generic keyword strategy. */
-function strategyForDb(concepts,overrides,dbId){
-  const db=getDatabase(dbId);
-  if(db&&db.nativeSyntax){ const o=overrides&&overrides[dbId]; return o!=null?o:renderSearch(concepts,dbId).full; }
-  return genericStrategyString(concepts);
+/* 73.md P6 — the final query string for one database, now via the strategy compiler
+   for EVERY catalogue database (honouring a saved override). The old generic pseudo-
+   string is gone: the compiler emits real per-database syntax + explicit diagnostics. */
+function strategyForDb(concepts,overrides,dbId,filters){
+  return compileStrategy({concepts,overrides,filters},dbId).query;
 }
 
 /* Plain, copy-able strategy table (concept → terms). */
@@ -884,7 +932,7 @@ function LimitsPanel({ filters, setFilters }) {
   const active = !!(f.dateFrom || f.dateTo || (f.languages || []).length || (f.pubTypes || []).length);
   const chip = (on) => ({ ...btn(on ? 'primary' : 'ghost'), fontSize: 10.5, padding: '4px 10px' });
   return (
-    <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: 14, marginTop: 12 }}>
+    <div data-testid="sb-limits-panel" style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 10, padding: 14, marginTop: 12 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
         <span style={{ fontSize: 11, fontWeight: 700, color: C.muted, letterSpacing: 0.6, textTransform: 'uppercase' }}>Limits</span>
         <Help text="Optional scope limits applied to every database that supports them: publication date range, language, and publication type. A database that can't apply a limit says so in the run step — the limit is never silently dropped." />
@@ -925,13 +973,15 @@ function LimitsPanel({ filters, setFilters }) {
      loadSearch  func     — INTEGRATION: async (projectId) => savedState|null
      saveSearch  func     — INTEGRATION: async (projectId, state) => void
    ════════════════════════════════════════════════════════════════════════════ */
-export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSearch,phase,onLiveQuery}){
+export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSearch,phase,onLiveQuery,onHitState,onRegisterHitRefresh}){
   const A=api||defaultApi;
   // prompt60 — embedded mode: the Search Wizard renders this builder as its Define
-  // (phase='define': keywords + concepts + Limits) and Build (phase='build': databases
-  // + strategy/override) steps, supplying its own chrome + step header. When `phase`
-  // is undefined the builder keeps its standalone 5-step flow unchanged.
-  const embedded = phase === 'define' || phase === 'build';
+  // (phase='define': keywords + concepts + Limits) and Build (phase='build') steps,
+  // supplying its own chrome + step header. 73.md P4 adds the finer-grained
+  // 'concepts' / 'terms' phases the staged Search Workspace uses (see
+  // embeddedShowsStep); 'define' stays the legacy combined alias. When `phase` is
+  // undefined the builder keeps its standalone 5-step flow unchanged.
+  const embedded = phase === 'define' || phase === 'build' || phase === 'concepts' || phase === 'terms';
   const [concepts,setConcepts]=useState([]);
   const [overrides,setOverrides]=useState({});
   // prompt60 — search-scope limits { dateFrom, dateTo, languages[], pubTypes[] }; the
@@ -948,6 +998,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const [readyForScreening,setReadyForScreening]=useState(false);
   const [dismissedWarnings,setDismissedWarnings]=useState([]); // SB4 — Search-Quality warnings the user kept anyway
   const [exportMsg,setExportMsg]=useState(""); // transient copy/export feedback
+  const [showPlainMirror,setShowPlainMirror]=useState(false); // 73.md P6 — strategy-level plain-English mirror toggle
   const [editing,setEditing]=useState(null);
   const [adding,setAdding]=useState(null);
   const [draft,setDraft]=useState("");
@@ -1250,6 +1301,47 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     return ()=>clearTimeout(countTimer.current);
   },[pubHash,pubmedQuery,A]); // eslint-disable-line
 
+  /* ── 73.md P3 — persistent-pulse seams for the staged Search Workspace ──────
+     onHitState: report every hit-state transition upward as a small snapshot.
+     onRegisterHitRefresh: hand the parent a stable "refresh now" trigger that
+     bypasses the 600ms debounce (Retry button). Both are ref-wrapped so a parent
+     passing fresh callbacks per render never re-fires effects, and the FNV hash
+     guard stays authoritative: results are committed ONLY while the strategy hash
+     still matches, so a forced refresh racing the debounced one can never publish
+     a stale count. */
+  const onHitStateRef=useRef(onHitState); onHitStateRef.current=onHitState;
+  useEffect(()=>{
+    if(typeof onHitStateRef.current!=="function") return;
+    onHitStateRef.current({
+      status:hitState.status, count:hitState.hitCount, updatedAt:hitState.lastUpdatedAt,
+      strategyHash:hitState.strategyHash, error:hitState.errorMessage,
+    });
+  },[hitState]);
+  const pubmedQueryRef=useRef(pubmedQuery); pubmedQueryRef.current=pubmedQuery;
+  const pubHashRef=useRef(pubHash); pubHashRef.current=pubHash;
+  const refreshHitsNow=useCallback(async()=>{
+    const q=pubmedQueryRef.current, h=pubHashRef.current;
+    if(!q) return;
+    clearTimeout(countTimer.current);          // cancel any pending debounced fetch (no double-fetch)
+    delete countCache.current[q];              // force a genuinely fresh count
+    setHitState(s=>s.strategyHash===h?{...s,status:"updating",errorMessage:null}:s);
+    try{
+      const n=await A.pubmedCount(q);
+      countCache.current[q]=n;
+      setCounts(c=>({...c,pubmed:n}));
+      setHitState(s=>s.strategyHash===h
+        ?{strategyHash:h,hitCount:n,status:"updated",lastUpdatedAt:Date.now(),errorMessage:null}:s);
+    }catch(e){
+      setHitState(s=>s.strategyHash===h
+        ?{...s,strategyHash:h,status:"failed",errorMessage:(e&&e.message)||"Hit count unavailable"}:s);
+    }
+    setCountState("idle");
+  },[A]);
+  const registerRefreshRef=useRef(onRegisterHitRefresh); registerRefreshRef.current=onRegisterHitRefresh;
+  useEffect(()=>{
+    if(typeof registerRefreshRef.current==="function") registerRefreshRef.current(refreshHitsNow);
+  },[refreshHitsNow]);
+
   /* ── concept/term mutators ─────────────────────────────────────────────── */
   const updateConcept=(id,patch)=>setConcepts(cs=>cs.map(c=>c.id===id?{...c,...patch}:c));
   const updateTerm=(cid,tid,patch)=>setConcepts(cs=>cs.map(c=>c.id===cid?{...c,terms:c.terms.map(t=>t.id===tid?{...t,...patch}:t)}:c));
@@ -1377,17 +1469,18 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const moveTargetsFor=(cid)=>concepts.filter(c=>c.id!==cid&&c.picoField!=="T").map(c=>({id:c.id,label:c.label}));
   const isDupTerm=(t)=>dupKeys.has(termEquivalenceKey(t.text));
 
-  // prompt60 — which of the 5 internal step panels render. Standalone: exactly the
-  // active step. Embedded: Define shows keywords+concepts (1,2); Build shows
-  // databases+strategy (3,4); the standalone Check & Export step (5) is replaced by
-  // the wizard's dedicated Run step, so it never shows in embedded mode.
-  const show = (n) => (embedded ? (phase === 'define' ? (n === 1 || n === 2) : (n === 3 || n === 4)) : step === n);
+  // prompt60 + 73.md P4 — which of the 5 internal step panels render. Standalone:
+  // exactly the active step. Embedded: see embeddedShowsStep ('define' = legacy
+  // combined alias; 'concepts'/'terms' split; 'build' = 3+4). The standalone Check
+  // & Export step (5) never shows in embedded mode.
+  const show = (n) => (embedded ? !!embeddedShowsStep(phase, n) : step === n);
 
   if(!loaded) return <div style={{padding:40,color:C.muted,fontFamily:SANS,background:C.bg,minHeight:"100%"}}>Loading search…</div>;
 
   return(
-    <div style={{background:C.bg,color:C.txt,fontFamily:SANS,minHeight:"100%",padding:"4px 2px"}}>
-      <style>{`@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap');`}</style>
+    <div style={{background:C.bg,color:C.txt,fontFamily:SANS,padding:"4px 2px"}}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap');
+.sbkw-token:focus-visible{outline:2px solid ${C.acc};outline-offset:2px;}`}</style>
 
       {/* header row — hidden in embedded (wizard) mode; the wizard supplies chrome */}
       {!embedded&&(
@@ -1446,10 +1539,16 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
 
       {/* ─────────── STEP 1 — Select Keywords ─────────── */}
       {show(1)&&(
-        <div>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+        <div data-testid="sb-step-select-keywords">
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
             <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Click the important ideas in your question</span>
             <Help text="Click the key words and phrases in your question — PecanRev turns the ones you pick into a search. Grey words (and, with, of…) aren't useful on their own; highlighted words are suggestions. Use the box under each field to add anything that isn't shown."/>
+          </div>
+          {/* 73.md P2 — selection legend: state is never colour-only (✓ prefix + border style). */}
+          <div style={{display:"flex",flexWrap:"wrap",gap:14,alignItems:"center",marginBottom:10,fontSize:10.5,color:C.muted}}>
+            <span style={{display:"inline-flex",alignItems:"center",gap:5}}><span aria-hidden="true" style={{fontWeight:700,color:C.acc}}>✓</span> selected</span>
+            <span style={{display:"inline-flex",alignItems:"center",gap:5}}><span aria-hidden="true" style={{width:16,height:10,border:`1px dashed ${C.brd2}`,borderRadius:4,display:"inline-block"}}/> dashed = suggested</span>
+            <span>type in the box under a field to add your own</span>
           </div>
           {pico?.question&&(
             <KeywordField fieldKey="Q" label="Research Question" hint="click the key ideas" text={pico.question} accent={C.acc}
@@ -1484,9 +1583,55 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
         </div>
       )}
 
+      {/* ─────────── 73.md P4 — phase 'concepts': compact concept-structure summary ───
+          Concept STRUCTURE without the full TermChip detail (that lives in the Terms &
+          Vocabulary stage). Reuses the existing state handlers — no new state shape. */}
+      {phase==="concepts"&&(
+        <div data-testid="sb-concepts-summary" style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:12,marginTop:12}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+            <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Your concepts</span>
+            <Help text="A concept is one idea in your question (a disease, a treatment). Concepts join with AND (all must appear). You'll broaden each concept with synonyms and subject headings in the next stage, Terms & Vocabulary."/>
+            <span style={{marginLeft:"auto",fontSize:10.5,color:C.dim}}>term detail → Terms &amp; Vocabulary</span>
+          </div>
+          {concepts.length===0&&<div style={{fontSize:11.5,color:C.dim,fontStyle:"italic"}}>No concepts yet — select keywords above, or add a concept.</div>}
+          {concepts.map((c,ci)=>{
+            const color=CONCEPT_COLORS[ci%CONCEPT_COLORS.length];
+            const n=c.terms.filter(t=>(t.text||"").trim()).length;
+            return(
+              <div key={c.id}>
+                <div style={{display:"flex",alignItems:"center",gap:8,background:C.surf,border:`1px solid ${C.brd2}`,borderLeft:`3px solid ${color}`,borderRadius:8,padding:"7px 10px",marginBottom:0}}>
+                  <span aria-hidden="true" style={{width:9,height:9,borderRadius:3,background:color,flexShrink:0}}/>
+                  <input value={c.label} onChange={e=>updateConcept(c.id,{label:e.target.value})} aria-label={`Concept name: ${c.label}`}
+                    style={{...inputStyle,fontWeight:600,flex:1,background:"transparent",border:"none",padding:"2px 0",fontSize:12.5}}/>
+                  {c.picoField&&<span title="Auto-generated from your PICO" style={{fontSize:8.5,fontWeight:700,letterSpacing:.4,color:C.acc,textTransform:"uppercase",background:`${alpha(C.acc,"14")}`,border:`1px solid ${alpha(C.acc,"44")}`,borderRadius:5,padding:"1px 6px",flexShrink:0}}>PICO</span>}
+                  <span style={{fontSize:9.5,color:C.dim,fontFamily:MONO,flexShrink:0}}>{n} term{n===1?"":"s"}</span>
+                  <StatusChip status={conceptStatus(c)}/>
+                  {!c.picoField&&<button onClick={()=>removeConcept(c.id)} title="Remove this concept" aria-label={`Remove concept ${c.label}`} style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:14,padding:0,lineHeight:1}}>×</button>}
+                </div>
+                {ci<concepts.length-1&&(
+                  <div style={{display:"flex",justifyContent:"center",margin:"3px 0"}}>
+                    <button onClick={()=>updateConcept(c.id,{op:c.op==="AND"?"OR":"AND"})}
+                      title="How this concept combines with the next — click to switch AND/OR"
+                      aria-label={`Joined to the next concept with ${c.op||"AND"} — click to switch`}
+                      style={{...btn("solid"),fontSize:9.5,padding:"1px 12px",fontFamily:MONO,letterSpacing:1,color:c.op==="AND"?C.acc:C.yel,borderColor:alpha(c.op==="AND"?C.acc:C.yel,"55")}}>{c.op||"AND"}</button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          <button onClick={addConcept} style={{...btn("ghost"),width:"100%",justifyContent:"center",borderStyle:"dashed",marginTop:8}}>+ Add concept</button>
+        </div>
+      )}
+
       {/* ─────────── STEP 2 — Organize Concepts (existing concept editor) ─────────── */}
       {show(2)&&(
-        <div style={{maxWidth:720}}>
+        <div data-testid="sb-step-organize-concepts">
+          {/* 73.md P4 — phase 'terms': one line linking the mental model. */}
+          {phase==="terms"&&(
+            <div style={{fontSize:12,color:C.txt2,lineHeight:1.6,marginBottom:10}}>
+              Each concept&apos;s terms are <strong style={{color:C.yel}}>OR</strong>&apos;d together (any one counts); concepts are combined with <strong style={{color:C.acc}}>AND</strong> (all must appear).
+            </div>
+          )}
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
             <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Your concepts</span>
             <Help text="A concept is one idea in your question (a disease, a treatment). Under each concept, list the ways authors might phrase it. Concepts join with AND (all must appear); terms inside a concept join with OR (any one counts)."/>
@@ -1557,13 +1702,17 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
             </div>
           )}
 
+          {/* 73.md P2 — responsive concept-card grid (the old maxWidth:720 cap is gone).
+              The AND/OR join renders as a chip on each non-last card's header showing
+              how it combines with the NEXT concept (click to toggle). */}
+          <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(360px, 1fr))",gap:14}}>
           {concepts.map((c,ci)=>{
             const color=CONCEPT_COLORS[ci%CONCEPT_COLORS.length];
             const meshN=c.terms.filter(t=>t.type==="controlled").length, freeN=c.terms.filter(t=>t.type==="freetext").length;
             return(
-              <div key={c.id} style={{marginBottom:10}}>
-                <div style={{background:C.card,border:`1px solid ${C.brd}`,borderLeft:`3px solid ${color}`,borderRadius:10,padding:12}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+              <div key={c.id}>
+                <div style={{background:C.card,border:`1px solid ${C.brd}`,borderLeft:`3px solid ${color}`,borderRadius:10,padding:12,height:"100%",boxSizing:"border-box"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10,flexWrap:"wrap"}}>
                     <span style={{width:9,height:9,borderRadius:3,background:color}}/>
                     <input value={c.label} onChange={e=>updateConcept(c.id,{label:e.target.value})}
                       style={{...inputStyle,fontWeight:600,width:"auto",flex:1,background:"transparent",border:"none",padding:"2px 0",fontSize:13}}/>
@@ -1580,6 +1729,15 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
                     )}
                     {/* SE2 — the five PICO groups always exist (not deletable); only manual concepts can be removed. */}
                     {!c.picoField&&<button onClick={()=>removeConcept(c.id)} title="Remove this concept" style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:15}}>×</button>}
+                    {/* 73.md P2 — join-to-next chip (replaces the old between-cards pill in the grid). */}
+                    {ci<concepts.length-1&&(
+                      <button onClick={()=>updateConcept(c.id,{op:c.op==="AND"?"OR":"AND"})}
+                        title="How this concept combines with the NEXT one — click to switch AND/OR"
+                        aria-label={`Joined to the next concept with ${c.op||"AND"} — click to switch`}
+                        style={{...btn("solid"),fontSize:9,padding:"1px 9px",fontFamily:MONO,letterSpacing:.8,flexShrink:0,color:c.op==="AND"?C.acc:C.yel,borderColor:alpha(c.op==="AND"?C.acc:C.yel,"55")}}>
+                        {c.op||"AND"} <span style={{opacity:.7,letterSpacing:0}}>next</span>
+                      </button>
+                    )}
                   </div>
                   {/* SE2 — Time Frame group shows the selected restriction (no keyword search term). */}
                   {c.picoField==="T"&&(
@@ -1619,77 +1777,72 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
                     )}
                   </div>
                 </div>
-                {ci<concepts.length-1&&(
-                  <div style={{display:"flex",justifyContent:"center",margin:"4px 0"}}>
-                    <button onClick={()=>updateConcept(c.id,{op:c.op==="AND"?"OR":"AND"})}
-                      style={{...btn("solid"),fontSize:10,padding:"2px 14px",fontFamily:MONO,letterSpacing:1,color:c.op==="AND"?C.acc:C.yel,borderColor:alpha(c.op==="AND"?C.acc:C.yel,"55")}}>{c.op||"AND"}</button>
-                  </div>
-                )}
               </div>
             );
           })}
-          <button onClick={addConcept} style={{...btn("ghost"),width:"100%",justifyContent:"center",borderStyle:"dashed",marginTop:4}}>+ Add concept</button>
+          </div>
+          <button onClick={addConcept} style={{...btn("ghost"),width:"100%",justifyContent:"center",borderStyle:"dashed",marginTop:12}}>+ Add concept</button>
 
-          <div style={{display:"flex",gap:16,marginTop:14,fontSize:10.5,color:C.muted}}>
-            <span style={{display:"inline-flex",alignItems:"center",gap:6}}><span style={{width:9,height:9,borderRadius:2,background:CONCEPT_COLORS[0]}}/> filled square = subject heading (MeSH)</span>
-            <span style={{display:"inline-flex",alignItems:"center",gap:6}}><span style={{width:9,height:9,borderRadius:"50%",border:`1.5px solid ${C.muted}`}}/> hollow circle = plain words</span>
+          {/* 73.md P2 — richer chip legend: heading state, term source, never colour-only. */}
+          <div style={{display:"flex",flexWrap:"wrap",gap:14,marginTop:14,fontSize:10.5,color:C.muted}}>
+            <span style={{display:"inline-flex",alignItems:"center",gap:6}}><span aria-hidden="true" style={{width:9,height:9,borderRadius:2,background:CONCEPT_COLORS[0]}}/> filled square = subject heading (MeSH)</span>
+            <span style={{display:"inline-flex",alignItems:"center",gap:6}}><span aria-hidden="true" style={{fontSize:9,fontWeight:700,color:C.yel,border:`1px solid ${alpha(C.yel,"66")}`,borderRadius:4,padding:"0 4px",textTransform:"uppercase"}}>MeSH?</span> yellow = heading needs confirmation</span>
+            <span style={{display:"inline-flex",alignItems:"center",gap:6}}><span aria-hidden="true" style={{width:16,height:10,border:`1px dashed ${C.brd2}`,borderRadius:4,display:"inline-block"}}/> dashed = free-text words</span>
+            <span style={{display:"inline-flex",alignItems:"center",gap:6}}>badges: <span style={{color:C.muted,fontWeight:700,fontSize:9,textTransform:"uppercase"}}>auto</span> from PICO · <span style={{color:C.grn,fontWeight:700,fontSize:9,textTransform:"uppercase"}}>added</span> by you · <span style={{color:C.acc,fontWeight:700,fontSize:9,textTransform:"uppercase"}}>syn</span> synonym</span>
           </div>
         </div>
       )}
 
-      {/* prompt60 — Limits panel completes the wizard's Define step (date/language/pubtype). */}
-      {phase==='define'&&<LimitsPanel filters={filters} setFilters={setFilters}/>}
+      {/* prompt60 — Limits panel completes the wizard's Define step (date/language/pubtype).
+          73.md P4 — the split 'terms' phase carries it too (limits ride with vocabulary). */}
+      {(phase==='define'||phase==='terms')&&<LimitsPanel filters={filters} setFilters={setFilters}/>}
 
       {/* ─────────── STEP 3 — Choose Databases ─────────── */}
       {show(3)&&(
         <DatabaseCatalogView selected={new Set(effectiveDbs)} onToggle={toggleDb}/>
       )}
 
-      {/* ─────────── STEP 4 — Build Strategy ─────────── */}
+      {/* ─────────── STEP 4 — Database Strategy Workspace (73.md P6) ───────────
+          Compiled, paste-ready syntax for EVERY selected catalogue database via the
+          strategy compiler — with per-database overrides, warnings, unsupported
+          features, vocabulary status, paste/run guidance, and open/export actions.
+          compileAll runs on the live in-memory strategy, so panels are always
+          current (an override shows "manually edited — not synced"). */}
       {show(4)&&(()=>{
-        const nativeSelected=DBS.filter(d=>effectiveDbs.includes(d.id));
-        const showDb=nativeSelected.find(d=>d.id===activeDB)?activeDB:(nativeSelected[0]?nativeSelected[0].id:"pubmed");
-        const genericDbs=effectiveDbs.filter(id=>{const db=getDatabase(id);return db&&!db.nativeSyntax;});
+        const compiled=compileAll({concepts,overrides,filters},effectiveDbs);
+        const plain=plainSearch(concepts);
         return(
-          <div>
+          <div data-testid="sb-strategy-workspace">
             <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:14,marginBottom:12}}>
               <div style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase",marginBottom:8}}>How your search fits together</div>
               <ConceptBlocksBar concepts={concepts}/>
               <div style={{fontSize:11,color:C.muted,marginTop:10,lineHeight:1.55}}>
                 Similar terms inside one concept are joined with <strong style={{color:C.yel}}>OR</strong> (any one counts); different concepts are joined with <strong style={{color:C.acc}}>AND</strong> (all must appear).
               </div>
-            </div>
-            {nativeSelected.length>0?(
-              <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:14,marginBottom:12}}>
-                <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-                  <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Database search format</span>
-                  <div style={{display:"flex",gap:4,marginLeft:"auto"}}>
-                    {nativeSelected.map(d=>(
-                      <button key={d.id} onClick={()=>setActiveDB(d.id)}
-                        style={{...btn(showDb===d.id?"solid":"ghost"),fontSize:10,padding:"3px 9px",borderColor:showDb===d.id?d.color:C.brd2,color:showDb===d.id?d.color:C.muted}}>
-                        {d.label}{overrides[d.id]!=null?" ✎":""}
-                      </button>
-                    ))}
-                  </div>
+              {plain&&(
+                <div style={{marginTop:8}}>
+                  {!beginner&&<button onClick={()=>setShowPlainMirror(s=>!s)} aria-expanded={beginner||showPlainMirror} style={{...btn("ghost"),fontSize:10,padding:"3px 9px"}}>{showPlainMirror?"Hide plain English":"Show in plain English"}</button>}
+                  {(beginner||showPlainMirror)&&(
+                    <div style={{marginTop:6,background:`${alpha(C.grn,"0c")}`,border:`1px solid ${alpha(C.grn,"33")}`,borderRadius:8,padding:"10px 12px"}}>
+                      <div style={{fontSize:9.5,fontWeight:700,color:C.grn,letterSpacing:.5,textTransform:"uppercase",marginBottom:6}}>In plain English, this finds:</div>
+                      {plain.split("\n").map((line,i)=><div key={i} style={{fontSize:11.5,color:C.txt2,lineHeight:1.6,padding:"1px 0"}}>{line}</div>)}
+                    </div>
+                  )}
                 </div>
-                <QueryOutput dbId={showDb} concepts={concepts} beginner={beginner}
-                  override={overrides[showDb]??null}
-                  setOverride={val=>setOverrides(o=>({...o,[showDb]:val}))}
-                  liveCount={counts[showDb]} countState={showDb==="pubmed"?countState:"idle"}
-                  hitState={showDb==="pubmed"?hitState:null}/>
-              </div>
-            ):(
-              <div style={{background:`${alpha(C.yel,"10")}`,border:`1px solid ${alpha(C.yel,"44")}`,borderRadius:8,padding:"10px 12px",marginBottom:12,fontSize:12,color:C.txt2}}>
-                None of your selected databases have an auto-generated search format. Select PubMed, Embase, or Cochrane in <button onClick={()=>setStep(3)} style={{...btn("ghost"),fontSize:11,padding:"1px 8px"}}>Choose Databases</button> to see ready-to-paste syntax, or use the generic strategy below.
-              </div>
-            )}
-            {genericDbs.length>0&&(
-              <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:14}}>
-                <div style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase",marginBottom:8}}>Generic strategy for: {genericDbs.map(id=>getDatabase(id)?.label).filter(Boolean).join(", ")}</div>
-                <div style={{fontSize:11,color:C.dim,marginBottom:8,lineHeight:1.5}}>PecanRev doesn't generate the exact native syntax for these databases yet. This keyword strategy is a starting point — adapt it to each database's own search format.</div>
-                <pre style={{background:C.bg,border:`1px solid ${C.brd}`,borderRadius:8,padding:12,fontFamily:MONO,fontSize:11,lineHeight:1.7,color:C.txt,whiteSpace:"pre-wrap",wordBreak:"break-word",margin:0,maxHeight:240,overflowY:"auto"}}>{genericStrategyString(concepts)||"Add terms to see the strategy…"}</pre>
-              </div>
-            )}
+              )}
+            </div>
+            <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",marginBottom:10}}>
+              <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Database strategies</span>
+              <span style={{fontSize:10.5,color:C.dim,fontFamily:MONO}}>{compiled.length} database{compiled.length===1?"":"s"}</span>
+              <button onClick={()=>{downloadText("search-strategies.txt",allStrategiesExportText(compiled));setExportMsg("Exported all strategies");setTimeout(()=>setExportMsg(""),1800);}}
+                style={{...btn("solid"),fontSize:10.5,marginLeft:"auto"}}>⤓ Export all strategies (.txt)</button>
+              {exportMsg&&<span role="status" style={{fontSize:11,color:C.grn,fontWeight:600}}>{exportMsg}</span>}
+            </div>
+            {compiled.map(res=>(
+              <DbStrategyPanel key={res.dbId} res={res} cap={capabilitiesFor(res.dbId)}
+                setOverride={val=>setOverrides(o=>{const n={...o}; if(val==null) delete n[res.dbId]; else n[res.dbId]=val; return n;})}
+                hitState={res.dbId==="pubmed"?hitState:null}/>
+            ))}
           </div>
         );
       })()}
@@ -1698,7 +1851,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
       {show(5)&&(()=>{
         const warnings=buildWarnings(concepts,hitState);
         const wcol={error:C.red,warn:C.yel,ok:C.grn};
-        const allStrategies=effectiveDbs.map(id=>{const db=getDatabase(id);return db?`### ${db.label}\n${strategyForDb(concepts,overrides,id)||"(no terms)"}`:"";}).filter(Boolean).join("\n\n");
+        const allStrategies=effectiveDbs.map(id=>{const db=getDatabase(id);return db?`### ${db.label}\n${strategyForDb(concepts,overrides,id,filters)||"(no terms)"}`:"";}).filter(Boolean).join("\n\n");
         return(
           <div style={{maxWidth:760}}>
             {/* warnings / health check */}
@@ -1714,12 +1867,12 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
             <div style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase",marginBottom:8}}>Final strategy per database</div>
             {effectiveDbs.map(id=>{
               const db=getDatabase(id); if(!db) return null;
-              const str=strategyForDb(concepts,overrides,id);
+              const str=strategyForDb(concepts,overrides,id,filters);
               return(
                 <div key={id} style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:"11px 13px",marginBottom:8}}>
                   <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
                     <span style={{fontSize:12,fontWeight:700,color:C.txt}}>{db.label}</span>
-                    {!db.nativeSyntax&&<span title="Generic keyword strategy — adapt to this database's own format" style={{fontSize:8,fontWeight:700,letterSpacing:.4,color:C.yel,textTransform:"uppercase",border:`1px solid ${alpha(C.yel,"55")}`,borderRadius:4,padding:"0 4px"}}>generic</span>}
+                    {db.syntaxLevel==="approximate"&&<span title="Approximate — this database's search is simplified and cannot express the full strategy" style={{fontSize:8,fontWeight:700,letterSpacing:.4,color:C.yel,textTransform:"uppercase",border:`1px solid ${alpha(C.yel,"55")}`,borderRadius:4,padding:"0 4px"}}>approximate</span>}
                     <span style={{fontSize:10,color:C.muted}}>{ACCESS_TIERS[db.tier]}</span>
                     {id==="pubmed"&&hitState&&hitState.status==="updated"&&hitState.hitCount!=null&&(
                       <span style={{fontSize:10.5,color:C.acc,fontFamily:MONO}}>{fmtCount(hitState.hitCount)} hits · updated {relativeTime(hitState.lastUpdatedAt)}</span>

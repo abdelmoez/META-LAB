@@ -5364,13 +5364,21 @@ export function TierAnalyticsDashboard({ data }) {
         ))}
         <StatTile label="Unassigned" value={num(data.unassigned)} color={C.yel} />
         <StatTile label="Avg days in tier" value={data.avgDaysInCurrentTier ?? '—'} sub="current tier" color={C.teal} />
+        {/* 73.md Part 10 — recentPromotions/recentDowngrades/manualChanges are
+            NUMBERS from the server (window tallies). They render as tiles; the
+            *List keys below carry the actual rows. */}
+        <StatTile label={`Promotions (${data.window?.days ?? 30}d)`} value={num(data.recentPromotions)} color={C.grn} />
+        <StatTile label={`Downgrades (${data.window?.days ?? 30}d)`} value={num(data.recentDowngrades)} color={C.yel} />
+        <StatTile label={`Manual changes (${data.window?.days ?? 30}d)`} value={num(data.manualChanges)} color={C.txt} />
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
         <TierChangeList title="Recent tier changes" rows={data.recentChanges} nameOf={nameOf} empty="No recent changes." />
-        <TierChangeList title="Recent promotions" rows={data.recentPromotions} nameOf={nameOf} empty="No recent promotions." />
-        <TierChangeList title="Recent downgrades" rows={data.recentDowngrades} nameOf={nameOf} empty="No recent downgrades." />
-        <TierUserMiniList title="Trial users" rows={data.trialUsers} nameOf={nameOf} empty="No trial users." untilColor={C.teal} />
+        {/* *List keys are absent on an older server → the lists normalize to []
+            and show their empty copy (never a crash). */}
+        <TierChangeList title="Recent promotions" rows={data.recentPromotionsList} nameOf={nameOf} empty="No recent promotions." />
+        <TierChangeList title="Recent downgrades" rows={data.recentDowngradesList} nameOf={nameOf} empty="No recent downgrades." />
+        <TierUserMiniList title="Trial users" rows={data.trialUsersList} nameOf={nameOf} empty="No trial users." untilColor={C.teal} />
         <TierUserMiniList title="Expiring soon" rows={data.expiringSoon} nameOf={nameOf} empty="Nothing expiring soon." untilColor={C.yel} />
       </div>
     </div>
@@ -5378,11 +5386,14 @@ export function TierAnalyticsDashboard({ data }) {
 }
 
 function TierChangeList({ title, rows, nameOf, empty }) {
+  // Array-safe (73.md Part 10): a mismatched server may hand a COUNT (number)
+  // here — anything that isn't an array renders the empty copy, never .map-crashes.
+  const list = Array.isArray(rows) ? rows : [];
   return (
     <SectionCard title={title}>
       <div style={{ padding: '6px 16px 12px' }}>
-        {(!rows || rows.length === 0) ? <div style={tierEmptyStyle}>{empty}</div> : rows.map((r, i) => (
-          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: i < rows.length - 1 ? `1px solid ${C.brd}` : 'none', flexWrap: 'wrap' }}>
+        {list.length === 0 ? <div style={tierEmptyStyle}>{empty}</div> : list.map((r, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: i < list.length - 1 ? `1px solid ${C.brd}` : 'none', flexWrap: 'wrap' }}>
             <span style={{ fontSize: 12, color: C.txt, fontWeight: 600, minWidth: 0, flex: '1 1 140px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.email}>{r.email}</span>
             <span style={{ fontSize: 11.5, color: C.muted, fontFamily: MONO }}>{nameOf(r.from)} → {nameOf(r.to)}</span>
             {r.changeType && <Badge text={humanizeChangeType(r.changeType)} color={C.acc} />}
@@ -5396,11 +5407,13 @@ function TierChangeList({ title, rows, nameOf, empty }) {
 }
 
 function TierUserMiniList({ title, rows, nameOf, empty, untilColor = C.muted }) {
+  // Array-safe (73.md Part 10) — same normalization as TierChangeList.
+  const list = Array.isArray(rows) ? rows : [];
   return (
     <SectionCard title={title}>
       <div style={{ padding: '6px 16px 12px' }}>
-        {(!rows || rows.length === 0) ? <div style={tierEmptyStyle}>{empty}</div> : rows.map((r, i) => (
-          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: i < rows.length - 1 ? `1px solid ${C.brd}` : 'none', flexWrap: 'wrap' }}>
+        {list.length === 0 ? <div style={tierEmptyStyle}>{empty}</div> : list.map((r, i) => (
+          <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', borderBottom: i < list.length - 1 ? `1px solid ${C.brd}` : 'none', flexWrap: 'wrap' }}>
             <span style={{ fontSize: 12, color: C.txt, fontWeight: 600, minWidth: 0, flex: '1 1 140px', overflow: 'hidden', textOverflow: 'ellipsis' }} title={r.email}>{r.email || r.name || r.userId}</span>
             {r.tierId != null && <Badge text={nameOf(r.tierId)} color={C.teal} />}
             {r.effectiveUntil && <span style={{ fontSize: 11, color: untilColor }}>until {fmtDate(r.effectiveUntil)}</span>}
@@ -9197,9 +9210,17 @@ export default function AdminConsole() {
 
   // Render the active section, gated by the allowed set (UX layer; server enforces too).
   // A mod navigating directly to an admin-only section gets the AccessDenied panel — never a crash.
+  // 73.md Part 10 — EVERY section mounts inside OpsErrorBoundary (keyed by section
+  // so switching clears a prior error): a render crash in one section degrades to
+  // a section-level error card instead of escalating to the app-level boundary
+  // and blanking the whole console.
   const renderActive = () => {
     if (!allowed.has(active)) return <AccessDenied section={sectionLabel(active)} />;
-    return sections[active];
+    return (
+      <OpsErrorBoundary key={active} label={`the ${sectionLabel(active)} section`}>
+        {sections[active]}
+      </OpsErrorBoundary>
+    );
   };
 
   // `allowed` is always a Set (role-derived until /console answers) — no show-all path.

@@ -8,14 +8,37 @@
  * bracketed placeholder (e.g. "[Search date not entered]") instead of inventing
  * one. The UI flags these sections "AI draft — verify" and tracks aiGenerated vs
  * userEdited so refreshes never silently overwrite human edits.
+ *
+ * 73.md Part 8 — generateDraft/generate* opts contract (ALL optional; with none of
+ * them the output for a DL/random project is byte-identical to the previous
+ * generator):
+ *   runMeta(studies, method, {tau2Method})  injectable engine (parity with Analysis tab)
+ *   model                'fixed'|'random' (legacy; superseded by opts.analysis.model)
+ *   analysis             { model, tau2Method } — the project's ACTUAL synthesis
+ *                        settings; falls back to project.analysisSettings.tau2Method
+ *   screening            { identified, afterDedup, screened, excluded, included } —
+ *                        live screening rollup (any subset) → computePrismaCounts
+ *                        COMPUTED tier (UI maps GET /api/screening/projects/:pid/overview)
+ *   searchMethodsText    server-composed search paragraph (UI fetches
+ *                        GET /api/search-builder/:projectId/methods-text) — replaces
+ *                        the generic "Information sources" text when present
+ *   reviewers/blind/conflictResolution  screening workflow facts (or bundle them as
+ *   screeningWorkflow    { reviewers, blind, conflictResolution })
+ *   pubBias              { [pairKey]: { egger:{intercept,pval,k}, trimFill:{k0,side} } }
+ *                        precomputed per-outcome publication-bias results; when
+ *                        absent Egger is computed locally (deterministic) for k≥10
+ *   robAssessments       structured RoB map (used by tables + Results rob count)
+ *   prismaCounts/primary/analyses  precomputed shares (perf/parity seams)
  */
 
-import { runMeta as defaultRunMeta } from '../statistics/meta-analysis.js';
+import { runMeta as defaultRunMeta, eggersTest } from '../statistics/meta-analysis.js';
 import { getOutcomePairs, filterStudiesForOutcome } from '../import-export/journalSubmission.js';
 import { fmtES, fmtNum } from '../format/precision.js';
 import { buildMethodsMarkdown } from '../docs/methodsText.js';
 import { computePrismaCounts } from './prismaCounts.js';
 import { JOURNAL_TEMPLATES } from './model.js';
+import { describeSynthesisModel, resolveAnalysis } from './analysisDescribe.js';
+import { computeSectionMeta } from './sources.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 const PH = (label) => `[${label}]`;
@@ -43,10 +66,14 @@ const bt = (x, kind) => {
   return x;
 };
 
-/** Pick the primary outcome (most studies with numeric ES) + its pooled result. */
+/** Pick the primary outcome (most studies with numeric ES) + its pooled result.
+ *  73.md Part 8 — pools with the project's ACTUAL {model, tau2Method}
+ *  (resolveAnalysis: opts.analysis → project.analysisSettings → DL default; DL
+ *  keeps results byte-for-byte identical). */
 export function primaryAnalysis(project, opts = {}) {
   const studies = Array.isArray(project && project.studies) ? project.studies : [];
   const runMeta = typeof opts.runMeta === 'function' ? opts.runMeta : defaultRunMeta;
+  const analysis = resolveAnalysis(project, opts);
   const pairs = getOutcomePairs(studies);
   if (!pairs.length) return null;
   let best = null;
@@ -55,8 +82,53 @@ export function primaryAnalysis(project, opts = {}) {
     if (!best || subset.length > best.subset.length) best = { pair, subset };
   }
   if (!best) return null;
-  const result = best.subset.length >= 2 ? runMeta(best.subset, opts.model || 'random') : null;
-  return { pair: best.pair, subset: best.subset, result, model: opts.model || 'random' };
+  const result = best.subset.length >= 2
+    ? runMeta(best.subset, analysis.model, { tau2Method: analysis.tau2Method }) : null;
+  return { pair: best.pair, subset: best.subset, result, model: analysis.model, tau2Method: analysis.tau2Method };
+}
+
+/**
+ * ALL outcome analyses, primary (most-studied) first, then by descending study
+ * count (ties keep first-appearance order). Every pair is returned — pairs with
+ * <2 numeric studies carry result:null so the narration can say so honestly.
+ * Returns [{ pair, subset, result, model, tau2Method }]. Pure/deterministic.
+ */
+export function allAnalyses(project, opts = {}) {
+  const studies = Array.isArray(project && project.studies) ? project.studies : [];
+  const runMeta = typeof opts.runMeta === 'function' ? opts.runMeta : defaultRunMeta;
+  const analysis = resolveAnalysis(project, opts);
+  const entries = getOutcomePairs(studies).map((pair, i) => ({ pair, subset: filterStudiesForOutcome(studies, pair), i }));
+  entries.sort((a, b) => (b.subset.length - a.subset.length) || (a.i - b.i));
+  return entries.map(({ pair, subset }) => ({
+    pair, subset,
+    result: subset.length >= 2 ? runMeta(subset, analysis.model, { tau2Method: analysis.tau2Method }) : null,
+    model: analysis.model, tau2Method: analysis.tau2Method,
+  }));
+}
+
+/* Time-frame presets mirror features/protocol/constants.js TIMEFRAME_OPTIONS
+   (engine must not import from features/ — dependency direction). */
+const TIMEFRAME_MODE_TEXT = {
+  any: 'no time restriction',
+  last1: 'the last 1 year',
+  last3: 'the last 3 years',
+  last5: 'the last 5 years',
+  last10: 'the last 10 years',
+  since2000: 'since 2000',
+  inception: 'since database inception',
+};
+
+/** Human text for the eligibility time frame (legacy free text, preset, or custom range). Pure. */
+export function timeframeText(pico) {
+  const p = pico || {};
+  if (clean(p.timeframe)) return clean(p.timeframe);
+  if (p.timeframeMode === 'custom') {
+    const s = clean(p.tfStart);
+    const e = clean(p.tfEnd);
+    if (s) return e ? `${s}–${e}` : `${s} to present`;
+    return '';
+  }
+  return TIMEFRAME_MODE_TEXT[p.timeframeMode] || '';
 }
 
 /** Assemble the buildMethodsMarkdown ctx from the project + resolved counts. */
@@ -69,13 +141,25 @@ function methodsCtx(project, opts) {
   const result = primary && primary.result;
   const measure = primary && (MEASURE[primary.pair.esType] || null);
   const pairs = getOutcomePairs(Array.isArray(project && project.studies) ? project.studies : []);
+  const analysisCfg = resolveAnalysis(project, opts);
+  const wf = opts.screeningWorkflow || {};
   return {
     projectName: clean(project && project.name),
     generatedAt: opts.generatedAt || '',
     software: opts.software || '',
     pico: { question: pico.question, P: pico.P, I: pico.I, C: pico.C, O: pico.O },
+    // 73.md Part 8 — verbatim researcher eligibility text (rendered as bullet
+    // lists in methodsText.js; omitted entirely when the project has none).
+    eligibility: {
+      incl: pico.incl,
+      excl: pico.excl,
+      studyDesign: pico.studyDesign,
+      timeframe: timeframeText(pico),
+    },
     databases: dbs.join(', '),
     dateSearched: clean(search.date),
+    // Server-composed real search paragraph (overrides the generic sentence).
+    searchMethodsText: clean(opts.searchMethodsText),
     registration: clean(pico.prosperoId),
     prisma: {
       identified: pc.counts.identified,
@@ -84,9 +168,14 @@ function methodsCtx(project, opts) {
       excludedFullText: pc.counts.reportsExcluded,
       included: pc.counts.included,
     },
-    screening: { reviewers: opts.reviewers, blind: opts.blind, conflictResolution: opts.conflictResolution },
+    screening: {
+      reviewers: opts.reviewers != null ? opts.reviewers : wf.reviewers,
+      blind: opts.blind != null ? opts.blind : wf.blind,
+      conflictResolution: opts.conflictResolution != null ? opts.conflictResolution : wf.conflictResolution,
+    },
     measure: measure ? measure.label : '',
-    model: (primary && primary.model) || 'random',
+    model: (primary && primary.model) || analysisCfg.model,
+    tau2Method: analysisCfg.tau2Method,
     hksj: !!(result && result.hksj),
     k: result ? result.k : null,
     heterogeneity: result ? { I2: fmtNum(result.I2, opts.prec), tau2: fmtNum(result.tau2, opts.prec), Q: fmtNum(result.Q, opts.prec), Qdf: result.k - 1, Qp: result.Qpval < 0.001 ? '<0.001' : fmtNum(result.Qpval, opts.prec) } : {},
@@ -140,8 +229,13 @@ export function generateAbstract(project, opts = {}) {
   const dbs = Object.keys((project.search && project.search.dbs) || {}).filter((k) => project.search.dbs[k]);
   const dbText = dbs.length ? dbs.join(', ') : PH('databases not selected');
   const dateText = clean(project.search && project.search.date) ? ` (last searched ${clean(project.search.date)})` : ` ${PH('Search date not entered')}`;
+  // Shared synthesis-model wording (analysisDescribe.js) — byte-identical for
+  // fixed / DL-random; reflects the configured τ² estimator otherwise.
+  const desc = describeSynthesisModel(resolveAnalysis(project, {
+    ...opts, model: (opts.analysis && opts.analysis.model) || (primary && primary.model) || opts.model,
+  }));
   const modelText = primary && primary.result
-    ? `Effect estimates were pooled using a ${(primary.model || 'random') === 'fixed' ? 'fixed-effect' : 'random-effects (DerSimonian–Laird)'} model; heterogeneity was assessed with I².`
+    ? `Effect estimates were pooled using a ${desc.short} model; heterogeneity was assessed with I².`
     : PH('Describe the synthesis approach');
   const incText = inc != null ? `${inc} studies were included` : PH('Number of included studies unavailable');
   const resultText = eff ? `${incText}. ${eff}` : `${incText}. ${PH('Add the main pooled result once an analysis is available')}`;
@@ -221,7 +315,11 @@ export function generateMethods(project, opts = {}) {
  * The PRISMA study-selection paragraph (counts narrative + Figure 1 pointer).
  * Shared by generateResults and the editor's "Insert PRISMA summary" button
  * (65.md MS-8), so the inserted text can never drift from the generated one.
- * @param {object} pc normalized result of computePrismaCounts
+ * @param {object} pc normalized result of computePrismaCounts — pass opts.screening
+ *   ({identified, afterDedup, screened, excluded, included} — the UI's mapping of
+ *   GET /api/screening/projects/:pid/overview) into computePrismaCounts /
+ *   generateResults / generateDraft and live screening counts fill any stage the
+ *   researcher has not entered manually (manual/override still win).
  */
 export function studySelectionParagraph(pc) {
   const c = (pc && pc.counts) || {};
@@ -234,9 +332,73 @@ export function studySelectionParagraph(pc) {
   ].join('') + ' The study-selection process is shown in the PRISMA 2020 flow diagram (Figure 1).';
 }
 
+/** Narration lines for a NON-primary outcome analysis (fuller stats incl. τ²). */
+function secondaryNarration(a, prec) {
+  const lines = [];
+  const label = (a.pair && a.pair.label) || 'a further outcome';
+  if (!a.result) {
+    lines.push(a.subset.length === 1
+      ? `${label} was reported by only one study and was not pooled.`
+      : `${label} had no studies with a numeric effect estimate and was not pooled.`);
+    return lines;
+  }
+  const m = MEASURE[a.pair.esType] || { label: 'effect size', kind: 'mean' };
+  const r = a.result;
+  const fmt = m.kind === 'prop'
+    ? (x) => (x == null ? '—' : `${fmtNum(x * 100, prec)}%`)
+    : (x) => (x == null ? '—' : fmtES(x, prec));
+  const p = r.pval < 0.001 ? 'P < 0.001' : `P = ${fmtNum(r.pval, prec)}`;
+  const tau2Bit = a.model !== 'fixed' ? `; τ² = ${fmtNum(r.tau2, prec)}` : '';
+  lines.push(`For ${label} (${r.k} studies), the pooled ${m.label} was ${fmt(bt(r.pES, m.kind))} (95% CI ${fmt(bt(r.lo95, m.kind))} to ${fmt(bt(r.hi95, m.kind))}; ${p}; I² = ${fmtNum(r.I2, prec)}%${tau2Bit}).`);
+  if (r.predInt) {
+    const lo = bt(r.predInt.lo, m.kind);
+    const hi = bt(r.predInt.hi, m.kind);
+    if (lo != null && hi != null) lines.push(`The 95% prediction interval for ${label} was ${fmt(lo)} to ${fmt(hi)}.`);
+  }
+  return lines;
+}
+
+/**
+ * Publication-bias sentence for one outcome analysis. Only when k≥10 (formal
+ * tests are under-powered below that). Prefers CALLER-precomputed results
+ * (opts.pubBias[pair.key] = { egger:{intercept,pval,k}, trimFill:{k0,side} });
+ * otherwise Egger is computed locally from the same subset (deterministic,
+ * same engine the Analysis tab uses). Returns null when nothing to report.
+ */
+function pubBiasNarration(a, opts, prec) {
+  if (!a || !a.result || a.result.k < 10) return null;
+  const supplied = opts.pubBias && (opts.pubBias[a.pair.key] || opts.pubBias[a.pair.label]);
+  let egger = supplied && supplied.egger;
+  const tf = supplied && supplied.trimFill;
+  if (!supplied) {
+    const e = eggersTest(a.subset);
+    if (e) egger = { intercept: e.intercept, pval: e.pval, k: e.k };
+  }
+  if (!egger && !tf) return null;
+  const bits = [];
+  if (egger && egger.intercept != null) {
+    const p = egger.pval != null ? (egger.pval < 0.001 ? 'P < 0.001' : `P = ${fmtNum(egger.pval, prec)}`) : '';
+    bits.push(`Egger's regression test for funnel-plot asymmetry gave an intercept of ${fmtES(egger.intercept, prec)}${p ? ` (${p})` : ''}`);
+  }
+  if (tf && tf.k0 != null) {
+    bits.push(`trim-and-fill imputed ${tf.k0} stud${tf.k0 === 1 ? 'y' : 'ies'}${tf.side ? ` on the ${tf.side}` : ''}`);
+  }
+  if (!bits.length) return null;
+  return `For ${(a.pair && a.pair.label) || 'the primary outcome'}, ${bits.join('; ')}.`;
+}
+
+/**
+ * Results section. 73.md Part 8 — narrates EVERY outcome pair (primary first),
+ * pooled with the project's actual {model, tau2Method}; honours opts.screening
+ * for PRISMA counts and opts.pubBias / local Egger (k≥10) for publication bias.
+ * With none of the new opts and a single DL/random outcome the output is
+ * byte-identical to the previous generator.
+ */
 export function generateResults(project, opts = {}) {
   const pc = opts.prismaCounts || computePrismaCounts(project, opts);
-  const primary = opts.primary || primaryAnalysis(project, opts);
+  const analyses = opts.analyses || allAnalyses(project, opts);
+  const primary = opts.primary || analyses[0] || null;
+  const secondaries = analyses.filter((a) => !primary || a.pair.key !== primary.pair.key);
   const studies = Array.isArray(project && project.studies) ? project.studies : [];
   const out = [];
 
@@ -251,7 +413,9 @@ export function generateResults(project, opts = {}) {
   out.push('');
 
   out.push('## Risk of bias');
-  const assessed = studies.filter((s) => s.rob && Object.keys(s.rob).length).length;
+  const robAss = opts.robAssessments || {};
+  const assessed = studies.filter((s) => (s.rob && Object.keys(s.rob).length)
+    || (robAss[s.id] && ((robAss[s.id].domains && Object.keys(robAss[s.id].domains).length) || clean(robAss[s.id].overall)))).length;
   out.push(assessed
     ? `Risk of bias was assessed for ${assessed} stud${assessed === 1 ? 'y' : 'ies'}; results are summarised in the risk-of-bias table. ${PH('State how many were at low/some/high risk')}.`
     : `${PH('Risk-of-bias assessment incomplete')}.`);
@@ -267,8 +431,31 @@ export function generateResults(project, opts = {}) {
     const f = m.kind === 'prop' ? (x) => `${fmtNum(x * 100, opts.prec)}%` : (x) => fmtES(x, opts.prec);
     if (lo != null && hi != null) out.push(`The 95% prediction interval was ${f(lo)} to ${f(hi)}.`);
   }
+  // τ² / estimator sentence for the primary — only under a NON-default estimator
+  // or an explicit opts.analysis (keeps legacy DL output byte-identical).
+  const analysisCfg = resolveAnalysis(project, opts);
+  if (eff && primary && primary.result && analysisCfg.model !== 'fixed'
+      && (analysisCfg.tau2Method !== 'DL' || (opts.analysis && opts.analysis.tau2Method))) {
+    const desc = describeSynthesisModel(analysisCfg);
+    out.push(`Between-study variance was τ² = ${fmtNum(primary.result.tau2, opts.prec)} (${desc.estimatorPhrase} estimator).`);
+  }
+  for (const a of secondaries) {
+    for (const ln of secondaryNarration(a, opts.prec)) out.push(ln);
+  }
   out.push('');
-  out.push(`${PH('Report any subgroup, sensitivity and publication-bias analyses you ran')}.`);
+  const pubBiasLines = [];
+  for (const a of (primary ? [primary, ...secondaries] : secondaries)) {
+    const t = pubBiasNarration(a, opts, opts.prec);
+    if (t) pubBiasLines.push(t);
+  }
+  if (pubBiasLines.length) {
+    out.push('## Publication bias');
+    for (const ln of pubBiasLines) out.push(ln);
+    out.push('');
+    out.push(`${PH('Report any subgroup and sensitivity analyses you ran')}.`);
+  } else {
+    out.push(`${PH('Report any subgroup, sensitivity and publication-bias analyses you ran')}.`);
+  }
   return out.join('\n');
 }
 
@@ -335,15 +522,37 @@ export function generateTitle(project) {
 }
 
 /**
- * Generate all narrative sections at once. Returns { [sectionId]: markdown }.
- * Computes the shared primary analysis + prisma counts ONCE and threads them in.
+ * Suggested short statements seeded from project data (73.md Part 8). Currently
+ * only `registration` (from pico.prosperoId). The UI must apply a suggestion ONLY
+ * when the draft's statement is still empty — never overwrite researcher text.
+ * Author-level funding/COI are deliberately NEVER autofilled (per-study funding
+ * belongs in the characteristics table, not the manuscript funding statement).
+ * Returns {} when nothing can be grounded. Pure.
+ */
+export function suggestStatements(project) {
+  const pico = (project && project.pico) || {};
+  const out = {};
+  const reg = clean(pico.prosperoId);
+  if (reg) out.registration = /^CRD/i.test(reg) ? `PROSPERO registration: ${reg}.` : `Registration: ${reg}.`;
+  return out;
+}
+
+/**
+ * Generate all narrative sections at once. Returns { [sectionId]: markdown }
+ * PLUS (73.md Part 8, additive — applyGeneratedSections ignores unknown keys):
+ *   sectionMeta  { [sectionId]: { sources:[{key,label}], missing:[{field,hint}],
+ *                inputsHash } } — provenance + per-section OUTDATED detection
+ *                (compare stored inputsHash vs computeSectionInputsHashes)
+ *   statements   suggestStatements(project) — apply only into EMPTY statements
+ * Computes the shared analyses + prisma counts ONCE and threads them in.
  */
 export function generateDraft(project, opts = {}) {
   const ctx = {
     ...opts,
     prismaCounts: opts.prismaCounts || computePrismaCounts(project, opts),
-    primary: opts.primary || primaryAnalysis(project, opts),
+    analyses: opts.analyses || allAnalyses(project, opts),
   };
+  ctx.primary = opts.primary || ctx.analyses[0] || null;
   return {
     title: generateTitle(project),
     abstract: generateAbstract(project, ctx),
@@ -353,11 +562,16 @@ export function generateDraft(project, opts = {}) {
     discussion: generateDiscussion(project, ctx),
     limitations: generateLimitations(project, ctx),
     conclusion: generateConclusion(project, ctx),
+    sectionMeta: computeSectionMeta(project, ctx),
+    statements: suggestStatements(project),
   };
 }
 
 export default {
   primaryAnalysis,
+  allAnalyses,
+  timeframeText,
+  suggestStatements,
   generateDraft,
   studySelectionParagraph,
   generateTitle,

@@ -13,19 +13,36 @@
  * Pure + exported for unit tests (tests/unit/methodsText.test.js).
  */
 
+import { describeSynthesisModel } from '../manuscript/analysisDescribe.js';
+
 const PLACEHOLDER = '[not recorded — please complete]';
 
 function clean(s) { return String(s == null ? '' : s).trim(); }
 function line(parts) { return parts.filter(Boolean).join(''); }
 
+/** Verbatim researcher text → bullet lines (split on newlines; leading bullet
+ *  glyphs stripped so "• item" stored by CriteriaList doesn't double-bullet). */
+function bulletLines(text) {
+  return String(text == null ? '' : text)
+    .split(/\r?\n/)
+    .map((l) => l.replace(/^[\s•*·-]+/, '').trim())
+    .filter(Boolean);
+}
+
 /**
  * @param {object} ctx
  *   projectName, generatedAt(string)
  *   pico {question,P,I,C,O}
+ *   eligibility {incl,excl,studyDesign,timeframe}  73.md Part 8 — verbatim
+ *     researcher criteria rendered as bullet lists (omitted when absent, so
+ *     legacy callers get byte-identical output)
  *   databases(string), dateSearched(string), registration(string)
+ *   searchMethodsText(string)  server-composed search paragraph (search-builder
+ *     methods-text endpoint); replaces the generic sentence when present
  *   prisma {identified,deduped,screened,excludedFullText,included}
  *   screening {reviewers(number), blind(bool), conflictResolution(string)}
- *   measure(string label), model('fixed'|'random'), hksj(bool)
+ *   measure(string label), model('fixed'|'random'), tau2Method('DL'|'REML'|…),
+ *   hksj(bool)
  *   k(number), heterogeneity {I2,tau2,Q,Qdf,Qp}, predInterval(bool)
  *   outcomes(string[]), robTool(string), grade(bool), software(string)
  * @returns {string} GitHub-flavoured Markdown
@@ -57,11 +74,30 @@ export function buildMethodsMarkdown(ctx = {}) {
   out.push(`- **Intervention/Exposure:** ${clean(pico.I) || PLACEHOLDER}`);
   out.push(`- **Comparator:** ${clean(pico.C) || PLACEHOLDER}`);
   out.push(`- **Outcomes:** ${clean(pico.O) || PLACEHOLDER}`);
+  // 73.md Part 8 — researcher-entered eligibility detail, VERBATIM (each line
+  // only renders when the project actually has the field; legacy ctx unchanged).
+  const elig = c.eligibility || {};
+  if (clean(elig.studyDesign)) out.push(`- **Study designs:** ${clean(elig.studyDesign)}`);
+  if (clean(elig.timeframe)) out.push(`- **Time frame:** ${clean(elig.timeframe)}`);
+  const inclLines = bulletLines(elig.incl);
+  if (inclLines.length) {
+    out.push('');
+    out.push('**Inclusion criteria.**');
+    for (const l of inclLines) out.push(`- ${l}`);
+  }
+  const exclLines = bulletLines(elig.excl);
+  if (exclLines.length) {
+    out.push('');
+    out.push('**Exclusion criteria.**');
+    for (const l of exclLines) out.push(`- ${l}`);
+  }
   out.push('');
 
   // ── Information sources & search ────────────────────────────────────────────
   out.push('## Information sources and search strategy');
-  out.push(line([
+  // A server-composed search paragraph (real per-database strategy) wins over
+  // the generic sentence; never both.
+  out.push(clean(c.searchMethodsText) || line([
     'We searched ',
     c.databases ? clean(c.databases) : PLACEHOLDER,
     c.dateSearched ? ` (last searched ${clean(c.dateSearched)})` : '',
@@ -105,9 +141,10 @@ export function buildMethodsMarkdown(ctx = {}) {
 
   // ── Statistical synthesis ───────────────────────────────────────────────────
   out.push('## Statistical analysis');
-  const modelLabel = c.model === 'fixed'
-    ? 'an inverse-variance common (fixed) effect model'
-    : 'a DerSimonian–Laird random-effects model';
+  // Shared wording (analysisDescribe.js) — byte-identical for fixed / DL-random;
+  // names the configured τ² estimator otherwise.
+  const synth = describeSynthesisModel({ model: c.model, tau2Method: c.tau2Method });
+  const modelLabel = synth.methodsPhrase;
   out.push(line([
     'Effect sizes',
     c.measure ? ` (${clean(c.measure)})` : '',
@@ -142,10 +179,13 @@ export function buildMethodsMarkdown(ctx = {}) {
 
   // ── Software ────────────────────────────────────────────────────────────────
   out.push('## Software');
+  const randomImpl = synth.tau2Method === 'DL'
+    ? 'DerSimonian–Laird random effects'
+    : `random effects with the ${synth.estimatorPhrase} τ² estimator`;
   out.push(line([
     'Screening, data extraction, meta-analysis and figures were produced in PecanRev',
     c.software ? ` (${clean(c.software)})` : '',
-    '. Statistical methods implemented: inverse-variance fixed effect and DerSimonian–Laird random effects',
+    `. Statistical methods implemented: inverse-variance fixed effect and ${randomImpl}`,
     c.hksj ? ', with Hartung–Knapp–Sidik–Jonkman adjustment' : '',
     '. Verify all numbers against your primary analysis before submission.',
   ]));

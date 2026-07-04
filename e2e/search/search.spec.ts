@@ -7,6 +7,14 @@
  * and `test.skip`s honestly if its precondition is off, so the file stays correct if
  * the rollout changes.
  *
+ * 73.md NOTE: with `searchWorkspaceV2` ON the Search tab renders the STAGED workspace
+ * instead of this wizard — NINE stages (Research Question → Concepts → Terms &
+ * Vocabulary → Search Mode → Database Strategies → Test & Refine → Run Externally /
+ * Automated Search [mode-aware] → Documentation → Send to Screening), a sticky
+ * `pubmed-pulse` bar, and mode cards (`search-mode-card-manual|automated`). This spec
+ * targets the legacy wizard, which stays byte-identical while the flag is OFF; the
+ * workspace's own coverage lives in tests/unit/searchWorkspace*.test.jsx.
+ *
  * Seeding is via the fast `tmpProject` fixture (a throwaway admin project, auto-
  * deleted). The embedded Search Builder seeds the five PICO concept groups on load,
  * so the wizard's Run gate opens without any external NLM round-trip.

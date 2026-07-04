@@ -16,7 +16,7 @@
  */
 import {
   computePrismaCounts,
-  buildStudyCharacteristicsTable, buildSummaryOfFindingsTable,
+  buildStudyCharacteristicsTable, buildSummaryOfFindingsTable, buildPrismaCountsTable,
   buildRobTable, buildSearchStrategyTable,
   primaryAnalysis, analysisSettings, buildReproManifest, generateMethods,
 } from '../../../research-engine/manuscript/index.js';
@@ -60,25 +60,47 @@ function analysisDatasetCsv(project) {
  * Build the reproducibility package Blob (.zip).
  * @param {object} project   Project.data blob
  * @param {object} draft     normalized manuscript draft
- * @param {object} [opts]    { runMeta, prec, appVersion, engineVersions, generatedAt, generatedBy, software, gradeByOutcome }
+ * @param {object} [opts]    { runMeta, prec, appVersion, engineVersions, generatedAt,
+ *   generatedBy, software, gradeByOutcome,
+ *   // 73.md Part 8 — live-wired data (all optional; absent → legacy output):
+ *   screening, screeningWorkflow, searchMethodsText, analysis,
+ *   robAssessments, robByStudyId, perSource }
  * @returns {Promise<Blob>}
  */
 export async function buildReproPackage(project, draft, opts = {}) {
   const warnings = [];
-  const prismaResult = computePrismaCounts(project, { overrides: draft.prismaOverrides });
+  // 73.md Part 8 — thread the SAME live-wired sources the on-screen tables use so
+  // the bundle can never disagree with the workspace (screening → PRISMA counts,
+  // RoB v2 → risk-of-bias table, pecan per-source → search table).
+  const prismaResult = computePrismaCounts(project, {
+    overrides: draft.prismaOverrides,
+    ...(opts.screening ? { screening: opts.screening } : {}),
+  });
   warnings.push(...(prismaResult.warnings || []));
-  const primary = primaryAnalysis(project, { runMeta: opts.runMeta });
+  const primary = primaryAnalysis(project, { runMeta: opts.runMeta, ...(opts.analysis ? { analysis: opts.analysis } : {}) });
 
-  const studyTbl = buildStudyCharacteristicsTable(project, {});
-  const robTbl = buildRobTable(project, {});
-  const searchTbl = buildSearchStrategyTable(project, {});
+  const studyTbl = buildStudyCharacteristicsTable(project, opts.robByStudyId ? { robByStudyId: opts.robByStudyId } : {});
+  const robTbl = buildRobTable(project, opts.robAssessments ? { assessments: opts.robAssessments } : {});
+  const searchTbl = buildSearchStrategyTable(project, opts.perSource ? { perSource: opts.perSource } : {});
+  const sofTbl = buildSummaryOfFindingsTable(project, { runMeta: opts.runMeta, prec: opts.prec, gradeByOutcome: opts.gradeByOutcome });
 
   const entries = [];
 
   // manuscript.docx (best-effort; never blocks the bundle). P12 — forward the GRADE
-  // certainty map so the bundled manuscript's SoF gets its Certainty (GRADE) column.
+  // certainty map so the bundled manuscript's SoF gets its Certainty (GRADE) column;
+  // 73.md — pass the live-wired tables so the docx matches the bundle CSVs exactly.
   try {
-    const docxBlob = await buildManuscriptDocx(project, draft, { runMeta: opts.runMeta, prec: opts.prec, prismaResult, primary, includeFigures: true, gradeByOutcome: opts.gradeByOutcome });
+    const docxBlob = await buildManuscriptDocx(project, draft, {
+      runMeta: opts.runMeta, prec: opts.prec, prismaResult, primary, includeFigures: true,
+      gradeByOutcome: opts.gradeByOutcome,
+      tables: {
+        study: studyTbl,
+        sof: sofTbl,
+        prisma: buildPrismaCountsTable(prismaResult),
+        rob: robTbl,
+        search: searchTbl,
+      },
+    });
     entries.push({ name: 'manuscript.docx', blob: docxBlob });
   } catch (e) {
     warnings.push(`Manuscript .docx could not be generated for the bundle: ${e && e.message}`);
@@ -117,11 +139,26 @@ export async function buildReproPackage(project, draft, opts = {}) {
   entries.push({ name: 'data/risk_of_bias.csv', text: tableCsv(robTbl) });
   entries.push({ name: 'search/search_strategy.csv', text: tableCsv(searchTbl) });
 
-  // Methods text
-  entries.push({ name: 'methods/methods.txt', text: (draft.sections.methods && draft.sections.methods.content) || generateMethods(project, { prismaCounts: prismaResult, primary, software: opts.software }) });
+  // Methods text — grounded in the same live wiring (search-builder methods text,
+  // screening workflow facts, configured synthesis model) when available.
+  entries.push({
+    name: 'methods/methods.txt',
+    text: (draft.sections.methods && draft.sections.methods.content) || generateMethods(project, {
+      prismaCounts: prismaResult, primary, software: opts.software,
+      ...(opts.analysis ? { analysis: opts.analysis } : {}),
+      ...(opts.screening ? { screening: opts.screening } : {}),
+      ...(opts.searchMethodsText ? { searchMethodsText: opts.searchMethodsText } : {}),
+      ...(opts.screeningWorkflow ? { screeningWorkflow: opts.screeningWorkflow } : {}),
+      ...(opts.robAssessments ? { robAssessments: opts.robAssessments } : {}),
+    }),
+  });
 
   // Analysis settings
-  const settings = analysisSettings(project, { primary, software: opts.software, outcomes: getOutcomePairs(project.studies || []).map((p) => p.label) });
+  const settings = analysisSettings(project, {
+    primary, software: opts.software,
+    ...(opts.analysis ? { analysis: opts.analysis } : {}),
+    outcomes: getOutcomePairs(project.studies || []).map((p) => p.label),
+  });
   entries.push({ name: 'settings/analysis_settings.json', text: JSON.stringify(settings, null, 2) });
 
   // Manifest LAST so it lists every file

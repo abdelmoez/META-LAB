@@ -154,9 +154,13 @@ export const adminApi = {
   // and a subscription placeholder (future billing — no payments are processed).
   //  analytics()               → { totalUsers, byTier:[{tierId,displayName,count,pct}],
   //    unassigned, avgDaysInCurrentTier, recentChanges:[{userId,email,from,to,
-  //    changeType,at,byName}], recentPromotions:[…], recentDowngrades:[…],
-  //    trialUsers:[…], expiringSoon:[{userId,email,tierId,effectiveUntil}],
-  //    newByTier:[{tierId,count}] }.
+  //    changeType,at,byName}], recentPromotions/recentDowngrades/manualChanges/
+  //    trialUsers (window tally NUMBERS — not rows), recentPromotionsList/
+  //    recentDowngradesList (≤20 rows, same shape as recentChanges),
+  //    trialUsersList:[{userId,email,tierId,effectiveFrom,effectiveUntil}] (≤100),
+  //    expiringSoon:[{userId,email,tierId,effectiveUntil}] (≤100),
+  //    newByTier:[{tierId,displayName,count}], newUnassigned, window:{days} }.
+  //    (73.md Part 10: the *List keys are additive — older servers omit them.)
   //  usersInTier(id,{skip,take,q}) → { users:[{ id,email,name,role,tierId,dateEntered,
   //    daysInTier,previousTierId,changeType,assignedByName,reason,createdAt,
   //    lastActive,status }], total }.

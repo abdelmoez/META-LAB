@@ -18,6 +18,13 @@
  *
  * Parity: the SAME runMeta the Analysis/Forest tabs use (monolithStats) is threaded
  * into every engine call, so manuscript numbers can never drift from the figures.
+ *
+ * 73.md Part 8 — live data wiring: on project open the hook fetches (parallel,
+ * soft-fail, cached per project) the linked screening PRISMA rollup, the
+ * search-builder methods text, RoB v2 assessments and the latest Pecan run's
+ * per-source counts (manuscriptData.js), threads them into EVERY engine call
+ * (genOpts / prismaCounts / tables), and exposes an honest availability map
+ * (`dataStatus`) plus per-section provenance/outdated/lock state for the UI.
  */
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { runMeta } from '../../research-engine/statistics/monolithStats.js';
@@ -29,10 +36,14 @@ import {
   generateReferenceList, referencesFromProject, orderReferencesForManuscript,
   computeReadiness, smartInsights,
   evaluateStaleness, primaryAnalysis,
+  computeSectionInputsHashes, checkConsistency,
 } from '../../research-engine/manuscript/index.js';
 import { generateDraft } from '../../research-engine/manuscript/draft.js';
 import { gradeCertaintyEnabled, sofCertaintyMap } from '../../frontend/workspace/gradeApi.js';
 import * as MS from './manuscriptState.js';
+import {
+  emptyManuscriptSources, fetchManuscriptSources, linkedScreenProjectId, composeGenOpts,
+} from './manuscriptData.js';
 
 export function useManuscript(project, upd) {
   const drafts = useMemo(() => readManuscripts(project), [project]);
@@ -182,24 +193,42 @@ export function useManuscript(project, upd) {
     return () => { alive = false; };
   }, [pid]);
 
+  // 73.md Part 8 — live data sources (screening / search / RoB / pecan), fetched
+  // in parallel once per project open, soft-fail (a missing flag / 404 / network
+  // error can never block generation — legacy inputs remain the fallback).
+  const [sources, setSources] = useState(() => emptyManuscriptSources());
+  const screenPid = linkedScreenProjectId(project);
+  useEffect(() => {
+    let alive = true;
+    setSources(emptyManuscriptSources());
+    if (!pid) return undefined;
+    fetchManuscriptSources({ projectId: pid, screenProjectId: screenPid })
+      .then((r) => { if (alive && r) setSources(r); })
+      .catch(() => { /* orchestrator is soft-fail; belt-and-braces */ });
+    return () => { alive = false; };
+  }, [pid, screenPid]);
+
   const genOpts = useMemo(
-    () => ({ runMeta, prec: project && project.analysisPrecision, ...(gradeByOutcome ? { gradeByOutcome } : {}) }),
-    [project, gradeByOutcome],
+    () => composeGenOpts({ project, runMeta, gradeByOutcome, sources }),
+    [project, gradeByOutcome, sources],
   );
 
   /* ── derived engine data for the panels ── */
   const prismaCounts = useMemo(
-    () => computePrismaCounts(project, { overrides: activeDraft && activeDraft.prismaOverrides }),
-    [project, activeDraft],
+    () => computePrismaCounts(project, {
+      overrides: activeDraft && activeDraft.prismaOverrides,
+      ...(sources.screening ? { screening: sources.screening } : {}),
+    }),
+    [project, activeDraft, sources],
   );
   const primary = useMemo(() => primaryAnalysis(project, genOpts), [project, genOpts]);
   const tables = useMemo(() => ({
-    study: buildStudyCharacteristicsTable(project, {}),
+    study: buildStudyCharacteristicsTable(project, sources.robByStudyId ? { robByStudyId: sources.robByStudyId } : {}),
     sof: buildSummaryOfFindingsTable(project, genOpts),
     prisma: buildPrismaCountsTable(prismaCounts),
-    rob: buildRobTable(project, {}),
-    search: buildSearchStrategyTable(project, {}),
-  }), [project, genOpts, prismaCounts]);
+    rob: buildRobTable(project, sources.robAssessments ? { assessments: sources.robAssessments } : {}),
+    search: buildSearchStrategyTable(project, sources.perSource ? { perSource: sources.perSource } : {}),
+  }), [project, genOpts, prismaCounts, sources]);
   const references = useMemo(() => {
     const refs = (activeDraft && activeDraft.references && activeDraft.references.length)
       ? activeDraft.references : referencesFromProject(project);
@@ -221,10 +250,39 @@ export function useManuscript(project, upd) {
     [project, activeDraft],
   );
 
+  // 73.md Part 9 — per-section OUTDATED detection: fresh input hashes computed
+  // with the SAME opts generation uses (incl. the active draft's templateId +
+  // prisma overrides), compared against the hash stamped at generation time.
+  const freshHashes = useMemo(() => {
+    if (!activeDraft) return {};
+    try {
+      return computeSectionInputsHashes(project, { ...genOpts, prismaCounts, templateId: activeDraft.templateId });
+    } catch { return {}; }
+  }, [project, genOpts, prismaCounts, activeDraft]);
+  const outdated = useMemo(
+    () => MS.computeOutdatedSections(activeDraft, freshHashes),
+    [activeDraft, freshHashes],
+  );
+
+  // 73.md Part 9 — cross-artefact consistency checks (also folded into
+  // smartInsights by the engine; the raw list powers the Overview card + jumps).
+  const consistency = useMemo(() => {
+    if (!activeDraft) return [];
+    try { return checkConsistency(project, activeDraft, { ...genOpts, prismaCounts }); } catch { return []; }
+  }, [project, activeDraft, genOpts, prismaCounts]);
+
   /* ── mutations ── */
   const updateSection = useCallback((id, content) => {
-    if (activeDraft) queueEdit(activeDraft.id, 'section', id, content);
+    if (!activeDraft) return;
+    const s = activeDraft.sections && activeDraft.sections[id];
+    if (s && s.locked) return; // locked sections are read-only (UI-enforced)
+    queueEdit(activeDraft.id, 'section', id, content);
   }, [activeDraft, queueEdit]);
+
+  // 73.md Part 9 — per-section lock toggle (persisted through the same path).
+  const setSectionLocked = useCallback((id, locked) => {
+    mutateActive((d) => MS.setSectionLocked(d, id, locked));
+  }, [mutateActive]);
 
   const setStatement = useCallback((id, val) => {
     if (activeDraft) queueEdit(activeDraft.id, 'statement', id, val);
@@ -251,15 +309,20 @@ export function useManuscript(project, upd) {
 
   const generate = useCallback((opts = {}) => {
     let skipped = [];
+    let skippedLocked = [];
     mutateActive((active) => {
       const generated = generateDraft(project, {
         ...genOpts, prismaCounts, primary, templateId: active.templateId,
       });
+      // applyGeneratedSections stamps generated.sectionMeta (sources/missing/
+      // inputsHash) onto every written section, always skips locked sections,
+      // and seeds generated.statements into EMPTY statements on a full generate.
       const res = MS.applyGeneratedSections(active, generated, opts);
       skipped = res.skipped;
+      skippedLocked = res.skippedLocked || [];
       return res.draft;
     });
-    return { skipped };
+    return { skipped, skippedLocked };
   }, [mutateActive, project, genOpts, prismaCounts, primary]);
 
   const refreshBlock = useCallback((blockId) => {
@@ -297,6 +360,16 @@ export function useManuscript(project, upd) {
     runMeta,
     gradeByOutcome,
     prismaCounts, primary, tables, references, readiness, insights, staleness,
+    // 73.md Parts 8/9 — live data wiring + provenance/outdated/lock surface.
+    genOpts,
+    dataStatus: sources.dataStatus,
+    screening: sources.screening,
+    screeningWorkflow: sources.screeningWorkflow,
+    searchMethodsText: sources.searchMethodsText,
+    robAssessments: sources.robAssessments,
+    robByStudyId: sources.robByStudyId,
+    perSource: sources.perSource,
+    outdated, consistency, setSectionLocked,
     updateSection, generate, refreshBlock, refreshAllBlocks,
     setMeta, setMetaDebounced, setStatement, updateDraft, addDraft, removeDraft,
     flush: flushPending,

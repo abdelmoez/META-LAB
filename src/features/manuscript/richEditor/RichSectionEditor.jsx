@@ -47,6 +47,9 @@ export const RICH_EDITOR_CSS = `
 export const RichSectionEditor = forwardRef(function RichSectionEditor({
   value, orderMap, onChange, placeholder, minHeight = 340,
   ariaLabel, testId = 'stitch-manuscript-rich-editor', onActivate,
+  // 73.md Part 9 — locked sections render read-only: contentEditable off, no
+  // emits, no paste rewriting. The parent remounts on lock toggle (resetKey).
+  readOnly = false,
 }, ref) {
   const rootRef = useRef(null);
   const savedRange = useRef(null);
@@ -72,7 +75,11 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     });
   }, [orderMap]);
 
+  const readOnlyRef = useRef(readOnly);
+  useEffect(() => { readOnlyRef.current = readOnly; });
+
   const emit = useCallback(() => {
+    if (readOnlyRef.current) return;
     const el = rootRef.current;
     if (!el) return;
     onChangeRef.current && onChangeRef.current(htmlToMd(el.innerHTML));
@@ -175,6 +182,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   };
 
   const onPaste = (e) => {
+    if (readOnly) { e.preventDefault(); return; }
     const cd = e.clipboardData;
     if (!cd) return;
     const html = cd.getData && cd.getData('text/html');
@@ -188,17 +196,18 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     <div
       ref={rootRef}
       className="ms-rich ms-page-body"
-      style={{ minHeight }}
-      contentEditable
+      style={{ minHeight, ...(readOnly ? { opacity: 0.92 } : {}) }}
+      contentEditable={!readOnly}
       suppressContentEditableWarning
       role="textbox"
       aria-multiline="true"
+      aria-readonly={readOnly ? 'true' : undefined}
       aria-label={ariaLabel || 'Section editor'}
       data-testid={testId}
       data-placeholder={placeholder || 'Write this section, or generate it from your project data.'}
       spellCheck
       onInput={() => { rememberSelection(); emit(); }}
-      onKeyDown={onKeyDown}
+      onKeyDown={readOnly ? undefined : onKeyDown}
       onKeyUp={rememberSelection}
       onMouseUp={rememberSelection}
       onFocus={rememberSelection}

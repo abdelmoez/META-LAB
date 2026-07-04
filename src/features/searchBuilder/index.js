@@ -10,6 +10,9 @@ export { default as SearchBuilderTab } from './SearchBuilderTab.jsx';
 // prompt42 — pure helpers exported for unit tests (hit-status hash, relative time,
 // and the `ignored` legacy→object normalizer used by the granular term restore).
 export { strategyHash, relativeTime, normalizeIgnored, normalizeIgnoredEntry } from './SearchBuilderTab.jsx';
+// 73.md — embedded-phase matrix + the per-database strategy panel/export (P4/P6),
+// exported for unit tests and for the staged Search Workspace.
+export { embeddedShowsStep, DbStrategyPanel, allStrategiesExportText } from './SearchBuilderTab.jsx';
 export { localMeshSuggestions, meshConfidence } from '../../research-engine/searchBuilder/meshSuggest.js';
 // SB3 — guided workflow helpers (Tab 1 keyword tokenization + Tab 3 database catalogue).
 export { tokenizeForSelection, suggestedKeywords, isFillerWord } from '../../research-engine/searchBuilder/keywordSelection.js';

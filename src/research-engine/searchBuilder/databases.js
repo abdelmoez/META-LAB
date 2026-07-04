@@ -60,6 +60,38 @@ export const DATABASE_CATALOG = [
   { id: 'acm',           label: 'ACM Digital Library',         group: 'Optional / specialty', tier: 'mixed', nativeSyntax: false, defaultOn: false },
 ];
 
+/**
+ * 73.md Part 6 — additive per-database compiler metadata, merged onto each catalogue
+ * entry at module load (purely additive; every pre-existing key is untouched).
+ *   syntaxLevel  'native' (real, runnable database syntax) | 'approximate' (simplified
+ *                / auto-stemmed — Google Scholar, grey literature). NOTE this is a
+ *                broader notion than `nativeSyntax`, which stays reserved for the three
+ *                databases the legacy SearchBuilderTab already rendered.
+ *   vocabSystem  the subject-heading system the compiler targets (mesh/emtree/…/none).
+ *   openUrl      a prefilled-search URL TEMPLATE ({q} = the encoded query) where a
+ *                pasted-in query is reliable; otherwise `homeUrl` points at the search
+ *                page the user should paste into.
+ */
+const SYNTAX_META = {
+  pubmed:         { syntaxLevel: 'native',      vocabSystem: 'mesh',   openUrl: 'https://pubmed.ncbi.nlm.nih.gov/?term={q}' },
+  embase:         { syntaxLevel: 'native',      vocabSystem: 'emtree', homeUrl: 'https://www.embase.com' },
+  cochrane:       { syntaxLevel: 'native',      vocabSystem: 'mesh',   homeUrl: 'https://www.cochranelibrary.com/advanced-search' },
+  clinicaltrials: { syntaxLevel: 'native',      vocabSystem: 'none',   openUrl: 'https://clinicaltrials.gov/search?term={q}' },
+  ictrp:          { syntaxLevel: 'native',      vocabSystem: 'none',   homeUrl: 'https://trialsearch.who.int' },
+  scopus:         { syntaxLevel: 'native',      vocabSystem: 'none',   homeUrl: 'https://www.scopus.com' },
+  wos:            { syntaxLevel: 'native',      vocabSystem: 'none',   homeUrl: 'https://www.webofscience.com' },
+  gscholar:       { syntaxLevel: 'approximate', vocabSystem: 'none',   openUrl: 'https://scholar.google.com/scholar?q={q}' },
+  cinahl:         { syntaxLevel: 'native',      vocabSystem: 'cinahl', homeUrl: 'https://search.ebscohost.com' },
+  psycinfo:       { syntaxLevel: 'native',      vocabSystem: 'apa',    homeUrl: 'https://www.apa.org/pubs/databases/psycinfo' },
+  proquest:       { syntaxLevel: 'native',      vocabSystem: 'none',   homeUrl: 'https://www.proquest.com' },
+  opengrey:       { syntaxLevel: 'approximate', vocabSystem: 'none',   homeUrl: 'https://opengrey.eu' },
+  europepmc:      { syntaxLevel: 'native',      vocabSystem: 'mesh',   openUrl: 'https://europepmc.org/search?query={q}' },
+  pmc:            { syntaxLevel: 'native',      vocabSystem: 'mesh',   openUrl: 'https://www.ncbi.nlm.nih.gov/pmc/?term={q}' },
+  ieee:           { syntaxLevel: 'native',      vocabSystem: 'none',   homeUrl: 'https://ieeexplore.ieee.org' },
+  acm:            { syntaxLevel: 'native',      vocabSystem: 'none',   homeUrl: 'https://dl.acm.org' },
+};
+for (const db of DATABASE_CATALOG) Object.assign(db, SYNTAX_META[db.id] || {});
+
 /** Catalogue grouped into the Tab-3 sections, preserving catalogue order. */
 export function databaseGroups() {
   const order = [];
@@ -87,9 +119,30 @@ export function getDatabase(id) {
   return DATABASE_CATALOG.find((d) => d.id === id) || null;
 }
 
-/** The ids whose query strings the builder can actually generate (native syntax). */
+/** The ids whose query strings the builder can actually generate (native syntax).
+ *  Unchanged contract: exactly ['cochrane','embase','pubmed'] — other code depends on it. */
 export function nativeSyntaxDatabases() {
   return DATABASE_CATALOG.filter((d) => d.nativeSyntax).map((d) => d.id);
+}
+
+/** 73.md Part 6 — the ids the strategy compiler can render (every catalogue entry). */
+export function compiledDatabases() {
+  return DATABASE_CATALOG.filter((d) => d.syntaxLevel).map((d) => d.id);
+}
+
+/** Prefilled-search URL for a compiled query, or null when only a home URL is reliable.
+ *  The query is URL-encoded into the entry's `openUrl` template ({q} placeholder). */
+export function openUrlFor(id, query) {
+  const db = getDatabase(id);
+  if (!db || !db.openUrl) return null;
+  return db.openUrl.replace('{q}', encodeURIComponent(String(query == null ? '' : query)));
+}
+
+/** The database's search/home page to paste a compiled query into, or null. */
+export function homeUrlFor(id) {
+  const db = getDatabase(id);
+  if (!db) return null;
+  return db.homeUrl || db.openUrl || null;
 }
 
 /** Tooltip shown next to the database list (institutional-access caveat). */

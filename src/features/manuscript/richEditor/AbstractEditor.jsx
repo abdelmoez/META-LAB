@@ -13,7 +13,7 @@ import {
 } from '../../../research-engine/manuscript/index.js';
 import { RichSectionEditor } from './RichSectionEditor.jsx';
 
-export function AbstractEditor({ value, templateId, orderMap, resetKey, onChange, onActivate }) {
+export function AbstractEditor({ value, templateId, orderMap, resetKey, onChange, onActivate, readOnly = false }) {
   const parsed = useMemo(() => parseAbstractSubsections(value), [value]);
   const info = useMemo(() => abstractTemplateInfo(templateId), [templateId]);
   const totalWords = abstractWordCount(value);
@@ -45,7 +45,7 @@ export function AbstractEditor({ value, templateId, orderMap, resetKey, onChange
           Free-form abstract — regenerate from the template to get labelled subsections.
         </div>
         <RichSectionEditor key={resetKey} value={value} orderMap={orderMap}
-          onChange={onChange} onActivate={onActivate}
+          onChange={onChange} onActivate={onActivate} readOnly={readOnly}
           ariaLabel="Abstract" placeholder="Write or generate the abstract…" minHeight={280} />
       </div>
     );
@@ -91,6 +91,7 @@ export function AbstractEditor({ value, templateId, orderMap, resetKey, onChange
                   orderMap={orderMap}
                   onChange={(md) => onField(i, md)}
                   onActivate={onActivate}
+                  readOnly={readOnly}
                   ariaLabel={`Abstract — ${sub.label}`}
                   testId={`stitch-manuscript-abstract-field-${i}`}
                   placeholder={`${sub.label}…`}

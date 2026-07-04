@@ -73,6 +73,10 @@ export default function PecanSearchTab({
   // preserving the standalone behaviour. initialSources/initialOverrides are keyed by
   // pecan PROVIDER id (already intersected by the wizard).
   initialCanonicalQuery, initialSources, initialOverrides,
+  // 73.md P1 — embedded mode: the staged Search Workspace supplies its own single
+  // header, so this tab suppresses its big header block (all controls/body kept).
+  // Default false → standalone/legacy usage is byte-identical.
+  embedded = false,
 }) {
   // ── Canonical query (the saved Search Builder strategy) ──────────────────────
   const [query, setQuery] = useState(null);        // { concepts, filters, overrides } | null
@@ -379,7 +383,7 @@ export default function PecanSearchTab({
 
   return (
     <div style={{ maxWidth: 1180, margin: '0 auto' }}>
-      <Header />
+      {!embedded && <Header />}
 
       {/* ════════════ (1) SEARCH STRATEGY ════════════ */}
       <StrategyCard

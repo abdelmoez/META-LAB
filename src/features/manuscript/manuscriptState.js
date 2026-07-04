@@ -6,7 +6,7 @@
  */
 import {
   readManuscripts, makeManuscriptDraft, migrateLegacyManuscript, normalizeDraft, SECTION_IDS,
-  JOURNAL_TEMPLATES,
+  STATEMENT_IDS, JOURNAL_TEMPLATES,
 } from '../../research-engine/manuscript/model.js';
 import { computeBlockHashes } from '../../research-engine/manuscript/sourceHash.js';
 
@@ -57,19 +57,33 @@ export function setSection(draft, id, content, opts = {}) {
 /**
  * Apply auto-generated sections. By default PRESERVES sections the user edited
  * (returns the list of skipped ids so the UI can offer "overwrite anyway").
- * @param {object} generated { [sectionId]: markdown, title? }
- * @param {object} opts { overwriteEdited:boolean, only?:string[] }
+ * 73.md Parts 8/9 (additive):
+ *   - LOCKED sections are ALWAYS skipped — even with overwriteEdited — and
+ *     reported separately (`skippedLocked`) so the UI can say so;
+ *   - per-section provenance from `generated.sectionMeta[id]` (or the explicit
+ *     `opts.sectionMeta` override) is stamped onto every WRITTEN section
+ *     ({sources, missing, inputsHash} — powers the OUTDATED badge);
+ *   - on a full generate (no `only`) `generated.statements` seeds EMPTY
+ *     statements only — researcher-entered statement text is never overwritten.
+ * @param {object} generated { [sectionId]: markdown, title?, sectionMeta?, statements? }
+ * @param {object} opts { overwriteEdited:boolean, only?:string[], sectionMeta?:object }
+ * @returns {{ draft:object, skipped:string[], skippedLocked:string[] }}
  */
 export function applyGeneratedSections(draft, generated, opts = {}) {
   const out = { ...draft, sections: { ...draft.sections } };
   const skipped = [];
+  const skippedLocked = [];
   const only = Array.isArray(opts.only) ? opts.only : null;
+  const metaMap = (opts.sectionMeta && typeof opts.sectionMeta === 'object') ? opts.sectionMeta
+    : ((generated.sectionMeta && typeof generated.sectionMeta === 'object') ? generated.sectionMeta : null);
   for (const id of SECTION_IDS) {
     if (only && !only.includes(id)) continue;
     if (generated[id] == null) continue;
     const prev = out.sections[id] || {};
+    if (prev.locked) { skippedLocked.push(id); continue; }
     const hasUserEdit = prev.userEdited && String(prev.content || '').trim();
     if (hasUserEdit && !opts.overwriteEdited) { skipped.push(id); continue; }
+    const meta = (metaMap && metaMap[id]) || null;
     out.sections[id] = {
       ...prev,
       content: generated[id],
@@ -77,11 +91,70 @@ export function applyGeneratedSections(draft, generated, opts = {}) {
       userEdited: false,
       lastGeneratedAt: nowIso(),
       updatedAt: nowIso(),
+      ...(meta ? {
+        sources: Array.isArray(meta.sources) ? meta.sources : [],
+        missing: Array.isArray(meta.missing) ? meta.missing : [],
+        ...(typeof meta.inputsHash === 'string' && meta.inputsHash ? { inputsHash: meta.inputsHash } : {}),
+      } : {}),
     };
   }
   if (generated.title && !String(out.title || '').trim()) out.title = generated.title;
+  // Statement seeding — EMPTY statements only, full generate only (never on a
+  // single-section regenerate, and never over researcher text).
+  if (!only && generated.statements && typeof generated.statements === 'object') {
+    let statements = null;
+    for (const sid of STATEMENT_IDS) {
+      const suggestion = generated.statements[sid];
+      if (typeof suggestion !== 'string' || !suggestion.trim()) continue;
+      const current = (out.statements && out.statements[sid]) || '';
+      if (String(current).trim()) continue;
+      if (!statements) statements = { ...(out.statements || {}) };
+      statements[sid] = suggestion;
+    }
+    if (statements) out.statements = statements;
+  }
   out.updatedAt = nowIso();
-  return { draft: out, skipped };
+  return { draft: out, skipped, skippedLocked };
+}
+
+/**
+ * 73.md Part 9 — per-section lock toggle (additive `sections[id].locked`).
+ * Locked is UI-enforced: the editor goes read-only and generation always skips
+ * the section (applyGeneratedSections). Unlocking sets locked:false, which
+ * normalizeDraft drops (only `locked === true` is persisted). Pure.
+ */
+export function setSectionLocked(draft, id, locked) {
+  if (!SECTION_IDS.includes(id)) return draft;
+  const prev = draft.sections[id] || {};
+  return {
+    ...draft,
+    sections: {
+      ...draft.sections,
+      [id]: { ...prev, locked: !!locked, updatedAt: nowIso() },
+    },
+    updatedAt: nowIso(),
+  };
+}
+
+/**
+ * 73.md Part 9 — OUTDATED detection. A section is outdated when it HAS content,
+ * carries a stored inputsHash (i.e. it was generated after this feature landed),
+ * and that hash no longer matches the fresh computeSectionInputsHashes value.
+ * Sections without a stored hash (pre-existing drafts) are never flagged. Pure.
+ * @returns {{ [sectionId]: true }}
+ */
+export function computeOutdatedSections(draft, freshHashes) {
+  const out = {};
+  if (!draft || !draft.sections || !freshHashes) return out;
+  for (const id of SECTION_IDS) {
+    const s = draft.sections[id];
+    if (!s) continue;
+    if (!String(s.content || '').trim()) continue;
+    if (typeof s.inputsHash !== 'string' || !s.inputsHash) continue;
+    if (!freshHashes[id]) continue;
+    if (s.inputsHash !== freshHashes[id]) out[id] = true;
+  }
+  return out;
 }
 
 /** Mark a data-linked block as refreshed against the current project data. */
@@ -129,5 +202,6 @@ export function newDraft(project, opts = {}) {
 
 export default {
   nowIso, ensureDrafts, upsertDraft, setSection, applyGeneratedSections,
+  setSectionLocked, computeOutdatedSections,
   markBlockRefreshed, markAllBlocksRefreshed, setMeta, setStatement, newDraft,
 };

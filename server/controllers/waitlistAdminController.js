@@ -23,11 +23,15 @@ export async function adminWaitlistMetrics(req, res) {
   try {
     const result = await waitlist.getMetrics();
     const config = waitlist.configStatus();
+    // 73.md Part 11 — additive diagnostics so an admin can see WHY the waitlist
+    // is unavailable (not_configured | client_unavailable | query_failed | ok)
+    // without shell access. Secret-free (redacted target + provider only).
+    const diagnostics = await waitlist.diagnose();
     if (!result.ok) {
-      if (isUnavailable(result.code)) return res.json({ configured: false, config, metrics: null });
-      return res.status(500).json({ error: 'Internal server error' });
+      if (isUnavailable(result.code)) return res.json({ configured: false, config, metrics: null, diagnostics });
+      return res.status(500).json({ error: 'Internal server error', diagnostics });
     }
-    return res.json({ configured: true, config, metrics: result.metrics });
+    return res.json({ configured: true, config, metrics: result.metrics, diagnostics });
   } catch (err) {
     console.error('[waitlist-admin] metrics error:', err?.message || err);
     return res.status(500).json({ error: 'Internal server error' });

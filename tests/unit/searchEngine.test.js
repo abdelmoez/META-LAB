@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import {
   mapMeshSummary, mapMeshSummaryList, emtreeFallback, parseSparqlLabels, meshNarrower, meshSuggest,
 } from '../../server/searchEngine/nlmClient.js';
-import { sanitizeIgnored, sanitizeFilters } from '../../server/searchEngine/searchEngineController.js';
+import { sanitizeIgnored, sanitizeFilters, sanitizeSearchMode } from '../../server/searchEngine/searchEngineController.js';
 import { createTtlCache } from '../../server/searchEngine/ttlCache.js';
 
 describe('mapMeshSummary', () => {
@@ -119,6 +119,23 @@ describe('sanitizeFilters — putSearch allowlist (prompt60 seam fix #3)', () =>
     expect(out.dateFrom.length).toBeLessThanOrEqual(10);
     expect(out.languages.length).toBe(20);
     expect(out.pubTypes.length).toBe(40);
+  });
+});
+
+describe('sanitizeSearchMode — putSearch allowlist (73.md P5 two-path marker)', () => {
+  it("accepts exactly 'manual' and 'automated'", () => {
+    expect(sanitizeSearchMode('manual')).toBe('manual');
+    expect(sanitizeSearchMode('automated')).toBe('automated');
+  });
+  it('collapses everything else to null (junk, casing, legacy shapes, absent)', () => {
+    expect(sanitizeSearchMode(null)).toBeNull();
+    expect(sanitizeSearchMode(undefined)).toBeNull();
+    expect(sanitizeSearchMode('')).toBeNull();
+    expect(sanitizeSearchMode('MANUAL')).toBeNull();
+    expect(sanitizeSearchMode('auto')).toBeNull();
+    expect(sanitizeSearchMode(1)).toBeNull();
+    expect(sanitizeSearchMode({ mode: 'manual' })).toBeNull();
+    expect(sanitizeSearchMode(['manual'])).toBeNull();
   });
 });
 

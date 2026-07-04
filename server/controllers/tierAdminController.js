@@ -238,14 +238,15 @@ export async function getTierAnalytics(req, res) {
       ? Math.round((currentRows.reduce((s, r) => s + daysInTier(r.effectiveFrom, now), 0) / currentRows.length) * 10) / 10
       : 0;
 
-    const trialUsers = currentRows.filter(r => r.changeType === 'trial_start'
-      && (!r.effectiveUntil || new Date(r.effectiveUntil).getTime() >= now.getTime())).length;
+    // Trial users: current trial_start assignments that have not expired.
+    const trialRows = currentRows.filter(r => r.changeType === 'trial_start'
+      && (!r.effectiveUntil || new Date(r.effectiveUntil).getTime() >= now.getTime()));
+    const trialUsers = trialRows.length;
 
-    const expiringSoon = currentRows
+    const expiringRows = currentRows
       .filter(r => isExpiringSoon(r.effectiveUntil, now, RECENT_WINDOW_DAYS))
       .sort((a, b) => new Date(a.effectiveUntil) - new Date(b.effectiveUntil))
-      .slice(0, 100)
-      .map(r => ({ userId: r.userId, tierId: r.tierId, effectiveUntil: r.effectiveUntil }));
+      .slice(0, 100);
 
     // Recent changes (last 20) + promotion/downgrade/manual tallies in the window.
     const recentAll = await prisma.userTierAssignment.findMany({
@@ -254,17 +255,36 @@ export async function getTierAnalytics(req, res) {
       select: { userId: true, tierId: true, previousTierId: true, changeType: true, createdAt: true, assignedByName: true },
     }).catch(() => []);
 
+    // The tallies stay NUMBERS (the shipped contract); the *List keys below are
+    // the ADDITIVE row arrays the dashboard lists render (73.md Part 10 — the
+    // counts were being fed to list components, which .map over rows). recentAll
+    // is createdAt-desc, so the first 20 matches are the most recent.
     let recentPromotions = 0, recentDowngrades = 0, manualChanges = 0;
+    const promotionRows = [], downgradeRows = [];
     for (const r of recentAll) {
       const dir = tierMoveDirection(r.previousTierId, r.tierId, orderById);
-      if (r.changeType === 'promotion' || dir === 'promotion') recentPromotions++;
-      else if (r.changeType === 'downgrade' || dir === 'downgrade') recentDowngrades++;
+      if (r.changeType === 'promotion' || dir === 'promotion') {
+        recentPromotions++;
+        if (promotionRows.length < 20) promotionRows.push(r);
+      } else if (r.changeType === 'downgrade' || dir === 'downgrade') {
+        recentDowngrades++;
+        if (downgradeRows.length < 20) downgradeRows.push(r);
+      }
       if (r.changeType === 'manual') manualChanges++;
     }
 
     const recentSlice = recentAll.slice(0, 20);
-    const emailById = await usersEmailMap(recentSlice.map(r => r.userId));
-    const recentChanges = recentSlice.map(r => ({
+    const trialSlice = trialRows.slice(0, 100);
+    // ONE email join covering every row the dashboard shows a user for
+    // (previously only recentChanges — the mini lists fell back to raw userIds).
+    const emailById = await usersEmailMap([
+      ...recentSlice.map(r => r.userId),
+      ...promotionRows.map(r => r.userId),
+      ...downgradeRows.map(r => r.userId),
+      ...trialSlice.map(r => r.userId),
+      ...expiringRows.map(r => r.userId),
+    ]);
+    const shapeChange = (r) => ({
       userId: r.userId,
       email: emailById.get(r.userId) || null,
       from: r.previousTierId || null,
@@ -272,6 +292,22 @@ export async function getTierAnalytics(req, res) {
       changeType: r.changeType,
       at: r.createdAt,
       byName: r.assignedByName || null,
+    });
+    const recentChanges = recentSlice.map(shapeChange);
+    const recentPromotionsList = promotionRows.map(shapeChange);
+    const recentDowngradesList = downgradeRows.map(shapeChange);
+    const trialUsersList = trialSlice.map(r => ({
+      userId: r.userId,
+      email: emailById.get(r.userId) || null,
+      tierId: r.tierId,
+      effectiveFrom: r.effectiveFrom,
+      effectiveUntil: r.effectiveUntil,
+    }));
+    const expiringSoon = expiringRows.map(r => ({
+      userId: r.userId,
+      email: emailById.get(r.userId) || null,
+      tierId: r.tierId,
+      effectiveUntil: r.effectiveUntil,
     }));
 
     const newByTier = tiers.map(t => {
@@ -286,10 +322,15 @@ export async function getTierAnalytics(req, res) {
       unassigned,
       avgDaysInCurrentTier,
       recentChanges,
+      // Window tallies — NUMBERS, kept exactly as shipped (clients pin on these).
       recentPromotions,
       recentDowngrades,
       manualChanges,
       trialUsers,
+      // 73.md Part 10 — additive row arrays for the dashboard lists.
+      recentPromotionsList,
+      recentDowngradesList,
+      trialUsersList,
       expiringSoon,
       newByTier,
       newUnassigned,

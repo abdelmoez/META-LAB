@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import {
   DATABASE_CATALOG, ACCESS_TIERS, databaseGroups, defaultSelectedDatabases,
   accessNote, getDatabase, nativeSyntaxDatabases, ACCESS_TOOLTIP,
+  compiledDatabases, openUrlFor, homeUrlFor,
 } from '../../src/research-engine/searchBuilder/databases.js';
 
 describe('DATABASE_CATALOG integrity', () => {
@@ -69,5 +70,44 @@ describe('getDatabase / accessNote edge cases', () => {
   it('returns null / empty for an unknown id', () => {
     expect(getDatabase('nope')).toBeNull();
     expect(accessNote('nope')).toBe('');
+  });
+});
+
+// ── 73.md Part 6 — additive compiler metadata (does not disturb the above) ──────
+describe('compiler metadata (73.md Part 6)', () => {
+  it('every catalogue entry carries a syntaxLevel + vocabSystem', () => {
+    for (const db of DATABASE_CATALOG) {
+      expect(['native', 'approximate']).toContain(db.syntaxLevel);
+      expect(['mesh', 'emtree', 'cinahl', 'apa', 'decs', 'none']).toContain(db.vocabSystem);
+    }
+  });
+
+  it('compiledDatabases() covers all 16 catalogue ids (the compiler renders every one)', () => {
+    expect(compiledDatabases().sort()).toEqual(DATABASE_CATALOG.map((d) => d.id).sort());
+    expect(compiledDatabases()).toHaveLength(16);
+  });
+
+  it('nativeSyntaxDatabases() is UNCHANGED — exactly the three legacy databases', () => {
+    expect(nativeSyntaxDatabases().sort()).toEqual(['cochrane', 'embase', 'pubmed']);
+  });
+
+  it('only Google Scholar + grey literature are approximate syntax; the rest are native', () => {
+    const approx = DATABASE_CATALOG.filter((d) => d.syntaxLevel === 'approximate').map((d) => d.id).sort();
+    expect(approx).toEqual(['gscholar', 'opengrey']);
+  });
+
+  it('openUrlFor() prefills the URL template only where reliable, else null', () => {
+    expect(openUrlFor('pubmed', 'cancer[tiab]')).toBe('https://pubmed.ncbi.nlm.nih.gov/?term=cancer%5Btiab%5D');
+    expect(openUrlFor('europepmc', 'TITLE:"x y"')).toBe('https://europepmc.org/search?query=TITLE%3A%22x%20y%22');
+    expect(openUrlFor('scopus', 'x')).toBeNull();       // subscription DB → no reliable prefill
+    expect(openUrlFor('nope', 'x')).toBeNull();
+  });
+
+  it('homeUrlFor() returns a paste-target page for every database', () => {
+    for (const db of DATABASE_CATALOG) {
+      expect(typeof homeUrlFor(db.id)).toBe('string');
+      expect(homeUrlFor(db.id).startsWith('http')).toBe(true);
+    }
+    expect(homeUrlFor('scopus')).toBe('https://www.scopus.com');
   });
 });

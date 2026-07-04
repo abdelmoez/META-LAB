@@ -410,9 +410,14 @@ export async function planRecordLimitFor(ownerUserId) {
 
 /**
  * backfillUserTiers — one-time idempotent boot hook: give every user WITHOUT any
- * assignment history an initial 'backfill' row + a concrete User.tierId. Normal
- * users get the site default tier; admins/mods get an internal tier if one exists
- * (none by default → they get the default too, and bypass tiers regardless).
+ * assignment history an initial 'backfill' row + a concrete User.tierId. A user
+ * who already carries an explicit User.tierId KEEPS it (the row just documents
+ * the status quo — 73.md Part 10: the old behaviour overwrote it with the site
+ * default and wrote previousTierId = the old tier, which both silently changed
+ * the user's tier AND made every legacy assignment look like a promotion/
+ * downgrade in analytics). Only users with NO tierId get the site default;
+ * admins/mods get an internal tier if one exists (none by default → they get the
+ * default too, and bypass tiers regardless).
  * Idempotent: a user that already has ANY assignment row is skipped. Returns the
  * number of users backfilled.
  */
@@ -435,13 +440,17 @@ export async function backfillUserTiers() {
   let n = 0;
   for (const u of users) {
     if (has.has(u.id)) continue;
-    const targetTier = (isSystemBypassUser(u) && internalTierId) ? internalTierId : defaultId;
+    // Explicit tier wins: preserve it verbatim. previousTierId stays null so the
+    // backfill reads as an 'initial' assignment, never a fake promotion/downgrade.
+    const explicitTierId = (typeof u.tierId === 'string' && u.tierId) ? u.tierId : null;
+    const targetTier = explicitTierId
+      || ((isSystemBypassUser(u) && internalTierId) ? internalTierId : defaultId);
     try {
       await recordTierAssignment({
         userId: u.id,
         tierId: targetTier,
         userTierId: targetTier,
-        previousTierId: u.tierId ?? null,
+        previousTierId: null,
         changeType: 'backfill',
         reason: 'Initial tier backfill',
         assignedByName: 'system',

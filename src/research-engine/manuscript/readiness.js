@@ -10,6 +10,8 @@ import { primaryAnalysis } from './draft.js';
 import { evaluateStaleness } from './sourceHash.js';
 import { auditReferences, referencesFromProject } from './citations.js';
 import { SECTION_IDS } from './model.js';
+import { describeSynthesisModel, resolveAnalysis } from './analysisDescribe.js';
+import { checkConsistency } from './consistency.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 const nonEmpty = (sect, id) => !!(sect && sect[id] && clean(sect[id].content));
@@ -103,16 +105,36 @@ export function smartInsights(project, draft, opts = {}) {
     if (aiUnverified.length) push('ai-review', 'info', `${aiUnverified.length} auto-drafted section(s) have not been reviewed/edited — verify before submission.`);
   }
 
+  // 73.md Part 8 — cross-artefact consistency checks (estimator wording vs the
+  // configured τ² method, PRISMA vs extraction, un-narrated outcomes, empty
+  // references, leftover placeholders, Results-without-Methods). Additive
+  // 'consistency:*' keys; the raw list is also exported via checkConsistency
+  // for per-section UI badges.
+  if (draft) {
+    for (const c of checkConsistency(project, draft, { ...opts, prismaCounts: pc })) {
+      push(`consistency:${c.id}`, c.severity === 'warn' ? 'warning' : 'info', c.message);
+    }
+  }
+
   return out;
 }
 
-/** Reproducibility analysis settings snapshot. Pure. */
+/** Reproducibility analysis settings snapshot. 73.md Part 8 — describes the
+ *  CONFIGURED estimator (opts.analysis → project.analysisSettings → DL) via the
+ *  shared describeSynthesisModel instead of a hardcoded DL string; DL output is
+ *  byte-identical, and tau2Method/synthesisModel are additive fields. Pure. */
 export function analysisSettings(project, opts = {}) {
   const primary = opts.primary || primaryAnalysis(project, opts);
+  const cfg = resolveAnalysis(project, {
+    ...opts, model: (opts.analysis && opts.analysis.model) || (primary && primary.model) || opts.model,
+  });
+  const desc = describeSynthesisModel(cfg);
   return {
     effectMeasure: primary ? (primary.pair.esType || null) : null,
-    model: (primary && primary.model) || 'random',
-    heterogeneityMethod: 'DerSimonian-Laird (I², τ², Cochran Q)',
+    model: (primary && primary.model) || cfg.model,
+    tau2Method: cfg.tau2Method,
+    synthesisModel: desc.label,
+    heterogeneityMethod: desc.heterogeneityMethod,
     hksj: !!(primary && primary.result && primary.result.hksj),
     predictionInterval: !!(primary && primary.result && primary.result.predInt),
     continuityCorrection: null,

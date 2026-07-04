@@ -77,6 +77,10 @@ export function buildStudyCharacteristicsTable(project, opts = {}) {
     { key: 'comparator', label: 'Comparator', get: (s) => clean(s.comparatorDef || s.comparator) },
     { key: 'outcome', label: 'Outcome(s)', get: (s) => clean(s.outcome || s.primaryOutcome) },
     { key: 'followup', label: 'Follow-up', get: (s) => clean(s.followup || s.timepoint) },
+    // 73.md Part 8 — per-study funding belongs HERE (never auto-filled into the
+    // manuscript's author-level funding statement). Column appears only when
+    // ≥1 study has it, like every other adaptive column.
+    { key: 'funding', label: 'Funding', get: (s) => clean(s.funding) },
     { key: 'rob', label: 'Risk of bias', get: (s) => clean(rob[s.id]) },
   ];
 
@@ -235,9 +239,21 @@ export function buildPrismaCountsTable(prismaResult) {
 }
 
 /**
- * D. Risk of bias summary table — from legacy per-study judgements (studies[].rob)
- * and/or injected structured assessments (opts.assessments: study.id → {domains:{},
- * overall}). Domains adapt to whatever the instrument used. Pure.
+ * D. Risk of bias summary table — STRUCTURED assessments win over legacy
+ * per-study judgements (studies[].rob); a study with only a legacy map still
+ * renders. Domains adapt to whatever the instrument used. Pure.
+ *
+ * @param {object} [opts.assessments]  RoB v2 structured map keyed by study id:
+ *   { [studyId]: {
+ *       domains: { [domainKey]: 'Low'|'Some concerns'|'High'|… },  // e.g. D1…D5
+ *       overall: 'Low'|'Some concerns'|'High',                     // final judgement
+ *       tool?:   string,                                           // e.g. 'RoB2'
+ *   } }
+ *   Wave-2 maps GET /api/rob/projects/:projectId/assessments to this shape
+ *   (assessment.studyId → key; per-domain judgements → domains; overall → overall).
+ *   A structured entry with domains takes FULL precedence over studies[].rob for
+ *   that study; an entry with only `overall` still contributes the Overall cell.
+ * @param {Array}  [opts.domainDefs]   [[key,label],…] override for non-RoB2 tools.
  */
 export function buildRobTable(project, opts = {}) {
   const studies = Array.isArray(project && project.studies) ? project.studies : [];
@@ -250,8 +266,13 @@ export function buildRobTable(project, opts = {}) {
   const rows = [];
   for (const s of studies) {
     const fromStruct = assessments[s.id];
-    const rob = (fromStruct && fromStruct.domains) || s.rob || {};
-    if (!rob || !Object.keys(rob).length) continue;
+    // Structured domains (when non-empty) beat legacy; an EMPTY structured
+    // domains map must not shadow a populated legacy studies[].rob.
+    const structDomains = fromStruct && fromStruct.domains && Object.keys(fromStruct.domains).length
+      ? fromStruct.domains : null;
+    const rob = structDomains || s.rob || {};
+    const overallOnly = !Object.keys(rob).length && !!(fromStruct && clean(fromStruct.overall));
+    if (!Object.keys(rob).length && !overallOnly) continue;
     const row = { study: clean(s.author || (s.authors || '').split(/[,;]/)[0]) + (s.year ? ` ${clean(s.year)}` : '') || clean(s.title) };
     for (const [k] of domainDefs) row[k] = clean(rob[k]);
     row.overall = clean((fromStruct && fromStruct.overall) || deriveOverall(rob, domainDefs));
@@ -293,21 +314,37 @@ function deriveOverall(rob, domainDefs) {
 /**
  * E. Search strategy table — from search builder / PRISMA-S data. One row per
  * database searched, with date/string/records when available. Pure.
+ *
+ * @param {object} [opts.perSource]  per-database execution facts keyed by dbKey:
+ *   { [dbKey]: {
+ *       records:    number,   // records retrieved from that database
+ *       searchedAt: string,   // ISO date the source was searched (alias: date)
+ *       query:      string,   // the exact query run there (alias: string)
+ *       filters?:   string, notes?: string,
+ *   } }
+ *   Wave-2 maps the Pecan search run's per-source counts
+ *   (GET /api/pecan-search/... run detail → sources[]) to this shape. A dbKey
+ *   present here but not enabled in search.dbs is NOT invented into a row —
+ *   the Search tab remains the source of truth for which databases were used.
+ *   Per-source values win over the project-level search.date/string fallbacks.
  */
 export function buildSearchStrategyTable(project, opts = {}) {
   const search = (project && project.search) || {};
   const dbs = search.dbs || {};
   const enabled = Object.keys(dbs).filter((k) => dbs[k]);
-  const perSource = opts.perSource || {}; // db → { records, string, date, filters }
+  const perSource = opts.perSource || {};
 
-  const rows = enabled.map((db) => ({
-    database: db,
-    date: clean((perSource[db] && perSource[db].date) || search.date),
-    string: clean((perSource[db] && perSource[db].string) || search.string),
-    records: (() => { const n = num(perSource[db] && perSource[db].records); return n == null ? '' : String(n); })(),
-    filters: clean((perSource[db] && perSource[db].filters) || ''),
-    notes: clean((perSource[db] && perSource[db].notes) || search.notes),
-  }));
+  const rows = enabled.map((db) => {
+    const ps = perSource[db] || {};
+    return {
+      database: db,
+      date: clean(ps.date || ps.searchedAt || search.date),
+      string: clean(ps.string || ps.query || search.string),
+      records: (() => { const n = num(ps.records); return n == null ? '' : String(n); })(),
+      filters: clean(ps.filters || ''),
+      notes: clean(ps.notes || search.notes),
+    };
+  });
 
   const candidates = [
     { key: 'database', label: 'Database' },

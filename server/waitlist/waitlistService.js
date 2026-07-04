@@ -9,7 +9,7 @@
 
 import { validateApplication, normalizeEmail, isValidEmail, isValidStatus } from '../../src/shared/betaWaitlist.js';
 import { getWaitlistClient } from './waitlistClient.js';
-import { isWaitlistDbConfigured, waitlistConfigStatus } from './config.js';
+import { isWaitlistDbConfigured, waitlistConfigStatus, waitlistDbProvider } from './config.js';
 import * as repo from './waitlistRepository.js';
 import { computeWaitlistMetrics } from './metrics.js';
 import { toCsv } from './csv.js';
@@ -323,6 +323,29 @@ export async function exportApplicants(params) {
 /** Config snapshot for the Ops console (no secrets). */
 export function configStatus() {
   return { ...waitlistConfigStatus(), emailConfigured: isEmailConfigured() };
+}
+
+// ── Ops: diagnostics ────────────────────────────────────────────────────────────
+/**
+ * 73.md Part 11 — pinpoint WHY the waitlist data layer is down (env unset vs
+ * generated client missing vs live query failing) for the admin metrics panel.
+ * Resolves the dedicated client and runs one cheap COUNT. No secrets: `target`
+ * is the same redacted value the Ops config already shows. Never throws.
+ * @returns {Promise<{dbConfigured:boolean, target:string, provider:string, clientOk:boolean, reason:'not_configured'|'client_unavailable'|'query_failed'|'ok'}>}
+ */
+export async function diagnose() {
+  const { dbConfigured, target } = waitlistConfigStatus();
+  const base = { dbConfigured, target, provider: waitlistDbProvider() };
+  if (!dbConfigured) return { ...base, clientOk: false, reason: 'not_configured' };
+  const c = await resolveClient();
+  if (!c.ok) return { ...base, clientOk: false, reason: c.code };
+  try {
+    await repo.countActive(c.client);
+    return { ...base, clientOk: true, reason: 'ok' };
+  } catch (err) {
+    console.error('[waitlist] diagnose query failed:', errDetail(err));
+    return { ...base, clientOk: false, reason: 'query_failed' };
+  }
 }
 
 export { isWaitlistDbConfigured };

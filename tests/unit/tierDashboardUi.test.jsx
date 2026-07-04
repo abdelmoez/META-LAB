@@ -24,6 +24,9 @@ const noop = () => {};
 const noAI = (html) => expect(html).not.toMatch(/\bAI\b/);
 
 describe('TierAnalyticsDashboard', () => {
+  // The REAL server contract (GET /api/admin/tiers/analytics): the window
+  // tallies recentPromotions/recentDowngrades/manualChanges/trialUsers are
+  // NUMBERS; the list rows live on the additive *List keys (73.md Part 10).
   const data = {
     totalUsers: 1234,
     byTier: [
@@ -36,16 +39,23 @@ describe('TierAnalyticsDashboard', () => {
     recentChanges: [
       { userId: 'u1', email: 'a@x.io', from: 'free', to: 'plus', changeType: 'promotion', at: new Date().toISOString(), byName: 'Admin One' },
     ],
-    recentPromotions: [
+    recentPromotions: 5,
+    recentDowngrades: 0,
+    manualChanges: 3,
+    trialUsers: 1,
+    recentPromotionsList: [
       { userId: 'u1', email: 'a@x.io', from: 'free', to: 'plus', changeType: 'promotion', at: new Date().toISOString(), byName: 'Admin One' },
     ],
-    recentDowngrades: [],
-    trialUsers: [
-      { userId: 'u2', email: 'trial@x.io', tierId: 'pro', effectiveUntil: '2026-08-01T00:00:00.000Z' },
+    recentDowngradesList: [],
+    trialUsersList: [
+      { userId: 'u2', email: 'trial@x.io', tierId: 'pro', effectiveFrom: '2026-06-15T00:00:00.000Z', effectiveUntil: '2026-08-01T00:00:00.000Z' },
     ],
     expiringSoon: [
       { userId: 'u3', email: 'exp@x.io', tierId: 'plus', effectiveUntil: '2026-07-10T00:00:00.000Z' },
     ],
+    newByTier: [],
+    newUnassigned: 0,
+    window: { days: 30 },
   };
 
   it('renders total + per-tier count tiles with percentages', () => {
@@ -61,6 +71,15 @@ describe('TierAnalyticsDashboard', () => {
     noAI(html);
   });
 
+  it('renders the window tallies as count tiles (they are numbers, not rows)', () => {
+    const html = renderToStaticMarkup(h(TierAnalyticsDashboard, { data }));
+    expect(html).toContain('Promotions (30d)');
+    expect(html).toContain('Downgrades (30d)');
+    expect(html).toContain('Manual changes (30d)');
+    expect(html).toContain('5'); // recentPromotions tally rendered somewhere
+    noAI(html);
+  });
+
   it('renders the compact lists: recent changes, trial users, expiring soon', () => {
     const html = renderToStaticMarkup(h(TierAnalyticsDashboard, { data }));
     expect(html).toContain('Recent tier changes');
@@ -73,15 +92,46 @@ describe('TierAnalyticsDashboard', () => {
     expect(html).toContain('Free → Plus');
     expect(html).toContain('promotion');
     expect(html).toContain('Admin One');
-    // an expiring row shows the user + an until date
+    // the trial + expiring rows show the user + an until date
+    expect(html).toContain('trial@x.io');
     expect(html).toContain('exp@x.io');
     expect(html).toContain('until');
     noAI(html);
   });
 
   it('shows the empty copy for lists with no rows', () => {
-    const html = renderToStaticMarkup(h(TierAnalyticsDashboard, { data: { ...data, recentDowngrades: [] } }));
+    const html = renderToStaticMarkup(h(TierAnalyticsDashboard, { data: { ...data, recentDowngradesList: [] } }));
     expect(html).toContain('No recent downgrades.');
+  });
+
+  it('REGRESSION (73.md Part 10): non-zero NUMBER tallies with the *List keys ABSENT (legacy server) render without crashing', () => {
+    // This is the exact shape that crashed the Tiers tab to the app-level
+    // boundary: counts fed where the lists expected row arrays, and the
+    // '(!rows || rows.length === 0)' guard let non-zero numbers through to .map.
+    const legacy = {
+      totalUsers: 10,
+      byTier: [{ tierId: 'pro', displayName: 'Pro', count: 10, pct: 100 }],
+      unassigned: 0,
+      avgDaysInCurrentTier: 2,
+      recentChanges: [],
+      recentPromotions: 4,
+      recentDowngrades: 2,
+      manualChanges: 1,
+      trialUsers: 3,
+      expiringSoon: [],
+      window: { days: 30 },
+    };
+    const html = renderToStaticMarkup(h(TierAnalyticsDashboard, { data: legacy }));
+    // The tallies surface as tiles…
+    expect(html).toContain('Promotions (30d)');
+    expect(html).toContain('Downgrades (30d)');
+    expect(html).toContain('Manual changes (30d)');
+    // …and the lists degrade to their empty copy instead of rows.map crashing.
+    expect(html).toContain('No recent promotions.');
+    expect(html).toContain('No recent downgrades.');
+    expect(html).toContain('No trial users.');
+    expect(html).toContain('Nothing expiring soon.');
+    noAI(html);
   });
 });
 

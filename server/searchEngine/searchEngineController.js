@@ -82,6 +82,15 @@ export function sanitizeFilters(raw) {
   };
 }
 
+/**
+ * 73.md P5 — the two-path search mode marker. Strictly 'manual' | 'automated';
+ * anything else (junk, legacy shapes) collapses to null (= not chosen yet).
+ * Exported for unit tests.
+ */
+export function sanitizeSearchMode(raw) {
+  return raw === 'manual' || raw === 'automated' ? raw : null;
+}
+
 async function searchEngineEnabled() {
   try {
     const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
@@ -151,7 +160,13 @@ export async function getSearch(req, res) {
     if (mod.revision <= 0) return res.json(null);
     // `updatedBy` lets the tab attribute a live update to the collaborator who made
     // it ("updated by …"); it is identity-only (id + name), no project content.
-    return res.json({ ...mod.state, revision: mod.revision, updatedAt: mod.updatedAt, updatedBy: mod.updatedBy });
+    // 73.md P5 — always surface a valid `searchMode` ('manual'|'automated'|null) so
+    // clients never have to re-validate; older saves simply read as null.
+    return res.json({
+      ...mod.state,
+      searchMode: sanitizeSearchMode(mod.state && mod.state.searchMode),
+      revision: mod.revision, updatedAt: mod.updatedAt, updatedBy: mod.updatedBy,
+    });
   } catch (err) {
     console.error('[searchEngine] getSearch error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
@@ -191,6 +206,13 @@ export async function putSearch(req, res) {
       // migration. Defensive clamp via sanitizeFilters.
       filters: sanitizeFilters(body.filters),
     };
+    // 73.md P5 — additive two-path marker ('manual' | 'automated' | null). ONLY
+    // written when the client names the key: patchModuleState's mergePatch is a
+    // shallow top-level merge, so a Search-Builder autosave that omits searchMode
+    // can never wipe a mode chosen in the workspace's Search Mode stage.
+    if (Object.prototype.hasOwnProperty.call(body, 'searchMode')) {
+      value.searchMode = sanitizeSearchMode(body.searchMode);
+    }
     // baseRevision null = overwrite (the contract's PUT is a full upsert; the
     // search builder is single-strategy-per-project so last-write-wins is fine).
     const out = await patchModuleState({

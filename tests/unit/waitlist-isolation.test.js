@@ -42,9 +42,19 @@ describe('waitlist code boundary (DB isolation)', () => {
 
 describe('waitlist config fail-safe', () => {
   const KEY = 'BETA_WAITLIST_DATABASE_URL';
+  // 73.md Part 11 — the postgres var is a valid fallback source; clear it too so
+  // "unconfigured" below is hermetic on machines that export it.
+  const PG_KEY = 'POSTGRES_WAITLIST_DATABASE_URL';
   let saved;
-  beforeEach(() => { saved = process.env[KEY]; delete process.env[KEY]; });
-  afterEach(() => { if (saved === undefined) delete process.env[KEY]; else process.env[KEY] = saved; });
+  let savedPg;
+  beforeEach(() => {
+    saved = process.env[KEY]; delete process.env[KEY];
+    savedPg = process.env[PG_KEY]; delete process.env[PG_KEY];
+  });
+  afterEach(() => {
+    if (saved === undefined) delete process.env[KEY]; else process.env[KEY] = saved;
+    if (savedPg === undefined) delete process.env[PG_KEY]; else process.env[PG_KEY] = savedPg;
+  });
 
   it('reports unconfigured when the dedicated env var is unset', () => {
     expect(isWaitlistDbConfigured()).toBe(false);

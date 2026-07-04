@@ -145,6 +145,38 @@ describe('GET /admin/tiers/analytics', () => {
     // our target shows up in recentChanges
     expect(a.recentChanges.some(c => c.userId === target.user.id)).toBe(true);
   });
+
+  it('73.md Part 10 — window tallies stay NUMBERS and the additive *List keys are row ARRAYS', async () => {
+    if (!haveAdmin()) return;
+    const res = await jsonFetch('/admin/tiers/analytics', { cookie: adminCookie });
+    expect(res.status).toBe(200);
+    const a = await res.json();
+    // The tallies keep the shipped numeric contract.
+    expect(typeof a.recentPromotions).toBe('number');
+    expect(typeof a.recentDowngrades).toBe('number');
+    expect(typeof a.manualChanges).toBe('number');
+    expect(typeof a.trialUsers).toBe('number');
+    // The *List keys carry the rows the dashboard lists render.
+    expect(Array.isArray(a.recentPromotionsList)).toBe(true);
+    expect(Array.isArray(a.recentDowngradesList)).toBe(true);
+    expect(Array.isArray(a.trialUsersList)).toBe(true);
+    expect(a.recentPromotionsList.length).toBeLessThanOrEqual(20);
+    expect(a.recentDowngradesList.length).toBeLessThanOrEqual(20);
+    expect(a.trialUsersList.length).toBeLessThanOrEqual(100);
+    // Our just-promoted target appears in the promotions list, email-joined,
+    // in the same row shape as recentChanges.
+    const mine = a.recentPromotionsList.find(c => c.userId === target.user.id);
+    expect(mine).toBeTruthy();
+    expect(mine.email).toBe(target.user.email);
+    expect(mine.changeType).toBe('promotion');
+    expect(typeof mine.to).toBe('string');
+    // Every user-bearing row carries an email key (null for vanished users —
+    // never undefined; the mini lists no longer fall back to raw userIds).
+    for (const r of [...a.recentPromotionsList, ...a.recentDowngradesList, ...a.trialUsersList, ...a.expiringSoon]) {
+      expect(typeof r.userId).toBe('string');
+      expect('email' in r).toBe(true);
+    }
+  });
 });
 
 describe('GET /admin/tiers/:id/users (+ CSV export)', () => {
