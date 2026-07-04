@@ -42,6 +42,7 @@ import searchEngineRouter  from './routes/searchEngine.js';
 import pecanSearchRouter    from './routes/pecanSearch.js';
 import citationMiningRouter from './routes/citationMining.js';
 import extractionRouter     from './routes/extraction.js';
+import aiExtractRouter      from './routes/aiExtract.js';
 import livingReviewRouter   from './routes/livingReview.js';
 import publicSynthesisRouter from './routes/publicSynthesis.js';
 import publicViewRouter      from './routes/publicView.js';
@@ -292,8 +293,16 @@ app.use(cors({ origin: corsOriginDelegate(), credentials: true }));
 // bodies. Matched on the path suffix (/import and /import/start).
 const jsonStandard    = express.json({ limit: '10mb' });
 const jsonLargeImport = express.json({ limit: '64mb' });
-app.use((req, res, next) =>
-  (/\/import(\/start)?$/.test(req.path) ? jsonLargeImport : jsonStandard)(req, res, next));
+// AI extraction accepts a base64 PDF: the DECODED cap is 20MB (413 enforced in
+// the controller), so the wire budget must cover base64 inflation (~27MB) plus
+// the JSON envelope. Everything else keeps the 10MB default.
+const jsonAiExtract   = express.json({ limit: '32mb' });
+app.use((req, res, next) => {
+  const parser = /\/import(\/start)?$/.test(req.path) ? jsonLargeImport
+    : req.path === '/api/ai-extract' ? jsonAiExtract
+    : jsonStandard;
+  return parser(req, res, next);
+});
 app.use(cookieParser());
 app.use(requestLogger);
 
@@ -466,6 +475,13 @@ app.use('/api/citation-mining', requireAuth, pecanSearchLimiter, citationMiningR
 // handler gates on the `extractionAssist` flag (default OFF → 404) and the
 // caller's META·LAB project access. AI suggestions never auto-commit.
 app.use('/api/extraction', requireAuth, extractionRouter);
+
+// ── AI extraction (server-proxied LLM) — requireAuth at the mount; the POST
+// handler gates on the `aiExtraction` flag (default OFF → 404). The Anthropic
+// key stays server-side (the browser never calls api.anthropic.com — CSP
+// connect-src 'self' stands); results are a validated patch flagged
+// needsReview. This is the ONE real model call in the app.
+app.use('/api/ai-extract', requireAuth, aiExtractRouter);
 
 // ── Living Reviews (66.md P6) — requireAuth at the mount; each handler gates on
 // the `livingReview` flag (default OFF → 404) and project access. Scheduled

@@ -95,6 +95,17 @@ export default function AppPdfViewer({
   flush = false,             // fill parent height (RoB sidebar) vs fixed previewHeight
   previewHeight = 520,
   withCredentials = true,
+  // ── Optional interactivity (RoadMap/1.md extraction workspace) ──────────────
+  // All default to inert, so existing callers (RoB, screening) are byte-for-byte
+  // unchanged. `onDocLoaded(doc)` hands the pdf.js document to a host that wants to
+  // extract text or re-render a region. `interaction` opts a page into click-to-
+  // assign or drag-a-region selection; `pageOverlay(page)` renders host content over
+  // a page (e.g. a draft highlight). Coordinates reported to the host are in PDF
+  // USER SPACE at scale 1 (x right from left, y UP from the page bottom) so they
+  // compose with the pure pdfTextGrid/gridFromRegion engine.
+  onDocLoaded = null,
+  interaction = null,        // null | { mode:'click'|'region', onTextClick, onRegion }
+  pageOverlay = null,        // null | (page:number) => ReactNode
 }) {
   const [doc, setDoc]         = useState(null);
   const [numPages, setNum]    = useState(0);
@@ -181,6 +192,7 @@ export default function AppPdfViewer({
         const d = await task.promise;
         if (cancelled) { try { d.destroy(); } catch { /* noop */ } return; }
         docRef.current = d; setDoc(d); setNum(d.numPages);
+        try { onDocLoaded && onDocLoaded(d); } catch { /* host callback is best-effort */ }
         // Seed page-1 dims up-front so the first wrapper is correctly sized → sharp first paint.
         try {
           const p1 = await d.getPage(1);
@@ -582,6 +594,8 @@ export default function AppPdfViewer({
                       searchOptions={searchOptions}
                       currentLocal={current && current.page === p ? current.local : null}
                       onDims={onPageDims}
+                      interaction={interaction}
+                      overlay={pageOverlay ? pageOverlay(p) : null}
                     />
                   ) : (
                     <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.dim, fontFamily: MONO, fontSize: 11 }}>
@@ -599,12 +613,18 @@ export default function AppPdfViewer({
 }
 
 /* ── A single continuous page: canvas + real text layer + match highlighting ─── */
-function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOptions, currentLocal, onDims }) {
+function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOptions, currentLocal, onDims, interaction = null, overlay = null }) {
   const canvasRef = useRef(null);
   const textRef   = useRef(null);
   const renderRef = useRef(null);
   const lastScrolledRef = useRef(null);          // last currentLocal we scrolled to (avoid per-keystroke jitter)
   const [textReady, setTextReady] = useState(0); // bumps after each text-layer (re)build
+  const [drag, setDrag] = useState(null);        // region rubber-band {x0,y0,x1,y1} in CSS px
+  const [pageDims, setPageDims] = useState(null); // {w,h} intrinsic (scale 1), for coord mapping
+
+  const iMode = interaction && interaction.mode;
+  const clickable = iMode === 'click';
+  const regionMode = iMode === 'region';
 
   // Render the canvas + build the text layer at the current scale/rotation.
   useEffect(() => {
@@ -615,7 +635,11 @@ function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOption
       try { page = await doc.getPage(pageNumber); } catch { return; }
       if (cancelled) return;
       // Report intrinsic (unrotated) dims so the parent sizes the wrapper precisely.
-      try { const v0 = page.getViewport({ scale: 1, rotation: 0 }); onDims && onDims(pageNumber, { w: v0.width, h: v0.height }); } catch { /* noop */ }
+      try {
+        const v0 = page.getViewport({ scale: 1, rotation: 0 });
+        onDims && onDims(pageNumber, { w: v0.width, h: v0.height });
+        setPageDims({ w: v0.width, h: v0.height });
+      } catch { /* noop */ }
 
       const viewport = page.getViewport({ scale, rotation }); // CSS-px geometry
       const canvas = canvasRef.current; if (!canvas) return;
@@ -691,12 +715,89 @@ function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOption
     }
   }, [term, searchOptions, currentLocal, textReady]);
 
+  // Map a page-local CSS-px point to PDF USER SPACE at scale 1 (x right, y UP from
+  // the page bottom). rotation is not applied to region coords (region tools run in
+  // fit/no-rotation mode); guarded by pageDims presence.
+  const cssToUser = useCallback((cx, cy) => {
+    const H = pageDims ? pageDims.h : 0;
+    return { x: cx / scale, y: H - cy / scale };
+  }, [pageDims, scale]);
+
+  function localPoint(e) {
+    const host = e.currentTarget.getBoundingClientRect();
+    return { x: e.clientX - host.left, y: e.clientY - host.top };
+  }
+
+  function onTextClickCapture(e) {
+    if (!clickable || !interaction.onTextClick) return;
+    // Only react to a click that lands on a text span (has text), not empty gaps.
+    const span = e.target.closest && e.target.closest('span');
+    const str = span ? (span.dataset.t != null ? span.dataset.t : span.textContent) : '';
+    if (!str || !str.trim()) return;
+    e.preventDefault(); e.stopPropagation();
+    interaction.onTextClick({ page: pageNumber, str: String(str).trim() });
+  }
+
+  function onRegionDown(e) {
+    if (!regionMode) return;
+    e.preventDefault();
+    const p = localPoint(e);
+    setDrag({ x0: p.x, y0: p.y, x1: p.x, y1: p.y });
+  }
+  function onRegionMove(e) {
+    if (!regionMode || !drag) return;
+    const p = localPoint(e);
+    setDrag((d) => (d ? { ...d, x1: p.x, y1: p.y } : d));
+  }
+  function onRegionUp(e) {
+    if (!regionMode || !drag) return;
+    const p = localPoint(e);
+    const cx0 = Math.min(drag.x0, p.x), cx1 = Math.max(drag.x0, p.x);
+    const cy0 = Math.min(drag.y0, p.y), cy1 = Math.max(drag.y0, p.y);
+    setDrag(null);
+    if (Math.abs(cx1 - cx0) < 6 || Math.abs(cy1 - cy0) < 6) return; // ignore tiny drags
+    // PDF user space (y up): top CSS edge → larger user-y.
+    const uTL = cssToUser(cx0, cy0), uBR = cssToUser(cx1, cy1);
+    const region = { x0: Math.min(uTL.x, uBR.x), y0: Math.min(uTL.y, uBR.y), x1: Math.max(uTL.x, uBR.x), y1: Math.max(uTL.y, uBR.y) };
+    if (interaction.onRegion) {
+      interaction.onRegion({
+        page: pageNumber, region,
+        cssRect: { x0: cx0, y0: cy0, x1: cx1, y1: cy1 },
+        scale, pageW: pageDims ? pageDims.w : null, pageH: pageDims ? pageDims.h : null,
+      });
+    }
+  }
+
+  const rubber = drag ? {
+    left: Math.min(drag.x0, drag.x1), top: Math.min(drag.y0, drag.y1),
+    width: Math.abs(drag.x1 - drag.x0), height: Math.abs(drag.y1 - drag.y0),
+  } : null;
+
   return (
     <>
       {/* Canvas size is set in px by the render effect (= the CSS-px viewport), so it
           aligns exactly with the text layer (which setLayerDimensions sizes the same way). */}
       <canvas ref={canvasRef} style={{ position: 'absolute', top: 0, left: 0, display: 'block' }} />
-      <div ref={textRef} className="mlpdf-tl" aria-hidden="true" />
+      <div
+        ref={textRef}
+        className="mlpdf-tl"
+        aria-hidden={!clickable}
+        onClickCapture={clickable ? onTextClickCapture : undefined}
+        style={clickable ? { pointerEvents: 'auto', cursor: 'copy' } : undefined}
+      />
+      {overlay ? <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 3 }}>{overlay}</div> : null}
+      {regionMode && (
+        <div
+          onMouseDown={onRegionDown} onMouseMove={onRegionMove} onMouseUp={onRegionUp}
+          onMouseLeave={() => drag && setDrag(null)}
+          style={{ position: 'absolute', inset: 0, zIndex: 4, cursor: 'crosshair', pointerEvents: 'auto' }}
+        >
+          {rubber && (
+            <div style={{ position: 'absolute', left: rubber.left, top: rubber.top, width: rubber.width, height: rubber.height,
+              border: '2px dashed #6d28d9', background: 'rgba(109,40,217,0.14)', pointerEvents: 'none' }} />
+          )}
+        </div>
+      )}
     </>
   );
 }

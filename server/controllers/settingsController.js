@@ -134,6 +134,17 @@ const DEFAULTS = {
     // human review is mandatory, nothing auto-commits). Default OFF: the Extraction
     // tab keeps its classic table until an admin enables this.
     extractionAssist: false,
+    // OPTIONAL server-proxied LLM extraction for the unified extraction
+    // workspace. Default OFF: POST /api/ai-extract 404s (existence-hidden) and
+    // GET /api/ai-extract/status reports available:false. When ON (and
+    // ANTHROPIC_API_KEY is configured server-side), a user can send a PDF or
+    // pasted article text to the server, which makes ONE model call and returns
+    // a validated, whitelisted study patch (ratio measures log-transformed with
+    // a conversions[] audit record; everything mapped is flagged needsReview —
+    // human sign-off mandatory, nothing auto-commits). Deterministic features
+    // are never labeled AI; this flag governs the app's one real model call.
+    // Admin-toggleable exactly like extractionAssist.
+    aiExtraction: false,
     // 66.md (P6) — living reviews: scheduled saved searches re-run through Pecan
     // Search, "new since last run" screening queue with AI pre-scoring, versioned
     // review snapshots and cautious evidence-shift alerts. Default OFF. Automated

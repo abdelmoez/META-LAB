@@ -12,6 +12,12 @@ import { alpha as themeAlpha } from "../../theme/tokens.js";
 // fetched when a user actually opens the structured mode.
 import { extractionAssistFlagEnabled } from "../../../features/extraction/flag.js";
 const ExtractionWorkspace = lazy(() => import("../../../features/extraction/ExtractionWorkspace.jsx"));
+// RoadMap/1.md — the unified assisted-extraction workspace (inline PDF + four methods).
+// Heavy (pdf.js + digitizer) so it is lazy-loaded only when a reviewer opens it.
+const AssistedExtractionPanel = lazy(() => import("../../../features/extraction/unified/AssistedExtractionPanel.jsx"));
+import DraftReviewList from "../../../features/extraction/unified/DraftReviewList.jsx";
+import { protocolOutcomes } from "../../../research-engine/extraction/protocolOutcomes.js";
+import { confirmDraft as confirmDraftPure, parkRecord as parkRecordPure, unparkToDraft as unparkPure } from "../../../research-engine/extraction/records.js";
 import { downloadBlob } from "../../components/exportCore.js";
 import { fmtES } from "../../../research-engine/format/precision.js";
 import { orderStudies, EXTRACTION_SORTS, DEFAULT_EXTRACTION_SORT } from "../../pages/extractionOrder.js";
@@ -586,6 +592,39 @@ function ExtractionTab({project,updateProject,activeId}){
       return {...p,studies:arr};
     });
   };
+  // ── Assisted-workspace draft handling (RoadMap/1.md) ─────────────────────────
+  // Drafts/parked live additively on the project blob; never overwrite a human value.
+  const addDrafts=(recs)=>{ if(!recs||!recs.length) return; updateProject(activeId,p=>({...p,extractionDrafts:[...(p.extractionDrafts||[]),...recs]})); };
+  const addParked=(recs)=>{ if(!recs||!recs.length) return; updateProject(activeId,p=>({...p,extractionParked:[...(p.extractionParked||[]),...recs]})); };
+  // Dismiss removes the record by id from whichever list holds it (drafts or parked).
+  const dismissDraft=(id)=>updateProject(activeId,p=>({...p,
+    extractionDrafts:(p.extractionDrafts||[]).filter(d=>d.id!==id),
+    extractionParked:(p.extractionParked||[]).filter(d=>d.id!==id)}));
+  const editDraftField=(id,key,value)=>updateProject(activeId,p=>({...p,extractionDrafts:(p.extractionDrafts||[]).map(d=>{
+    if(d.id!==id) return d;
+    if(key==="scope") return {...d,scope:{level:value.level,outcomeId:value.outcomeId,canonical:value.canonical},outcome:value.name!=null?value.name:d.outcome};
+    return {...d,[key]:value};
+  })}));
+  const confirmDraftById=(id)=>updateProject(activeId,p=>{
+    const at=new Date().toISOString();
+    const res=confirmDraftPure({studies:p.studies||[],drafts:p.extractionDrafts||[]},id,{at,baseStudyId:selectedStudyId||null});
+    if(!res.ok) return p;
+    return {...p,studies:res.studies,extractionDrafts:res.drafts};
+  });
+  const parkDraft=(id)=>updateProject(activeId,p=>{
+    const res=parkRecordPure({drafts:p.extractionDrafts||[],parked:p.extractionParked||[]},id,{at:new Date().toISOString()});
+    if(!res.ok) return p;
+    return {...p,extractionDrafts:res.drafts,extractionParked:res.parked};
+  });
+  const unparkRecord=(id,scope)=>updateProject(activeId,p=>{
+    const res=unparkPure({parked:p.extractionParked||[],drafts:p.extractionDrafts||[]},id,{scope});
+    if(!res.ok) return p;
+    return {...p,extractionParked:res.parked,extractionDrafts:res.drafts};
+  });
+  // Click-assign: patch several fields of one study at once (fast manual aid).
+  const patchStudy=(id,patch)=>updateProject(activeId,p=>({...p,studies:p.studies.map(s=>s.id===id?{...s,...patch,updatedAt:new Date().toISOString()}:s)}));
+  const addBlankAndSelect=()=>updateProject(activeId,p=>{const fresh=mkStudy();setTimeout(()=>setSelectedStudyId(fresh.id),0);return {...p,studies:[...p.studies,fresh]};});
+
   const[showAdd,setShowAdd]=useState(false);
   const[showAI,setShowAI]=useState(false);
   const[aiMode,setAiMode]=useState("pdf");   // pdf | text
@@ -596,6 +635,15 @@ function ExtractionTab({project,updateProject,activeId}){
   const[aiError,setAIError]=useState("");
   const[view,setView]=useState("cards");   // cards | table
   const[showQC,setShowQC]=useState(false);
+  // RoadMap/1.md — the unified assisted workspace + protocol-scoped drafts.
+  const[showAssisted,setShowAssisted]=useState(false);
+  const[selectedStudyId,setSelectedStudyId]=useState("");
+  const drafts=project.extractionDrafts||[];
+  const parked=project.extractionParked||[];
+  const protocol=useMemo(()=>protocolOutcomes(project),[project.prospero,project.pico]);
+  const protocolOuts=protocol.outcomes;
+  // Keep a study selected for the assisted workspace (default: first study).
+  useEffect(()=>{ if(!selectedStudyId&&studies.length) setSelectedStudyId(studies[0].id); },[studies,selectedStudyId]);
   // Filters
   const[fOutcome,setFOutcome]=useState("");
   const[fTime,setFTime]=useState("");
@@ -876,12 +924,46 @@ ${paperText.slice(0,15000)}`;
               background:view===v?C.acc:"transparent",color:view===v?C.accText:C.muted}}>{label}</button>
           ))}
         </div>
+        {!readOnly&&<button onClick={()=>setShowAssisted(v=>!v)} style={{...btnS(showAssisted?"primary":"ghost"),fontSize:12}} title="Inline PDF viewer + auto / pick-a-source / click-assign extraction">🔬 Assisted workspace</button>}
         {studies.length>0&&<button onClick={()=>setShowQC(!showQC)} style={{...btnS(showQC?"primary":"ghost"),fontSize:12}}>🔍 Data Quality Check</button>}
         {studies.length>0&&<button onClick={openExtractionExport} style={{...btnS("ghost"),fontSize:12}}>⤓ Export CSV</button>}
         {AI_FEATURES_ENABLED&&!readOnly&&<button onClick={()=>setShowAI(true)} style={{...btnS(),color:C.purp,borderColor:themeAlpha(C.purp,'55'),fontSize:12}}>✦ AI Extract</button>}
         {!readOnly&&<button onClick={()=>setShowAdd(true)} style={{...btnS("primary"),fontSize:12}}>+ Add Study</button>}
       </div>
     </div>
+
+    {/* RoadMap/1.md — the unified assisted workspace (inline PDF + four methods). */}
+    {showAssisted&&!readOnly&&(
+      <Suspense fallback={<div style={{padding:20,color:C.muted,fontSize:12,border:`1px solid ${C.brd}`,borderRadius:10,marginBottom:14}}>Loading the assisted extraction workspace…</div>}>
+        <AssistedExtractionPanel
+          projectId={project.id}
+          studies={studies}
+          outcomes={protocolOuts}
+          protocol={protocol}
+          selectedStudyId={selectedStudyId}
+          onSelectStudy={setSelectedStudyId}
+          onAddBlankStudy={addBlankAndSelect}
+          onAddDrafts={addDrafts}
+          onAddParked={addParked}
+          onPatchStudy={patchStudy}
+          readOnly={readOnly}
+        />
+      </Suspense>
+    )}
+
+    {/* Drafts to review + "Also reported (not in this review)" parked list. */}
+    {(drafts.length>0||parked.length>0)&&(
+      <DraftReviewList
+        drafts={drafts}
+        parked={parked}
+        outcomes={protocolOuts}
+        onConfirm={confirmDraftById}
+        onDismiss={dismissDraft}
+        onPark={parkDraft}
+        onUnpark={unparkRecord}
+        onEditField={editDraftField}
+      />
+    )}
 
     {/* Primary-data composition bar */}
     {comp.total>0&&(

@@ -12,6 +12,15 @@
  *   validationMetrics.js— scoring an extractor against a gold standard
  *   maHandoff.js        — reconciled values → mkStudy blob patch (+ calcES es/lo/hi)
  *
+ * RoadMap/1.md unified workspace additions (protocol-scoped, PDF-driven):
+ *   protocolOutcomes.js — the review's pre-specified primary/secondary outcomes
+ *   outcomeMatch.js     — conservative outcome-name matching (synonyms/dictionary)
+ *   patternExtract.js   — richer deterministic statistic harvesting from text
+ *   pdfTextGrid.js      — pdf.js text items → row/column table grids
+ *   records.js          — canonical per-outcome extraction record ⇄ mkStudy row
+ *   autoExtract.js      — Method 1: protocol-scoped deterministic first pass
+ *   digitizer/*         — plot digitizer math (axis calibration, figures, KM/Guyot)
+ *
  * KEY FORMAT shared across the engine: `${elementId}::${armKey || ''}` (model.valueKey).
  */
 
@@ -21,3 +30,12 @@ export * from './tableParse.js';
 export * from './heuristicExtract.js';
 export * from './validationMetrics.js';
 export * from './maHandoff.js';
+export * from './protocolOutcomes.js';
+export * from './outcomeMatch.js';
+export * from './patternExtract.js';
+export * from './pdfTextGrid.js';
+export * from './records.js';
+export * from './autoExtract.js';
+export * from './digitizer/calibration.js';
+export * from './digitizer/figureExtract.js';
+export * from './digitizer/kmGuyot.js';
