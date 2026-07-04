@@ -8,10 +8,11 @@
  * SearchWizard renders unchanged.
  */
 export { default as SearchWorkspace } from './SearchWorkspace.jsx';
-// 73.md — pure/presentational seams exported for unit tests: the stage table +
-// mode-aware labelling, the sticky PubMed pulse bar, the scroll-model walker, and
-// the load→merge→save search-mode persistence helper.
+// 73.md/74.md — pure/presentational seams exported for unit tests: the stage table +
+// the mode-scoped stage list (single source of truth for the visible workflow), the
+// mode-switch stage remap, the sticky PubMed pulse bar, the scroll-model walker, and
+// the single-key search-mode persistence helper.
 export {
-  STAGES, stagesFor, PubMedPulse, findScrollableAncestor, persistSearchModeMerged,
+  STAGES, stagesFor, stageAfterModeChange, PubMedPulse, findScrollableAncestor, persistSearchModeMerged,
 } from './SearchWorkspace.jsx';
 export { searchWorkspaceV2FlagEnabled } from './searchWorkspaceFlag.js';

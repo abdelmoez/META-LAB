@@ -13,7 +13,8 @@
  * Automated Search [mode-aware] → Documentation → Send to Screening), a sticky
  * `pubmed-pulse` bar, and mode cards (`search-mode-card-manual|automated`). This spec
  * targets the legacy wizard, which stays byte-identical while the flag is OFF; the
- * workspace's own coverage lives in tests/unit/searchWorkspace*.test.jsx.
+ * workspace's own coverage lives in tests/unit/searchWorkspace*.test.jsx plus the
+ * flag-flipping browser spec e2e/search/searchWorkspace.spec.ts (74.md mode scoping).
  *
  * Seeding is via the fast `tmpProject` fixture (a throwaway admin project, auto-
  * deleted). The embedded Search Builder seeds the five PICO concept groups on load,

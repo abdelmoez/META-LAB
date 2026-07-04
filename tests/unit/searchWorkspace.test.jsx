@@ -13,7 +13,7 @@ import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   SearchWorkspace, searchWorkspaceV2FlagEnabled,
-  STAGES, stagesFor, PubMedPulse, findScrollableAncestor, persistSearchModeMerged,
+  STAGES, stagesFor, stageAfterModeChange, PubMedPulse, findScrollableAncestor, persistSearchModeMerged,
 } from '../../src/features/searchWorkspace/index.js';
 
 afterEach(() => { vi.unstubAllGlobals(); });
@@ -50,13 +50,14 @@ describe('SearchWorkspace (SSR smoke)', () => {
   });
 });
 
-describe('STAGES / stagesFor — 73.md P5 renumbering + mode-aware Results label', () => {
-  it('has 9 stages in the locked order, with mode inserted after terms', () => {
+describe('STAGES / stagesFor — 73.md P5 + 74.md mode-scoped stage list', () => {
+  it('has 9 master stages in the locked order, with mode inserted after terms', () => {
     expect(STAGES.map((s) => s.id)).toEqual([
       'question', 'concepts', 'terms', 'mode', 'strategy', 'refine', 'results', 'documentation', 'screening',
     ]);
     expect(STAGES.map((s) => s.num)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
     expect(STAGES.find((s) => s.id === 'strategy').label).toBe('Database Strategies');
+    expect(STAGES.find((s) => s.id === 'strategy').manualOnly).toBe(true);
   });
   it('labels Results mode-aware: automated → Automated Search, manual/null → Run Externally', () => {
     const res = (mode) => stagesFor(mode).find((s) => s.id === 'results');
@@ -70,6 +71,45 @@ describe('STAGES / stagesFor — 73.md P5 renumbering + mode-aware Results label
     expect(STAGES.find((s) => s.id === 'concepts').phase).toBe('concepts');
     expect(STAGES.find((s) => s.id === 'terms').phase).toBe('terms');
     expect(STAGES.find((s) => s.id === 'strategy').phase).toBe('build');
+  });
+  // 74.md — the selected mode controls the ENTIRE visible workflow.
+  it('automated mode REMOVES Database Strategies and renumbers the pips 1..8', () => {
+    const auto = stagesFor('automated');
+    expect(auto.map((s) => s.id)).toEqual([
+      'question', 'concepts', 'terms', 'mode', 'refine', 'results', 'documentation', 'screening',
+    ]);
+    expect(auto.map((s) => s.num)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(auto.some((s) => s.label === 'Database Strategies')).toBe(false);
+  });
+  it('manual and undecided keep the full 9-stage rail (existing projects keep working)', () => {
+    for (const mode of ['manual', null, undefined]) {
+      const list = stagesFor(mode);
+      expect(list.map((s) => s.id)).toEqual(STAGES.map((s) => s.id));
+      expect(list.map((s) => s.num)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    }
+  });
+  it('never mutates the master STAGES table', () => {
+    stagesFor('automated'); stagesFor('manual');
+    expect(STAGES.find((s) => s.id === 'results').label).toBe('Run Externally');
+    expect(STAGES.length).toBe(9);
+  });
+});
+
+describe('stageAfterModeChange — 74.md: a removed stage never strands the user', () => {
+  it('keeps the stage when it survives the mode switch', () => {
+    for (const id of ['question', 'concepts', 'terms', 'mode', 'refine', 'results', 'documentation', 'screening']) {
+      expect(stageAfterModeChange(id, 'automated')).toBe(id);
+      expect(stageAfterModeChange(id, 'manual')).toBe(id);
+    }
+    expect(stageAfterModeChange('strategy', 'manual')).toBe('strategy');
+    expect(stageAfterModeChange('strategy', null)).toBe('strategy');
+  });
+  it('Database Strategies → Test & Refine when switching to automated (nearest FOLLOWING stage)', () => {
+    expect(stageAfterModeChange('strategy', 'automated')).toBe('refine');
+  });
+  it('an unknown stage id lands home on Research Question', () => {
+    expect(stageAfterModeChange('nope', 'automated')).toBe('question');
+    expect(stageAfterModeChange(undefined, 'manual')).toBe('question');
   });
 });
 
@@ -116,12 +156,15 @@ describe('SearchWorkspace — each stage composes its existing component without
     expect(render('mode', true)).not.toContain('search-mode-badge');
   });
 
-  it('Strategy stage: automated mode shows the provider summary FIRST + the run CTA', () => {
+  it('74.md — a strategy deep link under an automated seed REMAPS to Test & Refine', () => {
     const html = render('strategy', true, 'automated');
-    expect(html).toContain('automated-strategy-summary');
-    expect(html).toContain('Continue to Automated Search');
-    // manual mode: no automated summary
-    expect(render('strategy', true, 'manual')).not.toContain('automated-strategy-summary');
+    // The removed stage never renders — the workspace lands on the nearest survivor…
+    expect(html).toContain('data-stage="refine"');
+    expect(html).toContain('Test &amp; refine');
+    // …and no automated summary card exists anywhere any more (the automated rail
+    // simply has no Database Strategies stage to ride on).
+    expect(html).not.toContain('automated-strategy-summary');
+    expect(render('strategy', true, 'manual')).toContain('data-stage="strategy"');
   });
 
   it('Strategy/Results with NO mode chosen → the slim non-blocking chooser strip', () => {
@@ -135,8 +178,12 @@ describe('SearchWorkspace — each stage composes its existing component without
       const html = render('results', true, mode);
       expect(html).toContain('manual-run-guide');
       expect(html).toContain('Import your results');
-      expect(html).toContain('Switch to Automated');
       expect(html).not.toContain('Search strategy'); // PecanSearchTab's strategy card
+      // 74.md — no automated advert inside the manual workflow; only the neutral
+      // mode-change affordance remains.
+      expect(html).not.toContain('Switch to Automated');
+      expect(html).toContain('change-mode-link');
+      expect(html).toContain('Change the search mode');
     }
   });
 
@@ -173,6 +220,79 @@ describe('SearchWorkspace — each stage composes its existing component without
     expect(html).toContain('Go to Screening');
     expect(render('screening', true, 'manual')).toContain('manual mode');
     expect(render('screening', true, 'automated')).toContain('Automated Search');
+  });
+});
+
+describe('SearchWorkspace — 74.md: one workflow visible at a time', () => {
+  const render = (initialStage, pecanEnabled = true, initialSearchMode, readOnly = false) => renderToStaticMarkup(
+    h(SearchWorkspace, { projectId: 'p1', pico: PICO, readOnly, pecanEnabled, initialStage, initialSearchMode }),
+  );
+
+  it('automated mode: Database Strategies never appears on any workflow stage', () => {
+    // Every automated stage except the mode CHOOSER itself (whose manual card must
+    // describe the manual path so the distinction stays understandable).
+    for (const stage of ['question', 'concepts', 'terms', 'refine', 'results', 'documentation', 'screening']) {
+      for (const pecan of [true, false]) {
+        expect(render(stage, pecan, 'automated')).not.toContain('Database Strategies');
+      }
+    }
+  });
+
+  it('automated mode: the rail is the renumbered 8-stage list', () => {
+    const html = render('question', true, 'automated');
+    expect(html).toContain('Stage 1 of 8');
+    expect(html).toContain('Automated Search');
+    expect(html).not.toContain('Run Externally');
+  });
+
+  it('manual mode: the full 9-stage rail, and no automated-workflow surfaces anywhere', () => {
+    const html = render('question', true, 'manual');
+    expect(html).toContain('Stage 1 of 9');
+    expect(html).toContain('Database Strategies');
+    expect(html).toContain('Run Externally');
+    expect(html).not.toContain('Automated Search'); // the automated stage label never leaks
+    // The run stage never mounts the automated engine surface in manual mode.
+    const results = render('results', true, 'manual');
+    expect(results).toContain('manual-run-guide');
+    expect(results).not.toContain('Sources'); // PecanSearchTab's source cards
+  });
+
+  it('automated + engine off: the run dead-end offers a mode change, never a manual stage', () => {
+    const html = render('results', false, 'automated');
+    expect(html).toContain('Run the search');
+    expect(html).toContain('Change the search mode');
+    expect(html).not.toContain('Database Strategies');
+    // read-only: the surface stays calm with no mode-change controls
+    const ro = render('results', false, 'automated', true);
+    expect(ro).toContain('Run the search');
+    expect(ro).not.toContain('Change the search mode');
+  });
+
+  it('Test & Refine: the enable-in-Ops estimates card is an automated-only indicator — hidden in manual mode', () => {
+    expect(render('refine', false, 'manual')).not.toContain('Estimated results per database');
+    expect(render('refine', true, 'manual')).toContain('Estimated results per database');   // live estimates stay shared
+    expect(render('refine', false, 'automated')).toContain('Estimated results per database');
+    expect(render('refine', false, undefined)).toContain('Estimated results per database'); // undecided keeps the neutral note
+  });
+
+  it('Send to Screening (automated, engine off) points to the mode stage, not Database Strategies', () => {
+    const html = render('screening', false, 'automated');
+    expect(html).not.toContain('Database Strategies');
+    expect(html).toContain('change the search mode');
+  });
+
+  it('mode cards form ONE tab stop via roving tabindex', () => {
+    // No selection → the first card (manual) is the group's tab stop.
+    const none = render('mode', true, undefined);
+    expect(none).toContain('tabindex="0" data-testid="search-mode-card-manual"');
+    expect(none).toContain('tabindex="-1" data-testid="search-mode-card-automated"');
+    // Selection moves the tab stop with it.
+    const auto = render('mode', true, 'automated');
+    expect(auto).toContain('tabindex="-1" data-testid="search-mode-card-manual"');
+    expect(auto).toContain('tabindex="0" data-testid="search-mode-card-automated"');
+    const manual = render('mode', true, 'manual');
+    expect(manual).toContain('tabindex="0" data-testid="search-mode-card-manual"');
+    expect(manual).toContain('tabindex="-1" data-testid="search-mode-card-automated"');
   });
 });
 

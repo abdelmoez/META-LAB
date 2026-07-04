@@ -18,9 +18,11 @@
  *                            compiles a strategy per database, you run it yourself) vs
  *                            AUTOMATED (PecanRev runs its connected databases for you).
  *                            Persisted additively as `searchMode` on the search module.
- *   5. Database Strategies — <SearchBuilderTab phase="build"/> (databases + the 73.md P6
- *                            per-database compiled strategy workspace) + (studio)
- *                            <StrategyStudioPanel/>.
+ *   5. Database Strategies — MANUAL-ONLY (74.md): <SearchBuilderTab phase="build"/>
+ *                            (databases + the 73.md P6 per-database compiled strategy
+ *                            workspace) + (studio) <StrategyStudioPanel/>. In automated
+ *                            mode this stage does not exist — the run surface owns its
+ *                            own source selection and per-source override editor.
  *   6. Test & Refine       — multi-DB preview counts (pecanSearchApi.previewCount) +
  *                            <SearchQualityPanel/> + <SearchVersionsPanel/>.
  *   7. Automated Search / Run Externally — mode-aware: <PecanSearchTab embedded/> (run +
@@ -28,6 +30,14 @@
  *   8. Documentation       — <SearchExportPanel/> (methods text + PRISMA-S) + (studio)
  *                            <RecallReportPanel/>.
  *   9. Send to Screening   — the readyForScreening marker + the "Go to Screening" handoff.
+ *
+ * 74.md — ONE workflow at a time: `stagesFor(searchMode)` is the single source of truth
+ * for the visible stage list. Automated mode REMOVES the manual-only stages (Database
+ * Strategies) and renumbers the pips; manual mode never mounts the automated run
+ * surface. Switching modes remaps the active stage through the pure
+ * `stageAfterModeChange` helper, so a stage that disappears never strands the user on
+ * a blank panel. Both modes' saved data (manual per-database overrides, automated run
+ * history) is preserved — the mode switch itself persists ONLY the `searchMode` key.
  *
  * 73.md P1 — ONE deliberate scroll model: the page scrolls, the rail is sticky (and
  * scrolls internally when the viewport is short), no nested scrollers; every stage
@@ -60,28 +70,56 @@ import { Card, Note } from '../pecanSearch/components/parts.jsx';
 
 /* The 9 guided stages. `num` drives the always-numbered pip; `builder`/`phase` mark the
    stages that render the (persistent) Search Builder; `needsConcepts` marks stages that
-   are only meaningful once a strategy exists (disabled-with-reason until then). */
+   are only meaningful once a strategy exists (disabled-with-reason until then);
+   `manualOnly` marks stages that belong to the manual workflow and are REMOVED from the
+   rail in automated mode (74.md — the run surface owns sources/overrides there). */
 export const STAGES = [
   { id: 'question',      num: 1, label: 'Research Question',   desc: 'Frame the question' },
   { id: 'concepts',      num: 2, label: 'Concepts',            desc: 'Core concepts',         builder: true, phase: 'concepts' },
   { id: 'terms',         num: 3, label: 'Terms & Vocabulary',  desc: 'Synonyms & MeSH',       builder: true, phase: 'terms' },
   { id: 'mode',          num: 4, label: 'Search Mode',         desc: 'Manual or automated' },
-  { id: 'strategy',      num: 5, label: 'Database Strategies', desc: 'Per-database syntax',   builder: true, phase: 'build' },
+  { id: 'strategy',      num: 5, label: 'Database Strategies', desc: 'Per-database syntax',   builder: true, phase: 'build', manualOnly: true },
   { id: 'refine',        num: 6, label: 'Test & Refine',       desc: 'Counts & quality' },
   { id: 'results',       num: 7, label: 'Run Externally',      desc: 'Your database accounts', needsConcepts: true },
   { id: 'documentation', num: 8, label: 'Documentation',       desc: 'Methods & PRISMA-S' },
   { id: 'screening',     num: 9, label: 'Send to Screening',   desc: 'Prepare the import',    needsConcepts: true },
 ];
 
-/* 73.md P5 — the Results stage is mode-aware: automated runs inside PecanRev, manual
-   (or not-yet-chosen) runs in the user's own database accounts. Pure + exported. */
+/* 73.md P5 + 74.md — THE single source of truth for the visible workflow. Automated
+   mode removes the manual-only stages entirely (never a mixed rail) and renumbers the
+   pips; the Results stage is mode-aware: automated runs inside PecanRev, manual (or
+   not-yet-chosen) runs in the user's own database accounts. Pure + exported. */
 export function stagesFor(searchMode) {
-  return STAGES.map((s) => {
-    if (s.id !== 'results') return s;
-    return searchMode === 'automated'
-      ? { ...s, label: 'Automated Search', desc: 'Run & deduplicate' }
-      : s;
-  });
+  const automated = searchMode === 'automated';
+  return STAGES
+    .filter((s) => !(automated && s.manualOnly))
+    .map((s, i) => {
+      const out = { ...s, num: i + 1 };
+      if (s.id === 'results' && automated) {
+        out.label = 'Automated Search';
+        out.desc = 'Run & deduplicate';
+      }
+      return out;
+    });
+}
+
+/* 74.md — where to land when a mode switch removes the active stage. Stays put when
+   the stage survives; otherwise walks FORWARD through the master order to the nearest
+   surviving stage (Database Strategies → Test & Refine), then backward, then home.
+   Pure + exported. */
+export function stageAfterModeChange(currentStageId, searchMode) {
+  const next = stagesFor(searchMode);
+  if (next.some((s) => s.id === currentStageId)) return currentStageId;
+  const order = STAGES.map((s) => s.id);
+  const idx = order.indexOf(currentStageId);
+  if (idx === -1) return 'question';
+  for (let i = idx + 1; i < order.length; i++) {
+    if (next.some((s) => s.id === order[i])) return order[i];
+  }
+  for (let i = idx - 1; i >= 0; i--) {
+    if (next.some((s) => s.id === order[i])) return order[i];
+  }
+  return 'question';
 }
 
 const DISABLED_REASON = 'Build a strategy with at least one concept first';
@@ -336,17 +374,19 @@ function screeningImportHref() {
    catalogue when the Pecan engine is enabled. */
 const AUTOMATED_PROVIDER_FALLBACK = ['PubMed', 'Europe PMC', 'ClinicalTrials.gov', 'Crossref', 'DOAJ', 'OpenAlex', 'Semantic Scholar'];
 
-function ModeCard({ id, checked, onChoose, onArrow, title, tagline, body, benefit, limitation, next, chips, footNote, cardRef }) {
+function ModeCard({ id, checked, onChoose, onArrow, title, tagline, body, benefit, limitation, next, chips, footNote, cardRef, tabIndex }) {
   // recs round — a visible keyboard focus ring (the default outline is replaced, not
   // removed) and arrow keys MOVE FOCUS to the sibling card as they move selection,
-  // matching native radio-group behaviour.
+  // matching native radio-group behaviour. 74.md — roving tabindex: the group is ONE
+  // tab stop (the checked card, or the first card before any choice); arrows move
+  // within it.
   const [focused, setFocused] = useState(false);
   return (
     <div
       ref={cardRef}
       role="radio"
       aria-checked={checked}
-      tabIndex={0}
+      tabIndex={tabIndex == null ? 0 : tabIndex}
       data-testid={`search-mode-card-${id}`}
       onClick={onChoose}
       onFocus={() => setFocused(true)}
@@ -419,6 +459,7 @@ function ModeStage({ searchMode, onSelect, busy, err, pecanEnabled }) {
           id="manual"
           cardRef={manualRef}
           checked={searchMode === 'manual'}
+          tabIndex={searchMode === 'automated' ? -1 : 0}
           onChoose={() => !busy && onSelect('manual')}
           onArrow={() => { if (!busy) { onSelect('automated'); focusCard(automatedRef); } }}
           title="Manual search"
@@ -433,6 +474,7 @@ function ModeStage({ searchMode, onSelect, busy, err, pecanEnabled }) {
           id="automated"
           cardRef={automatedRef}
           checked={searchMode === 'automated'}
+          tabIndex={searchMode === 'automated' ? 0 : -1}
           onChoose={() => !busy && onSelect('automated')}
           onArrow={() => { if (!busy) { onSelect('manual'); focusCard(manualRef); } }}
           title="Automated search"
@@ -465,8 +507,10 @@ function ModeChooserStrip({ onChoose, busy, goMode }) {
   );
 }
 
-/* ════════════ 73.md P5 — MANUAL RUN stage (Results in manual / undecided mode) ════ */
-function ManualRunStage({ getLive, goStrategy, onSwitchAutomated, busy, readOnly }) {
+/* ════════════ 73.md P5 — MANUAL RUN stage (Results in manual / undecided mode) ════
+   74.md — this stage carries NO automated-workflow features: the only cross-mode
+   affordance is a neutral "change the search mode" link back to the Search Mode stage. */
+function ManualRunStage({ getLive, goStrategy, goMode, readOnly }) {
   const live = getLive() || {};
   const dbs = Array.isArray(live.databases) && live.databases.length ? live.databases : defaultSelectedDatabases();
   return (
@@ -505,11 +549,12 @@ function ManualRunStage({ getLive, goStrategy, onSwitchAutomated, busy, readOnly
       </Card>
       </div>
       {!readOnly && (
-        <Card title="Prefer PecanRev to run it?" icon="settings" desc="Switch to Automated and PecanRev searches its connected open databases, de-duplicates, and imports for you.">
-          <button type="button" onClick={onSwitchAutomated} disabled={busy} style={ghostBtn()} data-testid="switch-to-automated">
-            {busy ? 'Switching…' : 'Switch to Automated'}
+        <div data-testid="change-mode-link" style={{ marginTop: 12, fontSize: 11.5, color: C.muted, fontFamily: FONT }}>
+          Prefer this search to run differently?{' '}
+          <button type="button" onClick={goMode} style={{ background: 'none', border: 'none', color: C.acc, cursor: 'pointer', fontSize: 11.5, fontFamily: FONT, textDecoration: 'underline', padding: 0 }}>
+            Change the search mode
           </button>
-        </Card>
+        </div>
       )}
     </>
   );
@@ -519,7 +564,7 @@ function ManualRunStage({ getLive, goStrategy, onSwitchAutomated, busy, readOnly
    Surfaces the advisory `readyForScreening` marker (read + toggle via the SAME
    search-builder module the builder persists) and the "Go to Screening" handoff.
    73.md P5 — the explanation is mode-aware (auto-import vs external import). */
-function SendToScreeningStage({ projectId, pecanEnabled, readOnly, searchMode }) {
+function SendToScreeningStage({ projectId, pecanEnabled, readOnly, searchMode, goMode }) {
   const [ready, setReady] = useState(null); // null=unknown | boolean
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -599,11 +644,16 @@ function SendToScreeningStage({ projectId, pecanEnabled, readOnly, searchMode })
         </div>
       </Card>
 
+      {/* 74.md — never point an automated-mode user at manual-only stages: the way
+          forward is enabling the engine, or changing the search mode. */}
       {automated && !pecanEnabled && (
         <Note tone="info">
-          The automated multi-database run needs the <strong>Pecan Search Engine — Automated Run</strong> (enable it in Ops). Until then,
-          open <strong>Database Strategies</strong> to copy each database&apos;s strategy, run it externally, and import the results from the
-          Screening stage.
+          The automated multi-database run needs the <strong>Pecan Search Engine — Automated Run</strong> (an administrator enables it in
+          Ops). Until then, you can{' '}
+          <button type="button" onClick={goMode} style={{ background: 'none', border: 'none', color: C.acc, cursor: 'pointer', fontSize: 'inherit', fontFamily: 'inherit', textDecoration: 'underline', padding: 0 }}>
+            change the search mode
+          </button>{' '}
+          to Manual search and run each database yourself.
         </Note>
       )}
     </>
@@ -662,7 +712,12 @@ function StageIntro({ title, children }) {
 const PULSE_STAGES = new Set(['concepts', 'terms', 'mode', 'strategy', 'refine', 'results']);
 
 export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnabled, initialStage, initialSearchMode }) {
-  const [stage, setStage] = useState(initialStage || 'question');
+  // 74.md — the initial stage must already respect the initial mode's stage list
+  // (e.g. a 'strategy' deep link under an automated seed lands on Test & Refine).
+  const [stage, setStage] = useState(() => stageAfterModeChange(
+    initialStage || 'question',
+    initialSearchMode === 'manual' || initialSearchMode === 'automated' ? initialSearchMode : null,
+  ));
 
   // Live in-memory query reported by the embedded builder — held in a ref so continuous
   // edits never re-render this shell (which would thrash the heavy builder). Snapshotted
@@ -705,7 +760,12 @@ export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnable
       const saved = await loadSearch(projectId).catch(() => null);
       const m = saved && (saved.searchMode === 'manual' || saved.searchMode === 'automated') ? saved.searchMode : null;
       // The saved value is authoritative; a render-seed only survives when nothing is saved.
-      if (!dead && !modeChosenRef.current && (m != null || initialSearchMode == null)) setSearchMode(m);
+      if (!dead && !modeChosenRef.current && (m != null || initialSearchMode == null)) {
+        setSearchMode(m);
+        // 74.md — adopting the saved mode can remove the current stage from the rail
+        // (e.g. deep-linked to Database Strategies on an automated project).
+        setStage((cur) => stageAfterModeChange(cur, m));
+      }
     })();
     return () => { dead = true; };
   }, [projectId]); // eslint-disable-line
@@ -713,6 +773,9 @@ export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnable
     modeChosenRef.current = true;
     setModeBusy(true); setModeErr('');
     setSearchMode(mode); // local state reflects immediately; persistence is soft-fail
+    // 74.md — the interface updates in the SAME render: if the new mode's rail no
+    // longer contains the active stage, land on the nearest surviving stage.
+    setStage((cur) => stageAfterModeChange(cur, mode));
     try {
       await persistSearchModeMerged(loadSearch, saveSearch, projectId, mode);
     } catch {
@@ -866,24 +929,8 @@ export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnable
                 run guidance per database, and a live PubMed hit count. Override any database&apos;s query manually when you need to.
               </StageIntro>
             )}
-            {/* 73.md P5 — automated mode: the provider translation summary rides FIRST;
-                the compiled per-database strategies stay available beneath the divider. */}
-            {stage === 'strategy' && searchMode === 'automated' && (
-              <div data-testid="automated-strategy-summary">
-                <Card title="Automated run — how your strategy is used" icon="globe"
-                  desc="PecanRev translates the concept strategy for each connected database when the run starts — nothing to paste.">
-                  <div style={{ fontSize: 12, color: C.txt2, lineHeight: 1.65, marginBottom: 12 }}>
-                    Each connected database receives its own translated form of this strategy automatically, and every translation is
-                    recorded with the run for reproducibility. The compiled strategies below are yours to review — and to run manually in
-                    any database (Embase, Scopus, …) the automated run does not cover.
-                  </div>
-                  <button type="button" onClick={() => goTo('results')} style={primaryBtn()}>
-                    Continue to Automated Search →
-                  </button>
-                </Card>
-                <div aria-hidden="true" style={{ borderTop: `1px solid ${C.brd}`, margin: '4px 0 16px' }} />
-              </div>
-            )}
+            {/* 74.md — no automated content ever rides on this stage: 'strategy' exists
+                only in the manual/undecided rail (stagesFor drops it in automated mode). */}
             {builderEl}
             {stage === 'strategy' && studioEnabled && (
               <div style={{ marginTop: 12 }}>
@@ -916,7 +963,13 @@ export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnable
                 Sanity-check the strategy before you run it: preview how many records it returns per database, review a transparent quality
                 breakdown, and compare or restore saved versions.
               </StageIntro>
-              <PreviewEstimates projectId={projectId} getLive={getLive} pecanEnabled={pecanEnabled} />
+              {/* 74.md — in MANUAL mode a disabled engine is irrelevant: the "enable the
+                  automated engine in Ops" card is an automated-only status indicator and
+                  never renders there. With the engine on, per-database estimates are a
+                  shared sensitivity check and stay for both modes. */}
+              {(pecanEnabled || searchMode !== 'manual') && (
+                <PreviewEstimates projectId={projectId} getLive={getLive} pecanEnabled={pecanEnabled} />
+              )}
               <div style={{ marginTop: 12 }}>
                 <SearchQualityPanel key={`q-${panelNonce}`} projectId={projectId} getLive={getLive} />
                 <SearchVersionsPanel key={`v-${panelNonce}`} projectId={projectId} readOnly={readOnly} onAfterRestore={bumpPanels} />
@@ -937,13 +990,20 @@ export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnable
                   initialOverrides={runQuery ? runQuery.overrides : undefined}
                 />
               ) : (
+                /* 74.md — an automated-mode dead end never points at manual-only stages:
+                   the way forward is enabling the engine, or changing the search mode. */
                 <Card title="Run the search" icon="globe" desc="Running the strategy across every database needs the Pecan Search Engine — Automated Run.">
                   <Note tone="info">
                     Your strategy is saved. To execute it across PubMed, Europe PMC, ClinicalTrials.gov and the other open databases — and
                     auto-import the de-duplicated results into screening — an administrator must enable the
-                    <strong> Pecan Search Engine — Automated Run</strong> in Ops. Until then, open <strong>Database Strategies</strong> to copy
-                    each database&apos;s strategy and run it externally, then import from the Screening stage.
+                    <strong> Pecan Search Engine — Automated Run</strong> in Ops.
                   </Note>
+                  {!readOnly && (
+                    <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+                      <button type="button" onClick={() => goTo('mode')} style={ghostBtn()}>Change the search mode</button>
+                      <span style={{ fontSize: 11.5, color: C.muted }}>Manual search compiles a paste-ready strategy per database that you run yourself.</span>
+                    </div>
+                  )}
                 </Card>
               )
             ) : (
@@ -954,9 +1014,8 @@ export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnable
                 <ManualRunStage
                   getLive={getLive}
                   readOnly={readOnly}
-                  busy={modeBusy}
                   goStrategy={() => goTo('strategy')}
-                  onSwitchAutomated={() => changeMode('automated')}
+                  goMode={() => goTo('mode')}
                 />
               </>
             )
@@ -976,7 +1035,7 @@ export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnable
             </>
           )}
 
-          {stage === 'screening' && <SendToScreeningStage projectId={projectId} pecanEnabled={pecanEnabled} readOnly={readOnly} searchMode={searchMode} />}
+          {stage === 'screening' && <SendToScreeningStage projectId={projectId} pecanEnabled={pecanEnabled} readOnly={readOnly} searchMode={searchMode} goMode={() => goTo('mode')} />}
 
           {/* Footer nav — Back / Next through the stages (progressive, never lossy). */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 18, paddingTop: 14, borderTop: `1px solid ${C.brd}` }}>
