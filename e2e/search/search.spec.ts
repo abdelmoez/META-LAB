@@ -7,14 +7,19 @@
  * and `test.skip`s honestly if its precondition is off, so the file stays correct if
  * the rollout changes.
  *
- * 73.md NOTE: with `searchWorkspaceV2` ON the Search tab renders the STAGED workspace
- * instead of this wizard — NINE stages (Research Question → Concepts → Terms &
- * Vocabulary → Search Mode → Database Strategies → Test & Refine → Run Externally /
- * Automated Search [mode-aware] → Documentation → Send to Screening), a sticky
- * `pubmed-pulse` bar, and mode cards (`search-mode-card-manual|automated`). This spec
- * targets the legacy wizard, which stays byte-identical while the flag is OFF; the
- * workspace's own coverage lives in tests/unit/searchWorkspace*.test.jsx plus the
- * flag-flipping browser spec e2e/search/searchWorkspace.spec.ts (74.md mode scoping).
+ * 73.md/75.md NOTE: with `searchWorkspaceV2` ON the Search tab renders the STAGED
+ * workspace instead of this wizard — the mode-scoped stages (Research Question →
+ * Concepts → Terms & Vocabulary → Search Mode → Database Strategies → Test & Refine →
+ * Run Externally / Automated Search [mode-aware] → Documentation → Send to Screening),
+ * a sticky `pubmed-pulse` bar, and mode cards (`search-mode-card-manual|automated`).
+ * 75.md moves that numbered workflow into the WHITE project side-menu (the shared
+ * `stitch-workflow-stepper`, ?tab=search&stage=<id> deep links) and drops the in-body
+ * rail, so the side-menu is the persistent representation and "Next" from Send to
+ * Screening (`continue-to-screening`) hands off to the Screening workspace once the
+ * strategy is marked ready. This spec targets the legacy wizard, which stays
+ * byte-identical while the flag is OFF; the workspace's own coverage lives in
+ * tests/unit/searchWorkspace*.test.jsx + tests/unit/navConfigSearchSubmenu.test.js
+ * plus the flag-flipping browser spec e2e/search/searchWorkspace.spec.ts.
  *
  * Seeding is via the fast `tmpProject` fixture (a throwaway admin project, auto-
  * deleted). The embedded Search Builder seeds the five PICO concept groups on load,

@@ -71,15 +71,23 @@ describe('55.md — submenu visibility (Overview/Control/Reference reclaim width
       expect(categoryShowsSubmenu(id)).toBe(true);
     }
   });
-  // prompt60 folded discovery into the unified Search wizard (single child);
-  // 66.md P6 adds the Living Review dashboard beside it, so Search opens a white
-  // submenu again: Search wizard + Living Review (the latter is NOT a numbered
-  // workflow step — same append pattern as PRISMA Flow inside Screen).
-  it('search = Search wizard + Living Review (66.md P6)', () => {
+  // 75.md — the Search submenu IS the mode-scoped Search WORKFLOW (numbered stages,
+  // ?stage= deep links) followed by a visually-separate "Optional tools" group (Living
+  // Review + Citation Mining as UN-numbered rows — never in the 1..N numbering).
+  it('search = the mode-scoped Search workflow + Living Review optional tool (75.md)', () => {
     expect(categoryShowsSubmenu('search')).toBe(true);
     const items = submenuForCategory('search', CTX);
-    expect(items.map((i) => i.key)).toEqual(['search', 'living']);
-    expect(items[1].href).toBe('/app/project/p1?tab=living');
+    // Numbered workflow stages first (manual/undecided → the full stage list).
+    const stageKeys = items.filter((i) => !i.utility).map((i) => i.key);
+    expect(stageKeys).toEqual(['question', 'concepts', 'terms', 'mode', 'strategy', 'refine', 'results', 'documentation', 'screening']);
+    // …each a ?stage= deep link into the one unified Search workspace.
+    expect(items.find((i) => i.key === 'concepts').href).toBe('/app/project/p1?tab=search&stage=concepts');
+    // …then Living Review as an UN-numbered optional tool opening its own tab, carrying
+    // the "Optional tools" group separator label.
+    const living = items.find((i) => i.key === 'living');
+    expect(living.utility).toBe(true);
+    expect(living.href).toBe('/app/project/p1?tab=living');
+    expect(living.groupLabel).toBe('Optional tools');
   });
 });
 

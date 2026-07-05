@@ -10,6 +10,7 @@
  */
 import { prisma } from '../db/client.js';
 import { mlAccessFromMember } from '../screening/metalabAccess.js';
+import { featureAccess } from '../services/featureAccess.js';
 
 const FLAG = 'extractionAssist';
 
@@ -18,12 +19,13 @@ function safeParse(s, fallback) {
   catch { return fallback; }
 }
 
-/** Whether the `extractionAssist` feature flag is on (fail-closed). */
-export async function extractionEnabled() {
-  try {
-    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
-    return safeParse(row?.value, {})[FLAG] === true;
-  } catch { return false; }
+/**
+ * Whether the `extractionAssist` feature flag is on (fail-closed).
+ * 75.md Phase 7 — routed through the central seam. A gate passes `req.user` so
+ * admins keep extraction usable while it is globally OFF; no user = plain flag state.
+ */
+export async function extractionEnabled(user = null) {
+  return (await featureAccess(FLAG, user)).allowed;
 }
 
 /** Global admin extraction-AI settings (defaults merged under the stored row). */

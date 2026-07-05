@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { prisma } from '../db/client.js';
 import { runMeta } from '../../src/research-engine/statistics/meta-analysis.js';
+import { featureAccess } from '../services/featureAccess.js';
 // csvField prefixes =+-@ cells with a quote (CWE-1236 formula-injection guard).
 import { csvField, csvRow } from '../utils/csv.js';
 export { csvField };
@@ -29,12 +30,15 @@ function safeParse(s, fallback) {
   try { const v = JSON.parse(s ?? ''); return v ?? fallback; } catch { return fallback; }
 }
 
-/** Whether the `publicSynthesis` feature flag is on (fail-closed). */
-export async function publicSynthesisEnabled() {
-  try {
-    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
-    return safeParse(row?.value, {})[FLAG] === true;
-  } catch { return false; }
+/**
+ * Whether the `publicSynthesis` feature flag is on (fail-closed).
+ * 75.md Phase 7 — routed through the central seam. The authoring controller gate
+ * passes `req.user` so admins keep authoring usable while the flag is globally OFF;
+ * no user = plain flag state. (The unauthenticated public READ side has its own
+ * token check in routes/publicView.js and does not use this helper.)
+ */
+export async function publicSynthesisEnabled(user = null) {
+  return (await featureAccess(FLAG, user)).allowed;
 }
 
 /** Default publish settings (section toggles + branding/download opts). */

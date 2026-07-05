@@ -20,7 +20,7 @@ const AUDIT_MODULE = 'searchStrategyStudio';
 
 /** Flag + project-access gate. Returns access or null (after writing a response). */
 async function gate(req, res, { mutate = false } = {}) {
-  if (!(await studioEnabled())) { res.status(404).json({ error: 'Not found' }); return null; }
+  if (!(await studioEnabled(req.user))) { res.status(404).json({ error: 'Not found' }); return null; }
   const access = await resolveProjectAccess(req.params.pid, req.user.id);
   if (!access || !access.canView) { res.status(404).json({ error: 'Project not found' }); return null; }
   if (mutate && !access.canEdit) { res.status(403).json({ error: 'Read-only access' }); return null; }

@@ -38,6 +38,7 @@ import { createResolver, bareOaId } from './resolver.js';
 import { getMetaSiftSettings } from '../screening/settings.js';
 import { resolveScreeningUploadLimit } from '../screening/uploadLimit.js';
 import { requireEntitlement, requireLimit, loadUserForTier, planRecordLimitFor } from '../services/entitlementService.js';
+import { featureAccess } from '../services/featureAccess.js';
 
 // ── Bounds (hard caps — a user request can never exceed these) ─────────────────
 export const MAX_DEPTH = 3;                 // BFS depth ceiling (external fan-out guard)
@@ -74,12 +75,10 @@ async function loadEngine() {
 export function __setEngineForTests(mod) { _engine = mod; _engineTried = true; }
 
 // ── Feature flag gate ──────────────────────────────────────────────────────────
-export async function citationMiningEnabled() {
-  try {
-    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
-    const flags = JSON.parse(row && row.value ? row.value : '{}');
-    return flags.citationMining === true;
-  } catch { return false; }
+// 75.md Phase 7 — routed through the central seam. A gate passes `req.user` so
+// admins keep citation mining usable while it is globally OFF; no user = plain flag.
+export async function citationMiningEnabled(user = null) {
+  return (await featureAccess('citationMining', user)).allowed;
 }
 
 // ── Default resolver (offline unless CITATION_MINING_LIVE_RESOLVE=1) ───────────

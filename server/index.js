@@ -534,6 +534,21 @@ app.use((_req, res) => {
 // ── Global error handler (must be last) ───────────────────────────────────────
 app.use(errorHandler);
 
+// ── Fail-safe process guards ─────────────────────────────────────────────────
+// Node 20 terminates the process on an unhandled promise rejection by default. A
+// single stray rejection escaping an async route handler or a background worker
+// must NEVER take the whole API down. Log it server-side (never to a client) and
+// keep serving — matching the app's "isolate the failure, keep the process alive"
+// posture (per-search isolation in the living scheduler, best-effort notifications,
+// etc.). Uncaught synchronous exceptions are logged for the same reason; we
+// deliberately do not exit here.
+process.on('unhandledRejection', (reason) => {
+  console.error('[process] unhandledRejection:', reason instanceof Error ? (reason.stack || reason.message) : reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[process] uncaughtException:', err?.stack || err?.message || err);
+});
+
 // ── Start ──────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 3001;
 const server = app.listen(PORT, () => {

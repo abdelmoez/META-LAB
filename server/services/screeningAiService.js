@@ -31,6 +31,7 @@ import {
   chunk,
 } from '../../src/research-engine/screening/ai/index.js';
 import { buildEmbedFn, embeddingModelInfo } from './aiEmbeddingClient.js';
+import { featureAccess } from './featureAccess.js';
 // 66.md P4.3/P4.6 — citation-graph enrichment + representative validation samples.
 import { loadCitationByRecordId, getCitationStatus } from './citationEnrichmentService.js';
 import { mulberry32 } from '../../src/research-engine/screening/sampling.js';
@@ -97,13 +98,14 @@ function safeArray(s) {
   catch { return []; }
 }
 
-/** Whether the `aiScreening` feature flag is on (best-effort; fail-closed). */
-export async function aiFlagEnabled() {
-  try {
-    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
-    const flags = safeParse(row?.value, {});
-    return flags[AI_FLAG_KEY] === true;
-  } catch { return false; }
+/**
+ * Whether the `aiScreening` feature flag is on (best-effort; fail-closed).
+ * 75.md Phase 7 — routed through the central seam. The member-facing controller gate
+ * passes `req.user` so admins keep the feature usable while it is globally OFF; the
+ * background workers / shared screening list call it with no user (plain flag state).
+ */
+export async function aiFlagEnabled(user = null) {
+  return (await featureAccess(AI_FLAG_KEY, user)).allowed;
 }
 
 /**

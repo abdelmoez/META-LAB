@@ -16,12 +16,12 @@
  * builder is a first-class migrated workflow module while its engine stays its own
  * backend module.
  */
-import { prisma } from '../db/client.js';
 import { meshLookup, meshSuggest, pubmedCount } from './nlmClient.js';
 import {
   resolveProjectAccess, getModuleState, patchModuleState, recordWorkflowAudit,
 } from '../services/workflowState.js';
 import { emitToMetaLabProject } from '../realtime/bus.js';
+import { featureAccess } from '../services/featureAccess.js';
 import {
   snapshotVersion, listVersions, getVersion, restoreVersion, setFinal,
   loadLiveStrategy, recentRunCounts,
@@ -91,21 +91,19 @@ export function sanitizeSearchMode(raw) {
   return raw === 'manual' || raw === 'automated' ? raw : null;
 }
 
-async function searchEngineEnabled() {
-  try {
-    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
-    if (!row) return false;
-    return JSON.parse(row.value || '{}').searchEngine === true;
-  } catch {
-    return false;
-  }
+// 75.md Phase 7 — flag gating routes through the central featureAccess seam, so a
+// globally-disabled feature stays usable by ADMINS (reason 'adminOnly') while
+// non-admins keep getting the existence-hiding 404. Passing no `user` (schedulers,
+// internal callers) yields plain flag state with no admin path.
+async function searchEngineEnabled(user = null) {
+  return (await featureAccess('searchEngine', user)).allowed;
 }
 
 // ── NLM proxies (auth + flag only) ────────────────────────────────────────────
 
 export async function postMesh(req, res) {
   try {
-    if (!(await searchEngineEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await searchEngineEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const term = req.body && typeof req.body.term === 'string' ? req.body.term : '';
     if (!term.trim()) return res.json(null);
     return res.json(await meshLookup(term)); // record | null
@@ -117,7 +115,7 @@ export async function postMesh(req, res) {
 
 export async function postMeshSuggest(req, res) {
   try {
-    if (!(await searchEngineEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await searchEngineEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const term = req.body && typeof req.body.term === 'string' ? req.body.term : '';
     if (!term.trim()) return res.json([]);
     return res.json(await meshSuggest(term)); // array of mesh records (possibly [])
@@ -129,7 +127,7 @@ export async function postMeshSuggest(req, res) {
 
 export async function postCount(req, res) {
   try {
-    if (!(await searchEngineEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await searchEngineEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const query = req.body && typeof req.body.query === 'string' ? req.body.query : '';
     if (!query.trim()) return res.json({ count: null });
     return res.json({ count: await pubmedCount(query) });
@@ -142,7 +140,7 @@ export async function postCount(req, res) {
 // ── Per-project persistence (project access; reuses WorkflowModuleState) ───────
 
 async function gate(req, res) {
-  if (!(await searchEngineEnabled())) { res.status(404).json({ error: 'Not found' }); return null; }
+  if (!(await searchEngineEnabled(req.user))) { res.status(404).json({ error: 'Not found' }); return null; }
   const access = await resolveProjectAccess(req.params.projectId, req.user.id);
   if (!access || !access.canView) { res.status(404).json({ error: 'Project not found' }); return null; }
   return access;

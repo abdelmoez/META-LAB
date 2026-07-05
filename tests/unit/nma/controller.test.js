@@ -32,10 +32,29 @@ const DATASET = {
 describe('/api/nma controller', () => {
   beforeEach(() => { flagValue = true; });
 
-  it('404s when the feature flag is OFF', async () => {
+  it('404s for a non-admin when the feature flag is OFF', async () => {
     flagValue = false;
     const res = mockRes();
-    await nmaRun({ body: { dataset: DATASET } }, res);
+    // No user (or a non-admin) → the flag gate hides the feature.
+    await nmaRun({ body: { dataset: DATASET }, user: { role: 'user' } }, res);
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('75.md Phase 7 — an ADMIN can still run NMA while the flag is OFF (adminOnly bypass)', async () => {
+    flagValue = false;
+    const res = mockRes();
+    // featureAccess grants the admin (reason 'adminOnly'); the tier gate also
+    // bypasses for admins, so the real engine runs and returns a full result.
+    await nmaRun({ body: { dataset: DATASET, model: 'random' }, user: { role: 'admin' } }, res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.ok).toBe(true);
+    expect(res.body.treatments.sort()).toEqual(['A', 'B', 'Placebo']);
+  });
+
+  it('a MOD does NOT get the flag override (mods excluded) → 404 when OFF', async () => {
+    flagValue = false;
+    const res = mockRes();
+    await nmaRun({ body: { dataset: DATASET }, user: { role: 'mod' } }, res);
     expect(res.statusCode).toBe(404);
   });
 

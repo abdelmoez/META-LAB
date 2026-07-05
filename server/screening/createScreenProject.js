@@ -39,27 +39,36 @@ const DEFAULT_EXCLUSION_REASONS = [
  * @returns {Promise<object>} the created ScreenProject
  */
 export async function createLinkedScreenProject({ ownerId, title, linkedMetaLabProjectId, mlData, members }) {
-  const project = await prisma.screenProject.create({
-    data: {
-      ownerId,
-      title,
-      description: '',
-      linkedMetaLabProjectId,
-      // Cache the PICO/criteria from the META·LAB side at link time (Task 2).
-      picoSnapshot: snapshotPico(mlData || {}),
-      // Seed editable default keyword suggestions (same as SIFT-side create).
-      inclusionKeywords: JSON.stringify(DEFAULT_INCLUDE_KEYWORDS),
-      exclusionKeywords: JSON.stringify(DEFAULT_EXCLUDE_KEYWORDS),
-    },
-  });
+  // Atomic core (75.md Phase 6): the ScreenProject, its seeded exclusion reasons,
+  // and the creator's owner member row succeed or fail together. An interactive
+  // transaction so ensureLeaderMember writes the owner row inside the SAME
+  // transaction — a failure mid-create can never leave an orphaned, owner-less
+  // workspace.
+  const project = await prisma.$transaction(async (tx) => {
+    const sp = await tx.screenProject.create({
+      data: {
+        ownerId,
+        title,
+        description: '',
+        linkedMetaLabProjectId,
+        // Cache the PICO/criteria from the META·LAB side at link time (Task 2).
+        picoSnapshot: snapshotPico(mlData || {}),
+        // Seed editable default keyword suggestions (same as SIFT-side create).
+        inclusionKeywords: JSON.stringify(DEFAULT_INCLUDE_KEYWORDS),
+        exclusionKeywords: JSON.stringify(DEFAULT_EXCLUDE_KEYWORDS),
+      },
+    });
 
-  // Seed default exclusion reasons (literal copy of the SIFT-side seed).
-  await prisma.screenExclusionReason.createMany({
-    data: DEFAULT_EXCLUSION_REASONS.map(text => ({ projectId: project.id, text })),
-  });
+    // Seed default exclusion reasons (literal copy of the SIFT-side seed).
+    await tx.screenExclusionReason.createMany({
+      data: DEFAULT_EXCLUSION_REASONS.map(text => ({ projectId: sp.id, text })),
+    });
 
-  // The creator automatically becomes the workspace owner member row.
-  await ensureLeaderMember(project);
+    // The creator automatically becomes the workspace owner member row.
+    await ensureLeaderMember(sp, tx);
+
+    return sp;
+  });
 
   // Optionally mirror member rows ("same initial members"). Rows are shaped
   // like ScreenProjectMember rows: copy preset + all permission flags + status

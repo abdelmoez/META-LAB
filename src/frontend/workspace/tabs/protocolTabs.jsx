@@ -265,7 +265,7 @@ function PICODispatcher({project,updNested,upd,lockCtx,activeId}){
    engines, so this is a safe, reversible arrangement swap. When the flag is OFF (default),
    the SearchWizard path below is byte-identical. The legacy searchEngine-OFF SearchTab path
    is untouched. searchWorkspaceV2FlagEnabled() already requires searchEngine. */
-function SearchWizardDispatcher({project,activeId,updNested,upd,readOnly}){
+function SearchWizardDispatcher({project,activeId,updNested,upd,readOnly,hideRail,initialStage,onStageChange}){
   const[flags,setFlags]=useState(null); // null=checking; {searchEngine,pecan,workspaceV2}
   useEffect(()=>{let dead=false;
     (async()=>{
@@ -279,7 +279,7 @@ function SearchWizardDispatcher({project,activeId,updNested,upd,readOnly}){
   },[]);
   if(flags===null) return <div style={{padding:40,textAlign:"center",color:C.muted,fontSize:13}}>Loading Search…</div>;
   if(!flags.searchEngine) return <SearchTab project={project} updNested={updNested} upd={upd}/>;
-  if(flags.workspaceV2) return <SearchWorkspace projectId={activeId} pico={project.pico} readOnly={readOnly} pecanEnabled={flags.pecan}/>;
+  if(flags.workspaceV2) return <SearchWorkspace projectId={activeId} pico={project.pico} readOnly={readOnly} pecanEnabled={flags.pecan} hideRail={hideRail} initialStage={initialStage} onStageChange={onStageChange}/>;
   return <SearchWizard projectId={activeId} pico={project.pico} readOnly={readOnly} pecanEnabled={flags.pecan}/>;
 }
 

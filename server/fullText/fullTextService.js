@@ -9,7 +9,7 @@
  */
 import crypto from 'node:crypto';
 import { prisma } from '../db/client.js';
-import { getEffectiveFeatureFlags } from '../controllers/settingsController.js';
+import { featureAccess } from '../services/featureAccess.js';
 import { savePdf, isPdfBuffer } from '../screening/pdfStorage.js';
 
 export const FT_SETTINGS_KEY = 'fullTextSettings';
@@ -31,12 +31,13 @@ function safeParse(s, fallback) {
   catch { return fallback; }
 }
 
-/** Whether the `fullTextRetrieval` feature flag is on (fail-closed). */
-export async function fullTextRetrievalEnabled() {
-  try {
-    const flags = await getEffectiveFeatureFlags();
-    return flags[FT_FLAG] === true;
-  } catch { return false; }
+/**
+ * Whether the `fullTextRetrieval` feature flag is on (fail-closed).
+ * 75.md Phase 7 — routed through the central seam. A gate passes `req.user` so
+ * admins keep the feature usable while it is globally OFF; no user = plain flag state.
+ */
+export async function fullTextRetrievalEnabled(user = null) {
+  return (await featureAccess(FT_FLAG, user)).allowed;
 }
 
 /** Effective full-text settings (defaults ← stored row). Never throws. */

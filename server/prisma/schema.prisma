@@ -1699,6 +1699,8 @@ model LivingSavedSearch {
   canonicalQuery   String    @default("{}") // JSON canonical query AST snapshot — the EXACT re-runnable query
   canonicalText    String    @default("") // human-readable rendering of the query at save time
   cadence          String    @default("manual") // manual | daily | weekly | monthly
+  scheduleDayOfWeek Int? // weekly cadence: UTC weekday 0-6 (0=Sunday); null = legacy (+7 days)
+  scheduleHourUtc  Int? // UTC hour-of-day 0-23 to pin runs to; null = default 03:00 UTC
   enabled          Boolean   @default(true)
   nextRunAt        DateTime?
   lastRunAt        DateTime?

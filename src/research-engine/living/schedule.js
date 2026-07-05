@@ -36,9 +36,25 @@ export function describeCadence(cadence) {
 
 /** UTC hour, accepted only when a valid 0-23 integer; anything else → the default. */
 function normalizeHour(hourUtc) {
+  // null/undefined → default. (Number(null) is 0, NOT NaN, so an explicit null must
+  // be caught here or a legacy search with a null hour would shift from 03:00 to
+  // 00:00 UTC — this must stay byte-identical to the pre-day/hour behaviour.)
+  if (hourUtc == null) return DEFAULT_HOUR_UTC;
   const h = Math.trunc(Number(hourUtc));
   if (!Number.isFinite(h) || h < 0 || h > 23) return DEFAULT_HOUR_UTC;
   return h;
+}
+
+/**
+ * UTC day-of-week (0=Sunday … 6=Saturday) for a weekly cadence, or null when not
+ * supplied / invalid. null means "legacy behaviour": +7 calendar days from
+ * fromIso (byte-identical to the pre-day-selection engine).
+ */
+function normalizeDayOfWeek(dayOfWeek) {
+  if (dayOfWeek == null || dayOfWeek === '') return null;
+  const d = Math.trunc(Number(dayOfWeek));
+  if (!Number.isFinite(d) || d < 0 || d > 6) return null;
+  return d;
 }
 
 /** Days in a given UTC month (monthIndex 0-11), accounting for leap years. */
@@ -53,7 +69,8 @@ function daysInMonth(year, monthIndex) {
  * UTC ISO string, or null for 'manual'.
  *
  *   daily   → the next calendar day at hourUtc
- *   weekly  → 7 calendar days later at hourUtc
+ *   weekly  → the next occurrence of opts.dayOfWeek at hourUtc (1-7 days ahead);
+ *             when opts.dayOfWeek is null/invalid, 7 calendar days later (legacy)
  *   monthly → the same day-of-month one month later at hourUtc, clamped down to the
  *             target month's length (e.g. Jan 31 → Feb 28, or Feb 29 in a leap year)
  *
@@ -65,6 +82,8 @@ function daysInMonth(year, monthIndex) {
  * @param {string} fromIso  ISO timestamp to schedule from (usually "now" or a completion time)
  * @param {object} [opts]
  * @param {number} [opts.hourUtc=3]  UTC hour-of-day to pin the run to (0-23)
+ * @param {number} [opts.dayOfWeek]  weekly only: UTC weekday 0-6 (0=Sunday) to anchor
+ *                                    the run to. null/omitted/invalid ⇒ legacy +7 days.
  * @returns {string|null} ISO string of the next run, or null for 'manual' / invalid input
  */
 export function computeNextRunAt(cadence, fromIso, opts = {}) {
@@ -83,7 +102,16 @@ export function computeNextRunAt(cadence, fromIso, opts = {}) {
   if (cadence === 'daily') {
     next = new Date(Date.UTC(y, m, d + 1, hour, 0, 0, 0));
   } else if (cadence === 'weekly') {
-    next = new Date(Date.UTC(y, m, d + 7, hour, 0, 0, 0));
+    const dow = normalizeDayOfWeek(opts.dayOfWeek);
+    if (dow == null) {
+      // Legacy: exactly +7 calendar days (byte-identical to pre-day-selection).
+      next = new Date(Date.UTC(y, m, d + 7, hour, 0, 0, 0));
+    } else {
+      // Anchor to the chosen weekday: 1-7 days ahead. When fromIso already falls on
+      // that weekday we advance a full week (never 0) so a run never re-fires today.
+      const daysAhead = ((dow - from.getUTCDay() + 7) % 7) || 7;
+      next = new Date(Date.UTC(y, m, d + daysAhead, hour, 0, 0, 0));
+    }
   } else {
     // monthly: same day-of-month next month, clamped to that month's length.
     const targetMonth = m + 1;                       // Date normalizes overflow into the year

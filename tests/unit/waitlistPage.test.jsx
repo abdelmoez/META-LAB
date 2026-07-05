@@ -21,6 +21,22 @@ describe('Beta Waitlist page (redesigned)', () => {
     expect(html.toLowerCase()).toContain('evidence synthesis');
   });
 
+  it('leads with the grammatical "Join us" hero copy (no obsolete "Help us")', () => {
+    // 75.md Phase 10: "Help us …" → a natural "Join us in cultivating …", while the
+    // accent span "evidence synthesis." (with the Squiggle underline) stays intact.
+    expect(html).toContain('Join us in cultivating the future of');
+    expect(html).toContain('evidence synthesis.');
+    expect(html).not.toContain('Help us');
+  });
+
+  it('uses shared Stitch tokens — no retired one-off waitlist palette (WL) hexes', () => {
+    // The indigo/green WL palette (waitlistTheme.js) is retired; its hardcoded hexes
+    // (rendered inline) must be absent so the page flips with the shared S.* tokens.
+    for (const hex of ['#493ee5', '#635bff', '#5fce5b']) {
+      expect(html.toLowerCase()).not.toContain(hex);
+    }
+  });
+
   it('leads with an accessible email field (label associated)', () => {
     expect(html).toContain('type="email"');
     expect(html).toContain('for="email"'); // <label htmlFor="email">

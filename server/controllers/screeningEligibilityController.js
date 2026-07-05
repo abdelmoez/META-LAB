@@ -30,7 +30,7 @@ function stageOf(req) {
 
 /** Shared gate for /projects/:pid routes: flag → access. */
 async function gate(req, res) {
-  if (!(await eligibilityFlagEnabled())) { res.status(404).json({ error: 'Not found' }); return null; }
+  if (!(await eligibilityFlagEnabled(req.user))) { res.status(404).json({ error: 'Not found' }); return null; }
   const access = await getProjectAccess(req.params.pid, req.user);
   if (!access) { res.status(404).json({ error: 'Project not found' }); return null; }
   return access;
@@ -38,7 +38,7 @@ async function gate(req, res) {
 
 /** Shared gate for /records/:rid routes: flag → record → access. */
 async function recordGate(req, res) {
-  if (!(await eligibilityFlagEnabled())) { res.status(404).json({ error: 'Not found' }); return null; }
+  if (!(await eligibilityFlagEnabled(req.user))) { res.status(404).json({ error: 'Not found' }); return null; }
   const record = await prisma.screenRecord.findUnique({ where: { id: req.params.rid } });
   if (!record) { res.status(404).json({ error: 'Record not found' }); return null; }
   const access = await getProjectAccess(record.projectId, req.user);

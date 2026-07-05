@@ -8,16 +8,17 @@
  * no project data leaves the server and no arbitrary code is executed.
  */
 import { validateNetwork, runNetworkMetaAnalysis, SUPPORTED_MEASURES } from '../../src/research-engine/statistics/nma/index.js';
-import { getEffectiveFeatureFlags } from './settingsController.js';
+import { featureAccess } from '../services/featureAccess.js';
 // 67.md — product-tier enforcement (admins/mods bypass inside the service).
 import { requireEntitlement, sendTierLimit } from '../services/entitlementService.js';
 
 const MAX_STUDIES = 2000;     // resource-aware bound (not a methodological cap)
 const MAX_TREATMENTS = 200;
 
-async function flagOn() {
-  const f = await getEffectiveFeatureFlags();
-  return !!f.networkMetaAnalysis;
+// 75.md Phase 7 — central seam: admins keep NMA usable while it is globally OFF
+// (reason 'adminOnly'); non-admins keep the existence-hiding 404. Pass `req.user`.
+async function flagOn(user = null) {
+  return (await featureAccess('networkMetaAnalysis', user)).allowed;
 }
 
 /** Pull + structurally validate the dataset from the request body. */
@@ -41,7 +42,7 @@ function sanitizeDataset(body) {
 
 /** POST /api/nma/validate — readiness only. */
 export async function nmaValidate(req, res) {
-  if (!(await flagOn())) return res.status(404).json({ error: 'Not found' });
+  if (!(await flagOn(req.user))) return res.status(404).json({ error: 'Not found' });
   const s = sanitizeDataset(req.body || {});
   if (s.error) return res.status(400).json({ error: s.error });
   try {
@@ -54,7 +55,7 @@ export async function nmaValidate(req, res) {
 
 /** POST /api/nma/run — full frequentist NMA. Body: { dataset, model?, reference? }. */
 export async function nmaRun(req, res) {
-  if (!(await flagOn())) return res.status(404).json({ error: 'Not found' });
+  if (!(await flagOn(req.user))) return res.status(404).json({ error: 'Not found' });
   // 67.md — product-tier gate (admins/mods bypass inside the service).
   try { await requireEntitlement(req.user, 'metaAnalysis.nma'); }
   catch (e) { if (sendTierLimit(res, e)) return; throw e; }

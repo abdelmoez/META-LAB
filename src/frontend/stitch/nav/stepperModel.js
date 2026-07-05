@@ -69,18 +69,28 @@ export function submenuSteps(category, ctx = {}, opts = {}) {
         count: sc ? (sc.count || null) : null,
         desc: null,
         disabled: !it.href,
+        groupLabel: it.groupLabel || null,
       };
     });
   }
 
-  // Phase categories (Plan, Search, Extract, Analyze, Report): every submenu item
-  // is a numbered workflow step; status comes from the legacy stepStatus() truth.
-  return items.map((it, i) => ({
-    key: it.key, label: it.label, icon: it.icon, href: it.href,
-    num: i + 1,
-    status: statusMap[it.completionKey] || 'empty',
-    count: null,
-    desc: STEP_DESC[it.completionKey] || null,
-    disabled: !it.href,
-  }));
+  // Phase categories (Plan, Search, Extract, Analyze, Report): each submenu item is a
+  // numbered workflow step. 75.md — an item flagged `utility` (the Search category's
+  // optional tools: Living Review, Citation Mining) is an UN-numbered UtilityRow that
+  // never joins the 1..N numbering; `groupLabel` carries a visually-separate section
+  // header. Status comes from the legacy stepStatus() truth (utility rows have none).
+  let n = 0;
+  return items.map((it) => {
+    const utility = !!it.utility;
+    if (!utility) n += 1;
+    return {
+      key: it.key, label: it.label, icon: it.icon, href: it.href,
+      num: utility ? null : n,
+      status: utility ? null : (statusMap[it.completionKey] || 'empty'),
+      count: null,
+      desc: utility ? null : (it.desc || STEP_DESC[it.completionKey] || null),
+      disabled: !it.href,
+      groupLabel: it.groupLabel || null,
+    };
+  });
 }

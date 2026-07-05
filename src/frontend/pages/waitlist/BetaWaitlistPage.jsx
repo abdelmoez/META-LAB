@@ -14,8 +14,8 @@
  * on mount it sets `document.documentElement.dataset.uiDesign = 'stitch'`, injects
  * the scoped Stitch stylesheet once (<StitchStyle/>), wraps its content in
  * `.stitch-scope`, and restores the previous value on unmount. Nothing leaks. The
- * indigo accent lives in a page-local palette (waitlistTheme.js), never the global
- * Stitch brand token.
+ * accent uses the shared Stitch `S.*` brand/success tokens, so it flips correctly
+ * in both day and night with the rest of the app (no page-local palette).
  *
  * Intentionally honest (54.md): the queue card shows the REAL signup count (or
  * hides when unavailable) — no invented numbers, logos, or testimonials. Motion is
@@ -28,7 +28,6 @@ import { useNavigate } from 'react-router-dom';
 import { Icon } from '../../components/icons.jsx';
 import { S, salpha } from '../../stitch/theme/stitchTokens.js';
 import StitchStyle from '../../stitch/theme/StitchStyle.jsx';
-import { WL } from './waitlistTheme.js';
 import WaitlistFlow from './WaitlistFlow.jsx';
 import { fetchWaitlistCount } from './waitlistApi.js';
 
@@ -134,15 +133,15 @@ export default function BetaWaitlistPage({ preview = false }) {
         @keyframes wlPulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
         .wl-pulse-dot { animation: wlPulse 2.2s ease-in-out infinite; }
         .wl-link { color: ${S.textSecondary}; text-decoration: none; font-weight: 500; transition: color 0.15s ease; }
-        .wl-link:hover { color: ${WL.primary}; }
+        .wl-link:hover { color: ${S.brand}; }
         @media (prefers-reduced-motion: reduce) { .wl-orb, .wl-pulse-dot { animation: none !important; } }
         @media (max-width: 880px) { .wl-queue-card { display: none !important; } }
       `}</style>
 
       {/* Ambient background — subtle, low-opacity, non-interactive. */}
       <div aria-hidden="true" style={{ position: 'fixed', inset: 0, zIndex: 0, overflow: 'hidden', pointerEvents: 'none' }}>
-        <div className="wl-orb" style={{ position: 'absolute', top: '-12%', right: '-8%', width: 680, height: 680, borderRadius: '50%', background: WL.orbA, filter: 'blur(120px)' }} />
-        <div className="wl-orb" style={{ position: 'absolute', bottom: '-18%', left: '-10%', width: 560, height: 560, borderRadius: '50%', background: WL.orbB, filter: 'blur(120px)', animationDelay: '3s' }} />
+        <div className="wl-orb" style={{ position: 'absolute', top: '-12%', right: '-8%', width: 680, height: 680, borderRadius: '50%', background: salpha(S.brand, 0.20), filter: 'blur(120px)' }} />
+        <div className="wl-orb" style={{ position: 'absolute', bottom: '-18%', left: '-10%', width: 560, height: 560, borderRadius: '50%', background: salpha(S.success, 0.16), filter: 'blur(120px)', animationDelay: '3s' }} />
       </div>
 
       {preview && (
@@ -154,7 +153,7 @@ export default function BetaWaitlistPage({ preview = false }) {
       {/* Header */}
       <header style={{ position: 'relative', zIndex: 2, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '18px clamp(16px, 5vw, 48px)' }}>
         <a href="/" style={{ display: 'flex', alignItems: 'center', gap: 10, textDecoration: 'none' }}>
-          <span style={{ width: 34, height: 34, borderRadius: S.radiusControl, background: WL.primary, color: WL.onPrimary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', boxShadow: S.shadowSm }}>
+          <span style={{ width: 34, height: 34, borderRadius: S.radiusControl, background: S.brand, color: S.onBrand, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', boxShadow: S.shadowSm }}>
             <Icon name="forest" size={18} />
           </span>
           <span style={{ fontSize: 18, fontWeight: 800, letterSpacing: '-0.01em', color: S.textPrimary }}>PecanRev</span>
@@ -162,7 +161,7 @@ export default function BetaWaitlistPage({ preview = false }) {
         <nav style={{ display: 'flex', alignItems: 'center', gap: 'clamp(14px, 3vw, 26px)' }}>
           <a className="wl-link" href="/terms#privacy" style={{ fontSize: 13.5 }}>Research ethics</a>
           <a className="wl-link" href="/terms" style={{ fontSize: 13.5 }}>Help</a>
-          <a className="wl-link" href="/login" onClick={(e) => { e.preventDefault(); navigate('/login'); }} style={{ fontSize: 13.5, fontWeight: 600, color: WL.primary }}>Sign in</a>
+          <a className="wl-link" href="/login" onClick={(e) => { e.preventDefault(); navigate('/login'); }} style={{ fontSize: 13.5, fontWeight: 600, color: S.brand }}>Sign in</a>
         </nav>
       </header>
 
@@ -193,15 +192,15 @@ export default function BetaWaitlistPage({ preview = false }) {
 function Hero() {
   return (
     <div className="stitch-fade-in" style={{ textAlign: 'center', maxWidth: 760, margin: '0 auto', position: 'relative', zIndex: 1, padding: '8px 0 30px' }}>
-      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9, padding: '6px 14px', background: S.card, border: `1px solid ${salpha(S.outlineVariant, 0.5)}`, borderRadius: S.radiusPill, fontSize: 12.5, fontWeight: 700, color: WL.primary, marginBottom: 22, boxShadow: S.shadowSm }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9, padding: '6px 14px', background: S.card, border: `1px solid ${salpha(S.outlineVariant, 0.5)}`, borderRadius: S.radiusPill, fontSize: 12.5, fontWeight: 700, color: S.brand, marginBottom: 22, boxShadow: S.shadowSm }}>
         <span aria-hidden="true" style={{ position: 'relative', display: 'inline-flex', width: 8, height: 8 }}>
-          <span className="wl-pulse-dot" style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: WL.primary }} />
+          <span className="wl-pulse-dot" style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: S.brand }} />
         </span>
         PecanRev Beta · Early access
       </span>
       <h1 style={{ fontSize: 'clamp(32px, 5.5vw, 52px)', fontWeight: 800, lineHeight: 1.1, letterSpacing: '-0.025em', color: S.textPrimary, margin: '0 0 18px' }}>
-        Help us cultivate the future of{' '}
-        <span style={{ position: 'relative', display: 'inline-block', color: WL.primary }}>
+        Join us in cultivating the future of{' '}
+        <span style={{ position: 'relative', display: 'inline-block', color: S.brand }}>
           evidence synthesis.
           <Squiggle />
         </span>
@@ -219,7 +218,7 @@ function Squiggle() {
   return (
     <svg
       aria-hidden="true" viewBox="0 0 200 9" fill="none" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="none"
-      style={{ position: 'absolute', left: 0, bottom: -6, width: '100%', height: 10, color: WL.squiggle, opacity: 0.75 }}
+      style={{ position: 'absolute', left: 0, bottom: -6, width: '100%', height: 10, color: S.success, opacity: 0.75 }}
     >
       <path d="M2.00035 7.42624C48.0617 2.65824 100.866 0.812328 198.544 3.01166" stroke="currentColor" strokeLinecap="round" strokeWidth="4" />
     </svg>
@@ -245,12 +244,12 @@ function QueueCard({ count }) {
     >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
         <span style={{ fontSize: 10.5, fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase', color: S.textMuted }}>Queue status</span>
-        <span style={{ color: WL.primary, display: 'inline-flex' }}><Icon name="clock" size={15} /></span>
+        <span style={{ color: S.brand, display: 'inline-flex' }}><Icon name="clock" size={15} /></span>
       </div>
       <div style={{ fontSize: 30, fontWeight: 800, letterSpacing: '-0.02em', color: S.textPrimary, lineHeight: 1, marginBottom: 4 }}>{count.toLocaleString()}</div>
       <div style={{ fontSize: 12.5, color: S.textMuted, marginBottom: 14 }}>Teams registered</div>
       <div style={{ position: 'relative', width: '100%', height: 7, background: S.surfaceHigh, borderRadius: 9999, overflow: 'hidden' }}>
-        <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: '62%', background: WL.primary, borderRadius: 9999 }} />
+        <div style={{ position: 'absolute', left: 0, top: 0, height: '100%', width: '62%', background: S.brand, borderRadius: 9999 }} />
       </div>
       <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontSize: 10, fontWeight: 700, letterSpacing: '0.04em', color: salpha(S.textMuted, 0.75) }}>
         <span>Wave 1</span><span>Wave 2</span>

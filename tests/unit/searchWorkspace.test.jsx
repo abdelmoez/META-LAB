@@ -311,6 +311,55 @@ describe('SearchWorkspace — 74.md: one workflow visible at a time', () => {
   });
 });
 
+describe('SearchWorkspace — 75.md: side-menu-driven stage control + Next-after-screening', () => {
+  const render = (props) => renderToStaticMarkup(
+    h(SearchWorkspace, { projectId: 'p1', pico: PICO, readOnly: false, pecanEnabled: true, ...props }),
+  );
+
+  it('hideRail removes the DUPLICATE in-body rail, keeping the heading + Back/Next footer', () => {
+    // Default (side-menu not driving) → the in-body rail still renders.
+    expect(render({ initialStage: 'concepts' })).toContain('search-workspace-rail');
+    expect(render({ initialStage: 'concepts', hideRail: false })).toContain('search-workspace-rail');
+    // Driven by the white side-menu → the numbered rail is dropped (no duplication)…
+    const chromeless = render({ initialStage: 'concepts', hideRail: true });
+    expect(chromeless).not.toContain('search-workspace-rail');
+    // …but the per-stage heading, the stage surface and the footer stay.
+    expect(chromeless).toContain('data-stage="concepts"');
+    expect(chromeless).toContain('Concepts');
+    expect(chromeless).toContain('Stage 2 of 9');
+  });
+
+  it('opens the stage the host derived from ?stage= (deep-link contract)', () => {
+    // StitchProjectWorkspace reads ?stage= (readSearchStageParam) and passes it as
+    // initialStage; the workspace must open on exactly that stage — the URL is the
+    // source of truth for both the side-menu highlight and the body.
+    const html = render({ hideRail: true, initialStage: 'documentation' });
+    expect(html).toContain('data-stage="documentation"');
+    expect(html).toContain('Stage 8 of 9');
+    expect(html).toContain('Documentation');
+    // a mode-invalid deep link is remapped (74.md) even when it arrives via the URL/host.
+    expect(render({ hideRail: true, initialStage: 'strategy', initialSearchMode: 'automated' }))
+      .toContain('data-stage="refine"');
+  });
+
+  it('the Send-to-Screening stage exposes a "Continue to Screening" handoff, disabled until ready', () => {
+    const html = render({ hideRail: true, initialStage: 'screening' });
+    expect(html).toContain('continue-to-screening');
+    expect(html).toContain('Continue to Screening');
+    // "do NOT mark complete on mere click": readyForScreening gates it, and under SSR
+    // (no effects) the marker has not loaded → the handoff is disabled (no href).
+    expect(html).toContain('aria-disabled="true"');
+    // it is the LAST stage → the ordinary "Next:" stage button is not rendered.
+    expect(html).not.toContain('Next:');
+  });
+
+  it('non-terminal stages still render the ordinary Back/Next footer (regression)', () => {
+    const html = render({ hideRail: true, initialStage: 'concepts' });
+    expect(html).toContain('Next:');
+    expect(html).not.toContain('continue-to-screening');
+  });
+});
+
 describe('PubMedPulse — 73.md P3: honest hit-state presentation', () => {
   const render = (props) => renderToStaticMarkup(h(PubMedPulse, props));
 

@@ -30,6 +30,7 @@ import { statusOf, STATUS_META, relTime, ROLE_LABEL } from '../../pages/projectL
 import StitchAppShell from '../shell/StitchAppShell.jsx';
 import StitchProjectRail from '../shell/StitchProjectRail.jsx';
 import StitchProjectPresence from '../shell/StitchProjectPresence.jsx';
+import { useProjectProgress } from '../hooks/useProjectProgress.js';
 import { useSidebarPin } from '../shell/useSidebarPin.js';
 import { totalMembersOf } from '../shell/presence.js';
 import { projectStageHref } from '../nav/navConfig.js';
@@ -65,6 +66,13 @@ function rollupPhase(steps, statusMap) {
   return { status, pct, states };
 }
 function stepTone(status) { return STEP_TONE[status] || 'neutral'; }
+
+// The subtle header-bar tooltip: one concise line, not a stats dump (75.md WS-F).
+function headerProgressLabel(progress) {
+  const parts = [`Project progress: ${progress.pct}%`, `${progress.requiredDone} of ${progress.requiredTotal} steps`];
+  if (progress.nextStepId) parts.push(`Next: ${STAGE_LABEL[progress.nextStepId] || 'Continue'}`);
+  return parts.join(' · ');
+}
 
 export default function StitchProjectOverview() {
   const { projectId } = useParams();
@@ -124,14 +132,30 @@ export default function StitchProjectOverview() {
     () => (project ? { ...project, studies: Array.isArray(project.studies) ? project.studies : [] } : null),
     [project],
   );
-  const statusMap = useMemo(() => (safeProject ? stepStatus(safeProject, screeningComplete) : {}), [safeProject, screeningComplete]);
+  // 75.md WS-F — the ONE canonical workflow progress (server `_progress`, else the
+  // identical client model). Every number the Overview shows now derives from THIS so
+  // the header bar, the rail dots and the on-page counts can never disagree.
+  const progress = useProjectProgress(project);
+  // Overlay the canonical per-step statuses onto the legacy map so the rail dots and
+  // the per-phase rollup bars agree with the canonical pct. Falls back to stepStatus
+  // for any id the model doesn't emit (there are none beyond the 15 workflow steps).
+  const statusMap = useMemo(() => {
+    const base = safeProject ? stepStatus(safeProject, screeningComplete) : {};
+    const steps = progress.steps || [];
+    if (!steps.length) return base;
+    const m = { ...base };
+    for (const s of steps) m[s.id] = s.status;
+    return m;
+  }, [safeProject, screeningComplete, progress]);
 
   const phases = useMemo(() => PHASES.map((name) => ({
     name, label: phaseLabel(name), icon: PHASE_ICON[name],
     ...rollupPhase(PHASE_STEPS[name], statusMap),
   })), [statusMap]);
-  const overallPct = phases.length ? Math.round(phases.reduce((n, ph) => n + ph.pct, 0) / phases.length) : 0;
-  const stepsDone = WORKFLOW_TABS.filter((t) => statusMap[t.id] === 'done').length;
+  // Canonical single source: the workflow-steps percentage + the required-step tally.
+  const overallPct = progress.pct;
+  const stepsDone = progress.requiredDone;
+  const stepsTotal = progress.requiredTotal || WORKFLOW_TABS.length;
 
   const dataSummary = overview?.dataSummary || null;
   const studyCount = project ? (project._studyCount != null ? project._studyCount : (Array.isArray(project.studies) ? project.studies.length : 0)) : 0;
@@ -143,11 +167,9 @@ export default function StitchProjectOverview() {
   const readiness = project ? readinessCheck(project) : null;
   const auditItems = useMemo(() => (safeProject ? auditProject(safeProject) : []), [safeProject]);
 
-  // The single most-actionable element: the first workflow step that isn't done.
-  const nextStepId = useMemo(() => {
-    const hit = WORKFLOW_TABS.find((t) => (statusMap[t.id] || 'empty') !== 'done');
-    return hit ? hit.id : null;
-  }, [statusMap]);
+  // The single most-actionable element: the canonical next required step (the first
+  // required step that isn't done). Drives the "Continue" card + walker target.
+  const nextStepId = progress.nextStepId;
 
   const pico = (project && project.pico) || {};
   const picoFilled = !!(pico.P || pico.I || pico.C || pico.O || pico.question);
@@ -192,7 +214,10 @@ export default function StitchProjectOverview() {
   // Header project chat (all Stitch pages): the launcher self-probes access for the
   // META·LAB project id (route param), so it works even before the blob resolves.
   const chatContext = { projectId, projectName: project?.name || '' };
-  const shellProps = { activeKey: 'dashboard', renderPrimaryRail, contextRail: null, coordinatedNav: true, pinned, topPresence, chatContext };
+  // 75.md WS-F — the thin header underline reads the SAME canonical pct as the page
+  // body; null while loading so the bar only appears once the project resolves.
+  const headerProgress = project ? { pct: progress.pct, label: headerProgressLabel(progress) } : null;
+  const shellProps = { activeKey: 'dashboard', renderPrimaryRail, contextRail: null, coordinatedNav: true, pinned, topPresence, chatContext, headerProgress };
 
   /* ── loading / error ── */
   if (loading) {
@@ -276,7 +301,7 @@ export default function StitchProjectOverview() {
             <div style={{ minWidth: 0, flex: 1 }}>
               <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.05em', textTransform: 'uppercase', color: S.brand }}>Continue where you left off</div>
               <div style={{ fontSize: 17, fontWeight: 700, color: S.textPrimary, marginTop: 2 }}>{STAGE_LABEL[nextStepId] || 'Continue the review'}</div>
-              <div style={{ fontSize: 12.5, color: S.textSecondary, marginTop: 2 }}>{stepsDone} of {WORKFLOW_TABS.length} workflow steps complete · {overallPct}%</div>
+              <div style={{ fontSize: 12.5, color: S.textSecondary, marginTop: 2 }}>{stepsDone} of {stepsTotal} workflow steps complete · {overallPct}%</div>
             </div>
             <StitchButton iconRight="arrowRight" onClick={() => goStage(nextStepId)}>Continue</StitchButton>
           </StitchCard>
@@ -299,7 +324,7 @@ export default function StitchProjectOverview() {
         {/* LEFT — workflow + what needs doing */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
           <StitchCard>
-            <StitchSectionHeader title="Workflow" desc={`${stepsDone} of ${WORKFLOW_TABS.length} steps complete`}
+            <StitchSectionHeader title="Workflow" desc={`${stepsDone} of ${stepsTotal} steps complete`}
               action={<StitchBadge tone={overallPct === 100 ? 'success' : 'brand'} dot>{overallPct}%</StitchBadge>} />
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
               {phases.map((ph, i) => (

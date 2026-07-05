@@ -20,7 +20,7 @@ import {
 
 /** Shared gate: flag → access. Returns access or null (response already sent). */
 async function gate(req, res) {
-  if (!(await publicSynthesisEnabled())) { res.status(404).json({ error: 'Not found' }); return null; }
+  if (!(await publicSynthesisEnabled(req.user))) { res.status(404).json({ error: 'Not found' }); return null; }
   const access = await resolveExtractionAccess(req.params.mlpid, req.user);
   if (!access) { res.status(404).json({ error: 'Project not found' }); return null; }
   return access;

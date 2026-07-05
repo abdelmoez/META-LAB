@@ -15,6 +15,7 @@
 import { prisma } from '../db/client.js';
 import { getById as getOwnedProject, touchProjectActivity } from '../store.js';
 import { getRobMemberAccess } from '../screening/metalabAccess.js';
+import { featureAccess } from '../services/featureAccess.js';
 import { canMutateAssessment, normaliseScreeningStudy, normaliseManualStudy } from './robAccess.js';
 import { getRobTool } from '../../src/research-engine/rob/tools.js';
 import {
@@ -60,30 +61,22 @@ function questionDomainMap(instrument) {
 // Default OFF: enabled ONLY when featureFlags.rob_engine_v2 === true. Missing /
 // malformed flags → disabled (the opposite of the "missing = on" defaults used by
 // long-standing features, because this one ships dark until the gate passes).
-async function robEnabled() {
-  try {
-    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
-    if (!row) return false;
-    const flags = JSON.parse(row.value || '{}');
-    return flags.rob_engine_v2 === true;
-  } catch {
-    return false;
-  }
+// 75.md Phase 7 — routed through the central seam so a globally-disabled RoB engine
+// stays usable by admins (reason 'adminOnly') while non-admins keep the 404. Each
+// handler passes `req.user`; no user = plain flag state.
+async function robEnabled(user = null) {
+  return (await featureAccess('rob_engine_v2', user)).allowed;
 }
 
 // P14 — the GUIDED APPRAISAL sub-feature (appraise + validation endpoints). It is
 // gated behind its OWN flag `guidedRobAppraisal` AND functionally depends on
 // `rob_engine_v2` (there is nothing to appraise without the RoB engine on). Both
 // must be true; either off → 404 (existence hidden), exactly like robEnabled().
-async function guidedAppraisalEnabled() {
-  try {
-    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
-    if (!row) return false;
-    const flags = JSON.parse(row.value || '{}');
-    return flags.rob_engine_v2 === true && flags.guidedRobAppraisal === true;
-  } catch {
-    return false;
-  }
+// The guided→rob_engine_v2 hard dependency now lives in featureAccess's FEATURE_DEPS
+// (single source of truth). Pass `req.user` so admins keep guided appraisal usable
+// while it is globally OFF; no user = plain flag state.
+async function guidedAppraisalEnabled(user = null) {
+  return (await featureAccess('guidedRobAppraisal', user)).allowed;
 }
 
 // ── Audit (best-effort; never throws into a handler) ──────────────────────────
@@ -300,7 +293,7 @@ async function buildView(assessmentId) {
 // keeps working (RoB2 default); `/robins-i` serves the 7-domain, 5-level tool.
 const INSTRUMENT_URL_IDS = { rob2: 'RoB2', 'robins-i': 'ROBINS-I', robinsi: 'ROBINS-I' };
 export async function getRobInstrument(req, res) {
-  if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
+  if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
   const raw = String(req.params.id || 'rob2').toLowerCase();
   const instrumentId = INSTRUMENT_URL_IDS[raw];
   if (!instrumentId) return res.status(404).json({ error: 'Unknown instrument' });
@@ -310,7 +303,7 @@ export async function getRobInstrument(req, res) {
 // ── POST /api/rob/assessments ─────────────────────────────────────────────────
 export async function createAssessment(req, res) {
   try {
-    if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const { projectId, studyId, outcomeId, resultLabel, instrumentId } = req.body || {};
     if (!projectId || !studyId) {
       return res.status(400).json({ error: 'projectId and studyId are required' });
@@ -325,7 +318,7 @@ export async function createAssessment(req, res) {
     // Any non-RoB2 instrument (ROBINS-I) is part of the guided-appraisal feature, so
     // it may only be created when `guidedRobAppraisal` is ON. With the flag OFF the
     // workspace stays RoB2-only exactly as before (a stray ROBINS-I request → 400).
-    if (wantInstrumentId !== 'RoB2' && !(await guidedAppraisalEnabled())) {
+    if (wantInstrumentId !== 'RoB2' && !(await guidedAppraisalEnabled(req.user))) {
       return res.status(400).json({ error: 'ROBINS-I requires the Guided RoB Appraisal feature, which is not enabled.' });
     }
     const instrument = getInstrument(wantInstrumentId);
@@ -370,7 +363,7 @@ export async function createAssessment(req, res) {
 // ── GET /api/rob/assessments/:id ──────────────────────────────────────────────
 export async function getAssessment(req, res) {
   try {
-    if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
     // prompt46 #3 — surface per-assessment mutate permission so the UI disables
@@ -387,7 +380,7 @@ export async function getAssessment(req, res) {
 // ── GET /api/rob/projects/:projectId/assessments ──────────────────────────────
 export async function listProjectAssessments(req, res) {
   try {
-    if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const access = await resolveRobAccess(req.params.projectId, req.user.id);
     if (!access) return res.status(404).json({ error: 'Not found' });
     const project = access.project;
@@ -450,7 +443,7 @@ export async function listProjectAssessments(req, res) {
 // Body: { answers: [{ domainId?, questionId, response, rationale?, evidenceQuote?, evidenceLocator? }] }
 export async function upsertAnswers(req, res) {
   try {
-    if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
     if (!canMutateAssessment(a, permsFor(a), req.user.id)) return res.status(403).json({ error: 'Only the assessment creator, a project leader, or the owner can modify or delete this assessment.' });
@@ -502,7 +495,7 @@ export async function upsertAnswers(req, res) {
 // finalJudgment empty/null + clear:true → clears the override.
 export async function overrideJudgment(req, res) {
   try {
-    if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
     if (!canMutateAssessment(a, permsFor(a), req.user.id)) return res.status(403).json({ error: 'Only the assessment creator, a project leader, or the owner can modify or delete this assessment.' });
@@ -567,7 +560,7 @@ export async function overrideJudgment(req, res) {
 // ── POST /api/rob/assessments/:id/finalise ────────────────────────────────────
 export async function finaliseAssessment(req, res) {
   try {
-    if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
     if (!canMutateAssessment(a, permsFor(a), req.user.id)) return res.status(403).json({ error: 'Only the assessment creator, a project leader, or the owner can modify or delete this assessment.' });
@@ -599,7 +592,7 @@ export async function finaliseAssessment(req, res) {
 // ── POST /api/rob/assessments/:id/reopen ──────────────────────────────────────
 export async function reopenAssessment(req, res) {
   try {
-    if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
     if (!canMutateAssessment(a, permsFor(a), req.user.id)) return res.status(403).json({ error: 'Only the assessment creator, a project leader, or the owner can modify or delete this assessment.' });
@@ -619,7 +612,7 @@ export async function reopenAssessment(req, res) {
 // ── DELETE /api/rob/assessments/:id (soft delete) ─────────────────────────────
 export async function deleteAssessment(req, res) {
   try {
-    if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
     if (!canMutateAssessment(a, permsFor(a), req.user.id)) return res.status(403).json({ error: 'Only the assessment creator, a project leader, or the owner can modify or delete this assessment.' });
@@ -635,7 +628,7 @@ export async function deleteAssessment(req, res) {
 // ── GET /api/rob/assessments/:id/export?format=csv|json|robvis ────────────────
 export async function exportAssessment(req, res) {
   try {
-    if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
     const inst = instrumentFor(a);
@@ -693,7 +686,7 @@ export async function exportAssessment(req, res) {
 // each tagged with `source` ('screening' | 'manual'). View access is enough.
 export async function listStudyUniverse(req, res) {
   try {
-    if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const access = await resolveRobAccess(req.params.projectId, req.user.id);
     if (!access) return res.status(404).json({ error: 'Not found' });
     return res.json({ studies: await loadStudyUniverse(access.project) });
@@ -707,7 +700,7 @@ export async function listStudyUniverse(req, res) {
 // Body: { title, authors?, year?, doi?, pmid?, notes? }. Requires RoB edit access.
 export async function createManualStudy(req, res) {
   try {
-    if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const access = await resolveRobAccess(req.params.projectId, req.user.id);
     if (!access) return res.status(404).json({ error: 'Not found' });
     if (!access.canEdit) return res.status(403).json({ error: 'You have read-only access to Risk of Bias for this project.' });
@@ -746,7 +739,7 @@ export async function createManualStudy(req, res) {
 // has assessments, require ?force=true (the assessments are kept, not deleted).
 export async function deleteManualStudy(req, res) {
   try {
-    if (!(await robEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const access = await resolveRobAccess(req.params.projectId, req.user.id);
     if (!access) return res.status(404).json({ error: 'Not found' });
 
@@ -822,7 +815,7 @@ async function resolveStudyText(projectId, studyId, userId) {
 // human decisions are untouched. Mutate access required (creator/owner/leader).
 export async function appraiseAssessment(req, res) {
   try {
-    if (!(await guidedAppraisalEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await guidedAppraisalEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
     if (!a) return res.status(404).json({ error: 'Not found' });
     if (!canMutateAssessment(a, permsFor(a), req.user.id)) return res.status(403).json({ error: 'Only the assessment creator, a project leader, or the owner can run a guided appraisal for this assessment.' });
@@ -901,7 +894,7 @@ export async function appraiseAssessment(req, res) {
 // `?format=csv` returns a per-domain + overall summary CSV.
 export async function robValidation(req, res) {
   try {
-    if (!(await guidedAppraisalEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await guidedAppraisalEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const access = await resolveRobAccess(req.params.projectId, req.user.id);
     if (!access) return res.status(404).json({ error: 'Not found' });
 

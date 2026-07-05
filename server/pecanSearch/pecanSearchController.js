@@ -34,7 +34,7 @@ const clampOverride = (v) => (typeof v === 'string' ? v.slice(0, QUERY_LIMITS.MA
 
 /** Flag + project-access gate. Returns access or null (after writing a response). */
 async function gate(req, res, { mutate = false } = {}) {
-  if (!(await pecanSearchEnabled())) { res.status(404).json({ error: 'Not found' }); return null; }
+  if (!(await pecanSearchEnabled(req.user))) { res.status(404).json({ error: 'Not found' }); return null; }
   const access = await resolveProjectAccess(req.params.projectId, req.user.id);
   if (!access || !access.canView) { res.status(404).json({ error: 'Project not found' }); return null; }
   if (mutate && !access.canEdit) { res.status(403).json({ error: 'Read-only access' }); return null; }
@@ -61,7 +61,7 @@ function handleError(res, err, where) {
 
 export async function getProviders(req, res) {
   try {
-    if (!(await pecanSearchEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await pecanSearchEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const engine = await buildEngine();
     const providers = publicProviderConfig(engine.config).map((p) => ({
       ...p, implemented: engine.connectors[p.id] != null,

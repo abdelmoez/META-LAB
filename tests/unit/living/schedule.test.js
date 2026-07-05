@@ -72,6 +72,58 @@ describe('computeNextRunAt — weekly', () => {
   });
 });
 
+// 75.md Phase 5 — weekly day-of-week + UTC hour selection. Anchor 2026-07-01 is a
+// Wednesday (getUTCDay() === 3), so the "same weekday" case advances a full week.
+describe('computeNextRunAt — weekly day-of-week selection (75.md)', () => {
+  const wed = '2026-07-01T12:00:00.000Z'; // Wednesday
+
+  it('null/absent dayOfWeek is byte-identical to legacy +7 days', () => {
+    // Explicit null and undefined both fall back to the exact pre-feature output.
+    expect(computeNextRunAt('weekly', wed, { dayOfWeek: null }))
+      .toBe(computeNextRunAt('weekly', wed));
+    expect(computeNextRunAt('weekly', wed, {}))
+      .toBe('2026-07-08T03:00:00.000Z');
+  });
+
+  it('picks the next occurrence of each weekday (1-7 days ahead) at the chosen hour', () => {
+    expect(computeNextRunAt('weekly', wed, { dayOfWeek: 0, hourUtc: 9 })).toBe('2026-07-05T09:00:00.000Z'); // Sun
+    expect(computeNextRunAt('weekly', wed, { dayOfWeek: 4, hourUtc: 9 })).toBe('2026-07-02T09:00:00.000Z'); // Thu (tomorrow)
+    expect(computeNextRunAt('weekly', wed, { dayOfWeek: 6, hourUtc: 9 })).toBe('2026-07-04T09:00:00.000Z'); // Sat
+  });
+
+  it('advances a full week when the target weekday equals the anchor weekday (never 0 days)', () => {
+    // Wednesday → Wednesday must be +7, so a run never re-fires the same day.
+    expect(computeNextRunAt('weekly', wed, { dayOfWeek: 3, hourUtc: 9 })).toBe('2026-07-08T09:00:00.000Z');
+  });
+
+  it('defaults hour to 03:00 UTC when hourUtc is omitted', () => {
+    expect(computeNextRunAt('weekly', wed, { dayOfWeek: 1 })).toBe('2026-07-06T03:00:00.000Z'); // Mon
+  });
+
+  it('an out-of-range / non-numeric dayOfWeek falls back to legacy +7 (never throws)', () => {
+    expect(computeNextRunAt('weekly', wed, { dayOfWeek: 7 })).toBe('2026-07-08T03:00:00.000Z');
+    expect(computeNextRunAt('weekly', wed, { dayOfWeek: -1 })).toBe('2026-07-08T03:00:00.000Z');
+    expect(computeNextRunAt('weekly', wed, { dayOfWeek: 'x' })).toBe('2026-07-08T03:00:00.000Z');
+  });
+
+  it('engine truncates a fractional weekday deterministically (2.5 → 2); strict rejection is a service concern', () => {
+    // The pure engine mirrors normalizeHour: trunc-then-range-check, never throws.
+    // parseScheduleDay in livingService rejects fractional user input with a 400.
+    expect(computeNextRunAt('weekly', wed, { dayOfWeek: 2.5 })).toBe('2026-07-07T03:00:00.000Z');
+  });
+
+  it('dayOfWeek is ignored for daily and monthly cadences', () => {
+    expect(computeNextRunAt('daily', wed, { dayOfWeek: 5 })).toBe('2026-07-02T03:00:00.000Z');
+    expect(computeNextRunAt('monthly', wed, { dayOfWeek: 5 })).toBe('2026-08-01T03:00:00.000Z');
+  });
+
+  it('combines a custom weekday with a custom hour across a month boundary', () => {
+    // From Thu 2026-07-30, next Monday at 06:00 UTC = 2026-08-03.
+    expect(computeNextRunAt('weekly', '2026-07-30T23:00:00.000Z', { dayOfWeek: 1, hourUtc: 6 }))
+      .toBe('2026-08-03T06:00:00.000Z');
+  });
+});
+
 describe('computeNextRunAt — monthly (month-end clamping)', () => {
   it('Jan 31 → Feb 28 in a non-leap year (2026)', () => {
     expect(computeNextRunAt('monthly', '2026-01-31T12:00:00.000Z'))
@@ -107,6 +159,14 @@ describe('computeNextRunAt — hour clamping', () => {
   it('hour 0 is honoured (midnight UTC)', () => {
     expect(computeNextRunAt('daily', '2026-07-01T05:00:00.000Z', { hourUtc: 0 }))
       .toBe('2026-07-02T00:00:00.000Z');
+  });
+  it('an explicit null hour defaults to 03:00 UTC (byte-identical to omitting it)', () => {
+    // Regression: Number(null) === 0, so null must be caught before the numeric
+    // path or a legacy null-hour search would shift from 03:00 to 00:00 UTC.
+    expect(computeNextRunAt('daily', '2026-07-01T22:45:00.000Z', { hourUtc: null }))
+      .toBe(computeNextRunAt('daily', '2026-07-01T22:45:00.000Z'));
+    expect(computeNextRunAt('weekly', '2026-07-01T12:00:00.000Z', { dayOfWeek: null, hourUtc: null }))
+      .toBe('2026-07-08T03:00:00.000Z');
   });
 });
 

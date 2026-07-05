@@ -15,7 +15,7 @@ import {
 // P13 — meta-regression + bubble plots. Pure deterministic engine; gated behind
 // the `metaRegression` feature flag (default OFF → 404), mirroring the NMA route.
 import { metaRegression } from '../../src/research-engine/statistics/metaRegression.js';
-import { getEffectiveFeatureFlags } from './settingsController.js';
+import { featureAccess } from '../services/featureAccess.js';
 
 /**
  * POST /api/meta/run
@@ -131,8 +131,11 @@ export function runTrimFill(req, res) {
  * Returns: MetaRegressionResult (ok:false with warnings for degenerate/under-powered input).
  */
 export async function runMetaRegression(req, res) {
-  const flags = await getEffectiveFeatureFlags();
-  if (!flags.metaRegression) return res.status(404).json({ error: 'Not found' });
+  // 75.md Phase 7 — central seam: admins keep meta-regression usable while it is
+  // globally OFF (reason 'adminOnly'); non-admins keep the existence-hiding 404.
+  if (!(await featureAccess('metaRegression', req.user)).allowed) {
+    return res.status(404).json({ error: 'Not found' });
+  }
 
   const { studies, covariate, covariates, type, method = 'MM', measure } = req.body || {};
 

@@ -12,6 +12,7 @@
 import { prisma } from '../db/client.js';
 import { v4 as uuid } from 'uuid';
 import { emitToMetaLabProject } from '../realtime/bus.js';
+import { featureAccess } from '../services/featureAccess.js';
 import { createLinkedScreenProject } from '../screening/createScreenProject.js';
 import { getMetaSiftSettings } from '../screening/settings.js';
 import { DEFAULT_MAX_RECORDS_PER_PROJECT } from '../services/screeningImportService.js';
@@ -39,12 +40,13 @@ export async function loadProviderSettings() {
  * `pecanSearch:true, searchEngine:false` state can never launch a run — the engine
  * is silent without its dependency, regardless of how the flags were toggled.
  */
-export async function pecanSearchEnabled() {
-  try {
-    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
-    const flags = JSON.parse(row && row.value ? row.value : '{}');
-    return flags.pecanSearch === true && flags.searchEngine === true;
-  } catch { return false; }
+export async function pecanSearchEnabled(user = null) {
+  // 75.md Phase 7 — routed through the central seam. The pecan→searchEngine hard
+  // dependency now lives in featureAccess's FEATURE_DEPS table (single source of
+  // truth). With no `user` (living's runtime co-dependency check, the overview
+  // status report) this is plain flag state; a gate passes `req.user` so admins
+  // keep the feature usable while it is globally OFF.
+  return (await featureAccess('pecanSearch', user)).allowed;
 }
 
 /** Build the engine context (config + http + connectors) from env + admin policy. */

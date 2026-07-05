@@ -251,7 +251,45 @@ export function StitchAccountMenu() {
 // notification bell — never in the side navigation or duplicated in page content.
 // `topPresence` is the project-scoped PresenceIndicator (or null when there is no
 // project / no online members); a thin divider separates it from the utilities.
-export function StitchTopHeader({ onOpenNav, breadcrumb, topPresence = null, chatContext = null }) {
+// 75.md WS-F — the very thin project-progress underline that hugs the header's
+// bottom edge. Rendered ONLY inside a project (pages pass `headerProgress`); the
+// sticky header is the containing block, so an absolute bottom bar attaches cleanly.
+// prefers-reduced-motion strips the width transition (the fill jumps, never slides).
+const HEADER_PROGRESS_CSS =
+  '@media (prefers-reduced-motion: reduce){ html[data-ui-design="stitch"] .stitch-hdr-progress-fill{ transition: none !important; } }';
+
+function HeaderProgressBar({ headerProgress }) {
+  if (headerProgress == null) return null;
+  const raw = typeof headerProgress === 'number' ? { pct: headerProgress } : headerProgress;
+  const n = Number(raw && raw.pct);
+  if (!Number.isFinite(n)) return null;
+  const pct = Math.max(0, Math.min(100, Math.round(n)));
+  const label = (raw && raw.label) || `Project progress: ${pct}%`;
+  return (
+    <div
+      data-testid="stitch-header-progress"
+      role="progressbar"
+      aria-valuenow={pct}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-label={`Project progress: ${pct}%`}
+      aria-valuetext={`${pct}%`}
+      title={label}
+      style={{
+        position: 'absolute', left: 0, right: 0, bottom: 0, height: 2,
+        background: salpha(S.brand, 0.14), overflow: 'hidden',
+      }}
+    >
+      <style>{HEADER_PROGRESS_CSS}</style>
+      <div className="stitch-hdr-progress-fill" style={{
+        width: `${pct}%`, height: '100%', background: S.brand,
+        borderRadius: '0 2px 2px 0', transition: 'width 0.5s cubic-bezier(0.4, 0, 0.2, 1)',
+      }} />
+    </div>
+  );
+}
+
+export function StitchTopHeader({ onOpenNav, breadcrumb, topPresence = null, chatContext = null, headerProgress = null }) {
   const { theme, toggleTheme } = useTheme();
   return (
     <header data-testid="stitch-top-header" style={{
@@ -283,6 +321,8 @@ export function StitchTopHeader({ onOpenNav, breadcrumb, topPresence = null, cha
         <StitchIconButton icon={theme === 'night' ? 'sun' : 'moon'} label={theme === 'night' ? 'Light theme' : 'Dark theme'} onClick={toggleTheme} />
         <StitchAccountMenu />
       </div>
+      {/* 75.md WS-F — thin canonical project-progress underline (project pages only). */}
+      <HeaderProgressBar headerProgress={headerProgress} />
     </header>
   );
 }

@@ -18,6 +18,7 @@
  */
 import { prisma } from '../db/client.js';
 import { getModuleState } from '../services/workflowState.js';
+import { featureAccess } from '../services/featureAccess.js';
 import { buildEngine } from '../pecanSearch/runService.js';
 import { renderPlain } from '../pecanSearch/query/ast.js';
 import { buildSearchDocumentation } from '../pecanSearch/report.js';
@@ -49,15 +50,13 @@ function clampIterations(v) {
   return Math.max(1, Math.min(n, MAX_ITERATIONS_CEILING));
 }
 
-/* ── Flag gate: studio depends on searchEngine + pecanSearch (all three ON) ── */
-export async function studioEnabled() {
-  try {
-    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
-    const flags = JSON.parse(row && row.value ? row.value : '{}');
-    return flags.searchStrategyStudio === true
-      && flags.searchEngine === true
-      && flags.pecanSearch === true;
-  } catch { return false; }
+/* ── Flag gate: studio depends on searchEngine + pecanSearch (all three ON) ──
+ * 75.md Phase 7 — the three-flag AND now lives in featureAccess's FEATURE_DEPS
+ * (searchStrategyStudio → [searchEngine, pecanSearch], transitively). A gate passes
+ * `req.user` so admins keep the studio usable while it is globally OFF; no user =
+ * plain flag state. */
+export async function studioEnabled(user = null) {
+  return (await featureAccess('searchStrategyStudio', user)).allowed;
 }
 
 /* ── Guarded engine import (parallel agent owns the pure modules) ──────────── */

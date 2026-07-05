@@ -215,31 +215,38 @@ export async function createProject(req, res) {
       if (snap !== '{}') picoSnapshot = snap;
     }
 
-    let project = await prisma.screenProject.create({
-      data: {
-        ownerId: req.user.id,
-        title: title.trim(),
-        description,
-        reviewQuestion,
-        blindMode: effectiveBlind,
-        linkedMetaLabProjectId: linkedId,
-        ...(picoSnapshot !== undefined ? { picoSnapshot } : {}),
-        // Seed editable default keyword suggestions (prompt2 Task 8). Leaders can
-        // edit/replace these per project; the highlight/filter panel reads them.
-        inclusionKeywords: JSON.stringify(DEFAULT_INCLUDE_KEYWORDS),
-        exclusionKeywords: JSON.stringify(DEFAULT_EXCLUDE_KEYWORDS),
-      },
-    });
-    // Seed default exclusion reasons
+    // Atomic core (75.md Phase 6): the ScreenProject, its seeded exclusion
+    // reasons, and the creator's owner member row succeed or fail together — an
+    // interactive transaction so ensureLeaderMember writes the owner row inside
+    // the SAME transaction and a mid-create failure never orphans an owner-less
+    // workspace.
     const defaultReasons = [
       'Wrong population', 'Wrong intervention', 'Wrong comparator',
       'Wrong outcome', 'Wrong study design', 'Duplicate', 'Not accessible',
     ];
-    await prisma.screenExclusionReason.createMany({
-      data: defaultReasons.map(text => ({ projectId: project.id, text })),
+    let project = await prisma.$transaction(async (tx) => {
+      const sp = await tx.screenProject.create({
+        data: {
+          ownerId: req.user.id,
+          title: title.trim(),
+          description,
+          reviewQuestion,
+          blindMode: effectiveBlind,
+          linkedMetaLabProjectId: linkedId,
+          ...(picoSnapshot !== undefined ? { picoSnapshot } : {}),
+          // Seed editable default keyword suggestions (prompt2 Task 8). Leaders can
+          // edit/replace these per project; the highlight/filter panel reads them.
+          inclusionKeywords: JSON.stringify(DEFAULT_INCLUDE_KEYWORDS),
+          exclusionKeywords: JSON.stringify(DEFAULT_EXCLUDE_KEYWORDS),
+        },
+      });
+      await tx.screenExclusionReason.createMany({
+        data: defaultReasons.map(text => ({ projectId: sp.id, text })),
+      });
+      // The creator automatically becomes the project owner (Part 4).
+      await ensureLeaderMember(sp, tx);
+      return sp;
     });
-    // The creator automatically becomes the project leader (Part 4).
-    await ensureLeaderMember(project);
 
     // SIFT-side "Also create META·LAB project" (Task 2 — opt-in, default false,
     // never forced; ignored when an explicit link target was provided).

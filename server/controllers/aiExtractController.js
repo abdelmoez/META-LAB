@@ -13,18 +13,20 @@
  *    oversized PDFs are 413 at a 20 MB *decoded* cap (root cause (f) in
  *    services/aiExtractClient.js).
  */
-import { getEffectiveFeatureFlags } from './settingsController.js';
+import { featureAccess } from '../services/featureAccess.js';
 import {
   aiExtractInfo, extractStudyFromDocument, mapExtractedToStudyPatch,
 } from '../services/aiExtractClient.js';
 
 const MAX_PDF_DECODED_BYTES = 20 * 1024 * 1024; // 20 MB decoded (base64 wire size ≈ 27 MB)
 
-async function aiExtractionEnabled() {
-  try {
-    const flags = await getEffectiveFeatureFlags();
-    return flags?.aiExtraction === true;
-  } catch { return false; } // fail-closed
+// 75.md Phase 7 — routed through the central seam. Both handlers pass `req.user` so
+// an admin can see + use + test the server-proxied extraction path while the flag is
+// globally OFF (reason 'adminOnly'); non-admins keep the OFF behavior. `available`
+// still additionally requires ANTHROPIC_API_KEY, so the admin path never enables the
+// feature when the key is absent.
+async function aiExtractionEnabled(user = null) {
+  return (await featureAccess('aiExtraction', user)).allowed;
 }
 
 /** Decoded byte count of a (whitespace-stripped) base64 string — no allocation. */
@@ -38,10 +40,10 @@ function decodedBase64Bytes(b64) {
  * available = ANTHROPIC_API_KEY configured AND featureFlags.aiExtraction === true.
  * Never leaks the key; never leaks the model unless the feature is available.
  */
-export async function getStatus(_req, res) {
+export async function getStatus(req, res) {
   try {
     const info = aiExtractInfo();
-    const available = info.configured && (await aiExtractionEnabled());
+    const available = info.configured && (await aiExtractionEnabled(req.user));
     return res.json(available ? { available: true, model: info.model } : { available: false });
   } catch (err) {
     console.error('[ai-extract] status error:', err.message);
@@ -56,7 +58,7 @@ export async function getStatus(_req, res) {
  * 413 when the PDF decodes to > 20 MB. 502 (honest message) on upstream failure.
  */
 export async function postExtract(req, res) {
-  if (!(await aiExtractionEnabled())) return res.status(404).json({ error: 'Not found' });
+  if (!(await aiExtractionEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
   try {
     const body = req.body && typeof req.body === 'object' ? req.body : {};
 

@@ -48,7 +48,7 @@ export class WaitlistPage {
   /** The amber preview banner shown only on the /beta-waitlist preview route. */
   get previewNote(): Locator { return this.page.getByText('this is how the Beta Waitlist page looks', { exact: false }); }
   /** The waitlist hero headline (present on the public gate + preview, Step 1 only). */
-  get heroHeading(): Locator { return this.page.getByRole('heading', { name: /Help us cultivate the future/i }); }
+  get heroHeading(): Locator { return this.page.getByRole('heading', { name: /Join us in cultivating the future/i }); }
 
   // ── Step 2: About you ────────────────────────────────────────────────────────
   get aboutHeading(): Locator { return this.page.getByRole('heading', { name: 'About you' }); }

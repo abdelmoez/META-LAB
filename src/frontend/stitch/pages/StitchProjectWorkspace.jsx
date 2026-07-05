@@ -39,11 +39,13 @@ import StitchProjectRail from '../shell/StitchProjectRail.jsx';
 import StitchProjectSubnav from '../shell/StitchProjectSubnav.jsx';
 import StitchProjectOverview from './StitchProjectOverview.jsx';
 import { useStitchProjectDoc } from '../shell/useStitchProjectDoc.js';
+import { useProjectProgress } from '../hooks/useProjectProgress.js';
 import { useSidebarPin } from '../shell/useSidebarPin.js';
 import { useScreeningSummary, screenNeedsAttention } from '../shell/useScreeningSummary.js';
 import { totalMembersOf } from '../shell/presence.js';
 import {
   activeProjectStage, projectStageHref, categoryForStage, categoryShowsSubmenu, activeSubmenuKey,
+  readSearchStageParam, searchStageHref,
 } from '../nav/navConfig.js';
 import {
   StitchLoadingState, StitchErrorState, StitchButton, StitchBadge, S, salpha,
@@ -142,6 +144,16 @@ function DeepToolPage({ stage }) {
   const screeningComplete = !!(project && project._linkedMetaSift && project._linkedMetaSift.progressStatus === 'done');
   const statusMap = project ? stepStatus({ ...project, studies: safeStudies }, screeningComplete) : {};
 
+  // 75.md WS-F — the ONE canonical workflow progress (server `_progress`, else the
+  // identical client model). Drives the thin header underline; null while loading so
+  // the bar only appears once the project resolves (no flash of 0%).
+  const progress = useProjectProgress(project);
+  const headerProgress = project ? {
+    pct: progress.pct,
+    label: `Project progress: ${progress.pct}% · ${progress.requiredDone} of ${progress.requiredTotal} steps`
+      + (progress.nextStepId ? ` · Next: ${STAGE_LABEL[progress.nextStepId] || 'Continue'}` : ''),
+  } : null;
+
   const ctx = { projectId, linkedSiftId: spId };
   const goStage = (id) => navigate(projectStageHref(id, ctx));
   const nextId = nextStageId(stage);
@@ -180,7 +192,7 @@ function DeepToolPage({ stage }) {
     activeKey: 'dashboard', renderPrimaryRail, contextRail,
     coordinatedNav: true, pinned,
     topPresence, maxWidth: fullbleed ? 100000 : 1560, contentPad: !fullbleed,
-    chatContext,
+    chatContext, headerProgress,
   };
 
   const breadcrumb = (
@@ -257,7 +269,12 @@ function DeepToolPage({ stage }) {
     // prompt60 — ONE unified Search stage (Define → Build → Run). ?tab=discovery is
     // normalized to 'search' upstream (activeProjectStage), so the old discovery deep
     // link resolves to the wizard (opening on its Define step) instead of 404ing.
-    body = (<LazySearch project={project} activeId={projectId} updNested={doc.updNested} upd={doc.upd} readOnly={readOnly} />);
+    // 75.md — the WHITE project side-menu is the persistent representation of the 8-step
+    // Search workflow, so drive the staged workspace's active stage from `?stage=` and
+    // hide its duplicate in-body rail. `onStageChange` lets the body's Back/Next push
+    // `?stage=` through react-router (keeps the side-menu highlight + deep links synced).
+    body = (<LazySearch project={project} activeId={projectId} updNested={doc.updNested} upd={doc.upd} readOnly={readOnly}
+      hideRail initialStage={readSearchStageParam(search)} onStageChange={(id) => navigate(searchStageHref(id, { projectId }))} />);
   } else if (stage === 'prisma') {
     body = (<LazyPrisma project={project} updNested={doc.updNested} updateProject={doc.updateProject} activeId={projectId} setTab={goStage} />);
   } else if (stage === 'extraction') {

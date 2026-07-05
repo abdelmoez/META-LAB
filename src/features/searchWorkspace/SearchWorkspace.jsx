@@ -57,6 +57,10 @@
  */
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { C, FONT, alpha } from '../../frontend/theme/tokens.js';
+// 75.md — the stage table + mode-scoped stage list + stage remap now live in a
+// React-free module so the white side-menu (navConfig) and this body share ONE source
+// of truth and can never drift. Re-exported from index.js for existing importers.
+import { STAGES, stagesFor, stageAfterModeChange } from './searchStages.js';
 import { Icon } from '../../frontend/components/icons.jsx';
 import { SearchBuilderTab, searchBuilderApi, loadSearch, saveSearch, relativeTime } from '../searchBuilder/index.js';
 import { getDatabase, defaultSelectedDatabases, DATABASE_CATALOG } from '../../research-engine/searchBuilder/databases.js';
@@ -68,61 +72,23 @@ import {
 } from '../searchWizard/index.js';
 import { Card, Note } from '../pecanSearch/components/parts.jsx';
 
-/* The 9 guided stages. `num` drives the always-numbered pip; `builder`/`phase` mark the
-   stages that render the (persistent) Search Builder; `needsConcepts` marks stages that
-   are only meaningful once a strategy exists (disabled-with-reason until then);
-   `manualOnly` marks stages that belong to the manual workflow and are REMOVED from the
-   rail in automated mode (74.md — the run surface owns sources/overrides there). */
-export const STAGES = [
-  { id: 'question',      num: 1, label: 'Research Question',   desc: 'Frame the question' },
-  { id: 'concepts',      num: 2, label: 'Concepts',            desc: 'Core concepts',         builder: true, phase: 'concepts' },
-  { id: 'terms',         num: 3, label: 'Terms & Vocabulary',  desc: 'Synonyms & MeSH',       builder: true, phase: 'terms' },
-  { id: 'mode',          num: 4, label: 'Search Mode',         desc: 'Manual or automated' },
-  { id: 'strategy',      num: 5, label: 'Database Strategies', desc: 'Per-database syntax',   builder: true, phase: 'build', manualOnly: true },
-  { id: 'refine',        num: 6, label: 'Test & Refine',       desc: 'Counts & quality' },
-  { id: 'results',       num: 7, label: 'Run Externally',      desc: 'Your database accounts', needsConcepts: true },
-  { id: 'documentation', num: 8, label: 'Documentation',       desc: 'Methods & PRISMA-S' },
-  { id: 'screening',     num: 9, label: 'Send to Screening',   desc: 'Prepare the import',    needsConcepts: true },
-];
-
-/* 73.md P5 + 74.md — THE single source of truth for the visible workflow. Automated
-   mode removes the manual-only stages entirely (never a mixed rail) and renumbers the
-   pips; the Results stage is mode-aware: automated runs inside PecanRev, manual (or
-   not-yet-chosen) runs in the user's own database accounts. Pure + exported. */
-export function stagesFor(searchMode) {
-  const automated = searchMode === 'automated';
-  return STAGES
-    .filter((s) => !(automated && s.manualOnly))
-    .map((s, i) => {
-      const out = { ...s, num: i + 1 };
-      if (s.id === 'results' && automated) {
-        out.label = 'Automated Search';
-        out.desc = 'Run & deduplicate';
-      }
-      return out;
-    });
-}
-
-/* 74.md — where to land when a mode switch removes the active stage. Stays put when
-   the stage survives; otherwise walks FORWARD through the master order to the nearest
-   surviving stage (Database Strategies → Test & Refine), then backward, then home.
-   Pure + exported. */
-export function stageAfterModeChange(currentStageId, searchMode) {
-  const next = stagesFor(searchMode);
-  if (next.some((s) => s.id === currentStageId)) return currentStageId;
-  const order = STAGES.map((s) => s.id);
-  const idx = order.indexOf(currentStageId);
-  if (idx === -1) return 'question';
-  for (let i = idx + 1; i < order.length; i++) {
-    if (next.some((s) => s.id === order[i])) return order[i];
-  }
-  for (let i = idx - 1; i >= 0; i--) {
-    if (next.some((s) => s.id === order[i])) return order[i];
-  }
-  return 'question';
-}
+/* STAGES / stagesFor / stageAfterModeChange now live in ./searchStages.js (75.md) —
+   imported above and re-exported via index.js. */
 
 const DISABLED_REASON = 'Build a strategy with at least one concept first';
+
+/* 75.md — read the active Search stage from the URL (`?tab=search&stage=<id>`). The
+   white project side-menu drives stages via react-router navigation, so the body
+   reads the stage back off the URL (deep links + browser back/forward "just work").
+   SSR/Node-safe: returns null when there is no window, so tests fall back to the
+   `initialStage` seed prop. */
+function readStageFromUrl() {
+  if (typeof window === 'undefined' || !window.location) return null;
+  try {
+    const qs = new URLSearchParams(window.location.search || '');
+    return qs.get('stage') || null;
+  } catch { return null; }
+}
 
 /* 73.md P1 — the nearest scrollable ancestor of `el` (computed overflowY auto|scroll),
    or null. `getStyle` is injectable for tests; defaults to window.getComputedStyle.
@@ -564,19 +530,23 @@ function ManualRunStage({ getLive, goStrategy, goMode, readOnly }) {
    Surfaces the advisory `readyForScreening` marker (read + toggle via the SAME
    search-builder module the builder persists) and the "Go to Screening" handoff.
    73.md P5 — the explanation is mode-aware (auto-import vs external import). */
-function SendToScreeningStage({ projectId, pecanEnabled, readOnly, searchMode, goMode }) {
+function SendToScreeningStage({ projectId, pecanEnabled, readOnly, searchMode, goMode, onReadyChange }) {
   const [ready, setReady] = useState(null); // null=unknown | boolean
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+
+  // 75.md — report the loaded/toggled ready value up so the workspace footer's
+  // "Continue to Screening" enables ONLY once the handoff is actually complete.
+  const report = useCallback((v) => { if (typeof onReadyChange === 'function') onReadyChange(!!v); }, [onReadyChange]);
 
   useEffect(() => {
     let dead = false;
     (async () => {
       const saved = await loadSearch(projectId).catch(() => null);
-      if (!dead) setReady(!!(saved && saved.readyForScreening));
+      if (!dead) { const v = !!(saved && saved.readyForScreening); setReady(v); report(v); }
     })();
     return () => { dead = true; };
-  }, [projectId]);
+  }, [projectId, report]);
 
   // Toggle as a SINGLE-KEY save (recs round): the server only overwrites the keys
   // the body names, so this can never replay an empty strategy over the saved one
@@ -588,13 +558,13 @@ function SendToScreeningStage({ projectId, pecanEnabled, readOnly, searchMode, g
       const next = !ready;
       const ack = await saveSearch(projectId, { readyForScreening: next });
       if (!ack) throw new Error('save failed');
-      setReady(next);
+      setReady(next); report(next);
     } catch {
       setErr('Could not update the ready state. Please try again.');
     } finally {
       setBusy(false);
     }
-  }, [projectId, ready]);
+  }, [projectId, ready, report]);
 
   const automated = searchMode === 'automated';
   return (
@@ -718,11 +688,20 @@ function StageIntro({ title, children }) {
    mounted — hidden — on ALL of them, so its hit machine keeps running). */
 const PULSE_STAGES = new Set(['concepts', 'terms', 'mode', 'strategy', 'refine', 'results']);
 
-export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnabled, initialStage, initialSearchMode }) {
-  // 74.md — the initial stage must already respect the initial mode's stage list
+export default function SearchWorkspace({
+  projectId, pico, readOnly, pecanEnabled, initialStage, initialSearchMode,
+  // 75.md — external stage control. `hideRail` (set by StitchProjectWorkspace) drops
+  // the in-body StageRail when the white project side-menu is driving stages, so the
+  // numbered workflow is never shown twice. `onStageChange(id)` lets the router-aware
+  // host push `?tab=search&stage=<id>` (keeps the side-menu highlight + deep links in
+  // sync); when it is absent the body falls back to a best-effort URL sync.
+  hideRail, onStageChange,
+}) {
+  // 74.md/75.md — the initial stage prefers the URL (`?stage=`), then the seed prop,
+  // then Research Question — and must already respect the initial mode's stage list
   // (e.g. a 'strategy' deep link under an automated seed lands on Test & Refine).
   const [stage, setStage] = useState(() => stageAfterModeChange(
-    initialStage || 'question',
+    readStageFromUrl() || initialStage || 'question',
     initialSearchMode === 'manual' || initialSearchMode === 'automated' ? initialSearchMode : null,
   ));
 
@@ -839,13 +818,66 @@ export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnable
     return () => clearTimeout(t);
   }, [stage, resetScroll]);
 
-  const goTo = useCallback((id) => {
-    const target = stages.find((s) => s.id === id);
-    if (!target || stageDisabled(target)) return;
+  // 75.md — the advisory "ready for screening" marker, lifted here so the footer's
+  // "Continue to Screening" is enabled ONLY once the handoff is actually complete (the
+  // SendToScreeningStage reports its loaded/toggled value up). Never set on mere click.
+  const [screeningReady, setScreeningReady] = useState(false);
+
+  // Apply a stage locally (with its side-effects) — shared by user navigation AND the
+  // URL→stage sync below, so a side-menu click reaches Results/Refine with the same
+  // runQuery snapshot / panel refresh a footer Next would give.
+  const applyStage = useCallback((id) => {
     if (id === 'results') setRunQuery({ ...liveRef.current });
     if (id === 'refine') setPanelNonce((n) => n + 1);
     setStage(id);
-  }, [stages, stageDisabled]);
+  }, []);
+
+  // Push the active stage into the URL so the white side-menu highlight, deep links and
+  // browser back/forward stay in sync. Prefer the router-aware host callback; otherwise
+  // best-effort replaceState (keeps refresh honest without a hard reload).
+  const syncStageUrl = useCallback((id) => {
+    if (typeof onStageChange === 'function') { onStageChange(id); return; }
+    if (typeof window === 'undefined' || !window.history || !window.location) return;
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.set('tab', 'search');
+      url.searchParams.set('stage', id);
+      window.history.replaceState(window.history.state, '', url.pathname + url.search);
+    } catch { /* navigation is best-effort; local state already updated */ }
+  }, [onStageChange]);
+
+  const goTo = useCallback((id) => {
+    const target = stages.find((s) => s.id === id);
+    if (!target || stageDisabled(target)) return;
+    applyStage(id);
+    syncStageUrl(id);
+  }, [stages, stageDisabled, applyStage, syncStageUrl]);
+
+  // 75.md — keep the body stage in lock-step with the URL. The white side-menu
+  // navigates via react-router; that re-renders our router-aware host (StitchProject-
+  // Workspace) and therefore us, so reading `?stage=` on each render + reconciling in
+  // an effect catches side-menu clicks, deep links AND browser back/forward with one
+  // mechanism. SSR-safe: `urlStage` is null with no window, so the seeded state stands.
+  const urlStage = readStageFromUrl();
+  const stageRef = useRef(stage);
+  stageRef.current = stage;
+  useEffect(() => {
+    if (!urlStage) return;
+    const target = stageAfterModeChange(urlStage, searchMode);
+    if (target !== stageRef.current) applyStage(target);
+  }, [urlStage, searchMode, applyStage]);
+
+  // 75.md — "driven by the side menu": when the Stitch project workspace renders the
+  // Search workflow in the white submenu stepper, the in-body rail would duplicate it,
+  // so we drop it. An explicit `hideRail` prop always wins; otherwise we detect the
+  // side-menu stepper in the DOM (client-only — SSR keeps the rail, so existing tests
+  // and any non-Stitch mount are unchanged).
+  const [sideMenuPresent, setSideMenuPresent] = useState(false);
+  useEffect(() => {
+    if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return;
+    setSideMenuPresent(!!document.querySelector('[data-testid="stitch-workflow-stepper"]'));
+  }, [stage]);
+  const railHidden = typeof hideRail === 'boolean' ? hideRail : sideMenuPresent;
 
   const statusFor = useCallback((s) => {
     const idx = stages.findIndex((x) => x.id === s.id);
@@ -924,11 +956,16 @@ export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnable
 
       {/* Two-column shell: stage rail (left) + focused stage surface (right).
           73.md P1 — the rail never forces the row height: it aligns to the top and
-          scrolls internally when the viewport is short. */}
+          scrolls internally when the viewport is short.
+          75.md — when the white project side-menu is driving stages (`railHidden`) the
+          in-body rail is dropped to avoid a duplicated numbered workflow; the per-stage
+          headings/instructions and the Back/Next footer stay. */}
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 22, flexWrap: 'wrap' }}>
-        <aside style={{ flex: '0 0 236px', minWidth: 210, maxWidth: 260, position: 'sticky', top: 12, alignSelf: 'flex-start', maxHeight: 'calc(100vh - 90px)', overflowY: 'auto', background: C.card, border: `1px solid ${C.brd}`, borderRadius: 12, padding: '6px 8px' }}>
-          <StageRail stages={stages} active={stage} onSelect={goTo} statusFor={statusFor} />
-        </aside>
+        {!railHidden && (
+          <aside style={{ flex: '0 0 236px', minWidth: 210, maxWidth: 260, position: 'sticky', top: 12, alignSelf: 'flex-start', maxHeight: 'calc(100vh - 90px)', overflowY: 'auto', background: C.card, border: `1px solid ${C.brd}`, borderRadius: 12, padding: '6px 8px' }}>
+            <StageRail stages={stages} active={stage} onSelect={goTo} statusFor={statusFor} />
+          </aside>
+        )}
 
         <section style={{ flex: '1 1 560px', minWidth: 0 }} data-testid="search-workspace-stage" data-stage={stage}>
           {/* Persistent builder — mounted once, shown only on builder stages so concept /
@@ -1062,7 +1099,7 @@ export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnable
             </>
           )}
 
-          {stage === 'screening' && <SendToScreeningStage projectId={projectId} pecanEnabled={pecanEnabled} readOnly={readOnly} searchMode={searchMode} goMode={() => goTo('mode')} />}
+          {stage === 'screening' && <SendToScreeningStage projectId={projectId} pecanEnabled={pecanEnabled} readOnly={readOnly} searchMode={searchMode} goMode={() => goTo('mode')} onReadyChange={setScreeningReady} />}
 
           {/* Footer nav — Back / Next through the stages (progressive, never lossy). */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 18, paddingTop: 14, borderTop: `1px solid ${C.brd}` }}>
@@ -1070,7 +1107,26 @@ export default function SearchWorkspace({ projectId, pico, readOnly, pecanEnable
               ? <button type="button" onClick={() => goTo(stages[activeIdx - 1].id)} style={ghostBtn()}>← Back</button>
               : <span />}
             <span style={{ marginLeft: 'auto', fontSize: 11, color: C.dim }}>Stage {activeIdx + 1} of {stages.length}</span>
-            {activeIdx < stages.length - 1 && (() => {
+            {stage === 'screening' ? (
+              /* 75.md — the last stage's Next hands off to the Screening workspace for
+                 THIS project (the linked screening id is resolved by the embedded engine
+                 off the pathname). Enabled ONLY once the strategy is marked ready — never
+                 on a mere click. Rendered as an anchor so a middle-click / new-tab works,
+                 mirroring the in-stage "Go to Screening" handoff. */
+              <a
+                data-testid="continue-to-screening"
+                href={screeningReady ? screeningImportHref() : undefined}
+                role="button"
+                aria-disabled={!screeningReady || undefined}
+                title={screeningReady ? undefined : 'Mark the strategy ready for screening import first'}
+                onClick={(e) => { if (!screeningReady) e.preventDefault(); }}
+                style={{
+                  ...primaryBtn(), textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: 8,
+                  opacity: screeningReady ? 1 : 0.5, cursor: screeningReady ? 'pointer' : 'not-allowed',
+                }}>
+                Continue to Screening →
+              </a>
+            ) : activeIdx < stages.length - 1 && (() => {
               const next = stages[activeIdx + 1];
               const blocked = stageDisabled(next);
               return (

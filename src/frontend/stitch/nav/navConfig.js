@@ -26,6 +26,12 @@
  * Pure module: no React, no DOM. Trivially unit-testable.
  */
 import { TABS, PHASES, phaseLabel, PHASE_ICON } from '../../workspace/projectHelpers.js';
+// 75.md — the Search workflow's numbered stages now live in the WHITE side-menu too.
+// The stage list is derived from the SAME pure, React-free source of truth the in-body
+// SearchWorkspace uses (mode-scoped: automated drops Database Strategies), so the two
+// surfaces can never drift. Pure data + a pure function → safe to import into this
+// React-free nav module.
+import { stagesFor as searchStagesFor } from '../../../features/searchWorkspace/searchStages.js';
 
 /* ─── 1. GLOBAL purple-rail destinations (app-level, shown on every Stitch page) ─
    design2.md Part 1: the purple rail holds ONLY global, application-level
@@ -177,6 +183,20 @@ export function screeningSubHref(key, ctx = {}) {
     : `/app/project/${pid}?tab=screening&screen=${encodeURIComponent(key)}`;
 }
 
+/**
+ * 75.md — deep-link a Search WORKFLOW STAGE within the unified Stitch workspace. The
+ * host route is `?tab=search`; the staged SearchWorkspace reads `?stage=<id>` back off
+ * the URL for its active stage (a collision-free param — the host owns `?tab=`), so the
+ * white side-menu, deep links and browser back/forward all resolve to the same stage.
+ * Mirrors `screeningSubHref` (the proven param-carrying-submenu-href precedent).
+ * ctx = { projectId }.
+ */
+export function searchStageHref(stageId, ctx = {}) {
+  const pid = encodeURIComponent(ctx.projectId || '');
+  const id = encodeURIComponent(stageId || 'question');
+  return `/app/project/${pid}?tab=search&stage=${id}`;
+}
+
 /* ─── 5. Active-route matching (design2.md "Preserve deep links") ─────────────── */
 
 /** Which global rail key is active for a given pathname + search. */
@@ -254,6 +274,18 @@ export function readScreenParam(search) {
   }
 }
 
+/** 75.md — parse the Search workflow stage (`?stage=`) — only meaningful while
+ *  tab=search. Bare `?tab=search` (no stage) defaults to the first stage ('question'). */
+export function readSearchStageParam(search) {
+  if (typeof search !== 'string' || !search) return 'question';
+  try {
+    const qs = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
+    return qs.get('stage') || 'question';
+  } catch {
+    return 'question';
+  }
+}
+
 /* ─── 7. PROJECT CATEGORY MODEL (55.md) ────────────────────────────────────────
    55.md restructures the purple rail to show ONLY 9 top-level CATEGORIES; a
    category with children reveals a persistent white submenu beside the rail.
@@ -298,19 +330,79 @@ export function categoryForStage(stageId) {
   return 'overview'; // unknown stage → overview (deep links never break)
 }
 
+/* 75.md — icons for the Search workflow's numbered stages. (Numbered StepRows show the
+   pip NUMBER, not the icon, so these are cosmetic/shape-only; the un-numbered optional
+   tools below use their real TABS icons.) */
+const SEARCH_STAGE_ICONS = {
+  question: 'target', concepts: 'layers', terms: 'bookOpen', mode: 'settings',
+  strategy: 'database', refine: 'barChart', results: 'globe', documentation: 'fileText', screening: 'arrowRight',
+};
+
+/**
+ * 75.md — the Search category's white submenu: the Search WORKFLOW (stages 1..N, from
+ * the SAME mode-scoped `stagesFor` the in-body workspace uses — so automated drops
+ * Database Strategies) as numbered children deep-linking `?tab=search&stage=<id>`,
+ * followed by a VISUALLY-SEPARATE "Optional tools" group (Living Review + Citation
+ * Mining). The optional tools carry `utility: true` so the stepper renders them as
+ * UN-numbered rows that NEVER join the 1..N numbering or any progress denominator; the
+ * first one carries `groupLabel` so the stepper draws a labelled separator before it.
+ * Citation Mining is appended ONLY when `ctx.citationMiningEnabled` (flag OFF ⇒ no new
+ * tab). `ctx.searchMode` ('manual'|'automated'|null) is threaded by the subnav; when it
+ * is absent we default to the full manual list (robust — existing projects keep working).
+ */
+function searchSubmenu(ctx = {}) {
+  const stageItems = searchStagesFor(ctx.searchMode).map((s) => ({
+    key: s.id,
+    label: s.label,
+    icon: SEARCH_STAGE_ICONS[s.id] || 'search',
+    href: searchStageHref(s.id, ctx),
+    completionKey: null, // no per-stage completion truth in the pure nav layer
+    countKey: null,
+    screening: false,
+    desc: s.desc || null,
+    stage: s.id,
+  }));
+
+  // Optional tools — un-numbered utility rows, visually separated from the workflow.
+  const tools = [];
+  const living = TABS.find((t) => t.id === 'living');
+  if (living) {
+    tools.push({
+      key: 'living', label: living.label, icon: living.icon,
+      href: projectStageHref('living', ctx), completionKey: 'living', countKey: null, screening: false, utility: true,
+    });
+  }
+  // P15 — Citation Mining joins ONLY when the flag is ON (absent/false ⇒ unchanged).
+  const citation = ctx.citationMiningEnabled ? TABS.find((t) => t.id === 'citation') : null;
+  if (citation) {
+    tools.push({
+      key: 'citation', label: citation.label, icon: citation.icon,
+      href: projectStageHref('citation', ctx), completionKey: 'citation', countKey: null, screening: false, utility: true,
+    });
+  }
+  if (tools.length) tools[0].groupLabel = 'Optional tools'; // section header before the first tool
+
+  return [...stageItems, ...tools];
+}
+
 /**
  * Ordered child descriptors for a category's white submenu, or null when the
  * category has no submenu (overview / control / single-destination reference).
- * Each child: { key, label, icon, href|null, completionKey, screening? }.
- * `href` is null when the destination is unavailable (e.g. screening sub-pages
- * with no linked workspace) → the submenu renders it disabled.
- * ctx = { projectId, linkedSiftId }.
+ * Each child: { key, label, icon, href|null, completionKey, countKey, screening?,
+ * utility?, groupLabel?, desc?, stage? }. `href` is null when the destination is
+ * unavailable (e.g. screening sub-pages with no linked workspace) → the submenu renders
+ * it disabled. `utility:true` marks an UN-numbered row (Search's optional tools);
+ * `groupLabel` marks the start of a visually-separate group.
+ * ctx = { projectId, linkedSiftId, searchMode?, citationMiningEnabled? }.
  */
 export function submenuForCategory(categoryId, ctx = {}) {
   const cat = CATEGORY_BY_ID[categoryId];
   if (!cat) return null;
   if (cat.kind === 'overview' || cat.kind === 'control') return null;
   if (cat.kind === 'reference') return null; // single destination → no submenu
+
+  // 75.md — Search's submenu IS the mode-scoped Search workflow + optional tools.
+  if (cat.id === 'search') return searchSubmenu(ctx);
 
   if (cat.kind === 'screen') {
     // The screening sub-workflow (import → export, from SCREENING_SUBNAV) followed
@@ -337,8 +429,8 @@ export function submenuForCategory(categoryId, ctx = {}) {
     return screeningItems;
   }
 
-  // A workflow phase → its TABS, in order.
-  const items = TABS.filter((t) => t.phase === cat.phase).map((t) => ({
+  // A workflow phase → its TABS, in order. (Search is handled above via searchSubmenu.)
+  return TABS.filter((t) => t.phase === cat.phase).map((t) => ({
     key: t.id,
     label: t.label,
     icon: t.icon,
@@ -347,44 +439,6 @@ export function submenuForCategory(categoryId, ctx = {}) {
     countKey: null,
     screening: false,
   }));
-
-  // 66.md P6 — the Living Review dashboard joins the Search submenu (it re-runs the
-  // saved search over time). Deliberately NOT a phase-numbered workflow TAB: like the
-  // Screen category's PRISMA Flow append above, it navigates without joining the
-  // progress denominator / "Next step" walker (the feature is flag-gated OFF by
-  // default, so a permanently-empty mandatory step would misread as unfinished work).
-  if (cat.id === 'search') {
-    const living = TABS.find((t) => t.id === 'living');
-    if (living) {
-      items.push({
-        key: 'living',
-        label: living.label,
-        icon: living.icon,
-        href: projectStageHref('living', ctx),
-        completionKey: 'living',
-        countKey: null,
-        screening: false,
-      });
-    }
-    // P15 — Citation Mining joins the Search submenu ONLY when the flag is ON. The pure
-    // model reads a boolean from ctx (StitchProjectSubnav supplies it via a flag hook);
-    // when ctx.citationMiningEnabled is absent/false the entry is not appended, so the
-    // workspace is UNCHANGED with the flag off (no new tab). Like Living Review it is a
-    // non-numbered navigable entry (excluded from the progress denominator / walker).
-    const citation = ctx.citationMiningEnabled ? TABS.find((t) => t.id === 'citation') : null;
-    if (citation) {
-      items.push({
-        key: 'citation',
-        label: citation.label,
-        icon: citation.icon,
-        href: projectStageHref('citation', ctx),
-        completionKey: 'citation',
-        countKey: null,
-        screening: false,
-      });
-    }
-  }
-  return items;
 }
 
 /** True when a category opens a persistent white submenu (has >1 navigable child). */
@@ -396,12 +450,15 @@ export function categoryShowsSubmenu(categoryId) {
 /**
  * The active submenu child key for the current route within its category.
  * For 'screen', the active child is the `?screen=` sub-page (or 'prisma' when
- * tab=prisma); for every other category it is the active stage id.
+ * tab=prisma); for 'search', it is the `?stage=` workflow stage (bare ?tab=search →
+ * 'question'); Living Review / Citation Mining open their own tabs so match their key
+ * directly; for every other category it is the active stage id.
  */
 export function activeSubmenuKey(search) {
   const stage = activeProjectStage(search);
   if (stage === 'prisma') return 'prisma';
   if (stage === 'screening') return readScreenParam(search);
+  if (stage === 'search') return readSearchStageParam(search); // 75.md — the Search workflow sub-stage
   return stage;
 }
 

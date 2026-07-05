@@ -12,7 +12,7 @@
    `uid` / `now` are the monolith's OWN inline utils (verbatim copies kept here
    so this module resolves identically without re-pointing to defaults.js). */
 import { C } from "./ui/styles.js";
-import { ES_TYPES, ROB2 } from "../../research-engine/project-model/monolithConstants.js";
+import { ES_TYPES, ROB2, PRISMA_CL } from "../../research-engine/project-model/monolithConstants.js";
 import { runMeta, eggersTest, validateStudy, findDuplicates, checkPoolability } from "../../research-engine/statistics/monolithStats.js";
 import { fmtNum, fmtES, fmtPct } from "../../research-engine/format/precision.js";
 import { timeframeComplete } from "../../features/protocol/index.js";
@@ -282,8 +282,17 @@ export function readinessCheck(project) {
   return { ok: missing.length === 0, missing };
 }
 
-/* Compute completion status for each workflow step (for sidebar progress dots) */
-export function stepStatus(project, screeningComplete){
+/* Compute completion status for each workflow step (for sidebar progress dots).
+   75.md — the CANONICAL cross-surface model is computeProjectProgress()
+   (src/research-engine/progress/projectProgress.js), delivered as the server's
+   transient `_progress` annotation. This legacy per-step map stays as the client's
+   in-place fallback; the reconciliations below (nma rule, reachable subgroup, real
+   PRISMA-checklist size, manuscripts[] evidence) exist so the existing Overview/rail
+   stop disagreeing with themselves until wave 2 wires `_progress` in directly.
+   `opts.networkMetaAnalysis` mirrors the flag-gating: when OFF (the default here —
+   the Overview does not yet thread the flag) `nma` is treated as non-blocking so
+   100% / "all steps complete" is reachable, exactly as the server excludes it. */
+export function stepStatus(project, screeningComplete, opts={}){
   if(!project) return {};
   const p=project, pico=p.pico||{}, search=p.search||{}, prisma=p.prisma||{};
   const dbCount=Object.values(search.dbs||{}).filter(Boolean).length;
@@ -292,6 +301,14 @@ export function stepStatus(project, screeningComplete){
   const reportDone=Object.values(p.reportChecked||{}).filter(Boolean).length;
   const meta=runMeta(p.studies,"random");
   const gradeDone=Object.keys(p.grade||{}).length;
+  // Manuscript "done" evidence spans BOTH stores: the 64.md editor's
+  // data.manuscripts[] (draft.sections[id].content) and the legacy
+  // data.manuscript.drafts{} — count the most-complete draft either way.
+  const msDrafts=Array.isArray(p.manuscripts)?p.manuscripts:[];
+  let msFilled=0;
+  for(const d of msDrafts){const sec=d&&d.sections;if(sec&&typeof sec==="object"){const f=Object.values(sec).filter(x=>x&&typeof x.content==="string"&&x.content.trim()!=="").length;if(f>msFilled)msFilled=f;}}
+  const msLegacy=(p.manuscript&&p.manuscript.drafts&&typeof p.manuscript.drafts==="object")?Object.values(p.manuscript.drafts).filter(v=>v&&String(v).trim()!=="").length:0;
+  const msBest=Math.max(msFilled,msLegacy);
   return {
     pico: (pico.P&&pico.I&&pico.C&&pico.O&&timeframeComplete(pico))?"done":(pico.P||pico.I||pico.C||pico.O||pico.question)?"partial":"empty",
     prospero: (p.prospero&&p.prospero.fields&&Object.values(p.prospero.fields).filter(v=>v&&v.trim()).length>=15)?"done":(p.prospero&&p.prospero.fields&&Object.values(p.prospero.fields).filter(v=>v&&v.trim()).length>0)?"partial":"empty",
@@ -318,10 +335,21 @@ export function stepStatus(project, screeningComplete){
     })(),
     forest: meta?"done":"empty",
     sensitivity: (meta&&meta.k>=3)?"done":"empty",
-    subgroup: (p.studies.length>=4)?"partial":"empty",
+    // 75.md — subgroup can now REACH "done" (sibling-consistent with forest/
+    // sensitivity, which auto-complete from the pooled data): ≥4 pooled studies is
+    // enough to have meaningfully explored subgroups. Previously it maxed at
+    // "partial", which (with nma always empty) made 100% unreachable.
+    subgroup: (meta&&meta.k>=4)?"done":(meta||p.studies.length>=4)?"partial":"empty",
+    // 75.md — nma is flag-gated: when the flag is OFF (the default here) it is
+    // non-blocking ("done") so the numbered workflow can reach 100%, mirroring the
+    // server excluding it from the denominator. When ON it uses a network-feasibility
+    // proxy (no NMA result is persisted in the blob).
+    nma: opts&&opts.networkMetaAnalysis?((meta&&meta.k>=3)?"done":meta?"partial":"empty"):"done",
     grade: gradeDone>=5?"done":gradeDone>0?"partial":"empty",
-    report: reportDone>=20?"done":reportDone>0?"partial":"empty",
-    manuscript: (p.manuscript&&p.manuscript.drafts&&Object.keys(p.manuscript.drafts).length>=3)?"done":(p.manuscript&&p.manuscript.drafts&&Object.keys(p.manuscript.drafts).length>0)?"partial":"empty",
+    // 75.md — the "done" threshold is the REAL PRISMA-checklist size (PRISMA_CL,
+    // the same list ReportTab renders), reconciling the old 20-vs-27 disagreement.
+    report: reportDone>=PRISMA_CL.length?"done":reportDone>0?"partial":"empty",
+    manuscript: msBest>=3?"done":msBest>=1?"partial":"empty",
   };
 }
 
@@ -383,7 +411,9 @@ export function auditProject(p){
   if(gradeDone<5) add("med","Analyze","GRADE certainty not fully rated. Grade all 5 domains for your primary outcome.");
 
   // REPORT
-  if(reportDone<27) add("med","Report",`PRISMA checklist ${reportDone}/27 complete. Finish before submission.`);
+  // 75.md — align to the REAL checklist size (PRISMA_CL, the list ReportTab renders,
+  // currently 26) so stepStatus.report and this audit stop disagreeing (was 20 vs 27).
+  if(reportDone<PRISMA_CL.length) add("med","Report",`PRISMA checklist ${reportDone}/${PRISMA_CL.length} complete. Finish before submission.`);
   if(!(p.manuscript&&p.manuscript.drafts&&Object.keys(p.manuscript.drafts).length>0)) add("low","Report","No manuscript sections drafted yet.");
 
   return items;

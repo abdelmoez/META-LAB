@@ -25,7 +25,7 @@ const MAX_RECORDS_PAGE = 500;
  * after having already written the 404 response (caller returns immediately).
  */
 async function gate(req, res) {
-  if (!(await fullTextRetrievalEnabled())) { res.status(404).json({ error: 'Not found' }); return null; }
+  if (!(await fullTextRetrievalEnabled(req.user))) { res.status(404).json({ error: 'Not found' }); return null; }
   const access = await getProjectAccess(req.params.pid, req.user);
   if (!access) { res.status(404).json({ error: 'Project not found' }); return null; }
   return access;

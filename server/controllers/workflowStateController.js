@@ -22,7 +22,7 @@ import {
  * failure and returns null; returns the access object on success.
  */
 async function gate(req, res) {
-  if (!(await workflowStateEnabled())) {
+  if (!(await workflowStateEnabled(req.user))) {
     res.status(404).json({ error: 'Not found' });
     return null;
   }

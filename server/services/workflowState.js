@@ -17,6 +17,7 @@
 import { prisma } from '../db/client.js';
 import { getById } from '../store.js';
 import { getMetaLabMemberAccess } from '../screening/metalabAccess.js';
+import { featureAccess } from './featureAccess.js';
 
 // Whitelist of writable module keys (Phase 13 #8 — no arbitrary moduleKey writes).
 // Add a key here as each module is migrated off the whole-project blob.
@@ -39,15 +40,14 @@ export const MODULE_AUDIT_ACTION = {
 
 const FLAG_KEY = 'serverBackedWorkflowState';
 
-/** Feature-flag gate — default OFF (mirrors robController.robEnabled). */
-export async function workflowStateEnabled() {
-  try {
-    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
-    if (!row) return false;
-    return JSON.parse(row.value || '{}')[FLAG_KEY] === true;
-  } catch {
-    return false;
-  }
+/**
+ * Feature-flag gate — default OFF (mirrors robController.robEnabled).
+ * 75.md Phase 7 — routed through the central seam. The controller gate passes
+ * `req.user` so admins keep the feature usable while it is globally OFF; no user =
+ * plain flag state.
+ */
+export async function workflowStateEnabled(user = null) {
+  return (await featureAccess(FLAG_KEY, user)).allowed;
 }
 
 /**

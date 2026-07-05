@@ -118,9 +118,11 @@ describe('navConfig — active-route matching (preserve deep links)', () => {
     expect(activeProjectStage('?tab=screening')).toBe('screening');
     expect(activeProjectStage('')).toBe('overview');
   });
-  it('search submenu = unified Search wizard + Living Review (66.md P6)', () => {
+  it('search submenu = the mode-scoped Search workflow + Living Review optional tool (75.md)', () => {
     const items = submenuForCategory('search', { projectId: 'p1' });
-    expect(items.map((i) => i.key)).toEqual(['search', 'living']);
+    const stageKeys = items.filter((i) => !i.utility).map((i) => i.key);
+    expect(stageKeys).toEqual(['question', 'concepts', 'terms', 'mode', 'strategy', 'refine', 'results', 'documentation', 'screening']);
+    expect(items.some((i) => i.key === 'living' && i.utility)).toBe(true);
   });
 });
 

@@ -24,6 +24,7 @@
 import { prisma } from '../db/client.js';
 import { writeAudit } from '../screening/access.js';
 import { emitToProjectMembers } from '../realtime/bus.js';
+import { featureAccess } from './featureAccess.js';
 import { syncConflicts, CONFLICT_STAGE } from './screeningConflictService.js';
 import { touchProjectActivity } from '../store.js';
 import * as screeningEngine from '../../src/research-engine/screening/ai/index.js';
@@ -70,13 +71,13 @@ function clamp01(n) { return Math.min(1, Math.max(0, n)); }
 
 // ── Feature flag + global/project policy ─────────────────────────────────────
 
-/** Whether the `eligibilityScreening` feature flag is on (best-effort; fail-closed). */
-export async function eligibilityFlagEnabled() {
-  try {
-    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
-    const flags = safeParse(row?.value, {});
-    return flags[ELIGIBILITY_FLAG_KEY] === true;
-  } catch { return false; }
+/**
+ * Whether the `eligibilityScreening` feature flag is on (best-effort; fail-closed).
+ * 75.md Phase 7 — routed through the central seam. A gate passes `req.user` so admins
+ * keep the feature usable while it is globally OFF; no user = plain flag state.
+ */
+export async function eligibilityFlagEnabled(user = null) {
+  return (await featureAccess(ELIGIBILITY_FLAG_KEY, user)).allowed;
 }
 
 /** Global policy = defaults merged with the stored SiteSetting override (never throws). */

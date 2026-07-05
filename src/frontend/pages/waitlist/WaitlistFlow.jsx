@@ -21,8 +21,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { S, salpha } from '../../stitch/theme/stitchTokens.js';
 import { Icon } from '../../components/icons.jsx';
-import { StitchButton, StitchCard, StitchSpinner } from '../../stitch/primitives/index.js';
-import { WL } from './waitlistTheme.js';
+import { StitchButton, StitchCard } from '../../stitch/primitives/index.js';
 import {
   WAITLIST_ROLES, WAITLIST_FIELDS, WAITLIST_INSTITUTION_TYPES, WAITLIST_COVIDENCE,
   WAITLIST_PRIOR_REVIEW_COUNTS, WAITLIST_PRIOR_TOOLS, RESEARCH_EXPERIENCE_LEVELS,
@@ -276,7 +275,7 @@ export default function WaitlistFlow({ onSignIn, onStepChange }) {
           <FormError message={submitError} />
           <Actions>
             <StitchButton type="button" variant="neutral" icon="arrowLeft" onClick={() => goTo('email')}>Back</StitchButton>
-            <WlPrimaryButton type="submit" iconRight="arrowRight" onClick={next}>Continue</WlPrimaryButton>
+            <StitchButton type="submit" variant="primary" iconRight="arrowRight" onClick={next}>Continue</StitchButton>
           </Actions>
         </Section>
       )}
@@ -310,7 +309,7 @@ export default function WaitlistFlow({ onSignIn, onStepChange }) {
           <FormError message={submitError} />
           <Actions>
             <StitchButton type="button" variant="neutral" icon="arrowLeft" onClick={() => goTo('about')}>Back</StitchButton>
-            <WlPrimaryButton type="submit" iconRight="arrowRight" onClick={next}>Review</WlPrimaryButton>
+            <StitchButton type="submit" variant="primary" iconRight="arrowRight" onClick={next}>Review</StitchButton>
           </Actions>
         </Section>
       )}
@@ -322,7 +321,7 @@ export default function WaitlistFlow({ onSignIn, onStepChange }) {
             <ConsentCheckbox id="consent" checked={form.consent} onChange={(v) => set('consent', v)} error={errors.consent}>
               I agree that PecanRev may store the information above and contact me by email about beta access and
               related updates. I can ask to be removed at any time. See the{' '}
-              <a href="/terms#privacy" target="_blank" rel="noopener noreferrer" style={{ color: WL.primary, fontWeight: 600 }}>Privacy Policy</a>.
+              <a href="/terms#privacy" target="_blank" rel="noopener noreferrer" style={{ color: S.brand, fontWeight: 600 }}>Privacy Policy</a>.
             </ConsentCheckbox>
             <div style={{ height: 1, background: salpha(S.outlineVariant, 0.6) }} />
             <ConsentCheckbox id="researchConsent" checked={form.researchConsent} onChange={(v) => set('researchConsent', v)}>
@@ -334,9 +333,9 @@ export default function WaitlistFlow({ onSignIn, onStepChange }) {
           <FormError message={submitError} />
           <Actions>
             <StitchButton type="button" variant="neutral" icon="arrowLeft" onClick={() => goTo('institution')} disabled={submitting}>Back</StitchButton>
-            <WlPrimaryButton type="submit" loading={submitting} onClick={submit}>
+            <StitchButton type="submit" variant="primary" loading={submitting} onClick={submit}>
               {submitting ? 'Joining…' : 'Join the waitlist'}
-            </WlPrimaryButton>
+            </StitchButton>
           </Actions>
         </Section>
       )}
@@ -354,8 +353,8 @@ function EmailPill({ value, onChange, error, submitLabel }) {
     <div
       style={{
         background: S.card, padding: 8, borderRadius: S.radiusCard,
-        boxShadow: focus ? `${S.shadow1}, 0 0 0 3px ${WL.ring}` : S.shadow1,
-        border: `1px solid ${focus ? WL.softBorder : salpha(S.outlineVariant, 0.3)}`,
+        boxShadow: focus ? `${S.shadow1}, 0 0 0 3px ${S.ring}` : S.shadow1,
+        border: `1px solid ${focus ? salpha(S.brand, 0.22) : salpha(S.outlineVariant, 0.3)}`,
         display: 'flex', gap: 8, flexWrap: 'wrap', transition: 'border-color 0.2s ease, box-shadow 0.2s ease',
       }}
     >
@@ -381,43 +380,12 @@ function EmailPill({ value, onChange, error, submitLabel }) {
             width: '100%', height: 48, padding: '0 14px 0 42px', boxSizing: 'border-box',
             background: S.surfaceLow, color: S.textPrimary, border: 'none', borderRadius: S.radiusControl,
             fontFamily: S.font, fontSize: 15, outline: 'none',
-            boxShadow: focus ? `0 0 0 2px ${WL.primary}` : 'none', transition: 'box-shadow 0.15s ease',
+            boxShadow: focus ? `0 0 0 2px ${S.brand}` : 'none', transition: 'box-shadow 0.15s ease',
           }}
         />
       </div>
-      <WlPrimaryButton type="submit" iconRight="arrowRight" size="lg">{submitLabel}</WlPrimaryButton>
+      <StitchButton type="submit" variant="primary" iconRight="arrowRight" size="lg" style={{ height: 48, padding: '0 22px' }}>{submitLabel}</StitchButton>
     </div>
-  );
-}
-
-/** Indigo primary button matching the Design/waitlist reference CTA. */
-function WlPrimaryButton({ children, onClick, type = 'button', icon, iconRight, loading = false, disabled = false, block = false, size = 'md', style }) {
-  const z = size === 'lg' ? { padding: '0 22px', height: 48, fontSize: 15, icon: 18 } : { padding: '11px 20px', height: undefined, fontSize: 14.5, icon: 17 };
-  const isDisabled = disabled || loading;
-  return (
-    <button
-      type={type}
-      className="stitch-btn"
-      disabled={isDisabled}
-      aria-busy={loading || undefined}
-      onClick={onClick}
-      onMouseEnter={(e) => { if (!isDisabled) e.currentTarget.style.background = WL.primaryHover; }}
-      onMouseLeave={(e) => { if (!isDisabled) e.currentTarget.style.background = WL.primary; }}
-      onFocus={(e) => { e.currentTarget.style.boxShadow = `0 0 0 3px ${WL.ring}`; }}
-      onBlur={(e) => { e.currentTarget.style.boxShadow = 'none'; }}
-      style={{
-        display: block ? 'flex' : 'inline-flex', width: block ? '100%' : undefined,
-        alignItems: 'center', justifyContent: 'center', gap: 8,
-        padding: z.padding, height: z.height, fontSize: z.fontSize, fontWeight: 700, fontFamily: S.font,
-        lineHeight: 1.2, letterSpacing: '0.01em', color: WL.onPrimary, background: WL.primary,
-        border: '1px solid transparent', borderRadius: S.radiusControl, cursor: isDisabled ? 'not-allowed' : 'pointer',
-        opacity: isDisabled ? 0.55 : 1, transition: 'background 0.15s ease, opacity 0.15s ease', whiteSpace: 'nowrap', ...style,
-      }}
-    >
-      {loading ? <StitchSpinner size={z.icon} tone="currentColor" /> : (icon ? <Icon name={icon} size={z.icon} /> : null)}
-      {children}
-      {iconRight ? <Icon name={iconRight} size={z.icon} /> : null}
-    </button>
   );
 }
 
@@ -451,8 +419,8 @@ function Stepper({ current }) {
             <span style={{
               width: 26, height: 26, borderRadius: '50%', flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
               fontSize: 12.5, fontWeight: 700, fontFamily: S.font,
-              background: on ? WL.primary : S.surfaceContainer, color: on ? WL.onPrimary : S.textMuted,
-              border: `1px solid ${on ? WL.primary : S.outlineVariant}`,
+              background: on ? S.brand : S.surfaceContainer, color: on ? S.onBrand : S.textMuted,
+              border: `1px solid ${on ? S.brand : S.outlineVariant}`,
             }}>{done ? '✓' : i + 1}</span>
             <span style={{ fontSize: 13, fontWeight: active ? 700 : 500, color: active ? S.textPrimary : S.textMuted, fontFamily: S.font, whiteSpace: 'nowrap' }}>{s.label}</span>
             {i < STEPS.length - 1 && <span aria-hidden="true" style={{ flex: 1, height: 1, background: S.outlineVariant, margin: '0 4px' }} />}
@@ -597,7 +565,7 @@ function ConfirmationPanel({ topRef, result, email, firstName, onResend, resendS
         <StitchButton type="button" variant="neutral" icon="mail" onClick={onResend} disabled={resendState !== 'idle'}>
           {resendState === 'sending' ? 'Sending…' : resendState === 'done' ? 'Confirmation re-sent' : 'Resend confirmation email'}
         </StitchButton>
-        <WlPrimaryButton type="button" onClick={onSignIn}>Already have an account? Sign in</WlPrimaryButton>
+        <StitchButton type="button" variant="primary" onClick={onSignIn}>Already have an account? Sign in</StitchButton>
       </div>
     </StitchCard>
     </div>

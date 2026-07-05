@@ -15,12 +15,14 @@
  */
 import { getById, getByIdUnscoped } from '../store.js';
 import { getMetaLabMemberAccess } from '../screening/metalabAccess.js';
-import { getEffectiveFeatureFlags } from './settingsController.js';
+import { featureAccess } from '../services/featureAccess.js';
 import * as gradeService from '../services/gradeService.js';
 
-async function gradeEnabled() {
-  try { const f = await getEffectiveFeatureFlags(); return f.gradeCertainty === true; }
-  catch { return false; }
+// 75.md Phase 7 — routed through the central seam so a globally-disabled feature
+// stays usable by admins (reason 'adminOnly') while non-admins keep the 404. Each
+// handler passes `req.user`; no user = plain flag state.
+async function gradeEnabled(user = null) {
+  return (await featureAccess('gradeCertainty', user)).allowed;
 }
 
 /**
@@ -56,7 +58,7 @@ const modelOf = (req) => (req.query?.model === 'fixed' ? 'fixed' : 'random');
 // GET /api/grade/projects/:pid/outcomes
 export async function getOutcomes(req, res) {
   try {
-    if (!(await gradeEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await gradeEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const access = await resolveGradeAccess(req.params.pid, req.user.id);
     if (!access || !access.canView) return res.status(404).json({ error: 'Not found' });
     const result = await gradeService.listOutcomes(access.project, { model: modelOf(req) });
@@ -71,7 +73,7 @@ export async function getOutcomes(req, res) {
 // GET /api/grade/projects/:pid/outcomes/:key
 export async function getOutcome(req, res) {
   try {
-    if (!(await gradeEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await gradeEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const access = await resolveGradeAccess(req.params.pid, req.user.id);
     if (!access || !access.canView) return res.status(404).json({ error: 'Not found' });
     const outcome = await gradeService.getOutcome(access.project, req.params.key, { model: modelOf(req) });
@@ -87,7 +89,7 @@ export async function getOutcome(req, res) {
 // PUT /api/grade/projects/:pid/outcomes/:key  { domains, notes?, startLevel? }
 export async function putOutcome(req, res) {
   try {
-    if (!(await gradeEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await gradeEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const access = await resolveGradeAccess(req.params.pid, req.user.id);
     if (!access) return res.status(404).json({ error: 'Not found' });
     if (!access.canEdit) return res.status(403).json({ error: 'You have read-only access to this project.' });
@@ -103,7 +105,7 @@ export async function putOutcome(req, res) {
 // POST /api/grade/projects/:pid/outcomes/:key/lock
 export async function lockOutcome(req, res) {
   try {
-    if (!(await gradeEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await gradeEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const access = await resolveGradeAccess(req.params.pid, req.user.id);
     if (!access) return res.status(404).json({ error: 'Not found' });
     if (!access.canEdit || !(access.isOwner || access.role === 'leader')) {
@@ -121,7 +123,7 @@ export async function lockOutcome(req, res) {
 // POST /api/grade/projects/:pid/outcomes/:key/unlock
 export async function unlockOutcome(req, res) {
   try {
-    if (!(await gradeEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await gradeEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const access = await resolveGradeAccess(req.params.pid, req.user.id);
     if (!access) return res.status(404).json({ error: 'Not found' });
     if (!access.canEdit || !(access.isOwner || access.role === 'leader')) {
@@ -139,7 +141,7 @@ export async function unlockOutcome(req, res) {
 // GET /api/grade/projects/:pid/audit
 export async function getAudit(req, res) {
   try {
-    if (!(await gradeEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await gradeEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const access = await resolveGradeAccess(req.params.pid, req.user.id);
     if (!access || !access.canView) return res.status(404).json({ error: 'Not found' });
     const entries = await gradeService.getAudit(req.params.pid);
@@ -154,7 +156,7 @@ export async function getAudit(req, res) {
 // GET /api/grade/projects/:pid/sof?format=json|csv|html
 export async function getSof(req, res) {
   try {
-    if (!(await gradeEnabled())) return res.status(404).json({ error: 'Not found' });
+    if (!(await gradeEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const access = await resolveGradeAccess(req.params.pid, req.user.id);
     if (!access || !access.canView) return res.status(404).json({ error: 'Not found' });
     const format = ['csv', 'html', 'json'].includes(req.query?.format) ? req.query.format : 'json';

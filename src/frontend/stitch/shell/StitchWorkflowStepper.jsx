@@ -20,6 +20,7 @@
  *    receive the hover tooltip), and via a right-side lock affordance.
  *  - Buttons + aria-current="step" + keyboard + reduced-motion + light/dark tokens.
  */
+import { Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Icon } from '../../components/icons.jsx';
 import { S, salpha } from '../theme/stitchTokens.js';
@@ -174,10 +175,27 @@ export default function StitchWorkflowStepper({ steps, activeKey, ariaLabel = 'W
       <ol style={{ display: 'flex', flexDirection: 'column', gap: 0, margin: 0, padding: 0 }}>
         {steps.map((step, i) => {
           const active = activeKey === step.key;
-          if (step.num == null) return <UtilityRow key={step.key} testId={`stitch-stepper-step-${step.key}`} step={step} active={active} onNavigate={go} />;
-          const connAbove = i > 0 && steps[i - 1].num != null;
-          const connBelow = i < steps.length - 1 && steps[i + 1].num != null;
-          return <StepRow key={step.key} testId={`stitch-stepper-step-${step.key}`} step={step} active={active} connAbove={connAbove} connBelow={connBelow} onNavigate={go} />;
+          const row = step.num == null
+            ? <UtilityRow key={step.key} testId={`stitch-stepper-step-${step.key}`} step={step} active={active} onNavigate={go} />
+            : (() => {
+                // Connectors join consecutive NUMBERED rows only; a utility row (or a
+                // group-label break) below the last numbered step ends the line cleanly.
+                const connAbove = i > 0 && steps[i - 1].num != null && !step.groupLabel;
+                const connBelow = i < steps.length - 1 && steps[i + 1].num != null;
+                return <StepRow key={step.key} testId={`stitch-stepper-step-${step.key}`} step={step} active={active} connAbove={connAbove} connBelow={connBelow} onNavigate={go} />;
+              })();
+          // 75.md — a labelled separator before a group (Search's "Optional tools").
+          if (!step.groupLabel) return row;
+          return (
+            <Fragment key={step.key}>
+              <li aria-hidden="true" data-testid="stitch-stepper-group-label" style={{
+                listStyle: 'none', margin: '12px 4px 2px', paddingTop: 12,
+                borderTop: `1px solid ${salpha(S.outlineVariant, 0.5)}`,
+                fontSize: 10.5, fontWeight: 700, letterSpacing: 0.5, textTransform: 'uppercase', color: S.textMuted,
+              }}>{step.groupLabel}</li>
+              {row}
+            </Fragment>
+          );
         })}
       </ol>
     </nav>

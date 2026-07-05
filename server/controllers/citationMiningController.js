@@ -25,7 +25,7 @@ async function getSeedOwningProject(id) { return loadSeed(id); }
 
 /** Flag + project-access gate. Returns access, or null (after writing a response). */
 async function gate(req, res, { mutate = false, pid = req.params.pid } = {}) {
-  if (!(await citationMiningEnabled())) { res.status(404).json({ error: 'Not found' }); return null; }
+  if (!(await citationMiningEnabled(req.user))) { res.status(404).json({ error: 'Not found' }); return null; }
   const access = await resolveProjectAccess(pid, req.user.id);
   if (!access || !access.canView) { res.status(404).json({ error: 'Project not found' }); return null; }
   if (mutate && !access.canEdit) { res.status(403).json({ error: 'Read-only access' }); return null; }
@@ -38,7 +38,7 @@ async function gate(req, res, { mutate = false, pid = req.params.pid } = {}) {
  * the caller's access to THAT project. Returns { access, seed } or null.
  */
 async function gateSeed(req, res, { mutate = false } = {}) {
-  if (!(await citationMiningEnabled())) { res.status(404).json({ error: 'Not found' }); return null; }
+  if (!(await citationMiningEnabled(req.user))) { res.status(404).json({ error: 'Not found' }); return null; }
   const pid = req.params.pid; // present on the project-scoped alias, absent on the bare route
   const seed = pid ? await loadOwnedSeed(req.params.id, pid) : await getSeedOwningProject(req.params.id);
   if (!seed) { res.status(404).json({ error: 'Seed review not found' }); return null; }

@@ -16,6 +16,7 @@ import { prisma } from '../db/client.js';
 import { createNotification } from '../services/notificationService.js';
 import { scheduleRescore } from '../services/screeningAiJobs.js';
 import { startRun, pecanSearchEnabled } from '../pecanSearch/runService.js';
+import { featureAccess } from '../services/featureAccess.js';
 import { runMeta } from '../../src/research-engine/statistics/meta-analysis.js';
 import { detectEvidenceShift, DEFAULT_SHIFT_THRESHOLDS } from '../../src/research-engine/statistics/evidenceShift.js';
 import { computeNextRunAt, CADENCES } from '../../src/research-engine/living/schedule.js';
@@ -38,12 +39,60 @@ function safeParse(s, fallback) {
   try { const v = JSON.parse(s ?? ''); return v ?? fallback; } catch { return fallback; }
 }
 
-/** Whether the `livingReview` feature flag is on (fail-closed). */
-export async function livingReviewEnabled() {
+/**
+ * Validate an optional weekly day-of-week from request input.
+ * Absent (null/undefined/'') → null (legacy +7-day behaviour). A present value
+ * must be an integer 0-6 (0=Sunday) or the request is rejected (400).
+ */
+function parseScheduleDay(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || Math.trunc(n) !== n || n < 0 || n > 6) {
+    throw Object.assign(new Error('Day of week must be a whole number 0–6 (0 = Sunday).'), { status: 400 });
+  }
+  return n;
+}
+
+/**
+ * Validate an optional UTC hour from request input.
+ * Absent → null (defaults to 03:00 UTC). A present value must be an integer 0-23.
+ */
+function parseScheduleHour(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || Math.trunc(n) !== n || n < 0 || n > 23) {
+    throw Object.assign(new Error('Hour must be a whole number 0–23 (UTC).'), { status: 400 });
+  }
+  return n;
+}
+
+/**
+ * Structured, secret-free server log line for a living-review run lifecycle event.
+ * Emits ids/enums/counts only — never a search name, query text, or article
+ * content. Uses the app's plain console logging idiom; never throws.
+ */
+function logLivingRun(fields = {}) {
   try {
-    const row = await prisma.siteSetting.findUnique({ where: { key: 'featureFlags' } });
-    return safeParse(row.value, {})[FLAG] === true;
-  } catch { return false; }
+    const parts = [];
+    for (const [k, v] of Object.entries(fields)) {
+      if (v === null || v === undefined) continue;
+      parts.push(`${k}=${v}`);
+    }
+    console.log(`[living-run] ${parts.join(' ')}`);
+  } catch { /* logging must never destabilize a run */ }
+}
+
+/**
+ * Whether the `livingReview` feature flag is on (fail-closed).
+ * 75.md Phase 7 — routed through the central seam. livingReview's pecan
+ * co-dependency is a RUNTIME concern (the 409 below at runSavedSearch), NOT a hard
+ * existence dep, so it is intentionally NOT in featureAccess's FEATURE_DEPS: the
+ * dashboard stays viewable with pecan OFF, exactly as before. With no `user` (the
+ * scheduler) this is plain flag state; the controller gate passes `req.user` so an
+ * admin keeps the surface usable while the flag is globally OFF.
+ */
+export async function livingReviewEnabled(user = null) {
+  return (await featureAccess(FLAG, user)).allowed;
 }
 
 /** Global admin living-review settings (defaults merged under the stored row). */
@@ -114,6 +163,8 @@ export function shapeSearch(row) {
     providerIds: safeParse(row.providerIds, []),
     canonicalText: row.canonicalText || '',
     cadence: row.cadence,
+    scheduleDayOfWeek: row.scheduleDayOfWeek ?? null,
+    scheduleHourUtc: row.scheduleHourUtc ?? null,
     enabled: row.enabled,
     nextRunAt: row.nextRunAt,
     lastRunAt: row.lastRunAt,
@@ -143,6 +194,9 @@ export async function createSavedSearch(metaLabProjectId, body, actor) {
   if (!canonicalQuery) throw Object.assign(new Error('A canonical query snapshot is required (build the search strategy first).'), { status: 400 });
   const providerIds = Array.isArray(body.providerIds) ? body.providerIds.filter(p => typeof p === 'string').slice(0, 10) : [];
   if (!providerIds.length) throw Object.assign(new Error('Select at least one search source.'), { status: 400 });
+  // Optional weekly day + UTC hour (75.md Phase 5). Absent → legacy behaviour.
+  const scheduleDayOfWeek = parseScheduleDay(body.scheduleDayOfWeek);
+  const scheduleHourUtc = parseScheduleHour(body.scheduleHourUtc);
 
   const row = await prisma.livingSavedSearch.create({
     data: {
@@ -152,8 +206,12 @@ export async function createSavedSearch(metaLabProjectId, body, actor) {
       canonicalQuery: JSON.stringify(canonicalQuery),
       canonicalText: String(body.canonicalText || '').slice(0, 5000),
       cadence,
+      scheduleDayOfWeek,
+      scheduleHourUtc,
       enabled: body.enabled !== false,
-      nextRunAt: cadence !== 'manual' ? new Date(computeNextRunAt(cadence, new Date().toISOString())) : null,
+      nextRunAt: cadence !== 'manual'
+        ? new Date(computeNextRunAt(cadence, new Date().toISOString(), { dayOfWeek: scheduleDayOfWeek, hourUtc: scheduleHourUtc }))
+        : null,
       notes: body.notes ? String(body.notes).slice(0, 2000) : null,
       createdById: actor?.id || null,
       createdByName: actor?.name || actor?.email || '',
@@ -175,12 +233,35 @@ export async function updateSavedSearch(metaLabProjectId, searchId, body) {
     data.canonicalQuery = JSON.stringify(body.canonicalQuery);
     if (typeof body.canonicalText === 'string') data.canonicalText = body.canonicalText.slice(0, 5000);
   }
+  // Effective schedule = incoming field (validated) else the stored row value.
+  // nextRunAt is recomputed only when cadence, day-of-week, or hour actually
+  // changes, so a name/notes-only edit never re-anchors the schedule.
+  let cadence = row.cadence;
+  let dayOfWeek = row.scheduleDayOfWeek;
+  let hourUtc = row.scheduleHourUtc;
+  let scheduleTouched = false;
   if (typeof body.cadence === 'string' && CADENCES.includes(body.cadence)) {
     if (!settings.allowedCadences.includes(body.cadence)) {
       throw Object.assign(new Error(`Cadence "${body.cadence}" is not allowed by the administrator.`), { status: 400 });
     }
     data.cadence = body.cadence;
-    data.nextRunAt = body.cadence !== 'manual' ? new Date(computeNextRunAt(body.cadence, new Date().toISOString())) : null;
+    cadence = body.cadence;
+    scheduleTouched = true;
+  }
+  if ('scheduleDayOfWeek' in body) {
+    dayOfWeek = parseScheduleDay(body.scheduleDayOfWeek);
+    data.scheduleDayOfWeek = dayOfWeek;
+    scheduleTouched = true;
+  }
+  if ('scheduleHourUtc' in body) {
+    hourUtc = parseScheduleHour(body.scheduleHourUtc);
+    data.scheduleHourUtc = hourUtc;
+    scheduleTouched = true;
+  }
+  if (scheduleTouched) {
+    data.nextRunAt = cadence !== 'manual'
+      ? new Date(computeNextRunAt(cadence, new Date().toISOString(), { dayOfWeek, hourUtc }))
+      : null;
   }
   const updated = await prisma.livingSavedSearch.update({ where: { id: row.id }, data });
   return shapeSearch(updated);
@@ -226,9 +307,13 @@ export async function runSavedSearch(search, { actorId, reason = 'manual' } = {}
       lastRunState: run.state,
       lastError: null,
       nextRunAt: search.cadence !== 'manual'
-        ? new Date(computeNextRunAt(search.cadence, now.toISOString()))
+        ? new Date(computeNextRunAt(search.cadence, now.toISOString(), { dayOfWeek: search.scheduleDayOfWeek, hourUtc: search.scheduleHourUtc }))
         : null,
     },
+  });
+  logLivingRun({
+    event: 'start', projectId: search.metaLabProjectId, searchId: search.id,
+    runId: run.id, cadence: search.cadence, reason, providers: providerIds.length, state: run.state,
   });
   return run;
 }
@@ -264,6 +349,19 @@ export async function reconcileSearch(search) {
       lastNewCount: imported,
       lastError: state === 'failed' ? String(safeParse(run.errorSummary, {})?.message || 'Search run failed').slice(0, 500) : null,
     },
+  });
+
+  // Structured end-of-run log (ids/enums/counts only — no query or article text).
+  let retryCount = null;
+  try {
+    const job = await prisma.pecanSearchJob.findFirst({ where: { runId: run.id }, select: { attempts: true } });
+    retryCount = job?.attempts ?? null;
+  } catch { /* best-effort */ }
+  logLivingRun({
+    event: 'end', projectId: search.metaLabProjectId, searchId: search.id, runId: run.id,
+    cadence: search.cadence, state, retrieved: raw || imported, newAfterDedup: imported,
+    failureCategory: state === 'failed' ? (safeParse(run.errorSummary, {})?.category || 'run_failed') : null,
+    retryCount,
   });
 
   if (state === 'failed') {
@@ -467,7 +565,10 @@ export async function getUpdateQueue(metaLabProjectId, { limit = 200 } = {}) {
   });
   if (!livingRuns.length) return { records: [], runs: [] };
   const sourceRecords = await prisma.pecanSourceRecord.findMany({
-    where: { runId: { in: livingRuns.map(r => r.id) }, screenRecordId: { not: null }, dedupOutcome: { in: ['new', 'ambiguous'] } },
+    // screenRecordId is a NON-nullable column (@default("")); Prisma rejects
+    // `{ not: null }` on it at query-validation time. The pipeline writes '' until
+    // a record lands, so the correct "has a landed record" predicate is `not: ''`.
+    where: { runId: { in: livingRuns.map(r => r.id) }, screenRecordId: { not: '' }, dedupOutcome: { in: ['new', 'ambiguous'] } },
     select: { runId: true, screenRecordId: true },
   });
   const recordIds = [...new Set(sourceRecords.map(r => r.screenRecordId))];

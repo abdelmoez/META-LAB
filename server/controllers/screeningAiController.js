@@ -26,7 +26,7 @@ import { requireEntitlement, sendTierLimit } from '../services/entitlementServic
 
 /** Shared gate: flag → access. Returns access or null (response already sent). */
 async function gate(req, res) {
-  if (!(await aiFlagEnabled())) { res.status(404).json({ error: 'Not found' }); return null; }
+  if (!(await aiFlagEnabled(req.user))) { res.status(404).json({ error: 'Not found' }); return null; }
   const access = await getProjectAccess(req.params.pid, req.user);
   if (!access) { res.status(404).json({ error: 'Project not found' }); return null; }
   return access;

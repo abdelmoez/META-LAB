@@ -10,6 +10,7 @@ import { mkProject } from '../../src/research-engine/project-model/defaults.js';
 import { prisma } from '../db/client.js';
 import { getMetaLabMemberAccess, listSharedMetaLabAccess } from '../screening/metalabAccess.js';
 import { createLinkedScreenProject } from '../screening/createScreenProject.js';
+import { ensureScreenModuleForMetaLab } from '../screening/ensureWorkspace.js';
 import { emitToMetaLabProject, emitToProjectMembers } from '../realtime/bus.js';
 import { writeAudit } from '../screening/access.js';
 // 67.md — product-tier enforcement (admin/mod bypass inside the service).
@@ -17,8 +18,82 @@ import { requireEntitlement, requireLimit, sendTierLimit } from '../services/ent
 import { recordUsage, USAGE } from '../utils/usage.js';
 import { screeningCountSelect, DECIDED_FINAL_STATUSES, classifyDecided } from '../utils/screeningCounts.js';
 import { onlineCountsFor } from '../realtime/presence.js';
+// 75.md Phases 8-9 (Workstream D) — the ONE canonical workflow-progress model.
+import { computeProjectProgress } from '../../src/research-engine/progress/projectProgress.js';
+import { getModuleState } from '../services/workflowState.js';
+import { getEffectiveFeatureFlags } from './settingsController.js';
 
 const generateId = () => randomBytes(4).toString('hex');
+
+// The moduleKey the Search Builder persists its strategy under (mirrors
+// searchEngineController.SEARCH_MODULE). Read best-effort for the search step.
+const SEARCH_MODULE_KEY = 'search';
+
+/**
+ * 75.md — build the transient `_progress` annotation from data already resolved in
+ * the controller: the parsed blob (`projectObj`), the linked-workspace summary
+ * (`linkedSift` → decided/pool/record counts + progressStatus) and an optional
+ * per-project `progressCtx` (search-module evidence, RoB counts, feature flags).
+ * All inputs are already loaded on the GET paths, so this adds ZERO client fetches;
+ * `_`-prefix guarantees strip-on-persist (store.projectToData drops `_`-keys).
+ */
+function progressAnnotation(projectObj, linkedSift, progressCtx) {
+  const evidence = {
+    screening: linkedSift ? {
+      decidedCount: linkedSift.decidedCount,
+      screenablePool: linkedSift.screenablePool,
+      recordCount: linkedSift.recordCount,
+      progressStatus: linkedSift.progressStatus,
+    } : null,
+  };
+  if (progressCtx && progressCtx.search) evidence.search = progressCtx.search;
+  if (progressCtx && progressCtx.rob) evidence.rob = progressCtx.rob;
+  const opts = { networkMetaAnalysis: !!(progressCtx && progressCtx.flags && progressCtx.flags.networkMetaAnalysis) };
+  return computeProjectProgress(projectObj, evidence, opts);
+}
+
+/**
+ * 75.md — resolve the per-project evidence that lives OUTSIDE the blob for the
+ * single-project detail GETs (search strategy + first-class RoB rows). Best-effort:
+ * a failed lookup degrades to the blob-derived rule inside computeProjectProgress,
+ * never breaking the response. NOT used on the list path (would be N+1).
+ * @param {string} projectId
+ * @param {{ networkMetaAnalysis?: boolean }} flags
+ */
+async function loadProgressEvidence(projectId, flags) {
+  const ctx = { flags: flags || {} };
+  try {
+    const mod = await getModuleState(projectId, SEARCH_MODULE_KEY);
+    if (mod && mod.revision > 0) {
+      const st = mod.state || {};
+      ctx.search = {
+        revision: mod.revision,
+        conceptCount: Array.isArray(st.concepts) ? st.concepts.length : 0,
+        searchMode: st.searchMode || null,
+        readyForScreening: !!st.readyForScreening,
+      };
+    }
+  } catch { /* best-effort — fall back to the blob search heuristic */ }
+  try {
+    const rows = await prisma.robAssessment.findMany({
+      where: { projectId, deletedAt: null },
+      select: { studyId: true },
+      distinct: ['studyId'],
+    });
+    ctx.rob = { assessed: rows.length };
+  } catch { /* best-effort — fall back to the blob studies[].rob rule */ }
+  return ctx;
+}
+
+/** Cheap per-request flag read for progress gating (only `networkMetaAnalysis` today). */
+async function progressFlags() {
+  try {
+    const f = await getEffectiveFeatureFlags();
+    return { networkMetaAnalysis: !!f.networkMetaAnalysis };
+  } catch {
+    return { networkMetaAnalysis: false };
+  }
+}
 
 /**
  * prompt11 — transient blob-derived counts for the landing card.
@@ -63,7 +138,7 @@ function linkedSiftSummary(linked) {
  * member. `meta` carries prompt11 archive flags `{ archived, archivedAt }` from
  * the live DB row (the blob does not hold these first-class columns).
  */
-function annotateShared(projectObj, acc, owner, meta = {}, linked = null) {
+function annotateShared(projectObj, acc, owner, meta = {}, linked = null, progressCtx = null) {
   // 63.md — prefer the DB-computed summary (full uniform shape) when listProjects
   // resolved it; fall back to the id/title carried by the membership access so the
   // card never loses the link even if the summary lookup came back empty.
@@ -74,6 +149,8 @@ function annotateShared(projectObj, acc, owner, meta = {}, linked = null) {
         : null);
   return {
     ...projectObj,
+    // 75.md — canonical workflow progress (transient; stripped on persist).
+    _progress: progressAnnotation(projectObj, linkedSift, progressCtx),
     _shared: true,
     _role: acc.role,
     _canEdit: !!acc.canEdit,
@@ -110,10 +187,12 @@ function annotateShared(projectObj, acc, owner, meta = {}, linked = null) {
  * `meta` carries prompt11 archive flags `{ archived, archivedAt }` from the live
  * DB row (the blob does not hold these first-class columns).
  */
-function annotateOwned(projectObj, linked, meta = {}) {
+function annotateOwned(projectObj, linked, meta = {}, progressCtx = null) {
   const linkedSift = linkedSiftSummary(linked);
   return {
     ...projectObj,
+    // 75.md — canonical workflow progress (transient; stripped on persist).
+    _progress: progressAnnotation(projectObj, linkedSift, progressCtx),
     _archived: !!meta.archived,
     _archivedAt: meta.archivedAt ? new Date(meta.archivedAt).toISOString() : null,
     ...countsFromBlob(projectObj),
@@ -361,6 +440,11 @@ export async function listProjects(req, res) {
       onlineCount: onlineByScreenId[summary.id] || 0,
     };
 
+    // 75.md — ONE flag read for the whole list drives nma-gating in every card's
+    // `_progress`. The list stays cheap: no per-project search/RoB lookups (that
+    // would be N+1), so each card's search/rob steps use the blob-derived fallback.
+    const listProgressCtx = { flags: await progressFlags() };
+
     // prompt6 Tasks 3/8 — annotate owned rows with their linked META·SIFT
     // workspace + full owner permissions.
     const annotatedOwned = owned.map(p => {
@@ -368,6 +452,7 @@ export async function listProjects(req, res) {
       return annotateOwned(
         p, withCounts(ownedSummaryByMlId.get(p.id)) || null,
         { archived: ar?.archived, archivedAt: ar?.archivedAt },
+        listProgressCtx,
       );
     });
 
@@ -375,7 +460,7 @@ export async function listProjects(req, res) {
     const shared = sharedCtx
       ? sharedCtx.items.map(({ p, acc, owner, meta }) => {
           const summary = acc?.screenProjectId ? sharedCtx.summaryByScreenId.get(acc.screenProjectId) : null;
-          return annotateShared(p, acc, owner, meta, withCounts(summary) || null);
+          return annotateShared(p, acc, owner, meta, withCounts(summary) || null, listProgressCtx);
         })
       : [];
 
@@ -466,7 +551,11 @@ export async function getProject(req, res) {
       const ar = await prisma.project.findUnique({
         where: { id: project.id }, select: { archived: true, archivedAt: true },
       });
-      return res.json(annotateOwned(project, linked, ar || {}));
+      // 75.md — the detail GET carries the ACCURATE `_progress`: real search-strategy
+      // + first-class RoB evidence, flag-gated nma. Both Overview and Workspace read
+      // it off this one call (no extra client fetch).
+      const progressCtx = await loadProgressEvidence(project.id, await progressFlags());
+      return res.json(annotateOwned(project, linked, ar || {}, progressCtx));
     }
 
     // Member path (prompt5 Task 4): access a linked-workspace project they don't own.
@@ -485,7 +574,9 @@ export async function getProject(req, res) {
       const sums = await screenProjectSummaries([acc.screenProjectId], { by: 'screenId' });
       linkedShared = await enrichSummaryCounts(sums.get(acc.screenProjectId) || null);
     }
-    return res.json(annotateShared(raw, acc, owner, ar || {}, linkedShared));
+    // 75.md — shared detail view gets the same accurate `_progress` as the owner.
+    const progressCtx = await loadProgressEvidence(raw.id, await progressFlags());
+    return res.json(annotateShared(raw, acc, owner, ar || {}, linkedShared, progressCtx));
   } catch (err) {
     console.error('[projects] getProject error:', err.message);
     res.status(500).json({ error: 'Internal server error' });
@@ -814,11 +905,25 @@ export async function autosaveProject(req, res) {
     // Owner path — also the create path for brand-new projects (no row yet).
     const existing = await prisma.project.findFirst({ where: { id }, select: { userId: true } });
     if (!existing || existing.userId === req.user.id) {
+      const isCreate = !existing;
       const saved = await save(fullProject, req.user.id);
       // Soft-deleted row (resurrection guard, prompt9): a stale tab must never
       // revive a deleted project — and never 4xx (batch contract). Mirror the
       // saveAsMember skipped shape.
       if (!saved) return res.json({ id, skipped: true });
+      // 75.md Phase 6 — this endpoint is also a create path (legacy client-id
+      // projects). On a brand-new project, eagerly provision the linked screening
+      // module (+ atomic owner member row) so it never lingers in the
+      // workspace-less/memberCount:0 state. Best-effort + idempotent + owner-scoped:
+      // the autosave bridge PUTs every project in one batch, so this must NEVER
+      // throw/reject (it would lose the user's OWN edits) — swallow any failure.
+      if (isCreate) {
+        try {
+          await ensureScreenModuleForMetaLab(id, req.user);
+        } catch (provErr) {
+          console.error('[projects] autosave create — screening module provisioning failed:', provErr.message);
+        }
+      }
       // Realtime poke (Task 7) — fan out to linked-workspace members (owner is excluded).
       emitToMetaLabProject(id, req.user.id, { type: 'project.updated' }, { exclude: req.user.id });
       return res.json(saved);
@@ -859,6 +964,17 @@ export async function duplicateProject(req, res) {
     const { id, createdAt, updatedAt, ...rest } = original;
     const duplicate = { ...rest, id: generateId(), name: `${original.name} (copy)` };
     const saved = await save(duplicate, req.user.id);
+    // 75.md Phase 6 — eagerly provision the linked screening module (+ atomic
+    // owner member row) at duplicate time, so the new card is consistent with the
+    // createLinkedSift path: it shows a workspace + the creator as an owner member
+    // immediately, instead of the workspace-less/memberCount:0 state that lasted
+    // until Screening was first opened. Best-effort: idempotent + owner-scoped, and
+    // a failure NEVER rolls back the duplicate (mirrors createProject's contract).
+    try {
+      await ensureScreenModuleForMetaLab(saved.id, req.user);
+    } catch (provErr) {
+      console.error('[projects] duplicate — screening module provisioning failed:', provErr.message);
+    }
     res.status(201).json(saved);
   } catch (err) {
     if (err && err.code === 'FOREIGN_PROJECT') {
