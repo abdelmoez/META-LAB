@@ -69,6 +69,15 @@ describe('cellGrammar.parseCell — discriminated ParsedCell (§13.1)', () => {
   it('EFFECT_CI: an estimate with a parenthetical CI is one composite cell', () => {
     expect(parseCell('2.24 (1.40-3.57)')).toMatchObject({ kind: 'EFFECT_CI', est: 2.24, low: 1.40, high: 3.57 });
     expect(parseCell('1.05 (95% CI 0.89 to 1.24)')).toMatchObject({ kind: 'EFFECT_CI', est: 1.05, low: 0.89, high: 1.24 });
+    // comma-separated bounds — the common journal form (Fable recs round)
+    expect(parseCell('1.05 (0.89, 1.24)')).toMatchObject({ kind: 'EFFECT_CI', est: 1.05, low: 0.89, high: 1.24 });
+  });
+
+  it('EFFECT_CI never fabricates a CI from a thousands-grouped parenthetical count (Fable recs round)', () => {
+    // "64 (1,240)" is a count-with-total cell — the comma has no space, so it must NOT
+    // become est 64 with CI [1, 240].
+    const c = parseCell('64 (1,240)');
+    if (c) expect(c.kind).not.toBe('EFFECT_CI');
   });
 
   it('a bracketed thousands integer is NOT a CI (regression F21)', () => {

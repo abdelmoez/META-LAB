@@ -70,8 +70,13 @@ const RICH = { ratioCI: 5, meanSd: 4, pair: 4, range: 3, percent: 2, number: 1 }
 const RE_NUMBER = new RegExp(SIGNED, 'g');
 const RE_PERCENT = new RegExp('(' + SIGNED + ')\\s*%', 'g');
 const RE_RANGE = new RegExp('(' + SIGNED + ')' + SEP + '(' + SIGNED + ')', 'gi');
+// Inside a parenthetical CI the bounds may ALSO be comma/semicolon-separated —
+// "1.05 (0.89, 1.24)" is the common journal form (4.md §13.3). The comma requires a
+// trailing space so a thousands-grouped "(1,240)" never reads as a bound pair; comma
+// stays EXCLUDED from bare RE_RANGE (outside parens "3, 5" is a list, not a CI).
+const RSEP = '(\\s*' + DASH + '\\s*|\\s+to\\s+|\\s*[,;]\\s+)';
 const RE_RATIO = new RegExp(
-  '(' + NUM + ')\\s*\\(\\s*' + CI_LABEL + '(' + SIGNED + ')' + SEP + '(' + SIGNED + ')\\s*\\)',
+  '(' + NUM + ')\\s*\\(\\s*' + CI_LABEL + '(' + SIGNED + ')' + RSEP + '(' + SIGNED + ')\\s*\\)',
   'gi'
 );
 const RE_PAIR = new RegExp('(' + INT + ')\\s*/\\s*(' + INT + ')', 'g');

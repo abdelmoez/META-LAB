@@ -83,8 +83,11 @@ const RE_CI_BARE = new RegExp('^(' + NUMBER_SRC + ')\\s*(?:' + DASH_CLASS + '|to
 // thousands comma inside a single bracketed integer ("(1,240)") is NOT read as a bound
 // pair; a dash / "to" separator needs no space.
 const RE_CI_BRACKET = new RegExp('^[\\(\\[\\{]\\s*(' + NUMBER_SRC + ')\\s*(?:\\s[,;]\\s|[,;]\\s|\\s[,;]|' + DASH_CLASS + '|to)\\s*(' + NUMBER_SRC + ')\\s*[\\)\\]\\}]$', 'i');
-// Effect estimate + parenthetical CI: "2.24 (1.40–3.57)" / "1.05 (95% CI 0.89 to 1.24)".
-const RE_EFFECT_CI = new RegExp('^(' + NUMBER_SRC + ')\\s*[\\(\\[]\\s*(?:\\d{1,2}(?:\\.\\d+)?\\s*%\\s*(?:CI|C\\.I\\.|confidence\\s+interval)s?\\b[\\s:,]*)?(' + NUMBER_SRC + ')\\s*(?:' + DASH_CLASS + '|to|,)\\s*(' + NUMBER_SRC + ')\\s*[\\)\\]]$', 'i');
+// Effect estimate + parenthetical CI: "2.24 (1.40–3.57)" / "1.05 (95% CI 0.89 to 1.24)"
+// / "1.05 (0.89, 1.24)". A COMMA separator must touch whitespace (same rule as
+// RE_CI_BRACKET) so a thousands-grouped parenthetical count — "64 (1,240)" — is never
+// fabricated into a CI pair via regex backtracking.
+const RE_EFFECT_CI = new RegExp('^(' + NUMBER_SRC + ')\\s*[\\(\\[]\\s*(?:\\d{1,2}(?:\\.\\d+)?\\s*%\\s*(?:CI|C\\.I\\.|confidence\\s+interval)s?\\b[\\s:,]*)?(' + NUMBER_SRC + ')\\s*(?:' + DASH_CLASS + '|to|\\s[,;]\\s|[,;]\\s|\\s[,;])\\s*(' + NUMBER_SRC + ')\\s*[\\)\\]]$', 'i');
 // P value: an operator is REQUIRED unless the number is a decimal &lt; 1 (the p-value shape),
 // so "p2" (integer, no op) and "=64" are not misread as p-values.
 const RE_P = new RegExp('^p\\s*(<=|>=|≤|≥|<|>|=)\\s*(' + NUMBER_SRC + ')$', 'i');

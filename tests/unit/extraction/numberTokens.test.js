@@ -157,6 +157,22 @@ describe('snapNumberToken — kind: ratioCI', () => {
     expect(t).toMatchObject({ kind: 'ratioCI', est: 1.05, lo: 0.89, hi: 1.24 });
   });
 
+  it('comma-separated parenthesised CI: "1.05 (0.89, 1.24)" (Fable recs round)', () => {
+    const s = 'RR 1.05 (0.89, 1.24) p=0.31';
+    const t = snapAcross(s, '1.05 (0.89, 1.24)');
+    expect(t).toMatchObject({ kind: 'ratioCI', est: 1.05, lo: 0.89, hi: 1.24 });
+    // with the "95% CI" head too
+    const s2 = '1.12 (95% CI 1.00, 1.26)';
+    expect(snapNumberToken(s2, 0)).toMatchObject({ kind: 'ratioCI', est: 1.12, lo: 1.00, hi: 1.26 });
+  });
+
+  it('a thousands-grouped parenthetical count never becomes a ratioCI (Fable recs round)', () => {
+    // "64 (1,240)" — no space after the comma → not a bound pair.
+    const s = '64 (1,240)';
+    const t = snapNumberToken(s, 0);
+    expect(t && t.kind).not.toBe('ratioCI');
+  });
+
   it('clicking the est, the "95", or a bound all return the ratioCI', () => {
     const s = '1.05 (95% CI 0.89' + EN + '1.24)';
     for (const sub of ['1.05', '95', '0.89', '1.24']) {

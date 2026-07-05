@@ -54,8 +54,11 @@ const ASSIGN_FIELDS = [
 // first number" fallback is retired: a legacy no-offset payload is used only when the
 // run holds exactly ONE token (zero guessing), otherwise we ask for a direct click.
 const onlyToken = (s) => {
-  const toks = findNumberTokens(String(s || ''));
-  return toks.length === 1 ? toks[0] : null;
+  const str = String(s || '');
+  const toks = findNumberTokens(str);
+  // Route the lone token back through snapToken so the legacy path gets the SAME
+  // p-value/composite awareness as a real caret click (never a raw geometry token).
+  return toks.length === 1 ? snapToken(str, toks[0].start) : null;
 };
 /** The primary numeric component of a token (est for composites, a for pairs…). */
 const tokenPrimary = (t) =>
@@ -121,6 +124,12 @@ export default function AssistedExtractionPanel({
       setStatus('That looks like a p-value — click the effect estimate or its confidence interval instead.');
       return;
     }
+    // A bare percentage is not an effect estimate either (and would be log-transformed
+    // for ratio measures): Smart mode asks for the exact destination instead (§4.2).
+    if (assignField === 'smart' && token.kind === 'percent') {
+      setStatus('That looks like a percentage — choose the exact field it belongs to (events, n, …) from the field picker.');
+      return;
+    }
     // es/lo/hi are stored on the ANALYSIS scale: ln for ratio measures (OR/RR/HR/IRR).
     // Click-assign must honour that, matching the table/figure paths — never write a raw ratio.
     const isRatio = ['OR', 'RR', 'HR', 'IRR'].includes(study.esType);
@@ -172,6 +181,13 @@ export default function AssistedExtractionPanel({
     // destination field. Existing study values are treated as human-origin; a differing
     // machine (click) value against them is a conflict → ask before replacing, default keep.
     const conflicts = [];
+    // §18.2 — the dialog must speak on the CLINICAL scale: ratio es/lo/hi are stored as
+    // ln internally, so back-transform them for display (2 dp), never show raw logs.
+    const displayVal = (field, v) => {
+      const n = Number(v);
+      if (isRatio && ['es', 'lo', 'hi'].includes(field) && Number.isFinite(n)) return `${study.esType} ${Math.exp(n).toFixed(2)}`;
+      return Number.isFinite(n) ? String(Math.round(n * 10000) / 10000) : String(v);
+    };
     for (const field of VALUE_PATCH_FIELDS) {
       if (!(field in patch)) continue;
       const decision = decideWrite({
@@ -179,7 +195,7 @@ export default function AssistedExtractionPanel({
         incoming: patch[field], incomingOrigin: 'click',
       });
       if (decision.action === 'propose-replace' || decision.action === 'add-alternative') {
-        conflicts.push({ field, existing: String(study[field]), incoming: String(patch[field]) });
+        conflicts.push({ field, existing: displayVal(field, study[field]), incoming: displayVal(field, patch[field]) });
       }
     }
     if (conflicts.length) { setPendingAssign({ studyId: study.id, patch, conflicts }); setStatus(''); return; }
