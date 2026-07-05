@@ -14,7 +14,7 @@ export { default as SearchWorkspace } from './SearchWorkspace.jsx';
 // remap now live in the React-free `searchStages.js`; the sticky PubMed pulse bar,
 // the scroll-model walker, and the single-key search-mode persistence helper stay in
 // the component module. Re-exported here so existing importers keep working unchanged.
-export { STAGES, stagesFor, stageAfterModeChange } from './searchStages.js';
+export { STAGES, stagesFor, stageAfterModeChange, reconcileStageUrl } from './searchStages.js';
 export {
   PubMedPulse, findScrollableAncestor, persistSearchModeMerged,
 } from './SearchWorkspace.jsx';

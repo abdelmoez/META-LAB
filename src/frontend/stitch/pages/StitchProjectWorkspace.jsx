@@ -142,12 +142,24 @@ function DeepToolPage({ stage }) {
 
   const safeStudies = project && Array.isArray(project.studies) ? project.studies : [];
   const screeningComplete = !!(project && project._linkedMetaSift && project._linkedMetaSift.progressStatus === 'done');
-  const statusMap = project ? stepStatus({ ...project, studies: safeStudies }, screeningComplete) : {};
 
   // 75.md WS-F — the ONE canonical workflow progress (server `_progress`, else the
   // identical client model). Drives the thin header underline; null while loading so
   // the bar only appears once the project resolves (no flash of 0%).
   const progress = useProjectProgress(project);
+  // 75.md recs (Finding 4) — overlay the canonical per-step statuses onto the legacy
+  // blob-only map (mirrors StitchProjectOverview) so the workflow rail + white submenu
+  // agree with the header pct. Without this, evidence the blob can't see — e.g. RoB
+  // done via rob_engine_v2 (RobAssessment rows, empty blob studies[].rob) or the
+  // server's screening/search counts — shows done in the header but empty in the rail.
+  const statusMap = useMemo(() => {
+    const base = project ? stepStatus({ ...project, studies: safeStudies }, screeningComplete) : {};
+    const steps = progress.steps || [];
+    if (!steps.length) return base;
+    const m = { ...base };
+    for (const s of steps) m[s.id] = s.status;
+    return m;
+  }, [project, screeningComplete, progress]); // eslint-disable-line react-hooks/exhaustive-deps -- safeStudies derives from project
   const headerProgress = project ? {
     pct: progress.pct,
     label: `Project progress: ${progress.pct}% · ${progress.requiredDone} of ${progress.requiredTotal} steps`

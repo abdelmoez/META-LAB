@@ -289,10 +289,11 @@ export function readinessCheck(project) {
    in-place fallback; the reconciliations below (nma rule, reachable subgroup, real
    PRISMA-checklist size, manuscripts[] evidence) exist so the existing Overview/rail
    stop disagreeing with themselves until wave 2 wires `_progress` in directly.
-   `opts.networkMetaAnalysis` mirrors the flag-gating: when OFF (the default here —
-   the Overview does not yet thread the flag) `nma` is treated as non-blocking so
-   100% / "all steps complete" is reachable, exactly as the server excludes it. */
-export function stepStatus(project, screeningComplete, opts={}){
+   75.md recs (Finding 5) — `nma` now always reports its REAL evidence-based status
+   (never a flag-forced "done"); the flag-gated denominator exclusion lives ONLY in the
+   canonical computeProjectProgress, which the surfaces overlay onto this map. `opts` is
+   kept for call-site compatibility but no longer changes any status. */
+export function stepStatus(project, screeningComplete, opts={}){ // eslint-disable-line no-unused-vars
   if(!project) return {};
   const p=project, pico=p.pico||{}, search=p.search||{}, prisma=p.prisma||{};
   const dbCount=Object.values(search.dbs||{}).filter(Boolean).length;
@@ -340,11 +341,14 @@ export function stepStatus(project, screeningComplete, opts={}){
     // enough to have meaningfully explored subgroups. Previously it maxed at
     // "partial", which (with nma always empty) made 100% unreachable.
     subgroup: (meta&&meta.k>=4)?"done":(meta||p.studies.length>=4)?"partial":"empty",
-    // 75.md — nma is flag-gated: when the flag is OFF (the default here) it is
-    // non-blocking ("done") so the numbered workflow can reach 100%, mirroring the
-    // server excluding it from the denominator. When ON it uses a network-feasibility
-    // proxy (no NMA result is persisted in the blob).
-    nma: opts&&opts.networkMetaAnalysis?((meta&&meta.k>=3)?"done":meta?"partial":"empty"):"done",
+    // 75.md recs (Finding 5) — nma reports its REAL, evidence-based status regardless
+    // of the flag (a network-feasibility proxy: no NMA result is persisted in the blob).
+    // Forcing "done" when the flag was off painted a false "Complete" on brand-new empty
+    // projects. 100% stays reachable because the CANONICAL model (computeProjectProgress)
+    // excludes nma from the denominator via `required:false` when the flag is off — the
+    // consuming surfaces overlay that model's steps onto this map, so an honest "empty"
+    // here never blocks 100% while the flag is off, and never lies about completion.
+    nma: (meta&&meta.k>=3)?"done":meta?"partial":"empty",
     grade: gradeDone>=5?"done":gradeDone>0?"partial":"empty",
     // 75.md — the "done" threshold is the REAL PRISMA-checklist size (PRISMA_CL,
     // the same list ReportTab renders), reconciling the old 20-vs-27 disagreement.

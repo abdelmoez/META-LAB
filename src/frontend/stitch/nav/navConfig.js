@@ -339,31 +339,58 @@ const SEARCH_STAGE_ICONS = {
 };
 
 /**
- * 75.md — the Search category's white submenu: the Search WORKFLOW (stages 1..N, from
- * the SAME mode-scoped `stagesFor` the in-body workspace uses — so automated drops
- * Database Strategies) as numbered children deep-linking `?tab=search&stage=<id>`,
- * followed by a VISUALLY-SEPARATE "Optional tools" group (Living Review + Citation
- * Mining). The optional tools carry `utility: true` so the stepper renders them as
- * UN-numbered rows that NEVER join the 1..N numbering or any progress denominator; the
- * first one carries `groupLabel` so the stepper draws a labelled separator before it.
- * Citation Mining is appended ONLY when `ctx.citationMiningEnabled` (flag OFF ⇒ no new
- * tab). `ctx.searchMode` ('manual'|'automated'|null) is threaded by the subnav; when it
- * is absent we default to the full manual list (robust — existing projects keep working).
+ * 75.md — the Search category's white submenu.
+ *
+ * The NUMBERED part is flag-gated (recs round, Finding 1). Only when the staged
+ * SearchWorkspace (`searchWorkspaceV2`) is ON does the body support `?stage=` — so the
+ * submenu shows the mode-scoped Search WORKFLOW (stages 1..N, from the SAME
+ * `stagesFor` the in-body workspace uses — automated drops Database Strategies) as
+ * numbered children deep-linking `?tab=search&stage=<id>`. When the flag is OFF (the
+ * default in prod) the body renders the legacy SearchWizard/SearchTab, which has NO
+ * `?stage=` support, so the submenu shows the SINGLE 'Search' destination
+ * (`?tab=search`) it did pre-75 — never a row of numbered stages that would dead-end.
+ *
+ * The VISUALLY-SEPARATE "Optional tools" group (Living Review + Citation Mining)
+ * appears in BOTH modes — those open their own tabs regardless of the workflow shape.
+ * The optional tools carry `utility: true` so the stepper renders them as UN-numbered
+ * rows that NEVER join the 1..N numbering or any progress denominator; the first one
+ * carries `groupLabel` so the stepper draws a labelled separator before it. Citation
+ * Mining is appended ONLY when `ctx.citationMiningEnabled` (flag OFF ⇒ no new tab).
+ * `ctx.searchMode` ('manual'|'automated'|null) is threaded by the subnav; when it is
+ * absent we default to the full manual list (robust — existing projects keep working).
  */
 function searchSubmenu(ctx = {}) {
-  const stageItems = searchStagesFor(ctx.searchMode).map((s) => ({
-    key: s.id,
-    label: s.label,
-    icon: SEARCH_STAGE_ICONS[s.id] || 'search',
-    href: searchStageHref(s.id, ctx),
-    completionKey: null, // no per-stage completion truth in the pure nav layer
-    countKey: null,
-    screening: false,
-    desc: s.desc || null,
-    stage: s.id,
-  }));
+  // Finding 1 — the numbered workflow is only correct when the body honours `?stage=`.
+  const v2 = ctx.searchWorkspaceV2Enabled === true;
+  let stageItems;
+  if (v2) {
+    stageItems = searchStagesFor(ctx.searchMode).map((s) => ({
+      key: s.id,
+      label: s.label,
+      icon: SEARCH_STAGE_ICONS[s.id] || 'search',
+      href: searchStageHref(s.id, ctx),
+      completionKey: null, // no per-stage completion truth in the pure nav layer
+      countKey: null,
+      screening: false,
+      desc: s.desc || null,
+      stage: s.id,
+    }));
+  } else {
+    // Legacy (flag OFF): the single 'Search' destination the classic wizard opens.
+    const searchTab = TABS.find((t) => t.id === 'search');
+    stageItems = [{
+      key: 'search',
+      label: searchTab ? searchTab.label : 'Search',
+      icon: searchTab ? searchTab.icon : 'search',
+      href: projectStageHref('search', ctx),
+      completionKey: 'search',
+      countKey: null,
+      screening: false,
+    }];
+  }
 
   // Optional tools — un-numbered utility rows, visually separated from the workflow.
+  // Present in BOTH modes.
   const tools = [];
   const living = TABS.find((t) => t.id === 'living');
   if (living) {
@@ -393,7 +420,7 @@ function searchSubmenu(ctx = {}) {
  * unavailable (e.g. screening sub-pages with no linked workspace) → the submenu renders
  * it disabled. `utility:true` marks an UN-numbered row (Search's optional tools);
  * `groupLabel` marks the start of a visually-separate group.
- * ctx = { projectId, linkedSiftId, searchMode?, citationMiningEnabled? }.
+ * ctx = { projectId, linkedSiftId, searchMode?, searchWorkspaceV2Enabled?, citationMiningEnabled? }.
  */
 export function submenuForCategory(categoryId, ctx = {}) {
   const cat = CATEGORY_BY_ID[categoryId];

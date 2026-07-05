@@ -46,6 +46,27 @@ export function stagesFor(searchMode) {
     });
 }
 
+/* 75.md recs (Finding 3) — reconcile the URL `?stage=` against the body's current
+   stage + the active mode. Returns TWO independent instructions:
+     · `apply`   — the stage to adopt locally (null when the body is already there);
+     · `syncUrl` — the stage to push back into the URL (null when the URL already
+                   matches the resolved target).
+   Splitting them lets the reconcile effect BOTH land the body on the nearest surviving
+   stage for a non-surviving deep link (e.g. `?stage=strategy` on an automated project →
+   'refine') AND normalize the URL to that same stage — so the white side-menu highlight,
+   deep links and browser back/forward all resolve consistently. `syncUrl` is gated to
+   the case the URL genuinely differs from the target, which is what makes this
+   loop-safe: once the URL equals a surviving stage, `stageAfterModeChange` is the
+   identity, so nothing is pushed again. Pure + exported for unit tests. */
+export function reconcileStageUrl(urlStage, searchMode, currentStage) {
+  if (!urlStage) return { apply: null, syncUrl: null };
+  const target = stageAfterModeChange(urlStage, searchMode);
+  return {
+    apply: target !== currentStage ? target : null,
+    syncUrl: target !== urlStage ? target : null,
+  };
+}
+
 /* 74.md — where to land when a mode switch removes the active stage. Stays put when
    the stage survives; otherwise walks FORWARD through the master order to the nearest
    surviving stage (Database Strategies → Test & Refine), then backward, then home.

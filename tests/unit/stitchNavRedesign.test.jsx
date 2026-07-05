@@ -118,10 +118,18 @@ describe('navConfig — active-route matching (preserve deep links)', () => {
     expect(activeProjectStage('?tab=screening')).toBe('screening');
     expect(activeProjectStage('')).toBe('overview');
   });
-  it('search submenu = the mode-scoped Search workflow + Living Review optional tool (75.md)', () => {
-    const items = submenuForCategory('search', { projectId: 'p1' });
+  it('search submenu = the mode-scoped Search workflow + Living Review optional tool (75.md, flag ON)', () => {
+    // recs (Finding 1) — the numbered workflow needs the staged workspace (which
+    // honours ?stage=); the flag is threaded to see it.
+    const items = submenuForCategory('search', { projectId: 'p1', searchWorkspaceV2Enabled: true });
     const stageKeys = items.filter((i) => !i.utility).map((i) => i.key);
     expect(stageKeys).toEqual(['question', 'concepts', 'terms', 'mode', 'strategy', 'refine', 'results', 'documentation', 'screening']);
+    expect(items.some((i) => i.key === 'living' && i.utility)).toBe(true);
+  });
+  it('search submenu falls back to the single legacy Search destination when the flag is OFF (75.md recs)', () => {
+    const items = submenuForCategory('search', { projectId: 'p1' });
+    expect(items.filter((i) => !i.utility).map((i) => i.key)).toEqual(['search']);
+    expect(items.find((i) => i.key === 'search').href).toBe('/app/project/p1?tab=search');
     expect(items.some((i) => i.key === 'living' && i.utility)).toBe(true);
   });
 });

@@ -60,7 +60,7 @@ import { C, FONT, alpha } from '../../frontend/theme/tokens.js';
 // 75.md — the stage table + mode-scoped stage list + stage remap now live in a
 // React-free module so the white side-menu (navConfig) and this body share ONE source
 // of truth and can never drift. Re-exported from index.js for existing importers.
-import { STAGES, stagesFor, stageAfterModeChange } from './searchStages.js';
+import { STAGES, stagesFor, stageAfterModeChange, reconcileStageUrl } from './searchStages.js';
 import { Icon } from '../../frontend/components/icons.jsx';
 import { SearchBuilderTab, searchBuilderApi, loadSearch, saveSearch, relativeTime } from '../searchBuilder/index.js';
 import { getDatabase, defaultSelectedDatabases, DATABASE_CATALOG } from '../../research-engine/searchBuilder/databases.js';
@@ -862,10 +862,15 @@ export default function SearchWorkspace({
   const stageRef = useRef(stage);
   stageRef.current = stage;
   useEffect(() => {
-    if (!urlStage) return;
-    const target = stageAfterModeChange(urlStage, searchMode);
-    if (target !== stageRef.current) applyStage(target);
-  }, [urlStage, searchMode, applyStage]);
+    // 75.md recs (Finding 3) — the pure reconcile decides BOTH whether to adopt the
+    // resolved stage locally AND whether to normalize the URL. A non-surviving deep
+    // link (`?stage=strategy` on an automated project) now pushes `?stage=refine` back
+    // so the side-menu highlight + back/forward stop pointing at the phantom stage.
+    // `syncUrl` is only non-null when the URL genuinely differs → no render loop.
+    const { apply, syncUrl } = reconcileStageUrl(urlStage, searchMode, stageRef.current);
+    if (apply) applyStage(apply);
+    if (syncUrl) syncStageUrl(syncUrl);
+  }, [urlStage, searchMode, applyStage, syncStageUrl]);
 
   // 75.md — "driven by the side menu": when the Stitch project workspace renders the
   // Search workflow in the white submenu stepper, the in-body rail would duplicate it,

@@ -74,9 +74,12 @@ describe('55.md — submenu visibility (Overview/Control/Reference reclaim width
   // 75.md — the Search submenu IS the mode-scoped Search WORKFLOW (numbered stages,
   // ?stage= deep links) followed by a visually-separate "Optional tools" group (Living
   // Review + Citation Mining as UN-numbered rows — never in the 1..N numbering).
-  it('search = the mode-scoped Search workflow + Living Review optional tool (75.md)', () => {
+  // recs (Finding 1) — the numbered workflow appears ONLY when the staged workspace
+  // (searchWorkspaceV2) is on; otherwise the body has no `?stage=` support and the
+  // submenu falls back to the single legacy 'Search' destination.
+  it('search = the mode-scoped Search workflow + Living Review optional tool (75.md, flag ON)', () => {
     expect(categoryShowsSubmenu('search')).toBe(true);
-    const items = submenuForCategory('search', CTX);
+    const items = submenuForCategory('search', { ...CTX, searchWorkspaceV2Enabled: true });
     // Numbered workflow stages first (manual/undecided → the full stage list).
     const stageKeys = items.filter((i) => !i.utility).map((i) => i.key);
     expect(stageKeys).toEqual(['question', 'concepts', 'terms', 'mode', 'strategy', 'refine', 'results', 'documentation', 'screening']);
@@ -88,6 +91,13 @@ describe('55.md — submenu visibility (Overview/Control/Reference reclaim width
     expect(living.utility).toBe(true);
     expect(living.href).toBe('/app/project/p1?tab=living');
     expect(living.groupLabel).toBe('Optional tools');
+  });
+  it('search = the single legacy Search destination + optional tools when the flag is OFF', () => {
+    const items = submenuForCategory('search', CTX); // no searchWorkspaceV2Enabled
+    expect(items.filter((i) => !i.utility).map((i) => i.key)).toEqual(['search']);
+    expect(items.find((i) => i.key === 'search').href).toBe('/app/project/p1?tab=search');
+    // the optional tools group still rides the legacy submenu
+    expect(items.some((i) => i.key === 'living' && i.utility)).toBe(true);
   });
 });
 

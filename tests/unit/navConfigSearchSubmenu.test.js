@@ -17,7 +17,11 @@ import {
 import { submenuSteps } from '../../src/frontend/stitch/nav/stepperModel.js';
 import { stagesFor } from '../../src/features/searchWorkspace/searchStages.js';
 
-const CTX = { projectId: 'p1', linkedSiftId: 's1' };
+// 75.md recs (Finding 1) — the numbered Search WORKFLOW submenu is gated behind the
+// staged workspace flag (searchWorkspaceV2), because only then does the body honour
+// `?stage=`. Every "9 stages" test therefore threads searchWorkspaceV2Enabled:true; a
+// dedicated block below pins the legacy single-'Search' fallback when the flag is off.
+const CTX = { projectId: 'p1', linkedSiftId: 's1', searchWorkspaceV2Enabled: true };
 const stageKeysOf = (items) => items.filter((i) => !i.utility).map((i) => i.key);
 const toolsOf = (items) => items.filter((i) => i.utility);
 
@@ -82,6 +86,52 @@ describe('75.md — submenuForCategory("search") is the mode-scoped Search workf
     expect(categoryShowsSubmenu('search')).toBe(true);
     expect(categoryForStage('living')).toBe('search');
     expect(categoryForStage('citation')).toBe('search');
+  });
+});
+
+describe('75.md recs (Finding 1) — flag OFF falls back to the legacy single-Search submenu', () => {
+  // With searchWorkspaceV2 off (default prod) the body renders the legacy
+  // SearchWizard/SearchTab, which has NO `?stage=` support. The submenu must NOT show a
+  // row of numbered stages that would dead-end — it shows the single 'Search'
+  // destination (`?tab=search`) it did pre-75, plus the optional tools.
+  const OFF = { projectId: 'p1', linkedSiftId: 's1' }; // no searchWorkspaceV2Enabled
+
+  it('flag absent → a SINGLE numbered "Search" step (not the 9-stage workflow)', () => {
+    const items = submenuForCategory('search', OFF);
+    expect(stageKeysOf(items)).toEqual(['search']);
+    const search = items.find((i) => i.key === 'search');
+    expect(search.href).toBe('/app/project/p1?tab=search'); // the classic host route, no ?stage=
+    expect(search.completionKey).toBe('search');
+    // NONE of the workflow stage ids leak into the legacy submenu.
+    for (const id of ['question', 'concepts', 'terms', 'mode', 'strategy', 'refine', 'documentation']) {
+      expect(items.some((i) => i.key === id)).toBe(false);
+    }
+  });
+
+  it('flag explicitly false → identical legacy fallback', () => {
+    expect(stageKeysOf(submenuForCategory('search', { ...OFF, searchWorkspaceV2Enabled: false }))).toEqual(['search']);
+  });
+
+  it('the optional tools group STILL appears (both modes) and stays flag-gated', () => {
+    expect(toolsOf(submenuForCategory('search', OFF)).map((i) => i.key)).toEqual(['living']);
+    const withCite = submenuForCategory('search', { ...OFF, citationMiningEnabled: true });
+    expect(toolsOf(withCite).map((i) => i.key)).toEqual(['living', 'citation']);
+    expect(withCite.find((i) => i.key === 'living').groupLabel).toBe('Optional tools');
+  });
+
+  it('still shows a persistent submenu (legacy Search + Living = 2 navigable children)', () => {
+    // categoryShowsSubmenu probes WITHOUT the flag → it must exercise the legacy path.
+    expect(categoryShowsSubmenu('search')).toBe(true);
+  });
+
+  it('submenuSteps numbers the single legacy Search step 1 with its status + helper copy', () => {
+    const steps = submenuSteps('search', OFF, { statusMap: { search: 'partial' } });
+    const byKey = Object.fromEntries(steps.map((s) => [s.key, s]));
+    expect(byKey.search.num).toBe(1);
+    expect(byKey.search.status).toBe('partial');
+    expect(byKey.search.desc).toBe('Build and run your multi-database search');
+    // the optional tool stays an un-numbered utility row
+    expect(byKey.living.num).toBeNull();
   });
 });
 

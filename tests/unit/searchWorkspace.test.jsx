@@ -13,7 +13,7 @@ import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   SearchWorkspace, searchWorkspaceV2FlagEnabled,
-  STAGES, stagesFor, stageAfterModeChange, PubMedPulse, findScrollableAncestor, persistSearchModeMerged,
+  STAGES, stagesFor, stageAfterModeChange, reconcileStageUrl, PubMedPulse, findScrollableAncestor, persistSearchModeMerged,
 } from '../../src/features/searchWorkspace/index.js';
 
 afterEach(() => { vi.unstubAllGlobals(); });
@@ -110,6 +110,37 @@ describe('stageAfterModeChange — 74.md: a removed stage never strands the user
   it('an unknown stage id lands home on Research Question', () => {
     expect(stageAfterModeChange('nope', 'automated')).toBe('question');
     expect(stageAfterModeChange(undefined, 'manual')).toBe('question');
+  });
+});
+
+describe('reconcileStageUrl — 75.md recs (Finding 3): the reconcile re-syncs the URL', () => {
+  it('a non-surviving deep link normalizes the URL to the resolved stage', () => {
+    // ?stage=strategy on an automated project → the body shows refine AND the URL is
+    // pushed to refine (so the side-menu highlight + back/forward stop pointing at the
+    // phantom Database Strategies stage). Body still on the dead stage → apply too.
+    expect(reconcileStageUrl('strategy', 'automated', 'strategy')).toEqual({ apply: 'refine', syncUrl: 'refine' });
+  });
+
+  it('syncs the URL even when the body already landed on the survivor (apply is a no-op)', () => {
+    // Mount already seeded to refine (stageAfterModeChange on the seed); the effect must
+    // STILL normalize the stale ?stage=strategy in the URL.
+    expect(reconcileStageUrl('strategy', 'automated', 'refine')).toEqual({ apply: null, syncUrl: 'refine' });
+  });
+
+  it('a surviving deep link adopts the stage but leaves an already-correct URL alone', () => {
+    // Ordinary side-menu / deep-link nav: the URL already equals the target, so only the
+    // body adopts it — pushing the URL again would risk a render loop.
+    expect(reconcileStageUrl('terms', 'manual', 'question')).toEqual({ apply: 'terms', syncUrl: null });
+  });
+
+  it('is a no-op once body + URL agree (loop-safe: nothing pushed, nothing applied)', () => {
+    expect(reconcileStageUrl('terms', 'manual', 'terms')).toEqual({ apply: null, syncUrl: null });
+    expect(reconcileStageUrl('refine', 'automated', 'refine')).toEqual({ apply: null, syncUrl: null });
+  });
+
+  it('no URL stage (SSR / bare tab) → does nothing', () => {
+    expect(reconcileStageUrl(null, 'automated', 'question')).toEqual({ apply: null, syncUrl: null });
+    expect(reconcileStageUrl('', 'manual', 'question')).toEqual({ apply: null, syncUrl: null });
   });
 });
 
