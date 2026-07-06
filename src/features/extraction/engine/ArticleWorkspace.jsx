@@ -14,7 +14,7 @@
  * PlotDigitizer, DraftReviewList, the pure cell grammar + engine); it only adds the
  * full-screen shell, per-value provenance/jump, validation tiers and the completion gate.
  */
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AppPdfViewer from '../../../frontend/components/AppPdfViewer.jsx';
 import { C, btnS, inp, lbl, tagS } from '../../../frontend/workspace/ui/styles.js';
 import { alpha as themeAlpha } from '../../../frontend/theme/tokens.js';
@@ -96,6 +96,17 @@ export default function ArticleWorkspace({
   const progress = useMemo(() => progressOf(study || {}), [study]);
   const valueFields = useMemo(() => expectedFieldsFor(study || {}).filter((f) => !['author', 'year', 'outcome', 'timepoint', 'esType'].includes(f)), [study]);
 
+  // A completed article is read-only until it is reopened (§22); locked is a stronger,
+  // adjudicator-only completed state. `editable` gates every capture/edit path.
+  const locked = !!(article && article.status === 'locked');
+  const completed = !!(article && (article.status === 'complete' || article.status === 'locked'));
+  const editable = !readOnly && !completed;
+
+  // Clear a stale source-flash when switching articles so it never re-flashes on the
+  // wrong article (76.md review, medium finding).
+  const studyId = study && study.id;
+  useEffect(() => { setReveal(null); setStatus(''); setError(''); }, [studyId]);
+
   const patch = useCallback((p) => { if (onPatchStudy && study) onPatchStudy(study.id, p); }, [onPatchStudy, study]);
 
   /* ── Jump-to-source: reveal a field's stored provenance in the PDF (§15) ── */
@@ -109,7 +120,7 @@ export default function ArticleWorkspace({
 
   /* ── Click-to-Capture: snap a token, write the field(s), KEEP provenance ── */
   const assignFromClick = useCallback((payload) => {
-    if (!study || readOnly) return;
+    if (!study || !editable) return;
     const runStr = payload.str || '';
     const token = (payload.offset != null) ? snapToken(runStr, payload.offset) : onlyToken(runStr);
     if (!token) {
@@ -152,7 +163,16 @@ export default function ArticleWorkspace({
     } else {
       const n = tokenPrimary(token);
       if (n == null) { setStatus(`"${runStr}" has no number to capture.`); return; }
-      p[assignField] = String(n);
+      // es/lo/hi live on the ANALYSIS (ln) scale for ratio measures — a DIRECT-field
+      // capture must ln-transform too, exactly like Smart mode; otherwise the raw ratio
+      // is silently pooled as ln(ratio) (76.md review, high finding).
+      if (isRatio && (assignField === 'es' || assignField === 'lo' || assignField === 'hi')) {
+        if (!(n > 0)) { setStatus('That value is ≤ 0, which a ratio measure cannot take on the log scale.'); return; }
+        p[assignField] = String(Math.log(n));
+        conv.push({ id: Math.random().toString(36).slice(2, 10), type: 'ratio_log', method: 'ln(value)', reason: `click-assign ${assignField} (${study.esType})`, at: new Date().toISOString(), inputs: { [assignField]: n }, result: { [assignField]: Math.log(n) } });
+      } else {
+        p[assignField] = String(n);
+      }
     }
     if (conv.length) { p.conversions = [...(Array.isArray(study.conversions) ? study.conversions : []), ...conv]; p.converted = true; }
     if (!Object.keys(p).length) { setStatus('Nothing captured — click directly on the number.'); return; }
@@ -179,7 +199,7 @@ export default function ArticleWorkspace({
     }
     if (Object.keys(provFields).length && onAttachProvenance) onAttachProvenance(study.id, provFields);
     setStatus(`Captured ${Object.keys(p).filter((k) => VALUE_KEYS.includes(k)).join(', ')} from the PDF.`);
-  }, [study, assignField, readOnly, patch, onAttachProvenance]);
+  }, [study, assignField, editable, patch, onAttachProvenance]);
 
   /* ── Table Extractor: region → grid → mapper ── */
   const handleRegion = useCallback(async ({ page, region }) => {
@@ -242,16 +262,13 @@ export default function ArticleWorkspace({
   }, [study, digitizer, onAddDrafts]);
 
   const interaction = useMemo(() => {
-    if (readOnly || !pdf.url) return null;
+    if (!editable || !pdf.url) return null;
     if (method === 'click') return { mode: 'click', onTextClick: assignFromClick, onTextMiss: () => setStatus('No number there — zoom in, or run text recognition on scanned pages.') };
     if (method === 'table' || method === 'figure') return { mode: 'region', onRegion: handleRegion };
     return null;
-  }, [method, assignFromClick, handleRegion, pdf.url, readOnly]);
+  }, [method, assignFromClick, handleRegion, pdf.url, editable]);
 
-  const locked = article && (article.status === 'locked');
-  const completed = article && (article.status === 'complete' || article.status === 'locked');
-
-  const setField = (f, v) => { if (!readOnly) patch({ [f]: v, needsReview: true }); };
+  const setField = (f, v) => { if (editable) patch({ [f]: v, needsReview: true }); };
 
   const saveBadge = saveStatus === 'saving' ? { t: 'Saving…', c: C.acc }
     : saveStatus === 'saved' ? { t: 'Saved', c: C.grn }
@@ -350,12 +367,12 @@ export default function ArticleWorkspace({
           <FormSection title="Study & outcome">
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               {IDENTITY_FIELDS.map((f) => (
-                <Field key={f} field={f} value={study[f] || ''} onChange={(v) => setField(f, v)} readOnly={readOnly || locked}
+                <Field key={f} field={f} value={study[f] || ''} onChange={(v) => setField(f, v)} readOnly={!editable}
                   hasSource={hasSourceEvidence(study, f)} onJump={() => jumpToSource(f)} numeric={NUMERIC_FIELDS.has(f)} />
               ))}
               <div>
                 <label style={lbl}>{FIELD_LABELS.esType}</label>
-                <select value={study.esType || ''} onChange={(e) => setField('esType', e.target.value)} disabled={readOnly || locked} style={{ ...inp, fontSize: 12 }}>
+                <select value={study.esType || ''} onChange={(e) => setField('esType', e.target.value)} disabled={!editable} style={{ ...inp, fontSize: 12 }}>
                   {ES_TYPES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
                 </select>
               </div>
@@ -365,13 +382,13 @@ export default function ArticleWorkspace({
           <FormSection title={`Values${RATIO_MEASURES.includes(study.esType) ? ' · es/lo/hi stored on the ln scale' : ''}`}>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               {valueFields.map((f) => (
-                <Field key={f} field={f} value={study[f] || ''} onChange={(v) => setField(f, v)} readOnly={readOnly || locked}
+                <Field key={f} field={f} value={study[f] || ''} onChange={(v) => setField(f, v)} readOnly={!editable}
                   hasSource={hasSourceEvidence(study, f)} onJump={() => jumpToSource(f)} numeric />
               ))}
             </div>
             <div style={{ marginTop: 10 }}>
               <label style={lbl}>Notes — assumptions, conversions, unclear data</label>
-              <textarea value={study.notes || ''} onChange={(e) => setField('notes', e.target.value)} disabled={readOnly || locked}
+              <textarea value={study.notes || ''} onChange={(e) => setField('notes', e.target.value)} disabled={!editable}
                 placeholder="e.g. SD imputed from SE; median/IQR converted via Wan 2014; adjusted for age & sex…" style={{ ...inp, height: 48, resize: 'vertical', fontSize: 12 }} />
             </div>
           </FormSection>

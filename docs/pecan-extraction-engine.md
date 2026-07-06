@@ -169,6 +169,12 @@ of the extraction surface.
 - N-arm / subgroup relational modelling stays **blob-flat** (one outcome × timepoint per study row);
   companion-publication linkage is deferred.
 - Field-level autosave stays **whole-blob honest-status** (not per-value CAS); completion/reopen are
-  audited and conflict-guarded.
+  audited and conflict-guarded. Article STATE written server-side is merged back into the client blob
+  on each change (so the next whole-blob autosave preserves it), but a value edit made within the 800 ms
+  autosave debounce *before* pressing Complete may be validated server-side against the not-yet-persisted
+  blob — deliberate value edits normally settle well before completion.
 - Blinded dual-extraction enforcement stays in the 66.md structured stack (`extractionAssist`); the
-  engine's reviewer assignment is **advisory** in v1.
+  engine's reviewer assignment is **advisory** in v1 (unlocking a locked article still requires the
+  adjudicate permission).
+- The jump-to-source flash resets page rotation to 0 (its coordinate frame); the transient highlight is
+  a verification aid, not a persisted annotation.

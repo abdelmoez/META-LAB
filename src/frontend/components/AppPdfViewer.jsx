@@ -353,10 +353,12 @@ export default function AppPdfViewer({
   const prev = () => scrollToPage(pageNum - 1);
   const next = () => scrollToPage(pageNum + 1);
 
-  // Jump-to-source (§15): a new reveal nonce scrolls to its page. The per-page
-  // highlight box is rendered by PdfPageView (see `highlight` below) and self-clears.
+  // Jump-to-source (§15): a new reveal nonce scrolls to its page. Rotation is reset to
+  // 0 first because the stored region + the flash-box math are in the UNROTATED page
+  // frame — flashing while rotated would land the highlight in the wrong place (76.md
+  // review, medium finding). The per-page highlight box is rendered by PdfPageView.
   useEffect(() => {
-    if (reveal && reveal.page) scrollToPage(reveal.page);
+    if (reveal && reveal.page) { setRot(0); scrollToPage(reveal.page); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal && reveal.nonce]);
 
@@ -841,25 +843,26 @@ function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOption
     width: Math.abs(drag.x1 - drag.x0), height: Math.abs(drag.y1 - drag.y0),
   } : null;
 
-  // Jump-to-source flash (§15). Map the reveal region (PDF user space, y-up) back to
-  // CSS px: left = x0·scale, top = (H − y1)·scale. When no region is given (page-only
-  // provenance) we flash a full-width band near the page top so the jump still lands
-  // somewhere visible. Keyed by nonce so a repeat jump re-triggers the CSS animation.
-  const [flash, setFlash] = useState(null);
+  // Jump-to-source flash (§15). ARM only on a new nonce (so re-render / zoom does NOT
+  // re-flash — 76.md review, medium finding); the box position is computed LIVE from the
+  // current scale in render, so zooming repositions the highlight without restarting the
+  // animation. Maps the region (PDF user space, y-up) to CSS px: left=x0·scale,
+  // top=(H−y1)·scale. No region (page-only provenance) → a band near the page top.
+  const [flashNonce, setFlashNonce] = useState(null);
   useEffect(() => {
-    if (!highlight || !pageDims) { setFlash(null); return undefined; }
-    const H = pageDims.h;
-    let box;
-    const r = highlight.region;
-    if (r && ['x0', 'y0', 'x1', 'y1'].every((k) => Number.isFinite(+r[k]))) {
-      box = { left: r.x0 * scale, top: (H - r.y1) * scale, width: (r.x1 - r.x0) * scale, height: (r.y1 - r.y0) * scale };
-    } else {
-      box = { left: 8 * scale, top: 8 * scale, width: (pageDims.w - 16) * scale, height: 24 * scale };
-    }
-    setFlash({ ...box, nonce: highlight.nonce });
-    const t = setTimeout(() => setFlash(null), 2200);
+    if (!highlight || !highlight.nonce) { setFlashNonce(null); return undefined; }
+    setFlashNonce(highlight.nonce);
+    const t = setTimeout(() => setFlashNonce(null), 2200);
     return () => clearTimeout(t);
-  }, [highlight && highlight.nonce, pageDims, scale]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [highlight && highlight.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
+  let flash = null;
+  if (flashNonce && highlight && highlight.nonce === flashNonce && pageDims) {
+    const H = pageDims.h;
+    const r = highlight.region;
+    flash = (r && ['x0', 'y0', 'x1', 'y1'].every((k) => Number.isFinite(+r[k])))
+      ? { left: r.x0 * scale, top: (H - r.y1) * scale, width: (r.x1 - r.x0) * scale, height: (r.y1 - r.y0) * scale, nonce: flashNonce }
+      : { left: 8 * scale, top: 8 * scale, width: (pageDims.w - 16) * scale, height: 24 * scale, nonce: flashNonce };
+  }
 
   return (
     <>

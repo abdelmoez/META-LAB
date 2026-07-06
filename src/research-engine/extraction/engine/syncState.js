@@ -56,10 +56,13 @@ export function computeSyncHash(study = {}) {
   return djb2(parts.join('|'));
 }
 
-/** analysisReady(study) — a study can enter analysis when it has an effect size (es). */
+/** analysisReady(study) — a study can be POOLED only with an effect size AND its CI:
+ *  the meta-analysis derives the weight from se=(hi−lo)/(2·1.96), so es without lo/hi
+ *  cannot be weighted (checkPoolability filters on all three). Requiring es+lo+hi here
+ *  keeps the "Ready for analysis" sync badge/count honest (76.md review, low finding). */
 export function analysisReady(study = {}) {
-  const es = study.es;
-  return es !== '' && es !== null && es !== undefined && !Number.isNaN(+es);
+  const ok = (v) => v !== '' && v !== null && v !== undefined && !Number.isNaN(+v);
+  return ok(study.es) && ok(study.lo) && ok(study.hi);
 }
 
 /**

@@ -115,27 +115,53 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
   }), [updateProject, activeId]);
 
   /* ── Article state (round-trips through the engine API) ── */
+  // The engine writes article STATE (completion/lock/sync/inclusion) server-side into
+  // the SAME Project.data blob the client autosaves. To stop the next whole-blob autosave
+  // from reverting it (76.md review, high finding), merge the server's authoritative
+  // completion fields back into project.studies here — preserving the client's own
+  // provenance/value edits (we copy only the completion keys, not the whole meta).
+  const COMPLETION_META_KEYS = ['completedAt', 'completedBy', 'completedByName', 'locked', 'reopenedAt', 'reopenedBy', 'syncHash', 'syncedAt', 'syncedBy', 'includedInAnalysis'];
+  const mergeServerMeta = useCallback((id, serverMeta) => {
+    if (!serverMeta) return;
+    updateProject(activeId, (p) => ({
+      ...p,
+      studies: (p.studies || []).map((s) => {
+        if (s.id !== id) return s;
+        const meta = { ...(s.extractionMeta || {}) };
+        for (const k of COMPLETION_META_KEYS) meta[k] = serverMeta[k];
+        return { ...s, extractionMeta: meta };
+      }),
+    }));
+  }, [updateProject, activeId]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const completeArticle = useCallback(async (id) => {
     setCompleting(true); setBanner('');
-    try { await api.completeArticle(activeId, id); setBanner('Article marked complete.'); refreshList(); }
-    catch (e) {
+    try {
+      const r = await api.completeArticle(activeId, id);
+      mergeServerMeta(id, r && r.extractionMeta);
+      setBanner('Article marked complete.'); refreshList();
+    } catch (e) {
       if (e.status === 422 && e.payload && Array.isArray(e.payload.blocking)) {
         setBanner(`Cannot complete yet — ${e.payload.blocking.length} blocking check(s): ${e.payload.blocking.map((b) => b.msg).join(' · ')}`);
       } else setBanner(e.message || 'Could not complete this article.');
     } finally { setCompleting(false); }
-  }, [activeId, refreshList]);
+  }, [activeId, refreshList, mergeServerMeta]);
   const reopenArticle = useCallback(async (id) => {
     setCompleting(true); setBanner('');
-    try { await api.reopenArticle(activeId, id); setBanner('Article reopened for editing.'); refreshList(); }
-    catch (e) { setBanner(e.message || 'Could not reopen this article.'); }
+    try {
+      const r = await api.reopenArticle(activeId, id);
+      mergeServerMeta(id, r && r.extractionMeta);
+      setBanner('Article reopened for editing.'); refreshList();
+    } catch (e) { setBanner(e.message || 'Could not reopen this article.'); }
     finally { setCompleting(false); }
-  }, [activeId, refreshList]);
+  }, [activeId, refreshList, mergeServerMeta]);
 
-  // Merge the server article state (completedAt/locked) into the open study for the toolbar.
+  // Toolbar summary: compute from the (merge-fresh) blob study so completion state flips
+  // instantly after a complete/reopen, enriched with server-only pdfAvailable.
   const openArticleSummary = useMemo(() => {
     if (!openStudy) return null;
     const fromServer = serverArticles && serverArticles.articles && serverArticles.articles.find((a) => a.id === openStudy.id);
-    return fromServer || buildArticleSummary(openStudy, {});
+    return { ...buildArticleSummary(openStudy, {}), pdfAvailable: fromServer ? fromServer.pdfAvailable : false };
   }, [openStudy, serverArticles]);
 
   const orderedIds = useMemo(() => articles.map((a) => a.id), [articles]);

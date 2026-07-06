@@ -12,7 +12,6 @@ import { touchProjectActivity } from '../../store.js';
 import { emitToMetaLabProject } from '../../realtime/bus.js';
 import { evaluateCompletion } from '../../../src/research-engine/extraction/engine/completionGate.js';
 import { markSynced, analysisReady } from '../../../src/research-engine/extraction/engine/syncState.js';
-import { buildArticleSummary } from '../../../src/research-engine/extraction/engine/articleList.js';
 import { writeExtractionAudit, EXTRACTION_ACTIONS } from './auditLog.js';
 
 /** A typed error the router maps to a clean HTTP status. */
@@ -44,13 +43,11 @@ async function mutateStudyMeta(access, studyId, mutate) {
   return next;
 }
 
-function summaryOf(study) { return buildArticleSummary(study, {}); }
-
 /**
  * completeArticle(access, studyId, { at }) — validate then mark complete. Blocks (422
  * VALIDATION_BLOCKED) when blocking data checks remain. On success stamps
  * completedAt/By, clears the ready flag, and marks-synced when analysis-ready.
- * @returns {Promise<object>} the article summary
+ * @returns {Promise<object>} the updated study (controller derives summary + meta)
  */
 export async function completeArticle(access, studyId, { at } = {}) {
   const when = at || new Date().toISOString();
@@ -79,18 +76,22 @@ export async function completeArticle(access, studyId, { at } = {}) {
     action: EXTRACTION_ACTIONS.COMPLETE, entityType: 'article', entityId: studyId,
     details: { outcome: study.outcome || '', es: study.es || '' },
   });
-  return summaryOf(study);
+  return study;
 }
 
 /**
  * reopenArticle(access, studyId, { at }) — clear completion + lock, stamp reopen.
- * @returns {Promise<object>} the article summary
+ * A LOCKED article can only be reopened (which unlocks it) by an adjudicator — otherwise
+ * a canEdit-only member could clear an adjudicator's lock via reopen, bypassing the
+ * adjudicate gate on lock/unlock (76.md review, medium finding).
+ * @returns {Promise<object>} the updated study
  */
 export async function reopenArticle(access, studyId, { at } = {}) {
   const when = at || new Date().toISOString();
   const study = await mutateStudyMeta(access, studyId, (s) => {
     const meta = s.extractionMeta || {};
     if (!meta.completedAt && !meta.locked) throw new ArticleError(409, 'NOT_COMPLETE');
+    if (meta.locked && !access.canAdjudicate) throw new ArticleError(403, 'LOCK_REQUIRES_ADJUDICATE');
     return {
       ...s,
       extractionMeta: {
@@ -104,12 +105,12 @@ export async function reopenArticle(access, studyId, { at } = {}) {
     projectId: access.project.id, studyId, actorId: access.userId, actorName: access.userName,
     action: EXTRACTION_ACTIONS.REOPEN, entityType: 'article', entityId: studyId, details: {},
   });
-  return summaryOf(study);
+  return study;
 }
 
 /**
  * setLock(access, studyId, locked, { at }) — lock/unlock a completed article.
- * @returns {Promise<object>} the article summary
+ * @returns {Promise<object>} the updated study
  */
 export async function setLock(access, studyId, locked, { at } = {}) {
   const when = at || new Date().toISOString();
@@ -122,12 +123,12 @@ export async function setLock(access, studyId, locked, { at } = {}) {
     projectId: access.project.id, studyId, actorId: access.userId, actorName: access.userName,
     action: locked ? EXTRACTION_ACTIONS.LOCK : EXTRACTION_ACTIONS.UNLOCK, entityType: 'article', entityId: studyId, details: {},
   });
-  return summaryOf(study);
+  return study;
 }
 
 /**
  * setInclusion(access, studyId, included, { at }) — include/exclude from analysis (§20).
- * @returns {Promise<object>} the article summary
+ * @returns {Promise<object>} the updated study
  */
 export async function setInclusion(access, studyId, included, { at } = {}) {
   const when = at || new Date().toISOString();
@@ -139,5 +140,5 @@ export async function setInclusion(access, studyId, included, { at } = {}) {
     projectId: access.project.id, studyId, actorId: access.userId, actorName: access.userName,
     action: EXTRACTION_ACTIONS.INCLUDE, entityType: 'article', entityId: studyId, details: { included: !!included },
   });
-  return summaryOf(study);
+  return study;
 }

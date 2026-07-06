@@ -15,9 +15,17 @@ import { featureAccess } from '../services/featureAccess.js';
 import { resolveExtractionAccess } from '../extraction/access.js';
 import { buildArticles } from '../extraction/engine/articleService.js';
 import { readExtractionAudit } from '../extraction/engine/auditLog.js';
+import { buildArticleSummary } from '../../src/research-engine/extraction/engine/articleList.js';
 import {
   completeArticle, reopenArticle, setLock, setInclusion, ArticleError,
 } from '../extraction/engine/completionService.js';
+
+/** Shape every state-change response the same way: the row summary the list uses PLUS
+ *  the authoritative extractionMeta so the client can merge it back into its blob and
+ *  its next whole-blob autosave preserves the server-written state (76.md review, high). */
+function articleResult(study) {
+  return { article: buildArticleSummary(study, {}), extractionMeta: study.extractionMeta || {} };
+}
 
 const FLAG = 'extractionEngine';
 
@@ -55,6 +63,7 @@ function mapArticleError(res, e) {
     if (e.code === 'VALIDATION_BLOCKED') return res.status(422).json({ error: 'Resolve the blocking data checks before completing this article.', code: e.code, ...e.payload });
     if (e.code === 'ARTICLE_NOT_FOUND' || e.code === 'PROJECT_NOT_FOUND') return res.status(404).json({ error: 'Article not found', code: e.code });
     if (e.code === 'NOT_COMPLETE') return res.status(409).json({ error: 'This article is not complete.', code: e.code });
+    if (e.code === 'LOCK_REQUIRES_ADJUDICATE') return res.status(403).json({ error: 'This article is locked — only an adjudicator can reopen (unlock) it.', code: e.code });
     return res.status(400).json({ error: e.code, code: e.code, ...e.payload });
   }
   console.error('[extraction-engine] action failed', e);
@@ -65,8 +74,8 @@ function mapArticleError(res, e) {
 export async function postComplete(req, res) {
   const access = await gate(req, res, { needEdit: true }); if (!access) return;
   try {
-    const article = await completeArticle(access, req.params.sid, {});
-    res.json({ ok: true, article });
+    const study = await completeArticle(access, req.params.sid, {});
+    res.json({ ok: true, ...articleResult(study) });
   } catch (e) { mapArticleError(res, e); }
 }
 
@@ -74,8 +83,8 @@ export async function postComplete(req, res) {
 export async function postReopen(req, res) {
   const access = await gate(req, res, { needEdit: true }); if (!access) return;
   try {
-    const article = await reopenArticle(access, req.params.sid, {});
-    res.json({ ok: true, article });
+    const study = await reopenArticle(access, req.params.sid, {});
+    res.json({ ok: true, ...articleResult(study) });
   } catch (e) { mapArticleError(res, e); }
 }
 
@@ -83,8 +92,8 @@ export async function postReopen(req, res) {
 export async function postLock(req, res) {
   const access = await gate(req, res, { needAdjudicate: true }); if (!access) return;
   try {
-    const article = await setLock(access, req.params.sid, !!req.body?.locked, {});
-    res.json({ ok: true, article });
+    const study = await setLock(access, req.params.sid, !!req.body?.locked, {});
+    res.json({ ok: true, ...articleResult(study) });
   } catch (e) { mapArticleError(res, e); }
 }
 
@@ -92,8 +101,8 @@ export async function postLock(req, res) {
 export async function postInclusion(req, res) {
   const access = await gate(req, res, { needEdit: true }); if (!access) return;
   try {
-    const article = await setInclusion(access, req.params.sid, req.body?.included !== false, {});
-    res.json({ ok: true, article });
+    const study = await setInclusion(access, req.params.sid, req.body?.included !== false, {});
+    res.json({ ok: true, ...articleResult(study) });
   } catch (e) { mapArticleError(res, e); }
 }
 
