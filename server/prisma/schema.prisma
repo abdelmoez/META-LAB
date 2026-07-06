@@ -977,6 +977,26 @@ model RobAuditLog {
   @@index([assessmentId, createdAt])
 }
 
+// 76.md — Pecan Extraction Engine append-only audit trail. Records article-level
+// completion / reopen / lock / analysis-sync events with the completing user +
+// timestamp (§15/§22/§24). No FK (audit-survival precedent, mirrors RobAuditLog):
+// bare projectId/studyId strings so the trail outlives the study row it describes.
+model ExtractionAuditLog {
+  id         String   @id @default(uuid())
+  projectId  String
+  studyId    String   @default("")
+  actorId    String
+  actorName  String   @default("")
+  action     String // EXTRACTION_COMPLETE | EXTRACTION_REOPEN | EXTRACTION_LOCK | EXTRACTION_UNLOCK | EXTRACTION_SYNC | EXTRACTION_INCLUDE
+  entityType String? // "article" | "value"
+  entityId   String?
+  details    String   @default("{}") // JSON context (≤4000 chars)
+  createdAt  DateTime @default(now())
+
+  @@index([projectId, createdAt])
+  @@index([studyId, createdAt])
+}
+
 // prompt46 #4 — RoB-local MANUAL studies. A study a permitted reviewer adds
 // directly in the Risk-of-Bias module when it is NOT (yet) in the screening/
 // extraction set (project.studies, which lives in the Project.data blob). These

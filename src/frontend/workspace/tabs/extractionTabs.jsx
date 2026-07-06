@@ -11,6 +11,10 @@ import { alpha as themeAlpha } from "../../theme/tokens.js";
 // Flag helper is eager (tiny); the heavy workspace chunk is lazy so it is only
 // fetched when a user actually opens the structured mode.
 import { extractionAssistFlagEnabled } from "../../../features/extraction/flag.js";
+// 76.md — the Pecan Extraction Engine (flag `extractionEngine`). Eager tiny flag
+// helper; the heavy engine chunk (article list + full-screen split workspace) is lazy.
+import { extractionEngineFlagEnabled } from "../../../features/extraction/engine/extractionEngineFlag.js";
+const PecanExtractionEngine = lazy(() => import("../../../features/extraction/engine/PecanExtractionEngine.jsx"));
 const ExtractionWorkspace = lazy(() => import("../../../features/extraction/ExtractionWorkspace.jsx"));
 // RoadMap/1.md — the unified assisted-extraction workspace (inline PDF + four methods).
 // Heavy (pdf.js + digitizer) so it is lazy-loaded only when a reviewer opens it.
@@ -558,7 +562,29 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
     </div>)}
   </div>);
 }
-function ExtractionTab({project,updateProject,activeId,setTab}){
+/* 76.md — dispatcher (mirrors robTabs.RoBTab). When the `extractionEngine` flag is ON,
+   the Data Extraction tab IS the Pecan Extraction Engine (full-screen article list +
+   split workspace); when OFF, the current split-screen ExtractionTab is preserved
+   byte-for-byte. `onWorkspaceChange` lifts the "article open" state to the Stitch shell
+   so it goes full-bleed (same lift RoB uses); `saveStatus` shows honest autosave state
+   inside the engine toolbar. */
+function ExtractionTab({project,updateProject,activeId,setTab,onWorkspaceChange,saveStatus}){
+  const[engineOn,setEngineOn]=useState(null); // null = checking
+  useEffect(()=>{let dead=false;extractionEngineFlagEnabled().then(on=>{if(!dead)setEngineOn(!!on);}).catch(()=>{if(!dead)setEngineOn(false);});return()=>{dead=true;};},[]);
+  const readOnly=!!((project._permissions&&project._permissions.readOnly)||project._readOnly);
+  if(engineOn===null) return <div style={{padding:40,textAlign:"center",color:C.muted,fontSize:13}}>Loading extraction…</div>;
+  if(engineOn){
+    return(<Suspense fallback={<div style={{padding:24,color:C.muted,fontSize:12}}>Loading the Pecan Extraction Engine…</div>}>
+      <PecanExtractionEngine project={project} updateProject={updateProject} activeId={activeId} setTab={setTab}
+        onWorkspaceChange={onWorkspaceChange} saveStatus={saveStatus} readOnly={readOnly}/>
+    </Suspense>);
+  }
+  // Flag OFF — the classic split-screen workspace, unchanged. It never opens a
+  // full-bleed article view, so the shell's lift stays false (its initial state).
+  return <ClassicExtractionTab project={project} updateProject={updateProject} activeId={activeId} setTab={setTab}/>;
+}
+
+function ClassicExtractionTab({project,updateProject,activeId,setTab}){
   const{studies}=project;
   // prompt6 Task 5 — read-only viewers: hide the affirmative edit controls.
   // (updateProject already no-ops every write for read-only projects; this is polish.)
@@ -1200,4 +1226,4 @@ ${paperText.slice(0,15000)}`;
   </div>);
 }
 
-export { ESCalcInline, ConversionPanel, AddStudyModal, StudyCard, ExtractionTab };
+export { ESCalcInline, ConversionPanel, AddStudyModal, StudyCard, ExtractionTab, ClassicExtractionTab };

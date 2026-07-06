@@ -134,6 +134,13 @@ const DEFAULTS = {
     // human review is mandatory, nothing auto-commits). Default OFF: the Extraction
     // tab keeps its classic table until an admin enables this.
     extractionAssist: false,
+    // 76.md — the Pecan Extraction Engine: a full-screen, article-centred extraction
+    // workspace (article list with statuses/progress/filters → split PDF + form with
+    // three methods, per-value provenance + jump-to-source, honest save status,
+    // validation tiers, completion/reopen with audit, and analysis-sync status).
+    // Default OFF: the Extraction tab keeps its current split-screen workspace until
+    // an admin enables this. Independent of extractionAssist (reads the project blob).
+    extractionEngine: false,
     // OPTIONAL server-proxied LLM extraction for the unified extraction
     // workspace. Default OFF: POST /api/ai-extract 404s (existence-hidden) and
     // GET /api/ai-extract/status reports available:false. When ON (and

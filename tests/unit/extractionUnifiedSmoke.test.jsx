@@ -9,13 +9,18 @@
 import { describe, it, expect } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ExtractionTab } from '../../src/frontend/workspace/tabs/extractionTabs.jsx';
+import { ExtractionTab, ClassicExtractionTab } from '../../src/frontend/workspace/tabs/extractionTabs.jsx';
 import DraftReviewList from '../../src/features/extraction/unified/DraftReviewList.jsx';
 import { mkExtractionRecord } from '../../src/research-engine/extraction/records.js';
 import { mkProject } from '../../src/research-engine/project-model/defaults.js';
 
+// 76.md — ExtractionTab is now a flag DISPATCHER: it renders a brief flag-check spinner
+// during SSR (the extractionEngine flag resolves in an effect that never runs under
+// renderToStaticMarkup), then the classic split-screen tab (flag OFF, the default) or
+// the Pecan Extraction Engine (flag ON). These smoke tests assert the CLASSIC wiring
+// via ClassicExtractionTab directly, plus the dispatcher's loading contract.
 const renderTab = (project) =>
-  renderToStaticMarkup(createElement(ExtractionTab, { project, updateProject: () => {}, activeId: project.id }));
+  renderToStaticMarkup(createElement(ClassicExtractionTab, { project, updateProject: () => {}, activeId: project.id }));
 
 const withStudy = (project) => {
   project.studies = [{ id: 'st1', author: 'Smith', year: '2024', design: 'RCT', outcome: '', es: '', lo: '', hi: '' }];
@@ -23,6 +28,11 @@ const withStudy = (project) => {
 };
 
 describe('ExtractionTab (unified workspace wiring, SSR smoke)', () => {
+  it('the dispatcher shows a flag-check loading state during SSR', () => {
+    const html = renderToStaticMarkup(createElement(ExtractionTab, { project: mkProject('Demo'), updateProject: () => {}, activeId: 'p1' }));
+    expect(html).toContain('Loading extraction');
+  });
+
   it('renders the classic empty state + the Data Extraction heading (e2e-critical)', () => {
     const project = mkProject('Demo');
     const html = renderTab(project);

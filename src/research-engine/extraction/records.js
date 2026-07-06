@@ -42,8 +42,10 @@ const DEFAULT_ID_FN = () => Math.random().toString(36).slice(2, 10);
 /** The scope levels a record can target. */
 export const SCOPE_LEVELS = ['primary', 'secondary', 'other'];
 
-/** How a value was captured. */
-export const PROVENANCE_METHODS = ['auto', 'table', 'figure', 'click', 'manual', 'ai'];
+/** How a value was captured. ('ocr' = a value recognised from a scanned/image region
+ *  via local text recognition — 76.md §11 "indicate that OCR was used"; keeps the
+ *  record layer in step with valuePrecedence, which already knows 'ocr'.) */
+export const PROVENANCE_METHODS = ['auto', 'table', 'figure', 'click', 'manual', 'ai', 'ocr'];
 
 /** Extractor confidence levels. */
 export const CONFIDENCE_LEVELS = ['high', 'medium', 'low'];

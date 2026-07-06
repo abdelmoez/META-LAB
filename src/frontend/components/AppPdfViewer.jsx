@@ -79,6 +79,9 @@ const TEXTLAYER_CSS = `
 .mlpdf-tl[data-main-rotation="270"]{transform:rotate(270deg) translateX(-100%);}
 .mlpdf-tl mark{color:transparent;background:${HL};border-radius:2px;padding:0;margin:0;}
 .mlpdf-tl mark.cur{background:${HL_CURRENT};box-shadow:0 0 0 1px rgba(255,120,0,0.95);}
+.mlpdf-src-flash{animation:mlpdf-src-flash 2.1s ease-out;box-shadow:0 0 0 3px rgba(245,158,11,0.25);}
+@keyframes mlpdf-src-flash{0%{opacity:0;}8%{opacity:1;}70%{opacity:1;}100%{opacity:0.15;}}
+@media (prefers-reduced-motion: reduce){.mlpdf-src-flash{animation:none;}}
 `;
 function ensureTextLayerStyle() {
   if (typeof document === 'undefined') return;
@@ -106,6 +109,11 @@ export default function AppPdfViewer({
   onDocLoaded = null,
   interaction = null,        // null | { mode:'click'|'region', onTextClick, onRegion }
   pageOverlay = null,        // null | (page:number) => ReactNode
+  // ── Jump-to-source (76.md §15) — set `reveal` to { page, region?, nonce } to
+  // scroll to a page and briefly flash a highlight box over `region` (PDF user-space
+  // rectangle {x0,y0,x1,y1}). `nonce` must change on every jump so a repeat jump to
+  // the same field re-flashes. Inert (null) for every existing caller.
+  reveal = null,
 }) {
   const [doc, setDoc]         = useState(null);
   const [numPages, setNum]    = useState(0);
@@ -344,6 +352,13 @@ export default function AppPdfViewer({
   }, [numPages, pageTops]);
   const prev = () => scrollToPage(pageNum - 1);
   const next = () => scrollToPage(pageNum + 1);
+
+  // Jump-to-source (§15): a new reveal nonce scrolls to its page. The per-page
+  // highlight box is rendered by PdfPageView (see `highlight` below) and self-clears.
+  useEffect(() => {
+    if (reveal && reveal.page) scrollToPage(reveal.page);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reveal && reveal.nonce]);
 
   // Capture the content point under `anchorClientY` (or the viewport centre) so the
   // scroll-anchor layout effect can keep it visually pinned across a scale/rotation
@@ -598,6 +613,7 @@ export default function AppPdfViewer({
                       onDims={onPageDims}
                       interaction={interaction}
                       overlay={pageOverlay ? pageOverlay(p) : null}
+                      highlight={reveal && reveal.page === p ? reveal : null}
                     />
                   ) : (
                     <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', color: C.dim, fontFamily: MONO, fontSize: 11 }}>
@@ -647,7 +663,7 @@ function caretOffsetInSpan(span, clientX, clientY) {
 }
 
 /* ── A single continuous page: canvas + real text layer + match highlighting ─── */
-function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOptions, currentLocal, onDims, interaction = null, overlay = null }) {
+function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOptions, currentLocal, onDims, interaction = null, overlay = null, highlight = null }) {
   const canvasRef = useRef(null);
   const textRef   = useRef(null);
   const renderRef = useRef(null);
@@ -825,6 +841,26 @@ function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOption
     width: Math.abs(drag.x1 - drag.x0), height: Math.abs(drag.y1 - drag.y0),
   } : null;
 
+  // Jump-to-source flash (§15). Map the reveal region (PDF user space, y-up) back to
+  // CSS px: left = x0·scale, top = (H − y1)·scale. When no region is given (page-only
+  // provenance) we flash a full-width band near the page top so the jump still lands
+  // somewhere visible. Keyed by nonce so a repeat jump re-triggers the CSS animation.
+  const [flash, setFlash] = useState(null);
+  useEffect(() => {
+    if (!highlight || !pageDims) { setFlash(null); return undefined; }
+    const H = pageDims.h;
+    let box;
+    const r = highlight.region;
+    if (r && ['x0', 'y0', 'x1', 'y1'].every((k) => Number.isFinite(+r[k]))) {
+      box = { left: r.x0 * scale, top: (H - r.y1) * scale, width: (r.x1 - r.x0) * scale, height: (r.y1 - r.y0) * scale };
+    } else {
+      box = { left: 8 * scale, top: 8 * scale, width: (pageDims.w - 16) * scale, height: 24 * scale };
+    }
+    setFlash({ ...box, nonce: highlight.nonce });
+    const t = setTimeout(() => setFlash(null), 2200);
+    return () => clearTimeout(t);
+  }, [highlight && highlight.nonce, pageDims, scale]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <>
       {/* Canvas size is set in px by the render effect (= the CSS-px viewport), so it
@@ -838,6 +874,12 @@ function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOption
         style={clickable ? { pointerEvents: 'auto', cursor: 'copy' } : undefined}
       />
       {overlay ? <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 3 }}>{overlay}</div> : null}
+      {flash ? (
+        <div key={flash.nonce} className="mlpdf-src-flash" style={{
+          position: 'absolute', left: flash.left, top: flash.top, width: Math.max(6, flash.width), height: Math.max(6, flash.height),
+          border: '2px solid #f59e0b', background: 'rgba(245,158,11,0.22)', borderRadius: 3, pointerEvents: 'none', zIndex: 5,
+        }} />
+      ) : null}
       {regionMode && (
         <div
           onMouseDown={onRegionDown} onMouseMove={onRegionMove} onMouseUp={onRegionUp}

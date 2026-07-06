@@ -42,6 +42,7 @@ import searchEngineRouter  from './routes/searchEngine.js';
 import pecanSearchRouter    from './routes/pecanSearch.js';
 import citationMiningRouter from './routes/citationMining.js';
 import extractionRouter     from './routes/extraction.js';
+import extractionEngineRouter from './routes/extractionEngine.js';
 import aiExtractRouter      from './routes/aiExtract.js';
 import livingReviewRouter   from './routes/livingReview.js';
 import publicSynthesisRouter from './routes/publicSynthesis.js';
@@ -237,6 +238,17 @@ const searchEngineLimiter = rateLimit({
 const pecanSearchLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: process.env.NODE_ENV === 'production' ? 400 : 2000,
+  message: { error: 'Too many requests, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ── Rate limiter for the Pecan Extraction Engine (76.md) — article-list reads +
+// completion/reopen/lock/inclusion mutations. Generous (these are per-article user
+// clicks, not fan-out), prod-tight/dev-loose like the rest. ──────────────────────
+const extractionEngineLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 900 : 4000,
   message: { error: 'Too many requests, please try again later' },
   standardHeaders: true,
   legacyHeaders: false,
@@ -475,6 +487,12 @@ app.use('/api/citation-mining', requireAuth, pecanSearchLimiter, citationMiningR
 // handler gates on the `extractionAssist` flag (default OFF → 404) and the
 // caller's META·LAB project access. AI suggestions never auto-commit.
 app.use('/api/extraction', requireAuth, extractionRouter);
+
+// ── Pecan Extraction Engine (76.md) — requireAuth at the mount; each handler gates
+// on the `extractionEngine` flag (default OFF → 404) + META·LAB project access. Owns
+// article STATE only (list / complete / reopen / lock / inclusion / audit); extraction
+// VALUES stay on the project-blob autosave, so this never races value writes.
+app.use('/api/extraction-engine', requireAuth, extractionEngineLimiter, extractionEngineRouter);
 
 // ── AI extraction (server-proxied LLM) — requireAuth at the mount; the POST
 // handler gates on the `aiExtraction` flag (default OFF → 404). The Anthropic

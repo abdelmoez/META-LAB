@@ -124,6 +124,10 @@ function DeepToolPage({ stage }) {
 
   // True while a per-study RoB assessment is open (the split view needs full height).
   const [robInWorkspace, setRobInWorkspace] = useState(false);
+  // 76.md — true while a Pecan Extraction Engine ARTICLE is open (the PDF+form split
+  // needs the full viewport). Lifted from the extraction tab via onWorkspaceChange,
+  // exactly like RoB, so toggling full-bleed never remounts the engine.
+  const [extractionInWorkspace, setExtractionInWorkspace] = useState(false);
 
   const spId = project ? linkedSiftId(project) : null;
   const perms = project ? projectPerms(project) : null;
@@ -172,7 +176,7 @@ function DeepToolPage({ stage }) {
 
   // Full-bleed stages: screening (study list + detail) always; RoB only while a
   // per-study assessment is open (PDF + assessment split). These fill the viewport.
-  const fullbleed = stage === 'screening' || (stage === 'rob' && robInWorkspace);
+  const fullbleed = stage === 'screening' || (stage === 'rob' && robInWorkspace) || (stage === 'extraction' && extractionInWorkspace);
 
   const renderPrimaryRail = (variant) => (
     <StitchProjectRail projectId={projectId} linkedSiftId={spId} statusMap={statusMap}
@@ -290,7 +294,8 @@ function DeepToolPage({ stage }) {
   } else if (stage === 'prisma') {
     body = (<LazyPrisma project={project} updNested={doc.updNested} updateProject={doc.updateProject} activeId={projectId} setTab={goStage} />);
   } else if (stage === 'extraction') {
-    body = (<LazyExtraction project={project} updateProject={doc.updateProject} activeId={projectId} setTab={goStage} />);
+    body = (<LazyExtraction project={project} updateProject={doc.updateProject} activeId={projectId} setTab={goStage}
+      onWorkspaceChange={setExtractionInWorkspace} saveStatus={doc.saveStatus} />);
   } else if (stage === 'rob') {
     body = (<LazyRob project={project} updateProject={doc.updateProject} activeId={projectId} setTab={goStage} onWorkspaceChange={setRobInWorkspace} />);
   } else if (stage === 'analysis') {
