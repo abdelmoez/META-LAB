@@ -236,20 +236,30 @@ function annotateOwned(projectObj, linked, meta = {}, progressCtx = null) {
 async function screenProjectSummaries(ids, { by = 'linked', ownerId } = {}) {
   const out = new Map();
   if (!ids || !ids.length) return out;
-  const where = by === 'screenId'
-    ? { id: { in: ids } }
-    : { linkedMetaLabProjectId: { in: ids }, ownerId };
-  const rows = await prisma.screenProject.findMany({
-    where,
-    select: {
-      id: true,
-      title: true,
-      linkedMetaLabProjectId: true,
-      progressStatus: true,
-      _count: { select: screeningCountSelect() },
-    },
-    orderBy: { createdAt: 'asc' },
-  });
+  // Chunk the id list. A very large `in (...)` on the dashboard (a user/admin with
+  // hundreds of projects) intermittently trips a Prisma/SQLite query-engine panic
+  // ("no entry found for key"), which 500s the whole projects list. Batching keeps
+  // each query small + reliable and is a no-op for the common small-list case.
+  const CHUNK = 200;
+  const idChunks = [];
+  for (let i = 0; i < ids.length; i += CHUNK) idChunks.push(ids.slice(i, i + CHUNK));
+  const select = {
+    id: true,
+    title: true,
+    linkedMetaLabProjectId: true,
+    progressStatus: true,
+    _count: { select: screeningCountSelect() },
+  };
+  // Run the chunks SEQUENTIALLY — the SQLite query-engine panic this guards against is
+  // aggravated by concurrent reads, so fewer in-flight queries is more reliable here.
+  const rows = [];
+  for (const chunk of idChunks) {
+    const where = by === 'screenId'
+      ? { id: { in: chunk } }
+      : { linkedMetaLabProjectId: { in: chunk }, ownerId };
+    const group = await prisma.screenProject.findMany({ where, select, orderBy: { createdAt: 'asc' } });
+    rows.push(...group);
+  }
   for (const r of rows) {
     // 'linked' keys by the META·LAB project id (reverse lookup); 'screenId' keys
     // by the ScreenProject id (direct lookup). oldest-wins via the asc order + the
@@ -320,7 +330,20 @@ async function syncLinkedTitleIfInSync(projectId, ownerUserId, oldName, newName)
  * Returns a lightweight list of all projects for the authenticated user
  * (omits studies and records arrays for performance).
  */
+// A transient Prisma/SQLite query-engine panic ("no entry found for key" at
+// record.rs) that intermittently hits a big `in (...)` read — the SAME query
+// succeeds on a retry, so these are safe to re-run for a read-only assembly.
+function isTransientPrismaPanic(e) {
+  return e?.name === 'PrismaClientRustPanicError'
+    || /no entry found for key|query engine.*panic|panicked at/i.test(String(e?.message || ''));
+}
+
 export async function listProjects(req, res) {
+  // The projects-list assembly fans out many concurrent queries over a potentially
+  // large dataset; on SQLite the engine can intermittently panic on one of them and
+  // 500 the whole dashboard. Retry a transient engine panic a few times (the read is
+  // idempotent) before surfacing the error.
+  for (let attempt = 0; ; attempt++) {
   try {
     const full = req.query.full === 'true' || req.query.full === '1';
     // prompt11 — by default EXCLUDE user-facing archived projects (owned + shared).
@@ -467,9 +490,16 @@ export async function listProjects(req, res) {
 
     const all = [...annotatedOwned, ...shared];
     res.json(full ? all : all.map(({ studies, records, ...meta }) => meta));
+    return;
   } catch (err) {
+    if (isTransientPrismaPanic(err) && attempt < 6) {
+      await new Promise((r) => setTimeout(r, 40 * (attempt + 1))); // brief backoff, then retry
+      continue;
+    }
     console.error('[projects] listProjects error:', err.message);
     res.status(500).json({ error: 'Internal server error' });
+    return;
+  }
   }
 }
 
