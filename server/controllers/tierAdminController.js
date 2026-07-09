@@ -11,7 +11,7 @@ import {
   recordTierAssignment, revertTierAssignment, tierMoveDirection, daysInTier,
   pctOf, isExpiringSoon, coerceChangeType, VALID_CHANGE_TYPES,
 } from '../services/entitlementService.js';
-import { ENTITLEMENT_KEYS, ENTITLEMENT_KEY_SET, DEFAULT_TIER_IDS, UNLIMITED, tierDisplayName } from '../../src/shared/entitlements.js';
+import { ENTITLEMENT_KEYS, ENTITLEMENT_KEY_SET, DEFAULT_TIER_IDS, DEFAULT_TIERS, UNLIMITED, tierDisplayName } from '../../src/shared/entitlements.js';
 
 function safeParse(s, fallback) {
   try { const v = JSON.parse(s ?? ''); return v && typeof v === 'object' ? v : fallback; }
@@ -29,17 +29,23 @@ export function coerceTierMeta(b) {
   if (!b || typeof b !== 'object') return out;
   const boolKeys = ['isPaid', 'publiclyAvailable', 'manualAssignAllowed'];
   for (const k of boolKeys) if (typeof b[k] === 'boolean') out[k] = b[k];
+  // Prices are non-negative integer minor units, capped so an oversized value returns a
+  // clean 400 (below) rather than overflowing a 32-bit Int column on Postgres (a 500).
+  const PRICE_CAP = 1_000_000_00; // $1,000,000.00 in cents
   for (const k of ['priceMonthlyCents', 'priceAnnualCents']) {
     if (k in b) {
       if (b[k] === null || b[k] === '') out[k] = null;
-      else if (Number.isFinite(Number(b[k]))) out[k] = Math.max(0, Math.round(Number(b[k])));
+      else if (Number.isFinite(Number(b[k]))) out[k] = Math.min(PRICE_CAP, Math.max(0, Math.round(Number(b[k]))));
     }
   }
   for (const k of ['trialDays', 'gracePeriodDays']) {
     if (k in b && Number.isFinite(Number(b[k]))) out[k] = Math.min(3650, Math.max(0, Math.round(Number(b[k]))));
   }
-  if (typeof b.currency === 'string' && b.currency.trim()) {
-    out.currency = b.currency.trim().toLowerCase().slice(0, 8);
+  // Currency: a 3-letter ISO-4217 code (stored lower-case). Ignore anything else so the
+  // pricing UI's Intl.NumberFormat never receives a code it cannot render.
+  if (typeof b.currency === 'string') {
+    const c = b.currency.trim().toLowerCase();
+    if (/^[a-z]{3}$/.test(c)) out.currency = c;
   }
   return out;
 }
@@ -107,10 +113,23 @@ export async function updateTierAdmin(req, res) {
     // an explicit archive is handled by the dedicated archive endpoint.
     if (data.isActive === true) data.archivedAt = null;
 
+    // When a default-definition tier is edited BEFORE seedProductTiers has created its
+    // row (a brief post-deploy window), seed the missing display fields from the code
+    // default so the created row keeps its real name/order (not id/sortOrder=0, which
+    // would tie it with 'free' and misclassify promotions as lateral in analytics).
+    const defaultDef = DEFAULT_TIERS.find(t => t.id === id);
     const row = existing
       ? await prisma.productTier.update({ where: { id }, data })
       : await prisma.productTier.create({
-          data: { id, name: id, displayName: id, ...data, entitlements: data.entitlements || '{}' },
+          data: {
+            id,
+            name: defaultDef?.name || id,
+            displayName: defaultDef?.displayName || id,
+            description: defaultDef?.description ?? '',
+            sortOrder: defaultDef?.sortOrder ?? 0,
+            ...data, // admin-provided values override the seeded defaults
+            entitlements: data.entitlements || '{}',
+          },
         });
     await logAdminAction(req, 'UPDATE_PRODUCT_TIER', 'ProductTier', id, {
       changed: Object.keys(data),
@@ -230,8 +249,15 @@ export async function archiveTierAdmin(req, res) {
     if (existing) {
       await prisma.productTier.update({ where: { id }, data });
     } else {
+      // No DB row yet (default-def tier archived before seeding). Carry the resolved
+      // tier's name/order so the created row isn't malformed (sortOrder=0 would tie it
+      // with 'free' and misclassify promotions as lateral in analytics).
       await prisma.productTier.create({
-        data: { id, name: id, displayName: tier.displayName || id, description: tier.description || '', entitlements: '{}', ...data },
+        data: {
+          id, name: tier.name || id, displayName: tier.displayName || id,
+          description: tier.description || '', sortOrder: tier.sortOrder ?? 0,
+          entitlements: '{}', ...data,
+        },
       });
     }
     await logAdminAction(req, archived ? 'ARCHIVE_PRODUCT_TIER' : 'RESTORE_PRODUCT_TIER', 'ProductTier', id, {

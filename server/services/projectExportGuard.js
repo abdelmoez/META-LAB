@@ -107,8 +107,16 @@ export async function requireProjectExport(user, { exportType, projectId = null,
   const cap = limitOf(ctx.entitlements, EXPORT_LIMIT_KEY); // Infinity when UNLIMITED
   const finite = Number.isFinite(cap);
 
-  // Reserve inside a transaction so concurrent exports can't both pass the limit.
-  const row = await prisma.$transaction(async (tx) => {
+  // Reserve inside a transaction that counts prior counted rows and inserts the new
+  // one. On SQLite a single writer serialises transactions, so the count+insert is
+  // already atomic. On Postgres, READ COMMITTED would let two concurrent reservations
+  // both read cap-1 and both insert → the cap could be overshot; so on Postgres we run
+  // the transaction at SERIALIZABLE and retry the loser of a serialization conflict
+  // (SQLSTATE 40001 → Prisma P2034), which re-reads the now-committed row and hits the
+  // cap correctly. `isolationLevel` is omitted on SQLite (unsupported there).
+  const isPostgres = /^postgres/i.test(process.env.DATABASE_PROVIDER || '');
+  const txOpts = isPostgres ? { isolationLevel: 'Serializable' } : undefined;
+  const reserveOnce = () => prisma.$transaction(async (tx) => {
     if (finite) {
       const used = await tx.projectExportUsage.count({
         where: { userId: user.id, period, counted: true },
@@ -121,7 +129,16 @@ export async function requireProjectExport(user, { exportType, projectId = null,
         tierId: ctx.tierId || null, period, counted: true, status: 'started',
       },
     });
-  });
+  }, txOpts);
+  let row;
+  for (let attempt = 0; ; attempt++) {
+    try { row = await reserveOnce(); break; }
+    catch (e) {
+      if (e instanceof TierLimitError) throw e;              // a real cap hit → propagate
+      if (e && e.code === 'P2034' && attempt < 4) continue;  // serialization conflict → retry
+      throw e;
+    }
+  }
 
   return { reservationId: row.id, bypass: false, tierId: ctx.tierId || null, period };
 }
@@ -149,11 +166,15 @@ export async function settleProjectExport(reservationId, { status = 'succeeded',
   if (!reservationId) return;
   const ok = status === 'succeeded';
   try {
+    // `counted` was set correctly at RESERVE time (true for an enforced export, false
+    // for an admin/kill-switch BYPASS audit row). A success must NOT flip it — doing so
+    // would count bypass rows and, after a kill-switch toggle, lock a user out of their
+    // whole monthly allowance. Only a FAILURE changes it (→ refund).
     await prisma.projectExportUsage.update({
       where: { id: reservationId },
       data: {
         status: ok ? 'succeeded' : 'failed',
-        counted: ok, // a failed export is refunded
+        ...(ok ? {} : { counted: false }), // refund a failed export; leave a success as reserved
         settledAt: new Date(),
         fileSize: Number.isFinite(fileSize) ? Math.max(0, Math.round(fileSize)) : null,
         failureReason: failureReason ? String(failureReason).slice(0, 500) : null,

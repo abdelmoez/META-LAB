@@ -117,11 +117,18 @@ describe('project-export tier gate (79.md §3)', () => {
     expect(counted).toBeLessThanOrEqual(2);
   });
 
-  it('admin bypasses the gate without consuming allowance', async () => {
+  it('admin bypasses the gate without consuming allowance, even after settle', async () => {
     const { user, opts } = args(mkUser('admin', 'free', 'admin'));
     const r = await requireProjectExport(user, opts);
     expect(r.bypass).toBe(true);
+    // The controller calls settle('succeeded') on EVERY reservation, including bypass
+    // audit rows — settling must NOT flip a bypass row to counted (regression guard for
+    // the kill-switch lockout bug: a success only finalises status, never counts).
+    await settleProjectExport(r.reservationId, { status: 'succeeded' });
     const counted = await prisma.projectExportUsage.count({ where: { userId: user.id, counted: true } });
-    expect(counted).toBe(0); // bypass rows are uncounted audit entries
+    expect(counted).toBe(0); // bypass rows stay uncounted audit entries after settle
+    const row = await prisma.projectExportUsage.findUnique({ where: { id: r.reservationId } });
+    expect(row.status).toBe('succeeded');
+    expect(row.counted).toBe(false);
   });
 });

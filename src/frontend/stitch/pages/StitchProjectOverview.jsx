@@ -85,7 +85,11 @@ export default function StitchProjectOverview() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
-  // 79.md §3 — fail-open tier gate for the project-export button (server is authoritative).
+  // 79.md §3 — export failures use a SEPARATE inline state; `error` drives the
+  // full-page error boundary and must never be set by a transient export failure
+  // (a spent allowance / 500 would otherwise tear down the whole overview).
+  const [exportError, setExportError] = useState('');
+  // fail-open tier gate for the project-export button (server is authoritative).
   const ent = useEntitlements();
   const exportLocked = !ent.has('projects.export');
 
@@ -186,7 +190,7 @@ export default function StitchProjectOverview() {
 
   const onExport = useCallback(async () => {
     if (!perms?.canExport) return;
-    setExporting(true);
+    setExporting(true); setExportError('');
     try {
       const data = await api.exportProject(projectId);
       const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -196,8 +200,9 @@ export default function StitchProjectOverview() {
       document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
     } catch (e) {
       // 79.md §3 — surface the server's plain-language tier message (e.g. "Exporting
-      // projects is not included in your current plan.") instead of a generic error.
-      setError(e?.body?.message || e?.message || 'Export failed. Please try again.');
+      // projects is not included in your current plan.") INLINE — never on the
+      // full-page error state, which would tear down the whole (already-loaded) overview.
+      setExportError(e?.body?.message || e?.message || 'Export failed. Please try again.');
     } finally { setExporting(false); }
   }, [perms, projectId, project]);
 
@@ -290,6 +295,16 @@ export default function StitchProjectOverview() {
         {linkedId ? <StitchBadge tone="info" icon="link">Linked to Screening</StitchBadge> : <StitchBadge tone="neutral" icon="alert">No linked Screening</StitchBadge>}
         {project._archived ? <StitchBadge tone="warn" icon="layers">Archived</StitchBadge> : null}
       </div>
+
+      {/* 79.md §3 — inline export feedback (spent allowance / tier / transient error),
+          dismissible, never replacing the loaded overview. */}
+      {exportError ? (
+        <div role="status" style={{ marginTop: 12, padding: '10px 14px', borderRadius: 10, fontSize: 13, display: 'flex', alignItems: 'center', gap: 10, background: salpha(S.warn, 0.12), border: `1px solid ${salpha(S.warn, 0.4)}`, color: S.textPrimary }}>
+          <StitchIcon name="lock" size={15} />
+          <span style={{ flex: 1 }}>{exportError}</span>
+          <button onClick={() => setExportError('')} aria-label="Dismiss" style={{ background: 'none', border: 'none', cursor: 'pointer', color: S.textSecondary, fontSize: 16, lineHeight: 1, padding: 2 }}>×</button>
+        </div>
+      ) : null}
 
       {(readOnly || project._shared) ? (
         <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 10, padding: '11px 14px', borderRadius: 12, background: S.warnSoft, border: `1px solid ${salpha(S.warn, 0.3)}` }}>

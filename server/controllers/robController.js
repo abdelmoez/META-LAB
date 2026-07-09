@@ -629,6 +629,7 @@ export async function deleteAssessment(req, res) {
 
 // ── GET /api/rob/assessments/:id/export?format=csv|json|robvis ────────────────
 export async function exportAssessment(req, res) {
+  let reservation; // declared here so a post-reservation error can refund it (79.md §3)
   try {
     if (!(await robEnabled(req.user))) return res.status(404).json({ error: 'Not found' });
     const a = await loadAssessment(req.params.id, req.user.id);
@@ -642,7 +643,6 @@ export async function exportAssessment(req, res) {
     // 79.md §3 — RoB assessment export is a project export: Free tier is blocked and
     // permitted tiers consume one unit of the monthly allowance. Reserved once here,
     // after the format is known to be valid, and confirmed on the successful return.
-    let reservation;
     try {
       reservation = await requireProjectExport(req.user, {
         exportType: EXPORT_TYPES.ROB_ASSESSMENT, projectId: a.projectId || null, format,
@@ -694,6 +694,8 @@ export async function exportAssessment(req, res) {
     // Unreachable (format validated above); kept as a defensive guard.
     return res.status(400).json({ error: "format must be 'json', 'csv', or 'robvis'" });
   } catch (err) {
+    // A post-reservation failure produced no file → refund the allowance (79.md §3).
+    settleProjectExport(reservation?.reservationId, { status: 'failed', failureReason: err?.message });
     console.error('[rob] exportAssessment error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }

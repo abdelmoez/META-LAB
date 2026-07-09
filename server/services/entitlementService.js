@@ -166,10 +166,18 @@ export async function resolveUserEntitlements(user) {
     } catch { assignedTierId = null; }
   }
   const tiers = await listTiers();
+  const byId = new Map(tiers.map(t => [t.id, t]));
   const activeById = new Map(tiers.filter(t => t.isActive).map(t => [t.id, t]));
-  let tierId = assignedTierId && activeById.has(assignedTierId) ? assignedTierId : null;
-  if (!tierId) tierId = await getDefaultTierId(settings);
-  const tier = activeById.get(tierId) || tiers.find(t => t.id === tierId) || null;
+  const assigned = assignedTierId ? byId.get(assignedTierId) : null;
+  // An explicitly-assigned tier that is ACTIVE, or that has been soft-ARCHIVED, still
+  // governs the user — an archive must NEVER silently change an assigned user's
+  // entitlements (79.md §6: "archived tiers do not break users already assigned to
+  // them"). Only a plain (non-archived) deactivation or an unknown/deleted tier falls
+  // through to the site default.
+  let tierId;
+  if (assigned && (activeById.has(assigned.id) || assigned.archivedAt)) tierId = assigned.id;
+  else tierId = await getDefaultTierId(settings);
+  const tier = byId.get(tierId) || null;
   return {
     bypass: false, bypassReason: null,
     tierId,

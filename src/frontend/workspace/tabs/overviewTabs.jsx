@@ -269,6 +269,11 @@ function OverviewTab({project,setTab,onJournalZip,onRValidate}){
   const lid=linkedSiftId(project);
   const linkedTitle=(project._linkedMetaSift&&project._linkedMetaSift.title)||"";
   const perms=projectPerms(project);
+  // 79.md §3 — project export (incl. the journal ZIP) is a tier feature; show a locked
+  // state consistent with the header instead of a generic 403 (fail-open hook; server
+  // remains authoritative).
+  const ent=useEntitlements();
+  const exportLocked=!ent.has('projects.export');
   // Members + leaders from the linked Review Workspace (graceful when unlinked).
   const[mem,setMem]=useState({loading:!!lid,members:null,error:null});
   useEffect(()=>{
@@ -488,7 +493,9 @@ function OverviewTab({project,setTab,onJournalZip,onRValidate}){
           <div style={{display:"flex",flexDirection:"column",gap:8,minWidth:0}}>
             <div style={{fontSize:12.5,fontWeight:700,color:C.txt}}>Journal submission package</div>
             <div style={{fontSize:11.5,color:C.muted,lineHeight:1.55,flex:1}}>One ZIP with the PRISMA diagram, per-outcome forest plots, methods text, study table, and a full report.</div>
-            <button onClick={()=>onJournalZip()} style={{...btnS("primary"),fontSize:12,alignSelf:"flex-start"}}><Icon name="layers" size={13}/> Build ZIP package</button>
+            {exportLocked
+              ? <button disabled title="Exporting projects isn’t included in your current plan" style={{...btnS("ghost"),fontSize:12,alignSelf:"flex-start",opacity:0.6,cursor:"not-allowed"}}><Icon name="lock" size={13}/> Not in your plan</button>
+              : <button onClick={()=>onJournalZip()} style={{...btnS("primary"),fontSize:12,alignSelf:"flex-start"}}><Icon name="layers" size={13}/> Build ZIP package</button>}
           </div>
         )}
         {onRValidate&&(

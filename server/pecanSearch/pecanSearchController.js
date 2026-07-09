@@ -283,6 +283,7 @@ export async function getReport(req, res) {
 }
 
 export async function getReportExport(req, res) {
+  let reservation; // declared here so a post-reservation error can refund it (79.md §3)
   try {
     const access = await gate(req, res); if (!access) return;
     const owned = await loadOwnedRun(req, res); if (!owned) return;
@@ -291,7 +292,6 @@ export async function getReportExport(req, res) {
     const format = String(req.query.format || 'json').toLowerCase();
     // 79.md §3 — the search-run report is a project export: Free tier is blocked and
     // permitted tiers consume one unit of their monthly allowance.
-    let reservation;
     try {
       reservation = await requireProjectExport(req.user, {
         exportType: EXPORT_TYPES.PECAN_REPORT, projectId: req.params.projectId || null, format,
@@ -317,7 +317,11 @@ export async function getReportExport(req, res) {
     res.setHeader('Content-Disposition', `attachment; filename="${base}.json"`);
     settleProjectExport(reservation.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(body) });
     return res.send(body);
-  } catch (err) { return handleError(res, err, 'getReportExport'); }
+  } catch (err) {
+    // A post-reservation failure produced no file → refund the allowance (79.md §3).
+    settleProjectExport(reservation?.reservationId, { status: 'failed', failureReason: err?.message });
+    return handleError(res, err, 'getReportExport');
+  }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
