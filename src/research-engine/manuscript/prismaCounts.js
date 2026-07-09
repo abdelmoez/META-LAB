@@ -79,6 +79,13 @@ export function computePrismaCounts(project, opts = {}) {
   // 77.md §1 — deduplication is a TRI-STATE: performed (a real count, possibly 0),
   // not-performed, or unknown. A null count must never render as a confident "0".
   let dedupe = pick('dedupe', 'dedupe', null);
+  // MetaSiftPrismaSync auto-persists project.prisma.dedupe="0" precisely when the live
+  // source reports dedup NOT performed (duplicatesRemoved is 0 then). Don't let that echo
+  // mask the honest "not-performed" state — only a deliberate override (draft.prismaOverrides)
+  // or a non-zero manual value should stand.
+  if (provenance.dedupe === 'manual' && dedupe === 0 && sc.dedupePerformed === false && toNum(ov.dedupe) == null) {
+    dedupe = null;
+  }
   if (dedupe == null) {
     if (toNum(sc.identified) != null && toNum(sc.afterDedup) != null && sc.dedupePerformed !== false) {
       dedupe = toNum(sc.identified) - toNum(sc.afterDedup);

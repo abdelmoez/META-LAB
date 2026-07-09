@@ -92,13 +92,18 @@ export function usePdfSource(study, projectId) {
         }
         if (superseded()) return;
         if (sp && rid) {
-          const listing = await screeningApi.listPdf(sp, rid).catch(() => null);
+          // Distinguish "no attachment" from "couldn't check" — a transient list failure
+          // must NOT masquerade as a clean upload state, or an upload could replace an
+          // existing (just-unlisted) PDF (review finding).
+          let listing = null, listFailed = false;
+          try { listing = await screeningApi.listPdf(sp, rid); } catch { listFailed = true; }
           const att = (listing && listing.attachments && listing.attachments[0]) || null;
           if (superseded()) return;
           if (att) {
             setResolved({ url: screeningApi.pdfDownloadUrl(sp, rid, att.id), source: 'screening', screenProjectId: sp, recordId: rid });
           } else {
             setResolved({ url: null, source: null, screenProjectId: sp, recordId: rid });
+            if (listFailed) setError('Could not check for this study’s saved PDF just now — refresh before uploading so you don’t replace an existing file.');
           }
         }
       } catch (e) {
@@ -125,11 +130,15 @@ export function usePdfSource(study, projectId) {
     setResolving(false);
   }, [revokeLocal]);
 
-  const setLocalFile = useCallback(async (file) => {
+  // setLocalFile(file, { persist }) — persistence is OPT-IN. Only callers that intend a
+  // canonical, project-wide upload (the engine's empty-state upload, which targets a study
+  // with no existing PDF) pass persist:true; the classic panel's "replace PDF" keeps the
+  // safe session-local behaviour so it can never silently overwrite a stored attachment.
+  const setLocalFile = useCallback(async (file, opts = {}) => {
     if (!file) return;
     const sp = resolved.screenProjectId || directSp;
     const rid = resolved.recordId || directRid;
-    if (sp && rid) {
+    if (opts.persist && sp && rid) {
       setUploading(true); setError('');
       const startStudy = studyIdRef.current;
       try {
@@ -144,6 +153,9 @@ export function usePdfSource(study, projectId) {
           return;
         }
       } catch (e) {
+        // Guard the async failure the same way as the success path: if the reviewer switched
+        // article mid-upload, do NOT fall through to a local URL for the wrong study.
+        if (studyIdRef.current !== startStudy) { setUploading(false); return; }
         // Persisting failed (permissions, size, network) — keep the reviewer working with a
         // session-local copy, but tell them it was not saved to the project.
         setError((e && e.message ? `${e.message} ` : '') + 'Showing this PDF locally for this session only — it was not saved to the project.');

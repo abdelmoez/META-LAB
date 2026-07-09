@@ -77,7 +77,7 @@ const CHUNK_RELOAD_FLAG = 'pecan.chunkReloadAt';
 /** True when an error looks like a failed dynamic import / stale content-hashed chunk. */
 export function isChunkLoadError(err) {
   const msg = String((err && (err.message || err)) || '');
-  return /dynamically imported module|Loading chunk|Failed to fetch dynamically imported|Importing a module script failed|ChunkLoadError/i.test(msg);
+  return /dynamically imported module|Loading chunk|Failed to fetch dynamically imported|Importing a module script failed|Unable to preload CSS|ChunkLoadError/i.test(msg);
 }
 
 /**

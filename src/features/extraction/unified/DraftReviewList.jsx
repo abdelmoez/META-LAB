@@ -115,7 +115,7 @@ function MethodChip({ method }) {
 
 /* ── one draft card ──────────────────────────────────────────────────────── */
 
-function DraftCard({ d, outcomes, compact, readOnly, onConfirm, onDismiss, onPark, onEditField }) {
+function DraftCard({ d, outcomes, compact, readOnly, canPark = true, onConfirm, onDismiss, onPark, onEditField }) {
   const scope = d.scope && typeof d.scope === "object" ? d.scope : {};
   const completeness = recordCompleteness(d);
   const confColor = CONFIDENCE_COLOR[d.confidence] || C.red;
@@ -213,9 +213,11 @@ function DraftCard({ d, outcomes, compact, readOnly, onConfirm, onDismiss, onPar
             style={{ ...smallBtn("success"), ...(scopeReady ? {} : { opacity: 0.5, cursor: "not-allowed" }) }}>
             ✓ Confirm → adds to studies
           </button>
-          <button onClick={() => onPark && onPark(d.id)} style={smallBtn("ghost")}>
-            Not in this review
-          </button>
+          {canPark && (
+            <button onClick={() => onPark && onPark(d.id)} style={smallBtn("ghost")}>
+              Not in this review
+            </button>
+          )}
           <button onClick={() => onDismiss && onDismiss(d.id)} style={smallBtn("danger")}>
             Dismiss
           </button>
@@ -313,7 +315,7 @@ export default function DraftReviewList({
           )}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {safeDrafts.map((d) => (
-              <DraftCard key={d.id} d={d} outcomes={safeOutcomes} compact={compact} readOnly={readOnly}
+              <DraftCard key={d.id} d={d} outcomes={safeOutcomes} compact={compact} readOnly={readOnly} canPark={showParked}
                 onConfirm={onConfirm} onDismiss={onDismiss} onPark={onPark} onEditField={onEditField} />
             ))}
           </div>

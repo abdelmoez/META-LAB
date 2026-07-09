@@ -99,3 +99,35 @@ session-local copy with explicit "not saved" messaging.
   history rides in the additive `study.extractionMeta` blob). Standard build + deploy.
 - Rollback: set `extractionEngine` OFF (engine changes vanish; classic tab unaffected). The
   server `dedup` field and `ScopedErrorBoundary` are additive and inert if unused.
+
+## 9. Adversarial review round (12 confirmed fixes)
+
+A 6-dimension find→verify review found 12 real, verified issues in the round-1 code; all fixed:
+
+1. **PDF persist is now opt-in** (`setLocalFile(file,{persist:true})`) — the engine's
+   empty-state upload (no existing PDF) persists; the classic panel's "replace" stays
+   session-local, so it can never silently overwrite a stored screening PDF.
+2. **Upload-failure race** — the async catch path now bails on a mid-upload article switch,
+   so a failed persist can't show the wrong study's PDF.
+3. **Transient `listPdf` failure** is distinguished from "no PDF" and warns the user before an
+   upload could replace an unlisted attachment.
+4. **Single-field pick** now guards p-values/percentages (was fabricatable into a count).
+5. **Smart bare-number** is refused for non-effect-slot measures instead of misfiling into `es`.
+6. **Converter `es` target** is guarded to ratio measures only (ln-scale can't corrupt a
+   non-ratio effect size).
+7. **Converter stale result** — editing an input clears the cached Compute result so Apply
+   never writes a value/formula that no longer matches the inputs.
+8. **writeValues** skips identical re-writes (no autosave churn) and preserves the full
+   10-entry replace history.
+9. **Manual value edits** now re-attribute provenance to `manual` and drop the stale
+   page/bbox, so jump-to-source and replace-history stay honest.
+10. **Parked drafts** — the "Not in this review" action is hidden in the engine (where the
+    parked list is replaced by the Converter), so a draft can't become unreachable.
+11. **Dedup `lastRunAt`** is null when dedup wasn't performed (only accounting-bearing batches
+    count as a run).
+12. **Auto-synced manual dedupe `0`** no longer masks a live "not-performed" signal (only a
+    deliberate override or a non-zero manual value stands).
+
+Refuted (no change needed): object-URL leak on overlapping uploads (already guarded), a 30s
+chunk-reload "storm" (sessionStorage survives the reload), CSS-preload regex gap (broadened
+anyway as a cheap robustness win). Full unit suite green (4273), build green.

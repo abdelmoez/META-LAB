@@ -2147,10 +2147,14 @@ export async function getMetaLabSummary(req, res) {
     const dedupMethod         = anyImportAccounting && dupGroupCount > 0 ? 'combination'
       : anyImportAccounting ? 'automatic'
         : (dupGroupCount > 0 || postImportDupes > 0) ? 'manual' : null;
+    // Only a batch that actually recorded dedup accounting (or a resolved duplicate group)
+    // counts as a dedup "run", so lastRunAt aligns with `performed` and is null when dedup
+    // was never performed (review finding).
     const dedupTimes = [
-      ...batches.map(b => b.createdAt), ...dupGroups.map(g => g.resolvedAt || g.createdAt),
+      ...batches.filter(b => (b.preDedupCount || 0) > 0 || (b.duplicateCount || 0) > 0).map(b => b.createdAt),
+      ...dupGroups.map(g => g.resolvedAt || g.createdAt),
     ].filter(Boolean).map(t => new Date(t).getTime()).filter(n => Number.isFinite(n));
-    const dedupLastRunAt = dedupTimes.length ? new Date(Math.max(...dedupTimes)).toISOString() : null;
+    const dedupLastRunAt = dedupPerformed && dedupTimes.length ? new Date(Math.max(...dedupTimes)).toISOString() : null;
     const fullTextAssessed   = records.filter(r => r.currentStage === 'full_text').length;
     const excludedTitleAbstract = Math.max(0, screened - fullTextAssessed);
     const fullTextExcluded   = records.filter(r => r.finalStatus === 'rejected').length;

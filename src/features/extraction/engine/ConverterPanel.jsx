@@ -63,7 +63,9 @@ export default function ConverterPanel({ onApply, disabled = false, defaultOpen 
   const groups = useMemo(() => [...new Set(CONVERSIONS.map((c) => c.group))], []);
   const targets = res ? targetsFor(res.values) : [];
 
-  const setInput = (k, v) => setVals((prev) => ({ ...prev, [k]: v }));
+  // Editing an input invalidates a prior computed result, so the Apply buttons can never
+  // write a value/formula that no longer matches the current inputs (review finding).
+  const setInput = (k, v) => { setVals((prev) => ({ ...prev, [k]: v })); setRes(null); setErr(''); };
   const pickConversion = (id) => { setConvId(id); setRes(null); setErr(''); setVals({}); };
 
   const compute = () => {

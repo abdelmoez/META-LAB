@@ -162,21 +162,24 @@ export default function ArticleWorkspace({
     const written = [];
     const replaced = [];
     const provFields = {};
-    const p = { ...values };
+    const p = {};
     for (const f of Object.keys(values)) {
       if (!ALL_VALUE_KEYS.includes(f)) continue;
+      const nextVal = String(values[f]);
+      // Identical value → a true no-op: never churn autosave or shed history on a re-pick.
+      if (nonEmpty(study[f]) && String(study[f]) === nextVal) continue;
+      p[f] = values[f];
       written.push(f);
-      const had = nonEmpty(study[f]) && String(study[f]) !== String(values[f]);
       const prior = readProvenance(study, f);
-      const history = Array.isArray(prior && prior.history) ? prior.history.slice(-9) : [];
-      if (had) {
-        replaced.push({ field: f, from: String(study[f]), to: String(values[f]) });
+      const history = Array.isArray(prior && prior.history) ? prior.history.slice(-10) : [];
+      if (nonEmpty(study[f])) {
+        replaced.push({ field: f, from: String(study[f]), to: nextVal });
         history.push({ value: String(study[f]), method: (prior && prior.method) || 'manual', at: now });
       }
       provFields[f] = {
         method: prov.method || 'manual', page: prov.page || null, bbox: prov.bbox || null,
         excerpt: prov.excerpt ? String(prov.excerpt).slice(0, 200) : undefined, at: now,
-        history: history.length ? history : undefined,
+        history: history.length ? history.slice(-10) : undefined,
       };
     }
     if (!written.length) return { written: [], replaced: [] };
@@ -231,10 +234,18 @@ export default function ArticleWorkspace({
       else {
         const raw = tokenPrimary(token);
         if (raw == null) { setStatus(`"${runStr}" has no number to capture.`); return; }
+        // A lone number in Smart mode only makes sense as the effect estimate for an
+        // es/lo/hi measure. For a 2×2 / continuous / count measure, route the user to the
+        // exact field instead of silently writing it into the (hidden) es slot (77.md §7).
+        if (!usesEffectSlot(study)) { setStatus('That is a single number — choose the exact field (events, n, or a 2×2 cell) above, then click it.'); return; }
         const e = esFields(Number(raw), null, null); if (!e) { setStatus('That value is ≤ 0, which a ratio measure cannot take on the log scale.'); return; }
         Object.assign(values, e);
       }
     } else {
+      // A specific field is the target — but a p-value or percentage is almost never the
+      // literal value for a count/effect field, so guard the same way Smart mode does.
+      if (token.kind === 'p') { setStatus('That looks like a p-value — pick the effect estimate or its CI instead.'); return; }
+      if (token.kind === 'percent') { setStatus('That looks like a percentage — capture the reported count, not the percent.'); return; }
       const n = tokenPrimary(token);
       if (n == null) { setStatus(`"${runStr}" has no number to capture.`); return; }
       // es/lo/hi live on the ANALYSIS (ln) scale for ratio measures — a direct capture
@@ -273,6 +284,13 @@ export default function ArticleWorkspace({
   /* ── Converter apply (77.md §4): route through the same write path + audit ── */
   const applyConversion = useCallback(({ patch: convPatch, conversion, targetLabel }) => {
     if (!study || !editable || !convPatch) return;
+    // The 'es' converter target (ratio_log) emits es/lo/hi already on the LN scale. Only a
+    // ratio measure stores es on the ln scale — applying it under a non-ratio (or unset)
+    // measure would silently mis-scale the effect size (77.md §4, review finding).
+    if (['es', 'lo', 'hi'].some((k) => k in convPatch) && !RATIO_MEASURES.includes(study.esType)) {
+      setStatus('This conversion produces a log-scale effect size, which only applies to a ratio measure (OR/RR/HR/IRR). Set the effect measure first.');
+      return;
+    }
     const now = new Date().toISOString();
     const record = { id: Math.random().toString(36).slice(2, 10), type: conversion.type, method: conversion.method, reason: conversion.reason || '', inputs: conversion.inputs || {}, formula: conversion.formula, at: now, target: targetLabel };
     const note = `Converted (${conversion.label}): ${conversion.detail}${conversion.reason ? ` — ${conversion.reason}` : ''}.`;
@@ -293,7 +311,23 @@ export default function ArticleWorkspace({
     return { mode: 'click', onTextClick: assignFromClick, onTextMiss: () => setStatus('No number there — zoom in, or run text recognition on scanned pages.') };
   }, [method, assignFromClick, pdf.url, editable]);
 
-  const setField = (f, v) => { if (editable) patch({ [f]: v, needsReview: true }); };
+  const setField = useCallback((f, v) => {
+    if (!editable || !study) return;
+    patch({ [f]: v, needsReview: true });
+    // 77.md §2/§15 — a manually typed VALUE invalidates any prior click/table source
+    // location (which described the previous value). Re-attribute the field to 'manual',
+    // drop the stale page/bbox so jump-to-source can't point at the wrong place, and keep
+    // the replaced value in history.
+    if (ALL_VALUE_KEYS.includes(f) && onAttachProvenance) {
+      const prior = readProvenance(study, f);
+      const changed = String(study[f] || '') !== String(v);
+      if (prior && (prior.page || prior.bbox || prior.method) && changed) {
+        const history = Array.isArray(prior.history) ? prior.history.slice(-10) : [];
+        if (nonEmpty(study[f])) history.push({ value: String(study[f]), method: prior.method || 'manual', at: new Date().toISOString() });
+        onAttachProvenance(study.id, { [f]: { method: 'manual', page: null, bbox: null, history: history.length ? history : undefined } });
+      }
+    }
+  }, [editable, study, patch, onAttachProvenance]);
   const focusField = useCallback((f) => { if (method === 'click' && assignOptions.some(([k]) => k === f)) setActiveField(f); }, [method, assignOptions]);
 
   const activeLabel = activeField === 'smart'
@@ -349,15 +383,18 @@ export default function ArticleWorkspace({
               <div style={{ fontSize: 30 }}>📄</div>
               <div style={{ fontSize: 13, color: C.txt }}>{pdf.resolving ? 'Looking for this article’s PDF…' : 'No PDF linked to this article.'}</div>
               {!readOnly && (
-                <label style={{ cursor: 'pointer' }}>
-                  <span style={{ ...btnS('ghost'), fontSize: 12, display: 'inline-block' }}>{pdf.uploading ? 'Uploading…' : '⬆ Upload a PDF'}</span>
-                  <input type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} onChange={(e) => { pdf.setLocalFile(e.target.files && e.target.files[0]); e.target.value = ''; }} />
+                <label style={{ cursor: pdf.uploading ? 'default' : 'pointer' }}>
+                  <span style={{ ...btnS('ghost'), fontSize: 12, display: 'inline-block', opacity: pdf.uploading ? 0.6 : 1 }}>{pdf.uploading ? 'Uploading…' : '⬆ Upload a PDF'}</span>
+                  <input type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} disabled={pdf.uploading}
+                    onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; pdf.setLocalFile(f, { persist: true }); }} />
                 </label>
               )}
               <div style={{ fontSize: 11, color: C.dim }}>
-                {pdf.canPersistUpload === false
-                  ? 'This study is not linked to a screening record, so an uploaded PDF stays in this tab only. Manual entry works without a PDF.'
-                  : 'A PDF you upload here is saved to the project and shows up in Screening and Risk of Bias too.'}
+                {pdf.resolving
+                  ? 'Manual entry works without a PDF — type values on the right.'
+                  : pdf.canPersistUpload === false
+                    ? 'This study is not linked to a screening record, so an uploaded PDF stays in this tab only. Manual entry works without a PDF.'
+                    : 'A PDF you upload here is saved to the project and shows up in Screening and Risk of Bias too.'}
               </div>
             </div>
           )}

@@ -30,10 +30,24 @@ describe('computePrismaCounts — dedup honesty (§1)', () => {
     expect(r.provenance.dedupe).toBe('computed');
   });
 
-  it('still lets a manual project.prisma dedupe value win (explicit user intent)', () => {
+  it('still lets a non-zero manual project.prisma dedupe value win (explicit user intent)', () => {
     const r = computePrismaCounts({ prisma: { dedupe: '7' } }, { screening: { identified: 120, dedupePerformed: false } });
     expect(r.counts.dedupe).toBe(7);
     expect(r.provenance.dedupe).toBe('manual');
+  });
+
+  it('does NOT let an auto-synced manual "0" mask a live not-performed signal (§1)', () => {
+    // MetaSiftPrismaSync writes project.prisma.dedupe="0" exactly when dedup was not performed.
+    const r = computePrismaCounts({ prisma: { dedupe: '0' } }, { screening: { identified: 120, dedupePerformed: false } });
+    expect(r.counts.dedupe).toBeNull();
+    expect(r.provenance.dedupe).toBe('not-performed');
+    expect(r.warnings.some((w) => /not been performed/i.test(w))).toBe(true);
+  });
+
+  it('a deliberate override of 0 still stands even when live says not-performed', () => {
+    const r = computePrismaCounts({ prisma: { dedupe: '0' } }, { overrides: { dedupe: '0' }, screening: { identified: 120, dedupePerformed: false } });
+    expect(r.counts.dedupe).toBe(0);
+    expect(r.provenance.dedupe).toBe('override');
   });
 
   it('warns when dedup is simply unknown (no signal either way)', () => {
