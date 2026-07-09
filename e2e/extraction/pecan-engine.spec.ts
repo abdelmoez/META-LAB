@@ -71,6 +71,16 @@ test.describe('Pecan Extraction Engine', () => {
       const target = page.getByLabel('Next click fills →');
       await expect(target).toBeVisible();
       await expect(target.locator('option', { hasText: '2×2 a' })).toHaveCount(1);
+
+      // §7 — changing the effect measure re-drives the pick targets (RR 2×2 → MD continuous),
+      // proving the field mapping (not a stale 'smart') across browsers.
+      await page.getByTestId('pex-esType').selectOption('MD');
+      await expect(target.locator('option', { hasText: 'Mean (Exp)' })).toHaveCount(1);
+      await expect(target.locator('option', { hasText: '2×2 a' })).toHaveCount(0);
+
+      // Manual Entry hides the pick guidance; the form stays editable.
+      await page.getByRole('tab', { name: /Manual Entry/i }).click();
+      await expect(page.getByLabel('Next click fills →')).toHaveCount(0);
     } finally {
       await deleteProject(request, project.id);
     }

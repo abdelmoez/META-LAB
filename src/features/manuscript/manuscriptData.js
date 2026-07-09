@@ -105,6 +105,15 @@ export function mapScreeningSummary(d) {
     if (dd.method) out.dedupeMethod = String(dd.method);
     if (dd.lastRunAt) out.dedupeLastRunAt = String(dd.lastRunAt);
   }
+  // 77.md §1 — per-source identification split. Only feed dbs/reg/other into the PRISMA
+  // counts when it is EXACT (no import-time dups), so identified = dbs+reg+other stays
+  // consistent with the separately-reported identified total.
+  const sr = d.sources && typeof d.sources === 'object' ? d.sources : null;
+  if (sr && sr.exact === true) {
+    if (num(sr.databases) != null) out.dbs = num(sr.databases);
+    if (num(sr.registers) != null) out.reg = num(sr.registers);
+    if (num(sr.other) != null) out.other = num(sr.other);
+  }
   return Object.keys(out).length ? out : null;
 }
 

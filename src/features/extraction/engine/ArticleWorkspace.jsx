@@ -103,7 +103,11 @@ export default function ArticleWorkspace({
   const rowRef = useRef(null);
   const split = useExtractionSplit(rowRef);
 
-  const pdf = usePdfSource(study, projectId);
+  // When a PDF is persisted to the blob-anchored study-document store (a non-screening
+  // study), stamp the pointer into the study blob so a whole-blob autosave can't clobber
+  // the server's durable write (77.md §5).
+  const onDocPersisted = useCallback((sid, document) => { if (onPatchStudy && document) onPatchStudy(sid, { document, updatedAt: new Date().toISOString() }); }, [onPatchStudy]);
+  const pdf = usePdfSource(study, projectId, { onDocumentPersisted: onDocPersisted });
   const completion = useMemo(() => evaluateCompletion(study || {}), [study]);
   const progress = useMemo(() => progressOf(study || {}), [study]);
   // Show every EXPECTED field, plus any OTHER value field that already carries data, so a
@@ -393,8 +397,8 @@ export default function ArticleWorkspace({
                 {pdf.resolving
                   ? 'Manual entry works without a PDF — type values on the right.'
                   : pdf.canPersistUpload === false
-                    ? 'This study is not linked to a screening record, so an uploaded PDF stays in this tab only. Manual entry works without a PDF.'
-                    : 'A PDF you upload here is saved to the project and shows up in Screening and Risk of Bias too.'}
+                    ? 'An uploaded PDF stays in this tab only for now. Manual entry works without a PDF.'
+                    : 'A PDF you upload here is saved to the project — it stays after you reload and is available in Risk of Bias (and Screening, when the study is screening-linked).'}
               </div>
             </div>
           )}
@@ -448,8 +452,8 @@ export default function ArticleWorkspace({
                   hasSource={hasSourceEvidence(study, f)} onJump={() => jumpToSource(f)} numeric={NUMERIC_FIELDS.has(f)} />
               ))}
               <div>
-                <label style={lbl}>{FIELD_LABELS.esType}</label>
-                <select value={study.esType || ''} onChange={(e) => setField('esType', e.target.value)} disabled={!editable} style={{ ...inp, fontSize: 12 }}>
+                <label style={lbl} htmlFor="pex-esType">{FIELD_LABELS.esType}</label>
+                <select id="pex-esType" data-testid="pex-esType" value={study.esType || ''} onChange={(e) => setField('esType', e.target.value)} disabled={!editable} style={{ ...inp, fontSize: 12 }}>
                   {ES_TYPES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
                 </select>
               </div>

@@ -44,23 +44,27 @@ export function computePrismaCounts(project, opts = {}) {
   const provenance = {};
   const warnings = [];
 
-  // Resolve a single field through the precedence chain.
-  const pick = (key, manualKey, computedKey) => {
+  // Resolve a single field through the precedence chain. Accepts several computed keys
+  // tried in order (first non-null wins), so a field can prefer an explicit value and fall
+  // back to a coarser one.
+  const pick = (key, manualKey, ...computedKeys) => {
     const o = toNum(ov[key]);
     if (o != null) { provenance[key] = 'override'; return o; }
     const m = toNum(p[manualKey != null ? manualKey : key]);
     if (m != null) { provenance[key] = 'manual'; return m; }
-    if (computedKey && toNum(sc[computedKey]) != null) {
-      provenance[key] = 'computed';
-      return toNum(sc[computedKey]);
+    for (const ck of computedKeys) {
+      if (ck && toNum(sc[ck]) != null) { provenance[key] = 'computed'; return toNum(sc[ck]); }
     }
     provenance[key] = 'missing';
     return null;
   };
 
-  const dbs = pick('dbs', 'dbs', 'identified');
-  const reg = pick('reg', 'reg', null);
-  const other = pick('other', 'other', null);
+  // 77.md §1 — dbs prefers the explicit per-source split (sc.dbs), falling back to the whole
+  // identified count only when no split is available (legacy behaviour). reg/other now read
+  // the canonical split too (previously always manual/missing).
+  const dbs = pick('dbs', 'dbs', 'dbs', 'identified');
+  const reg = pick('reg', 'reg', 'reg');
+  const other = pick('other', 'other', 'other');
 
   // identified = dbs+reg+other when any present, else fall back to screening.identified
   let identified = null;

@@ -19,8 +19,9 @@
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import Icon from '../components/icons.jsx';
 import PdfViewer from '../screening/components/PdfViewer.jsx';
+import AppPdfViewer from '../components/AppPdfViewer.jsx';
 
-export default function RobPdfPanel({ loading, error, screenProjectId, recordId, canManage, onRetry, previewHeight }) {
+export default function RobPdfPanel({ loading, error, screenProjectId, recordId, studyDocUrl, canManage, onRetry, previewHeight }) {
   // The "Study PDF" label + the back affordance live in RobWorkspace's tab bar /
   // top-level header (prompt32), so this panel is header-less — a pure renderer.
   // prompt36 Task 2 — when a real PDF is shown, the embedded viewer runs in `flush`
@@ -31,6 +32,10 @@ export default function RobPdfPanel({ loading, error, screenProjectId, recordId,
     <div style={{ border: `1px solid ${C.brd}`, borderRadius: 14, background: C.card, overflow: 'hidden', display: 'flex', flexDirection: 'column', height: '100%' }}>
       {showViewer ? (
         <PdfViewer pid={screenProjectId} recordId={recordId} canManage={!!canManage} defaultOpen previewHeight={previewHeight} flush />
+      ) : studyDocUrl ? (
+        // 77.md §5 — a manually-added study with a persisted study document (no screening
+        // record) still shows its PDF here, read-only, via the shared viewer.
+        <AppPdfViewer key={studyDocUrl} url={studyDocUrl} flush />
       ) : (
         <div style={{ padding: 14, flex: 1, minHeight: 0 }}>
           {loading ? (

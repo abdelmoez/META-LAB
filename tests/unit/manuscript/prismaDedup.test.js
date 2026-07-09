@@ -57,3 +57,29 @@ describe('computePrismaCounts — dedup honesty (§1)', () => {
     expect(r.warnings.some((w) => /deduplication was performed/i.test(w))).toBe(true);
   });
 });
+
+describe('computePrismaCounts — per-source split (§1)', () => {
+  it('uses the canonical dbs/reg/other split when provided; identified = their sum', () => {
+    const r = computePrismaCounts({}, { screening: { identified: 100, dbs: 70, reg: 20, other: 10 } });
+    expect(r.counts.dbs).toBe(70);
+    expect(r.counts.reg).toBe(20);
+    expect(r.counts.other).toBe(10);
+    expect(r.provenance.dbs).toBe('computed');
+    expect(r.provenance.reg).toBe('computed');
+    expect(r.counts.identified).toBe(100); // 70+20+10 derived
+    expect(r.provenance.identified).toBe('derived');
+  });
+
+  it('falls back to identified-as-dbs (legacy) when no split is available', () => {
+    const r = computePrismaCounts({}, { screening: { identified: 100 } });
+    expect(r.counts.dbs).toBe(100);
+    expect(r.provenance.dbs).toBe('computed');
+    expect(r.provenance.reg).toBe('missing');
+  });
+
+  it('a manual project.prisma split still overrides the computed one', () => {
+    const r = computePrismaCounts({ prisma: { dbs: '55' } }, { screening: { identified: 100, dbs: 70, reg: 20, other: 10 } });
+    expect(r.counts.dbs).toBe(55);
+    expect(r.provenance.dbs).toBe('manual');
+  });
+});

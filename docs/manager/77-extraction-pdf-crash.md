@@ -81,17 +81,15 @@ session-local copy with explicit "not saved" messaging.
   contract in `e2e/extraction/pecan-engine.spec.ts`.
 - Build green.
 
-## 7. Remaining limitations (honest)
+## 7. Limitations — addressed in a follow-up round
 
-- A brand-new `Document` table + backfill migration was deliberately NOT built: the existing
-  screening-attachment store already IS the canonical shared document store, and a parallel
-  table would create the competing source of truth the brief warns against. Persisting
-  extraction uploads to that canonical store is the correct, lower-risk consolidation.
-- Persisted extraction upload requires the study to be screening-linked; a truly manual study
-  has no server record to attach to (session-local, clearly messaged).
-- Full Firefox/WebKit coverage is `@smoke`-tagged (project convention), not the whole suite.
-- Per-source PRISMA split (databases vs registers vs other) is not yet aggregated from
-  `ScreenRecord.sourceDb`; `identified`/dedup metadata are canonical and honest.
+The round-1 limitations were addressed (see §10); what remains is genuinely out of scope:
+
+- Existing screening PDFs are NOT retro-migrated into the study-document store — they don't
+  need to be; a screening-linked study already resolves its `ScreenPdfAttachment` and that
+  stays canonical. The study document is the store for studies that have no screening record.
+- A many-documents-per-study model isn't introduced (one canonical PDF per study, matching
+  every existing consumer's assumption).
 
 ## 8. Deploy / rollback
 
@@ -131,3 +129,44 @@ A 6-dimension find→verify review found 12 real, verified issues in the round-1
 Refuted (no change needed): object-URL leak on overlapping uploads (already guarded), a 30s
 chunk-reload "storm" (sessionStorage survives the reload), CSS-preload regex gap (broadened
 anyway as a cheap robustness win). Full unit suite green (4273), build green.
+
+## 10. Limitations follow-up round (manual-study PDFs · per-source PRISMA · cross-browser)
+
+Addressed the three documented limitations:
+
+**Persistent, cross-engine PDFs for manual (non-screening) studies (§5 gap, zero migration).**
+A study that was never screened had no `ScreenRecord` to hang a `ScreenPdfAttachment` on, so
+its uploaded PDF could only be session-local. New **blob-anchored study-document store**:
+bytes on disk (`server/storage/study-docs/<projectId>/<uuid>.pdf`), the authoritative pointer
+(`study.document = {storedName, fileHash, fileName, fileSize, mimeType, uploadedBy, uploadedAt}`)
+rides in the project blob — so there is **no schema migration** and **one canonical PDF
+location per study** (screening attachment when screening-linked, else this document — never
+both, no competing source of truth). New `server/studyDocs/studyDocStorage.js` +
+`server/controllers/studyDocController.js` + routes `POST/GET/GET download/DELETE
+/api/projects/:id/studies/:studyId/document`. Access = the extraction access resolver
+(owner/member, canView to read, canEdit to write); PDFs streamed through the authenticated
+Range-aware route (never public); magic-byte + 25 MB validated; sha256 content-dedupe within a
+project; `storedName` strictly validated (`isSafeStoredName`) at every filesystem use to block
+a crafted-blob path traversal. The server writes `study.document` durably AND returns it so the
+client stamps its in-memory blob (autosave can't clobber the pointer). `usePdfSource` gained
+study-document resolution + `setLocalFile(file,{persist:true})` persistence for manual studies;
+the extraction article list shows availability for them; **Risk of Bias** renders the document
+too (`RobPdfPanel` fallback). Verified end-to-end against a live server (upload · checksum ·
+metadata · download · cross-user 404 · delete).
+
+**Per-source PRISMA split (databases vs registers vs other).** New pure
+`research-engine/screening/sourceClassify.js` (`classifySource`/`splitBySource`) buckets
+`ScreenRecord.sourceDb`; `getMetaLabSummary` emits `sources:{databases,registers,other,exact}`;
+`mapScreeningSummary` feeds dbs/reg/other into the manuscript **only when `exact`** (no
+import-time duplicates, so the split equals `identified` and can't corrupt the total);
+`computePrismaCounts.pick` is now variadic so dbs prefers the explicit split and falls back to
+identified, and reg/other read the canonical split (previously always manual/missing).
+
+**Cross-browser coverage.** The study-document round-trip is covered by a deterministic
+integration test (`tests/integration/api-study-doc.test.js`); the extraction UX contract
+(two modes, Converter, measure-driven active field, RR→MD field switch, Manual Entry) is a
+cross-browser `@smoke` e2e that runs on Chromium/Firefox/WebKit (pdf.js canvas rendering stays
+out of the browser assertions — too fragile in CI, per the existing files-pdf convention).
+
+Tests added: `sourceClassify`, `studyDocStorage`, extended `prismaDedup` (source split), the
+study-doc integration test, extended extraction e2e. Full unit suite green; build green.

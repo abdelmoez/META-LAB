@@ -16,6 +16,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { screeningApi } from '../../../frontend/screening/api-client/screeningApi.js';
+import { studyDocApi } from './studyDocApi.js';
 import { normalizeItems } from '../../../research-engine/extraction/pdfTextGrid.js';
 
 const MAX_PAGES = 120;
@@ -45,7 +46,7 @@ function isPdfBytes(buf) {
  *   extractPages(): Promise<{pages:[{page,text}], count}>
  * }
  */
-export function usePdfSource(study, projectId) {
+export function usePdfSource(study, projectId, { onDocumentPersisted } = {}) {
   const [resolved, setResolved] = useState({ url: null, source: null, screenProjectId: null, recordId: null });
   const [resolving, setResolving] = useState(false);
   const [retrieving, setRetrieving] = useState(false);
@@ -71,8 +72,13 @@ export function usePdfSource(study, projectId) {
   // edit, e.g. each click-assign. Depend on these primitives instead.
   const directSp = (study && study.screeningProjectId) || null;
   const directRid = (study && study.screeningRecordId) || null;
+  // The blob-anchored study document (77.md §5) — the persistent PDF for a study that
+  // isn't screening-linked. Depend on its storedName primitive, not the whole object.
+  const docStored = (study && study.document && study.document.storedName) || null;
 
-  // Resolve the screening-attached PDF whenever the selected study (identity) changes.
+  // Resolve the study's PDF whenever its identity (or persisted-doc pointer) changes.
+  // Priority: screening attachment (canonical for screened studies) → blob study document
+  // → nothing. Both survive refresh/relogin and are served through authenticated routes.
   useEffect(() => {
     let dead = false;
     revokeLocal();
@@ -82,6 +88,7 @@ export function usePdfSource(study, projectId) {
 
     const token = supersedeRef.current;   // if a local upload happens mid-resolve, bail
     const superseded = () => dead || supersedeRef.current !== token;
+    const studyDocUrl = () => studyDocApi.downloadUrl(projectId, studyId);
     (async () => {
       setResolving(true);
       try {
@@ -101,10 +108,15 @@ export function usePdfSource(study, projectId) {
           if (superseded()) return;
           if (att) {
             setResolved({ url: screeningApi.pdfDownloadUrl(sp, rid, att.id), source: 'screening', screenProjectId: sp, recordId: rid });
+          } else if (docStored) {
+            setResolved({ url: studyDocUrl(), source: 'study-doc', screenProjectId: sp, recordId: rid });
           } else {
             setResolved({ url: null, source: null, screenProjectId: sp, recordId: rid });
             if (listFailed) setError('Could not check for this study’s saved PDF just now — refresh before uploading so you don’t replace an existing file.');
           }
+        } else if (docStored) {
+          // Manual study with a persisted document — resolve it straight from the blob pointer.
+          setResolved({ url: studyDocUrl(), source: 'study-doc', screenProjectId: null, recordId: null });
         }
       } catch (e) {
         if (!superseded()) setError(e.message || 'Could not resolve a PDF for this study.');
@@ -113,13 +125,13 @@ export function usePdfSource(study, projectId) {
       }
     })();
     return () => { dead = true; };
-  }, [studyId, projectId, directSp, directRid, revokeLocal]);
+  }, [studyId, projectId, directSp, directRid, docStored, revokeLocal]);
 
-  // A screening-linked study can PERSIST an uploaded PDF to the canonical attachment
-  // store, so it survives refresh/relogin and appears in Screening + Risk of Bias too
-  // (77.md §5 — one canonical project-study document, no per-engine copies). When the
-  // study is NOT screening-linked, we honestly fall back to a session-local object URL.
-  const canPersistUpload = !!((resolved.screenProjectId || directSp) && (resolved.recordId || directRid));
+  // A PDF uploaded here can be PERSISTED so it survives refresh/relogin and is available
+  // across engines (77.md §5): screening-linked studies → the canonical ScreenPdfAttachment
+  // (also visible in Screening + RoB); any other study → the blob-anchored study document
+  // (visible in Extraction + RoB). Effectively any study with a project + id can persist.
+  const canPersistUpload = !!(((resolved.screenProjectId || directSp) && (resolved.recordId || directRid)) || (projectId && studyId));
 
   const localFallback = useCallback((file) => {
     supersedeRef.current += 1;   // supersede any in-flight screening resolve so it can't clobber this
@@ -161,9 +173,30 @@ export function usePdfSource(study, projectId) {
         setError((e && e.message ? `${e.message} ` : '') + 'Showing this PDF locally for this session only — it was not saved to the project.');
       }
       setUploading(false);
+    } else if (opts.persist && projectId && studyId) {
+      // Not screening-linked → persist to the blob-anchored study document store. The server
+      // writes study.document durably; we also stamp it into the client blob (onDocumentPersisted)
+      // so a whole-blob autosave can't clobber the pointer.
+      setUploading(true); setError('');
+      const startStudy = studyIdRef.current;
+      try {
+        const r = await studyDocApi.upload(projectId, studyId, file);
+        if (studyIdRef.current !== startStudy) { setUploading(false); return; }
+        if (r && r.document && r.document.storedName) {
+          supersedeRef.current += 1; revokeLocal();
+          setResolved({ url: studyDocApi.downloadUrl(projectId, studyId), source: 'study-doc', screenProjectId: null, recordId: null });
+          if (onDocumentPersisted) onDocumentPersisted(studyId, r.document);
+          setUploading(false);
+          return;
+        }
+      } catch (e) {
+        if (studyIdRef.current !== startStudy) { setUploading(false); return; }
+        setError((e && e.message ? `${e.message} ` : '') + 'Showing this PDF locally for this session only — it was not saved to the project.');
+      }
+      setUploading(false);
     }
     localFallback(file);
-  }, [resolved.screenProjectId, resolved.recordId, directSp, directRid, revokeLocal, localFallback]);
+  }, [resolved.screenProjectId, resolved.recordId, directSp, directRid, projectId, studyId, revokeLocal, localFallback, onDocumentPersisted]);
 
   const clearLocal = useCallback(() => {
     revokeLocal();

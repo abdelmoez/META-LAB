@@ -16,14 +16,17 @@ import { buildArticleSummary, articleListStats } from '../../../src/research-eng
  */
 async function pdfAvailabilityForStudies(studies) {
   const byRecord = new Map(); // recordId → [studyId]
+  const map = new Map();
   for (const s of studies) {
+    // 77.md §5 — a blob-anchored study document counts as an available PDF too, so a
+    // manually-added study with a persisted upload shows the same availability flag.
+    if (s && s.document && s.document.storedName) map.set(s.id, true);
     const rid = s && s.screeningRecordId;
     if (rid) {
       if (!byRecord.has(rid)) byRecord.set(rid, []);
       byRecord.get(rid).push(s.id);
     }
   }
-  const map = new Map();
   const recordIds = [...byRecord.keys()];
   if (!recordIds.length) return map;
   try {

@@ -13,6 +13,7 @@ import {
 import { kickImportWorker } from '../services/screeningImportWorker.js';
 import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../screening/access.js';
 import { rankItems } from '../../src/research-engine/screening/ai/ranking.js';
+import { splitBySource } from '../../src/research-engine/screening/sourceClassify.js';
 import { fastListEligible, buildFastListQuery } from '../../src/research-engine/screening/recordListQuery.js';
 import { aiFlagEnabled } from '../services/screeningAiService.js';
 // 62.md — export logic moved into a shared service so the sync route + the async export
@@ -30,6 +31,7 @@ import { resolveScreeningUploadLimit } from '../screening/uploadLimit.js';
 // 67.md — product-tier enforcement (admins/mods bypass inside the service). The
 // per-project record cap binds to the PROJECT OWNER's tier, not the acting member's.
 import { requireEntitlement, requireLimit, sendTierLimit, loadUserForTier, planRecordLimitFor } from '../services/entitlementService.js';
+import { requireProjectExport, requireProjectExportEnabled, settleProjectExport, EXPORT_TYPES } from '../services/projectExportGuard.js';
 import { snapshotPico } from '../screening/picoSnapshot.js';
 import { screeningCountSelect } from '../utils/screeningCounts.js';
 import { derivePrismaIdentification } from '../utils/prismaDerive.js';
@@ -1320,6 +1322,7 @@ function fallbackParseRIS(content) {
 // and the async export worker.
 
 export async function exportRecords(req, res) {
+  let reservation = null;
   try {
     // Access-guard (prompt6 403-vs-404 audit): outsider → 404; active member
     // without canExportRecords (and not leader/owner) → 403.
@@ -1332,6 +1335,16 @@ export async function exportRecords(req, res) {
     const settings = await getMetaSiftSettings();
     if (!settings.allowExport) return res.status(403).json({ error: 'Export is currently disabled by the administrator' });
 
+    // 67.md — screening.export tier gate (the sync path historically SKIPPED this, a
+    // bypass the async path already blocked). 79.md §3 — plus the master project-export
+    // gate + monthly allowance RESERVATION (Free = blocked; failed exports refunded below).
+    try {
+      await requireEntitlement(req.user, 'screening.export');
+      reservation = await requireProjectExport(req.user, {
+        exportType: EXPORT_TYPES.SCREENING_RECORDS, projectId: p.id, format: req.query.format || 'csv',
+      });
+    } catch (e) { if (sendTierLimit(res, e)) return; throw e; }
+
     const fmt    = req.query.format || 'csv';
     const filter = req.query.filter || 'all';
 
@@ -1341,6 +1354,8 @@ export async function exportRecords(req, res) {
     // (POST …/export/start), which streams to a file off the request thread.
     const recordCount = await prisma.screenRecord.count({ where: { projectId: p.id } });
     if (recordCount > EXPORT_SYNC_MAX) {
+      // Not an export the user completed → refund the reserved allowance (79.md §3).
+      settleProjectExport(reservation?.reservationId, { status: 'failed', failureReason: 'too_large_use_async' });
       return res.status(413).json({
         error: 'This project is too large for a direct download. Use background export instead.',
         useAsync: true,
@@ -1379,15 +1394,18 @@ export async function exportRecords(req, res) {
     });
 
     if (fmt === 'json') {
+      const body = JSON.stringify(filtered);
       res.setHeader('Content-Type', 'application/json');
       res.setHeader('Content-Disposition', `attachment; filename="sift-export-${p.id.slice(0,8)}.json"`);
-      return res.json(filtered);
+      settleProjectExport(reservation?.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(body) });
+      return res.send(body);
     }
 
     if (fmt === 'ris') {
       const ris = filtered.map(renderRisBlock).join('\n\n') + (filtered.length ? '\n' : '');
       res.setHeader('Content-Type', 'application/x-research-info-systems');
       res.setHeader('Content-Disposition', `attachment; filename="sift-export-${p.id.slice(0,8)}.ris"`);
+      settleProjectExport(reservation?.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(ris) });
       return res.send(ris);
     }
 
@@ -1396,8 +1414,11 @@ export async function exportRecords(req, res) {
     const csv = [EXPORT_COLUMNS.join(','), ...filtered.map(renderCsvRow)].join('\n');
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename="sift-export-${p.id.slice(0,8)}.csv"`);
+    settleProjectExport(reservation?.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(csv) });
     res.send(csv);
   } catch (err) {
+    // Refund the reserved allowance — a failed export never consumes usage (79.md §3).
+    settleProjectExport(reservation?.reservationId, { status: 'failed', failureReason: err?.message });
     console.error('[screening] exportRecords:', err.message);
     res.status(500).json({ error: 'Export failed' });
   }
@@ -1410,8 +1431,13 @@ async function gateExport(req, res) {
   const canExport = access.isOwner || (access.active && (access.isLeader || access.perms.canExportRecords));
   if (!canExport) { res.status(403).json({ error: 'You do not have permission to export records from this project' }); return null; }
   // 67.md — product-tier gate on top of the project permission (both must pass).
-  try { await requireEntitlement(req.user, 'screening.export'); }
-  catch (e) { if (sendTierLimit(res, e)) return null; throw e; }
+  // 79.md §3 — also require the master project-export entitlement (Free = blocked).
+  // Boolean-only here: gateExport is called on start AND every poll/download, so it
+  // must NOT consume the monthly allowance (that is reserved once, in startExport).
+  try {
+    await requireEntitlement(req.user, 'screening.export');
+    await requireProjectExportEnabled(req.user);
+  } catch (e) { if (sendTierLimit(res, e)) return null; throw e; }
   return access;
 }
 
@@ -2217,6 +2243,11 @@ export async function getMetaLabSummary(req, res) {
         duplicatesRemoved,
         afterDedup: screened,
       },
+      // 77.md §1 — per-source identification split (databases vs registers vs other) from
+      // ScreenRecord.sourceDb. `exact` is true only when there were no import-time duplicates,
+      // so the split (over surviving records) equals `identified` and can safely drive the
+      // PRISMA dbs/reg/other cells; otherwise it is an informational breakdown only.
+      sources: { ...splitBySource(records), exact: importDuplicates === 0 },
       // prompt29 Part 9 — workflow-stepper completeness signals.
       screeningStarted,
       screeningComplete,
