@@ -36,8 +36,14 @@ describe('canMutateAssessment (creator | owner | leader)', () => {
 
 describe('study source normalisers', () => {
   it('screening study → source:screening with stringified year', () => {
+    // 79.md §1 — journal / doi / pmid are passed through (optional; '' / null when absent)
+    // so the redesigned article list can distinguish same-author/year studies.
     expect(normaliseScreeningStudy({ id: 's1', title: 'T', author: 'Doe', year: 2021 }))
-      .toEqual({ id: 's1', source: 'screening', title: 'T', author: 'Doe', year: '2021' });
+      .toEqual({ id: 's1', source: 'screening', title: 'T', author: 'Doe', year: '2021', journal: '', doi: null, pmid: null });
+  });
+  it('screening study → surfaces journal/doi/pmid when the blob carries them', () => {
+    expect(normaliseScreeningStudy({ id: 's2', title: 'T2', author: 'Roe', year: '2020', journal: 'BMJ', doi: '10.1/x', pmid: '999' }))
+      .toEqual({ id: 's2', source: 'screening', title: 'T2', author: 'Roe', year: '2020', journal: 'BMJ', doi: '10.1/x', pmid: '999' });
   });
   it('manual study → source:manual, authors mapped to author', () => {
     const out = normaliseManualStudy({ id: 'm1', title: 'Manual', authors: 'Roe', year: '2024', doi: '10.x', pmid: '123', createdById: 'u1', createdByName: 'U' });

@@ -19,6 +19,7 @@ import RobWorkspace from './RobWorkspace.jsx';
 import RobTrafficLight from './RobTrafficLight.jsx';
 import { judgmentStyle } from './judgmentStyle.js';
 import { ROB_TOOLS, normalizeRobTool, isRobToolActive } from '../../research-engine/rob/tools.js';
+import { articleStatusOf } from './articleStatus.js';
 
 export default function ProjectRobPanel({ projectId, embedded = false, canEdit = true, robTool, onSelectTool, onContinue, onWorkspaceChange }) {
   const [project, setProject] = useState(null);
@@ -27,6 +28,9 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
   const [error, setError] = useState('');
   const [accessDenied, setAccessDenied] = useState(false);
   const [openId, setOpenId] = useState(null);          // open assessment in the workspace
+  // 79.md §1 — the study whose assessment was last opened; its card is briefly
+  // highlighted on return so the reviewer never loses their place in a long list.
+  const [recentStudyId, setRecentStudyId] = useState(null);
   const [creatingFor, setCreatingFor] = useState(null); // study being created-for
   const [studies, setStudies] = useState([]);          // prompt46 #4 — merged study universe (screening + manual)
   const [showAddStudy, setShowAddStudy] = useState(false);
@@ -87,6 +91,7 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
       if (appraisalOn && instrumentId) body.instrumentId = instrumentId;
       const res = await robApi.createAssessment(body);
       setCreatingFor(null);
+      setRecentStudyId(study.id);
       await reload();
       setOpenId(res.assessment.id);
     } catch (e) { setError(e.message); }
@@ -170,42 +175,33 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
       {studies.length === 0 ? (
         <Center>This project has no studies yet. Add studies in <strong>Data Extraction</strong>, or use <strong>Add manual study</strong> above to assess a study directly here.</Center>
       ) : (
-        <div style={{ display: 'grid', gap: 10 }}>
-          {studies.map(s => {
-            const list = byStudy[s.id] || [];
-            const label = `${s.author || ''} ${s.year ? `(${s.year})` : ''}`.trim() || (s.title || s.id);
-            const manual = s.source === 'manual';
-            return (
-              <div key={s.id} style={{ ...card, ...(manual ? { borderLeft: `3px solid ${C.purp}` } : null) }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                      <span style={{ fontWeight: 700, fontSize: 14 }}>{label}</span>
-                      <SourceBadge source={s.source} />
-                    </div>
-                    {s.title && <div style={{ fontSize: 12, color: C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 2 }}>{s.title}</div>}
-                  </div>
-                  {canEdit && (
-                    <button onClick={() => setCreatingFor(creatingFor === s.id ? null : s.id)} style={ghost}><Icon name="plus" size={13} /> Assess a result</button>
-                  )}
-                  {canEdit && manual && (
-                    <button onClick={() => removeManualStudy(s)} style={{ ...miniBtn, color: C.muted }} title="Delete manual study"><Icon name="trash" size={12} /></button>
-                  )}
-                </div>
-
-                {canEdit && creatingFor === s.id && <CreateForm onCancel={() => setCreatingFor(null)} onCreate={(label2, inst) => createFor(s, label2, inst)} appraisalOn={appraisalOn} defaultInstrument={selectedTool} />}
-
-                {list.length > 0 ? (
-                  <div style={{ marginTop: 10, display: 'grid', gap: 6 }}>
-                    {list.map(a => <AssessmentRow key={a.id} a={a} canEdit={canEdit} onOpen={() => setOpenId(a.id)} onRemove={() => removeAssessment(a.id)} />)}
-                  </div>
-                ) : (
-                  <div style={{ marginTop: 8, fontSize: 12, color: C.muted, fontStyle: 'italic' }}>No risk-of-bias result assessed yet.</div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+        <>
+          {/* 79.md §1 — status overview strip: how many articles are not started /
+              in progress / complete, scannable at a glance (icon + count, not colour
+              alone). Clarifies the shape of the work before diving into the list. */}
+          <ArticleStatusSummary studies={studies} byStudy={byStudy} />
+          <div style={{ display: 'grid', gap: 14 }} role="list" aria-label="Articles for risk-of-bias assessment">
+            {studies.map((s, i) => (
+              <ArticleCard
+                key={s.id}
+                index={i + 1}
+                study={s}
+                assessments={byStudy[s.id] || []}
+                canEdit={canEdit}
+                recent={recentStudyId === s.id}
+                creating={creatingFor === s.id}
+                onToggleCreate={() => setCreatingFor(creatingFor === s.id ? null : s.id)}
+                onCreate={(label2, inst) => createFor(s, label2, inst)}
+                onCancelCreate={() => setCreatingFor(null)}
+                appraisalOn={appraisalOn}
+                defaultInstrument={selectedTool}
+                onOpenAssessment={(a) => { setRecentStudyId(s.id); setOpenId(a.id); }}
+                onRemoveAssessment={removeAssessment}
+                onRemoveStudy={() => removeManualStudy(s)}
+              />
+            ))}
+          </div>
+        </>
       )}
 
       {showAddStudy && <ManualStudyModal onClose={() => setShowAddStudy(false)} onAdd={addManualStudy} />}
@@ -287,6 +283,122 @@ function ToolSelector({ selected, canEdit, onSelect, appraisalOn }) {
   );
 }
 
+// ── 79.md §1 — article-list distinction ──────────────────────────────────────
+// `articleStatusOf` (pure) lives in ./articleStatus.js so it is unit-testable
+// without the PDF/React tree. Icon + label encoding, never colour alone.
+
+function ArticleStatusChip({ status }) {
+  return (
+    <span role="status" aria-label={`Assessment status: ${status.label}`} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 5, padding: '3px 10px', borderRadius: 20,
+      background: alpha(status.tone, '1c'), border: `1px solid ${alpha(status.tone, '4d')}`,
+      color: status.tone, fontSize: 11, fontWeight: 700, fontFamily: FONT, whiteSpace: 'nowrap',
+    }}>
+      <Icon name={status.icon} size={12} /> {status.label}
+    </span>
+  );
+}
+
+// A scannable count of Not started / In progress / Complete across the whole list.
+function ArticleStatusSummary({ studies, byStudy }) {
+  let notStarted = 0, inProgress = 0, complete = 0;
+  for (const s of studies) {
+    const st = articleStatusOf(byStudy[s.id] || []);
+    if (st.key === 'complete') complete++;
+    else if (st.key === 'not-started') notStarted++;
+    else inProgress++;
+  }
+  const item = (icon, tone, n, label) => (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, color: C.txt2 }}>
+      <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 20, height: 20, borderRadius: 6, background: alpha(tone, '1c'), color: tone }}><Icon name={icon} size={12} /></span>
+      <strong style={{ color: C.txt }}>{n}</strong> {label}
+    </span>
+  );
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 18, flexWrap: 'wrap', margin: '2px 0 14px' }}>
+      {item('minus', C.muted, notStarted, 'not started')}
+      {item('clock', C.yel, inProgress, 'in progress')}
+      {item('circleCheck', C.grn, complete, 'complete')}
+      <span style={{ marginLeft: 'auto', fontSize: 11.5, color: C.muted, fontFamily: MONO }}>{studies.length} article{studies.length === 1 ? '' : 's'}</span>
+    </div>
+  );
+}
+
+// A compact monospace identity chip (study id / DOI / PMID); a href makes it a
+// link that never bubbles a click up to the card.
+function IdChip({ icon, label, href, title }) {
+  const inner = (
+    <span title={title || label} style={{
+      display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 10, fontFamily: MONO, fontWeight: 600,
+      color: C.muted, background: alpha(C.txt, '08'), border: `1px solid ${C.brd}`, borderRadius: 6,
+      padding: '1px 7px', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    }}>
+      {icon && <Icon name={icon} size={10} />}{label}
+    </span>
+  );
+  if (href) return <a href={href} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()} style={{ textDecoration: 'none' }}>{inner}</a>;
+  return inner;
+}
+
+// One article as a distinct, elevated card: number · title-first identity · id
+// chips · a status chip · nested assessment rows. Hover lifts it; the just-assessed
+// article keeps an accent ring so the reviewer never loses their place (79.md §1).
+function ArticleCard({
+  index, study: s, assessments: list, canEdit, recent, creating,
+  onToggleCreate, onCreate, onCancelCreate, appraisalOn, defaultInstrument,
+  onOpenAssessment, onRemoveAssessment, onRemoveStudy,
+}) {
+  const [hover, setHover] = useState(false);
+  const manual = s.source === 'manual';
+  const status = articleStatusOf(list);
+  const title = s.title || `${s.author || ''} ${s.year ? `(${s.year})` : ''}`.trim() || `Study ${s.id}`;
+  const metaBits = [s.author, s.year, s.journal].map((x) => (x == null ? '' : String(x).trim())).filter(Boolean);
+  return (
+    <div role="listitem" onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      style={{
+        position: 'relative', background: C.card, borderRadius: 14, overflow: 'hidden',
+        border: `1px solid ${recent ? alpha(C.acc, '80') : hover ? C.brd2 : C.brd}`,
+        boxShadow: recent ? `0 0 0 3px ${alpha(C.acc, '24')}` : hover ? `0 8px 20px -12px ${C.shadow}` : `0 1px 2px ${C.shadow}`,
+        transition: 'box-shadow .15s ease, border-color .15s ease',
+      }}>
+      {/* Identity spine: violet for a manual study, a subtle accent for screening. */}
+      <span aria-hidden style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: 4, background: manual ? C.purp : alpha(C.acc, '40') }} />
+      <div style={{ padding: '14px 16px 14px 20px' }}>
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap' }}>
+          <span aria-hidden title={`Article ${index}`} style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', minWidth: 26, height: 26, padding: '0 7px', borderRadius: 8, background: C.surf, border: `1px solid ${C.brd}`, color: C.txt2, fontSize: 12, fontWeight: 800, fontFamily: MONO }}>{index}</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <span title={title} className="t-truncate" style={{ display: 'block', fontWeight: 800, fontSize: 14.5, color: C.txt, lineHeight: 1.3 }}>{title}</span>
+            {metaBits.length > 0 && <div className="t-truncate" style={{ fontSize: 12, color: C.txt2, marginTop: 3 }}>{metaBits.join(' · ')}</div>}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 8, flexWrap: 'wrap' }}>
+              <IdChip label={`ID ${String(s.id).slice(0, 8)}`} title={`Study identifier ${s.id}`} />
+              {s.doi && <IdChip icon="link" label={`DOI ${s.doi}`} href={`https://doi.org/${s.doi}`} />}
+              {s.pmid && <IdChip icon="fileText" label={`PMID ${s.pmid}`} href={`https://pubmed.ncbi.nlm.nih.gov/${s.pmid}`} />}
+              <SourceBadge source={s.source} small />
+            </div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <ArticleStatusChip status={status} />
+            {canEdit && <button onClick={onToggleCreate} style={ghost}><Icon name="plus" size={13} /> Assess a result</button>}
+            {canEdit && manual && <button onClick={onRemoveStudy} style={{ ...miniBtn, color: C.muted }} title="Delete manual study"><Icon name="trash" size={12} /></button>}
+          </div>
+        </div>
+
+        {canEdit && creating && <CreateForm onCancel={onCancelCreate} onCreate={onCreate} appraisalOn={appraisalOn} defaultInstrument={defaultInstrument} />}
+
+        {list.length > 0 ? (
+          <div style={{ marginTop: 12, display: 'grid', gap: 7 }}>
+            {list.map((a) => <AssessmentRow key={a.id} a={a} canEdit={canEdit} onOpen={() => onOpenAssessment(a)} onRemove={() => onRemoveAssessment(a.id)} />)}
+          </div>
+        ) : (
+          <div style={{ marginTop: 10, fontSize: 12, color: C.muted, display: 'flex', alignItems: 'center', gap: 6 }}>
+            <Icon name="minus" size={12} /> No risk-of-bias result assessed yet.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AssessmentRow({ a, canEdit, onOpen, onRemove, orphan }) {
   const st = judgmentStyle(a.overall);
   // prompt46 #3 — default-allow when the backend omits canMutate (no regression for owners);
@@ -295,7 +407,11 @@ function AssessmentRow({ a, canEdit, onOpen, onRemove, orphan }) {
   const toolLabel = a.instrumentLabel || (a.instrumentId === 'RoB2' ? 'RoB 2' : a.instrumentId) || 'Tool unknown';
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '9px 11px', borderRadius: 8, background: C.surf, border: `1px solid ${C.brd}` }}>
-      <span style={{ width: 11, height: 11, borderRadius: '50%', background: st.hex, flexShrink: 0, marginTop: 2, alignSelf: 'flex-start' }} />
+      {/* 79.md §1 — colour + REDUNDANT symbol (judgement icon) so completed/incomplete
+          judgements are distinguishable without relying on colour alone. */}
+      <span title={st.label} aria-label={`Risk of bias: ${st.label}`} style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 18, height: 18, borderRadius: '50%', background: st.bg, color: st.fg, border: `1px solid ${alpha(st.fg, '55')}`, flexShrink: 0, marginTop: 1, alignSelf: 'flex-start' }}>
+        <Icon name={st.icon} size={11} />
+      </span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <button onClick={onOpen} style={{ display: 'block', width: '100%', textAlign: 'left', background: 'none', border: 'none', cursor: 'pointer', fontFamily: FONT, color: C.txt, fontSize: 13, padding: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
           {a.resultLabel || 'Result'} — <span style={{ color: st.fg, fontWeight: 700 }}>{st.label}</span> {a.status === 'complete' ? '· finalised' : '· draft'}{orphan ? ` · study ${a.studyId}` : ''}

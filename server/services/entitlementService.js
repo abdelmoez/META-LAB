@@ -70,6 +70,24 @@ export async function seedProductTiers() {
   }
 }
 
+/**
+ * 79.md §2 — business-metadata fields on a ProductTier row, with safe defaults so a
+ * default-definition tier (no DB row) and older rows still resolve every field.
+ */
+export function tierMetaFields(row, defaults = {}) {
+  return {
+    isPaid: row?.isPaid ?? defaults.isPaid ?? false,
+    publiclyAvailable: row?.publiclyAvailable ?? defaults.publiclyAvailable ?? true,
+    manualAssignAllowed: row?.manualAssignAllowed ?? defaults.manualAssignAllowed ?? true,
+    priceMonthlyCents: row?.priceMonthlyCents ?? defaults.priceMonthlyCents ?? null,
+    priceAnnualCents: row?.priceAnnualCents ?? defaults.priceAnnualCents ?? null,
+    currency: row?.currency ?? defaults.currency ?? 'usd',
+    trialDays: row?.trialDays ?? defaults.trialDays ?? 0,
+    gracePeriodDays: row?.gracePeriodDays ?? defaults.gracePeriodDays ?? 0,
+    archivedAt: row?.archivedAt ?? null,
+  };
+}
+
 /** All tiers: DB rows (admin-edited) merged over code defaults; sorted. */
 export async function listTiers() {
   let rows = [];
@@ -90,6 +108,9 @@ export async function listTiers() {
       entitlements: resolveEntitlements(t.id, row ? safeParse(row.entitlements, {}) : null),
       storedOverrides: row ? safeParse(row.entitlements, {}) : {},
       isDefaultDefinition: true,
+      // 'free' is the canonical free tier; the others default to paid=false until an
+      // admin sets pricing (business model is not final — 67.md).
+      ...tierMetaFields(row, { isPaid: false }),
     });
   }
   // Custom admin-created tiers (beyond the three defaults).
@@ -100,6 +121,7 @@ export async function listTiers() {
       entitlements: resolveEntitlements(row.id, safeParse(row.entitlements, {})),
       storedOverrides: safeParse(row.entitlements, {}),
       isDefaultDefinition: false,
+      ...tierMetaFields(row),
     });
   }
   out.sort((a, b) => a.sortOrder - b.sortOrder || a.id.localeCompare(b.id));

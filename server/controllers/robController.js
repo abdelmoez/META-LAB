@@ -18,6 +18,8 @@ import { getRobMemberAccess } from '../screening/metalabAccess.js';
 import { featureAccess } from '../services/featureAccess.js';
 import { canMutateAssessment, normaliseScreeningStudy, normaliseManualStudy } from './robAccess.js';
 import { getRobTool } from '../../src/research-engine/rob/tools.js';
+import { sendTierLimit } from '../services/entitlementService.js';
+import { requireProjectExport, settleProjectExport, EXPORT_TYPES } from '../services/projectExportGuard.js';
 import {
   getInstrument,
   proposeDomain,
@@ -634,10 +636,23 @@ export async function exportAssessment(req, res) {
     const inst = instrumentFor(a);
     const view = await buildView(a.id);
     const format = String(req.query.format || 'json').toLowerCase();
+    if (!['json', 'csv', 'robvis'].includes(format)) {
+      return res.status(400).json({ error: "format must be 'json', 'csv', or 'robvis'" });
+    }
+    // 79.md §3 — RoB assessment export is a project export: Free tier is blocked and
+    // permitted tiers consume one unit of the monthly allowance. Reserved once here,
+    // after the format is known to be valid, and confirmed on the successful return.
+    let reservation;
+    try {
+      reservation = await requireProjectExport(req.user, {
+        exportType: EXPORT_TYPES.ROB_ASSESSMENT, projectId: a.projectId || null, format,
+      });
+    } catch (e) { if (sendTierLimit(res, e)) return; throw e; }
     const filePrefix = inst.id === 'RoB2' ? 'rob2' : 'robins-i';
     const base = `${filePrefix}_${a.studyId}${a.resultLabel ? '_' + a.resultLabel.replace(/[^a-z0-9]+/gi, '-').toLowerCase() : ''}`;
 
     if (format === 'json') {
+      settleProjectExport(reservation.reservationId, { status: 'succeeded' });
       return res.json({ format, filename: `${base}.json`, mime: 'application/json', content: view });
     }
     if (format === 'csv') {
@@ -652,6 +667,7 @@ export async function exportAssessment(req, res) {
         }
       }
       const csv = rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+      settleProjectExport(reservation.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(csv) });
       return res.json({ format, filename: `${base}.csv`, mime: 'text/csv', content: csv });
     }
     if (format === 'robvis') {
@@ -672,8 +688,10 @@ export async function exportAssessment(req, res) {
         '1',
       ];
       const csv = [header, row].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+      settleProjectExport(reservation.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(csv) });
       return res.json({ format, filename: `${base}_robvis.csv`, mime: 'text/csv', content: csv });
     }
+    // Unreachable (format validated above); kept as a defensive guard.
     return res.status(400).json({ error: "format must be 'json', 'csv', or 'robvis'" });
   } catch (err) {
     console.error('[rob] exportAssessment error:', err.message);

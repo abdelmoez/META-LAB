@@ -26,14 +26,20 @@ export function canMutateAssessment(assessment, access, userId) {
 }
 
 /** Normalise a screening/extraction-derived study (project.studies blob) for the
- *  RoB study universe. source:'screening' — NOT deletable from RoB. */
+ *  RoB study universe. source:'screening' — NOT deletable from RoB.
+ *  79.md §1 — pass through the identity metadata the article list surfaces
+ *  (journal / DOI / PMID), when the source blob carries it, so two same-author/year
+ *  studies are distinguishable. Fields stay optional (absent → '' / null). */
 export function normaliseScreeningStudy(s) {
   return {
     id: s.id,
     source: 'screening',
     title: s.title || '',
-    author: s.author || '',
+    author: s.author || s.authors || '',
     year: s.year != null ? String(s.year) : '',
+    journal: s.journal || s.source_title || s.venue || '',
+    doi: s.doi || null,
+    pmid: s.pmid || null,
   };
 }
 

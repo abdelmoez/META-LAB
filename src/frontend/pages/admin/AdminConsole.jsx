@@ -5050,16 +5050,32 @@ function LivingReviewsSection() {
    fields + entitlement matrix, and assigning individual users to a tier.
    ════════════════════════════════════════════════════════════════════════ */
 
+/** 79.md §2 — extract the business-metadata fields from a tier object with defaults. */
+function tierMetaState(tier) {
+  return {
+    isPaid: tier.isPaid === true,
+    publiclyAvailable: tier.publiclyAvailable !== false,
+    manualAssignAllowed: tier.manualAssignAllowed !== false,
+    priceMonthlyCents: tier.priceMonthlyCents ?? null,
+    priceAnnualCents: tier.priceAnnualCents ?? null,
+    currency: tier.currency || 'usd',
+    trialDays: tier.trialDays ?? 0,
+    gracePeriodDays: tier.gracePeriodDays ?? 0,
+  };
+}
+
 /** One tier's editable card: display fields, active toggle, entitlement matrix. */
-function TierCard({ tier, keys, isDefault, onSave, onViewUsers }) {
+function TierCard({ tier, keys, isDefault, onSave, onViewUsers, onDuplicate, onArchive }) {
   // Local working copy — seeded from the RESOLVED entitlement map so every key has
   // an explicit value, and saved back as a FULL override map (behavior is explicit).
   const [displayName, setDisplayName] = useState(tier.displayName || tier.id);
   const [description, setDescription] = useState(tier.description || '');
   const [isActive, setIsActive] = useState(tier.isActive !== false);
   const [ents, setEnts] = useState(() => ({ ...(tier.entitlements || {}) }));
+  const [meta, setMeta] = useState(() => tierMetaState(tier)); // 79.md §2 plan/billing
   const [status, setStatus] = useState('idle');
   const [error, setError] = useState('');
+  const archived = !!tier.archivedAt;
 
   // Re-seed when the upstream tier object changes (after a save reloads the list).
   useEffect(() => {
@@ -5067,7 +5083,11 @@ function TierCard({ tier, keys, isDefault, onSave, onViewUsers }) {
     setDescription(tier.description || '');
     setIsActive(tier.isActive !== false);
     setEnts({ ...(tier.entitlements || {}) });
+    setMeta(tierMetaState(tier));
   }, [tier]);
+  const setMetaField = (k, v) => setMeta((m) => ({ ...m, [k]: v }));
+  const priceStr = (cents) => (cents == null || cents === '' ? '' : (Number(cents) / 100).toFixed(2));
+  const parsePrice = (dollars) => (dollars === '' || dollars == null ? null : Math.max(0, Math.round(Number(dollars) * 100)));
 
   const groups = useMemo(() => {
     const by = new Map();
@@ -5092,7 +5112,13 @@ function TierCard({ tier, keys, isDefault, onSave, onViewUsers }) {
       else overrides[k.key] = (v === UNLIMITED) ? UNLIMITED : Math.max(0, Math.round(Number(v) || 0));
     }
     try {
-      await onSave(tier.id, { displayName: displayName.trim() || tier.id, description, isActive, entitlements: overrides });
+      await onSave(tier.id, {
+        displayName: displayName.trim() || tier.id, description, isActive, entitlements: overrides,
+        // 79.md §2 — plan/billing metadata (future-billing-ready; no payments processed).
+        isPaid: meta.isPaid, publiclyAvailable: meta.publiclyAvailable, manualAssignAllowed: meta.manualAssignAllowed,
+        priceMonthlyCents: meta.priceMonthlyCents, priceAnnualCents: meta.priceAnnualCents,
+        currency: meta.currency, trialDays: meta.trialDays, gracePeriodDays: meta.gracePeriodDays,
+      });
       setStatus('saved'); setTimeout(() => setStatus('idle'), 3000);
     } catch (e) {
       setError(e.message || 'Save failed'); setStatus('error'); setTimeout(() => setStatus('idle'), 4000);
@@ -5108,12 +5134,27 @@ function TierCard({ tier, keys, isDefault, onSave, onViewUsers }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
           <Badge text={tier.id} color={C.acc} />
           {isDefault && <Badge text="Site default" color={C.teal} />}
+          {tier.isPaid && <Badge text="Paid" color={C.grn} />}
+          {archived && <Badge text="Archived" color={C.yel} />}
           <span style={{ flex: 1 }} />
           <span style={{ fontSize: 12, color: C.muted }}>{tier.assignedUsers || 0} user{(tier.assignedUsers || 0) === 1 ? '' : 's'} assigned</span>
           {onViewUsers && (
             <button onClick={() => onViewUsers(tier.id)} data-testid={`tier-view-users-${tier.id}`}
               style={{ padding: '5px 12px', background: alpha(C.acc, '14'), border: `1px solid ${alpha(C.acc, '40')}`, borderRadius: 6, color: C.acc, fontSize: 12, fontWeight: 600, cursor: 'pointer', fontFamily: FONT }}>
               View users
+            </button>
+          )}
+          {onDuplicate && (
+            <button onClick={() => onDuplicate(tier)} data-testid={`tier-duplicate-${tier.id}`}
+              style={{ padding: '5px 12px', background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 6, color: C.txt2, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
+              Duplicate
+            </button>
+          )}
+          {onArchive && !isDefault && (
+            <button onClick={() => onArchive(tier, !archived)} data-testid={`tier-archive-${tier.id}`}
+              title={archived ? 'Restore this tier' : 'Archive this tier (users already assigned keep working)'}
+              style={{ padding: '5px 12px', background: 'transparent', border: `1px solid ${archived ? alpha(C.grn, '55') : alpha(C.yel, '55')}`, borderRadius: 6, color: archived ? C.grn : C.yel, fontSize: 12, cursor: 'pointer', fontFamily: FONT }}>
+              {archived ? 'Restore' : 'Archive'}
             </button>
           )}
         </div>
@@ -5132,6 +5173,48 @@ function TierCard({ tier, keys, isDefault, onSave, onViewUsers }) {
           <span style={{ fontSize: 12.5, color: C.txt2 }}>
             Active {isDefault && <span style={{ color: C.yel }}>— the site default tier cannot be deactivated.</span>}
           </span>
+        </div>
+
+        {/* 79.md §2 — plan & billing metadata. Billing-provider-ready placeholders:
+            NO payment is processed; prices/trial/grace are configuration for a future
+            integration and drive the public pricing/self-serve surface. */}
+        <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px dashed ${C.brd}` }}>
+          <div style={{ ...labelStyle, marginBottom: 10 }}>Plan &amp; billing (no payments processed yet)</div>
+          <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap', marginBottom: 12 }}>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: C.txt2 }}>
+              <Toggle checked={meta.isPaid} onChange={v => setMetaField('isPaid', v)} testId={`tier-paid-${tier.id}`} /> Paid tier
+            </label>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: C.txt2 }}>
+              <Toggle checked={meta.publiclyAvailable} onChange={v => setMetaField('publiclyAvailable', v)} testId={`tier-public-${tier.id}`} /> Publicly available
+            </label>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: C.txt2 }}>
+              <Toggle checked={meta.manualAssignAllowed} onChange={v => setMetaField('manualAssignAllowed', v)} testId={`tier-manual-${tier.id}`} /> Manual assignment allowed
+            </label>
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 12 }}>
+            <div>
+              <label style={labelStyle}>Monthly price</label>
+              <input type="number" min={0} step="0.01" value={priceStr(meta.priceMonthlyCents)} placeholder="—"
+                onChange={e => setMetaField('priceMonthlyCents', parsePrice(e.target.value))} style={smallInput} data-testid={`tier-price-monthly-${tier.id}`} />
+            </div>
+            <div>
+              <label style={labelStyle}>Annual price</label>
+              <input type="number" min={0} step="0.01" value={priceStr(meta.priceAnnualCents)} placeholder="—"
+                onChange={e => setMetaField('priceAnnualCents', parsePrice(e.target.value))} style={smallInput} data-testid={`tier-price-annual-${tier.id}`} />
+            </div>
+            <div>
+              <label style={labelStyle}>Currency</label>
+              <input value={meta.currency} onChange={e => setMetaField('currency', e.target.value.toLowerCase().slice(0, 8))} style={smallInput} data-testid={`tier-currency-${tier.id}`} />
+            </div>
+            <div>
+              <label style={labelStyle}>Trial (days)</label>
+              <input type="number" min={0} value={meta.trialDays} onChange={e => setMetaField('trialDays', Math.max(0, Math.round(Number(e.target.value) || 0)))} style={smallInput} data-testid={`tier-trial-${tier.id}`} />
+            </div>
+            <div>
+              <label style={labelStyle}>Grace (days)</label>
+              <input type="number" min={0} value={meta.gracePeriodDays} onChange={e => setMetaField('gracePeriodDays', Math.max(0, Math.round(Number(e.target.value) || 0)))} style={smallInput} data-testid={`tier-grace-${tier.id}`} />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -5733,6 +5816,95 @@ function TierOverlay({ title, subtitle, onClose, children, width = 720 }) {
   );
 }
 
+/** 79.md §2 — minimal create-tier form (a new tier starts from the Free baseline;
+ *  its entitlements/pricing/limits are then configured on its card). */
+function NewTierForm({ onCreate, onCancel }) {
+  const [id, setId] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [isPaid, setIsPaid] = useState(false);
+  const [status, setStatus] = useState('idle');
+  const [error, setError] = useState('');
+  const submit = async () => {
+    setStatus('saving'); setError('');
+    try {
+      await onCreate({ id: id.trim().toLowerCase(), displayName: displayName.trim() || id.trim(), isPaid, isActive: true });
+      setStatus('idle'); setId(''); setDisplayName('');
+    } catch (e) { setError(e.message || 'Create failed'); setStatus('idle'); }
+  };
+  return (
+    <SectionCard title="New tier">
+      <div style={{ padding: '16px 20px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: 16 }}>
+          <div><label style={tierLabelStyle}>Tier id (slug)</label><input value={id} onChange={e => setId(e.target.value)} placeholder="e.g. team" style={inputStyle} data-testid="new-tier-id" /></div>
+          <div><label style={tierLabelStyle}>Display name</label><input value={displayName} onChange={e => setDisplayName(e.target.value)} placeholder="e.g. Team" style={inputStyle} data-testid="new-tier-name" /></div>
+        </div>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 12.5, color: C.txt2, marginTop: 12 }}>
+          <Toggle checked={isPaid} onChange={setIsPaid} testId="new-tier-paid" /> Paid tier
+        </label>
+        <p style={{ fontSize: 11.5, color: C.muted, marginTop: 10, lineHeight: 1.5 }}>The new tier starts from the Free baseline. Configure its entitlements, pricing and limits on its card after creating.</p>
+        {error && <div style={{ fontSize: 12, color: C.red, marginTop: 8 }}>{error}</div>}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+          <button onClick={onCancel} style={tierCancelBtn}>Cancel</button>
+          <SaveButton onClick={submit} status={status} label="Create tier" testId="new-tier-submit" />
+        </div>
+      </div>
+    </SectionCard>
+  );
+}
+
+/** 79.md §3 — Ops view of project-export usage (per period): total counted exports,
+ *  a per-tier breakdown, and the most recent export attempts with status + counted. */
+function ProjectExportUsagePanel() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+  const load = useCallback(async () => {
+    try { setData(await adminApi.tiers.exportUsage()); setErr(''); }
+    catch (e) { setErr(e.message || 'Could not load export usage.'); }
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  return (
+    <SectionCard title="Project export usage">
+      <div style={{ padding: '16px 20px' }}>
+        {err ? <ErrorBox msg={err} /> : !data ? <Spinner size={16} /> : (
+          <>
+            <div style={{ display: 'flex', gap: 18, flexWrap: 'wrap', marginBottom: 14, fontSize: 12.5, color: C.txt2 }}>
+              <span>Period <strong style={{ color: C.txt, fontFamily: MONO }}>{data.period}</strong></span>
+              <span>Counted exports this period <strong style={{ color: C.txt }}>{data.totalCounted}</strong></span>
+            </div>
+            {Array.isArray(data.byTier) && data.byTier.length > 0 && (
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
+                {data.byTier.map(t => <Badge key={t.tierId || 'none'} text={`${t.tierId || 'default'}: ${t.count}`} color={C.acc} />)}
+              </div>
+            )}
+            <div style={{ fontSize: 11, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 8 }}>Recent exports</div>
+            {(!data.recent || data.recent.length === 0) ? <div style={{ fontSize: 12, color: C.muted }}>No project exports recorded yet.</div> : (
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                  <thead><tr style={{ textAlign: 'left', color: C.muted, fontFamily: MONO }}>
+                    <th style={{ padding: '4px 8px' }}>User</th><th style={{ padding: '4px 8px' }}>Type</th><th style={{ padding: '4px 8px' }}>Tier</th><th style={{ padding: '4px 8px' }}>Status</th><th style={{ padding: '4px 8px' }}>Counted</th><th style={{ padding: '4px 8px' }}>When</th>
+                  </tr></thead>
+                  <tbody>
+                    {data.recent.slice(0, 30).map(r => (
+                      <tr key={r.id} style={{ borderTop: `1px solid ${C.brd}` }}>
+                        <td style={{ padding: '6px 8px' }}>{r.email || (r.userId ? r.userId.slice(0, 8) : '—')}</td>
+                        <td style={{ padding: '6px 8px', fontFamily: MONO }}>{r.exportType}</td>
+                        <td style={{ padding: '6px 8px' }}>{r.tierId || '—'}</td>
+                        <td style={{ padding: '6px 8px' }}>{r.status}</td>
+                        <td style={{ padding: '6px 8px' }}>{r.counted ? 'yes' : 'no'}</td>
+                        <td style={{ padding: '6px 8px', color: C.muted }}>{fmtAgo(r.createdAt)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    </SectionCard>
+  );
+}
+
 function TiersSection() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
@@ -5743,6 +5915,8 @@ function TiersSection() {
   const [editUser, setEditUser]     = useState(null);   // user row
   const [historyUser, setHistoryUser] = useState(null); // user row
   const [subUser, setSubUser]       = useState(null);   // user row
+  const [creating, setCreating]     = useState(false);  // 79.md §2 — create-tier form open
+  const [actionErr, setActionErr]   = useState('');     // duplicate/archive/create error
 
   const load = useCallback(async () => {
     try {
@@ -5760,6 +5934,27 @@ function TiersSection() {
   const saveTier = useCallback(async (id, body) => {
     await adminApi.tiers.saveTier(id, body);
     await load();
+  }, [load]);
+
+  // 79.md §2 — duplicate / archive-restore a tier (a duplicate prompts for a new id).
+  const onDuplicate = useCallback(async (tier) => {
+    setActionErr('');
+    const id = (window.prompt(`New tier id for the copy of “${tier.displayName || tier.id}” (lowercase slug):`, `${tier.id}-copy`) || '').trim().toLowerCase();
+    if (!id) return;
+    try { await adminApi.tiers.duplicateTier(tier.id, { id }); await load(); }
+    catch (e) { setActionErr(e.message || 'Could not duplicate the tier.'); }
+  }, [load]);
+  const onArchive = useCallback(async (tier, archived) => {
+    setActionErr('');
+    if (archived && (tier.assignedUsers || 0) > 0 &&
+      !window.confirm(`Archive “${tier.displayName || tier.id}”? ${tier.assignedUsers} assigned user(s) keep their access; the tier is just hidden from new assignments.`)) return;
+    try { await adminApi.tiers.archiveTier(tier.id, { archived }); await load(); }
+    catch (e) { setActionErr(e.message || 'Could not update the tier.'); }
+  }, [load]);
+  const onCreate = useCallback(async (body) => {
+    setActionErr('');
+    try { await adminApi.tiers.createTier(body); setCreating(false); await load(); }
+    catch (e) { setActionErr(e.message || 'Could not create the tier.'); throw e; }
   }, [load]);
 
   async function saveSettings() {
@@ -5816,10 +6011,25 @@ function TiersSection() {
         </div>
       </SectionCard>
 
+      {/* 79.md §2 — create a new tier + surface any duplicate/archive/create error. */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, margin: '6px 0 12px', flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.txt }}>Tiers ({tiers.length})</div>
+        <button onClick={() => setCreating(v => !v)} data-testid="tier-create-toggle"
+          style={{ padding: '6px 14px', background: C.acc2, border: 'none', borderRadius: 7, color: C.accText, fontSize: 12.5, fontWeight: 600, cursor: 'pointer', fontFamily: FONT }}>
+          {creating ? 'Cancel' : '+ New tier'}
+        </button>
+      </div>
+      {actionErr && <div style={{ marginBottom: 10 }}><ErrorBox msg={actionErr} /></div>}
+      {creating && <NewTierForm keys={keys} onCreate={onCreate} onCancel={() => setCreating(false)} />}
+
       {/* One card per tier. */}
       {tiers.map(t => (
-        <TierCard key={t.id} tier={t} keys={keys} isDefault={t.id === defaultTierId} onSave={saveTier} onViewUsers={setUsersTier} />
+        <TierCard key={t.id} tier={t} keys={keys} isDefault={t.id === defaultTierId}
+          onSave={saveTier} onViewUsers={setUsersTier} onDuplicate={onDuplicate} onArchive={onArchive} />
       ))}
+
+      {/* 79.md §3 — project-export usage view. */}
+      <ProjectExportUsagePanel />
 
       {/* Per-user assignment (search-and-pick kept intact; richer flows are additive). */}
       <TierUserAssignPanel tiers={tiers} defaultTierId={defaultTierId} onAssigned={load}

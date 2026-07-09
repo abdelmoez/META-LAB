@@ -179,6 +179,12 @@ export const adminApi = {
   tiers: {
     get:            ()         => req(`${BASE}/tiers`),
     saveTier:       (id, body) => req(`${BASE}/tiers/${id}`, { method: 'PUT', ...json(body) }),
+    // 79.md §2 — create / clone / archive-or-restore a tier.
+    createTier:     (body)     => req(`${BASE}/tiers`, { method: 'POST', ...json(body) }),
+    duplicateTier:  (id, body) => req(`${BASE}/tiers/${id}/duplicate`, { method: 'POST', ...json(body) }),
+    archiveTier:    (id, body) => req(`${BASE}/tiers/${id}/archive`, { method: 'POST', ...json(body) }),
+    // 79.md §3 — project-export usage view.
+    exportUsage:    (period)   => req(`${BASE}/export-usage${period ? `?period=${encodeURIComponent(period)}` : ''}`),
     saveSettings:   (body)     => req(`${BASE}/tier-settings`, { method: 'PUT', ...json(body) }),
     assignUser:     (id, body) => req(`${BASE}/users/${id}/tier`, { method: 'PATCH', ...json(body) }),
     changeUserTier: (id, body) => req(`${BASE}/users/${id}/tier`, { method: 'PATCH', ...json(body) }),

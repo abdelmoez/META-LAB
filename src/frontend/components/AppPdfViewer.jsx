@@ -37,6 +37,33 @@ if (typeof window !== 'undefined' && typeof Worker !== 'undefined') {
   try { pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker(); } catch { /* falls back to fake worker */ }
 }
 
+// 79.md §4 — worker robustness. pdf.js runs OFF the main thread via the worker above.
+// If that worker never responds (a module-worker / MIME / cross-origin failure that
+// Safari, an old browser, or a strict CSP can cause), `getDocument().promise` would
+// otherwise hang forever on "Loading PDF…". These helpers detect the hang and fall
+// back to the built-in main-thread ("fake") worker so the PDF STILL renders — a
+// standards-compliant degradation, not a browser block. The fallback is global +
+// one-shot: once the worker is known-bad, later loads skip straight to main-thread.
+let _pdfWorkerDisabled = false;
+function disablePdfWorker() {
+  if (_pdfWorkerDisabled) return;
+  _pdfWorkerDisabled = true;
+  try {
+    const port = pdfjsLib.GlobalWorkerOptions.workerPort;
+    pdfjsLib.GlobalWorkerOptions.workerPort = null;
+    pdfjsLib.GlobalWorkerOptions.workerSrc = ''; // → pdf.js uses its built-in main-thread worker
+    try { port && port.terminate && port.terminate(); } catch { /* noop */ }
+  } catch { /* noop */ }
+}
+const WORKER_LOAD_TIMEOUT_MS = 12000;
+function promiseWithTimeout(p, ms) {
+  if (!ms) return p;
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(Object.assign(new Error('pdf worker timeout'), { __workerTimeout: true })), ms);
+    p.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+  });
+}
+
 // First bytes of a PDF are "%PDF-" — detects an HTML/JSON error body returned 200.
 function isPdfBytes(buf) {
   try {
@@ -195,9 +222,24 @@ export default function AppPdfViewer({
         if (!cancelled) { setError('Could not reach the PDF (network error). Check your connection and retry.'); setLoading(false); }
         return;
       }
-      task = pdfjsLib.getDocument({ data: new Uint8Array(buf), isEvalSupported: false });
+      // Copy the bytes per attempt so a first attempt that transfers/detaches the
+      // buffer to the worker never breaks the main-thread fallback retry.
+      const mkTask = () => pdfjsLib.getDocument({ data: new Uint8Array(buf.slice(0)), isEvalSupported: false });
       try {
-        const d = await task.promise;
+        task = mkTask();
+        let d;
+        try {
+          d = await promiseWithTimeout(task.promise, _pdfWorkerDisabled ? 0 : WORKER_LOAD_TIMEOUT_MS);
+        } catch (e) {
+          if (e && e.__workerTimeout && !cancelled) {
+            // The worker never answered — disable it and re-load on the main thread
+            // so the PDF renders instead of hanging (79.md §4).
+            try { task.destroy(); } catch { /* noop */ }
+            disablePdfWorker();
+            task = mkTask();
+            d = await task.promise;
+          } else { throw e; }
+        }
         if (cancelled) { try { d.destroy(); } catch { /* noop */ } return; }
         docRef.current = d; setDoc(d); setNum(d.numPages);
         try { onDocLoaded && onDocLoaded(d); } catch { /* host callback is best-effort */ }
@@ -635,7 +677,14 @@ export default function AppPdfViewer({
 /* Resolve the character offset within a text-layer span's ORIGINAL text (dataset.t) at a
    screen point. Highlight passes replace a span's single text node with text + <mark>
    nodes, but the concatenated textContent still equals dataset.t, so we sum node lengths in
-   DFS order up to the caret node. Returns null when the point is not inside the span text. */
+   DFS order up to the caret node. Returns null when the point is not inside the span text.
+
+   Safari/WebKit note (79.md §4): document.caretPositionFromPoint arrived only in Safari 17,
+   and both caret-from-point APIs can return a caret in a DIFFERENT node — or nothing — for
+   the CSS-transformed text-layer spans this viewer draws. So when the caret APIs don't land
+   inside `span`, we fall back to a purely GEOMETRIC resolver (Range.getBoundingClientRect
+   per character, supported everywhere) so click-to-pick lands on the exact number under the
+   cursor in every browser, not just Chromium/Firefox. */
 function caretOffsetInSpan(span, clientX, clientY) {
   let node = null, off = 0;
   try {
@@ -647,21 +696,57 @@ function caretOffsetInSpan(span, clientX, clientY) {
       const r = document.caretRangeFromPoint(clientX, clientY);
       if (r && span.contains(r.startContainer)) { node = r.startContainer; off = r.startOffset; }
     }
+  } catch { node = null; }
+  if (node) {
+    let total = 0, done = false;
+    const walk = (n) => {
+      if (done) return;
+      if (n === node) {
+        if (n.nodeType === 3) total += off;
+        else for (let i = 0; i < off && i < n.childNodes.length; i++) total += (n.childNodes[i].textContent || '').length;
+        done = true; return;
+      }
+      if (n.nodeType === 3) { total += (n.textContent || '').length; return; }
+      for (const c of n.childNodes) { walk(c); if (done) return; }
+    };
+    walk(span);
+    if (done) return total;
+  }
+  // Fallback: browser-independent geometry (fixes Safari/WebKit click-to-pick).
+  return caretOffsetByGeometry(span, clientX, clientY);
+}
+
+/* Character offset within `span` nearest the screen point, using per-character Range
+   rects only. Returns the offset of the character whose rect contains the point, else
+   the nearest character on the clicked line; null when the span has no measurable text. */
+function caretOffsetByGeometry(span, clientX, clientY) {
+  try {
+    let acc = 0, best = null, bestDist = Infinity;
+    const rng = document.createRange();
+    const consider = (textNode) => {
+      const len = textNode.textContent ? textNode.textContent.length : 0;
+      for (let i = 0; i < len; i++) {
+        let r;
+        try { rng.setStart(textNode, i); rng.setEnd(textNode, i + 1); r = rng.getBoundingClientRect(); }
+        catch { continue; }
+        if (!r || (r.width === 0 && r.height === 0)) continue;
+        const onLine = clientY >= r.top - 2 && clientY <= r.bottom + 2;
+        if (onLine && clientX >= r.left && clientX <= r.right) return acc + i; // exact hit
+        const mid = (r.left + r.right) / 2;
+        const dist = Math.abs(clientX - mid) + (onLine ? 0 : 10000); // prefer the clicked line
+        if (dist < bestDist) { bestDist = dist; best = acc + i; }
+      }
+      acc += len;
+      return null;
+    };
+    const walk = (n) => {
+      if (n.nodeType === 3) return consider(n);
+      for (const c of n.childNodes) { const hit = walk(c); if (hit != null) return hit; }
+      return null;
+    };
+    const hit = walk(span);
+    return hit != null ? hit : best;
   } catch { return null; }
-  if (!node) return null;
-  let total = 0, done = false;
-  const walk = (n) => {
-    if (done) return;
-    if (n === node) {
-      if (n.nodeType === 3) total += off;
-      else for (let i = 0; i < off && i < n.childNodes.length; i++) total += (n.childNodes[i].textContent || '').length;
-      done = true; return;
-    }
-    if (n.nodeType === 3) { total += (n.textContent || '').length; return; }
-    for (const c of n.childNodes) { walk(c); if (done) return; }
-  };
-  walk(span);
-  return done ? total : null;
 }
 
 /* ── A single continuous page: canvas + real text layer + match highlighting ─── */

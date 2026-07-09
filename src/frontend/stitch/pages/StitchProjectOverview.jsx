@@ -34,6 +34,7 @@ import { useProjectProgress } from '../hooks/useProjectProgress.js';
 import { useSidebarPin } from '../shell/useSidebarPin.js';
 import { totalMembersOf } from '../shell/presence.js';
 import { projectStageHref } from '../nav/navConfig.js';
+import { useEntitlements } from '../../entitlements/useEntitlements.js';
 import { buildMyWork, buildAttention } from './overviewModel.js';
 import {
   StitchPageHeader, StitchSectionHeader, StitchCard, StitchMetricCard,
@@ -84,6 +85,9 @@ export default function StitchProjectOverview() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
+  // 79.md §3 — fail-open tier gate for the project-export button (server is authoritative).
+  const ent = useEntitlements();
+  const exportLocked = !ent.has('projects.export');
 
   const loadData = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -190,7 +194,11 @@ export default function StitchProjectOverview() {
       const a = document.createElement('a');
       a.href = url; a.download = `${(project?.name || 'project').replace(/[^\w.-]+/g, '_')}.json`;
       document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
-    } catch { setError('Export failed. Please try again.'); } finally { setExporting(false); }
+    } catch (e) {
+      // 79.md §3 — surface the server's plain-language tier message (e.g. "Exporting
+      // projects is not included in your current plan.") instead of a generic error.
+      setError(e?.body?.message || e?.message || 'Export failed. Please try again.');
+    } finally { setExporting(false); }
   }, [perms, projectId, project]);
 
   /* ── shell wiring: project rail (coordinated, pinnable) ── */
@@ -267,7 +275,9 @@ export default function StitchProjectOverview() {
           ? pico.question
           : `Updated ${relTime(project.updatedAt || project.modified)} · ${overallPct}% through the review`}
         actions={<>
-          {perms?.canExport ? <StitchButton variant="ghost" size="sm" icon="download" loading={exporting} onClick={onExport}>Export</StitchButton> : null}
+          {perms?.canExport ? (exportLocked
+            ? <StitchButton variant="ghost" size="sm" icon="lock" disabled title="Exporting projects isn’t included in your current plan">Export</StitchButton>
+            : <StitchButton variant="ghost" size="sm" icon="download" loading={exporting} onClick={onExport}>Export</StitchButton>) : null}
           <StitchButton icon="sliders" variant="neutral" size="sm" onClick={() => goStage('control')}>Project Control</StitchButton>
         </>}
       />

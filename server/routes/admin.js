@@ -93,6 +93,10 @@ import {
 import {
   getTiersAdmin,
   updateTierAdmin,
+  createTierAdmin,
+  duplicateTierAdmin,
+  archiveTierAdmin,
+  getProjectExportUsageAdmin,
   updateTierSettingsAdmin,
   updateUserTierAdmin,
   getTierAnalytics,
@@ -310,7 +314,12 @@ router.put('/full-text/settings', requireAdmin, updateFullTextAdminSettings);
 // /tiers/:id/users/export) are declared BEFORE the more generic ones so they are
 // never shadowed.
 router.get('/tiers/analytics',          requireAdmin, getTierAnalytics);
+// 79.md §3 — project-export usage view (declared before the generic /tiers/:id).
+router.get('/export-usage',             requireAdmin, getProjectExportUsageAdmin);
 router.get('/tiers',                    requireAdmin, getTiersAdmin);
+router.post('/tiers',                   requireAdmin, createTierAdmin);              // 79.md §2 — create tier
+router.post('/tiers/:id/duplicate',     requireAdmin, duplicateTierAdmin);           // 79.md §2 — clone tier
+router.post('/tiers/:id/archive',       requireAdmin, archiveTierAdmin);             // 79.md §2 — archive/restore tier
 router.put('/tiers/:id',                requireAdmin, updateTierAdmin);
 router.put('/tier-settings',            requireAdmin, updateTierSettingsAdmin);
 router.get('/tiers/:id/users/export',   requireAdmin, exportUsersInTier);

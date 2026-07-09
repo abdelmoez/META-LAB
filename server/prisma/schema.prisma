@@ -1785,8 +1785,47 @@ model ProductTier {
   isActive     Boolean  @default(true)
   sortOrder    Int      @default(0)
   entitlements String   @default("{}") // JSON { "screening.aiScoring": true, "projects.maxActiveProjects": 3, ... } (-1 = unlimited)
+  // 79.md §2 — subscription/business metadata (future billing-ready; NO payment
+  // processing is performed). All ADDITIVE + defaulted/nullable so `prisma db push`
+  // stays safe and existing rows keep working. `archivedAt` records a soft-archive:
+  // an archived tier is deactivated (isActive=false) but its row is kept so users
+  // already assigned to it never break.
+  isPaid              Boolean   @default(false) // free vs paid tier (drives pricing UI)
+  publiclyAvailable   Boolean   @default(true)  // offered on the public/self-serve pricing surface
+  manualAssignAllowed Boolean   @default(true)  // admins may manually assign users to this tier
+  priceMonthlyCents   Int? // monthly price in minor units (e.g. cents); null = unset
+  priceAnnualCents    Int? // annual price in minor units; null = unset
+  currency            String    @default("usd") // ISO-4217 lower-case for the price fields
+  trialDays           Int       @default(0) // free-trial length in days (0 = no trial offered)
+  gracePeriodDays     Int       @default(0) // post-lapse grace before entitlements drop (0 = none)
+  archivedAt          DateTime? // soft-archive timestamp (row kept; assigned users preserved)
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+}
+
+// 79.md §3 — DURABLE project-export usage ledger. Powers BOTH the monthly
+// allowance enforcement (race-safe: a reservation row is inserted inside the same
+// transaction that counts prior rows) AND the Ops export-usage view. Rows have no
+// FKs (UsageEvent/Notification precedent) so they survive user/project deletion.
+// `counted=false` marks a failed/refunded attempt that must NOT consume allowance.
+model ProjectExportUsage {
+  id            String    @id @default(uuid())
+  userId        String
+  projectId     String? // metaLab project id (null when not project-scoped)
+  exportType    String // project_json | journal_zip | screening_records | rob_assessment | pecan_report
+  format        String? // json | zip | csv | ris | ...
+  tierId        String? // the user's effective tier AT THE TIME of export (snapshot)
+  period        String // 'YYYY-MM' allowance window (UTC month)
+  counted       Boolean   @default(true) // false = failed/refunded → does not consume the allowance
+  status        String    @default("started") // started | succeeded | failed
+  failureReason String?
+  fileSize      Int? // bytes, when known
+  createdAt     DateTime  @default(now())
+  settledAt     DateTime?
+
+  @@index([userId, period, counted])
+  @@index([userId, createdAt])
+  @@index([projectId])
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

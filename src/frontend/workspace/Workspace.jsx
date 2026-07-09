@@ -902,10 +902,22 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
     const jsonName=(project?.name||"project").replace(/[^a-z0-9]/gi,"_")+".json";
     setExpItem({
       id:"project-json",
-      title:`Project backup — ${jsonName}`,
+      title:`Project export — ${jsonName}`,
       formats:[{id:"json",label:"JSON (portable project file)"}],
       sizing:false,
-      run:async()=>{exportProject(false);},   // existing payload shape, unchanged
+      // 79.md §3 — route the single-project export through the SERVER endpoint so the
+      // tier gate is the final authority (Free tier is blocked; permitted tiers consume
+      // one unit of their monthly allowance, re-checked at execution time). The old
+      // client-side blob build bypassed the backend entirely.
+      run:async()=>{
+        let data;
+        try { data = await api.exportProject(project.id); }
+        catch(e){ throw new Error(e?.body?.message || e?.message || "Export failed."); }
+        const blob=new Blob([JSON.stringify(data,null,2)],{type:"application/json"});
+        const u=URL.createObjectURL(blob);const a=document.createElement("a");
+        a.href=u;a.download=jsonName;
+        document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(u);
+      },
     });
   };
 

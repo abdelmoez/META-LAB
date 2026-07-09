@@ -10,6 +10,8 @@ import { getMetaLabMemberAccess } from '../screening/metalabAccess.js';
 import { prisma } from '../db/client.js';
 import { recordUsage, USAGE } from '../utils/usage.js';
 import { getVersion } from '../version.js';
+import { sendTierLimit } from '../services/entitlementService.js';
+import { requireProjectExport, settleProjectExport, EXPORT_TYPES } from '../services/projectExportGuard.js';
 
 /** Read the featureFlags SiteSetting — best-effort, defaults to {} (= all on). */
 async function getFeatureFlags() {
@@ -105,6 +107,19 @@ export async function exportProject(req, res) {
       return res.status(403).json({ error: 'Export tools are disabled' });
     }
 
+    // 79.md §3 — TIER GATE (backend authority). Free tier cannot export projects;
+    // permitted tiers consume one unit of their monthly allowance. Re-checked HERE at
+    // execution time, so a stale browser tab opened before a downgrade cannot export.
+    let reservation;
+    try {
+      reservation = await requireProjectExport(req.user, {
+        exportType: EXPORT_TYPES.PROJECT_JSON, projectId: req.params.id, format: 'json',
+      });
+    } catch (e) {
+      if (sendTierLimit(res, e)) return;
+      throw e;
+    }
+
     recordUsage({
       type: USAGE.EXPORT,
       userId: req.user.id,
@@ -113,10 +128,19 @@ export async function exportProject(req, res) {
       meta: { source: 'metalab-project-export' },
     });
 
-    const filename = `${project.name.replace(/[^a-z0-9]/gi, '_')}_export.json`;
-    res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.json(project);
+    try {
+      const body = JSON.stringify(project);
+      const filename = `${project.name.replace(/[^a-z0-9]/gi, '_')}_export.json`;
+      res.setHeader('Content-Type', 'application/json');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      res.send(body);
+      // Confirm the reservation (succeeded) with the real payload size.
+      settleProjectExport(reservation.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(body) });
+    } catch (e) {
+      // Serialisation/transport failure → refund the allowance (failed export).
+      settleProjectExport(reservation.reservationId, { status: 'failed', failureReason: e?.message });
+      throw e;
+    }
   } catch (err) {
     console.error('[importExport] exportProject error:', err.message);
     res.status(500).json({ error: 'Internal server error' });
@@ -152,6 +176,21 @@ export async function authorizeJournalSubmission(req, res) {
     if (flags.exportTools === false) {
       return res.status(403).json({ error: 'Export tools are disabled' });
     }
+
+    // 79.md §3 — TIER GATE. The journal-submission ZIP is a full-project export;
+    // the browser hard-fails on our 403, so this is a genuine backend choke-point.
+    // Authorizing the package IS the export event, so the reservation is confirmed
+    // immediately (the ZIP is then assembled client-side from the live project).
+    let reservation;
+    try {
+      reservation = await requireProjectExport(req.user, {
+        exportType: EXPORT_TYPES.JOURNAL_ZIP, projectId: req.params.id, format: 'zip',
+      });
+    } catch (e) {
+      if (sendTierLimit(res, e)) return;
+      throw e;
+    }
+    settleProjectExport(reservation.reservationId, { status: 'succeeded' });
 
     recordUsage({
       type: USAGE.EXPORT,

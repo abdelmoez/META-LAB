@@ -17,6 +17,7 @@ import NotificationsBell from "../../components/NotificationsBell.jsx";
 import UserMenu from "../../components/UserMenu.jsx";
 import ProjectMembersPanel from "../../screening/tabs/ProjectMembersPanel.jsx";
 import { api } from "../../api-client/apiClient.js";
+import { useEntitlements } from "../../entitlements/useEntitlements.js";
 import { runMeta } from "../../../research-engine/statistics/monolithStats.js";
 import { C, btnS, inp, tagS } from "../ui/styles.js";
 import { SwitchToggle, SectionHeader, InfoBox, ProgressBar } from "../ui/primitives.jsx";
@@ -143,6 +144,11 @@ function ProjectTitle({project,canRename,onRename}){
    one (Task 8); its popover is portaled so it can't be clipped (Task 3). */
 function ProjectHeaderBar({project,tab,inScreening,focus,onToggleFocus,setTab,onBackToProjects,presenceUsers,presenceLocks,totalMembers,myUserId,spId,reqMissing=0,reqMissingList,missingItems=0,onShowAudit,onReport,onExport,onJournalZip,onImport}){
   const sectionLabel=(TABS.find(t=>t.id===tab)?.label)||"Overview";
+  // 79.md §3 — project export is a tier feature. The hook is FAIL-OPEN (returns true
+  // while loading / on error / for admins), so a Free user only sees the locked state
+  // once a concrete entitlement map has loaded; the SERVER remains the final authority.
+  const ent=useEntitlements();
+  const exportLocked=!ent.has('projects.export');
   // prompt30 Part 5 — compact status badges + actions shown near the title on
   // every NON-overview page (the full detailed header now lives on Overview only).
   const compact=tab!=="overview";
@@ -186,8 +192,12 @@ function ProjectHeaderBar({project,tab,inScreening,focus,onToggleFocus,setTab,on
       <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
         {compact&&onReport&&<>
           <Tooltip content="Export a full report (PDF / HTML)"><button onClick={onReport} aria-label="Export report" style={hdrIconBtn}><Icon name="fileText" size={13}/></button></Tooltip>
-          {onJournalZip&&<Tooltip content="Journal submission package (ZIP): PRISMA, forest plots, methods text & study table"><button onClick={onJournalZip} aria-label="Export journal submission package" style={hdrIconBtn}><Icon name="layers" size={13}/></button></Tooltip>}
-          <Tooltip content="Export project as JSON"><button onClick={onExport} aria-label="Export project" style={hdrIconBtn}><Icon name="download" size={13}/></button></Tooltip>
+          {onJournalZip&&(exportLocked
+            ? <Tooltip content="Exporting projects isn’t included in your current plan"><button aria-label="Export journal submission package (not included in your plan)" aria-disabled="true" disabled style={{...hdrIconBtn,opacity:0.5,cursor:"not-allowed"}}><Icon name="lock" size={13}/></button></Tooltip>
+            : <Tooltip content="Journal submission package (ZIP): PRISMA, forest plots, methods text & study table"><button onClick={onJournalZip} aria-label="Export journal submission package" style={hdrIconBtn}><Icon name="layers" size={13}/></button></Tooltip>)}
+          {exportLocked
+            ? <Tooltip content="Exporting projects isn’t included in your current plan"><button aria-label="Export project (not included in your plan)" aria-disabled="true" disabled style={{...hdrIconBtn,opacity:0.5,cursor:"not-allowed"}}><Icon name="lock" size={13}/></button></Tooltip>
+            : <Tooltip content="Export project as JSON"><button onClick={onExport} aria-label="Export project" style={hdrIconBtn}><Icon name="download" size={13}/></button></Tooltip>}
           <Tooltip content="Import project JSON"><button onClick={onImport} aria-label="Import project" style={hdrIconBtn}><Icon name="upload" size={13}/></button></Tooltip>
         </>}
         {tab!=="overview"&&<button onClick={()=>setTab("overview")} title="Project overview" style={{...btnS("ghost"),fontSize:11.5,display:"inline-flex",alignItems:"center",gap:5}}><Icon name="arrowLeft" size={12}/><span className="uh-navlabel">Project overview</span></button>}

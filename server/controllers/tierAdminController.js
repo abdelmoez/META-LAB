@@ -18,6 +18,32 @@ function safeParse(s, fallback) {
   catch { return fallback; }
 }
 
+/**
+ * 79.md §2 — whitelist-coerce the tier BUSINESS-METADATA fields from a request body
+ * (pricing / trial / grace / flags). Only present, well-typed keys are returned so a
+ * partial PATCH never clobbers unspecified fields. Prices are non-negative integers
+ * in minor units (cents); null clears a price. currency is a 3-letter lower-case code.
+ */
+export function coerceTierMeta(b) {
+  const out = {};
+  if (!b || typeof b !== 'object') return out;
+  const boolKeys = ['isPaid', 'publiclyAvailable', 'manualAssignAllowed'];
+  for (const k of boolKeys) if (typeof b[k] === 'boolean') out[k] = b[k];
+  for (const k of ['priceMonthlyCents', 'priceAnnualCents']) {
+    if (k in b) {
+      if (b[k] === null || b[k] === '') out[k] = null;
+      else if (Number.isFinite(Number(b[k]))) out[k] = Math.max(0, Math.round(Number(b[k])));
+    }
+  }
+  for (const k of ['trialDays', 'gracePeriodDays']) {
+    if (k in b && Number.isFinite(Number(b[k]))) out[k] = Math.min(3650, Math.max(0, Math.round(Number(b[k]))));
+  }
+  if (typeof b.currency === 'string' && b.currency.trim()) {
+    out.currency = b.currency.trim().toLowerCase().slice(0, 8);
+  }
+  return out;
+}
+
 /** Whitelist-coerce an entitlement override map (junk keys/types dropped). */
 export function coerceEntitlementOverrides(patch) {
   const out = {};
@@ -71,12 +97,15 @@ export async function updateTierAdmin(req, res) {
       return res.status(400).json({ error: 'The site default tier cannot be deactivated. Change the default tier first.' });
     }
 
-    const data = {};
+    const data = { ...coerceTierMeta(b) };
     if (typeof b.displayName === 'string' && b.displayName.trim()) data.displayName = b.displayName.trim().slice(0, 100);
     if (typeof b.description === 'string') data.description = b.description.slice(0, 500);
     if (typeof b.isActive === 'boolean') data.isActive = b.isActive;
     if (Number.isFinite(b.sortOrder)) data.sortOrder = Math.round(b.sortOrder);
     if (overrides !== null) data.entitlements = JSON.stringify(overrides);
+    // Keep archivedAt consistent with isActive: reactivating clears the archive stamp;
+    // an explicit archive is handled by the dedicated archive endpoint.
+    if (data.isActive === true) data.archivedAt = null;
 
     const row = existing
       ? await prisma.productTier.update({ where: { id }, data })
@@ -90,6 +119,144 @@ export async function updateTierAdmin(req, res) {
     const tiers = await listTiers();
     res.json({ ok: true, tier: tiers.find(t => t.id === row.id) || null });
   } catch (e) { console.error('updateTierAdmin', e); res.status(500).json({ error: 'Internal server error' }); }
+}
+
+/** A valid custom tier id: lowercase slug, not colliding with a reserved word. */
+const TIER_ID_RE = /^[a-z][a-z0-9_-]{1,40}$/;
+const RESERVED_TIER_IDS = new Set(['__default__', 'default', 'admin', 'mod', 'user', 'all', 'none']);
+
+/**
+ * POST /api/admin/tiers — 79.md §2. Create a NEW custom tier. The id is a stable
+ * lowercase slug (immutable once created); everything else is editable afterwards.
+ */
+export async function createTierAdmin(req, res) {
+  try {
+    const b = req.body || {};
+    const id = String(b.id || '').trim().toLowerCase();
+    if (!TIER_ID_RE.test(id) || RESERVED_TIER_IDS.has(id) || DEFAULT_TIER_IDS.includes(id)) {
+      return res.status(400).json({ error: 'Tier id must be a unique lowercase slug (a-z, 0-9, -, _) that is not a reserved or built-in tier.' });
+    }
+    const existing = await prisma.productTier.findUnique({ where: { id } });
+    if (existing) return res.status(409).json({ error: 'A tier with that id already exists.' });
+
+    const overrides = coerceEntitlementOverrides(b.entitlements || {});
+    const meta = coerceTierMeta(b);
+    const displayName = (typeof b.displayName === 'string' && b.displayName.trim()) ? b.displayName.trim().slice(0, 100) : id;
+    const tiers = await listTiers();
+    const maxSort = tiers.reduce((m, t) => Math.max(m, t.sortOrder || 0), 0);
+
+    const row = await prisma.productTier.create({
+      data: {
+        id, name: id, displayName,
+        description: typeof b.description === 'string' ? b.description.slice(0, 500) : '',
+        isActive: b.isActive !== false,
+        sortOrder: Number.isFinite(b.sortOrder) ? Math.round(b.sortOrder) : maxSort + 1,
+        entitlements: JSON.stringify(overrides),
+        ...meta,
+      },
+    });
+    await logAdminAction(req, 'CREATE_PRODUCT_TIER', 'ProductTier', id, { displayName, meta });
+    const list = await listTiers();
+    res.status(201).json({ ok: true, tier: list.find(t => t.id === row.id) || null });
+  } catch (e) { console.error('createTierAdmin', e); res.status(500).json({ error: 'Internal server error' }); }
+}
+
+/**
+ * POST /api/admin/tiers/:id/duplicate — 79.md §2. Clone an existing tier (default or
+ * custom) as a starting template. Body: { id, displayName? }. The clone copies the
+ * source's FULLY-RESOLVED entitlements + business metadata; the new id must be free.
+ */
+export async function duplicateTierAdmin(req, res) {
+  try {
+    const sourceId = String(req.params.id || '');
+    const tiers = await listTiers();
+    const source = tiers.find(t => t.id === sourceId);
+    if (!source) return res.status(404).json({ error: 'Source tier not found' });
+
+    const b = req.body || {};
+    const newId = String(b.id || '').trim().toLowerCase();
+    if (!TIER_ID_RE.test(newId) || RESERVED_TIER_IDS.has(newId) || DEFAULT_TIER_IDS.includes(newId)) {
+      return res.status(400).json({ error: 'New tier id must be a unique lowercase slug that is not a reserved or built-in tier.' });
+    }
+    if (await prisma.productTier.findUnique({ where: { id: newId } })) {
+      return res.status(409).json({ error: 'A tier with that id already exists.' });
+    }
+    // Copy the RESOLVED entitlements so the clone is fully explicit (independent of the
+    // source's default-merge), then whitelist through the coercer.
+    const overrides = coerceEntitlementOverrides(source.entitlements || {});
+    const maxSort = tiers.reduce((m, t) => Math.max(m, t.sortOrder || 0), 0);
+    const row = await prisma.productTier.create({
+      data: {
+        id: newId, name: newId,
+        displayName: (typeof b.displayName === 'string' && b.displayName.trim()) ? b.displayName.trim().slice(0, 100) : `${source.displayName} (copy)`,
+        description: source.description || '',
+        isActive: true,
+        sortOrder: maxSort + 1,
+        entitlements: JSON.stringify(overrides),
+        isPaid: source.isPaid, publiclyAvailable: false, // a clone starts unpublished
+        manualAssignAllowed: source.manualAssignAllowed,
+        priceMonthlyCents: source.priceMonthlyCents ?? null, priceAnnualCents: source.priceAnnualCents ?? null,
+        currency: source.currency || 'usd', trialDays: source.trialDays || 0, gracePeriodDays: source.gracePeriodDays || 0,
+      },
+    });
+    await logAdminAction(req, 'DUPLICATE_PRODUCT_TIER', 'ProductTier', newId, { from: sourceId });
+    const list = await listTiers();
+    res.status(201).json({ ok: true, tier: list.find(t => t.id === row.id) || null });
+  } catch (e) { console.error('duplicateTierAdmin', e); res.status(500).json({ error: 'Internal server error' }); }
+}
+
+/**
+ * POST /api/admin/tiers/:id/archive — 79.md §2. Soft-archive (deactivate + stamp
+ * archivedAt) or restore (body { archived:false }). Archiving keeps the row so users
+ * already assigned to it never break; the site default tier can never be archived.
+ */
+export async function archiveTierAdmin(req, res) {
+  try {
+    const id = String(req.params.id || '');
+    const archived = req.body?.archived !== false; // default = archive
+    const tiers = await listTiers();
+    const tier = tiers.find(t => t.id === id);
+    if (!tier) return res.status(404).json({ error: 'Tier not found' });
+    const defaultTierId = await getDefaultTierId();
+    if (archived && id === defaultTierId) {
+      return res.status(400).json({ error: 'The site default tier cannot be archived. Change the default tier first.' });
+    }
+
+    // For a default-definition tier without a row yet, create one carrying the archive state.
+    const existing = await prisma.productTier.findUnique({ where: { id } });
+    const data = archived
+      ? { isActive: false, archivedAt: new Date() }
+      : { isActive: true, archivedAt: null };
+    if (existing) {
+      await prisma.productTier.update({ where: { id }, data });
+    } else {
+      await prisma.productTier.create({
+        data: { id, name: id, displayName: tier.displayName || id, description: tier.description || '', entitlements: '{}', ...data },
+      });
+    }
+    await logAdminAction(req, archived ? 'ARCHIVE_PRODUCT_TIER' : 'RESTORE_PRODUCT_TIER', 'ProductTier', id, {
+      assignedUsers: await prisma.user.count({ where: { tierId: id } }).catch(() => 0),
+    });
+    const list = await listTiers();
+    res.json({ ok: true, tier: list.find(t => t.id === id) || null });
+  } catch (e) { console.error('archiveTierAdmin', e); res.status(500).json({ error: 'Internal server error' }); }
+}
+
+/** GET /api/admin/export-usage?period=YYYY-MM — 79.md §3 project-export usage view. */
+export async function getProjectExportUsageAdmin(req, res) {
+  try {
+    const { projectExportUsageSummary, currentPeriod } = await import('../services/projectExportGuard.js');
+    const period = /^\d{4}-\d{2}$/.test(String(req.query.period || '')) ? String(req.query.period) : currentPeriod();
+    const summary = await projectExportUsageSummary({ period, take: 100 });
+    // Enrich the top-user + recent rows with emails for the Ops table.
+    const ids = [...new Set([...summary.topUsers.map(u => u.userId), ...summary.recent.map(r => r.userId)].filter(Boolean))];
+    const emailById = await usersEmailMap(ids);
+    res.json({
+      ...summary,
+      topUsers: summary.topUsers.map(u => ({ ...u, email: emailById.get(u.userId) || null })),
+      recent: summary.recent.map(r => ({ ...r, email: emailById.get(r.userId) || null })),
+    });
+  } catch (e) { console.error('getProjectExportUsageAdmin', e); res.status(500).json({ error: 'Internal server error' }); }
 }
 
 /** PUT /api/admin/tier-settings — enforcement kill-switch + default tier. */

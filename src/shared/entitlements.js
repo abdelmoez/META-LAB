@@ -33,6 +33,10 @@ export const ENTITLEMENT_KEYS = [
   { key: 'projects.create',               kind: 'boolean', group: 'Projects',       label: 'Create projects' },
   { key: 'projects.maxActiveProjects',    kind: 'limit',   group: 'Projects',       label: 'Max active projects' },
   { key: 'projects.maxMembersPerProject', kind: 'limit',   group: 'Projects',       label: 'Max members per project' },
+  // 79.md §3 — the master gate for exporting a PROJECT (full-project JSON, journal
+  // ZIP, screening/RoB/pecan artifact exports). Free = false (cannot export any
+  // project). The monthly allowance for permitted tiers is `exports.maxPerMonth`.
+  { key: 'projects.export',               kind: 'boolean', group: 'Projects',       label: 'Export projects' },
   // Screening
   { key: 'screening.import',              kind: 'boolean', group: 'Screening',      label: 'Import records' },
   { key: 'screening.maxRecordsPerProject',kind: 'limit',   group: 'Screening',      label: 'Max records per project' },
@@ -91,6 +95,7 @@ export const DEFAULT_TIERS = [
       'projects.create': true,
       'projects.maxActiveProjects': 2,
       'projects.maxMembersPerProject': 2,
+      'projects.export': false, // 79.md §3 — Free tier cannot export projects (baseline)
       'screening.import': true,
       'screening.maxRecordsPerProject': 1000,
       'screening.export': true,
@@ -132,6 +137,7 @@ export const DEFAULT_TIERS = [
     entitlements: {
       'projects.maxActiveProjects': 10,
       'projects.maxMembersPerProject': 8,
+      'projects.export': true, // 79.md §3 — Plus can export projects (allowance = exports.maxPerMonth)
       'screening.maxRecordsPerProject': 25000,
       'screening.aiScoring': true,
       'screening.validationMetrics': true,
@@ -164,6 +170,7 @@ export const DEFAULT_TIERS = [
     entitlements: {
       'projects.maxActiveProjects': UNLIMITED,
       'projects.maxMembersPerProject': UNLIMITED,
+      'projects.export': true, // 79.md §3 — Pro can export projects (unlimited via exports.maxPerMonth)
       'screening.maxRecordsPerProject': 250000,
       'screening.aiScoring': true,
       'screening.validationMetrics': true,

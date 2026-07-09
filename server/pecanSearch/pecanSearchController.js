@@ -21,6 +21,8 @@ import { buildReport, reportToCsv, reportToHtml } from './report.js';
 import { publicProviderConfig } from './config.js';
 import { normalizeCanonical, validateCanonical, QUERY_LIMITS } from './query/ast.js';
 import { PecanError } from './errors.js';
+import { sendTierLimit } from '../services/entitlementService.js';
+import { requireProjectExport, settleProjectExport, EXPORT_TYPES } from '../services/projectExportGuard.js';
 
 const AUDIT_MODULE = 'pecanSearch';
 // Cache identical count previews briefly so rapid typing never floods providers.
@@ -287,20 +289,34 @@ export async function getReportExport(req, res) {
     const report = await buildReport(owned.id);
     if (!report) return res.status(404).json({ error: 'Run not found' });
     const format = String(req.query.format || 'json').toLowerCase();
+    // 79.md §3 — the search-run report is a project export: Free tier is blocked and
+    // permitted tiers consume one unit of their monthly allowance.
+    let reservation;
+    try {
+      reservation = await requireProjectExport(req.user, {
+        exportType: EXPORT_TYPES.PECAN_REPORT, projectId: req.params.projectId || null, format,
+      });
+    } catch (e) { if (sendTierLimit(res, e)) return; throw e; }
     const base = `pecanrev-search-${owned.id.slice(0, 8)}`;
     if (format === 'csv') {
+      const body = reportToCsv(report);
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="${base}.csv"`);
-      return res.send(reportToCsv(report));
+      settleProjectExport(reservation.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(body) });
+      return res.send(body);
     }
     if (format === 'html') {
+      const body = reportToHtml(report);
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
       res.setHeader('Content-Disposition', `inline; filename="${base}.html"`);
-      return res.send(reportToHtml(report));
+      settleProjectExport(reservation.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(body) });
+      return res.send(body);
     }
+    const body = JSON.stringify(report, null, 2);
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${base}.json"`);
-    return res.send(JSON.stringify(report, null, 2));
+    settleProjectExport(reservation.reservationId, { status: 'succeeded', fileSize: Buffer.byteLength(body) });
+    return res.send(body);
   } catch (err) { return handleError(res, err, 'getReportExport'); }
 }
 
