@@ -178,6 +178,7 @@ function annotateShared(projectObj, acc, owner, meta = {}, linked = null, progre
       readOnly: !!acc.readOnly,
       canExport: !!acc.canExport,
       canAssessRiskOfBias: !!acc.canAssessRiskOfBias, // prompt41 Task 5 — surface RoB grant to the UI
+      canRunAnalysis: !!acc.canRunAnalysis,           // 78.md #2 — surface the Analysis grant to the UI
     },
   };
 }
@@ -200,7 +201,7 @@ function annotateOwned(projectObj, linked, meta = {}, progressCtx = null) {
     // workspace's real record count when one exists (studies === records).
     ...(linkedSift ? { _recordCount: linkedSift.recordCount } : {}),
     _linkedMetaSift: linkedSift,
-    _permissions: { role: 'owner', isOwner: true, canView: true, canEdit: true, readOnly: false, canExport: true, canAssessRiskOfBias: true },
+    _permissions: { role: 'owner', isOwner: true, canView: true, canEdit: true, readOnly: false, canExport: true, canAssessRiskOfBias: true, canRunAnalysis: true },
   };
 }
 

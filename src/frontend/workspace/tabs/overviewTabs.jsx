@@ -652,7 +652,10 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
           ["Created",fmtDate(project.created||project.createdAt)],
           ["Last modified",fmtDate(project.modified||project.updatedAt)],
           ["Studies in extraction",String((project.studies||[]).length)],
-          ["Screening",lid?((project._linkedMetaSift&&project._linkedMetaSift.title)||(sp&&sp.title)||"Set up"):"Set up on open"],
+          // 78.md #1 — the linked screening workspace is BACKEND infrastructure; Project
+          // Control presents ONE unified PecanRev project, so no "Screening" linkage row
+          // is exposed here (admin diagnostics live in the Ops Console). The link itself
+          // (linkedSiftId / _linkedMetaSift) and its sync are untouched.
         ].map(([k,v])=>(
           <div key={k} style={{display:"flex",justifyContent:"space-between",gap:10,fontSize:12,padding:"4px 0",minWidth:0}}>
             <span style={{color:C.muted,flexShrink:0}}>{k}</span>
@@ -662,14 +665,18 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
       </div>
     </div>
 
-    {/* Status + linked workspace */}
-    {lid?(
+    {/* Project status. 78.md #1 — the engine-linkage framing (linked-workspace status,
+        "Open Screening" handoff, "set up on open" prompt) is removed so Project Control
+        reads as ONE unified project; the status itself is a normal project setting. The
+        underlying linkage + sync are unchanged. Status is only editable once the shared
+        workspace exists (linked) — it lives on the same shared record the team uses. */}
+    {lid&&(
       <div style={card}>
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,flexWrap:"wrap"}}>
           <div style={secLbl}>Project status{statusFlash&&<span style={{marginLeft:8,color:C.grn,textTransform:"none",letterSpacing:0,fontFamily:"'IBM Plex Mono',monospace"}}>✓ saved</span>}</div>
         </div>
         {spErr&&<div style={{fontSize:11.5,color:C.red,marginBottom:8}}>{spErr}</div>}
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",marginBottom:12}}>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap"}}>
           <div>
             <div style={{fontSize:12.5,color:C.txt,fontWeight:600}}>Status</div>
             <div style={{fontSize:11,color:C.muted,marginTop:2}}>Where this review stands — shared across the whole project team.</div>
@@ -684,29 +691,17 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
             <span style={tagS(spStatus==="done"?"green":spStatus==="in_progress"?"blue":"")}>{statusMeta?statusMeta.label:spStatus}</span>
           )}
         </div>
-        <div style={{borderTop:`1px solid ${C.brd}`,paddingTop:12,display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
-          {setTab&&<button onClick={()=>setTab("screening")} style={{...btnS("ghost"),fontSize:11}}><Icon name="filter" size={11}/> Open Screening →</button>}
-          <span style={{fontSize:10.5,color:C.muted}}>Accepted full-text studies hand off to Data Extraction; PRISMA numbers fill in from screening.</span>
-        </div>
-      </div>
-    ):(
-      <div style={{...card,borderColor:themeAlpha("var(--t-teal)","40"),background:C.bg}}>
-        <div style={{...secLbl,color:"var(--t-teal)"}}>Screening</div>
-        <div style={{fontSize:12,color:C.muted,lineHeight:1.6,marginBottom:12}}>
-          Open the <strong style={{color:C.txt}}>Screening</strong> stage to import references and screen with your team. The screening
-          workspace — including its members and permissions — is set up automatically the first time the owner opens it. No manual linking needed.
-        </div>
-        {setTab&&<button onClick={()=>setTab("screening")} style={btnS("primary")}>Go to Screening →</button>}
       </div>
     )}
 
-    {/* prompt34 Task 9 — Screening & collaboration settings (blind mode, restrict
-        chat, required reviewers) live HERE in Project Control as the main place to
-        edit them; they write to the linked ScreenProject (single source of truth),
-        so the Screening "Settings" tab shows the same synchronized values. */}
+    {/* Collaboration & permissions (prompt34 Task 9). Blind mode, restrict chat and the
+        required-reviewers quorum are edited HERE as the main place; they persist on the
+        project's shared record (the single source of truth the whole team reads). 78.md
+        #1 — the section is named for what the user manages (collaboration), not for the
+        backend engine that stores it. */}
     {lid&&(
       <div style={card}>
-        <div style={secLbl}>Screening &amp; collaboration{spFlash&&<span style={{marginLeft:8,color:C.grn,textTransform:"none",letterSpacing:0,fontFamily:"'IBM Plex Mono',monospace"}}>✓ saved</span>}</div>
+        <div style={secLbl}>Collaboration &amp; permissions{spFlash&&<span style={{marginLeft:8,color:C.grn,textTransform:"none",letterSpacing:0,fontFamily:"'IBM Plex Mono',monospace"}}>✓ saved</span>}</div>
         {!canManageStatus&&<div style={{fontSize:11.5,color:C.muted,marginBottom:10,lineHeight:1.5}}>You can view these settings. Only the owner or a leader can change them.</div>}
         {spErr&&<div style={{fontSize:11.5,color:C.red,marginBottom:8}}>{spErr}</div>}
         {/* Blind mode */}
@@ -723,7 +718,7 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",borderTop:`1px solid ${C.brd}`,marginTop:12,paddingTop:12}}>
           <div style={{minWidth:0,flex:1}}>
             <div style={{fontSize:12.5,color:C.txt,fontWeight:600}}>Restrict chat</div>
-            <div style={{fontSize:11,color:C.muted,marginTop:2,lineHeight:1.45}}>When on, only members with the Chat permission can post.</div>
+            <div style={{fontSize:11,color:C.muted,marginTop:2,lineHeight:1.45}}>When on, only the project owner and leaders can post — everyone else is read-only. Mute an individual member instead with their Chat permission.</div>
           </div>
           {canManageStatus
             ? <SwitchToggle on={!!sp?.chatRestricted} busy={spBusy} onClick={()=>saveSpSetting({chatRestricted:!sp?.chatRestricted})} ariaLabel={`Restrict chat — currently ${sp?.chatRestricted?"on":"off"}`} onLabel="Restricted" offLabel="Open"/>

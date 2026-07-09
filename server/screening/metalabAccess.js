@@ -29,7 +29,14 @@ export function mlAccessFromMember(m) {
   // explicit per-member flag (it was computed but never surfaced, so granting it had
   // no effect on RoB access).
   const canAssessRiskOfBias = full || !!m.canAssessRiskOfBias;
-  return { canView, canEdit, readOnly, canExport, canAssessRiskOfBias };
+  // 78.md #2 — the Analysis grant. Owner/leader always; otherwise the explicit
+  // per-member flag. Like RoB above, this was stored on the member matrix but never
+  // surfaced, so the "Analysis" toggle was inert; surfacing it lets the UI gate the
+  // meta-analysis views for members without the grant. Analysis is client-side
+  // computation over already-viewable studies, so this UI gate is the appropriate
+  // enforcement point (no data is exposed that canView members can't already see).
+  const canRunAnalysis = full || !!m.canRunAnalysis;
+  return { canView, canEdit, readOnly, canExport, canAssessRiskOfBias, canRunAnalysis };
 }
 
 /**

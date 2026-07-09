@@ -32,6 +32,7 @@ import { resolveScreeningUploadLimit } from '../screening/uploadLimit.js';
 import { requireEntitlement, requireLimit, sendTierLimit, loadUserForTier, planRecordLimitFor } from '../services/entitlementService.js';
 import { snapshotPico } from '../screening/picoSnapshot.js';
 import { screeningCountSelect } from '../utils/screeningCounts.js';
+import { derivePrismaIdentification } from '../utils/prismaDerive.js';
 import {
   scorePair, normalizeTitle, classifyPair, DUP_TYPES,
   isExactDuplicateGroup, pickBulkPrimary, mergeFillBlanks,
@@ -2116,12 +2117,22 @@ export async function getMetaLabSummary(req, res) {
     }
     if (!sp) return res.json({ linked: false });
 
-    const [records, decisions, conflicts, dupGroups, batches] = await Promise.all([
+    const [records, decisions, conflicts, dupGroups, batches, pecanSources] = await Promise.all([
       prisma.screenRecord.findMany({ where: { projectId: sp.id } }),
       prisma.screenDecision.findMany({ where: { projectId: sp.id }, select: { recordId: true, reviewerId: true, decision: true, stage: true } }),
       prisma.screenConflict.findMany({ where: { projectId: sp.id }, select: { resolvedAt: true } }),
       prisma.screenDuplicateGroup.findMany({ where: { projectId: sp.id }, select: { resolvedAt: true, createdAt: true } }),
       prisma.screenImportBatch.findMany({ where: { projectId: sp.id }, select: { preDedupCount: true, duplicateCount: true, createdAt: true, source: true } }),
+      // 78.md #4 — the AUTOMATED (Pecan Search Engine) runs for THIS project. The engine
+      // removes cross-source duplicates BEFORE landing, so those raw retrievals never
+      // became ScreenRecords/import batches; we fold their exact+fuzzy dedup into the
+      // PRISMA identified/duplicates-removed counts below so an automated search's flow
+      // reflects the true retrieval. Keyed by the META·LAB project id (the search
+      // workspace). Fail-soft: any error (flag off, no runs) → no automated contribution.
+      prisma.pecanSearchSource.findMany({
+        where: { run: { metaLabProjectId: req.params.mlpid } },
+        select: { exactDupCount: true, fuzzyDupCount: true },
+      }).catch(() => []),
     ]);
     const total              = records.length;
     // 58.md §7 — PRISMA must show total-identified BEFORE dedup + ALL duplicates
@@ -2132,9 +2143,14 @@ export async function getMetaLabSummary(req, res) {
     const importDuplicates   = batches.reduce((a, b) => a + (b.duplicateCount || 0), 0);
     const preDedupAccounting = batches.reduce((a, b) => a + (b.preDedupCount || 0), 0);
     const postImportDupes    = records.filter(r => r.isDuplicate).length;
-    const duplicatesRemoved  = importDuplicates + postImportDupes;
-    const identified         = total + importDuplicates; // records identified before any dedup
-    const screened           = Math.max(0, total - postImportDupes);
+    // 78.md #4 — automated-run cross-source duplicates (engine-removed before landing).
+    // existingMatch is excluded on purpose (rerun-safety — see prismaDerive.js).
+    const pecanExactDup      = pecanSources.reduce((a, s) => a + (s.exactDupCount || 0), 0);
+    const pecanFuzzyDup      = pecanSources.reduce((a, s) => a + (s.fuzzyDupCount || 0), 0);
+    // Manual + imported + automated all feed the SAME normalized derivation (pure helper).
+    const { identified, duplicatesRemoved, screened } = derivePrismaIdentification({
+      recordCount: total, importDuplicates, postImportDuplicates: postImportDupes, pecanExactDup, pecanFuzzyDup,
+    });
 
     // 77.md §1 — HONEST deduplication metadata so the Manuscript Editor never reports a
     // confident "0 duplicates" when dedup was never performed (or is only legacy data with

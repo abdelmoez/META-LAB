@@ -179,7 +179,12 @@ function DeepToolPage({ stage }) {
 
   // Full-bleed stages: screening (study list + detail) always; RoB only while a
   // per-study assessment is open (PDF + assessment split). These fill the viewport.
-  const fullbleed = stage === 'screening' || (stage === 'rob' && robInWorkspace) || (stage === 'extraction' && extractionInWorkspace);
+  // 78.md #6 — 'search' is full-bleed too: the staged SearchWorkspace pins the stage
+  // header (flexShrink:0) above a single bounded body scroller, so the Automated Search
+  // tab's tall result content can no longer push the header off-screen or let the page
+  // scroll into empty space. (SearchWorkspace only adopts its internal scroller when the
+  // white side-menu is driving it — `railHidden` — so SSR/tests keep the page-scroll model.)
+  const fullbleed = stage === 'screening' || stage === 'search' || (stage === 'rob' && robInWorkspace) || (stage === 'extraction' && extractionInWorkspace);
 
   const renderPrimaryRail = (variant) => (
     <StitchProjectRail projectId={projectId} linkedSiftId={spId} statusMap={statusMap}
@@ -325,6 +330,26 @@ function DeepToolPage({ stage }) {
     body = (<LazyReport project={project} upd={doc.upd} />);
   } else if (stage === 'methods') {
     body = (<LazyMethods />);
+  }
+
+  // 78.md #2 — the "Analysis" member permission is now enforced. A member WITHOUT the
+  // grant (canRunAnalysis===false on a shared project; owners/leaders always keep it,
+  // and a missing annotation defaults permissive) gets a clear, non-technical read-only
+  // explanation instead of the meta-analysis engine + its plots. Analysis is client-side
+  // computation over studies the member can already view, so this UI gate is the correct
+  // enforcement point — no data is exposed that canView members can't already see.
+  const ANALYSIS_STAGES = new Set(['analysis', 'forest', 'sensitivity', 'subgroup', 'nma']);
+  if (ANALYSIS_STAGES.has(stage) && perms && perms.isOwner === false && perms.canRunAnalysis === false) {
+    body = (
+      <div role="status" style={{ maxWidth: 560, margin: '32px auto 0', textAlign: 'center', padding: '28px 24px', background: S.card, border: `1px solid ${salpha(S.outlineVariant, 0.45)}`, borderRadius: 16 }}>
+        <div style={{ marginBottom: 12 }}><StitchBadge tone="warn" dot icon="lock">Restricted</StitchBadge></div>
+        <h2 style={{ fontSize: 18, fontWeight: 700, color: S.textPrimary, margin: '0 0 8px' }}>Analysis is restricted for your role</h2>
+        <p style={{ fontSize: 13.5, lineHeight: 1.6, color: S.textSecondary, margin: 0 }}>
+          You can view the rest of this project, but running the meta-analysis and its plots needs the <strong>Analysis</strong> permission.
+          Ask the project owner or a leader to enable Analysis for you in <strong>Project&nbsp;Control ▸ Members&nbsp;&amp;&nbsp;permissions</strong>.
+        </p>
+      </div>
+    );
   }
 
   // The body wrapper keeps the SAME DOM position whether full-bleed or carded, so

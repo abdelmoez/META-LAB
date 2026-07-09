@@ -431,9 +431,12 @@ export function projectPerms(project){
   if(project&&project._shared) return {
     role:project._role||"member",isOwner:false,
     canView:true,canEdit:!!project._canEdit,
-    readOnly:!!project._readOnly,canExport:true,
+    // 78.md #2 — default-permissive when the server annotation is absent (an older
+    // payload): the Analysis gate only ever restricts when _permissions explicitly
+    // says canRunAnalysis===false, so a missing value never locks anyone out.
+    readOnly:!!project._readOnly,canExport:true,canRunAnalysis:true,
   };
-  return {role:"owner",isOwner:true,canView:true,canEdit:true,readOnly:false,canExport:true};
+  return {role:"owner",isOwner:true,canView:true,canEdit:true,readOnly:false,canExport:true,canRunAnalysis:true};
 }
 /* Linked META·SIFT ScreenProject id for a project (workspace = source of truth). */
 export function linkedSiftId(project){

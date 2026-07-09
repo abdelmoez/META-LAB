@@ -61,6 +61,9 @@ import { C, FONT, alpha } from '../../frontend/theme/tokens.js';
 // React-free module so the white side-menu (navConfig) and this body share ONE source
 // of truth and can never drift. Re-exported from index.js for existing importers.
 import { STAGES, stagesFor, stageAfterModeChange, reconcileStageUrl } from './searchStages.js';
+// 78.md #5 — publish every mode change to the shared store so the white side-menu
+// (StitchProjectSubnav → useSearchMode) re-scopes its stage list immediately, no reload.
+import { publishSearchMode } from './searchModeStore.js';
 import { Icon } from '../../frontend/components/icons.jsx';
 import { SearchBuilderTab, searchBuilderApi, loadSearch, saveSearch, relativeTime } from '../searchBuilder/index.js';
 import { getDatabase, defaultSelectedDatabases, DATABASE_CATALOG } from '../../research-engine/searchBuilder/databases.js';
@@ -751,6 +754,8 @@ export default function SearchWorkspace({
         // 74.md — adopting the saved mode can remove the current stage from the rail
         // (e.g. deep-linked to Database Strategies on an automated project).
         setStage((cur) => stageAfterModeChange(cur, m));
+        // 78.md #5 — seed the shared store so the side-menu reflects the persisted mode.
+        publishSearchMode(projectId, m);
       }
     })();
     return () => { dead = true; };
@@ -765,6 +770,9 @@ export default function SearchWorkspace({
     modeChosenRef.current = true;
     setModeErr('');
     setSearchMode(mode); // local state reflects immediately; persistence is soft-fail
+    // 78.md #5 — the white side-menu re-scopes its stage list in the SAME tick as the
+    // body (both read the shared store), so switching mode never leaves the menu stale.
+    publishSearchMode(projectId, mode);
     // 74.md — the interface updates in the SAME render: if the new mode's rail no
     // longer contains the active stage, land on the nearest surviving stage.
     setStage((cur) => stageAfterModeChange(cur, mode));
@@ -806,6 +814,10 @@ export default function SearchWorkspace({
   const rootRef = useRef(null);
   const resetScroll = useCallback(() => {
     try {
+      // 78.md #6 — in the full-bleed side-menu layout rootRef itself IS the scroller,
+      // so reset it directly (harmless no-op when it isn't a scroller); then also reset
+      // the nearest scrollable ancestor for the page-scroll (non-railHidden) model.
+      if (rootRef.current) rootRef.current.scrollTop = 0;
       const sc = findScrollableAncestor(rootRef.current);
       if (sc) sc.scrollTop = 0;
       else if (typeof window !== 'undefined' && typeof window.scrollTo === 'function') window.scrollTo(0, 0);
@@ -918,7 +930,16 @@ export default function SearchWorkspace({
   const modeLabel = searchMode === 'automated' ? 'Automated search' : searchMode === 'manual' ? 'Manual search' : null;
 
   return (
-    <div ref={rootRef} style={{ maxWidth: 1240, margin: '0 auto', fontFamily: FONT, color: C.txt }}>
+    // 78.md #6 — when the white side-menu drives the workflow (`railHidden`), the host
+    // renders this stage full-bleed, so THIS element is the ONE bounded primary scroll
+    // region (flex:1 + minHeight:0 + overflowY:auto): the pinned stage header stays put
+    // and the tall Automated Search content scrolls here instead of pushing the page.
+    // A non-railHidden mount (SSR/tests/legacy) keeps the original page-scroll model.
+    <div ref={rootRef}
+      style={railHidden
+        ? { flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', fontFamily: FONT, color: C.txt }
+        : { maxWidth: 1240, margin: '0 auto', fontFamily: FONT, color: C.txt }}>
+      <div style={railHidden ? { maxWidth: 1240, margin: '0 auto', padding: '18px 20px 40px' } : undefined}>
       {/* ONE unified header */}
       <header style={{ marginBottom: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6, flexWrap: 'wrap' }}>
@@ -1144,6 +1165,7 @@ export default function SearchWorkspace({
             })()}
           </div>
         </section>
+      </div>
       </div>
     </div>
   );

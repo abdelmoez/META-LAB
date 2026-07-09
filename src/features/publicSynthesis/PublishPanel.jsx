@@ -58,6 +58,19 @@ export default function PublishPanel({ projectId }) {
   const [maOutcomes, setMaOutcomes] = useState([]);
   const [showComposer, setShowComposer] = useState(false);
 
+  // 78.md #3 — the preview modal must NOT be dismissed by an accidental outside/
+  // background click (that was destroying the visible synthesis until a refresh).
+  // Closing is now DELIBERATE ONLY: the explicit Close button or the Escape key.
+  // The Escape listener is scoped to while the modal is open, so it never affects
+  // any other surface. previewPayload is retained regardless, so the content is
+  // never lost.
+  useEffect(() => {
+    if (!previewOpen) return undefined;
+    const onKey = (e) => { if (e.key === 'Escape') setPreviewOpen(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [previewOpen]);
+
   useEffect(() => {
     let alive = true;
     publicSynthesisFlagEnabled().then((v) => { if (alive) setFlag(v); }).catch(() => { if (alive) setFlag(false); });
@@ -326,11 +339,14 @@ export default function PublishPanel({ projectId }) {
         </div>
       )}
 
-      {/* Preview modal — the real public page component, fed the sanitized payload */}
+      {/* Preview modal — the real public page component, fed the sanitized payload.
+          78.md #3 — the backdrop is NOT a click-away dismiss: an outside/background
+          click must never destroy the visible synthesis (the reported bug). Closing
+          is deliberate only — the Close button below or the Escape key. */}
       {previewOpen && previewPayload && (
-        <div role="dialog" aria-modal="true" onClick={() => setPreviewOpen(false)}
+        <div role="dialog" aria-modal="true" aria-label="Public synthesis preview"
           style={{ position: 'fixed', inset: 0, background: 'rgba(15,15,30,0.55)', display: 'flex', alignItems: 'flex-start', justifyContent: 'center', zIndex: 1000, padding: '24px 16px', overflow: 'auto' }}>
-          <div onClick={(e) => e.stopPropagation()}
+          <div
             style={{ background: '#fff', borderRadius: 12, maxWidth: 920, width: '100%', overflow: 'hidden', boxShadow: '0 16px 50px rgba(10,10,30,0.35)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 18px', borderBottom: '1px solid #e2e4ee', background: '#faf9ff' }}>
               <span style={{ fontSize: 13, fontWeight: 700, color: '#4c1d95' }}>Preview — this is what visitors will see</span>

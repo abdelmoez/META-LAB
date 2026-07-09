@@ -159,7 +159,7 @@ function SettingsSection({ pid, project, canManage, refreshProject, presence }) 
         </div>
 
         <div style={{ borderTop: `1px solid ${C.brd}`, marginTop: 14, paddingTop: 14 }}>
-          <Row title="Restrict chat" hint="When on, only members with the Chat permission can post.">
+          <Row title="Restrict chat" hint="When on, only the project owner and leaders can post — everyone else is read-only. Mute an individual member instead with their Chat permission.">
             {canManage
               ? <Toggle checked={chatRestricted} disabled={busy} onChange={next => { const prev = chatRestricted; setChatRestricted(next); save({ chatRestricted: next }).then(ok => { if (!ok) setChatRestricted(prev); }); }} />
               : <Badge color={chatRestricted ? C.ylw : C.muted}>{chatRestricted ? 'Restricted' : 'Open'}</Badge>}

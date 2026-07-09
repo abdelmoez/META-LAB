@@ -91,6 +91,10 @@ export default function ChatDrawer({
 
   const [canChat, setCanChat] = useState(canChatProp ?? false);
   const [chatRestricted, setChatRestricted] = useState(!!restricted);
+  // 78.md #2 — the server's RESOLVED write verdict (canWriteChat). Null until the
+  // first list() response; once set it is the single source of truth for the
+  // composer's read-only state, so the client can never drift from the server gate.
+  const [canPost, setCanPost] = useState(null);
 
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -152,6 +156,7 @@ export default function ChatDrawer({
       merge(data?.messages || [], data?.serverTime, false);
       setCanChat(data?.canChat ?? canChatProp ?? false);
       setChatRestricted(!!(data?.chatRestricted ?? restricted));
+      if (data?.canPost != null) setCanPost(!!data.canPost);
       setTyping(data?.typing || []);
     } catch (e) {
       setLoadError(e?.message || 'Failed to load the project chat.');
@@ -172,6 +177,7 @@ export default function ChatDrawer({
       merge(data?.messages || [], data?.serverTime);
       if (data?.canChat != null) setCanChat(data.canChat);
       if (data?.chatRestricted != null) setChatRestricted(!!data.chatRestricted);
+      if (data?.canPost != null) setCanPost(!!data.canPost);
       setTyping(data?.typing || []);
     } catch { /* keep cursor, retry on next tick */ }
   }, [merge]);
@@ -225,12 +231,14 @@ export default function ChatDrawer({
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
-  // prompt50 WS6 — a member denied chat (canChat=false) is read-only regardless
-  // of the project-wide chatRestricted flag; leaders/owner are never blocked.
-  // `canChat` is refreshed from every authorized list() response + the
-  // permissions.changed poke, so this flips without a reload. Backend enforces
-  // the same rule — this is a true disabled state, not a cosmetic hide.
-  const blocked = !canChat && !isLeader;
+  // 78.md #2 — read-only state comes from the SERVER's resolved verdict (`canPost`)
+  // whenever it is available, so the composer and the server write-gate (canWriteChat)
+  // can never disagree: a per-member mute (canChat=false) OR the project-wide "Restrict
+  // chat" lock (leadership-only) both flip this to read-only without a reload. Before
+  // the first list() response (canPost null) we fall back to the local hint (leaders +
+  // canChat, minus the project lock) so the composer starts in a sensible state. The
+  // server enforces the same rule — this is a true disabled state, not a cosmetic hide.
+  const blocked = canPost != null ? !canPost : !(isLeader || (canChat && !chatRestricted));
 
   const send = useCallback(async () => {
     const text = draft.trim();

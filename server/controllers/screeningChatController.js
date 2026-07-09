@@ -53,21 +53,29 @@ function activeTypers(projectId, exceptUserId) {
 /**
  * Per-member chat WRITE gate (prompt50 WS6).
  *
- * A member explicitly denied chat (canChat=false) is READ-ONLY: they keep read
- * access to existing chat content but cannot create new chat content — REGARDLESS
- * of the project-wide `chatRestricted` flag. The owner and leaders are never
- * blocked. Before this fix the gate only fired when `chatRestricted` was on, so
- * disabling a single member's canChat had no effect (the reported bug).
+ * TWO orthogonal controls, both enforced here (78.md #2):
+ *   1. Per-member mute — a member explicitly denied chat (canChat=false) is
+ *      READ-ONLY regardless of the project-wide flag (prompt50 WS6).
+ *   2. Project-wide "Restrict chat" (`ScreenProject.chatRestricted`) — a HARD
+ *      lock to leadership. When ON, regular members are read-only EVEN IF they
+ *      have canChat; only the owner and leaders can post. Before 78.md the gate
+ *      ignored this flag entirely and canChat defaults to true for every member,
+ *      so flipping "Restrict chat" changed nothing — the reported bug ("restricted
+ *      but users still chat"). The flag now genuinely restricts on its own.
  *
- * The project-wide `chatRestricted` flag remains a valid additional lockdown; it
- * is fully subsumed by this per-member check (it only ever blocked members who
- * already lacked canChat). Enforced on EVERY chat WRITE route (send, delete,
- * typing) so a forged request body, a stale browser tab, a replayed WebSocket
- * event, or a direct API call cannot bypass it — the UI hint is never the
- * source of truth.
+ * The rule only ever ADDS restriction (leaders always post; a muted member stays
+ * muted), so no previously-blocked user is newly allowed. Enforced on EVERY chat
+ * WRITE route (send, delete, typing) so a forged request body, a stale browser
+ * tab, a replayed WebSocket event, or a direct API call cannot bypass it — the UI
+ * hint is never the source of truth. The resolved verdict is also surfaced to the
+ * client as `canPost` (below) so the composer and the server share ONE contract.
  */
-function canWriteChat(access) {
-  return !!(access && (access.isLeader || access.canChat));
+export function canWriteChat(access) {
+  if (!access) return false;
+  if (access.isLeader) return true;                                  // owner + leaders always post
+  if (!access.canChat) return false;                                 // per-member mute (preserved)
+  if (access.project && access.project.chatRestricted) return false; // project-wide lock → leadership only
+  return true;
 }
 
 /** Strip HTML tags + control chars; trim; cap length. */
@@ -102,12 +110,14 @@ async function listMessagesCore(access, req, res) {
       isMe: m.senderId === req.user.id,
     })),
     canChat: access.canChat,
-    // isLeader is the SECOND half of the server write-gate (canWriteChat =
-    // isLeader || canChat). The META·LAB chat door carries no other channel for
-    // it, so surfacing it here lets a header launcher decide "may participate"
-    // (and keep a leader out of read-only) from this one access probe. Additive.
+    // isLeader is one input to the write-gate; surfaced so a header launcher can
+    // decide "may participate" from this one access probe. Additive.
     isLeader: access.isLeader,
     chatRestricted: access.project.chatRestricted,
+    // 78.md #2 — the RESOLVED write verdict. The client composer uses this single
+    // field instead of re-deriving the rule, so the UI can never drift from the
+    // server gate (canWriteChat). Read-only sessions flip live off this value.
+    canPost: canWriteChat(access),
     typing: activeTypers(access.project.id, req.user.id),
     serverTime: new Date().toISOString(),
   });

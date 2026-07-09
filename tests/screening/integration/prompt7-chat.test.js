@@ -232,28 +232,71 @@ describe('prompt7 T11 — shared chat via the META·LAB door (/screening/metalab
     // Typing + delete are chat writes too — also blocked for a read-only member.
     expect((await api(`/screening/projects/${spid}/chat/typing`, { method: 'POST', cookie: v.cookie })).status).toBe(403);
 
-    // Turning the project-wide flag ON does not change the per-member outcome.
+    // Turning the project-wide flag ON does not change the per-member outcome for a
+    // muted member — they were already read-only.
     const restrict = await api(`/screening/projects/${spid}`, { method: 'PUT', cookie: owner.cookie, body: { chatRestricted: true } });
     expect(restrict.status).toBe(200);
     const denied = await api(`/screening/metalab/${mlId}/chat`, { method: 'POST', cookie: v.cookie, body: { message: `blocked ${r}` } });
     expect(denied.status).toBe(403);
     expect(String(denied.data.error)).toMatch(/permission/i);
 
-    // Reading is never restricted; canChat travels in the response so the UI can
-    // flip to read-only without a reload.
+    // Reading is never restricted; canChat + the resolved canPost verdict travel in the
+    // response so the UI can flip to read-only without a reload.
     const list = await api(`/screening/metalab/${mlId}/chat`, { cookie: v.cookie });
     expect(list.status).toBe(200);
     expect(list.data.canChat).toBe(false);
+    expect(list.data.canPost).toBe(false);
     expect(list.data.messages.find(x => String(x.message).startsWith('blocked'))).toBeFalsy();
 
     // Owner (leader) is never blocked.
     expect((await api(`/screening/metalab/${mlId}/chat`, { method: 'POST', cookie: owner.cookie, body: { message: `leader ok ${r}` } })).status).toBe(201);
 
-    // Scenario 7 step 7–8: re-enabling canChat restores the member's ability to post.
+    // Scenario 7 step 7–8: re-enabling canChat restores the member's ability to post —
+    // but ONLY once the project-wide lock is also off (78.md #2: "Restrict chat" is a
+    // leadership lock, so a canChat member is still read-only while it is on). Lift the
+    // lock, re-grant canChat, and posting is restored.
+    await api(`/screening/projects/${spid}`, { method: 'PUT', cookie: owner.cookie, body: { chatRestricted: false } });
     const reEnable = await api(`/screening/projects/${spid}/members/${mid}`, { method: 'PATCH', cookie: owner.cookie, body: { canChat: true } });
     expect(reEnable.status).toBe(200);
     expect(reEnable.data.member.canChat).toBe(true);
     expect((await api(`/screening/metalab/${mlId}/chat`, { method: 'POST', cookie: v.cookie, body: { message: `now allowed ${r}` } })).status).toBe(201);
+
+    await cleanupPair(owner, spid, mlId);
+  });
+
+  it('78.md #2 — "Restrict chat" is a leadership lock: a canChat member is read-only while ON, and can post again once it is OFF; leaders/owner never blocked', async () => {
+    if (!up) return;
+    const { r, owner, mlId, spid } = await setupPair('p7c_lock');
+    // A normal reviewer HAS canChat by default (the exact case that made the old
+    // project-wide flag a no-op).
+    const m = await register(`p7c_lock_m${r}@t.local`);
+    const add = await api(`/screening/projects/${spid}/members`, { method: 'POST', cookie: owner.cookie, body: { email: m.email, preset: 'reviewer' } });
+    expect(add.status).toBe(201);
+    expect(add.data.member.canChat).toBe(true);
+
+    // Open chat: the canChat reviewer can post, and the server says canPost=true.
+    expect((await api(`/screening/metalab/${mlId}/chat`, { method: 'POST', cookie: m.cookie, body: { message: `open ${r}` } })).status).toBe(201);
+    const openList = await api(`/screening/metalab/${mlId}/chat`, { cookie: m.cookie });
+    expect(openList.data.canPost).toBe(true);
+
+    // Restrict chat → the SAME canChat reviewer is now read-only (the flag restricts on
+    // its own — the reported bug is fixed). The resolved verdict travels to the client.
+    expect((await api(`/screening/projects/${spid}`, { method: 'PUT', cookie: owner.cookie, body: { chatRestricted: true } })).status).toBe(200);
+    const blocked = await api(`/screening/metalab/${mlId}/chat`, { method: 'POST', cookie: m.cookie, body: { message: `should fail ${r}` } });
+    expect(blocked.status).toBe(403);
+    const restrictedList = await api(`/screening/metalab/${mlId}/chat`, { cookie: m.cookie });
+    expect(restrictedList.data.canChat).toBe(true);       // per-member permission unchanged…
+    expect(restrictedList.data.canPost).toBe(false);      // …but the project lock makes it read-only
+
+    // The owner (leadership) is never blocked by the project lock.
+    expect((await api(`/screening/metalab/${mlId}/chat`, { method: 'POST', cookie: owner.cookie, body: { message: `leader still ok ${r}` } })).status).toBe(201);
+    // Typing + both doors are gated identically.
+    expect((await api(`/screening/projects/${spid}/chat/typing`, { method: 'POST', cookie: m.cookie })).status).toBe(403);
+    expect((await api(`/screening/projects/${spid}/chat`, { method: 'POST', cookie: m.cookie, body: { message: `sift fail ${r}` } })).status).toBe(403);
+
+    // Un-restrict → the reviewer can post again (no per-member change needed).
+    expect((await api(`/screening/projects/${spid}`, { method: 'PUT', cookie: owner.cookie, body: { chatRestricted: false } })).status).toBe(200);
+    expect((await api(`/screening/metalab/${mlId}/chat`, { method: 'POST', cookie: m.cookie, body: { message: `open again ${r}` } })).status).toBe(201);
 
     await cleanupPair(owner, spid, mlId);
   });
