@@ -96,6 +96,15 @@ export function mapScreeningSummary(d) {
   if (num(p.screened) != null) out.screened = num(p.screened);
   if (num(p.excludedTitleAbstract) != null) out.excluded = num(p.excludedTitleAbstract);
   if (num(p.included) != null) out.included = num(p.included);
+  // 77.md §1 — thread the honest dedup metadata so the manuscript can state whether
+  // deduplication was performed (and how/when), never inferring "0 duplicates" from
+  // silence. `dedupePerformed:false` is a meaningful signal, not missing data.
+  const dd = d.dedup && typeof d.dedup === 'object' ? d.dedup : null;
+  if (dd) {
+    out.dedupePerformed = dd.performed === true;
+    if (dd.method) out.dedupeMethod = String(dd.method);
+    if (dd.lastRunAt) out.dedupeLastRunAt = String(dd.lastRunAt);
+  }
   return Object.keys(out).length ? out : null;
 }
 

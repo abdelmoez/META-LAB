@@ -43,6 +43,39 @@ test.describe('Pecan Extraction Engine', () => {
     }
   });
 
+  test('workspace shows only Pick-from-PDF + Manual Entry, the Converter, and a measure-driven active field @smoke', async ({ page, request, setFlags }) => {
+    await setFlags({ extractionEngine: true });
+    const project = await createProject(request, `E2E Pecan UX ${Date.now()}`);
+    try {
+      // 77.md §7 — a Risk Ratio study; picking must be able to fill the 2×2 boxes.
+      const res = await request.post(`/api/projects/${project.id}/studies`, {
+        data: { author: 'Rivera', year: '2022', outcome: 'Mortality', esType: 'RR' },
+      });
+      expect(res.ok(), `seed study failed: ${res.status()}`).toBeTruthy();
+
+      await page.goto(`/app/project/${project.id}?tab=extraction`);
+      await page.getByText('Rivera').first().click();
+      const ws = page.getByTestId('pex-workspace');
+      await expect(ws).toBeVisible({ timeout: 15000 });
+
+      // §3 — exactly two input modes, no table/figure recognition.
+      await expect(page.getByRole('tab', { name: /Pick from PDF/i })).toBeVisible();
+      await expect(page.getByRole('tab', { name: /Manual Entry/i })).toBeVisible();
+      await expect(page.getByRole('tab', { name: /Table|Figure/i })).toHaveCount(0);
+
+      // §4 — the Converter is present; the parked "Also reported" slot is gone.
+      await expect(page.getByTestId('pex-converter')).toBeVisible();
+      await expect(page.getByText('Also reported (not in this review)')).toHaveCount(0);
+
+      // §7/§8 — a discoverable, measure-driven active pick target (RR → the 2×2 cells).
+      const target = page.getByLabel('Next click fills →');
+      await expect(target).toBeVisible();
+      await expect(target.locator('option', { hasText: '2×2 a' })).toHaveCount(1);
+    } finally {
+      await deleteProject(request, project.id);
+    }
+  });
+
   test('flag OFF keeps the classic extraction surface', async ({ page, request, setFlags }) => {
     await setFlags({ extractionEngine: false });
     const project = await createProject(request, `E2E Classic Extraction ${Date.now()}`);

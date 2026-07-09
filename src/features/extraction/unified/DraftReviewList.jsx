@@ -280,6 +280,7 @@ function ParkedRow({ rec, outcomes, pickedId, readOnly, onPick, onUnpark, onDism
 
 export default function DraftReviewList({
   drafts = [], parked = [], outcomes = [], compact = false, readOnly = false,
+  showParked = true,
   onConfirm, onDismiss, onPark, onUnpark, onEditField,
 }) {
   // parked-row outcome picks (recordId → outcomeId); stale keys are harmless.
@@ -287,7 +288,9 @@ export default function DraftReviewList({
   const pick = (recordId, outcomeId) => setPicks((prev) => ({ ...prev, [recordId]: outcomeId }));
 
   const safeDrafts = Array.isArray(drafts) ? drafts.filter(Boolean) : [];
-  const safeParked = Array.isArray(parked) ? parked.filter(Boolean) : [];
+  // showParked=false: the host (e.g. the Pecan Extraction Engine, 77.md §4) surfaces the
+  // Converter in this slot instead and manages parked records elsewhere.
+  const safeParked = showParked && Array.isArray(parked) ? parked.filter(Boolean) : [];
   const safeOutcomes = Array.isArray(outcomes) ? outcomes.filter(Boolean) : [];
   // unparkToDraft only accepts primary/secondary scopes — never offer 'other'.
   const parkTargets = safeOutcomes.filter((o) => o.level === "primary" || o.level === "secondary");

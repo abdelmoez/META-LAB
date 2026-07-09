@@ -53,6 +53,52 @@ export function expectedFieldsFor(study = {}) {
   return [...base, 'es', 'lo', 'hi'];
 }
 
+/** Identity/scope fields that are never click-to-pick targets. */
+const NON_VALUE_FIELDS = new Set(['author', 'year', 'outcome', 'esType', 'timepoint']);
+
+/**
+ * assignableFieldsFor(study) — the value fields the current effect measure expects,
+ * in the order they should be filled. These are exactly the fields click-to-pick can
+ * target for this measure (77.md §7): RR/OR → a,b,c,d; DIAG → tp,fp,fn,tn;
+ * SMD/MD → nExp,meanExp,sdExp,nCtrl,meanCtrl,sdCtrl; PROP → events,total; the generic
+ * effect measures → es,lo,hi. Pure — mirrors expectedFieldsFor so the pick dropdown,
+ * the active-field cursor and the form always agree.
+ * @returns {string[]}
+ */
+export function assignableFieldsFor(study = {}) {
+  return expectedFieldsFor(study).filter((f) => !NON_VALUE_FIELDS.has(f));
+}
+
+/**
+ * usesEffectSlot(study) — true when the measure is captured as a single effect
+ * estimate + CI (es/lo/hi) rather than raw cell counts, so "Smart" capture (value +
+ * its CI in one click) is the natural default. Pure.
+ * @returns {boolean}
+ */
+export function usesEffectSlot(study = {}) {
+  const fields = assignableFieldsFor(study);
+  return fields.length === 3 && fields[0] === 'es';
+}
+
+/**
+ * nextAssignableField(study, current) — for click-to-pick auto-advance: the next
+ * EMPTY expected value field after `current` (wrapping once), or '' if every expected
+ * field is filled. Lets a reviewer fill all four 2×2 boxes with four clicks without
+ * touching the field selector (77.md §7/§8). Pure.
+ * @returns {string} field key or ''
+ */
+export function nextAssignableField(study = {}, current = '') {
+  const fields = assignableFieldsFor(study);
+  if (!fields.length) return '';
+  const start = fields.indexOf(current);
+  // Search forward from just after `current`, wrapping, for the first empty field.
+  for (let i = 1; i <= fields.length; i++) {
+    const f = fields[(Math.max(start, 0) + i) % fields.length];
+    if (!nonEmpty(study[f])) return f;
+  }
+  return '';
+}
+
 /**
  * progressOf(study) — completed-field count + percentage over expectedFieldsFor.
  * @returns {{ filledFields:number, totalFields:number, pct:number, fields:string[] }}

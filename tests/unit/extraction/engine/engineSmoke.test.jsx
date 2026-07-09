@@ -7,6 +7,7 @@ import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import ArticleList from '../../../../src/features/extraction/engine/ArticleList.jsx';
 import PecanExtractionEngine from '../../../../src/features/extraction/engine/PecanExtractionEngine.jsx';
+import ArticleWorkspace from '../../../../src/features/extraction/engine/ArticleWorkspace.jsx';
 import { buildArticleSummary } from '../../../../src/research-engine/extraction/engine/articleList.js';
 import { mkStudy } from '../../../../src/research-engine/project-model/defaults.js';
 
@@ -45,5 +46,26 @@ describe('PecanExtractionEngine SSR', () => {
       <PecanExtractionEngine project={{ id: 'p2', studies: [] }} updateProject={() => {}} activeId="p2" setTab={() => {}} />,
     );
     expect(html).toContain('Articles for extraction');
+  });
+});
+
+describe('ArticleWorkspace SSR (77.md §3/§4/§8)', () => {
+  const study = { ...mkStudy(), id: 's1', author: 'Adams', year: '2021', outcome: 'Mortality', esType: 'RR' };
+  const html = renderToStaticMarkup(
+    <ArticleWorkspace projectId="p1" study={study} article={{ id: 's1', status: 'in_progress' }} studies={[study]} />,
+  );
+  it('offers only Pick from PDF and Manual Entry modes', () => {
+    expect(html).toContain('Pick from PDF');
+    expect(html).toContain('Manual Entry');
+  });
+  it('no longer surfaces table- or figure-recognition modes (§3)', () => {
+    expect(html).not.toMatch(/▦ Table|📈 Figure/);
+  });
+  it('surfaces the Converter and drops the "Also reported" slot (§4)', () => {
+    expect(html).toContain('CONVERTER');
+    expect(html).not.toMatch(/Also reported \(not in this review\)/);
+  });
+  it('shows a discoverable active pick target for the measure (§7/§8)', () => {
+    expect(html).toMatch(/Next click fills/);
   });
 });

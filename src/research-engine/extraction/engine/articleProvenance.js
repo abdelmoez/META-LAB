@@ -45,6 +45,15 @@ export function mkValueProvenance(partial = {}) {
   if (p.rule) out.rule = String(p.rule);
   if (p.confidence) out.confidence = String(p.confidence);
   if (p.ocr) out.ocr = true;
+  // 77.md §2 — when click-to-pick REPLACES a prior value, the replaced value(s) are kept
+  // here so replacement is immediate but never a silent loss. Bounded to the last 10.
+  if (Array.isArray(p.history) && p.history.length) {
+    out.history = p.history.slice(-10).map((h) => ({
+      value: String((h && h.value) != null ? h.value : ''),
+      method: VALUE_PROVENANCE_METHODS.includes(h && h.method) ? h.method : 'manual',
+      at: h && h.at ? String(h.at) : undefined,
+    }));
+  }
   return out;
 }
 

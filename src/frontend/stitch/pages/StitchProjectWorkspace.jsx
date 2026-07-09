@@ -50,6 +50,9 @@ import {
 import {
   StitchLoadingState, StitchErrorState, StitchButton, StitchBadge, S, salpha,
 } from '../primitives';
+// 77.md §9 — isolate a stage/engine crash to its own card instead of blanking the whole
+// workspace (which showed the generic "Something went wrong" panel).
+import ScopedErrorBoundary from '../../components/ScopedErrorBoundary.jsx';
 
 /* ── Lazy editor bodies — the proven legacy/feature components, code-split. Each is
    the SAME component the legacy Workspace.jsx renders for that tab, so parity is
@@ -342,7 +345,12 @@ function DeepToolPage({ stage }) {
       <div style={wrapperStyle}>
         <div style={headerWrapStyle}>{headerRow}</div>
         <div className={fullbleed ? undefined : 'stitch-tool-body'} style={bodyWrapStyle}>
-          <Suspense fallback={fallback}>{body}</Suspense>
+          {/* Scoped boundary keyed by stage: a throw in one engine (a rejected lazy chunk,
+              a data-shape bug in a chart, etc.) recovers to a card and clears when the
+              user navigates to another stage — the shell + rail stay live (77.md §9). */}
+          <ScopedErrorBoundary name={`stage:${stage}`} engine={stage} label={STAGE_LABEL[stage] || 'This tool'} resetKeys={[stage, projectId]}>
+            <Suspense fallback={fallback}>{body}</Suspense>
+          </ScopedErrorBoundary>
         </div>
       </div>
       {/* One shared export dialog, mounted for the whole workspace. */}

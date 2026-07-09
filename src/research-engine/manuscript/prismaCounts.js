@@ -76,11 +76,22 @@ export function computePrismaCounts(project, opts = {}) {
   } else if (toNum(sc.identified) != null) { identified = toNum(sc.identified); provenance.identified = 'computed'; }
   else { provenance.identified = 'missing'; }
 
-  const dedupe = pick('dedupe', 'dedupe', null) ?? (
-    (toNum(sc.identified) != null && toNum(sc.afterDedup) != null)
-      ? (provenance.dedupe = 'computed', toNum(sc.identified) - toNum(sc.afterDedup))
-      : null
-  );
+  // 77.md §1 — deduplication is a TRI-STATE: performed (a real count, possibly 0),
+  // not-performed, or unknown. A null count must never render as a confident "0".
+  let dedupe = pick('dedupe', 'dedupe', null);
+  if (dedupe == null) {
+    if (toNum(sc.identified) != null && toNum(sc.afterDedup) != null && sc.dedupePerformed !== false) {
+      dedupe = toNum(sc.identified) - toNum(sc.afterDedup);
+      provenance.dedupe = 'computed';
+    } else if (sc.dedupePerformed === false) {
+      provenance.dedupe = 'not-performed';   // count stays null; the UI/text shows "not performed", not 0
+    } else {
+      provenance.dedupe = 'missing';
+    }
+  }
+  const dedupePerformed = sc.dedupePerformed === true ? true : sc.dedupePerformed === false ? false : null;
+  const dedupeMethod = sc.dedupeMethod || null;
+  const dedupeLastRunAt = sc.dedupeLastRunAt || null;
 
   // screened = explicit manual `screened` OR identified − dedupe
   let screened = null;
@@ -152,10 +163,17 @@ export function computePrismaCounts(project, opts = {}) {
   }
   const missingKey = ['identified', 'screened', 'included'].filter((k) => provenance[k] === 'missing');
   if (missingKey.length) warnings.push(`PRISMA counts incomplete: ${missingKey.join(', ')} not available. Enter them in the PRISMA Flow tab or override here.`);
+  // 77.md §1 — be explicit rather than silently reporting 0 duplicates.
+  if (provenance.dedupe === 'not-performed') {
+    warnings.push('Deduplication has not been performed (or is not recorded) — "duplicates removed" is unknown, not zero. Run deduplication in Screening, or enter the count here.');
+  } else if (provenance.dedupe === 'missing' && identified != null) {
+    warnings.push('Duplicates removed is not available — confirm whether deduplication was performed before reporting it.');
+  }
 
   const counts = {
     dbs, reg, other, identified,
     dedupe, duplicatesRemoved,
+    dedupePerformed, dedupeMethod, dedupeLastRunAt,
     screened, excludedScreen,
     reportsAssessed, reportsExcluded, excludedReasons,
     included, includedQual, includedQuant,

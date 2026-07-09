@@ -49,6 +49,7 @@ export function usePdfSource(study, projectId) {
   const [resolved, setResolved] = useState({ url: null, source: null, screenProjectId: null, recordId: null });
   const [resolving, setResolving] = useState(false);
   const [retrieving, setRetrieving] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const localUrlRef = useRef(null);
   const supersedeRef = useRef(0);   // bumped when a local file is chosen, so an in-flight resolve can bail
@@ -109,16 +110,48 @@ export function usePdfSource(study, projectId) {
     return () => { dead = true; };
   }, [studyId, projectId, directSp, directRid, revokeLocal]);
 
-  const setLocalFile = useCallback((file) => {
-    if (!file) return;
+  // A screening-linked study can PERSIST an uploaded PDF to the canonical attachment
+  // store, so it survives refresh/relogin and appears in Screening + Risk of Bias too
+  // (77.md §5 — one canonical project-study document, no per-engine copies). When the
+  // study is NOT screening-linked, we honestly fall back to a session-local object URL.
+  const canPersistUpload = !!((resolved.screenProjectId || directSp) && (resolved.recordId || directRid));
+
+  const localFallback = useCallback((file) => {
     supersedeRef.current += 1;   // supersede any in-flight screening resolve so it can't clobber this
     revokeLocal();
     const u = URL.createObjectURL(file);
     localUrlRef.current = u;
     setResolved((prev) => ({ url: u, source: 'local', screenProjectId: prev.screenProjectId, recordId: prev.recordId }));
     setResolving(false);
-    setError('');
   }, [revokeLocal]);
+
+  const setLocalFile = useCallback(async (file) => {
+    if (!file) return;
+    const sp = resolved.screenProjectId || directSp;
+    const rid = resolved.recordId || directRid;
+    if (sp && rid) {
+      setUploading(true); setError('');
+      const startStudy = studyIdRef.current;
+      try {
+        await screeningApi.uploadPdf(sp, rid, file);
+        const listing = await screeningApi.listPdf(sp, rid).catch(() => null);
+        if (studyIdRef.current !== startStudy) { setUploading(false); return; }   // study switched mid-upload
+        const att = (listing && listing.attachments && listing.attachments[0]) || null;
+        if (att) {
+          supersedeRef.current += 1; revokeLocal();
+          setResolved({ url: screeningApi.pdfDownloadUrl(sp, rid, att.id), source: 'screening', screenProjectId: sp, recordId: rid });
+          setUploading(false);
+          return;
+        }
+      } catch (e) {
+        // Persisting failed (permissions, size, network) — keep the reviewer working with a
+        // session-local copy, but tell them it was not saved to the project.
+        setError((e && e.message ? `${e.message} ` : '') + 'Showing this PDF locally for this session only — it was not saved to the project.');
+      }
+      setUploading(false);
+    }
+    localFallback(file);
+  }, [resolved.screenProjectId, resolved.recordId, directSp, directRid, revokeLocal, localFallback]);
 
   const clearLocal = useCallback(() => {
     revokeLocal();
@@ -220,9 +253,9 @@ export function usePdfSource(study, projectId) {
   return useMemo(() => ({
     url: resolved.url, source: resolved.source,
     screenProjectId: resolved.screenProjectId, recordId: resolved.recordId,
-    resolving, retrieving, error, canRetrieveOa, retrieveOa,
+    resolving, retrieving, uploading, error, canRetrieveOa, retrieveOa, canPersistUpload,
     setLocalFile, clearLocal, extractPages,
-  }), [resolved, resolving, retrieving, error, canRetrieveOa, retrieveOa, setLocalFile, clearLocal, extractPages]);
+  }), [resolved, resolving, retrieving, uploading, error, canRetrieveOa, retrieveOa, canPersistUpload, setLocalFile, clearLocal, extractPages]);
 }
 
 export default usePdfSource;

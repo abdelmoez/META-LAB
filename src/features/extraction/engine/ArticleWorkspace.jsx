@@ -1,37 +1,38 @@
 /**
- * features/extraction/engine/ArticleWorkspace.jsx — 76.md §7–§17 & §22.
+ * features/extraction/engine/ArticleWorkspace.jsx — 76.md §7–§17 & §22, 77.md §2/§3/§4/§7/§8.
  *
  * The full-screen, article-centred extraction workspace: a resizable split with the
  * PDF on the left (AppPdfViewer, with jump-to-source reveal) and a structured
  * extraction form on the right, plus a stable top toolbar (methods · progress ·
- * validation · honest save status · prev/next article · complete). Three methods:
- *   • Table Extractor — drag a region → the pure grid pipeline → TableRegionMapper.
- *   • Click-to-Capture — click a number in the PDF → snapToken → the chosen field,
- *     KEEPING structured per-value provenance (page + bbox) so the source is jumpable.
- *   • Manual Entry — the always-visible form; every field is editable + auditable.
+ * validation · honest save status · prev/next article · complete).
  *
- * Reuses the proven pieces wholesale (AppPdfViewer, usePdfSource, TableRegionMapper,
- * PlotDigitizer, DraftReviewList, the pure cell grammar + engine); it only adds the
- * full-screen shell, per-value provenance/jump, validation tiers and the completion gate.
+ * TWO input methods only (77.md §3):
+ *   • Pick from PDF — choose/focus a field, click its number in the PDF → it fills that
+ *     field, KEEPING structured per-value provenance (page + bbox). Clicking a second
+ *     number over an existing value REPLACES it immediately (the prior value is kept in
+ *     the value's provenance history — never a silent loss). The active field is obvious
+ *     and auto-advances through the effect measure's required fields (77.md §2/§7/§8).
+ *   • Manual Entry — the always-visible form; every field is editable + auditable.
+ * A Converter (77.md §4) sits where the parked list used to, to recover mean/SD, SE,
+ * counts and log-ratios from what the paper reports.
+ *
+ * Table- and figure-recognition modes were removed from the user-facing workflow
+ * (77.md §3); the pure engines remain in the repo for reuse/migration but are not
+ * surfaced here.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import AppPdfViewer from '../../../frontend/components/AppPdfViewer.jsx';
 import { C, btnS, inp, lbl, tagS } from '../../../frontend/workspace/ui/styles.js';
 import { alpha as themeAlpha } from '../../../frontend/theme/tokens.js';
 import { usePdfSource } from '../unified/usePdfSource.js';
-import { renderRegionToDataUrl } from '../unified/renderRegion.js';
-import PlotDigitizer from '../unified/PlotDigitizer.jsx';
-import TableRegionMapper from '../unified/TableRegionMapper.jsx';
 import DraftReviewList from '../unified/DraftReviewList.jsx';
-import { normalizeItems, itemsToRows, detectColumns, buildGrid } from '../../../research-engine/extraction/pdfTextGrid.js';
 import { snapToken } from '../../../research-engine/extraction/cellGrammar.js';
 import { findNumberTokens } from '../../../research-engine/extraction/numberTokens.js';
-import { mkExtractionRecord } from '../../../research-engine/extraction/records.js';
-import { decideWrite } from '../../../research-engine/extraction/valuePrecedence.js';
 import { useExtractionSplit } from './useExtractionSplit.js';
-import { expectedFieldsFor, progressOf } from '../../../research-engine/extraction/engine/articleStatus.js';
+import { expectedFieldsFor, progressOf, assignableFieldsFor, usesEffectSlot, nextAssignableField } from '../../../research-engine/extraction/engine/articleStatus.js';
 import { evaluateCompletion } from '../../../research-engine/extraction/engine/completionGate.js';
 import { readProvenance, hasSourceEvidence } from '../../../research-engine/extraction/engine/articleProvenance.js';
+import ConverterPanel from './ConverterPanel.jsx';
 
 const RATIO_MEASURES = ['OR', 'RR', 'HR', 'IRR'];
 const ES_TYPES = [['', '—'], ['OR', 'Odds ratio'], ['RR', 'Risk ratio'], ['HR', 'Hazard ratio'], ['IRR', 'Incidence-rate ratio'], ['SMD', 'Std. mean diff'], ['MD', 'Mean difference'], ['PROP', 'Proportion'], ['COR', 'Correlation'], ['DIAG', 'Diagnostic 2×2']];
@@ -45,18 +46,28 @@ const FIELD_LABELS = {
 };
 const IDENTITY_FIELDS = ['author', 'year', 'outcome', 'timepoint'];
 const NUMERIC_FIELDS = new Set(['a', 'b', 'c', 'd', 'events', 'total', 'tp', 'fp', 'fn', 'tn', 'nExp', 'meanExp', 'sdExp', 'nCtrl', 'meanCtrl', 'sdCtrl', 'es', 'lo', 'hi', 'year']);
+const ALL_VALUE_KEYS = ['es', 'lo', 'hi', 'a', 'b', 'c', 'd', 'events', 'total', 'tp', 'fp', 'fn', 'tn', 'nExp', 'meanExp', 'sdExp', 'nCtrl', 'meanCtrl', 'sdCtrl'];
+const nonEmpty = (v) => v !== '' && v !== null && v !== undefined;
 
-const ASSIGN_FIELDS = [
-  ['smart', '✦ Smart (value + its 95% CI / events + total)'],
-  ['es', 'Effect size (es)'], ['lo', 'CI lower'], ['hi', 'CI upper'],
-  ['a', '2×2 a'], ['b', '2×2 b'], ['c', '2×2 c'], ['d', '2×2 d'],
-  ['nExp', 'n (Exp)'], ['meanExp', 'mean (Exp)'], ['sdExp', 'SD (Exp)'],
-  ['nCtrl', 'n (Ctrl)'], ['meanCtrl', 'mean (Ctrl)'], ['sdCtrl', 'SD (Ctrl)'],
-  ['events', 'events'], ['total', 'total'],
-];
+const COACH_KEY = 'metalab.extraction.pickCoachDismissed';
 
 const onlyToken = (s) => { const toks = findNumberTokens(String(s || '')); return toks.length === 1 ? snapToken(String(s), toks[0].start) : null; };
 const tokenPrimary = (t) => (t == null ? null : t.value != null ? t.value : t.est != null ? t.est : t.a != null ? t.a : t.lo != null ? t.lo : null);
+
+/** The next-click target options for the current measure: Smart + its expected fields. */
+function assignOptionsFor(study) {
+  const fields = assignableFieldsFor(study);
+  const opts = [['smart', '✦ Smart (value + its 95% CI, or events + total)']];
+  for (const f of fields) opts.push([f, FIELD_LABELS[f] || f]);
+  return opts;
+}
+/** The sensible default pick target for a measure: Smart for effect-slot measures,
+ *  else the first required value field so the 2×2/continuous boxes fill in order. */
+function defaultActiveField(study) {
+  if (usesEffectSlot(study) || !study.esType) return 'smart';
+  const fields = assignableFieldsFor(study);
+  return fields[0] || 'smart';
+}
 
 function ProgressRing({ pct }) {
   const r = 9, cir = 2 * Math.PI * r, off = cir * (1 - pct / 100);
@@ -78,14 +89,15 @@ export default function ArticleWorkspace({
   onConfirmDraft, onDismissDraft, onParkDraft, onUnparkRecord, onEditDraftField,
   onComplete, onReopen, completing = false,
 }) {
-  const [method, setMethod] = useState('click');      // click | table | figure | manual
-  const [assignField, setAssignField] = useState('smart');
+  const [method, setMethod] = useState('click');      // click (Pick from PDF) | manual
+  const [activeField, setActiveField] = useState('smart');  // the field the next PDF click fills
   const [status, setStatus] = useState('');
   const [error, setError] = useState('');
   const [reveal, setReveal] = useState(null);          // { page, region, nonce }
-  const [digitizer, setDigitizer] = useState(null);
-  const [tableModal, setTableModal] = useState(null);
   const [showChecks, setShowChecks] = useState(true);
+  const [coachDismissed, setCoachDismissed] = useState(() => {
+    try { return localStorage.getItem(COACH_KEY) === '1'; } catch { return false; }
+  });
   const revealNonce = useRef(0);
   const docRef = useRef(null);
   const rowRef = useRef(null);
@@ -94,20 +106,39 @@ export default function ArticleWorkspace({
   const pdf = usePdfSource(study, projectId);
   const completion = useMemo(() => evaluateCompletion(study || {}), [study]);
   const progress = useMemo(() => progressOf(study || {}), [study]);
-  const valueFields = useMemo(() => expectedFieldsFor(study || {}).filter((f) => !['author', 'year', 'outcome', 'timepoint', 'esType'].includes(f)), [study]);
+  // Show every EXPECTED field, plus any OTHER value field that already carries data, so a
+  // value captured for this measure is never invisible (77.md §7 — e.g. a Smart capture of
+  // RR + CI into es/lo/hi stays visible even though RR "expects" the 2×2 cells).
+  const valueFields = useMemo(() => {
+    const expected = expectedFieldsFor(study || {}).filter((f) => !['author', 'year', 'outcome', 'timepoint', 'esType'].includes(f));
+    const extra = ALL_VALUE_KEYS.filter((f) => !expected.includes(f) && nonEmpty((study || {})[f]));
+    return [...expected, ...extra];
+  }, [study]);
+  const assignOptions = useMemo(() => assignOptionsFor(study || {}), [study && study.esType]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // A completed article is read-only until it is reopened (§22); locked is a stronger,
-  // adjudicator-only completed state. `editable` gates every capture/edit path.
   const locked = !!(article && article.status === 'locked');
   const completed = !!(article && (article.status === 'complete' || article.status === 'locked'));
   const editable = !readOnly && !completed;
 
-  // Clear a stale source-flash when switching articles so it never re-flashes on the
-  // wrong article (76.md review, medium finding).
   const studyId = study && study.id;
-  useEffect(() => { setReveal(null); setStatus(''); setError(''); }, [studyId]);
+  const esType = study && study.esType;
+  // New article → reset the transient UI + the pick target to the measure default.
+  useEffect(() => {
+    setReveal(null); setStatus(''); setError('');
+    setActiveField(defaultActiveField(study || {}));
+  }, [studyId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Measure changed (same article) → clamp the pick target to a field the new measure
+  // actually uses (77.md §7 root cause: a stale 'smart'/off-measure target inserted nothing).
+  useEffect(() => {
+    setActiveField((cur) => {
+      if (cur === 'smart') return usesEffectSlot(study || {}) || !esType ? 'smart' : defaultActiveField(study || {});
+      return assignableFieldsFor(study || {}).includes(cur) ? cur : defaultActiveField(study || {});
+    });
+  }, [esType]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const patch = useCallback((p) => { if (onPatchStudy && study) onPatchStudy(study.id, p); }, [onPatchStudy, study]);
+
+  const dismissCoach = useCallback(() => { setCoachDismissed(true); try { localStorage.setItem(COACH_KEY, '1'); } catch { /* ignore */ } }, []);
 
   /* ── Jump-to-source: reveal a field's stored provenance in the PDF (§15) ── */
   const jumpToSource = useCallback((field) => {
@@ -118,7 +149,46 @@ export default function ArticleWorkspace({
     setStatus(`Jumped to the source of ${FIELD_LABELS[field] || field}${prov.page ? ` (p. ${prov.page})` : ''}.`);
   }, [study]);
 
-  /* ── Click-to-Capture: snap a token, write the field(s), KEEP provenance ── */
+  /**
+   * writeValues — the ONE write path for both click-to-pick and the Converter. Writes
+   * the value fields in `values`, RECORDING any replaced prior value in that field's
+   * provenance history (so replacement is immediate but never a silent data loss — 77.md
+   * §2), attaches fresh per-value provenance, and threads an optional conversions[] audit.
+   * @returns {{written:string[], replaced:Array<{field,from,to}>}}
+   */
+  const writeValues = useCallback((values, prov = {}, extra = {}) => {
+    if (!study || !editable) return { written: [], replaced: [] };
+    const now = new Date().toISOString();
+    const written = [];
+    const replaced = [];
+    const provFields = {};
+    const p = { ...values };
+    for (const f of Object.keys(values)) {
+      if (!ALL_VALUE_KEYS.includes(f)) continue;
+      written.push(f);
+      const had = nonEmpty(study[f]) && String(study[f]) !== String(values[f]);
+      const prior = readProvenance(study, f);
+      const history = Array.isArray(prior && prior.history) ? prior.history.slice(-9) : [];
+      if (had) {
+        replaced.push({ field: f, from: String(study[f]), to: String(values[f]) });
+        history.push({ value: String(study[f]), method: (prior && prior.method) || 'manual', at: now });
+      }
+      provFields[f] = {
+        method: prov.method || 'manual', page: prov.page || null, bbox: prov.bbox || null,
+        excerpt: prov.excerpt ? String(prov.excerpt).slice(0, 200) : undefined, at: now,
+        history: history.length ? history : undefined,
+      };
+    }
+    if (!written.length) return { written: [], replaced: [] };
+    p.needsReview = true;
+    if (!study.source && !extra.source) p.source = 'text';
+    Object.assign(p, extra);
+    patch(p);
+    if (onAttachProvenance) onAttachProvenance(study.id, provFields);
+    return { written, replaced };
+  }, [study, editable, patch, onAttachProvenance]);
+
+  /* ── Pick from PDF: snap a token, write the active field(s), auto-advance ── */
   const assignFromClick = useCallback((payload) => {
     if (!study || !editable) return;
     const runStr = payload.str || '';
@@ -128,8 +198,7 @@ export default function ArticleWorkspace({
       setStatus(n === 0 ? `"${runStr}" has no number to capture.` : 'Could not pinpoint which number you clicked — zoom in and click directly on it.');
       return;
     }
-    if (assignField === 'smart' && token.kind === 'p') { setStatus('That looks like a p-value — click the effect estimate or its CI instead.'); return; }
-    if (assignField === 'smart' && token.kind === 'percent') { setStatus('That looks like a percentage — choose the exact field (events, n, …).'); return; }
+    const target = activeField;
     const isRatio = RATIO_MEASURES.includes(study.esType);
     const conv = [];
     const esFields = (est, lo, hi) => {
@@ -148,127 +217,88 @@ export default function ArticleWorkspace({
       if (hi != null) out.hi = String(hi);
       return out;
     };
-    const p = {};
-    if (assignField === 'smart') {
-      if (token.kind === 'ratioCI') { const e = esFields(token.est, token.lo, token.hi); if (!e) { setStatus('That estimate/CI is ≤ 0, which a ratio measure cannot take.'); return; } Object.assign(p, e); }
-      else if (token.kind === 'range') { const e = esFields(null, token.lo, token.hi); if (!e) { setStatus('That CI is ≤ 0, which a ratio measure cannot take.'); return; } Object.assign(p, e); }
-      else if (token.kind === 'pair') { p.events = String(token.a); p.total = String(token.b); }
-      else if (token.kind === 'meanSd') { p.meanExp = String(token.a); p.sdExp = String(token.b); }
+
+    const values = {};
+    let advance = true;   // single-field captures auto-advance; composite Smart captures don't
+    if (target === 'smart') {
+      advance = false;
+      if (token.kind === 'p') { setStatus('That looks like a p-value — pick the effect estimate or its CI instead.'); return; }
+      if (token.kind === 'percent') { setStatus('That looks like a percentage — choose the exact field (events, n, …) from the field selector.'); return; }
+      if (token.kind === 'ratioCI') { const e = esFields(token.est, token.lo, token.hi); if (!e) { setStatus('That estimate/CI is ≤ 0, which a ratio measure cannot take.'); return; } Object.assign(values, e); }
+      else if (token.kind === 'range') { const e = esFields(null, token.lo, token.hi); if (!e) { setStatus('That CI is ≤ 0, which a ratio measure cannot take.'); return; } Object.assign(values, e); }
+      else if (token.kind === 'pair') { values.events = String(token.a); values.total = String(token.b); }
+      else if (token.kind === 'meanSd') { values.meanExp = String(token.a); values.sdExp = String(token.b); }
       else {
         const raw = tokenPrimary(token);
         if (raw == null) { setStatus(`"${runStr}" has no number to capture.`); return; }
         const e = esFields(Number(raw), null, null); if (!e) { setStatus('That value is ≤ 0, which a ratio measure cannot take on the log scale.'); return; }
-        Object.assign(p, e);
+        Object.assign(values, e);
       }
     } else {
       const n = tokenPrimary(token);
       if (n == null) { setStatus(`"${runStr}" has no number to capture.`); return; }
-      // es/lo/hi live on the ANALYSIS (ln) scale for ratio measures — a DIRECT-field
-      // capture must ln-transform too, exactly like Smart mode; otherwise the raw ratio
-      // is silently pooled as ln(ratio) (76.md review, high finding).
-      if (isRatio && (assignField === 'es' || assignField === 'lo' || assignField === 'hi')) {
+      // es/lo/hi live on the ANALYSIS (ln) scale for ratio measures — a direct capture
+      // must ln-transform too (76.md review), otherwise the raw ratio pools as ln(ratio).
+      if (isRatio && (target === 'es' || target === 'lo' || target === 'hi')) {
         if (!(n > 0)) { setStatus('That value is ≤ 0, which a ratio measure cannot take on the log scale.'); return; }
-        p[assignField] = String(Math.log(n));
-        conv.push({ id: Math.random().toString(36).slice(2, 10), type: 'ratio_log', method: 'ln(value)', reason: `click-assign ${assignField} (${study.esType})`, at: new Date().toISOString(), inputs: { [assignField]: n }, result: { [assignField]: Math.log(n) } });
+        values[target] = String(Math.log(n));
+        conv.push({ id: Math.random().toString(36).slice(2, 10), type: 'ratio_log', method: 'ln(value)', reason: `click-assign ${target} (${study.esType})`, at: new Date().toISOString(), inputs: { [target]: n }, result: { [target]: Math.log(n) } });
       } else {
-        p[assignField] = String(n);
+        values[target] = String(n);
       }
     }
-    if (conv.length) { p.conversions = [...(Array.isArray(study.conversions) ? study.conversions : []), ...conv]; p.converted = true; }
-    if (!Object.keys(p).length) { setStatus('Nothing captured — click directly on the number.'); return; }
+    if (!Object.keys(values).length) { setStatus('Nothing captured — click directly on the number.'); return; }
 
-    // Overwrite guard (§32): never silently replace an existing human value.
-    const VALUE_KEYS = ['es', 'lo', 'hi', 'a', 'b', 'c', 'd', 'nExp', 'meanExp', 'sdExp', 'nCtrl', 'meanCtrl', 'sdCtrl', 'events', 'total'];
-    for (const f of VALUE_KEYS) {
-      if (!(f in p)) continue;
-      const d = decideWrite({ existingValue: study[f], existingOrigin: 'user-typed', incoming: p[f], incomingOrigin: 'click' });
-      if (d.action === 'propose-replace' || d.action === 'add-alternative') {
-        setStatus(`${FIELD_LABELS[f] || f} already has a value — clear it first or use Manual entry to change it.`);
-        return;
-      }
+    const extra = conv.length ? { conversions: [...(Array.isArray(study.conversions) ? study.conversions : []), ...conv], converted: true } : {};
+    const { written, replaced } = writeValues(values, { method: 'click', page: payload.page || null, bbox: payload.spanBox || null, excerpt: runStr }, extra);
+    if (!written.length) return;
+
+    // Human-readable confirmation (aria-live) — say what filled and what was replaced.
+    const names = written.map((f) => FIELD_LABELS[f] || f);
+    if (replaced.length) {
+      const r = replaced[0];
+      setStatus(`Replaced ${FIELD_LABELS[r.field] || r.field} (was ${r.from}) → ${r.to}. Previous value kept in history.`);
+    } else {
+      setStatus(`Captured ${names.join(', ')} from the PDF.`);
     }
-    p.needsReview = true;
-    if (!study.source) p.source = 'text';
-    patch(p);
 
-    // Per-value provenance (§15): page + span bbox for every field this click filled.
-    const provFields = {};
-    for (const f of Object.keys(p)) {
-      if (!VALUE_KEYS.includes(f)) continue;
-      provFields[f] = { method: 'click', page: payload.page || null, bbox: payload.spanBox || null, excerpt: runStr.slice(0, 200), at: new Date().toISOString() };
+    // Auto-advance the active field to the next empty required field (fills a→b→c→d).
+    if (advance) {
+      const after = { ...study, ...values };
+      const next = nextAssignableField(after, target);
+      if (next && next !== target) setActiveField(next);
     }
-    if (Object.keys(provFields).length && onAttachProvenance) onAttachProvenance(study.id, provFields);
-    setStatus(`Captured ${Object.keys(p).filter((k) => VALUE_KEYS.includes(k)).join(', ')} from the PDF.`);
-  }, [study, assignField, editable, patch, onAttachProvenance]);
+  }, [study, activeField, editable, writeValues]);
 
-  /* ── Table Extractor: region → grid → mapper ── */
-  const handleRegion = useCallback(async ({ page, region }) => {
-    setError(''); setStatus('');
-    const doc = docRef.current;
-    if (!doc) { setError('PDF is still loading.'); return; }
-    try {
-      if (method === 'figure') {
-        setStatus('Rendering the figure region…');
-        const { dataUrl } = await renderRegionToDataUrl(doc, page, region, { maxWidth: 900 });
-        setDigitizer({ imageUrl: dataUrl, region, page }); setStatus('');
-      } else {
-        setStatus('Reading the table region…');
-        const pg = await doc.getPage(page);
-        const content = await pg.getTextContent();
-        const items = normalizeItems(content.items || []);
-        const inRegion = items.filter((it) => it.x >= region.x0 && it.x <= region.x1 && it.y >= region.y0 && it.y <= region.y1);
-        const rows = itemsToRows(inRegion);
-        const cols = detectColumns(rows);
-        if (rows.length < 2 || cols.length < 2) { setError('That region did not look like a table (need ≥2 rows and ≥2 columns). Try a tighter selection or the figure digitizer.'); setStatus(''); return; }
-        setTableModal({ grid: buildGrid(rows, cols), region, page }); setStatus('');
-      }
-    } catch (e) { setError(e.message || 'Could not read that region.'); setStatus(''); }
-  }, [method]);
-
-  const applyTable = useCallback((payload) => {
-    const at = new Date().toISOString();
-    const list = Array.isArray(payload) ? payload : [payload];
-    const built = list.map((r) => ({
-      park: !!(r.scope && r.scope.level === 'other'),
-      rec: mkExtractionRecord({
-        author: (study && study.author) || '', year: (study && study.year) || '', sourceStudyId: (study && study.id) || '',
-        outcome: r.outcome || '', timepoint: r.timepoint || '', comparison: r.comparison || '', esType: r.esType || '',
-        scope: r.scope, values: r.values || {},
-        provenance: { method: 'table', page: tableModal && tableModal.page, region: tableModal && tableModal.region, excerpt: r.excerpt || 'Parsed from a selected table region.', at },
-        confidence: r.confidence || 'medium',
-        conversions: (r.conversions || []).map((cv, i) => ({ ...cv, at, id: `${Math.random().toString(36).slice(2, 8)}${i}` })),
-      }),
-    }));
-    const draftRecs = built.filter((b) => !b.park).map((b) => b.rec);
-    const parkRecs = built.filter((b) => b.park).map((b) => b.rec);
-    if (draftRecs.length) onAddDrafts && onAddDrafts(draftRecs);
-    if (parkRecs.length) onAddParked && onAddParked(parkRecs);
-    setTableModal(null);
-    setStatus(`Table → ${draftRecs.length} draft(s)${parkRecs.length ? ` + ${parkRecs.length} also-reported` : ''}. Confirm below to fill the form.`);
-  }, [study, tableModal, onAddDrafts, onAddParked]);
-
-  const applyFigure = useCallback((result) => {
-    setStatus(`Digitized ${result.figureType}. Confirm the draft below.`);
-    // Figure → draft (reuse the records path via the same shape the split panel used).
-    const at = new Date().toISOString();
-    const rec = mkExtractionRecord({
-      author: (study && study.author) || '', year: (study && study.year) || '', sourceStudyId: (study && study.id) || '',
-      values: result.values && result.values.es != null ? { es: String(result.values.es), lo: String(result.values.lo), hi: String(result.values.hi) } : {},
-      provenance: { method: 'figure', page: digitizer && digitizer.page, region: digitizer && digitizer.region, excerpt: `Digitized ${result.figureType}.`, at },
-      confidence: 'medium', notes: `Digitized ${result.figureType} — verify against the figure.`,
-    });
-    onAddDrafts && onAddDrafts([rec]);
-    setDigitizer(null);
-  }, [study, digitizer, onAddDrafts]);
+  /* ── Converter apply (77.md §4): route through the same write path + audit ── */
+  const applyConversion = useCallback(({ patch: convPatch, conversion, targetLabel }) => {
+    if (!study || !editable || !convPatch) return;
+    const now = new Date().toISOString();
+    const record = { id: Math.random().toString(36).slice(2, 10), type: conversion.type, method: conversion.method, reason: conversion.reason || '', inputs: conversion.inputs || {}, formula: conversion.formula, at: now, target: targetLabel };
+    const note = `Converted (${conversion.label}): ${conversion.detail}${conversion.reason ? ` — ${conversion.reason}` : ''}.`;
+    const extra = {
+      conversions: [...(Array.isArray(study.conversions) ? study.conversions : []), record],
+      converted: true,
+      notes: study.notes ? `${study.notes} | ${note}` : note,
+    };
+    const { written, replaced } = writeValues(convPatch, { method: 'manual', excerpt: note }, extra);
+    if (!written.length) { setStatus('Nothing applied.'); return; }
+    setStatus(replaced.length
+      ? `Applied converted value; replaced ${FIELD_LABELS[replaced[0].field] || replaced[0].field} (kept in history).`
+      : `Applied converted value to ${written.map((f) => FIELD_LABELS[f] || f).join(', ')}.`);
+  }, [study, editable, writeValues]);
 
   const interaction = useMemo(() => {
-    if (!editable || !pdf.url) return null;
-    if (method === 'click') return { mode: 'click', onTextClick: assignFromClick, onTextMiss: () => setStatus('No number there — zoom in, or run text recognition on scanned pages.') };
-    if (method === 'table' || method === 'figure') return { mode: 'region', onRegion: handleRegion };
-    return null;
-  }, [method, assignFromClick, handleRegion, pdf.url, editable]);
+    if (!editable || !pdf.url || method !== 'click') return null;
+    return { mode: 'click', onTextClick: assignFromClick, onTextMiss: () => setStatus('No number there — zoom in, or run text recognition on scanned pages.') };
+  }, [method, assignFromClick, pdf.url, editable]);
 
   const setField = (f, v) => { if (editable) patch({ [f]: v, needsReview: true }); };
+  const focusField = useCallback((f) => { if (method === 'click' && assignOptions.some(([k]) => k === f)) setActiveField(f); }, [method, assignOptions]);
+
+  const activeLabel = activeField === 'smart'
+    ? 'Smart (value + its 95% CI, or events + total)'
+    : (FIELD_LABELS[activeField] || activeField);
 
   const saveBadge = saveStatus === 'saving' ? { t: 'Saving…', c: C.acc }
     : saveStatus === 'saved' ? { t: 'Saved', c: C.grn }
@@ -276,9 +306,6 @@ export default function ArticleWorkspace({
 
   return (
     <div data-testid="pex-workspace" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
-      {digitizer && <PlotDigitizer imageUrl={digitizer.imageUrl} onCancel={() => setDigitizer(null)} onApply={applyFigure} />}
-      {tableModal && <TableRegionMapper grid={tableModal.grid} outcomes={outcomes} onCancel={() => setTableModal(null)} onApply={applyTable} />}
-
       {/* ── Stable top toolbar (§7) ── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderBottom: `1px solid ${C.brd}`, background: C.card, flexWrap: 'wrap', flexShrink: 0 }}>
         <button onClick={onBack} style={{ ...btnS('ghost'), fontSize: 11 }} title="Back to the article list (Esc)">← Articles</button>
@@ -290,9 +317,10 @@ export default function ArticleWorkspace({
           {study ? `${study.author || 'Untitled'}${study.year ? ` (${study.year})` : ''}` : ''}
         </div>
         {!readOnly && (
-          <div style={{ display: 'flex', border: `1px solid ${C.brd}`, borderRadius: 6, overflow: 'hidden', marginLeft: 6 }}>
-            {[['table', '▦ Table'], ['click', '⊹ Click'], ['figure', '📈 Figure'], ['manual', '⌨ Manual']].map(([m, label]) => (
-              <button key={m} onClick={() => setMethod(m)} style={{ padding: '6px 11px', border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600, background: method === m ? C.acc : 'transparent', color: method === m ? C.accText : C.muted }}>{label}</button>
+          <div role="tablist" aria-label="Extraction input mode" style={{ display: 'flex', border: `1px solid ${C.brd}`, borderRadius: 6, overflow: 'hidden', marginLeft: 6 }}>
+            {[['click', '⊹ Pick from PDF'], ['manual', '⌨ Manual Entry']].map(([m, label]) => (
+              <button key={m} role="tab" aria-selected={method === m} onClick={() => setMethod(m)}
+                style={{ padding: '6px 12px', border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600, background: method === m ? C.acc : 'transparent', color: method === m ? C.accText : C.muted }}>{label}</button>
             ))}
           </div>
         )}
@@ -322,11 +350,15 @@ export default function ArticleWorkspace({
               <div style={{ fontSize: 13, color: C.txt }}>{pdf.resolving ? 'Looking for this article’s PDF…' : 'No PDF linked to this article.'}</div>
               {!readOnly && (
                 <label style={{ cursor: 'pointer' }}>
-                  <span style={{ ...btnS('ghost'), fontSize: 12, display: 'inline-block' }}>⬆ Upload a PDF</span>
+                  <span style={{ ...btnS('ghost'), fontSize: 12, display: 'inline-block' }}>{pdf.uploading ? 'Uploading…' : '⬆ Upload a PDF'}</span>
                   <input type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} onChange={(e) => { pdf.setLocalFile(e.target.files && e.target.files[0]); e.target.value = ''; }} />
                 </label>
               )}
-              <div style={{ fontSize: 11, color: C.dim }}>Manual entry works without a PDF — type values on the right.</div>
+              <div style={{ fontSize: 11, color: C.dim }}>
+                {pdf.canPersistUpload === false
+                  ? 'This study is not linked to a screening record, so an uploaded PDF stays in this tab only. Manual entry works without a PDF.'
+                  : 'A PDF you upload here is saved to the project and shows up in Screening and Risk of Bias too.'}
+              </div>
             </div>
           )}
         </div>
@@ -342,26 +374,34 @@ export default function ArticleWorkspace({
 
         {/* Form + methods + drafts + validation */}
         <div style={{ minWidth: 0, minHeight: 0, overflowY: 'auto', padding: 14, display: 'flex', flexDirection: 'column', gap: 14, background: C.bg }}>
-          {/* method hint */}
+          {/* Pick-from-PDF guidance + active-field selector (§8) */}
           {method === 'click' && !readOnly && (
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-              <label style={{ ...lbl, margin: 0 }}>Click a number → </label>
-              <select value={assignField} onChange={(e) => setAssignField(e.target.value)} style={{ ...inp, width: 'auto', fontSize: 12 }}>
-                {ASSIGN_FIELDS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-              </select>
-              {!pdf.url && <span style={{ fontSize: 11, color: C.yel }}>Load a PDF to click values.</span>}
-            </div>
-          )}
-          {(method === 'table' || method === 'figure') && !readOnly && (
-            <div style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.5 }}>
-              {method === 'table' ? 'Drag a rectangle around a results table on the PDF → its shape is detected and pre-mapped for you to confirm.' : 'Drag a rectangle around a figure → a guided digitizer opens (no model call).'}
-              {!pdf.url && <span style={{ color: C.yel }}> Load a PDF first.</span>}
+            <div style={{ border: `1px solid ${themeAlpha(C.acc, '44')}`, background: themeAlpha(C.acc, '0c'), borderRadius: 8, padding: '10px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {!coachDismissed && (
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+                  <div style={{ fontSize: 11.5, color: C.txt2, lineHeight: 1.5, flex: 1 }}>
+                    <strong style={{ color: C.txt }}>Pick from PDF is on.</strong> Choose the field to fill (below), then <strong>click that number in the PDF</strong>.
+                    Click a different number to replace it — no need to clear it first.
+                  </div>
+                  <button onClick={dismissCoach} title="Dismiss this tip" style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.muted, fontSize: 15, lineHeight: 1, padding: 0 }}>×</button>
+                </div>
+              )}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                <label htmlFor="pex-active-field" style={{ ...lbl, margin: 0 }}>Next click fills →</label>
+                <select id="pex-active-field" value={activeField} onChange={(e) => setActiveField(e.target.value)} style={{ ...inp, width: 'auto', fontSize: 12 }}>
+                  {assignOptions.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+                </select>
+                {!pdf.url && <span style={{ fontSize: 11, color: C.yel }}>Load a PDF to click values.</span>}
+              </div>
+              {pdf.url && <div style={{ fontSize: 11, color: C.acc, fontWeight: 600 }}>◎ Now click the value for <strong>{activeLabel}</strong> in the PDF.</div>}
             </div>
           )}
 
-          {status && <div style={{ fontSize: 11.5, color: C.grn, lineHeight: 1.5 }}>{status}</div>}
-          {error && <div style={{ fontSize: 11.5, color: C.red, lineHeight: 1.5 }}>{error}</div>}
-          {pdf.error && <div style={{ fontSize: 11.5, color: C.yel }}>{pdf.error}</div>}
+          <div role="status" aria-live="polite" style={{ minHeight: status || error || pdf.error ? undefined : 0 }}>
+            {status && <div style={{ fontSize: 11.5, color: C.grn, lineHeight: 1.5 }}>{status}</div>}
+            {error && <div style={{ fontSize: 11.5, color: C.red, lineHeight: 1.5 }}>{error}</div>}
+            {pdf.error && <div style={{ fontSize: 11.5, color: C.yel }}>{pdf.error}</div>}
+          </div>
 
           {/* Structured form (§14 — identity + esType + value group) */}
           <FormSection title="Study & outcome">
@@ -383,7 +423,9 @@ export default function ArticleWorkspace({
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               {valueFields.map((f) => (
                 <Field key={f} field={f} value={study[f] || ''} onChange={(v) => setField(f, v)} readOnly={!editable}
-                  hasSource={hasSourceEvidence(study, f)} onJump={() => jumpToSource(f)} numeric />
+                  hasSource={hasSourceEvidence(study, f)} onJump={() => jumpToSource(f)} numeric
+                  picking={method === 'click' && !readOnly} active={method === 'click' && activeField === f}
+                  onFocusField={() => focusField(f)} />
               ))}
             </div>
             <div style={{ marginTop: 10 }}>
@@ -393,11 +435,14 @@ export default function ArticleWorkspace({
             </div>
           </FormSection>
 
-          {/* Drafts to confirm (table/figure) */}
-          {(drafts.length > 0 || parked.length > 0) && (
-            <DraftReviewList drafts={drafts} parked={parked} outcomes={outcomes} compact
+          {/* Drafts to confirm (from assisted/auto paths; parked list replaced by the Converter). */}
+          {drafts.length > 0 && (
+            <DraftReviewList drafts={drafts} parked={[]} outcomes={outcomes} compact showParked={false}
               onConfirm={onConfirmDraft} onDismiss={onDismissDraft} onPark={onParkDraft} onUnpark={onUnparkRecord} onEditField={onEditDraftField} />
           )}
+
+          {/* Converter (§4) — occupies the old "Also reported" slot. */}
+          {!readOnly && <ConverterPanel onApply={applyConversion} disabled={!editable} />}
 
           {/* Validation panel (§17 tiers) */}
           <div style={{ border: `1px solid ${C.brd}`, borderRadius: 8, background: C.card, overflow: 'hidden' }}>
@@ -438,11 +483,14 @@ function FormSection({ title, children }) {
   );
 }
 
-function Field({ field, value, onChange, readOnly, hasSource, onJump, numeric }) {
+function Field({ field, value, onChange, readOnly, hasSource, onJump, numeric, picking, active, onFocusField }) {
+  const borderColor = active ? C.acc : hasSource ? themeAlpha(C.acc, '55') : C.brd;
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
-        <label style={{ ...lbl, margin: 0 }}>{FIELD_LABELS[field] || field}</label>
+        <label style={{ ...lbl, margin: 0, color: active ? C.acc : undefined }}>
+          {active ? '◎ ' : ''}{FIELD_LABELS[field] || field}
+        </label>
         {hasSource ? (
           <button onClick={onJump} title="Jump to this value’s source in the PDF"
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.acc, fontSize: 10.5, fontWeight: 700, padding: 0, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
@@ -452,7 +500,9 @@ function Field({ field, value, onChange, readOnly, hasSource, onJump, numeric })
       </div>
       <input value={value} onChange={(e) => onChange(e.target.value)} disabled={readOnly}
         inputMode={numeric ? 'decimal' : undefined}
-        style={{ ...inp, fontSize: 12.5, fontFamily: numeric ? "'IBM Plex Mono',monospace" : 'inherit', borderColor: hasSource ? themeAlpha(C.acc, '55') : C.brd }} />
+        onFocus={picking ? onFocusField : undefined}
+        aria-label={active ? `${FIELD_LABELS[field] || field} — active pick target` : undefined}
+        style={{ ...inp, fontSize: 12.5, fontFamily: numeric ? "'IBM Plex Mono',monospace" : 'inherit', borderColor, boxShadow: active ? `0 0 0 2px ${themeAlpha(C.acc, '33')}` : undefined }} />
     </div>
   );
 }

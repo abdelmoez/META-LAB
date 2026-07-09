@@ -35,7 +35,7 @@ import { interpretResult } from "../projectHelpers.js";
 
 /* ════════════ TAB: ANALYSIS ════════════ */
 export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
-  const{studies}=project;
+  const studies=Array.isArray(project&&project.studies)?project.studies:[];
   const[method,setMethod]=useState("random");
   // RoadMap/2.md — opt-in τ² estimator (DerSimonian–Laird default keeps existing results).
   // PERSISTED to the project so every pooled view (forest diamond, sensitivity, subgroup,
@@ -789,7 +789,7 @@ export function ResultsWriteup({result,interp,esType,method,methodLabel,studies,
 
 /* ════════════ TAB: FOREST PLOT ════════════ */
 export function ForestTab({project}){
-  const{studies}=project;
+  const studies=Array.isArray(project&&project.studies)?project.studies:[];
   const{theme}=useTheme(); // prompt19 — live forest plot follows day/night
   const[method,setMethod]=useState("random");
   // RoadMap/2.md recs — use the project-wide τ² estimator so the exported forest
@@ -975,7 +975,7 @@ export function ForestTab({project}){
 
 /* ════════════ TAB: SENSITIVITY ANALYSIS ════════════ */
 export function SensitivityTab({project}){
-  const{studies}=project;
+  const studies=Array.isArray(project&&project.studies)?project.studies:[];
   const prec = project?.analysisPrecision;
   const[method,setMethod]=useState("random");
   // RoadMap/2.md recs — sensitivity analyses use the project-wide τ² estimator too.
@@ -1217,7 +1217,7 @@ export function SensitivityTab({project}){
 
 /* ════════════ TAB: SUBGROUP ANALYSIS ════════════ */
 export function SubgroupTab({project}){
-  const{studies}=project;
+  const studies=Array.isArray(project&&project.studies)?project.studies:[];
   const prec = project?.analysisPrecision;
   const[groupKey,setGroupKey]=useState("design");
   const[method,setMethod]=useState("random");

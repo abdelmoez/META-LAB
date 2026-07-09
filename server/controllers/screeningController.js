@@ -2116,11 +2116,12 @@ export async function getMetaLabSummary(req, res) {
     }
     if (!sp) return res.json({ linked: false });
 
-    const [records, decisions, conflicts, dupGroups] = await Promise.all([
+    const [records, decisions, conflicts, dupGroups, batches] = await Promise.all([
       prisma.screenRecord.findMany({ where: { projectId: sp.id } }),
       prisma.screenDecision.findMany({ where: { projectId: sp.id }, select: { recordId: true, reviewerId: true, decision: true, stage: true } }),
       prisma.screenConflict.findMany({ where: { projectId: sp.id }, select: { resolvedAt: true } }),
-      prisma.screenDuplicateGroup.findMany({ where: { projectId: sp.id }, select: { resolvedAt: true } }),
+      prisma.screenDuplicateGroup.findMany({ where: { projectId: sp.id }, select: { resolvedAt: true, createdAt: true } }),
+      prisma.screenImportBatch.findMany({ where: { projectId: sp.id }, select: { preDedupCount: true, duplicateCount: true, createdAt: true, source: true } }),
     ]);
     const total              = records.length;
     // 58.md §7 — PRISMA must show total-identified BEFORE dedup + ALL duplicates
@@ -2128,12 +2129,28 @@ export async function getMetaLabSummary(req, res) {
     // skipped at insert (never become ScreenRecords), so they are recovered from the
     // per-batch dedup accounting; post-import detected duplicates are flagged on the
     // surviving records. `identified` = pre-dedup total; `screened` = pool after dedup.
-    const importDedup        = await prisma.screenImportBatch.aggregate({ where: { projectId: sp.id }, _sum: { duplicateCount: true, preDedupCount: true } });
-    const importDuplicates   = importDedup._sum.duplicateCount || 0;
+    const importDuplicates   = batches.reduce((a, b) => a + (b.duplicateCount || 0), 0);
+    const preDedupAccounting = batches.reduce((a, b) => a + (b.preDedupCount || 0), 0);
     const postImportDupes    = records.filter(r => r.isDuplicate).length;
     const duplicatesRemoved  = importDuplicates + postImportDupes;
     const identified         = total + importDuplicates; // records identified before any dedup
     const screened           = Math.max(0, total - postImportDupes);
+
+    // 77.md §1 — HONEST deduplication metadata so the Manuscript Editor never reports a
+    // confident "0 duplicates" when dedup was never performed (or is only legacy data with
+    // no accounting). `performed` is the tri-state signal; method distinguishes the
+    // automatic import-time dedupe (dedupeAndInsertRecords) from human duplicate-group
+    // resolution; lastRunAt is the most recent of either.
+    const anyImportAccounting = preDedupAccounting > 0 || importDuplicates > 0;
+    const dupGroupCount       = dupGroups.length;
+    const dedupPerformed      = anyImportAccounting || postImportDupes > 0 || dupGroupCount > 0;
+    const dedupMethod         = anyImportAccounting && dupGroupCount > 0 ? 'combination'
+      : anyImportAccounting ? 'automatic'
+        : (dupGroupCount > 0 || postImportDupes > 0) ? 'manual' : null;
+    const dedupTimes = [
+      ...batches.map(b => b.createdAt), ...dupGroups.map(g => g.resolvedAt || g.createdAt),
+    ].filter(Boolean).map(t => new Date(t).getTime()).filter(n => Number.isFinite(n));
+    const dedupLastRunAt = dedupTimes.length ? new Date(Math.max(...dedupTimes)).toISOString() : null;
     const fullTextAssessed   = records.filter(r => r.currentStage === 'full_text').length;
     const excludedTitleAbstract = Math.max(0, screened - fullTextAssessed);
     const fullTextExcluded   = records.filter(r => r.finalStatus === 'rejected').length;
@@ -2170,6 +2187,16 @@ export async function getMetaLabSummary(req, res) {
       screeningProjectId: sp.id,
       title: sp.title,
       prisma: { identified, duplicatesRemoved, screened, excludedTitleAbstract, fullTextAssessed, fullTextExcluded, included: includedFinal },
+      // 77.md §1 — canonical, honest dedup metadata for the Manuscript Editor + PRISMA.
+      dedup: {
+        performed: dedupPerformed,
+        method: dedupMethod,
+        lastRunAt: dedupLastRunAt,
+        beforeDedup: identified,
+        duplicatesDetected: duplicatesRemoved,
+        duplicatesRemoved,
+        afterDedup: screened,
+      },
       // prompt29 Part 9 — workflow-stepper completeness signals.
       screeningStarted,
       screeningComplete,
