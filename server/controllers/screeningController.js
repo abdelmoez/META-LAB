@@ -1457,11 +1457,24 @@ export async function startExport(req, res) {
     const fmt = ['csv', 'json', 'ris'].includes(reqFmt) ? reqFmt : 'csv';
     const filter = ['all', 'include', 'exclude', 'maybe', 'undecided'].includes(reqFilter) ? reqFilter : 'all';
 
+    // 79.md §3 — reserve one unit of the monthly project-export allowance at job
+    // START (gateExport already verified the master gate boolean). Enqueuing the job
+    // IS the export event, so the reservation is confirmed immediately; a job that
+    // later fails is a background concern (the allowance is not auto-refunded, matching
+    // the documented policy that a submitted async export counts).
+    let reservation;
+    try {
+      reservation = await requireProjectExport(req.user, {
+        exportType: EXPORT_TYPES.SCREENING_RECORDS, projectId: access.project.id, format: fmt,
+      });
+    } catch (e) { if (sendTierLimit(res, e)) return; throw e; }
+
     const job = await enqueueExportJob(access.project.id, {
       createdById: req.user.id,
       createdByName: req.user.name || req.user.email || '',
       format: fmt, filter, includeAiCv: true,
     });
+    settleProjectExport(reservation.reservationId, { status: 'succeeded' });
     recordUsage({ type: USAGE.EXPORT, userId: req.user.id, screenProjectId: access.project.id, format: fmt, meta: { filter, async: true } });
     res.status(202).json({ ok: true, jobId: job.id, status: job.status, format: fmt, filter });
   } catch (err) {
@@ -2149,14 +2162,16 @@ export async function getMetaLabSummary(req, res) {
       prisma.screenConflict.findMany({ where: { projectId: sp.id }, select: { resolvedAt: true } }),
       prisma.screenDuplicateGroup.findMany({ where: { projectId: sp.id }, select: { resolvedAt: true, createdAt: true } }),
       prisma.screenImportBatch.findMany({ where: { projectId: sp.id }, select: { preDedupCount: true, duplicateCount: true, createdAt: true, source: true } }),
-      // 78.md #4 — the AUTOMATED (Pecan Search Engine) runs for THIS project. The engine
-      // removes cross-source duplicates BEFORE landing, so those raw retrievals never
-      // became ScreenRecords/import batches; we fold their exact+fuzzy dedup into the
-      // PRISMA identified/duplicates-removed counts below so an automated search's flow
-      // reflects the true retrieval. Keyed by the META·LAB project id (the search
-      // workspace). Fail-soft: any error (flag off, no runs) → no automated contribution.
+      // 78.md #4 — the AUTOMATED (Pecan Search Engine) runs that LANDED in THIS resolved
+      // workspace (sp.id — recs round: scoped to the SAME ScreenProject as `records`/
+      // `batches`, NOT the raw mlpid, so when one META·LAB project is linked from more
+      // than one workspace the automated dedup aligns with the records it counts). The
+      // engine removes cross-source duplicates BEFORE landing, so those raw retrievals
+      // never became ScreenRecords/import batches; we fold their exact+fuzzy dedup into
+      // the PRISMA identified/duplicates-removed counts below so an automated search's
+      // flow reflects the true retrieval. Fail-soft: any error → no automated contribution.
       prisma.pecanSearchSource.findMany({
-        where: { run: { metaLabProjectId: req.params.mlpid } },
+        where: { run: { screenProjectId: sp.id } },
         select: { exactDupCount: true, fuzzyDupCount: true },
       }).catch(() => []),
     ]);

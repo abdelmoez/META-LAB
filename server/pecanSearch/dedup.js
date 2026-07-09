@@ -49,10 +49,18 @@ function verdictToOutcome(verdict, hit) {
   if (verdict.type === DUP_TYPES.NOT) {
     return { outcome: 'new', matchedId: '', matchedOrigin: '', score: 0, components: {}, type: verdict.type, reasons: [], conflicts: [], decisionSource: '' };
   }
-  // PROBABLE (mergeable + high-confidence) → auto-merge as a fuzzy duplicate.
+  // PROBABLE (mergeable + high-confidence) → auto-merge.
   if (verdict.type === DUP_TYPES.PROBABLE && verdict.mergeable) {
+    // 78.md #4 recs — a PROBABLE title/fuzzy match against a PRE-EXISTING project record
+    // is an existing_match, not a fresh fuzzy duplicate (mirrors the identifier path,
+    // dedup.js identity()). This makes reruns rerun-STABLE: a re-found record classifies
+    // the same way every time, so the PRISMA automated-dedup counts (which sum
+    // exact+fuzzy across runs) never inflate on rerun. Within-run near-duplicates of
+    // records NEW to the project stay fuzzy_dup. Landing behaviour is unchanged (both
+    // fuzzy_dup and existing_match are non-landing outcomes).
+    const isExisting = hit && hit.origin === 'existing';
     return {
-      outcome: 'fuzzy_dup', matchedId: hit.id, matchedOrigin: hit.origin,
+      outcome: isExisting ? 'existing_match' : 'fuzzy_dup', matchedId: hit.id, matchedOrigin: hit.origin,
       score: verdict.score, components: verdict.signals, type: verdict.type,
       reasons: verdict.reasons, conflicts: verdict.conflicts, decisionSource: 'automatic',
     };

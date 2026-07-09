@@ -39,13 +39,16 @@ export function useSearchMode(projectId, enabled = true) {
     } else {
       // Seed the shared store from the persisted mode (server is authoritative). The
       // publish notifies our own subscriber, so we never setMode() directly here.
+      // recs round — only seed while the store is STILL unresolved: if the in-body
+      // SearchWorkspace published a (newer, optimistic) mode while this load was in
+      // flight, that published value wins and this stale seed must not clobber it.
       loadSearch(projectId)
         .then((s) => {
-          if (!alive) return;
+          if (!alive || getSearchMode(projectId) !== undefined) return;
           const m = s && (s.searchMode === 'manual' || s.searchMode === 'automated') ? s.searchMode : null;
           publishSearchMode(projectId, m);
         })
-        .catch(() => { if (alive) publishSearchMode(projectId, null); });
+        .catch(() => { if (alive && getSearchMode(projectId) === undefined) publishSearchMode(projectId, null); });
     }
     return () => { alive = false; unsub(); };
   }, [projectId, enabled]);

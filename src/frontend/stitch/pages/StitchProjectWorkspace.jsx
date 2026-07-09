@@ -360,9 +360,17 @@ function DeepToolPage({ stage }) {
   const headerWrapStyle = fullbleed
     ? { padding: '10px 20px', borderBottom: `1px solid ${salpha(S.outlineVariant, 0.45)}`, flexShrink: 0 }
     : { marginBottom: 20 };
-  const bodyWrapStyle = fullbleed
-    ? { flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }
-    : { background: S.card, borderRadius: 16, border: `1px solid ${salpha(S.outlineVariant, 0.45)}`, padding: 20, minHeight: 400 };
+  const bodyWrapStyle = (fullbleed && stage === 'search')
+    // 78.md #6 (recs) — the search body is itself the ONE bounded primary scroller, so
+    // EVERY search child scrolls: the staged SearchWorkspace, AND the legacy
+    // SearchWizard / SearchTab / loading placeholder (rendered when searchWorkspaceV2 is
+    // off — the default — none of which build their own scroller). The pinned stage
+    // header stays above it. (The other full-bleed stages keep overflow:hidden because
+    // their engines manage their own inner split-scrollers.)
+    ? { flex: 1, minWidth: 0, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '18px 20px 40px' }
+    : fullbleed
+      ? { flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }
+      : { background: S.card, borderRadius: 16, border: `1px solid ${salpha(S.outlineVariant, 0.45)}`, padding: 20, minHeight: 400 };
 
   return (
     <StitchAppShell {...shellProps} breadcrumb={breadcrumb}

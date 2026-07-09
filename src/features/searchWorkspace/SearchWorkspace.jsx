@@ -930,16 +930,11 @@ export default function SearchWorkspace({
   const modeLabel = searchMode === 'automated' ? 'Automated search' : searchMode === 'manual' ? 'Manual search' : null;
 
   return (
-    // 78.md #6 — when the white side-menu drives the workflow (`railHidden`), the host
-    // renders this stage full-bleed, so THIS element is the ONE bounded primary scroll
-    // region (flex:1 + minHeight:0 + overflowY:auto): the pinned stage header stays put
-    // and the tall Automated Search content scrolls here instead of pushing the page.
-    // A non-railHidden mount (SSR/tests/legacy) keeps the original page-scroll model.
-    <div ref={rootRef}
-      style={railHidden
-        ? { flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', fontFamily: FONT, color: C.txt }
-        : { maxWidth: 1240, margin: '0 auto', fontFamily: FONT, color: C.txt }}>
-      <div style={railHidden ? { maxWidth: 1240, margin: '0 auto', padding: '18px 20px 40px' } : undefined}>
+    // 78.md #6 (recs) — the search stage is full-bleed and the HOST body wrapper is the
+    // single bounded scroller (StitchProjectWorkspace bodyWrapStyle for search), which
+    // also scrolls the legacy wizard. So this root stays a plain centered block — no
+    // second scroller here — and the pinned stage header above it stays visible.
+    <div ref={rootRef} style={{ maxWidth: 1240, margin: '0 auto', fontFamily: FONT, color: C.txt }}>
       {/* ONE unified header */}
       <header style={{ marginBottom: 18 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6, flexWrap: 'wrap' }}>
@@ -1165,7 +1160,6 @@ export default function SearchWorkspace({
             })()}
           </div>
         </section>
-      </div>
       </div>
     </div>
   );

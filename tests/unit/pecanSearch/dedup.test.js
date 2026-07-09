@@ -23,11 +23,19 @@ describe('dedup orchestration', () => {
     expect(v.matchedId).toBe('r1');
   });
 
-  it('auto-merges a high-confidence fuzzy duplicate (probable)', () => {
-    const idx = createDedupIndex([REC({ id: 'e1', title: 'Effect of metformin on glycaemic control in adults', authors: 'Smith J; Doe A', journal: 'Diabetes Care', year: '2018' })]);
+  it('auto-merges a high-confidence fuzzy duplicate against an IN-RUN landed record (probable → fuzzy_dup)', () => {
+    const idx = createDedupIndex([]);
+    idx.addLanded(REC({ id: 'r1', title: 'Effect of metformin on glycaemic control in adults', authors: 'Smith J; Doe A', journal: 'Diabetes Care', year: '2018' }));
     const v = idx.classify({ title: 'Effect of metformin on glycemic control in adults', authors: 'Smith J; Doe A', journal: 'Diabetes Care', year: '2018' });
     expect(['fuzzy_dup', 'ambiguous']).toContain(v.outcome);
     if (v.outcome === 'fuzzy_dup') expect(v.decisionSource).toBe('automatic');
+  });
+
+  it('a PROBABLE fuzzy match against a PRE-EXISTING record is an existing_match, not fuzzy_dup (78.md #4 recs — makes reruns rerun-stable)', () => {
+    const idx = createDedupIndex([REC({ id: 'e1', title: 'Effect of metformin on glycaemic control in adults', authors: 'Smith J; Doe A', journal: 'Diabetes Care', year: '2018' })]);
+    const v = idx.classify({ title: 'Effect of metformin on glycemic control in adults', authors: 'Smith J; Doe A', journal: 'Diabetes Care', year: '2018' });
+    expect(v.outcome).toBe('existing_match');
+    expect(v.matchedId).toBe('e1');
   });
 
   it('routes a possible/related match to ambiguous review (not auto-merged)', () => {

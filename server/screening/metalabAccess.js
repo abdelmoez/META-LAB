@@ -119,6 +119,9 @@ export async function listSharedMetaLabAccess(userId) {
     select: {
       projectId: true, role: true,
       canViewMetaLab: true, canEditMetaLab: true, readOnlyMetaLab: true, canExport: true,
+      // 78.md #2 (recs) — include the distinct grants so the projects-LIST _permissions
+      // don't under-report a genuinely-granted member (mlAccessFromMember reads these).
+      canAssessRiskOfBias: true, canRunAnalysis: true,
     },
   });
   if (!memberships.length) return [];
