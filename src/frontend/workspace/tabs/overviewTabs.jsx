@@ -605,6 +605,12 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
     setSp(s=>({...s,progressStatus:v}));
     try{
       await screeningApi.updateProject(lid,{progressStatus:v});
+      // 81.md — propagate onto the parent project's transient annotation so sibling
+      // views reading project._linkedMetaSift.progressStatus (dashboard card, Overview
+      // progress, Stitch stepper) update instantly, matching the twin ProjectControlTab
+      // which calls refreshProject(). Spread the existing summary so recordCount/title/
+      // decidedCount are preserved (only progressStatus changes).
+      onAnnotate(project.id,{_linkedMetaSift:{...(project._linkedMetaSift||{}),progressStatus:v}});
       setStatusFlash(true);setTimeout(()=>setStatusFlash(false),1400);
     }catch(e){
       setSp(s=>({...s,progressStatus:prev}));

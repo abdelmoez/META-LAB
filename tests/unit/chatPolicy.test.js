@@ -75,6 +75,12 @@ describe('chatPostBlockReason — honest UI copy', () => {
     expect(chatPostBlockReasonFlat({ isLeader: false, canChat: true, chatRestricted: true })).toBe('restricted');
     expect(chatPostBlockReasonFlat({ isLeader: false, canChat: false, chatRestricted: false })).toBe('muted');
   });
+  it('flat helpers are null-safe and mirror the nested twins on nullish input', () => {
+    for (const bad of [null, undefined]) {
+      expect(canPostChatFlat(bad)).toBe(canPostProjectChat(null));          // false, no throw
+      expect(chatPostBlockReasonFlat(bad)).toBe(chatPostBlockReason(null)); // 'no-access', no throw
+    }
+  });
   it('chatBlockMessage gives distinct, non-empty copy for restricted vs muted', () => {
     expect(chatBlockMessage('restricted')).toMatch(/restrict/i);
     expect(chatBlockMessage('muted')).toMatch(/turned off/i);

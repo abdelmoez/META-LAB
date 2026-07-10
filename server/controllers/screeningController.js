@@ -2241,7 +2241,12 @@ export async function getMetaLabSummary(req, res) {
     // Mirror the Screening module's own substep rules (see screeningOverviewController
     // + ui/screeningSteps.js): every substep must be finished. Assumptions are
     // documented in docs/manager/screening-completion-rule.md.
-    const effectiveRequired = Math.max(Number(sp.requiredScreeningReviewers) || 2, QUORUM);
+    // 81.md (requiredScreeningReviewers audit) — floor by the SAME admin-driven quorum
+    // the promotion gate uses (effectiveRequiredReviewers → getEffectiveQuorum), not the
+    // hardcoded QUORUM=2. Under the default (minIncludeQuorum=2) this is identical; when
+    // an admin raises the global quorum it stops "done screening" from displaying at
+    // fewer reviewers than promotion actually requires. Monotonic — never lowers the bar.
+    const effectiveRequired = await effectiveRequiredReviewers(sp);
     const taReviewers = {};
     for (const d of decisions) {
       if (d.stage === 'title_abstract' && d.decision !== 'undecided') (taReviewers[d.recordId] ||= new Set()).add(d.reviewerId);

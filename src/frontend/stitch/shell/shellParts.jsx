@@ -312,8 +312,10 @@ export function StitchTopHeader({ onOpenNav, breadcrumb, topPresence = null, cha
           </>
         ) : null}
         {/* Project chat — shown ONLY within a project (never on dashboard/profile/ops/
-            other global pages). Inside a project it is greyed + unclickable when a
-            leader/owner has restricted chat or no Screening workspace is linked. */}
+            other global pages). 81.md read-only model: any linked member can open it;
+            a member who cannot post (per-member mute or the project-wide "Restrict chat"
+            lock) opens a READ-ONLY drawer. The icon greys + is unclickable ONLY when
+            there is nothing to open (probing / probe error / no linked Screening workspace). */}
         {chatContext?.projectId ? (
           <StitchChatLauncher projectId={chatContext.projectId} projectName={chatContext.projectName || ''} />
         ) : null}

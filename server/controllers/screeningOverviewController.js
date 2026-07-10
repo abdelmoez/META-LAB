@@ -4,8 +4,9 @@
  * whole-project progress, and the audit log.
  */
 import { prisma } from '../db/client.js';
-import { getProjectAccess, ensureLeaderMember, QUORUM } from '../screening/access.js';
+import { getProjectAccess, ensureLeaderMember } from '../screening/access.js';
 import { mlAccessFromMember } from '../screening/metalabAccess.js';
+import { getEffectiveQuorum } from '../screening/settings.js';
 
 /** GET /projects/:pid/overview — summary metrics for the Overview tab. */
 export async function getOverview(req, res) {
@@ -46,7 +47,10 @@ export async function getOverview(req, res) {
     // A record's T/A work is done once enough DISTINCT reviewers have weighed in —
     // the same effectiveRequired bar the promotion gate uses (access.js). Records
     // below that bar still need screening. Duplicates are out of the pool.
-    const effectiveRequired = Math.max(Number(access.project.requiredScreeningReviewers) || 2, QUORUM);
+    // 81.md — floor by the admin-driven global quorum (same as the promotion gate),
+    // not the hardcoded QUORUM=2, so T/A "pending" never under-counts when an admin
+    // raised minIncludeQuorum. Identical to today under the default (getEffectiveQuorum→2).
+    const effectiveRequired = Math.max(Number(access.project.requiredScreeningReviewers) || 2, await getEffectiveQuorum());
     const taReviewers = {};
     decisions.forEach(d => {
       if (d.stage === 'title_abstract' && d.decision !== 'undecided') {

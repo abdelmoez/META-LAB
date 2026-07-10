@@ -77,19 +77,23 @@ export function chatPostBlockReason(access) {
   return 'no-access';
 }
 
-/** Adapt the client-flat probe shape onto the nested access shape. */
-function toAccess({ isLeader = false, canChat = false, chatRestricted = false } = {}) {
+/** Adapt the client-flat probe shape onto the nested access shape. Null-safe so the
+ *  flat helpers mirror their nested twins on nullish input (e.g. an error/empty probe). */
+function toAccess(flat) {
+  const { isLeader = false, canChat = false, chatRestricted = false } = flat || {};
   return { isLeader: !!isLeader, canChat: !!canChat, project: { chatRestricted: !!chatRestricted } };
 }
 
 /** Flat-shape write gate for the client launcher probe ({isLeader,canChat,chatRestricted}). */
 export function canPostChatFlat(flat) {
+  if (!flat) return false;                       // mirror canPostProjectChat(null) → false
   return canPostProjectChat(toAccess(flat));
 }
 
 /** Flat-shape block-reason for the client launcher/composer. */
 export function chatPostBlockReasonFlat(flat) {
-  return chatPostBlockReason({ ...toAccess(flat), canChat: !!(flat && flat.canChat) });
+  if (!flat) return 'no-access';                 // mirror chatPostBlockReason(null) → 'no-access'
+  return chatPostBlockReason(toAccess(flat));
 }
 
 /** Human-readable one-liner for a block reason (shared launcher tooltip + composer copy). */
