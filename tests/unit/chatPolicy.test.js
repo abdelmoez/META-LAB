@@ -13,22 +13,20 @@ import {
 } from '../../src/research-engine/screening/chatPolicy.js';
 import { canWriteChat } from '../../server/controllers/screeningChatController.js';
 
-const acc = (o) => ({ isLeader: false, canChat: false, active: true, project: { chatRestricted: false }, ...o });
+const acc = (o) => ({ isOwner: false, isLeader: false, canChat: false, active: true, project: { chatRestricted: false }, ...o });
 
-describe('canPostProjectChat — leadership-lock write gate', () => {
-  it('leaders/owner always post (even muted, even restricted)', () => {
-    expect(canPostProjectChat(acc({ isLeader: true }))).toBe(true);
-    expect(canPostProjectChat(acc({ isLeader: true, canChat: false, project: { chatRestricted: true } }))).toBe(true);
-  });
-  it('muted member (canChat=false) never posts', () => {
-    expect(canPostProjectChat(acc({ canChat: false }))).toBe(false);
-    expect(canPostProjectChat(acc({ canChat: false, project: { chatRestricted: true } }))).toBe(false);
-  });
-  it('open chat: a canChat member posts', () => {
+describe('canPostProjectChat — 81.md v2 owner-only restrict lock', () => {
+  it('OPEN chat: owner + leaders post; canChat member posts; muted member read-only', () => {
+    expect(canPostProjectChat(acc({ isOwner: true, isLeader: true }))).toBe(true);
+    expect(canPostProjectChat(acc({ isLeader: true }))).toBe(true);   // leader (non-owner)
     expect(canPostProjectChat(acc({ canChat: true }))).toBe(true);
+    expect(canPostProjectChat(acc({ canChat: false }))).toBe(false);
   });
-  it('restrict chat: a canChat member is read-only (the reported bug)', () => {
-    expect(canPostProjectChat(acc({ canChat: true, project: { chatRestricted: true } }))).toBe(false);
+  it('RESTRICTED chat: ONLY the owner posts — leaders AND members read-only', () => {
+    expect(canPostProjectChat(acc({ isOwner: true, isLeader: true, canChat: true, project: { chatRestricted: true } }))).toBe(true);
+    expect(canPostProjectChat(acc({ isLeader: true, canChat: true, project: { chatRestricted: true } }))).toBe(false); // leader blocked
+    expect(canPostProjectChat(acc({ canChat: true, project: { chatRestricted: true } }))).toBe(false);                 // member blocked
+    expect(canPostProjectChat(acc({ canChat: false, project: { chatRestricted: true } }))).toBe(false);                // muted blocked
   });
   it('null / missing project handled', () => {
     expect(canPostProjectChat(null)).toBe(false);
@@ -38,11 +36,13 @@ describe('canPostProjectChat — leadership-lock write gate', () => {
 
 describe('server canWriteChat delegates to the shared policy (no drift)', () => {
   const cases = [
+    acc({ isOwner: true, isLeader: true }),
     acc({ isLeader: true }),
     acc({ canChat: false }),
     acc({ canChat: true }),
     acc({ canChat: true, project: { chatRestricted: true } }),
-    acc({ isLeader: true, canChat: false, project: { chatRestricted: true } }),
+    acc({ isLeader: true, canChat: true, project: { chatRestricted: true } }),
+    acc({ isOwner: true, isLeader: true, project: { chatRestricted: true } }),
   ];
   it('returns identical verdicts to canPostProjectChat for every shape', () => {
     for (const a of cases) expect(canWriteChat(a)).toBe(canPostProjectChat(a));
@@ -65,14 +65,16 @@ describe('canAccessProjectChat — reading is never restricted', () => {
 describe('chatPostBlockReason — honest UI copy', () => {
   it('classifies ok / restricted / muted / no-access', () => {
     expect(chatPostBlockReason(acc({ canChat: true }))).toBe('ok');
-    expect(chatPostBlockReason(acc({ isLeader: true, project: { chatRestricted: true } }))).toBe('ok');
-    expect(chatPostBlockReason(acc({ canChat: true, project: { chatRestricted: true } }))).toBe('restricted');
+    expect(chatPostBlockReason(acc({ isOwner: true, isLeader: true, project: { chatRestricted: true } }))).toBe('ok');   // owner
+    expect(chatPostBlockReason(acc({ isLeader: true, canChat: true, project: { chatRestricted: true } }))).toBe('restricted'); // blocked leader
+    expect(chatPostBlockReason(acc({ canChat: true, project: { chatRestricted: true } }))).toBe('restricted');          // blocked member
     expect(chatPostBlockReason(acc({ canChat: false }))).toBe('muted');
     expect(chatPostBlockReason(null)).toBe('no-access');
   });
-  it('flat helpers agree with the nested rule', () => {
-    expect(canPostChatFlat({ isLeader: false, canChat: true, chatRestricted: true })).toBe(false);
-    expect(chatPostBlockReasonFlat({ isLeader: false, canChat: true, chatRestricted: true })).toBe('restricted');
+  it('flat helpers agree with the nested rule (incl. owner exemption under restrict)', () => {
+    expect(canPostChatFlat({ isOwner: true, isLeader: true, canChat: true, chatRestricted: true })).toBe(true);
+    expect(canPostChatFlat({ isLeader: true, canChat: true, chatRestricted: true })).toBe(false);
+    expect(chatPostBlockReasonFlat({ isLeader: true, canChat: true, chatRestricted: true })).toBe('restricted');
     expect(chatPostBlockReasonFlat({ isLeader: false, canChat: false, chatRestricted: false })).toBe('muted');
   });
   it('flat helpers are null-safe and mirror the nested twins on nullish input', () => {

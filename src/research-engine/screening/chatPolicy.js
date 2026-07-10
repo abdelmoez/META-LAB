@@ -13,13 +13,13 @@
  *
  * Two orthogonal capabilities, both derived from a resolved access context:
  *
- *   canPostProjectChat  — may WRITE (send / typing / delete). The leadership
- *                         lock (78.md #2): a leader/owner always posts; a muted
- *                         member (canChat=false) never posts; the project-wide
- *                         "Restrict chat" flag (ScreenProject.chatRestricted)
- *                         makes EVERY regular member read-only even with canChat.
- *                         This is the EXACT gate the server enforces on every
- *                         chat-write route and echoes to the client as `canPost`.
+ *   canPostProjectChat  — may WRITE (send / typing / delete). "Restrict chat" is
+ *                         an OWNER-ONLY lock (81.md v2): when ON, ONLY the project
+ *                         OWNER can post — leaders AND members are read-only. When
+ *                         OFF, the normal rule applies: owner + leaders always post,
+ *                         and a muted member (canChat=false) is read-only. This is
+ *                         the EXACT gate the server enforces on every chat-write
+ *                         route and echoes to the client as `canPost`.
  *
  *   canAccessProjectChat — may OPEN chat and READ history. Reading is NEVER
  *                         restricted (server contract; a resolved member always
@@ -37,16 +37,19 @@
  */
 
 /**
- * The write gate. Only ever ADDS restriction (a leader always posts; a muted
- * member stays muted), so no previously-blocked user is newly allowed.
- * @param {{isLeader?:boolean, canChat?:boolean, project?:{chatRestricted?:boolean}}} access
+ * The write gate.
+ * @param {{isOwner?:boolean, isLeader?:boolean, canChat?:boolean, project?:{chatRestricted?:boolean}}} access
  * @returns {boolean}
  */
 export function canPostProjectChat(access) {
   if (!access) return false;
-  if (access.isLeader) return true;                                   // owner + leaders always post
-  if (!access.canChat) return false;                                  // per-member mute (preserved)
-  if (access.project && access.project.chatRestricted) return false;  // project-wide lock → leadership only
+  // 81.md v2 — "Restrict chat" is an OWNER-ONLY lock: when ON, ONLY the project
+  // owner may post; leaders AND members are read-only.
+  if (access.project && access.project.chatRestricted) return !!access.isOwner;
+  // Not restricted → the normal rule: owner + leaders always post…
+  if (access.isLeader) return true;
+  // …and a muted member (canChat=false) is read-only.
+  if (!access.canChat) return false;
   return true;
 }
 
@@ -65,14 +68,15 @@ export function canAccessProjectChat(access) {
  * WHY a context cannot post — drives consistent, honest UI copy.
  * @returns {'ok'|'muted'|'restricted'|'no-access'}
  *   ok         — may post
- *   restricted — canChat but the project-wide "Restrict chat" lock is on
- *   muted      — this member's own Chat permission was turned off (canChat=false)
+ *   restricted — the project-wide "Restrict chat" lock is on and the caller is not
+ *                the owner (applies to blocked LEADERS and members alike)
+ *   muted      — chat is open but this member's Chat permission is off (canChat=false)
  *   no-access  — no resolved membership at all
  */
 export function chatPostBlockReason(access) {
   if (!access) return 'no-access';
   if (canPostProjectChat(access)) return 'ok';
-  if (access.canChat && access.project && access.project.chatRestricted) return 'restricted';
+  if (access.project && access.project.chatRestricted) return 'restricted';
   if (!access.canChat) return 'muted';
   return 'no-access';
 }
@@ -80,11 +84,11 @@ export function chatPostBlockReason(access) {
 /** Adapt the client-flat probe shape onto the nested access shape. Null-safe so the
  *  flat helpers mirror their nested twins on nullish input (e.g. an error/empty probe). */
 function toAccess(flat) {
-  const { isLeader = false, canChat = false, chatRestricted = false } = flat || {};
-  return { isLeader: !!isLeader, canChat: !!canChat, project: { chatRestricted: !!chatRestricted } };
+  const { isOwner = false, isLeader = false, canChat = false, chatRestricted = false } = flat || {};
+  return { isOwner: !!isOwner, isLeader: !!isLeader, canChat: !!canChat, project: { chatRestricted: !!chatRestricted } };
 }
 
-/** Flat-shape write gate for the client launcher probe ({isLeader,canChat,chatRestricted}). */
+/** Flat-shape write gate for the client probe ({isOwner,isLeader,canChat,chatRestricted}). */
 export function canPostChatFlat(flat) {
   if (!flat) return false;                       // mirror canPostProjectChat(null) → false
   return canPostProjectChat(toAccess(flat));
@@ -100,7 +104,7 @@ export function chatPostBlockReasonFlat(flat) {
 export function chatBlockMessage(reason) {
   switch (reason) {
     case 'restricted':
-      return 'Chat is restricted — only the project owner and leaders can post right now. You can still read messages.';
+      return 'Chat is restricted — only the project owner can post right now. You can still read messages.';
     case 'muted':
       return 'Your permission to post in this chat has been turned off. You can read existing messages.';
     case 'no-access':

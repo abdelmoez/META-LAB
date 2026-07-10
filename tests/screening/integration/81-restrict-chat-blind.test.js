@@ -149,3 +149,42 @@ describe('81.md B — flipping "Restrict chat" pushes a live permissions.changed
     await api(`/projects/${mlId}`, { method: 'DELETE', cookie: owner.cookie });
   }, 30000);
 });
+
+describe('81.md v2 C — owner-only lock: a non-owner LEADER is read-only when restricted; owner still posts', () => {
+  it('leader posts when open, is BLOCKED (403) when restricted, owner always posts, restored on un-restrict', async () => {
+    if (!up) return;
+    const r = rnd();
+    const owner = await register(`c81c_o${r}@t.local`);
+    const ml = await api('/projects', { method: 'POST', cookie: owner.cookie, body: { name: `Chat81C ${r}` } });
+    const mlId = ml.data.id;
+    const sp = await api('/screening/projects', { method: 'POST', cookie: owner.cookie, body: { title: `Chat81C ${r}`, linkedMetaLabProjectId: mlId } });
+    const spid = sp.data.id;
+    // A real LEADER (not the owner).
+    const leader = await register(`c81c_L${r}@t.local`);
+    const add = await api(`/screening/projects/${spid}/members`, { method: 'POST', cookie: owner.cookie, body: { email: leader.email, preset: 'leader' } });
+    expect(add.status).toBe(201);
+    expect(add.data.member.role).toBe('leader');
+
+    // OPEN chat: the leader can post, and the server marks them isLeader (not owner).
+    expect((await api(`/screening/metalab/${mlId}/chat`, { method: 'POST', cookie: leader.cookie, body: { message: `leader open ${r}` } })).status).toBe(201);
+    const openList = await api(`/screening/metalab/${mlId}/chat`, { cookie: leader.cookie });
+    expect(openList.data.isLeader).toBe(true);
+    expect(openList.data.isOwner).toBe(false);
+    expect(openList.data.canPost).toBe(true);
+
+    // RESTRICT → the leader is now READ-ONLY (owner-only lock); the OWNER still posts.
+    expect((await api(`/screening/projects/${spid}`, { method: 'PUT', cookie: owner.cookie, body: { chatRestricted: true } })).status).toBe(200);
+    expect((await api(`/screening/metalab/${mlId}/chat`, { method: 'POST', cookie: leader.cookie, body: { message: `leader blocked ${r}` } })).status).toBe(403);
+    const lead = await api(`/screening/metalab/${mlId}/chat`, { cookie: leader.cookie });
+    expect(lead.data.canPost).toBe(false);          // leader read-only under the owner-only lock
+    expect(lead.data.isOwner).toBe(false);
+    expect((await api(`/screening/metalab/${mlId}/chat`, { method: 'POST', cookie: owner.cookie, body: { message: `owner ok ${r}` } })).status).toBe(201);
+
+    // UN-RESTRICT → the leader can post again.
+    expect((await api(`/screening/projects/${spid}`, { method: 'PUT', cookie: owner.cookie, body: { chatRestricted: false } })).status).toBe(200);
+    expect((await api(`/screening/metalab/${mlId}/chat`, { method: 'POST', cookie: leader.cookie, body: { message: `leader open again ${r}` } })).status).toBe(201);
+
+    await api(`/screening/projects/${spid}`, { method: 'DELETE', cookie: owner.cookie });
+    await api(`/projects/${mlId}`, { method: 'DELETE', cookie: owner.cookie });
+  }, 30000);
+});

@@ -67,9 +67,9 @@ import { canPostChatFlat, chatPostBlockReasonFlat } from '../../../research-engi
  * mounts; `readOnly` ⇒ enabled but the composer is read-only. `mayParticipate` is kept
  * as a back-compat alias of `canPost`.
  */
-export function deriveChatLauncherState({ projectId, status, canChat, isLeader, chatRestricted = false, projectName = '' }) {
-  const canPost = canPostChatFlat({ isLeader, canChat, chatRestricted });
-  const blockReason = chatPostBlockReasonFlat({ isLeader, canChat, chatRestricted });
+export function deriveChatLauncherState({ projectId, status, canChat, isLeader, isOwner = false, chatRestricted = false, projectName = '' }) {
+  const canPost = canPostChatFlat({ isOwner, isLeader, canChat, chatRestricted });
+  const blockReason = chatPostBlockReasonFlat({ isOwner, isLeader, canChat, chatRestricted });
   const enabled = !!projectId && status === 'linked';
   const readOnly = enabled && !canPost;
   let disabledReason = null;
@@ -93,6 +93,7 @@ export default function StitchChatLauncher({ projectId = null, projectName = '' 
   const [canChat, setCanChat] = useState(false);
   const [chatRestricted, setChatRestricted] = useState(false);
   const [isLeader, setIsLeader] = useState(false);
+  const [isOwner, setIsOwner] = useState(false);
 
   // Current project id + a monotonic probe-sequence guard so a re-probe (project
   // change OR a live permissions.changed poke) supersedes any in-flight response,
@@ -119,10 +120,11 @@ export default function StitchChatLauncher({ projectId = null, projectName = '' 
         setCanChat(!!d?.canChat);
         setChatRestricted(!!d?.chatRestricted);
         setIsLeader(!!d?.isLeader);
+        setIsOwner(!!d?.isOwner);
       })
       .catch((e) => {
         if (!mountedRef.current || seq !== probeSeq.current) return;
-        setCanChat(false); setChatRestricted(false); setIsLeader(false);
+        setCanChat(false); setChatRestricted(false); setIsLeader(false); setIsOwner(false);
         setStatus(e?.status === 404 ? 'unlinked' : 'error');
       });
   }, []);
@@ -132,7 +134,7 @@ export default function StitchChatLauncher({ projectId = null, projectName = '' 
     setOpen(false);
     if (!projectId) {
       probeSeq.current++; // cancel any in-flight probe
-      setStatus('idle'); setCanChat(false); setChatRestricted(false); setIsLeader(false); setUnread(0);
+      setStatus('idle'); setCanChat(false); setChatRestricted(false); setIsLeader(false); setIsOwner(false); setUnread(0);
       return;
     }
     runProbe({ initial: true });
@@ -161,7 +163,7 @@ export default function StitchChatLauncher({ projectId = null, projectName = '' 
     [],
   );
 
-  const { enabled, tipLabel } = deriveChatLauncherState({ projectId, status, canChat, isLeader, chatRestricted, projectName });
+  const { enabled, tipLabel } = deriveChatLauncherState({ projectId, status, canChat, isLeader, isOwner, chatRestricted, projectName });
 
   // Shared circular geometry (matches NotificationsBell — 30px brand-tinted disc).
   const baseStyle = {
@@ -234,6 +236,7 @@ export default function StitchChatLauncher({ projectId = null, projectName = '' 
           onUnreadChange={setUnread}
           canChat={canChat}
           isLeader={isLeader}
+          isOwner={isOwner}
           restricted={chatRestricted}
           title={(projectName && projectName.trim()) || 'Project chat'}
           realtimeMatch={realtimeMatch}

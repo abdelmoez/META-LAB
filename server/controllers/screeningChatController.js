@@ -54,22 +54,19 @@ function activeTypers(projectId, exceptUserId) {
 /**
  * Per-member chat WRITE gate (prompt50 WS6).
  *
- * TWO orthogonal controls, both enforced here (78.md #2):
- *   1. Per-member mute — a member explicitly denied chat (canChat=false) is
- *      READ-ONLY regardless of the project-wide flag (prompt50 WS6).
- *   2. Project-wide "Restrict chat" (`ScreenProject.chatRestricted`) — a HARD
- *      lock to leadership. When ON, regular members are read-only EVEN IF they
- *      have canChat; only the owner and leaders can post. Before 78.md the gate
- *      ignored this flag entirely and canChat defaults to true for every member,
- *      so flipping "Restrict chat" changed nothing — the reported bug ("restricted
- *      but users still chat"). The flag now genuinely restricts on its own.
+ * TWO controls, both enforced here:
+ *   1. Per-member mute — when chat is OPEN, a member explicitly denied chat
+ *      (canChat=false) is READ-ONLY (prompt50 WS6).
+ *   2. Project-wide "Restrict chat" (`ScreenProject.chatRestricted`) — an
+ *      OWNER-ONLY lock (81.md v2). When ON, ONLY the project OWNER can post;
+ *      leaders AND members are read-only. (78.md made this a leadership lock;
+ *      81.md v2 narrowed it to owner-only per the product owner's request.)
  *
- * The rule only ever ADDS restriction (leaders always post; a muted member stays
- * muted), so no previously-blocked user is newly allowed. Enforced on EVERY chat
- * WRITE route (send, delete, typing) so a forged request body, a stale browser
- * tab, a replayed WebSocket event, or a direct API call cannot bypass it — the UI
- * hint is never the source of truth. The resolved verdict is also surfaced to the
- * client as `canPost` (below) so the composer and the server share ONE contract.
+ * Enforced on EVERY chat WRITE route (send, delete, typing) so a forged request
+ * body, a stale browser tab, a replayed WebSocket event, or a direct API call
+ * cannot bypass it — the UI hint is never the source of truth. The resolved verdict
+ * is also surfaced to the client as `canPost` (below) so the composer and the
+ * server share ONE contract.
  *
  * 81.md — the rule now lives in ONE shared, dependency-free module
  * (src/research-engine/screening/chatPolicy.js) imported by BOTH the server and
@@ -111,9 +108,11 @@ async function listMessagesCore(access, req, res) {
       isMe: m.senderId === req.user.id,
     })),
     canChat: access.canChat,
-    // isLeader is one input to the write-gate; surfaced so a header launcher can
-    // decide "may participate" from this one access probe. Additive.
+    // isLeader / isOwner are inputs to the write-gate; surfaced so a header launcher
+    // can resolve the read-only state from this one access probe. 81.md v2 — "Restrict
+    // chat" is owner-only, so isOwner is needed to tell a blocked leader from the owner.
     isLeader: access.isLeader,
+    isOwner: access.isOwner,
     chatRestricted: access.project.chatRestricted,
     // 78.md #2 — the RESOLVED write verdict. The client composer uses this single
     // field instead of re-deriving the rule, so the UI can never drift from the

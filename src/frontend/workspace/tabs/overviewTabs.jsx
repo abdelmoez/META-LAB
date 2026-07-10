@@ -741,7 +741,7 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
         <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",borderTop:`1px solid ${C.brd}`,marginTop:12,paddingTop:12}}>
           <div style={{minWidth:0,flex:1}}>
             <div style={{fontSize:12.5,color:C.txt,fontWeight:600}}>Restrict chat</div>
-            <div style={{fontSize:11,color:C.muted,marginTop:2,lineHeight:1.45}}>When on, only the project owner and leaders can post — everyone else is read-only. Mute an individual member instead with their Chat permission.</div>
+            <div style={{fontSize:11,color:C.muted,marginTop:2,lineHeight:1.45}}>When on, only the project owner can post — everyone else, including leaders, is read-only. Mute an individual member instead with their Chat permission.</div>
           </div>
           {canManageStatus
             ? <SwitchToggle on={!!sp?.chatRestricted} busy={spBusy} onClick={()=>saveSpSetting({chatRestricted:!sp?.chatRestricted})} ariaLabel={`Restrict chat — currently ${sp?.chatRestricted?"on":"off"}`} onLabel="Restricted" offLabel="Open"/>

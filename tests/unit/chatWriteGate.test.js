@@ -1,38 +1,33 @@
 /**
- * chatWriteGate.test.js — 78.md #2. Unit coverage for the chat write-gate semantics.
- * "Restrict chat" is a leadership lock that STRENGTHENS enforcement: leaders/owner always
- * post, a muted member (canChat=false) is always read-only, and when the project-wide
- * flag is ON every regular member is read-only even with canChat. (The end-to-end route
- * enforcement is covered by tests/screening/integration/prompt7-chat.test.js.)
+ * chatWriteGate.test.js — 81.md v2. Unit coverage for the chat write-gate semantics.
+ * "Restrict chat" is an OWNER-ONLY lock: when ON, ONLY the project owner can post —
+ * leaders AND members are read-only. When OFF, owner + leaders always post and a muted
+ * member (canChat=false) is read-only. (End-to-end route enforcement is covered by
+ * tests/screening/integration/prompt7-chat.test.js + 81-restrict-chat-blind.test.js.)
  */
 import { describe, it, expect } from 'vitest';
 import { canWriteChat } from '../../server/controllers/screeningChatController.js';
 
-const acc = (o) => ({ isLeader: false, canChat: false, project: { chatRestricted: false }, ...o });
+const acc = (o) => ({ isOwner: false, isLeader: false, canChat: false, project: { chatRestricted: false }, ...o });
 
-describe('canWriteChat — 78.md #2 leadership-lock semantics', () => {
-  it('leaders/owner always post (even when restricted)', () => {
-    expect(canWriteChat(acc({ isLeader: true }))).toBe(true);
-    expect(canWriteChat(acc({ isLeader: true, canChat: false, project: { chatRestricted: true } }))).toBe(true);
+describe('canWriteChat — 81.md v2 owner-only restrict-chat lock', () => {
+  it('OPEN chat: owner + leaders post; a canChat member posts; a muted member is read-only', () => {
+    expect(canWriteChat(acc({ isOwner: true, isLeader: true, canChat: true }))).toBe(true);
+    expect(canWriteChat(acc({ isLeader: true, canChat: false }))).toBe(true);   // leader (non-owner) posts when open
+    expect(canWriteChat(acc({ canChat: true }))).toBe(true);                    // member with canChat posts
+    expect(canWriteChat(acc({ canChat: false }))).toBe(false);                  // muted member read-only
   });
 
-  it('a muted member (canChat=false) is read-only regardless of the project flag', () => {
-    expect(canWriteChat(acc({ canChat: false, project: { chatRestricted: false } }))).toBe(false);
-    expect(canWriteChat(acc({ canChat: false, project: { chatRestricted: true } }))).toBe(false);
+  it('RESTRICTED chat: ONLY the owner posts — leaders AND members are read-only', () => {
+    expect(canWriteChat(acc({ isOwner: true, isLeader: true, canChat: true, project: { chatRestricted: true } }))).toBe(true);  // owner
+    expect(canWriteChat(acc({ isLeader: true, canChat: true, project: { chatRestricted: true } }))).toBe(false);                // leader (non-owner) BLOCKED
+    expect(canWriteChat(acc({ canChat: true, project: { chatRestricted: true } }))).toBe(false);                                // member BLOCKED
+    expect(canWriteChat(acc({ canChat: false, project: { chatRestricted: true } }))).toBe(false);                               // muted BLOCKED
   });
 
-  it('open chat: a canChat member can post', () => {
-    expect(canWriteChat(acc({ canChat: true, project: { chatRestricted: false } }))).toBe(true);
-  });
-
-  it('restricted chat: a canChat member is read-only (the fixed bug — the flag now restricts on its own)', () => {
-    expect(canWriteChat(acc({ canChat: true, project: { chatRestricted: true } }))).toBe(false);
-  });
-
-  it('null/garbage access is denied', () => {
+  it('null/garbage access is denied; a missing project object ⇒ unrestricted (canChat governs)', () => {
     expect(canWriteChat(null)).toBe(false);
     expect(canWriteChat(undefined)).toBe(false);
-    // missing project object → treated as unrestricted (canChat governs)
     expect(canWriteChat({ isLeader: false, canChat: true })).toBe(true);
   });
 });

@@ -81,6 +81,7 @@ export default function ChatDrawer({
   me,
   canChat: canChatProp = false,
   isLeader = false,
+  isOwner = false,
   restricted = false,
   title = 'Project Chat',
   realtimeMatch,
@@ -96,10 +97,12 @@ export default function ChatDrawer({
   // first list() response; once set it is the single source of truth for the
   // composer's read-only state, so the client can never drift from the server gate.
   const [canPost, setCanPost] = useState(null);
-  // 81.md — isLeader must refresh from list() alongside canChat/chatRestricted/canPost
-  // so the read-only REASON copy (muted vs restricted) stays correct after a LIVE
-  // demotion; the prop only seeds the mount-time value.
+  // 81.md — isLeader/isOwner must refresh from list() alongside canChat/chatRestricted/
+  // canPost so the read-only REASON copy (muted vs restricted) stays correct after a
+  // LIVE role change; the props only seed the mount-time value. isOwner matters because
+  // "Restrict chat" is owner-only (v2) — a blocked leader vs the owner differ.
   const [isLeaderLive, setIsLeaderLive] = useState(!!isLeader);
+  const [isOwnerLive, setIsOwnerLive] = useState(!!isOwner);
 
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
@@ -163,6 +166,7 @@ export default function ChatDrawer({
       setChatRestricted(!!(data?.chatRestricted ?? restricted));
       if (data?.canPost != null) setCanPost(!!data.canPost);
       if (data?.isLeader != null) setIsLeaderLive(!!data.isLeader);
+      if (data?.isOwner != null) setIsOwnerLive(!!data.isOwner);
       setTyping(data?.typing || []);
     } catch (e) {
       setLoadError(e?.message || 'Failed to load the project chat.');
@@ -185,6 +189,7 @@ export default function ChatDrawer({
       if (data?.chatRestricted != null) setChatRestricted(!!data.chatRestricted);
       if (data?.canPost != null) setCanPost(!!data.canPost);
       if (data?.isLeader != null) setIsLeaderLive(!!data.isLeader);
+      if (data?.isOwner != null) setIsOwnerLive(!!data.isOwner);
       setTyping(data?.typing || []);
     } catch { /* keep cursor, retry on next tick */ }
   }, [merge]);
@@ -245,11 +250,11 @@ export default function ChatDrawer({
   // the first list() response (canPost null) we fall back to the SHARED policy gate
   // (chatPolicy.canPostChatFlat — the exact rule the server enforces) so the composer
   // starts correct. This is a true disabled state, not a cosmetic hide.
-  const blocked = canPost != null ? !canPost : !canPostChatFlat({ isLeader: isLeaderLive, canChat, chatRestricted });
+  const blocked = canPost != null ? !canPost : !canPostChatFlat({ isOwner: isOwnerLive, isLeader: isLeaderLive, canChat, chatRestricted });
   // WHY posting is blocked → honest, specific copy ("restricted" vs "muted"). Derived
-  // from the same signals the server sends (incl. isLeaderLive), refreshed on every
-  // list() poll — so a live demotion flips the copy too, matching the server canPost.
-  const blockReason = chatPostBlockReasonFlat({ isLeader: isLeaderLive, canChat, chatRestricted });
+  // from the same signals the server sends (incl. isOwnerLive/isLeaderLive), refreshed on
+  // every list() poll — so a live role change flips the copy too, matching server canPost.
+  const blockReason = chatPostBlockReasonFlat({ isOwner: isOwnerLive, isLeader: isLeaderLive, canChat, chatRestricted });
   const readOnlyMessage = chatBlockMessage(blockReason)
     || 'Chat is read-only for your account in this project. You can read existing messages, but a project owner or leader has turned off your permission to post.';
 

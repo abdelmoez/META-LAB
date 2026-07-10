@@ -19,7 +19,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import StitchChatLauncher, { deriveChatLauncherState } from '../../src/frontend/components/chat/StitchChatLauncher.jsx';
 
 const state = (over) => deriveChatLauncherState({
-  projectId: 'mlp_1', status: 'linked', canChat: false, isLeader: false, chatRestricted: false, projectName: 'Aspirin SR', ...over,
+  projectId: 'mlp_1', status: 'linked', canChat: false, isLeader: false, isOwner: false, chatRestricted: false, projectName: 'Aspirin SR', ...over,
 });
 
 describe('deriveChatLauncherState — enabled/greyed + read-only decision (81.md)', () => {
@@ -62,12 +62,27 @@ describe('deriveChatLauncherState — enabled/greyed + read-only decision (81.md
     expect(s.blockReason).toBe('muted');
   });
 
-  it('leader override: isLeader posts even when canChat=false AND chatRestricted=true (matches canWriteChat)', () => {
-    const s = state({ status: 'linked', canChat: false, isLeader: true, chatRestricted: true });
+  it('81.md v2 owner-only: the OWNER still posts when restricted', () => {
+    const s = state({ status: 'linked', isOwner: true, isLeader: true, canChat: true, chatRestricted: true });
     expect(s.canPost).toBe(true);
     expect(s.enabled).toBe(true);
     expect(s.readOnly).toBe(false);
     expect(s.tipLabel).toBe('Chat — Aspirin SR');
+  });
+
+  it('81.md v2 owner-only: a non-owner LEADER is now READ-ONLY when restricted (was writable pre-v2)', () => {
+    const s = state({ status: 'linked', isOwner: false, isLeader: true, canChat: true, chatRestricted: true });
+    expect(s.canPost).toBe(false);
+    expect(s.enabled).toBe(true);
+    expect(s.readOnly).toBe(true);
+    expect(s.blockReason).toBe('restricted');
+    expect(s.tipLabel).toBe('Chat — Aspirin SR · read-only');
+  });
+
+  it('a leader posts normally when chat is OPEN (restriction off)', () => {
+    const s = state({ status: 'linked', isLeader: true, canChat: false });
+    expect(s.canPost).toBe(true);
+    expect(s.readOnly).toBe(false);
   });
 
   it('while probing access, the icon stays inert (no clickable flash)', () => {
