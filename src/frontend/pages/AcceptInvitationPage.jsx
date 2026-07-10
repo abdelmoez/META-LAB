@@ -211,12 +211,17 @@ export default function AcceptInvitationPage() {
       setTimeout(() => navigate('/app', { replace: true }), 900);
     } catch (err) {
       const code = err?.body?.code;
-      if (code && INVALID_COPY[code] && code !== 'validation') {
-        // The token died between validate and submit (expired/used/revoked/etc).
+      // A terminal token state (expired/used/revoked/superseded) → switch to the
+      // message screen. validation + server_error are RETRYABLE, so keep the form
+      // and show an inline error instead of dead-ending.
+      if (code && INVALID_COPY[code] && !['validation', 'server_error'].includes(code)) {
         setInvalidCode(code);
         setPhase('invalid');
       } else {
-        setError(err?.message || 'Could not activate your account. Please try again.');
+        const raw = err?.message || '';
+        setError(!raw || /internal server error/i.test(raw)
+          ? 'Something went wrong activating your account. Please try again.'
+          : raw);
       }
     } finally {
       setSubmitting(false);

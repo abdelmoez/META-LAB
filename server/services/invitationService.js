@@ -130,27 +130,31 @@ export async function createInvitation({ applicantId, email, name = '', invitedB
 
   const prior = await prisma.waitlistInvitation.count({ where: { normalizedEmail: normalized } });
 
-  // Rotate: burn any still-live link for this email first (one live link at a time).
-  await prisma.waitlistInvitation.updateMany({
-    where: { normalizedEmail: normalized, status: 'pending' },
-    data: { status: 'superseded' },
-  }).catch(() => {});
-
-  const invitation = await prisma.waitlistInvitation.create({
-    data: {
-      waitlistApplicantId: applicantId,
-      email: String(email || ''),
-      normalizedEmail: normalized,
-      name: name || null,
-      tokenHash,
-      status: 'pending',
-      expiresAt,
-      attempt: prior + 1,
-      tierId: tierId || null,
-      invitedByUserId,
-      batchId: batchId || null,
-      ip: ip || '',
-    },
+  // Rotate + create ATOMICALLY (one live link at a time). Wrapping the supersede
+  // and the create in one transaction means a single issue can never leave two
+  // live rows for this email (the read-only `prior` count stays outside — an
+  // off-by-one in the attempt number under concurrency is cosmetic).
+  const invitation = await prisma.$transaction(async (tx) => {
+    await tx.waitlistInvitation.updateMany({
+      where: { normalizedEmail: normalized, status: 'pending' },
+      data: { status: 'superseded' },
+    });
+    return tx.waitlistInvitation.create({
+      data: {
+        waitlistApplicantId: applicantId,
+        email: String(email || ''),
+        normalizedEmail: normalized,
+        name: name || null,
+        tokenHash,
+        status: 'pending',
+        expiresAt,
+        attempt: prior + 1,
+        tierId: tierId || null,
+        invitedByUserId,
+        batchId: batchId || null,
+        ip: ip || '',
+      },
+    });
   });
   return { token, invitation, expiresAt };
 }
@@ -284,17 +288,16 @@ export async function inviteApplicant({ applicant, invitedByUserId, tierId = nul
  * @returns {Promise<{ok:true, invitationId:string} | {ok:false, code:'no_active_invitation'}>}
  */
 export async function revokeInvitationForApplicant(applicantId, { revokedByUserId = null } = {}) {
-  const row = await prisma.waitlistInvitation.findFirst({
-    where: { waitlistApplicantId: applicantId, status: 'pending' },
-    orderBy: { createdAt: 'desc' },
-  });
-  if (!row) return { ok: false, code: 'no_active_invitation' };
+  // Revoke EVERY live (pending) invitation for the applicant — not just the newest.
+  // Even though issuing rotates prior links to `superseded`, a concurrent double-issue
+  // could leave more than one `pending` row; revoking all of them guarantees no live
+  // link survives a revoke (the invariant the admin expects).
   const upd = await prisma.waitlistInvitation.updateMany({
-    where: { id: row.id, status: 'pending' },
+    where: { waitlistApplicantId: applicantId, status: 'pending' },
     data: { status: 'revoked', revokedAt: new Date(), revokedByUserId: revokedByUserId || null },
   });
   if (upd.count === 0) return { ok: false, code: 'no_active_invitation' };
-  return { ok: true, invitationId: row.id };
+  return { ok: true, count: upd.count };
 }
 
 // ── Token resolution (public accept page) ───────────────────────────────────────
@@ -329,91 +332,108 @@ export async function acceptInvitation(token, { password, name = '', acceptedTer
   const pw = validateInvitePassword(password);
   if (!pw.ok) return { ok: false, code: 'validation', message: pw.error };
 
-  const resolved = await resolveInvitationToken(token);
-  if (resolved.status !== 'ok') return { ok: false, code: resolved.status };
-  const row = resolved.row;
-  const normalized = row.normalizedEmail;
-
-  // Phase 10 — the email already belongs to a real account. NEVER overwrite an
-  // existing password. Burn+link the invitation (single-use) and point them at
-  // sign-in. Do NOT sign them in (we did not verify they own that account).
-  const existing = await prisma.user.findUnique({ where: { email: normalized }, select: { id: true } });
-  if (existing) {
-    await prisma.waitlistInvitation.updateMany({
-      where: { id: row.id, status: 'pending' },
-      data: { status: 'accepted', acceptedAt: new Date(), acceptedUserId: existing.id },
-    }).catch(() => {});
-    return { ok: false, code: 'account_exists', userId: existing.id, applicantId: row.waitlistApplicantId };
-  }
-
-  const hashed = await hashPassword(password);
-  const userNumber = await allocateUserNumber().catch(() => null);
-  const cleanName = (name && String(name).trim().slice(0, 100)) || row.name || null;
-
-  let userId;
+  // Outer guard: ANY unexpected throw (transient DB blip in resolve / existence
+  // check / hashPassword) returns a typed code so the controller never emits a
+  // code-less 500 and the accept page can show a friendly message.
   try {
-    userId = await prisma.$transaction(async (tx) => {
-      // Single-use burn FIRST behind the pending guard; if lost, abort the whole tx.
-      const burn = await tx.waitlistInvitation.updateMany({
-        where: { id: row.id, status: 'pending' },
-        data: { status: 'accepted', acceptedAt: new Date() },
-      });
-      if (burn.count === 0) throw new ConsumedError();
+    const resolved = await resolveInvitationToken(token);
+    if (resolved.status !== 'ok') return { ok: false, code: resolved.status };
+    const row = resolved.row;
+    const normalized = row.normalizedEmail;
 
-      const user = await tx.user.create({
-        data: {
-          email: normalized,
-          name: cleanName,
-          password: hashed,
-          role: 'user',
-          userNumber,
-          // The invitation link proves control of the mailbox → treat as verified.
-          emailVerifiedAt: new Date(),
-          termsAcceptedAt: acceptedTerms ? new Date() : null,
-        },
-      });
-      await tx.waitlistInvitation.update({ where: { id: row.id }, data: { acceptedUserId: user.id } });
-      return user.id;
-    });
-  } catch (err) {
-    if (err instanceof ConsumedError) return { ok: false, code: 'accepted' };
-    // Unique-email race: another accept (or a registration) created the account
-    // between our existence check and the create — treat as an existing account.
-    if (err && (err.code === 'P2002' || /unique/i.test(err.message || ''))) {
-      const u = await prisma.user.findUnique({ where: { email: normalized }, select: { id: true } });
-      return { ok: false, code: 'account_exists', userId: u?.id, applicantId: row.waitlistApplicantId };
+    // Phase 10 — the email already belongs to a real account. NEVER overwrite an
+    // existing password. Burn+link the invitation (single-use) and point them at
+    // sign-in. Do NOT sign them in (we did not verify they own that account).
+    const existing = await prisma.user.findUnique({ where: { email: normalized }, select: { id: true } });
+    if (existing) {
+      await prisma.waitlistInvitation.updateMany({
+        where: { id: row.id, status: 'pending' },
+        data: { status: 'accepted', acceptedAt: new Date(), acceptedUserId: existing.id },
+      }).catch(() => {});
+      return { ok: false, code: 'account_exists', userId: existing.id, applicantId: row.waitlistApplicantId };
     }
-    console.error('[invitation] accept tx failed:', err?.message || err);
+
+    const hashed = await hashPassword(password);
+    const userNumber = await allocateUserNumber().catch(() => null);
+    const cleanName = (name && String(name).trim().slice(0, 100)) || row.name || null;
+
+    let createdUser;
+    try {
+      createdUser = await prisma.$transaction(async (tx) => {
+        // Single-use burn FIRST behind the pending guard; if lost, abort the whole tx.
+        const burn = await tx.waitlistInvitation.updateMany({
+          where: { id: row.id, status: 'pending' },
+          data: { status: 'accepted', acceptedAt: new Date() },
+        });
+        if (burn.count === 0) throw new ConsumedError();
+
+        // Return the created row DIRECTLY (superset of what the controller needs) so
+        // there is no undefended post-commit re-read that could 500 an account that
+        // already exists + a token that is already burned.
+        const user = await tx.user.create({
+          data: {
+            email: normalized,
+            name: cleanName,
+            password: hashed,
+            role: 'user',
+            userNumber,
+            // The invitation link proves control of the mailbox → treat as verified.
+            emailVerifiedAt: new Date(),
+            termsAcceptedAt: acceptedTerms ? new Date() : null,
+          },
+          select: { id: true, email: true, name: true, role: true, sessionEpoch: true, createdAt: true, onboardingCompletedAt: true },
+        });
+        await tx.waitlistInvitation.update({ where: { id: row.id }, data: { acceptedUserId: user.id } });
+        return user;
+      });
+    } catch (err) {
+      if (err instanceof ConsumedError) {
+        // The link was consumed / rotated / revoked in the tiny window between
+        // resolve and burn — return the ACCURATE reason so the page shows the right
+        // message ("already used" vs "a newer invitation was issued" vs "revoked").
+        const r2 = await resolveInvitationToken(token).catch(() => ({ status: 'accepted' }));
+        const code = ['accepted', 'superseded', 'revoked', 'expired'].includes(r2.status) ? r2.status : 'accepted';
+        return { ok: false, code };
+      }
+      // Unique-email race: another accept (or a registration) created the account
+      // between our existence check and the create — treat as an existing account.
+      if (err && (err.code === 'P2002' || /unique/i.test(err.message || ''))) {
+        const u = await prisma.user.findUnique({ where: { email: normalized }, select: { id: true } }).catch(() => null);
+        return { ok: false, code: 'account_exists', userId: u?.id, applicantId: row.waitlistApplicantId };
+      }
+      console.error('[invitation] accept tx failed:', err?.message || err);
+      return { ok: false, code: 'server_error' };
+    }
+
+    const userId = createdUser.id;
+
+    // ── Post-commit side effects (best-effort — never fail an accepted account) ──
+    // Assign the initial tier through the ONE centralized writer (Phase 14). The tier
+    // pinned on the invitation wins; otherwise the site default is resolved.
+    try {
+      const tierId = row.tierId || (await getDefaultTierId());
+      if (tierId) {
+        await recordTierAssignment({
+          userId,
+          tierId,
+          userTierId: tierId,
+          changeType: 'beta_access',
+          reason: 'Waitlist invitation accepted',
+          assignedByName: 'system',
+        });
+        if (!row.tierId) {
+          await prisma.waitlistInvitation.update({ where: { id: row.id }, data: { tierId } }).catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.error('[invitation] tier assignment failed:', e?.message || e);
+    }
+
+    return { ok: true, userId, user: createdUser, applicantId: row.waitlistApplicantId };
+  } catch (err) {
+    console.error('[invitation] accept failed:', err?.message || err);
     return { ok: false, code: 'server_error' };
   }
-
-  // ── Post-commit side effects (best-effort — never fail an accepted account) ──
-  // Assign the initial tier through the ONE centralized writer (Phase 14). The tier
-  // pinned on the invitation wins; otherwise the site default is resolved.
-  try {
-    const tierId = row.tierId || (await getDefaultTierId());
-    if (tierId) {
-      await recordTierAssignment({
-        userId,
-        tierId,
-        userTierId: tierId,
-        changeType: 'beta_access',
-        reason: 'Waitlist invitation accepted',
-        assignedByName: 'system',
-      });
-      if (!row.tierId) {
-        await prisma.waitlistInvitation.update({ where: { id: row.id }, data: { tierId } }).catch(() => {});
-      }
-    }
-  } catch (e) {
-    console.error('[invitation] tier assignment failed:', e?.message || e);
-  }
-
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { id: true, email: true, name: true, role: true, sessionEpoch: true, createdAt: true, onboardingCompletedAt: true },
-  });
-  return { ok: true, userId, user, applicantId: row.waitlistApplicantId };
 }
 
 // ── Enrichment for the Ops list/detail (cross-DB READ only) ─────────────────────
@@ -422,11 +442,21 @@ export async function acceptInvitation(token, { password, name = '', acceptedTer
  * @param {string[]} normalizedEmails
  * @returns {Promise<Map<string, object>>} normalizedEmail → latest raw invitation row
  */
+// Columns needed to derive state + build a safe view. Deliberately EXCLUDES
+// tokenHash so the raw hash is never materialized into an in-memory enrichment map.
+const INVITATION_VIEW_SELECT = {
+  id: true, normalizedEmail: true, status: true, expiresAt: true, attempt: true,
+  acceptedAt: true, acceptedUserId: true, revokedAt: true, revokedByUserId: true,
+  tierId: true, emailStatus: true, emailSentAt: true, lastEmailError: true,
+  invitedByUserId: true, batchId: true, createdAt: true, updatedAt: true,
+};
+
 export async function latestInvitationsForEmails(normalizedEmails) {
   const emails = [...new Set((normalizedEmails || []).map((e) => normalizeEmail(e)).filter(Boolean))];
   if (!emails.length) return new Map();
   const rows = await prisma.waitlistInvitation.findMany({
     where: { normalizedEmail: { in: emails } },
+    select: INVITATION_VIEW_SELECT,
     orderBy: { createdAt: 'desc' },
   });
   const map = new Map();
@@ -473,7 +503,7 @@ export async function invitationHistoryForApplicant(applicantId, normalizedEmail
   const or = [{ waitlistApplicantId: applicantId }];
   const ne = normalizeEmail(normalizedEmail);
   if (ne) or.push({ normalizedEmail: ne });
-  const rows = await prisma.waitlistInvitation.findMany({ where: { OR: or }, orderBy: { createdAt: 'desc' } });
+  const rows = await prisma.waitlistInvitation.findMany({ where: { OR: or }, select: INVITATION_VIEW_SELECT, orderBy: { createdAt: 'desc' } });
   return rows.map((r) => toInvitationView(r));
 }
 

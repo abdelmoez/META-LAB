@@ -32,6 +32,23 @@ function cleanTierId(v) {
   return s || null;
 }
 
+// Whitelist + string-coerce a bulk filter object. Only known list-filter keys pass,
+// and each value is forced to a scalar string — a client can never smuggle a Prisma
+// operator object (e.g. { status: { in: ['REMOVED'] } }) through the bulk endpoint.
+const BULK_FILTER_KEYS = ['status', 'role', 'countryCode', 'emailStatus', 'institutionType', 'covidenceLicense', 'primaryField', 'search', 'dateFrom', 'dateTo'];
+function sanitizeFilter(input) {
+  const out = {};
+  if (!input || typeof input !== 'object') return out;
+  for (const k of BULK_FILTER_KEYS) {
+    const v = input[k];
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
+      const s = String(v).trim();
+      if (s) out[k] = s;
+    }
+  }
+  return out;
+}
+
 /** Compute the derived invite state for a single applicant (one cheap lookup each). */
 async function stateFor(applicant) {
   const ne = normalizeEmail(applicant.email);
@@ -79,9 +96,14 @@ async function inviteOne({ applicant, invitedByUserId, tierId, batchId, ip, base
   // A valid invitation WAS generated → advance the waitlist status to INVITED
   // (best-effort; the derived 'failed'/'expired' display comes from the invitation
   // itself, so an email failure still surfaces correctly). Skip when we didn't mint
-  // one (already_registered / cooldown).
+  // one (already_registered / cooldown). The status-history note reflects the ACTUAL
+  // email outcome so it never claims "sent" when nothing was sent or the send failed.
   if (['invited', 'invited_no_email', 'email_failed'].includes(result.code)) {
-    waitlist.setStatus(applicant.id, 'INVITED', { changedBy: invitedByUserId, note: resend ? 'Invitation resent' : 'Invitation sent' }).catch(() => {});
+    const verb = resend ? 'Invitation re-issued' : 'Invitation created';
+    const outcome = result.code === 'invited' ? 'email sent'
+      : result.code === 'email_failed' ? 'email FAILED'
+      : 'email not configured';
+    waitlist.setStatus(applicant.id, 'INVITED', { changedBy: invitedByUserId, note: `${verb} — ${outcome}` }).catch(() => {});
   }
 
   return {
@@ -194,8 +216,8 @@ export async function adminRevokeInvitation(req, res) {
     // Preserve the waitlist record; return the applicant to a non-invited status so
     // Ops can re-invite intentionally later. UNDER_REVIEW keeps them on the list.
     waitlist.setStatus(applicant.id, 'UNDER_REVIEW', { changedBy: req.user.id, note: 'Invitation revoked' }).catch(() => {});
-    await logAdminAction(req, 'WAITLIST_INVITE_REVOKE', 'BetaWaitlistApplicant', applicant.id, { invitationId: revoked.invitationId });
-    return res.json({ ok: true, invitationId: revoked.invitationId });
+    await logAdminAction(req, 'WAITLIST_INVITE_REVOKE', 'BetaWaitlistApplicant', applicant.id, { revoked: revoked.count });
+    return res.json({ ok: true, revoked: revoked.count });
   } catch (err) {
     console.error('[waitlist-invite] revoke error:', err?.message || err);
     return res.status(500).json({ error: 'Internal server error' });
@@ -233,11 +255,12 @@ export async function adminBulkInvite(req, res) {
     const tierId = cleanTierId(body.tierId);
     const cap = invitationService.maxBulkInvite();
 
+    // Fetch cap+1 so we can DETECT (not just silently cap) an over-limit selection.
     let resolved;
     if (Array.isArray(body.ids) && body.ids.length) {
       resolved = await waitlist.applicantsForInvite({ ids: body.ids }, cap + 1);
     } else if (body.allMatchingFilter && typeof body.allMatchingFilter === 'object') {
-      resolved = await waitlist.applicantsForInvite({ filters: body.allMatchingFilter }, cap + 1);
+      resolved = await waitlist.applicantsForInvite({ filters: sanitizeFilter(body.allMatchingFilter) }, cap + 1);
     } else {
       return res.status(400).json({ error: 'Provide ids[] or allMatchingFilter.', code: 'bad_request' });
     }
@@ -245,6 +268,9 @@ export async function adminBulkInvite(req, res) {
       if (isUnavailable(resolved.code)) return res.status(503).json(UNAVAILABLE);
       return res.status(500).json({ error: 'Internal server error' });
     }
+
+    // More rows matched than we will process this batch (the resolver returned cap+1).
+    const hasMore = resolved.rows.length > cap;
 
     // Dedupe by id AND by normalized email (two waitlist rows, same address → one).
     const seenIds = new Set();
@@ -256,12 +282,8 @@ export async function adminBulkInvite(req, res) {
       seenIds.add(a.id); seenEmails.add(ne);
       applicants.push(a);
     }
-
-    let truncated = 0;
-    if (applicants.length > cap) {
-      truncated = applicants.length - cap;
-      applicants = applicants.slice(0, cap);
-    }
+    // Process at most `cap` this batch; the admin re-runs the action to continue.
+    if (applicants.length > cap) applicants = applicants.slice(0, cap);
 
     // One batched lookup for state (existing users + latest invitations).
     const emails = applicants.map((a) => normalizeEmail(a.email));
@@ -296,8 +318,9 @@ export async function adminBulkInvite(req, res) {
       });
     });
 
-    // Summarize.
-    const summary = { requested: resolved.rows.length, processed: results.length, truncated, invited: 0, resent: 0, invited_no_email: 0, email_failed: 0, already_registered: 0, already_accepted: 0, skipped: 0, cooldown: 0, error: 0 };
+    // Summarize. `processed` is the number actually attempted this batch; `hasMore`
+    // + `limit` honestly signal an over-limit selection (never a misleading "1").
+    const summary = { processed: results.length, limit: cap, hasMore, invited: 0, resent: 0, invited_no_email: 0, email_failed: 0, already_registered: 0, already_accepted: 0, skipped: 0, cooldown: 0, error: 0 };
     for (const r of results) {
       if (r.code === 'invited') { r.priorState === 'invited' ? summary.resent++ : summary.invited++; }
       else if (r.code in summary) summary[r.code]++;

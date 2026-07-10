@@ -18,6 +18,10 @@ async function req(url, opts = {}) {
   if (!res.ok) {
     const err = new Error((body?.error) || `HTTP ${res.status}`);
     err.status = res.status;
+    // Expose the parsed body + semantic code so callers can branch (e.g. an invite
+    // that 409s with code 'already_registered'). Mirrors the public apiClient.
+    err.body = body;
+    err.code = body?.code;
     throw err;
   }
   return body;

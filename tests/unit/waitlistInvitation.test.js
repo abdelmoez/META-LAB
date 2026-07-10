@@ -63,8 +63,10 @@ describe('deriveInviteState', () => {
   it('is accepted when the invitation is accepted', () => {
     expect(deriveInviteState({ status: 'INVITED' }, { status: 'accepted' }, NOW)).toBe('accepted');
   });
-  it('is accepted when the applicant is ACCEPTED even without an invitation', () => {
-    expect(deriveInviteState({ status: 'ACCEPTED' }, null, NOW)).toBe('accepted');
+  it('does NOT trust the manually-settable ACCEPTED waitlist status alone (no invitation → waiting)', () => {
+    // A real acceptance always writes an accepted invitation; a bare ACCEPTED
+    // waitlist status with no invitation must not masquerade as an activated account.
+    expect(deriveInviteState({ status: 'ACCEPTED' }, null, NOW)).toBe('waiting');
   });
   it('treats a superseded latest row as freshly invitable (waiting)', () => {
     expect(deriveInviteState({ status: 'WAITLISTED' }, { status: 'superseded', expiresAt: future() }, NOW)).toBe('waiting');

@@ -72,10 +72,14 @@ export function validateInvitePassword(password, confirm) {
  * @returns {'waiting'|'invited'|'accepted'|'expired'|'revoked'|'failed'}
  */
 export function deriveInviteState(applicant, invitation, now = Date.now()) {
-  // Accepted is terminal — true if EITHER side records it (defensive against a
-  // cross-DB write that only half-completed).
+  // Accepted is terminal, but it is proven ONLY by an accepted invitation (or, in
+  // enrichApplicant, by an existing real user) — NOT by the applicant's own
+  // waitlist status. `ACCEPTED` is an admin-settable waitlist status; treating it
+  // as "accepted" on its own would show a green Accepted badge (and gate off
+  // invites) for someone who never actually created an account. A real acceptance
+  // always writes the main-DB invitation.status='accepted' + a User row, so this
+  // stays correct for genuine acceptances.
   if (invitation && invitation.status === 'accepted') return 'accepted';
-  if (applicant && applicant.status === 'ACCEPTED') return 'accepted';
 
   if (!invitation) return 'waiting';
 

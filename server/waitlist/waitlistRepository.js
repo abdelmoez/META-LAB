@@ -201,39 +201,55 @@ const INVITE_SELECT = {
  * never invitable. Capped at `cap` rows so a filter-based select can never fan out
  * unbounded. Returns minimal fields only.
  */
+// Coerce a filter value to a trimmed scalar string, or '' when it is not a
+// primitive. This is a HARD guard: even though the invite path already receives
+// only known keys, coercing to a string means a caller can NEVER smuggle a Prisma
+// operator object (e.g. { in: ['REMOVED'] }) through a filter to defeat the
+// REMOVED exclusion or crash on `.trim()`.
+function scalarStr(v) {
+  if (v == null) return '';
+  if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') return String(v).trim();
+  return '';
+}
+
 export async function applicantsForInvite(client, { ids = null, filters = {} } = {}, cap = 500) {
   const take = Math.min(Math.max(1, cap | 0), 5000);
-  const where = { status: { not: 'REMOVED' } };
+  // The REMOVED exclusion is ALWAYS AND-combined (never overwritten) so no status
+  // filter — including an injected operator object — can resurrect withdrawn people.
+  const and = [{ status: { not: 'REMOVED' } }];
 
   if (Array.isArray(ids)) {
     const clean = [...new Set(ids.filter((x) => typeof x === 'string' && x))].slice(0, take);
     if (!clean.length) return [];
-    where.id = { in: clean };
+    and.push({ id: { in: clean } });
   } else {
-    if (filters.status) where.status = filters.status === 'REMOVED' ? '__never__' : filters.status;
-    if (filters.role) where.role = filters.role;
-    if (filters.countryCode) where.countryCode = String(filters.countryCode).toUpperCase();
-    if (filters.emailStatus) where.confirmationEmailStatus = filters.emailStatus;
-    if (filters.institutionType) where.institutionType = filters.institutionType;
-    if (filters.covidenceLicense) where.covidenceLicense = filters.covidenceLicense;
-    if (filters.primaryField) where.primaryField = filters.primaryField;
+    const status = scalarStr(filters.status);
+    // Any status filter is an equality on a string; 'REMOVED' is impossible because
+    // it contradicts the base NOT:'REMOVED' guard → empty result (can't invite them).
+    if (status) and.push({ status });
+    const role = scalarStr(filters.role); if (role) and.push({ role });
+    const country = scalarStr(filters.countryCode); if (country) and.push({ countryCode: country.toUpperCase() });
+    const emailStatus = scalarStr(filters.emailStatus); if (emailStatus) and.push({ confirmationEmailStatus: emailStatus });
+    const instType = scalarStr(filters.institutionType); if (instType) and.push({ institutionType: instType });
+    const covid = scalarStr(filters.covidenceLicense); if (covid) and.push({ covidenceLicense: covid });
+    const field = scalarStr(filters.primaryField); if (field) and.push({ primaryField: field });
     const dateFilter = {};
-    if (filters.dateFrom) { const d = new Date(filters.dateFrom); if (!Number.isNaN(d.getTime())) dateFilter.gte = d; }
-    if (filters.dateTo) { const d = new Date(filters.dateTo); if (!Number.isNaN(d.getTime())) dateFilter.lte = d; }
-    if (Object.keys(dateFilter).length) where.createdAt = dateFilter;
-    const search = (filters.search || '').trim().slice(0, 200);
+    const df = scalarStr(filters.dateFrom); if (df) { const d = new Date(df); if (!Number.isNaN(d.getTime())) dateFilter.gte = d; }
+    const dt = scalarStr(filters.dateTo); if (dt) { const d = new Date(dt); if (!Number.isNaN(d.getTime())) dateFilter.lte = d; }
+    if (Object.keys(dateFilter).length) and.push({ createdAt: dateFilter });
+    const search = scalarStr(filters.search).slice(0, 200);
     if (search) {
-      where.OR = [
+      and.push({ OR: [
         { email: { contains: search } },
         { firstName: { contains: search } },
         { lastName: { contains: search } },
         { institutionName: { contains: search } },
-      ];
+      ] });
     }
   }
 
   const rows = await client.betaWaitlistApplicant.findMany({
-    where,
+    where: { AND: and },
     select: INVITE_SELECT,
     orderBy: { createdAt: 'desc' },
     take,

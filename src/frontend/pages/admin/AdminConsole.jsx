@@ -8791,6 +8791,7 @@ function WaitlistSection() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkResult, setBulkResult] = useState(null);
   const [rowBusyId, setRowBusyId] = useState(null); // per-row invite in-flight (double-click guard)
+  const [exporting, setExporting] = useState(false); // CSV export in-flight guard
   const [msg, setMsg] = useState(''); // transient success banner (invitations)
   const searchTimer = useRef(null);
   const filtersRef = useRef({});
@@ -8842,9 +8843,10 @@ function WaitlistSection() {
 
   // ── 80.md — invitation selection + bulk ────────────────────────────────────
   const clearSelection = () => { setSelected(new Set()); setSelectAllMatching(false); };
-  // Changing filters invalidates a cross-page selection — clear it to avoid
-  // inviting people who no longer match what the admin is looking at.
-  useEffect(() => { clearSelection(); }, [status, role, countryCode, emailStatus, dateFrom, dateTo]);
+  // Changing ANY filter (incl. the search box) invalidates a cross-page selection —
+  // clear it so "select all matching" can never invite people who no longer match
+  // what the admin is looking at.
+  useEffect(() => { clearSelection(); }, [search, status, role, countryCode, emailStatus, dateFrom, dateTo]);
 
   // A row is selectable unless the person already has an account / accepted.
   const rowSelectable = (r) => r.inviteState !== 'accepted' && !r.existingUser;
@@ -8906,6 +8908,8 @@ function WaitlistSection() {
   };
 
   const doExport = async () => {
+    if (exporting) return; // re-entrancy guard against double-clicks
+    setExporting(true);
     try {
       const url = adminApi.betaWaitlist.exportUrl(filtersRef.current);
       const res = await fetch(url, { credentials: 'include' });
@@ -8918,6 +8922,7 @@ function WaitlistSection() {
       document.body.appendChild(a); a.click(); a.remove();
       URL.revokeObjectURL(href);
     } catch (e) { setErr(`Export failed: ${e.message}`); }
+    finally { setExporting(false); }
   };
 
   const m = data && data.metrics;
@@ -9050,7 +9055,7 @@ function WaitlistSection() {
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: C.muted }}>To<input type="date" aria-label="Submitted on or before" value={dateTo} min={dateFrom || undefined} onChange={(e) => setDateTo(e.target.value)} style={wlInput} /></label>
             <button type="button" onClick={clearFilters} style={wlBtn}>Clear</button>
             <button type="button" onClick={refreshAll} style={wlBtn}><Icon name="refresh" size={13} />Refresh</button>
-            <button type="button" onClick={doExport} disabled={total === 0} style={{ ...wlBtn, opacity: total === 0 ? 0.5 : 1, color: C.acc, borderColor: alpha(C.acc, '50') }}><Icon name="download" size={13} />Export CSV</button>
+            <button type="button" onClick={doExport} disabled={total === 0 || exporting} style={{ ...wlBtn, opacity: (total === 0 || exporting) ? 0.5 : 1, color: C.acc, borderColor: alpha(C.acc, '50') }}><Icon name="download" size={13} />{exporting ? 'Exporting…' : 'Export CSV'}</button>
           </div>
 
           {/* ── Applicants table ──────────────────────────────────────────── */}
@@ -9061,9 +9066,11 @@ function WaitlistSection() {
                   <tr style={{ borderBottom: `1px solid ${C.brd}`, background: C.card2 }}>
                     <th style={{ width: 34, padding: '9px 4px 9px 12px', textAlign: 'center' }}>
                       <input type="checkbox" aria-label="Select all invitable applicants on this page"
-                        checked={allPageSelected} onChange={toggleSelectAllPage}
-                        disabled={selectablePageRows.length === 0}
-                        style={{ accentColor: C.acc, width: 15, height: 15, cursor: selectablePageRows.length === 0 ? 'not-allowed' : 'pointer' }} />
+                        ref={(el) => { if (el) el.indeterminate = !selectAllMatching && !allPageSelected && selectablePageRows.some((r) => selected.has(r.id)); }}
+                        checked={selectAllMatching || allPageSelected} onChange={toggleSelectAllPage}
+                        disabled={selectablePageRows.length === 0 || selectAllMatching}
+                        title={selectAllMatching ? 'All matching applicants are selected — use Clear to change the selection' : undefined}
+                        style={{ accentColor: C.acc, width: 15, height: 15, cursor: (selectablePageRows.length === 0 || selectAllMatching) ? 'not-allowed' : 'pointer' }} />
                     </th>
                     <SortHead col="lastName">Name</SortHead>
                     <SortHead col="email">Email</SortHead>
@@ -9081,7 +9088,7 @@ function WaitlistSection() {
                     <tr><td colSpan={10} style={{ padding: 40, textAlign: 'center' }}><Spinner /></td></tr>
                   ) : rows.length === 0 ? (
                     <tr><td colSpan={10} style={{ padding: '44px 16px', textAlign: 'center', color: C.muted, fontSize: 13.5 }}>
-                      {total === 0 && !search && !status && !role && !countryCode && !emailStatus
+                      {total === 0 && !search && !status && !role && !countryCode && !emailStatus && !dateFrom && !dateTo
                         ? 'No applicants yet. When people join the waitlist, they will appear here.'
                         : 'No applicants match these filters.'}
                     </td></tr>
@@ -9151,7 +9158,11 @@ function WaitlistSection() {
 
       {/* ── Bulk result summary ──────────────────────────────────────────── */}
       {bulkResult && (
-        <div role="dialog" aria-modal="true" aria-label="Bulk invitation results" style={{ position: 'fixed', inset: 0, zIndex: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+        <div role="dialog" aria-modal="true" aria-label="Bulk invitation results"
+          tabIndex={-1}
+          ref={(el) => { if (el) el.focus(); }}
+          onKeyDown={(e) => { if (e.key === 'Escape') setBulkResult(null); }}
+          style={{ position: 'fixed', inset: 0, zIndex: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, outline: 'none' }}>
           <div onClick={() => setBulkResult(null)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)' }} />
           <div style={{ position: 'relative', width: 'min(460px, 100%)', background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 12, padding: '22px 24px', boxShadow: '0 24px 60px rgba(0,0,0,0.35)' }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 4 }}>Invitations processed</div>
@@ -9178,7 +9189,7 @@ function WaitlistSection() {
                       <span style={{ fontSize: 14, fontWeight: 700, fontFamily: MONO, color: l.color }}>{s[l.k]}</span>
                     </div>
                   ))}
-                  {s.truncated > 0 && <div style={{ fontSize: 11.5, color: C.yel }}>Note: {s.truncated} beyond the batch limit were not processed — run the action again to continue.</div>}
+                  {s.hasMore && <div style={{ fontSize: 11.5, color: C.yel }}>More applicants matched than the {s.limit}-per-batch limit. This batch processed {s.processed}; run the action again to continue with the rest.</div>}
                 </div>
               );
             })()}
