@@ -49,7 +49,7 @@ function recordLoginEvent(req, user, success) {
  * so the notification falls back to a generic actor.
  * Best-effort â€” registration must never fail or slow because of this.
  */
-async function claimPendingScreenInvites(user) {
+export async function claimPendingScreenInvites(user) {
   try {
     const pending = await prisma.screenProjectMember.findMany({
       where: { email: user.email, userId: null },
@@ -82,7 +82,7 @@ async function claimPendingScreenInvites(user) {
  * only — never city/coords, never the raw IP (only an optional salted hash).
  * Fully wrapped so geolocation can NEVER block or 500 registration.
  */
-async function captureRegistrationCountry(req, user) {
+export async function captureRegistrationCountry(req, user) {
   try {
     const { code, name, source } = await resolveCountry(req);
     await prisma.user.update({

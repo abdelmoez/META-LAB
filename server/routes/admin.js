@@ -139,6 +139,13 @@ import {
   adminExportApplicants,
 } from '../controllers/waitlistAdminController.js';
 import {
+  adminInviteApplicant,
+  adminResendInvitation,
+  adminRevokeInvitation,
+  adminInvitationHistory,
+  adminBulkInvite,
+} from '../controllers/invitationAdminController.js';
+import {
   getSearchProviders,
   updateSearchProviders,
   requeueJob as requeueSearchJob,
@@ -357,11 +364,19 @@ router.get('/rob/metrics',   requireAdmin, getRobMetrics);
 // export) are declared BEFORE the :id routes so they are never shadowed.
 router.get('/beta-waitlist/metrics',                requireAdmin, adminWaitlistMetrics);
 router.get('/beta-waitlist/export',                 requireAdmin, adminExportApplicants);
+// 80.md — bulk account invitation. Static path declared BEFORE the :id routes.
+router.post('/beta-waitlist/invitations/bulk',      requireAdmin, adminBulkInvite);
 router.get('/beta-waitlist/applicants',             requireAdmin, adminListApplicants);
 router.get('/beta-waitlist/applicants/:id',         requireAdmin, adminGetApplicant);
 router.patch('/beta-waitlist/applicants/:id/status', requireAdmin, adminUpdateStatus);
 router.patch('/beta-waitlist/applicants/:id/notes',  requireAdmin, adminUpdateNotes);
 router.post('/beta-waitlist/applicants/:id/resend',  requireAdmin, adminResendConfirmation);
+// 80.md — account invitation lifecycle (distinct from the confirmation-email
+// resend above). Specific /invite/* paths declared before the generic :id delete.
+router.post('/beta-waitlist/applicants/:id/invite',         requireAdmin, adminInviteApplicant);
+router.post('/beta-waitlist/applicants/:id/invite/resend',  requireAdmin, adminResendInvitation);
+router.post('/beta-waitlist/applicants/:id/invite/revoke',  requireAdmin, adminRevokeInvitation);
+router.get('/beta-waitlist/applicants/:id/invitations',     requireAdmin, adminInvitationHistory);
 router.delete('/beta-waitlist/applicants/:id',       requireAdmin, adminRemoveApplicant);
 
 // ── Engine versions (54.md Part 6) — ADMIN ONLY, internal/operational only ──────

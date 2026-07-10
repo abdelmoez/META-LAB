@@ -26,6 +26,7 @@ const SiftDashboard = lazy(() => import('./frontend/screening/pages/SiftDashboar
 const SiftProject   = lazy(() => import('./frontend/screening/pages/SiftProject.jsx'));
 const SiftImport    = lazy(() => import('./frontend/screening/pages/SiftImport.jsx'));
 const InvitePage    = lazy(() => import('./frontend/pages/InvitePage.jsx'));
+const AcceptInvitationPage = lazy(() => import('./frontend/pages/AcceptInvitationPage.jsx'));
 const ResetPassword = lazy(() => import('./frontend/pages/ResetPassword.jsx'));
 const VerifyEmail   = lazy(() => import('./frontend/pages/VerifyEmail.jsx'));
 const Onboarding    = lazy(() => import('./frontend/pages/Onboarding.jsx'));
@@ -80,7 +81,7 @@ function inviteParam() {
 }
 
 // prompt32 — paths that must never be redirected to /onboarding by the gate.
-const ONBOARDING_GATE_EXEMPT = ['/onboarding', '/invite', '/verify-email', '/terms', '/reset'];
+const ONBOARDING_GATE_EXEMPT = ['/onboarding', '/invite', '/accept-invitation', '/verify-email', '/terms', '/reset'];
 
 /**
  * prompt32 — OnboardingGate wraps protected content and redirects any
@@ -194,6 +195,10 @@ export default function App() {
         {/* Invite landing — deliberately unwrapped: must work signed-in AND
             signed-out (PublicRoute would bounce signed-in invitees to /app) */}
         <Route path="/invite/:token" element={<InvitePage />} />
+
+        {/* 80.md — waitlist → account activation. Unwrapped like /invite + /reset:
+            the emailed link must work signed-out (and not bounce a signed-in visitor). */}
+        <Route path="/accept-invitation" element={<AcceptInvitationPage />} />
 
         {/* Public password reset — unwrapped (must work signed-out AND signed-in).
             /reset = request a link; /reset?token=… = choose a new password. */}

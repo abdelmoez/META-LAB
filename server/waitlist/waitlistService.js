@@ -218,6 +218,24 @@ export async function listApplicants(params) {
   }
 }
 
+// ── Ops: resolve applicants for a bulk invite (80.md) ───────────────────────────
+/**
+ * Resolve the applicants a bulk-invite operation targets — either an explicit
+ * `ids` array or the same filter set as the list view. Fail-safe like every entry
+ * point. Returns minimal fields only (id, email, normalizedEmail, names, status).
+ */
+export async function applicantsForInvite({ ids = null, filters = {} } = {}, cap = 500) {
+  const c = await resolveClient();
+  if (!c.ok) return { ok: false, code: c.code };
+  try {
+    const rows = await repo.applicantsForInvite(c.client, { ids, filters }, cap);
+    return { ok: true, rows };
+  } catch (err) {
+    console.error('[waitlist] applicantsForInvite failed:', errDetail(err));
+    return { ok: false, code: 'db_error' };
+  }
+}
+
 // ── Ops: detail ─────────────────────────────────────────────────────────────────
 export async function getApplicant(id) {
   const c = await resolveClient();

@@ -33,6 +33,7 @@ import adminRouter       from './routes/admin.js';
 import screeningRouter    from './routes/screening.js';
 import notificationsRouter from './routes/notifications.js';
 import invitesRouter      from './routes/invites.js';
+import acceptInvitationRouter from './routes/acceptInvitation.js';
 import eventsRouter       from './routes/events.js';
 import robRouter          from './routes/rob.js';
 import onboardingRouter   from './routes/onboarding.js';
@@ -401,6 +402,12 @@ app.use('/api/notifications',        notificationsRouter);
 // router below: that router applies requireAuth at router level and would 401
 // every unauthenticated /api/* request, killing the pre-auth invite landing.
 app.use('/api/invites', inviteLimiter, invitesRouter);
+
+// ── Public waitlist → account invitation acceptance (80.md) — token landing +
+// password-set/account-create. Own mount, reusing the invite limiter; MUST be
+// BEFORE the bare '/api' importExport router (which applies requireAuth and would
+// 401 the pre-auth acceptance page). The URL token is the only credential.
+app.use('/api/accept-invitation', inviteLimiter, acceptInvitationRouter);
 
 // ── Public Beta Waitlist (prompt48) — unauthenticated submit/resend. Own mount
 // with a dedicated limiter; MUST be BEFORE the bare '/api' importExport router

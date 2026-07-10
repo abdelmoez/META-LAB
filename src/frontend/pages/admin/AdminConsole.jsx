@@ -31,6 +31,7 @@ import { countryNameForCode, COUNTRY_OPTIONS } from '../../../shared/countries.j
 import { describeAuditEvent, describeSecurityEvent, parseDetails, SEVERITY_ORDER } from '../../../shared/auditFormat.js';
 // prompt48 — Beta Waitlist domain constants (shared with the public form + server).
 import { WAITLIST_ROLES, WAITLIST_STATUSES, WAITLIST_STATUS_LABELS, applicantRoleLabel, applicantDisplayName } from '../../../shared/betaWaitlist.js';
+import { INVITE_STATE_LABELS } from '../../../shared/waitlistInvitation.js';
 // 67.md — product-tier model (shared client+server). UNLIMITED (-1) drives the
 // "Unlimited" checkbox in the entitlement editor; tierDisplayName labels rows.
 import { UNLIMITED, tierDisplayName } from '../../../shared/entitlements.js';
@@ -8692,6 +8693,23 @@ function WlEmailBadge({ status }) {
   return <span style={{ display: 'inline-block', fontSize: 11, fontWeight: 700, color, background: WL_EMAIL_BG[status] || C.card2, padding: '2px 8px', borderRadius: 6, fontFamily: MONO }}>{label}</span>;
 }
 
+// 80.md — derived invitation-lifecycle badge (waiting/invited/accepted/expired/
+// revoked/failed). Distinct from the applicant's raw waitlist status (WlBadge).
+const INVITE_STATE_COLOR = { waiting: C.muted, invited: C.purp, accepted: C.grn, expired: C.yel, revoked: C.red, failed: C.red };
+const INVITE_STATE_BG = { waiting: C.card2, invited: C.purpBg, accepted: C.grnBg, expired: C.yelBg, revoked: C.redBg, failed: C.redBg };
+function InviteBadge({ state, existing }) {
+  const s = state || 'waiting';
+  const color = INVITE_STATE_COLOR[s] || C.muted;
+  const bg = INVITE_STATE_BG[s] || C.card2;
+  const label = existing && s === 'accepted' ? 'Existing account' : (INVITE_STATE_LABELS[s] || s);
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, padding: '2px 9px', borderRadius: 999, fontSize: 11, fontWeight: 700, color, background: bg, border: `1px solid ${alpha(color, '40')}`, fontFamily: FONT, whiteSpace: 'nowrap' }}>
+      <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: '50%', background: color }} />
+      {label}
+    </span>
+  );
+}
+
 function WlBars({ title, items, color = C.acc }) {
   if (!items || items.length === 0) return null;
   const max = Math.max(1, ...items.map((i) => i.count));
@@ -8766,6 +8784,14 @@ function WaitlistSection() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
   const [selectedId, setSelectedId] = useState(null);
+  // 80.md — invitation selection + bulk state.
+  const [selected, setSelected] = useState(() => new Set()); // hand-picked applicant ids (persists across pages)
+  const [selectAllMatching, setSelectAllMatching] = useState(false); // "all N matching the filter"
+  const [bulkConfirm, setBulkConfirm] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkResult, setBulkResult] = useState(null);
+  const [rowBusyId, setRowBusyId] = useState(null); // per-row invite in-flight (double-click guard)
+  const [msg, setMsg] = useState(''); // transient success banner (invitations)
   const searchTimer = useRef(null);
   const filtersRef = useRef({});
   // dateTo is widened to end-of-day so the chosen day is inclusive.
@@ -8814,6 +8840,71 @@ function WaitlistSection() {
   };
   const refreshAll = () => { loadMetrics(); loadTable(page); };
 
+  // ── 80.md — invitation selection + bulk ────────────────────────────────────
+  const clearSelection = () => { setSelected(new Set()); setSelectAllMatching(false); };
+  // Changing filters invalidates a cross-page selection — clear it to avoid
+  // inviting people who no longer match what the admin is looking at.
+  useEffect(() => { clearSelection(); }, [status, role, countryCode, emailStatus, dateFrom, dateTo]);
+
+  // A row is selectable unless the person already has an account / accepted.
+  const rowSelectable = (r) => r.inviteState !== 'accepted' && !r.existingUser;
+  const selectablePageRows = rows.filter(rowSelectable);
+  const allPageSelected = selectablePageRows.length > 0 && selectablePageRows.every((r) => selected.has(r.id));
+  const selectionCount = selectAllMatching ? total : selected.size;
+
+  const toggleRow = (r) => {
+    setSelectAllMatching(false);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(r.id)) next.delete(r.id); else next.add(r.id);
+      return next;
+    });
+  };
+  const toggleSelectAllPage = () => {
+    setSelectAllMatching(false);
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allPageSelected) selectablePageRows.forEach((r) => next.delete(r.id));
+      else selectablePageRows.forEach((r) => next.add(r.id));
+      return next;
+    });
+  };
+
+  // Single-row invite / resend (one click, contextual by state).
+  const inviteRow = async (r, e) => {
+    if (e) e.stopPropagation();
+    setRowBusyId(r.id); setErr(''); setMsg('');
+    try {
+      const isResend = r.inviteState === 'invited';
+      const d = isResend ? await adminApi.betaWaitlist.resendInvite(r.id) : await adminApi.betaWaitlist.invite(r.id);
+      const code = d.result?.code;
+      if (code === 'already_registered') setMsg(`${applicantDisplayName(r)} already has an account.`);
+      else if (code === 'email_failed') setErr(`Invitation created but the email to ${r.email} failed — retry from the applicant panel.`);
+      else if (code === 'invited_no_email') setMsg(`Invitation created for ${r.email}, but email is not configured — nothing was sent.`);
+      else setMsg(isResend ? `Invitation re-sent to ${r.email}.` : `Invitation sent to ${r.email}.`);
+      refreshAll();
+    } catch (ex) {
+      setErr(ex.status === 429 ? 'An invitation was sent very recently. Please wait before resending.' : ex.message);
+    } finally { setRowBusyId(null); }
+  };
+
+  const runBulkInvite = async () => {
+    setBulkBusy(true); setErr('');
+    try {
+      const body = selectAllMatching
+        ? { allMatchingFilter: filtersRef.current }
+        : { ids: [...selected] };
+      const d = await adminApi.betaWaitlist.bulkInvite(body);
+      setBulkResult(d);
+      setBulkConfirm(false);
+      clearSelection();
+      refreshAll();
+    } catch (ex) {
+      setErr(ex.status === 413 ? 'Too many recipients selected. Narrow the selection and try again.' : ex.message);
+      setBulkConfirm(false);
+    } finally { setBulkBusy(false); }
+  };
+
   const doExport = async () => {
     try {
       const url = adminApi.betaWaitlist.exportUrl(filtersRef.current);
@@ -8846,6 +8937,29 @@ function WaitlistSection() {
       </div>
 
       {err && <div role="alert" style={{ margin: '0 0 14px', padding: '9px 12px', background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 8, color: C.red, fontSize: 12.5 }}>{err}</div>}
+      {msg && <div style={{ margin: '0 0 14px', padding: '9px 12px', background: C.grnBg, border: `1px solid ${C.grn}`, borderRadius: 8, color: C.grn, fontSize: 12.5, display: 'flex', justifyContent: 'space-between', gap: 10 }}><span>{msg}</span><button type="button" onClick={() => setMsg('')} aria-label="Dismiss" style={{ background: 'none', border: 'none', color: C.grn, cursor: 'pointer', fontWeight: 700 }}>×</button></div>}
+
+      {/* ── 80.md — bulk invitation toolbar (shown only when rows are selected) ── */}
+      {selectionCount > 0 && (
+        <div role="region" aria-label="Bulk invitation actions" style={{ margin: '0 0 12px', padding: '10px 14px', background: C.accBg, border: `1px solid ${alpha(C.acc, '50')}`, borderRadius: 10, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: C.txt }}>
+            {selectionCount} {selectionCount === 1 ? 'person' : 'people'} selected
+          </span>
+          {!selectAllMatching && allPageSelected && total > rows.length && (
+            <button type="button" onClick={() => setSelectAllMatching(true)} style={{ background: 'none', border: 'none', color: C.acc, fontWeight: 600, fontSize: 12.5, cursor: 'pointer', textDecoration: 'underline', padding: 0 }}>
+              Select all {total} matching this filter
+            </button>
+          )}
+          {selectAllMatching && (
+            <span style={{ fontSize: 12, color: C.txt2 }}>All applicants matching the current filter.</span>
+          )}
+          <span style={{ flex: 1 }} />
+          <button type="button" onClick={() => setBulkConfirm(true)} style={{ ...wlBtn, background: C.acc, color: C.accText, borderColor: C.acc, fontWeight: 700 }}>
+            <Icon name="send" size={13} />Send invitations to {selectionCount} selected
+          </button>
+          <button type="button" onClick={clearSelection} style={wlBtn}>Clear</button>
+        </div>
+      )}
 
       {!configured && !loadingM ? (
         <WlConfigNeeded config={data && data.config} diagnostics={data && data.diagnostics} />
@@ -8860,6 +8974,18 @@ function WaitlistSection() {
             <KpiCard label="Confirmation emails sent" value={m ? m.email.sent : null} loading={loadingM} color={C.grn} />
             <KpiCard label="Email failures" value={m ? m.email.failed : null} loading={loadingM} color={m && m.email.failed > 0 ? C.red : C.muted} />
           </div>
+
+          {/* ── Invitation KPIs (80.md) — account-invitation lifecycle ─────── */}
+          {m && m.invitations && (
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginBottom: 16 }}>
+              <KpiCard label="Pending invitations" value={m.invitations.pendingActive} loading={loadingM} color={C.purp} />
+              <KpiCard label="Accepted (activated)" value={m.invitations.accepted} loading={loadingM} color={C.grn} />
+              <KpiCard label="Accepted · 7 days" value={m.invitations.acceptedLast7} loading={loadingM} color={C.grn} />
+              <KpiCard label="Expired invitations" value={m.invitations.expired} loading={loadingM} color={m.invitations.expired > 0 ? C.yel : C.muted} />
+              <KpiCard label="Invitation email failures" value={m.invitations.failedEmail} loading={loadingM} color={m.invitations.failedEmail > 0 ? C.red : C.muted} />
+              <KpiCard label="Revoked" value={m.invitations.revoked} loading={loadingM} color={C.muted} />
+            </div>
+          )}
 
           {hasData && (
             <div style={{ marginBottom: 8 }}>
@@ -8933,22 +9059,28 @@ function WaitlistSection() {
               <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 880 }}>
                 <thead>
                   <tr style={{ borderBottom: `1px solid ${C.brd}`, background: C.card2 }}>
+                    <th style={{ width: 34, padding: '9px 4px 9px 12px', textAlign: 'center' }}>
+                      <input type="checkbox" aria-label="Select all invitable applicants on this page"
+                        checked={allPageSelected} onChange={toggleSelectAllPage}
+                        disabled={selectablePageRows.length === 0}
+                        style={{ accentColor: C.acc, width: 15, height: 15, cursor: selectablePageRows.length === 0 ? 'not-allowed' : 'pointer' }} />
+                    </th>
                     <SortHead col="lastName">Name</SortHead>
                     <SortHead col="email">Email</SortHead>
                     <SortHead col="institutionName">Institution</SortHead>
                     <th style={{ textAlign: 'left', padding: '9px 10px', fontSize: 11, fontWeight: 700, color: C.muted, fontFamily: MONO, letterSpacing: '0.04em', textTransform: 'uppercase' }}>Role</th>
                     <SortHead col="countryName">Country</SortHead>
                     <SortHead col="status">Status</SortHead>
-                    <th style={{ textAlign: 'left', padding: '9px 10px', fontSize: 11, fontWeight: 700, color: C.muted, fontFamily: MONO, letterSpacing: '0.04em', textTransform: 'uppercase' }}>Interests</th>
+                    <th style={{ textAlign: 'left', padding: '9px 10px', fontSize: 11, fontWeight: 700, color: C.muted, fontFamily: MONO, letterSpacing: '0.04em', textTransform: 'uppercase' }}>Invitation</th>
                     <SortHead col="createdAt">Submitted</SortHead>
                     <th style={{ textAlign: 'left', padding: '9px 10px', fontSize: 11, fontWeight: 700, color: C.muted, fontFamily: MONO, letterSpacing: '0.04em', textTransform: 'uppercase' }}>Email</th>
                   </tr>
                 </thead>
                 <tbody>
                   {loadingT ? (
-                    <tr><td colSpan={9} style={{ padding: 40, textAlign: 'center' }}><Spinner /></td></tr>
+                    <tr><td colSpan={10} style={{ padding: 40, textAlign: 'center' }}><Spinner /></td></tr>
                   ) : rows.length === 0 ? (
-                    <tr><td colSpan={9} style={{ padding: '44px 16px', textAlign: 'center', color: C.muted, fontSize: 13.5 }}>
+                    <tr><td colSpan={10} style={{ padding: '44px 16px', textAlign: 'center', color: C.muted, fontSize: 13.5 }}>
                       {total === 0 && !search && !status && !role && !countryCode && !emailStatus
                         ? 'No applicants yet. When people join the waitlist, they will appear here.'
                         : 'No applicants match these filters.'}
@@ -8962,13 +9094,30 @@ function WaitlistSection() {
                       onMouseLeave={(e) => e.currentTarget.style.background = 'transparent'}
                       onFocus={(e) => { e.currentTarget.style.background = C.card2; e.currentTarget.style.outline = `2px solid ${C.acc}`; e.currentTarget.style.outlineOffset = '-2px'; }}
                       onBlur={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.outline = 'none'; }}>
+                      <td style={{ padding: '10px 4px 10px 12px', textAlign: 'center' }} onClick={(e) => e.stopPropagation()}>
+                        <input type="checkbox" aria-label={`Select ${applicantDisplayName(r)}`}
+                          checked={selectAllMatching || selected.has(r.id)} disabled={!rowSelectable(r) || selectAllMatching}
+                          onChange={() => toggleRow(r)}
+                          style={{ accentColor: C.acc, width: 15, height: 15, cursor: (!rowSelectable(r) || selectAllMatching) ? 'not-allowed' : 'pointer' }} />
+                      </td>
                       <td style={{ padding: '10px', fontSize: 13, color: C.txt, fontWeight: 600, whiteSpace: 'nowrap' }}>{applicantDisplayName(r)}</td>
                       <td style={{ padding: '10px', fontSize: 12.5, color: C.txt2, fontFamily: MONO, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.email}>{r.email}</td>
                       <td style={{ padding: '10px', fontSize: 12.5, color: C.txt2, maxWidth: 170, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.institutionName}>{r.institutionName}</td>
                       <td style={{ padding: '10px', fontSize: 12.5, color: C.txt2, whiteSpace: 'nowrap' }}>{applicantRoleLabel(r)}</td>
                       <td style={{ padding: '10px', fontSize: 12.5, color: C.txt2, whiteSpace: 'nowrap' }}>{r.countryName || r.countryCode || '—'}</td>
                       <td style={{ padding: '10px' }}><WlBadge status={r.status} /></td>
-                      <td style={{ padding: '10px', fontSize: 11.5, color: C.muted, maxWidth: 150, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={(r.areasOfInterest || []).join(', ')}>{(r.areasOfInterest || []).length ? `${r.areasOfInterest.length} selected` : '—'}</td>
+                      <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <InviteBadge state={r.inviteState} existing={!!r.existingUser} />
+                          {r.eligibility && (r.eligibility.canInvite || r.eligibility.canResend) && !r.existingUser && (
+                            <button type="button" onClick={(e) => inviteRow(r, e)} disabled={rowBusyId === r.id}
+                              title={r.eligibility.canResend ? 'Resend invitation' : 'Send invitation'}
+                              style={{ ...wlBtn, height: 26, padding: '0 9px', fontSize: 11.5, color: C.acc, borderColor: alpha(C.acc, '50'), opacity: rowBusyId === r.id ? 0.5 : 1 }}>
+                              <Icon name={r.eligibility.canResend ? 'mail' : 'send'} size={12} />{rowBusyId === r.id ? '…' : (r.eligibility.canResend ? 'Resend' : 'Invite')}
+                            </button>
+                          )}
+                        </div>
+                      </td>
                       <td style={{ padding: '10px', fontSize: 12, color: C.txt2, whiteSpace: 'nowrap' }}>{wlFmtDate(r.createdAt)}</td>
                       <td style={{ padding: '10px' }}><WlEmailBadge status={r.confirmationEmailStatus} /></td>
                     </tr>
@@ -8990,6 +9139,54 @@ function WaitlistSection() {
         </>
       )}
 
+      {/* ── Bulk invite confirmation (prevents accidental mass sends) ────── */}
+      <ConfirmModal
+        open={bulkConfirm}
+        title={`Send invitations to ${selectionCount} ${selectionCount === 1 ? 'person' : 'people'}?`}
+        message={`Each eligible person will receive a PecanRev email with a secure link to create their account. People who were already invited will get a fresh link (their previous link stops working). Already-registered or already-accepted people are skipped automatically.${bulkBusy ? ' Sending…' : ''}`}
+        confirmLabel={bulkBusy ? 'Sending…' : `Send ${selectionCount} invitation${selectionCount === 1 ? '' : 's'}`}
+        onConfirm={bulkBusy ? undefined : runBulkInvite}
+        onCancel={() => !bulkBusy && setBulkConfirm(false)}
+      />
+
+      {/* ── Bulk result summary ──────────────────────────────────────────── */}
+      {bulkResult && (
+        <div role="dialog" aria-modal="true" aria-label="Bulk invitation results" style={{ position: 'fixed', inset: 0, zIndex: 600, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16 }}>
+          <div onClick={() => setBulkResult(null)} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.45)' }} />
+          <div style={{ position: 'relative', width: 'min(460px, 100%)', background: C.surf, border: `1px solid ${C.brd}`, borderRadius: 12, padding: '22px 24px', boxShadow: '0 24px 60px rgba(0,0,0,0.35)' }}>
+            <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 4 }}>Invitations processed</div>
+            <div style={{ fontSize: 12.5, color: C.muted, marginBottom: 16 }}>Batch {bulkResult.batchId}</div>
+            {(() => {
+              const s = bulkResult.summary || {};
+              const lines = [
+                { k: 'invited', label: 'Invited', color: C.grn },
+                { k: 'resent', label: 'Re-invited (fresh link)', color: C.grn },
+                { k: 'invited_no_email', label: 'Created (email not configured)', color: C.yel },
+                { k: 'email_failed', label: 'Email failed — retry', color: C.red },
+                { k: 'already_registered', label: 'Already has an account', color: C.muted },
+                { k: 'already_accepted', label: 'Already accepted', color: C.muted },
+                { k: 'skipped', label: 'Skipped', color: C.muted },
+                { k: 'cooldown', label: 'Skipped (sent recently)', color: C.muted },
+                { k: 'error', label: 'Errors', color: C.red },
+              ].filter((l) => (s[l.k] || 0) > 0);
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
+                  {lines.length === 0 && <div style={{ fontSize: 13, color: C.muted }}>No changes were made.</div>}
+                  {lines.map((l) => (
+                    <div key={l.k} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 11px', background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8 }}>
+                      <span style={{ fontSize: 13, color: C.txt2 }}>{l.label}</span>
+                      <span style={{ fontSize: 14, fontWeight: 700, fontFamily: MONO, color: l.color }}>{s[l.k]}</span>
+                    </div>
+                  ))}
+                  {s.truncated > 0 && <div style={{ fontSize: 11.5, color: C.yel }}>Note: {s.truncated} beyond the batch limit were not processed — run the action again to continue.</div>}
+                </div>
+              );
+            })()}
+            <button type="button" onClick={() => setBulkResult(null)} style={{ ...wlBtn, width: '100%', justifyContent: 'center', background: C.acc, color: C.accText, borderColor: C.acc }}>Done</button>
+          </div>
+        </div>
+      )}
+
       {selectedId && <WaitlistDrawer id={selectedId} onClose={() => setSelectedId(null)} onChanged={refreshAll} />}
     </div>
   );
@@ -9007,13 +9204,17 @@ function WaitlistDrawer({ id, onClose, onChanged }) {
   const [resending, setResending] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [msg, setMsg] = useState('');
+  // 80.md — invitation state
+  const [invitations, setInvitations] = useState([]);
+  const [invBusy, setInvBusy] = useState(false);
+  const [confirmRevoke, setConfirmRevoke] = useState(false);
   const panelRef = useRef(null);
   const prevFocusRef = useRef(null);
 
   const load = useCallback(() => {
     setLoading(true);
     adminApi.betaWaitlist.get(id)
-      .then((d) => { setApplicant(d.applicant); setStatusVal(d.applicant.status); setNotes(d.applicant.internalNotes || ''); })
+      .then((d) => { setApplicant(d.applicant); setStatusVal(d.applicant.status); setNotes(d.applicant.internalNotes || ''); setInvitations(d.invitations || []); })
       .catch((e) => setErr(e.message))
       .finally(() => setLoading(false));
   }, [id]);
@@ -9077,6 +9278,30 @@ function WaitlistDrawer({ id, onClose, onChanged }) {
   const remove = async () => {
     try { await adminApi.betaWaitlist.remove(id); onChanged(); onClose(); }
     catch (e) { setErr(e.message); }
+  };
+
+  // ── 80.md — invitation actions ─────────────────────────────────────────────
+  const runInviteAction = async (fn, okMsg) => {
+    setInvBusy(true); setMsg(''); setErr('');
+    try {
+      const d = await fn();
+      const code = d?.result?.code;
+      if (code === 'already_registered') setMsg('This person already has an account.');
+      else if (code === 'email_failed') setErr('Invitation created, but the email failed to send. You can retry.');
+      else if (code === 'invited_no_email') setMsg('Invitation created, but email is not configured — nothing was sent.');
+      else setMsg(okMsg);
+      onChanged(); load();
+    } catch (e) {
+      setErr(e.status === 429 ? 'An invitation was sent very recently. Please wait before resending.' : e.message);
+    } finally { setInvBusy(false); }
+  };
+  const doInvite = () => runInviteAction(() => adminApi.betaWaitlist.invite(id), 'Invitation sent.');
+  const doResend = () => runInviteAction(() => adminApi.betaWaitlist.resendInvite(id), 'Invitation re-sent.');
+  const doRevoke = async () => {
+    setInvBusy(true); setMsg(''); setErr('');
+    try { await adminApi.betaWaitlist.revokeInvite(id); setMsg('Invitation revoked.'); setConfirmRevoke(false); onChanged(); load(); }
+    catch (e) { setErr(e.message); }
+    finally { setInvBusy(false); }
   };
 
   const Row = ({ label, children }) => (children == null || children === '' || (Array.isArray(children) && !children.length)) ? null : (
@@ -9144,6 +9369,72 @@ function WaitlistDrawer({ id, onClose, onChanged }) {
                   </div>
                 </div>
               )}
+
+              {/* ── 80.md — Account invitation ──────────────────────────────── */}
+              <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${C.brd}` }}>
+                <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 10 }}>Account invitation</div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+                  <InviteBadge state={applicant.inviteState} existing={!!applicant.existingUser} />
+                  {applicant.existingUser && (
+                    <span style={{ fontSize: 12, color: C.txt2 }}>
+                      Already registered{applicant.existingUser.userNumber ? ` · user #${applicant.existingUser.userNumber}` : ''}{applicant.existingUser.suspended ? ' · suspended' : ''}
+                    </span>
+                  )}
+                </div>
+
+                {applicant.invitation && (
+                  <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '10px 12px', marginBottom: 12, fontSize: 12.5, color: C.txt2, lineHeight: 1.7 }}>
+                    <div>Current link: <strong style={{ color: C.txt }}>{INVITE_STATE_LABELS[applicant.invitation.expired ? 'expired' : (applicant.invitation.status === 'pending' ? 'invited' : applicant.invitation.status)] || applicant.invitation.status}</strong> · attempt {applicant.invitation.attempt}</div>
+                    <div>Email: <WlEmailBadge status={applicant.invitation.emailStatus} /> {applicant.invitation.emailSentAt ? `· sent ${wlFmtDateTime(applicant.invitation.emailSentAt)}` : ''}</div>
+                    {applicant.invitation.lastEmailError && <div style={{ color: C.red }}>Last email error: {applicant.invitation.lastEmailError}</div>}
+                    <div>Expires: {wlFmtDateTime(applicant.invitation.expiresAt)}</div>
+                    {applicant.invitation.acceptedAt && <div style={{ color: C.grn }}>Accepted {wlFmtDateTime(applicant.invitation.acceptedAt)}</div>}
+                    {applicant.invitation.revokedAt && <div>Revoked {wlFmtDateTime(applicant.invitation.revokedAt)}</div>}
+                  </div>
+                )}
+
+                {!applicant.existingUser && applicant.inviteState !== 'accepted' && (
+                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+                    {applicant.eligibility?.canInvite && (
+                      <button type="button" onClick={doInvite} disabled={invBusy} style={{ ...wlBtn, background: C.acc, color: C.accText, borderColor: C.acc, fontWeight: 700, opacity: invBusy ? 0.6 : 1 }}>
+                        <Icon name="send" size={13} />{invBusy ? 'Sending…' : (applicant.inviteState === 'revoked' ? 'Re-invite' : 'Send invitation')}
+                      </button>
+                    )}
+                    {applicant.eligibility?.canResend && (
+                      <button type="button" onClick={doResend} disabled={invBusy} style={{ ...wlBtn, color: C.acc, borderColor: alpha(C.acc, '50'), opacity: invBusy ? 0.6 : 1 }}>
+                        <Icon name="mail" size={13} />{invBusy ? 'Sending…' : 'Resend invitation'}
+                      </button>
+                    )}
+                    {applicant.eligibility?.canRevoke && (
+                      !confirmRevoke ? (
+                        <button type="button" onClick={() => setConfirmRevoke(true)} disabled={invBusy} style={{ ...wlBtn, color: C.red, borderColor: alpha(C.red, '50') }}><Icon name="x" size={13} />Revoke</button>
+                      ) : (
+                        <span style={{ display: 'inline-flex', gap: 6, alignItems: 'center' }}>
+                          <span style={{ fontSize: 12, color: C.red, fontWeight: 600 }}>Revoke the active link?</span>
+                          <button type="button" onClick={doRevoke} disabled={invBusy} style={{ ...wlBtn, background: C.red, color: '#fff', borderColor: C.red }}>Yes, revoke</button>
+                          <button type="button" onClick={() => setConfirmRevoke(false)} style={wlBtn}>Cancel</button>
+                        </span>
+                      )
+                    )}
+                  </div>
+                )}
+
+                {/* Invitation history */}
+                {invitations.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 8 }}>Invitation history</div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                      {invitations.map((iv) => (
+                        <div key={iv.id} style={{ fontSize: 12, color: C.txt2, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                          <span style={{ fontFamily: MONO, color: C.muted, fontSize: 11 }}>{wlFmtDateTime(iv.createdAt)}</span>
+                          <span>attempt {iv.attempt} · <strong>{INVITE_STATE_LABELS[iv.effectiveStatus === 'pending' ? 'invited' : iv.effectiveStatus] || iv.effectiveStatus}</strong> · email {iv.emailStatus}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {/* Admin actions */}
               <div style={{ marginTop: 20, paddingTop: 16, borderTop: `1px solid ${C.brd}` }}>

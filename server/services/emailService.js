@@ -498,3 +498,86 @@ export function renderInviteEmail({
 
   return { html, text };
 }
+
+/**
+ * renderWaitlistInvitationEmail — 80.md Phase 7. The professional PecanRev email
+ * sent when an admin converts a WAITLIST entry into an account invitation. This is
+ * distinct from renderInviteEmail (a PROJECT-membership invite for an existing
+ * account) and from renderBetaWaitlistConfirmationEmail (a non-account waitlist
+ * receipt): here the CTA creates the person's PASSWORD and activates a real
+ * account. The link carries the single-use invitation token; every interpolated
+ * value is escaped. Returns HTML + plain text (both, per Phase 7).
+ *
+ * @param {{appName?:string, toName?:string, link:string,
+ *          expiresAt?:Date|string|null, supportEmail?:string}} opts
+ * @returns {{html:string, text:string}}
+ */
+export function renderWaitlistInvitationEmail({
+  appName = 'PecanRev',
+  toName = '',
+  link = '',
+  expiresAt = null,
+  supportEmail = '',
+} = {}) {
+  const greeting = toName ? `Hi ${escapeHtml(toName)},` : 'Hello,';
+  const appBase = env('APP_BASE_URL');
+  const supportHtml = supportEmail
+    ? `<a href="mailto:${escapeHtml(supportEmail)}" style="color:#6366f1;text-decoration:none;">${escapeHtml(supportEmail)}</a>`
+    : (appBase
+      ? `<a href="${escapeHtml(appBase)}" style="color:#6366f1;text-decoration:none;">${escapeHtml(appBase)}</a>`
+      : escapeHtml(appName));
+
+  let expiryText = '';
+  if (expiresAt) {
+    const d = expiresAt instanceof Date ? expiresAt : new Date(expiresAt);
+    if (!Number.isNaN(d.getTime())) {
+      expiryText = d.toLocaleString('en-GB', {
+        day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit',
+      });
+    }
+  }
+  const expiryHtml = expiryText
+    ? `<div style="font-size:12px;color:#6b7280;margin-top:18px;">This invitation link expires on ${escapeHtml(expiryText)}. After that, ask the ${escapeHtml(appName)} team for a new one.</div>`
+    : '';
+
+  const bodyHtml = `          <div style="font-size:17px;font-weight:700;color:#111827;margin-bottom:14px;">You're invited to ${escapeHtml(appName)}</div>
+          <div style="font-size:14px;color:#1f2937;line-height:1.6;margin-bottom:8px;">${greeting}</div>
+          <div style="font-size:14px;color:#1f2937;line-height:1.7;margin-bottom:22px;">
+            A spot has opened up on the ${escapeHtml(appName)} beta and we'd love to have you. You joined the
+            waitlist &mdash; now you can create your account. Click below to set your password and activate access
+            to search building, screening, data extraction, risk-of-bias assessment, and meta-analysis, all in one place.
+          </div>
+          ${ctaButton(link, 'Create your password')}
+          <div style="font-size:12px;color:#6b7280;margin-top:22px;line-height:1.6;">
+            If the button doesn&#39;t work, copy and paste this link into your browser:<br>
+            <a href="${escapeHtml(link)}" style="color:#6366f1;text-decoration:none;word-break:break-all;">${escapeHtml(link)}</a>
+          </div>
+          ${expiryHtml}
+          <div style="font-size:12px;color:#9ca3af;margin-top:18px;line-height:1.6;">
+            This link is personal to you &mdash; please don&#39;t share it. If you didn&#39;t join the ${escapeHtml(appName)}
+            waitlist or weren&#39;t expecting this, you can safely ignore this email, and feel free to reach us at ${supportHtml}.
+          </div>`;
+
+  const html = renderBaseEmailLayout({ appName, bodyHtml });
+
+  const textParts = [
+    `You're invited to ${appName}`,
+    '',
+    toName ? `Hi ${toName},` : 'Hello,',
+    '',
+    `A spot has opened up on the ${appName} beta and we'd love to have you. You joined the waitlist — now you can create your account. Open the link below to set your password and activate access to search building, screening, data extraction, risk-of-bias assessment, and meta-analysis, all in one place.`,
+    '',
+    `Create your password: ${link}`,
+  ];
+  if (expiryText) textParts.push('', `This invitation link expires on ${expiryText}. After that, ask the ${appName} team for a new one.`);
+  textParts.push(
+    '',
+    `This link is personal to you — please don't share it. If you didn't join the ${appName} waitlist or weren't expecting this, you can safely ignore this email${supportEmail ? `, or contact us at ${supportEmail}` : ''}.`,
+    '',
+    '—',
+    `Sent by the ${appName} team`,
+  );
+  if (appBase) textParts.push(appBase);
+
+  return { html, text: textParts.join('\n') };
+}

@@ -2405,3 +2405,75 @@ model TierSubscription {
   @@unique([userId])
   @@index([userId])
 }
+
+// 80.md — WAITLIST → USER ACCOUNT INVITATION. Lives in the MAIN application DB
+// (alongside PasswordResetToken + the inline email-verification token on User),
+// NOT in the strictly-separate Beta Waitlist DB. Rationale: acceptance CREATES a
+// real User in this database, so the security-critical accept path (burn token →
+// create user → assign tier → mark accepted) is a single-DB transaction, and the
+// invitation token belongs with the other auth tokens that follow the same
+// SHA-256-hash-only, single-use, time-limited ceremony.
+//
+// Cross-database linkage is by an OPAQUE string, never a foreign key — this is the
+// SAME isolation contract as BetaWaitlistStatusEvent.changedBy (an opaque main-DB
+// userId held in the waitlist DB). Here `waitlistApplicantId` is the opaque
+// waitlist-DB applicant uuid, and `normalizedEmail` is the durable join key. No
+// Prisma relation crosses the boundary in either direction.
+//
+// Token/lifecycle model (mirrors PasswordResetToken):
+//   - The raw token is 32-byte CSPRNG hex; only its SHA-256 hash is stored here.
+//   - status: pending (live) → accepted | revoked | superseded. EXPIRED is derived
+//     dynamically from expiresAt at validation time (never trusted from a stored
+//     flag), so security never depends on a cleanup job (80.md Phase 11).
+//   - Issuing a new invitation for an email marks that email's prior `pending`
+//     rows `superseded` (one live link at a time — mirrors createResetToken).
+//   - acceptedUserId links the accepted invitation to the created/existing User.
+// Indexes are plain @@index (NOT @unique) so `prisma db push` stays additive-safe
+// on the VPS without --accept-data-loss (same reasoning as PasswordResetToken.tokenHash
+// and User.userNumber); uniqueness of a live link is guaranteed by construction
+// (256-bit random token + single-use burn), not by a DB constraint.
+model WaitlistInvitation {
+  id                  String    @id @default(uuid())
+  // Opaque uuid of the applicant in the SEPARATE Beta Waitlist DB (no FK).
+  waitlistApplicantId String
+  email               String // as-typed display address (copied from the applicant)
+  normalizedEmail     String // trimmed + lowercased — the durable cross-DB join key
+  name                String?
+
+  tokenHash           String // SHA-256 hex of the single-use raw token; plaintext NEVER stored
+  status              String    @default("pending") // pending | accepted | revoked | superseded
+  expiresAt           DateTime // now + WAITLIST_INVITE_TTL_MINUTES; expiry is derived from this
+  attempt             Int       @default(1) // this invitation's attempt number for the applicant
+
+  // Acceptance outcome
+  acceptedAt          DateTime?
+  acceptedUserId      String? // main-DB User.id created or linked at acceptance
+
+  // Revocation (admin)
+  revokedAt           DateTime?
+  revokedByUserId     String?
+
+  // Tier to grant at acceptance (resolved default when null). Recorded for audit
+  // + future admin-selected tiers (80.md Phase 14). Never hard-coded downstream.
+  tierId              String?
+
+  // Email-delivery tracking for THIS invitation attempt (never conflated with the
+  // waitlist confirmation email). lastEmailError is a SAFE short reason only.
+  emailStatus         String    @default("pending") // pending | sent | failed | skipped
+  emailSentAt         DateTime?
+  lastEmailError      String?
+
+  invitedByUserId     String // admin User.id who issued this invitation
+  batchId             String? // groups a single bulk-invite operation for audit
+  ip                  String    @default("")
+  createdAt           DateTime  @default(now())
+  updatedAt           DateTime  @updatedAt
+
+  @@index([tokenHash])
+  @@index([normalizedEmail])
+  @@index([status])
+  @@index([expiresAt])
+  @@index([waitlistApplicantId])
+  @@index([acceptedUserId])
+  @@index([batchId])
+}

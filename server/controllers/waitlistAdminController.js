@@ -10,7 +10,35 @@
  */
 
 import * as waitlist from '../waitlist/waitlistService.js';
+import * as invitationService from '../services/invitationService.js';
+import { normalizeEmail } from '../../src/shared/betaWaitlist.js';
 import { logAdminAction } from '../utils/audit.js';
+
+/**
+ * 80.md — enrich a set of waitlist rows with their MAIN-db invitation state
+ * (derived lifecycle + eligibility + latest invitation view + existing user) in
+ * TWO batched queries. Read-only cross-DB join; a failure degrades gracefully to
+ * unenriched rows (the waitlist tab must never blank because the main-db lookup
+ * hiccupped).
+ */
+async function enrichRows(rows) {
+  if (!Array.isArray(rows) || !rows.length) return rows;
+  try {
+    const emails = rows.map((r) => normalizeEmail(r.email));
+    const [invMap, userMap] = await Promise.all([
+      invitationService.latestInvitationsForEmails(emails),
+      invitationService.existingUsersForEmails(emails),
+    ]);
+    const now = Date.now();
+    return rows.map((r) => {
+      const ne = normalizeEmail(r.email);
+      return { ...r, ...invitationService.enrichApplicant(r, invMap.get(ne) || null, userMap.get(ne) || null, now) };
+    });
+  } catch (err) {
+    console.error('[waitlist-admin] enrich failed:', err?.message || err);
+    return rows;
+  }
+}
 
 const UNAVAILABLE = { error: 'The Beta Waitlist database is not configured or unavailable.', code: 'unavailable' };
 
@@ -31,7 +59,13 @@ export async function adminWaitlistMetrics(req, res) {
       if (isUnavailable(result.code)) return res.json({ configured: false, config, metrics: null, diagnostics });
       return res.status(500).json({ error: 'Internal server error', diagnostics });
     }
-    return res.json({ configured: true, config, metrics: result.metrics, diagnostics });
+    // 80.md — invitation KPIs come from the MAIN db (WaitlistInvitation), separate
+    // from the waitlist-DB applicant metrics. Best-effort: on failure omit them
+    // rather than 500 the whole panel.
+    let invitations = null;
+    try { invitations = await invitationService.invitationMetrics(); }
+    catch (e) { console.error('[waitlist-admin] invitation metrics failed:', e?.message || e); }
+    return res.json({ configured: true, config, metrics: { ...result.metrics, invitations }, diagnostics });
   } catch (err) {
     console.error('[waitlist-admin] metrics error:', err?.message || err);
     return res.status(500).json({ error: 'Internal server error' });
@@ -63,7 +97,8 @@ export async function adminListApplicants(req, res) {
       }
       return res.status(500).json({ error: 'Internal server error' });
     }
-    return res.json({ configured: true, rows: result.rows, total: result.total, page: result.page, limit: result.limit, pages: result.pages });
+    const rows = await enrichRows(result.rows);
+    return res.json({ configured: true, rows, total: result.total, page: result.page, limit: result.limit, pages: result.pages });
   } catch (err) {
     console.error('[waitlist-admin] list error:', err?.message || err);
     return res.status(500).json({ error: 'Internal server error' });
@@ -79,7 +114,13 @@ export async function adminGetApplicant(req, res) {
       if (result.code === 'not_found') return res.status(404).json({ error: 'Applicant not found' });
       return res.status(500).json({ error: 'Internal server error' });
     }
-    return res.json({ applicant: result.applicant });
+    // Enrich the detail record + attach the full invitation history for the drawer.
+    const [enriched] = await enrichRows([result.applicant]);
+    let invitations = [];
+    try {
+      invitations = await invitationService.invitationHistoryForApplicant(result.applicant.id, result.applicant.normalizedEmail || result.applicant.email);
+    } catch (e) { console.error('[waitlist-admin] history in detail failed:', e?.message || e); }
+    return res.json({ applicant: enriched || result.applicant, invitations });
   } catch (err) {
     console.error('[waitlist-admin] detail error:', err?.message || err);
     return res.status(500).json({ error: 'Internal server error' });

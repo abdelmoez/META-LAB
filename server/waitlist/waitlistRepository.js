@@ -184,6 +184,63 @@ export async function getApplicantById(client, id) {
   return row ? parseApplicant(row) : null;
 }
 
+// Minimal fields needed to mint an invitation (80.md bulk invite). No free-text PII.
+const INVITE_SELECT = {
+  id: true,
+  email: true,
+  normalizedEmail: true,
+  firstName: true,
+  lastName: true,
+  status: true,
+};
+
+/**
+ * Resolve applicants for a bulk-invite operation (80.md Phase 6). Either an
+ * explicit `ids` array OR the same filter set as listApplicants (for "invite all
+ * matching the current filter"). REMOVED applicants are always excluded — they are
+ * never invitable. Capped at `cap` rows so a filter-based select can never fan out
+ * unbounded. Returns minimal fields only.
+ */
+export async function applicantsForInvite(client, { ids = null, filters = {} } = {}, cap = 500) {
+  const take = Math.min(Math.max(1, cap | 0), 5000);
+  const where = { status: { not: 'REMOVED' } };
+
+  if (Array.isArray(ids)) {
+    const clean = [...new Set(ids.filter((x) => typeof x === 'string' && x))].slice(0, take);
+    if (!clean.length) return [];
+    where.id = { in: clean };
+  } else {
+    if (filters.status) where.status = filters.status === 'REMOVED' ? '__never__' : filters.status;
+    if (filters.role) where.role = filters.role;
+    if (filters.countryCode) where.countryCode = String(filters.countryCode).toUpperCase();
+    if (filters.emailStatus) where.confirmationEmailStatus = filters.emailStatus;
+    if (filters.institutionType) where.institutionType = filters.institutionType;
+    if (filters.covidenceLicense) where.covidenceLicense = filters.covidenceLicense;
+    if (filters.primaryField) where.primaryField = filters.primaryField;
+    const dateFilter = {};
+    if (filters.dateFrom) { const d = new Date(filters.dateFrom); if (!Number.isNaN(d.getTime())) dateFilter.gte = d; }
+    if (filters.dateTo) { const d = new Date(filters.dateTo); if (!Number.isNaN(d.getTime())) dateFilter.lte = d; }
+    if (Object.keys(dateFilter).length) where.createdAt = dateFilter;
+    const search = (filters.search || '').trim().slice(0, 200);
+    if (search) {
+      where.OR = [
+        { email: { contains: search } },
+        { firstName: { contains: search } },
+        { lastName: { contains: search } },
+        { institutionName: { contains: search } },
+      ];
+    }
+  }
+
+  const rows = await client.betaWaitlistApplicant.findMany({
+    where,
+    select: INVITE_SELECT,
+    orderBy: { createdAt: 'desc' },
+    take,
+  });
+  return rows;
+}
+
 /** Minimal fields for metrics aggregation (no PII free-text). */
 export async function allForMetrics(client) {
   const rows = await client.betaWaitlistApplicant.findMany({

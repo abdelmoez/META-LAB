@@ -449,6 +449,19 @@ export const api = {
     resetPassword: (token, password) =>
       req(`${BASE}/auth/reset-password`, { method: "POST", ...json({ token, password }) }),
   },
+
+  // 80.md — public waitlist → account invitation acceptance. get() validates the
+  // token (throws with err.body.code ∈ invalid|expired|revoked|accepted|superseded
+  // on a non-2xx); accept() sets the password + creates the account and returns
+  // { ok, user } after auto-sign-in (throws with err.body.code on failure).
+  invitations: {
+    get: (token) => req(`${BASE}/accept-invitation/${encodeURIComponent(token)}`),
+    accept: (token, { password, name, acceptedTerms } = {}) =>
+      req(`${BASE}/accept-invitation/${encodeURIComponent(token)}/accept`, {
+        method: "POST",
+        ...json({ password, name, acceptedTerms }),
+      }),
+  },
 };
 
 export default api;

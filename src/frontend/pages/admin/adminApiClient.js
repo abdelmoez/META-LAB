@@ -315,6 +315,16 @@ export const adminApi = {
     resend:    (id, force)     => req(`${BASE}/beta-waitlist/applicants/${id}/resend`, { method: 'POST', ...json({ force: !!force }) }),
     remove:    (id)            => req(`${BASE}/beta-waitlist/applicants/${id}`, { method: 'DELETE' }),
     exportUrl: (p)             => `${BASE}/beta-waitlist/export${qs(p)}`,
+    // 80.md — account invitation lifecycle. invite/resendInvite/revokeInvite return
+    // { result } (result.code ∈ invited|invited_no_email|email_failed|already_registered|
+    //   cooldown); bulkInvite returns { batchId, summary, results }; invitations(id)
+    //   returns { invitations:[…safe views…] }.
+    invite:        (id, tierId) => req(`${BASE}/beta-waitlist/applicants/${id}/invite`, { method: 'POST', ...json(tierId ? { tierId } : {}) }),
+    resendInvite:  (id)         => req(`${BASE}/beta-waitlist/applicants/${id}/invite/resend`, { method: 'POST', ...json({}) }),
+    revokeInvite:  (id)         => req(`${BASE}/beta-waitlist/applicants/${id}/invite/revoke`, { method: 'POST', ...json({}) }),
+    invitations:   (id)         => req(`${BASE}/beta-waitlist/applicants/${id}/invitations`),
+    // body = { ids:[…] } OR { allMatchingFilter:{…filters} }, optional tierId.
+    bulkInvite:    (body)       => req(`${BASE}/beta-waitlist/invitations/bulk`, { method: 'POST', ...json(body) }),
   },
 
   // 54.md Part 6 — engine versions (admin-only, read-only).

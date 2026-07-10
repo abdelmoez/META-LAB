@@ -51,6 +51,11 @@ function isExempt(path) {
     path.startsWith('/api/auth') ||
     path.startsWith('/api/admin') ||
     path.startsWith('/api/events') ||
+    // 80.md — a waitlist invitee following an emailed account-creation link is an
+    // EXTERNAL flow whose availability must not hinge on maintenance state (an
+    // admin may enable maintenance precisely while onboarding a batch of invitees).
+    // The token is the only credential; it stays reachable during maintenance.
+    path.startsWith('/api/accept-invitation') ||
     // 68.md P8 — a published public synthesis is an EXTERNAL, shareable artifact
     // (embedded on third-party sites, opened by anonymous readers). Its availability
     // must not hinge on this app's internal maintenance state, so the public read
