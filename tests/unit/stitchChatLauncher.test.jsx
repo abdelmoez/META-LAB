@@ -1,12 +1,17 @@
 /**
- * stitchChatLauncher.test.jsx — the Stitch header chat launcher.
+ * stitchChatLauncher.test.jsx — the Stitch header chat launcher (81.md model).
  *
- * Two layers, both DOM-free (this repo's vitest runs in node; the existing Stitch
- * suite uses renderToStaticMarkup):
- *   1. deriveChatLauncherState — the pure enabled/greyed decision (the heart of the
- *      feature: "greyed + unclickable when restricted by a leader or owner").
- *   2. An SSR render smoke for the no-project state: greyed, aria-disabled, the
- *      accessible name explains why, and NO chat drawer/composer is mounted.
+ * READ-ONLY model: reading is never restricted, so any linked member's icon is
+ * ENABLED (opens the drawer to read). "Restrict chat" and a per-member mute remove
+ * POSTING only — surfaced as `readOnly`/`canPost` on an ENABLED launcher (composer +
+ * server enforce), NOT by greying the icon. The icon greys ONLY when there is nothing
+ * to open (no project / probing / probe error / no linked workspace).
+ *
+ * Two layers, both DOM-free (this repo's vitest runs in node; the Stitch suite uses
+ * renderToStaticMarkup):
+ *   1. deriveChatLauncherState — the pure enabled/greyed + read-only decision, now
+ *      driven by the shared chatPolicy gate (the SAME rule the server enforces).
+ *   2. An SSR render smoke for the no-project state.
  */
 import { describe, it, expect } from 'vitest';
 import { createElement as h } from 'react';
@@ -14,10 +19,10 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import StitchChatLauncher, { deriveChatLauncherState } from '../../src/frontend/components/chat/StitchChatLauncher.jsx';
 
 const state = (over) => deriveChatLauncherState({
-  projectId: 'mlp_1', status: 'linked', canChat: false, isLeader: false, projectName: 'Aspirin SR', ...over,
+  projectId: 'mlp_1', status: 'linked', canChat: false, isLeader: false, chatRestricted: false, projectName: 'Aspirin SR', ...over,
 });
 
-describe('deriveChatLauncherState — enabled vs greyed decision', () => {
+describe('deriveChatLauncherState — enabled/greyed + read-only decision (81.md)', () => {
   it('no project in context → greyed, "Open a project to use chat"', () => {
     const s = state({ projectId: null, status: 'idle' });
     expect(s.enabled).toBe(false);
@@ -31,29 +36,38 @@ describe('deriveChatLauncherState — enabled vs greyed decision', () => {
     expect(s.disabledReason).toBe('Link a Screening project to enable chat');
   });
 
-  it('restricted: project-wide chatRestricted with no canChat and not a leader → greyed', () => {
-    const s = state({ status: 'linked', canChat: false, isLeader: false });
-    expect(s.enabled).toBe(false);
-    expect(s.disabledReason).toBe('Chat is restricted by a project owner or leader');
-  });
-
-  it('restricted: a member whose canChat was turned off by a leader → greyed', () => {
-    // Same gate — canChat=false, not a leader — regardless of the project flag.
-    const s = state({ status: 'linked', canChat: false, isLeader: false });
-    expect(s.mayParticipate).toBe(false);
-    expect(s.enabled).toBe(false);
-  });
-
-  it('may participate: a member WITH canChat → active, drawer-eligible', () => {
+  it('open chat, member WITH canChat → ENABLED, writable (canPost)', () => {
     const s = state({ status: 'linked', canChat: true, isLeader: false });
     expect(s.enabled).toBe(true);
+    expect(s.canPost).toBe(true);
+    expect(s.readOnly).toBe(false);
     expect(s.tipLabel).toBe('Chat — Aspirin SR');
   });
 
-  it('leader override: isLeader posts even when canChat is false (matches canWriteChat)', () => {
-    const s = state({ status: 'linked', canChat: false, isLeader: true });
-    expect(s.mayParticipate).toBe(true);
+  it('project-wide "Restrict chat" ON + member has canChat, not a leader → ENABLED but READ-ONLY (was the untested gap)', () => {
+    // The exact reported case: chatRestricted flips a canChat member to read-only.
+    const s = state({ status: 'linked', canChat: true, isLeader: false, chatRestricted: true });
+    expect(s.enabled).toBe(true);          // reading is never restricted — icon opens
+    expect(s.canPost).toBe(false);         // …but posting is blocked (matches server canWriteChat)
+    expect(s.readOnly).toBe(true);
+    expect(s.blockReason).toBe('restricted');
+    expect(s.tipLabel).toBe('Chat — Aspirin SR · read-only');
+  });
+
+  it('per-member mute (canChat=false, not a leader) → ENABLED but READ-ONLY, reason "muted"', () => {
+    const s = state({ status: 'linked', canChat: false, isLeader: false });
     expect(s.enabled).toBe(true);
+    expect(s.canPost).toBe(false);
+    expect(s.readOnly).toBe(true);
+    expect(s.blockReason).toBe('muted');
+  });
+
+  it('leader override: isLeader posts even when canChat=false AND chatRestricted=true (matches canWriteChat)', () => {
+    const s = state({ status: 'linked', canChat: false, isLeader: true, chatRestricted: true });
+    expect(s.canPost).toBe(true);
+    expect(s.enabled).toBe(true);
+    expect(s.readOnly).toBe(false);
+    expect(s.tipLabel).toBe('Chat — Aspirin SR');
   });
 
   it('while probing access, the icon stays inert (no clickable flash)', () => {

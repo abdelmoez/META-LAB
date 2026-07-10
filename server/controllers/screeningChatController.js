@@ -20,6 +20,7 @@ import { getProjectAccess } from '../screening/access.js';
 import { resolveMetaLabChatScope } from '../screening/chatScope.js';
 import { getMetaSiftSettings } from '../screening/settings.js';
 import { emitToProjectMembers } from '../realtime/bus.js';
+import { canPostProjectChat } from '../../src/research-engine/screening/chatPolicy.js';
 
 const MAX_LEN = 4000;
 
@@ -69,14 +70,14 @@ function activeTypers(projectId, exceptUserId) {
  * tab, a replayed WebSocket event, or a direct API call cannot bypass it — the UI
  * hint is never the source of truth. The resolved verdict is also surfaced to the
  * client as `canPost` (below) so the composer and the server share ONE contract.
+ *
+ * 81.md — the rule now lives in ONE shared, dependency-free module
+ * (src/research-engine/screening/chatPolicy.js) imported by BOTH the server and
+ * every client surface (ChatDrawer composer + all three launchers), so the
+ * client can never re-derive a looser rule than the server enforces. This export
+ * name is preserved as a thin delegate for the existing call sites + tests.
  */
-export function canWriteChat(access) {
-  if (!access) return false;
-  if (access.isLeader) return true;                                  // owner + leaders always post
-  if (!access.canChat) return false;                                 // per-member mute (preserved)
-  if (access.project && access.project.chatRestricted) return false; // project-wide lock → leadership only
-  return true;
-}
+export const canWriteChat = canPostProjectChat;
 
 /** Strip HTML tags + control chars; trim; cap length. */
 function sanitize(text) {

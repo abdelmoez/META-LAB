@@ -12,21 +12,23 @@
  *     with projectId=null it still renders the greyed "Open a project" state).
  *   • Project in context → probe the META·LAB chat door ONCE — metalabListChat
  *     with since=now: zero message payload, but the server returns the access
- *     write-gates (canChat / chatRestricted / isLeader) from the resolved scope:
+ *     signals (canChat / chatRestricted / isLeader) from the resolved scope:
  *       – 404             → no linked Screening workspace → GREYED
  *                           ("Link a Screening project to enable chat").
- *       – restricted      → !isLeader && !canChat (a leader/owner turned a
- *                           member's chat off, or the project-wide chatRestricted
- *                           flag with no canChat) → GREYED + unclickable
- *                           ("Chat is restricted by a project owner or leader") —
- *                           exactly the server write-gate `canWriteChat`.
- *       – may participate → isLeader || canChat → ACTIVE: opens the shared
- *                           ChatDrawer (metalab adapter) + shows the unread badge.
+ *       – linked (member) → ACTIVE: opens the shared ChatDrawer (metalab adapter)
+ *                           + shows the unread badge. Reading is never restricted,
+ *                           so ANY resolved member opens chat.
+ *       – linked, cannot post → still ACTIVE but READ-ONLY (tooltip "· read-only"):
+ *                           a per-member mute or the project-wide "Restrict chat"
+ *                           lock removes POSTING, enforced by the composer + server
+ *                           (chatPolicy.canPostChatFlat === server canWriteChat),
+ *                           NOT by hiding the icon (81.md).
  *
- * The ChatDrawer (shared with the legacy launchers) is mounted ONLY when the user
- * may participate, so a restricted / unlinked / no-project state never polls. The
- * drawer self-refreshes canChat/chatRestricted from every list() response; we also
- * pass isLeader so a leader is never read-only — matching canWriteChat server-side.
+ * The ChatDrawer (shared with the legacy launchers) is mounted whenever the user is
+ * a linked member; an unlinked / no-project / error state never polls. The drawer
+ * self-refreshes canChat/chatRestricted/canPost from every list() response; we also
+ * pass isLeader + chatRestricted so the composer's read-only state matches the server
+ * gate immediately (before the first list()).
  *
  * Visual idiom matches NotificationsBell (its header neighbour): a 30px circular
  * brand-tinted button + red unread badge, styled with Stitch tokens.
@@ -38,34 +40,49 @@ import { StitchTooltip } from '../../stitch/primitives/overlay.jsx';
 import { screeningApi } from '../../screening/api-client/screeningApi.js';
 import { useRealtime } from '../../hooks/useRealtime.js';
 import ChatDrawer from './ChatDrawer.jsx';
+import { canPostChatFlat, chatPostBlockReasonFlat } from '../../../research-engine/screening/chatPolicy.js';
 
 /**
  * Pure derivation of the launcher's visual state from the resolved access probe —
- * the heart of the feature (enabled vs greyed, and WHY). Exported so the decision
- * can be unit-tested without a DOM or network.
+ * the heart of the feature (enabled vs greyed, read-only vs writable, and WHY).
+ * Exported so the decision can be unit-tested without a DOM or network.
  *
  *   status: 'idle' (no project) | 'probing' | 'linked' | 'unlinked' | 'error' (probe failed)
- *   mayParticipate === the server write-gate canWriteChat(access) = isLeader || canChat
  *
- * Returns { mayParticipate, enabled, disabledReason, tipLabel }. `enabled` ⇒ the
- * icon is clickable and the ChatDrawer mounts; otherwise it is greyed + unclickable
- * and `disabledReason` explains why (also the tooltip + accessible name).
+ * 81.md — READING IS NEVER RESTRICTED (server contract): any resolved member of a
+ * linked workspace may OPEN chat and read history. "Restrict chat" (and a per-member
+ * mute) removes POSTING, which the composer + server enforce — NOT the launcher by
+ * hiding the icon. So the icon is ENABLED for every linked member and greys ONLY when
+ * there is nothing to open (no project / still probing / probe error / no linked
+ * workspace). A member who cannot post opens a READ-ONLY drawer (the tooltip says so).
+ *
+ * `canPost` is the SHARED write gate (chatPolicy.canPostChatFlat) — the SAME rule the
+ * server enforces: isLeader || (canChat && !chatRestricted). Before 81.md this file
+ * re-derived a LOOSER `isLeader || canChat` that dropped the project-wide chatRestricted
+ * lock (and gated `enabled` on it), so a restricted member's icon wrongly read as fully
+ * active. Now there is one rule and the flag participates.
+ *
+ * Returns { canPost, readOnly, blockReason, enabled, disabledReason, tipLabel,
+ *           mayParticipate }. `enabled` ⇒ the icon is clickable and the ChatDrawer
+ * mounts; `readOnly` ⇒ enabled but the composer is read-only. `mayParticipate` is kept
+ * as a back-compat alias of `canPost`.
  */
-export function deriveChatLauncherState({ projectId, status, canChat, isLeader, projectName = '' }) {
-  const mayParticipate = !!(isLeader || canChat);
-  const enabled = !!projectId && status === 'linked' && mayParticipate;
+export function deriveChatLauncherState({ projectId, status, canChat, isLeader, chatRestricted = false, projectName = '' }) {
+  const canPost = canPostChatFlat({ isLeader, canChat, chatRestricted });
+  const blockReason = chatPostBlockReasonFlat({ isLeader, canChat, chatRestricted });
+  const enabled = !!projectId && status === 'linked';
+  const readOnly = enabled && !canPost;
   let disabledReason = null;
   if (!projectId) disabledReason = 'Open a project to use chat';
   else if (status === 'probing' || status === 'idle') disabledReason = 'Project chat';
-  // A failed probe must NOT be blamed on a person — keep it neutral (the genuine
-  // leader/owner restriction is the LAST branch, only on a resolved 'linked' gate).
+  // A failed probe must NOT be blamed on a person — keep it neutral.
   else if (status === 'error') disabledReason = 'Chat is unavailable right now';
   else if (status === 'unlinked') disabledReason = 'Link a Screening project to enable chat';
-  else if (!mayParticipate) disabledReason = 'Chat is restricted by a project owner or leader';
+  const nameLabel = projectName ? `Chat — ${projectName}` : 'Project chat';
   const tipLabel = enabled
-    ? (projectName ? `Chat — ${projectName}` : 'Project chat')
+    ? (readOnly ? `${nameLabel} · read-only` : nameLabel)
     : disabledReason;
-  return { mayParticipate, enabled, disabledReason, tipLabel };
+  return { canPost, readOnly, blockReason, enabled, disabledReason, tipLabel, mayParticipate: canPost };
 }
 
 export default function StitchChatLauncher({ projectId = null, projectName = '' }) {
@@ -144,7 +161,7 @@ export default function StitchChatLauncher({ projectId = null, projectName = '' 
     [],
   );
 
-  const { enabled, tipLabel } = deriveChatLauncherState({ projectId, status, canChat, isLeader, projectName });
+  const { enabled, tipLabel } = deriveChatLauncherState({ projectId, status, canChat, isLeader, chatRestricted, projectName });
 
   // Shared circular geometry (matches NotificationsBell — 30px brand-tinted disc).
   const baseStyle = {

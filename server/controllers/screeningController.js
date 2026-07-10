@@ -429,6 +429,20 @@ export async function updateProject(req, res) {
       });
     }
 
+    // 81.md — "Restrict chat" flip. On a REAL change, (1) audit it (the sibling
+    // settings blindMode/requiredReviewers were audited but this one was not — a
+    // leader silencing the whole team left no trail), and (2) push a user-targeted
+    // permissions.changed to every project member so an ALREADY-OPEN chat drawer /
+    // header launcher re-resolves its post-gate LIVE without a reload. The server
+    // gate (canWriteChat) already rejects the disallowed send immediately; this
+    // just closes the up-to-30s window where a still-open composer looked writable.
+    if (data.chatRestricted !== undefined && data.chatRestricted !== p.chatRestricted) {
+      await writeAudit(p.id, req.user, data.chatRestricted ? 'CHAT_RESTRICTED_ON' : 'CHAT_RESTRICTED_OFF', {
+        entityType: 'project', entityId: p.id,
+      });
+      emitToProjectMembers(p.id, { type: 'permissions.changed', projectId: p.id }, { exclude: req.user.id });
+    }
+
     // Task 12: record REAL status transitions (old !== new) for the ops
     // "done today" distinct-project metric. Best-effort — never fails the save.
     if (data.progressStatus !== undefined && data.progressStatus !== p.progressStatus) {
@@ -713,7 +727,11 @@ export async function listRecords(req, res) {
         }));
       return {
         id: r.id, projectId: r.projectId,
-        title: r.title, authors: blind ? '' : r.authors, year: r.year, journal: r.journal,
+        // 81.md (blindMode audit) — blind mode promises to hide "author / journal
+        // info" from non-leaders, but only `authors` was suppressed server-side;
+        // `journal` shipped in the JSON, so a non-leader could read it straight from
+        // GET /records (the client only hid it visually). Suppress journal too.
+        title: r.title, authors: blind ? '' : r.authors, year: r.year, journal: blind ? '' : r.journal,
         doi: r.doi, pmid: r.pmid, abstract: r.abstract, keywords: r.keywords, sourceDb: r.sourceDb,
         isDuplicate: r.isDuplicate, isPrimary: r.isPrimary,
         currentStage: r.currentStage, finalStatus: r.finalStatus, promotedAt: r.promotedAt,

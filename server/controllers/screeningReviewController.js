@@ -135,7 +135,11 @@ export async function listSecondReview(req, res) {
       isLeader: access.isLeader,
       blindMode: access.project.blindMode,
       records: records.map(r => ({
-        id: r.id, title: r.title, authors: r.authors, year: r.year, journal: r.journal,
+        // 81.md (blindMode audit) — the second-review list computed `blind` but
+        // applied it ONLY to reviewer identity, shipping authors AND journal
+        // unblinded to non-leaders (worse than listRecords, which at least blanked
+        // authors). Suppress both to honor blind mode on the wire, not just the UI.
+        id: r.id, title: r.title, authors: blind ? '' : r.authors, year: r.year, journal: blind ? '' : r.journal,
         doi: r.doi, pmid: r.pmid, abstract: r.abstract,
         finalStatus: r.finalStatus, rejectedReason: r.rejectedReason,
         acceptedAt: r.acceptedAt, promotedAt: r.promotedAt, promotedVia: r.promotedVia,

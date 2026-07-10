@@ -39,6 +39,7 @@ import { createPortal } from 'react-dom';
 import { C, FONT, MONO, alpha } from '../../theme/tokens.js';
 import { useRealtime } from '../../hooks/useRealtime.js';
 import Icon from '../icons.jsx';
+import { canPostChatFlat, chatPostBlockReasonFlat, chatBlockMessage } from '../../../research-engine/screening/chatPolicy.js';
 
 const POLL_MS = 4000;
 const HEALTHY_POLL_MS = 30000;
@@ -231,14 +232,19 @@ export default function ChatDrawer({
     return () => window.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
-  // 78.md #2 — read-only state comes from the SERVER's resolved verdict (`canPost`)
-  // whenever it is available, so the composer and the server write-gate (canWriteChat)
+  // 78.md #2 / 81.md — read-only state comes from the SERVER's resolved verdict
+  // (`canPost`) whenever it is available, so the composer and the server write-gate
   // can never disagree: a per-member mute (canChat=false) OR the project-wide "Restrict
   // chat" lock (leadership-only) both flip this to read-only without a reload. Before
-  // the first list() response (canPost null) we fall back to the local hint (leaders +
-  // canChat, minus the project lock) so the composer starts in a sensible state. The
-  // server enforces the same rule — this is a true disabled state, not a cosmetic hide.
-  const blocked = canPost != null ? !canPost : !(isLeader || (canChat && !chatRestricted));
+  // the first list() response (canPost null) we fall back to the SHARED policy gate
+  // (chatPolicy.canPostChatFlat — the exact rule the server enforces) so the composer
+  // starts correct. This is a true disabled state, not a cosmetic hide.
+  const blocked = canPost != null ? !canPost : !canPostChatFlat({ isLeader, canChat, chatRestricted });
+  // WHY posting is blocked → honest, specific copy ("restricted" vs "muted"). Derived
+  // from the same signals the server sends, refreshed on every list() poll.
+  const blockReason = chatPostBlockReasonFlat({ isLeader, canChat, chatRestricted });
+  const readOnlyMessage = chatBlockMessage(blockReason)
+    || 'Chat is read-only for your account in this project. You can read existing messages, but a project owner or leader has turned off your permission to post.';
 
   const send = useCallback(async () => {
     const text = draft.trim();
@@ -350,11 +356,11 @@ export default function ChatDrawer({
           {blocked ? (
             <div>
               <input type="text" value="" disabled readOnly
-                placeholder="Chat is read-only for your account in this project."
-                aria-label="Chat is read-only for your account in this project."
+                placeholder={blockReason === 'restricted' ? 'Chat is restricted — read-only.' : 'Chat is read-only for your account.'}
+                aria-label={readOnlyMessage}
                 style={{ width: '100%', background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 8, padding: '9px 12px', color: C.muted, fontSize: 13, fontFamily: FONT, outline: 'none', opacity: 0.6, cursor: 'not-allowed', boxSizing: 'border-box' }} />
               <div role="status" style={{ fontSize: 11.5, color: C.muted, marginTop: 6, lineHeight: 1.5 }}>
-                Chat is read-only for your account in this project. You can read existing messages, but a project owner or leader has turned off your permission to post.
+                {readOnlyMessage}
               </div>
             </div>
           ) : (
