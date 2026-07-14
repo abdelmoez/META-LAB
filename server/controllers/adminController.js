@@ -846,11 +846,18 @@ export async function updateUserRole(req, res) {
       });
     }
 
+    // 86.md P2.2/P2.34 — a role change must REVOKE the target's existing sessions.
+    // req.user.role is the JWT claim, and three bypasses trust it (featureAccess
+    // isFlagAdmin, entitlementService isSystemBypassUser, the maintenance staff
+    // bypass), so without this a demoted admin/mod kept those privileges for up to
+    // the 7-day token lifetime. Bumping sessionEpoch invalidates the old token's
+    // `se` claim; invalidateAuthState clears the 15s in-memory auth cache instantly.
     const updated = await prisma.user.update({
       where: { id: req.params.id },
-      data: { role },
+      data: { role, sessionEpoch: { increment: 1 } },
       select: { id: true, email: true, name: true, role: true, suspended: true, createdAt: true, lastActive: true },
     });
+    invalidateAuthState(target.id);
 
     await logAdminAction(req, 'ASSIGN_ROLE', 'User', target.id, {
       email: target.email,

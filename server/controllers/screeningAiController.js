@@ -119,11 +119,17 @@ export async function getAiScores(req, res) {
     const isAdmin = req.user?.role === 'admin';
     const overrideRequested = isAdmin && (req.query.showBelowThreshold === '1' || req.query.showBelowThreshold === 'true');
     const belowThreshold = screenedCount < threshold;
-    const scoresHidden = enabled && belowThreshold && !overrideRequested;
+    // 86.md P2.93 — enforce blindFromAi SERVER-SIDE. It was reported in the payload
+    // but not applied here, so a blinded reviewer could fetch the full score map
+    // directly (defeating the point of blinding the AI from human screeners).
+    // Leaders are exempt (mirrors listRecords/blindMode); admins keep their testing
+    // override. Withhold the scores, don't just flag them.
+    const blindWithheld = enabled && aiProject.blindFromAi && !access.isLeader && !overrideRequested;
+    const scoresHidden = (enabled && belowThreshold && !overrideRequested) || blindWithheld;
 
     const scores = scoresHidden ? {} : await getScoresMap(req.params.pid, stage);
     res.json({
-      scores, stage, blindFromAi: aiProject.blindFromAi, policy: aiProject.policy, enabled,
+      scores, stage, blindFromAi: aiProject.blindFromAi, blindWithheld, policy: aiProject.policy, enabled,
       threshold, screenedCount, belowThreshold, scoresHidden,
       overrideApplied: overrideRequested && belowThreshold,
       canOverride: isAdmin, // UI shows the admin testing-override control only when true
@@ -139,6 +145,14 @@ export async function getAiExplanation(req, res) {
   const access = await gate(req, res); if (!access) return;
   try {
     const stage = stageOf(req);
+    // 86.md P2.93 — a per-record AI explanation reveals the AI's signal for that
+    // record, so it must honour blindFromAi for non-leaders exactly like the score map.
+    const global = await getGlobalAiSettings();
+    const project = await prisma.screenProject.findUnique({ where: { id: req.params.pid } });
+    const aiProject = getProjectAiSettings(project, global);
+    if (global.enabled && aiProject.enabled && aiProject.blindFromAi && !access.isLeader) {
+      return res.status(404).json({ error: 'No AI score yet for this record' });
+    }
     const expl = await getRecordExplanation(req.params.pid, req.params.rid, stage);
     if (!expl) return res.status(404).json({ error: 'No AI score yet for this record' });
     res.json(expl);
