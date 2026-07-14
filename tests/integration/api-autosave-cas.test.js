@@ -6,17 +6,19 @@
  * SQLite prisma — no live server needed). Run serially with the other DB-writing
  * integration files: `--pool=forks --poolOptions.forks.singleFork=true`.
  *
- * Contract under test (store.js save/saveAsMember):
+ * Contract under test (store.js save/saveAsMember/mutateProjectBlob):
  *  - no baseline            → legacy last-write-wins (unchanged behaviour)
  *  - current rev            → write lands, rev increments
  *  - STALE rev + diff       → typed SAVE_CONFLICT (409 at the API layer), row untouched
  *  - stale rev + SAME data  → the no-op guard wins (no conflict for identical content)
- *  - non-autosave writes (e.g. studyDoc/completion prisma.project.update) do NOT
- *    bump the rev → the initiating client's next autosave still lands.
+ *  - 86.md Phase B — module writers now route through mutateProjectBlob, which DOES
+ *    bump the rev (CAS + retry), so a stale client autosave 409s instead of silently
+ *    erasing the module's change. A RAW prisma.project.update that bypasses the helper
+ *    still leaves the rev untouched (documented so no one re-introduces that pattern).
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { prisma } from '../../server/db/client.js';
-import { save, saveAsMember } from '../../server/store.js';
+import { save, saveAsMember, mutateProjectBlob } from '../../server/store.js';
 
 const TS = Date.now();
 const created = { userIds: [], projectIds: [] };
@@ -72,19 +74,40 @@ describe('autosave optimistic concurrency (autosaveRev)', () => {
     expect(same.autosaveRev).toBe(2); // and the rev did not move
   });
 
-  it('a NON-autosave server write does not bump the rev → the client autosave still lands', async () => {
+  it('a RAW prisma write (bypassing the helper) does not bump the rev → the client autosave still lands', async () => {
     if (!dbUp) return;
-    // Simulate a module writer (studyDoc upload / extraction completion): direct
-    // prisma update of the blob WITHOUT touching autosaveRev.
+    // Legacy anti-pattern: a direct prisma update that DOESN'T touch autosaveRev.
     const row = await prisma.project.findFirst({ where: { id: proj().id } });
     const data = JSON.parse(row.data);
-    data.moduleStamp = 'server-side-write';
+    data.moduleStamp = 'raw-write';
     await prisma.project.update({ where: { id: row.id }, data: { data: JSON.stringify(data), lastSavedAt: new Date() } });
 
-    // The client (which merged the module result locally) autosaves with its OLD rev.
-    const merged = await save(proj({ notes: 'v4', moduleStamp: 'server-side-write' }), user.id, { baseRev: 2 });
-    expect(merged.notes).toBe('v4'); // NOT a conflict — module writes are rev-neutral
+    // The client autosaves with its OLD rev; the raw write left the rev at 2 so it lands.
+    const merged = await save(proj({ notes: 'v4', moduleStamp: 'raw-write' }), user.id, { baseRev: 2 });
+    expect(merged.notes).toBe('v4');
     expect(merged.autosaveRev).toBe(3);
+  });
+
+  it('86.md Phase B — mutateProjectBlob DOES bump the rev → a stale client autosave 409s', async () => {
+    if (!dbUp) return;
+    // Current rev is 3 (from the previous test). A real module writer routes through
+    // mutateProjectBlob, which commits + bumps the rev to 4.
+    const out = await mutateProjectBlob(proj().id, (d) => { d.moduleStamp = 'helper-write'; return { result: { ok: true } }; });
+    expect(out.committed).toBe(true);
+    const row = await prisma.project.findFirst({ where: { id: proj().id } });
+    expect(row.autosaveRev).toBe(4);
+
+    // A client holding the pre-write baseline (3) now 409s instead of clobbering.
+    let conflict = null;
+    try { await save(proj({ notes: 'stale-after-module' }), user.id, { baseRev: 3 }); }
+    catch (e) { conflict = e; }
+    expect(conflict && conflict.code).toBe('SAVE_CONFLICT');
+
+    // commit:false leaves the rev untouched.
+    const noop = await mutateProjectBlob(proj().id, () => ({ result: {}, commit: false }));
+    expect(noop.committed).toBe(false);
+    const same = await prisma.project.findFirst({ where: { id: proj().id } });
+    expect(same.autosaveRev).toBe(4);
   });
 
   it('no baseline → legacy last-write-wins (backward compatible)', async () => {

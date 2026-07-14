@@ -8,7 +8,7 @@
  * a durable audit row, and stamps project activity. Never overwrites captured values.
  */
 import { prisma } from '../../db/client.js';
-import { touchProjectActivity } from '../../store.js';
+import { touchProjectActivity, mutateProjectBlob } from '../../store.js';
 import { emitToMetaLabProject } from '../../realtime/bus.js';
 import { evaluateCompletion } from '../../../src/research-engine/extraction/engine/completionGate.js';
 import { markSynced, analysisReady } from '../../../src/research-engine/extraction/engine/syncState.js';
@@ -30,23 +30,22 @@ export { ArticleError };
  * synchronous/pure — it runs inside the transaction.
  */
 async function mutateStudyMeta(access, studyId, mutate) {
-  const { mlId, next } = await prisma.$transaction(async (tx) => {
-    const ml = await tx.project.findFirst({ where: { id: access.project.id, deletedAt: null } });
-    if (!ml) throw new ArticleError(404, 'PROJECT_NOT_FOUND');
-    let data;
-    try { data = JSON.parse(ml.data || '{}'); } catch { data = {}; }
+  // 86.md P1.16 — route through the shared CAS helper so the write ALSO bumps
+  // autosaveRev (this previously used a $transaction that fixed engine-vs-engine
+  // races but bumped only lastSavedAt, so a stale client autosave could still revert
+  // a completion/lock stamp). Now such an autosave 409s and reloads instead.
+  const outcome = await mutateProjectBlob(access.project.id, (data) => {
     if (!Array.isArray(data.studies)) data.studies = [];
     const idx = data.studies.findIndex((s) => s && s.id === studyId);
-    if (idx < 0) throw new ArticleError(404, 'ARTICLE_NOT_FOUND');
-
+    if (idx < 0) return { result: { notFound: true }, commit: false };
     const mutated = mutate({ ...data.studies[idx] });
     data.studies[idx] = mutated;
-    await tx.project.update({ where: { id: ml.id }, data: { data: JSON.stringify(data), lastSavedAt: new Date() } });
-    return { mlId: ml.id, next: mutated };
+    return { result: { next: mutated } };
   });
-  try { emitToMetaLabProject(mlId, access.ownerId, { type: 'project.updated' }, { exclude: access.userId }); } catch { /* best-effort */ }
-  try { await touchProjectActivity(mlId); } catch { /* best-effort */ }
-  return next;
+  if (!outcome) throw new ArticleError(404, 'PROJECT_NOT_FOUND');
+  if (outcome.result.notFound) throw new ArticleError(404, 'ARTICLE_NOT_FOUND');
+  try { emitToMetaLabProject(access.project.id, access.ownerId, { type: 'project.updated' }, { exclude: access.userId }); } catch { /* best-effort */ }
+  return outcome.result.next;
 }
 
 /**

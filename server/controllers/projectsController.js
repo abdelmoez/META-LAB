@@ -627,13 +627,25 @@ export async function getProject(req, res) {
  */
 export async function updateProject(req, res) {
   try {
-    const { id, studies, records, ...allowed } = req.body || {};
+    // 86.md P2.60 — updateProject is a full-blob upsert with NO CAS. Today it is only
+    // used for renames (title-shaped), but a client that sends its observed rev as
+    // `_baseRev` now gets the SAME optimistic-concurrency protection as autosave (a
+    // 409 instead of silently reverting a concurrent edit). `_baseRev` is stripped
+    // from the persisted blob by projectToData like any `_`-prefixed key.
+    const { id, studies, records, _baseRev, ...allowed } = req.body || {};
+    const baseRev = Number.isInteger(_baseRev) ? _baseRev : null;
+    const conflict409 = (err) => res.status(409).json({
+      error: 'Project was updated elsewhere since it was loaded', code: 'SAVE_CONFLICT',
+      project: err && err.serverProject ? err.serverProject : undefined,
+    });
 
     // Owner path.
     const project = await getById(req.params.id, req.user.id);
     if (project) {
       const updated = { ...project, ...allowed, id: project.id };
-      const saved = await save(updated, req.user.id);
+      let saved;
+      try { saved = await save(updated, req.user.id, { baseRev }); }
+      catch (err) { if (err && err.code === 'SAVE_CONFLICT') return conflict409(err); throw err; }
       // Soft-deleted row (resurrection guard) → indistinguishable from gone.
       if (!saved) return res.status(404).json({ error: 'Project not found' });
       await syncLinkedTitleIfInSync(project.id, req.user.id, project.name, saved.name);
@@ -651,7 +663,9 @@ export async function updateProject(req, res) {
     const raw = await getByIdUnscoped(req.params.id);
     if (!raw) return res.status(404).json({ error: 'Project not found' });
     const updated = { ...raw, ...allowed, id: raw.id };
-    const saved = await saveAsMember(updated);
+    let saved;
+    try { saved = await saveAsMember(updated, { baseRev }); }
+    catch (err) { if (err && err.code === 'SAVE_CONFLICT') return conflict409(err); throw err; }
     if (!saved) return res.status(404).json({ error: 'Project not found' });
     const synced = await syncLinkedTitleIfInSync(raw.id, acc.ownerId, raw.name, saved.name);
     // Realtime poke (Task 7) — workspace members + owner, minus the editor.

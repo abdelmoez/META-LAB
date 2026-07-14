@@ -290,6 +290,67 @@ export async function saveAsMember(project, { baseRev = null } = {}) {
 }
 
 /**
+ * mutateProjectBlob(projectId, mutate, opts) — 86.md Phase B.
+ *
+ * The ONE safe way for a server-side "module writer" (screening handoff/revert,
+ * extraction send-to-MA / engine completion, study-document pointers) to change the
+ * fat `Project.data` blob. It fixes two race families the ad-hoc
+ * findFirst→JSON.parse→update writers had:
+ *
+ *   1. module-writer vs module-writer — two concurrent writers each read the same
+ *      blob and the second write drops the first (e.g. two handoffs lose a study).
+ *   2. module-writer vs client-autosave — a client whose `_baseRev` still matched
+ *      could autosave the pre-write blob and silently erase the module's change,
+ *      because those writers bumped lastSavedAt but NOT autosaveRev.
+ *
+ * Both are closed by a compare-and-swap on autosaveRev with a bounded retry: read
+ * the row (fresh each attempt), run `mutate(data)` — which mutates the parsed blob
+ * IN PLACE and returns `{ result, commit }` — then, when `commit !== false`, write
+ * ONLY if the row is still at the rev we read, incrementing it. A losing writer
+ * simply re-reads and re-applies; a client autosave carrying the now-stale rev 409s
+ * through the existing CAS and its conflict UI reloads+merges. `mutate` MUST be
+ * synchronous and side-effect-free (it may run more than once). When `commit` is
+ * false (e.g. a dedup short-circuit) NO write happens and the rev is untouched.
+ * Callers keep their own realtime emit.
+ *
+ * @param {string} projectId
+ * @param {(data:object)=>({result?:any, commit?:boolean})} mutate  mutates the parsed blob in place
+ * @param {{maxAttempts?:number}} [opts]
+ * @returns {Promise<null | { project: object, result: any, committed: boolean }>} null when the project is gone
+ */
+export async function mutateProjectBlob(projectId, mutate, { maxAttempts = 6 } = {}) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const existing = await prisma.project.findFirst({ where: { id: projectId, deletedAt: null } });
+    if (!existing) return null;
+    let data;
+    try { data = JSON.parse(existing.data || '{}'); } catch { data = {}; }
+    const baseRev = Number(existing.autosaveRev || 0);
+    const out = mutate(data) || {};
+    const result = out.result;
+    if (out.commit === false) {
+      // No change to persist (e.g. duplicate handoff) — never bump the rev.
+      return { project: rowToProject(existing), result, committed: false };
+    }
+    const now = new Date();
+    const res = await prisma.project.updateMany({
+      where: { id: projectId, autosaveRev: baseRev },
+      data: { data: JSON.stringify(data), autosaveRev: { increment: 1 }, lastActivityAt: now, lastSavedAt: now },
+    });
+    if (res.count === 1) {
+      const row = await prisma.project.findFirst({ where: { id: projectId } });
+      // lastActivityAt is stamped in the CAS write above (86.md P3.74 — the sibling
+      // writers previously touched only lastSavedAt, so handoff/send-to-MA never
+      // reordered "Last Modified"; the blob mutation IS meaningful activity).
+      return { project: row ? rowToProject(row) : null, result, committed: true };
+    }
+    // Lost the CAS to a concurrent writer — re-read and re-apply.
+  }
+  const err = new Error('mutateProjectBlob: exceeded retry attempts under contention');
+  err.code = 'BLOB_CONTENTION';
+  throw err;
+}
+
+/**
  * Soft-delete a project by id, scoped to the given user (prompt9).
  * Marks deletedAt + deletedSource='owner' instead of destroying the row —
  * hidden from everyone incl. the owner (404), recoverable by admin restore.

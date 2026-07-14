@@ -8,6 +8,7 @@
  *                   → leader finalize reject  → stays in META·SIFT with reason
  */
 import { prisma } from '../db/client.js';
+import { mutateProjectBlob } from '../store.js';
 import { getProjectAccess, writeAudit } from '../screening/access.js';
 import { getMetaSiftSettings } from '../screening/settings.js';
 import { mkStudy } from '../../src/research-engine/project-model/defaults.js';
@@ -72,50 +73,57 @@ export function studyFromRecord(record, actor) {
  */
 export async function handoffToMetaLab(screenProject, record, actor) {
   if (!screenProject.linkedMetaLabProjectId) return { handed: false, reason: 'no_link' };
-  const ml = await prisma.project.findFirst({
+  // Verify the link still resolves to a live project owned by the screen owner
+  // before the CAS write (mutateProjectBlob writes by id, unscoped).
+  const mlCheck = await prisma.project.findFirst({
     where: { id: screenProject.linkedMetaLabProjectId, userId: screenProject.ownerId, deletedAt: null },
+    select: { id: true },
   });
-  if (!ml) return { handed: false, reason: 'link_missing' };
+  if (!mlCheck) return { handed: false, reason: 'link_missing' };
 
-  let data;
-  try { data = JSON.parse(ml.data || '{}'); } catch { data = {}; }
-  if (!Array.isArray(data.studies)) data.studies = [];
+  // 86.md P0.2/P1.14/P1.21 — the append (read→dedup→push→write) now runs through the
+  // CAS helper: two concurrent handoffs can no longer each read the same blob and
+  // drop each other's study, and the rev bump makes a stale client autosave 409
+  // instead of erasing the appended study.
+  const outcome = await mutateProjectBlob(mlCheck.id, (data) => {
+    if (!Array.isArray(data.studies)) data.studies = [];
+    const dup = data.studies.some(st =>
+      (record.doi  && st.doi  && String(st.doi).toLowerCase().trim()  === String(record.doi).toLowerCase().trim()) ||
+      (record.pmid && st.pmid && String(st.pmid).trim()               === String(record.pmid).trim()) ||
+      (normTitle(record.title) && normTitle(st.title) === normTitle(record.title))
+    );
+    if (dup) return { result: { handed: false, reason: 'duplicate' }, commit: false };
 
-  const dup = data.studies.some(st =>
-    (record.doi  && st.doi  && String(st.doi).toLowerCase().trim()  === String(record.doi).toLowerCase().trim()) ||
-    (record.pmid && st.pmid && String(st.pmid).trim()               === String(record.pmid).trim()) ||
-    (normTitle(record.title) && normTitle(st.title) === normTitle(record.title))
-  );
-  if (dup) return { handed: false, reason: 'duplicate' };
-
-  // prompt21 — if this record was previously reverted out of Data Extraction, RESTORE
-  // the snapshotted study (with any extracted data the user had entered) rather than
-  // starting a fresh blank one. Provenance is re-asserted so re-sync stays idempotent.
-  let restored = false, study;
-  if (record.revertedExtractionSnapshot) {
-    try {
-      const snap = JSON.parse(record.revertedExtractionSnapshot);
-      if (snap && typeof snap === 'object') {
-        study = snap;
-        study.siftOrigin = true;
-        study.screeningRecordId  = record.id || '';
-        study.screeningProjectId = record.projectId || '';
-        if (!study.id) study.id = studyFromRecord(record, actor).id;
-        restored = true;
-      }
-    } catch { /* fall through to a fresh study */ }
+    // prompt21 — if this record was previously reverted out of Data Extraction, RESTORE
+    // the snapshotted study (with any extracted data the user had entered) rather than
+    // starting a fresh blank one. Provenance is re-asserted so re-sync stays idempotent.
+    let restored = false, study;
+    if (record.revertedExtractionSnapshot) {
+      try {
+        const snap = JSON.parse(record.revertedExtractionSnapshot);
+        if (snap && typeof snap === 'object') {
+          study = snap;
+          study.siftOrigin = true;
+          study.screeningRecordId  = record.id || '';
+          study.screeningProjectId = record.projectId || '';
+          if (!study.id) study.id = studyFromRecord(record, actor).id;
+          restored = true;
+        }
+      } catch { /* fall through to a fresh study */ }
+    }
+    if (!study) study = studyFromRecord(record, actor);
+    data.studies.push(study);
+    return { result: { handed: true, studyId: study.id, restored } };
+  });
+  if (!outcome) return { handed: false, reason: 'link_missing' };
+  const res = outcome.result;
+  if (res.handed) {
+    // Realtime poke (Task 7) — the META·LAB blob changed (study appended); open
+    // clients refresh-when-clean / banner-when-dirty.
+    emitToMetaLabProject(mlCheck.id, screenProject.ownerId, { type: 'project.updated' }, { exclude: actor?.id });
+    return { ...res, metaLabProjectId: mlCheck.id };
   }
-  if (!study) study = studyFromRecord(record, actor);
-
-  data.studies.push(study);
-  await prisma.project.update({
-    where: { id: ml.id },
-    data: { data: JSON.stringify(data), lastSavedAt: new Date() },
-  });
-  // Realtime poke (Task 7) — the META·LAB blob changed (study appended); open
-  // monoliths refresh-when-clean / banner-when-dirty.
-  emitToMetaLabProject(ml.id, screenProject.ownerId, { type: 'project.updated' }, { exclude: actor?.id });
-  return { handed: true, studyId: study.id, metaLabProjectId: ml.id, restored };
+  return res;
 }
 
 /** GET /projects/:pid/second-review — records that reached quorum (full_text stage). */
@@ -300,26 +308,29 @@ export async function revertFinalReview(req, res) {
     let snapshot = rec.revertedExtractionSnapshot || null;
     let removed = false;
     if (access.project.linkedMetaLabProjectId) {
-      const ml = await prisma.project.findFirst({
+      const mlCheck = await prisma.project.findFirst({
         where: { id: access.project.linkedMetaLabProjectId, userId: access.project.ownerId, deletedAt: null },
+        select: { id: true },
       });
-      if (ml) {
-        let data; try { data = JSON.parse(ml.data || '{}'); } catch { data = {}; }
-        if (Array.isArray(data.studies)) {
+      if (mlCheck) {
+        // 86.md P0.2/P1.14/P1.21 — splice through the CAS helper so a concurrent
+        // autosave/handoff can't clobber (or be clobbered by) the removal, and the
+        // rev bump makes a stale client autosave 409 instead of resurrecting the row.
+        const outcome = await mutateProjectBlob(mlCheck.id, (data) => {
+          if (!Array.isArray(data.studies)) return { result: { removed: false }, commit: false };
           const idx = data.studies.findIndex(st =>
             (rec.handoffStudyId && st.id === rec.handoffStudyId) ||
             (st.screeningRecordId && st.screeningRecordId === rec.id)
           );
-          if (idx !== -1) {
-            snapshot = JSON.stringify(data.studies[idx]);
-            data.studies.splice(idx, 1);
-            removed = true;
-            await prisma.project.update({
-              where: { id: ml.id },
-              data: { data: JSON.stringify(data), lastSavedAt: new Date() },
-            });
-            emitToMetaLabProject(ml.id, access.project.ownerId, { type: 'project.updated' }, { exclude: req.user.id });
-          }
+          if (idx === -1) return { result: { removed: false }, commit: false };
+          const snap = JSON.stringify(data.studies[idx]);
+          data.studies.splice(idx, 1);
+          return { result: { removed: true, snapshot: snap } };
+        });
+        if (outcome && outcome.result && outcome.result.removed) {
+          snapshot = outcome.result.snapshot;
+          removed = true;
+          emitToMetaLabProject(mlCheck.id, access.project.ownerId, { type: 'project.updated' }, { exclude: req.user.id });
         }
       }
     }

@@ -20,7 +20,7 @@ import multer from 'multer';
 import fs from 'fs';
 import { prisma } from '../db/client.js';
 import { resolveExtractionAccess } from '../extraction/access.js';
-import { touchProjectActivity } from '../store.js';
+import { touchProjectActivity, mutateProjectBlob } from '../store.js';
 import { setInlinePdfFramingHeaders } from '../screening/pdfFraming.js';
 import {
   STUDY_DOC_ROOT, MAX_STUDY_DOC_BYTES, isPdfBuffer, sha256, studyDocPath, saveStudyDoc, deleteStudyDocFile, isSafeStoredName,
@@ -133,20 +133,31 @@ export async function uploadStudyDoc(req, res) {
     if (twin) { storedName = twin.storedName; fileSize = twin.fileSize || buf.length; }
     else { const saved = saveStudyDoc(access.project.id, buf); storedName = saved.storedName; fileSize = saved.fileSize; }
 
-    // Replace: if this study already had a DIFFERENT stored file that nothing else uses, remove it.
-    const prev = data.studies[idx].document;
-    if (prev && isSafeStoredName(prev.storedName) && prev.storedName !== storedName && !referencedElsewhere(data.studies, prev.storedName, req.params.studyId)) {
-      deleteStudyDocFile(access.project.id, prev.storedName);
-    }
-
     const document = {
       storedName, fileName: String(req.file.originalname || 'document.pdf').slice(0, 255), fileHash: hash,
       fileSize, mimeType: 'application/pdf',
       uploadedBy: access.userId, uploadedByName: access.userName || '', uploadedAt: new Date().toISOString(),
     };
-    data.studies[idx] = { ...data.studies[idx], document };
-    await prisma.project.update({ where: { id: ml.id }, data: { data: JSON.stringify(data), lastSavedAt: new Date() } });
-    try { await touchProjectActivity(ml.id); } catch { /* best-effort */ }
+    // 86.md P1.15/P1.16/P2.88 — the pointer write goes through the CAS helper so a
+    // concurrent studies autosave can't clobber it (or be clobbered by it), and the
+    // rev bump makes a stale client autosave 409. Disk I/O stays OUT of the (retryable)
+    // mutate; the replaced file is unlinked AFTER the commit (was before — a failed
+    // write left the file gone but the pointer intact).
+    const outcome = await mutateProjectBlob(access.project.id, (d) => {
+      if (!Array.isArray(d.studies)) d.studies = [];
+      const i = d.studies.findIndex((s) => s && s.id === req.params.studyId);
+      if (i < 0) return { result: { status: 404, prev: null }, commit: false };
+      const prev = d.studies[i].document || null;
+      d.studies[i] = { ...d.studies[i], document };
+      return { result: { status: 201, prev } };
+    });
+    if (!outcome) return res.status(404).json({ error: 'Project not found' });
+    if (outcome.result.status === 404) return res.status(404).json({ error: 'Study not found' });
+    const prev = outcome.result.prev;
+    if (prev && isSafeStoredName(prev.storedName) && prev.storedName !== storedName &&
+        !referencedElsewhere(outcome.project.studies, prev.storedName, req.params.studyId)) {
+      deleteStudyDocFile(access.project.id, prev.storedName);
+    }
     res.status(201).json({ document: shapeDoc(document) });
   } catch (err) {
     console.error('[study-doc] uploadStudyDoc:', err.message);
@@ -241,14 +252,24 @@ export async function deleteStudyDoc(req, res) {
     const doc = data.studies[idx].document;
     if (!doc || !doc.storedName) return res.status(404).json({ error: 'No document for this study' });
 
-    const { document, ...rest } = data.studies[idx]; // eslint-disable-line no-unused-vars
-    data.studies[idx] = rest;
-    // Only unlink a trusted server-generated file, and only when nothing else references it.
-    if (isSafeStoredName(doc.storedName) && !referencedElsewhere(data.studies, doc.storedName, req.params.studyId)) {
-      deleteStudyDocFile(access.project.id, doc.storedName);
+    // 86.md P1.15/P1.16/P2.88 — remove the pointer through the CAS helper; unlink the
+    // file only AFTER the commit and only when the committed blob no longer references it.
+    const outcome = await mutateProjectBlob(access.project.id, (d) => {
+      if (!Array.isArray(d.studies)) d.studies = [];
+      const i = d.studies.findIndex((s) => s && s.id === req.params.studyId);
+      if (i < 0) return { result: { status: 404 }, commit: false };
+      const cur = d.studies[i].document;
+      if (!cur || !cur.storedName) return { result: { status: 404, gone: true }, commit: false };
+      const { document, ...rest } = d.studies[i]; // eslint-disable-line no-unused-vars
+      d.studies[i] = rest;
+      return { result: { status: 200, removedStoredName: cur.storedName } };
+    });
+    if (!outcome) return res.status(404).json({ error: 'Project not found' });
+    if (outcome.result.status === 404) return res.status(404).json({ error: outcome.result.gone ? 'No document for this study' : 'Study not found' });
+    const removedName = outcome.result.removedStoredName;
+    if (removedName && isSafeStoredName(removedName) && !referencedElsewhere(outcome.project.studies, removedName, req.params.studyId)) {
+      deleteStudyDocFile(access.project.id, removedName);
     }
-    await prisma.project.update({ where: { id: ml.id }, data: { data: JSON.stringify(data), lastSavedAt: new Date() } });
-    try { await touchProjectActivity(ml.id); } catch { /* best-effort */ }
     res.status(200).json({ deleted: true });
   } catch (err) {
     console.error('[study-doc] deleteStudyDoc:', err.message);
@@ -315,9 +336,19 @@ export async function uploadExtraStudyDoc(req, res) {
       fileSize, mimeType: 'application/pdf',
       uploadedBy: access.userId, uploadedByName: access.userName || '', uploadedAt: new Date().toISOString(),
     };
-    data.studies[idx] = { ...data.studies[idx], documents: [...existingDocs, document] };
-    await prisma.project.update({ where: { id: ml.id }, data: { data: JSON.stringify(data), lastSavedAt: new Date() } });
-    try { await touchProjectActivity(ml.id); } catch { /* best-effort */ }
+    // 86.md P1.15/P1.16/P2.88 — CAS-protected append of the extra-document entry.
+    const outcome = await mutateProjectBlob(access.project.id, (d) => {
+      if (!Array.isArray(d.studies)) d.studies = [];
+      const i = d.studies.findIndex((s) => s && s.id === req.params.studyId);
+      if (i < 0) return { result: { status: 404 }, commit: false };
+      const cur = Array.isArray(d.studies[i].documents) ? d.studies[i].documents : [];
+      if (cur.length >= MAX_EXTRA_DOCS) return { result: { status: 400 }, commit: false };
+      d.studies[i] = { ...d.studies[i], documents: [...cur, document] };
+      return { result: { status: 201 } };
+    });
+    if (!outcome) return res.status(404).json({ error: 'Project not found' });
+    if (outcome.result.status === 404) return res.status(404).json({ error: 'Study not found' });
+    if (outcome.result.status === 400) return res.status(400).json({ error: `A study can carry at most ${MAX_EXTRA_DOCS} additional files` });
     res.status(201).json({ document: shapeExtraDoc(document) });
   } catch (err) {
     console.error('[study-doc] uploadExtraStudyDoc:', err.message);
@@ -371,13 +402,23 @@ export async function deleteExtraStudyDoc(req, res) {
     const doc = docs.find((d) => d && d.id === req.params.docId);
     if (!doc) return res.status(404).json({ error: 'No such file for this study' });
 
-    data.studies[idx] = { ...data.studies[idx], documents: docs.filter((d) => d && d.id !== req.params.docId) };
-    // Only unlink a trusted server-generated file, and only when nothing else references it.
-    if (isSafeStoredName(doc.storedName) && !referencedElsewhere(data.studies, doc.storedName, req.params.studyId, req.params.docId)) {
-      deleteStudyDocFile(access.project.id, doc.storedName);
+    // 86.md P1.15/P1.16/P2.88 — CAS-protected removal; unlink after commit.
+    const outcome = await mutateProjectBlob(access.project.id, (d) => {
+      if (!Array.isArray(d.studies)) d.studies = [];
+      const i = d.studies.findIndex((s) => s && s.id === req.params.studyId);
+      if (i < 0) return { result: { status: 404 }, commit: false };
+      const curDocs = Array.isArray(d.studies[i].documents) ? d.studies[i].documents : [];
+      const target = curDocs.find((x) => x && x.id === req.params.docId);
+      if (!target) return { result: { status: 404, gone: true }, commit: false };
+      d.studies[i] = { ...d.studies[i], documents: curDocs.filter((x) => x && x.id !== req.params.docId) };
+      return { result: { status: 200, removedStoredName: target.storedName } };
+    });
+    if (!outcome) return res.status(404).json({ error: 'Project not found' });
+    if (outcome.result.status === 404) return res.status(404).json({ error: outcome.result.gone ? 'No such file for this study' : 'Study not found' });
+    const removedName = outcome.result.removedStoredName;
+    if (removedName && isSafeStoredName(removedName) && !referencedElsewhere(outcome.project.studies, removedName, req.params.studyId, req.params.docId)) {
+      deleteStudyDocFile(access.project.id, removedName);
     }
-    await prisma.project.update({ where: { id: ml.id }, data: { data: JSON.stringify(data), lastSavedAt: new Date() } });
-    try { await touchProjectActivity(ml.id); } catch { /* best-effort */ }
     res.status(200).json({ deleted: true });
   } catch (err) {
     console.error('[study-doc] deleteExtraStudyDoc:', err.message);

@@ -18,6 +18,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../api-client/apiClient.js';
+import { useRealtime } from '../../hooks/useRealtime.js';
 
 const DEBOUNCE_MS = 800;
 
@@ -26,6 +27,11 @@ export function useStitchProjectDoc(projectId) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [saveStatus, setSaveStatus] = useState('idle'); // idle | saving | saved | error | conflict
+  // 86.md P0.2 — set when a SERVER-SIDE module writer (screening handoff, extraction
+  // send-to-MA, engine completion, study-doc pointer) changed this project's blob
+  // while we had an unsaved local edit. The page surfaces it as a non-destructive
+  // "updated elsewhere — reload" prompt instead of silently clobbering on next save.
+  const [remoteUpdate, setRemoteUpdate] = useState(false);
   const projectRef = useRef(null);
   const timerRef = useRef(null);
   // 83.md-limitation fix — the server `autosaveRev` this page last observed; sent
@@ -41,6 +47,7 @@ export function useStitchProjectDoc(projectId) {
       projectRef.current = p;
       baselineRef.current = (p && Number.isInteger(p.autosaveRev)) ? p.autosaveRev : null;
       setProject(p);
+      setRemoteUpdate(false);
     } catch (e) {
       setError(e?.message || 'Could not load this project.');
     } finally {
@@ -49,6 +56,19 @@ export function useStitchProjectDoc(projectId) {
   }, [projectId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // 86.md P0.2 (part a) — adopt server-side module-writer changes to the blob. Module
+  // writers now bump autosaveRev (so a stale autosave 409s → the conflict path below
+  // reloads), but a CLEAN page would otherwise not see the change until it edits.
+  // Reload immediately when clean; flag it when a local edit is pending (never clobber).
+  useRealtime({
+    'project.updated': (ev) => {
+      const mlId = ev && ev.metaLabProjectId;
+      if (!mlId || mlId !== projectId) return;
+      if (timerRef.current || saveStatus === 'saving') { setRemoteUpdate(true); return; }
+      load();
+    },
+  });
 
   const readOnly = !!(project && (project._readOnly || (project._permissions && project._permissions.readOnly)));
 
@@ -121,5 +141,5 @@ export function useStitchProjectDoc(projectId) {
     updateProject(projectId, (p) => ({ ...p, [field]: { ...(p[field] || {}), [key]: val } }));
   }, [updateProject, projectId]);
 
-  return { project, loading, error, reload: load, readOnly, upd, updNested, updateProject, saveStatus, flush };
+  return { project, loading, error, reload: load, readOnly, upd, updNested, updateProject, saveStatus, flush, remoteUpdate, dismissRemoteUpdate: () => setRemoteUpdate(false) };
 }

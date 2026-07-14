@@ -13,6 +13,7 @@
  *    overwrites human-entered effect sizes (409 unless overwrite confirmed).
  */
 import { prisma } from '../db/client.js';
+import { mutateProjectBlob } from '../store.js';
 import { emitToMetaLabProject } from '../realtime/bus.js';
 import {
   extractionEnabled, resolveExtractionAccess, getExtractionAiSettings,
@@ -606,42 +607,52 @@ export async function postSendToMa(req, res) {
       return res.status(422).json({ error: 'Consensus values do not map to meta-analysis inputs', warnings: out?.warnings || [] });
     }
 
-    const ml = await prisma.project.findFirst({ where: { id: projectId, deletedAt: null } });
-    let data;
-    try { data = JSON.parse(ml.data || '{}'); } catch { data = {}; }
-    if (!Array.isArray(data.studies)) data.studies = [];
-    const idx = data.studies.findIndex(s => s.id === studyId);
-    if (idx < 0) return res.status(404).json({ error: 'Study not found' });
-    const st = data.studies[idx];
-
-    // Never silently overwrite a human-entered effect size (66.md rule 7).
-    const hasEs = st.es !== '' && st.es != null;
-    if (hasEs && !req.body?.overwrite) {
-      return res.status(409).json({
-        error: 'This study already has an effect size. Confirm overwrite to replace it with the consensus-derived value.',
-        code: 'HAS_EFFECT_SIZE',
-        current: { es: st.es, lo: st.lo, hi: st.hi, esType: st.esType },
-        proposed: out.patch,
-        warnings: out.warnings,
+    // 86.md P1.15/P1.16 — the read→check→mutate→write now runs through the CAS helper
+    // so a concurrent autosave or sibling module write can't drop the consensus value,
+    // and the rev bump makes a stale client autosave 409 instead of reverting it. The
+    // 404/409 validation is done INSIDE the callback (against the fresh blob) and
+    // surfaced via the result without committing a write.
+    const outcome = await mutateProjectBlob(projectId, (data) => {
+      if (!Array.isArray(data.studies)) data.studies = [];
+      const idx = data.studies.findIndex(s => s.id === studyId);
+      if (idx < 0) return { result: { status: 404, body: { error: 'Study not found' } }, commit: false };
+      const st = data.studies[idx];
+      // Never silently overwrite a human-entered effect size (66.md rule 7).
+      const hasEs = st.es !== '' && st.es != null;
+      if (hasEs && !req.body?.overwrite) {
+        return {
+          result: {
+            status: 409,
+            body: {
+              error: 'This study already has an effect size. Confirm overwrite to replace it with the consensus-derived value.',
+              code: 'HAS_EFFECT_SIZE',
+              current: { es: st.es, lo: st.lo, hi: st.hi, esType: st.esType },
+              proposed: out.patch,
+              warnings: out.warnings,
+            },
+          },
+          commit: false,
+        };
+      }
+      Object.assign(st, out.patch);
+      st.source = 'calculated';
+      st.converted = true;
+      st.conversions = Array.isArray(st.conversions) ? st.conversions : [];
+      st.conversions.push({
+        id: Math.random().toString(36).slice(2, 10),
+        target: 'es', type: st.esType || out.patch.esType || '',
+        method: 'structured-extraction-consensus',
+        reason: 'Consensus values from dual extraction sent to meta-analysis',
+        at: new Date().toISOString(),
       });
-    }
-
-    Object.assign(st, out.patch);
-    st.source = 'calculated';
-    st.converted = true;
-    st.conversions = Array.isArray(st.conversions) ? st.conversions : [];
-    st.conversions.push({
-      id: Math.random().toString(36).slice(2, 10),
-      target: 'es', type: st.esType || out.patch.esType || '',
-      method: 'structured-extraction-consensus',
-      reason: 'Consensus values from dual extraction sent to meta-analysis',
-      at: new Date().toISOString(),
+      st.updatedAt = new Date().toISOString();
+      data.studies[idx] = st;
+      return { result: { status: 200, body: { ok: true, patch: out.patch, warnings: out.warnings } } };
     });
-    st.updatedAt = new Date().toISOString();
-    data.studies[idx] = st;
-    await prisma.project.update({ where: { id: ml.id }, data: { data: JSON.stringify(data), lastSavedAt: new Date() } });
-    emitToMetaLabProject(ml.id, access.ownerId, { type: 'project.updated' }, { exclude: access.userId });
-    res.json({ ok: true, patch: out.patch, warnings: out.warnings });
+    if (!outcome) return res.status(404).json({ error: 'Project not found' });
+    const r = outcome.result;
+    if (r.status === 200) emitToMetaLabProject(projectId, access.ownerId, { type: 'project.updated' }, { exclude: access.userId });
+    return res.status(r.status).json(r.body);
   } catch (e) { console.error('extraction postSendToMa', e); res.status(500).json({ error: 'Internal server error' }); }
 }
 
