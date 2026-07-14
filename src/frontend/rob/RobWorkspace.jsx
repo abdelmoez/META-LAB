@@ -866,9 +866,13 @@ export default function RobWorkspace({ assessmentId, onClose, onChanged, onConti
         </div>
         {/* P14 — guided appraisal action (flag ON, editable, not finalised). It
             suggests answers from the study text; the reviewer accepts/edits each. */}
+        {/* 86.md P1.11 — re-run is NON-destructive: runAppraisal(false) so the
+            server refreshes machine suggestions for un-answered questions but NEVER
+            overwrites a reviewer's own answers/rationales/evidence (the old
+            `!!appraisal` sent force=true, silently wiping human work on re-run). */}
         {appraisalOn && editable && !finalised && (
-          <button onClick={() => runAppraisal(!!appraisal)} disabled={appraising}
-            title={appraisal ? 'Re-run the guided appraisal from the study text' : 'Suggest signalling answers from the study text — you review and accept each one'}
+          <button onClick={() => runAppraisal(false)} disabled={appraising}
+            title={appraisal ? 'Refresh suggestions from the study text — your own answers and rationales are kept' : 'Suggest signalling answers from the study text — you review and accept each one'}
             style={{ ...ghostBtn, flexShrink: 0, background: appraising ? C.surf : alpha(C.acc, '12'), color: appraising ? C.muted : C.acc, borderColor: alpha(C.acc, '45'), cursor: appraising ? 'progress' : 'pointer' }}>
             <Icon name="clipboard" size={14} /> {appraising ? 'Appraising…' : appraisal ? 'Re-run appraisal' : 'Run guided appraisal'}
           </button>

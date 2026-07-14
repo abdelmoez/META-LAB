@@ -163,6 +163,33 @@ export async function save(project, userId, { baseRev = null } = {}) {
   // authoritative "Last Modified" timestamp. (Reached only past the no-op guard
   // above, so merely opening/normalising a project never reorders the list.)
   const now = new Date();
+
+  // 86.md P1.13 — make the CAS ATOMIC. throwIfConflicted above is a JS comparison
+  // between two separate round-trips (findFirst → upsert); two concurrent saves at
+  // the same baseRev could both pass it and both write, silently losing the loser
+  // (a real lost update on the Postgres target; the interleave is possible even on
+  // SQLite). When the client supplied a baseline, make the WRITE itself conditional
+  // on the rev so exactly one of the racing saves can land.
+  const base = Number(baseRev);
+  if (existing && baseRev != null && Number.isInteger(base) && base >= 0) {
+    const res = await prisma.project.updateMany({
+      where: { id, autosaveRev: base },
+      data: { name, data: dataStr, lastActivityAt: now, autosaveRev: { increment: 1 } },
+    });
+    if (res.count !== 1) {
+      const fresh = await prisma.project.findFirst({ where: { id } });
+      console.warn(`[store] autosave conflict refused (atomic): project=${id} clientRev=${base} serverRev=${fresh ? fresh.autosaveRev : '?'}`);
+      const err = new Error('Project was updated elsewhere since it was loaded');
+      err.code = 'SAVE_CONFLICT';
+      err.status = 409;
+      if (fresh) err.serverProject = rowToProject(fresh);
+      throw err;
+    }
+    const row = await prisma.project.findFirst({ where: { id } });
+    return rowToProject(row);
+  }
+
+  // Create path, and the legacy no-baseline last-write-wins path.
   const row = await prisma.project.upsert({
     where: { id },
     update: { name, data: dataStr, lastActivityAt: now, autosaveRev: { increment: 1 } },
@@ -235,9 +262,29 @@ export async function saveAsMember(project, { baseRev = null } = {}) {
     return rowToProject(existing);
   }
   throwIfConflicted(existing, baseRev); // opt-in CAS (see save())
+  const now = new Date();
+  // 86.md P1.13 — atomic CAS (see save()): conditional write when a baseline was
+  // supplied, so two concurrent member saves at the same rev cannot both land.
+  const base = Number(baseRev);
+  if (baseRev != null && Number.isInteger(base) && base >= 0) {
+    const res = await prisma.project.updateMany({
+      where: { id: project.id, autosaveRev: base },
+      data: { name: project.name, data, lastActivityAt: now, autosaveRev: { increment: 1 } },
+    });
+    if (res.count !== 1) {
+      const fresh = await prisma.project.findFirst({ where: { id: project.id } });
+      const err = new Error('Project was updated elsewhere since it was loaded');
+      err.code = 'SAVE_CONFLICT';
+      err.status = 409;
+      if (fresh) err.serverProject = rowToProject(fresh);
+      throw err;
+    }
+    const row = await prisma.project.findFirst({ where: { id: project.id } });
+    return rowToProject(row);
+  }
   const row = await prisma.project.update({
     where: { id: project.id },
-    data: { name: project.name, data, lastActivityAt: new Date(), autosaveRev: { increment: 1 } }, // prompt50 WS5 — meaningful edit by a member
+    data: { name: project.name, data, lastActivityAt: now, autosaveRev: { increment: 1 } }, // prompt50 WS5 — meaningful edit by a member
   });
   return rowToProject(row);
 }

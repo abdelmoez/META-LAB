@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { prisma } from '../db/client.js';
 import { runMeta } from '../../src/research-engine/statistics/meta-analysis.js';
+import { isExcludedFromAnalysis } from '../../src/research-engine/statistics/studyFilter.js';
 import { featureAccess } from '../services/featureAccess.js';
 // csvField prefixes =+-@ cells with a quote (CWE-1236 formula-injection guard).
 import { csvField, csvRow } from '../utils/csv.js';
@@ -151,10 +152,11 @@ async function derivePrisma(spIds) {
  * per-study annotated rows {label, es, lo, hi, weight} read off the runMeta result
  * (studies[]._es / _wRandomPct). Study labels are author+year ONLY — never notes.
  */
-export function deriveMa(studies) {
+export function deriveMa(studies, tau2Method = 'DL') {
   const groups = new Map();
   for (const s of studies) {
     if (s.es === '' || s.lo === '' || s.hi === '' || s.es == null) continue;
+    if (isExcludedFromAnalysis(s)) continue; // 86.md P1.17
     const key = `${s.outcome || 'Primary'}||${s.timepoint || ''}||${s.esType || ''}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(s);
@@ -164,7 +166,8 @@ export function deriveMa(studies) {
     if (group.length < 2) continue;
     const [outcome, timepoint, esType] = key.split('||');
     let result;
-    try { result = runMeta(group, 'random'); } catch { result = null; }
+    // 86.md P1.5 — pool with the project's persisted τ² estimator (default DL).
+    try { result = runMeta(group, 'random', { tau2Method }); } catch { result = null; }
     if (!result) continue;
     // Whitelist per-study rows from the annotated engine result — build each row
     // field-by-field so nothing else on the study object leaks.
@@ -329,7 +332,7 @@ export function buildPublicPayloadFromData({ project, robRows = [], layoutCards 
     pico,
     prisma: st.sections.prisma ? (prismaCounts || null) : null,
     includedStudies,
-    ma: st.sections.forest ? deriveMa(studies) : [],
+    ma: st.sections.forest ? deriveMa(studies, (blob.analysisSettings && blob.analysisSettings.tau2Method) || 'DL') : [],
     rob: st.sections.rob ? deriveRob(robRows) : null,
     yearHistogram: st.sections.yearHistogram ? deriveYearHistogram(studies) : [],
     dashboard: { cards: sanitizeCards(layoutCards) },

@@ -181,6 +181,41 @@ app.post(CSP_REPORT_PATH, cspReportLimiter, (req, res, next) => {
   });
 });
 
+// ── Client error beacon (86.md P1.7) ───────────────────────────────────────────
+// The SPA's installGlobalErrorHandlers() sendBeacon()s render crashes, chunk-load
+// failures and unhandled rejections here. The route was missing, so every client
+// crash 404'd and crash telemetry was fiction. Mounted early (before maintenance +
+// the global JSON parser) with its own tight limiter + tiny body cap; log-only, it
+// never persists or reflects. No auth: crashes happen pre-auth too, and the beacon
+// carries only a correlation id + a truncated message (never a stack).
+const clientErrorLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 120 : 1000,
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (_req, res) => res.status(429).end(),
+});
+const clientErrorParser = express.json({ type: ['application/json', 'text/plain'], limit: '8kb' });
+app.post('/api/client-errors', clientErrorLimiter, (req, res) => {
+  clientErrorParser(req, res, (err) => {
+    if (err) return res.status(err.type === 'entity.too.large' ? 413 : 400).end();
+    try {
+      const e = req.body && typeof req.body === 'object' ? req.body : {};
+      const s = (v, n) => (v == null ? '' : String(v).replace(/[\r\n\t]+/g, ' ').slice(0, n));
+      console.warn('[client-error]', JSON.stringify({
+        correlationId: s(e.correlationId, 64),
+        name: s(e.name, 80),
+        message: s(e.message, 300),
+        route: s(e.route, 200),
+        engine: s(e.engine, 60),
+        release: s(e.release, 60),
+        browser: s(e.browser, 120),
+      }));
+    } catch { /* never throw from the telemetry sink */ }
+    return res.status(204).end();
+  });
+});
+
 // ── Rate limiter for auth routes (20 req / 15 min in production; relaxed in dev/test) ──
 // Dev cap sized for the FULL vitest suite: 3k+ tests register/login hundreds of
 // throwaway users per run, and back-to-back runs share one 15-min window — at
@@ -311,7 +346,13 @@ const jsonLargeImport = express.json({ limit: '64mb' });
 // the JSON envelope. Everything else keeps the 10MB default.
 const jsonAiExtract   = express.json({ limit: '32mb' });
 app.use((req, res, next) => {
-  const parser = /\/import(\/start)?$/.test(req.path) ? jsonLargeImport
+  // 86.md P1.8 — the 64MB budget is ONLY for the authenticated screening import
+  // routes. The old suffix-only regex matched ANY path ending in `/import`
+  // (e.g. an unauthenticated POST /x/import), letting anonymous clients stream a
+  // 64MB JSON body into JSON.parse before auth/rate-limit/maintenance ran — a
+  // memory/CPU DoS. Scope it to the exact known routes; everything else keeps 10MB.
+  const isScreeningImport = req.path.startsWith('/api/screening/') && /\/import(\/start)?$/.test(req.path);
+  const parser = isScreeningImport ? jsonLargeImport
     : req.path === '/api/ai-extract' ? jsonAiExtract
     : jsonStandard;
   return parser(req, res, next);

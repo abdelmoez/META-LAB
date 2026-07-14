@@ -18,7 +18,9 @@ import { scheduleRescore } from '../services/screeningAiJobs.js';
 import { startRun, pecanSearchEnabled } from '../pecanSearch/runService.js';
 import { featureAccess } from '../services/featureAccess.js';
 import { runMeta } from '../../src/research-engine/statistics/meta-analysis.js';
+import { isExcludedFromAnalysis } from '../../src/research-engine/statistics/studyFilter.js';
 import { detectEvidenceShift, DEFAULT_SHIFT_THRESHOLDS } from '../../src/research-engine/statistics/evidenceShift.js';
+import { detectMaShifts } from '../../src/research-engine/living/snapshotDiff.js';
 import { computeNextRunAt, CADENCES } from '../../src/research-engine/living/schedule.js';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -443,10 +445,15 @@ export async function buildSnapshotSummary(metaLabProjectId) {
   }
 
   // Meta-analysis results per (outcome, timepoint, esType) — canonical engine,
-  // same grouping rule as the Analysis tab.
+  // same grouping rule AND same τ² estimator as the Analysis tab (86.md P1.5): pool
+  // with the project's persisted estimator so snapshots (and the evidence-shift
+  // alerts derived from them) never contradict the numbers the user sees. Studies
+  // the reviewer excluded/archived are dropped (86.md P1.17).
+  const tau2Method = (data.analysisSettings && data.analysisSettings.tau2Method) || 'DL';
   const groups = new Map();
   for (const s of studies) {
     if (s.es === '' || s.lo === '' || s.hi === '' || s.es == null) continue;
+    if (isExcludedFromAnalysis(s)) continue;
     const key = `${s.outcome || 'Primary'}||${s.timepoint || ''}||${s.esType || ''}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(s);
@@ -456,12 +463,12 @@ export async function buildSnapshotSummary(metaLabProjectId) {
     if (group.length < 2) continue;
     const [outcome, timepoint, esType] = key.split('||');
     try {
-      const result = runMeta(group, 'random');
+      const result = runMeta(group, 'random', { tau2Method });
       if (!result) continue;
       ma.push({
         outcome, timepoint, esType,
         k: result.k, es: result.pES, lo: result.lo95, hi: result.hi95,
-        pval: result.pval, i2: result.I2, method: result.method,
+        pval: result.pval, i2: result.I2, method: result.method, tau2Method,
       });
     } catch { /* skip un-poolable groups */ }
   }
@@ -510,7 +517,13 @@ export async function createSnapshot(metaLabProjectId, { kind = 'manual', label 
     try {
       const settings = await getLivingSettings();
       const prevSummary = safeParse(prev.summary, {});
-      const res = detectEvidenceShift(prevSummary.ma || [], summary.ma || [], settings.evidenceShift);
+      // 86.md P0.4 — detectEvidenceShift compares ONE per-outcome summary pair, not
+      // whole MA arrays. Passing the arrays directly (as this did) made every
+      // numeric check fail silently, so an alert could never fire. Pair the rows by
+      // outcome/timepoint and run the detector per pair (reuses the same helper
+      // snapshotDiff already uses for the human-readable diff).
+      const shifts = detectMaShifts(prevSummary.ma || [], summary.ma || [], settings.evidenceShift);
+      const res = { shifts, any: shifts.length > 0, majors: shifts.filter(s => s.severity === 'major').length };
       if (res.any) {
         const severity = res.shifts.some(s => s.severity === 'major') ? 'major'
           : res.shifts.some(s => s.severity === 'notable') ? 'notable' : 'info';

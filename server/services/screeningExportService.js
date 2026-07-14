@@ -169,12 +169,20 @@ export function buildExportRow(r, userId, cv, ctx = NEUTRAL_EXPORT_CTX) {
     reviewerCols[`reviewer_${i + 1}_decision`] = d ? (d.decision || 'undecided') : '';
     reviewerCols[`reviewer_${i + 1}_decided_at`] = d ? isoOrBlank(d.updatedAt || d.createdAt) : '';
   }
+  // 86.md P1.1 — blind-mode parity with listRecords: a non-leader on a blind
+  // project must not receive the record's bibliographic identity in an export the
+  // same way the on-screen list blanks it (server/controllers/screeningController.js
+  // `blind = blindMode && !isLeader`). ctx.canSeeIdentity is that exact verdict.
+  // (doi/pmid follow the listRecords contract, which ships them — see P3.104.)
+  // renderRisBlock reads authors/journal off THIS built row, so blanking here also
+  // blinds the RIS export.
+  const blindRecord = !ctx.canSeeIdentity;
   return {
     id: r.id,
     title: r.title,
-    authors: r.authors,
+    authors: blindRecord ? '' : r.authors,
     year: r.year,
-    journal: r.journal,
+    journal: blindRecord ? '' : r.journal,
     doi: r.doi,
     pmid: r.pmid,
     abstract: r.abstract,

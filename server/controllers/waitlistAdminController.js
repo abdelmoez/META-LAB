@@ -195,8 +195,20 @@ export async function adminRemoveApplicant(req, res) {
       if (result.code === 'not_found') return res.status(404).json({ error: 'Applicant not found' });
       return res.status(500).json({ error: 'Internal server error' });
     }
-    await logAdminAction(req, 'WAITLIST_REMOVE', 'BetaWaitlistApplicant', req.params.id, null);
-    return res.json({ ok: true });
+    // 86.md P1.10 — removing an applicant must also KILL any pending account
+    // invitation for them. The invitation lives in the MAIN db and its accept flow
+    // validates only against that row, so without this a deliberately-removed person
+    // could still create an account from an emailed link. Best-effort (main-db side):
+    // never let a revoke hiccup fail the remove the admin already saw succeed.
+    let revoked = 0;
+    try {
+      const r = await invitationService.revokeInvitationForApplicant(req.params.id, { revokedByUserId: req.user?.id || null });
+      revoked = (r && (r.revoked ?? r.count)) || 0;
+    } catch (e) {
+      console.error('[waitlist-admin] revoke-on-remove failed:', e?.message || e);
+    }
+    await logAdminAction(req, 'WAITLIST_REMOVE', 'BetaWaitlistApplicant', req.params.id, { invitationsRevoked: revoked });
+    return res.json({ ok: true, invitationsRevoked: revoked });
   } catch (err) {
     console.error('[waitlist-admin] remove error:', err?.message || err);
     return res.status(500).json({ error: 'Internal server error' });

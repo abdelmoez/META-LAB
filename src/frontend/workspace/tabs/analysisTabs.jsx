@@ -19,6 +19,10 @@ import { fmtNum, fmtES, fmtP, fmtPct, fmtI2, fmtWeight, normalizePrecision, DECI
 import { isNonPrimary } from "../../../research-engine/import-export/referenceParsers.js";
 import { ES_TYPES, DATA_NATURE_LABEL, ADJUST_LABEL, SOURCE_LABEL } from "../../../research-engine/project-model/monolithConstants.js";
 import { normalCDF, runMeta, eggersTest, leaveOneOut, trimFill, influenceDiagnostics, subgroupAnalysis, analysisTypeWarnings, CONVERSIONS, checkPoolability, TAU2_METHODS, TAU2_LABELS } from "../../../research-engine/statistics/monolithStats.js";
+// 86.md P1.17 — studies a reviewer excluded ("exclude from analysis") or archived
+// must not pool. Shared predicate so Analysis, GRADE, living-review and public
+// synthesis all agree on what is analyzable.
+import { isExcludedFromAnalysis } from "../../../research-engine/statistics/studyFilter.js";
 // P13 — the meta-regression engine ships in the SAME barrel as subgroupAnalysis
 // above, but lands CONCURRENTLY. A namespace import keeps `npm run build` green
 // whether or not `metaRegression` is present yet (a missing NAMED export would
@@ -50,7 +54,7 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
   // ── Outcome / time-point selector ─────────────────────────────────────────
   const outcomePairs=useMemo(()=>{
     const seen=new Set(), pairs=[];
-    studies.filter(s=>s.es!==""&&!isNaN(+s.es)).forEach(s=>{
+    studies.filter(s=>s.es!==""&&!isNaN(+s.es)&&!isExcludedFromAnalysis(s)).forEach(s=>{
       const oc=(s.outcome||"").trim(), tp=(s.timepoint||"").trim();
       const key=`${oc}|||${tp}`;
       if(!seen.has(key)){ seen.add(key); pairs.push({outcome:oc,timepoint:tp,esType:(s.esType||"").trim(),key}); }
@@ -86,7 +90,7 @@ export function AnalysisTab({project,updateProject,onApplyPrecisionToAll}){
     if(!activeOutcome) return [];
     return studies.filter(s=>{
       const oc=(s.outcome||"").trim(), tp=(s.timepoint||"").trim();
-      return oc===activeOutcome.outcome && tp===activeOutcome.timepoint && s.es!==""&&!isNaN(+s.es);
+      return oc===activeOutcome.outcome && tp===activeOutcome.timepoint && s.es!==""&&!isNaN(+s.es)&&!isExcludedFromAnalysis(s);
     });
   },[studies,activeOutcome]);
 
@@ -802,7 +806,7 @@ export function ForestTab({project}){
   // ── Outcome / time-point selector (same logic as AnalysisTab) ─────────────
   const outcomePairs=useMemo(()=>{
     const seen=new Set(), pairs=[];
-    studies.filter(s=>s.es!==""&&!isNaN(+s.es)).forEach(s=>{
+    studies.filter(s=>s.es!==""&&!isNaN(+s.es)&&!isExcludedFromAnalysis(s)).forEach(s=>{
       const oc=(s.outcome||"").trim(), tp=(s.timepoint||"").trim();
       const key=`${oc}|||${tp}`;
       if(!seen.has(key)){ seen.add(key); pairs.push({outcome:oc,timepoint:tp,esType:(s.esType||"").trim(),key}); }
@@ -828,7 +832,7 @@ export function ForestTab({project}){
     if(!activeOutcome) return [];
     return studies.filter(s=>{
       const oc=(s.outcome||"").trim(), tp=(s.timepoint||"").trim();
-      return oc===activeOutcome.outcome && tp===activeOutcome.timepoint && s.es!==""&&!isNaN(+s.es);
+      return oc===activeOutcome.outcome && tp===activeOutcome.timepoint && s.es!==""&&!isNaN(+s.es)&&!isExcludedFromAnalysis(s);
     });
   },[studies,activeOutcome]);
 

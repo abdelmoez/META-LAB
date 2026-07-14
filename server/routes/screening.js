@@ -7,7 +7,9 @@
  */
 import { Router } from 'express';
 import { requireAuth } from '../middleware/auth.js';
-import { PrismaClient } from '@prisma/client';
+// 86.md P1.9 — use the provider-selected, pragma'd SHARED client, not a second
+// bare-schema PrismaClient (which is SQLite-only and would split-brain under Postgres).
+import { prisma } from '../db/client.js';
 import * as S from '../controllers/screeningController.js';
 import * as M from '../controllers/screeningMemberController.js';
 import * as RV from '../controllers/screeningReviewController.js';
@@ -21,7 +23,6 @@ import * as AI from '../controllers/screeningAiController.js';
 import * as EL from '../controllers/screeningEligibilityController.js';
 
 const r = Router();
-const prisma = new PrismaClient();
 
 r.use(requireAuth);
 

@@ -26,7 +26,26 @@ export const GRADE_ROB_RATINGS = { NOT_SERIOUS: 'not_serious', SERIOUS: 'serious
 export const ROB_GRADE_SOURCE = { AUTO: 'auto_rob', MANUAL: 'manual' };
 
 const COMPLETED = new Set(['complete', 'consensus']);
-const VALID_OVERALL = new Set(['low', 'some', 'high']);
+
+// 86.md P1.12 — map EVERY instrument's overall judgement onto the 3-level GRADE
+// concern scale. Previously only RoB 2's low/some/high were recognised, so a
+// finalised ROBINS-I assessment of 'serious' or 'critical' counted as neither low
+// nor high — it fell through and the domain reported "no assessments finalised",
+// silently hiding serious/critical risk. This is instrument-agnostic (no need to
+// thread instrumentId): RoB 2 = low/some/high; ROBINS-I / ROBINS-E =
+// low/moderate/serious/critical/ni.
+const OVERALL_TO_CONCERN = {
+  low: 'low',
+  some: 'some',
+  moderate: 'some',
+  ni: 'some', // "no information" → treated cautiously as some-concerns
+  high: 'high',
+  serious: 'high',
+  critical: 'high',
+};
+function concernOf(overall) {
+  return OVERALL_TO_CONCERN[String(overall == null ? '' : overall).trim().toLowerCase()] || null;
+}
 
 /**
  * Stable signature over ALL assessments (id:status:overall, sorted) so any change
@@ -58,7 +77,7 @@ export function summariseRobForGrade(assessments = []) {
   const signature = robGradeSignature(list);
   const completedList = list.filter(a => COMPLETED.has(a.status));
   const counts = { low: 0, some: 0, high: 0 };
-  for (const a of completedList) if (VALID_OVERALL.has(a.overall)) counts[a.overall] += 1;
+  for (const a of completedList) { const c = concernOf(a.overall); if (c) counts[c] += 1; }
   const assessed = counts.low + counts.some + counts.high;
   const pending = list.length - completedList.length;
 

@@ -64,6 +64,48 @@ describe('gradeSync — summariseRobForGrade', () => {
     expect(r.pending).toBe(1);
     expect(r.reason).toMatch(/not yet finalised/);
   });
+
+  // 86.md P1.12 — ROBINS-I / ROBINS-E overall levels (low/moderate/serious/critical/ni)
+  // must map onto the GRADE concern scale, not be silently dropped.
+  it('maps ROBINS-I serious/critical to high risk (regression: were previously ignored)', () => {
+    const r = summariseRobForGrade([
+      A('1', 'complete', 'low'),
+      A('2', 'complete', 'critical'),
+      A('3', 'complete', 'serious'),
+      A('4', 'complete', 'serious'),
+      A('5', 'complete', 'critical'),
+      A('6', 'complete', 'critical'),
+    ]);
+    expect(r.assessed).toBe(6);
+    expect(r.counts).toEqual({ low: 1, some: 0, high: 5 });
+    expect(r.suggestedRating).toBe(GRADE_ROB_RATINGS.VERY_SERIOUS);
+    expect(r.concern).toBe('very_serious');
+  });
+
+  it('maps ROBINS-I moderate and ni to some-concerns', () => {
+    const r = summariseRobForGrade([
+      A('1', 'complete', 'moderate'),
+      A('2', 'complete', 'moderate'),
+      A('3', 'complete', 'ni'),
+      A('4', 'complete', 'low'),
+    ]);
+    expect(r.counts).toEqual({ low: 1, some: 3, high: 0 });
+    expect(r.suggestedRating).toBe(GRADE_ROB_RATINGS.SERIOUS); // some-concerns majority
+  });
+
+  it('regression guard: five critical ROBINS-I assessments are NOT reported as "none finalised"', () => {
+    const r = summariseRobForGrade([
+      A('1', 'complete', 'low'),
+      A('2', 'complete', 'critical'),
+      A('3', 'complete', 'critical'),
+      A('4', 'complete', 'critical'),
+      A('5', 'complete', 'critical'),
+      A('6', 'complete', 'critical'),
+    ]);
+    expect(r.assessed).toBe(6);
+    expect(r.suggestedRating).not.toBe(null);
+    expect(r.concern).toBe('very_serious');
+  });
 });
 
 describe('gradeSync — robGradeSignature (staleness)', () => {

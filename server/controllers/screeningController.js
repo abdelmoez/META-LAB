@@ -1,7 +1,10 @@
 /**
  * screeningController.js — META·SIFT Beta API handlers.
  */
-import { PrismaClient } from '@prisma/client';
+// 86.md P1.9 — use the provider-selected, pragma'd SHARED client, not a second
+// bare-schema PrismaClient (SQLite-only; splits brain under Postgres, and misses
+// the WAL/busy_timeout pragmas applied only to the shared client's connection).
+import { prisma } from '../db/client.js';
 import { createHash } from 'crypto';
 import { detectDuplicatesInProject, recordDuplicateLabels, getDuplicateEvaluation } from '../services/screeningDuplicateService.js';
 import { syncConflicts } from '../services/screeningConflictService.js';
@@ -68,8 +71,6 @@ function parseJsonList(json) {
   try { const v = JSON.parse(json || '[]'); return Array.isArray(v) ? v.filter(x => typeof x === 'string') : []; }
   catch { return []; }
 }
-
-const prisma = new PrismaClient();
 
 // ── Ownership guard ──────────────────────────────────────────────────
 // deletedAt:null — soft-deleted projects are indistinguishable from

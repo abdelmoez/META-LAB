@@ -5,9 +5,13 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch: {}
+# 86.md P1.3 — event-scoped concurrency. A single shared 'production-deploy' group
+# let any PR run evict a QUEUED production deploy (GitHub keeps one pending run per
+# group). PR runs now group per-PR (and cancel their own stale runs); only main-push
+# deploys share the serialized production slot.
 concurrency:
-  group: production-deploy
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || 'production-deploy' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 jobs:
   # ── Test gate (roadmap 0.1) ────────────────────────────────────────────────
   # Runs the hermetic, server-free suite (research-engine statistics golden

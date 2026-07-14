@@ -27,6 +27,7 @@
 import { prisma } from '../db/client.js';
 import { touchProjectActivity } from '../store.js';
 import { runMeta, eggersTest } from '../../src/research-engine/statistics/meta-analysis.js';
+import { analyzableStudies } from '../../src/research-engine/statistics/studyFilter.js';
 import { getOutcomePairs, filterStudiesForOutcome } from '../../src/research-engine/import-export/journalSubmission.js';
 import { summariseRobForGrade } from '../../src/research-engine/rob/gradeSync.js';
 import { buildSummaryOfFindingsTable } from '../../src/research-engine/manuscript/tables.js';
@@ -106,12 +107,15 @@ function dominantDesign(subset) {
  * back-transformed for the `estimate`/`ci*` fields; raw log-scale values stay on
  * pES/lo95/hi95. Returns { pooled:false, … } (never throws) when < 2 studies.
  */
-export function metaSummaryForOutcome(subset, model = 'random') {
-  const list = Array.isArray(subset) ? subset : [];
+export function metaSummaryForOutcome(subset, model = 'random', tau2Method = 'DL') {
+  // 86.md P1.17 — studies the reviewer excluded/archived must not pool or count.
+  const list = analyzableStudies(Array.isArray(subset) ? subset : []);
   const esType = String((list.find((s) => s && s.esType)?.esType) || '').trim();
   const kind = MEASURE_KIND[esType] || 'mean';
   const { total: nParticipants, partial } = participantTotal(list);
-  const res = list.length >= 2 ? runMeta(list, model === 'fixed' ? 'fixed' : 'random') : null;
+  // 86.md P1.5 — pool with the project's persisted τ² estimator so GRADE certainty
+  // never contradicts the Analysis tab (both default to DerSimonian–Laird).
+  const res = list.length >= 2 ? runMeta(list, model === 'fixed' ? 'fixed' : 'random', { tau2Method }) : null;
   if (!res) {
     return {
       pooled: false, k: list.length, model, esType, kind,
@@ -293,7 +297,8 @@ function storedRowDTO(row, engine) {
 function assembleOutcome({ project, pair, allRob, storedRow, engine, model }) {
   const studies = Array.isArray(project.studies) ? project.studies : [];
   const subset = filterStudiesForOutcome(studies, pair);
-  const meta = metaSummaryForOutcome(subset, model);
+  const tau2Method = (project && project.analysisSettings && project.analysisSettings.tau2Method) || 'DL';
+  const meta = metaSummaryForOutcome(subset, model, tau2Method);
   const robPick = robForOutcome(allRob, pair);
   const robSummary = summariseRobForGrade(robPick.list);
   const pico = (project && project.pico) || {};
@@ -423,7 +428,8 @@ export async function saveOutcome(project, outcomeKey, payload, user, { model = 
   const robSummary = summariseRobForGrade(robPick.list);
   const pico = (project && project.pico) || {};
   const designOrPico = { ...pico, studyDesign: pico.studyDesign, design: dominantDesign(subset), designs: subset.map((s) => (s && s.design) || '') };
-  const meta = metaSummaryForOutcome(subset, model);
+  const tau2Method = (project && project.analysisSettings && project.analysisSettings.tau2Method) || 'DL';
+  const meta = metaSummaryForOutcome(subset, model, tau2Method);
 
   const validIds = domainIdsFromEngine(engine);
   const validRatings = ratingSetFromEngine(engine);
