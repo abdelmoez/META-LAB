@@ -37,6 +37,11 @@ import {
   computeReadiness, smartInsights,
   evaluateStaleness, primaryAnalysis,
   computeSectionInputsHashes, checkConsistency,
+  // 84.md — live manuscript sync: dependency graph, sync plan, contradictions,
+  // missing-info, freshness rollup and version snapshots (all pure engine).
+  computeDependencyState, buildSyncPlan, applySyncDecision,
+  detectContradictions, collectMissingInfo, computeFreshness,
+  createSnapshot, restoreSnapshot, removeSnapshot,
 } from '../../research-engine/manuscript/index.js';
 import { generateDraft } from '../../research-engine/manuscript/draft.js';
 import { gradeCertaintyEnabled, sofCertaintyMap } from '../../frontend/workspace/gradeApi.js';
@@ -293,6 +298,147 @@ export function useManuscript(project, upd) {
     try { return checkConsistency(project, activeDraft, { ...genOpts, prismaCounts }); } catch { return []; }
   }, [project, activeDraft, genOpts, prismaCounts]);
 
+  /* ── 84.md — live manuscript sync ── */
+  // Coarse per-key dependency fingerprint (same opts generation uses). Only
+  // computed once the live-source fetches settle, so a change to search.date can
+  // mark Methods outdated with a NAMED reason — never a fetch-blip false positive.
+  const freshDepState = useMemo(() => {
+    if (!activeDraft || !sourcesSettled) return {};
+    try {
+      return computeDependencyState(project, {
+        ...genOpts, prismaCounts, primary,
+        overrides: activeDraft.prismaOverrides,
+        templateId: activeDraft.templateId, citationStyle: activeDraft.citationStyle,
+      });
+    } catch { return {}; }
+  }, [project, genOpts, prismaCounts, primary, activeDraft, sourcesSettled]);
+
+  const contradictions = useMemo(() => {
+    if (!activeDraft) return [];
+    try { return detectContradictions(project, activeDraft, { ...genOpts, prismaCounts, primary }); } catch { return []; }
+  }, [project, activeDraft, genOpts, prismaCounts, primary]);
+
+  const missingInfo = useMemo(() => {
+    if (!activeDraft) return [];
+    try { return collectMissingInfo(project, activeDraft, { ...genOpts, prismaCounts, primary }); } catch { return []; }
+  }, [project, activeDraft, genOpts, prismaCounts, primary]);
+
+  // Which refreshable data blocks are currently stale (evaluateStaleness is keyed
+  // by blockId → { stale, lastRefreshedAt }).
+  const staleBlocks = useMemo(
+    () => Object.keys(staleness || {}).filter((k) => staleness[k] && staleness[k].stale),
+    [staleness],
+  );
+
+  const freshness = useMemo(() => {
+    try {
+      return computeFreshness({
+        outdated, contradictions, missing: missingInfo,
+        staleBlocks, availabilityKnown: sourcesSettled,
+      });
+    } catch {
+      return { status: 'unknown', label: 'Sync status unavailable', counts: {} };
+    }
+  }, [outdated, contradictions, missingInfo, staleBlocks, sourcesSettled]);
+
+  // Eager, LIGHT count for the tab badge (no draft generation).
+  const outdatedCount = useMemo(() => Object.keys(outdated || {}).length, [outdated]);
+
+  // LAZY sync plan: generating the draft to diff CURRENT vs PROPOSED is heavy, so
+  // it runs on demand only (tab open / after a decision). The `generated` bundle
+  // the current plan diffs against is kept in a ref so applySyncDecision applies
+  // EXACTLY the proposed text the user saw.
+  const [syncPlan, setSyncPlan] = useState(null);
+  const generatedRef = useRef(null);
+  const planShownRef = useRef(false);
+
+  const refreshSyncPlan = useCallback(() => {
+    planShownRef.current = true;
+    if (!activeDraft) { generatedRef.current = null; setSyncPlan(null); return null; }
+    try {
+      const generated = generateDraft(project, {
+        ...genOpts, prismaCounts, primary, templateId: activeDraft.templateId,
+      });
+      generatedRef.current = generated;
+      const plan = buildSyncPlan({
+        project, draft: activeDraft, generated, freshDepState, freshHashes, outdated,
+      });
+      setSyncPlan(plan);
+      return plan;
+    } catch (e) {
+      // 84.md Part 22 — a synchronization failure must never corrupt the manuscript
+      // and must be DISPLAYED, not swallowed: surface an error plan the panel renders
+      // with a retry, and keep the last generated ref cleared so no stale proposal
+      // can be applied.
+      generatedRef.current = null;
+      setSyncPlan({ error: (e && e.message) || 'Synchronization failed', entries: [], counts: { outdated: 0, conflicts: 0, critical: 0 } });
+      return null;
+    }
+  }, [project, genOpts, prismaCounts, primary, activeDraft, freshDepState, freshHashes, outdated]);
+
+  // Once the panel has been opened, keep the plan current after edits / decisions /
+  // AND whenever any plan input changes — refreshSyncPlan's identity tracks project /
+  // draft / fresh hashes / dep state, so a tab opened BEFORE the live sources settled
+  // recomputes the moment they do (otherwise the plan would freeze on empty inputs).
+  // Never runs before first open, so it can't add fetch-blip noise to an unvisited tab.
+  useEffect(() => {
+    if (planShownRef.current) refreshSyncPlan();
+  }, [refreshSyncPlan]);
+
+  // Unwrap an engine {draft, …} result (or a bare draft) to the next draft. Null
+  // when the decision did not produce one (mutateActive then no-ops).
+  const draftOf = (res) => (res && (res.draft || (res.sections ? res : null))) || null;
+
+  const decide = useCallback((sectionId, decision) => {
+    const generated = generatedRef.current;
+    mutateActive((draft) => draftOf(applySyncDecision(draft, sectionId, decision, {
+      generated,
+      sectionMeta: generated && generated.sectionMeta,
+      freshDepState, availability, nowIso: new Date().toISOString(),
+    })));
+    refreshSyncPlan();
+  }, [mutateActive, freshDepState, availability, refreshSyncPlan]);
+
+  // Accept every auto-applicable update in ONE mutation (looping decide() would
+  // clobber, since projectRef only catches up on the next render).
+  const acceptAllSafe = useCallback(() => {
+    const plan = syncPlan;
+    const generated = generatedRef.current;
+    if (!plan || !generated) return;
+    const ids = (plan.entries || []).filter((e) => e.canAutoApply).map((e) => e.sectionId);
+    if (!ids.length) return;
+    mutateActive((draft) => {
+      let d = draft;
+      for (const id of ids) {
+        const next = draftOf(applySyncDecision(d, id, 'accept', {
+          generated, sectionMeta: generated.sectionMeta,
+          freshDepState, availability, nowIso: new Date().toISOString(),
+        }));
+        if (next) d = next;
+      }
+      return d;
+    });
+    refreshSyncPlan();
+  }, [syncPlan, mutateActive, freshDepState, availability, refreshSyncPlan]);
+
+  /* 84.md Part 6 — version snapshots (stored on the draft). */
+  const createSnapshotNow = useCallback(({ label, frozen } = {}) => {
+    mutateActive((draft) => draftOf(createSnapshot(draft, project, {
+      label: label || '', frozen: !!frozen, author: (project && project._me && project._me.name) || null,
+      appVersion: (typeof window !== 'undefined' && window.__APP_VERSION__) || null,
+      nowIso: new Date().toISOString(), genOpts: { ...genOpts, prismaCounts, primary },
+    })));
+  }, [mutateActive, project, genOpts, prismaCounts, primary]);
+
+  const restoreSnapshotById = useCallback((id) => {
+    mutateActive((draft) => draftOf(restoreSnapshot(draft, id, { nowIso: new Date().toISOString() })));
+    refreshSyncPlan();
+  }, [mutateActive, refreshSyncPlan]);
+
+  const removeSnapshotById = useCallback((id, opts = {}) => {
+    mutateActive((draft) => draftOf(removeSnapshot(draft, id, { force: !!opts.force })));
+  }, [mutateActive]);
+
   /* ── mutations ── */
   const updateSection = useCallback((id, content) => {
     if (!activeDraft) return;
@@ -395,6 +541,11 @@ export function useManuscript(project, upd) {
     robByStudyId: sources.robByStudyId,
     perSource: sources.perSource,
     outdated, consistency, setSectionLocked,
+    // 84.md — live manuscript sync surface for the Updates panel + freshness pills.
+    freshDepState, contradictions, missingInfo, freshness, outdatedCount,
+    syncPlan, refreshSyncPlan, decide, acceptAllSafe,
+    snapshots: (activeDraft && activeDraft.snapshots) || [],
+    createSnapshotNow, restoreSnapshotById, removeSnapshotById,
     updateSection, generate, refreshBlock, refreshAllBlocks,
     setMeta, setMetaDebounced, setStatement, updateDraft, addDraft, removeDraft,
     flush: flushPending,

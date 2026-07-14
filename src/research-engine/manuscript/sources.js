@@ -20,6 +20,9 @@ import { computePrismaCounts } from './prismaCounts.js';
 import { getOutcomePairs, filterStudiesForOutcome } from '../import-export/journalSubmission.js';
 import { resolveAnalysis } from './analysisDescribe.js';
 import { SECTION_IDS } from './model.js';
+// 84.md — per-section dependency fingerprint stamped into sectionMeta. dependencies.js
+// must NOT import this file (one-way dependency direction — see dependencies.js header).
+import { computeDependencyState, sectionDepState } from './dependencies.js';
 
 const clean = (s) => String(s == null ? '' : s).trim();
 
@@ -187,11 +190,17 @@ export function computeSectionInputs(project, opts = {}) {
  */
 export function computeSectionMeta(project, opts = {}) {
   const all = computeSectionInputs(project, opts);
+  // 84.md — compute the full dependency fingerprint ONCE, then slice per section so
+  // an accepted/generated section can stamp its depState for later diffDeps.
+  const depState = computeDependencyState(project, opts);
   const out = {};
   for (const id of SECTION_IDS) {
     const e = all[id];
     if (!e) continue;
-    out[id] = { sources: e.sources, missing: e.missing, inputsHash: hashOf(e.inputs) };
+    out[id] = {
+      sources: e.sources, missing: e.missing, inputsHash: hashOf(e.inputs),
+      depState: sectionDepState(id, depState),
+    };
   }
   return out;
 }

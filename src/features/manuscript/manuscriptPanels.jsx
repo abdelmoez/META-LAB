@@ -13,10 +13,11 @@ import { alpha } from '../../frontend/theme/tokens.js';
 import {
   SECTION_TYPES, SECTION_IDS, STATEMENT_TYPES, CITATION_STYLES, JOURNAL_TEMPLATES, sectionStatus,
   collectCitationOrder, draftSectionTexts, studySelectionParagraph,
+  explainKeys, SECTION_DEPENDENCIES,
 } from '../../research-engine/manuscript/index.js';
 import { RichSectionEditor, RichToolbar, RICH_EDITOR_CSS } from './richEditor/RichSectionEditor.jsx';
 import { AbstractEditor } from './richEditor/AbstractEditor.jsx';
-import { extractOutline } from './richEditor/mdDom.js';
+import { extractOutline, mdToHtml } from './richEditor/mdDom.js';
 // 67.md — Word (.docx) export is a Plus-plan feature (server-enforced). This is
 // UX-only, fail-open: only disable the button once we KNOW the plan lacks it.
 import { useEntitlements } from '../../frontend/entitlements';
@@ -153,6 +154,219 @@ export function ExportButtons({ exporters, canonical }) {
         style={{ ...btnS('ghost'), opacity: exporting ? 0.6 : 1 }}>
         <Icon name="checkSquare" size={13} /> {lbl('prismaS', 'PRISMA-S checklist')}
       </button>
+    </div>
+  );
+}
+
+/* ════════════ 84.md — live sync: freshness pill + Updates review ════════════ */
+
+/** Overall freshness → pill tone. synced=green, warnings/missing=yellow,
+    updates=blue, critical=red, unknown=gray. */
+const FRESHNESS_TONE = {
+  synced: 'green', warnings: 'yellow', updates: 'blue',
+  'missing-info': 'yellow', critical: 'red', unknown: 'gray',
+};
+
+/** Dependency category → chip tone (84.md severity colouring). */
+const CATEGORY_TONE = { critical: 'red', methods: 'blue', numerical: 'yellow', wording: 'gray' };
+
+export function FreshnessPill({ freshness, style }) {
+  if (!freshness) return null;
+  return (
+    <span data-testid="stitch-manuscript-freshness"
+      title="How closely the manuscript matches the current project data"
+      style={{ ...tagS(FRESHNESS_TONE[freshness.status] || 'gray'), ...style }}>
+      {freshness.label || 'Sync status'}
+    </span>
+  );
+}
+
+const previewBox = {
+  background: C.bg, border: `1px solid ${C.brd}`, borderRadius: 8,
+  padding: '10px 12px', fontSize: 12, color: C.txt2, lineHeight: 1.6,
+  overflow: 'auto', maxHeight: 240, minWidth: 0, flex: '1 1 260px',
+};
+
+/** CURRENT vs PROPOSED preview — input is our own markdown, rendered through the
+    same escape-first mdToHtml sanitizer the editor uses. */
+function DiffPreview({ current, proposed }) {
+  return (
+    <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', margin: '10px 0' }}>
+      <div style={{ flex: '1 1 260px', minWidth: 0 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 4 }}>Current</div>
+        <div style={previewBox} dangerouslySetInnerHTML={{ __html: mdToHtml(current || '') || '<em>Empty</em>' }} />
+      </div>
+      <div style={{ flex: '1 1 260px', minWidth: 0 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: C.acc, letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 4 }}>Proposed</div>
+        <div data-testid="stitch-manuscript-update-proposed" style={previewBox}
+          dangerouslySetInnerHTML={{ __html: mdToHtml(proposed || '') || '<em>Empty</em>' }} />
+      </div>
+    </div>
+  );
+}
+
+const sectionLabel = (id) => (SECTION_TYPES.find((s) => s.id === id) || {}).label || id;
+
+function UpdateCard({ entry, m }) {
+  const id = entry.sectionId;
+  const detachConfirm = 'Detach stops this section from auto-updating when the project data changes. You can Relink it later. Continue?';
+  const onDetach = () => { if (typeof window === 'undefined' || window.confirm(detachConfirm)) m.decide(id, 'detach'); };
+  return (
+    <Card data-testid={`stitch-manuscript-update-${id}`} style={{ marginBottom: 14 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+        <h3 style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: C.txt }}>{sectionLabel(id)}</h3>
+        {entry.detached ? (
+          <span style={tagS('gray')}>Detached</span>
+        ) : entry.locked ? (
+          <span style={tagS('yellow')}><Icon name="lock" size={9} /> Locked</span>
+        ) : entry.syncState === 'edited' ? (
+          <span style={tagS('yellow')}>Manually edited — review required</span>
+        ) : (
+          <span style={tagS('blue')}>Update available</span>
+        )}
+      </div>
+
+      {/* reason chips — WHY this is out of date, coloured by severity */}
+      {Array.isArray(entry.reasons) && entry.reasons.length > 0 && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 8 }}>
+          {entry.reasons.map((r) => <span key={r.key} style={tagS(CATEGORY_TONE[r.category] || 'gray')}>{r.label}</span>)}
+        </div>
+      )}
+
+      {entry.locked && (
+        <InfoBox color={C.yel}>
+          <strong>This section is locked.</strong> The project data behind it changed, so the locked text <strong>may now be inaccurate</strong>. Unlock it in the Editor to accept the update.
+        </InfoBox>
+      )}
+      {entry.interpretive && (
+        <div data-testid={`stitch-manuscript-update-interpretive-${id}`}
+          style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.6, marginBottom: 6 }}>
+          Interpretive section — review carefully; never auto-applied.
+        </div>
+      )}
+
+      <DiffPreview current={entry.current} proposed={entry.proposed} />
+
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <button onClick={() => m.decide(id, 'accept')} disabled={!!entry.locked}
+          data-testid="stitch-manuscript-update-accept"
+          title={entry.locked ? 'Unlock this section in the Editor to accept the update' : 'Replace the current text with the proposed update'}
+          style={{ ...btnS('primary'), fontSize: 11, opacity: entry.locked ? 0.5 : 1, cursor: entry.locked ? 'not-allowed' : undefined }}>
+          <Icon name="check" size={12} /> Accept update
+        </button>
+        <button onClick={() => m.decide(id, 'keep')} style={{ ...btnS('ghost'), fontSize: 11 }}>
+          Keep my wording
+        </button>
+        {entry.detached ? (
+          <button onClick={() => m.decide(id, 'relink')} style={{ ...btnS('ghost'), fontSize: 11 }}>
+            <Icon name="refresh" size={12} /> Relink
+          </button>
+        ) : (
+          <button onClick={onDetach} style={{ ...btnS('ghost'), fontSize: 11 }}>
+            Detach
+          </button>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function ContradictionsCard({ items }) {
+  const sorted = [...(items || [])].sort((a, b) => (a.severity === 'critical' ? 0 : 1) - (b.severity === 'critical' ? 0 : 1));
+  return (
+    <Card data-testid="stitch-manuscript-contradictions" style={{ marginBottom: 14 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {sorted.map((c) => (
+          <div key={c.id} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <span style={{ ...tagS(c.severity === 'critical' ? 'red' : 'yellow'), flexShrink: 0 }}>
+              {c.severity === 'critical' ? 'Critical' : 'Check'}
+            </span>
+            {c.section && <span style={{ ...tagS('gray'), flexShrink: 0 }}>{sectionLabel(c.section)}</span>}
+            <span style={{ fontSize: 12, color: C.txt2, lineHeight: 1.6, flex: '1 1 240px' }}>{c.message}</span>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+function MissingInfoCard({ items }) {
+  return (
+    <Card data-testid="stitch-manuscript-missing-info" style={{ marginBottom: 14 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {(items || []).map((mi, i) => (
+          <div key={mi.field || i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+            <span style={{ ...tagS('yellow'), flexShrink: 0 }}>Missing</span>
+            <span style={{ fontSize: 12, color: C.txt2, lineHeight: 1.6, flex: '1 1 240px' }}>
+              {mi.hint || mi.field}
+              {mi.resolveAt && <span style={{ color: C.muted }}> — add it in {mi.resolveAt}.</span>}
+            </span>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+export function UpdatesPanel({ m }) {
+  const plan = m.syncPlan;
+  const entries = (plan && plan.entries) || [];
+  // Outdated sections need review (this already subsumes edited-conflicts and
+  // locked-stale, which the engine flags outdated); a detached section whose text
+  // now differs is shown so its Relink action is reachable.
+  const shown = entries.filter((e) => e.outdated || (e.detached && !e.sameText));
+  const safeCount = entries.filter((e) => e.canAutoApply).length;
+  const contradictions = m.contradictions || [];
+  const missing = m.missingInfo || [];
+  const nothing = shown.length === 0 && contradictions.length === 0 && missing.length === 0;
+
+  return (
+    <div data-testid="stitch-manuscript-updates">
+      <div data-testid="stitch-manuscript-plan-debug" style={{ display: 'none' }}>
+        {JSON.stringify({ n: entries.length, out: entries.filter((e) => e.outdated).map((e) => e.sectionId), counts: plan && plan.counts, fresh: m.freshness && m.freshness.counts })}
+      </div>
+      {plan && plan.error && (
+        /* 84.md Part 22 — a sync failure is DISPLAYED with a retry, never silent. */
+        <div role="alert" data-testid="stitch-manuscript-sync-error"
+          style={{ border: `1px solid ${C.red}`, borderRadius: 8, padding: '10px 12px', marginBottom: 14, fontSize: 12.5, color: C.txt2, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ flex: 1 }}>Synchronization failed: {plan.error}. The manuscript was not changed.</span>
+          <button onClick={() => m.refreshSyncPlan && m.refreshSyncPlan()} style={{ ...btnS('ghost'), fontSize: 11 }}>Retry</button>
+        </div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', marginBottom: 16 }}>
+        <FreshnessPill freshness={m.freshness} />
+        <span style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.6, flex: '1 1 200px' }}>
+          The manuscript tracks your project data. When a number, method or count changes, the affected sections show the proposed update here — you decide what to accept.
+        </span>
+        {safeCount > 0 && (
+          <button onClick={() => m.acceptAllSafe && m.acceptAllSafe()}
+            data-testid="stitch-manuscript-accept-all"
+            title="Accept every update that is safe to apply automatically (interpretive and edited sections are left for you to review)"
+            style={{ ...btnS('primary'), fontSize: 11 }}>
+            <Icon name="check" size={12} /> Accept all safe updates ({safeCount})
+          </button>
+        )}
+      </div>
+
+      {contradictions.length > 0 && (
+        <Block title="Contradictions" desc="Statements in the manuscript that conflict with the current project data. Resolve these before submission.">
+          <ContradictionsCard items={contradictions} />
+        </Block>
+      )}
+
+      {missing.length > 0 && (
+        <Block title="Missing information" desc="Facts a complete manuscript needs that are not in the project yet.">
+          <MissingInfoCard items={missing} />
+        </Block>
+      )}
+
+      {shown.length > 0 ? (
+        <Block title="Section updates" desc="Each card shows the current text beside the proposed update, and why it changed.">
+          {shown.map((e) => <UpdateCard key={e.sectionId} entry={e} m={m} />)}
+        </Block>
+      ) : nothing ? (
+        <InfoBox color={C.grn}>Fully synchronized with the project.</InfoBox>
+      ) : null}
     </div>
   );
 }
@@ -399,6 +613,15 @@ export function OverviewPanel({ m, exporters, onOpenSection }) {
   const allEmpty = SECTION_TYPES.every((s) => sectionStatus(sections[s.id] || {}) === 'empty');
   return (
     <div>
+      {/* 84.md — at-a-glance sync status against the live project data */}
+      {!allEmpty && m.freshness && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 16 }}>
+          <FreshnessPill freshness={m.freshness} />
+          <span style={{ fontSize: 11.5, color: C.muted }}>
+            Manages how closely the draft matches your project — see the Updates tab to review and apply changes.
+          </span>
+        </div>
+      )}
       {allEmpty ? (
         <FirstDraftHero m={m} />
       ) : (
@@ -570,6 +793,7 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
   const [sel, setSel] = useState('title');
   const [genNotice, setGenNotice] = useState(null); // { only:null|[id], skipped:[...], skippedLocked:[...] }
   const [toolsOpen, setToolsOpen] = useState(true);
+  const [whyOpen, setWhyOpen] = useState(false); // 84.md — "Why does this say this?"
 
   const section = (m.activeDraft.sections && m.activeDraft.sections[sel]) || {};
   const lastGen = section.lastGeneratedAt || null;
@@ -791,6 +1015,13 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
               style={{ ...btnS(locked ? 'primary' : 'ghost'), fontSize: 11 }}>
               <Icon name="lock" size={12} /> {locked ? 'Unlock' : 'Lock'}
             </button>
+            <button onClick={() => setWhyOpen((v) => !v)} aria-expanded={whyOpen}
+              aria-label="Why does this section say this?"
+              title="Show what this section was generated from and what it depends on"
+              data-testid="stitch-manuscript-why-toggle"
+              style={{ ...btnS(whyOpen ? 'primary' : 'ghost'), fontSize: 11 }}>
+              <Icon name="info" size={12} /> Why?
+            </button>
             <button onClick={() => setToolsOpen((v) => !v)} aria-label={toolsOpen ? 'Hide tools panel' : 'Show tools panel'}
               title={toolsOpen ? 'Hide tools panel' : 'Show tools panel'}
               data-testid="stitch-manuscript-tools-toggle"
@@ -812,6 +1043,12 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
           <div data-testid="stitch-manuscript-missing" style={{ fontSize: 11, color: C.muted, marginBottom: 8, lineHeight: 1.5 }}>
             Missing: {section.missing.slice(0, 2).map((x) => x.hint).join(' · ')}
           </div>
+        )}
+
+        {/* 84.md — "Why does this say this?" provenance detail (sources / missing /
+            last generated / declared dependencies). Compact; keyboard-toggled. */}
+        {whyOpen && (
+          <WhySectionPanel section={section} sectionId={sel} />
         )}
 
         {genNotice && (
@@ -960,6 +1197,113 @@ function ToolsLabel({ children }) {
     <div style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.6, textTransform: 'uppercase', marginBottom: 8 }}>
       {children}
     </div>
+  );
+}
+
+/* 84.md — per-section "Why does this say this?" detail: the live sources it was
+   generated from, what it still needs, when it was generated, and the project
+   facts it depends on (a change to any of them surfaces in the Updates tab). */
+function WhySectionPanel({ section, sectionId }) {
+  const sources = Array.isArray(section.sources) ? section.sources : [];
+  const missing = Array.isArray(section.missing) ? section.missing : [];
+  const storedKeys = (section.depState && typeof section.depState === 'object')
+    ? Object.keys(section.depState) : (SECTION_DEPENDENCIES[sectionId] || []);
+  const deps = explainKeys(storedKeys);
+  return (
+    <Card data-testid="stitch-manuscript-why" style={{ padding: 12, marginBottom: 10 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div>
+          <ToolsLabel>Generated from</ToolsLabel>
+          {sources.length ? (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {sources.map((s) => <span key={s.key} style={tagS('blue')}>{s.label}</span>)}
+            </div>
+          ) : <span style={{ fontSize: 11, color: C.muted }}>Not generated yet — write it, or generate it from your project data.</span>}
+        </div>
+        <div>
+          <ToolsLabel>Depends on</ToolsLabel>
+          {deps.length ? (
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              {deps.map((d) => <span key={d.key} style={tagS(CATEGORY_TONE[d.category] || 'gray')}>{d.label}</span>)}
+            </div>
+          ) : <span style={{ fontSize: 11, color: C.muted }}>No tracked dependencies.</span>}
+          <div style={{ fontSize: 10.5, color: C.muted, marginTop: 5, lineHeight: 1.5 }}>
+            A change to any of these can flag this section for review in the Updates tab.
+          </div>
+        </div>
+        {missing.length > 0 && (
+          <div>
+            <ToolsLabel>Still missing</ToolsLabel>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
+              {missing.map((mi, i) => <li key={mi.field || i}>{mi.hint || mi.field}</li>)}
+            </ul>
+          </div>
+        )}
+        <div style={{ fontSize: 10.5, color: C.muted }}>Last generated: {fmtTime(section.lastGeneratedAt)}</div>
+      </div>
+    </Card>
+  );
+}
+
+/* 84.md Part 6 — manuscript version snapshots: named restore points of the whole
+   draft. Frozen snapshots are protected from deletion; Restore first takes an
+   automatic safety snapshot (engine side) so it is undoable. */
+function SnapshotsBlock({ m }) {
+  const [label, setLabel] = useState('');
+  const [frozen, setFrozen] = useState(false);
+  const snaps = m.snapshots || [];
+  const create = () => { if (m.createSnapshotNow) m.createSnapshotNow({ label: label.trim(), frozen }); setLabel(''); setFrozen(false); };
+  const restore = (s) => {
+    if (typeof window === 'undefined' || window.confirm('Restore this snapshot? The current draft text will be replaced. A safety snapshot of the current state is taken automatically first, so this can be undone.')) {
+      if (m.restoreSnapshotById) m.restoreSnapshotById(s.id);
+    }
+  };
+  const del = (s) => {
+    if (s.frozen) return;
+    if (typeof window === 'undefined' || window.confirm('Delete this snapshot? This cannot be undone.')) {
+      if (m.removeSnapshotById) m.removeSnapshotById(s.id);
+    }
+  };
+  return (
+    <Card data-testid="stitch-manuscript-snapshots">
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: snaps.length ? 14 : 0 }}>
+        <Labeled label="Snapshot label" style={{ flex: '1 1 200px' }}>
+          <input value={label} onChange={(e) => setLabel(e.target.value)}
+            placeholder="e.g. Before reviewer revisions" aria-label="Snapshot label"
+            data-testid="stitch-manuscript-snapshot-label" style={inp} />
+        </Labeled>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: C.txt2, cursor: 'pointer', paddingBottom: 8 }}>
+          <input type="checkbox" checked={frozen} onChange={(e) => setFrozen(e.target.checked)}
+            aria-label="Freeze snapshot to protect it from deletion" />
+          Freeze (protect from deletion)
+        </label>
+        <button onClick={create} data-testid="stitch-manuscript-snapshot-create" style={{ ...btnS('primary'), fontSize: 11 }}>
+          <Icon name="plus" size={12} /> Create snapshot
+        </button>
+      </div>
+      {snaps.length ? (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }} data-testid="stitch-manuscript-snapshot-list">
+          {snaps.map((s, i) => (
+            <div key={s.id} data-testid={`stitch-manuscript-snapshot-${s.id}`}
+              style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '9px 0', borderTop: i === 0 ? 'none' : `1px solid ${C.brd}` }}>
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: C.txt, flex: '1 1 160px' }}>{s.label || 'Untitled snapshot'}</span>
+              {s.frozen && <span style={tagS('purple')}><Icon name="lock" size={9} /> Frozen</span>}
+              <span style={{ fontSize: 10.5, color: C.muted }}>{fmtTime(s.createdAt || s.at)}</span>
+              <span style={{ display: 'flex', gap: 6 }}>
+                <button onClick={() => restore(s)} aria-label={`Restore snapshot ${s.label || ''}`}
+                  data-testid={`stitch-manuscript-snapshot-restore-${s.id}`}
+                  style={{ ...btnS('ghost'), fontSize: 10.5, padding: '3px 10px' }}>Restore</button>
+                <button onClick={() => del(s)} disabled={!!s.frozen}
+                  aria-label={`Delete snapshot ${s.label || ''}`}
+                  title={s.frozen ? 'Frozen snapshots are protected from deletion' : 'Delete this snapshot'}
+                  data-testid={`stitch-manuscript-snapshot-delete-${s.id}`}
+                  style={{ ...btnS('ghost'), fontSize: 10.5, padding: '3px 10px', opacity: s.frozen ? 0.5 : 1, cursor: s.frozen ? 'not-allowed' : undefined }}>Delete</button>
+              </span>
+            </div>
+          ))}
+        </div>
+      ) : <div style={{ fontSize: 11.5, color: C.muted }}>No snapshots yet. Create one to save a named restore point for the whole manuscript.</div>}
+    </Card>
   );
 }
 
@@ -1248,6 +1592,10 @@ export function ExportPanel({ m, exporters }) {
             <Stat label="Citation style" value={(CITATION_STYLES.find((s) => s.id === m.activeDraft.citationStyle) || {}).label || '—'} />
           </div>
         </Card>
+      </Block>
+
+      <Block title="Version snapshots" desc="Save a named restore point of the whole manuscript before big changes. Freeze one to protect it; Restore takes an automatic safety snapshot first.">
+        <SnapshotsBlock m={m} />
       </Block>
 
       <Block title="Journal template">

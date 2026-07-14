@@ -89,6 +89,51 @@ test.describe('Manuscript editor (flag ON)', () => {
     await expect(page.getByTestId('stitch-manuscript-abstract-words')).toBeVisible();
   });
 
+  // 84.md — live sync: a project change after generation flags the affected
+  // sections in the Updates panel with the REASON, offers a proposal, and
+  // accepting it brings the manuscript back in sync. Uses the project API
+  // (autosave) to flip the τ² estimator — a Methods dependency.
+  test('84.md: project change → Updates panel flags Methods with a reason → accept resyncs', async ({ page, request, tmpProject }) => {
+    await openManuscript(page, tmpProject.id);
+    // Wait for the live sources to settle BEFORE generating: sections stamp the
+    // availability they were generated under, and staleness is honestly "unknown"
+    // (never guessed) when compared across a different availability. The freshness
+    // pill lives in the Updates panel.
+    await page.getByTestId('stitch-manuscript-subtab-updates').click();
+    await expect(page.getByTestId('stitch-manuscript-freshness').first()).not.toContainText(/unknown/i, { timeout: 15_000 });
+    await page.getByTestId('stitch-manuscript-subtab-editor').click();
+    await page.getByTestId('stitch-manuscript-generate').click();
+    await expect(page.getByTestId('stitch-manuscript-save-status').first()).toContainText(/Saved/i, { timeout: 15_000 });
+
+    // Change a Methods dependency server-side: analysisSettings.tau2Method DL→REML.
+    const proj = await (await request.get(`/api/projects/${tmpProject.id}`)).json();
+    proj.analysisSettings = { ...(proj.analysisSettings || {}), tau2Method: 'REML' };
+    const put = await request.put(`/api/projects/${tmpProject.id}/autosave`, { data: proj });
+    expect(put.ok()).toBeTruthy();
+    await page.reload();
+    await expect(page.getByTestId('stitch-manuscript-workspace')).toBeVisible({ timeout: 15_000 });
+
+    // Freshness surfaces the pending update; the Updates tab lists Methods with
+    // the dependency that changed and a side-by-side proposal.
+    await page.getByTestId('stitch-manuscript-subtab-updates').click();
+    const entry = page.getByTestId('stitch-manuscript-update-methods');
+    await page.waitForTimeout(4000);
+    console.log('TAU2', JSON.stringify((await (await request.get(`/api/projects/${tmpProject.id}`)).json()).analysisSettings));
+    console.log('PLANDBG', await page.getByTestId('stitch-manuscript-plan-debug').textContent());
+    await expect(entry).toBeVisible({ timeout: 15_000 });
+    await expect(entry).toContainText(/τ²|estimator|analysis/i);   // the reason
+    await expect(entry.getByTestId('stitch-manuscript-update-proposed')).toContainText(/restricted maximum likelihood/i);
+
+    // Accept → the section is current again and the editor shows the new wording.
+    await entry.getByTestId('stitch-manuscript-update-accept').click();
+    await expect(page.getByTestId('stitch-manuscript-update-methods')).toHaveCount(0);
+    await page.getByTestId('stitch-manuscript-subtab-editor').click();
+    await page.getByTestId('stitch-manuscript-section-methods').click();
+    await expect(page.getByTestId('stitch-manuscript-rich-editor')).toContainText(/restricted maximum likelihood/i, { timeout: 10_000 });
+    // Persisted: survives refresh.
+    await expect(page.getByTestId('stitch-manuscript-save-status').first()).toContainText(/Saved/i, { timeout: 15_000 });
+  });
+
   test('one-click Word export downloads a .docx', async ({ page, tmpProject }) => {
     await openManuscript(page, tmpProject.id);
     // Give the export something non-trivial to render.

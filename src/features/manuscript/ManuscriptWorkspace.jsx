@@ -8,7 +8,7 @@
  * legacy token system (Stitch auto-remaps --t-*).
  */
 import { useState, useCallback } from 'react';
-import { C, btnS } from '../../frontend/workspace/ui/styles.js';
+import { C, btnS, tagS } from '../../frontend/workspace/ui/styles.js';
 import { SectionHeader, InfoBox } from '../../frontend/workspace/ui/primitives.jsx';
 import { Icon } from '../../frontend/components/icons.jsx';
 import { alpha } from '../../frontend/theme/tokens.js';
@@ -16,11 +16,12 @@ import { CITATION_STYLES, JOURNAL_TEMPLATES, SECTION_IDS } from '../../research-
 import { useManuscript } from './useManuscript.js';
 import {
   Select, OverviewPanel, EditorPanel, TablesPanel, FiguresPanel, ReferencesPanel, PrismaPanel, ExportPanel,
-  SaveStatusPill,
+  UpdatesPanel, SaveStatusPill,
 } from './manuscriptPanels.jsx';
 
 const SUBTABS = [
   { id: 'overview', label: 'Overview', icon: 'layers' },
+  { id: 'updates', label: 'Updates', icon: 'refresh' },
   { id: 'editor', label: 'Editor', icon: 'pencil' },
   { id: 'tables', label: 'Tables', icon: 'table' },
   { id: 'figures', label: 'Figures', icon: 'barChart' },
@@ -162,17 +163,36 @@ export function ManuscriptWorkspace({ project, upd }) {
 
       {/* sub-tab bar */}
       <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap', marginBottom: 20 }}>
-        {SUBTABS.map((s) => (
-          <button key={s.id} onClick={() => setTab(s.id)}
-            data-testid={`stitch-manuscript-subtab-${s.id}`}
-            style={{ ...btnS(tab === s.id ? 'primary' : 'ghost'), fontSize: 11.5 }}>
-            <Icon name={s.icon} size={12} /> {s.label}
-          </button>
-        ))}
+        {SUBTABS.map((s) => {
+          // 84.md — the Updates tab carries a count badge when the manuscript is
+          // out of sync with the project (updates available / critical), and its
+          // heavy sync plan is (re)computed only when the tab is opened.
+          const wantsBadge = s.id === 'updates'
+            && (m.freshness.status === 'updates' || m.freshness.status === 'critical');
+          const badgeN = (m.freshness.counts && m.freshness.counts.outdated) || m.outdatedCount;
+          return (
+            <button key={s.id}
+              onClick={() => { setTab(s.id); if (s.id === 'updates' && m.refreshSyncPlan) m.refreshSyncPlan(); }}
+              data-testid={`stitch-manuscript-subtab-${s.id}`}
+              style={{ ...btnS(tab === s.id ? 'primary' : 'ghost'), fontSize: 11.5 }}>
+              <Icon name={s.icon} size={12} /> {s.label}
+              {wantsBadge && badgeN > 0 && (
+                <span data-testid="stitch-manuscript-updates-badge"
+                  style={{
+                    ...tagS(m.freshness.status === 'critical' ? 'red' : 'yellow'),
+                    marginLeft: 6, padding: '0 6px', fontSize: 10, lineHeight: '15px',
+                  }}>
+                  {badgeN}
+                </span>
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {/* panels */}
       {tab === 'overview' && <OverviewPanel m={m} exporters={exporters} onOpenSection={openSection} />}
+      {tab === 'updates' && <UpdatesPanel m={m} />}
       {tab === 'editor' && <EditorPanel m={m} exporters={exporters} sectionRequest={sectionRequest} />}
       {tab === 'tables' && <TablesPanel m={m} />}
       {tab === 'figures' && <FiguresPanel m={m} />}

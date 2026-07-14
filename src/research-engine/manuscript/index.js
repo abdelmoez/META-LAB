@@ -18,3 +18,12 @@ export * from './abstractSections.js';
 export * from './analysisDescribe.js';
 export * from './sources.js';
 export * from './consistency.js';
+// 84.md — live project synchronization: engine versions, dependency graph, safe
+// sync/review workflow, contradiction + missing-info detection, snapshots, freshness.
+export * from './versions.js';
+export * from './dependencies.js';
+export * from './syncPlan.js';
+export * from './contradictions.js';
+export * from './missingInfo.js';
+export * from './snapshots.js';
+export * from './freshness.js';

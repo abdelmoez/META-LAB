@@ -232,6 +232,14 @@ export function normalizeDraft(raw, nowIso = null) {
     if (r.sourceAvailability && typeof r.sourceAvailability === 'object') {
       out.sections[s.id].sourceAvailability = { ...r.sourceAvailability };
     }
+    // 84.md — additive live-sync section fields (detached/approval/review stamps,
+    // per-section dependency fingerprint, last-linked info). Preserved only when
+    // present, so pre-84 blobs normalize byte-identically.
+    if (r.detached === true) out.sections[s.id].detached = true;
+    if (typeof r.approvedAt === 'string' && r.approvedAt) out.sections[s.id].approvedAt = r.approvedAt;
+    if (typeof r.reviewedAt === 'string' && r.reviewedAt) out.sections[s.id].reviewedAt = r.reviewedAt;
+    if (r.depState && typeof r.depState === 'object') out.sections[s.id].depState = { ...r.depState };
+    if (r.lastLinked && typeof r.lastLinked === 'object') out.sections[s.id].lastLinked = { ...r.lastLinked };
   }
   // statements
   out.statements = {};
@@ -258,6 +266,13 @@ export function normalizeDraft(raw, nowIso = null) {
     affiliations: Array.isArray(raw.authorship?.affiliations) ? raw.authorship.affiliations : [],
     correspondingNote: raw.authorship?.correspondingNote || '',
   };
+  // 84.md Part 21 — additive version history + sync audit log. Only materialized
+  // when the stored blob actually has them (no phantom keys on legacy drafts); the
+  // read caps guard against an unbounded persisted array.
+  if (Array.isArray(raw.snapshots) && raw.snapshots.length) out.snapshots = raw.snapshots.slice(-20);
+  else delete out.snapshots;
+  if (Array.isArray(raw.syncLog) && raw.syncLog.length) out.syncLog = raw.syncLog.slice(-100);
+  else delete out.syncLog;
   return out;
 }
 

@@ -95,6 +95,9 @@ export function applyGeneratedSections(draft, generated, opts = {}) {
         sources: Array.isArray(meta.sources) ? meta.sources : [],
         missing: Array.isArray(meta.missing) ? meta.missing : [],
         ...(typeof meta.inputsHash === 'string' && meta.inputsHash ? { inputsHash: meta.inputsHash } : {}),
+        // 84.md — stamp the per-section dependency fingerprint so the sync plan can
+        // later diffDeps this section against a fresh project state. Additive.
+        ...(meta.depState && typeof meta.depState === 'object' ? { depState: { ...meta.depState } } : {}),
       } : {}),
       // recs round — remember WHICH live sources this generation saw, so OUTDATED
       // detection only compares hashes computed under the same availability.
