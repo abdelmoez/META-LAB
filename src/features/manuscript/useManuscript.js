@@ -286,10 +286,21 @@ export function useManuscript(project, upd) {
       return computeSectionInputsHashes(project, { ...genOpts, prismaCounts, templateId: activeDraft.templateId });
     } catch { return {}; }
   }, [project, genOpts, prismaCounts, activeDraft, sourcesSettled]);
-  const outdated = useMemo(
-    () => (fetchDegraded ? {} : MS.computeOutdatedSections(activeDraft, freshHashes, availability)),
-    [activeDraft, freshHashes, availability, fetchDegraded],
-  );
+  const outdated = useMemo(() => {
+    const all = MS.computeOutdatedSections(activeDraft, freshHashes, availability);
+    if (!fetchDegraded) return all;
+    // 84.md refinement — a degraded source fetch must not blanket-suppress honest
+    // staleness: sections that RECORDED the availability they were generated under
+    // were already compared like-for-like by the per-section guard (a source that
+    // was in the same state both times yields comparable hashes). Only sections
+    // WITHOUT that stamp (pre-availability drafts) stay "unknown" while degraded.
+    const out = {};
+    for (const id of Object.keys(all)) {
+      const s = activeDraft && activeDraft.sections && activeDraft.sections[id];
+      if (s && s.sourceAvailability) out[id] = true;
+    }
+    return out;
+  }, [activeDraft, freshHashes, availability, fetchDegraded]);
 
   // 73.md Part 9 — cross-artefact consistency checks (also folded into
   // smartInsights by the engine; the raw list powers the Overview card + jumps).

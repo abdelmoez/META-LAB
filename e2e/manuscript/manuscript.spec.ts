@@ -105,8 +105,15 @@ test.describe('Manuscript editor (flag ON)', () => {
     await page.getByTestId('stitch-manuscript-generate').click();
     await expect(page.getByTestId('stitch-manuscript-save-status').first()).toContainText(/Saved/i, { timeout: 15_000 });
 
+    // Wait until the GENERATED draft (with its provenance stamps) has actually
+    // LANDED server-side — the save pill can match an earlier save, and a GET
+    // taken too early would make the PUT below clobber the generated draft (LWW).
+    let proj = null;
+    await expect(async () => {
+      proj = await (await request.get(`/api/projects/${tmpProject.id}`)).json();
+      expect(proj?.manuscripts?.[0]?.sections?.methods?.inputsHash).toBeTruthy();
+    }).toPass({ timeout: 15_000 });
     // Change a Methods dependency server-side: analysisSettings.tau2Method DL→REML.
-    const proj = await (await request.get(`/api/projects/${tmpProject.id}`)).json();
     proj.analysisSettings = { ...(proj.analysisSettings || {}), tau2Method: 'REML' };
     const put = await request.put(`/api/projects/${tmpProject.id}/autosave`, { data: proj });
     expect(put.ok()).toBeTruthy();
@@ -117,9 +124,6 @@ test.describe('Manuscript editor (flag ON)', () => {
     // the dependency that changed and a side-by-side proposal.
     await page.getByTestId('stitch-manuscript-subtab-updates').click();
     const entry = page.getByTestId('stitch-manuscript-update-methods');
-    await page.waitForTimeout(4000);
-    console.log('TAU2', JSON.stringify((await (await request.get(`/api/projects/${tmpProject.id}`)).json()).analysisSettings));
-    console.log('PLANDBG', await page.getByTestId('stitch-manuscript-plan-debug').textContent());
     await expect(entry).toBeVisible({ timeout: 15_000 });
     await expect(entry).toContainText(/τ²|estimator|analysis/i);   // the reason
     await expect(entry.getByTestId('stitch-manuscript-update-proposed')).toContainText(/restricted maximum likelihood/i);

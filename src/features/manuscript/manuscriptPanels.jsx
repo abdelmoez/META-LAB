@@ -322,9 +322,6 @@ export function UpdatesPanel({ m }) {
 
   return (
     <div data-testid="stitch-manuscript-updates">
-      <div data-testid="stitch-manuscript-plan-debug" style={{ display: 'none' }}>
-        {JSON.stringify({ n: entries.length, out: entries.filter((e) => e.outdated).map((e) => e.sectionId), counts: plan && plan.counts, fresh: m.freshness && m.freshness.counts })}
-      </div>
       {plan && plan.error && (
         /* 84.md Part 22 — a sync failure is DISPLAYED with a retry, never silent. */
         <div role="alert" data-testid="stitch-manuscript-sync-error"
