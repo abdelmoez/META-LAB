@@ -288,6 +288,7 @@ export async function recoverStuckFullTextJobs(now = Date.now(), maxAttempts = D
  * startFullTextWorker — boot hook. Recovers crash-interrupted jobs (re-queue under
  * the retry cap), then drains. Idempotent.
  */
+let sweepTimer = null;
 export async function startFullTextWorker() {
   try {
     const { requeued, failed } = await recoverStuckFullTextJobs();
@@ -295,6 +296,19 @@ export async function startFullTextWorker() {
     if (failed) console.warn(`[fulltext-worker] failed ${failed} retrieval job(s) over the retry cap (${DEFAULT_MAX_JOB_ATTEMPTS})`);
   } catch (e) {
     console.error('[fulltext-worker] startup failed:', e?.message);
+  }
+  // 86.md P1.19 — periodic stuck-job sweep (was boot-only). A job whose worker
+  // wedged mid-run (now bounded by the download timeout, but belt-and-suspenders)
+  // self-heals within STUCK_MS without a process restart. Heartbeat-staleness based,
+  // so it never disturbs an actively-draining job. unref'd → never holds the process.
+  if (!sweepTimer) {
+    sweepTimer = setInterval(async () => {
+      try {
+        const { requeued } = await recoverStuckFullTextJobs();
+        if (requeued) { console.log(`[fulltext-worker] periodic sweep re-queued ${requeued} stuck job(s)`); kickFullTextWorker(); }
+      } catch (e) { console.error('[fulltext-worker] periodic sweep failed:', e?.message); }
+    }, STUCK_MS);
+    if (typeof sweepTimer.unref === 'function') sweepTimer.unref();
   }
   kickFullTextWorker();
 }

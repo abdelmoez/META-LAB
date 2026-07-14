@@ -12,6 +12,7 @@
  */
 import { prisma } from '../db/client.js';
 import { writeAudit } from '../screening/access.js';
+import { ELIGIBILITY_ENGINE_REVIEWER_ID } from './screeningEligibilityService.js';
 import crypto from 'node:crypto';
 import {
   computeValidation,
@@ -208,7 +209,11 @@ export async function loadEngineInput(projectId, stage = 'title_abstract') {
       },
     }),
     prisma.screenDecision.findMany({
-      where: { projectId, stage },
+      // 86.md P2.94 — never train the relevance model on the eligibility engine's
+      // OWN auto-applied decisions (a label feedback loop where the model learns to
+      // predict its sibling engine). Human labels only; the engine reviewerId is
+      // excluded at the source.
+      where: { projectId, stage, reviewerId: { not: ELIGIBILITY_ENGINE_REVIEWER_ID } },
       // prompt49 item 1 — also load rating + notes so the engine can derive
       // SEPARATE reviewer-quality + note signals (relevance classifier unchanged).
       select: { recordId: true, reviewerId: true, decision: true, rating: true, notes: true, createdAt: true },

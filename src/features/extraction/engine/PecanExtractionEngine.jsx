@@ -17,6 +17,7 @@ import { protocolOutcomes } from '../../../research-engine/extraction/protocolOu
 import { confirmDraft as confirmDraftPure, parkRecord as parkRecordPure, unparkToDraft as unparkPure } from '../../../research-engine/extraction/records.js';
 import { reconcileDrafts, identityOf } from '../../../research-engine/extraction/draftReconcile.js';
 import { attachProvenanceMany } from '../../../research-engine/extraction/engine/articleProvenance.js';
+import { deriveEffectSizeFromRaw } from '../../../research-engine/extraction/deriveEffectSize.js';
 import { buildArticleSummary } from '../../../research-engine/extraction/engine/articleList.js';
 import { mkStudy } from '../../../research-engine/project-model/defaults.js';
 import { addOutcome, duplicateOutcome, renameOutcome, setOutcomeRole, archiveOutcome, groupForStudy, activeOutcomes } from '../../../research-engine/extraction/outcomeGroups.js';
@@ -150,10 +151,40 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
 
   const completeArticle = useCallback(async (id) => {
     setCompleting(true); setBanner('');
+    // 86.md P0.3 — before completing, backfill a poolable effect size from RAW cells
+    // when the reviewer captured 2×2 / continuous / etc. data for a raw-derivable
+    // measure but never entered es/lo/hi (the engine dropped the classic tab's inline
+    // calculator, so such studies silently never pooled). Never overwrites a
+    // reviewer-entered effect size; records a conversions[] audit + provenance.
+    let derivedMsg = '';
+    updateProject(activeId, (p) => {
+      const studies = Array.isArray(p.studies) ? p.studies : [];
+      const s = studies.find((x) => x.id === id);
+      if (!s) return p;
+      const d = deriveEffectSizeFromRaw(s, { at: new Date().toISOString() });
+      if (!d) return p;
+      derivedMsg = ` Effect size auto-derived from raw ${d.esType} data.`;
+      const now = new Date().toISOString();
+      const provFields = {};
+      for (const f of ['es', 'lo', 'hi']) provFields[f] = { method: 'calculated', at: now, excerpt: d.conversion.method };
+      return {
+        ...p,
+        studies: studies.map((x) => {
+          if (x.id !== id) return x;
+          const next = {
+            ...x, es: d.es, lo: d.lo, hi: d.hi, esType: d.esType,
+            source: x.source || 'calculated',
+            conversions: [...(Array.isArray(x.conversions) ? x.conversions : []), d.conversion],
+            updatedAt: now,
+          };
+          return attachProvenanceMany(next, provFields);
+        }),
+      };
+    });
     try {
       const r = await api.completeArticle(activeId, id);
       mergeServerMeta(id, r && r.extractionMeta);
-      setBanner('Article marked complete.'); refreshList();
+      setBanner(`Article marked complete.${derivedMsg}`); refreshList();
     } catch (e) {
       if (e.status === 422 && e.payload && Array.isArray(e.payload.blocking)) {
         setBanner(`Cannot complete yet — ${e.payload.blocking.length} blocking check(s): ${e.payload.blocking.map((b) => b.msg).join(' · ')}`);

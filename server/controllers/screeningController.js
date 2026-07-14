@@ -8,6 +8,7 @@ import { prisma } from '../db/client.js';
 import { createHash } from 'crypto';
 import { detectDuplicatesInProject, recordDuplicateLabels, getDuplicateEvaluation } from '../services/screeningDuplicateService.js';
 import { syncConflicts } from '../services/screeningConflictService.js';
+import { ELIGIBILITY_ENGINE_REVIEWER_ID } from '../services/screeningEligibilityService.js';
 import { touchProjectActivity } from '../store.js';
 import {
   parseImportContent, dedupeAndInsertRecords, hasUsableIdentity,
@@ -1635,8 +1636,16 @@ export async function saveDecision(req, res) {
     // request body cannot bypass the requirement.
     let promoted = false;
     if (stage === 'title_abstract' && rec.currentStage === 'title_abstract') {
+      // 86.md P1.20 — the eligibility engine's governed auto-apply writes real
+      // ScreenDecision rows under a dedicated non-human reviewerId. Those must NOT
+      // count toward the DISTINCT-HUMAN-REVIEWER promotion quorum: otherwise one
+      // human include + one auto-applied engine include silently satisfies the
+      // "two independent reviewers" guarantee while PRISMA/audit claim quorum was
+      // met by humans. Excluded here at the source. (Conflict detection deliberately
+      // STILL sees the engine — see screeningConflictService — so a genuine
+      // human-vs-engine disagreement still surfaces for the leader to resolve.)
       const stageDecisions = await prisma.screenDecision.findMany({
-        where: { recordId: rec.id, stage: 'title_abstract', decision: { not: 'undecided' } },
+        where: { recordId: rec.id, stage: 'title_abstract', decision: { not: 'undecided' }, reviewerId: { not: ELIGIBILITY_ENGINE_REVIEWER_ID } },
         select: { reviewerId: true, decision: true },
       });
       // DISTINCT reviewers: collapse any duplicate rows per reviewer (the unique

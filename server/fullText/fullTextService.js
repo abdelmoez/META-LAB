@@ -81,6 +81,45 @@ export function maxPdfBytes(settings) {
   return Math.min(100, Math.max(1, mb)) * 1024 * 1024;
 }
 
+// 86.md P1.19 — hard wall-clock cap on a single PDF download (vs the 15s metadata
+// timeout; a real PDF can legitimately take longer than a JSON call). Overridable.
+export const FT_DOWNLOAD_TIMEOUT_MS = Number(process.env.FT_DOWNLOAD_TIMEOUT_MS) || 60000;
+
+/**
+ * Read a fetch Response body into a Buffer, aborting as soon as cumulative bytes
+ * exceed `maxBytes` so a misbehaving/huge OA host can never be fully buffered in
+ * RAM (86.md P1.19). Streams via the web ReadableStream reader when available;
+ * falls back to arrayBuffer() (still post-checked by the caller) for exotic fetch
+ * implementations that don't expose a readable body.
+ * @throws {Error} with code 'TOO_LARGE' when the cap is exceeded.
+ */
+export async function readBodyCapped(res, maxBytes, controller) {
+  const body = res && res.body;
+  const reader = body && typeof body.getReader === 'function' ? body.getReader() : null;
+  if (!reader) {
+    // No streamable body — fall back to arrayBuffer (bounded by the caller's check).
+    return Buffer.from(await res.arrayBuffer());
+  }
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value && value.length) {
+      total += value.length;
+      if (total > maxBytes) {
+        try { await reader.cancel(); } catch { /* best effort */ }
+        if (controller) { try { controller.abort(); } catch { /* best effort */ } }
+        const err = new Error('response exceeds size cap');
+        err.code = 'TOO_LARGE';
+        throw err;
+      }
+      chunks.push(Buffer.from(value));
+    }
+  }
+  return Buffer.concat(chunks, total);
+}
+
 /**
  * coverage(projectId) — honest full-text coverage counts for the status card.
  *   included         — records with finalStatus 'accepted'
@@ -158,20 +197,34 @@ export async function downloadAndAttach(record, candidate, opts = {}) {
   if (!pdfUrl) return { ok: false, reason: 'no PDF URL' };
   if (typeof fetchFn !== 'function') return { ok: false, reason: 'fetch unavailable' };
 
+  // 86.md P1.19 — the PDF fetch previously had NO timeout and buffered the ENTIRE
+  // body via arrayBuffer() BEFORE the size check, so one hung or multi-GB OA host
+  // could wedge the whole full-text worker (draining flag stuck) or exhaust memory.
+  // Bound it with an AbortController hard timeout AND stream the body, aborting the
+  // moment cumulative bytes exceed the cap.
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller ? setTimeout(() => controller.abort(), FT_DOWNLOAD_TIMEOUT_MS) : null;
   let res;
   try {
-    res = await fetchFn(pdfUrl, { redirect: 'follow' });
+    res = await fetchFn(pdfUrl, controller ? { redirect: 'follow', signal: controller.signal } : { redirect: 'follow' });
   } catch (e) {
-    return { ok: false, reason: `fetch failed: ${String((e && e.message) || e).slice(0, 200)}` };
+    if (timer) clearTimeout(timer);
+    const aborted = e && (e.name === 'AbortError' || /abort/i.test(String(e.message || '')));
+    return { ok: false, reason: aborted ? `download timed out after ${FT_DOWNLOAD_TIMEOUT_MS}ms` : `fetch failed: ${String((e && e.message) || e).slice(0, 200)}` };
   }
-  if (!res || !res.ok) return { ok: false, reason: `HTTP ${res ? res.status : 'no-response'}` };
+  if (!res || !res.ok) { if (timer) clearTimeout(timer); return { ok: false, reason: `HTTP ${res ? res.status : 'no-response'}` }; }
 
   const ct = String((res.headers && res.headers.get && res.headers.get('content-type')) || '').toLowerCase();
   let buf;
   try {
-    buf = Buffer.from(await res.arrayBuffer());
+    buf = await readBodyCapped(res, maxBytes, controller);
   } catch (e) {
-    return { ok: false, reason: `read failed: ${String((e && e.message) || e).slice(0, 200)}` };
+    if (timer) clearTimeout(timer);
+    if (e && e.code === 'TOO_LARGE') return { ok: false, reason: `PDF exceeds ${settings.maxPdfMb}MB cap` };
+    const aborted = e && (e.name === 'AbortError' || /abort/i.test(String(e.message || '')));
+    return { ok: false, reason: aborted ? `download timed out after ${FT_DOWNLOAD_TIMEOUT_MS}ms` : `read failed: ${String((e && e.message) || e).slice(0, 200)}` };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
   if (buf.length > maxBytes) return { ok: false, reason: `PDF exceeds ${settings.maxPdfMb}MB cap` };
   // content-type must look like a PDF AND the magic bytes must confirm it — a

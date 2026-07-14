@@ -245,9 +245,23 @@ export async function putSearch(req, res) {
     if (has('searchMode')) value.searchMode = sanitizeSearchMode(body.searchMode);
     // baseRevision null = overwrite (the contract's PUT is a full upsert; the
     // search builder is single-strategy-per-project so last-write-wins is fine).
-    const out = await patchModuleState({
-      projectId: req.params.projectId, moduleKey: SEARCH_MODULE, patch: value, baseRevision: null, user: req.user,
-    });
+    // 86.md P0.1 — patchModuleState still runs an internal CAS even with
+    // baseRevision:null, so a concurrent writer landing between its read and write
+    // returns {conflict:true} with NO write. This previously fell through to a
+    // hard-coded {ok:true}, silently DROPPING the edit while the client marked it
+    // saved. Retry a bounded number of times (re-reads the fresh state and re-applies
+    // the whitelisted patch — correct LWW), and if it still can't land, answer 409 so
+    // the client keeps the pending payload for a real retry instead of losing it.
+    let out;
+    for (let attempt = 0; attempt < 4; attempt++) {
+      out = await patchModuleState({
+        projectId: req.params.projectId, moduleKey: SEARCH_MODULE, patch: value, baseRevision: null, user: req.user,
+      });
+      if (out.ok || !out.conflict) break;
+    }
+    if (!out.ok) {
+      return res.status(409).json({ ok: false, conflict: true, revision: out.current ? out.current.revision : undefined });
+    }
     if (out.ok) {
       await recordWorkflowAudit({
         projectId: req.params.projectId, moduleKey: SEARCH_MODULE, action: 'SEARCH_UPDATED',
@@ -264,7 +278,7 @@ export async function putSearch(req, res) {
         { exclude: req.user.id },
       );
     }
-    return res.json({ ok: true, revision: out.ok ? out.result.revision : undefined });
+    return res.json({ ok: true, revision: out.result.revision });
   } catch (err) {
     console.error('[searchEngine] putSearch error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
