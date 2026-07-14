@@ -28,8 +28,10 @@ const DEBOUNCE_MS = 800;
 const statusListeners = new Set();
 
 /**
- * Subscribe to autosave status changes.
- * @param {(status: 'idle'|'saving'|'saved'|'failed') => void} fn
+ * Subscribe to autosave status changes. 'conflict' means the server refused a
+ * stale write because another tab/collaborator saved first (a
+ * `metalab:autosave-conflict` window event carries the project id).
+ * @param {(status: 'idle'|'saving'|'saved'|'failed'|'conflict') => void} fn
  * @returns {() => void} unsubscribe
  */
 export function subscribeToSaveStatus(fn) {
@@ -48,6 +50,7 @@ async function apiFetch(url, opts = {}) {
   if (!res.ok) {
     const err = new Error(`HTTP ${res.status}`);
     err.status = res.status;
+    try { err.body = await res.json(); } catch { /* non-JSON error body */ }
     throw err;
   }
   return res.json();
@@ -59,6 +62,14 @@ async function apiFetch(url, opts = {}) {
 // projects that the monolith deleted locally and must be removed on the server.
 let knownServerIds = new Set();
 
+/* ── Optimistic-concurrency baselines (83.md-limitation fix) ─────────── */
+
+// projectId → the server `autosaveRev` this client last observed. Sent with each
+// autosave PUT as `_baseRev` so the server can 409 instead of silently clobbering
+// a newer AUTOSAVE from another tab/collaborator (module writes never bump the
+// rev). `_`-prefixed, so the server strips it from the persisted blob.
+const saveBaselines = new Map();
+
 /* ── Debounce state (owned here so flushStorage() can drain it) ──────── */
 
 let debounceTimer = null;
@@ -69,7 +80,18 @@ let saveInFlight  = false;  // true while doSave() is executing (realtime guard)
  * Execute the actual save against the server.  Called either from the
  * debounce timer or directly by flushStorage().
  */
+let saveChain = Promise.resolve();
 async function doSave(value) {
+  // Serialize saves: a flush racing an in-flight debounced save would carry the
+  // pre-flight `_baseRev` and false-conflict against this very tab. Each batch
+  // waits for the previous one so baselines are always current.
+  const run = () => doSaveNow(value);
+  const next = saveChain.then(run, run);
+  saveChain = next;
+  return next;
+}
+
+async function doSaveNow(value) {
   saveInFlight = true;
   emitStatus('saving');
   try {
@@ -98,11 +120,31 @@ async function doSave(value) {
         apiFetch(`${BASE}/projects/${p.id}/autosave`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(p),
+          body: JSON.stringify({ ...p, _baseRev: saveBaselines.has(p.id) ? saveBaselines.get(p.id) : undefined }),
         })
       )
     );
-    const failures = results.filter(r => r.status === 'rejected');
+    // Refresh baselines from every landed save (the server returns the row's
+    // new updatedAt), so the next PUT carries a current baseline.
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled' && r.value && Number.isInteger(r.value.autosaveRev)) {
+        saveBaselines.set(writable[i].id, r.value.autosaveRev);
+      }
+    });
+    // 409 = the project changed on the server since this tab loaded it. The
+    // server REFUSED the stale write (nothing was lost server-side). The stale
+    // baseline is deliberately KEPT, so retries keep being refused until the
+    // user loads the latest version (get() re-records baselines) — the local
+    // divergence is surfaced VISIBLY, never allowed to win silently.
+    const conflicts = results
+      .map((r, i) => ({ r, p: writable[i] }))
+      .filter(x => x.r.status === 'rejected' && x.r.reason && x.r.reason.status === 409);
+    conflicts.forEach(({ p }) => {
+      try {
+        window.dispatchEvent(new CustomEvent('metalab:autosave-conflict', { detail: { id: p.id, name: p.name || '' } }));
+      } catch { /* noop */ }
+    });
+    const failures = results.filter(r => r.status === 'rejected' && (!r.reason || r.reason.status !== 409));
     failures.forEach(r =>
       console.error('[serverStorage] autosave failed:', r.reason && r.reason.message)
     );
@@ -123,6 +165,10 @@ async function doSave(value) {
     knownServerIds = currentIds;
     if (failures.length > 0) {
       emitStatus('failed');
+      return;
+    }
+    if (conflicts.length > 0) {
+      emitStatus('conflict');
       return;
     }
     emitStatus('saved');
@@ -156,6 +202,8 @@ window.storage = {
         list.map(p => apiFetch(`${BASE}/projects/${p.id}`))
       );
       knownServerIds = new Set(full.map(p => p.id));
+      // Record the concurrency baseline every save will be checked against.
+      full.forEach(p => { if (p && p.id && Number.isInteger(p.autosaveRev)) saveBaselines.set(p.id, p.autosaveRev); });
       return { value: JSON.stringify(full) };
     } catch (err) {
       console.error('[serverStorage] load failed:', err.message);
@@ -213,4 +261,15 @@ export async function flushStorage() {
  */
 export function hasPendingSave() {
   return pendingValue !== null || debounceTimer !== null || saveInFlight;
+}
+
+/**
+ * Drop any debounced (not yet sent) save WITHOUT executing it. Used when
+ * resolving an autosave conflict: the local divergence is being replaced by the
+ * server's newer copy, so persisting it would be wrong. In-flight requests are
+ * not affected (the server refuses stale ones via the baseline anyway).
+ */
+export function discardPendingSave() {
+  if (debounceTimer !== null) { clearTimeout(debounceTimer); debounceTimer = null; }
+  pendingValue = null;
 }

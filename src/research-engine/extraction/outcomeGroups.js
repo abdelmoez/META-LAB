@@ -303,6 +303,40 @@ export function publicationSourceFor(studies = [], studyId) {
 }
 
 /**
+ * publicationFilesFor(studies, studyId) — 83.md "Multiple Publication Files". Every
+ * ADDITIONAL file (study.documents[] — supplements, protocols, secondary reports)
+ * available to this row's PUBLICATION: the union across its citation-group members
+ * (same weak-key physical-linkage rule as publicationSourceFor), deduplicated by
+ * storedName, in stable member/array order. The MAIN article is not listed here —
+ * it is whatever usePdfSource resolves (screening attachment or study.document).
+ * @returns {Array<{ id, docStudyId, label, fileName, storedName }>}
+ */
+export function publicationFilesFor(studies = [], studyId) {
+  const pub = publicationSourceFor(studies, studyId);
+  if (!pub) return [];
+  const list = Array.isArray(studies) ? studies : [];
+  const byId = new Map(list.filter((x) => x && x.id).map((x) => [x.id, x]));
+  const target = byId.get(studyId);
+  const key = citationKey(target);
+  const samePhysicalFile = (x) =>
+    (!!target.screeningRecordId && x.screeningRecordId === target.screeningRecordId)
+    || (!!(target.document && target.document.storedName) && !!(x.document && x.document.storedName === target.document.storedName));
+  const members = isStrongCitationKey(key)
+    ? list.filter((x) => x && citationKey(x) === key)
+    : list.filter((x) => x && citationKey(x) === key && (x.id === studyId || samePhysicalFile(x)));
+  const seen = new Set();
+  const out = [];
+  for (const st of members) {
+    for (const d of (Array.isArray(st.documents) ? st.documents : [])) {
+      if (!d || !d.storedName || !d.id || seen.has(d.storedName)) continue;
+      seen.add(d.storedName);
+      out.push({ id: d.id, docStudyId: st.id, label: s(d.label) || 'other', fileName: s(d.fileName) || 'document.pdf', storedName: d.storedName });
+    }
+  }
+  return out;
+}
+
+/**
  * spreadAvailabilityByCitation(studies, availability) — 83.md §2, server list view.
  * Given a per-row availability map (studyId → boolean), mark EVERY row of a citation
  * group available when ANY of its rows is — the paper's PDF is shared across its

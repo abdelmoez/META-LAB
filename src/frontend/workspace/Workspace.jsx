@@ -8,7 +8,7 @@ import { useRealtime } from "../hooks/useRealtime.js";
 import { useProjectPresence, useFieldLock } from "../screening/hooks/usePresence.js";
 import PresenceIndicator from "../screening/components/PresenceIndicator.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
-import { flushStorage, hasPendingSave } from "../storage/serverStorage.js";
+import { flushStorage, hasPendingSave, discardPendingSave } from "../storage/serverStorage.js";
 import { tierErrorMessage } from "../entitlements";
 import { alpha as themeAlpha } from "../theme/tokens.js";
 import { useTheme } from "../theme/ThemeContext.jsx";
@@ -449,6 +449,26 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   const applyRemoteUpdate=useCallback(async()=>{
     try{await flushStorage();}catch(_){/* best-effort */}
     if(await refetchProjects())setRemoteUpdate(false);
+  },[refetchProjects]);
+  // 83.md-limitation fix — the autosave CAS refused a stale write (409): another
+  // tab/collaborator saved first. Show a dedicated banner whose action loads the
+  // LATEST version WITHOUT flushing local edits first (flushing would clobber the
+  // newer server copy — the opposite of what a refused conflict means).
+  const[saveConflict,setSaveConflict]=useState(null); // {id,name}|null
+  useEffect(()=>{
+    const onConflict=(e)=>{
+      const d=e&&e.detail;
+      if(!d||!d.id||!projectsRef.current.some(p=>p.id===d.id))return;
+      setSaveConflict({id:d.id,name:d.name||""});
+    };
+    window.addEventListener("metalab:autosave-conflict",onConflict);
+    return()=>window.removeEventListener("metalab:autosave-conflict",onConflict);
+  },[]);
+  const resolveSaveConflict=useCallback(async()=>{
+    // The local divergence lost — drop the pending (refused) save so the refetch
+    // isn't blocked by hasPendingSave, then adopt the server's newer copy.
+    discardPendingSave();
+    if(await refetchProjects())setSaveConflict(null);
   },[refetchProjects]);
   useRealtime({
     "project.updated":(ev)=>{
@@ -1426,6 +1446,20 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           <span style={{fontSize:14,flexShrink:0}}>⚠</span>
           <span style={{color:C.txt2,lineHeight:1.5,flex:1}}>{createWarning}</span>
           <button onClick={()=>setCreateWarning("")} style={{background:"none",border:"none",color:C.muted,fontSize:16,cursor:"pointer",padding:0,lineHeight:1,flexShrink:0}}>×</button>
+        </div>
+      )}
+      {saveConflict&&(
+        /* Autosave-CAS conflict (83.md-limitation fix): the server REFUSED this
+           tab's stale write because a newer save exists. Loading the latest is
+           the only safe resolution — do NOT flush local edits first. */
+        <div role="alert" style={{maxWidth:960,margin:"0 auto 18px",padding:"10px 14px",borderRadius:8,fontSize:12.5,display:"flex",alignItems:"center",gap:9,
+          background:themeAlpha(C.red,'12'),border:`1px solid ${themeAlpha(C.red,'44')}`}}>
+          <span style={{fontSize:14,flexShrink:0}}>⚠</span>
+          <span style={{color:C.txt2,lineHeight:1.5,flex:1}}>
+            <strong style={{color:C.txt}}>{saveConflict.name||"This project"}</strong> was updated in another tab or by a collaborator.
+            Your latest change could not be saved — load the latest version to continue (unsaved local edits will be replaced).
+          </span>
+          <button onClick={resolveSaveConflict} style={{...btnS("primary"),fontSize:11,padding:"5px 12px",flexShrink:0}}>Load latest</button>
         </div>
       )}
       {remoteUpdate&&(

@@ -12,8 +12,8 @@ import { subscribeToSaveStatus } from '../storage/serverStorage.js';
 import MetaLab from '../workspace/Workspace.jsx';
 import { C, MONO } from '../theme/tokens.js';
 
-const SAVE_LABEL = { saving: 'Saving…', saved: 'Saved', failed: 'Save failed', idle: '' };
-const SAVE_COLOR = { saving: C.muted, saved: C.grn, failed: C.red, idle: 'transparent' };
+const SAVE_LABEL = { saving: 'Saving…', saved: 'Saved', failed: 'Save failed', conflict: 'Updated elsewhere — not saved', idle: '' };
+const SAVE_COLOR = { saving: C.muted, saved: C.grn, failed: C.red, conflict: C.red, idle: 'transparent' };
 
 export default function AppWorkspace() {
   const [saveStatus, setSaveStatus] = useState('idle');

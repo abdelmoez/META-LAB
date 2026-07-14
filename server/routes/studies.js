@@ -14,6 +14,7 @@ import {
 } from '../controllers/studiesController.js';
 import {
   studyDocUploadMiddleware, uploadStudyDoc, getStudyDoc, downloadStudyDoc, deleteStudyDoc,
+  listStudyDocs, uploadExtraStudyDoc, downloadExtraStudyDoc, deleteExtraStudyDoc,
 } from '../controllers/studyDocController.js';
 import { requireAuth } from '../middleware/auth.js';
 
@@ -32,5 +33,12 @@ router.post('/:studyId/document', studyDocUploadMiddleware, uploadStudyDoc);
 router.get('/:studyId/document', getStudyDoc);
 router.get('/:studyId/document/download', downloadStudyDoc);
 router.delete('/:studyId/document', deleteStudyDoc);
+
+// 83.md-limitation fix — MULTIPLE publication files per study (supplement/protocol/
+// secondary/…): additive study.documents[], same store + dedup + safe deletes.
+router.get('/:studyId/documents', listStudyDocs);
+router.post('/:studyId/documents', studyDocUploadMiddleware, uploadExtraStudyDoc);
+router.get('/:studyId/documents/:docId/download', downloadExtraStudyDoc);
+router.delete('/:studyId/documents/:docId', deleteExtraStudyDoc);
 
 export default router;

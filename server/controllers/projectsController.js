@@ -932,12 +932,29 @@ export async function autosaveProject(req, res) {
     if (!fullProject.name || typeof fullProject.name !== 'string') {
       return res.status(400).json({ error: 'name is required' });
     }
+    // 83.md-limitation fix — OPT-IN optimistic concurrency: `_baseRev` is the
+    // `autosaveRev` the client last observed. A different rev → 409 with the server
+    // copy (the stale write is refused, never merged); no baseline → legacy last-
+    // write-wins. `_`-prefixed, so projectToData never persists it into the blob.
+    const rawBaseRev = req.body._baseRev;
+    const baseRev = Number.isInteger(rawBaseRev) ? rawBaseRev
+      : (typeof rawBaseRev === 'string' && /^[0-9]+$/.test(rawBaseRev) ? Number(rawBaseRev) : null);
+    const conflict409 = (err) => res.status(409).json({
+      id, conflict: true, error: 'Project was updated elsewhere since it was loaded',
+      project: err.serverProject || null,
+    });
 
     // Owner path — also the create path for brand-new projects (no row yet).
     const existing = await prisma.project.findFirst({ where: { id }, select: { userId: true } });
     if (!existing || existing.userId === req.user.id) {
       const isCreate = !existing;
-      const saved = await save(fullProject, req.user.id);
+      let saved;
+      try {
+        saved = await save(fullProject, req.user.id, { baseRev });
+      } catch (err) {
+        if (err && err.code === 'SAVE_CONFLICT') return conflict409(err);
+        throw err;
+      }
       // Soft-deleted row (resurrection guard, prompt9): a stale tab must never
       // revive a deleted project — and never 4xx (batch contract). Mirror the
       // saveAsMember skipped shape.
@@ -967,7 +984,13 @@ export async function autosaveProject(req, res) {
     // no-op (prompt5 Task 4 §6).
     const acc = await getMetaLabMemberAccess(id, req.user.id);
     if (acc && acc.canEdit) {
-      const saved = await saveAsMember(fullProject);
+      let saved;
+      try {
+        saved = await saveAsMember(fullProject, { baseRev });
+      } catch (err) {
+        if (err && err.code === 'SAVE_CONFLICT') return conflict409(err);
+        throw err;
+      }
       if (saved) emitToMetaLabProject(id, acc.ownerId, { type: 'project.updated' }, { exclude: req.user.id });
       return res.json(saved || { id, skipped: true });
     }

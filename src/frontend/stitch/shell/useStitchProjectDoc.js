@@ -25,15 +25,21 @@ export function useStitchProjectDoc(projectId) {
   const [project, setProject] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [saveStatus, setSaveStatus] = useState('idle'); // idle | saving | saved | error
+  const [saveStatus, setSaveStatus] = useState('idle'); // idle | saving | saved | error | conflict
   const projectRef = useRef(null);
   const timerRef = useRef(null);
+  // 83.md-limitation fix — the server `autosaveRev` this page last observed; sent
+  // as `_baseRev` so the autosave CAS can refuse a stale write (another tab or
+  // collaborator AUTOSAVED first — module writes never bump the rev) instead of
+  // silently clobbering it.
+  const baselineRef = useRef(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError('');
     try {
       const p = await api.projects.get(projectId);
       projectRef.current = p;
+      baselineRef.current = (p && Number.isInteger(p.autosaveRev)) ? p.autosaveRev : null;
       setProject(p);
     } catch (e) {
       setError(e?.message || 'Could not load this project.');
@@ -46,11 +52,34 @@ export function useStitchProjectDoc(projectId) {
 
   const readOnly = !!(project && (project._readOnly || (project._permissions && project._permissions.readOnly)));
 
-  const persist = useCallback(async (blob) => {
-    setSaveStatus('saving');
-    try { await api.projects.autosave(projectId, blob); setSaveStatus('saved'); }
-    catch { setSaveStatus('error'); }
-  }, [projectId]);
+  // Sends are SERIALIZED (one in flight at a time): a second debounced PUT racing
+  // the first would still carry the pre-first `_baseRev` and read as a conflict of
+  // this client with itself. The chain guarantees each PUT sees the baseline the
+  // previous response established (same discipline as useModuleState).
+  const sendChainRef = useRef(Promise.resolve());
+  const persist = useCallback((blob) => {
+    const run = async () => {
+      setSaveStatus('saving');
+      try {
+        const saved = await api.projects.autosave(projectId, { ...blob, _baseRev: baselineRef.current != null ? baselineRef.current : undefined });
+        if (saved && Number.isInteger(saved.autosaveRev)) baselineRef.current = saved.autosaveRev;
+        setSaveStatus('saved');
+      } catch (e) {
+        if (e && e.status === 409) {
+          // The server refused this stale write — a newer save exists. Reload the
+          // authoritative copy (which also refreshes the baseline) and surface the
+          // conflict; the divergent local blob must not keep retrying.
+          setSaveStatus('conflict');
+          load();
+          return;
+        }
+        setSaveStatus('error');
+      }
+    };
+    const next = sendChainRef.current.then(run, run);
+    sendChainRef.current = next;
+    return next;
+  }, [projectId, load]);
 
   const scheduleSave = useCallback((blob) => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -63,7 +92,7 @@ export function useStitchProjectDoc(projectId) {
   }, [persist]);
 
   // Flush any pending write on unmount so navigation never drops an edit.
-  useEffect(() => () => { if (timerRef.current) { clearTimeout(timerRef.current); if (projectRef.current) api.projects.autosave(projectId, projectRef.current).catch(() => {}); } }, [projectId]);
+  useEffect(() => () => { if (timerRef.current) { clearTimeout(timerRef.current); if (projectRef.current) api.projects.autosave(projectId, { ...projectRef.current, _baseRev: baselineRef.current != null ? baselineRef.current : undefined }).catch(() => {}); } }, [projectId]);
 
   // The canonical write choke point — the native equivalent of the legacy
   // workspace's `updateProject(id, updater)` (Workspace.jsx). The monolith tab

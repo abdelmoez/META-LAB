@@ -163,10 +163,14 @@ test.describe('Pecan Extraction Engine', () => {
   });
 
   // 83.md §2 + §3 — one study PDF shared across outcomes, and the persistent
-  // (dismissible) jump-to-source highlight. Skipped in Firefox for the same dev-mode
-  // synthetic-PDF worker flake as above; WebKit + Chromium give cross-engine parity.
+  // (dismissible) jump-to-source highlight. Firefox skip verified empirically
+  // (2026-07-13): under the Playwright-Firefox DEV build the pdf.js module worker
+  // never renders ANY synthetic PDF (http-served, not just blob:) — the viewer sits
+  // at "Loading PDF…" past the 12s main-thread watchdog. Production classic-bundle
+  // workers are unaffected (see the WebKit test's note); Chromium + WebKit give the
+  // cross-engine evidence here.
   test('study PDF is reused across outcomes; jump-to-source highlights persist until dismissed @smoke', async ({ page, request, setFlags, browserName }) => {
-    test.skip(browserName === 'firefox', 'dev-mode module-worker + synthetic-blob-PDF flake; covered by WebKit + Chromium');
+    test.skip(browserName === 'firefox', 'Playwright-Firefox dev-mode pdf.js worker cannot render synthetic PDFs (verified: http-served too) — covered by Chromium + WebKit');
     await setFlags({ extractionEngine: true });
     const project = await createProject(request, `E2E Pecan PDF Reuse ${Date.now()}`);
     try {
@@ -220,6 +224,23 @@ test.describe('Pecan Extraction Engine', () => {
       // Per-outcome separation: the NEW outcome starts with no values and no source
       // references — outcome A's sources must never appear as outcome B's.
       await expect(page.locator('button[title*="Jump to this value"]')).toHaveCount(0);
+
+      // Multiple publication files (83.md limitation fix): add a supplement via the
+      // file bar, switch to it (viewer swaps to the supplement's text), and switch
+      // back to the main article — no re-upload of either file.
+      const fileBar = page.getByTestId('pex-file-bar');
+      await expect(fileBar).toBeVisible();
+      // The AddFileControl label picker defaults to "supplement" — just attach the file.
+      const addInput = fileBar.locator('input[type="file"]');
+      await addInput.setInputFiles({ name: 'appendix.pdf', mimeType: 'application/pdf', buffer: minimalPdf('Appendix eTable 9.99') });
+      const switcher = fileBar.locator('#pex-file-select');
+      await expect(switcher.locator('option', { hasText: 'appendix.pdf' })).toHaveCount(1, { timeout: 10000 });
+      // Uploading auto-switches to the new file; its text layer renders.
+      await expect(page.locator('.mlpdf-tl span', { hasText: '9.99' }).first()).toBeVisible({ timeout: 25000 });
+      // Back to the main article — its text is still there, no upload prompt.
+      await switcher.selectOption('');
+      await expect(page.locator('.mlpdf-tl span', { hasText: '2.45' }).first()).toBeVisible({ timeout: 25000 });
+      await expect(page.getByText('No PDF linked to this article.')).toHaveCount(0);
     } finally {
       await deleteProject(request, project.id);
     }

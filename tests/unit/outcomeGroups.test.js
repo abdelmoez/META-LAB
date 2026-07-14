@@ -9,7 +9,7 @@ import {
   citationKey, groupStudiesByCitation, groupForStudy, activeOutcomes,
   addOutcome, duplicateOutcome, renameOutcome, setOutcomeRole,
   archiveOutcome, restoreOutcome, reorderOutcomes, outcomeSummary,
-  publicationSourceFor, spreadAvailabilityByCitation,
+  publicationSourceFor, publicationFilesFor, spreadAvailabilityByCitation,
   OUTCOME_ROLES, PUBLICATION_LINK_FIELDS,
 } from '../../src/research-engine/extraction/outcomeGroups.js';
 
@@ -184,6 +184,34 @@ describe('publicationSourceFor — 83.md §2 paper-level PDF resolution', () => 
     ];
     expect(publicationSourceFor(rec, 'r2').anchorId).toBe('r1');
     expect(publicationSourceFor(rec, 'r2').screeningRecordId).toBe('rec9');
+  });
+});
+
+describe('publicationFilesFor — 83.md multiple publication files', () => {
+  const f1 = { id: 'd1', storedName: 'sup.pdf', fileName: 'appendix.pdf', label: 'supplement' };
+  const f2 = { id: 'd2', storedName: 'prot.pdf', fileName: 'protocol.pdf', label: 'protocol' };
+  it('unions documents[] across the citation group, deduped by storedName, carrier row id attached', () => {
+    const studies = [
+      paper({ id: 's1', doi: '10.1/x', outcome: 'A', documents: [f1] }),
+      paper({ id: 's2', doi: '10.1/x', outcome: 'B', documents: [f2, { ...f1, id: 'd1-copy' }] }), // duplicate pointer
+      paper({ id: 'z1', doi: '10.9/z', outcome: 'other', documents: [{ id: 'dz', storedName: 'z.pdf', fileName: 'z.pdf', label: 'other' }] }),
+    ];
+    const files = publicationFilesFor(studies, 's2');
+    expect(files.map((f) => f.storedName).sort()).toEqual(['prot.pdf', 'sup.pdf']); // no z.pdf, no dup
+    expect(files.find((f) => f.storedName === 'sup.pdf').docStudyId).toBe('s1');    // carrier row keys the download
+    expect(files.find((f) => f.storedName === 'prot.pdf').label).toBe('protocol');
+  });
+  it('weak identity shares files only via physical linkage', () => {
+    const studies = [
+      paper({ id: 's1', author: 'Smith', year: '2020', documents: [f1] }),
+      paper({ id: 's2', author: 'Smith', year: '2020' }), // possibly a different Smith 2020
+    ];
+    expect(publicationFilesFor(studies, 's2')).toEqual([]); // no borrowing on a weak text match
+    expect(publicationFilesFor(studies, 's1').length).toBe(1); // own files always visible
+  });
+  it('empty/unknown inputs → []', () => {
+    expect(publicationFilesFor([], 'x')).toEqual([]);
+    expect(publicationFilesFor([paper({ id: 's1' })], 's1')).toEqual([]);
   });
 });
 

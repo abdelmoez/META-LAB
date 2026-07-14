@@ -36,7 +36,8 @@ import {
   familyOf, reportedFormatsFor, effectiveReportedFormat, defaultReportedFormat,
   harmonizeStudy, conversionStatusOf, CONVERSION_STATUS_LABELS, validateReported,
 } from '../../../research-engine/extraction/harmonize.js';
-import { publicationSourceFor } from '../../../research-engine/extraction/outcomeGroups.js';
+import { publicationSourceFor, publicationFilesFor } from '../../../research-engine/extraction/outcomeGroups.js';
+import { studyDocApi } from '../unified/studyDocApi.js';
 import ConverterPanel from './ConverterPanel.jsx';
 
 const RATIO_MEASURES = ['OR', 'RR', 'HR', 'IRR'];
@@ -123,6 +124,58 @@ export default function ArticleWorkspace({
   // outcomes neither clears nor re-resolves the viewer.
   const publication = useMemo(() => (study ? publicationSourceFor(studies, study.id) : null), [studies, study && study.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const pdf = usePdfSource(study, projectId, { onDocumentPersisted: onDocPersisted, publication });
+
+  // 83.md "Multiple Publication Files" — every ADDITIONAL file of this paper
+  // (supplements, protocols, secondary reports) from any sibling outcome row. The
+  // switcher overrides which file the viewer shows; the MAIN article stays whatever
+  // usePdfSource resolves. File identity rides provenance (fileKey), so a value
+  // picked from the supplement never gets its coordinates applied to the main PDF.
+  const pubFiles = useMemo(() => (study ? publicationFilesFor(studies, study.id) : []), [studies, study && study.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [activeFileId, setActiveFileId] = useState('');   // '' = main article
+  const pubAnchor = publication && publication.anchorId;
+  useEffect(() => { setActiveFileId(''); }, [pubAnchor]);  // new paper → back to the main article
+  const activeExtra = useMemo(() => pubFiles.find((f) => f.id === activeFileId) || null, [pubFiles, activeFileId]);
+  useEffect(() => { if (activeFileId && !activeExtra) setActiveFileId(''); }, [activeFileId, activeExtra]); // file removed → main
+  const effUrl = activeExtra ? studyDocApi.extraDownloadUrl(projectId, activeExtra.docStudyId, activeExtra.id) : pdf.url;
+  const effFileKey = activeExtra ? `doc:${activeExtra.storedName}` : pdf.fileKey;
+  const [fileBusy, setFileBusy] = useState(false);
+  const addExtraFile = useCallback(async (file, label) => {
+    if (!file || !study) return;
+    setFileBusy(true); setError('');
+    // Publication files attach to the group's ANCHOR row: it is the paper's stable
+    // identity AND is long-persisted server-side — a just-added outcome row may not
+    // have autosaved yet (the server would 404 its id).
+    const targetId = (publication && publication.anchorId) || study.id;
+    const target = studies.find((x) => x && x.id === targetId) || study;
+    try {
+      const r = await studyDocApi.uploadExtra(projectId, target.id, file, label);
+      if (r && r.document) {
+        // Stamp the entry into the client blob too, so a whole-blob autosave can't
+        // clobber the server's durable write (same pattern as study.document).
+        if (onPatchStudy) onPatchStudy(target.id, { documents: [...(Array.isArray(target.documents) ? target.documents : []), r.document] });
+        setActiveFileId(r.document.id);
+        setStatus(`Added ${r.document.fileName} (${r.document.label}) to this study's files.`);
+      }
+    } catch (e) {
+      setError(e.message || 'Could not add the file.');
+    } finally { setFileBusy(false); }
+  }, [projectId, study, studies, publication, onPatchStudy]);
+  const removeExtraFile = useCallback(async () => {
+    if (!activeExtra) return;
+    if (typeof window !== 'undefined' && !window.confirm(`Remove ${activeExtra.fileName} from this study's files? Extracted values keep their source records.`)) return;
+    setFileBusy(true); setError('');
+    try {
+      await studyDocApi.removeExtra(projectId, activeExtra.docStudyId, activeExtra.id);
+      const carrier = studies.find((x) => x && x.id === activeExtra.docStudyId);
+      if (carrier && onPatchStudy) {
+        onPatchStudy(carrier.id, { documents: (Array.isArray(carrier.documents) ? carrier.documents : []).filter((d) => d && d.id !== activeExtra.id) });
+      }
+      setActiveFileId('');
+      setStatus('File removed from this study.');
+    } catch (e) {
+      setError(e.message || 'Could not remove the file.');
+    } finally { setFileBusy(false); }
+  }, [activeExtra, projectId, studies, onPatchStudy]);
   const completion = useMemo(() => evaluateCompletion(study || {}), [study]);
   const progress = useMemo(() => progressOf(study || {}), [study]);
   // Show every EXPECTED field, plus any OTHER value field that already carries data, so a
@@ -172,7 +225,7 @@ export default function ArticleWorkspace({
     // 83.md §3/§5 — never apply one PDF's coordinates to another: when the value was
     // captured on a DIFFERENT file than the one now shown (replaced upload, other
     // attachment), fall back to a page-level indicator instead of a wrong exact box.
-    const fileMismatch = !!(prov.bbox && prov.fileKey && pdf.fileKey && prov.fileKey !== pdf.fileKey);
+    const fileMismatch = !!(prov.bbox && prov.fileKey && effFileKey && prov.fileKey !== effFileKey);
     const region = fileMismatch ? null : (prov.bbox || null);
     revealNonce.current += 1;
     setReveal({
@@ -187,12 +240,11 @@ export default function ArticleWorkspace({
       : region
         ? `Showing the exact source of ${FIELD_LABELS[field] || field}${prov.page ? ` (p. ${prov.page})` : ''}. Click elsewhere or press Escape to dismiss.`
         : `This value's source was saved as page ${prov.page} only — showing the page (no exact location recorded).`);
-  }, [study, pdf.fileKey]);
+  }, [study, effFileKey]);
   const dismissReveal = useCallback(() => setReveal((r) => (r ? null : r)), []);
 
   // Dismiss the source highlight when the PDF itself changes (upload/replace/switch).
-  const pdfUrl = pdf.url;
-  useEffect(() => { setReveal(null); }, [pdfUrl]);
+  useEffect(() => { setReveal(null); }, [effUrl]);
 
   // Escape dismisses the highlight FIRST (capture phase, before the engine's
   // Esc-closes-workspace listener); only an Escape with no active highlight closes.
@@ -333,7 +385,7 @@ export default function ArticleWorkspace({
     if (!Object.keys(values).length) { setStatus('Nothing captured — click directly on the number.'); return; }
 
     const extra = conv.length ? { conversions: [...(Array.isArray(study.conversions) ? study.conversions : []), ...conv], converted: true } : {};
-    const { written, replaced } = writeValues(values, { method: 'click', page: payload.page || null, bbox: payload.spanBox || null, fileKey: pdf.fileKey || null, excerpt: runStr }, extra);
+    const { written, replaced } = writeValues(values, { method: 'click', page: payload.page || null, bbox: payload.spanBox || null, fileKey: effFileKey || null, excerpt: runStr }, extra);
     if (!written.length) return;
 
     // Human-readable confirmation (aria-live) — say what filled and what was replaced.
@@ -351,7 +403,7 @@ export default function ArticleWorkspace({
       const next = nextAssignableField(after, target);
       if (next && next !== target) setActiveField(next);
     }
-  }, [study, activeField, editable, writeValues, pdf.fileKey]);
+  }, [study, activeField, editable, writeValues, effFileKey]);
 
   /* ── Converter apply (77.md §4): route through the same write path + audit ── */
   const applyConversion = useCallback(({ patch: convPatch, conversion, targetLabel }) => {
@@ -417,9 +469,9 @@ export default function ArticleWorkspace({
   }, [study, editable, writeValues, activeFormat]);
 
   const interaction = useMemo(() => {
-    if (!editable || !pdf.url || method !== 'click') return null;
+    if (!editable || !effUrl || method !== 'click') return null;
     return { mode: 'click', onTextClick: assignFromClick, onTextMiss: () => setStatus('No number there — zoom in, or run text recognition on scanned pages.') };
-  }, [method, assignFromClick, pdf.url, editable]);
+  }, [method, assignFromClick, effUrl, editable]);
 
   const setField = useCallback((f, v) => {
     if (!editable || !study) return;
@@ -495,8 +547,30 @@ export default function ArticleWorkspace({
       <div ref={rowRef} style={{ flex: 1, minHeight: 0, display: 'grid', gridTemplateColumns: 'var(--pex-pdf-pct, 55%) 16px minmax(0,1fr)' }}>
         {/* PDF */}
         <div style={{ minWidth: 0, minHeight: 0, borderRight: `1px solid ${C.brd}`, display: 'flex', flexDirection: 'column' }}>
-          {pdf.url ? (
-            <AppPdfViewer key={pdf.url} url={pdf.url} flush onDocLoaded={(d) => { docRef.current = d; }} interaction={interaction} reveal={reveal} onRevealDismiss={dismissReveal} />
+          {/* 83.md "Multiple Publication Files" — file switcher: main article +
+              supplements/protocols/…; picking never re-uploads, deleting is
+              reference-counted server-side, and the file identity travels with each
+              picked value's provenance. Shown once the study has any file context. */}
+          {(pubFiles.length > 0 || (effUrl && !readOnly)) && (
+            <div data-testid="pex-file-bar" style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 10px', borderBottom: `1px solid ${C.brd}`, background: C.card, flexShrink: 0, flexWrap: 'wrap' }}>
+              <label htmlFor="pex-file-select" style={{ ...lbl, margin: 0, flexShrink: 0 }}>File</label>
+              <select id="pex-file-select" value={activeFileId} onChange={(e) => setActiveFileId(e.target.value)}
+                style={{ ...inp, width: 'auto', maxWidth: 260, fontSize: 11.5 }}>
+                <option value="">Main article{pdf.source === 'screening' || pdf.source === 'oa' ? ' (screening PDF)' : ''}</option>
+                {pubFiles.map((f) => <option key={f.id} value={f.id}>{f.label} — {f.fileName}</option>)}
+              </select>
+              {activeExtra && !readOnly && canEdit && (
+                <button onClick={removeExtraFile} disabled={fileBusy} title="Remove this file from the study (extracted values keep their source records)"
+                  style={{ ...btnS('ghost'), fontSize: 11, color: C.red, opacity: fileBusy ? 0.5 : 1 }}>✕ Remove</button>
+              )}
+              <div style={{ flex: 1 }} />
+              {!readOnly && canEdit && (
+                <AddFileControl busy={fileBusy} onAdd={addExtraFile} />
+              )}
+            </div>
+          )}
+          {effUrl ? (
+            <AppPdfViewer key={effUrl} url={effUrl} flush onDocLoaded={(d) => { docRef.current = d; }} interaction={interaction} reveal={reveal} onRevealDismiss={dismissReveal} />
           ) : (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, padding: 24, textAlign: 'center', color: C.muted }}>
               <div style={{ fontSize: 30 }}>📄</div>
@@ -547,9 +621,9 @@ export default function ArticleWorkspace({
                 <select id="pex-active-field" value={activeField} onChange={(e) => setActiveField(e.target.value)} style={{ ...inp, width: 'auto', fontSize: 12 }}>
                   {assignOptions.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
                 </select>
-                {!pdf.url && <span style={{ fontSize: 11, color: C.yel }}>Load a PDF to click values.</span>}
+                {!effUrl && <span style={{ fontSize: 11, color: C.yel }}>Load a PDF to click values.</span>}
               </div>
-              {pdf.url && <div style={{ fontSize: 11, color: C.acc, fontWeight: 600 }}>◎ Now click the value for <strong>{activeLabel}</strong> in the PDF.</div>}
+              {effUrl && <div style={{ fontSize: 11, color: C.acc, fontWeight: 600 }}>◎ Now click the value for <strong>{activeLabel}</strong> in the PDF.</div>}
             </div>
           )}
 
@@ -669,6 +743,26 @@ export default function ArticleWorkspace({
         </div>
       </div>
     </div>
+  );
+}
+
+/** Compact "add publication file" control: label picker + hidden file input. */
+function AddFileControl({ busy, onAdd }) {
+  const [label, setLabel] = useState('supplement');
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+      <select value={label} onChange={(e) => setLabel(e.target.value)} aria-label="File type for the next upload"
+        style={{ ...inp, width: 'auto', fontSize: 11 }} disabled={busy}>
+        {[['supplement', 'Supplement'], ['protocol', 'Protocol'], ['secondary', 'Secondary publication'], ['abstract', 'Conference abstract'], ['other', 'Other']].map(([k, l]) => (
+          <option key={k} value={k}>{l}</option>
+        ))}
+      </select>
+      <label style={{ cursor: busy ? 'default' : 'pointer' }}>
+        <span style={{ ...btnS('ghost'), fontSize: 11, display: 'inline-block', opacity: busy ? 0.5 : 1 }}>{busy ? 'Uploading…' : '＋ Add file'}</span>
+        <input type="file" accept="application/pdf,.pdf" style={{ display: 'none' }} disabled={busy}
+          onChange={(e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) onAdd(f, label); }} />
+      </label>
+    </span>
   );
 }
 

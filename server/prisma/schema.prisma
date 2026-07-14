@@ -244,6 +244,14 @@ model Project {
   archived             Boolean               @default(false) // prompt11 — user-facing archive (reversible hide)
   archivedAt           DateTime? // prompt11 — when archived
   lastSavedAt          DateTime?
+  // 83.md-limitation fix — optimistic-concurrency clock for the whole-blob AUTOSAVE
+  // path ONLY. Incremented exclusively by store.save/saveAsMember on a real content
+  // change; module writers (study-doc upload, extraction completion, …) deliberately
+  // do NOT bump it — the initiating client merges their results locally (76.md/77.md
+  // contracts), so its next autosave is a valid superset, not a conflict. A stale
+  // client rev therefore means exactly one thing: ANOTHER TAB/COLLABORATOR autosaved
+  // first. Additive Int default → `prisma db push` stays additive-safe.
+  autosaveRev          Int                   @default(0)
   // prompt50 WS5 — authoritative MEANINGFUL-activity timestamp for "Last Modified"
   // sorting. Distinct from the Prisma @updatedAt column (which a bare row-touch
   // bumps): this is set only by meaningful user activity — a real blob edit, or a

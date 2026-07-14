@@ -260,7 +260,8 @@ function DeepToolPage({ stage }) {
           </StitchBadge>
           {doc.saveStatus === 'saving' ? <StitchBadge tone="info" icon="refresh">Saving…</StitchBadge>
             : doc.saveStatus === 'saved' ? <StitchBadge tone="success" icon="circleCheck">Autosaved</StitchBadge>
-              : doc.saveStatus === 'error' ? <StitchBadge tone="danger" icon="alertTriangle">Save failed</StitchBadge> : null}
+              : doc.saveStatus === 'error' ? <StitchBadge tone="danger" icon="alertTriangle">Save failed</StitchBadge>
+                : doc.saveStatus === 'conflict' ? <StitchBadge tone="danger" icon="alertTriangle">Updated elsewhere — reloaded latest</StitchBadge> : null}
         </div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>

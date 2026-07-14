@@ -32,6 +32,23 @@ export const studyDocApi = {
     return data;
   },
   remove: (pid, sid) => req('DELETE', `/projects/${pid}/studies/${sid}/document`),
+
+  /* 83.md-limitation fix — MULTIPLE publication files per study (documents[]). */
+  /** Authenticated inline-download URL for one additional publication file. */
+  extraDownloadUrl: (pid, sid, docId) => `${BASE}/projects/${pid}/studies/${sid}/documents/${encodeURIComponent(docId)}/download`,
+  /** { primary, documents } for a study. */
+  list: (pid, sid) => req('GET', `/projects/${pid}/studies/${sid}/documents`),
+  /** Upload an additional file with a label → { document }. */
+  uploadExtra: async (pid, sid, file, label = 'other') => {
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('label', label);
+    const r = await fetch(`${BASE}/projects/${pid}/studies/${sid}/documents`, { method: 'POST', credentials: 'include', body: fd });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw Object.assign(new Error(data.error || `Upload failed (${r.status})`), { status: r.status, data });
+    return data;
+  },
+  removeExtra: (pid, sid, docId) => req('DELETE', `/projects/${pid}/studies/${sid}/documents/${encodeURIComponent(docId)}`),
 };
 
 export default studyDocApi;

@@ -28,6 +28,11 @@ function rowToProject(row) {
     // Falls back to updatedAt/createdAt for any row not yet backfilled.
     lastActivityAt: row.lastActivityAt || row.updatedAt || row.createdAt,
     ...parsed,
+    // 83.md-limitation fix — the autosave optimistic-concurrency clock; clients
+    // send it back as `_baseRev` (0 for legacy rows created before the column).
+    // AFTER the spread: the COLUMN is authoritative even if an old blob carries a
+    // stale embedded copy (written before projectToData stripped it).
+    autosaveRev: Number(row.autosaveRev || 0),
   };
 }
 
@@ -39,7 +44,10 @@ function rowToProject(row) {
  * @param {object} project
  */
 function projectToData(project) {
-  const { id, name, createdAt, updatedAt, lastActivityAt, ...rest } = project;
+  // autosaveRev is a first-class column (the CAS clock) — it must NEVER ride into
+  // the blob, or a server-side getById→save round-trip would embed a stale copy
+  // that rowToProject's `...parsed` spread then shadows the real column with.
+  const { id, name, createdAt, updatedAt, lastActivityAt, autosaveRev, ...rest } = project;
   const data = {};
   for (const k of Object.keys(rest)) {
     if (!k.startsWith('_')) data[k] = rest[k];
@@ -104,7 +112,7 @@ export async function getById(id, userId) {
  * @param {string} userId
  * @returns {Promise<object>} saved project
  */
-export async function save(project, userId) {
+export async function save(project, userId, { baseRev = null } = {}) {
   if (!project || !project.id) throw new Error('project must have an id');
 
   const { id, name } = project;
@@ -142,17 +150,42 @@ export async function save(project, userId) {
     return rowToProject(existing);
   }
 
+  // 83.md-limitation fix — OPT-IN optimistic concurrency: the client sends the
+  // `autosaveRev` it last observed; a different rev means another tab/collaborator
+  // AUTOSAVED since (module writers deliberately never bump the rev — the initiating
+  // client merges their results locally, so its next autosave is a valid superset).
+  // REJECT with a typed conflict instead of silently clobbering. Checked only past
+  // the no-op guard, so identical content never conflicts. Clients that send no
+  // baseline keep today's last-write-wins behaviour.
+  throwIfConflicted(existing, baseRev);
+
   // prompt50 WS5 — a real content change IS meaningful activity → stamp the
   // authoritative "Last Modified" timestamp. (Reached only past the no-op guard
   // above, so merely opening/normalising a project never reorders the list.)
   const now = new Date();
   const row = await prisma.project.upsert({
     where: { id },
-    update: { name, data: dataStr, lastActivityAt: now },
-    create: { id, userId, name, data: dataStr, lastActivityAt: now },
+    update: { name, data: dataStr, lastActivityAt: now, autosaveRev: { increment: 1 } },
+    create: { id, userId, name, data: dataStr, lastActivityAt: now, autosaveRev: 1 },
   });
 
   return rowToProject(row);
+}
+
+/** Typed SAVE_CONFLICT when another autosave landed after the client's baseline rev. */
+function throwIfConflicted(existing, baseRev) {
+  if (!existing || baseRev == null) return;
+  const base = Number(baseRev);
+  if (!Number.isInteger(base) || base < 0) return;
+  const current = Number(existing.autosaveRev || 0);
+  if (current !== base) {
+    console.warn(`[store] autosave conflict refused: project=${existing.id} clientRev=${base} serverRev=${current}`);
+    const err = new Error('Project was updated elsewhere since it was loaded');
+    err.code = 'SAVE_CONFLICT';
+    err.status = 409;
+    err.serverProject = rowToProject(existing);
+    throw err;
+  }
 }
 
 /**
@@ -190,7 +223,7 @@ export async function getManyByIds(ids) {
  * @param {object} project — must have { id, name }
  * @returns {Promise<object|null>}
  */
-export async function saveAsMember(project) {
+export async function saveAsMember(project, { baseRev = null } = {}) {
   if (!project || !project.id) throw new Error('project must have an id');
   // Never resurrect an admin-archived project via a member write.
   const existing = await prisma.project.findFirst({ where: { id: project.id, deletedAt: null } });
@@ -201,9 +234,10 @@ export async function saveAsMember(project) {
   if (existing.name === project.name && existing.data === data) {
     return rowToProject(existing);
   }
+  throwIfConflicted(existing, baseRev); // opt-in CAS (see save())
   const row = await prisma.project.update({
     where: { id: project.id },
-    data: { name: project.name, data, lastActivityAt: new Date() }, // prompt50 WS5 — meaningful edit by a member
+    data: { name: project.name, data, lastActivityAt: new Date(), autosaveRev: { increment: 1 } }, // prompt50 WS5 — meaningful edit by a member
   });
   return rowToProject(row);
 }

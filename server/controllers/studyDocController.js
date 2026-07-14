@@ -62,9 +62,47 @@ function shapeDoc(d) {
   };
 }
 
-/** True if any OTHER study in the blob still references this storedName (dedupe safety). */
-function referencedElsewhere(studies, storedName, exceptStudyId) {
-  return studies.some((s) => s && s.id !== exceptStudyId && s.document && s.document.storedName === storedName);
+/**
+ * True if any OTHER reference in the blob still points at this storedName (dedupe
+ * safety). Scans BOTH stores: the primary `study.document` pointer and every entry
+ * of the additive multi-file `study.documents[]` (83.md-limitation fix), except the
+ * one being removed (identified by studyId and, for a documents[] entry, its docId).
+ */
+function referencedElsewhere(studies, storedName, exceptStudyId, exceptDocId = null) {
+  return studies.some((s) => {
+    if (!s) return false;
+    const primaryHit = s.document && s.document.storedName === storedName
+      && !(s.id === exceptStudyId && exceptDocId == null);
+    if (primaryHit) return true;
+    const docs = Array.isArray(s.documents) ? s.documents : [];
+    return docs.some((d) => d && d.storedName === storedName
+      && !(s.id === exceptStudyId && exceptDocId != null && d.id === exceptDocId));
+  });
+}
+
+/** 83.md-limitation fix — additional publication files (supplement/protocol/…). */
+const DOC_LABELS = ['supplement', 'protocol', 'secondary', 'abstract', 'other'];
+const MAX_EXTRA_DOCS = 12;
+
+function shapeExtraDoc(d) {
+  if (!d || !d.storedName) return null;
+  return { ...shapeDoc(d), id: d.id || null, label: DOC_LABELS.includes(d.label) ? d.label : 'other' };
+}
+
+/** Content-dedupe: find a trusted stored twin of `hash` anywhere in the blob. */
+function findTwinStoredName(studies, hash) {
+  for (const s of studies) {
+    if (!s) continue;
+    if (s.document && s.document.fileHash === hash && isSafeStoredName(s.document.storedName)) {
+      return { storedName: s.document.storedName, fileSize: s.document.fileSize || 0 };
+    }
+    for (const d of (Array.isArray(s.documents) ? s.documents : [])) {
+      if (d && d.fileHash === hash && isSafeStoredName(d.storedName)) {
+        return { storedName: d.storedName, fileSize: d.fileSize || 0 };
+      }
+    }
+  }
+  return null;
 }
 
 /** POST /api/projects/:id/studies/:studyId/document — upload/replace this study's PDF. */
@@ -87,12 +125,12 @@ export async function uploadStudyDoc(req, res) {
 
     const hash = sha256(buf);
     // Content-dedupe within the project: reuse an identical file already stored, so
-    // re-uploading the same PDF never writes a second binary.
+    // re-uploading the same PDF never writes a second binary. Only a twin whose
+    // storedName is a trusted server-generated name is adopted; scans document +
+    // documents[] stores.
     let storedName = null, fileSize = buf.length;
-    // Only reuse a twin whose storedName is a trusted server-generated name (a crafted blob
-    // storedName must never be adopted).
-    const twin = data.studies.find((s) => s && s.document && s.document.fileHash === hash && isSafeStoredName(s.document.storedName));
-    if (twin) { storedName = twin.document.storedName; fileSize = twin.document.fileSize || buf.length; }
+    const twin = findTwinStoredName(data.studies, hash);
+    if (twin) { storedName = twin.storedName; fileSize = twin.fileSize || buf.length; }
     else { const saved = saveStudyDoc(access.project.id, buf); storedName = saved.storedName; fileSize = saved.fileSize; }
 
     // Replace: if this study already had a DIFFERENT stored file that nothing else uses, remove it.
@@ -214,6 +252,135 @@ export async function deleteStudyDoc(req, res) {
     res.status(200).json({ deleted: true });
   } catch (err) {
     console.error('[study-doc] deleteStudyDoc:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/* ── 83.md-limitation fix — MULTIPLE publication files per study ──────────────
+   A study may carry a main article (`study.document`) PLUS supplements, protocols,
+   secondary publications… stored additively in `study.documents[]` (same on-disk
+   store, content-deduped by hash, reference-counted deletes). Every outcome of the
+   paper can read any of them; adding an outcome never requires re-uploading. */
+
+/** GET /api/projects/:id/studies/:studyId/documents — { primary, documents } */
+export async function listStudyDocs(req, res) {
+  try {
+    const access = await resolveExtractionAccess(req.params.id, req.user);
+    if (!access || !access.canView) return res.status(404).json({ error: 'Project not found' });
+    const ml = await prisma.project.findFirst({ where: { id: access.project.id, deletedAt: null } });
+    if (!ml) return res.status(404).json({ error: 'Project not found' });
+    const data = parseData(ml);
+    const study = (data.studies || []).find((s) => s && s.id === req.params.studyId);
+    if (!study) return res.status(404).json({ error: 'Study not found' });
+    const docs = (Array.isArray(study.documents) ? study.documents : []).map(shapeExtraDoc).filter(Boolean);
+    res.json({ primary: shapeDoc(study.document), documents: docs });
+  } catch (err) {
+    console.error('[study-doc] listStudyDocs:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/** POST /api/projects/:id/studies/:studyId/documents (multipart file + label) → { document } */
+export async function uploadExtraStudyDoc(req, res) {
+  try {
+    const access = await resolveExtractionAccess(req.params.id, req.user);
+    if (!access || !access.canView) return res.status(404).json({ error: 'Project not found' });
+    if (!access.canEdit) return res.status(403).json({ error: 'You do not have permission to attach files in this project' });
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded (field name must be "file")' });
+    const buf = req.file.buffer;
+    if (!isPdfBuffer(buf)) return res.status(400).json({ error: 'File is not a valid PDF' });
+    const label = DOC_LABELS.includes(req.body && req.body.label) ? req.body.label : 'other';
+
+    const ml = await prisma.project.findFirst({ where: { id: access.project.id, deletedAt: null } });
+    if (!ml) return res.status(404).json({ error: 'Project not found' });
+    const data = parseData(ml);
+    if (!Array.isArray(data.studies)) data.studies = [];
+    const idx = data.studies.findIndex((s) => s && s.id === req.params.studyId);
+    if (idx < 0) return res.status(404).json({ error: 'Study not found' });
+    const existingDocs = Array.isArray(data.studies[idx].documents) ? data.studies[idx].documents : [];
+    if (existingDocs.length >= MAX_EXTRA_DOCS) {
+      return res.status(400).json({ error: `A study can carry at most ${MAX_EXTRA_DOCS} additional files` });
+    }
+
+    const hash = sha256(buf);
+    let storedName = null, fileSize = buf.length;
+    const twin = findTwinStoredName(data.studies, hash);
+    if (twin) { storedName = twin.storedName; fileSize = twin.fileSize || buf.length; }
+    else { const saved = saveStudyDoc(access.project.id, buf); storedName = saved.storedName; fileSize = saved.fileSize; }
+
+    const document = {
+      id: `doc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      label,
+      storedName, fileName: String(req.file.originalname || 'document.pdf').slice(0, 255), fileHash: hash,
+      fileSize, mimeType: 'application/pdf',
+      uploadedBy: access.userId, uploadedByName: access.userName || '', uploadedAt: new Date().toISOString(),
+    };
+    data.studies[idx] = { ...data.studies[idx], documents: [...existingDocs, document] };
+    await prisma.project.update({ where: { id: ml.id }, data: { data: JSON.stringify(data), lastSavedAt: new Date() } });
+    try { await touchProjectActivity(ml.id); } catch { /* best-effort */ }
+    res.status(201).json({ document: shapeExtraDoc(document) });
+  } catch (err) {
+    console.error('[study-doc] uploadExtraStudyDoc:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/** GET /api/projects/:id/studies/:studyId/documents/:docId/download — stream inline. */
+export async function downloadExtraStudyDoc(req, res) {
+  try {
+    const access = await resolveExtractionAccess(req.params.id, req.user);
+    if (!access || !access.canView) return res.status(404).json({ error: 'Project not found' });
+    const ml = await prisma.project.findFirst({ where: { id: access.project.id, deletedAt: null } });
+    if (!ml) return res.status(404).json({ error: 'Project not found' });
+    const data = parseData(ml);
+    const study = (data.studies || []).find((s) => s && s.id === req.params.studyId);
+    const doc = study && (Array.isArray(study.documents) ? study.documents : []).find((d) => d && d.id === req.params.docId);
+    if (!doc || !doc.storedName || !isSafeStoredName(doc.storedName)) return res.status(404).json({ error: 'No such file for this study' });
+
+    const filePath = studyDocPath(access.project.id, doc.storedName);
+    let stat;
+    try { stat = fs.statSync(filePath); } catch { return res.status(404).json({ error: 'File missing on disk' }); }
+    const safeName = String(doc.fileName || 'document.pdf').replace(/["\\\r\n]/g, '');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${safeName}"`);
+    res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+    setInlinePdfFramingHeaders(res);
+    res.setHeader('Content-Length', stat.size);
+    const stream = fs.createReadStream(filePath);
+    stream.on('error', () => { if (!res.headersSent) res.status(500); try { res.end(); } catch { /* noop */ } });
+    stream.pipe(res);
+  } catch (err) {
+    console.error('[study-doc] downloadExtraStudyDoc:', err.message);
+    if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/** DELETE /api/projects/:id/studies/:studyId/documents/:docId — remove one file entry. */
+export async function deleteExtraStudyDoc(req, res) {
+  try {
+    const access = await resolveExtractionAccess(req.params.id, req.user);
+    if (!access || !access.canView) return res.status(404).json({ error: 'Project not found' });
+    if (!access.canEdit) return res.status(403).json({ error: 'You do not have permission to remove files in this project' });
+    const ml = await prisma.project.findFirst({ where: { id: access.project.id, deletedAt: null } });
+    if (!ml) return res.status(404).json({ error: 'Project not found' });
+    const data = parseData(ml);
+    if (!Array.isArray(data.studies)) data.studies = [];
+    const idx = data.studies.findIndex((s) => s && s.id === req.params.studyId);
+    if (idx < 0) return res.status(404).json({ error: 'Study not found' });
+    const docs = Array.isArray(data.studies[idx].documents) ? data.studies[idx].documents : [];
+    const doc = docs.find((d) => d && d.id === req.params.docId);
+    if (!doc) return res.status(404).json({ error: 'No such file for this study' });
+
+    data.studies[idx] = { ...data.studies[idx], documents: docs.filter((d) => d && d.id !== req.params.docId) };
+    // Only unlink a trusted server-generated file, and only when nothing else references it.
+    if (isSafeStoredName(doc.storedName) && !referencedElsewhere(data.studies, doc.storedName, req.params.studyId, req.params.docId)) {
+      deleteStudyDocFile(access.project.id, doc.storedName);
+    }
+    await prisma.project.update({ where: { id: ml.id }, data: { data: JSON.stringify(data), lastSavedAt: new Date() } });
+    try { await touchProjectActivity(ml.id); } catch { /* best-effort */ }
+    res.status(200).json({ deleted: true });
+  } catch (err) {
+    console.error('[study-doc] deleteExtraStudyDoc:', err.message);
     res.status(500).json({ error: 'Internal server error' });
   }
 }
