@@ -128,7 +128,9 @@ export default function ArticleWorkspace({
     const extra = ALL_VALUE_KEYS.filter((f) => !expected.includes(f) && nonEmpty((study || {})[f]));
     return [...expected, ...extra];
   }, [study]);
-  const assignOptions = useMemo(() => assignOptionsFor(study || {}), [study && study.esType]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Depends on esType AND reportedFormat — a continuous format switch (mean_sd →
+  // median_iqr) changes the assignable fields, so the pick dropdown must recompute.
+  const assignOptions = useMemo(() => assignOptionsFor(study || {}), [study && study.esType, study && study.reportedFormat]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const locked = !!(article && article.status === 'locked');
   const completed = !!(article && (article.status === 'complete' || article.status === 'locked'));
@@ -136,6 +138,7 @@ export default function ArticleWorkspace({
 
   const studyId = study && study.id;
   const esType = study && study.esType;
+  const reportedFormat = study && study.reportedFormat;
   // New article → reset the transient UI + the pick target to the measure default.
   useEffect(() => {
     setReveal(null); setStatus(''); setError('');
@@ -148,7 +151,7 @@ export default function ArticleWorkspace({
       if (cur === 'smart') return usesEffectSlot(study || {}) || !esType ? 'smart' : defaultActiveField(study || {});
       return assignableFieldsFor(study || {}).includes(cur) ? cur : defaultActiveField(study || {});
     });
-  }, [esType]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [esType, reportedFormat]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const patch = useCallback((p) => { if (onPatchStudy && study) onPatchStudy(study.id, p); }, [onPatchStudy, study]);
 
@@ -323,6 +326,8 @@ export default function ArticleWorkspace({
   /* ── 82.md — reported→analysis harmonization (auto-convert median/IQR etc.) ── */
   const harmonization = useMemo(() => harmonizeStudy(study || {}), [study]);
   const convStatus = useMemo(() => conversionStatusOf(study || {}), [study]);
+  // Part-8 reported-field validation (Q1≤med≤Q3, min≤med≤max, CI lo≤hi, SE/SD≥0, n int).
+  const reportedIssues = useMemo(() => validateReported(study || {}), [study]);
   const reportedFormats = useMemo(() => reportedFormatsFor((study && study.esType) || ''), [study && study.esType]);
   const activeFormat = effectiveReportedFormat(study || {});
 
@@ -343,7 +348,15 @@ export default function ArticleWorkspace({
     const priorOther = (Array.isArray(study.conversions) ? study.conversions : []).filter((c) => !c || !c.formatId);
     const extra = { conversions: [...priorOther, ...records], converted: true };
     const { written } = writeValues(plan.writes, { method: 'manual', excerpt: `Auto-harmonized from ${activeFormat}` }, extra);
-    if (!written.length) { setStatus('Conversion produced no change.'); return; }
+    if (!written.length) {
+      // The derived mean/SD are byte-identical to what's stored (e.g. the row was
+      // only stale because CONVERSION_ENGINE_VERSION bumped). writeValues bailed
+      // before persisting `extra`, so stamp the REFRESHED audit directly — otherwise
+      // the "out of date" badge could never be cleared (review fix).
+      patch({ conversions: [...priorOther, ...records], converted: true });
+      setStatus('Conversion refreshed — values were already up to date.');
+      return;
+    }
     const warn = plan.warnings.length ? ` ⚠ ${plan.warnings[0]}` : '';
     setStatus(`Converted the reported values to ${written.map((f) => FIELD_LABELS[f] || f).join(', ')}. Original reported values are preserved.${warn}`);
   }, [study, editable, writeValues, activeFormat]);
@@ -543,6 +556,7 @@ export default function ArticleWorkspace({
                 {convStatus === 'stale' && <div style={{ fontSize: 11, color: C.yel, marginTop: 6, lineHeight: 1.5 }}>A reported value changed since this was converted — the analysis mean/SD are out of date. Recompute before using them.</div>}
                 {convStatus === 'missing' && <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>Enter the reported values above (both arms) to enable the conversion.</div>}
                 {convStatus === 'generated' && <div style={{ fontSize: 11, color: C.grn, marginTop: 6 }}>✓ Converted values applied and up to date.</div>}
+                {reportedIssues.errors.map((e, i) => <div key={`re${i}`} style={{ fontSize: 11, color: C.red, marginTop: 5, lineHeight: 1.5 }}>✗ {e}</div>)}
                 {harmonization.errors.map((e, i) => <div key={`e${i}`} style={{ fontSize: 11, color: C.red, marginTop: 5, lineHeight: 1.5 }}>✗ {e}</div>)}
                 {harmonization.warnings.map((w, i) => <div key={`w${i}`} style={{ fontSize: 11, color: C.yel, marginTop: 5, lineHeight: 1.5 }}>⚠ {w}</div>)}
               </div>

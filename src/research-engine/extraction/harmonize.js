@@ -299,6 +299,13 @@ export function conversionStatusOf(study = {}) {
     if (prev.engineVersion !== fresh.engineVersion) return 'stale';
     if (prev.formatId !== fresh.formatId) return 'stale';
   }
+  // ORPHAN check (review fix): an arm that WAS converted but whose reported input has
+  // since been cleared drops out of freshByArm (plan.status becomes 'partial'), yet its
+  // derived mean/SD + conversion record survive. Flag it stale so the reviewer recomputes
+  // or clears the now-unsupported value — never silently pool it as "up to date".
+  for (const arm of appliedByArm.keys()) {
+    if (!freshByArm.has(arm)) return 'stale';
+  }
   return 'generated';
 }
 

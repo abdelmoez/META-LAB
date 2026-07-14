@@ -19,7 +19,7 @@ import { reconcileDrafts, identityOf } from '../../../research-engine/extraction
 import { attachProvenanceMany } from '../../../research-engine/extraction/engine/articleProvenance.js';
 import { buildArticleSummary } from '../../../research-engine/extraction/engine/articleList.js';
 import { mkStudy } from '../../../research-engine/project-model/defaults.js';
-import { addOutcome, duplicateOutcome, renameOutcome, setOutcomeRole, archiveOutcome } from '../../../research-engine/extraction/outcomeGroups.js';
+import { addOutcome, duplicateOutcome, renameOutcome, setOutcomeRole, archiveOutcome, groupForStudy, activeOutcomes } from '../../../research-engine/extraction/outcomeGroups.js';
 import ArticleList from './ArticleList.jsx';
 import ArticleWorkspace from './ArticleWorkspace.jsx';
 import OutcomeNavigator from './OutcomeNavigator.jsx';
@@ -181,9 +181,12 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
     const r = archiveOutcome(studies, id);
     if (r.error || !r.studies) return;
     updateProject(activeId, (p) => ({ ...p, studies: r.studies }));
-    // Leaving an archived outcome open is confusing — jump to a sibling if one exists.
-    const sibling = studies.find((s) => s.id !== id);
+    // Jump to the nearest remaining outcome OF THE SAME PAPER (never an unrelated
+    // study). Compute against the post-archive rows so the archived one is excluded.
+    const group = groupForStudy(r.studies, id);
+    const sibling = group ? activeOutcomes(group).find((o) => o.id !== id) : null;
     if (sibling) setOpenId(sibling.id);
+    else setOpenId(''); // no active sibling → back to the article list
   }, [studies, updateProject, activeId]);
 
   const orderedIds = useMemo(() => articles.map((a) => a.id), [articles]);

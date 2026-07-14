@@ -173,6 +173,12 @@ describe('conversionStatusOf — lifecycle + stale detection', () => {
     const changed = { ...applied, q3Exp: 25 }; // Q3 changed after approval
     expect(conversionStatusOf(changed)).toBe('stale');
   });
+  it('stale when a converted arm’s reported input is CLEARED (orphaned derived value)', () => {
+    const plan = harmonizeStudy(base);
+    // Apply both arms, then clear one arm's reported input (leaving the derived value orphaned).
+    const applied = { ...base, conversions: plan.conversions.map((c) => ({ ...c })), meanCtrl: 12, sdCtrl: 6.2, q1Ctrl: '' };
+    expect(conversionStatusOf(applied)).toBe('stale');
+  });
   it('stale when the engine version moves', () => {
     const plan = harmonizeStudy(base);
     const applied = { ...base, conversions: plan.conversions.map((c) => ({ ...c, engineVersion: 'OLD-VERSION' })) };
