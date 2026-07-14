@@ -22,6 +22,7 @@ import ExportDialog from "../components/ExportDialog.jsx";
 import { rasterizeSvg, downloadBlob, downloadText, zipFiles } from "../components/exportCore.js";
 // prompt42 Task 8 — one-click journal-submission ZIP (pure helpers + methods text).
 import { getOutcomePairs as jsOutcomePairs, filterStudiesForOutcome as jsFilterStudies, buildStudyTableCSV as jsStudyTableCSV, buildReadmeMarkdown as jsReadme, buildManifest as jsManifest, buildWarningsText as jsWarnings, safeName as jsSafeName } from "../../research-engine/import-export/journalSubmission.js";
+import { poolPrimaryOutcome } from "../../research-engine/statistics/summaryPool.js";
 // prompt44 — reference-import parsers extracted to a pure module (verbatim).
 import { mkRecord, normTitle, parseRIS, parseNBIB, parseBibTeX, parseEndNoteXML, parseReferences, dedupeRecords, isNonPrimary } from "../../research-engine/import-export/referenceParsers.js";
 // prompt44 — pure domain constants extracted verbatim (no C/Icon/JSX).
@@ -661,8 +662,11 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   const buildReportHTML=(precOverride)=>{
     if(!project) return null;
     const p=project, pico=p.pico||{}, pr=p.prisma||{};
-    const res=runMeta(p.studies||[],"random");
-    const esType=(p.studies||[]).map(s=>s.esType).filter(Boolean)[0]||"";
+    // 86.md P1.6/P1.5 — report the PRIMARY outcome pool (persisted estimator), not
+    // every outcome/measure pooled into one figure that exists in no real analysis.
+    const _pooled=poolPrimaryOutcome(p.studies||[],"random",{tau2Method:(p.analysisSettings&&p.analysisSettings.tau2Method)||"DL"});
+    const res=_pooled.result;
+    const esType=_pooled.subset.map(s=>s.esType).filter(Boolean)[0]||"";
     const t=ES_TYPES[esType]||{}; const isLog=!!t.log, isProp=esType==="PROP";
     const bt=x=>isLog?Math.exp(x):isProp?(()=>{const e=Math.exp(x);return e/(1+e);})():x;
     const prec=precOverride||p.analysisPrecision; // prompt32 Task 8 — honor export-dialog precision
@@ -1571,7 +1575,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
                 {projectPerms(project).readOnly&&<span style={tagS("yellow")} title="You can view this shared project, but your changes will not be saved."><Icon name="lock" size={11}/> Read-only access</span>}
                 {project.pico?.prosperoId&&<span style={tagS("blue")}>PROSPERO: {project.pico.prosperoId}</span>}
                 {project.pico?.studyDesign&&<span style={tagS()}>{project.pico.studyDesign}</span>}
-                {(()=>{const r=runMeta(project.studies,"random");return r?<span style={tagS("green")}>k={r.k} · I²={r.I2}%</span>:null;})()}
+                {(()=>{const r=poolPrimaryOutcome(project.studies,"random",{tau2Method:(project.analysisSettings&&project.analysisSettings.tau2Method)||"DL"}).result;return r?<span style={tagS("green")}>k={r.k} · I²={r.I2}%</span>:null;})()/* 86.md P1.6 — primary-outcome pool, not cross-outcome */}
                 {(()=>{
                   const r=readinessCheck(project);
                   return r.ok

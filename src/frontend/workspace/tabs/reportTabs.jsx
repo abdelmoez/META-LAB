@@ -23,6 +23,7 @@ import { METHODS_CONTENT, NOT_IMPLEMENTED } from "../../../research-engine/docs/
 import { fmtES } from "../../../research-engine/format/precision.js";
 import { PRISMA_CL, GRADE_DOMAINS } from "../../../research-engine/project-model/monolithConstants.js";
 import { runMeta, eggersTest } from "../../../research-engine/statistics/monolithStats.js";
+import { poolPrimaryOutcome } from "../../../research-engine/statistics/summaryPool.js";
 import { robFlagEnabled, robApi } from "../../rob/robApi.js";
 import { summariseRobForGrade, ROB_GRADE_SOURCE } from "../../../research-engine/rob/gradeSync.js";
 import { AI_FEATURES_ENABLED, callClaude } from "../../services/aiService.js";
@@ -166,7 +167,9 @@ function LegacyGRADETab({project,upd}){
   const levelColors=[C.red,C.red,C.yel,C.grn];
   const levelEmoji=["⊕○○○","⊕⊕○○","⊕⊕⊕○","⊕⊕⊕⊕"];
 
-  const result=useMemo(()=>runMeta(project.studies,"random"),[project.studies]);
+  // 86.md P1.6/P1.5 — GRADE is per-outcome ("for your primary outcome"); pool the
+  // primary outcome group with the persisted τ² estimator, not every outcome mixed.
+  const result=useMemo(()=>poolPrimaryOutcome(project.studies,"random",{tau2Method:(project.analysisSettings&&project.analysisSettings.tau2Method)||"DL"}).result,[project.studies,project.analysisSettings]);
 
   return(<div>
     <SectionHeader icon="award" title="GRADE Certainty of Evidence" desc="Grade the body of evidence for your primary outcome. Required by most journals and Cochrane."/>
@@ -298,8 +301,11 @@ function LegacyManuscriptTab({project,upd}){
     prisma.dbs, prisma.included, prisma.quant
   ].join("|");
 
-  const result=useMemo(()=>runMeta(studies,"random"),[studies]);
-  const egger=useMemo(()=>eggersTest(studies),[studies]);
+  // 86.md P1.6/P1.5 — the auto-drafted Results paragraph describes the PRIMARY
+  // outcome pool (persisted estimator), not a cross-outcome/measure mash-up.
+  const pooled=useMemo(()=>poolPrimaryOutcome(studies,"random",{tau2Method:(project.analysisSettings&&project.analysisSettings.tau2Method)||"DL"}),[studies,project.analysisSettings]);
+  const result=pooled.result;
+  const egger=useMemo(()=>eggersTest(pooled.subset),[pooled.subset]);
 
   const sections=[
     {id:"methods",label:"Methods",icon:"🔬",desc:"Search strategy, eligibility, extraction, synthesis methods"},

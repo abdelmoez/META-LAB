@@ -19,6 +19,7 @@ import ProjectMembersPanel from "../../screening/tabs/ProjectMembersPanel.jsx";
 import { api } from "../../api-client/apiClient.js";
 import { useEntitlements } from "../../entitlements/useEntitlements.js";
 import { runMeta } from "../../../research-engine/statistics/monolithStats.js";
+import { poolPrimaryOutcome } from "../../../research-engine/statistics/summaryPool.js";
 import { C, btnS, inp, tagS } from "../ui/styles.js";
 import { SwitchToggle, SectionHeader, InfoBox, ProgressBar } from "../ui/primitives.jsx";
 import { TABS, readinessCheck, stepStatus, auditProject, projectPerms, linkedSiftId, CTRL_STATUS_OPTIONS } from "../projectHelpers.js";
@@ -321,7 +322,9 @@ function OverviewTab({project,setTab,onJournalZip,onRValidate}){
   const doneCount=wfTabs.filter(t=>status[t.id]==="done").length;
   const nextStep=wfTabs.find(t=>status[t.id]!=="done")||null;
   const ready=readinessCheck(project);
-  const meta=runMeta(studies,"random");
+  // 86.md P1.6/P1.5 — the overview I² badge reflects the PRIMARY outcome pool
+  // (persisted estimator), not every outcome/measure pooled into one figure.
+  const meta=poolPrimaryOutcome(studies,"random",{tau2Method:(project.analysisSettings&&project.analysisSettings.tau2Method)||"DL"}).result;
   const pico=project.pico||{},prisma=project.prisma||{};
   const owner=project._owner?(project._owner.name||project._owner.email):"You";
   const leaders=(mem.members||[]).filter(m=>m.role==="leader"||m.role==="owner");

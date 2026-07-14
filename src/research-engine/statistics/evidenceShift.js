@@ -28,12 +28,21 @@ export const DEFAULT_SHIFT_THRESHOLDS = {
 
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
-/** CI crosses (or touches) the null (0 on the analysis scale) → not significant. */
-function crossesNull(lo, hi) {
+// 86.md P2.15/P3.30 — the "no effect" value is 0 on the analysis scale for ratio
+// measures (ln 1 = 0), SMD/MD/RD/BETA and Fisher-z, BUT AUC is stored on its RAW
+// 0–1 scale where the null is 0.5, not 0. Judging AUC significance against 0 made
+// every AUC CI trivially "exclude the null" (AUC ≥ 0 always), so significance/
+// direction shifts for AUC outcomes were meaningless. Make the null measure-aware.
+function nullOf(esType) {
+  return String(esType || '').trim().toUpperCase() === 'AUC' ? 0.5 : 0;
+}
+
+/** CI crosses (or touches) the measure's null → not significant. */
+function crossesNull(lo, hi, nul = 0) {
   if (!isNum(lo) || !isNum(hi)) return null; // unknown
   const low = Math.min(lo, hi);
   const high = Math.max(lo, hi);
-  return low <= 0 && high >= 0;
+  return low <= nul && high >= nul;
 }
 
 /** Compact per-snapshot payload echoed into each shift for the UI/audit trail. */
@@ -115,12 +124,15 @@ export function detectEvidenceShift(prev, curr, thresholds = {}) {
   const kCurr = isNum(curr.k) ? curr.k : null;
   const bothMeetMinK = kPrev !== null && kCurr !== null && kPrev >= th.minK && kCurr >= th.minK;
 
-  // ── Direction change: sign of the pooled effect flipped ───────────────────
+  // Measure-aware null (0 on the analysis scale; 0.5 for raw-scale AUC).
+  const nul = nullOf(base.esType);
+
+  // ── Direction change: side of the pooled effect flipped relative to the null ─
   // Only meaningful when both snapshots are non-trivially estimated (k >= minK)
-  // and both effects are clearly non-zero.
+  // and both effects are clearly on one side of the null.
   let directionFired = false;
-  if (bothMeetMinK && isNum(prev.es) && isNum(curr.es) && prev.es !== 0 && curr.es !== 0) {
-    if (Math.sign(prev.es) !== Math.sign(curr.es)) {
+  if (bothMeetMinK && isNum(prev.es) && isNum(curr.es) && prev.es !== nul && curr.es !== nul) {
+    if (Math.sign(prev.es - nul) !== Math.sign(curr.es - nul)) {
       directionFired = true;
       add(
         'direction_change',
@@ -132,8 +144,8 @@ export function detectEvidenceShift(prev, curr, thresholds = {}) {
 
   // ── Significance change: CI crossed the null in exactly one snapshot ───────
   if (bothMeetMinK) {
-    const prevCrosses = crossesNull(prev.lo, prev.hi);
-    const currCrosses = crossesNull(curr.lo, curr.hi);
+    const prevCrosses = crossesNull(prev.lo, prev.hi, nul);
+    const currCrosses = crossesNull(curr.lo, curr.hi, nul);
     if (prevCrosses !== null && currCrosses !== null && prevCrosses !== currCrosses) {
       const gained = prevCrosses && !currCrosses; // was non-sig, now sig
       const msg = gained

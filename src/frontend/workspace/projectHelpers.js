@@ -14,6 +14,7 @@
 import { C } from "./ui/styles.js";
 import { ES_TYPES, ROB2, PRISMA_CL } from "../../research-engine/project-model/monolithConstants.js";
 import { runMeta, eggersTest, validateStudy, findDuplicates, checkPoolability } from "../../research-engine/statistics/monolithStats.js";
+import { poolPrimaryOutcome } from "../../research-engine/statistics/summaryPool.js";
 import { fmtNum, fmtES, fmtPct } from "../../research-engine/format/precision.js";
 import { timeframeComplete } from "../../features/protocol/index.js";
 
@@ -131,9 +132,14 @@ export const GRADE_OPTIONS=[
 /* Evidence-linked GRADE suggestions derived from the actual analysis.
    Returns { domainId: {suggest, reason} } so the user can one-click apply or override. */
 export function gradeSuggestions(project){
-  const studies=(project.studies||[]).filter(s=>s.es!==""&&!isNaN(+s.es));
+  const allStudies=(project.studies||[]).filter(s=>s.es!==""&&!isNaN(+s.es));
   const robMethod=project.robMethod||"RoB2";
-  const result=runMeta(studies,"random");
+  // 86.md P1.6/P1.5 — pool the PRIMARY outcome with the persisted τ² estimator, not
+  // all studies of every outcome/measure mixed into one meaningless estimate.
+  const tau2Method=(project.analysisSettings&&project.analysisSettings.tau2Method)||"DL";
+  const pooled=poolPrimaryOutcome(allStudies,"random",{tau2Method});
+  const studies=pooled.subset.length?pooled.subset:allStudies;
+  const result=pooled.result;
   const egger=eggersTest(studies);
   const out={};
 
