@@ -46,16 +46,24 @@ test.describe('Create project', () => {
     }
   });
 
-  test('creating with a title + description shows a success toast and the new card', async ({ page }) => {
+  test('creating with a title + description opens the new project immediately (83.md §1)', async ({ page }) => {
     const dash = new ProjectOverviewPage(page);
     const name = uniqueName('Created');
     created.push(name);
     await dash.gotoDashboard();
     await dash.createProjectViaUI(name, 'A short review question for the E2E suite.');
-    // The create modal closes and the new card appears in the list (real reload).
+    // 83.md §1 — success navigates STRAIGHT into the new project workspace using the
+    // backend-returned id (no manual find-and-open step) and lands on Overview.
     await expect(dash.shell.modal).toBeHidden();
+    await expect(page).toHaveURL(/\/app\/project\/[^/?]+/, { timeout: 15_000 });
+    await expect(page.getByText(name).first()).toBeVisible();
+    // Refresh keeps the project open (route + server state, no temporary ids).
+    await page.reload();
+    await expect(page).toHaveURL(/\/app\/project\/[^/?]+/);
+    await expect(page.getByText(name).first()).toBeVisible();
+    // Back returns to the dashboard, where the new project appears in the list.
+    await page.goBack();
     await expect(dash.card(name)).toBeVisible();
-    await expect(dash.cardTitle(name)).toHaveAttribute('title', name);
   });
 
   test('title is required — empty and whitespace-only titles are rejected', async ({ page }) => {
@@ -73,13 +81,12 @@ test.describe('Create project', () => {
     await dash.modalButton('Create project').click();
     await expect(dash.modalError).toHaveText('Please enter a project title.');
 
-    // A real title submits successfully and dismisses the modal.
+    // A real title submits successfully and opens the new project (83.md §1).
     const name = uniqueName('Guarded');
     created.push(name);
     await dash.createTitleInput.fill(name);
     await dash.modalButton('Create project').click();
-    await expect(dash.successToast('Project created')).toBeVisible();
-    await expect(dash.shell.modal).toBeHidden();
+    await expect(page).toHaveURL(/\/app\/project\/[^/?]+/, { timeout: 15_000 });
   });
 });
 

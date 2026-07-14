@@ -40,14 +40,24 @@ function isPdfBytes(buf) {
 }
 
 /**
- * usePdfSource(study) -> {
- *   url, source: 'screening'|'local'|null, resolving, error,
+ * usePdfSource(study, projectId, { onDocumentPersisted, publication }) -> {
+ *   url, source: 'screening'|'study-doc'|'oa'|'local'|null, resolving, error,
  *   screenProjectId, recordId, setLocalFile(file), clearLocal(),
  *   extractPages(): Promise<{pages:[{page,text}], count}>
  * }
+ *
+ * `publication` (83.md §2, optional) scopes the PDF to the PAPER instead of the single
+ * study row: pass `publicationSourceFor(studies, study.id)` and the hook resolves via
+ * the citation group's carrier row (screening link or study document from ANY sibling
+ * outcome). Because the effect is keyed on the publication identity — not the row id —
+ * switching outcomes of the same paper neither clears nor re-resolves the PDF, so the
+ * viewer keeps its page/zoom/scroll. Callers that omit it keep per-row behaviour.
  */
-export function usePdfSource(study, projectId, { onDocumentPersisted } = {}) {
-  const [resolved, setResolved] = useState({ url: null, source: null, screenProjectId: null, recordId: null });
+export function usePdfSource(study, projectId, { onDocumentPersisted, publication = null } = {}) {
+  // `fileKey` identifies the exact FILE shown (attachment id / stored blob name; null
+  // for a session-local upload). Stored with click-to-pick provenance so a jump can
+  // detect "these coordinates were captured on a different file" (83.md §3/§5).
+  const [resolved, setResolved] = useState({ url: null, source: null, screenProjectId: null, recordId: null, fileKey: null });
   const [resolving, setResolving] = useState(false);
   const [retrieving, setRetrieving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -56,9 +66,17 @@ export function usePdfSource(study, projectId, { onDocumentPersisted } = {}) {
   const supersedeRef = useRef(0);   // bumped when a local file is chosen, so an in-flight resolve can bail
   const studyId = study && study.id;
   const studyIdRef = useRef(studyId);
-  studyIdRef.current = studyId;     // always the currently-selected study, for in-flight guards
+  studyIdRef.current = studyId;     // always the currently-selected study (upload targets)
   const doi = (study && study.doi) || '';
   const pmid = (study && study.pmid) || '';
+
+  // The PAPER identity this hook is resolving for — the stable anchor row id, NOT the
+  // citation-key string (which churns per keystroke while a citation field is edited).
+  // In-flight guards compare against it (not the open row id) so finishing a persist/OA
+  // retrieval is still valid after the reviewer switches to a sibling OUTCOME.
+  const pubKey = (publication && (publication.anchorId || publication.key)) || studyId || null;
+  const pubKeyRef = useRef(pubKey);
+  pubKeyRef.current = pubKey;
 
   // Clean up an object URL when the local file changes or the component unmounts.
   const revokeLocal = useCallback(() => {
@@ -66,36 +84,62 @@ export function usePdfSource(study, projectId, { onDocumentPersisted } = {}) {
   }, []);
   useEffect(() => () => revokeLocal(), [revokeLocal]);
 
-  // Only the study IDENTITY + its screening-record link affect which PDF resolves —
-  // NOT its extraction values. Depending on the whole `study` object would re-resolve
+  // Only the publication IDENTITY + its PDF linkage affect which PDF resolves —
+  // NOT extraction values. Depending on the whole `study` object would re-resolve
   // (and revoke a session-local upload / reload the screening PDF) on every field
   // edit, e.g. each click-assign. Depend on these primitives instead.
-  const directSp = (study && study.screeningProjectId) || null;
-  const directRid = (study && study.screeningRecordId) || null;
+  const directSp = (publication && publication.screeningProjectId) || (study && study.screeningProjectId) || null;
+  const directRid = (publication && publication.screeningRecordId) || (study && study.screeningRecordId) || null;
   // The blob-anchored study document (77.md §5) — the persistent PDF for a study that
-  // isn't screening-linked. Depend on its storedName primitive, not the whole object.
-  const docStored = (study && study.document && study.document.storedName) || null;
+  // isn't screening-linked. With a publication, the carrier row may be a SIBLING
+  // outcome; its id keys the download route. Depend on primitives, not objects.
+  const docStored = (publication && publication.docStoredName) || (study && study.document && study.document.storedName) || null;
+  // docSid only matters when a study-document EXISTS; gating on docStored keeps it
+  // null — and stable — for screening-linked papers, so a sibling-outcome switch
+  // (which changes studyId but nothing else) cannot re-run the resolve effect
+  // (adversarial-review finding: the churn re-fired listPdf per switch and a
+  // transient failure could blank the shared viewer mid-extraction).
+  const docSid = docStored ? (((publication && publication.docStoredName) ? publication.docStudyId : studyId) || null) : null;
+  // Candidate row ids for the server study→screening-record handoff lookup. Read via a
+  // ref so the sibling SET growing (e.g. "+ Add outcome") never re-runs the resolve.
+  const lookupIdsRef = useRef([]);
+  lookupIdsRef.current = (publication && publication.lookupStudyIds && publication.lookupStudyIds.length)
+    ? publication.lookupStudyIds : (studyId ? [studyId] : []);
 
-  // Resolve the study's PDF whenever its identity (or persisted-doc pointer) changes.
+  // Resolve the paper's PDF whenever its identity (or persisted-doc pointer) changes.
   // Priority: screening attachment (canonical for screened studies) → blob study document
   // → nothing. Both survive refresh/relogin and are served through authenticated routes.
+  const prevPubKeyRef = useRef(undefined);
   useEffect(() => {
     let dead = false;
-    revokeLocal();
-    setResolved({ url: null, source: null, screenProjectId: null, recordId: null });
+    // Same paper (a linkage primitive changed, e.g. a persist finished stamping the
+    // pointer) → keep the current PDF on screen while re-resolving; an equal URL then
+    // lands as a no-op for the viewer. A different paper clears immediately so the old
+    // paper's PDF can never linger over the new one.
+    const samePaper = prevPubKeyRef.current === pubKey;
+    prevPubKeyRef.current = pubKey;
+    if (!samePaper) {
+      revokeLocal();
+      setResolved({ url: null, source: null, screenProjectId: null, recordId: null, fileKey: null });
+    }
     setError('');
     if (!studyId) return undefined;
 
     const token = supersedeRef.current;   // if a local upload happens mid-resolve, bail
     const superseded = () => dead || supersedeRef.current !== token;
-    const studyDocUrl = () => studyDocApi.downloadUrl(projectId, studyId);
     (async () => {
       setResolving(true);
       try {
         let sp = directSp, rid = directRid;
         if (!sp || !rid) {
-          const r = await screeningApi.metalabStudyRecord(projectId, studyId).catch(() => null);
-          if (r && r.recordId && r.screenProjectId) { sp = r.screenProjectId; rid = r.recordId; }
+          // No direct link on any group row — ask the server to resolve the handoff.
+          // Only originally handed-off rows carry a ScreenRecord.handoffStudyId, so try
+          // each candidate (target row first, then siblings) until one resolves.
+          for (const sid of lookupIdsRef.current) {
+            const r = await screeningApi.metalabStudyRecord(projectId, sid).catch(() => null);
+            if (superseded()) return;
+            if (r && r.recordId && r.screenProjectId) { sp = r.screenProjectId; rid = r.recordId; break; }
+          }
         }
         if (superseded()) return;
         if (sp && rid) {
@@ -107,16 +151,21 @@ export function usePdfSource(study, projectId, { onDocumentPersisted } = {}) {
           const att = (listing && listing.attachments && listing.attachments[0]) || null;
           if (superseded()) return;
           if (att) {
-            setResolved({ url: screeningApi.pdfDownloadUrl(sp, rid, att.id), source: 'screening', screenProjectId: sp, recordId: rid });
-          } else if (docStored) {
-            setResolved({ url: studyDocUrl(), source: 'study-doc', screenProjectId: sp, recordId: rid });
+            setResolved({ url: screeningApi.pdfDownloadUrl(sp, rid, att.id), source: 'screening', screenProjectId: sp, recordId: rid, fileKey: `att:${att.id}` });
+          } else if (docStored && docSid) {
+            setResolved({ url: studyDocApi.downloadUrl(projectId, docSid), source: 'study-doc', screenProjectId: sp, recordId: rid, fileKey: `doc:${docStored}` });
           } else {
-            setResolved({ url: null, source: null, screenProjectId: sp, recordId: rid });
+            setResolved({ url: null, source: null, screenProjectId: sp, recordId: rid, fileKey: null });
             if (listFailed) setError('Could not check for this study’s saved PDF just now — refresh before uploading so you don’t replace an existing file.');
           }
-        } else if (docStored) {
+        } else if (docStored && docSid) {
           // Manual study with a persisted document — resolve it straight from the blob pointer.
-          setResolved({ url: studyDocUrl(), source: 'study-doc', screenProjectId: null, recordId: null });
+          setResolved({ url: studyDocApi.downloadUrl(projectId, docSid), source: 'study-doc', screenProjectId: null, recordId: null, fileKey: `doc:${docStored}` });
+        } else if (samePaper) {
+          // Re-resolve of the same paper found nothing (e.g. the linkage was removed) —
+          // clear the kept-on-screen URL now that we know it no longer applies.
+          revokeLocal();
+          setResolved({ url: null, source: null, screenProjectId: null, recordId: null, fileKey: null });
         }
       } catch (e) {
         if (!superseded()) setError(e.message || 'Could not resolve a PDF for this study.');
@@ -125,7 +174,7 @@ export function usePdfSource(study, projectId, { onDocumentPersisted } = {}) {
       }
     })();
     return () => { dead = true; };
-  }, [studyId, projectId, directSp, directRid, docStored, revokeLocal]);
+  }, [pubKey, projectId, directSp, directRid, docStored, docSid, revokeLocal]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A PDF uploaded here can be PERSISTED so it survives refresh/relogin and is available
   // across engines (77.md §5): screening-linked studies → the canonical ScreenPdfAttachment
@@ -138,7 +187,7 @@ export function usePdfSource(study, projectId, { onDocumentPersisted } = {}) {
     revokeLocal();
     const u = URL.createObjectURL(file);
     localUrlRef.current = u;
-    setResolved((prev) => ({ url: u, source: 'local', screenProjectId: prev.screenProjectId, recordId: prev.recordId }));
+    setResolved((prev) => ({ url: u, source: 'local', screenProjectId: prev.screenProjectId, recordId: prev.recordId, fileKey: null }));
     setResolving(false);
   }, [revokeLocal]);
 
@@ -152,45 +201,50 @@ export function usePdfSource(study, projectId, { onDocumentPersisted } = {}) {
     const rid = resolved.recordId || directRid;
     if (opts.persist && sp && rid) {
       setUploading(true); setError('');
-      const startStudy = studyIdRef.current;
+      // Guard on the PAPER, not the row: switching to a sibling outcome of the same
+      // publication mid-upload must not orphan the persist (83.md §2).
+      const startPub = pubKeyRef.current;
       try {
         await screeningApi.uploadPdf(sp, rid, file);
         const listing = await screeningApi.listPdf(sp, rid).catch(() => null);
-        if (studyIdRef.current !== startStudy) { setUploading(false); return; }   // study switched mid-upload
+        if (pubKeyRef.current !== startPub) { setUploading(false); return; }   // paper switched mid-upload
         const att = (listing && listing.attachments && listing.attachments[0]) || null;
         if (att) {
           supersedeRef.current += 1; revokeLocal();
-          setResolved({ url: screeningApi.pdfDownloadUrl(sp, rid, att.id), source: 'screening', screenProjectId: sp, recordId: rid });
+          setResolved({ url: screeningApi.pdfDownloadUrl(sp, rid, att.id), source: 'screening', screenProjectId: sp, recordId: rid, fileKey: `att:${att.id}` });
           setUploading(false);
           return;
         }
       } catch (e) {
         // Guard the async failure the same way as the success path: if the reviewer switched
-        // article mid-upload, do NOT fall through to a local URL for the wrong study.
-        if (studyIdRef.current !== startStudy) { setUploading(false); return; }
+        // paper mid-upload, do NOT fall through to a local URL for the wrong study.
+        if (pubKeyRef.current !== startPub) { setUploading(false); return; }
         // Persisting failed (permissions, size, network) — keep the reviewer working with a
         // session-local copy, but tell them it was not saved to the project.
         setError((e && e.message ? `${e.message} ` : '') + 'Showing this PDF locally for this session only — it was not saved to the project.');
       }
       setUploading(false);
     } else if (opts.persist && projectId && studyId) {
-      // Not screening-linked → persist to the blob-anchored study document store. The server
-      // writes study.document durably; we also stamp it into the client blob (onDocumentPersisted)
-      // so a whole-blob autosave can't clobber the pointer.
+      // Not screening-linked → persist to the blob-anchored study document store, keyed to
+      // the row that was OPEN when the upload started. The server writes study.document
+      // durably; we also stamp it into the client blob (onDocumentPersisted) so a
+      // whole-blob autosave can't clobber the pointer. Sibling outcomes of the same paper
+      // resolve it through the publication carrier scan.
       setUploading(true); setError('');
+      const startPub = pubKeyRef.current;
       const startStudy = studyIdRef.current;
       try {
-        const r = await studyDocApi.upload(projectId, studyId, file);
-        if (studyIdRef.current !== startStudy) { setUploading(false); return; }
+        const r = await studyDocApi.upload(projectId, startStudy, file);
+        if (pubKeyRef.current !== startPub) { setUploading(false); return; }
         if (r && r.document && r.document.storedName) {
           supersedeRef.current += 1; revokeLocal();
-          setResolved({ url: studyDocApi.downloadUrl(projectId, studyId), source: 'study-doc', screenProjectId: null, recordId: null });
-          if (onDocumentPersisted) onDocumentPersisted(studyId, r.document);
+          setResolved({ url: studyDocApi.downloadUrl(projectId, startStudy), source: 'study-doc', screenProjectId: null, recordId: null, fileKey: `doc:${r.document.storedName}` });
+          if (onDocumentPersisted) onDocumentPersisted(startStudy, r.document);
           setUploading(false);
           return;
         }
       } catch (e) {
-        if (studyIdRef.current !== startStudy) { setUploading(false); return; }
+        if (pubKeyRef.current !== startPub) { setUploading(false); return; }
         setError((e && e.message ? `${e.message} ` : '') + 'Showing this PDF locally for this session only — it was not saved to the project.');
       }
       setUploading(false);
@@ -200,7 +254,7 @@ export function usePdfSource(study, projectId, { onDocumentPersisted } = {}) {
 
   const clearLocal = useCallback(() => {
     revokeLocal();
-    setResolved({ url: null, source: null, screenProjectId: null, recordId: null });
+    setResolved({ url: null, source: null, screenProjectId: null, recordId: null, fileKey: null });
   }, [revokeLocal]);
 
   // Third sourcing mode: auto-retrieve an open-access PDF by DOI/PMID and persist it as a
@@ -210,12 +264,12 @@ export function usePdfSource(study, projectId, { onDocumentPersisted } = {}) {
   const retrieveOa = useCallback(async () => {
     const sp = resolved.screenProjectId, rid = resolved.recordId;
     if (!sp || !rid) { setError('This study is not linked to a screening record, so its PDF cannot be auto-retrieved. Upload it instead.'); return; }
-    // Guard the multi-second round-trip: if the reviewer switches study (or uploads a local
+    // Guard the multi-second round-trip: if the reviewer switches PAPER (or uploads a local
     // PDF) while OA retrieval is in flight, its late result must NOT clobber the new study's
-    // view with the wrong document.
-    const startStudyId = studyIdRef.current;
+    // view with the wrong document. A sibling-outcome switch keeps the retrieval valid.
+    const startPub = pubKeyRef.current;
     const startToken = supersedeRef.current;
-    const stale = () => studyIdRef.current !== startStudyId || supersedeRef.current !== startToken;
+    const stale = () => pubKeyRef.current !== startPub || supersedeRef.current !== startToken;
     setRetrieving(true); setError('');
     try {
       // Preserve the server's structured status through the API's throw-on-non-2xx (403 for a
@@ -226,7 +280,7 @@ export function usePdfSource(study, projectId, { onDocumentPersisted } = {}) {
         const listing = await screeningApi.listPdf(sp, rid).catch(() => null);
         if (stale()) return;
         const att = (listing && listing.attachments && listing.attachments[0]) || null;
-        if (att) { supersedeRef.current += 1; revokeLocal(); setResolved({ url: screeningApi.pdfDownloadUrl(sp, rid, att.id), source: 'oa', screenProjectId: sp, recordId: rid }); }
+        if (att) { supersedeRef.current += 1; revokeLocal(); setResolved({ url: screeningApi.pdfDownloadUrl(sp, rid, att.id), source: 'oa', screenProjectId: sp, recordId: rid, fileKey: `att:${att.id}` }); }
       } else {
         const why = r && (r.status === 'not_found' ? 'No open-access copy was found for this DOI/PMID.'
           : r.status === 'skipped_feature_disabled' ? 'Automatic PDF retrieval is turned off by your administrator.'
@@ -296,7 +350,7 @@ export function usePdfSource(study, projectId, { onDocumentPersisted } = {}) {
   }, [resolved.url]);
 
   return useMemo(() => ({
-    url: resolved.url, source: resolved.source,
+    url: resolved.url, source: resolved.source, fileKey: resolved.fileKey || null,
     screenProjectId: resolved.screenProjectId, recordId: resolved.recordId,
     resolving, retrieving, uploading, error, canRetrieveOa, retrieveOa, canPersistUpload,
     setLocalFile, clearLocal, extractPages,

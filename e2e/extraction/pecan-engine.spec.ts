@@ -162,6 +162,69 @@ test.describe('Pecan Extraction Engine', () => {
     }
   });
 
+  // 83.md §2 + §3 — one study PDF shared across outcomes, and the persistent
+  // (dismissible) jump-to-source highlight. Skipped in Firefox for the same dev-mode
+  // synthetic-PDF worker flake as above; WebKit + Chromium give cross-engine parity.
+  test('study PDF is reused across outcomes; jump-to-source highlights persist until dismissed @smoke', async ({ page, request, setFlags, browserName }) => {
+    test.skip(browserName === 'firefox', 'dev-mode module-worker + synthetic-blob-PDF flake; covered by WebKit + Chromium');
+    await setFlags({ extractionEngine: true });
+    const project = await createProject(request, `E2E Pecan PDF Reuse ${Date.now()}`);
+    try {
+      const res = await request.post(`/api/projects/${project.id}/studies`, {
+        data: { author: 'Nasser', year: '2024', outcome: 'Mortality', esType: 'OR' },
+      });
+      expect(res.ok(), `seed study failed: ${res.status()}`).toBeTruthy();
+
+      await page.goto(`/app/project/${project.id}?tab=extraction`);
+      await page.getByText('Nasser').first().click();
+      await expect(page.getByTestId('pex-workspace')).toBeVisible({ timeout: 15000 });
+
+      // Upload the study PDF once (persisted to the project's study-document store).
+      const fileInput = page.locator('input[type="file"][accept*="pdf"]');
+      await fileInput.setInputFiles({ name: 'nasser.pdf', mimeType: 'application/pdf', buffer: minimalPdf('OR 2.45 CI 1.10 3.20') });
+      const numberSpan = page.locator('.mlpdf-tl span', { hasText: '2.45' }).first();
+      await expect(numberSpan).toBeVisible({ timeout: 25000 });
+
+      // Pick a value so the field gains a jumpable source (page + bbox provenance).
+      await numberSpan.click();
+      const jump = page.locator('button[title*="Jump to this value"]').first();
+      await expect(jump).toBeVisible({ timeout: 10000 });
+
+      // §3 — clicking the source shows a PERSISTENT highlight (not a timed flash)…
+      await jump.click();
+      const highlight = page.locator('.mlpdf-src-hl');
+      await expect(highlight).toBeVisible();
+      await page.waitForTimeout(2600); // outlives the old 2.2s flash
+      await expect(highlight).toBeVisible();
+      // …Escape dismisses it (and does NOT close the workspace)…
+      await page.keyboard.press('Escape');
+      await expect(highlight).toHaveCount(0);
+      await expect(page.getByTestId('pex-workspace')).toBeVisible();
+      // …re-selecting the source shows it again; clicking elsewhere (the form side,
+      // NOT the toolbar's Back button) dismisses it.
+      await jump.click();
+      await expect(highlight).toBeVisible();
+      await page.getByText('STUDY & OUTCOME').click();
+      await expect(highlight).toHaveCount(0);
+
+      // §2 — adding another outcome keeps the SAME study PDF loaded: no re-upload
+      // prompt, no empty viewer, and the text layer is still there.
+      await jump.click();
+      await expect(highlight).toBeVisible();
+      await page.getByRole('button', { name: /\+ Add outcome/ }).click();
+      await expect(page.getByTestId('pex-outcome-nav')).toBeVisible();
+      await expect(highlight).toHaveCount(0);                 // outcome switch clears the highlight
+      await expect(page.getByText('No PDF linked to this article.')).toHaveCount(0);
+      await expect(page.locator('.mlpdf-tl span', { hasText: '2.45' }).first()).toBeVisible({ timeout: 25000 });
+
+      // Per-outcome separation: the NEW outcome starts with no values and no source
+      // references — outcome A's sources must never appear as outcome B's.
+      await expect(page.locator('button[title*="Jump to this value"]')).toHaveCount(0);
+    } finally {
+      await deleteProject(request, project.id);
+    }
+  });
+
   test('flag OFF keeps the classic extraction surface', async ({ page, request, setFlags }) => {
     await setFlags({ extractionEngine: false });
     const project = await createProject(request, `E2E Classic Extraction ${Date.now()}`);

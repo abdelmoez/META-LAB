@@ -19,6 +19,8 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { api } from '../api-client/apiClient.js';
+import { createdProjectId } from '../api-client/createdProject.js';
+import { tierErrorMessage } from '../entitlements';
 import { screeningApi } from '../screening/api-client/screeningApi.js';
 import { robFlagEnabled } from '../rob/robApi.js';
 import { useAuth } from '../context/AuthContext.jsx';
@@ -675,6 +677,7 @@ function CreateModal({ onClose, onCreated }) {
 
   const submit = async (e) => {
     e.preventDefault();
+    if (busy) return;   // 83.md §1 — double-submit guard
     const trimmed = name.trim();
     if (!trimmed) { setErr('Please enter a project title.'); return; }
     setBusy(true); setErr('');
@@ -687,7 +690,9 @@ function CreateModal({ onClose, onCreated }) {
       });
       onCreated(res);
     } catch (e2) {
-      setErr(e2.message || 'Could not create the project.');
+      // A tier-limit 403 carries the human message in the body; the bare .message is
+      // the TIER_LIMIT_EXCEEDED enum key (83.md §1 review finding).
+      setErr(tierErrorMessage(e2) || e2.message || 'Could not create the project.');
       setBusy(false);
     }
   };
@@ -1745,7 +1750,9 @@ export default function ProjectLanding() {
           onClose={closeModal}
           onCreated={(res) => {
             closeModal();
-            const id = res && res.id;
+            // 83.md §1 — the linked-sift response nests the project ({ project, … });
+            // read either shape so the new project ALWAYS opens immediately.
+            const id = createdProjectId(res);
             if (id) navigate(`/app/project/${encodeURIComponent(id)}`);
             else reload();
           }}

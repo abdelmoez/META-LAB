@@ -32,6 +32,16 @@ export const CITATION_FIELDS = Object.freeze([
   'comparatorDef', 'funding', 'extractedBy',
 ]);
 
+// 83.md §2 — the PDF/publication linkage is STUDY-level, not outcome-level. A new
+// outcome row of the same paper must keep resolving the paper's PDF, so cloning also
+// inherits the screening-attachment link and the blob study-document pointer (the
+// same contract records.js `citationTemplate` already applies to confirmed drafts;
+// `document` pointers are dedup-safe server-side — content-hash reuse + a
+// referenced-elsewhere check before any file delete).
+export const PUBLICATION_LINK_FIELDS = Object.freeze([
+  'screeningProjectId', 'screeningRecordId', 'document',
+]);
+
 const s = (v) => (v == null ? '' : String(v).trim());
 const norm = (v) => s(v).toLowerCase().replace(/\s+/g, ' ');
 
@@ -142,6 +152,7 @@ export function addOutcome(studies = [], sourceStudyId, opts = {}) {
   const fresh = mkStudy();
   fresh.id = idFn();
   for (const f of CITATION_FIELDS) fresh[f] = src[f] !== undefined ? src[f] : fresh[f];
+  for (const f of PUBLICATION_LINK_FIELDS) if (src[f] !== undefined && src[f] !== null && src[f] !== '') fresh[f] = src[f];
   fresh.outcome = s(opts.name);
   fresh.timepoint = s(opts.timepoint);
   fresh.notes = `Same cohort as ${s(src.author) || 'study'} ${s(src.year)} — additional outcome/time point.`;
@@ -215,6 +226,107 @@ export function restoreOutcome(studies = [], studyId) {
     delete st.extractionMeta.archived;
   });
   return found ? { studies: next } : { error: 'study not found' };
+}
+
+/**
+ * publicationSourceFor(studies, studyId) — 83.md §2. The PDF a study row should show
+ * is a PUBLICATION (paper) fact, not an outcome fact. Existing rows created before
+ * PUBLICATION_LINK_FIELDS inheritance (or via other paths) may lack the linkage, so
+ * resolution falls back to ANY sibling row of the same citation group — including
+ * ARCHIVED outcomes (archiving an outcome must never make the paper's PDF vanish).
+ *
+ * Preference order (non-destructive; per-row files are respected when present):
+ *   1. the row's own screening link / document,
+ *   2. the first sibling with a screening link,
+ *   3. the first sibling with a persisted study document.
+ *
+ * @returns {{ key:string, anchorId:string, screeningProjectId:string|null,
+ *             screeningRecordId:string|null, docStudyId:string|null,
+ *             docStoredName:string|null, lookupStudyIds:string[] } | null}
+ *   `anchorId` is a STABLE identity for the paper: the first group member's row id in
+ *   array order. Row ids are immutable, so it does not churn while the reviewer types
+ *   in a citation field (citation-key strings do — keying a PDF resolve on them would
+ *   reload the viewer per keystroke) and it is identical from every outcome of the
+ *   paper. `docStudyId` is the row whose blob-anchored document should be streamed
+ *   (the study-doc download route is keyed by study id). `lookupStudyIds` are
+ *   candidate ids for the server's study→screening-record handoff resolution, target
+ *   row first.
+ */
+/**
+ * isStrongCitationKey(key) — true for identities precise enough to drive FILE
+ * sharing (DOI / PMID / author|year|title). The `a:author|year` and `id:` fallbacks
+ * can collide across genuinely different papers (two 2020 Smith trials with no
+ * titles yet), and streaming one paper's PDF for another is worse than not sharing —
+ * so weak keys resolve per-row only (adversarial-review finding). Display grouping
+ * (groupStudiesByCitation) intentionally keeps the looser match.
+ */
+export function isStrongCitationKey(key) {
+  return /^(doi:|pmid:|t:)/.test(String(key || ''));
+}
+
+export function publicationSourceFor(studies = [], studyId) {
+  const list = Array.isArray(studies) ? studies : [];
+  const target = list.find((x) => x && x.id === studyId);
+  if (!target) return null;
+  const key = citationKey(target);
+  // Weak identity may still group on shared PHYSICAL linkage — two rows pointing at
+  // the same screening record / stored file are provably the same publication (the
+  // inheritance path copies exactly these), while text-only weak matches are not.
+  const samePhysicalFile = (x) =>
+    (!!target.screeningRecordId && x.screeningRecordId === target.screeningRecordId)
+    || (!!(target.document && target.document.storedName) && !!(x.document && x.document.storedName === target.document.storedName));
+  const members = isStrongCitationKey(key)
+    ? list.filter((x) => x && citationKey(x) === key) // array order (stable anchor)
+    : list.filter((x) => x && citationKey(x) === key && (x.id === target.id || samePhysicalFile(x)));
+  const hasScreenLink = (st) => !!(st.screeningProjectId && st.screeningRecordId);
+  const hasDoc = (st) => !!(st.document && st.document.storedName);
+  // Own-row preference: a row that carries its own linkage keeps it (non-destructive
+  // for legacy per-row uploads); only linkage-less rows fall back to a sibling carrier.
+  const screenCarrier = (hasScreenLink(target) ? target : members.find(hasScreenLink)) || null;
+  // For documents the download URL is keyed by the carrier ROW id, so when the row's
+  // own pointer is the SAME file as the group's first carrier (the pointer-copy case),
+  // resolve through the group-stable carrier — otherwise the URL (and the mounted
+  // viewer) would flip between sibling outcomes streaming identical bytes. A row whose
+  // own file genuinely DIFFERS (a deliberate per-row upload) keeps its own.
+  const firstDoc = members.find(hasDoc) || null;
+  const docCarrier = (hasDoc(target) && firstDoc && target.document.storedName !== firstDoc.document.storedName)
+    ? target : firstDoc;
+  return {
+    key,
+    anchorId: (members[0] && members[0].id) || target.id,
+    screeningProjectId: screenCarrier ? screenCarrier.screeningProjectId : null,
+    screeningRecordId: screenCarrier ? screenCarrier.screeningRecordId : null,
+    docStudyId: docCarrier ? docCarrier.id : null,
+    docStoredName: docCarrier ? docCarrier.document.storedName : null,
+    lookupStudyIds: [target.id, ...members.filter((st) => st.id !== target.id).map((st) => st.id)].slice(0, 8),
+  };
+}
+
+/**
+ * spreadAvailabilityByCitation(studies, availability) — 83.md §2, server list view.
+ * Given a per-row availability map (studyId → boolean), mark EVERY row of a citation
+ * group available when ANY of its rows is — the paper's PDF is shared across its
+ * outcomes. Pure; returns a NEW Map, input untouched.
+ * @param {object[]} studies
+ * @param {Map<string, boolean>} availability
+ * @returns {Map<string, boolean>}
+ */
+export function spreadAvailabilityByCitation(studies = [], availability = new Map()) {
+  const out = new Map(availability);
+  const byKey = new Map(); // key → { ids:[], any:boolean }
+  for (const st of (Array.isArray(studies) ? studies : [])) {
+    if (!st || typeof st !== 'object' || !st.id) continue;
+    const key = citationKey(st);
+    if (!isStrongCitationKey(key)) continue; // weak identity → per-row availability only
+    if (!byKey.has(key)) byKey.set(key, { ids: [], any: false });
+    const g = byKey.get(key);
+    g.ids.push(st.id);
+    if (out.get(st.id)) g.any = true;
+  }
+  for (const { ids, any } of byKey.values()) {
+    if (any) for (const id of ids) out.set(id, true);
+  }
+  return out;
 }
 
 /**

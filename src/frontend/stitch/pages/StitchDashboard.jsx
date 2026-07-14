@@ -18,6 +18,7 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { api } from '../../api-client/apiClient.js';
+import { createdProjectOf } from '../../api-client/createdProject.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import {
   STATUS_META, statusOf, roleOf, isOwnerOf, canEditOf, relTime, progressOf, ROLE_LABEL,
@@ -70,6 +71,7 @@ function CreateProjectModal({ open, onClose, onCreated }) {
 
   const submit = async (e) => {
     e?.preventDefault?.();
+    if (busy) return;   // 83.md §1 — double-click/Enter must never create two projects
     const trimmed = name.trim();
     if (!trimmed) { setErr('Please enter a project title.'); return; }
     setBusy(true); setErr('');
@@ -683,7 +685,16 @@ export default function StitchDashboard() {
           html[data-ui-design="stitch"] .stitch-projlist-row td[data-th="Actions"]{ justify-content: flex-start; }
         }
       `}</style>
-      <CreateProjectModal open={createOpen} onClose={() => setCreateOpen(false)} onCreated={() => { setCreateOpen(false); reload(); }} />
+      <CreateProjectModal open={createOpen} onClose={() => setCreateOpen(false)} onCreated={(res) => {
+        // 83.md §1 — open the newly created project immediately, using the DEFINITIVE
+        // id the backend returned (either response shape); the project workspace's
+        // default landing tab is Overview. Only a shapeless response falls back to
+        // reloading the list.
+        setCreateOpen(false);
+        const created = createdProjectOf(res);
+        if (created) navigate(`/app/project/${encodeURIComponent(created.id)}`);
+        else reload();
+      }} />
       <ActionModal state={action && action.type !== 'delete' ? action : null} onClose={() => setAction(null)} onDone={() => { setAction(null); reload(); }} />
       <DeleteProjectModal project={action && action.type === 'delete' ? action.project : null} onClose={() => setAction(null)} onDone={() => { setAction(null); reload(); }} />
     </StitchAppShell>

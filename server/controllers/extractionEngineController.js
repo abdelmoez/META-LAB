@@ -53,7 +53,7 @@ export async function getArticles(req, res) {
   const access = await gate(req, res); if (!access) return;
   try {
     const project = blobOf(access);
-    const { articles, stats } = await buildArticles(project);
+    const { articles, stats } = await buildArticles(project, { mlProjectId: access.project.id, userId: access.userId });
     res.json({ articles, stats, canEdit: access.canEdit, canAdjudicate: access.canAdjudicate });
   } catch (e) { console.error('[extraction-engine] getArticles', e); res.status(500).json({ error: 'Internal server error' }); }
 }

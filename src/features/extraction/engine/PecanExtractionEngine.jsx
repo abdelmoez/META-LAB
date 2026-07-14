@@ -87,6 +87,17 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
     ...p, studies: (p.studies || []).map((s) => (s.id === id ? attachProvenanceMany(s, entriesByField) : s)),
   })), [updateProject, activeId]);
 
+  // 83.md §5 — value fields + their provenance land in ONE functional update, so an
+  // autosave flush can never persist a captured value without its provenance/history.
+  const writeStudy = useCallback((id, patch, entriesByField) => updateProject(activeId, (p) => ({
+    ...p,
+    studies: (p.studies || []).map((s) => {
+      if (s.id !== id) return s;
+      const next = { ...s, ...patch, updatedAt: new Date().toISOString() };
+      return entriesByField ? attachProvenanceMany(next, entriesByField) : next;
+    }),
+  })), [updateProject, activeId]);
+
   const addDrafts = useCallback((recs) => { if (!recs || !recs.length) return; updateProject(activeId, (p) => ({ ...p, extractionDrafts: reconcileDrafts(p.extractionDrafts || [], recs, { dismissedIdentities: p.extractionDismissed || [] }).drafts })); }, [updateProject, activeId]);
   const addParked = useCallback((recs) => { if (!recs || !recs.length) return; updateProject(activeId, (p) => ({ ...p, extractionParked: reconcileDrafts(p.extractionParked || [], recs, { dismissedIdentities: p.extractionDismissed || [] }).drafts })); }, [updateProject, activeId]);
   const dismissDraft = useCallback((id) => updateProject(activeId, (p) => {
@@ -216,7 +227,7 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
             projectId={activeId} study={openStudy} article={openArticleSummary} studies={studies}
             outcomes={outcomes} protocol={protocol} readOnly={readOnly} canEdit={canEdit} saveStatus={saveStatus}
             onBack={() => setOpenId('')} onPrev={goPrev} onNext={goNext} hasPrev={openIdx > 0} hasNext={openIdx >= 0 && openIdx < orderedIds.length - 1}
-            onPatchStudy={patchStudy} onAttachProvenance={attachProvenance}
+            onPatchStudy={patchStudy} onAttachProvenance={attachProvenance} onWriteStudy={writeStudy}
             onAddDrafts={addDrafts} onAddParked={addParked} drafts={drafts} parked={parked}
             onConfirmDraft={confirmDraft} onDismissDraft={dismissDraft} onParkDraft={parkDraft} onUnparkRecord={unparkRecord} onEditDraftField={editDraftField}
             onComplete={completeArticle} onReopen={reopenArticle} completing={completing}

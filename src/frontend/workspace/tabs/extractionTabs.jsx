@@ -601,12 +601,16 @@ function ClassicExtractionTab({project,updateProject,activeId,setTab}){
   const addStudyObj=(st)=>updateProject(activeId,p=>({...p,studies:[...p.studies,st]}));
   const updStudy=(id,k,v)=>updateProject(activeId,p=>({...p,studies:p.studies.map(s=>s.id===id?{...s,[k]:v,updatedAt:new Date().toISOString()}:s)}));
   const delStudy=id=>updateProject(activeId,p=>({...p,studies:p.studies.filter(s=>s.id!==id)}));
-  // Clone study-level metadata into a new row for another outcome / time point / arm
+  // Clone study-level metadata into a new row for another outcome / time point / arm.
+  // 83.md §2 — the PDF linkage (screening ids + study-document pointer) is STUDY-level
+  // information, so the clone inherits it too and keeps resolving the paper's PDF.
   const cloneForOutcome=(s)=>{
     const META=["author","year","country","design","title","authors","journal","doi","pmid","abstract",
       "dataSource","enrollPeriod","populationDef","interventionDef","comparatorDef","funding","extractedBy"];
+    const LINK=["screeningProjectId","screeningRecordId","document"];
     const fresh=mkStudy();
     META.forEach(k=>{fresh[k]=s[k];});
+    LINK.forEach(k=>{if(s[k]!==undefined&&s[k]!==null&&s[k]!=="")fresh[k]=s[k];});
     fresh.outcome="";fresh.timepoint="";fresh.notes=`Same cohort as ${s.author||"study"} ${s.year||""} — additional outcome/time point.`;
     updateProject(activeId,p=>({...p,studies:[...p.studies,fresh]}));
   };

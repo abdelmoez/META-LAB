@@ -37,6 +37,9 @@ export function mkValueProvenance(partial = {}) {
     bbox = { x0: +b.x0, y0: +b.y0, x1: +b.x1, y1: +b.y1 };
   }
   const out = { field: String(p.field || ''), method, page, bbox };
+  // 83.md §3/§5 — which FILE the coordinates were captured on (attachment id /
+  // stored blob name), so a jump never applies one PDF's coordinates to another.
+  if (p.fileKey) out.fileKey = String(p.fileKey);
   if (p.excerpt != null) out.excerpt = String(p.excerpt).slice(0, 600);
   if (p.at) out.at = String(p.at);
   if (p.by) out.by = String(p.by);

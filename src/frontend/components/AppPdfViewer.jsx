@@ -32,6 +32,7 @@ import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.min.mjs';
 import PdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?worker';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import { findMatchesInText } from './pdfSearch.js';
+import { revealBoxFor, revealScrollTop } from './pdfRevealBox.js';
 
 if (typeof window !== 'undefined' && typeof Worker !== 'undefined') {
   try { pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker(); } catch { /* falls back to fake worker */ }
@@ -106,9 +107,9 @@ const TEXTLAYER_CSS = `
 .mlpdf-tl[data-main-rotation="270"]{transform:rotate(270deg) translateX(-100%);}
 .mlpdf-tl mark{color:transparent;background:${HL};border-radius:2px;padding:0;margin:0;}
 .mlpdf-tl mark.cur{background:${HL_CURRENT};box-shadow:0 0 0 1px rgba(255,120,0,0.95);}
-.mlpdf-src-flash{animation:mlpdf-src-flash 2.1s ease-out;box-shadow:0 0 0 3px rgba(245,158,11,0.25);}
-@keyframes mlpdf-src-flash{0%{opacity:0;}8%{opacity:1;}70%{opacity:1;}100%{opacity:0.15;}}
-@media (prefers-reduced-motion: reduce){.mlpdf-src-flash{animation:none;}}
+.mlpdf-src-hl{animation:mlpdf-src-pulse 0.8s ease-out;box-shadow:0 0 0 3px rgba(245,158,11,0.25);}
+@keyframes mlpdf-src-pulse{0%{opacity:0;}30%{opacity:1;}60%{opacity:0.6;}100%{opacity:1;}}
+@media (prefers-reduced-motion: reduce){.mlpdf-src-hl{animation:none;}}
 `;
 function ensureTextLayerStyle() {
   if (typeof document === 'undefined') return;
@@ -136,11 +137,16 @@ export default function AppPdfViewer({
   onDocLoaded = null,
   interaction = null,        // null | { mode:'click'|'region', onTextClick, onRegion }
   pageOverlay = null,        // null | (page:number) => ReactNode
-  // ── Jump-to-source (76.md §15) — set `reveal` to { page, region?, nonce } to
-  // scroll to a page and briefly flash a highlight box over `region` (PDF user-space
-  // rectangle {x0,y0,x1,y1}). `nonce` must change on every jump so a repeat jump to
-  // the same field re-flashes. Inert (null) for every existing caller.
+  // ── Jump-to-source (76.md §15, 83.md §3) — set `reveal` to { page, region?, nonce,
+  // label? } to scroll the source into view and show a PERSISTENT highlight over
+  // `region` (PDF user-space rectangle {x0,y0,x1,y1}); no region → a distinct
+  // page-level indicator (never a fabricated location). The highlight stays until the
+  // HOST clears `reveal`; the viewer requests that via `onRevealDismiss` (click inside
+  // the document, Escape, rotation). `nonce` must change on every jump so a repeat
+  // jump to the same field re-runs the arrival pulse + scroll. Inert (null) for every
+  // existing caller.
   reveal = null,
+  onRevealDismiss = null,
 }) {
   const [doc, setDoc]         = useState(null);
   const [numPages, setNum]    = useState(0);
@@ -395,14 +401,58 @@ export default function AppPdfViewer({
   const prev = () => scrollToPage(pageNum - 1);
   const next = () => scrollToPage(pageNum + 1);
 
-  // Jump-to-source (§15): a new reveal nonce scrolls to its page. Rotation is reset to
-  // 0 first because the stored region + the flash-box math are in the UNROTATED page
-  // frame — flashing while rotated would land the highlight in the wrong place (76.md
+  // Jump-to-source (§15, 83.md §3): a new reveal nonce scrolls the SOURCE REGION into
+  // view, centred comfortably in the viewport (a page-top jump alone can leave a
+  // bottom-of-page source out of sight). Rotation is reset to 0 first because the
+  // stored region + the highlight-box math are in the UNROTATED page frame (76.md
   // review, medium finding). The per-page highlight box is rendered by PdfPageView.
+  const scrollToReveal = useCallback((rv) => {
+    const el = wrapRef.current;
+    if (!el || !numPages || !rv || !rv.page) return;
+    const page = Math.min(numPages, Math.max(1, rv.page));
+    programmaticScroll.current = Date.now();
+    setPageNum(page);
+    // Mount the target (± a neighbour) immediately so it is never blank on arrival.
+    setRenderRange((cur) => {
+      const lo = Math.max(1, page - 1), hi = Math.min(numPages, page + 1);
+      return (cur.lo <= lo && cur.hi >= hi) ? cur : { lo: Math.min(cur.lo, lo), hi: Math.max(cur.hi, hi) };
+    });
+    const box = revealBoxFor(rv.region, displayDims(page), scaleFor(page));
+    const top = revealScrollTop({ pageTop: pageTops[page] || 0, box, viewportH: el.clientHeight || 0, pagePad: COL_PAD });
+    el.scrollTo({ top, behavior: 'smooth' });
+  }, [numPages, pageTops, displayDims, scaleFor]);
+  const revealCentredRef = useRef(null);   // nonce already centred with REAL page dims
+  // A reveal that arrives while ROTATED only queues the rotation reset on its first
+  // run: scrolling immediately would compute pageTops/displayDims in the still-
+  // rotated layout and land hundreds of px off (adversarial-review finding). The
+  // `rotation` dep re-runs this effect after the reset commits, when every closure
+  // is rebuilt for the unrotated layout the highlight math assumes. A USER rotation
+  // while a reveal is live never re-triggers a scroll — the rotate buttons dismiss
+  // the reveal first.
+  const revealHandledRef = useRef(null);   // nonce whose scroll has been dispatched
   useEffect(() => {
-    if (reveal && reveal.page) { setRot(0); scrollToPage(reveal.page); }
+    if (!reveal || !reveal.page) return;
+    // Once a nonce has scrolled, a later rotation change must not re-force rot=0 /
+    // re-scroll (defensive for hosts that keep `reveal` set without onRevealDismiss).
+    if (revealHandledRef.current === reveal.nonce) return;
+    if (rotation !== 0) { setRot(0); return; }
+    revealHandledRef.current = reveal.nonce;
+    scrollToReveal(reveal);
+    // Dims for the target page may still be the page-1 fallback; remember whether
+    // this centring used real dims so the follow-up effect can re-centre once.
+    revealCentredRef.current = dimsRef.current[reveal.page] ? reveal.nonce : null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reveal && reveal.nonce]);
+  }, [reveal && reveal.nonce, rotation]);
+  // Re-centre ONCE when the revealed page's real dims land after the first scroll
+  // (mixed-size PDFs where the fallback estimate was off). Guarded per nonce — never
+  // a scroll loop — and only in the unrotated frame the scroll math assumes.
+  useEffect(() => {
+    if (!reveal || !reveal.nonce || revealCentredRef.current === reveal.nonce) return;
+    if (rotation !== 0 || !dims[reveal.page]) return;
+    revealCentredRef.current = reveal.nonce;
+    scrollToReveal(reveal);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dims, reveal && reveal.nonce, rotation]);
 
   // Capture the content point under `anchorClientY` (or the viewport centre) so the
   // scroll-anchor layout effect can keep it visually pinned across a scale/rotation
@@ -440,9 +490,11 @@ export default function AppPdfViewer({
   const zoomOut = () => applyZoom((s) => ladderDown(s));
   // Reset to fit-width mode (the toolbar's "Fit width" control).
   const fitWidth = () => { captureAnchor(null); setUserScale(null); };
-  // Rotate keeps the centred page in view by capturing the same anchor first.
-  const rotateLeft  = () => { captureAnchor(null); setRot((r) => (r + 270) % 360); };
-  const rotateRight = () => { captureAnchor(null); setRot((r) => (r + 90) % 360); };
+  // Rotate keeps the centred page in view by capturing the same anchor first. A live
+  // source highlight is dismissed — its box math is in the unrotated frame (83.md §3).
+  const dismissReveal = () => { if (reveal && onRevealDismiss) onRevealDismiss(); };
+  const rotateLeft  = () => { dismissReveal(); captureAnchor(null); setRot((r) => (r + 270) % 360); };
+  const rotateRight = () => { dismissReveal(); captureAnchor(null); setRot((r) => (r + 90) % 360); };
 
   // Ctrl/⌘ + wheel zooms smoothly around the cursor; a plain wheel scrolls normally.
   // Bound as a non-passive native listener so preventDefault suppresses the browser
@@ -463,6 +515,7 @@ export default function AppPdfViewer({
     if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
     if (e.key === 'ArrowLeft' || e.key === 'PageUp') { prev(); e.preventDefault(); }
     else if (e.key === 'ArrowRight' || e.key === 'PageDown') { next(); e.preventDefault(); }
+    else if (e.key === 'Escape' && reveal && onRevealDismiss) { onRevealDismiss(); e.preventDefault(); }
   }
 
   /* ── Live search scan: find every match across ALL pages (rendered or not) ── */
@@ -609,8 +662,11 @@ export default function AppPdfViewer({
         </div>
       )}
 
-      {/* Scroll area: continuous pages / state */}
-      <div ref={wrapRef} onScroll={onScroll} style={{ flex: 1, minHeight: flush ? 0 : undefined, overflow: 'auto', background: C.card2 }}>
+      {/* Scroll area: continuous pages / state. A pointer-down anywhere in the
+          document dismisses a live source highlight (83.md §3) — dismissal never
+          blocks the click itself (click-to-pick etc. still fire). */}
+      <div ref={wrapRef} onScroll={onScroll} onPointerDown={reveal && onRevealDismiss ? () => onRevealDismiss() : undefined}
+        style={{ flex: 1, minHeight: flush ? 0 : undefined, overflow: 'auto', background: C.card2 }}>
         {error ? (
           <div style={{ margin: 'auto', maxWidth: 360, textAlign: 'center', padding: '28px 18px', fontSize: 12.5, color: C.txt2 }}>
             <div style={{ fontSize: 26, marginBottom: 8 }}>📄</div>
@@ -928,26 +984,17 @@ function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOption
     width: Math.abs(drag.x1 - drag.x0), height: Math.abs(drag.y1 - drag.y0),
   } : null;
 
-  // Jump-to-source flash (§15). ARM only on a new nonce (so re-render / zoom does NOT
-  // re-flash — 76.md review, medium finding); the box position is computed LIVE from the
-  // current scale in render, so zooming repositions the highlight without restarting the
-  // animation. Maps the region (PDF user space, y-up) to CSS px: left=x0·scale,
-  // top=(H−y1)·scale. No region (page-only provenance) → a band near the page top.
-  const [flashNonce, setFlashNonce] = useState(null);
-  useEffect(() => {
-    if (!highlight || !highlight.nonce) { setFlashNonce(null); return undefined; }
-    setFlashNonce(highlight.nonce);
-    const t = setTimeout(() => setFlashNonce(null), 2200);
-    return () => clearTimeout(t);
-  }, [highlight && highlight.nonce]); // eslint-disable-line react-hooks/exhaustive-deps
-  let flash = null;
-  if (flashNonce && highlight && highlight.nonce === flashNonce && pageDims) {
-    const H = pageDims.h;
-    const r = highlight.region;
-    flash = (r && ['x0', 'y0', 'x1', 'y1'].every((k) => Number.isFinite(+r[k])))
-      ? { left: r.x0 * scale, top: (H - r.y1) * scale, width: (r.x1 - r.x0) * scale, height: (r.y1 - r.y0) * scale, nonce: flashNonce }
-      : { left: 8 * scale, top: 8 * scale, width: (pageDims.w - 16) * scale, height: 24 * scale, nonce: flashNonce };
-  }
+  // Jump-to-source highlight (§15, 83.md §3). PERSISTENT while the host keeps the
+  // `highlight` prop set (dismissal is host-owned: click elsewhere, Escape, another
+  // source, outcome/study/PDF switch); the box position is computed LIVE from the
+  // current scale in render, so zoom/resize reposition it without restarting the
+  // arrival pulse (keyed on nonce). Maps the region (PDF user space, y-up) to CSS px:
+  // left=x0·scale, top=(H−y1)·scale. No region (page-only provenance) → a clearly
+  // DISTINCT page-level indicator, never a fabricated exact location. Pure overlay —
+  // the PDF bytes are untouched, nothing is saved, exports are unaffected.
+  const srcBox = (highlight && highlight.nonce && pageDims)
+    ? revealBoxFor(highlight.region, pageDims, scale)
+    : null;
 
   return (
     <>
@@ -962,11 +1009,26 @@ function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOption
         style={clickable ? { pointerEvents: 'auto', cursor: 'copy' } : undefined}
       />
       {overlay ? <div style={{ position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 3 }}>{overlay}</div> : null}
-      {flash ? (
-        <div key={flash.nonce} className="mlpdf-src-flash" style={{
-          position: 'absolute', left: flash.left, top: flash.top, width: Math.max(6, flash.width), height: Math.max(6, flash.height),
-          border: '2px solid #f59e0b', background: 'rgba(245,158,11,0.22)', borderRadius: 3, pointerEvents: 'none', zIndex: 5,
-        }} />
+      {srcBox && srcBox.kind === 'exact' ? (
+        <div key={highlight.nonce} className="mlpdf-src-hl" role="img"
+          aria-label={highlight.label ? `Selected source location for ${highlight.label}` : 'Selected source location'}
+          style={{
+            position: 'absolute', left: srcBox.left, top: srcBox.top, width: Math.max(6, srcBox.width), height: Math.max(6, srcBox.height),
+            border: '2px solid #f59e0b', background: 'rgba(245,158,11,0.22)', borderRadius: 3, pointerEvents: 'none', zIndex: 5,
+          }} />
+      ) : srcBox ? (
+        // Page-only provenance: a labelled page-level indicator (dashed = approximate),
+        // clearly distinguishable from the exact-source box and from search highlights.
+        <div key={highlight.nonce} className="mlpdf-src-hl" role="status"
+          aria-label="Source page — exact location not recorded"
+          style={{ position: 'absolute', left: 6, right: 6, top: 6, display: 'flex', justifyContent: 'center', pointerEvents: 'none', zIndex: 5 }}>
+          <span style={{
+            fontSize: 11.5, fontFamily: FONT, fontWeight: 600, color: '#92400e',
+            background: 'rgba(245,158,11,0.14)', border: '2px dashed #f59e0b', borderRadius: 6, padding: '4px 10px',
+          }}>
+            ◈ Source is on this page — exact location not recorded
+          </span>
+        </div>
       ) : null}
       {regionMode && (
         <div

@@ -36,6 +36,7 @@ import {
   familyOf, reportedFormatsFor, effectiveReportedFormat, defaultReportedFormat,
   harmonizeStudy, conversionStatusOf, CONVERSION_STATUS_LABELS, validateReported,
 } from '../../../research-engine/extraction/harmonize.js';
+import { publicationSourceFor } from '../../../research-engine/extraction/outcomeGroups.js';
 import ConverterPanel from './ConverterPanel.jsx';
 
 const RATIO_MEASURES = ['OR', 'RR', 'HR', 'IRR'];
@@ -92,7 +93,7 @@ export default function ArticleWorkspace({
   projectId, study, article, studies = [], outcomes = [], protocol = { outcomes: [] },
   readOnly = false, saveStatus = '', canEdit = true,
   onBack, onPrev, onNext, hasPrev, hasNext,
-  onPatchStudy, onAttachProvenance,
+  onPatchStudy, onAttachProvenance, onWriteStudy,
   onAddDrafts, onAddParked, drafts = [], parked = [],
   onConfirmDraft, onDismissDraft, onParkDraft, onUnparkRecord, onEditDraftField,
   onComplete, onReopen, completing = false,
@@ -117,7 +118,11 @@ export default function ArticleWorkspace({
   // study), stamp the pointer into the study blob so a whole-blob autosave can't clobber
   // the server's durable write (77.md §5).
   const onDocPersisted = useCallback((sid, document) => { if (onPatchStudy && document) onPatchStudy(sid, { document, updatedAt: new Date().toISOString() }); }, [onPatchStudy]);
-  const pdf = usePdfSource(study, projectId, { onDocumentPersisted: onDocPersisted });
+  // 83.md §2 — the PDF belongs to the PAPER: resolve through the citation group's
+  // carrier row so every outcome of the same publication shares one PDF, and switching
+  // outcomes neither clears nor re-resolves the viewer.
+  const publication = useMemo(() => (study ? publicationSourceFor(studies, study.id) : null), [studies, study && study.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pdf = usePdfSource(study, projectId, { onDocumentPersisted: onDocPersisted, publication });
   const completion = useMemo(() => evaluateCompletion(study || {}), [study]);
   const progress = useMemo(() => progressOf(study || {}), [study]);
   // Show every EXPECTED field, plus any OTHER value field that already carries data, so a
@@ -157,14 +162,55 @@ export default function ArticleWorkspace({
 
   const dismissCoach = useCallback(() => { setCoachDismissed(true); try { localStorage.setItem(COACH_KEY, '1'); } catch { /* ignore */ } }, []);
 
-  /* ── Jump-to-source: reveal a field's stored provenance in the PDF (§15) ── */
+  /* ── Jump-to-source: reveal a field's stored provenance in the PDF (§15, 83.md §3).
+     The highlight PERSISTS until dismissed — click anywhere else (PDF or form),
+     Escape, selecting another source, or switching outcome/study/PDF. Page-only
+     provenance shows a distinct page-level indicator, never a fabricated box. ── */
   const jumpToSource = useCallback((field) => {
     const prov = readProvenance(study, field);
     if (!prov || (!prov.page && !prov.bbox)) { setStatus('No saved source for this value yet.'); return; }
+    // 83.md §3/§5 — never apply one PDF's coordinates to another: when the value was
+    // captured on a DIFFERENT file than the one now shown (replaced upload, other
+    // attachment), fall back to a page-level indicator instead of a wrong exact box.
+    const fileMismatch = !!(prov.bbox && prov.fileKey && pdf.fileKey && prov.fileKey !== pdf.fileKey);
+    const region = fileMismatch ? null : (prov.bbox || null);
     revealNonce.current += 1;
-    setReveal({ page: prov.page || 1, region: prov.bbox || null, nonce: revealNonce.current });
-    setStatus(`Jumped to the source of ${FIELD_LABELS[field] || field}${prov.page ? ` (p. ${prov.page})` : ''}.`);
-  }, [study]);
+    setReveal({ page: prov.page || 1, region, nonce: revealNonce.current, label: FIELD_LABELS[field] || field });
+    setStatus(fileMismatch
+      ? `This value was captured on a different file than the one shown — showing its page (${prov.page || 1}) without an exact box.`
+      : region
+        ? `Showing the exact source of ${FIELD_LABELS[field] || field}${prov.page ? ` (p. ${prov.page})` : ''}. Click elsewhere or press Escape to dismiss.`
+        : `This value's source was saved as page ${prov.page} only — showing the page (no exact location recorded).`);
+  }, [study, pdf.fileKey]);
+  const dismissReveal = useCallback(() => setReveal((r) => (r ? null : r)), []);
+
+  // Dismiss the source highlight when the PDF itself changes (upload/replace/switch).
+  const pdfUrl = pdf.url;
+  useEffect(() => { setReveal(null); }, [pdfUrl]);
+
+  // Escape dismisses the highlight FIRST (capture phase, before the engine's
+  // Esc-closes-workspace listener); only an Escape with no active highlight closes.
+  const revealActive = !!reveal;
+  useEffect(() => {
+    if (!revealActive) return undefined;
+    const onKey = (e) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      e.preventDefault();
+      dismissReveal();
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }, [revealActive, dismissReveal]);
+
+  // Any pointer-down outside a source button dismisses the highlight. Source buttons
+  // are excluded so "jump again / jump to another source" replaces instead of toggling
+  // (pointerdown would otherwise dismiss before the button's click sets the new one).
+  const onWorkspacePointerDown = useCallback((e) => {
+    if (!reveal) return;
+    if (e.target && e.target.closest && e.target.closest('[data-pex-jump]')) return;
+    dismissReveal();
+  }, [reveal, dismissReveal]);
 
   /**
    * writeValues — the ONE write path for both click-to-pick and the Converter. Writes
@@ -195,6 +241,7 @@ export default function ArticleWorkspace({
       }
       provFields[f] = {
         method: prov.method || 'manual', page: prov.page || null, bbox: prov.bbox || null,
+        fileKey: prov.fileKey || undefined,
         excerpt: prov.excerpt ? String(prov.excerpt).slice(0, 200) : undefined, at: now,
         history: history.length ? history.slice(-10) : undefined,
       };
@@ -203,10 +250,12 @@ export default function ArticleWorkspace({
     p.needsReview = true;
     if (!study.source && !extra.source) p.source = 'text';
     Object.assign(p, extra);
-    patch(p);
-    if (onAttachProvenance) onAttachProvenance(study.id, provFields);
+    // ONE blob write for value + provenance (83.md §5): a save that flushes between two
+    // separate writes could persist a value without its provenance/history entry.
+    if (onWriteStudy) onWriteStudy(study.id, p, provFields);
+    else { patch(p); if (onAttachProvenance) onAttachProvenance(study.id, provFields); }
     return { written, replaced };
-  }, [study, editable, patch, onAttachProvenance]);
+  }, [study, editable, patch, onAttachProvenance, onWriteStudy]);
 
   /* ── Pick from PDF: snap a token, write the active field(s), auto-advance ── */
   const assignFromClick = useCallback((payload) => {
@@ -278,7 +327,7 @@ export default function ArticleWorkspace({
     if (!Object.keys(values).length) { setStatus('Nothing captured — click directly on the number.'); return; }
 
     const extra = conv.length ? { conversions: [...(Array.isArray(study.conversions) ? study.conversions : []), ...conv], converted: true } : {};
-    const { written, replaced } = writeValues(values, { method: 'click', page: payload.page || null, bbox: payload.spanBox || null, excerpt: runStr }, extra);
+    const { written, replaced } = writeValues(values, { method: 'click', page: payload.page || null, bbox: payload.spanBox || null, fileKey: pdf.fileKey || null, excerpt: runStr }, extra);
     if (!written.length) return;
 
     // Human-readable confirmation (aria-live) — say what filled and what was replaced.
@@ -296,7 +345,7 @@ export default function ArticleWorkspace({
       const next = nextAssignableField(after, target);
       if (next && next !== target) setActiveField(next);
     }
-  }, [study, activeField, editable, writeValues]);
+  }, [study, activeField, editable, writeValues, pdf.fileKey]);
 
   /* ── Converter apply (77.md §4): route through the same write path + audit ── */
   const applyConversion = useCallback(({ patch: convPatch, conversion, targetLabel }) => {
@@ -368,21 +417,26 @@ export default function ArticleWorkspace({
 
   const setField = useCallback((f, v) => {
     if (!editable || !study) return;
-    patch({ [f]: v, needsReview: true });
     // 77.md §2/§15 — a manually typed VALUE invalidates any prior click/table source
     // location (which described the previous value). Re-attribute the field to 'manual',
     // drop the stale page/bbox so jump-to-source can't point at the wrong place, and keep
-    // the replaced value in history.
-    if (ALL_VALUE_KEYS.includes(f) && onAttachProvenance) {
+    // the replaced value in history. Value + provenance land in ONE blob write (83.md §5).
+    let provEntry = null;
+    if (ALL_VALUE_KEYS.includes(f)) {
       const prior = readProvenance(study, f);
       const changed = String(study[f] || '') !== String(v);
       if (prior && (prior.page || prior.bbox || prior.method) && changed) {
         const history = Array.isArray(prior.history) ? prior.history.slice(-10) : [];
         if (nonEmpty(study[f])) history.push({ value: String(study[f]), method: prior.method || 'manual', at: new Date().toISOString() });
-        onAttachProvenance(study.id, { [f]: { method: 'manual', page: null, bbox: null, history: history.length ? history : undefined } });
+        provEntry = { [f]: { method: 'manual', page: null, bbox: null, history: history.length ? history : undefined } };
       }
     }
-  }, [editable, study, patch, onAttachProvenance]);
+    if (onWriteStudy) onWriteStudy(study.id, { [f]: v, needsReview: true }, provEntry || undefined);
+    else {
+      patch({ [f]: v, needsReview: true });
+      if (provEntry && onAttachProvenance) onAttachProvenance(study.id, provEntry);
+    }
+  }, [editable, study, patch, onAttachProvenance, onWriteStudy]);
   const focusField = useCallback((f) => { if (method === 'click' && assignOptions.some(([k]) => k === f)) setActiveField(f); }, [method, assignOptions]);
 
   const activeLabel = activeField === 'smart'
@@ -394,7 +448,7 @@ export default function ArticleWorkspace({
       : saveStatus === 'error' ? { t: 'Save failed', c: C.red } : null;
 
   return (
-    <div data-testid="pex-workspace" style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+    <div data-testid="pex-workspace" onPointerDownCapture={onWorkspacePointerDown} style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
       {/* ── Stable top toolbar (§7) ── */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', borderBottom: `1px solid ${C.brd}`, background: C.card, flexWrap: 'wrap', flexShrink: 0 }}>
         <button onClick={onBack} style={{ ...btnS('ghost'), fontSize: 11 }} title="Back to the article list (Esc)">← Articles</button>
@@ -436,7 +490,7 @@ export default function ArticleWorkspace({
         {/* PDF */}
         <div style={{ minWidth: 0, minHeight: 0, borderRight: `1px solid ${C.brd}`, display: 'flex', flexDirection: 'column' }}>
           {pdf.url ? (
-            <AppPdfViewer key={pdf.url} url={pdf.url} flush onDocLoaded={(d) => { docRef.current = d; }} interaction={interaction} reveal={reveal} />
+            <AppPdfViewer key={pdf.url} url={pdf.url} flush onDocLoaded={(d) => { docRef.current = d; }} interaction={interaction} reveal={reveal} onRevealDismiss={dismissReveal} />
           ) : (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10, padding: 24, textAlign: 'center', color: C.muted }}>
               <div style={{ fontSize: 30 }}>📄</div>
@@ -630,7 +684,7 @@ function Field({ field, value, onChange, readOnly, hasSource, onJump, numeric, p
           {active ? '◎ ' : ''}{FIELD_LABELS[field] || field}
         </label>
         {hasSource ? (
-          <button onClick={onJump} title="Jump to this value’s source in the PDF"
+          <button onClick={onJump} data-pex-jump title="Jump to this value’s source in the PDF"
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: C.acc, fontSize: 10.5, fontWeight: 700, padding: 0, display: 'inline-flex', alignItems: 'center', gap: 3 }}>
             ⌖ source
           </button>

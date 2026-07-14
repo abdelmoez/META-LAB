@@ -22,7 +22,7 @@ byte-for-byte via a dispatcher. Admins can use the engine even while the flag is
 | Audit model | `ExtractionAuditLog` (`server/prisma/schema.prisma`) |
 | Client API | `src/features/extraction/engine/engineApi.js` |
 | Frontend engine | `src/features/extraction/engine/` (`PecanExtractionEngine`, `ArticleList`, `ArticleWorkspace`, `useExtractionSplit`) |
-| PDF viewer | `AppPdfViewer.jsx` — `reveal` prop + `.mlpdf-src-flash` jump-to-source overlay |
+| PDF viewer | `AppPdfViewer.jsx` — `reveal`/`onRevealDismiss` props + persistent `.mlpdf-src-hl` jump-to-source overlay |
 | Shell integration | `extractionTabs.jsx` (`ExtractionTab` flag dispatcher); `StitchProjectWorkspace.jsx` (`extractionInWorkspace` full-bleed lift) |
 
 The pure engine is a **separate barrel** from `../index.js` (the 66.md engine) so its article-level
@@ -104,9 +104,13 @@ keyed by the study value field under `extractionMeta.provenance`:
 
 `method` is one of `table | figure | click | manual | auto | ai | ocr`; `bbox` is the PDF user-space
 rectangle at scale 1; `page` is 1-based. A field that has a jumpable source shows a **⌖ source** chip;
-clicking it sets `AppPdfViewer`'s `reveal = { page, region, nonce }`, which scrolls to the page and
-briefly flashes a `.mlpdf-src-flash` highlight box over the region (the nonce forces a re-flash on a
-repeat jump; the prop is inert/null for every existing caller).
+clicking it sets `AppPdfViewer`'s `reveal = { page, region, nonce, label? }`, which scrolls the region
+into view (centred) and shows a PERSISTENT `.mlpdf-src-hl` highlight box over it (83.md §3). The
+highlight stays until dismissed — click anywhere else (PDF or form), Escape, selecting another source,
+or switching outcome/study/PDF — via the host clearing `reveal` (the viewer requests it through
+`onRevealDismiss`). Page-only provenance shows a distinct labelled page-level indicator instead of a
+fabricated box. The nonce forces a re-reveal on a repeat jump; the prop is inert/null for every
+existing caller.
 
 ## Analysis sync (§20/§21)
 

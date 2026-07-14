@@ -9,6 +9,7 @@ import { useProjectPresence, useFieldLock } from "../screening/hooks/usePresence
 import PresenceIndicator from "../screening/components/PresenceIndicator.jsx";
 import { useAuth } from "../context/AuthContext.jsx";
 import { flushStorage, hasPendingSave } from "../storage/serverStorage.js";
+import { tierErrorMessage } from "../entitlements";
 import { alpha as themeAlpha } from "../theme/tokens.js";
 import { useTheme } from "../theme/ThemeContext.jsx";
 import { Icon } from "../components/icons.jsx";
@@ -256,6 +257,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   const[withSift,setWithSift]=useState(true);          // Task 2 — default ON
   const[creatingProject,setCreatingProject]=useState(false);
   const[createWarning,setCreateWarning]=useState("");   // Task 2 — non-fatal SIFT-create warning
+  const[createErr,setCreateErr]=useState("");           // 83.md §1 — server REJECTED the create (modal stays open, nothing opens)
   const[deepLinkMiss,setDeepLinkMiss]=useState(null);   // Task 3 — ?project= id we couldn't open
   // prompt42 Task 7 — lifted from RoBTab: true while the per-study RoB assessment
   // workspace is open, so the shell drops page-level scroll (the assessment's PDF +
@@ -527,7 +529,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
   // Network/server failure falls back to the legacy local create (autosave upserts it).
   const confirmAdd=async()=>{
     const name=newName.trim();if(!name||creatingProject)return;
-    setCreatingProject(true);
+    setCreatingProject(true);setCreateErr("");
     let proj=null,warning="";
     try{
       const r=await fetch("/api/projects",{method:"POST",credentials:"include",
@@ -537,8 +539,17 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
         const data=await r.json();
         proj=data&&data.project?data.project:data; // {project, linkedScreenProject} vs bare
         if(data&&data.warning)warning=data.warning;
+      }else{
+        // 83.md §1 — the server REJECTED the create (tier limit, validation, auth).
+        // Show the HUMAN message (tier-cap bodies carry it in .message; .error is the
+        // enum key) and stop: no local ghost project, no navigation, and the modal
+        // stays open so the user can retry or cancel.
+        const body=await r.json().catch(()=>({}));
+        setCreateErr(tierErrorMessage(body)||((body&&(body.message||body.error))?String(body.message||body.error):`Could not create the project (HTTP ${r.status}).`));
+        setCreatingProject(false);
+        return;
       }
-    }catch(_){/* offline / proxy error → local fallback below */}
+    }catch(_){/* offline / proxy error → local fallback below (autosave upserts it later) */}
     if(!proj||!proj.id){
       proj=mkProject(name);
       if(withSift)warning="Project created — its screening workspace could not be set up just now. It will be created automatically the next time you open Screening.";
@@ -1109,6 +1120,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           onKeyDown={e=>{if(e.key==="Enter")confirmAdd();if(e.key==="Escape")setShowModal(false);}}
           placeholder="e.g. Metformin in T2DM — systematic review 2025"
           style={{...inp,marginBottom:14,fontSize:13}}/>
+        {createErr&&<div role="alert" style={{fontSize:12,color:C.red,marginTop:-6,marginBottom:12,lineHeight:1.5}}>{createErr}</div>}
         {/* prompt6 Task 2 — linked META·SIFT screening project, default ON */}
         <label style={{display:"flex",alignItems:"flex-start",gap:9,cursor:"pointer",marginBottom:18,userSelect:"none"}}>
           <input type="checkbox" checked={withSift} onChange={e=>setWithSift(e.target.checked)}
@@ -1469,7 +1481,7 @@ export default function MetaLab({ initialProjectId = null, initialTab = null, on
           <p style={{fontSize:12,color:C.muted,marginBottom:36}}>Everything saves automatically in your browser.</p>
 
           <div style={{display:"flex",gap:10,justifyContent:"center",marginBottom:48}}>
-            <button onClick={()=>setShowModal(true)} style={{...btnS("primary"),padding:"10px 24px",fontSize:13,borderRadius:10}}>
+            <button onClick={()=>{setCreateErr("");setShowModal(true);}} style={{...btnS("primary"),padding:"10px 24px",fontSize:13,borderRadius:10}}>
               Create project
             </button>
             <button onClick={()=>importRef.current&&importRef.current.click()} style={{...btnS("ghost"),padding:"10px 20px",fontSize:13,borderRadius:10}}>

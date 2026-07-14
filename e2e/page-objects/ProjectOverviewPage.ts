@@ -87,13 +87,15 @@ export class ProjectOverviewPage {
     await expect(this.createTitleInput).toBeVisible();
   }
 
-  /** Create a project through the UI; resolves once the success toast appears. */
+  /** Create a project through the UI. 83.md §1 — success navigates into the new
+   *  project immediately, which unmounts the dashboard (and its toast container), so
+   *  callers assert the outcome (URL / card) instead of this method waiting on a
+   *  toast that may already be gone. */
   async createProjectViaUI(name: string, description?: string): Promise<void> {
     await this.openCreateModal();
     await this.createTitleInput.fill(name);
     if (description) await this.createDescInput.fill(description);
     await this.modalButton('Create project').click();
-    await expect(this.successToast('Project created')).toBeVisible();
   }
 
   /** Open the rename modal for a card. */

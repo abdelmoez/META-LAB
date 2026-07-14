@@ -52,4 +52,10 @@ describe('articleProvenance.attach/read', () => {
     expect(readProvenance(s, 'es').page).toBe(9);
     expect(readProvenance(s, 'es').method).toBe('click');
   });
+  it('83.md §3 — records the fileKey the coordinates were captured on (optional, string)', () => {
+    const s = attachProvenance(mkStudy(), 'es', { method: 'click', page: 2, bbox: { x0: 1, y0: 2, x1: 3, y1: 4 }, fileKey: 'att:abc' });
+    expect(readProvenance(s, 'es').fileKey).toBe('att:abc');
+    const noKey = attachProvenance(mkStudy(), 'es', { method: 'click', page: 2 });
+    expect(readProvenance(noKey, 'es').fileKey).toBeUndefined();
+  });
 });

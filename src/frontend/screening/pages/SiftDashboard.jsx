@@ -104,11 +104,11 @@ export default function SiftDashboard() {
 
   async function handleCreate(e) {
     e.preventDefault();
-    if (!newForm.title.trim()) return;
+    if (!newForm.title.trim() || creating) return;   // 83.md §1 — double-submit guard
     setCreating(true);
     setCreateError(null);
     try {
-      await screeningApi.createProject({
+      const created = await screeningApi.createProject({
         title: newForm.title.trim(),
         description: newForm.description.trim() || undefined,
         reviewQuestion: newForm.reviewQuestion.trim() || undefined,
@@ -118,6 +118,9 @@ export default function SiftDashboard() {
       });
       setShowNewModal(false);
       setNewForm(EMPTY_FORM);
+      // 83.md §1 — open the new screening project immediately with the id the
+      // backend returned; only a shapeless response falls back to the list refetch.
+      if (created && created.id) { navigate(`/sift-beta/projects/${encodeURIComponent(created.id)}`); return; }
       await loadProjects();
     } catch (e) {
       setCreateError(e.message || 'Failed to create project');

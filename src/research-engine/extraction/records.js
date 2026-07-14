@@ -66,6 +66,9 @@ const CITATION_FIELDS = [
   'author', 'year', 'country', 'design', 'title', 'authors', 'journal', 'doi', 'pmid',
   'abstract', 'dataSource', 'enrollPeriod', 'populationDef', 'interventionDef', 'funding',
   'extractedBy', 'screeningRecordId', 'screeningProjectId',
+  // 83.md §2 — the blob study-document pointer is STUDY-level (dedup-safe server-side),
+  // so a new per-outcome row keeps resolving the paper's persisted PDF.
+  'document',
 ];
 
 /** citationTemplate(src) — a FRESH study (new id, empty value/outcome fields) that
