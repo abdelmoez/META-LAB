@@ -730,6 +730,28 @@ export async function listModelVersions(projectId, stage = 'title_abstract', lim
 }
 
 /** Latest scores for a project/stage, keyed by recordId. */
+/**
+ * 89.md — the model-internal fields of a per-record score that are administrator-only
+ * (raw + calibrated probabilities, model confidence/uncertainty, per-signal breakdown,
+ * raw signal inputs, model provenance/ranking keys). Regular screeners keep the fields
+ * they actually use to screen: the relevance score, band, prediction, caveats, and the
+ * plain-language explanation. Stripping happens SERVER-SIDE (defence-in-depth) so a
+ * reviewer cannot read these by inspecting the raw /ai/scores, /ai/explanation, or
+ * record-list responses — the frontend gate on `advanced` is then just presentation.
+ */
+const AI_INTERNAL_FIELDS = ['proba', 'calibratedProba', 'confidence', 'uncertainty', 'mode', 'picoMean', 'subScores', 'signals'];
+export function stripAiInternals(score) {
+  if (!score || typeof score !== 'object') return score;
+  const out = { ...score };
+  for (const k of AI_INTERNAL_FIELDS) delete out[k];
+  if (out.explanation && typeof out.explanation === 'object') {
+    out.explanation = { ...out.explanation };
+    delete out.explanation.subScores;
+    delete out.explanation.signals;
+  }
+  return out;
+}
+
 export async function getScoresMap(projectId, stage = 'title_abstract') {
   const rows = await prisma.screenAiScore.findMany({ where: { projectId, stage } });
   const map = {};

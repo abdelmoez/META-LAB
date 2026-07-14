@@ -17,7 +17,7 @@ import {
   aiFlagEnabled, getGlobalAiSettings, getProjectAiSettings,
   getScoresMap, getRecordExplanation, getStatus, getValidation, recordFeedback,
   rollbackToRun, listModelVersions,
-  createValidationSample, getValidationSampleStatus,
+  createValidationSample, getValidationSampleStatus, stripAiInternals,
 } from '../services/screeningAiService.js';
 import { getJobStatus, enqueueManualRun, enqueueCitationEnrichment } from '../services/screeningAiJobs.js';
 import { getCitationStatus } from '../services/citationEnrichmentService.js';
@@ -32,8 +32,51 @@ async function gate(req, res) {
   return access;
 }
 
-function canRunAi(access, global) {
-  return access.isLeader || (global.allowReviewersToRun && access.canScreen);
+/** Canonical site-admin signal (JWT role), matching getAiScores' existing check. */
+export function isSiteAdmin(req) {
+  return req.user?.role === 'admin';
+}
+
+/**
+ * 89.md — who may see/operate the advanced "Guided Screening" surface (model
+ * config, diagnostics, calibration, validation, model versions, project AI policy).
+ * This is the project's screening ADMINISTRATOR: a project leader / settings-manager,
+ * OR a site admin. Regular screeners (reviewers, members, read-only) are excluded and
+ * get only the simplified run-scores + per-article-score experience. Every advanced
+ * endpoint enforces this server-side; the frontend hides the panel on the same signal
+ * (the `canConfigure` flag returned by getAiStatus).
+ */
+export function canConfigureAi(access, req) {
+  return access.isLeader || access.canManageSettings || isSiteAdmin(req);
+}
+
+export function canRunAi(access, global, req) {
+  return access.isLeader || (global.allowReviewersToRun && access.canScreen) || (req && isSiteAdmin(req));
+}
+
+/**
+ * 89.md — the trimmed status a REGULAR user (non-configurer) receives. Strips every
+ * administrative field — validation/CV metrics, global settings, the engine-config
+ * catalogue, embedding/citation diagnostics, and the project's model thresholds/policy —
+ * keeping only what the simplified screening UI needs: whether scoring is enabled, the
+ * viewer's run permission, blind state, a scored count, and a minimal latest-run marker
+ * (no metrics). Backend-enforced so a regular user cannot read admin data by calling the
+ * endpoint directly.
+ */
+export function publicAiStatus(status, { canRun, stage }) {
+  const lr = status && status.latestRun;
+  const proj = (status && status.project) || {};
+  return {
+    enabled: !!(status && status.enabled),
+    canRun,
+    canConfigure: false,
+    stage,
+    scoreCount: (status && status.scoreCount) || 0,
+    // Only the two fields the simplified UI reads (blind gate + whether AI is on).
+    project: { enabled: !!proj.enabled, blindFromAi: !!proj.blindFromAi },
+    // A metrics-free marker so the UI can say "scores available / not run" without leaking.
+    latestRun: lr ? { mode: lr.mode, status: lr.status, completedAt: lr.completedAt } : null,
+  };
 }
 
 const STAGES = new Set(['title_abstract', 'full_text']);
@@ -49,7 +92,12 @@ export async function getAiStatus(req, res) {
     const stage = stageOf(req);
     const status = await getStatus(req.params.pid, stage);
     const global = await getGlobalAiSettings();
-    res.json({ ...status, canRun: canRunAi(access, global), canConfigure: access.isLeader || access.canManageSettings, stage });
+    const canRun = canRunAi(access, global, req);
+    const canConfigure = canConfigureAi(access, req);
+    // 89.md — regular users get a trimmed, metrics-free status; only administrators
+    // (leader/settings-manager/site-admin) receive the full config + diagnostics bundle.
+    if (!canConfigure) return res.json(publicAiStatus(status, { canRun, stage }));
+    res.json({ ...status, canRun, canConfigure, stage });
   } catch (e) {
     console.error('getAiStatus', e);
     res.status(500).json({ error: 'Internal server error' });
@@ -70,7 +118,7 @@ export async function postAiRun(req, res) {
   try {
     const global = await getGlobalAiSettings();
     if (!global.enabled) return res.status(403).json({ error: 'AI screening is disabled by the administrator' });
-    if (!canRunAi(access, global)) return res.status(403).json({ error: 'You do not have permission to run AI scoring' });
+    if (!canRunAi(access, global, req)) return res.status(403).json({ error: 'You do not have permission to run AI scoring' });
     // 67.md — product tier AND project permission must both pass.
     try { await requireEntitlement(req.user, 'screening.aiScoring'); }
     catch (e) { if (sendTierLimit(res, e)) return; throw e; }
@@ -127,9 +175,22 @@ export async function getAiScores(req, res) {
     const blindWithheld = enabled && aiProject.blindFromAi && !access.isLeader && !overrideRequested;
     const scoresHidden = (enabled && belowThreshold && !overrideRequested) || blindWithheld;
 
-    const scores = scoresHidden ? {} : await getScoresMap(req.params.pid, stage);
+    let scores = scoresHidden ? {} : await getScoresMap(req.params.pid, stage);
+    // 89.md — regular screeners get the score without the model internals (calibrated
+    // probability, confidence/uncertainty, per-signal breakdown, raw signals). The full
+    // object is served only to project administrators (leader / settings / site admin),
+    // matching the frontend `advanced` gate — enforced here so it can't be bypassed.
+    const configurer = canConfigureAi(access, req);
+    if (!configurer) {
+      const trimmed = {};
+      for (const rid of Object.keys(scores)) trimmed[rid] = stripAiInternals(scores[rid]);
+      scores = trimmed;
+    }
     res.json({
-      scores, stage, blindFromAi: aiProject.blindFromAi, blindWithheld, policy: aiProject.policy, enabled,
+      scores, stage, blindFromAi: aiProject.blindFromAi, blindWithheld, enabled,
+      // The project's AI policy (assist/prioritize/…) is administrative config — expose
+      // it only to configurers (publicAiStatus already withholds it from getAiStatus).
+      ...(configurer ? { policy: aiProject.policy } : {}),
       threshold, screenedCount, belowThreshold, scoresHidden,
       overrideApplied: overrideRequested && belowThreshold,
       canOverride: isAdmin, // UI shows the admin testing-override control only when true
@@ -155,7 +216,8 @@ export async function getAiExplanation(req, res) {
     }
     const expl = await getRecordExplanation(req.params.pid, req.params.rid, stage);
     if (!expl) return res.status(404).json({ error: 'No AI score yet for this record' });
-    res.json(expl);
+    // 89.md — trim model internals for regular screeners (keep the plain-language "why").
+    res.json(canConfigureAi(access, req) ? expl : stripAiInternals(expl));
   } catch (e) {
     console.error('getAiExplanation', e);
     res.status(500).json({ error: 'Internal server error' });
@@ -180,7 +242,7 @@ export async function postAiFeedback(req, res) {
 export async function getAiValidation(req, res) {
   const access = await gate(req, res); if (!access) return;
   try {
-    if (!access.isLeader) return res.status(403).json({ error: 'Validation metrics are leader-only' });
+    if (!canConfigureAi(access, req)) return res.status(403).json({ error: 'Validation metrics are restricted to project administrators' });
     try { await requireEntitlement(req.user, 'screening.validationMetrics'); }
     catch (e) { if (sendTierLimit(res, e)) return; throw e; }
     const stage = stageOf(req);
@@ -197,7 +259,7 @@ export async function getAiValidation(req, res) {
 export async function getAiModelVersions(req, res) {
   const access = await gate(req, res); if (!access) return;
   try {
-    if (!access.isLeader && !access.canManageSettings) return res.status(403).json({ error: 'Model history is not permitted' });
+    if (!canConfigureAi(access, req)) return res.status(403).json({ error: 'Model history is restricted to project administrators' });
     const versions = await listModelVersions(req.params.pid, stageOf(req));
     res.json({ versions });
   } catch (e) {
@@ -210,7 +272,7 @@ export async function getAiModelVersions(req, res) {
 export async function postAiRollback(req, res) {
   const access = await gate(req, res); if (!access) return;
   try {
-    if (!access.isLeader && !access.canManageSettings) return res.status(403).json({ error: 'Rolling back models is not permitted' });
+    if (!canConfigureAi(access, req)) return res.status(403).json({ error: 'Rolling back models is restricted to project administrators' });
     const global = await getGlobalAiSettings();
     if (!global.enabled) return res.status(403).json({ error: 'AI screening is disabled by the administrator' });
     const runId = String(req.body?.runId || '');
@@ -224,10 +286,12 @@ export async function postAiRollback(req, res) {
   }
 }
 
-/** GET /projects/:pid/ai/citation-status — enrichment coverage (66.md P4.3). */
+/** GET /projects/:pid/ai/citation-status — enrichment coverage (66.md P4.3).
+ *  89.md — model-diagnostic surface, restricted to project administrators. */
 export async function getAiCitationStatus(req, res) {
   const access = await gate(req, res); if (!access) return;
   try {
+    if (!canConfigureAi(access, req)) return res.status(403).json({ error: 'Citation diagnostics are restricted to project administrators' });
     res.json(await getCitationStatus(req.params.pid));
   } catch (e) {
     console.error('getAiCitationStatus', e);
@@ -245,7 +309,7 @@ export async function postAiCitationEnrichment(req, res) {
   try {
     const global = await getGlobalAiSettings();
     if (!global.enabled) return res.status(403).json({ error: 'AI screening is disabled by the administrator' });
-    if (!canRunAi(access, global)) return res.status(403).json({ error: 'You do not have permission to run citation enrichment' });
+    if (!canRunAi(access, global, req)) return res.status(403).json({ error: 'You do not have permission to run citation enrichment' });
     try { await requireEntitlement(req.user, 'screening.aiScoring'); }
     catch (e) { if (sendTierLimit(res, e)) return; throw e; }
     const job = await enqueueCitationEnrichment(req.params.pid, { stage: stageOf(req), actor: req.user });
@@ -256,10 +320,12 @@ export async function postAiCitationEnrichment(req, res) {
   }
 }
 
-/** GET /projects/:pid/ai/validation-sample — latest seed sample + progress (P4.6). */
+/** GET /projects/:pid/ai/validation-sample — latest seed sample + progress (P4.6).
+ *  89.md — validation diagnostics, restricted to project administrators. */
 export async function getAiValidationSample(req, res) {
   const access = await gate(req, res); if (!access) return;
   try {
+    if (!canConfigureAi(access, req)) return res.status(403).json({ error: 'Validation samples are restricted to project administrators' });
     res.json(await getValidationSampleStatus(req.params.pid, stageOf(req)));
   } catch (e) {
     console.error('getAiValidationSample', e);
@@ -274,7 +340,7 @@ export async function getAiValidationSample(req, res) {
 export async function postAiValidationSample(req, res) {
   const access = await gate(req, res); if (!access) return;
   try {
-    if (!access.isLeader && !access.canManageSettings) return res.status(403).json({ error: 'Creating validation samples is leader-only' });
+    if (!canConfigureAi(access, req)) return res.status(403).json({ error: 'Creating validation samples is restricted to project administrators' });
     const out = await createValidationSample({
       projectId: req.params.pid,
       stage: stageOf(req),
@@ -293,7 +359,7 @@ export async function postAiValidationSample(req, res) {
 export async function putAiSettings(req, res) {
   const access = await gate(req, res); if (!access) return;
   try {
-    if (!access.isLeader && !access.canManageSettings) return res.status(403).json({ error: 'Managing AI settings is not permitted' });
+    if (!canConfigureAi(access, req)) return res.status(403).json({ error: 'Managing AI settings is restricted to project administrators' });
     const body = req.body || {};
     const project = await prisma.screenProject.findUnique({ where: { id: req.params.pid } });
     const current = getProjectAiSettings(project, await getGlobalAiSettings());

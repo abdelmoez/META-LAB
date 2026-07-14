@@ -1250,8 +1250,12 @@ function RightColumn({
         </div>
       )}
 
-      {/* AI Screening (feature flag: aiScreening) */}
-      {ai?.enabled && (
+      {/* Guided Screening — the advanced model/diagnostics/config panel. 89.md: this is
+          restricted to project ADMINISTRATORS (leader / settings-manager / site admin) via
+          the server-computed `canConfigure`. Regular screeners never see this Section; they
+          get the simplified Run Scores control (AiQueueBar) + per-article scores instead.
+          Score updates keep flowing regardless — the hook + realtime live above this. */}
+      {ai?.enabled && ai?.status?.canConfigure && (
         <Section title="Guided Screening" open={open.ai} onToggle={() => toggle('ai')}>
           <AiStatusPanel ai={ai} />
         </Section>
