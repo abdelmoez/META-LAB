@@ -17,7 +17,7 @@
 import { useRef, useEffect, useMemo, useCallback, useImperativeHandle, forwardRef } from 'react';
 import { C, btnS, inp } from '../../../frontend/workspace/ui/styles.js';
 import { alpha } from '../../../frontend/theme/tokens.js';
-import { mdToHtml, htmlToMd, citeChipHtml, CITE_CHIP_CLASS } from './mdDom.js';
+import { mdToHtml, htmlToMd, citeChipHtml, CITE_CHIP_CLASS, ASSET_CHIP_CLASS } from './mdDom.js';
 
 /* Page-scoped CSS: the paper is LITERAL white in both themes (a printed page),
    so the ink colors are fixed — theme tokens on purpose only OUTSIDE the page. */
@@ -42,11 +42,18 @@ export const RICH_EDITOR_CSS = `
 .ms-page-body .${CITE_CHIP_CLASS}{display:inline-block;background:#e8edff;color:#3448c5;border:1px solid #c3cdf5;
   border-radius:10px;padding:0 6px;margin:0 1px;font:600 10.5px/1.7 'IBM Plex Sans',sans-serif;
   vertical-align:baseline;cursor:default;white-space:nowrap;}
+.ms-page-body .${ASSET_CHIP_CLASS}{display:inline-block;background:#eaf6ef;color:#1e7a46;border:1px solid #bfe3cd;
+  border-radius:10px;padding:0 6px;margin:0 1px;font:600 10.5px/1.7 'IBM Plex Sans',sans-serif;
+  vertical-align:baseline;cursor:default;white-space:nowrap;}
 `;
 
 export const RichSectionEditor = forwardRef(function RichSectionEditor({
   value, orderMap, onChange, placeholder, minHeight = 340,
   ariaLabel, testId = 'stitch-manuscript-rich-editor', onActivate,
+  // 85.md B2 — asset-chip numbering (resolveNumbering.byId, Map or plain object;
+  // absent → chips read 'Table ?'). The workspace gates this on sourcesSettled
+  // (pre-settle it passes a '…' lookup) so numbers never flicker.
+  assetNumbers = null,
   // 73.md Part 9 — locked sections render read-only: contentEditable off, no
   // emits, no paste rewriting. The parent remounts on lock toggle (resetKey).
   readOnly = false,
@@ -54,14 +61,16 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
   const rootRef = useRef(null);
   const savedRange = useRef(null);
   const orderMapRef = useRef(orderMap);
+  const assetNumbersRef = useRef(assetNumbers);
   const onChangeRef = useRef(onChange);
   useEffect(() => { orderMapRef.current = orderMap; });
+  useEffect(() => { assetNumbersRef.current = assetNumbers; });
   useEffect(() => { onChangeRef.current = onChange; });
 
   // Rendered from props exactly once (per mount/key) — React sees the SAME
   // __html string on every re-render and never touches the live DOM again.
   const html0 = useRef(null);
-  if (html0.current == null) html0.current = mdToHtml(value || '', { orderMap });
+  if (html0.current == null) html0.current = mdToHtml(value || '', { orderMap, assetNumbers });
 
   // Chips renumber in place when the order of first appearance changes; chips
   // are contenteditable=false islands, so this never disturbs the caret.
@@ -74,6 +83,21 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
       if (chip.textContent !== label) chip.textContent = label;
     });
   }, [orderMap]);
+
+  // Asset chips renumber the same way ('Table 2' ⇄ 'Table ?') when numbering or
+  // availability changes — atomic islands, caret-safe.
+  useEffect(() => {
+    const el = rootRef.current;
+    if (!el || !assetNumbers || typeof el.querySelectorAll !== 'function') return;
+    const lookup = typeof assetNumbers.get === 'function'
+      ? (id) => assetNumbers.get(id) : (id) => assetNumbers[id];
+    el.querySelectorAll(`span.${ASSET_CHIP_CLASS}[data-asset]`).forEach((chip) => {
+      const id = chip.getAttribute('data-asset') || '';
+      const n = lookup(id);
+      const label = `${id.startsWith('figure:') ? 'Figure' : 'Table'} ${n == null ? '?' : n}`;
+      if (chip.textContent !== label) chip.textContent = label;
+    });
+  }, [assetNumbers]);
 
   const readOnlyRef = useRef(readOnly);
   useEffect(() => { readOnlyRef.current = readOnly; });
@@ -163,7 +187,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     exec,
     focus: () => rootRef.current && rootRef.current.focus(),
     /** Insert subset markdown at the caret as normal editable content (MS-8). */
-    insertMarkdown: (md) => insertHtml(mdToHtml(md, { orderMap: orderMapRef.current })),
+    insertMarkdown: (md) => insertHtml(mdToHtml(md, { orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current })),
     /** Insert an atomic citation chip at the caret. */
     insertCitation: (refId) => {
       if (!refId) return;
@@ -189,7 +213,7 @@ export const RichSectionEditor = forwardRef(function RichSectionEditor({
     if (!html) return; // plain-text paste → browser default (inserted as text)
     e.preventDefault();
     // Word/Docs HTML → markdown subset → clean HTML (everything else drops to text)
-    insertHtml(mdToHtml(htmlToMd(html), { orderMap: orderMapRef.current }));
+    insertHtml(mdToHtml(htmlToMd(html), { orderMap: orderMapRef.current, assetNumbers: assetNumbersRef.current }));
   };
 
   return (

@@ -16,7 +16,7 @@ import { CITATION_STYLES, JOURNAL_TEMPLATES, SECTION_IDS } from '../../research-
 import { useManuscript } from './useManuscript.js';
 import {
   Select, OverviewPanel, EditorPanel, TablesPanel, FiguresPanel, ReferencesPanel, PrismaPanel, ExportPanel,
-  UpdatesPanel, SaveStatusPill,
+  UpdatesPanel, SaveStatusPill, ExportValidationDialog,
 } from './manuscriptPanels.jsx';
 
 const SUBTABS = [
@@ -37,6 +37,10 @@ export function ManuscriptWorkspace({ project, upd }) {
   const [tab, setTab] = useState('overview');
   const [exporting, setExporting] = useState(null); // null | 'word' | 'repro' | 'prisma' | 'prismaS'
   const [exportError, setExportError] = useState('');
+  // 85.md B2 — pre-export validation review ({ model, validation, fetchedAt })
+  // + figure-rasterization progress label for the Word button.
+  const [exportReview, setExportReview] = useState(null);
+  const [exportProgress, setExportProgress] = useState('');
   // 73.md Part 9 — Overview/Consistency "Open" actions jump into the Editor at a
   // specific section (or straight to the References tab for reference findings).
   const [sectionRequest, setSectionRequest] = useState(null);
@@ -70,18 +74,50 @@ export function ManuscriptWorkspace({ project, upd }) {
     return m.activeDraft;
   }, [m]);
 
-  // Exports thread the SAME live-wired tables/counts the panels render
-  // (screening PRISMA rollup, RoB v2 assessments, pecan per-source, GRADE map)
-  // so what you download always matches what you saw on screen.
-  const onExportWord = useCallback(() => runExport('word', async () => {
+  // 85.md B2 — Word export builds from a FRESH export model (flush pending edits,
+  // re-fetch live sources, recompute tables/assets/numbering/placements) so the
+  // .docx can never embed sources from project-open time.
+  const doWordExport = useCallback(async (model) => {
     const { buildManuscriptDocx } = await import('./export/manuscriptDocx.js');
     const { downloadBlob } = await import('../../frontend/components/exportCore.js');
-    const blob = await buildManuscriptDocx(project, freshDraft(), {
-      runMeta: m.runMeta, gradeByOutcome: m.gradeByOutcome,
-      prismaResult: m.prismaCounts, primary: m.primary, tables: m.tables,
-    });
-    downloadBlob(blob, `${safeName(project.name)}.docx`);
-  }), [runExport, project, freshDraft, m.runMeta, m.gradeByOutcome, m.prismaCounts, m.primary, m.tables]);
+    setExportProgress('');
+    try {
+      const blob = await buildManuscriptDocx(project, model.draft, {
+        runMeta: m.runMeta, gradeByOutcome: m.gradeByOutcome,
+        prec: project && project.analysisPrecision,
+        prismaResult: model.prismaCounts, primary: model.primary, tables: model.tables,
+        analyses: model.analyses, assets: model.assets,
+        numbering: model.numbering, placements: model.placements,
+        robAssessments: model.robAssessments, robByStudyId: model.robByStudyId,
+        screening: model.screening, validation: model.validation,
+        onProgress: (step, total, label) => setExportProgress(`Rendering figure ${step}/${total}…`),
+      });
+      downloadBlob(blob, `${safeName(project.name)}.docx`);
+    } finally {
+      setExportProgress('');
+    }
+  }, [project, m.runMeta, m.gradeByOutcome]);
+
+  // Pre-export flow: CLEAN (no errors AND no warnings) → export immediately, no
+  // dialog. Errors → blocked review. Warnings only → review with "Export anyway".
+  const onExportWord = useCallback(() => runExport('word', async () => {
+    setExportReview(null);
+    const model = await m.prepareExport();
+    if (!model) return;
+    const v = model.validation || { errors: [], warnings: [] };
+    if ((v.errors || []).length || (v.warnings || []).length) {
+      setExportReview({ model, validation: v, fetchedAt: model.fetchedAt });
+      return;
+    }
+    await doWordExport(model);
+  }), [runExport, m, doWordExport]);
+
+  const onExportAnyway = useCallback(() => {
+    const review = exportReview;
+    if (!review) return;
+    setExportReview(null);
+    runExport('word', () => doWordExport(review.model));
+  }, [exportReview, runExport, doWordExport]);
 
   const onExportRepro = useCallback(() => runExport('repro', async () => {
     const { buildReproPackage } = await import('./export/manuscriptRepro.js');
@@ -107,7 +143,7 @@ export function ManuscriptWorkspace({ project, upd }) {
     cx.downloadPrismaSChecklist(project);
   }), [runExport, project]);
 
-  const exporters = { onExportWord, onExportRepro, onPrismaChecklist, onPrismaSChecklist, exporting, exportError };
+  const exporters = { onExportWord, onExportRepro, onPrismaChecklist, onPrismaSChecklist, exporting, exportError, exportProgress };
 
   if (!m.activeDraft) {
     return (
@@ -189,6 +225,13 @@ export function ManuscriptWorkspace({ project, upd }) {
           );
         })}
       </div>
+
+      {/* 85.md B2 — pre-export validation review (rendered above every panel so
+          it is visible from whichever tab hosted the export button). */}
+      {exportReview && (
+        <ExportValidationDialog review={exportReview} exporting={exporting}
+          onExportAnyway={onExportAnyway} onClose={() => setExportReview(null)} />
+      )}
 
       {/* panels */}
       {tab === 'overview' && <OverviewPanel m={m} exporters={exporters} onOpenSection={openSection} />}

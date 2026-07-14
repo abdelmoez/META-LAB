@@ -29,6 +29,9 @@
  *                        absent Egger is computed locally (deterministic) for k≥10
  *   robAssessments       structured RoB map (used by tables + Results rob count)
  *   prismaCounts/primary/analyses  precomputed shares (perf/parity seams)
+ *   assetRefs            85.md B1 — emit structured [[table:…]]/[[figure:…]] asset
+ *                        tokens instead of frozen "(Table 1)"/"(Figure 1)" prose.
+ *                        Default FALSE: legacy output stays byte-identical.
  */
 
 import { runMeta as defaultRunMeta, eggersTest } from '../statistics/meta-analysis.js';
@@ -321,15 +324,18 @@ export function generateMethods(project, opts = {}) {
  *   generateResults / generateDraft and live screening counts fill any stage the
  *   researcher has not entered manually (manual/override still win).
  */
-export function studySelectionParagraph(pc) {
+export function studySelectionParagraph(pc, opts = {}) {
   const c = (pc && pc.counts) || {};
+  // 85.md B1 — assetRefs emits the structured token so numbering/placement stay
+  // live; without it the legacy frozen "(Figure 1)" text is byte-identical.
+  const figRef = opts && opts.assetRefs ? '([[figure:prisma]])' : '(Figure 1)';
   return [
     c.identified != null ? `${c.identified} records were identified` : `${PH('Number of records identified unavailable')}`,
     c.duplicatesRemoved != null ? `, of which ${c.duplicatesRemoved} duplicates were removed` : '',
     c.screened != null ? `; ${c.screened} records were screened` : '',
     c.reportsAssessed != null ? `, ${c.reportsAssessed} reports were assessed for eligibility` : '',
     c.included != null ? `, and ${c.included} studies met the inclusion criteria.` : '.',
-  ].join('') + ' The study-selection process is shown in the PRISMA 2020 flow diagram (Figure 1).';
+  ].join('') + ` The study-selection process is shown in the PRISMA 2020 flow diagram ${figRef}.`;
 }
 
 /** Narration lines for a NON-primary outcome analysis (fuller stats incl. τ²). */
@@ -405,13 +411,18 @@ export function generateResults(project, opts = {}) {
   const studies = Array.isArray(project && project.studies) ? project.studies : [];
   const out = [];
 
+  // 85.md B1 — assetRefs swaps frozen "(Table 1)" prose for structured tokens
+  // (numbering/placement resolve them live). Default off → legacy byte-identical.
+  const assetRefs = !!opts.assetRefs;
+
   out.push('## Study selection');
-  out.push(studySelectionParagraph(pc));
+  out.push(studySelectionParagraph(pc, { assetRefs }));
   out.push('');
 
   out.push('## Study characteristics');
+  const studyTableRef = assetRefs ? '([[table:study]])' : '(Table 1)';
   out.push(studies.length
-    ? `Characteristics of the included studies are summarised in the study-characteristics table (Table 1). ${PH('Briefly describe the range of designs, populations and settings')}.`
+    ? `Characteristics of the included studies are summarised in the study-characteristics table ${studyTableRef}. ${PH('Briefly describe the range of designs, populations and settings')}.`
     : `${PH('No included studies with extracted data yet')}.`);
   out.push('');
 
@@ -420,7 +431,7 @@ export function generateResults(project, opts = {}) {
   const assessed = studies.filter((s) => (s.rob && Object.keys(s.rob).length)
     || (robAss[s.id] && ((robAss[s.id].domains && Object.keys(robAss[s.id].domains).length) || clean(robAss[s.id].overall)))).length;
   out.push(assessed
-    ? `Risk of bias was assessed for ${assessed} stud${assessed === 1 ? 'y' : 'ies'}; results are summarised in the risk-of-bias table. ${PH('State how many were at low/some/high risk')}.`
+    ? `Risk of bias was assessed for ${assessed} stud${assessed === 1 ? 'y' : 'ies'}; results are summarised in the risk-of-bias table${assetRefs ? ' ([[table:rob]])' : ''}. ${PH('State how many were at low/some/high risk')}.`
     : `${PH('Risk-of-bias assessment incomplete')}.`);
   out.push('');
 
@@ -449,6 +460,11 @@ export function generateResults(project, opts = {}) {
   }
   for (const a of secondaries) {
     for (const ln of secondaryNarration(a, opts.prec)) out.push(ln);
+  }
+  // SoF pointer — only in assetRefs mode and only when the summary-of-findings
+  // table will actually be available (≥1 outcome pair exists).
+  if (assetRefs && analyses.length) {
+    out.push('Pooled results for every outcome are summarised in the summary-of-findings table ([[table:sof]]).');
   }
   out.push('');
   const pubBiasLines = [];

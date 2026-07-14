@@ -13,6 +13,7 @@ import {
 import {
   generateDraft, generateMethods, generateResults, generateAbstract,
   primaryAnalysis, allAnalyses, timeframeText, suggestStatements,
+  studySelectionParagraph,
 } from '../../../src/research-engine/manuscript/draft.js';
 import { buildMethodsMarkdown } from '../../../src/research-engine/docs/methodsText.js';
 import { computePrismaCounts } from '../../../src/research-engine/manuscript/prismaCounts.js';
@@ -337,6 +338,11 @@ describe('sources + inputsHash provenance', () => {
     const old = normalizeDraft({ sections: { results: { content: 'x' } } });
     expect('sources' in old.sections.results).toBe(false);
     expect('inputsHash' in old.sections.results).toBe(false);
+    // 85.md B1 — draft.assets follows the same pattern: absent/empty → no phantom key
+    expect('assets' in old).toBe(false);
+    expect('assets' in normalizeDraft({ assets: {} })).toBe(false);
+    const withAssets = normalizeDraft({ assets: { 'table:study': { included: false } } });
+    expect(withAssets.assets['table:study']).toEqual({ included: false });
   });
 });
 
@@ -458,5 +464,51 @@ describe('backward compat (no new opts → legacy output)', () => {
     for (const m of ['DL', 'REML', 'ML', 'PM', 'EB', 'SJ', 'HO', 'HS']) {
       expect(typeof TAU2_PHRASES[m]).toBe('string');
     }
+  });
+});
+
+/* ── 85.md B1 — assetRefs:true parallel pin (token emission) ──────────────── */
+
+describe('assetRefs:true emits structured tokens (parallel pin)', () => {
+  it('swaps frozen (Table 1)/(Figure 1) prose for [[…]] tokens, otherwise identical', () => {
+    const legacy = generateDraft(baseProject(), {});
+    const tokens = generateDraft(baseProject(), { assetRefs: true });
+    expect(tokens.results).toContain('the PRISMA 2020 flow diagram ([[figure:prisma]]).');
+    expect(tokens.results).toContain('the study-characteristics table ([[table:study]]).');
+    expect(tokens.results).toContain('the risk-of-bias table ([[table:rob]]).');
+    expect(tokens.results).toContain('the summary-of-findings table ([[table:sof]]).');
+    expect(tokens.results).not.toContain('(Figure 1)');
+    expect(tokens.results).not.toContain('(Table 1)');
+    // sections without token emission points are byte-identical
+    expect(tokens.abstract).toBe(legacy.abstract);
+    expect(tokens.methods).toBe(legacy.methods);
+    expect(tokens.introduction).toBe(legacy.introduction);
+    expect(tokens.discussion).toBe(legacy.discussion);
+    expect(tokens.limitations).toBe(legacy.limitations);
+    expect(tokens.conclusion).toBe(legacy.conclusion);
+    // results differ ONLY by the token swaps + the additive SoF sentence
+    const normalized = tokens.results
+      .replace(' ([[figure:prisma]])', ' (Figure 1)')
+      .replace(' ([[table:study]])', ' (Table 1)')
+      .replace(' ([[table:rob]])', '')
+      .replace('\nPooled results for every outcome are summarised in the summary-of-findings table ([[table:sof]]).', '');
+    expect(normalized).toBe(legacy.results);
+  });
+
+  it('studySelectionParagraph variant is exported for the editor Insert-PRISMA button', () => {
+    const pc = computePrismaCounts(baseProject(), {});
+    const legacy = studySelectionParagraph(pc);
+    const tokened = studySelectionParagraph(pc, { assetRefs: true });
+    expect(legacy).toContain('(Figure 1).');
+    expect(tokened).toContain('([[figure:prisma]]).');
+    expect(tokened.replace('([[figure:prisma]])', '(Figure 1)')).toBe(legacy);
+  });
+
+  it('no-studies project: assetRefs on emits no table:study token (honest placeholder kept)', () => {
+    const r = generateResults({ name: '', pico: {}, search: { dbs: {} }, prisma: {}, studies: [] }, { assetRefs: true });
+    expect(r).not.toContain('[[table:study]]');
+    expect(r).not.toContain('[[table:sof]]');
+    expect(r).not.toContain('[[table:rob]]');
+    expect(r).toContain('[No included studies with extracted data yet]');
   });
 });

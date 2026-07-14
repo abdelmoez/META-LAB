@@ -35,13 +35,16 @@ import {
   buildRobTable, buildSearchStrategyTable,
   generateReferenceList, referencesFromProject, orderReferencesForManuscript,
   computeReadiness, smartInsights,
-  evaluateStaleness, primaryAnalysis,
+  evaluateStaleness, primaryAnalysis, allAnalyses,
   computeSectionInputsHashes, checkConsistency,
   // 84.md — live manuscript sync: dependency graph, sync plan, contradictions,
   // missing-info, freshness rollup and version snapshots (all pure engine).
   computeDependencyState, buildSyncPlan, applySyncDecision,
   detectContradictions, collectMissingInfo, computeFreshness,
   createSnapshot, restoreSnapshot, removeSnapshot,
+  // 85.md B1/B2 — asset registry, token numbering/placement + pre-export validation.
+  computeManuscriptAssets, resolveNumbering, computePlacements, validateExport,
+  assetToken,
 } from '../../research-engine/manuscript/index.js';
 import { generateDraft } from '../../research-engine/manuscript/draft.js';
 import { gradeCertaintyEnabled, sofCertaintyMap } from '../../frontend/workspace/gradeApi.js';
@@ -57,6 +60,8 @@ export function useManuscript(project, upd) {
   const [localSeed, setLocalSeed] = useState(null); // read-only fallback (upd is a no-op)
   const [saveState, setSaveState] = useState('saved'); // 'saved' | 'saving' | 'error' (UX-6)
   const [lastError, setLastError] = useState(null);
+  const saveStateRef = useRef(saveState);
+  useEffect(() => { saveStateRef.current = saveState; });
 
   // Refs to the freshest committed values (avoid stale-closure writes).
   const projectRef = useRef(project);
@@ -215,18 +220,42 @@ export function useManuscript(project, upd) {
   // reject). Until then, generation would see empty sources and OUTDATED detection
   // would compare hashes against unlike inputs — both are gated on this flag.
   const [sourcesSettled, setSourcesSettled] = useState(false);
+  // 85.md B2 — when the sources were last (re)fetched (shown in the export dialog).
+  const [sourcesFetchedAt, setSourcesFetchedAt] = useState(null);
+  const sourcesRef = useRef(sources);
+  useEffect(() => { sourcesRef.current = sources; });
   const screenPid = linkedScreenProjectId(project);
   useEffect(() => {
     let alive = true;
     setSources(emptyManuscriptSources());
     setSourcesSettled(false);
+    setSourcesFetchedAt(null);
     if (!pid) { setSourcesSettled(true); return undefined; }
     fetchManuscriptSources({ projectId: pid, screenProjectId: screenPid })
-      .then((r) => { if (alive) { if (r) setSources(r); setSourcesSettled(true); } })
+      .then((r) => { if (alive) { if (r) setSources(r); setSourcesSettled(true); setSourcesFetchedAt(new Date().toISOString()); } })
       .catch(() => { if (alive) setSourcesSettled(true); /* orchestrator is soft-fail; belt-and-braces */ });
     return () => { alive = false; };
   }, [pid, screenPid]);
   const availability = useMemo(() => sourceAvailability(sources), [sources]);
+
+  // 85.md B2 — export-freshness seam: re-run the soft-fail source fetch on demand
+  // (the export path calls this so a .docx never embeds sources from project-open
+  // time). Resolves with the FRESH sources so the caller can compute on them
+  // immediately — state catches up on the next render.
+  const refreshSources = useCallback(async () => {
+    if (!pid) return { sources: sourcesRef.current, fetchedAt: null };
+    try {
+      const r = await fetchManuscriptSources({ projectId: pid, screenProjectId: screenPid });
+      if (r) {
+        const at = new Date().toISOString();
+        setSources(r);
+        setSourcesSettled(true);
+        setSourcesFetchedAt(at);
+        return { sources: r, fetchedAt: at };
+      }
+    } catch { /* soft-fail — fall through to the last known sources */ }
+    return { sources: sourcesRef.current, fetchedAt: null };
+  }, [pid, screenPid]);
 
   const genOpts = useMemo(
     () => composeGenOpts({ project, runMeta, gradeByOutcome, sources }),
@@ -268,6 +297,62 @@ export function useManuscript(project, upd) {
   const staleness = useMemo(
     () => (activeDraft ? evaluateStaleness(activeDraft, project) : {}),
     [project, activeDraft],
+  );
+
+  /* ── 85.md B2 — asset registry + live numbering/placement for editor + export ── */
+  // Per-outcome analyses (primary first) — the SAME list the export renders
+  // per-outcome forest figures from, so editor chips and the .docx agree.
+  const analyses = useMemo(() => {
+    try { return allAnalyses(project, genOpts); } catch { return []; }
+  }, [project, genOpts]);
+
+  // Data-block staleness → per-asset stale flags. Mirrors the readiness rule:
+  // only blocks that WERE refreshed and have since diverged count (a never-
+  // refreshed block on a fresh draft is not "stale data", it is just unpinned).
+  const staleAssets = useMemo(() => {
+    const link = {
+      study_characteristics_table: 'table:study',
+      summary_of_findings_table: 'table:sof',
+      prisma_counts_table: 'table:prisma',
+      risk_of_bias_table: 'table:rob',
+      search_strategy_table: 'table:search',
+      prisma_flow: 'figure:prisma',
+      forest_plot: 'figure:forest-primary',
+    };
+    const map = {};
+    for (const k of Object.keys(staleness || {})) {
+      const st = staleness[k];
+      if (st && st.stale && st.lastRefreshedAt && link[k]) map[link[k]] = true;
+    }
+    return map;
+  }, [staleness]);
+
+  const assets = useMemo(() => {
+    if (!activeDraft) return [];
+    try {
+      return computeManuscriptAssets(project, activeDraft, {
+        tables, prismaCounts, analyses, primary,
+        robByStudyId: sources.robByStudyId || undefined,
+        robAssessments: sources.robAssessments || undefined,
+        staleAssets,
+      });
+    } catch { return []; }
+  }, [project, activeDraft, tables, prismaCounts, analyses, primary, sources, staleAssets]);
+
+  const assetNumbering = useMemo(
+    () => resolveNumbering({ sections: activeDraft || [], assets }),
+    [activeDraft, assets],
+  );
+  const assetPlacements = useMemo(
+    () => computePlacements({ sections: activeDraft || [], numbering: assetNumbering, assets }),
+    [activeDraft, assetNumbering, assets],
+  );
+  // True when the draft carries ANY structured asset token (known or not) — the
+  // Insert-PRISMA button uses this to avoid silently mixing reference modes.
+  const draftUsesTokens = useMemo(
+    () => !!((assetNumbering.mentioned && assetNumbering.mentioned.size)
+      || (assetNumbering.unresolved || []).length),
+    [assetNumbering],
   );
 
   // 73.md Part 9 — per-section OUTDATED detection: fresh input hashes computed
@@ -339,9 +424,13 @@ export function useManuscript(project, upd) {
   }, [project, activeDraft, genOpts, prismaCounts, primary]);
 
   // Which refreshable data blocks are currently stale (evaluateStaleness is keyed
-  // by blockId → { stale, lastRefreshedAt }).
+  // by blockId → { stale, lastRefreshedAt }). 85.md B2 — mirror the readiness
+  // rule: a NEVER-refreshed block is unpinned, not stale ("8 updates available"
+  // on every fresh draft — and a pre-export warning on every export — was noise,
+  // not honesty; genuine divergence after a refresh still counts).
   const staleBlocks = useMemo(
-    () => Object.keys(staleness || {}).filter((k) => staleness[k] && staleness[k].stale),
+    () => Object.keys(staleness || {})
+      .filter((k) => staleness[k] && staleness[k].stale && staleness[k].lastRefreshedAt),
     [staleness],
   );
 
@@ -359,6 +448,53 @@ export function useManuscript(project, upd) {
   // Eager, LIGHT count for the tab badge (no draft generation).
   const outdatedCount = useMemo(() => Object.keys(outdated || {}).length, [outdated]);
 
+  /* ── 85.md B2 — pre-export preparation: flush → REFRESH sources → recompute the
+        whole export model (tables/assets/numbering/placements) on the FRESH state
+        → validate. Everything the .docx builder needs is returned so the export
+        renders exactly what was validated (state memos catch up next render). ── */
+  const prepareExport = useCallback(async () => {
+    const flushed = flushPending();
+    const list = flushed || readManuscripts(projectRef.current);
+    const draft = list.find((d) => d.id === activeIdRef.current) || list[0] || activeDraft;
+    if (!draft) return null;
+    const { sources: fresh, fetchedAt } = await refreshSources();
+    const proj = projectRef.current;
+    const gOpts = composeGenOpts({ project: proj, runMeta, gradeByOutcome, sources: fresh });
+    const pc = computePrismaCounts(proj, {
+      overrides: draft.prismaOverrides,
+      ...(fresh.screening ? { screening: fresh.screening } : {}),
+    });
+    const tbls = {
+      study: buildStudyCharacteristicsTable(proj, fresh.robByStudyId ? { robByStudyId: fresh.robByStudyId } : {}),
+      sof: buildSummaryOfFindingsTable(proj, gOpts),
+      prisma: buildPrismaCountsTable(pc),
+      rob: buildRobTable(proj, fresh.robAssessments ? { assessments: fresh.robAssessments } : {}),
+      search: buildSearchStrategyTable(proj, fresh.perSource ? { perSource: fresh.perSource } : {}),
+    };
+    const anals = allAnalyses(proj, gOpts);
+    const prim = anals[0] || null;
+    const asts = computeManuscriptAssets(proj, draft, {
+      tables: tbls, prismaCounts: pc, analyses: anals, primary: prim,
+      robByStudyId: fresh.robByStudyId || undefined,
+      robAssessments: fresh.robAssessments || undefined,
+      staleAssets,
+    });
+    const numb = resolveNumbering({ sections: draft, assets: asts });
+    const plc = computePlacements({ sections: draft, numbering: numb, assets: asts });
+    const validation = validateExport({
+      project: proj, draft, assets: asts, numbering: numb, placements: plc,
+      saveState: saveStateRef.current, sourcesSettled: true,
+      freshness, dataStatus: fresh.dataStatus,
+    });
+    return {
+      draft, fetchedAt,
+      genOpts: gOpts, prismaCounts: pc, tables: tbls, analyses: anals, primary: prim,
+      assets: asts, numbering: numb, placements: plc, validation,
+      robAssessments: fresh.robAssessments, robByStudyId: fresh.robByStudyId,
+      screening: fresh.screening,
+    };
+  }, [flushPending, refreshSources, gradeByOutcome, staleAssets, freshness, activeDraft]);
+
   // LAZY sync plan: generating the draft to diff CURRENT vs PROPOSED is heavy, so
   // it runs on demand only (tab open / after a decision). The `generated` bundle
   // the current plan diffs against is kept in a ref so applySyncDecision applies
@@ -374,7 +510,9 @@ export function useManuscript(project, upd) {
       const generated = generateDraft(project, {
         // SAME opts domain as freshDepState — a narrower set here would stamp
         // depState hashes that read as phantom "changed" reasons (review fix 4).
-        ...genOpts, prismaCounts, primary,
+        // 85.md B2 — assetRefs matches generate(): proposals carry the same
+        // structured tokens accepting them would otherwise strip.
+        ...genOpts, prismaCounts, primary, assetRefs: true,
         overrides: activeDraft.prismaOverrides,
         templateId: activeDraft.templateId, citationStyle: activeDraft.citationStyle,
       });
@@ -471,6 +609,34 @@ export function useManuscript(project, upd) {
     mutateActive((d) => MS.setSectionLocked(d, id, locked));
   }, [mutateActive]);
 
+  // 85.md B2 — per-asset override (draft.assets[id]): include toggle is an
+  // IMMEDIATE structural write; title/caption/legend text edits go through the
+  // panels' buffered setMetaDebounced({ assets }) path instead.
+  const setAssetOverride = useCallback((assetId, patch) => {
+    if (!assetId || !patch) return;
+    mutateActive((d) => {
+      const cur = (d.assets && typeof d.assets === 'object') ? d.assets : {};
+      const prev = (cur[assetId] && typeof cur[assetId] === 'object') ? cur[assetId] : {};
+      return MS.setMeta(d, { assets: { ...cur, [assetId]: { ...prev, ...patch } } });
+    });
+  }, [mutateActive]);
+
+  // 85.md B2 — "Insert reference" from the Tables/Figures panels: no editor is
+  // mounted there, so the token is appended to the END of Results (the caller
+  // tells the researcher so). Returns false when Results is locked.
+  const insertAssetReference = useCallback((assetId) => {
+    if (!assetId) return false;
+    let ok = false;
+    mutateActive((d) => {
+      const sec = (d.sections && d.sections.results) || {};
+      if (sec.locked) return null;
+      const cur = String(sec.content || '');
+      ok = true;
+      return MS.setSection(d, 'results', `${cur.replace(/\s+$/, '')}${cur.trim() ? '\n\n' : ''}${assetToken(assetId)}`);
+    });
+    return ok;
+  }, [mutateActive]);
+
   const setStatement = useCallback((id, val) => {
     if (activeDraft) queueEdit(activeDraft.id, 'statement', id, val);
   }, [activeDraft, queueEdit]);
@@ -498,8 +664,11 @@ export function useManuscript(project, upd) {
     let skipped = [];
     let skippedLocked = [];
     mutateActive((active) => {
+      // 85.md B2 — assetRefs:true at every generation call site: new drafts get
+      // structured [[table:…]]/[[figure:…]] tokens; regenerating a section of a
+      // token-era draft keeps them. Engine default stays FALSE (legacy pins).
       const generated = generateDraft(project, {
-        ...genOpts, prismaCounts, primary,
+        ...genOpts, prismaCounts, primary, assetRefs: true,
         templateId: active.templateId, citationStyle: active.citationStyle,
         overrides: active.prismaOverrides,
       });
@@ -554,6 +723,11 @@ export function useManuscript(project, upd) {
     // 73.md Parts 8/9 — live data wiring + provenance/outdated/lock surface.
     genOpts,
     sourcesSettled,
+    sourcesFetchedAt,
+    refreshSources,
+    // 85.md B2 — asset registry + numbering/placement + export preparation.
+    analyses, assets, assetNumbering, assetPlacements, draftUsesTokens,
+    setAssetOverride, insertAssetReference, prepareExport,
     dataStatus: sources.dataStatus,
     screening: sources.screening,
     screeningWorkflow: sources.screeningWorkflow,

@@ -366,8 +366,14 @@ export function buildPubForestSVG(result,opts){
   const favLow = (isLog||isProp)?(o.favLow||"favours experimental"):"favours lower";
   const favHigh= (isLog||isProp)?(o.favHigh||"favours control"):"favours higher";
   // For ratio measures: <1 (left) usually favours treatment; keep it configurable but sensible.
-  svg+=txt(xPlot+2, favY, "◄ "+( (isLog||isProp)?(o.favLow||"favours experimental"):"favours lower"), 9, {anchor:"start",fill:GREY,italic:true});
-  svg+=txt(xPlotEnd-2, favY, ((isLog||isProp)?(o.favHigh||"favours control"):"favours higher")+" ►", 9, {anchor:"end",fill:GREY,italic:true});
+  // Arrowheads are explicit <path> triangles, NOT the ◄/► glyphs — Georgia has no
+  // glyph for those codepoints, so Word's SVG renderer (and some canvas font
+  // fallbacks) drew tofu boxes. Same size/position/color as the old glyphs.
+  const favTri=(x,dir)=>`<path d="M${(x+dir*6).toFixed(1)},${(favY-6.5).toFixed(1)} L${x.toFixed(1)},${(favY-3).toFixed(1)} L${(x+dir*6).toFixed(1)},${(favY+0.5).toFixed(1)} Z" fill="${GREY}"/>`;
+  svg+=favTri(xPlot+2,1);
+  svg+=txt(xPlot+11, favY, favLow, 9, {anchor:"start",fill:GREY,italic:true});
+  svg+=favTri(xPlotEnd-2,-1);
+  svg+=txt(xPlotEnd-11, favY, favHigh, 9, {anchor:"end",fill:GREY,italic:true});
 
   // ---- axis label (clean measure name) ----
   const axisName = ratioScale ? measureFull : isProp?"Proportion (%)" : isLog&&logOut?("log "+measureFull) : measureFull;
@@ -381,6 +387,107 @@ export function buildPubForestSVG(result,opts){
   let line2=`Test for overall effect: p ${op}  ·  Filled diamond: ${method==="random"?"random effects":"common / fixed effect"}`;
   if(result.hksj) line2+=`  ·  HKSJ 95% CI: ${fmt(result.hksj.lo)} to ${fmt(result.hksj.hi)} (t-based)`;
   svg+=txt(MLEFT,hetY+13,line2,9,{fill:GREY});
+
+  const full=`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${svg}</svg>`;
+  return {svg:full,W,H};
+}
+
+/* ════════════ FUNNEL PLOT BUILDER (85.md Objective 2 / B1) ════════════
+   Pure, off-screen funnel plot so the manuscript Word export can embed the
+   figure without the Analysis tab being open (the live FunnelPlot in charts.jsx
+   is a themed React SVG and stays untouched). Conventions mirror
+   buildPubForestSVG: points are laid out on the STORED analysis scale (ln for
+   ratio measures, logit for proportions), tick labels are back-transformed for
+   readability, colors are ABSOLUTE hex (export-safe) and the font is Georgia.
+   Input is a runMeta result ({studies:[{_es,_se,…}], pES, …}). Returns
+   { svg, W, H } or null when fewer than 3 usable studies. Deterministic. */
+export function buildFunnelSVG(result, opts){
+  if(!result || !Array.isArray(result.studies)) return null;
+  const o=opts||{};
+  const esType=o.esType||"";
+  const t=ES_TYPES[esType]||{};
+  const isLog=!!t.log, isProp=esType==="PROP";
+  const prec=o.prec;
+  const bt=x=>{ if(isLog)return Math.exp(x); if(isProp){const e=Math.exp(x);return e/(1+e);} return x; };
+  const fmtTick=x=>fmtES(bt(x),prec);
+  const pts=result.studies.map(s=>{
+    const es=+s._es;
+    const se=(s._se!=null && Number.isFinite(+s._se) && +s._se>0) ? +s._se
+      : ((Number.isFinite(+s._hi)&&Number.isFinite(+s._lo)) ? (+s._hi-+s._lo)/(2*1.96) : NaN);
+    return { es, se, label:(s.author||"Study")+(s.year?` ${s.year}`:"") };
+  }).filter(p=>Number.isFinite(p.es)&&Number.isFinite(p.se)&&p.se>0);
+  if(pts.length<3) return null;   // same ≥3-study guard the Analysis tab uses
+
+  const centre=Number.isFinite(+result.pES)?+result.pES:pts.reduce((a,p)=>a+p.es,0)/pts.length;
+  const maxSE=Math.max(...pts.map(p=>p.se))*1.15;
+  const dataMin=Math.min(...pts.map(p=>p.es));
+  const dataMax=Math.max(...pts.map(p=>p.es));
+  const halfRange=Math.max(centre-dataMin,dataMax-centre,1.96*maxSE)*1.1;
+  const minX=centre-halfRange, maxX=centre+halfRange;
+
+  const title=(o.title||"").trim();
+  const titleH=title?28:0;
+  const W=620, H=440+titleH, ML=64, MR=20, MT=24+titleH, MB=56;
+  const plotW=W-ML-MR, plotH=H-MT-MB;
+  const xS=x=>ML+((x-minX)/(maxX-minX))*plotW;
+  const yS=se=>MT+(se/maxSE)*plotH;   // SE increases DOWNWARD (0 at top)
+
+  // palette — absolute hex only (rasterizeSvg cannot resolve CSS variables)
+  const INK="#111111", GREY="#555555", AXIS="#333333", CONE_FILL="#f2f2f2", CONE_LINE="#bbbbbb", POOL="#2e7d32", DOT="#333333";
+  const FF="Georgia, 'Times New Roman', serif";
+  const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  const txt=(x,y,s,size,opt)=>{const a=(opt&&opt.anchor)||"start";const fill=(opt&&opt.fill)||INK;const fw=(opt&&opt.bold)?"700":"400";const it=(opt&&opt.italic)?"italic":"normal";const tr=(opt&&opt.transform)?` transform="${opt.transform}"`:"";
+    return `<text x="${x.toFixed(1)}" y="${y.toFixed(1)}" font-family="${FF}" font-size="${size}" font-style="${it}" font-weight="${fw}" fill="${fill}" text-anchor="${a}"${tr}>${esc(s)}</text>`;};
+  const line=(x1,y1,x2,y2,stroke,sw,dash)=>`<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" stroke="${stroke}" stroke-width="${sw||1}"${dash?` stroke-dasharray="${dash}"`:""}/>`;
+
+  let svg="";
+  if(!o.noBg) svg+=`<rect x="0" y="0" width="${W}" height="${H}" fill="#ffffff"/>`;
+  if(title) svg+=txt(W/2, 20, title, 14, {anchor:"middle",bold:true});
+
+  // pseudo 95% CI cone from the pooled effect (dashed outline, faint fill)
+  const steps=30;
+  let dLeft="", dRight="";
+  for(let i=0;i<=steps;i++){
+    const se=(i/steps)*maxSE;
+    dLeft+=(i===0?"M":"L")+xS(centre-1.96*se).toFixed(1)+","+yS(se).toFixed(1)+" ";
+  }
+  for(let i=steps;i>=0;i--){
+    const se=(i/steps)*maxSE;
+    dRight+="L"+xS(centre+1.96*se).toFixed(1)+","+yS(se).toFixed(1)+" ";
+  }
+  svg+=`<path d="${dLeft}${dRight}Z" fill="${CONE_FILL}" stroke="${CONE_LINE}" stroke-width="1" stroke-dasharray="4,4"/>`;
+
+  // pooled-effect vertical line
+  svg+=line(xS(centre),MT,xS(centre),MT+plotH,POOL,1.5,"3,3");
+
+  // axes
+  svg+=line(ML,MT,ML,MT+plotH,AXIS,1);
+  svg+=line(ML,MT+plotH,ML+plotW,MT+plotH,AXIS,1);
+
+  // SE ticks (y, 0 at top)
+  for(let i=0;i<=4;i++){
+    const se=maxSE*i/4;
+    svg+=line(ML-4,yS(se),ML,yS(se),AXIS,1);
+    svg+=txt(ML-8,yS(se)+3.5,fmtNum(se,prec),9.5,{anchor:"end",fill:GREY});
+  }
+  // ES ticks (x) — labelled in display units (back-transformed for ln/logit scales)
+  for(let i=0;i<=6;i++){
+    const v=minX+(i*(maxX-minX))/6;
+    svg+=line(xS(v),MT+plotH,xS(v),MT+plotH+4,AXIS,1);
+    svg+=txt(xS(v),MT+plotH+16,fmtTick(v),9.5,{anchor:"middle",fill:GREY});
+  }
+
+  // axis labels
+  svg+=txt(ML+plotW/2,H-14,"Effect size",11,{anchor:"middle",bold:true});
+  svg+=txt(16,MT+plotH/2,"Standard error",11,{anchor:"middle",bold:true,transform:`rotate(-90,16,${(MT+plotH/2).toFixed(1)})`});
+
+  // study points
+  pts.forEach(p=>{
+    svg+=`<circle cx="${xS(p.es).toFixed(1)}" cy="${yS(p.se).toFixed(1)}" r="4.5" fill="${DOT}" stroke="#ffffff" stroke-width="1.2"/>`;
+  });
+
+  // pooled annotation (top-right, mirrors the live plot)
+  svg+=txt(ML+plotW-4,MT+12,`Pooled: ${fmtTick(centre)}`,9.5,{anchor:"end",fill:GREY,italic:true});
 
   const full=`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${svg}</svg>`;
   return {svg:full,W,H};

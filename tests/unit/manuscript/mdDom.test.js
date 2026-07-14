@@ -290,3 +290,68 @@ describe('studySelectionParagraph (MS-8)', () => {
     expect(para).toContain('[Number of records identified unavailable]');
   });
 });
+
+/* ── 85.md B1 — asset chips ([[table:…]]/[[figure:…]]) ─────────────────────── */
+
+describe('asset chips (85.md B1)', () => {
+  it('renders tokens as atomic ms-asset chips with numbering from opts.assetNumbers', () => {
+    const html = mdToHtml('See [[table:study]] and [[figure:prisma]].', {
+      assetNumbers: { 'table:study': 2, 'figure:prisma': 1 },
+    });
+    expect(html).toContain('<span class="ms-asset" data-asset="table:study" contenteditable="false">Table 2</span>');
+    expect(html).toContain('<span class="ms-asset" data-asset="figure:prisma" contenteditable="false">Figure 1</span>');
+    expect(html).not.toContain('[[table:');
+  });
+
+  it('accepts a Map for assetNumbers; unknown number → label ?', () => {
+    const html = mdToHtml('[[figure:funnel]] [[table:sof]]', {
+      assetNumbers: new Map([['figure:funnel', 3]]),
+    });
+    expect(html).toContain('>Figure 3</span>');
+    expect(html).toContain('>Table ?</span>');
+    // no numbering map at all → all ?
+    expect(mdToHtml('[[table:sof]]')).toContain('>Table ?</span>');
+  });
+
+  it('round-trips md → HTML → md as a fixed point (chips reverse via data-asset)', () => {
+    const md = 'Before [[table:study]] mid [[figure:forest:mace-5y]] after.';
+    expect(rt(md)).toBe(md);
+    expect(rt(rt(md))).toBe(md);
+    // with numbering the label changes but the reversed markdown does not
+    expect(htmlToMd(mdToHtml(md, { assetNumbers: { 'table:study': 1 } }))).toBe(md);
+  });
+
+  it('chips render inside pipe-table cells and reverse correctly', () => {
+    const md = '| a | [[table:sof]] |\n| --- | --- |\n| 1 | 2 |';
+    const html = mdToHtml(md, { assetNumbers: { 'table:sof': 4 } });
+    expect(html).toContain('data-asset="table:sof"');
+    expect(html).toContain('>Table 4</span>');
+    expect(rt(md)).toBe(md);
+  });
+
+  it('sanitizer keeps valid chip spans and degrades corrupt data-asset to text', () => {
+    // pasted chip (valid) survives as a token
+    expect(htmlToMd('<p>x <span class="ms-asset" data-asset="figure:rob" contenteditable="false">Figure 2</span> y</p>'))
+      .toBe('x [[figure:rob]] y');
+    // grammar-breaking id → falls back to the chip text, never a broken token
+    expect(htmlToMd('<p><span class="ms-asset" data-asset="junk id!">Table ?</span></p>'))
+      .toBe('Table ?');
+    expect(htmlToMd('<p><span data-asset="table:UPPER">Table ?</span></p>')).toBe('Table ?');
+  });
+
+  it('stripInlineMd turns asset tokens into label-ish text (outlines never leak tokens)', () => {
+    expect(stripInlineMd('Results [[table:study]] and [[figure:prisma]] [[cite:r1]]'))
+      .toBe('Results Table ? and Figure ?');
+    expect(stripInlineMd('## Head [[figure:funnel]]')).toContain('Figure ?');
+  });
+
+  it('asset chips never collide with cite chips', () => {
+    const html = mdToHtml('[[cite:r1]] [[table:study]]', {
+      orderMap: new Map([['r1', 1]]),
+      assetNumbers: { 'table:study': 1 },
+    });
+    expect(html).toContain('class="ms-cite"');
+    expect(html).toContain('class="ms-asset"');
+    expect(htmlToMd(html)).toBe('[[cite:r1]] [[table:study]]');
+  });
+});

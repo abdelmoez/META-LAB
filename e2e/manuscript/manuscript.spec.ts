@@ -17,6 +17,24 @@ async function openManuscript(page: import('@playwright/test').Page, projectId: 
   await expect(page.getByTestId('stitch-manuscript-workspace')).toBeVisible({ timeout: 20_000 });
 }
 
+/**
+ * 85.md B2 — seed studies + PRISMA counts so the generated draft's structured
+ * [[table:…]]/[[figure:…]] references all resolve to AVAILABLE assets and the
+ * pre-export validation is CLEAN (the one-click path shows no dialog). An empty
+ * project would honestly warn that the referenced PRISMA figure has no data.
+ */
+async function seedExportableData(request: import('@playwright/test').APIRequestContext, projectId: string) {
+  const proj = await (await request.get(`/api/projects/${projectId}`)).json();
+  proj.prisma = { dbs: '1200', reg: '50', other: '0', dedupe: '250', excTA: '800', excFull: '180', reasons: [], included: '', quant: '' };
+  proj.studies = [
+    { id: 's1', title: 'Trial A', authors: 'Smith J', year: '2020', journal: 'Lancet', outcome: 'MACE', esType: 'OR', es: '-0.36', lo: '-0.6', hi: '-0.12', nExp: '500', nCtrl: '500' },
+    { id: 's2', title: 'Trial B', authors: 'Lee K', year: '2021', journal: 'NEJM', outcome: 'MACE', esType: 'OR', es: '-0.22', lo: '-0.5', hi: '0.06', nExp: '300', nCtrl: '300' },
+    { id: 's3', title: 'Trial C', authors: 'Brown T', year: '2019', journal: 'JAMA', outcome: 'MACE', esType: 'OR', es: '-0.30', lo: '-0.55', hi: '-0.05', nExp: '400', nCtrl: '400' },
+  ];
+  const put = await request.put(`/api/projects/${projectId}/autosave`, { data: proj });
+  expect(put.ok()).toBeTruthy();
+}
+
 test.describe('Manuscript editor (flag ON)', () => {
   test.beforeEach(async ({ setFlags }) => {
     await setFlags({ manuscriptEditor: true });
@@ -138,7 +156,8 @@ test.describe('Manuscript editor (flag ON)', () => {
     await expect(page.getByTestId('stitch-manuscript-save-status').first()).toContainText(/Saved/i, { timeout: 15_000 });
   });
 
-  test('one-click Word export downloads a .docx', async ({ page, tmpProject }) => {
+  test('one-click Word export downloads a .docx (clean path — no dialog)', async ({ page, request, tmpProject }) => {
+    await seedExportableData(request, tmpProject.id);
     await openManuscript(page, tmpProject.id);
     // Give the export something non-trivial to render.
     await page.getByTestId('stitch-manuscript-subtab-editor').click();
@@ -149,6 +168,39 @@ test.describe('Manuscript editor (flag ON)', () => {
     await page.getByTestId('stitch-manuscript-subtab-overview').click();
     const downloadP = page.waitForEvent('download', { timeout: 45_000 });
     await page.getByTestId('stitch-manuscript-export-word').click();
+    const download = await downloadP;
+    expect(download.suggestedFilename()).toMatch(/\.docx$/);
+    // Clean validation → the review panel never appeared (85.md B2 contract).
+    await expect(page.getByTestId('stitch-manuscript-export-validation')).toHaveCount(0);
+  });
+
+  // 85.md B2 — dirty path: EXPLICITLY including an asset that is never referenced
+  // in the text raises a warning → the pre-export review appears, "Export anyway"
+  // still downloads the .docx.
+  test('export validation: unreferenced explicit include → review dialog → Export anyway downloads', async ({ page, request, tmpProject }) => {
+    await seedExportableData(request, tmpProject.id);
+    await openManuscript(page, tmpProject.id);
+    await page.getByTestId('stitch-manuscript-subtab-editor').click();
+    await page.getByTestId('stitch-manuscript-generate').click();
+    await expect(page.getByTestId('stitch-manuscript-save-status').first()).toContainText(/Saved/i, { timeout: 15_000 });
+
+    // Figures tab: include the funnel plot (available — 3 numeric studies — but
+    // never referenced by the generated text).
+    await page.getByTestId('stitch-manuscript-subtab-figures').click();
+    const include = page.getByTestId('stitch-manuscript-asset-include-figure-funnel');
+    await expect(include).toBeEnabled({ timeout: 15_000 });
+    await include.check();
+    await expect(page.getByTestId('stitch-manuscript-save-status').first()).toContainText(/Saved/i, { timeout: 15_000 });
+
+    // Export → warning review (blocking dialog is only for errors).
+    await page.getByTestId('stitch-manuscript-subtab-overview').click();
+    await page.getByTestId('stitch-manuscript-export-word').click();
+    const review = page.getByTestId('stitch-manuscript-export-validation');
+    await expect(review).toBeVisible({ timeout: 20_000 });
+    await expect(review).toContainText(/never referenced/i);
+
+    const downloadP = page.waitForEvent('download', { timeout: 45_000 });
+    await page.getByTestId('stitch-manuscript-export-anyway').click();
     const download = await downloadP;
     expect(download.suggestedFilename()).toMatch(/\.docx$/);
   });

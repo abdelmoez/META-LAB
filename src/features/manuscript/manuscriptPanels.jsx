@@ -14,6 +14,8 @@ import {
   SECTION_TYPES, SECTION_IDS, STATEMENT_TYPES, CITATION_STYLES, JOURNAL_TEMPLATES, sectionStatus,
   collectCitationOrder, draftSectionTexts, studySelectionParagraph,
   explainKeys, SECTION_DEPENDENCIES,
+  // 85.md B2 — structured asset references (tokens ↔ live numbering).
+  assetToken,
 } from '../../research-engine/manuscript/index.js';
 import { RichSectionEditor, RichToolbar, RICH_EDITOR_CSS } from './richEditor/RichSectionEditor.jsx';
 import { AbstractEditor } from './richEditor/AbstractEditor.jsx';
@@ -128,11 +130,12 @@ function SvgBox({ svg }) {
 
 /* ── reusable export-button group ── */
 export function ExportButtons({ exporters, canonical }) {
-  const { onExportWord, onExportRepro, onPrismaChecklist, onPrismaSChecklist, exporting } = exporters;
+  const { onExportWord, onExportRepro, onPrismaChecklist, onPrismaSChecklist, exporting, exportProgress } = exporters;
   const ent = useEntitlements();
   const wordLocked = !ent.loading && !ent.has('manuscript.wordExport');
   const busy = (k) => exporting === k;
-  const lbl = (k, base) => (busy(k) ? 'Generating…' : base);
+  // 85.md B2 — the Word button narrates figure rasterization ("Rendering figure 2/5…").
+  const lbl = (k, base) => (busy(k) ? ((k === 'word' && exportProgress) || 'Generating…') : base);
   return (
     <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
       <button onClick={onExportWord} disabled={!!exporting || wordLocked}
@@ -155,6 +158,67 @@ export function ExportButtons({ exporters, canonical }) {
         <Icon name="checkSquare" size={13} /> {lbl('prismaS', 'PRISMA-S checklist')}
       </button>
     </div>
+  );
+}
+
+/* ════════════ 85.md B2 — pre-export validation review ════════════ */
+
+const fmtFetched = (iso) => { try { return iso ? new Date(iso).toLocaleTimeString() : null; } catch { return null; } };
+
+/**
+ * Pre-export validation review (85.md B2). Shown ONLY when validateExport found
+ * something: errors BLOCK the export (each with an action hint); warnings offer
+ * "Export anyway" / "Fix first". A clean report never mounts this — the export
+ * stays one-click.
+ */
+export function ExportValidationDialog({ review, onExportAnyway, onClose, exporting }) {
+  if (!review || !review.validation) return null;
+  const v = review.validation;
+  const errors = v.errors || [];
+  const warnings = v.warnings || [];
+  const info = v.info || [];
+  const blocked = errors.length > 0;
+  const fetched = fmtFetched(review.fetchedAt);
+  const row = (e, tone, i, prefix) => (
+    <div key={`${prefix}-${e.code}-${i}`} style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap', padding: '6px 0' }}>
+      <span style={{ ...tagS(tone), flexShrink: 0 }}>{tone === 'red' ? 'Blocks export' : tone === 'yellow' ? 'Check' : 'Note'}</span>
+      <span style={{ flex: '1 1 280px', minWidth: 0, fontSize: 12, color: C.txt2, lineHeight: 1.6 }}>
+        {e.message}
+        {e.action && <span style={{ display: 'block', fontSize: 11, color: C.muted }}>{e.action}</span>}
+      </span>
+    </div>
+  );
+  return (
+    <Card data-testid="stitch-manuscript-export-validation" role="alertdialog"
+      aria-label="Export check results"
+      style={{ marginBottom: 18, borderColor: blocked ? C.red : C.yel, borderLeft: `3px solid ${blocked ? C.red : C.yel}` }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', marginBottom: 6 }}>
+        <h3 style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: C.txt }}>
+          {blocked ? 'Export blocked — fix these first' : 'Check before you export'}
+        </h3>
+        {fetched && (
+          <span data-testid="stitch-manuscript-export-fetchedat" style={{ fontSize: 10.5, color: C.muted }}>
+            Live data refreshed at {fetched}
+          </span>
+        )}
+      </div>
+      {errors.map((e, i) => row(e, 'red', i, 'err'))}
+      {warnings.map((e, i) => row(e, 'yellow', i, 'warn'))}
+      {info.map((e, i) => row(e, 'gray', i, 'info'))}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 10 }}>
+        {!blocked && (
+          <button onClick={onExportAnyway} disabled={!!exporting}
+            data-testid="stitch-manuscript-export-anyway"
+            style={{ ...btnS('primary'), fontSize: 11, opacity: exporting ? 0.6 : 1 }}>
+            <Icon name="fileText" size={12} /> Export anyway
+          </button>
+        )}
+        <button onClick={onClose} data-testid="stitch-manuscript-export-fix-first"
+          style={{ ...btnS('ghost'), fontSize: 11 }}>
+          {blocked ? 'Close' : 'Fix first'}
+        </button>
+      </div>
+    </Card>
   );
 }
 
@@ -834,6 +898,15 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
     return collectCitationOrder(texts).orderMap;
   }, [m.activeDraft, sel, buf]);
 
+  // 85.md B2 — asset-chip numbering for the WYSIWYG surface. Gated on settle:
+  // until the live sources resolve, availability (and therefore numbers) may
+  // still change, so chips read 'Table …' instead of flickering through numbers.
+  const pendingAssetNumbers = useMemo(() => ({ get: () => '…' }), []);
+  const assetNumbers = m.sourcesSettled === false
+    ? pendingAssetNumbers
+    : ((m.assetNumbering && m.assetNumbering.byId) || null);
+  const availableAssets = (m.assets || []).filter((a) => a.available);
+
   // MS-11: derive sub-entries from headings at render time — no model change.
   const outline = useMemo(() => {
     const map = {};
@@ -893,8 +966,21 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
   };
 
   const insertCitation = (refId) => { if (locked) return; const api = getApi(); if (api && refId) api.insertCitation(refId); };
-  // MS-8: insert the generated study-selection paragraph as normal editable text
-  const insertPrisma = () => { if (locked) return; const api = getApi(); if (api) api.insertMarkdown(studySelectionParagraph(m.prismaCounts)); };
+  // MS-8: insert the generated study-selection paragraph as normal editable text.
+  // 85.md B2 — token variant ONLY when the draft already uses structured tokens
+  // (no silent mixed mode; a legacy draft keeps the legacy "(Figure 1)" text and
+  // validation warns if modes ever mix).
+  const insertPrisma = () => {
+    if (locked) return;
+    const api = getApi();
+    if (api) api.insertMarkdown(studySelectionParagraph(m.prismaCounts, { assetRefs: !!m.draftUsesTokens }));
+  };
+  // 85.md B2 — insert a live [[table:…]]/[[figure:…]] reference at the caret.
+  const insertAssetRef = (assetId) => {
+    if (locked || !assetId) return;
+    const api = getApi();
+    if (api) api.insertMarkdown(assetToken(assetId));
+  };
 
   const status = sectionStatus(section);
   const isTitle = sel === 'title';
@@ -1101,9 +1187,11 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
               </div>
             ) : isAbstract ? (
               <AbstractEditor value={pageValue} templateId={m.activeDraft.templateId} orderMap={orderMap}
+                assetNumbers={assetNumbers}
                 resetKey={resetKey} onChange={onType} onActivate={setActive} readOnly={locked} />
             ) : (
               <RichSectionEditor key={resetKey} ref={mainApi} value={pageValue} orderMap={orderMap}
+                assetNumbers={assetNumbers}
                 onChange={onType} onActivate={setActive} readOnly={locked}
                 ariaLabel={(SECTION_TYPES.find((s) => s.id === sel) || {}).label || 'Section'}
                 placeholder="Write this section here, or generate it from your project data. Use the toolbar for headings, lists and citations." />
@@ -1155,6 +1243,19 @@ export function EditorPanel({ m, exporters, sectionRequest }) {
                 style={{ ...btnS('ghost'), justifyContent: 'center', opacity: (isTitle || locked) ? 0.5 : 1 }}>
                 <Icon name="flow" size={12} /> Insert PRISMA summary
               </button>
+              {availableAssets.length > 0 && (
+                <select value="" disabled={isTitle || locked}
+                  aria-label="Insert table or figure reference"
+                  title="Insert a live reference to a table or figure at the cursor"
+                  data-testid="stitch-manuscript-tools-insert-asset"
+                  onChange={(e) => { insertAssetRef(e.target.value); e.target.value = ''; }}
+                  style={{ ...inp, cursor: (isTitle || locked) ? 'default' : 'pointer', fontSize: 11, paddingRight: 22, opacity: (isTitle || locked) ? 0.5 : 1 }}>
+                  <option value="">+ Reference a table/figure…</option>
+                  {availableAssets.map((a) => (
+                    <option key={a.id} value={a.id}>{assetNumberLabel(m, a)} — {a.title || a.id}</option>
+                  ))}
+                </select>
+              )}
             </div>
           </ToolsGroup>
 
@@ -1348,38 +1449,149 @@ export function SaveStatusPill({ saveState, lastError, onRetry }) {
   );
 }
 
-/* ════════════ 3. TABLES ════════════ */
+/* ════════════ 3+4. TABLES & FIGURES — the Assets panels (85.md B2) ════════════
+   Both sub-tabs are driven by the SAME derived asset registry the export uses
+   (m.assets — computeManuscriptAssets), so what you see (numbers, inclusion,
+   availability, staleness) is exactly what the .docx will do. */
 function fmtTime(iso) { try { return iso ? new Date(iso).toLocaleString() : 'Not refreshed'; } catch { return 'Not refreshed'; } }
 
-export function TablesPanel({ m }) {
-  const order = ['study', 'sof', 'prisma', 'rob', 'search'];
+const assetTestSlug = (id) => String(id).replace(/:/g, '-');
+
+/** Live number chip text — gated on sourcesSettled so numbers never flicker. */
+export function assetNumberLabel(m, asset) {
+  const word = asset.kind === 'figure' ? 'Figure' : 'Table';
+  if (m.sourcesSettled === false) return `${word} …`;
+  const byId = (m.assetNumbering && m.assetNumbering.byId) || {};
+  const n = byId[asset.id];
+  return n == null ? 'Not in export' : `${word} ${n}`;
+}
+
+/** One asset's controls: number, editable title/caption(/legend), include toggle,
+    honest badges, Insert-reference. Text edits are BUFFERED per panel (authorship
+    pattern) and land through setMetaDebounced({ assets }). */
+function AssetControls({ m, asset, buf, commit, onInsertNotice }) {
+  const slug = assetTestSlug(asset.id);
+  const ov = (buf && buf[asset.id]) || {};
+  const numbering = m.assetNumbering || {};
+  const mentioned = !!(numbering.mentioned && numbering.mentioned.has && numbering.mentioned.has(asset.id));
+  const autoIncluded = !!(numbering.autoIncluded && numbering.autoIncluded.has && numbering.autoIncluded.has(asset.id));
+  // Optimistic: the buffered override wins so the toggle responds instantly
+  // (persistence is debounced; prepareExport flushes it before validating).
+  const includedNow = typeof ov.included === 'boolean' ? ov.included : (!!asset.included || autoIncluded);
+  const patch = (p) => commit(asset.id, p);
+  const numLabel = assetNumberLabel(m, asset);
+  const onInsert = () => {
+    const ok = m.insertAssetReference && m.insertAssetReference(asset.id);
+    if (onInsertNotice) {
+      onInsertNotice(ok
+        ? 'Reference added to the end of Results — open the Editor to move it where it belongs.'
+        : 'Results is locked — unlock it in the Editor before inserting a reference.');
+    }
+  };
   return (
-    <div>
+    <div data-testid={`stitch-manuscript-asset-${slug}`} style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <Icon name={asset.kind === 'figure' ? 'barChart' : 'table'} size={13} />
+        <span data-testid={`stitch-manuscript-asset-number-${slug}`}
+          style={tagS(numLabel.startsWith('Not') ? 'gray' : 'blue')}>{numLabel}</span>
+        <span style={tagS(asset.available ? 'green' : 'gray')}>{asset.available ? 'Available' : 'No data'}</span>
+        {asset.stale && <span style={tagS('yellow')}>Stale</span>}
+        {mentioned
+          ? <span style={tagS('purple')} title={autoIncluded ? 'Included because the text references it' : 'Referenced in the text'}>Referenced in text</span>
+          : <span style={{ fontSize: 10.5, color: C.muted }}>Not referenced in the text</span>}
+        <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: C.txt2, cursor: asset.available ? 'pointer' : 'not-allowed' }}
+            title={!asset.available ? 'No data yet — nothing to include'
+              : mentioned ? 'Referenced in the text — remove the reference to exclude it' : 'Include this in the Word export'}>
+            <input type="checkbox" checked={includedNow}
+              disabled={!asset.available || mentioned}
+              data-testid={`stitch-manuscript-asset-include-${slug}`}
+              onChange={(e) => patch({ included: e.target.checked })}
+              aria-label={`Include ${asset.title || asset.id} in the export`} />
+            Include
+          </label>
+          <button onClick={onInsert} disabled={!asset.available}
+            data-testid={`stitch-manuscript-asset-insert-${slug}`}
+            title="Insert a live reference to this item into the manuscript text"
+            style={{ ...btnS('ghost'), fontSize: 10.5, padding: '3px 10px', opacity: asset.available ? 1 : 0.5 }}>
+            Insert reference
+          </button>
+        </span>
+      </div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        <Labeled label="Title" style={{ flex: '1 1 220px' }}>
+          <input value={ov.title || ''} placeholder={asset.title || 'Title…'}
+            onChange={(e) => patch({ title: e.target.value })}
+            aria-label={`${asset.title || asset.id} title override`}
+            data-testid={`stitch-manuscript-asset-title-${slug}`} style={inp} />
+        </Labeled>
+        <Labeled label="Caption" style={{ flex: '2 1 260px' }}>
+          <textarea value={ov.caption || ''} placeholder={asset.defaultCaption || 'Caption…'}
+            onChange={(e) => patch({ caption: e.target.value })}
+            rows={1} aria-label={`${asset.title || asset.id} caption`}
+            style={{ ...inp, resize: 'vertical', lineHeight: 1.5 }} />
+        </Labeled>
+        {asset.kind === 'figure' && (
+          <Labeled label="Legend" style={{ flex: '2 1 260px' }}>
+            <textarea value={ov.legend || ''} placeholder="Optional legend under the figure…"
+              onChange={(e) => patch({ legend: e.target.value })}
+              rows={1} aria-label={`${asset.title || asset.id} legend`}
+              style={{ ...inp, resize: 'vertical', lineHeight: 1.5 }} />
+          </Labeled>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Buffered draft.assets edits shared by both panels (authorship pattern). */
+function useAssetOverridesBuffer(m) {
+  const [buf, setBuf] = useState(() => ({ ...((m.activeDraft && m.activeDraft.assets) || {}) }));
+  useEffect(() => { setBuf({ ...((m.activeDraft && m.activeDraft.assets) || {}) }); }, [m.activeId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const commit = (assetId, patch) => {
+    setBuf((prev) => {
+      const next = { ...prev, [assetId]: { ...(prev[assetId] || {}), ...patch } };
+      m.setMetaDebounced({ assets: next });
+      return next;
+    });
+  };
+  return [buf, commit];
+}
+
+export function TablesPanel({ m }) {
+  const [buf, commit] = useAssetOverridesBuffer(m);
+  const [notice, setNotice] = useState('');
+  const tableAssets = (m.assets || []).filter((a) => a.kind === 'table');
+  return (
+    <div data-testid="stitch-manuscript-assets-tables">
+      <InfoBox color={C.acc}>Numbers below are live — they follow where each table is first referenced in the text. Unreferenced tables are placed at the end of the exported document.</InfoBox>
+      {notice && <InfoBox color={C.acc}>{notice}</InfoBox>}
       <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 14 }}>
         <button onClick={m.refreshAllBlocks} data-testid="stitch-manuscript-refresh-all" style={btnS('ghost')}>
           <Icon name="refresh" size={13} /> Refresh all
         </button>
       </div>
-      {order.map((key) => {
-        const t = m.tables[key];
-        if (!t) return null;
-        const st = m.staleness[t.id] || {};
+      {tableAssets.map((asset) => {
+        const t = m.tables[asset.builderId];
+        const st = (t && m.staleness[t.id]) || {};
         return (
-          <Card key={key} style={{ marginBottom: 16 }}>
+          <Card key={asset.id} style={{ marginBottom: 16 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
-                <h3 style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: C.txt }}>{t.title}</h3>
-                {st.stale && <span style={tagS('yellow')}>Stale</span>}
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <span style={{ fontSize: 10.5, color: C.muted }}>Last refreshed: {fmtTime(st.lastRefreshedAt)}</span>
-                <button onClick={() => m.refreshBlock(t.id)} style={{ ...btnS('ghost'), fontSize: 11 }}>
-                  <Icon name="refresh" size={12} /> Refresh
-                </button>
-              </div>
+              <h3 style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: C.txt }}>{asset.title || (t && t.title)}</h3>
+              {t && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span style={{ fontSize: 10.5, color: C.muted }}>Last refreshed: {fmtTime(st.lastRefreshedAt)}</span>
+                  <button onClick={() => m.refreshBlock(t.id)} style={{ ...btnS('ghost'), fontSize: 11 }}>
+                    <Icon name="refresh" size={12} /> Refresh
+                  </button>
+                </div>
+              )}
             </div>
-            <DataTable table={t} />
-            {(t.warnings || []).map((w, i) => <InfoBox key={i} color={C.yel}>{w}</InfoBox>)}
+            <AssetControls m={m} asset={asset} buf={buf} commit={commit} onInsertNotice={setNotice} />
+            <div style={{ marginTop: 10 }}>
+              <DataTable table={t} />
+            </div>
+            {((t && t.warnings) || []).map((w, i) => <InfoBox key={i} color={C.yel}>{w}</InfoBox>)}
           </Card>
         );
       })}
@@ -1387,28 +1599,46 @@ export function TablesPanel({ m }) {
   );
 }
 
-/* ════════════ 4. FIGURES ════════════ */
 export function FiguresPanel({ m }) {
+  const [buf, commit] = useAssetOverridesBuffer(m);
+  const [notice, setNotice] = useState('');
   const svgs = useFigureSvgs(m, { forest: true, prisma: true });
-  const hasForest = m.primary && m.primary.result;
-  return (
-    <div>
-      <InfoBox color={C.acc}>The forest plot and PRISMA 2020 flow diagram below are embedded automatically in the Word export and the reproducibility package.</InfoBox>
-
-      <Block title="PRISMA 2020 flow diagram">
-        {svgs.loading ? <div style={{ color: C.muted, fontSize: 12 }}>Rendering…</div>
+  const figureAssets = (m.assets || []).filter((a) => a.kind === 'figure');
+  const preview = (asset) => {
+    if (asset.id === 'figure:prisma') {
+      return svgs.loading ? <div style={{ color: C.muted, fontSize: 12 }}>Rendering…</div>
+        : svgs.error ? <InfoBox color={C.red}>{svgs.error}</InfoBox>
+          : svgs.prisma ? <SvgBox svg={svgs.prisma} />
+            : <InfoBox color={C.muted}>No PRISMA counts available yet — enter them in the PRISMA tab.</InfoBox>;
+    }
+    if (asset.id === 'figure:forest-primary') {
+      return !asset.available ? <InfoBox color={C.muted}>No meta-analysis result yet. Add studies with effect sizes and run an analysis to see a forest plot.</InfoBox>
+        : svgs.loading ? <div style={{ color: C.muted, fontSize: 12 }}>Rendering…</div>
           : svgs.error ? <InfoBox color={C.red}>{svgs.error}</InfoBox>
-            : svgs.prisma ? <SvgBox svg={svgs.prisma} />
-              : <InfoBox color={C.muted}>No PRISMA counts available yet — enter them in the PRISMA tab.</InfoBox>}
-      </Block>
-
-      <Block title="Forest plot">
-        {!hasForest ? <InfoBox color={C.muted}>No meta-analysis result yet. Add studies with effect sizes and run an analysis to see a forest plot.</InfoBox>
-          : svgs.loading ? <div style={{ color: C.muted, fontSize: 12 }}>Rendering…</div>
-            : svgs.error ? <InfoBox color={C.red}>{svgs.error}</InfoBox>
-              : svgs.forest ? <SvgBox svg={svgs.forest} />
-                : <InfoBox color={C.muted}>The forest plot could not be rendered from the current analysis.</InfoBox>}
-      </Block>
+            : svgs.forest ? <SvgBox svg={svgs.forest} />
+              : <InfoBox color={C.muted}>The forest plot could not be rendered from the current analysis.</InfoBox>;
+    }
+    return (
+      <div style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.6 }}>
+        {asset.available
+          ? 'Rendered at export time — verify the underlying data in the Analysis / Risk of bias tabs.'
+          : 'No data yet — this figure becomes available once its source data exists.'}
+      </div>
+    );
+  };
+  return (
+    <div data-testid="stitch-manuscript-assets-figures">
+      <InfoBox color={C.acc}>Included figures are embedded in the Word export with captions, alt text and live numbering. Reference one from the text and it moves next to its first mention.</InfoBox>
+      {notice && <InfoBox color={C.acc}>{notice}</InfoBox>}
+      {figureAssets.map((asset) => (
+        <Card key={asset.id} style={{ marginBottom: 16 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10, flexWrap: 'wrap' }}>
+            <h3 style={{ margin: 0, fontSize: 13.5, fontWeight: 700, color: C.txt }}>{asset.title}</h3>
+          </div>
+          <AssetControls m={m} asset={asset} buf={buf} commit={commit} onInsertNotice={setNotice} />
+          <div style={{ marginTop: 10 }}>{preview(asset)}</div>
+        </Card>
+      ))}
     </div>
   );
 }

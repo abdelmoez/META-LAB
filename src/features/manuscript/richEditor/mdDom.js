@@ -10,6 +10,9 @@
  *   [text](https://…)           | pipe | tables | (with `| --- |` header separator)
  *   [[cite:id]]                 → atomic chip <span class="ms-cite" data-cite=…
  *                                 contenteditable="false">[n]</span> (n from orderMap)
+ *   [[table:id]]/[[figure:id]]  → atomic chip <span class="ms-asset" data-asset=…
+ *                                 contenteditable="false">Table 2</span> (85.md B1;
+ *                                 number from opts.assetNumbers, unknown → 'Table ?')
  *
  * Security: escape FIRST (same rule as the old mdToHtml) — user text is never
  * injected unescaped, link hrefs are scheme-whitelisted (http/https/mailto).
@@ -20,8 +23,10 @@
  */
 
 import { CITATION_TOKEN_RE } from '../../../research-engine/manuscript/citations.js';
+import { ASSET_TOKEN_RE } from '../../../research-engine/manuscript/refTokens.js';
 
 export const CITE_CHIP_CLASS = 'ms-cite';
+export const ASSET_CHIP_CLASS = 'ms-asset';
 
 /* ════════════ escaping ════════════ */
 
@@ -51,14 +56,32 @@ export function citeChipHtml(id, n) {
   return `<span class="${CITE_CHIP_CLASS}" data-cite="${escapeAttr(id)}" contenteditable="false">[${n == null ? '?' : n}]</span>`;
 }
 
+/** The atomic, non-editable asset chip (85.md B1). `id` = full 'table:study';
+    label = 'Table 2' / 'Table ?' when unnumbered. */
+export function assetChipHtml(id, label) {
+  return `<span class="${ASSET_CHIP_CLASS}" data-asset="${escapeAttr(id)}" contenteditable="false">${escapeHtml(label)}</span>`;
+}
+
+/** Look a number up in a Map OR plain-object numbering map (resolveNumbering.byId). */
+function assetNumberOf(assetNumbers, id) {
+  if (!assetNumbers) return null;
+  const n = typeof assetNumbers.get === 'function' ? assetNumbers.get(id) : assetNumbers[id];
+  return n == null ? null : n;
+}
+
 /** Inline transforms over ALREADY-ESCAPED text. Chips first so a chip's [n] can
     never be re-parsed as a link; code before links/emphasis (verbatim spans). */
-function inlineHtml(escText, orderMap) {
+function inlineHtml(escText, orderMap, assetNumbers) {
   let t = escText;
   t = t.replace(new RegExp(CITATION_TOKEN_RE.source, 'g'), (_m, idEsc) => {
     const id = unescapeEntities(idEsc);
     const n = orderMap && typeof orderMap.get === 'function' ? orderMap.get(id) : null;
     return citeChipHtml(id, n);
+  });
+  t = t.replace(new RegExp(ASSET_TOKEN_RE.source, 'g'), (_m, kind, suffix) => {
+    const id = `${kind}:${suffix}`;
+    const n = assetNumberOf(assetNumbers, id);
+    return assetChipHtml(id, `${kind === 'figure' ? 'Figure' : 'Table'} ${n == null ? '?' : n}`);
   });
   t = t.replace(/`([^`]+)`/g, '<code>$1</code>');
   t = t.replace(/\[([^\]]*)\]\(([^)\s]+)\)/g, (m, txt, urlEsc) => {
@@ -91,9 +114,9 @@ export function parsePipeTable(lines) {
   return { header: null, rows: all };
 }
 
-function tableHtml(escLines, orderMap) {
+function tableHtml(escLines, orderMap, assetNumbers) {
   const { header, rows } = parsePipeTable(escLines);
-  const cell = (tag, c) => `<${tag}>${inlineHtml(c, orderMap)}</${tag}>`;
+  const cell = (tag, c) => `<${tag}>${inlineHtml(c, orderMap, assetNumbers)}</${tag}>`;
   const tr = (cells, tag) => `<tr>${cells.map((c) => cell(tag, c)).join('')}</tr>`;
   const parts = ['<table>'];
   if (header) parts.push(`<thead>${tr(header, 'th')}</thead>`);
@@ -104,10 +127,12 @@ function tableHtml(escLines, orderMap) {
 
 /**
  * Render the markdown subset to HTML. opts.orderMap: Map(citeId → 1-based n) for
- * chip numbering (missing/absent → [?]).
+ * cite-chip numbering (missing/absent → [?]). opts.assetNumbers: Map or plain
+ * object (resolveNumbering.byId) for asset-chip labels (missing → 'Table ?').
  */
 export function mdToHtml(md, opts = {}) {
   const orderMap = opts.orderMap || null;
+  const assetNumbers = opts.assetNumbers || null;
   const esc = escapeHtml(md);
   if (!esc.trim()) return '';
   const lines = esc.split(/\r?\n/);
@@ -115,27 +140,28 @@ export function mdToHtml(md, opts = {}) {
   let list = null; // 'ul' | 'ol' | null
   let tableBuf = null;
   const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
-  const flushTable = () => { if (tableBuf) { out.push(tableHtml(tableBuf, orderMap)); tableBuf = null; } };
+  const flushTable = () => { if (tableBuf) { out.push(tableHtml(tableBuf, orderMap, assetNumbers)); tableBuf = null; } };
+  const inline = (s) => inlineHtml(s, orderMap, assetNumbers);
   for (const line of lines) {
     const isTable = /^\s*\|/.test(line);
     if (tableBuf && !isTable) flushTable();
     if (isTable) { closeList(); if (!tableBuf) tableBuf = []; tableBuf.push(line); continue; }
-    if (/^###\s+/.test(line)) { closeList(); out.push(`<h4>${inlineHtml(line.replace(/^###\s+/, ''), orderMap)}</h4>`); continue; }
-    if (/^##\s+/.test(line)) { closeList(); out.push(`<h3>${inlineHtml(line.replace(/^##\s+/, ''), orderMap)}</h3>`); continue; }
-    if (/^#\s+/.test(line)) { closeList(); out.push(`<h2>${inlineHtml(line.replace(/^#\s+/, ''), orderMap)}</h2>`); continue; }
+    if (/^###\s+/.test(line)) { closeList(); out.push(`<h4>${inline(line.replace(/^###\s+/, ''))}</h4>`); continue; }
+    if (/^##\s+/.test(line)) { closeList(); out.push(`<h3>${inline(line.replace(/^##\s+/, ''))}</h3>`); continue; }
+    if (/^#\s+/.test(line)) { closeList(); out.push(`<h2>${inline(line.replace(/^#\s+/, ''))}</h2>`); continue; }
     if (/^\s*[-*]\s+/.test(line)) {
       if (list !== 'ul') { closeList(); out.push('<ul>'); list = 'ul'; }
-      out.push(`<li>${inlineHtml(line.replace(/^\s*[-*]\s+/, ''), orderMap)}</li>`);
+      out.push(`<li>${inline(line.replace(/^\s*[-*]\s+/, ''))}</li>`);
       continue;
     }
     if (/^\s*\d+\.\s+/.test(line)) {
       if (list !== 'ol') { closeList(); out.push('<ol>'); list = 'ol'; }
-      out.push(`<li>${inlineHtml(line.replace(/^\s*\d+\.\s+/, ''), orderMap)}</li>`);
+      out.push(`<li>${inline(line.replace(/^\s*\d+\.\s+/, ''))}</li>`);
       continue;
     }
     if (!line.trim()) { closeList(); continue; }
     closeList();
-    out.push(`<p>${inlineHtml(line, orderMap)}</p>`);
+    out.push(`<p>${inline(line)}</p>`);
   }
   closeList();
   flushTable();
@@ -207,6 +233,12 @@ function inlineOf(nodes, opts = {}) {
     if (tag === 'br') { out += opts.oneLine ? ' ' : '\n'; continue; }
     if (VOID_TAGS.has(tag)) continue;
     if (n.attrs && n.attrs['data-cite']) { out += `[[cite:${String(n.attrs['data-cite']).replace(/[\]\s]/g, '')}]]`; continue; }
+    if (n.attrs && n.attrs['data-asset'] != null) {
+      // Asset chip → its stable token. Only a grammar-valid id round-trips; a
+      // foreign/corrupt data-asset span degrades to its text content below.
+      const id = String(n.attrs['data-asset']).replace(/[[\]\s]/g, '');
+      if (/^(table|figure):[a-z0-9:-]+$/.test(id)) { out += `[[${id}]]`; continue; }
+    }
     if (tag === 'code') { const t = textOf(n).replace(/`/g, '').trim(); if (t) out += `\`${t}\``; continue; }
     if (tag === 'a' && n.attrs && /^(https?:\/\/|mailto:)/i.test(n.attrs.href || '')) {
       // ) and whitespace would break the md link grammar → percent-encode them
@@ -363,10 +395,12 @@ export function htmlToMd(html) {
 
 /* ════════════ outline (MS-11) ════════════ */
 
-/** Strip inline markdown for display labels (outline entries). */
+/** Strip inline markdown for display labels (outline entries). Asset tokens
+    become their label-ish text ('Table ?') so raw tokens never leak. */
 export function stripInlineMd(s) {
   return String(s == null ? '' : s)
     .replace(new RegExp(CITATION_TOKEN_RE.source, 'g'), '')
+    .replace(new RegExp(ASSET_TOKEN_RE.source, 'g'), (_m, kind) => (kind === 'figure' ? 'Figure ?' : 'Table ?'))
     .replace(/\[([^\]]*)\]\([^)\s]+\)/g, '$1')
     .replace(/\*\*\*|\*\*|\*|`/g, '')
     .trim();
@@ -390,4 +424,4 @@ export function extractOutline(md) {
   return out;
 }
 
-export default { escapeHtml, mdToHtml, htmlToMd, citeChipHtml, parsePipeTable, extractOutline, stripInlineMd, CITE_CHIP_CLASS };
+export default { escapeHtml, mdToHtml, htmlToMd, citeChipHtml, assetChipHtml, parsePipeTable, extractOutline, stripInlineMd, CITE_CHIP_CLASS, ASSET_CHIP_CLASS };

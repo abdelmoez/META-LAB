@@ -27,3 +27,9 @@ export * from './contradictions.js';
 export * from './missingInfo.js';
 export * from './snapshots.js';
 export * from './freshness.js';
+// 85.md Objective 2 (B1) — asset registry, structured [[table:…]]/[[figure:…]]
+// references, block-level placement model and pre-export validation.
+export * from './assets.js';
+export * from './refTokens.js';
+export * from './placement.js';
+export * from './exportValidation.js';

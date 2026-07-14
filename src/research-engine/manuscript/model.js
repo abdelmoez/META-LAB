@@ -45,7 +45,15 @@ export const STATEMENT_TYPES = [
 
 export const STATEMENT_IDS = STATEMENT_TYPES.map((s) => s.id);
 
-/** Data-linked blocks: refreshable, computed from live project data (never edited as prose). */
+/**
+ * Data-linked blocks: refreshable, computed from live project data (never edited as prose).
+ *
+ * LEGACY-DEAD FIELD (85.md B1): `dataBlocks[*].enabled` was never wired to any UI
+ * or export — no code may READ it and no new code may WRITE it. Asset inclusion
+ * lives in `draft.assets[assetId].included` (see assets.js). The field is still
+ * materialized by normalizeDraft below ONLY so stored legacy blobs keep
+ * normalizing byte-identically.
+ */
 export const DATA_BLOCK_TYPES = [
   { id: 'study_characteristics_table', label: 'Study characteristics table' },
   { id: 'summary_of_findings_table', label: 'Summary of findings' },
@@ -293,6 +301,16 @@ export function normalizeDraft(raw, nowIso = null) {
   else delete out.snapshots;
   if (Array.isArray(raw.syncLog) && raw.syncLog.length) out.syncLog = raw.syncLog.slice(-100);
   else delete out.syncLog;
+  // 85.md B1 — per-asset overrides ({[assetId]: {included, title, caption, legend,
+  // note}}). Same pattern as snapshots: materialized ONLY when non-empty so legacy
+  // blobs normalize byte-identically (no phantom key).
+  if (raw.assets && typeof raw.assets === 'object' && !Array.isArray(raw.assets)) {
+    const ids = Object.keys(raw.assets).filter((k) => raw.assets[k] && typeof raw.assets[k] === 'object');
+    if (ids.length) {
+      out.assets = {};
+      for (const k of ids) out.assets[k] = { ...raw.assets[k] };
+    } else delete out.assets;
+  } else delete out.assets;
   return out;
 }
 

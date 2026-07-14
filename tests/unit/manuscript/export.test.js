@@ -168,3 +168,159 @@ describe('manuscript export — MS-4 markdown subset parity', () => {
     expect(doc).not.toContain('**');
   });
 });
+
+/* ── 85.md B2: placement-aware asset assembly — tokens resolve to numbered
+      cross-references (bookmark + hyperlink) and the asset object is spliced
+      after the block of its first body mention. Structure asserted by unzipping
+      the OOXML (figures degrade to honest notes in Node — no canvas). ── */
+describe('manuscript export — 85.md placement-aware assets', () => {
+  async function unpack(project, draft, opts = {}) {
+    const blob = await buildManuscriptDocx(project, draft, opts);
+    const zip = await JSZip.loadAsync(Buffer.from(await blob.arrayBuffer()));
+    return zip.file('word/document.xml').async('string');
+  }
+
+  function blankDraft(title = 'Assets') {
+    return normalizeDraft(makeManuscriptDraft({ title }));
+  }
+
+  it('(a) inline placement: mention paragraph → table → next paragraph, with bookmark + hyperlink', async () => {
+    const project = fixtureProject();
+    const d = blankDraft();
+    d.sections.methods.content = 'Intro paragraph before.\n\nSee [[table:study]] for the details.\n\nAfter paragraph text.';
+    const doc = await unpack(project, d);
+    const iMention = doc.indexOf('for the details');
+    const iCaption = doc.indexOf('Table 1.');
+    const iTable = doc.indexOf('<w:tbl', iCaption); // the spliced study table
+    const iAfter = doc.indexOf('After paragraph text');
+    expect(iMention).toBeGreaterThan(-1);
+    expect(iCaption).toBeGreaterThan(iMention);
+    expect(iTable).toBeGreaterThan(iCaption);
+    expect(iAfter).toBeGreaterThan(iTable);
+    // cross-reference machinery: bookmark on the caption, hyperlink at the mention
+    expect(doc).toContain('w:name="ref_table_study"');
+    expect(doc).toContain('w:anchor="ref_table_study"');
+    expect(doc).not.toContain('[[table:');
+  });
+
+  it('(b) mid-ordered-list mention: the WHOLE list stays one numbering instance, table after it', async () => {
+    const project = fixtureProject();
+    const d = blankDraft();
+    d.sections.methods.content = 'Before list.\n\n1. first step [[table:study]]\n2. second step\n3. third step\n\nAfter list.';
+    const doc = await unpack(project, d);
+    const iThird = doc.indexOf('third step');
+    const iCaption = doc.indexOf('Table 1.');
+    const iAfter = doc.indexOf('After list');
+    expect(iCaption).toBeGreaterThan(iThird); // never spliced INTO the list
+    expect(iAfter).toBeGreaterThan(iCaption);
+    // one ordered list → exactly one concrete numbering instance (no restart)
+    const numIds = new Set([...doc.matchAll(/<w:numId w:val="(\d+)"\/>/g)].map((x) => x[1]));
+    expect(numIds.size).toBe(1);
+  });
+
+  it('(c) repeated references emit the asset exactly once', async () => {
+    const project = fixtureProject();
+    const d = blankDraft();
+    d.sections.methods.content = 'First mention [[table:study]].';
+    d.sections.results.content = 'Second mention [[table:study]] again [[table:study]].';
+    const doc = await unpack(project, d);
+    expect([...doc.matchAll(/Table 1\./g)].length).toBe(1); // one caption
+    expect([...doc.matchAll(/w:name="ref_table_study"/g)].length).toBe(1); // one bookmark
+    expect([...doc.matchAll(/w:anchor="ref_table_study"/g)].length).toBe(3); // every mention links
+  });
+
+  it('(f) legacy token-less draft → end-section layout, sequential captions, honest figure notes', async () => {
+    const project = fixtureProject();
+    const d = draftFor(project); // legacy generation — no tokens
+    const doc = await unpack(project, d);
+    // Tables land in the end "Tables" section, numbered sequentially.
+    const iTablesH = doc.indexOf('>Tables<');
+    expect(iTablesH).toBeGreaterThan(-1);
+    const t1 = doc.indexOf('Table 1.');
+    const t2 = doc.indexOf('Table 2.');
+    const t3 = doc.indexOf('Table 3.');
+    expect(t1).toBeGreaterThan(iTablesH);
+    expect(t2).toBeGreaterThan(t1);
+    expect(t3).toBeGreaterThan(t2);
+    // Figures: rasterization degrades gracefully in Node → caption + honest note.
+    expect(doc).toContain('Figure 1. PRISMA 2020 flow diagram');
+    expect(doc).toContain('could not be generated for this export');
+  });
+
+  it('(g) unresolved reference renders "Table ?" and never crashes or leaks the token', async () => {
+    const project = fixtureProject();
+    const d = blankDraft();
+    d.sections.methods.content = 'See [[table:doesnotexist]] here.';
+    const doc = await unpack(project, d);
+    expect(doc).toContain('Table ?');
+    expect(doc).not.toContain('[[table:');
+  });
+
+  it('(h) statements render BOTH cite and asset markers (no literal token leak)', async () => {
+    const project = fixtureProject();
+    const d = blankDraft();
+    d.sections.results.content = 'Evidence [[cite:s1]] and [[table:study]].';
+    d.statements.funding = 'Supported by X [[cite:s1]]; see [[table:study]].';
+    const doc = await unpack(project, d);
+    expect(doc).not.toContain('[[cite:');
+    expect(doc).not.toContain('[[table:');
+    expect(doc).toContain('Supported by X [1]; see ');
+    // the statement's asset mention is a live cross-reference too
+    expect([...doc.matchAll(/w:anchor="ref_table_study"/g)].length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('(i) >8-column table gets FIXED layout, grid columns and the 8pt step-down (+ onInfo)', async () => {
+    const project = fixtureProject();
+    const d = blankDraft();
+    d.sections.methods.content = 'See [[table:study]].';
+    const cols = Array.from({ length: 9 }, (_, i) => ({ key: `c${i}`, label: `C${i}` }));
+    const na = { available: false };
+    const wideTable = {
+      id: 'study_characteristics_table', title: 'Wide table', available: true,
+      columns: cols, rows: [{ c0: 'alpha' }], note: '', warnings: [], generatedFrom: 'studies',
+    };
+    const infos = [];
+    const doc = await unpack(project, d, {
+      tables: { study: wideTable, sof: na, prisma: na, rob: na, search: na },
+      onInfo: (code, message) => infos.push({ code, message }),
+    });
+    expect(doc).toContain('w:type="fixed"');
+    expect(doc).toContain('<w:gridCol');
+    expect(doc).toContain('<w:sz w:val="16"/>');
+    expect(infos.some((x) => x.code === 'wide-table')).toBe(true);
+  });
+
+  it('(j) keep-together only on SMALL tables (row cantSplit present small, absent big)', async () => {
+    const project = fixtureProject();
+    const dSmall = blankDraft();
+    dSmall.sections.methods.content = 'See [[table:study]].'; // 3-row fixture table → small
+    const docSmall = await unpack(project, dSmall);
+    expect(docSmall).toContain('<w:cantSplit');
+
+    const na = { available: false };
+    const bigRows = Array.from({ length: 12 }, (_, i) => ({ c0: `row ${i}` }));
+    const bigTable = {
+      id: 'study_characteristics_table', title: 'Big table', available: true,
+      columns: [{ key: 'c0', label: 'C0' }], rows: bigRows, note: '', warnings: [], generatedFrom: 'studies',
+    };
+    const dBig = blankDraft();
+    dBig.sections.methods.content = 'See [[table:study]].';
+    const docBig = await unpack(project, dBig, { tables: { study: bigTable, sof: na, prisma: na, rob: na, search: na } });
+    expect(docBig).not.toContain('<w:cantSplit');
+  });
+
+  it('builder warnings[] export as italic notes under the table', async () => {
+    const project = fixtureProject();
+    const d = blankDraft();
+    d.sections.methods.content = 'See [[table:study]].';
+    const na = { available: false };
+    const warnTable = {
+      id: 'study_characteristics_table', title: 'Warned table', available: true,
+      columns: [{ key: 'c0', label: 'C0' }], rows: [{ c0: 'x' }], note: 'A note.',
+      warnings: ['Participant totals are partial.'], generatedFrom: 'studies',
+    };
+    const doc = await unpack(project, d, { tables: { study: warnTable, sof: na, prisma: na, rob: na, search: na } });
+    expect(doc).toContain('Participant totals are partial.');
+    expect(doc).toContain('A note.');
+  });
+});
