@@ -78,6 +78,25 @@ function sampleSize(s) {
  * the prompt's required set; RoB summary is filled from `robByStudyId` when given
  * (study.id -> 'Low'/'Some concerns'/'High'), else left blank. PURE.
  */
+// 82.md Part 12 — a compact summary of the REPORTED-as-stated numbers (so the export
+// shows original values, not only the converted es/lo/hi), and how the analysis value
+// was derived. PURE; reads only additive fields (absent on legacy rows → '').
+const REPORTED_BASES = [
+  ['nExp', 'nExp'], ['meanExp', 'meanExp'], ['sdExp', 'sdExp'], ['medianExp', 'medExp'], ['q1Exp', 'q1Exp'], ['q3Exp', 'q3Exp'], ['minExp', 'minExp'], ['maxExp', 'maxExp'], ['seExp', 'seExp'], ['ciLoExp', 'ciLoExp'], ['ciHiExp', 'ciHiExp'],
+  ['nCtrl', 'nCtrl'], ['meanCtrl', 'meanCtrl'], ['sdCtrl', 'sdCtrl'], ['medianCtrl', 'medCtrl'], ['q1Ctrl', 'q1Ctrl'], ['q3Ctrl', 'q3Ctrl'], ['minCtrl', 'minCtrl'], ['maxCtrl', 'maxCtrl'], ['seCtrl', 'seCtrl'], ['ciLoCtrl', 'ciLoCtrl'], ['ciHiCtrl', 'ciHiCtrl'],
+  ['a', 'a'], ['b', 'b'], ['c', 'c'], ['d', 'd'], ['events', 'events'], ['total', 'total'], ['tp', 'tp'], ['fp', 'fp'], ['fn', 'fn'], ['tn', 'tn'],
+];
+function reportedSummary(s) {
+  const parts = [];
+  for (const [k, lbl] of REPORTED_BASES) { const v = s[k]; if (v !== '' && v !== null && v !== undefined) parts.push(`${lbl}=${v}`); }
+  return parts.join('; ');
+}
+function conversionSummary(s) {
+  const list = Array.isArray(s.conversions) ? s.conversions : [];
+  if (!list.length) return '';
+  return list.map((c) => c && (c.methodLabel || c.method || c.type)).filter(Boolean).join('; ');
+}
+
 export function buildStudyTableCSV(studies, robByStudyId = {}) {
   const list = Array.isArray(studies) ? studies : [];
   const cols = [
@@ -85,7 +104,11 @@ export function buildStudyTableCSV(studies, robByStudyId = {}) {
     ['country', 'Country'], ['design', 'Study design'], ['population', 'Population'],
     ['intervention', 'Intervention/Exposure'], ['comparator', 'Comparator'], ['outcome', 'Outcome(s)'],
     ['timepoint', 'Timepoint'], ['sampleSize', 'Sample size'], ['esType', 'Effect measure'],
-    ['es', 'Effect size'], ['lo', 'CI lower'], ['hi', 'CI upper'], ['rob', 'Risk of bias'],
+    // 82.md Part 12 — reported-as-stated values + provenance BEFORE the analysis es/lo/hi.
+    ['reportedFormat', 'Reported format'], ['reported', 'Reported values (as stated)'],
+    ['es', 'Effect size (analysis scale)'], ['lo', 'CI lower'], ['hi', 'CI upper'],
+    ['dataSource', 'Data location'], ['converted', 'Value converted?'], ['conversionMethod', 'Conversion method(s)'],
+    ['rob', 'Risk of bias'],
   ];
   const rob = robByStudyId || {};
   const rowOf = (s) => ({
@@ -102,7 +125,12 @@ export function buildStudyTableCSV(studies, robByStudyId = {}) {
     timepoint: s.timepoint || '',
     sampleSize: sampleSize(s),
     esType: s.esType || '',
+    reportedFormat: s.reportedFormat || '',
+    reported: reportedSummary(s),
     es: s.es ?? '', lo: s.lo ?? '', hi: s.hi ?? '',
+    dataSource: s.source || '',
+    converted: s.converted ? 'Yes' : 'No',
+    conversionMethod: conversionSummary(s),
     rob: rob[s.id] || '',
   });
   const header = cols.map(c => c[1]).join(',');

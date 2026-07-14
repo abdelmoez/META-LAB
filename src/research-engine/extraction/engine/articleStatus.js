@@ -15,6 +15,7 @@
  */
 
 import { validateStudy } from '../../validation/study-validator.js';
+import { familyOf, reportedFieldsForStudy } from '../harmonize.js';
 
 /** The article statuses the engine models (76.md §6). Order = rough workflow order. */
 export const ARTICLE_STATUSES = Object.freeze([
@@ -46,7 +47,12 @@ export function expectedFieldsFor(study = {}) {
   const t = study.esType || '';
   if (t === 'OR' || t === 'RR') return [...base, 'a', 'b', 'c', 'd'];
   if (t === 'PROP') return [...base, 'events', 'total'];
-  if (t === 'SMD' || t === 'MD') return [...base, 'nExp', 'meanExp', 'sdExp', 'nCtrl', 'meanCtrl', 'sdCtrl'];
+  // 82.md — continuous (MD/SMD) fields now depend on the REPORTED FORMAT. The
+  // default/legacy format (mean_sd) yields exactly [nExp,meanExp,sdExp,nCtrl,
+  // meanCtrl,sdCtrl] as before; median_iqr yields median/q1/q3, mean_ci yields
+  // mean/CI, etc. reportedFieldsForStudy is the single source of truth so the
+  // form, the click-to-pick targets and the progress bar always agree.
+  if (familyOf(t) === 'continuous') return [...base, ...reportedFieldsForStudy(study)];
   if (t === 'DIAG') return [...base, 'tp', 'fp', 'fn', 'tn'];
   if (t === 'HR' || t === 'COR' || t === 'IRR' || t === 'BETA' || t === 'AUC' || t === 'GENERIC') return [...base, 'es', 'lo', 'hi'];
   // No measure chosen yet — count the generic effect slot so a hand-entered es/CI still moves the bar.
@@ -115,7 +121,10 @@ export function progressOf(study = {}) {
 /** True when a study carries ANY captured value (raw or effect). */
 export function hasAnyValue(study = {}) {
   const VALS = ['n', 'nExp', 'nCtrl', 'meanExp', 'sdExp', 'meanCtrl', 'sdCtrl',
-    'a', 'b', 'c', 'd', 'events', 'total', 'tp', 'fp', 'fn', 'tn', 'es', 'lo', 'hi'];
+    'a', 'b', 'c', 'd', 'events', 'total', 'tp', 'fp', 'fn', 'tn', 'es', 'lo', 'hi',
+    // 82.md reported-as-stated continuous fields (per arm)
+    'medianExp', 'q1Exp', 'q3Exp', 'minExp', 'maxExp', 'seExp', 'ciLoExp', 'ciHiExp',
+    'medianCtrl', 'q1Ctrl', 'q3Ctrl', 'minCtrl', 'maxCtrl', 'seCtrl', 'ciLoCtrl', 'ciHiCtrl'];
   return VALS.some((k) => nonEmpty(study[k]));
 }
 

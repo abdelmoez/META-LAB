@@ -32,6 +32,10 @@ import { useExtractionSplit } from './useExtractionSplit.js';
 import { expectedFieldsFor, progressOf, assignableFieldsFor, usesEffectSlot, nextAssignableField } from '../../../research-engine/extraction/engine/articleStatus.js';
 import { evaluateCompletion } from '../../../research-engine/extraction/engine/completionGate.js';
 import { readProvenance, hasSourceEvidence } from '../../../research-engine/extraction/engine/articleProvenance.js';
+import {
+  familyOf, reportedFormatsFor, effectiveReportedFormat, defaultReportedFormat,
+  harmonizeStudy, conversionStatusOf, CONVERSION_STATUS_LABELS, validateReported,
+} from '../../../research-engine/extraction/harmonize.js';
 import ConverterPanel from './ConverterPanel.jsx';
 
 const RATIO_MEASURES = ['OR', 'RR', 'HR', 'IRR'];
@@ -43,10 +47,14 @@ const FIELD_LABELS = {
   events: 'Events', total: 'Total', tp: 'TP', fp: 'FP', fn: 'FN', tn: 'TN',
   nExp: 'n (Exp)', meanExp: 'Mean (Exp)', sdExp: 'SD (Exp)', nCtrl: 'n (Ctrl)', meanCtrl: 'Mean (Ctrl)', sdCtrl: 'SD (Ctrl)',
   es: 'Effect size (analysis scale)', lo: 'CI lower', hi: 'CI upper',
+  // 82.md reported-as-stated continuous fields (per arm)
+  medianExp: 'Median (Exp)', q1Exp: 'Q1 / 25th pct (Exp)', q3Exp: 'Q3 / 75th pct (Exp)', minExp: 'Minimum (Exp)', maxExp: 'Maximum (Exp)', seExp: 'SE (Exp)', ciLoExp: 'Mean 95% CI lower (Exp)', ciHiExp: 'Mean 95% CI upper (Exp)',
+  medianCtrl: 'Median (Ctrl)', q1Ctrl: 'Q1 / 25th pct (Ctrl)', q3Ctrl: 'Q3 / 75th pct (Ctrl)', minCtrl: 'Minimum (Ctrl)', maxCtrl: 'Maximum (Ctrl)', seCtrl: 'SE (Ctrl)', ciLoCtrl: 'Mean 95% CI lower (Ctrl)', ciHiCtrl: 'Mean 95% CI upper (Ctrl)',
 };
+const REPORTED_CONT_FIELDS = ['medianExp', 'q1Exp', 'q3Exp', 'minExp', 'maxExp', 'seExp', 'ciLoExp', 'ciHiExp', 'medianCtrl', 'q1Ctrl', 'q3Ctrl', 'minCtrl', 'maxCtrl', 'seCtrl', 'ciLoCtrl', 'ciHiCtrl'];
 const IDENTITY_FIELDS = ['author', 'year', 'outcome', 'timepoint'];
-const NUMERIC_FIELDS = new Set(['a', 'b', 'c', 'd', 'events', 'total', 'tp', 'fp', 'fn', 'tn', 'nExp', 'meanExp', 'sdExp', 'nCtrl', 'meanCtrl', 'sdCtrl', 'es', 'lo', 'hi', 'year']);
-const ALL_VALUE_KEYS = ['es', 'lo', 'hi', 'a', 'b', 'c', 'd', 'events', 'total', 'tp', 'fp', 'fn', 'tn', 'nExp', 'meanExp', 'sdExp', 'nCtrl', 'meanCtrl', 'sdCtrl'];
+const NUMERIC_FIELDS = new Set(['a', 'b', 'c', 'd', 'events', 'total', 'tp', 'fp', 'fn', 'tn', 'nExp', 'meanExp', 'sdExp', 'nCtrl', 'meanCtrl', 'sdCtrl', 'es', 'lo', 'hi', 'year', ...REPORTED_CONT_FIELDS]);
+const ALL_VALUE_KEYS = ['es', 'lo', 'hi', 'a', 'b', 'c', 'd', 'events', 'total', 'tp', 'fp', 'fn', 'tn', 'nExp', 'meanExp', 'sdExp', 'nCtrl', 'meanCtrl', 'sdCtrl', ...REPORTED_CONT_FIELDS];
 const nonEmpty = (v) => v !== '' && v !== null && v !== undefined;
 
 const COACH_KEY = 'metalab.extraction.pickCoachDismissed';
@@ -95,6 +103,8 @@ export default function ArticleWorkspace({
   const [error, setError] = useState('');
   const [reveal, setReveal] = useState(null);          // { page, region, nonce }
   const [showChecks, setShowChecks] = useState(true);
+  const [convOpen, setConvOpen] = useState(false);   // 82.md — discoverable Converter panel
+  const converterRef = useRef(null);
   const [coachDismissed, setCoachDismissed] = useState(() => {
     try { return localStorage.getItem(COACH_KEY) === '1'; } catch { return false; }
   });
@@ -310,6 +320,34 @@ export default function ArticleWorkspace({
       : `Applied converted value to ${written.map((f) => FIELD_LABELS[f] || f).join(', ')}.`);
   }, [study, editable, writeValues]);
 
+  /* ── 82.md — reported→analysis harmonization (auto-convert median/IQR etc.) ── */
+  const harmonization = useMemo(() => harmonizeStudy(study || {}), [study]);
+  const convStatus = useMemo(() => conversionStatusOf(study || {}), [study]);
+  const reportedFormats = useMemo(() => reportedFormatsFor((study && study.esType) || ''), [study && study.esType]);
+  const activeFormat = effectiveReportedFormat(study || {});
+
+  /** Apply the pending harmonization: derive meanExp/sdExp/… from the reported values,
+   *  stamp the conversion audit (formatId + inputsHash so stale-detection works), and
+   *  route through the SAME immediate-replace + provenance write path. Never touches the
+   *  reported fields, so the paper's original numbers are preserved. */
+  const applyHarmonization = useCallback(() => {
+    if (!study || !editable) return;
+    const plan = harmonizeStudy(study);
+    if (!plan.required || !Object.keys(plan.writes).length) { setStatus('Nothing to convert — enter the reported values first.'); return; }
+    const now = new Date().toISOString();
+    const records = plan.conversions.map((c) => ({
+      ...c, id: Math.random().toString(36).slice(2, 10), at: now,
+      type: c.method, reason: `Harmonized ${activeFormat} → analysis (${c.target === 'exp' ? 'intervention' : 'comparator'} arm)`,
+    }));
+    // Replace any prior harmonization records (they carry formatId); keep other conversions.
+    const priorOther = (Array.isArray(study.conversions) ? study.conversions : []).filter((c) => !c || !c.formatId);
+    const extra = { conversions: [...priorOther, ...records], converted: true };
+    const { written } = writeValues(plan.writes, { method: 'manual', excerpt: `Auto-harmonized from ${activeFormat}` }, extra);
+    if (!written.length) { setStatus('Conversion produced no change.'); return; }
+    const warn = plan.warnings.length ? ` ⚠ ${plan.warnings[0]}` : '';
+    setStatus(`Converted the reported values to ${written.map((f) => FIELD_LABELS[f] || f).join(', ')}. Original reported values are preserved.${warn}`);
+  }, [study, editable, writeValues, activeFormat]);
+
   const interaction = useMemo(() => {
     if (!editable || !pdf.url || method !== 'click') return null;
     return { mode: 'click', onTextClick: assignFromClick, onTextMiss: () => setStatus('No number there — zoom in, or run text recognition on scanned pages.') };
@@ -361,6 +399,10 @@ export default function ArticleWorkspace({
                 style={{ padding: '6px 12px', border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600, background: method === m ? C.acc : 'transparent', color: method === m ? C.accText : C.muted }}>{label}</button>
             ))}
           </div>
+        )}
+        {!readOnly && (
+          <button onClick={() => { setConvOpen(true); setTimeout(() => { try { converterRef.current && converterRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch { /* ignore */ } }, 30); }}
+            style={{ ...btnS('ghost'), fontSize: 11 }} title="Open the data converter (median/IQR → mean/SD, SE → SD, CI → SE, log-ratios…)">🔄 Convert</button>
         )}
         <div style={{ flex: 1 }} />
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }} title={`${progress.filledFields}/${progress.totalFields} expected fields`}>
@@ -457,6 +499,18 @@ export default function ArticleWorkspace({
                   {ES_TYPES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
                 </select>
               </div>
+              {/* 82.md — REPORTED FORMAT is separate from the analytical effect measure.
+                  Only shown for continuous measures, where the paper may report mean/SD,
+                  median/IQR, median/range, mean/SE or mean/CI. Drives the fields below. */}
+              {familyOf(study.esType) === 'continuous' && reportedFormats.length > 0 && (
+                <div>
+                  <label style={lbl} htmlFor="pex-reportedFormat">Reported as</label>
+                  <select id="pex-reportedFormat" data-testid="pex-reportedFormat" value={activeFormat}
+                    onChange={(e) => setField('reportedFormat', e.target.value)} disabled={!editable} style={{ ...inp, fontSize: 12 }}>
+                    {reportedFormats.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+                  </select>
+                </div>
+              )}
             </div>
           </FormSection>
 
@@ -469,6 +523,31 @@ export default function ArticleWorkspace({
                   onFocusField={() => focusField(f)} />
               ))}
             </div>
+            {/* 82.md — harmonization review: reported→analysis conversion status, transparent
+                and reversible. The reported values above are never overwritten. */}
+            {harmonization.required && (
+              <div data-testid="pex-harmonize" style={{ marginTop: 10, border: `1px solid ${convStatus === 'stale' ? themeAlpha(C.yel, '66') : themeAlpha(C.acc, '44')}`, background: convStatus === 'stale' ? themeAlpha(C.yel, '10') : themeAlpha(C.acc, '0c'), borderRadius: 8, padding: '9px 11px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: convStatus === 'stale' ? C.yel : convStatus === 'unable' ? C.red : C.acc }}>
+                    {CONVERSION_STATUS_LABELS[convStatus] || convStatus}
+                  </span>
+                  <span style={{ fontSize: 11, color: C.muted, flex: 1, minWidth: 120 }}>
+                    → estimated mean &amp; SD for analysis (reported values are kept).
+                  </span>
+                  {editable && (convStatus === 'eligible' || convStatus === 'stale') && (
+                    <button onClick={applyHarmonization} style={{ ...btnS(convStatus === 'stale' ? 'ghost' : 'primary'), fontSize: 11 }}>
+                      {convStatus === 'stale' ? '↻ Update conversion' : '✦ Convert to mean & SD'}
+                    </button>
+                  )}
+                </div>
+                {convStatus === 'stale' && <div style={{ fontSize: 11, color: C.yel, marginTop: 6, lineHeight: 1.5 }}>A reported value changed since this was converted — the analysis mean/SD are out of date. Recompute before using them.</div>}
+                {convStatus === 'missing' && <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>Enter the reported values above (both arms) to enable the conversion.</div>}
+                {convStatus === 'generated' && <div style={{ fontSize: 11, color: C.grn, marginTop: 6 }}>✓ Converted values applied and up to date.</div>}
+                {harmonization.errors.map((e, i) => <div key={`e${i}`} style={{ fontSize: 11, color: C.red, marginTop: 5, lineHeight: 1.5 }}>✗ {e}</div>)}
+                {harmonization.warnings.map((w, i) => <div key={`w${i}`} style={{ fontSize: 11, color: C.yel, marginTop: 5, lineHeight: 1.5 }}>⚠ {w}</div>)}
+              </div>
+            )}
+
             <div style={{ marginTop: 10 }}>
               <label style={lbl}>Notes — assumptions, conversions, unclear data</label>
               <textarea value={study.notes || ''} onChange={(e) => setField('notes', e.target.value)} disabled={!editable}
@@ -482,8 +561,12 @@ export default function ArticleWorkspace({
               onConfirm={onConfirmDraft} onDismiss={onDismissDraft} onPark={onParkDraft} onUnpark={onUnparkRecord} onEditField={onEditDraftField} />
           )}
 
-          {/* Converter (§4) — occupies the old "Also reported" slot. */}
-          {!readOnly && <ConverterPanel onApply={applyConversion} disabled={!editable} />}
+          {/* Converter (§4) — discoverable via the toolbar "🔄 Convert" button (82.md Part 4). */}
+          {!readOnly && (
+            <div ref={converterRef}>
+              <ConverterPanel onApply={applyConversion} disabled={!editable} open={convOpen} onOpenChange={setConvOpen} />
+            </div>
+          )}
 
           {/* Validation panel (§17 tiers) */}
           <div style={{ border: `1px solid ${C.brd}`, borderRadius: 8, background: C.card, overflow: 'hidden' }}>

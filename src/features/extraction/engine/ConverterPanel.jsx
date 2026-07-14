@@ -51,8 +51,16 @@ function patchFor(target, values) {
   return p;
 }
 
-export default function ConverterPanel({ onApply, disabled = false, defaultOpen = false }) {
-  const [open, setOpen] = useState(defaultOpen);
+export default function ConverterPanel({ onApply, disabled = false, defaultOpen = false, open: openProp, onOpenChange }) {
+  // Controllable open state (82.md Part 4): a parent (the toolbar "Convert" button)
+  // can drive `open`; when uncontrolled it manages its own state as before.
+  const [openState, setOpenState] = useState(defaultOpen);
+  const open = openProp !== undefined ? openProp : openState;
+  const setOpen = (next) => {
+    const v = typeof next === 'function' ? next(open) : next;
+    if (onOpenChange) onOpenChange(v);
+    if (openProp === undefined) setOpenState(v);
+  };
   const [convId, setConvId] = useState(CONVERSIONS[0].id);
   const [vals, setVals] = useState({});
   const [reason, setReason] = useState('');

@@ -120,6 +120,15 @@ export const mkStudy = () => ({
   // raw continuous
   nExp: "", nCtrl: "", meanExp: "", sdExp: "", meanCtrl: "", sdCtrl: "",
 
+  // 82.md — REPORTED-AS-STATED continuous fields (per arm). The paper's original
+  // numbers live here PERMANENTLY; harmonize.js derives meanExp/sdExp above from
+  // them (median+IQR, median+range, mean+SE, mean+CI) and NEVER overwrites these.
+  // `reportedFormat` picks which of these the UI shows (see harmonize.REPORTED_FORMATS);
+  // '' ⇒ the family default (mean_sd / events_total / effect_ci) — fully back-compatible.
+  reportedFormat: "",
+  medianExp: "", q1Exp: "", q3Exp: "", minExp: "", maxExp: "", seExp: "", ciLoExp: "", ciHiExp: "",
+  medianCtrl: "", q1Ctrl: "", q3Ctrl: "", minCtrl: "", maxCtrl: "", seCtrl: "", ciLoCtrl: "", ciHiCtrl: "",
+
   // raw dichotomous 2×2 (a=event/exp  b=noevent/exp  c=event/ctrl  d=noevent/ctrl)
   a: "", b: "", c: "", d: "",
 
