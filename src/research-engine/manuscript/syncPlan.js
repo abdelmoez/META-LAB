@@ -144,6 +144,9 @@ export function applySyncDecision(draft, sectionId, decision, ctx = {}) {
       content: proposed,
       aiGenerated: true,
       userEdited: false,
+      // Clear any stale approved-wording stamp so the accepted section classifies as
+      // fully 'project'-controlled again (not 'approved') on the next sync plan.
+      approvedAt: null,
       detached: false,
       lastGeneratedAt: nowIso,
       reviewedAt: nowIso,

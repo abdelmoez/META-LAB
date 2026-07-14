@@ -283,7 +283,11 @@ export function useManuscript(project, upd) {
   const freshHashes = useMemo(() => {
     if (!activeDraft || !sourcesSettled) return {};
     try {
-      return computeSectionInputsHashes(project, { ...genOpts, prismaCounts, templateId: activeDraft.templateId });
+      return computeSectionInputsHashes(project, {
+        ...genOpts, prismaCounts,
+        templateId: activeDraft.templateId, citationStyle: activeDraft.citationStyle,
+        overrides: activeDraft.prismaOverrides,
+      });
     } catch { return {}; }
   }, [project, genOpts, prismaCounts, activeDraft, sourcesSettled]);
   const outdated = useMemo(() => {
@@ -368,7 +372,11 @@ export function useManuscript(project, upd) {
     if (!activeDraft) { generatedRef.current = null; setSyncPlan(null); return null; }
     try {
       const generated = generateDraft(project, {
-        ...genOpts, prismaCounts, primary, templateId: activeDraft.templateId,
+        // SAME opts domain as freshDepState — a narrower set here would stamp
+        // depState hashes that read as phantom "changed" reasons (review fix 4).
+        ...genOpts, prismaCounts, primary,
+        overrides: activeDraft.prismaOverrides,
+        templateId: activeDraft.templateId, citationStyle: activeDraft.citationStyle,
       });
       generatedRef.current = generated;
       const plan = buildSyncPlan({
@@ -491,7 +499,9 @@ export function useManuscript(project, upd) {
     let skippedLocked = [];
     mutateActive((active) => {
       const generated = generateDraft(project, {
-        ...genOpts, prismaCounts, primary, templateId: active.templateId,
+        ...genOpts, prismaCounts, primary,
+        templateId: active.templateId, citationStyle: active.citationStyle,
+        overrides: active.prismaOverrides,
       });
       // applyGeneratedSections stamps generated.sectionMeta (sources/missing/
       // inputsHash) onto every written section, always skips locked sections,

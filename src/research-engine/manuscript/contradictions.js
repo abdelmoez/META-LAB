@@ -101,7 +101,7 @@ export function detectContradictions(project, draft, opts = {}) {
   // (c) included-count — stated count of included studies ≠ project count.
   const pc = computePrismaCounts(p, opts);
   const includedCount = pc.counts.included != null ? pc.counts.included : studies.length;
-  const countRe = /(\d+)\s+(?:studies|trials|RCTs)\s+(?:were\s+|was\s+)?included/i;
+  const countRe = /(\d+)\s+(?:studies|trials|RCTs)\s+(?:were|was)\s+included/i;
   for (const [id, txt] of [['results', resultsTxt], ['abstract', abstractTxt]]) {
     if (!clean(txt)) continue;
     const m = txt.match(countRe);
@@ -161,7 +161,12 @@ export function detectContradictions(project, draft, opts = {}) {
 
   // (g) abstract-estimate — abstract point estimate disagrees with the pooled result.
   if (clean(abstractTxt) && primary && primary.result && Number.isFinite(primary.result.pES)) {
-    const m = abstractTxt.match(/\b(OR|RR|HR|MD|SMD)\s*[=:,]?\s*(-?\d+\.\d+)/);
+    // Only compare a stated estimate whose measure token matches the PRIMARY pooled
+    // measure — otherwise a secondary-outcome number would be checked against the
+    // wrong pooled value. Pick the first occurrence of the primary measure.
+    const primaryEs = clean(primary.pair.esType).toUpperCase();
+    const m = [...abstractTxt.matchAll(/\b(OR|RR|HR|MD|SMD)\s*[=:,]?\s*(-?\d+\.\d+)/gi)]
+      .find((mm) => mm[1].toUpperCase() === primaryEs);
     if (m) {
       const stated = Number(m[2]);
       const pooled = bt(primary.result.pES, clean(primary.pair.esType));

@@ -124,6 +124,26 @@ export const JOURNAL_TEMPLATE_IDS = JOURNAL_TEMPLATES.map((t) => t.id);
 
 export const SCHEMA_VERSION = 2;
 
+export const SNAPSHOT_CAP = 20;
+
+/**
+ * 84.md Part 21 — frozen-aware snapshot cap. Frozen (submission) snapshots are
+ * NEVER evicted; the oldest NON-frozen ones drop first, and if the frozen set
+ * alone meets or exceeds the cap they are all kept (no non-frozen retained).
+ * Preserves original chronological order. Pure.
+ */
+export function capSnapshots(list, cap = SNAPSHOT_CAP) {
+  const arr = Array.isArray(list) ? list.slice() : [];
+  if (arr.length <= cap) return arr;
+  const frozen = arr.filter((s) => s && s.frozen);
+  const nonFrozen = arr.filter((s) => !(s && s.frozen));
+  const keepNonFrozen = Math.max(0, cap - frozen.length);
+  const keptNonFrozen = keepNonFrozen >= nonFrozen.length
+    ? nonFrozen : nonFrozen.slice(nonFrozen.length - keepNonFrozen);
+  const keptSet = new Set(keptNonFrozen);
+  return arr.filter((s) => (s && s.frozen) || keptSet.has(s));
+}
+
 let _seq = 0;
 /** Deterministic-enough id (no Date/Math.random dependency for reproducibility of tests when seeded). */
 export function manuscriptUid(prefix = 'ms') {
@@ -269,7 +289,7 @@ export function normalizeDraft(raw, nowIso = null) {
   // 84.md Part 21 — additive version history + sync audit log. Only materialized
   // when the stored blob actually has them (no phantom keys on legacy drafts); the
   // read caps guard against an unbounded persisted array.
-  if (Array.isArray(raw.snapshots) && raw.snapshots.length) out.snapshots = raw.snapshots.slice(-20);
+  if (Array.isArray(raw.snapshots) && raw.snapshots.length) out.snapshots = capSnapshots(raw.snapshots);
   else delete out.snapshots;
   if (Array.isArray(raw.syncLog) && raw.syncLog.length) out.syncLog = raw.syncLog.slice(-100);
   else delete out.syncLog;

@@ -379,3 +379,83 @@ describe('normalizeDraft — 84.md additive fields', () => {
     expect(n.syncLog.length).toBe(100);
   });
 });
+
+/* ── adversarial-review fixes ─────────────────────────────────────────────── */
+
+describe('review fixes', () => {
+  it('(1) frozen snapshots are never evicted by the cap; ids stay unique after eviction', () => {
+    let draft = makeManuscriptDraft();
+    const p = baseProject();
+    // one frozen submission snapshot, then 25 routine ones
+    draft = createSnapshot(draft, p, { label: 'submission', frozen: true, nowIso: '2026-07-13T00:00:00Z-0' }).draft;
+    for (let i = 1; i <= 25; i += 1) draft = createSnapshot(draft, p, { label: `v${i}`, nowIso: `2026-07-13T00:00:00Z-${i}` }).draft;
+    expect(draft.snapshots.length).toBe(20);
+    const frozen = draft.snapshots.filter((s) => s.frozen);
+    expect(frozen.length).toBe(1);
+    expect(frozen[0].label).toBe('submission'); // survived eviction
+    expect(new Set(draft.snapshots.map((s) => s.id)).size).toBe(draft.snapshots.length); // no id reuse
+  });
+  it('(1) normalizeDraft read-cap also preserves frozen over non-frozen', () => {
+    const raw = makeManuscriptDraft();
+    raw.snapshots = Array.from({ length: 30 }, (_, i) => ({ id: `snap_${i}_x`, label: `v${i}`, frozen: i < 3 }));
+    const n = normalizeDraft(raw);
+    expect(n.snapshots.length).toBe(20);
+    expect(n.snapshots.filter((s) => s.frozen).length).toBe(3);
+  });
+  it('(2) restore never overwrites a locked section and reports it in skippedLocked', () => {
+    let draft = makeManuscriptDraft();
+    draft.sections.methods.content = 'Snapshot methods.';
+    draft.sections.results.content = 'Snapshot results.';
+    const snap = createSnapshot(draft, baseProject(), { label: 'v1', nowIso: '2026-07-13T00:00:01Z' });
+    draft = snap.draft;
+    draft = { ...draft, sections: {
+      ...draft.sections,
+      methods: { ...draft.sections.methods, content: 'Locked edit.', locked: true },
+      results: { ...draft.sections.results, content: 'Later results.' },
+    } };
+    const res = restoreSnapshot(draft, snap.snapshot.id, { nowIso: '2026-07-13T00:00:02Z' });
+    expect(res.restored).toBe(true);
+    expect(res.skippedLocked).toContain('methods');
+    expect(res.draft.sections.methods.content).toBe('Locked edit.'); // kept current
+    expect(res.draft.sections.methods.locked).toBe(true);
+    expect(res.draft.sections.results.content).toBe('Snapshot results.'); // restored
+  });
+  it('(3) accept clears a stale approvedAt so the section classifies as project-controlled', () => {
+    const draft = draftFrom(baseProject(), {});
+    // pretend the section was previously approved
+    draft.sections.methods.approvedAt = '2026-01-01T00:00:00Z';
+    const p2 = baseProject(); p2.analysisSettings = { tau2Method: 'REML' };
+    const generated = generateDraft(p2, {});
+    const ctx = { generated, sectionMeta: generated.sectionMeta, freshDepState: computeDependencyState(p2, {}), nowIso: '2026-07-13T00:00:00Z' };
+    const { draft: next } = applySyncDecision(draft, 'methods', 'accept', ctx);
+    expect(next.sections.methods.approvedAt).toBeNull();
+    expect(sectionSyncState(next.sections.methods)).toBe('project');
+  });
+  it('(4) with identical opts, a freshly generated depState diffs to [] for every section (no phantom reasons)', () => {
+    const p = baseProject();
+    const opts = { templateId: 'jama', citationStyle: 'jama', reviewers: 2 };
+    const gen = generateDraft(p, opts);
+    const fresh = computeDependencyState(p, opts);
+    for (const id of SECTION_IDS) {
+      expect(diffDeps(gen.sectionMeta[id].depState, fresh, id)).toEqual([]);
+    }
+  });
+  it('(5) abstract-estimate only compares the token matching the primary measure', () => {
+    const p = baseProject(); // pooled OR
+    const primary = { pair: { esType: 'OR', label: 'MACE' }, result: { pES: Math.log(0.70) } };
+    const d = makeManuscriptDraft();
+    // an RR number is present but the pooled measure is OR — must NOT be compared to the OR pool
+    d.sections.abstract.content = 'The pooled RR 1.50 favoured control for a secondary outcome.';
+    expect(detectContradictions(p, d, { primary }).find((i) => i.id === 'abstract-estimate')).toBeFalsy();
+    // a matching OR number that disagrees WITH the pool → flagged
+    d.sections.abstract.content = 'The pooled OR 1.90 favoured control overall.';
+    expect(detectContradictions(p, d, { primary }).find((i) => i.id === 'abstract-estimate')).toBeTruthy();
+  });
+  it('(6) included-count needs the finite verb — qualitative-synthesis phrasing does not false-fire', () => {
+    const d = makeManuscriptDraft();
+    d.sections.results.content = 'Overall, 7 studies included in the qualitative synthesis provided context.';
+    expect(detectContradictions(baseProject(), d, {}).find((i) => i.id === 'included-count')).toBeFalsy();
+    d.sections.results.content = 'In total, 7 studies were included in the review.';
+    expect(detectContradictions(baseProject(), d, {}).find((i) => i.id === 'included-count')).toBeTruthy();
+  });
+});

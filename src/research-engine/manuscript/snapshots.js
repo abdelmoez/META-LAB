@@ -13,19 +13,14 @@
 import { collectEngineVersions } from './versions.js';
 import { computeDependencyState } from './dependencies.js';
 import { computePrismaCounts } from './prismaCounts.js';
-import { SECTION_IDS } from './model.js';
+import { SECTION_IDS, capSnapshots } from './model.js';
 
-const SNAPSHOT_CAP = 20;
 const SYNC_LOG_CAP = 100;
 
 function appendSyncLog(draft, entry) {
   const log = Array.isArray(draft.syncLog) ? draft.syncLog : [];
   const next = [...log, entry];
   return next.length > SYNC_LOG_CAP ? next.slice(next.length - SYNC_LOG_CAP) : next;
-}
-
-function capSnapshots(list) {
-  return list.length > SNAPSHOT_CAP ? list.slice(list.length - SNAPSHOT_CAP) : list;
 }
 
 /** Content-only projection of the draft's sections (stable snapshot shape). */
@@ -45,8 +40,15 @@ function snapshotSections(draft) {
 }
 
 function nextSnapshotId(draft, nowIso) {
-  const seq = (Array.isArray(draft.snapshots) ? draft.snapshots.length : 0) + 1;
-  return `snap_${seq}_${String(nowIso || '').replace(/[^0-9]/g, '')}`;
+  // Collision-proof: derive the sequence from the MAX existing numeric suffix + 1.
+  // (length+1 reused ids after a frozen-aware eviction shortened the array.)
+  const list = Array.isArray(draft.snapshots) ? draft.snapshots : [];
+  let maxSeq = 0;
+  for (const s of list) {
+    const m = s && typeof s.id === 'string' && s.id.match(/^snap_(\d+)_/);
+    if (m) maxSeq = Math.max(maxSeq, Number(m[1]));
+  }
+  return `snap_${maxSeq + 1}_${String(nowIso || '').replace(/[^0-9]/g, '')}`;
 }
 
 /** Content backbone shared by real + safety snapshots (no project-derived fields). */
@@ -107,15 +109,18 @@ export function restoreSnapshot(draft, snapshotId, opts = {}) {
   const snapshots = capSnapshots([...list, safety]);
 
   const sections = {};
+  const skippedLocked = [];
   for (const id of SECTION_IDS) {
     const cur = (draft.sections && draft.sections[id]) || {};
+    // A locked section keeps its CURRENT content on restore — never overwritten.
+    if (cur.locked) { sections[id] = { ...cur }; skippedLocked.push(id); continue; }
     const snapSec = (snap.sections && snap.sections[id]) || {};
     const content = typeof snapSec.content === 'string' ? snapSec.content : '';
     sections[id] = {
       ...cur,
       content,
       userEdited: content.trim() ? true : !!cur.userEdited,
-      locked: !!cur.locked,
+      locked: false,
     };
   }
 
@@ -128,7 +133,7 @@ export function restoreSnapshot(draft, snapshotId, opts = {}) {
     snapshots,
     syncLog: appendSyncLog(draft, { at: nowIso, sectionId: null, action: 'restore', reasons: [], snapshotId: snap.id }),
   };
-  return { draft: nextDraft, restored: true };
+  return { draft: nextDraft, restored: true, skippedLocked };
 }
 
 /** Remove a snapshot by id. Refuses a frozen snapshot unless {force:true}. */
