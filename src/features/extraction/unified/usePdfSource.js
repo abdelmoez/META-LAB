@@ -299,10 +299,25 @@ export function usePdfSource(study, projectId, { onDocumentPersisted, publicatio
   // auto-extract. Pages whose text layer is empty/garbled fall back to LOCAL text
   // recognition (Tesseract.js) so auto-generate works on scanned PDFs too. onProgress is an
   // optional (phase, page, total) reporter for the UI.
+  // 83.md §5 — a run is CANCELLED (not just discarded) when the PDF changes, a newer
+  // run starts, or the hook unmounts: the fetch aborts and the page/OCR loops bail, so
+  // a multi-second extraction for a previous paper cannot keep burning the worker.
+  const extractAbortRef = useRef(null);
+  useEffect(() => () => { try { extractAbortRef.current && extractAbortRef.current.abort(); } catch { /* noop */ } }, [resolved.url]);
   const extractPages = useCallback(async (onProgress) => {
     const url = resolved.url;
     if (!url) return { pages: [], count: 0, ocrPages: 0 };
-    const res = await fetch(url, { credentials: 'include' });
+    try { extractAbortRef.current && extractAbortRef.current.abort(); } catch { /* noop */ }
+    const ac = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    extractAbortRef.current = ac;
+    const aborted = () => !!(ac && ac.signal.aborted);
+    let res;
+    try {
+      res = await fetch(url, { credentials: 'include', signal: ac ? ac.signal : undefined });
+    } catch (e) {
+      if (aborted()) return { pages: [], count: 0, ocrPages: 0, aborted: true };
+      throw e;
+    }
     if (!res.ok) throw new Error(`Could not download the PDF (HTTP ${res.status}).`);
     const buf = await res.arrayBuffer();
     if (!isPdfBytes(buf)) throw new Error('The file is not a readable PDF.');
@@ -313,6 +328,7 @@ export function usePdfSource(study, projectId, { onDocumentPersisted, publicatio
     const pages = [];
     const scanned = [];   // pages whose text layer failed → OCR candidates
     for (let p = 1; p <= total; p++) {
+      if (aborted()) break;
       try {
         onProgress && onProgress('text', p, total);
         const page = await doc.getPage(p);
@@ -325,10 +341,11 @@ export function usePdfSource(study, projectId, { onDocumentPersisted, publicatio
     }
     // Text-recognition fallback (deterministic, local, NOT AI) for scanned pages.
     let ocrPages = 0;
-    if (scanned.length) {
+    if (scanned.length && !aborted()) {
       try {
         const { recognizeImage } = await import('../../../frontend/services/ocr.js');
         for (const p of scanned.slice(0, MAX_OCR_PAGES)) {
+          if (aborted()) break;
           try {
             onProgress && onProgress('ocr', p, total);
             const page = await doc.getPage(p);
@@ -346,6 +363,7 @@ export function usePdfSource(study, projectId, { onDocumentPersisted, publicatio
     }
     pages.sort((a, b) => a.page - b.page);
     try { await doc.cleanup?.(); doc.destroy?.(); } catch { /* noop */ }
+    if (aborted()) return { pages: [], count: 0, ocrPages: 0, aborted: true };
     return { pages, count: total, ocrPages, scannedPages: scanned.length };
   }, [resolved.url]);
 

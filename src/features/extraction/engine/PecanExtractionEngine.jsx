@@ -178,27 +178,43 @@ export default function PecanExtractionEngine({ project, updateProject, activeId
     return { ...buildArticleSummary(openStudy, {}), pdfAvailable: fromServer ? fromServer.pdfAvailable : false };
   }, [openStudy, serverArticles]);
 
-  /* ── 82.md — multi-outcome (pure outcomeGroups over studies[]) ── */
-  const applyStudies = useCallback((result, openNew) => {
-    if (!result || result.error || !result.studies) { if (result && result.error) setBanner(result.error); return; }
-    updateProject(activeId, (p) => ({ ...p, studies: result.studies }));
-    if (openNew && result.id) setOpenId(result.id);
-  }, [updateProject, activeId]);
-  const onAddOutcome = useCallback((srcId) => applyStudies(addOutcome(studies, srcId, { mkStudy }), true), [applyStudies, studies]);
-  const onDuplicateOutcome = useCallback((srcId) => applyStudies(duplicateOutcome(studies, srcId), true), [applyStudies, studies]);
-  const onRenameOutcome = useCallback((id, name) => applyStudies(renameOutcome(studies, id, name), false), [applyStudies, studies]);
-  const onSetOutcomeRole = useCallback((id, role) => applyStudies(setOutcomeRole(studies, id, role), false), [applyStudies, studies]);
+  /* ── 82.md — multi-outcome (pure outcomeGroups over studies[]) ──
+     83.md §5 — every mutation RECOMPUTES inside the functional updater (from
+     p.studies, the freshest state) instead of precomputing from the render-time
+     array and replacing studies[] wholesale, which could clobber a write that
+     landed between render and click. New ids are pre-generated so navigation
+     never depends on reading a side effect out of the updater (StrictMode-safe). */
+  const applyPure = useCallback((mutate) => updateProject(activeId, (p) => {
+    const r = mutate(Array.isArray(p.studies) ? p.studies : []);
+    if (!r || r.error || !r.studies) return p;
+    return { ...p, studies: r.studies };
+  }), [updateProject, activeId]);
+  const newRowId = () => Math.random().toString(36).slice(2, 10);
+  const onAddOutcome = useCallback((srcId) => {
+    if (!studies.some((s) => s && s.id === srcId)) return;
+    const id = newRowId();
+    applyPure((rows) => addOutcome(rows, srcId, { mkStudy, idFn: () => id }));
+    setOpenId(id);
+  }, [applyPure, studies]);
+  const onDuplicateOutcome = useCallback((srcId) => {
+    if (!studies.some((s) => s && s.id === srcId)) return;
+    const id = newRowId();
+    applyPure((rows) => duplicateOutcome(rows, srcId, { idFn: () => id }));
+    setOpenId(id);
+  }, [applyPure, studies]);
+  const onRenameOutcome = useCallback((id, name) => applyPure((rows) => renameOutcome(rows, id, name)), [applyPure]);
+  const onSetOutcomeRole = useCallback((id, role) => applyPure((rows) => setOutcomeRole(rows, id, role)), [applyPure]);
   const onArchiveOutcome = useCallback((id) => {
-    const r = archiveOutcome(studies, id);
-    if (r.error || !r.studies) return;
-    updateProject(activeId, (p) => ({ ...p, studies: r.studies }));
+    applyPure((rows) => archiveOutcome(rows, id));
     // Jump to the nearest remaining outcome OF THE SAME PAPER (never an unrelated
     // study). Compute against the post-archive rows so the archived one is excluded.
+    const r = archiveOutcome(studies, id);
+    if (r.error || !r.studies) return;
     const group = groupForStudy(r.studies, id);
     const sibling = group ? activeOutcomes(group).find((o) => o.id !== id) : null;
     if (sibling) setOpenId(sibling.id);
     else setOpenId(''); // no active sibling → back to the article list
-  }, [studies, updateProject, activeId]);
+  }, [applyPure, studies]);
 
   const orderedIds = useMemo(() => articles.map((a) => a.id), [articles]);
   const openIdx = orderedIds.indexOf(openId);

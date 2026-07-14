@@ -175,7 +175,13 @@ export default function ArticleWorkspace({
     const fileMismatch = !!(prov.bbox && prov.fileKey && pdf.fileKey && prov.fileKey !== pdf.fileKey);
     const region = fileMismatch ? null : (prov.bbox || null);
     revealNonce.current += 1;
-    setReveal({ page: prov.page || 1, region, nonce: revealNonce.current, label: FIELD_LABELS[field] || field });
+    setReveal({
+      page: prov.page || 1, region, nonce: revealNonce.current, label: FIELD_LABELS[field] || field,
+      // 83.md §3 "Sources Without Coordinates" — when no exact box can be shown, the
+      // viewer may draw a clearly-labelled approximate box IF (and only if) the stored
+      // excerpt matches exactly ONE text run on the page. Never a silent guess.
+      excerpt: !region && prov.excerpt ? String(prov.excerpt) : null,
+    });
     setStatus(fileMismatch
       ? `This value was captured on a different file than the one shown — showing its page (${prov.page || 1}) without an exact box.`
       : region

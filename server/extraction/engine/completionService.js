@@ -23,23 +23,29 @@ export { ArticleError };
 /**
  * mutateStudyMeta(access, studyId, mutate) — load the blob fresh, apply `mutate(study)`
  * (which returns the new study), persist, emit, and return the new study. Throws
- * ArticleError(404) when the study is missing. The write is a whole-row update guarded
- * by the same deletedAt/ownership invariants the controller uses.
+ * ArticleError(404) when the study is missing. The read-modify-write runs inside ONE
+ * interactive transaction (83.md §5) so two concurrent engine mutations (complete +
+ * inclusion, or two reviewers) can no longer each read the same blob and have the
+ * second write silently drop the first's extractionMeta change. `mutate` must stay
+ * synchronous/pure — it runs inside the transaction.
  */
 async function mutateStudyMeta(access, studyId, mutate) {
-  const ml = await prisma.project.findFirst({ where: { id: access.project.id, deletedAt: null } });
-  if (!ml) throw new ArticleError(404, 'PROJECT_NOT_FOUND');
-  let data;
-  try { data = JSON.parse(ml.data || '{}'); } catch { data = {}; }
-  if (!Array.isArray(data.studies)) data.studies = [];
-  const idx = data.studies.findIndex((s) => s && s.id === studyId);
-  if (idx < 0) throw new ArticleError(404, 'ARTICLE_NOT_FOUND');
+  const { mlId, next } = await prisma.$transaction(async (tx) => {
+    const ml = await tx.project.findFirst({ where: { id: access.project.id, deletedAt: null } });
+    if (!ml) throw new ArticleError(404, 'PROJECT_NOT_FOUND');
+    let data;
+    try { data = JSON.parse(ml.data || '{}'); } catch { data = {}; }
+    if (!Array.isArray(data.studies)) data.studies = [];
+    const idx = data.studies.findIndex((s) => s && s.id === studyId);
+    if (idx < 0) throw new ArticleError(404, 'ARTICLE_NOT_FOUND');
 
-  const next = mutate({ ...data.studies[idx] });
-  data.studies[idx] = next;
-  await prisma.project.update({ where: { id: ml.id }, data: { data: JSON.stringify(data), lastSavedAt: new Date() } });
-  try { emitToMetaLabProject(ml.id, access.ownerId, { type: 'project.updated' }, { exclude: access.userId }); } catch { /* best-effort */ }
-  try { await touchProjectActivity(ml.id); } catch { /* best-effort */ }
+    const mutated = mutate({ ...data.studies[idx] });
+    data.studies[idx] = mutated;
+    await tx.project.update({ where: { id: ml.id }, data: { data: JSON.stringify(data), lastSavedAt: new Date() } });
+    return { mlId: ml.id, next: mutated };
+  });
+  try { emitToMetaLabProject(mlId, access.ownerId, { type: 'project.updated' }, { exclude: access.userId }); } catch { /* best-effort */ }
+  try { await touchProjectActivity(mlId); } catch { /* best-effort */ }
   return next;
 }
 

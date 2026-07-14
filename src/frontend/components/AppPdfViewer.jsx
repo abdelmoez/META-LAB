@@ -32,7 +32,7 @@ import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.min.mjs';
 import PdfWorker from 'pdfjs-dist/legacy/build/pdf.worker.min.mjs?worker';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import { findMatchesInText } from './pdfSearch.js';
-import { revealBoxFor, revealScrollTop } from './pdfRevealBox.js';
+import { revealBoxFor, revealScrollTop, isExactRegion } from './pdfRevealBox.js';
 
 if (typeof window !== 'undefined' && typeof Worker !== 'undefined') {
   try { pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker(); } catch { /* falls back to fake worker */ }
@@ -138,13 +138,14 @@ export default function AppPdfViewer({
   interaction = null,        // null | { mode:'click'|'region', onTextClick, onRegion }
   pageOverlay = null,        // null | (page:number) => ReactNode
   // ── Jump-to-source (76.md §15, 83.md §3) — set `reveal` to { page, region?, nonce,
-  // label? } to scroll the source into view and show a PERSISTENT highlight over
-  // `region` (PDF user-space rectangle {x0,y0,x1,y1}); no region → a distinct
-  // page-level indicator (never a fabricated location). The highlight stays until the
-  // HOST clears `reveal`; the viewer requests that via `onRevealDismiss` (click inside
-  // the document, Escape, rotation). `nonce` must change on every jump so a repeat
-  // jump to the same field re-runs the arrival pulse + scroll. Inert (null) for every
-  // existing caller.
+  // label?, excerpt? } to scroll the source into view and show a PERSISTENT highlight
+  // over `region` (PDF user-space rectangle {x0,y0,x1,y1}); no region → a distinct
+  // page-level indicator (never a fabricated location), upgraded to a labelled
+  // APPROXIMATE box only when `excerpt` matches exactly ONE text run on the page.
+  // The highlight stays until the HOST clears `reveal`; the viewer requests that via
+  // `onRevealDismiss` (click inside the document, Escape, rotation). `nonce` must
+  // change on every jump so a repeat jump to the same field re-runs the arrival
+  // pulse + scroll. Inert (null) for every existing caller.
   reveal = null,
   onRevealDismiss = null,
 }) {
@@ -996,6 +997,37 @@ function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOption
     ? revealBoxFor(highlight.region, pageDims, scale)
     : null;
 
+  // 83.md §3 "Sources Without Coordinates" — cautious text-match fallback: when a
+  // page-level reveal carries the stored excerpt and it matches exactly ONE text run
+  // on this page, draw a clearly-labelled APPROXIMATE (dashed) box around that run.
+  // Zero or multiple matches → stay with the page banner; an ambiguous match is never
+  // silently highlighted. Re-measured whenever the text layer rebuilds (zoom/resize).
+  const [textMatch, setTextMatch] = useState(null); // { left, top, width, height, nonce }
+  const lastMatchScrollRef = useRef(null);
+  useEffect(() => {
+    const wantsMatch = highlight && highlight.nonce && !isExactRegion(highlight.region) && highlight.excerpt;
+    const tl = textRef.current;
+    if (!wantsMatch || !tl) { setTextMatch((cur) => (cur ? null : cur)); return; }
+    const q = String(highlight.excerpt).trim();
+    if (q.length < 4) { setTextMatch((cur) => (cur ? null : cur)); return; }
+    const spans = [...tl.querySelectorAll(':scope > span')];
+    const hits = spans.filter((s) => ((s.dataset.t != null ? s.dataset.t : s.textContent) || '').includes(q));
+    if (hits.length !== 1) { setTextMatch((cur) => (cur ? null : cur)); return; }
+    try {
+      const host = tl.getBoundingClientRect();
+      const r = hits[0].getBoundingClientRect();
+      setTextMatch({ left: r.left - host.left, top: r.top - host.top, width: r.width, height: r.height, nonce: highlight.nonce });
+      // Bring the matched run into view once per nonce (the viewer-level scroll only
+      // reached the page top — it had no coordinates to centre on).
+      if (lastMatchScrollRef.current !== highlight.nonce) {
+        lastMatchScrollRef.current = highlight.nonce;
+        try { hits[0].scrollIntoView({ block: 'center', inline: 'nearest' }); } catch { /* noop */ }
+      }
+    } catch { setTextMatch(null); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlight && highlight.nonce, highlight && highlight.excerpt, textReady]);
+  const activeTextMatch = (textMatch && highlight && textMatch.nonce === highlight.nonce) ? textMatch : null;
+
   return (
     <>
       {/* Canvas size is set in px by the render effect (= the CSS-px viewport), so it
@@ -1016,6 +1048,25 @@ function PdfPageView({ doc, pageNumber, scale, rotation, dpr, term, searchOption
             position: 'absolute', left: srcBox.left, top: srcBox.top, width: Math.max(6, srcBox.width), height: Math.max(6, srcBox.height),
             border: '2px solid #f59e0b', background: 'rgba(245,158,11,0.22)', borderRadius: 3, pointerEvents: 'none', zIndex: 5,
           }} />
+      ) : srcBox && activeTextMatch ? (
+        // Unique text match for a coordinate-less source: an APPROXIMATE (dashed) box
+        // around the one text run containing the stored excerpt, explicitly labelled so
+        // it can never be mistaken for an exact stored location.
+        <div key={highlight.nonce} className="mlpdf-src-hl" role="img"
+          aria-label={`Approximate source location (matched by text)${highlight.label ? ` for ${highlight.label}` : ''}`}
+          style={{
+            position: 'absolute', left: activeTextMatch.left - 3, top: activeTextMatch.top - 3,
+            width: Math.max(6, activeTextMatch.width + 6), height: Math.max(6, activeTextMatch.height + 6),
+            border: '2px dashed #f59e0b', background: 'rgba(245,158,11,0.16)', borderRadius: 3, pointerEvents: 'none', zIndex: 5,
+          }}>
+          <span style={{
+            position: 'absolute', top: '100%', left: 0, marginTop: 3, whiteSpace: 'nowrap',
+            fontSize: 10, fontFamily: FONT, fontWeight: 600, color: '#92400e',
+            background: 'rgba(255,255,255,0.92)', border: '1px dashed #f59e0b', borderRadius: 4, padding: '1px 6px',
+          }}>
+            matched by text — approximate
+          </span>
+        </div>
       ) : srcBox ? (
         // Page-only provenance: a labelled page-level indicator (dashed = approximate),
         // clearly distinguishable from the exact-source box and from search highlights.
