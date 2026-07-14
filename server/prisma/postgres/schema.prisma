@@ -387,6 +387,8 @@ model ContactReply {
   status        String         @default("sent") // sent | failed | draft
   error         String         @default("")
   createdAt     DateTime       @default(now())
+
+  @@index([messageId]) // 86.md P2.56 — replies loaded per contact message
 }
 
 model SiteSetting {
@@ -407,6 +409,8 @@ model AdminAuditLog {
   ip         String?
   userAgent  String?
   createdAt  DateTime @default(now())
+
+  @@index([createdAt]) // 86.md P2.56 — Ops audit log is time-ordered
 }
 
 model SecurityEvent {
@@ -418,6 +422,9 @@ model SecurityEvent {
   userAgent String?
   details   String? // JSON-serialised extra info
   createdAt DateTime @default(now())
+
+  @@index([type, createdAt]) // 86.md P2.56 — security dashboards filter by type/time
+  @@index([userId])
 }
 
 // ─── META·SIFT Beta ──────────────────────────────────────────────────
@@ -655,6 +662,11 @@ model ScreenConflict {
   notes             String        @default("")
   createdAt         DateTime      @default(now())
   updatedAt         DateTime      @updatedAt
+
+  // 86.md P2.56 — per-project conflict lists + per-record recompute were full table
+  // scans across ALL projects' conflicts (this model had no index at all).
+  @@index([projectId])
+  @@index([recordId])
 }
 
 model ScreenImportBatch {
@@ -795,6 +807,8 @@ model ScreenChatMessage {
   createdAt  DateTime      @default(now())
   updatedAt  DateTime      @updatedAt
   deletedAt  DateTime?
+
+  @@index([projectId, createdAt]) // 86.md P2.56 — per-project chat history load
 }
 
 model ScreenPdfAttachment {
@@ -866,6 +880,7 @@ model UsageEvent {
   createdAt        DateTime @default(now())
 
   @@index([type, createdAt])
+  @@index([userId]) // 86.md P2.56 — Ops aggregates usage per user
 }
 
 model ScreenAuditLog {
@@ -879,6 +894,8 @@ model ScreenAuditLog {
   entityId   String?
   details    String        @default("{}") // JSON context
   createdAt  DateTime      @default(now())
+
+  @@index([projectId, createdAt]) // 86.md P2.56 — per-project audit trail load
 }
 
 // ─── META·LAB RoB — Risk-of-Bias assessments (rob.md, feature flag rob_engine_v2) ─

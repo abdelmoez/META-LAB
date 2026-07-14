@@ -109,6 +109,27 @@ function safeParseData(dataStr) {
   }
 }
 
+// 86.md P2.56 — cache the (expensive) all-project blob scan that totals studies +
+// records for the Ops Overview. A full-table fetch + JSON.parse of every blob on
+// every poll is a scale hotspot; a 60s TTL keeps the Overview live enough while
+// bounding the cost. Invalidated implicitly by TTL (these totals move slowly).
+let _blobAggCache = null; // { at:number, studies:number, records:number }
+const BLOB_AGG_TTL_MS = 60_000;
+async function getProjectBlobAggregate(now = Date.now()) {
+  if (_blobAggCache && (now - _blobAggCache.at) < BLOB_AGG_TTL_MS) {
+    return { studies: _blobAggCache.studies, records: _blobAggCache.records };
+  }
+  const rows = await prisma.project.findMany({ where: { deletedAt: null }, select: { data: true } });
+  let studies = 0, records = 0;
+  for (const project of rows) {
+    const data = safeParseData(project.data);
+    studies += Array.isArray(data.studies) ? data.studies.length : 0;
+    records += Array.isArray(data.records) ? data.records.length : 0;
+  }
+  _blobAggCache = { at: now, studies, records };
+  return { studies, records };
+}
+
 // ── GET /api/admin/metrics ────────────────────────────────────────────────────
 
 export async function getMetrics(req, res) {
@@ -138,7 +159,6 @@ export async function getMetrics(req, res) {
       failedLogins7d,
       loginsDay, loginsWeek, loginsMonth, loginsQuarter, loginsYear,
       activeUsersDay, activeUsersWeek, activeUsersMonth, activeUsersQuarter, activeUsersYear,
-      allProjects,
     ] = await Promise.all([
       prisma.user.count(),
       prisma.user.count({ where: { createdAt: { gte: todayStart } } }),
@@ -171,17 +191,14 @@ export async function getMetrics(req, res) {
       prisma.user.count({ where: { lastActive: { gte: monthAgo } } }),
       prisma.user.count({ where: { lastActive: { gte: quarterAgo } } }),
       prisma.user.count({ where: { lastActive: { gte: yearAgo } } }),
-      prisma.project.findMany({ select: { data: true } }),
     ]);
     const unreadMessages = Math.max(0, activeMessages - myReadActive);
 
-    let studies = 0;
-    let records = 0;
-    for (const project of allProjects) {
-      const data = safeParseData(project.data);
-      studies += Array.isArray(data.studies) ? data.studies.length : 0;
-      records += Array.isArray(data.records) ? data.records.length : 0;
-    }
+    // 86.md P2.56 — total studies/records across ALL projects requires parsing every
+    // project's JSON blob (there is no SQL count of an array inside a TEXT column).
+    // The Overview polls frequently but these totals change slowly, so the scan is
+    // cached (60s TTL) — bounding it to at most once/minute regardless of poll rate.
+    const { studies, records } = await getProjectBlobAggregate();
 
     // ── prompt9 ops metrics (additive keys ONLY — never rename) ─────────────
     // invites: pending excludes expired rows; expired = still-pending past the
