@@ -44,6 +44,7 @@ import pecanSearchRouter    from './routes/pecanSearch.js';
 import citationMiningRouter from './routes/citationMining.js';
 import extractionRouter     from './routes/extraction.js';
 import extractionEngineRouter from './routes/extractionEngine.js';
+import provenanceRouter     from './routes/provenance.js';
 import aiExtractRouter      from './routes/aiExtract.js';
 import livingReviewRouter   from './routes/livingReview.js';
 import publicSynthesisRouter from './routes/publicSynthesis.js';
@@ -541,6 +542,12 @@ app.use('/api/extraction', requireAuth, extractionRouter);
 // article STATE only (list / complete / reopen / lock / inclusion / audit); extraction
 // VALUES stay on the project-blob autosave, so this never races value writes.
 app.use('/api/extraction-engine', requireAuth, extractionEngineLimiter, extractionEngineRouter);
+
+// ── Research Provenance ledger (88.md) — requireAuth at the mount; each handler
+// gates on the `researchProvenance` flag (default OFF → 404) + project access. The
+// append-only Project History across search/screening/extraction/RoB/analysis/
+// manuscript. Reads are membership-scoped; reason/invalidate are leadership-scoped.
+app.use('/api/provenance', requireAuth, provenanceRouter);
 
 // ── AI extraction (server-proxied LLM) — requireAuth at the mount; the POST
 // handler gates on the `aiExtraction` flag (default OFF → 404). The Anthropic

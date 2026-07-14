@@ -141,6 +141,16 @@ const DEFAULTS = {
     // Default OFF: the Extraction tab keeps its current split-screen workspace until
     // an admin enables this. Independent of extractionAssist (reads the project blob).
     extractionEngine: false,
+    // 88.md — Research Provenance: the append-only, project-wide event ledger
+    // (search/screening/extraction/RoB/analysis/manuscript) with deterministic
+    // scientific-significance + manuscript-relevance classification, a Project
+    // History tab, and honest baselines for legacy projects. Default OFF: the API
+    // (/api/provenance) 404s (existence-hidden) and the History tab is not surfaced
+    // until an admin enables this. Server-side event capture runs best-effort even
+    // when off is irrelevant — capture only activates via the flag-gated surfaces
+    // and the atomic writer, so a dark flag means zero behavioural change. Requires
+    // the ProjectEvent table (prisma db push) to have any effect.
+    researchProvenance: false,
     // OPTIONAL server-proxied LLM extraction for the unified extraction
     // workspace. Default OFF: POST /api/ai-extract 404s (existence-hidden) and
     // GET /api/ai-extract/status reports available:false. When ON (and

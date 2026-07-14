@@ -150,6 +150,10 @@ export async function save(project, userId, { baseRev = null } = {}) {
     return rowToProject(existing);
   }
 
+  // 88.md — capture the pre-image so a SUCCESSFUL write can append provenance events
+  // (the client autosaves the whole blob; we diff before→after for scientific changes).
+  const provBefore = existing ? safeParseBlob(existing.data) : null;
+
   // 83.md-limitation fix — OPT-IN optimistic concurrency: the client sends the
   // `autosaveRev` it last observed; a different rev means another tab/collaborator
   // AUTOSAVED since (module writers deliberately never bump the rev — the initiating
@@ -186,6 +190,7 @@ export async function save(project, userId, { baseRev = null } = {}) {
       throw err;
     }
     const row = await prisma.project.findFirst({ where: { id } });
+    captureProvenance(id, provBefore, data, userId);
     return rowToProject(row);
   }
 
@@ -196,7 +201,27 @@ export async function save(project, userId, { baseRev = null } = {}) {
     create: { id, userId, name, data: dataStr, lastActivityAt: now, autosaveRev: 1 },
   });
 
+  if (existing) captureProvenance(id, provBefore, data, userId);
   return rowToProject(row);
+}
+
+/** Parse a stored blob string → object (best-effort; {} on failure). */
+function safeParseBlob(s) {
+  try { return JSON.parse(s || '{}'); } catch { return {}; }
+}
+
+/**
+ * 88.md — fire-and-forget provenance capture on a successful autosave. Best-effort
+ * and non-blocking (adds NO latency to save): diff the before→after blob for
+ * scientifically-meaningful changes and append classified events. No-ops entirely
+ * when the ProjectEvent table is absent (pre-migration) or nothing scientific changed.
+ * NEVER throws — a capture failure must not affect the save.
+ */
+function captureProvenance(projectId, before, after, userId) {
+  if (!before) return;
+  import('./provenance/mutateWithEvents.js')
+    .then((m) => m.recordBlobDiff(projectId, before, after, { actorUserId: userId, origin: 'user_action' }))
+    .catch((e) => { console.error('[provenance] autosave capture failed', e?.message || e); });
 }
 
 /** Typed SAVE_CONFLICT when another autosave landed after the client's baseline rev. */

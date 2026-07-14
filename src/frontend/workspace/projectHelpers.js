@@ -214,6 +214,12 @@ export const TABS=[
   // workflow map, the progress denominator, and the "Next step" walker.
   {id:"overview",   icon:"grid",        label:"Overview",             phase:null,  group:"project"},
   {id:"control",    icon:"sliders",     label:"Project Control",      phase:null,  group:"project"},
+  // 88.md — Research Provenance / Project History (flag `researchProvenance`, default
+  // OFF). phase:null + group:"history" keeps it OUT of the numbered workflow map, the
+  // progress denominator, the "Next step" walker AND the legacy sidebar (which renders
+  // only workflow/reference/project groups) — surfaced only via the flag-gated entry in
+  // Project Control + the ?tab=history deep link, exactly like Living Review / Citation.
+  {id:"history",    icon:"clock",       label:"Project History",      phase:null,  group:"history"},
   {id:"pico",       icon:"target",      label:"PICO & Question",      phase:"Plan",    num:1},
   {id:"prospero",   icon:"clipboard",   label:"Protocol",             phase:"Plan",    num:2},
   // prompt60 — the former two search tabs (Search Builder + Search & Discovery) are

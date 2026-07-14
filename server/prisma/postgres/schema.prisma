@@ -2516,3 +2516,65 @@ model WaitlistInvitation {
   @@index([acceptedUserId])
   @@index([batchId])
 }
+
+// 88.md — the unified, append-only PROJECT PROVENANCE LEDGER. One structured,
+// immutable row per meaningful scientific action across the WHOLE project (search,
+// screening, extraction, RoB, analysis, reporting, manuscript). Sits ABOVE the
+// per-engine audit tables (ScreenAuditLog / RobAuditLog / ExtractionAuditLog / …)
+// as the scientific memory of the study. Denormalised, NO FK ("audit-survival"
+// convention — a row outlives the entity it describes), JSON columns stored as
+// bounded, sanitised Strings (SQLite has no Json type; matches ExtractionAuditLog).
+// Int autoincrement id gives a global monotonic order; per-project order = (projectId,id).
+// Values are classified by the pure engine (src/research-engine/provenance): the
+// significance level (0-6), affected manuscript sections and impact flags are
+// COMPUTED, not free-text. Additive new table → `prisma db push` creates it cleanly.
+model ProjectEvent {
+  id                        Int      @id @default(autoincrement())
+  projectId                 String
+  projectRev                Int      @default(0) // Project.autosaveRev at write time
+  eventType                 String   // e.g. META_ANALYSIS_MODEL_CHANGED (taxonomy)
+  category                  String   // taxonomy CATEGORIES
+  subtype                   String?
+  actorUserId               String   @default("")
+  actorName                 String   @default("")
+  actorRole                 String   @default("")
+  origin                    String   @default("user_action") // taxonomy ORIGINS
+  clientTs                  DateTime?
+  serverTs                  DateTime @default(now())
+  projectStage              String?  // taxonomy PROJECT_STAGES
+  module                    String?  // search|screening|extraction|rob|analysis|manuscript|core
+  entityType                String?
+  entityId                  String?
+  parentEntityId            String?
+  prevValue                 String   @default("null") // JSON, sanitised + bounded
+  newValue                  String   @default("null") // JSON, sanitised + bounded
+  diff                      String   @default("{}")   // JSON structured diff
+  reason                    String?  // optional user rationale (methodological changes)
+  correlationId             String?  // groups bulk / multi-event operations
+  sessionId                 String?
+  jobId                     String?
+  relatedOutcome            String?
+  relatedStudy              String?
+  relatedAnalysis           String?
+  significance              Int      @default(1) // 0..6 (taxonomy SIGNIFICANCE)
+  manuscriptSections        String   @default("[]") // JSON string[] of section ids
+  resultImpact              String   @default("none") // none|possible|changed
+  requiresRecalc            Boolean  @default(false)
+  requiresManuscriptRefresh Boolean  @default(false)
+  requiresReview            Boolean  @default(false)
+  supersedesEventId         Int?
+  reconstructed             Boolean  @default(false) // migration baseline / reconstructed history
+  invalidated               Boolean  @default(false) // admin soft-invalidate (never hard-delete)
+  schemaVersion             Int      @default(1)
+  metadata                  String   @default("{}") // JSON extra context (bounded)
+  checksum                  String?
+  idempotencyKey            String?  @unique // dedup retried/duplicate submissions
+  createdAt                 DateTime @default(now())
+
+  @@index([projectId, id])
+  @@index([projectId, category])
+  @@index([projectId, eventType])
+  @@index([projectId, significance])
+  @@index([projectId, serverTs])
+  @@index([correlationId])
+}

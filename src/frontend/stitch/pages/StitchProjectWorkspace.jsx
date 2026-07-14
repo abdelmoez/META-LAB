@@ -80,6 +80,8 @@ const LazyNma         = lazy(() => import('../../workspace/tabs/nmaTab.jsx').the
 const LazyLiving      = lazy(() => import('../../../features/livingReview/LivingReviewTab.jsx'));
 // P15 Bibliomine — Citation Mining panel (flag `citationMining`; its own feature dir).
 const LazyCitation    = lazy(() => import('../../../features/citationMining/CitationMiningPanel.jsx'));
+// 88.md — Research Provenance / Project History (flag `researchProvenance`; own dir).
+const LazyHistory     = lazy(() => import('../../../features/provenance/ProjectHistoryPanel.jsx'));
 const LazyExportDialog = lazy(() => import('../../components/ExportDialog.jsx'));
 
 // Every workflow stage that has a native page here. Anything not in this set falls
@@ -89,7 +91,7 @@ const SCOPE = new Set([
   // (activeProjectStage) so it still resolves inside this scope.
   'control', 'pico', 'prospero', 'search', 'living', 'citation', 'screening', 'prisma',
   'extraction', 'rob', 'analysis', 'forest', 'sensitivity', 'subgroup', 'nma', 'grade',
-  'manuscript', 'report', 'methods',
+  'manuscript', 'report', 'methods', 'history',
 ]);
 const STAGE_LABEL = TABS.reduce((m, t) => { m[t.id] = t.label; return m; }, {});
 // Workflow order (the legacy stepper order) → used for the next-step action.
@@ -331,6 +333,10 @@ function DeepToolPage({ stage }) {
     body = (<LazyReport project={project} upd={doc.upd} />);
   } else if (stage === 'methods') {
     body = (<LazyMethods />);
+  } else if (stage === 'history') {
+    // 88.md — the append-only Research Provenance ledger (flag `researchProvenance`;
+    // the panel + API 404 when off, so a stray deep link degrades to an error card).
+    body = (<LazyHistory project={project} projectId={projectId} />);
   }
 
   // 78.md #2 — the "Analysis" member permission is now enforced. A member WITHOUT the

@@ -20,6 +20,7 @@ import { api } from "../../api-client/apiClient.js";
 import { useEntitlements } from "../../entitlements/useEntitlements.js";
 import { runMeta } from "../../../research-engine/statistics/monolithStats.js";
 import { poolPrimaryOutcome } from "../../../research-engine/statistics/summaryPool.js";
+import { useResearchProvenanceEnabled } from "../../../features/provenance/useResearchProvenanceEnabled.js";
 import { C, btnS, inp, tagS } from "../ui/styles.js";
 import { SwitchToggle, SectionHeader, InfoBox, ProgressBar } from "../ui/primitives.jsx";
 import { TABS, readinessCheck, stepStatus, auditProject, projectPerms, linkedSiftId, CTRL_STATUS_OPTIONS } from "../projectHelpers.js";
@@ -532,6 +533,8 @@ function OverviewTab({project,setTab,onJournalZip,onRValidate}){
 function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
   const lid=linkedSiftId(project);
   const perms=projectPerms(project);
+  const provenanceOn=useResearchProvenanceEnabled(); // 88.md — gate the Project History entry
+
   const amProjectOwner=!project._shared;
   // prompt32 Task 10 — owner-only Danger Zone (archive / delete) state.
   const[archiveBusy,setArchiveBusy]=useState(false);
@@ -658,6 +661,19 @@ function ControlTab({project,onAnnotate,setTab,presence,onDeleted}){
     <SectionHeader icon="sliders" title="Project Control"
       desc="Manage this review project — status, members, roles, and permissions — all in one place."
       badge={`Your role · ${perms.role}`}/>
+
+    {/* 88.md — flag-gated entry to the append-only Research Provenance ledger. */}
+    {provenanceOn===true&&(
+      <button type="button" onClick={()=>setTab("history")}
+        style={{width:"100%",textAlign:"left",background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"12px 14px",marginBottom:14,cursor:"pointer",display:"flex",alignItems:"center",gap:12}}>
+        <span style={{fontSize:18}}>🕑</span>
+        <span style={{flex:1,minWidth:0}}>
+          <span style={{display:"block",fontSize:13,fontWeight:700,color:C.txt}}>Research Provenance &amp; Project History</span>
+          <span style={{display:"block",fontSize:11.5,color:C.muted,marginTop:2}}>Every meaningful change to this study — with scientific significance and manuscript impact.</span>
+        </span>
+        <span style={{fontSize:12,color:C.brand||C.txt2,fontWeight:600,whiteSpace:"nowrap"}}>Open →</span>
+      </button>
+    )}
 
     {perms.readOnly&&(
       <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:8,padding:"10px 14px",marginBottom:14,fontSize:12,color:C.txt2,display:"flex",alignItems:"center",gap:8}}>
