@@ -19,7 +19,7 @@ import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../scr
 import { rankItems } from '../../src/research-engine/screening/ai/ranking.js';
 import { splitBySource } from '../../src/research-engine/screening/sourceClassify.js';
 import { fastListEligible, buildFastListQuery } from '../../src/research-engine/screening/recordListQuery.js';
-import { aiFlagEnabled } from '../services/screeningAiService.js';
+import { aiFlagEnabled, stripAiInternals } from '../services/screeningAiService.js';
 // 62.md — export logic moved into a shared service so the sync route + the async export
 // worker share one CSV schema and one row mapping. CV is now capped + run off the event
 // loop; large projects stream via the durable job instead of buffering in one request.
@@ -750,6 +750,11 @@ export async function listRecords(req, res) {
 
     // Attach the FULL persisted AI score + explanation to a page (bounded by limit)
     // → instant Layer-1 "Why this score?" with no extra request (se2.md §5).
+    // 89.md — model internals (raw/calibrated probs, confidence/uncertainty, per-signal
+    // breakdown, raw signals) are administrator-only. Trim the inline aiScore for regular
+    // screeners so the data matches the render gate and can't be read from the raw list
+    // response. Administrators = project leader / settings-manager / site admin.
+    const aiConfigurer = access.isLeader || access.canManageSettings || req.user?.role === 'admin';
     const attachAiScores = async (paged) => {
       if (!aiOn || !paged.length) return paged;
       const ids = paged.map(r => r.id);
@@ -759,17 +764,15 @@ export async function listRecords(req, res) {
       return paged.map(r => {
         const s = fMap.get(r.id);
         if (!s) return r;
-        return {
-          ...r,
-          aiScore: {
-            recordId: s.recordId, score: s.score, proba: s.proba, calibratedProba: s.calibratedProba ?? null,
-            band: s.band, prediction: s.prediction,
-            confidence: s.confidence, uncertainty: s.uncertainty, mode: s.mode, lowConfidence: s.lowConfidence,
-            missingAbstract: s.missingAbstract, picoMean: s.picoMean,
-            subScores: parse(s.subScoresJson), signals: parse(s.signalsJson), explanation: parse(s.explanationJson),
-            updatedAt: s.updatedAt,
-          },
+        const aiScore = {
+          recordId: s.recordId, score: s.score, proba: s.proba, calibratedProba: s.calibratedProba ?? null,
+          band: s.band, prediction: s.prediction,
+          confidence: s.confidence, uncertainty: s.uncertainty, mode: s.mode, lowConfidence: s.lowConfidence,
+          missingAbstract: s.missingAbstract, picoMean: s.picoMean,
+          subScores: parse(s.subScoresJson), signals: parse(s.signalsJson), explanation: parse(s.explanationJson),
+          updatedAt: s.updatedAt,
         };
+        return { ...r, aiScore: aiConfigurer ? aiScore : stripAiInternals(aiScore) };
       });
     };
 

@@ -81,6 +81,11 @@ export function AiScoreCard({ ai, record, decided }) {
   const rid = record?.id;
   const score = rid ? (record?.aiScore || ai.scores[rid]) : null;
   const blind = ai.status?.project?.blindFromAi;
+  // 89.md — regular screeners get a focused card (the relevance score, the plain-language
+  // "why", similar records, PICO match) WITHOUT the model internals (calibrated
+  // probability, confidence/uncertainty bars, per-signal breakdown, provenance, engine
+  // config). Those are shown only to project administrators (canConfigure).
+  const advanced = !!ai.status?.canConfigure;
 
   // se2.md §5 — Layer 1 (instant): the explanation is served INLINE with the record
   // (server attaches the persisted ScreenAiScore.explanation), so "Why this score?"
@@ -127,7 +132,7 @@ export function AiScoreCard({ ai, record, decided }) {
               style={{ background: 'none', border: 'none', color: C.muted, fontSize: 11, fontFamily: FONT, cursor: 'pointer', textDecoration: 'underline' }}>Hide</button>
           </span>
         ) : null}
-        {ai.status?.latestRun && <Chip color={C.muted}>{ai.status.latestRun.mode === 'supervised' ? 'Trained model' : 'Cold-start'}</Chip>}
+        {advanced && ai.status?.latestRun && <Chip color={C.muted}>{ai.status.latestRun.mode === 'supervised' ? 'Trained model' : 'Cold-start'}</Chip>}
       </div>
       {children}
     </div>
@@ -162,7 +167,7 @@ export function AiScoreCard({ ai, record, decided }) {
   if (!score) {
     return card(
       <div style={{ fontSize: 12.5, color: C.muted }}>
-        No relevance score yet. {ai.status?.canRun ? 'Run scoring from the Guided Screening panel.' : 'Ask a project leader to run scoring.'}
+        No relevance score yet. {ai.status?.canRun ? 'Run scores from the article-list toolbar.' : 'Ask a project leader to run scoring.'}
       </div>
     );
   }
@@ -178,7 +183,7 @@ export function AiScoreCard({ ai, record, decided }) {
         <Chip color={predColor}>{PRED_LABEL[score.prediction] || score.prediction}</Chip>
       </div>
 
-      {score.calibratedProba != null && (
+      {advanced && score.calibratedProba != null && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, background: alpha(C.acc, 0.06), border: `1px solid ${alpha(C.acc, 0.25)}`, borderRadius: 7, padding: '6px 9px' }}>
           <span style={{ color: C.txt2 }} title="Calibrated probability that this record meets the inclusion criteria, learned from your decisions via out-of-fold cross-validation. Distinct from the ranking score.">Calibrated inclusion probability</span>
           <span style={{ flex: 1 }} />
@@ -186,16 +191,18 @@ export function AiScoreCard({ ai, record, decided }) {
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: C.muted, marginBottom: 3 }}><span>CONFIDENCE</span><span>{pct(score.confidence)}</span></div>
-          <Bar value={score.confidence} color={C.acc} />
+      {advanced && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: C.muted, marginBottom: 3 }}><span>CONFIDENCE</span><span>{pct(score.confidence)}</span></div>
+            <Bar value={score.confidence} color={C.acc} />
+          </div>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: C.muted, marginBottom: 3 }}><span>UNCERTAINTY</span><span>{pct(score.uncertainty)}</span></div>
+            <Bar value={score.uncertainty} color={C.yel} />
+          </div>
         </div>
-        <div>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10.5, color: C.muted, marginBottom: 3 }}><span>UNCERTAINTY</span><span>{pct(score.uncertainty)}</span></div>
-          <Bar value={score.uncertainty} color={C.yel} />
-        </div>
-      </div>
+      )}
 
       {score.missingAbstract && <Chip color={C.gold} title="No abstract — title-only, low confidence">No abstract — title only</Chip>}
       {score.lowConfidence && <div style={{ fontSize: 11.5, color: C.gold }}>Low-confidence prior — no model trained and no criteria configured yet.</div>}
@@ -229,19 +236,26 @@ export function AiScoreCard({ ai, record, decided }) {
               <ReasonList title="Reasons to include" color={C.grn} reasons={dropCitation(e.reasonsInclude, e.citation)} />
               <ReasonList title="Reasons to exclude" color={C.red} reasons={dropCitation(e.reasonsExclude, e.citation)} />
               <CitationSignals citation={e.citation} />
-              <SubScoreBreakdown subScores={e.subScores} />
+              {/* 89.md — per-signal breakdown + provenance + engine config are model
+                  internals: administrators only. Regular screeners keep the plain-language
+                  reasons, similar records, and PICO match above/below. */}
+              {advanced && <SubScoreBreakdown subScores={e.subScores} />}
               <PicoMatch breakdown={e.picoBreakdown} />
               <SimilarList title="Similar included records" color={C.teal} items={e.similar} />
               {/* 65.md SCR-6 — symmetric counter-examples from the excluded side. */}
               <SimilarList title="Similar excluded records" color={C.red} items={e.similarExcluded} />
-              {/* 66.md P4.10 — which signals actually fed this project's scores. */}
-              <ProvenanceChips ai={ai} />
-              {/* 65.md SCR-6 — score provenance: honest about in-sample vs held-out. */}
-              <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, borderTop: `1px solid ${C.brd}`, paddingTop: 8 }}>
-                This is the live model score, computed on the project's current decisions (in-sample).
-                Validation-grade held-out (cross-validated) scores are included in the CSV export.
-                {ai.status?.engineConfig?.activeLabel ? <> Engine config: <span style={{ fontFamily: MONO }}>{ai.status.engineConfig.activeLabel}</span>.</> : null}
-              </div>
+              {advanced && (
+                <>
+                  {/* 66.md P4.10 — which signals actually fed this project's scores. */}
+                  <ProvenanceChips ai={ai} />
+                  {/* 65.md SCR-6 — score provenance: honest about in-sample vs held-out. */}
+                  <div style={{ fontSize: 10.5, color: C.muted, lineHeight: 1.5, borderTop: `1px solid ${C.brd}`, paddingTop: 8 }}>
+                    This is the live model score, computed on the project&apos;s current decisions (in-sample).
+                    Validation-grade held-out (cross-validated) scores are included in the CSV export.
+                    {ai.status?.engineConfig?.activeLabel ? <> Engine config: <span style={{ fontFamily: MONO }}>{ai.status.engineConfig.activeLabel}</span>.</> : null}
+                  </div>
+                </>
+              )}
             </>
           )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
@@ -368,51 +382,84 @@ export function AiQueueBar({ ai, mode, onMode, band, onBand, onRefreshRankings }
   const ent = useEntitlements();
   const aiScoringLocked = !ent.loading && !ent.has('screening.aiScoring');
   if (!ai.enabled) return null;
-  // AI-blinding: a non-leader reviewer must not get AI-ordered/filtered worklists
-  // (the order leaks the model's opinion). Server enforces this too; leaders exempt.
-  if (ai.status?.project?.blindFromAi && !ai.status?.canConfigure) return null;
+  // AI-blinding: a non-leader reviewer must not get AI-ORDERED/FILTERED worklists (the
+  // order leaks the model's opinion) — so the queue/band selects are hidden under blind.
+  // 89.md fix: a blinded reviewer with run permission (allowReviewersToRun) must still be
+  // able to RUN scoring, so we no longer hide the whole bar — only the ordering controls.
+  const blindHidden = !!(ai.status?.project?.blindFromAi && !ai.status?.canConfigure);
   const sel = {
     fontFamily: FONT, fontSize: 12, color: C.txt, background: C.card, border: `1px solid ${C.brd}`,
     borderRadius: 6, padding: '5px 7px', cursor: 'pointer',
   };
+  // 89.md — background-job + score state, used to drive an honest Run/Update Scores
+  // label and a compact, screen-reader-announced status for regular screeners (who no
+  // longer have the Guided Screening panel). No fake progress — all from the job row.
+  const aiBusy = ai.running || ai.jobStatus?.running || ai.jobStatus?.state === 'updating' || ai.jobStatus?.state === 'queued';
+  const progressPct = ai.jobStatus?.total > 0 ? ai.jobStatus.progress : null;
+  const failed = !aiBusy && ai.jobStatus?.lastStatus === 'failed';
+  const scoresExist = !!ai.status?.latestRun || (ai.status?.scoreCount > 0) || (ai.scores && Object.keys(ai.scores).length > 0);
+  const belowThreshold = !!(ai.gate?.scoresHidden && ai.gate?.belowThreshold);
+  // 89.md fix — below the visibility threshold there are no USABLE scores yet (the server
+  // withholds them), so even if a cold-start run created rows, the verb stays "Run Scores"
+  // to match the "complete N decisions" status (never a contradictory "Update Scores").
+  const usableScores = scoresExist && !belowThreshold;
+  const outdated = !aiBusy && usableScores && (ai.jobStatus?.pending > 0);
+  // The button verb reflects whether this creates scores for the first time or refreshes.
+  const runLabel = aiBusy ? (progressPct != null ? `Scoring… ${progressPct}%` : 'Scoring…')
+    : failed ? 'Retry scoring'
+      : usableScores ? 'Update Scores'
+        : 'Run Scores';
+  const runTitle = aiScoringLocked ? AI_SCORING_LOCKED_MSG
+    : usableScores ? 'Recalculate relevance scores from the current decisions (runs in the background)'
+      : 'Calculate relevance scores from the current decisions (runs in the background)';
+  // A single, coarse status line (not the fast-moving %), announced politely so screen
+  // readers hear major transitions without per-record chatter.
+  const statusText = aiBusy ? 'Calculating relevance scores…'
+    : failed ? `Scoring failed${ai.jobStatus?.lastReason ? ` — ${ai.jobStatus.lastReason}` : ''}. You can try again.`
+      : belowThreshold ? `Complete ${ai.gate.threshold} screening decisions to unlock scores (${ai.gate.screenedCount}/${ai.gate.threshold}).`
+        : outdated ? 'New decisions recorded — scores may be out of date.'
+          : '';
+  const statusColor = failed ? C.red : outdated ? C.gold : belowThreshold ? C.muted : C.teal;
+
+  // Nothing to show for a blinded reviewer who also can't run and has no status.
+  if (blindHidden && !ai.status?.canRun && !statusText && !ai.rankingsAvailable) return null;
+
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-      <span style={{ fontFamily: MONO, fontSize: 10, color: C.acc, letterSpacing: '.06em' }}>QUEUE</span>
-      <select value={mode} onChange={e => onMode(e.target.value)} style={sel} title="Reorder the worklist by relevance">
-        {QUEUE_MODES.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
-      </select>
-      <select value={band || 'all'} onChange={e => onBand(e.target.value)} style={sel} title="Filter loaded records by relevance band">
-        <option value="all">All scores</option>
-        <option value="very_high">Very high (80+)</option>
-        <option value="high">High (60–80)</option>
-        <option value="medium">Medium (40–60)</option>
-        <option value="low">Low (&lt;40)</option>
-        <option value="uncertain">Uncertain band</option>
-      </select>
-      {ai.status?.canRun && (() => {
-        // 62.md — scoring runs in the background; keep the button busy (and prevent a
-        // duplicate run) while a job is queued or running, not just during the enqueue.
-        const aiBusy = ai.running || ai.jobStatus?.running || ai.jobStatus?.state === 'updating' || ai.jobStatus?.state === 'queued';
-        const pct = ai.jobStatus?.total > 0 ? ai.jobStatus.progress : null;
-        return (
-          <MiniBtn onClick={() => ai.run()} disabled={aiBusy || aiScoringLocked}
-            title={aiScoringLocked ? AI_SCORING_LOCKED_MSG : 'Train on current decisions and re-score all records (runs in the background)'}>
-            {aiBusy ? (pct != null ? `Scoring… ${pct}%` : 'Scoring…') : 'Run scoring'}
-          </MiniBtn>
-        );
-      })()}
-      {/* se2.md §6 / 62.md — background scoring state + position-preserving refresh */}
-      {(ai.jobStatus?.state === 'updating' || (ai.jobStatus?.running)) && (
-        <span title={`${ai.jobStatus.pending || 0} new decision(s) being incorporated`} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11, color: C.teal }}>
-          <span style={{ width: 7, height: 7, borderRadius: '50%', background: C.teal, animation: 'sift-fade .8s ease infinite alternate' }} />
-          Scores updating{ai.jobStatus?.total > 0 ? ` (${ai.jobStatus.progress}%)` : (ai.jobStatus.pending ? ` (${ai.jobStatus.pending})` : '')}…
-        </span>
+      {!blindHidden && (
+        <>
+          <span style={{ fontFamily: MONO, fontSize: 10, color: C.acc, letterSpacing: '.06em' }}>QUEUE</span>
+          <select value={mode} onChange={e => onMode(e.target.value)} style={sel} title="Reorder the worklist by relevance" aria-label="Order the article worklist by relevance">
+            {QUEUE_MODES.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+          </select>
+          <select value={band || 'all'} onChange={e => onBand(e.target.value)} style={sel} title="Filter loaded records by relevance band" aria-label="Filter articles by relevance band">
+            <option value="all">All scores</option>
+            <option value="very_high">Very high (80+)</option>
+            <option value="high">High (60–80)</option>
+            <option value="medium">Medium (40–60)</option>
+            <option value="low">Low (&lt;40)</option>
+            <option value="uncertain">Uncertain band</option>
+          </select>
+        </>
+      )}
+      {ai.status?.canRun && (
+        // Disabled while a job is queued/running so a double-click can't launch a
+        // duplicate run (the server is also idempotent per-project).
+        <MiniBtn onClick={() => ai.run()} disabled={aiBusy || aiScoringLocked} title={runTitle}>
+          {runLabel}
+        </MiniBtn>
       )}
       {ai.rankingsAvailable && ai.jobStatus?.state !== 'updating' && (
         <MiniBtn color={C.teal} onClick={() => onRefreshRankings && onRefreshRankings()} title="Apply the freshly-computed rankings (keeps your current record)">
           ↻ Refresh rankings
         </MiniBtn>
       )}
+      {/* Compact, accessible score-state. aria-live announces major transitions
+          (calculating / failed / outdated / insufficient) — never per-record noise. */}
+      <span role="status" aria-live="polite" style={{ display: statusText ? 'inline-flex' : 'none', alignItems: 'center', gap: 5, fontSize: 11, color: statusColor }}>
+        {aiBusy && <span aria-hidden="true" style={{ width: 7, height: 7, borderRadius: '50%', background: C.teal, animation: 'sift-fade .8s ease infinite alternate' }} />}
+        {statusText}
+      </span>
     </div>
   );
 }
