@@ -27,7 +27,7 @@ import { useCitationMiningEnabled } from '../../../features/citationMining/useCi
 // Both hooks are thin feature reads; searchMode is fetched ONLY for the active Search
 // category with the flag on, so no other page pays for it.
 import { useSearchWorkspaceV2Enabled } from '../../../features/searchWorkspace/useSearchWorkspaceV2Enabled.js';
-import { useSearchMode } from '../../../features/searchWorkspace/useSearchMode.js';
+import { useSearchMode, useSearchStageStatuses } from '../../../features/searchWorkspace/useSearchMode.js';
 
 const CATEGORY_BY_ID = PROJECT_CATEGORIES.reduce((m, c) => { m[c.id] = c; return m; }, {});
 
@@ -39,6 +39,10 @@ export default function StitchProjectSubnav({ projectId, linkedSiftId, category,
   // Resolve the saved search mode only when it can actually change the submenu (the
   // Search category, staged workspace on) — otherwise skip the fetch (enabled=false).
   const searchMode = useSearchMode(projectId, category === 'search' && searchWorkspaceV2Enabled);
+  // review-round #10 — live per-stage status glyphs: subscribing forces a re-render
+  // when the mounted workspace publishes fresher statuses (navConfig reads the same
+  // store cache while building the submenu, so no value needs threading here).
+  useSearchStageStatuses(projectId, category === 'search' && searchWorkspaceV2Enabled);
   const steps = submenuSteps(
     category,
     { projectId, linkedSiftId, citationMiningEnabled, searchWorkspaceV2Enabled, searchMode },

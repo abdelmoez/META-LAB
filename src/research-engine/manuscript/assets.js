@@ -7,18 +7,28 @@
  * only when non-empty, like snapshots).
  *
  * Identity rules (critique-hardened):
- *   - Per-outcome forest ids are `figure:forest:<slug>` where the slug comes from
- *     the STABLE pair.key ('outcome|||timepoint'), NOT from the study-count sort
- *     position — adding a study can never orphan a caption override.
- *   - Slug collisions are suffixed deterministically by lexicographic pair.key
- *     order (independent of the analyses sort), so ids stay stable across runs.
+ *   - EVERY forest (the current primary included) gets a stable pair-keyed id
+ *     `figure:forest:<slug>` where the slug comes from the STABLE pair.key
+ *     ('outcome|||timepoint'), NOT from the study-count sort position — a primary
+ *     flip (most-studies re-sort) can never rebind a token or caption override to
+ *     a different outcome. The funnel is keyed `figure:funnel:<slug>` of the pair
+ *     it plots. 'figure:forest-primary' / 'figure:funnel' survive as RESOLVABLE
+ *     ALIASES (`aliasIds` on the current primary-pair assets): alias tokens keep
+ *     numbering/rendering (they follow whatever pair is primary NOW), and alias
+ *     overrides read through — but pair-keyed overrides always win, and new
+ *     overrides are written under pair-keyed ids only (the panels key on a.id).
+ *   - Slug allocation is GLOBAL over all pairs in lexicographic pair.key order
+ *     (independent of the analyses sort): the first free candidate wins, so a
+ *     synthesized '<base>-N' suffix can never collide with another pair's natural
+ *     base slug (cross-base duplicates minted two assets with one id, which every
+ *     Map-keyed consumer silently collapsed).
  *   - Ids satisfy the token grammar ([a-z0-9:-] only, no ']', no whitespace);
  *     the human outcome label is stored separately (`outcomeLabel`).
  *
- * Inclusion defaults: available tables, figure:prisma and figure:forest-primary
- * default to included; per-outcome forests, figure:rob and figure:funnel default
- * to EXCLUDED and are auto-included when a token references them (numbering
- * resolves that — see refTokens.resolveNumbering).
+ * Inclusion defaults: available tables, figure:prisma and the PRIMARY pair's
+ * forest default to included; non-primary forests, figure:rob and the funnel
+ * default to EXCLUDED and are auto-included when a token references them
+ * (numbering resolves that — see refTokens.resolveNumbering).
  *
  * Pure — no DOM/React/network, deterministic.
  */
@@ -70,8 +80,9 @@ function staleFlag(stale, id) {
  *   staleAssets   {[assetId]:true} map or Set — stamps `stale:true`
  *
  * @returns Array of ordered asset descriptors:
- *   { id, kind:'table'|'figure', builderId, title, defaultCaption, legend?,
- *     available, stale?, includedDefault, included, note?, source,
+ *   { id, kind:'table'|'figure', builderId, title, defaultCaption, caption?,
+ *     legend?, available, stale?, includedDefault, included, note?, source,
+ *     aliasIds?,                  // legacy role ids resolving to this asset
  *     pairKey?, outcomeLabel? }   // forest/funnel figures only
  */
 export function computeManuscriptAssets(project, draft, opts = {}) {
@@ -93,15 +104,21 @@ export function computeManuscriptAssets(project, draft, opts = {}) {
   const out = [];
   const push = (base) => {
     const a = { ...base };
-    const ov = overrides[base.id];
-    if (ov && typeof ov === 'object') {
+    // Alias overrides read through (legacy role-keyed draft.assets entries), but
+    // the pair-keyed id always wins — new overrides are written under it only.
+    for (const key of [...(base.aliasIds || []), base.id]) {
+      const ov = overrides[key];
+      if (!(ov && typeof ov === 'object')) continue;
       if (typeof ov.included === 'boolean') a.included = ov.included;
       if (clean(ov.title)) a.title = clean(ov.title);
-      if (clean(ov.caption)) a.defaultCaption = clean(ov.caption);
+      // caption is the asset's OWN field (rendered under the "Table N. Title"
+      // line by the export) — it never masquerades as defaultCaption, which
+      // stays the builder default the panel shows as a placeholder.
+      if (clean(ov.caption)) a.caption = clean(ov.caption);
       if (clean(ov.legend)) a.legend = clean(ov.legend);
       if (clean(ov.note)) a.note = clean(ov.note);
     }
-    if (staleFlag(stale, base.id)) a.stale = true;
+    if (staleFlag(stale, base.id) || (base.aliasIds || []).some((id) => staleFlag(stale, id))) a.stale = true;
     out.push(a);
   };
 
@@ -145,8 +162,34 @@ export function computeManuscriptAssets(project, draft, opts = {}) {
 
   const primaryAvailable = !!(primary && primary.result);
   const primaryLabel = (primary && primary.pair && primary.pair.label) || 'primary outcome';
+  const primaryPairKey = (primary && primary.pair && primary.pair.key) || null;
+
+  // GLOBAL slug allocation over ALL pairs (primary included), lexicographic
+  // pair.key order, first-free-candidate: cross-base collisions can never mint a
+  // duplicate id, and the allocation is independent of the study-count sort.
+  const slugByKey = new Map();
+  {
+    const used = new Set();
+    const keys = [];
+    for (const a of analyses) {
+      if (a && a.pair && a.pair.key && !slugByKey.has(a.pair.key)) { slugByKey.set(a.pair.key, null); keys.push(a.pair.key); }
+    }
+    keys.sort();
+    for (const key of keys) {
+      const base = assetSlug(key);
+      let slug = base;
+      for (let i = 2; used.has(slug); i += 1) slug = `${base}-${i}`;
+      used.add(slug);
+      slugByKey.set(key, slug);
+    }
+  }
+
+  // The current primary pair's forest — pair-keyed id so a primary flip never
+  // rebinds tokens/overrides; 'figure:forest-primary' resolves to it as an alias.
+  const primarySlug = primaryPairKey ? slugByKey.get(primaryPairKey) : null;
   push({
-    id: 'figure:forest-primary',
+    id: primarySlug ? `figure:forest:${primarySlug}` : 'figure:forest-primary',
+    ...(primarySlug ? { aliasIds: ['figure:forest-primary'] } : {}),
     kind: 'figure',
     builderId: 'forest',
     title: `Forest plot — ${primaryLabel}`,
@@ -155,27 +198,14 @@ export function computeManuscriptAssets(project, draft, opts = {}) {
     includedDefault: primaryAvailable,
     included: primaryAvailable,
     source: 'analysis',
-    pairKey: (primary && primary.pair && primary.pair.key) || null,
+    pairKey: primaryPairKey,
     outcomeLabel: primaryLabel,
   });
 
-  // Per-NON-primary-outcome forests. Slug base from the stable pair.key; collision
-  // suffixes assigned in lexicographic pair.key order so a study-count re-sort of
-  // `analyses` can never flip which pair owns 'slug-2'.
-  const secondaries = analyses.filter((a) => a && a.pair && (!primary || a.pair.key !== primary.pair.key));
-  const slugById = new Map();
-  const byBase = new Map();
+  // Per-NON-primary-outcome forests (same global slug table).
+  const secondaries = analyses.filter((a) => a && a.pair && a.pair.key && a.pair.key !== primaryPairKey);
   for (const a of secondaries) {
-    const base = assetSlug(a.pair.key);
-    if (!byBase.has(base)) byBase.set(base, []);
-    byBase.get(base).push(a.pair.key);
-  }
-  for (const [base, keys] of byBase) {
-    const sorted = keys.slice().sort();
-    sorted.forEach((key, i) => slugById.set(key, i === 0 ? base : `${base}-${i + 1}`));
-  }
-  for (const a of secondaries) {
-    const slug = slugById.get(a.pair.key);
+    const slug = slugByKey.get(a.pair.key);
     const label = a.pair.label || a.pair.outcome || 'outcome';
     push({
       id: `figure:forest:${slug}`,
@@ -211,10 +241,12 @@ export function computeManuscriptAssets(project, draft, opts = {}) {
     source: 'rob',
   });
 
-  // Funnel plot for the PRIMARY analysis — same ≥3-study guard the Analysis tab uses.
+  // Funnel plot for the PRIMARY analysis — same ≥3-study guard the Analysis tab
+  // uses. Keyed to the pair it plots; 'figure:funnel' resolves to it as an alias.
   const funnelAvailable = primaryAvailable && funnelEligible(primary && primary.subset);
   push({
-    id: 'figure:funnel',
+    id: primarySlug ? `figure:funnel:${primarySlug}` : 'figure:funnel',
+    ...(primarySlug ? { aliasIds: ['figure:funnel'] } : {}),
     kind: 'figure',
     builderId: 'funnel',
     title: `Funnel plot — ${primaryLabel}`,
@@ -223,7 +255,7 @@ export function computeManuscriptAssets(project, draft, opts = {}) {
     includedDefault: false,
     included: false,
     source: 'analysis',
-    pairKey: (primary && primary.pair && primary.pair.key) || null,
+    pairKey: primaryPairKey,
     outcomeLabel: primaryLabel,
   });
 

@@ -16,8 +16,15 @@
  */
 import { norm } from './conceptExtraction.js';
 import { isFillerWord } from './keywordSelection.js';
+import { isLiveTerm } from './termLiveness.js';
 
 const s = (v) => String(v == null ? '' : v);
+
+/** A concept term's SEARCHED text — '' for a disabled/blank object term (shared
+ *  liveness rule, termLiveness.js). String entries are tolerated and always live:
+ *  they cannot carry a `disabled` flag. A disabled term is not executed, so it must
+ *  neither explain a missing seed nor count as coverage for a candidate synonym. */
+const liveTermText = (t) => (t && typeof t === 'object' ? (isLiveTerm(t) ? t.text : '') : t);
 
 /* ── identifier normalization ────────────────────────────────────────────────── */
 /** DOI → lowercased bare DOI (strips https://doi.org/, dx.doi.org, doi: prefixes). */
@@ -87,7 +94,7 @@ function likelyReason(seed, ids, bestSim, { concepts, filters }) {
   if (concepts && concepts.length && title) {
     const missing = [];
     for (const c of concepts) {
-      const terms = ((c && c.terms) || []).map((t) => norm(t && t.text != null ? t.text : t)).filter(Boolean);
+      const terms = ((c && c.terms) || []).map((t) => norm(liveTermText(t))).filter(Boolean);
       if (!terms.length) continue;
       const hit = terms.some((term) => title.includes(term));
       if (!hit) missing.push(s(c.label) || s(c.picoField) || 'a concept');
@@ -163,7 +170,7 @@ export function suggestQueryImprovements({ notFound, concepts } = {}) {
   const covered = new Set();
   for (const c of (Array.isArray(concepts) ? concepts : [])) {
     for (const t of ((c && c.terms) || [])) {
-      const n = norm(t && t.text != null ? t.text : t);
+      const n = norm(liveTermText(t));
       for (const w of n.split(' ')) if (w) covered.add(w);
     }
   }

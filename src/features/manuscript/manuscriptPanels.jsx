@@ -202,6 +202,12 @@ export function ExportValidationDialog({ review, onExportAnyway, onClose, export
           </span>
         )}
       </div>
+      {review.recheck && (
+        <div data-testid="stitch-manuscript-export-recheck"
+          style={{ fontSize: 11.5, color: C.txt2, marginBottom: 6 }}>
+          Your latest edits were re-checked before exporting — new blocking problems were found, so nothing was exported.
+        </div>
+      )}
       {errors.map((e, i) => row(e, 'red', i, 'err'))}
       {warnings.map((e, i) => row(e, 'yellow', i, 'warn'))}
       {info.map((e, i) => row(e, 'gray', i, 'info'))}
@@ -1467,8 +1473,8 @@ export function assetNumberLabel(m, asset) {
 }
 
 /** One asset's controls: number, editable title/caption(/legend), include toggle,
-    honest badges, Insert-reference. Text edits are BUFFERED per panel (authorship
-    pattern) and land through setMetaDebounced({ assets }). */
+    honest badges, Insert-reference. Text edits are BUFFERED per panel and land
+    as per-asset patches through queueAssetPatch (merge-at-flush). */
 function AssetControls({ m, asset, buf, commit, onInsertNotice }) {
   const slug = assetTestSlug(asset.id);
   const ov = (buf && buf[asset.id]) || {};
@@ -1519,6 +1525,8 @@ function AssetControls({ m, asset, buf, commit, onInsertNotice }) {
         </span>
       </div>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+        {/* Title = the "{Table|Figure} N. Title" caption line; Caption = its own
+            paragraph exported UNDER that line (it is never merged into the title). */}
         <Labeled label="Title" style={{ flex: '1 1 220px' }}>
           <input value={ov.title || ''} placeholder={asset.title || 'Title…'}
             onChange={(e) => patch({ title: e.target.value })}
@@ -1526,7 +1534,8 @@ function AssetControls({ m, asset, buf, commit, onInsertNotice }) {
             data-testid={`stitch-manuscript-asset-title-${slug}`} style={inp} />
         </Labeled>
         <Labeled label="Caption" style={{ flex: '2 1 260px' }}>
-          <textarea value={ov.caption || ''} placeholder={asset.defaultCaption || 'Caption…'}
+          <textarea value={ov.caption || ''}
+            placeholder={`Optional caption exported under the “${asset.kind === 'figure' ? 'Figure' : 'Table'} N. Title” line…`}
             onChange={(e) => patch({ caption: e.target.value })}
             rows={1} aria-label={`${asset.title || asset.id} caption`}
             style={{ ...inp, resize: 'vertical', lineHeight: 1.5 }} />
@@ -1544,16 +1553,25 @@ function AssetControls({ m, asset, buf, commit, onInsertNotice }) {
   );
 }
 
-/** Buffered draft.assets edits shared by both panels (authorship pattern). */
+/** Buffered draft.assets edits shared by both panels. The buffer is DISPLAY
+    state only: commits queue per-asset FIELD patches (m.queueAssetPatch) that
+    merge over the CURRENT draft.assets at flush time — never a wholesale
+    replacement from a mount-time snapshot, which silently reverted overrides
+    written by the other panel (or a collaborator) after this panel mounted.
+    It re-seeds from the draft whenever the overrides change while nothing is
+    in flight, so other writers' values surface instead of going stale. */
 function useAssetOverridesBuffer(m) {
-  const [buf, setBuf] = useState(() => ({ ...((m.activeDraft && m.activeDraft.assets) || {}) }));
+  const draftAssets = (m.activeDraft && m.activeDraft.assets) || null;
+  const [buf, setBuf] = useState(() => ({ ...(draftAssets || {}) }));
   useEffect(() => { setBuf({ ...((m.activeDraft && m.activeDraft.assets) || {}) }); }, [m.activeId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    // saveState 'saved' ⇔ no queued/in-flight edit — re-seeding then can never
+    // clobber typing, and after our own flush it echoes the merged result back.
+    if (m.saveState === 'saved') setBuf({ ...(draftAssets || {}) });
+  }, [draftAssets, m.saveState]); // eslint-disable-line react-hooks/exhaustive-deps
   const commit = (assetId, patch) => {
-    setBuf((prev) => {
-      const next = { ...prev, [assetId]: { ...(prev[assetId] || {}), ...patch } };
-      m.setMetaDebounced({ assets: next });
-      return next;
-    });
+    setBuf((prev) => ({ ...prev, [assetId]: { ...(prev[assetId] || {}), ...patch } }));
+    m.queueAssetPatch(assetId, patch);
   };
   return [buf, commit];
 }
@@ -1611,7 +1629,11 @@ export function FiguresPanel({ m }) {
           : svgs.prisma ? <SvgBox svg={svgs.prisma} />
             : <InfoBox color={C.muted}>No PRISMA counts available yet — enter them in the PRISMA tab.</InfoBox>;
     }
-    if (asset.id === 'figure:forest-primary') {
+    // The primary pair's forest is pair-keyed ('figure:forest:<slug>') with the
+    // legacy role id kept as an alias — detect it by either.
+    const isPrimaryForest = asset.id === 'figure:forest-primary'
+      || (asset.aliasIds || []).includes('figure:forest-primary');
+    if (isPrimaryForest) {
       return !asset.available ? <InfoBox color={C.muted}>No meta-analysis result yet. Add studies with effect sizes and run an analysis to see a forest plot.</InfoBox>
         : svgs.loading ? <div style={{ color: C.muted, fontSize: 12 }}>Rendering…</div>
           : svgs.error ? <InfoBox color={C.red}>{svgs.error}</InfoBox>

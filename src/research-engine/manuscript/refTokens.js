@@ -73,7 +73,12 @@ export function orderedSections(draftOrSections) {
 export function resolveNumbering({ sections, assets } = {}) {
   const secs = orderedSections(sections || []);
   const list = Array.isArray(assets) ? assets : [];
+  // Alias ids (asset.aliasIds — e.g. legacy 'figure:forest-primary') resolve to
+  // their asset; everything downstream is tracked under the CANONICAL asset.id.
   const byAssetId = new Map(list.map((a) => [a.id, a]));
+  for (const a of list) {
+    for (const al of (a.aliasIds || [])) if (!byAssetId.has(al)) byAssetId.set(al, a);
+  }
   const bodySet = new Set(BODY_SECTION_IDS);
 
   const mentioned = new Set();
@@ -89,12 +94,12 @@ export function resolveNumbering({ sections, assets } = {}) {
         unresolved.push({ token: assetToken(tk.id), id: tk.id, kind: tk.kind, sectionId: sec.id, reason: 'unknown' });
         continue;
       }
-      mentioned.add(tk.id);
+      mentioned.add(asset.id);
       if (!asset.available) {
         unresolved.push({ token: assetToken(tk.id), id: tk.id, kind: tk.kind, sectionId: sec.id, reason: 'unavailable' });
         continue;
       }
-      if (bodySet.has(sec.id) && !bodySeen.has(tk.id)) { bodySeen.add(tk.id); bodyFirstMention.push(tk.id); }
+      if (bodySet.has(sec.id) && !bodySeen.has(asset.id)) { bodySeen.add(asset.id); bodyFirstMention.push(asset.id); }
     }
   }
 
@@ -121,6 +126,12 @@ export function resolveNumbering({ sections, assets } = {}) {
   };
   for (const id of bodyFirstMention) if (emitted.has(id) && byId[id] == null) assign(id);
   for (const a of list) if (emitted.has(a.id) && byId[a.id] == null) assign(a.id);
+
+  // Alias ids mirror their canonical number so every renderer (editor chips,
+  // renderAssetMarkers, docx parseInline) resolves alias tokens identically.
+  for (const a of list) {
+    for (const al of (a.aliasIds || [])) if (!(al in byId)) byId[al] = byId[a.id];
+  }
 
   return { byId, orderTables, orderFigures, mentioned, unresolved, autoIncluded };
 }

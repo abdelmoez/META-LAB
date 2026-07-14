@@ -34,6 +34,7 @@
  */
 import { matchFamily, norm } from './conceptExtraction.js';
 import { getDatabase } from './databases.js';
+import { isLiveTerm } from './termLiveness.js';
 
 export const PROFILES = Object.freeze(['broad', 'balanced', 'precise']);
 const PROFILE_SET = new Set(PROFILES);
@@ -193,8 +194,11 @@ registerRenderer(pubmedRenderer);
 registerRenderer(openalexRenderer);
 
 /* ── normalization ───────────────────────────────────────────────────────────── */
+// MUST use the shared liveness rule (termLiveness.js): a `disabled: true` term is
+// excluded from every generated, paste-ready string, or the studio would execute a
+// broader search than the compiled preview / methods text / version hash document.
 function liveTerms(concept) {
-  return ((concept && concept.terms) || []).filter((t) => t && s(t.text).trim());
+  return ((concept && concept.terms) || []).filter(isLiveTerm);
 }
 function normalizeConcepts(concepts) {
   return (Array.isArray(concepts) ? concepts : [])
@@ -249,7 +253,9 @@ function buildBlocks(concepts, renderer, profile, warnings) {
   const blocks = [];
   const blockQs = [];
   for (const concept of concepts) {
-    const live = concept.terms;
+    // generateStrategyFor is exported and reachable with RAW (un-normalized) concepts
+    // (e.g. the critic's revised strategies), so liveness is re-applied here too.
+    const live = liveTerms(concept);
     if (!live.length) {
       warnings.push({ type: 'EMPTY_CONCEPT', message: `Concept "${concept.label}" has no search terms and was omitted.` });
       continue;

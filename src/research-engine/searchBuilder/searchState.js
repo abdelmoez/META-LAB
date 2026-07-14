@@ -143,10 +143,12 @@ export function syncSearchBuilderFromPico(pico, existingConcepts, ignoredList) {
       // Keep an auto term the user converted to MeSH even if it is no longer
       // extracted — and (85.md A1) an auto term the user DISABLED: disable means
       // "keep but off", so a PICO edit that drops the keyword must not silently
-      // delete the switched-off term.
+      // delete the switched-off term. `kept` covers the disable→RE-ENABLE path:
+      // re-enabling clears `disabled` (the keep-marker), so without the stamp the
+      // next sync would silently delete the term the user just switched back on.
       for (const t of priorAuto) {
         const n = norm(t.text);
-        if (!used.has(n) && !ig.has(n) && (t.type === 'controlled' || t.vocab || t.disabled)) { used.add(n); autoTerms.push(t); }
+        if (!used.has(n) && !ig.has(n) && (t.type === 'controlled' || t.vocab || t.disabled || t.kept)) { used.add(n); autoTerms.push(t); }
       }
     }
 
@@ -396,10 +398,14 @@ export function removeTermFromField(concepts, fieldKey, text) {
 
 /**
  * 85.md A1 — disable-without-delete. Set/clear one term's `disabled` flag.
- * FLAG HYGIENE: enabling DELETES the key (never writes `disabled: false`), so a
- * disable→enable round-trip leaves the term byte-identical to a term that was never
- * touched — the persisted signature (serializeSearchState) must not drift, or every
- * toggle would look like a permanent content change to autosave/versions/collab.
+ * FLAG HYGIENE: enabling DELETES the key (never writes `disabled: false`); terms
+ * that were never toggled stay byte-identical, so old saves never look "changed".
+ * RE-ENABLE KEEP-MARKER: re-enabling a pico_auto term stamps the additive
+ * `kept: true` (omit-when-absent). The `disabled` flag WAS the term's protection in
+ * syncSearchBuilderFromPico's keep-condition — clearing it without a replacement
+ * marker lets the next PICO sync silently delete a term whose keyword is no longer
+ * extracted, right after the user switched it back ON. This is a deliberate
+ * persisted-signature change: autosave MUST fire so the marker survives a reload.
  * Pure; returns a new array (untouched concepts/terms keep their references).
  */
 export function setTermDisabled(concepts, conceptId, termId, disabled) {
@@ -412,7 +418,9 @@ export function setTermDisabled(concepts, conceptId, termId, disabled) {
         if (disabled) return t.disabled === true ? t : { ...t, disabled: true };
         if (!('disabled' in t)) return t; // already enabled — no-op
         const { disabled: _off, ...rest } = t;
-        return rest;
+        // Only pico_auto terms need the sync keep-marker; manual/user terms are
+        // never dropped by a sync, so they round-trip byte-identically.
+        return rest.source === 'pico_auto' ? { ...rest, kept: true } : rest;
       }),
     };
   });

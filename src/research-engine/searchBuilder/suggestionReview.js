@@ -15,7 +15,7 @@
  *
  * REJECTION KEY (persisted in the module state's `rejectedSuggestions` string list,
  * omit-when-empty — see searchState.pickPersisted and the putSearch sanitizer):
- *   rej:<picoField-or-normalized-concept-label>:<termEquivalenceKey(sourceText)>
+ *   rej:<picoField-or-concept-id-or-normalized-label>:<termEquivalenceKey(sourceText)>
  * Keying on the SOURCE term's equivalence key (not the suggested heading) is what
  * keeps a whole family rejected: rejecting the heading offered for "EUS" also
  * covers the one offered for "endoscopic ultrasound".
@@ -28,11 +28,16 @@ import { liveTermsOf } from './termLiveness.js';
 
 /** Persisted rejection key for a suggestion rooted at `termText` in `concept`.
  *  Scope = the concept's stable picoField when present (canonical groups), else the
- *  normalized label (manual concepts have random ids that regenerate; labels don't). */
+ *  concept's persisted id: two MANUAL concepts can legitimately share a label
+ *  (addConcept auto-names by count, renames are unvalidated), and a label scope
+ *  would leak a rejection made in one into the other. Normalized label is only the
+ *  last-resort fallback for id-less input. (Scope format changed from label→id
+ *  pre-release, hours after the feature shipped — no persisted keys in the old
+ *  manual-label format exist to migrate.) */
 export function rejectionKey(concept, termText) {
   const scope = concept && concept.picoField
     ? String(concept.picoField).trim().toUpperCase()
-    : norm(concept && concept.label);
+    : ((concept && concept.id != null && String(concept.id).trim()) || norm(concept && concept.label));
   return `rej:${scope}:${termEquivalenceKey(termText)}`;
 }
 

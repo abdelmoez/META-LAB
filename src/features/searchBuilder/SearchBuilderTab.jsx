@@ -213,7 +213,9 @@ export function renderTerm(term,dbId){
   return `${token}${fieldSuffix(dbId,field)}`;
 }
 function renderConcept(concept,dbId){
-  const live=concept.terms.filter(t=>(t.text||"").trim());
+  // review-round #4 — a switched-off term must not appear in any query rendering
+  // (the compilers already skip it; this legacy renderer must agree).
+  const live=liveTermsOf(concept);
   if(!live.length) return "";
   if(dbId==="pubmed"){
     const parts=live.map(t=>t.type==="controlled"?renderControlled(t,dbId):pubmedFree(t));
@@ -253,7 +255,8 @@ function plainTerm(term){
   return `articles mentioning ${how} in ${where}`;
 }
 function plainConcept(concept){
-  const parts=concept.terms.filter(t=>t.text.trim()).map(plainTerm);
+  // review-round #4 — the plain-English mirror describes what RUNS: skip disabled.
+  const parts=liveTermsOf(concept).map(plainTerm);
   if(!parts.length) return "";
   return parts.length===1?parts[0]:parts.join(", OR ");
 }
@@ -897,7 +900,7 @@ function KeywordField({fieldKey,label,hint,text,accent,isSelected,onToggle,onAdd
 /* Visual concept blocks joined by AND/OR — the beginner's mental model before any
    Boolean string. Read-only summary used at the top of Build Strategy. */
 function ConceptBlocksBar({concepts}){
-  const blocks=concepts.map(c=>({label:c.label,n:c.terms.filter(t=>(t.text||"").trim()).length,op:c.op||"AND",pico:!!c.picoField})).filter(b=>b.n>0);
+  const blocks=concepts.map(c=>({label:c.label,n:liveTermsOf(c).length,op:c.op||"AND",pico:!!c.picoField})).filter(b=>b.n>0);
   if(!blocks.length) return <div style={{color:C.muted,fontSize:12,fontStyle:"italic",padding:"6px 0"}}>No concepts with terms yet — add keywords first.</div>;
   return(
     <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8}}>
@@ -965,10 +968,11 @@ function strategyForDb(concepts,overrides,dbId,filters){
   return compileStrategy({concepts,overrides,filters},dbId).query;
 }
 
-/* Plain, copy-able strategy table (concept → terms). */
+/* Plain, copy-able strategy table (concept → terms). review-round #4: documents
+   what RUNS — switched-off terms are excluded like everywhere else. */
 function strategyTableText(concepts){
-  const rows=concepts.filter(c=>c.terms.some(t=>(t.text||"").trim()))
-    .map((c,i)=>`${i+1}\t${c.label}\t${c.terms.filter(t=>(t.text||"").trim()).map(t=>t.text).join(" OR ")}`);
+  const rows=concepts.filter(c=>liveTermsOf(c).length)
+    .map((c,i)=>`${i+1}\t${c.label}\t${liveTermsOf(c).map(t=>t.text).join(" OR ")}`);
   return ["#\tConcept\tTerms",...rows].join("\n");
 }
 
@@ -1117,6 +1121,15 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const [undoMsg,setUndoMsg]=useState(null);
   // Master-detail: the concept whose terms are being edited on the Terms stage.
   const [activeConceptId,setActiveConceptId]=useState(null);
+  // review-round #8 — switching the active concept closes any popover/add box that
+  // belongs to another concept: an INVISIBLE editor (master-detail hides non-active
+  // concepts) silently kept `busyEditing` true, deferring remote updates that then
+  // "reappeared" much later.
+  useEffect(()=>{
+    if(!activeConceptId) return;
+    setEditing(e=>(e&&e.conceptId&&e.conceptId!==activeConceptId?null:e));
+    setAdding(a=>(a&&a!==activeConceptId?null:a));
+  },[activeConceptId]);
   // Per-concept add-box drafts (keyed by concept id) — blur RETAINS them; switching
   // concepts round-trips them (critique #4: no navigation may lose typed work).
   const [drafts,setDrafts]=useState({});
@@ -1128,7 +1141,17 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const [announceMsg,setAnnounceMsg]=useState('');
   // "Show dismissed" toggle inside the suggestions disclosure.
   const [showDismissedSuggs,setShowDismissedSuggs]=useState(false);
-  const announce=(msg)=>setAnnounceMsg(String(msg||''));
+  // review-round #11 — clear-then-set: aria-live only fires on CONTENT CHANGE, so
+  // two identical consecutive messages ("Added 'x'" twice) were silent the second
+  // time. Blanking first guarantees a change; the timer also self-clears the region
+  // so stale text is not re-read when the user tabs back into the live region.
+  const announceTimer=useRef(null);
+  const announce=(msg)=>{
+    clearTimeout(announceTimer.current);
+    setAnnounceMsg('');
+    announceTimer.current=setTimeout(()=>setAnnounceMsg(String(msg||'')),30);
+  };
+  useEffect(()=>()=>clearTimeout(announceTimer.current),[]);
 
   /* ── SE2: PICO key + refs (used by mount, autosave guard, and auto-sync) ───
      The key includes the Time Frame fields so a Time-Frame edit also re-syncs. */
@@ -1228,7 +1251,14 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   useEffect(()=>{
     if(!loaded||!saveSearch||!projectId) return;
     const sig=serializeSearchState({concepts,overrides,ignored,databases:selectedDbs,readyForScreening,dismissedWarnings,filters,rejectedSuggestions});
-    if(sig===lastSavedRef.current){ pendingSaveRef.current=null; return; } // unchanged vs the server → no PUT, no ping-pong
+    if(sig===lastSavedRef.current){
+      pendingSaveRef.current=null; // unchanged vs the server → no PUT, no ping-pong
+      // review-round #7 — an edit REVERTED inside the 800ms window (snackbar Undo,
+      // re-typing the old value) cancels the pending PUT; the indicator must not
+      // stay "Saving…" forever for a save that will never fire.
+      if(saveStateRef.current==='saving'){ setSaveState('saved'); saveStateRef.current='saved'; }
+      return;
+    }
     setRemoteUpdatedBy(null); // this user is now editing → drop the "updated by collaborator" attribution
     const payload={concepts,overrides,ignored,databases:selectedDbs,dismissedWarnings,filters,rejectedSuggestions};
     pendingSaveRef.current={sig,payload};
@@ -1282,7 +1312,10 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   }
   // 85.md A2 — busy now also covers the new edit surfaces: an open term-editor
   // popover, a non-empty per-concept add draft, and a pending multi-term paste.
-  const anyDraft=Object.values(drafts).some(v=>v&&String(v).trim());
+  // review-round #6 — only drafts belonging to a concept that still EXISTS count
+  // (an orphaned entry — e.g. adopted remote state deleted the concept — must not
+  // block remote adoption forever).
+  const anyDraft=Object.entries(drafts).some(([cid,v])=>v&&String(v).trim()&&concepts.some(c=>c.id===cid));
   const busyEditing=!!(editing||adding||(draft&&draft.trim())||anyDraft||pendingSplit);
   async function pullRemote(){
     if(!loadSearch||!projectId) return;
@@ -1543,6 +1576,14 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     });
     setConcepts(cs=>cs.filter(c2=>c2.id!==id));
     setActiveConceptId(a=>a===id?null:a);
+    // review-round #6 — a deleted concept's retained add-draft / pending paste /
+    // inline status must not linger: an orphaned draft kept `busyEditing` true
+    // FOREVER, permanently deferring remote adoption for this session.
+    setDrafts(d=>{ if(!(id in d)) return d; const {[id]:_gone,...rest}=d; return rest; });
+    setAddStatus(s=>{ if(!(id in s)) return s; const {[id]:_gone,...rest}=s; return rest; });
+    setPendingSplit(p=>(p&&p.cid===id?null:p));
+    if(editing&&editing.conceptId===id) setEditing(null);
+    if(adding===id) setAdding(null);
   };
   /* 85.md A2 — disable-without-delete (A1 setTermDisabled) + undo. */
   const toggleTermDisabled=(cid,tid)=>{
@@ -1629,7 +1670,12 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
           : '';
     setDrafts(d=>({...d,[cid]:''}));
     setPendingSplit(null);
-    if(msg){ setAddStatus(s=>({...s,[cid]:msg})); announce(msg); }
+    if(msg){
+      setAddStatus(s=>({...s,[cid]:msg})); announce(msg);
+      // review-round #11 — the inline status is transient feedback, not permanent
+      // chrome: clear it after a beat (unless a newer message replaced it).
+      setTimeout(()=>setAddStatus(s=>(s[cid]===msg?(({[cid]:_gone,...rest})=>rest)(s):s)),8000);
+    }
   };
   /* Commit the draft: multi-term input pauses on an explicit "Add N terms?" preview. */
   const commitTypedDraft=(cid)=>{
@@ -1678,12 +1724,19 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     const c=conceptsRef.current.find(x=>x.id===cid); if(!c) return;
     const pend=pendingSuggestions(c,rejectedSuggestions).filter(s=>s.kind==='mesh');
     if(!pend.length) return;
+    // review-round #9 — several freetext terms can map to ONE heading ("t2dm" and
+    // "type 2 diabetes" → "Diabetes Mellitus, Type 2"): accept each descriptor once,
+    // and skip descriptors the concept already carries as a controlled term.
+    const have=new Set(c.terms.filter(t=>t.type==='controlled').map(t=>cnorm(t.text)));
+    const batch=[];
+    for(const s of pend){ const k=cnorm(s.text); if(!k||have.has(k)) continue; have.add(k); batch.push(s); }
+    if(!batch.length) return;
     const created=[];
-    const newTerms=pend.map(s=>{const tid=uid();created.push(tid);return {id:tid,text:s.text,type:'controlled',field:'tiab',source:'user_added',vocab:s.vocab||null};});
+    const newTerms=batch.map(s=>{const tid=uid();created.push(tid);return {id:tid,text:s.text,type:'controlled',field:'tiab',source:'user_added',vocab:s.vocab||null};});
     setConcepts(cs=>cs.map(x=>x.id===cid?{...x,terms:[...x.terms,...newTerms]}:x));
-    setUndoStack(st=>recordBulkAccept(st,{concept:c,termIds:created,label:`${pend.length} headings`}));
-    setUndoMsg(`Accepted ${pend.length} subject headings`);
-    announce(`Accepted ${pend.length} subject headings into ${c.label}`);
+    setUndoStack(st=>recordBulkAccept(st,{concept:c,termIds:created,label:`${batch.length} headings`}));
+    setUndoMsg(`Accepted ${batch.length} subject heading${batch.length===1?'':'s'}`);
+    announce(`Accepted ${batch.length} subject heading${batch.length===1?'':'s'} into ${c.label}`);
   };
   /* Rejection keys scoped to one concept, for the "Show dismissed" restore list. */
   const rejectedEntriesFor=(c)=>{
@@ -2241,7 +2294,9 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
           <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit, minmax(360px, 1fr))",gap:14}}>
           {concepts.map((c,ci)=>{
             const color=CONCEPT_COLORS[ci%CONCEPT_COLORS.length];
-            const meshN=c.terms.filter(t=>t.type==="controlled").length, freeN=c.terms.filter(t=>t.type==="freetext").length;
+            // review-round #4 — the "N mesh · N text" stat describes what is searched.
+            const liveHere=liveTermsOf(c);
+            const meshN=liveHere.filter(t=>t.type==="controlled").length, freeN=liveHere.filter(t=>t.type==="freetext").length;
             return(
               <div key={c.id}>
                 <div style={{background:C.card,border:`1px solid ${C.brd}`,borderLeft:`3px solid ${color}`,borderRadius:10,padding:12,height:"100%",boxSizing:"border-box"}}>

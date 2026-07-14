@@ -112,12 +112,25 @@ export function ManuscriptWorkspace({ project, upd }) {
     await doWordExport(model);
   }), [runExport, m, doWordExport]);
 
+  // "Export anyway" must never ship the model frozen when the dialog opened: the
+  // dialog's own action hints send the user off to edit the draft, so we re-run
+  // prepareExport and export the FRESH model. If the re-check now finds ERRORS,
+  // the dialog re-opens (with a notice) instead of exporting; warnings alone
+  // don't re-prompt — the user already chose to export despite warnings.
   const onExportAnyway = useCallback(() => {
-    const review = exportReview;
-    if (!review) return;
+    if (!exportReview) return;
     setExportReview(null);
-    runExport('word', () => doWordExport(review.model));
-  }, [exportReview, runExport, doWordExport]);
+    runExport('word', async () => {
+      const model = await m.prepareExport();
+      if (!model) return;
+      const v = model.validation || { errors: [], warnings: [] };
+      if ((v.errors || []).length) {
+        setExportReview({ model, validation: v, fetchedAt: model.fetchedAt, recheck: true });
+        return;
+      }
+      await doWordExport(model);
+    });
+  }, [exportReview, runExport, m, doWordExport]);
 
   const onExportRepro = useCallback(() => runExport('repro', async () => {
     const { buildReproPackage } = await import('./export/manuscriptRepro.js');

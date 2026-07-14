@@ -140,6 +140,15 @@ export function buildPrismaSVG(prisma,opts){
   return {svg:`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${defs}${svg}</svg>`,W,H};
 }
 
+/* Journal-clean measure name for the effect axis — the forest and funnel
+   builders MUST share this (both figures land in the same exported document;
+   divergent axis labels present one pooled estimate as two different things). */
+export function esMeasureName(esType){
+  return esType==="OR"?"Odds Ratio" : esType==="RR"?"Risk Ratio" : esType==="HR"?"Hazard Ratio"
+    : esType==="SMD"?"Standardised Mean Difference" : esType==="MD"?"Mean Difference"
+    : esType==="COR"?"Correlation (Fisher z)" : esType==="PROP"?"Proportion (%)" : "Effect size";
+}
+
 export function buildPubForestSVG(result,opts){
   if(!result) return null;
   const o=opts||{};
@@ -152,9 +161,7 @@ export function buildPubForestSVG(result,opts){
   const isLog=!!t.log, isProp=esType==="PROP";
   const logOut=!!o.logScale;        // user opt-in to show the log scale instead of the ratio scale
   // Pretty measure name for the axis
-  const measureFull = esType==="OR"?"Odds Ratio" : esType==="RR"?"Risk Ratio" : esType==="HR"?"Hazard Ratio"
-    : esType==="SMD"?"Standardised Mean Difference" : esType==="MD"?"Mean Difference"
-    : esType==="COR"?"Correlation (Fisher z)" : esType==="PROP"?"Proportion (%)" : "Effect size";
+  const measureFull = esMeasureName(esType);
   const ratioAbbr = esType==="OR"?"OR":esType==="RR"?"RR":esType==="HR"?"HR":"";
   const ratioScale = isLog && !logOut;   // show actual ratio axis for OR/RR/HR
   // back-transform a stored (log/logit) value to display units
@@ -409,7 +416,10 @@ export function buildFunnelSVG(result, opts){
   const isLog=!!t.log, isProp=esType==="PROP";
   const prec=o.prec;
   const bt=x=>{ if(isLog)return Math.exp(x); if(isProp){const e=Math.exp(x);return e/(1+e);} return x; };
-  const fmtTick=x=>fmtES(bt(x),prec);
+  // Display units mirror buildPubForestSVG: proportions read as PERCENT (the
+  // forest ticks/axis and the narrative all say %), ratios as ratio units — the
+  // same pooled estimate must never appear as "0.25" here and "25%" next door.
+  const fmtTick=x=>(isProp?fmtPct(bt(x)*100,prec):fmtES(bt(x),prec));
   const pts=result.studies.map(s=>{
     const es=+s._es;
     const se=(s._se!=null && Number.isFinite(+s._se) && +s._se>0) ? +s._se
@@ -477,8 +487,8 @@ export function buildFunnelSVG(result, opts){
     svg+=txt(xS(v),MT+plotH+16,fmtTick(v),9.5,{anchor:"middle",fill:GREY});
   }
 
-  // axis labels
-  svg+=txt(ML+plotW/2,H-14,"Effect size",11,{anchor:"middle",bold:true});
+  // axis labels — measure-named x axis, matching the forest plot's conventions
+  svg+=txt(ML+plotW/2,H-14,esMeasureName(esType),11,{anchor:"middle",bold:true});
   svg+=txt(16,MT+plotH/2,"Standard error",11,{anchor:"middle",bold:true,transform:`rotate(-90,16,${(MT+plotH/2).toFixed(1)})`});
 
   // study points
@@ -486,8 +496,8 @@ export function buildFunnelSVG(result, opts){
     svg+=`<circle cx="${xS(p.es).toFixed(1)}" cy="${yS(p.se).toFixed(1)}" r="4.5" fill="${DOT}" stroke="#ffffff" stroke-width="1.2"/>`;
   });
 
-  // pooled annotation (top-right, mirrors the live plot)
-  svg+=txt(ML+plotW-4,MT+12,`Pooled: ${fmtTick(centre)}`,9.5,{anchor:"end",fill:GREY,italic:true});
+  // pooled annotation (top-right, mirrors the live plot; % carries its unit)
+  svg+=txt(ML+plotW-4,MT+12,`Pooled: ${fmtTick(centre)}${isProp?"%":""}`,9.5,{anchor:"end",fill:GREY,italic:true});
 
   const full=`<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">${svg}</svg>`;
   return {svg:full,W,H};

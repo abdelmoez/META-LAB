@@ -89,7 +89,8 @@ function collectPlainMentions(md, sectionId, out) {
  * @param {object} args {
  *   sections   ordered [{id,content}] (or a draft — orderedSections normalizes),
  *   numbering  resolveNumbering output (defines the emitted set + order),
- *   assets     computeManuscriptAssets output (unused today; kept for parity/extension)
+ *   assets     computeManuscriptAssets output (resolves alias token ids —
+ *              e.g. 'figure:forest-primary' — to their canonical asset)
  * }
  * @returns {{
  *   bySection: {[sectionId]: [{afterBlockIndex, assetId}]},
@@ -98,12 +99,19 @@ function collectPlainMentions(md, sectionId, out) {
  *   plainMentions: [{kind, number, sectionId, line}],  // detection-only raw hits
  * }}
  */
-export function computePlacements({ sections, numbering, assets: _assets } = {}) {
+export function computePlacements({ sections, numbering, assets } = {}) {
   const secs = orderedSections(sections || []);
   const num = numbering || {};
   const byId = num.byId || {};
   const emitted = new Set(Object.keys(byId).filter((id) => byId[id] != null));
   const bodySet = new Set(BODY_SECTION_IDS);
+
+  // Alias token ids place their CANONICAL asset (the docx emitter is keyed by
+  // canonical ids only — an alias assetId would silently emit nothing).
+  const aliasTo = new Map();
+  for (const a of (Array.isArray(assets) ? assets : [])) {
+    for (const al of (a.aliasIds || [])) if (!aliasTo.has(al)) aliasTo.set(al, a.id);
+  }
 
   const bySection = {};
   const placed = new Set();
@@ -117,7 +125,8 @@ export function computePlacements({ sections, numbering, assets: _assets } = {})
         const re = new RegExp(ASSET_TOKEN_RE.source, 'g');
         let m;
         while ((m = re.exec(blocks[bi].text)) !== null) {
-          const id = `${m[1]}:${m[2]}`;
+          const raw = `${m[1]}:${m[2]}`;
+          const id = aliasTo.get(raw) || raw;
           if (!emitted.has(id) || placed.has(id)) continue; // later mentions never re-insert
           placed.add(id);
           if (!bySection[sec.id]) bySection[sec.id] = [];

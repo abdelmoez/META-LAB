@@ -21,6 +21,10 @@ import {
   canonicalStrategyProjection, strategyContentHash, renderStrategyText,
 } from '../../server/searchEngine/searchVersionService.js';
 import { loadCanonicalQuery } from '../../src/features/pecanSearch/pecanSearchApi.js';
+import { generateStrategies, generateStrategyFor } from '../../src/research-engine/searchBuilder/strategyGenerator.js';
+import { critiqueStrategy } from '../../src/research-engine/searchBuilder/strategyCritic.js';
+import { estimateRecall, suggestQueryImprovements } from '../../src/research-engine/searchBuilder/recallEstimate.js';
+import { diffStrategies } from '../../src/research-engine/searchBuilder/versionDiff.js';
 
 const term = (text, extra = {}) => ({ id: `t-${text}`, text, type: 'freetext', field: 'tiab', ...extra });
 const concept = (id, label, terms, extra = {}) => ({ id, label, op: 'AND', source: 'user_added', terms, ...extra });
@@ -196,6 +200,85 @@ describe('adoption: version projection + strategyContentHash (server)', () => {
   it('renderStrategyText (version canonicalText) excludes disabled terms', () => {
     expect(renderStrategyText(withDisabled)).not.toMatch(/cardiac failure/);
     expect(renderStrategyText(withDisabled)).toMatch(/heart failure/);
+  });
+});
+
+/* ── Adoption (h): strategyGenerator — Strategy Studio paste-ready strings ── */
+describe('adoption: strategyGenerator (Strategy Studio)', () => {
+  const concepts = [
+    concept('c1', 'Population', [term('stroke'), term('TIA', { disabled: true })]),
+    concept('c2', 'Intervention', [term('aspirin', { disabled: true })]),
+  ];
+  it('a generated, paste-ready searchString never contains a disabled term', () => {
+    const { strategies } = generateStrategies({
+      concepts, databases: ['pubmed'], filters: {}, options: { profiles: ['balanced'] },
+    });
+    const s = strategies[0];
+    expect(s.searchString).toContain('stroke');
+    expect(s.searchString).not.toContain('TIA');
+    expect(s.searchString).not.toContain('aspirin');
+    // the all-disabled concept is honestly reported empty; blocks carry live terms only
+    expect(s.warnings.some((w) => w.type === 'EMPTY_CONCEPT')).toBe(true);
+    expect(s.blocks.flatMap((b) => b.terms.map((t) => t.text))).toEqual(['stroke']);
+  });
+  it('generateStrategyFor with RAW concepts (the critic-revision path) also excludes disabled terms', () => {
+    const s = generateStrategyFor(concepts, 'pubmed', { dateFrom: '', dateTo: '', languages: [], pubTypes: [] }, 'balanced');
+    expect(s.searchString).toContain('stroke');
+    expect(s.searchString).not.toContain('TIA');
+    expect(s.searchString).not.toContain('aspirin');
+  });
+});
+
+/* ── Adoption (i): strategyCritic — critique + revised strategies ── */
+describe('adoption: strategyCritic', () => {
+  // gliflozins have no concept family, so withSynonymsAdded cannot re-introduce text.
+  const strategy = {
+    database: 'pubmed', profile: 'balanced',
+    searchString: 'empagliflozin[tiab]',
+    blocks: [{
+      concept: 'Drug', picoField: 'I',
+      terms: [term('empagliflozin'), term('dapagliflozin', { disabled: true })],
+    }],
+    filters: { dateFrom: '', dateTo: '', languages: [], pubTypes: [] },
+    warnings: [],
+  };
+  it('a disabled term does not mask a thin concept, and the revised strategy never renders it', () => {
+    const out = critiqueStrategy({ strategy });
+    expect(out.issues.map((i) => i.type)).toContain('MISSING_SYNONYMS'); // one LIVE term only
+    expect(out.revised).toBeTruthy();
+    expect(out.revised.searchString).toContain('empagliflozin');
+    expect(out.revised.searchString).not.toContain('dapagliflozin');
+  });
+});
+
+/* ── Adoption (j): recallEstimate — missing-seed reasons + improvement suggestions ── */
+describe('adoption: recallEstimate', () => {
+  const concepts = [concept('c1', 'Drug', [term('dapagliflozin'), term('empagliflozin', { disabled: true })])];
+  it('a disabled term does not count as concept coverage for a missing seed', () => {
+    const { missingAnalysis } = estimateRecall({
+      seeds: [{ title: 'Empagliflozin and cardiovascular outcomes' }],
+      retrieved: [], concepts, filters: {},
+    });
+    expect(missingAnalysis).toHaveLength(1);
+    expect(missingAnalysis[0].likelyReason).toContain('shares no term with the Drug concept');
+  });
+  it('a title token covered ONLY by a disabled term is still suggested as a synonym', () => {
+    const out = suggestQueryImprovements({
+      notFound: [{ title: 'Empagliflozin reduces mortality' }, { title: 'Empagliflozin kidney outcomes' }],
+      concepts,
+    });
+    expect(out.some((s) => s.suggestion.includes('"empagliflozin"'))).toBe(true);
+  });
+});
+
+/* ── Adoption (k): versionDiff — version compare (disabled ≡ absent) ── */
+describe('adoption: diffStrategies', () => {
+  it('disabling a term diffs as term-removed, never as "no changes"', () => {
+    const v1 = { concepts: [concept('c1', 'Population', [term('stroke'), term('TIA')])] };
+    const v2 = { concepts: [concept('c1', 'Population', [term('stroke'), term('TIA', { disabled: true })])] };
+    const d = diffStrategies(v1, v2);
+    expect(d.changed).toBe(true);
+    expect(d.terms).toEqual([{ concept: 'Population', added: [], removed: ['TIA'] }]);
   });
 });
 

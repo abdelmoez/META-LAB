@@ -22,6 +22,9 @@ import { featureAccess } from '../services/featureAccess.js';
 import { buildEngine } from '../pecanSearch/runService.js';
 import { renderPlain } from '../pecanSearch/query/ast.js';
 import { buildSearchDocumentation } from '../pecanSearch/report.js';
+// Shared liveness rule — pure + dependency-free, safe to import statically (unlike
+// the lazily-guarded engine trio below). See src/.../termLiveness.js adopter list.
+import { stripDisabledTerms } from '../../src/research-engine/searchBuilder/termLiveness.js';
 
 const SEARCH_MODULE = 'search';
 export const DEFAULT_MAX_ITERATIONS = 4;   // bounded loop — no runaway external calls
@@ -89,11 +92,15 @@ export async function loadStudioEngine() {
 export function _resetStudioEngineCache() { _engine = null; _engineTried = false; }
 
 /* ── Stored strategy (the live 'search' workflow module) ──────────────────── */
-async function loadStoredStrategy(pid) {
+/** The saved concepts carry `disabled: true` keep-but-off terms (85.md A1). They are
+ *  stripped HERE — the single server choke point — so the generator/critic/recall
+ *  engines can never emit a paste-ready string broader than the compiled preview,
+ *  the methods text, or the version hash. Exported for unit tests. */
+export async function loadStoredStrategy(pid) {
   const mod = await getModuleState(pid, SEARCH_MODULE);
   const st = (mod && mod.state) || {};
   return {
-    concepts: Array.isArray(st.concepts) ? st.concepts : [],
+    concepts: stripDisabledTerms(Array.isArray(st.concepts) ? st.concepts : []),
     filters: st.filters && typeof st.filters === 'object' ? st.filters : {},
     databases: Array.isArray(st.databases) ? st.databases.filter((d) => typeof d === 'string') : [],
   };

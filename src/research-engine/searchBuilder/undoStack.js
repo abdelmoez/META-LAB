@@ -19,7 +19,6 @@
  * Ids stay untouched (undo re-inserts the ORIGINAL term/concept objects).
  */
 import { norm } from './conceptExtraction.js';
-import { setTermDisabled } from './searchState.js';
 
 export const UNDO_STACK_CAP = 20;
 
@@ -78,8 +77,11 @@ export function recordRemoveConcept(stack, { concept, index, ignoredEntriesAdded
   });
 }
 
-/** recordDisable(stack, { concept, term }) → stack. Undo re-ENABLES the term
- *  (deletes the `disabled` key via setTermDisabled — never writes disabled:false). */
+/** recordDisable(stack, { concept, term }) → stack. Undo re-ENABLES the term by
+ *  DELETING the `disabled` key — the EXACT inverse patch, byte-identical to the
+ *  pre-disable state. Unlike setTermDisabled's enable path it does NOT stamp the
+ *  `kept` sync marker: undo reverts the action (no signature drift), while the
+ *  deliberate Enable toggle must survive future PICO syncs. */
 export function recordDisable(stack, { concept, term } = {}) {
   if (!concept || !term) return asStack(stack);
   return pushEntry(stack, {
@@ -163,9 +165,23 @@ export function undoLast(stack, state) {
   }
 
   if (entry.kind === 'disable') {
+    // Exact inverse of "add disabled:true": delete the key, nothing else (see
+    // recordDisable — no `kept` stamp here, or disable→undo would drift the
+    // persisted signature).
+    const next = concepts.map((c) => {
+      if (!c || c.id !== entry.conceptId) return c;
+      return {
+        ...c,
+        terms: asList(c.terms).map((t) => {
+          if (!t || t.id !== entry.termId || !('disabled' in t)) return t;
+          const { disabled: _off, ...restT } = t;
+          return restT;
+        }),
+      };
+    });
     return {
       stack: rest,
-      state: { ...state, concepts: setTermDisabled(concepts, entry.conceptId, entry.termId, false), ignored },
+      state: { ...state, concepts: next, ignored },
       description: `Re-enabled "${entry.text}"`,
     };
   }

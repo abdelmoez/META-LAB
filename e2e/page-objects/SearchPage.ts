@@ -48,7 +48,10 @@ export class SearchPage {
     this.shell = new ShellNav(page);
   }
 
-  /** The non-fullbleed workspace tool body — scopes all tab-content locators. */
+  /** The workspace tool body — scopes all tab-content locators. Present in BOTH the
+   *  carded (pico/prospero) and full-bleed (search) layouts: StitchProjectWorkspace
+   *  keeps the `stitch-tool-body` class on the tool-body wrapper regardless of
+   *  full-bleed, so the search stage's content is scopable here too. */
   private get body(): Locator { return this.page.locator('.stitch-tool-body'); }
 
   /* ── Navigation ──────────────────────────────────────────────────────────── */
@@ -131,6 +134,46 @@ export class SearchPage {
     await input.press('Enter');
   }
 
+  /* ── 74.md/75.md — the staged Search Workspace's stage navigation ──────────────
+     75.md moved the numbered Search workflow into the WHITE project side-menu (the
+     shared `stitch-workflow-stepper`): under the Stitch shell the in-body StageRail
+     (`search-workspace-rail`) is HIDDEN (`hideRail` from StitchProjectWorkspace) and
+     the side-menu stepper drives stages via `?tab=search&stage=<id>` links. A non-
+     Stitch / hideRail=false mount still renders the in-body rail. EXACTLY ONE of the
+     two is present at a time, so this union locator drives whichever the shell shows,
+     and both restructure identically on a mode switch (both derive from `stagesFor`).
+     Stage pips carry the stage label in their accessible name in BOTH surfaces
+     ("Step N: <label>" in the side-menu, "Stage N: <label>" in the in-body rail). */
+  get stageNav(): Locator {
+    return this.page.locator('[data-testid="stitch-workflow-stepper"], [data-testid="search-workspace-rail"]');
+  }
+  /** A stage pip by (partial) label, in whichever navigation surface is present. */
+  stageStep(name: RegExp | string): Locator {
+    return this.stageNav.getByRole('button', { name: typeof name === 'string' ? new RegExp(name) : name });
+  }
+  /** The staged workspace's stage surface — present in BOTH shells once the staged
+   *  workspace is mounted; `data-stage` carries the active stage id. */
+  get stageSurface(): Locator { return this.page.getByTestId('search-workspace-stage'); }
+
+  /** Open ?tab=search and wait for the STAGED workspace (not the legacy wizard). The
+   *  dispatcher reads /api/settings/public once per mount, so retry the navigation
+   *  until the freshly-flipped `searchWorkspaceV2` flag has propagated. */
+  async openStagedWorkspace(projectId: string): Promise<void> {
+    await expect(async () => {
+      await this.gotoSearch(projectId);
+      await expect(this.stageSurface).toBeVisible({ timeout: 5_000 });
+    }).toPass({ timeout: 30_000 });
+  }
+
+  /** Deep-link a specific staged Search stage (`?tab=search&stage=<id>`), retrying
+   *  while the flag propagates until the stage surface reports the requested stage. */
+  async gotoStage(projectId: string, stageId: string): Promise<void> {
+    await expect(async () => {
+      await this.shell.goto(`/app/project/${encodeURIComponent(projectId)}?tab=search&stage=${encodeURIComponent(stageId)}`);
+      await expect(this.stageSurface).toHaveAttribute('data-stage', stageId, { timeout: 5_000 });
+    }).toPass({ timeout: 30_000 });
+  }
+
   /* ── 85.md — staged workspace (searchWorkspaceV2): redesigned Concepts +
         Terms & Vocabulary master-detail locators ─────────────────────────────── */
 
@@ -153,13 +196,16 @@ export class SearchPage {
   get addTermInput(): Locator { return this.body.getByTestId('sb-add-term-input'); }
   get addTermButton(): Locator { return this.body.getByTestId('sb-add-term-btn'); }
   get addStatusLine(): Locator { return this.body.getByTestId('sb-add-status'); }
-  /** A term chip's EDIT button (the whole chip) inside the active concept. */
+  /** A term chip's EDIT button (the whole chip) inside the active concept. EXACT so a
+   *  free-text term never aliases a longer subject-heading descriptor that contains it
+   *  as a substring (e.g. "heart failure" vs "Heart Failure, Diastolic"); the chip's
+   *  accessible name is exactly `Edit <text>` (aria-label overrides the inner text). */
   termChip(term: string): Locator {
-    return this.activeConcept.getByRole('button', { name: `Edit ${term}` });
+    return this.activeConcept.getByRole('button', { name: `Edit ${term}`, exact: true });
   }
-  /** A term chip's separate remove button (pinned aria contract). */
+  /** A term chip's separate remove button (pinned aria contract; EXACT — see termChip). */
   termChipRemove(term: string): Locator {
-    return this.activeConcept.getByRole('button', { name: `Remove ${term}` });
+    return this.activeConcept.getByRole('button', { name: `Remove ${term}`, exact: true });
   }
   get termEditor(): Locator { return this.body.getByTestId('sb-term-editor'); }
   get suggestionsArea(): Locator { return this.body.getByTestId('sb-suggestions'); }

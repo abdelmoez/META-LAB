@@ -30,8 +30,9 @@ describe('buildFunnelSVG', () => {
     // pseudo-CI cone (dashed path) + pooled vertical line
     expect(svg).toContain('stroke-dasharray="4,4"');
     expect(svg).toContain('stroke-dasharray="3,3"');
-    // axis labels mandated by the spec
-    expect(svg).toContain('>Effect size</text>');
+    // review-round #16: the effect axis carries the MEASURE name in display units
+    // (back-transformed), matching the forest plot in the same export.
+    expect(svg).toContain('>Odds Ratio</text>');
     expect(svg).toContain('>Standard error</text>');
     expect(svg).toContain('Pooled: ');
     // export-safe: absolute hex only, Georgia, no CSS variables
@@ -39,6 +40,13 @@ describe('buildFunnelSVG', () => {
     expect(svg).toContain('Georgia');
     // deterministic: same input → byte-identical output
     expect(buildFunnelSVG(runMeta(fixtureStudies(), 'random'), { esType: 'OR' }).svg).toBe(svg);
+  });
+
+  it('PROP outcomes are labelled as percentages, matching the forest plot (review-round #16)', () => {
+    const result = runMeta(fixtureStudies(), 'random'); // es on the logit scale for PROP
+    const svg = buildFunnelSVG(result, { esType: 'PROP' }).svg;
+    expect(svg).toContain('>Proportion (%)</text>');
+    expect(svg).toMatch(/Pooled: [\d.]+%/); // pooled annotation in percent, not a 0–1 fraction
   });
 
   it('adds a title block when opts.title is given', () => {

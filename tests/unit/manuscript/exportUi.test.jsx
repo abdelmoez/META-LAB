@@ -136,7 +136,8 @@ describe('FiguresPanel — asset rows incl. rob/funnel with caption + legend edi
   const html = renderToStaticMarkup(<FiguresPanel m={m} />);
 
   it('renders every figure asset row (prisma, primary forest, rob, funnel)', () => {
-    for (const id of ['figure-prisma', 'figure-forest-primary', 'figure-rob', 'figure-funnel']) {
+    // review-round #13: forest/funnel rows are pair-keyed (fixture primary = MACE)
+    for (const id of ['figure-prisma', 'figure-forest-mace', 'figure-rob', 'figure-funnel-mace']) {
       expect(html).toContain(`data-testid="stitch-manuscript-asset-${id}"`);
     }
     expect(html).toContain('data-testid="stitch-manuscript-assets-figures"');

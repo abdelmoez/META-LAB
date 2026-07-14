@@ -15,6 +15,7 @@
 import { generateStrategyFor, databaseSupportsControlled } from './strategyGenerator.js';
 import { detectCrossConceptDuplicates, termEquivalenceKey } from './crossConcept.js';
 import { matchFamily, norm } from './conceptExtraction.js';
+import { isLiveTerm } from './termLiveness.js';
 
 const s = (v) => String(v == null ? '' : v);
 
@@ -41,7 +42,10 @@ const SEVERITY_PENALTY = { error: 0.3, warn: 0.12, info: 0.03 };
 const round3 = (n) => Math.round(n * 1000) / 1000;
 
 /** Reconstruct the concept model from a strategy's blocks (lossless — blocks carry
- *  the source term objects). Used for duplicate detection + regenerating a revision. */
+ *  the source term objects). Used for duplicate detection + regenerating a revision.
+ *  Applies the shared liveness rule (termLiveness.js): the critic must judge — and
+ *  its `revised` strategy must re-render — only terms the search actually executes,
+ *  even when a caller hands it raw blocks carrying `disabled: true` terms. */
 function reconstructConcepts(strategy) {
   const blocks = (strategy && Array.isArray(strategy.blocks)) ? strategy.blocks : [];
   return blocks.map((b, i) => ({
@@ -49,7 +53,7 @@ function reconstructConcepts(strategy) {
     label: s(b.concept) || `Concept ${i + 1}`,
     picoField: b.picoField || null,
     op: 'AND',
-    terms: (Array.isArray(b.terms) ? b.terms : []).map((t) => ({ ...t })),
+    terms: (Array.isArray(b.terms) ? b.terms : []).filter(isLiveTerm).map((t) => ({ ...t })),
   }));
 }
 

@@ -71,7 +71,12 @@ export function validateExport(args = {}) {
   const num = numbering || {};
   const byId = num.byId || {};
   const pl = placements || {};
+  // Alias ids (asset.aliasIds — e.g. 'figure:forest-primary') resolve to their
+  // asset so alias-referencing messages/checks describe the right item.
   const assetById = new Map(list.map((a) => [a.id, a]));
+  for (const a of list) {
+    for (const al of (a.aliasIds || [])) if (!assetById.has(al)) assetById.set(al, a);
+  }
   const knownIds = list.map((a) => a.id);
 
   const errors = [];
@@ -110,7 +115,8 @@ export function validateExport(args = {}) {
       const n = byId[id];
       if (n == null) continue;
       const a = assetById.get(id);
-      if (!a || a.kind !== kind) continue;
+      // Alias entries mirror their canonical number by design — not a duplicate.
+      if (!a || a.kind !== kind || a.id !== id) continue;
       if (seen.has(n)) {
         push(errors, 'duplicate-numbering',
           `Internal numbering error: ${kind} number ${n} was assigned to both "${seen.get(n)}" and "${id}".`,
@@ -139,9 +145,12 @@ export function validateExport(args = {}) {
   // this in my manuscript"), so an unmentioned explicit include is worth a nudge.
   const assetOverrides = (draft && draft.assets && typeof draft.assets === 'object') ? draft.assets : {};
   for (const id of (pl.fallback || [])) {
-    const ov = assetOverrides[id];
+    const fa = assetById.get(id);
+    // Alias overrides read through (legacy role-keyed draft.assets entries).
+    const ov = assetOverrides[id]
+      || ((fa && fa.aliasIds) || []).map((al) => assetOverrides[al]).find((x) => x && x.included === true);
     if (!(ov && ov.included === true)) continue;
-    const a = assetById.get(id);
+    const a = fa;
     const kindLabel = a && a.kind === 'figure' ? 'Figure' : 'Table';
     push(warnings, 'included-not-mentioned',
       `${kindLabel} "${(a && (a.title || a.id)) || id}" is included but never referenced in the text — it will be placed at the end of the document.`,

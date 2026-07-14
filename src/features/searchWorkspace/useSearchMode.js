@@ -20,7 +20,10 @@
  */
 import { useEffect, useState } from 'react';
 import { loadSearch } from '../searchBuilder/index.js';
-import { getSearchMode, publishSearchMode, subscribeSearchMode } from './searchModeStore.js';
+import {
+  getSearchMode, publishSearchMode, subscribeSearchMode,
+  getSearchStageStatuses, subscribeSearchStageStatuses,
+} from './searchModeStore.js';
 
 export function useSearchMode(projectId, enabled = true) {
   const [mode, setMode] = useState(() => {
@@ -53,6 +56,24 @@ export function useSearchMode(projectId, enabled = true) {
     return () => { alive = false; unsub(); };
   }, [projectId, enabled]);
   return mode;
+}
+
+/**
+ * useSearchStageStatuses — review-round #10. The white side-menu's stepper reads the
+ * per-stage completion statuses the mounted SearchWorkspace publishes (navConfig
+ * consumes the store cache synchronously) — but the CACHE alone never re-renders the
+ * subnav, so glyphs went stale until an unrelated render. Subscribing here makes the
+ * subnav re-render the moment the body publishes fresher statuses. No seed fetch:
+ * statuses only exist while the workspace is mounted (glyph-less fallback otherwise).
+ */
+export function useSearchStageStatuses(projectId, enabled = true) {
+  const [statuses, setStatuses] = useState(() => getSearchStageStatuses(projectId) || null);
+  useEffect(() => {
+    if (!enabled || !projectId) return undefined;
+    setStatuses(getSearchStageStatuses(projectId) || null);
+    return subscribeSearchStageStatuses(projectId, (s) => setStatuses(s || null));
+  }, [projectId, enabled]);
+  return enabled ? statuses : null;
 }
 
 export default useSearchMode;

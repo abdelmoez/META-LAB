@@ -40,18 +40,19 @@ test.describe.serial('74.md — mode-scoped staged Search Workspace (searchWorks
     try { await setFeatureFlags(adminCtx, { searchWorkspaceV2: false }); }
     finally { await adminCtx?.dispose(); }
   });
-  /** Open ?tab=search and wait for the STAGED workspace (not the legacy wizard). The
-   *  dispatcher reads /api/settings/public once per mount, so retry the navigation
-   *  until the freshly-flipped flag has propagated. */
+  /** Open ?tab=search and wait for the STAGED workspace (not the legacy wizard). 75.md
+   *  moved the numbered workflow into the WHITE project side-menu, so the "we are in the
+   *  staged workspace" signal is the always-present stage surface (in BOTH shells), NOT
+   *  the in-body rail (which `hideRail` drops under the Stitch shell). */
   async function openWorkspace(sp: SearchPage, projectId: string): Promise<void> {
-    await expect(async () => {
-      await sp.gotoSearch(projectId);
-      await expect(sp.page.getByTestId('search-workspace-rail')).toBeVisible({ timeout: 5_000 });
-    }).toPass({ timeout: 30_000 });
+    await sp.openStagedWorkspace(projectId);
   }
 
-  const rail = (sp: SearchPage) => sp.page.getByTestId('search-workspace-rail');
-  const stageSurface = (sp: SearchPage) => sp.page.getByTestId('search-workspace-stage');
+  // 75.md — stage navigation happens through whichever surface the shell renders: the
+  // white side-menu stepper (Stitch shell) OR the in-body StageRail (hideRail=false).
+  // `sp.stageNav` is the union locator; both carry the stage label in each pip's name.
+  const rail = (sp: SearchPage) => sp.stageNav;
+  const stageSurface = (sp: SearchPage) => sp.stageSurface;
   const dbStrategiesPip = (sp: SearchPage) => rail(sp).getByRole('button', { name: /Database Strategies/ });
   const manualCard = (sp: SearchPage) => sp.page.getByTestId('search-mode-card-manual');
   const automatedCard = (sp: SearchPage) => sp.page.getByTestId('search-mode-card-automated');
@@ -297,9 +298,16 @@ test.describe.serial('74.md — mode-scoped staged Search Workspace (searchWorks
     await expect(hfRow).toBeVisible({ timeout: 20_000 });
     await expect(htnRow).toBeVisible({ timeout: 20_000 });
 
-    // Accept one → the descriptor chip (with MeSH badge) joins the included terms.
-    await hfRow.getByRole('button', { name: /Accept suggestion/ }).click();
-    await expect(sp.termChip('Heart Failure')).toBeVisible();
+    // Accept one → the descriptor chip (with MeSH badge) joins the included terms. The
+    // exact descriptor is vocabulary-dependent (live NLM or the offline core fallback —
+    // e.g. "Heart Failure" or "Heart Failure, Diastolic"), so read it off the Accept
+    // button's aria-label ("Accept suggestion <descriptor>") and assert THAT chip, which
+    // proves the accepted subject heading became a term without pinning a brittle label.
+    const hfAccept = hfRow.getByRole('button', { name: /Accept suggestion/ });
+    const hfDescriptor = ((await hfAccept.getAttribute('aria-label')) || '').replace(/^Accept suggestion\s*/i, '').trim();
+    expect(hfDescriptor.length, 'the subject-heading suggestion names a descriptor').toBeGreaterThan(0);
+    await hfAccept.click();
+    await expect(sp.termChip(hfDescriptor)).toBeVisible();
     await expect(hfRow).toHaveCount(0);
 
     // Dismiss the other → it leaves the list…
@@ -317,7 +325,7 @@ test.describe.serial('74.md — mode-scoped staged Search Workspace (searchWorks
       .toBeGreaterThan(0);
     await sp.page.goto(`/app/project/${encodeURIComponent(tmpProject.id)}?tab=search&stage=terms`);
     await expect(sp.activeConcept).toBeVisible({ timeout: 15_000 });
-    await expect(sp.termChip('Heart Failure')).toBeVisible();
+    await expect(sp.termChip(hfDescriptor)).toBeVisible();
     await expect(sp.suggestionRow('subject heading for "hypertension"')).toHaveCount(0);
   });
 
@@ -384,9 +392,13 @@ test.describe.serial('74.md — mode-scoped staged Search Workspace (searchWorks
     await openModeStage(sp);
     await automatedCard(sp).click();
     await rail(sp).getByRole('button', { name: /Automated Search/ }).click();
-    // The Pecan run surface mounts (sources + strategy cards) — we do NOT run.
+    // The Pecan run surface mounts (sources + strategy cards) — we do NOT run. Target the
+    // Sources section HEADING specifically: once the sources table loads, the plain word
+    // "Sources" also appears in the caption/total-row/footnote, so a loose text match
+    // strict-violates as the async content lands (it only passed before by racing the
+    // pre-table render).
     await expect(stageSurface(sp)).toHaveAttribute('data-stage', 'results');
-    await expect(stageSurface(sp).getByText('Sources')).toBeVisible({ timeout: 15_000 });
+    await expect(stageSurface(sp).getByRole('heading', { name: 'Sources', exact: true })).toBeVisible({ timeout: 15_000 });
   });
 
   /* ════════ 85.md — axe scans of the two redesigned stages ════════ */

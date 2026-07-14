@@ -43,11 +43,15 @@ describe('computeManuscriptAssets — registry', () => {
   it('emits the 5 tables + figure set in registry order with stable ids', () => {
     const assets = computeManuscriptAssets(baseProject(), draft());
     const ids = assets.map((a) => a.id);
+    // review-round #13: the primary forest + funnel are PAIR-KEYED (stable across
+    // primary flips); the legacy role ids survive as resolvable aliases.
     expect(ids).toEqual([
       'table:study', 'table:sof', 'table:prisma', 'table:rob', 'table:search',
-      'figure:prisma', 'figure:forest-primary', 'figure:forest:mortality',
-      'figure:rob', 'figure:funnel',
+      'figure:prisma', 'figure:forest:mace-5y', 'figure:forest:mortality',
+      'figure:rob', 'figure:funnel:mace-5y',
     ]);
+    expect(assets.find((a) => a.id === 'figure:forest:mace-5y').aliasIds).toEqual(['figure:forest-primary']);
+    expect(assets.find((a) => a.id === 'figure:funnel:mace-5y').aliasIds).toEqual(['figure:funnel']);
     // every id satisfies the token grammar
     for (const id of ids) expect(/^(table|figure):[a-z0-9:-]+$/.test(id)).toBe(true);
   });
@@ -70,10 +74,10 @@ describe('computeManuscriptAssets — registry', () => {
     expect(by['table:study'].included).toBe(true);
     expect(by['table:sof'].included).toBe(true);
     expect(by['figure:prisma'].included).toBe(true);
-    expect(by['figure:forest-primary'].included).toBe(true);
+    expect(by['figure:forest:mace-5y'].included).toBe(true); // the current primary pair
     expect(by['figure:forest:mortality'].included).toBe(false);
     expect(by['figure:rob'].included).toBe(false);
-    expect(by['figure:funnel'].included).toBe(false);
+    expect(by['figure:funnel:mace-5y'].included).toBe(false);
     // includedDefault mirrors that
     expect(by['figure:forest:mortality'].includedDefault).toBe(false);
     expect(by['table:study'].includedDefault).toBe(true);
@@ -100,12 +104,13 @@ describe('computeManuscriptAssets — registry', () => {
     });
     expect(withRob.find((a) => a.id === 'figure:rob').available).toBe(true);
     // funnel: primary (MACE) has 3 studies with full CIs → available
-    expect(withRob.find((a) => a.id === 'figure:funnel').available).toBe(true);
-    // drop to 2 primary studies → funnel unavailable
+    expect(withRob.find((a) => a.builderId === 'funnel').available).toBe(true);
+    // drop to 2 primary studies → funnel unavailable (find by builderId — the
+    // pair-keyed id follows whichever pair is primary after the re-sort)
     const p2 = baseProject();
     p2.studies = p2.studies.filter((s) => s.id !== 's3');
     const two = computeManuscriptAssets(p2, draft());
-    expect(two.find((a) => a.id === 'figure:funnel').available).toBe(false);
+    expect(two.find((a) => a.builderId === 'funnel').available).toBe(false);
   });
 
   it('per-outcome forest ids come from the stable pair.key, label stored separately', () => {
@@ -140,17 +145,30 @@ describe('computeManuscriptAssets — registry', () => {
     const d = draft();
     d.assets = {
       'table:study': { included: false, title: 'My table', caption: 'My caption', legend: 'My legend', note: 'My note' },
-      'figure:funnel': { included: true },
+      'figure:funnel': { included: true }, // legacy role-keyed override → alias read-through
     };
     const assets = computeManuscriptAssets(baseProject(), d);
     const study = assets.find((a) => a.id === 'table:study');
     expect(study.included).toBe(false);
     expect(study.includedDefault).toBe(true); // default untouched
     expect(study.title).toBe('My table');
-    expect(study.defaultCaption).toBe('My caption');
+    // review-round #14: caption is the asset's OWN field; defaultCaption stays the builder default
+    expect(study.caption).toBe('My caption');
+    expect(study.defaultCaption).toBe('Characteristics of included studies');
     expect(study.legend).toBe('My legend');
     expect(study.note).toBe('My note');
-    expect(assets.find((a) => a.id === 'figure:funnel').included).toBe(true);
+    expect(assets.find((a) => a.builderId === 'funnel').included).toBe(true);
+  });
+
+  it('pair-keyed override beats an alias override on the same asset', () => {
+    const d = draft();
+    d.assets = {
+      'figure:forest-primary': { title: 'Alias title', caption: 'Alias caption' },
+      'figure:forest:mace-5y': { title: 'Pair title' },
+    };
+    const primary = computeManuscriptAssets(baseProject(), d).find((a) => a.id === 'figure:forest:mace-5y');
+    expect(primary.title).toBe('Pair title');       // pair-keyed wins
+    expect(primary.caption).toBe('Alias caption');  // alias fields still read through where not overridden
   });
 
   it('staleAssets opt stamps stale:true (map or Set)', () => {

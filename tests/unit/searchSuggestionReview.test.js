@@ -13,9 +13,12 @@ const controlled = (text, extra = {}) => ({ id: `t-${text}`, text, type: 'contro
 const concept = (id, label, terms, extra = {}) => ({ id, label, op: 'AND', terms, ...extra });
 
 describe('rejectionKey', () => {
-  it('scopes by picoField when present, else by the normalized concept label', () => {
+  it('scopes by picoField when present, else by the concept id, else the normalized label', () => {
     expect(rejectionKey({ picoField: 'P', label: 'Population' }, 'widget score')).toBe('rej:P:widget score');
+    expect(rejectionKey({ id: 'c7', label: 'My Concept' }, 'widget score')).toBe('rej:c7:widget score');
     expect(rejectionKey({ label: 'My Concept' }, 'widget score')).toBe('rej:my concept:widget score');
+    // picoField wins over id (the canonical groups keep their stable scope)
+    expect(rejectionKey({ id: 'c7', picoField: 'P' }, 'widget score')).toBe('rej:P:widget score');
     // family terms collapse to the family key ("obesity" is a known family)
     expect(rejectionKey({ picoField: 'P' }, 'obesity')).toBe('rej:P:fam:obesity');
   });
@@ -26,6 +29,12 @@ describe('rejectionKey', () => {
   });
   it('different scopes yield different keys (a rejection in P never hides an I suggestion)', () => {
     expect(rejectionKey({ picoField: 'P' }, 'EUS')).not.toBe(rejectionKey({ picoField: 'I' }, 'EUS'));
+  });
+  it('same-LABELED manual concepts do not collide (scope = the persisted concept id)', () => {
+    // addConcept auto-names by count ("Concept 3") and renames are unvalidated, so
+    // two manual concepts can share a label; the id keeps their memories separate.
+    expect(rejectionKey({ id: 'cA', label: 'Concept 3' }, 'EUS'))
+      .not.toBe(rejectionKey({ id: 'cB', label: 'Concept 3' }, 'EUS'));
   });
 });
 
@@ -72,6 +81,14 @@ describe('pendingSuggestions — kind "mesh" (convertible freetext)', () => {
       freetext('endoscopic ultrasound', { vocab: { mesh: 'Endosonography' } }),
     ], { picoField: 'I' });
     expect(pendingSuggestions(fam)).toHaveLength(1);
+  });
+
+  it('a dismissal in one same-labeled MANUAL concept never hides the suggestion in the other', () => {
+    const c1 = concept('cA', 'Concept 3', [freetext('EUS', { vocab: { mesh: 'Endosonography' } })]);
+    const c2 = concept('cB', 'Concept 3', [freetext('endoscopic ultrasound', { vocab: { mesh: 'Endosonography' } })]);
+    const rejected = [rejectionKey(c1, 'EUS')]; // dismissed in the FIRST concept only
+    expect(pendingSuggestions(c1, rejected)).toEqual([]);
+    expect(pendingSuggestions(c2, rejected)).toHaveLength(1); // still offered here
   });
 });
 

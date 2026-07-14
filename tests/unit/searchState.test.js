@@ -442,13 +442,35 @@ describe('setTermDisabled — flag hygiene', () => {
     expect('disabled' in on[0].terms[0]).toBe(false);
   });
 
-  it('PINNED: disable→enable round-trip is byte-identical to the original signature', () => {
+  it('PINNED: never-disabled saves stay byte-identical (kept/disabled are omit-when-absent)', () => {
     const original = { concepts: base(), overrides: {}, ignored: [] };
-    const off = setTermDisabled(original.concepts, 'c1', 't1', true);
-    const roundTripped = { concepts: setTermDisabled(off, 'c1', 't1', false), overrides: {}, ignored: [] };
-    expect(serializeSearchState(roundTripped)).toBe(serializeSearchState(original));
+    // enabling an already-enabled term is a pure no-op — no kept stamp, no drift
+    const noop = { concepts: setTermDisabled(original.concepts, 'c1', 't1', false), overrides: {}, ignored: [] };
+    expect(serializeSearchState(noop)).toBe(serializeSearchState(original));
+    expect('kept' in noop.concepts[0].terms[0]).toBe(false);
     // …and disabling DOES change the signature (autosave must fire).
+    const off = setTermDisabled(original.concepts, 'c1', 't1', true);
     expect(serializeSearchState({ ...original, concepts: off })).not.toBe(serializeSearchState(original));
+  });
+
+  it('re-enabling a pico_auto term stamps kept:true — the sync keep-marker replacing the cleared disabled flag', () => {
+    const off = setTermDisabled(base(), 'c1', 't1', true);
+    const on = setTermDisabled(off, 'c1', 't1', false);
+    expect('disabled' in on[0].terms[0]).toBe(false);
+    expect(on[0].terms[0].kept).toBe(true);
+    // Deliberate signature change: autosave must persist the marker across reloads.
+    const original = { concepts: base(), overrides: {}, ignored: [] };
+    expect(serializeSearchState({ ...original, concepts: on })).not.toBe(serializeSearchState(original));
+    // Stamping is idempotent across repeat toggles.
+    const again = setTermDisabled(setTermDisabled(on, 'c1', 't1', true), 'c1', 't1', false);
+    expect(again[0].terms[0].kept).toBe(true);
+  });
+
+  it('a user_added term round-trips byte-identical (sync never drops it — no marker needed)', () => {
+    const original = { concepts: base(), overrides: {}, ignored: [] };
+    const off = setTermDisabled(original.concepts, 'c1', 't2', true);
+    const roundTripped = { concepts: setTermDisabled(off, 'c1', 't2', false), overrides: {}, ignored: [] };
+    expect(serializeSearchState(roundTripped)).toBe(serializeSearchState(original));
   });
 
   it('is a no-op for unknown concept/term ids and junk input', () => {
@@ -479,6 +501,23 @@ describe('syncSearchBuilderFromPico — disabled terms survive a PICO edit (85.m
     const a = syncSearchBuilderFromPico({ P: 'asthma' }, [], []);
     const b = syncSearchBuilderFromPico({ P: 'COPD' }, a, []);
     expect(b.find((c) => c.picoField === 'P').terms.map((t) => norm(t.text))).not.toContain('asthma');
+  });
+
+  it('disable → PICO edit drops keyword → RE-ENABLE → later syncs keep the term switched ON (kept marker)', () => {
+    // The disabled flag was the term's only keep-marker; clearing it on re-enable
+    // must not turn the enable toggle into a delayed silent delete.
+    const a = syncSearchBuilderFromPico({ P: 'asthma' }, [], []);
+    const seeded = a.map((c) => (c.picoField === 'P'
+      ? { ...c, id: 'cP', terms: c.terms.map((t) => (norm(t.text) === 'asthma' ? { ...t, id: 'tA' } : t)) }
+      : c));
+    const off = setTermDisabled(seeded, 'cP', 'tA', true);
+    const afterEdit = syncSearchBuilderFromPico({ P: 'COPD' }, off, []);   // keyword gone; term kept OFF
+    const on = setTermDisabled(afterEdit, 'cP', 'tA', false);              // user switches it back ON
+    const b = syncSearchBuilderFromPico({ P: 'COPD in adults' }, on, []);  // any later PICO edit re-syncs
+    const kept = b.find((c) => c.picoField === 'P').terms.find((t) => norm(t.text) === 'asthma');
+    expect(kept).toBeTruthy();               // NOT silently deleted
+    expect(kept.disabled).toBeUndefined();   // and it is ON
+    expect(kept.kept).toBe(true);            // the marker that saved it
   });
 
   it('a disabled auto term whose keyword is STILL in the PICO text keeps its flag (object reuse)', () => {

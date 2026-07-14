@@ -185,9 +185,10 @@ test.describe('Manuscript editor (flag ON)', () => {
     await expect(page.getByTestId('stitch-manuscript-save-status').first()).toContainText(/Saved/i, { timeout: 15_000 });
 
     // Figures tab: include the funnel plot (available — 3 numeric studies — but
-    // never referenced by the generated text).
+    // never referenced by the generated text). The funnel id is PAIR-KEYED
+    // (figure:funnel:<outcome-slug>, review-round #13), so match by prefix.
     await page.getByTestId('stitch-manuscript-subtab-figures').click();
-    const include = page.getByTestId('stitch-manuscript-asset-include-figure-funnel');
+    const include = page.locator('[data-testid^="stitch-manuscript-asset-include-figure-funnel"]');
     await expect(include).toBeEnabled({ timeout: 15_000 });
     await include.check();
     await expect(page.getByTestId('stitch-manuscript-save-status').first()).toContainText(/Saved/i, { timeout: 15_000 });

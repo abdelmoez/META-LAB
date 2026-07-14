@@ -103,6 +103,32 @@ describe('diffStrategies — filters', () => {
   });
 });
 
+describe('diffStrategies — disabled terms (85.md A1: disabled ≡ absent)', () => {
+  it('PINNED: v1 term enabled vs v2 same term disabled → changed:true, term reported removed', () => {
+    // The compare panel must agree with strategyContentHash/canonicalText, which
+    // both treat a disabled term as absent — "no changes" here would misreport a
+    // real difference between the searches the two versions execute.
+    const a = { concepts: [concept('Population', [{ text: 'stroke' }, { text: 'TIA' }])] };
+    const b = { concepts: [concept('Population', [{ text: 'stroke' }, { text: 'TIA', disabled: true }])] };
+    const d = diffStrategies(a, b);
+    expect(d.changed).toBe(true);
+    expect(d.terms).toEqual([{ concept: 'Population', added: [], removed: ['TIA'] }]);
+  });
+
+  it('re-enabling reports the term as added', () => {
+    const a = { concepts: [concept('Population', [{ text: 'stroke', disabled: true }])] };
+    const b = { concepts: [concept('Population', [{ text: 'stroke' }])] };
+    const d = diffStrategies(a, b);
+    expect(d.terms).toEqual([{ concept: 'Population', added: ['stroke'], removed: [] }]);
+  });
+
+  it('a term disabled in BOTH snapshots is no change', () => {
+    const a = { concepts: [concept('Population', [{ text: 'stroke' }, { text: 'TIA', disabled: true }])] };
+    const b = { concepts: [concept('Population', [{ text: 'stroke' }, { text: 'TIA', disabled: true }])] };
+    expect(diffStrategies(a, b).changed).toBe(false);
+  });
+});
+
 describe('diffStrategies — defensive input handling', () => {
   it('tolerates null / empty / malformed strategies', () => {
     expect(diffStrategies(null, null).changed).toBe(false);

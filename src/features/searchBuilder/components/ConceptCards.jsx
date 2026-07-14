@@ -39,9 +39,13 @@ export default function ConceptCards({
   const [confirmId, setConfirmId] = useState(null);
   const counts = suggestionCounts || {};
 
-  const askRemove = (c, liveN) => {
+  // review-round #12 — the confirm gate counts EVERY non-blank term, not just live
+  // ones: a concept whose terms are all switched off ("keep-but-off") still holds
+  // work the user chose to keep, so deleting it without ceremony loses data.
+  const askRemove = (c) => {
     if (!onRemoveConcept) return;
-    if (liveN === 0) { onRemoveConcept(c.id); return; } // nothing to lose → no ceremony
+    const totalN = (c.terms || []).filter((t) => t && String(t.text || '').trim()).length;
+    if (totalN === 0) { onRemoveConcept(c.id); return; } // nothing to lose → no ceremony
     setConfirmId(c.id);
   };
 
@@ -85,7 +89,7 @@ export default function ConceptCards({
                 </button>
               )}
               {!c.picoField && !confirming && onRemoveConcept && (
-                <button type="button" onClick={() => askRemove(c, liveN)}
+                <button type="button" onClick={() => askRemove(c)}
                   aria-label={`Delete concept ${c.label || ''}`} title="Delete this concept"
                   style={{ background: 'none', border: 'none', color: C.dim, cursor: 'pointer', fontSize: 15, padding: '2px 6px', lineHeight: 1, flexShrink: 0, minWidth: 24, minHeight: 24 }}>
                   ×
@@ -94,7 +98,7 @@ export default function ConceptCards({
               {confirming && (
                 <span role="alertdialog" aria-label={`Delete concept ${c.label || ''}?`}
                   style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 'auto', flexShrink: 0 }}>
-                  <span style={{ fontSize: 11, color: C.txt2 }}>Delete concept “{c.label}” and its {liveN} term{liveN === 1 ? '' : 's'}?</span>
+                  <span style={{ fontSize: 11, color: C.txt2 }}>{(() => { const n = (c.terms || []).filter((t) => t && String(t.text || '').trim()).length; return `Delete concept “${c.label}” and its ${n} term${n === 1 ? '' : 's'}?`; })()}</span>
                   <button type="button" onClick={() => { setConfirmId(null); onRemoveConcept && onRemoveConcept(c.id); }}
                     style={{ background: alpha(C.red, '10'), border: `1px solid ${alpha(C.red, '44')}`, borderRadius: 6, color: C.red, cursor: 'pointer', fontSize: 10.5, fontWeight: 700, fontFamily: FONT, padding: '3px 10px' }}>
                     Delete

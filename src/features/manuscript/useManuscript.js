@@ -118,6 +118,13 @@ export function useManuscript(project, upd) {
       if (kind === 'section') d = MS.setSection(d, key, v);
       else if (kind === 'statement') d = MS.setStatement(d, key, v);
       else if (kind === 'meta') d = MS.setMeta(d, { [key]: v });
+      else if (kind === 'assetPatch') {
+        // Per-asset override patch merged over the FLUSH-TIME draft.assets — a
+        // panel's mount-time snapshot must never wholesale-replace the map
+        // (that silently reverted overrides written by another panel/writer).
+        const cur = (d.assets && typeof d.assets === 'object') ? d.assets : {};
+        d = MS.setMeta(d, { assets: { ...cur, [key]: { ...(cur[key] || {}), ...v } } });
+      }
     }
     return d;
   }, []);
@@ -149,7 +156,12 @@ export function useManuscript(project, upd) {
     if (!draftId) return;
     if (pending.current && pending.current.draftId !== draftId) flushPending();
     if (!pending.current) pending.current = { draftId, fields: new Map() };
-    pending.current.fields.set(`${kind}:${key}`, value);
+    // assetPatch values are PARTIAL field objects: queuing caption then legend for
+    // the same asset must accumulate, not replace (last-set-wins is only right for
+    // whole-value kinds like section/statement/meta).
+    const mapKey = `${kind}:${key}`;
+    const prev = kind === 'assetPatch' ? pending.current.fields.get(mapKey) : undefined;
+    pending.current.fields.set(mapKey, prev ? { ...prev, ...value } : value);
     setSaveState('saving');
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => flushPending(), 600);
@@ -225,8 +237,13 @@ export function useManuscript(project, upd) {
   const sourcesRef = useRef(sources);
   useEffect(() => { sourcesRef.current = sources; });
   const screenPid = linkedScreenProjectId(project);
+  // review-round #21 — one generation per (pid, screenPid) target: an in-flight
+  // refreshSources() resolving AFTER the target changed must not re-install the
+  // old project's sources over the new fetch.
+  const sourcesGenRef = useRef(0);
   useEffect(() => {
     let alive = true;
+    sourcesGenRef.current += 1;
     setSources(emptyManuscriptSources());
     setSourcesSettled(false);
     setSourcesFetchedAt(null);
@@ -244,9 +261,12 @@ export function useManuscript(project, upd) {
   // immediately — state catches up on the next render.
   const refreshSources = useCallback(async () => {
     if (!pid) return { sources: sourcesRef.current, fetchedAt: null };
+    const gen = sourcesGenRef.current;
     try {
       const r = await fetchManuscriptSources({ projectId: pid, screenProjectId: screenPid });
-      if (r) {
+      // Stale resolution (project/screening link changed mid-flight) → discard;
+      // the mount effect for the new target owns the state now.
+      if (r && gen === sourcesGenRef.current) {
         const at = new Date().toISOString();
         setSources(r);
         setSourcesSettled(true);
@@ -611,7 +631,7 @@ export function useManuscript(project, upd) {
 
   // 85.md B2 — per-asset override (draft.assets[id]): include toggle is an
   // IMMEDIATE structural write; title/caption/legend text edits go through the
-  // panels' buffered setMetaDebounced({ assets }) path instead.
+  // panels' buffered queueAssetPatch path instead.
   const setAssetOverride = useCallback((assetId, patch) => {
     if (!assetId || !patch) return;
     mutateActive((d) => {
@@ -620,6 +640,14 @@ export function useManuscript(project, upd) {
       return MS.setMeta(d, { assets: { ...cur, [assetId]: { ...prev, ...patch } } });
     });
   }, [mutateActive]);
+
+  // review-round #20 — debounced per-asset FIELD patch (title/caption/legend typing):
+  // rides queueEdit's 'assetPatch' kind, which merges over the FLUSH-TIME
+  // draft.assets — never a wholesale replacement from a panel's mount-time snapshot.
+  const queueAssetPatch = useCallback((assetId, patch) => {
+    if (!activeDraft || !assetId || !patch) return;
+    queueEdit(activeDraft.id, 'assetPatch', assetId, patch);
+  }, [activeDraft, queueEdit]);
 
   // 85.md B2 — "Insert reference" from the Tables/Figures panels: no editor is
   // mounted there, so the token is appended to the END of Results (the caller
@@ -727,7 +755,7 @@ export function useManuscript(project, upd) {
     refreshSources,
     // 85.md B2 — asset registry + numbering/placement + export preparation.
     analyses, assets, assetNumbering, assetPlacements, draftUsesTokens,
-    setAssetOverride, insertAssetReference, prepareExport,
+    setAssetOverride, queueAssetPatch, insertAssetReference, prepareExport,
     dataStatus: sources.dataStatus,
     screening: sources.screening,
     screeningWorkflow: sources.screeningWorkflow,

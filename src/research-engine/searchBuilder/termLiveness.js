@@ -12,9 +12,14 @@
  *
  * Adopters: compilers/normalize.js (all 16 DB compilers + PubMed count + previews),
  * crossConcept.js (quality checks + duplicate detection), searchState.conceptStatus,
- * methodsText.js (Methods paragraph), server/pecanSearch/query/ast.js (automated
- * runs / preview counts / renderPlain — inline mirror), server/searchEngine/
- * searchVersionService.canonicalStrategyProjection (version identity hash), and
+ * methodsText.js (Methods paragraph), strategyGenerator.js (Strategy Studio
+ * paste-ready strings), strategyCritic.js (critique + revised strategies),
+ * recallEstimate.js (concept-coverage reasons + improvement suggestions),
+ * versionDiff.js (version compare — disabled ≡ absent, matching the projection),
+ * server/pecanSearch/query/ast.js (automated runs / preview counts / renderPlain —
+ * inline mirror), server/searchEngine/searchVersionService.canonicalStrategyProjection
+ * (version identity hash), server/searchEngine/strategyStudioService.loadStoredStrategy
+ * (strips disabled terms before the studio engine ever sees them), and
  * pecanSearchApi.loadCanonicalQuery (client belt-and-braces).
  *
  * Pure, dependency-free, deterministic.

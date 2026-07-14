@@ -118,6 +118,16 @@ describe('recordDisable / undoLast', () => {
       .toBe(serializeSearchState({ concepts: state.concepts, overrides: {}, ignored: [] }));
     expect(out.description).toBe('Re-enabled "obesity"');
   });
+
+  it('undo does NOT stamp the `kept` sync marker (that belongs to the deliberate Enable toggle)', () => {
+    const state = baseState();
+    const stack = recordDisable([], { concept: state.concepts[0], term: state.concepts[0].terms[0] });
+    const disabled = { ...state, concepts: setTermDisabled(state.concepts, 'c1', 't1', true) };
+    const out = undoLast(stack, disabled);
+    expect('kept' in out.state.concepts[0].terms[0]).toBe(false);
+    // …whereas the toggle path stamps it on this same pico_auto term.
+    expect(setTermDisabled(disabled.concepts, 'c1', 't1', false)[0].terms[0].kept).toBe(true);
+  });
 });
 
 describe('recordBulkAccept / undoLast', () => {

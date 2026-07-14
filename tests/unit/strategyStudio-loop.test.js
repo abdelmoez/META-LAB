@@ -7,8 +7,15 @@
  * deterministic and never touches a live provider or the database. This is the "runs
  * even when the dev server is down" companion to the integration gate test.
  */
-import { describe, it, expect } from 'vitest';
-import { computeOptimization } from '../../server/searchEngine/strategyStudioService.js';
+import { describe, it, expect, vi } from 'vitest';
+import { computeOptimization, loadStoredStrategy } from '../../server/searchEngine/strategyStudioService.js';
+import { getModuleState } from '../../server/services/workflowState.js';
+
+// Only getModuleState is stubbed — everything else in the module stays real.
+vi.mock('../../server/services/workflowState.js', async (importOriginal) => ({
+  ...(await importOriginal()),
+  getModuleState: vi.fn(),
+}));
 
 const INITIAL = {
   strategies: [
@@ -117,5 +124,35 @@ describe('computeOptimization — bounded generator↔critic loop', () => {
     );
     expect(out.iterationRecords[0].hitKind).toBe('timeout');
     expect(out.iterationRecords[0].hitCount).toBeNull();
+  });
+});
+
+describe('loadStoredStrategy — the server choke point strips disabled terms (85.md A1)', () => {
+  it('a disabled:true term never reaches generate/optimize/recall (emptied concept kept for op chaining)', async () => {
+    getModuleState.mockResolvedValueOnce({ state: {
+      concepts: [
+        { id: 'p', label: 'Population', op: 'AND', terms: [
+          { id: 't1', text: 'stroke', type: 'freetext', field: 'tiab' },
+          { id: 't2', text: 'TIA', type: 'freetext', field: 'tiab', disabled: true },
+        ] },
+        { id: 'i', label: 'Intervention', op: 'OR', terms: [
+          { id: 't3', text: 'aspirin', type: 'freetext', field: 'tiab', disabled: true },
+        ] },
+      ],
+      filters: { dateFrom: '2020' },
+      databases: ['pubmed'],
+    } });
+    const out = await loadStoredStrategy('p1');
+    expect(out.concepts).toHaveLength(2); // emptied concept KEPT — it carries the op chain
+    expect(out.concepts[0].terms.map((t) => t.text)).toEqual(['stroke']);
+    expect(out.concepts[1].terms).toEqual([]);
+    expect(out.filters).toEqual({ dateFrom: '2020' });
+    expect(out.databases).toEqual(['pubmed']);
+  });
+
+  it('tolerates a missing module state', async () => {
+    getModuleState.mockResolvedValueOnce(null);
+    const out = await loadStoredStrategy('p1');
+    expect(out).toEqual({ concepts: [], filters: {}, databases: [] });
   });
 });

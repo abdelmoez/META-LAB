@@ -378,7 +378,12 @@ function DeepToolPage({ stage }) {
       docTitle={[STAGE_LABEL[stage] || 'Workspace', project.name]}>
       <div style={wrapperStyle}>
         <div style={headerWrapStyle}>{headerRow}</div>
-        <div className={fullbleed ? undefined : 'stitch-tool-body'} style={bodyWrapStyle}>
+        {/* `stitch-tool-body` is a stable test/scoping hook for the workspace tool body
+            (no CSS keys on it). It is applied in BOTH layouts: full-bleed stages (search,
+            screening, …) formerly dropped it, which left the search stage's content
+            unscopable from the page objects. Styling stays 100% on the inline
+            `bodyWrapStyle`, so this is class-as-hook only. */}
+        <div className="stitch-tool-body" style={bodyWrapStyle}>
           {/* Scoped boundary keyed by stage: a throw in one engine (a rejected lazy chunk,
               a data-shape bug in a chart, etc.) recovers to a card and clears when the
               user navigates to another stage — the shell + rail stay live (77.md §9). */}

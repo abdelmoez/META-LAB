@@ -73,6 +73,8 @@ export function buildAnchors(assets) {
     while (used.has(name)) name = `${base.slice(0, 35)}_${i++}`;
     used.add(name);
     anchors[a.id] = name;
+    // Alias ids (e.g. 'figure:forest-primary') hyperlink to the SAME bookmark.
+    for (const al of (a.aliasIds || [])) if (!anchors[al]) anchors[al] = name;
   }
   return anchors;
 }
@@ -85,6 +87,36 @@ function parseInline(text, D, base = {}, ictx = null) {
   const { TextRun, ExternalHyperlink, InternalHyperlink } = D;
   const runs = [];
   const plain = (t, extra = {}) => { if (t) runs.push(new TextRun({ text: t, ...base, ...extra })); };
+  // One asset-token cross-reference run: "Table 2" as an InternalHyperlink to the
+  // asset's caption bookmark; unresolved/unnumbered → plain "Table ?" (never a
+  // raw token leak). `extra` carries the surrounding format (bold/italic/code) so
+  // a token inside emphasis renders formatted, not as literal [[…]] text.
+  // Cross-reference text stays visually plain — Word's own cross-refs are
+  // unstyled, and a blue underline would read as a web link.
+  const assetRef = (kind, suffix, extra = {}) => {
+    const id = `${kind}:${suffix}`;
+    const n = ictx && ictx.numbers ? ictx.numbers[id] : null;
+    const label = `${kind === 'figure' ? 'Figure' : 'Table'} ${n == null ? '?' : n}`;
+    const anchor = (n != null && ictx && ictx.anchors) ? ictx.anchors[id] : null;
+    if (anchor && InternalHyperlink) {
+      runs.push(new InternalHyperlink({ anchor, children: [new TextRun({ text: label, ...base, ...extra })] }));
+    } else plain(label, extra);
+  };
+  // Formatted-segment emitter: pre-split on asset tokens so a token inside
+  // **bold** / *italic* / `code` still resolves (the outer alternation consumes
+  // the whole emphasis span before the token alternative can match).
+  const emit = (t, extra = {}) => {
+    const str = String(t == null ? '' : t);
+    const tre = /\[\[(table|figure):([a-z0-9:-]+)\]\]/g;
+    let l = 0;
+    let tm;
+    while ((tm = tre.exec(str)) !== null) {
+      if (tm.index > l) plain(str.slice(l, tm.index), extra);
+      assetRef(tm[1], tm[2], extra);
+      l = tre.lastIndex;
+    }
+    if (l < str.length) plain(str.slice(l), extra);
+  };
   // Asset tokens FIRST in the alternation so they can never be re-parsed as links.
   const re = /(\[\[(?:table|figure):[a-z0-9:-]+\]\]|\*\*\*[^*]+\*\*\*|\*\*(?:[^*]|\*(?!\*))+?\*\*|\*[^*]+\*|`[^`]+`|\[[^\]]*\]\((?:https?:\/\/|mailto:)[^)\s]+\))/g;
   let last = 0;
@@ -94,19 +126,9 @@ function parseInline(text, D, base = {}, ictx = null) {
     if (m.index > last) plain(s.slice(last, m.index));
     const tok = m[0];
     if (tok.startsWith('[[')) {
-      // [[table:study]] → "Table 2" as an InternalHyperlink to the asset's
-      // caption bookmark; unresolved/unnumbered → plain "Table ?" (never a raw
-      // token leak). Cross-reference text stays visually plain — Word's own
-      // cross-refs are unstyled, and a blue underline would read as a web link.
       const am = tok.match(/^\[\[(table|figure):([a-z0-9:-]+)\]\]$/);
-      const id = `${am[1]}:${am[2]}`;
-      const n = ictx && ictx.numbers ? ictx.numbers[id] : null;
-      const label = `${am[1] === 'figure' ? 'Figure' : 'Table'} ${n == null ? '?' : n}`;
-      const anchor = (n != null && ictx && ictx.anchors) ? ictx.anchors[id] : null;
-      if (anchor && InternalHyperlink) {
-        runs.push(new InternalHyperlink({ anchor, children: [new TextRun({ text: label, ...base })] }));
-      } else plain(label);
-    } else if (tok.startsWith('***')) plain(tok.slice(3, -3), { bold: true, italics: true });
+      assetRef(am[1], am[2]);
+    } else if (tok.startsWith('***')) emit(tok.slice(3, -3), { bold: true, italics: true });
     else if (tok.startsWith('**')) {
       // bold segment may contain *italic* runs: **a *b* c**
       const inner = tok.slice(2, -2);
@@ -114,12 +136,12 @@ function parseInline(text, D, base = {}, ictx = null) {
       let il = 0;
       let im;
       while ((im = ire.exec(inner)) !== null) {
-        if (im.index > il) plain(inner.slice(il, im.index), { bold: true });
-        plain(im[1], { bold: true, italics: true });
+        if (im.index > il) emit(inner.slice(il, im.index), { bold: true });
+        emit(im[1], { bold: true, italics: true });
         il = ire.lastIndex;
       }
-      if (il < inner.length) plain(inner.slice(il), { bold: true });
-    } else if (tok.startsWith('`')) plain(tok.slice(1, -1), { font: 'Consolas' });
+      if (il < inner.length) emit(inner.slice(il), { bold: true });
+    } else if (tok.startsWith('`')) emit(tok.slice(1, -1), { font: 'Consolas' });
     else if (tok.startsWith('[')) {
       const lm = tok.match(/^\[([^\]]*)\]\(((?:https?:\/\/|mailto:)[^)\s]+)\)$/);
       if (lm && ExternalHyperlink) {
@@ -129,7 +151,7 @@ function parseInline(text, D, base = {}, ictx = null) {
         }));
       } else if (lm) plain(`${lm[1] || lm[2]} (${lm[2]})`);
       else plain(tok);
-    } else plain(tok.slice(1, -1), { italics: true });
+    } else emit(tok.slice(1, -1), { italics: true });
     last = re.lastIndex;
   }
   if (last < s.length) plain(s.slice(last));
@@ -276,6 +298,15 @@ function note(text, D) {
   const { Paragraph, TextRun } = D;
   return new Paragraph({ spacing: { after: 120 }, children: [new TextRun({ text, italics: true, size: 16, color: '666666' })] });
 }
+/** User caption text — its own 9pt paragraph under the "Table N. Title" line. */
+function captionBody(text, D, opts = {}) {
+  const { Paragraph, TextRun } = D;
+  return new Paragraph({
+    spacing: { after: 80 },
+    keepNext: opts.keepNext || undefined,
+    children: [new TextRun({ text, size: 18 })],
+  });
+}
 function h1(text, D, opts = {}) {
   const { Paragraph, HeadingLevel } = D;
   return new Paragraph({ heading: HeadingLevel.HEADING_1, text, pageBreakBefore: !!opts.pageBreak, spacing: { before: 240, after: 100 } });
@@ -361,6 +392,10 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
     const n = numbering.byId[a.id];
     const tbl = tables[a.builderId];
     out.push(caption(`Table ${n}. ${assetTitle(a)}`, D, { bookmark: anchors[a.id], keepNext: true }));
+    // User caption override — its OWN paragraph under the title line (it used to
+    // be silently dropped: assetTitle only read it when the title was empty,
+    // which builder titles never are).
+    if (a.caption) out.push(captionBody(a.caption, D, { keepNext: true }));
     if (tbl && tbl.available) {
       out.push(tableToDocx(tbl, D, { onInfo }));
       // Builder warnings were previously dropped from the export — now honest
@@ -379,16 +414,20 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
   const renderFigurePng = async (a) => {
     if (a.builderId === 'prisma') return prismaPng(prismaResult, { title: '', targetWidthPx: 1800 });
     if (a.builderId === 'forest') {
-      const match = (a.id === 'figure:forest-primary')
-        ? primary
-        : analyses.find((x) => x && x.pair && x.pair.key === a.pairKey);
+      // Every forest is pair-keyed; the legacy role id ('figure:forest-primary',
+      // now also an alias) falls back to the current primary analysis.
+      const match = (a.pairKey && analyses.find((x) => x && x.pair && x.pair.key === a.pairKey))
+        || ((a.id === 'figure:forest-primary' || (a.aliasIds || []).includes('figure:forest-primary')) ? primary : null);
       if (!match || !match.result) return null;
       return forestPng(match.result, { esType: match.pair.esType, title: '', prec, targetWidthPx: 2200 });
     }
     if (a.builderId === 'rob') return robPng(robAssessments, { studies: project.studies, targetWidthPx: 1800 });
     if (a.builderId === 'funnel') {
-      if (!primary || !primary.result) return null;
-      return funnelPng(primary.result, { esType: primary.pair && primary.pair.esType, prec, targetWidthPx: 2200 });
+      // The funnel plots the pair it is keyed to (the primary pair at registry
+      // time); pairKey lookup keeps it bound across a later primary flip.
+      const fp = (a.pairKey && analyses.find((x) => x && x.pair && x.pair.key === a.pairKey)) || primary;
+      if (!fp || !fp.result) return null;
+      return funnelPng(fp.result, { esType: fp.pair && fp.pair.esType, prec, targetWidthPx: 2200 });
     }
     return null;
   };
@@ -401,6 +440,8 @@ export async function buildManuscriptDocx(project, draft, opts = {}) {
     // Caption first (carries the bookmark) so cross-reference hyperlinks stay
     // valid even when rasterization fails and we fall back to an honest note.
     out.push(caption(`Figure ${n}. ${title}`, D, { bookmark: anchors[a.id], keepNext: true }));
+    // User caption override — its own paragraph under the title line.
+    if (a.caption) out.push(captionBody(a.caption, D, { keepNext: true }));
     try {
       const png = await renderFigurePng(a);
       if (png && png.blob) {
