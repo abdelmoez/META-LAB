@@ -131,6 +131,53 @@ export class SearchPage {
     await input.press('Enter');
   }
 
+  /* ── 85.md — staged workspace (searchWorkspaceV2): redesigned Concepts +
+        Terms & Vocabulary master-detail locators ─────────────────────────────── */
+
+  /** Concepts stage — the cards container (pinned testid) + one card by name. */
+  get conceptCards(): Locator { return this.body.getByTestId('sb-concepts-summary'); }
+  conceptCard(name: string): Locator {
+    return this.body.getByTestId('sb-concept-card').filter({ hasText: name });
+  }
+  /** The card's ONE primary action — navigates to Terms & Vocabulary. */
+  editTermsButton(conceptName: string): Locator {
+    return this.conceptCard(conceptName).getByRole('button', { name: /Edit terms/ });
+  }
+
+  /** Terms stage — master-detail surfaces. */
+  get conceptNavigator(): Locator { return this.body.getByTestId('sb-concept-navigator'); }
+  navigatorPill(name: string): Locator {
+    return this.conceptNavigator.getByRole('tab', { name: new RegExp(name, 'i') });
+  }
+  get activeConcept(): Locator { return this.body.getByTestId('sb-active-concept'); }
+  get addTermInput(): Locator { return this.body.getByTestId('sb-add-term-input'); }
+  get addTermButton(): Locator { return this.body.getByTestId('sb-add-term-btn'); }
+  get addStatusLine(): Locator { return this.body.getByTestId('sb-add-status'); }
+  /** A term chip's EDIT button (the whole chip) inside the active concept. */
+  termChip(term: string): Locator {
+    return this.activeConcept.getByRole('button', { name: `Edit ${term}` });
+  }
+  /** A term chip's separate remove button (pinned aria contract). */
+  termChipRemove(term: string): Locator {
+    return this.activeConcept.getByRole('button', { name: `Remove ${term}` });
+  }
+  get termEditor(): Locator { return this.body.getByTestId('sb-term-editor'); }
+  get suggestionsArea(): Locator { return this.body.getByTestId('sb-suggestions'); }
+  suggestionRow(text: string): Locator {
+    return this.body.getByTestId('sb-suggestion-row').filter({ hasText: text });
+  }
+  get strategyPreview(): Locator { return this.body.getByTestId('sb-strategy-preview'); }
+  get saveStatus(): Locator { return this.body.getByTestId('sb-save-status').first(); }
+  /** The undo snackbar is portaled-fixed at the page level (not body-scoped). */
+  get undoSnackbar(): Locator { return this.page.getByTestId('sb-undo'); }
+
+  /** Type into the active concept's add box and commit with the explicit Add button. */
+  async addTermToActiveConcept(term: string): Promise<void> {
+    await expect(this.addTermInput).toBeVisible();
+    await this.addTermInput.fill(term);
+    await this.addTermButton.click();
+  }
+
   /* ── Run step (PecanSearchTab) ───────────────────────────────────────────── */
 
   get pecanHeading(): Locator { return this.body.getByRole('heading', { name: /Run search — Pecan Search Engine/i }); }

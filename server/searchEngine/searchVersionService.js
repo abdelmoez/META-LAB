@@ -53,7 +53,12 @@ export function canonicalStrategyProjection(strategy) {
       picoField: str(c.picoField).trim().toUpperCase(),
       op: c.op === 'OR' ? 'OR' : 'AND',
       terms: (Array.isArray(c.terms) ? c.terms : [])
-        .filter((t) => t && typeof t === 'object' && str(t.text).trim())
+        // 85.md A1 — a disabled term is not part of the executed search, so it is not
+        // part of the strategy's IDENTITY either: disabled ≡ absent. This makes a
+        // disable toggle correctly flip `currentMatch`, and keeps every OLD save
+        // (no `disabled` key anywhere) hashing byte-identically. Mirrors the shared
+        // liveness rule in src/research-engine/searchBuilder/termLiveness.js.
+        .filter((t) => t && typeof t === 'object' && str(t.text).trim() && t.disabled !== true)
         .map((t) => ({
           text: norm(t.text),
           field: norm(t.field) || 'tiab',

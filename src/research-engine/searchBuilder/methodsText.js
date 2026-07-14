@@ -1,5 +1,5 @@
 /**
- * methodsText.js — 69.md §8. Pure, dependency-free generator of a manuscript-ready
+ * methodsText.js — 69.md §8. Pure, dependency-light generator of a manuscript-ready
  * "Search strategy" Methods paragraph from a saved Search-Builder strategy plus its
  * versions and (optional) executed run counts.
  *
@@ -16,6 +16,7 @@
  * Output: { text } is assembled by the caller; this module returns the paragraph
  * string. Exported for unit testing.
  */
+import { isLiveTerm } from './termLiveness.js';
 
 const s = (v) => String(v == null ? '' : v);
 const trim = (v) => s(v).trim();
@@ -66,7 +67,9 @@ function conceptList(strategy) {
     .filter((c) => c && typeof c === 'object')
     .map((c) => ({
       label: trim(c.label) || trim(c.picoField),
-      terms: (Array.isArray(c.terms) ? c.terms : []).filter((t) => t && typeof t === 'object' && trim(t.text)),
+      // 85.md A1 — shared liveness rule: the Methods text documents only the terms
+      // that are actually searched (non-blank AND not disabled; see termLiveness.js).
+      terms: (Array.isArray(c.terms) ? c.terms : []).filter((t) => t && typeof t === 'object' && isLiveTerm(t)),
     }))
     .filter((c) => c.terms.length > 0);
 }

@@ -26,6 +26,7 @@ import { test, expect } from '../fixtures/stitch-test';
 import { SearchPage } from '../page-objects/SearchPage';
 import { setFeatureFlags } from '../helpers/api';
 import { BASE_URL, adminStatePath } from '../helpers/env';
+import { expectNoSeriousA11y } from '../helpers/axe';
 
 test.describe.serial('74.md — mode-scoped staged Search Workspace (searchWorkspaceV2 ON)', () => {
   let adminCtx: APIRequestContext;
@@ -227,5 +228,190 @@ test.describe.serial('74.md — mode-scoped staged Search Workspace (searchWorks
     await page.keyboard.press('ArrowLeft');
     await expect(manualCard(sp)).toHaveAttribute('aria-checked', 'true');
     await expect(manualCard(sp)).toBeFocused();
+  });
+
+  /* ════════ 85.md — novice scenario flows over the redesigned Concepts +
+     Terms & Vocabulary stages (concept cards, master-detail, preview, undo) ════ */
+
+  test('S1: create concepts → Edit terms → add a synonym → preview reflects it → Next', async ({ page, tmpProject }) => {
+    const sp = new SearchPage(page);
+    await openWorkspace(sp, tmpProject.id);
+
+    // Concepts stage — the keyword picker keeps its pinned placeholders.
+    await rail(sp).getByRole('button', { name: /Concepts/ }).click();
+    await expect(sp.conceptCards).toBeVisible();
+    await sp.addKeyword('Population', 'diabetes');
+    await sp.addKeyword('Intervention / Exposure', 'metformin');
+    await expect(sp.selectedKeywordRemove('diabetes')).toBeVisible();
+
+    // The ONE primary card action navigates to Terms & Vocabulary with the concept active.
+    await sp.editTermsButton('Population').click();
+    await expect(stageSurface(sp)).toHaveAttribute('data-stage', 'terms');
+    await expect(sp.activeConcept).toBeVisible();
+    await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue('Population');
+
+    // Add a synonym via the explicit Add button; the chip + outcome line appear.
+    await sp.addTermToActiveConcept('hyperglycemia');
+    await expect(sp.termChip('hyperglycemia')).toBeVisible();
+    await expect(sp.addStatusLine).toContainText(/Added|added/);
+
+    // The strategy preview names the concept and carries the new term.
+    await expect(sp.strategyPreview).toBeVisible();
+    await expect(sp.strategyPreview).toContainText('Population');
+    await expect(sp.strategyPreview).toContainText('hyperglycemia');
+
+    // Blur retention: a half-typed draft survives a navigator switch (round-trip).
+    await sp.addTermInput.fill('half-typed');
+    await sp.navigatorPill('Intervention').click();
+    await expect(sp.activeConcept.getByLabel(/Concept name/)).toHaveValue(/Intervention/);
+    await sp.navigatorPill('Population').click();
+    await expect(sp.addTermInput).toHaveValue('half-typed');
+    // …and Escape clears it deliberately (no silent commit — the C3 fix).
+    await sp.addTermInput.press('Escape'); // closes the dropdown if open
+    await sp.addTermInput.press('Escape'); // clears the draft
+    await expect(sp.addTermInput).toHaveValue('');
+    await expect(sp.termChip('half-typed')).toHaveCount(0);
+
+    // Footer Next continues the staged flow.
+    await page.getByRole('button', { name: /Next: Search Mode/ }).click();
+    await expect(stageSurface(sp)).toHaveAttribute('data-stage', 'mode');
+  });
+
+  test('S2: vocabulary suggestions — accept adds a subject heading; dismiss persists across reload', async ({ page, tmpProject }) => {
+    const sp = new SearchPage(page);
+    await openWorkspace(sp, tmpProject.id);
+
+    // Seed two terms with known vocabulary (live NLM or the offline core fallback).
+    await rail(sp).getByRole('button', { name: /Concepts/ }).click();
+    await sp.addKeyword('Population', 'heart failure');
+    await sp.addKeyword('Population', 'hypertension');
+
+    await sp.editTermsButton('Population').click();
+    await expect(sp.activeConcept).toBeVisible();
+
+    // The review disclosure lists heading suggestions once lookups attach vocab.
+    // Scope rows by their "why" line so a later synonyms-suggestion for the SAME
+    // heading can never alias these locators.
+    const hfRow = sp.suggestionRow('subject heading for "heart failure"');
+    const htnRow = sp.suggestionRow('subject heading for "hypertension"');
+    await expect(hfRow).toBeVisible({ timeout: 20_000 });
+    await expect(htnRow).toBeVisible({ timeout: 20_000 });
+
+    // Accept one → the descriptor chip (with MeSH badge) joins the included terms.
+    await hfRow.getByRole('button', { name: /Accept suggestion/ }).click();
+    await expect(sp.termChip('Heart Failure')).toBeVisible();
+    await expect(hfRow).toHaveCount(0);
+
+    // Dismiss the other → it leaves the list…
+    await htnRow.getByRole('button', { name: /Dismiss suggestion/ }).click();
+    await expect(htnRow).toHaveCount(0);
+
+    // …and the rejection PERSISTS server-side (rejectedSuggestions round-trip).
+    await expect
+      .poll(async () => {
+        const r = await page.request.get(`/api/search-builder/${encodeURIComponent(tmpProject.id)}`);
+        if (!r.ok()) return null;
+        const b = await r.json().catch(() => null);
+        return Array.isArray(b?.rejectedSuggestions) ? b.rejectedSuggestions.length : 0;
+      }, { timeout: 15_000, message: 'rejection never persisted' })
+      .toBeGreaterThan(0);
+    await sp.page.goto(`/app/project/${encodeURIComponent(tmpProject.id)}?tab=search&stage=terms`);
+    await expect(sp.activeConcept).toBeVisible({ timeout: 15_000 });
+    await expect(sp.termChip('Heart Failure')).toBeVisible();
+    await expect(sp.suggestionRow('subject heading for "hypertension"')).toHaveCount(0);
+  });
+
+  test('S3: edit in place, disable-without-delete, remove → snackbar Undo restores', async ({ page, tmpProject }) => {
+    const sp = new SearchPage(page);
+    await openWorkspace(sp, tmpProject.id);
+    await page.goto(`/app/project/${encodeURIComponent(tmpProject.id)}?tab=search&stage=terms`);
+    await expect(sp.activeConcept).toBeVisible();
+
+    await sp.addTermToActiveConcept('cardiomyopathy');
+    await expect(sp.termChip('cardiomyopathy')).toBeVisible();
+
+    // The whole chip opens the editor popover.
+    await sp.termChip('cardiomyopathy').click();
+    await expect(sp.termEditor).toBeVisible();
+
+    // Edit the text IN PLACE (replace without delete).
+    const textInput = sp.termEditor.getByLabel('Term text');
+    await textInput.fill('cardiomyopathies');
+    await sp.termEditor.getByRole('button', { name: 'Done' }).click();
+    await expect(sp.termChip('cardiomyopathies')).toBeVisible();
+
+    // Disable-without-delete: the chip stays, marked off.
+    await sp.termChip('cardiomyopathies').click();
+    await sp.termEditor.getByRole('button', { name: 'Disable' }).click();
+    await sp.termEditor.getByRole('button', { name: 'Done' }).click();
+    await expect(sp.activeConcept.getByText('off', { exact: true })).toBeVisible();
+
+    // Remove → undo snackbar → Undo restores the chip.
+    await sp.termChipRemove('cardiomyopathies').click();
+    await expect(sp.termChip('cardiomyopathies')).toHaveCount(0);
+    await expect(sp.undoSnackbar).toBeVisible();
+    await sp.undoSnackbar.getByRole('button', { name: 'Undo' }).click();
+    await expect(sp.termChip('cardiomyopathies')).toBeVisible();
+  });
+
+  test('S4-manual: DB catalogue → mark ready → the screening handoff link opens', async ({ page, tmpProject }) => {
+    const sp = new SearchPage(page);
+    await openWorkspace(sp, tmpProject.id);
+
+    // Give the strategy a term so downstream stages are meaningful.
+    await rail(sp).getByRole('button', { name: /Concepts/ }).click();
+    await sp.addKeyword('Population', 'asthma');
+
+    // Manual mode → Database Strategies exists and shows the catalogue.
+    await openModeStage(sp);
+    await manualCard(sp).click();
+    await dbStrategiesPip(sp).click();
+    await expect(sp.databasePicker).toBeVisible();
+
+    // Send to Screening: mark ready, then the footer handoff enables with a real href.
+    await rail(sp).getByRole('button', { name: /Send to Screening/ }).click();
+    const markBtn = page.getByRole('button', { name: /Mark strategy ready for screening import/ });
+    await expect(markBtn).toBeEnabled({ timeout: 15_000 });
+    await markBtn.click();
+    const cont = page.getByTestId('continue-to-screening');
+    await expect(cont).not.toHaveAttribute('aria-disabled', 'true');
+    await expect(cont).toHaveAttribute('href', /tab=screening&screen=import/);
+  });
+
+  test('S4-automated: provider run surface is reachable (no run started)', async ({ page, tmpProject }) => {
+    const sp = new SearchPage(page);
+    await openWorkspace(sp, tmpProject.id);
+    await openModeStage(sp);
+    await automatedCard(sp).click();
+    await rail(sp).getByRole('button', { name: /Automated Search/ }).click();
+    // The Pecan run surface mounts (sources + strategy cards) — we do NOT run.
+    await expect(stageSurface(sp)).toHaveAttribute('data-stage', 'results');
+    await expect(stageSurface(sp).getByText('Sources')).toBeVisible({ timeout: 15_000 });
+  });
+
+  /* ════════ 85.md — axe scans of the two redesigned stages ════════ */
+
+  test('a11y: the Concepts stage has no serious/critical violations', async ({ page, tmpProject }, testInfo) => {
+    const sp = new SearchPage(page);
+    await openWorkspace(sp, tmpProject.id);
+    await rail(sp).getByRole('button', { name: /Concepts/ }).click();
+    await expect(sp.conceptCards).toBeVisible();
+    await expectNoSeriousA11y(page, {
+      include: '[data-testid="stitch-main-content"]',
+      testInfo, label: 'search-concepts',
+    });
+  });
+
+  test('a11y: the Terms & Vocabulary stage has no serious/critical violations', async ({ page, tmpProject }, testInfo) => {
+    const sp = new SearchPage(page);
+    await openWorkspace(sp, tmpProject.id);
+    await page.goto(`/app/project/${encodeURIComponent(tmpProject.id)}?tab=search&stage=terms`);
+    await expect(sp.activeConcept).toBeVisible();
+    await sp.addTermToActiveConcept('copd');
+    await expect(sp.termChip('copd')).toBeVisible();
+    await expectNoSeriousA11y(page, {
+      include: '[data-testid="stitch-main-content"]',
+      testInfo, label: 'search-terms',
+    });
   });
 });

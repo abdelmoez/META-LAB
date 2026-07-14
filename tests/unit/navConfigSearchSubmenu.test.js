@@ -9,13 +9,16 @@
  *   - Citation Mining stays flag-gated (ctx.citationMiningEnabled);
  *   - searchStageHref / readSearchStageParam / activeSubmenuKey resolve the ?stage=.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import {
   submenuForCategory, searchStageHref, readSearchStageParam, activeSubmenuKey,
   categoryShowsSubmenu, categoryForStage,
 } from '../../src/frontend/stitch/nav/navConfig.js';
 import { submenuSteps } from '../../src/frontend/stitch/nav/stepperModel.js';
 import { stagesFor } from '../../src/features/searchWorkspace/searchStages.js';
+// 85.md — the additive per-stage status flows from the shared store the mounted
+// workspace publishes to (glyph-less fallback otherwise).
+import { publishSearchStageStatuses, __resetSearchModeStore } from '../../src/features/searchWorkspace/searchModeStore.js';
 
 // 75.md recs (Finding 1) — the numbered Search WORKFLOW submenu is gated behind the
 // staged workspace flag (searchWorkspaceV2), because only then does the body honour
@@ -86,6 +89,55 @@ describe('75.md — submenuForCategory("search") is the mode-scoped Search workf
     expect(categoryShowsSubmenu('search')).toBe(true);
     expect(categoryForStage('living')).toBe('search');
     expect(categoryForStage('citation')).toBe('search');
+  });
+});
+
+describe('85.md — additive per-stage `status` on the Search submenu items', () => {
+  beforeEach(() => __resetSearchModeStore());
+
+  it('no published statuses → status:null on every stage item (glyph-less fallback)', () => {
+    const items = submenuForCategory('search', CTX);
+    for (const it2 of items.filter((i) => !i.utility)) expect(it2.status).toBeNull();
+  });
+
+  it('an explicit ctx.searchStageStatuses wins and maps per stage id', () => {
+    const items = submenuForCategory('search', {
+      ...CTX,
+      searchStageStatuses: { question: 'done', concepts: 'partial', terms: 'attention' },
+    });
+    const byKey = Object.fromEntries(items.map((i) => [i.key, i]));
+    expect(byKey.question.status).toBe('done');
+    expect(byKey.concepts.status).toBe('partial');
+    expect(byKey.terms.status).toBe('attention');
+    expect(byKey.mode.status).toBeNull(); // unknown stages stay glyph-less
+  });
+
+  it('falls back to the shared store the mounted workspace publishes to', () => {
+    publishSearchStageStatuses('p1', { question: 'done', screening: 'empty' });
+    const items = submenuForCategory('search', CTX);
+    const byKey = Object.fromEntries(items.map((i) => [i.key, i]));
+    expect(byKey.question.status).toBe('done');
+    expect(byKey.screening.status).toBe('empty');
+  });
+
+  it('submenuSteps prefers the item status over the legacy statusMap', () => {
+    const steps = submenuSteps('search', {
+      ...CTX,
+      searchStageStatuses: { question: 'done', concepts: 'attention' },
+    }, { statusMap: {} });
+    const byKey = Object.fromEntries(steps.map((s) => [s.key, s]));
+    expect(byKey.question.status).toBe('done');
+    expect(byKey.concepts.status).toBe('attention');
+    expect(byKey.terms.status).toBe('empty'); // no truth → the calm default
+    expect(byKey.living.status).toBeNull();   // utility rows stay status-less
+  });
+
+  it('the legacy (flag OFF) single-Search submenu is untouched by the store', () => {
+    publishSearchStageStatuses('p1', { question: 'done' });
+    const items = submenuForCategory('search', { projectId: 'p1', linkedSiftId: 's1' });
+    const search = items.find((i) => i.key === 'search');
+    expect(search.status).toBeUndefined(); // legacy item shape is unchanged
+    expect(search.completionKey).toBe('search');
   });
 });
 

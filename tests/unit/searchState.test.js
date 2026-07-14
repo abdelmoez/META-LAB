@@ -11,7 +11,9 @@ import {
   conceptFieldKey, PICO_FIELD_DEFS,
   findFieldConcept, fieldHasTerm, addManualTermToField, removeTermFromField,
   conceptStatus, CONCEPT_STATUS_LABELS, termPicoRole, normalizePersistedFilters,
+  setTermDisabled, normalizePersistedRejected,
 } from '../../src/research-engine/searchBuilder/searchState.js';
+import { rejectionKey } from '../../src/research-engine/searchBuilder/suggestionReview.js';
 import { norm, picoToConcepts } from '../../src/research-engine/searchBuilder/conceptExtraction.js';
 
 describe('stableStringify', () => {
@@ -414,5 +416,153 @@ describe('pickPersisted — SB4 dismissedWarnings', () => {
     const a = { concepts: [], overrides: {}, ignored: [], databases: [], readyForScreening: false, dismissedWarnings: [] };
     const b = { ...a, dismissedWarnings: ['empty:O'] };
     expect(serializeSearchState(a)).not.toBe(serializeSearchState(b));
+  });
+});
+
+/* ── 85.md A1 — disable-without-delete (setTermDisabled) ─────────────────────── */
+
+describe('setTermDisabled — flag hygiene', () => {
+  const base = () => [{
+    id: 'c1', label: 'Condition', op: 'AND', picoField: 'P', field: 'Population', source: 'pico_auto',
+    terms: [
+      { id: 't1', text: 'heart failure', type: 'freetext', field: 'tiab', source: 'pico_auto' },
+      { id: 't2', text: 'cardiac failure', type: 'freetext', field: 'tiab', source: 'user_added' },
+    ],
+  }];
+
+  it('disables a term with disabled:true', () => {
+    const out = setTermDisabled(base(), 'c1', 't1', true);
+    expect(out[0].terms[0].disabled).toBe(true);
+    expect(out[0].terms[1].disabled).toBeUndefined(); // sibling untouched
+  });
+
+  it('enabling DELETES the key — never writes disabled:false', () => {
+    const off = setTermDisabled(base(), 'c1', 't1', true);
+    const on = setTermDisabled(off, 'c1', 't1', false);
+    expect('disabled' in on[0].terms[0]).toBe(false);
+  });
+
+  it('PINNED: disable→enable round-trip is byte-identical to the original signature', () => {
+    const original = { concepts: base(), overrides: {}, ignored: [] };
+    const off = setTermDisabled(original.concepts, 'c1', 't1', true);
+    const roundTripped = { concepts: setTermDisabled(off, 'c1', 't1', false), overrides: {}, ignored: [] };
+    expect(serializeSearchState(roundTripped)).toBe(serializeSearchState(original));
+    // …and disabling DOES change the signature (autosave must fire).
+    expect(serializeSearchState({ ...original, concepts: off })).not.toBe(serializeSearchState(original));
+  });
+
+  it('is a no-op for unknown concept/term ids and junk input', () => {
+    const cs = base();
+    expect(setTermDisabled(cs, 'nope', 't1', true)[0].terms[0].disabled).toBeUndefined();
+    expect(setTermDisabled(cs, 'c1', 'nope', true)[0].terms.every((t) => !t.disabled)).toBe(true);
+    expect(setTermDisabled(null, 'c1', 't1', true)).toEqual([]);
+  });
+});
+
+describe('syncSearchBuilderFromPico — disabled terms survive a PICO edit (85.md A1)', () => {
+  it('keeps a DISABLED pico_auto freetext term whose keyword left the PICO text (off, not dropped)', () => {
+    const a = syncSearchBuilderFromPico({ P: 'asthma' }, [], []);
+    const pop = a.find((c) => c.picoField === 'P');
+    const asthma = pop.terms.find((t) => norm(t.text) === 'asthma');
+    const withDisabled = a.map((c) => (c.picoField === 'P'
+      ? { ...c, terms: c.terms.map((t) => (norm(t.text) === 'asthma' ? { ...t, id: t.id || 'x1', disabled: true } : t)) }
+      : c));
+    const b = syncSearchBuilderFromPico({ P: 'COPD' }, withDisabled, []);
+    const popB = b.find((c) => c.picoField === 'P');
+    const kept = popB.terms.find((t) => norm(t.text) === 'asthma');
+    expect(kept).toBeTruthy();
+    expect(kept.disabled).toBe(true); // kept OFF, not silently re-enabled
+    expect(asthma.source).toBe('pico_auto'); // sanity: this exercised the auto-term keep path
+  });
+
+  it('an ENABLED plain freetext auto term whose keyword left is still dropped (unchanged behavior)', () => {
+    const a = syncSearchBuilderFromPico({ P: 'asthma' }, [], []);
+    const b = syncSearchBuilderFromPico({ P: 'COPD' }, a, []);
+    expect(b.find((c) => c.picoField === 'P').terms.map((t) => norm(t.text))).not.toContain('asthma');
+  });
+
+  it('a disabled auto term whose keyword is STILL in the PICO text keeps its flag (object reuse)', () => {
+    const a = syncSearchBuilderFromPico({ P: 'asthma' }, [], []);
+    const withDisabled = a.map((c) => (c.picoField === 'P'
+      ? { ...c, terms: c.terms.map((t) => (norm(t.text) === 'asthma' ? { ...t, disabled: true } : t)) }
+      : c));
+    const b = syncSearchBuilderFromPico({ P: 'asthma' }, withDisabled, []);
+    expect(b.find((c) => c.picoField === 'P').terms.find((t) => norm(t.text) === 'asthma').disabled).toBe(true);
+  });
+});
+
+describe('syncSearchBuilderFromPico — cross-group dedup winner keeps ITS OWN disabled flag', () => {
+  // 'placebo' has no PICO role, so the dedup winner is the first group by PICO order
+  // (Comparator when duplicated across C and O).
+  const pico = { C: 'placebo', O: 'placebo' };
+  const withFlagOn = (groups, key) => groups.map((c) => (c.picoField === key
+    ? { ...c, terms: c.terms.map((t) => (norm(t.text) === 'placebo' ? { ...t, disabled: true } : t)) }
+    : c));
+  const placeboIn = (groups, key) => (groups.find((c) => c.picoField === key).terms || [])
+    .find((t) => norm(t.text) === 'placebo');
+
+  it('winner disabled + loser enabled → survivor stays disabled', () => {
+    const a = syncSearchBuilderFromPico(pico, [], []);
+    const seeded = withFlagOn(a, 'C'); // C is the winner (PICO order)
+    const b = syncSearchBuilderFromPico(pico, seeded, []);
+    expect(placeboIn(b, 'C').disabled).toBe(true);
+    expect(placeboIn(b, 'O')).toBeUndefined(); // loser copy deduped away
+  });
+
+  it('winner enabled + loser disabled → survivor stays enabled (a discarded duplicate never switches it)', () => {
+    const a = syncSearchBuilderFromPico(pico, [], []);
+    const seeded = withFlagOn(a, 'O'); // O loses the dedup to C
+    const b = syncSearchBuilderFromPico(pico, seeded, []);
+    expect(placeboIn(b, 'C')).toBeTruthy();
+    expect(placeboIn(b, 'C').disabled).toBeUndefined();
+    expect(placeboIn(b, 'O')).toBeUndefined();
+  });
+});
+
+/* ── 85.md A1 — persisted rejected-suggestion keys ───────────────────────────── */
+
+describe('pickPersisted / serializeSearchState — rejectedSuggestions (85.md A1)', () => {
+  it('PINNED: omitted when empty — old-save signatures stay byte-identical', () => {
+    const before = serializeSearchState({ concepts: [], overrides: {}, ignored: [] });
+    const withEmpty = serializeSearchState({ concepts: [], overrides: {}, ignored: [], rejectedSuggestions: [] });
+    expect(withEmpty).toBe(before);
+    expect(pickPersisted({ concepts: [] }).rejectedSuggestions).toBeUndefined();
+    expect(normalizePersistedRejected([])).toBeUndefined();
+    expect(normalizePersistedRejected(null)).toBeUndefined();
+    expect(normalizePersistedRejected(['', '   '])).toBeUndefined(); // nothing usable
+  });
+  it('round-trips non-empty keys and changes the signature (autosave fires)', () => {
+    const base = { concepts: [], overrides: {}, ignored: [] };
+    const withRej = { ...base, rejectedSuggestions: ['rej:P:fam:eus', 'rej:I:metformin'] };
+    expect(pickPersisted(withRej).rejectedSuggestions).toEqual(['rej:P:fam:eus', 'rej:I:metformin']);
+    expect(serializeSearchState(withRej)).not.toBe(serializeSearchState(base));
+  });
+  it('drops non-string junk', () => {
+    expect(normalizePersistedRejected(['rej:P:x', 7, null, {}])).toEqual(['rej:P:x']);
+  });
+});
+
+describe('conceptStatus — optional { rejected } (85.md A1)', () => {
+  const c = {
+    id: 'cP', picoField: 'P', label: 'Population',
+    terms: [
+      { id: 't1', text: 'obesity', type: 'freetext', vocab: { mesh: 'Obesity' } },
+      { id: 't2', text: 'overweight', type: 'freetext' },
+    ],
+  };
+  it('without opts the existing behavior is unchanged (backwards compatible)', () => {
+    expect(conceptStatus(c)).toBe('mesh-suggested');
+  });
+  it('a concept whose every suggestion is rejected does NOT stay mesh-suggested', () => {
+    const rejected = new Set([rejectionKey(c, 'obesity')]);
+    expect(conceptStatus(c, { rejected })).toBe('ready'); // 2 live terms, no pending heading
+  });
+  it('accepts an array too, and an unrelated rejection changes nothing', () => {
+    expect(conceptStatus(c, { rejected: [rejectionKey(c, 'obesity')] })).toBe('ready');
+    expect(conceptStatus(c, { rejected: ['rej:I:something-else'] })).toBe('mesh-suggested');
+  });
+  it('falls back to needs-review when the only live term had its suggestion rejected', () => {
+    const single = { ...c, terms: [c.terms[0]] };
+    expect(conceptStatus(single, { rejected: [rejectionKey(single, 'obesity')] })).toBe('needs-review');
   });
 });

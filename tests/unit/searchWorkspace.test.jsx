@@ -401,6 +401,26 @@ describe('PubMedPulse — 73.md P3: honest hit-state presentation', () => {
     expect(html).not.toContain('999');
   });
 
+  // 85.md — the five PICO groups ALWAYS exist (audit M1: hasConcepts never fires),
+  // so the REAL empty state keys off the builder-reported live-term count.
+  it('concepts exist but zero live terms → "Add terms…" invitation, never a number', () => {
+    const html = render({ snapshot: { status: 'updated', count: 999, updatedAt: Date.now() }, hasConcepts: true, liveTermCount: 0 });
+    expect(html).toContain('Add terms to see a live PubMed estimate');
+    expect(html).not.toContain('999');
+  });
+
+  it('a positive live-term count keeps the normal lifecycle (no empty branch)', () => {
+    const html = render({ snapshot: { status: 'updated', count: 999, updatedAt: Date.now() }, hasConcepts: true, liveTermCount: 3 });
+    expect(html).toContain('≈ 999 PubMed records');
+    expect(html).not.toContain('Add terms to see');
+  });
+
+  it('an unknown live-term count (builder not reporting yet) never fakes the empty state', () => {
+    const html = render({ snapshot: { status: 'updated', count: 42, updatedAt: Date.now() }, hasConcepts: true, liveTermCount: null });
+    expect(html).toContain('≈ 42 PubMed records');
+    expect(html).not.toContain('Add terms to see');
+  });
+
   it('updated → the count as current, with a LIVE marker + relative time', () => {
     const html = render({ snapshot: { status: 'updated', count: 1234, updatedAt: Date.now() - 120000 }, hasConcepts: true });
     expect(html).toContain('≈ 1,234 PubMed records');

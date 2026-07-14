@@ -1,6 +1,5 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from "react";
-import { C, FONT, MONO, alpha } from "../../frontend/theme/tokens.js";  // SearchEngine: adapt to app theme (day/night + brand)
-import { picoToConcepts } from "../../research-engine/searchBuilder/conceptExtraction.js"; // prompt40 Task 3
+import { C, FONT, MONO, alpha, CB_SERIES } from "../../frontend/theme/tokens.js";  // SearchEngine: adapt to app theme (day/night + brand)
 import { localMeshSuggestions, meshConfidence } from "../../research-engine/searchBuilder/meshSuggest.js"; // prompt42 Task 3 + SB5 vocab safety
 import { serializeSearchState, pickPersisted, remoteAdoptDecision, syncSearchBuilderFromPico,
   findFieldConcept, fieldHasTerm, conceptStatus, CONCEPT_STATUS_LABELS, PICO_FIELD_DEFS } from "../../research-engine/searchBuilder/searchState.js"; // SE1 + SE2 + SB3
@@ -9,6 +8,27 @@ import { databaseGroups, defaultSelectedDatabases, getDatabase, ACCESS_TIERS, AC
 import { compileStrategy, compileAll, capabilitiesFor } from "../../research-engine/searchBuilder/compilers/index.js"; // 73.md P6 — per-database strategy compiler (read-only consumer)
 import { detectCrossConceptDuplicates, searchQualityCheck, sensitivitySignal, termEquivalenceKey } from "../../research-engine/searchBuilder/crossConcept.js"; // SB4 Parts 4/8/9
 import { useRealtime } from "../../frontend/hooks/useRealtime.js"; // SE1 Task 5 — live collaborator sync (shared SSE poke channel)
+// 85.md A1 — pure engine modules for the redesigned Concepts / Terms & Vocabulary UI.
+import { liveTermsOf } from "../../research-engine/searchBuilder/termLiveness.js";
+import { setTermDisabled } from "../../research-engine/searchBuilder/searchState.js";
+import { splitTermInput, addTypedTerms } from "../../research-engine/searchBuilder/termEntry.js";
+import { pendingSuggestions, suggestionCount, rejectionKey, resetSuggestionMemory } from "../../research-engine/searchBuilder/suggestionReview.js";
+import { computeStageStatuses } from "../../research-engine/searchBuilder/stageStatus.js";
+import {
+  recordRemoveTerm, recordRemoveConcept, recordDisable, recordBulkAccept, undoLast, clear as clearUndo,
+} from "../../research-engine/searchBuilder/undoStack.js";
+// 85.md A2 — extracted presentational leaves (SSR-contract-tested in searchBuilderUi.test.jsx).
+import ConceptCards from "./components/ConceptCards.jsx";
+import ConceptNavigator from "./components/ConceptNavigator.jsx";
+import ActiveConceptPanel from "./components/ActiveConceptPanel.jsx";
+import TermChipRow from "./components/TermChipRow.jsx";
+import TermEditorPopover from "./components/TermEditorPopover.jsx";
+import AddTermBox from "./components/AddTermBox.jsx";
+import SuggestionsDisclosure from "./components/SuggestionsDisclosure.jsx";
+import StrategyPreviewPanel from "./components/StrategyPreviewPanel.jsx";
+import SaveStatusIndicator from "./components/SaveStatusIndicator.jsx";
+import UndoSnackbar from "./components/UndoSnackbar.jsx";
+import { Disclosure } from "../pecanSearch/components/parts.jsx"; // native-<details> pattern
 
 /* ════════════════════════════════════════════════════════════════════════════
    SEARCH BUILDER TAB  ·  production component for the META·LAB SaaS app
@@ -37,7 +57,11 @@ import { useRealtime } from "../../frontend/hooks/useRealtime.js"; // SE1 Task 5
 // Theme adapted to the app design tokens (C/FONT/MONO/alpha imported above) so
 // the Search Builder follows day/night + the global brand color.
 const SANS=FONT;
-const CONCEPT_COLORS=["#2dd4bf","#818cf8","#f0abfc","#5eead4","#c4b5fd","#67e8f9","#a5b4fc","#6ee7b7"];
+// 85.md A2 — concept identity accents are now the CVD-safe Okabe–Ito series
+// (tokens.js CB_SERIES) and are used ONLY as a secondary accent (border-left /
+// legend), never as the sole carrier of meaning. The old 8 pastels included two
+// near-identical teals/indigos and were not colour-blind-vetted.
+const CONCEPT_COLORS=CB_SERIES;
 const uid=()=>Math.random().toString(36).slice(2,9);
 // prompt40 Task 3 — multi-concept extraction from PICO (deterministic, no network).
 const cnorm=(s)=>String(s||"").toLowerCase().replace(/[“”"'’.()[\]{}:!?]/g," ").replace(/\s+/g," ").trim();
@@ -149,9 +173,18 @@ const DBS=[
 /* ---- syntax renderers (verified against library guides; see BACKEND_CONTRACT) ---- */
 function renderControlled(term,dbId){
   const v=term.vocab, t=(term.text||"").trim();
-  if(dbId==="pubmed"){ const d=v?.mesh||t; return `"${d}"[Mesh${term.noExplode?":NoExp":""}]`; }
-  if(dbId==="cochrane"){ const d=v?.mesh||t; return `[mh ${term.noExplode?"^":""}"${d}"]`; }
-  if(dbId==="embase"){ const d=v?.emtree||t.toLowerCase(); return `'${d}'/${term.noExplode?"de":"exp"}`; }
+  // 85.md A2 — a controlled term with NO matched vocabulary must fall back to a
+  // free-text token: `"nonexistent heading"[Mesh]` is a heading that doesn't exist
+  // and would match nothing, while the editor copy has always promised "it will
+  // search as plain words until a match is found". Behaviour now matches the copy.
+  if(!v){
+    if(dbId==="pubmed") return pubmedFree(term);
+    const {token,field}=freeTextToken(term);
+    return `${token}${fieldSuffix(dbId,field)}`;
+  }
+  if(dbId==="pubmed"){ const d=v.mesh||t; return `"${d}"[Mesh${term.noExplode?":NoExp":""}]`; }
+  if(dbId==="cochrane"){ const d=v.mesh||t; return `[mh ${term.noExplode?"^":""}"${d}"]`; }
+  if(dbId==="embase"){ const d=v.emtree||t.toLowerCase(); return `'${d}'/${term.noExplode?"de":"exp"}`; }
   return t;
 }
 function freeTextToken(term){
@@ -171,7 +204,8 @@ function fieldSuffix(dbId,field){
   if(dbId==="embase")   return field==="ti"?":ti":field==="all"?":ab,ti,kw":":ab,ti";
   return "";
 }
-function renderTerm(term,dbId){
+/* 85.md A2 — exported so the unmatched-heading fallback above is unit-pinned. */
+export function renderTerm(term,dbId){
   if(!((term.text||"").trim())) return "";
   if(term.type==="controlled") return renderControlled(term,dbId);
   if(dbId==="pubmed") return pubmedFree(term);
@@ -300,7 +334,7 @@ function Help({text}){
       {open&&(
         <span style={{position:"absolute",zIndex:80,top:"calc(100% + 6px)",left:0,width:280,background:C.card,
           border:`1px solid ${alpha(C.acc,"55")}`,borderRadius:9,padding:"10px 12px",fontSize:11,lineHeight:1.55,color:C.txt2,
-          boxShadow:"0 14px 40px #000a",fontWeight:400,whiteSpace:"normal"}}>
+          boxShadow:"0 14px 40px var(--t-shadow)",fontWeight:400,whiteSpace:"normal"}}>
           {text}
           <button onClick={()=>setOpen(false)} style={{display:"block",marginTop:8,...btn("ghost"),fontSize:10,padding:"2px 8px"}}>Got it</button>
         </span>
@@ -312,6 +346,30 @@ function Lbl({plain,jargon}){
   return(<span style={{display:"inline-flex",alignItems:"baseline",gap:5}}>
     <span>{plain}</span>{jargon&&<span style={{fontFamily:MONO,fontSize:9,color:C.dim,opacity:.8}}>{jargon}</span>}
   </span>);
+}
+
+/* 85.md A2 — dismissible 3-line mental-model intro for the Concepts stage
+   (localStorage 'sb-intro-dismissed'; InfoBox/Note callout recipe — no paragraph
+   walls). Fixes audit M2: novices arrive expecting to "create concepts" and meet
+   pre-made groups with no framing. */
+function ConceptsIntroStrip(){
+  const [dismissed,setDismissed]=useState(()=>{ try{ return localStorage.getItem('sb-intro-dismissed')==='1'; }catch{ return false; } });
+  if(dismissed) return null;
+  const dismiss=()=>{ setDismissed(true); try{ localStorage.setItem('sb-intro-dismissed','1'); }catch{/* private mode */} };
+  const line={display:"flex",gap:8,alignItems:"flex-start",fontSize:12,color:C.txt2,lineHeight:1.6};
+  return(
+    <div data-testid="sb-intro-strip" style={{background:`${alpha(C.acc,"10")}`,border:`1px solid ${alpha(C.acc,"33")}`,borderLeft:`3px solid ${alpha(C.acc,"80")}`,borderRadius:8,padding:"10px 12px",marginBottom:12}}>
+      <div style={{display:"flex",alignItems:"flex-start",gap:10}}>
+        <div style={{flex:1,display:"flex",flexDirection:"column",gap:3}}>
+          <span style={line}><span aria-hidden="true" style={{color:C.acc}}>·</span><span>Your review question splits into <strong>concepts</strong> (a condition, a treatment…).</span></span>
+          <span style={line}><span aria-hidden="true" style={{color:C.acc}}>·</span><span>Inside a concept you collect <strong>different words for the same idea</strong> — any one counts.</span></span>
+          <span style={line}><span aria-hidden="true" style={{color:C.acc}}>·</span><span>Concepts then <strong>combine to narrow</strong> the search — all must appear.</span></span>
+        </div>
+        <button type="button" onClick={dismiss} aria-label="Dismiss introduction"
+          style={{background:"none",border:"none",color:C.muted,cursor:"pointer",fontSize:15,lineHeight:1,padding:"2px 6px",minWidth:24,minHeight:24}}>×</button>
+      </div>
+    </div>
+  );
 }
 function BreadthDots({term}){
   const b=termBreadth(term);
@@ -325,7 +383,7 @@ function BreadthDots({term}){
 function MeSHDetail({vocab,term,pinned,onClose}){
   if(!vocab) return null;
   return(
-    <div style={{background:C.card,border:`1px solid ${alpha(C.acc,"55")}`,borderRadius:10,padding:13,width:320,boxShadow:"0 16px 48px #000a",fontSize:11,lineHeight:1.55}}>
+    <div style={{background:C.card,border:`1px solid ${alpha(C.acc,"55")}`,borderRadius:10,padding:13,width:320,boxShadow:"0 16px 48px var(--t-shadow)",fontSize:11,lineHeight:1.55}}>
       <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:8}}>
         <span style={{fontWeight:700,fontSize:12,color:C.acc,fontFamily:MONO}}>{vocab.mesh}</span>
         {pinned&&<button onClick={onClose} style={{marginLeft:"auto",background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:14}}>×</button>}
@@ -400,7 +458,7 @@ function TermChip({term,dbId,color,onEdit,onRemove,onMove,moveTargets,isDuplicat
         <button onClick={e=>{e.stopPropagation();onRemove();}} title="Remove term" aria-label="Remove term" style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:13,padding:0,lineHeight:1}}>×</button>
       </span>
       {canMove&&moveOpen&&(
-        <span style={{position:"absolute",zIndex:75,top:"100%",left:0,marginTop:4,background:C.card,border:`1px solid ${C.brd2}`,borderRadius:8,boxShadow:"0 14px 40px #000a",overflow:"hidden",minWidth:180}}>
+        <span style={{position:"absolute",zIndex:75,top:"100%",left:0,marginTop:4,background:C.card,border:`1px solid ${C.brd2}`,borderRadius:8,boxShadow:"0 14px 40px var(--t-shadow)",overflow:"hidden",minWidth:180}}>
           <span style={{display:"block",fontSize:9,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase",padding:"6px 10px 2px"}}>Move to concept</span>
           {moveTargets.map(t=>(
             <button key={t.id} onClick={e=>{e.stopPropagation();onMove(t.id);setMoveOpen(false);}}
@@ -436,7 +494,7 @@ function TermEditor({term,onChange,onClose,onConvert,onLookup}){
     );
   };
   return(
-    <div style={{position:"absolute",zIndex:70,marginTop:6,background:C.card,border:`1px solid ${C.brd2}`,borderRadius:10,padding:14,width:360,boxShadow:"0 16px 48px #000a"}}>
+    <div style={{position:"absolute",zIndex:70,marginTop:6,background:C.card,border:`1px solid ${C.brd2}`,borderRadius:10,padding:14,width:360,boxShadow:"0 16px 48px var(--t-shadow)"}}>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:8}}>
         <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase"}}>Edit term</span>
         <BreadthDots term={term}/>
@@ -579,7 +637,7 @@ function SuggestBox({api,value,onChange,onPick,onCommitTyped,onEscape,onBlur,pla
         placeholder={placeholder} style={istyle}
         role="combobox" aria-expanded={open} aria-autocomplete="list"/>
       {open&&items.length>0&&(
-        <div role="listbox" style={{position:"absolute",zIndex:90,top:"calc(100% + 3px)",left:0,minWidth:240,maxWidth:340,background:C.card,border:`1px solid ${alpha(C.acc,"55")}`,borderRadius:8,boxShadow:"0 14px 40px #000a",overflow:"hidden"}}>
+        <div role="listbox" style={{position:"absolute",zIndex:90,top:"calc(100% + 3px)",left:0,minWidth:240,maxWidth:340,background:C.card,border:`1px solid ${alpha(C.acc,"55")}`,borderRadius:8,boxShadow:"0 14px 40px var(--t-shadow)",overflow:"hidden"}}>
           {items.map((s,i)=>{
             const badge=SUGG_BADGE[s.type]||SUGG_BADGE.keyword;
             return(
@@ -810,7 +868,7 @@ function KeywordField({fieldKey,label,hint,text,accent,isSelected,onToggle,onAdd
       {String(text||"").trim()?(
         <div style={{lineHeight:2.1}}>
           {tokens.map((tok,i)=>{
-            if(tok.kind==="filler") return <span key={i} style={{color:C.dim,fontSize:12.5,margin:"0 1px"}}>{tok.text} </span>;
+            if(tok.kind==="filler") return <span key={i} style={{color:C.muted,fontSize:12.5,margin:"0 1px"}}>{tok.text} </span>;
             const sel=isSelected(tok.text);
             return(
               <span key={i}> <button onClick={()=>onToggle(fieldKey,tok.text)} title={sel?"Click to unselect":"Click to select as a keyword"}
@@ -825,7 +883,7 @@ function KeywordField({fieldKey,label,hint,text,accent,isSelected,onToggle,onAdd
           })}
         </div>
       ):(
-        <div style={{fontSize:11.5,color:C.dim,fontStyle:"italic"}}>Empty — fill this in Protocol → PICO, then your keywords appear here to click.</div>
+        <div style={{fontSize:11.5,color:C.muted,fontStyle:"italic"}}>Empty — fill this in Protocol → PICO, then your keywords appear here to click.</div>
       )}
       <div style={{display:"flex",gap:6,marginTop:9}}>
         <input value={manual} onChange={e=>setManual(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();addManual();}}}
@@ -840,7 +898,7 @@ function KeywordField({fieldKey,label,hint,text,accent,isSelected,onToggle,onAdd
    Boolean string. Read-only summary used at the top of Build Strategy. */
 function ConceptBlocksBar({concepts}){
   const blocks=concepts.map(c=>({label:c.label,n:c.terms.filter(t=>(t.text||"").trim()).length,op:c.op||"AND",pico:!!c.picoField})).filter(b=>b.n>0);
-  if(!blocks.length) return <div style={{color:C.dim,fontSize:12,fontStyle:"italic",padding:"6px 0"}}>No concepts with terms yet — add keywords first.</div>;
+  if(!blocks.length) return <div style={{color:C.muted,fontSize:12,fontStyle:"italic",padding:"6px 0"}}>No concepts with terms yet — add keywords first.</div>;
   return(
     <div style={{display:"flex",flexWrap:"wrap",alignItems:"center",gap:8}}>
       {blocks.map((b,i)=>{
@@ -954,7 +1012,7 @@ function LimitsPanel({ filters, setFilters }) {
         <Help text="Optional scope limits applied to every database that supports them: publication date range, language, and publication type. A database that can't apply a limit says so in the run step — the limit is never silently dropped." />
         {active
           ? <span style={{ marginLeft: 'auto', fontSize: 10, color: C.acc, fontFamily: MONO }}>active</span>
-          : <span style={{ marginLeft: 'auto', fontSize: 10, color: C.dim }}>none — all years &amp; languages</span>}
+          : <span style={{ marginLeft: 'auto', fontSize: 10, color: C.muted }}>none — all years &amp; languages</span>}
       </div>
       <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 12 }}>
         <label style={{ display: 'flex', flexDirection: 'column', gap: 3, fontSize: 10.5, color: C.muted }}>Published from (year)
@@ -989,7 +1047,7 @@ function LimitsPanel({ filters, setFilters }) {
      loadSearch  func     — INTEGRATION: async (projectId) => savedState|null
      saveSearch  func     — INTEGRATION: async (projectId, state) => void
    ════════════════════════════════════════════════════════════════════════════ */
-export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSearch,phase,onLiveQuery,onHitState,onRegisterHitRefresh}){
+export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSearch,phase,onLiveQuery,onHitState,onRegisterHitRefresh,onGoToStage,onStats}){
   const A=api||defaultApi;
   // prompt60 — embedded mode: the Search Wizard renders this builder as its Define
   // (phase='define': keywords + concepts + Limits) and Build (phase='build') steps,
@@ -1005,7 +1063,11 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   // persisted alongside the rest of the strategy (and surfaced to the run step).
   const [filters,setFilters]=useState({dateFrom:'',dateTo:'',languages:[],pubTypes:[]});
   const [activeDB,setActiveDB]=useState("pubmed");
-  const [beginner,setBeginner]=useState(true); // SB3 — beginner mode is the default
+  // SB3 + 85.md A2 — beginner mode is the default; the choice persists per browser
+  // (localStorage 'sb-beginner') and the toggle is now exposed in the EMBEDDED
+  // workspace toolbar too (audit M9: workspace novices could never reach it).
+  const [beginner,setBeginner]=useState(()=>{ try{ return localStorage.getItem('sb-beginner')!=='0'; }catch{ return true; } });
+  const toggleBeginner=()=>setBeginner(b=>{ const next=!b; try{ localStorage.setItem('sb-beginner',next?'1':'0'); }catch{/* private mode */} return next; });
   // SB3 — guided stepper position (1..5) and the selected databases / handoff marker.
   // selectedDbs [] means "use the catalogue defaults"; it is only written once the
   // user changes the selection, so existing projects don't trigger a spurious save.
@@ -1027,7 +1089,6 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   // manual). { strategyHash, hitCount, status, lastUpdatedAt, errorMessage }.
   // status: idle | stale | updating | updated | failed.
   const [hitState,setHitState]=useState({strategyHash:null,hitCount:null,status:"idle",lastUpdatedAt:null,errorMessage:null});
-  const [picoDirty,setPicoDirty]=useState(false);
   // prompt40 Task 2/5 + prompt42 Task 2 — auto-suggested terms the user deleted,
   // each as {text, field, label} (field/label = the PICO field the term came from,
   // so restore is granular per-field). Persisted so a PICO re-sync never re-adds
@@ -1045,6 +1106,29 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   // Name of the collaborator whose live update we last applied (cleared once this
   // user makes their own edit). Drives the "updated by …" attribution chip.
   const [remoteUpdatedBy,setRemoteUpdatedBy]=useState(null);
+
+  /* ── 85.md A2 — redesigned Concepts / Terms & Vocabulary state ────────────── */
+  // Persisted rejection memory for vocabulary suggestions (A1 suggestionReview keys).
+  const [rejectedSuggestions,setRejectedSuggestions]=useState([]);
+  // Honest save-state machine: 'saved' | 'saving' | 'error' (audit C2 — silent failure).
+  const [saveState,setSaveState]=useState('saved');
+  // Feature-local undo stack (A1 undoStack) + the snackbar's latest action message.
+  const [undoStack,setUndoStack]=useState([]);
+  const [undoMsg,setUndoMsg]=useState(null);
+  // Master-detail: the concept whose terms are being edited on the Terms stage.
+  const [activeConceptId,setActiveConceptId]=useState(null);
+  // Per-concept add-box drafts (keyed by concept id) — blur RETAINS them; switching
+  // concepts round-trips them (critique #4: no navigation may lose typed work).
+  const [drafts,setDrafts]=useState({});
+  // A multi-term paste awaiting explicit confirmation: { cid, raw, terms } | null.
+  const [pendingSplit,setPendingSplit]=useState(null);
+  // Inline add-outcome message ("2 added · 1 already present") per concept id.
+  const [addStatus,setAddStatus]=useState({});
+  // Polite live-region announcement (keyword picker clicks, undo, bulk accepts).
+  const [announceMsg,setAnnounceMsg]=useState('');
+  // "Show dismissed" toggle inside the suggestions disclosure.
+  const [showDismissedSuggs,setShowDismissedSuggs]=useState(false);
+  const announce=(msg)=>setAnnounceMsg(String(msg||''));
 
   /* ── SE2: PICO key + refs (used by mount, autosave guard, and auto-sync) ───
      The key includes the Time Frame fields so a Time-Frame edit also re-syncs. */
@@ -1094,6 +1178,8 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     setSelectedDbs(saved&&Array.isArray(saved.databases)?saved.databases.filter(s=>typeof s==="string"):[]);
     setReadyForScreening(!!(saved&&saved.readyForScreening));
     setDismissedWarnings(saved&&Array.isArray(saved.dismissedWarnings)?saved.dismissedWarnings.filter(s=>typeof s==="string"):[]);
+    // 85.md A1/A2 — persisted vocabulary-suggestion rejections (absent on old saves).
+    setRejectedSuggestions(saved&&Array.isArray(saved.rejectedSuggestions)?saved.rejectedSuggestions.filter(s=>typeof s==="string"&&s.trim()):[]);
     // Record what the server actually holds BEFORE syncing, so autosave persists the
     // synced structure once when it differs (legacy/blank) and is a no-op when stable.
     lastSavedRef.current=saved&&saved.concepts?serializeSearchState(saved):"";
@@ -1112,21 +1198,55 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
      reverted that toggle. The step-5 button below persists it single-key instead;
      the server keeps whichever writer acted last. */
   const saveTimer=useRef(null);
+  // 85.md A2 — the pending payload+signature, held in a ref so an unmount can FLUSH
+  // the debounced save immediately (the old 800ms window silently lost the last edit
+  // when the user navigated away mid-debounce) and so saveNow (the Retry button) can
+  // re-fire the exact same write.
+  const pendingSaveRef=useRef(null);
+  const saveStateRef=useRef('saved'); // mirror for the unmount flush (no stale closure)
+  const doSave=useCallback(async(sig,payload)=>{
+    if(!saveSearch||!projectId) return;
+    setSaveState('saving'); saveStateRef.current='saving';
+    try{
+      const res=await saveSearch(projectId,payload);
+      if(!res) throw new Error('save rejected');
+      lastSavedRef.current=sig;
+      if(res&&typeof res.revision==="number") revisionRef.current=res.revision;
+      if(pendingSaveRef.current&&pendingSaveRef.current.sig===sig) pendingSaveRef.current=null;
+      setSaveState('saved'); saveStateRef.current='saved';
+    }catch(e){
+      console.error("saveSearch failed",e);
+      setSaveState('error'); saveStateRef.current='error'; // pendingSaveRef keeps the payload for Retry
+    }
+  },[saveSearch,projectId]); // eslint-disable-line
+  // Immediate save (Retry button / unmount flush) — bypasses the 800ms debounce.
+  const saveNow=useCallback(()=>{
+    clearTimeout(saveTimer.current);
+    const p=pendingSaveRef.current;
+    if(p) doSave(p.sig,p.payload);
+  },[doSave]);
   useEffect(()=>{
     if(!loaded||!saveSearch||!projectId) return;
-    const sig=serializeSearchState({concepts,overrides,ignored,databases:selectedDbs,readyForScreening,dismissedWarnings,filters});
-    if(sig===lastSavedRef.current) return; // unchanged vs the server (e.g. just loaded/applied) → no PUT, no ping-pong
+    const sig=serializeSearchState({concepts,overrides,ignored,databases:selectedDbs,readyForScreening,dismissedWarnings,filters,rejectedSuggestions});
+    if(sig===lastSavedRef.current){ pendingSaveRef.current=null; return; } // unchanged vs the server → no PUT, no ping-pong
     setRemoteUpdatedBy(null); // this user is now editing → drop the "updated by collaborator" attribution
+    const payload={concepts,overrides,ignored,databases:selectedDbs,dismissedWarnings,filters,rejectedSuggestions};
+    pendingSaveRef.current={sig,payload};
+    setSaveState('saving'); saveStateRef.current='saving';
     clearTimeout(saveTimer.current);
-    saveTimer.current=setTimeout(async()=>{
-      try{
-        const res=await saveSearch(projectId,{concepts,overrides,ignored,databases:selectedDbs,dismissedWarnings,filters});
-        lastSavedRef.current=sig;
-        if(res&&typeof res.revision==="number") revisionRef.current=res.revision;
-      }catch(e){ console.error("saveSearch failed",e); }
-    },800);
+    saveTimer.current=setTimeout(()=>doSave(sig,payload),800);
     return ()=>clearTimeout(saveTimer.current);
-  },[concepts,overrides,ignored,selectedDbs,readyForScreening,dismissedWarnings,filters,loaded]); // eslint-disable-line
+  },[concepts,overrides,ignored,selectedDbs,readyForScreening,dismissedWarnings,filters,rejectedSuggestions,loaded]); // eslint-disable-line
+  // Unmount flush — if a debounced save is still pending, fire it immediately so
+  // leaving the Search tab inside the 800ms window can never lose the last edit.
+  useEffect(()=>()=>{
+    clearTimeout(saveTimer.current);
+    const p=pendingSaveRef.current;
+    if(p&&p.sig!==lastSavedRef.current&&saveStateRef.current!=='error'){
+      // fire-and-forget: the component is gone; the server ack just lands.
+      doSave(p.sig,p.payload);
+    }
+  },[doSave]);
 
   /* ── SE2: auto-sync the five groups whenever PICO changes — no manual button.
      Updates the editor's UI immediately; collaborators converge via the realtime
@@ -1151,9 +1271,19 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     setSelectedDbs(persisted.databases); setReadyForScreening(persisted.readyForScreening); // SB3
     setDismissedWarnings(persisted.dismissedWarnings); // SB4
     setFilters(persisted.filters||{dateFrom:"",dateTo:"",languages:[],pubTypes:[]}); // prompt60
+    setRejectedSuggestions(persisted.rejectedSuggestions||[]); // 85.md A1
+    // 85.md A1 — the undo stack is only valid against the document it was recorded
+    // on; undoing across a collaborator's update would resurrect stale state and
+    // clobber their work via the last-write-wins PUT.
+    setUndoStack(clearUndo()); setUndoMsg(null);
+    pendingSaveRef.current=null; setSaveState('saved'); saveStateRef.current='saved';
     setRemoteUpdatedBy(saved.updatedBy&&saved.updatedBy.name?saved.updatedBy.name:"a collaborator");
     pendingRemoteRef.current=null; setRemotePending(false);
   }
+  // 85.md A2 — busy now also covers the new edit surfaces: an open term-editor
+  // popover, a non-empty per-concept add draft, and a pending multi-term paste.
+  const anyDraft=Object.values(drafts).some(v=>v&&String(v).trim());
+  const busyEditing=!!(editing||adding||(draft&&draft.trim())||anyDraft||pendingSplit);
   async function pullRemote(){
     if(!loadSearch||!projectId) return;
     let saved; try{ saved=await loadSearch(projectId); }catch{ return; }
@@ -1161,7 +1291,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     const decision=remoteAdoptDecision({
       remoteSig:serializeSearchState(saved), lastSavedSig:lastSavedRef.current,
       remoteRevision:saved.revision, knownRevision:revisionRef.current,
-      busy:!!(editing||adding||(draft&&draft.trim())),
+      busy:busyEditing,
     });
     if(decision==="skip") return;
     if(decision==="defer"){ pendingRemoteRef.current=saved; setRemotePending(true); return; }
@@ -1176,8 +1306,8 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   });
   // When the user finishes editing, flush any remote update parked during the edit.
   useEffect(()=>{
-    if(!editing&&!adding&&!(draft&&draft.trim())&&pendingRemoteRef.current) applyRemote(pendingRemoteRef.current);
-  },[editing,adding,draft]); // eslint-disable-line
+    if(!busyEditing&&pendingRemoteRef.current) applyRemote(pendingRemoteRef.current);
+  },[editing,adding,draft,drafts,pendingSplit]); // eslint-disable-line
 
   /* Restore hidden terms — forget every deleted auto term and re-run the idempotent
      sync. Manual concepts and manual terms are preserved; the five PICO groups are
@@ -1185,7 +1315,11 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
      term may reappear.) */
   function resetSuggestions(){
     lookedRef.current=new Set();
-    setIgnored([]);
+    // 85.md A1 — "Restore all" clears BOTH "user said no" lists together (hidden
+    // terms AND rejected suggestions), so no rejection is ever hidden-unrecoverable.
+    const cleared=resetSuggestionMemory({});
+    setIgnored(cleared.ignored);
+    setRejectedSuggestions(cleared.rejectedSuggestions);
     syncFromPico(conceptsRef.current,[]);
   }
 
@@ -1242,13 +1376,9 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     return [...m.entries()].map(([field,items])=>({field,label:items.find(i=>i.label)?.label||"",items}));
   },[ignored]);
 
-  /* How many genuinely-new PICO suggestions are available (drives the banner). */
-  const newSuggestionCount=useMemo(()=>{
-    if(!picoDirty) return 0;
-    const have=presentPrimaries(concepts);
-    const ig=new Set(ignored.map(e=>cnorm(e&&e.text)));
-    return picoToConcepts(pico).filter(c=>{ const p=cnorm(c.terms[0]?.text); return p&&!have.has(p)&&!ig.has(p); }).length;
-  },[picoDirty,concepts,ignored,pico]); // eslint-disable-line
+  /* 85.md A2 — the dead newSuggestionCount/presentPrimaries/picoDirty trio is gone
+     (it was never wired and would have thrown on first use); the real suggestion
+     counts come from the pure A1 suggestionReview module below. */
 
   /* ── MeSH lookup via API with offline fallback ─────────────────────────── */
   const tryLookup=useCallback(async (cid,tid,text,forceControlled)=>{
@@ -1276,7 +1406,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
      result whose hash no longer matches the current strategy. Drives the hash off
      `pubmedQuery`, which already prefers a user-edited override over the generated
      query, so hand-edited strategies stay safe. */
-  const countCache=useRef({});        // query string -> count (number|null)
+  const countCache=useRef({});        // query string -> { n: count|null, at: fetchedAtMs } (M5: honest timestamps)
   const countTimer=useRef(null);
   const pubmedQuery=useMemo(()=>{
     const o=overrides.pubmed;
@@ -1297,14 +1427,15 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
       setCounts(c=>({...c,pubmed:null})); setCountState("idle");
       return;
     }
-    // Cached → resolve immediately to 'updated' (no fetch, no flicker). Keep the
-    // existing timestamp if this is still the same strategy; stamp fresh when the
-    // strategy changed (the cached count is newly shown for this strategy).
+    // Cached → resolve immediately to 'updated' (no fetch, no flicker). 85.md A2
+    // (audit M5): the timestamp shown is the time the count was actually FETCHED
+    // (stored alongside the cache entry) — a cache hit must never stamp a fresh
+    // "updated just now" on a 40-minute-old number.
     if(countCache.current[pubmedQuery]!==undefined){
-      const n=countCache.current[pubmedQuery];
-      setHitState(s=>({strategyHash:pubHash,hitCount:n,status:"updated",
-        lastUpdatedAt:(s.strategyHash===pubHash&&s.lastUpdatedAt)?s.lastUpdatedAt:Date.now(),errorMessage:null}));
-      setCounts(c=>({...c,pubmed:n})); setCountState("idle");
+      const cached=countCache.current[pubmedQuery];
+      setHitState({strategyHash:pubHash,hitCount:cached.n,status:"updated",
+        lastUpdatedAt:cached.at,errorMessage:null});
+      setCounts(c=>({...c,pubmed:cached.n})); setCountState("idle");
       return;
     }
     // New strategy → mark stale right away, then debounce a single refresh.
@@ -1315,7 +1446,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
       setHitState(s=>s.strategyHash===pubHash?{...s,status:"updating"}:s);
       try{
         const n=await A.pubmedCount(pubmedQuery);
-        countCache.current[pubmedQuery]=n;
+        countCache.current[pubmedQuery]={n,at:Date.now()}; // fetch time rides with the count (M5)
         setCounts(c=>({...c,pubmed:n}));
         // Race guard: only commit if this is still the current strategy.
         setHitState(s=>s.strategyHash===pubHash
@@ -1356,7 +1487,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     setHitState(s=>s.strategyHash===h?{...s,status:"updating",errorMessage:null}:s);
     try{
       const n=await A.pubmedCount(q);
-      countCache.current[q]=n;
+      countCache.current[q]={n,at:Date.now()}; // fetch time rides with the count (M5)
       setCounts(c=>({...c,pubmed:n}));
       setHitState(s=>s.strategyHash===h
         ?{strategyHash:h,hitCount:n,status:"updated",lastUpdatedAt:Date.now(),errorMessage:null}:s);
@@ -1383,18 +1514,57 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
   const removeTerm=(cid,tid)=>{
     const c=concepts.find(x=>x.id===cid);
     const t=c?.terms.find(x=>x.id===tid);
+    // 85.md A2 — record the inverse (incl. the ignored entry the removal adds) so
+    // the snackbar's Undo restores term AND bookkeeping together (critique #7).
+    if(c&&t){
+      const willIgnore=t.source==="pico_auto"&&!ignored.some(e=>cnorm(e.text)===cnorm(t.text));
+      const entry=willIgnore?{text:t.text,field:c.field||"",label:c.label||""}:null;
+      setUndoStack(st=>recordRemoveTerm(st,{concept:c,term:t,ignoredEntryAdded:entry}));
+      setUndoMsg(`Removed "${t.text}"`);
+    }
     if(t&&t.source==="pico_auto"){ addIgnored({text:t.text,field:c?.field||"",label:c?.label||""}); }
     setConcepts(cs=>cs.map(c2=>c2.id===cid?{...c2,terms:c2.terms.filter(t2=>t2.id!==tid)}:c2));
+    if(editing&&editing.termId===tid) setEditing(null);
   };
   const addConcept=()=>setConcepts(cs=>[...cs,{id:uid(),label:`Concept ${cs.length+1}`,op:"AND",source:"user_added",terms:[]}]);
   const removeConcept=id=>{
     const c=concepts.find(x=>x.id===id);
+    const idx=concepts.findIndex(x=>x.id===id);
     const auto=(c?.terms||[]).filter(t=>t.source==="pico_auto").map(t=>({text:t.text,field:c?.field||"",label:c?.label||""}));
+    const have=new Set(ignored.map(e=>cnorm(e.text)));
+    const actuallyAdded=auto.filter(e=>!have.has(cnorm(e.text)));
+    if(c){
+      setUndoStack(st=>recordRemoveConcept(st,{concept:c,index:idx,ignoredEntriesAdded:actuallyAdded}));
+      setUndoMsg(`Deleted concept "${c.label}"`);
+    }
     if(auto.length) setIgnored(ig=>{
-      const have=new Set(ig.map(e=>cnorm(e.text)));
-      return [...ig,...auto.filter(e=>!have.has(cnorm(e.text)))];
+      const haveNow=new Set(ig.map(e=>cnorm(e.text)));
+      return [...ig,...auto.filter(e=>!haveNow.has(cnorm(e.text)))];
     });
     setConcepts(cs=>cs.filter(c2=>c2.id!==id));
+    setActiveConceptId(a=>a===id?null:a);
+  };
+  /* 85.md A2 — disable-without-delete (A1 setTermDisabled) + undo. */
+  const toggleTermDisabled=(cid,tid)=>{
+    const c=concepts.find(x=>x.id===cid);
+    const t=c?.terms.find(x=>x.id===tid);
+    if(!c||!t) return;
+    const disabling=t.disabled!==true;
+    if(disabling){
+      setUndoStack(st=>recordDisable(st,{concept:c,term:t}));
+      setUndoMsg(`Switched off "${t.text}"`);
+    }
+    setConcepts(cs=>setTermDisabled(cs,cid,tid,disabling));
+  };
+  /* 85.md A2 — the snackbar's Undo: apply the inverse of the latest recorded action. */
+  const undoLastAction=()=>{
+    const r=undoLast(undoStack,{concepts:conceptsRef.current,ignored:ignoredRef.current});
+    if(!r) return;
+    setConcepts(r.state.concepts);
+    setIgnored(r.state.ignored);
+    setUndoStack(r.stack);
+    setUndoMsg(null);
+    announce(r.description||'Undone');
   };
   const commitAdd=cid=>{
     if(!draft.trim()){setAdding(null);return;}
@@ -1427,6 +1597,102 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     setConcepts(cs=>cs.map(x=>x.id===cid?{...x,terms:[...x.terms,...newTerms]}:x));
   };
 
+  /* ── 85.md A2 — typed/pasted term entry through the ONE pure commit path ────
+     addTypedTerms splits (newline/semicolon ONLY — never comma), normalizes outer
+     quotes to phrase:true, dedupes, and reports what was skipped so nothing is
+     silently dropped OR silently duplicated (audit H1/C3/M7). */
+  const applyTypedAdd=(cid,raw)=>{
+    const base=conceptsRef.current;
+    const res=addTypedTerms(base,cid,raw);
+    const target=base.find(x=>x.id===cid);
+    const label=target?target.label:'this concept';
+    if(res.concepts!==base){
+      // assign ids to the new (id-less) terms, then trigger vocab lookups for them
+      const looks=[];
+      const withIds=res.concepts.map(c=>{
+        if(c.id!==cid) return c;
+        return {...c,terms:c.terms.map(t=>{
+          if(t.id) return t;
+          const tid=uid(); looks.push([tid,t.text]);
+          return {...t,id:tid};
+        })};
+      });
+      setConcepts(withIds);
+      looks.forEach(([tid,text])=>tryLookup(cid,tid,text));
+    }
+    const msg=res.added.length&&res.duplicates.length
+      ? `${res.added.length} added · ${res.duplicates.length} already present`
+      : res.added.length
+        ? (res.added.length===1?`Added "${res.added[0]}" to ${label}`:`${res.added.length} terms added to ${label}`)
+        : res.duplicates.length
+          ? `"${res.duplicates[0]}" is already in ${label}`
+          : '';
+    setDrafts(d=>({...d,[cid]:''}));
+    setPendingSplit(null);
+    if(msg){ setAddStatus(s=>({...s,[cid]:msg})); announce(msg); }
+  };
+  /* Commit the draft: multi-term input pauses on an explicit "Add N terms?" preview. */
+  const commitTypedDraft=(cid)=>{
+    const raw=String(drafts[cid]||'');
+    const {terms}=splitTermInput(raw);
+    if(!terms.length) return;
+    if(terms.length>1){ setPendingSplit({cid,raw,terms}); return; }
+    applyTypedAdd(cid,raw);
+  };
+  /* A multi-line paste lands directly in the confirm row (inputs strip newlines). */
+  const handleMultiPaste=(cid,rawText)=>{
+    const {terms}=splitTermInput(rawText);
+    if(terms.length>1) setPendingSplit({cid,raw:rawText,terms});
+  };
+
+  /* ── 85.md A2 — vocabulary-suggestion review (pure A1 suggestionReview) ───── */
+  const suggCounts=useMemo(()=>suggestionCount(concepts,rejectedSuggestions),[concepts,rejectedSuggestions]);
+  const acceptSuggestion=(cid,s)=>{
+    const c=conceptsRef.current.find(x=>x.id===cid); if(!c||!s) return;
+    const created=[];
+    if(s.kind==='mesh'){
+      const tid=uid(); created.push(tid);
+      const newTerm={id:tid,text:s.text,type:'controlled',field:'tiab',source:'user_added',vocab:s.vocab||null};
+      setConcepts(cs=>cs.map(x=>x.id===cid?{...x,terms:[...x.terms,newTerm]}:x));
+      if(!s.vocab) tryLookup(cid,tid,s.text,true);
+      announce(`Added subject heading "${s.text}" to ${c.label}`);
+    } else if(s.kind==='synonyms'){
+      const existing=new Set((c.terms||[]).map(x=>cnorm(x.text)));
+      const newTerms=(s.synonyms||[]).filter(x=>!existing.has(cnorm(x))).map(x=>{const tid=uid();created.push(tid);return {id:tid,text:x,type:'freetext',field:'tiab',source:'synonym'};});
+      if(!newTerms.length) return;
+      setConcepts(cs=>cs.map(x=>x.id===cid?{...x,terms:[...x.terms,...newTerms]}:x));
+      announce(`Added ${newTerms.length} synonym${newTerms.length===1?'':'s'} to ${c.label}`);
+    }
+    if(created.length){
+      setUndoStack(st=>recordBulkAccept(st,{concept:c,termIds:created,label:s.text}));
+      setUndoMsg(`Accepted "${s.text}"`);
+    }
+  };
+  const dismissSuggestion=(s)=>{
+    if(!s||!s.key) return;
+    setRejectedSuggestions(r=>r.includes(s.key)?r:[...r,s.key]);
+    announce(`Dismissed suggestion "${s.text}"`);
+  };
+  const unrejectSuggestion=(key)=>setRejectedSuggestions(r=>r.filter(k=>k!==key));
+  const acceptAllHeadings=(cid)=>{
+    const c=conceptsRef.current.find(x=>x.id===cid); if(!c) return;
+    const pend=pendingSuggestions(c,rejectedSuggestions).filter(s=>s.kind==='mesh');
+    if(!pend.length) return;
+    const created=[];
+    const newTerms=pend.map(s=>{const tid=uid();created.push(tid);return {id:tid,text:s.text,type:'controlled',field:'tiab',source:'user_added',vocab:s.vocab||null};});
+    setConcepts(cs=>cs.map(x=>x.id===cid?{...x,terms:[...x.terms,...newTerms]}:x));
+    setUndoStack(st=>recordBulkAccept(st,{concept:c,termIds:created,label:`${pend.length} headings`}));
+    setUndoMsg(`Accepted ${pend.length} subject headings`);
+    announce(`Accepted ${pend.length} subject headings into ${c.label}`);
+  };
+  /* Rejection keys scoped to one concept, for the "Show dismissed" restore list. */
+  const rejectedEntriesFor=(c)=>{
+    if(!c) return [];
+    const prefix=rejectionKey(c,'');
+    return rejectedSuggestions.filter(k=>k.startsWith(prefix))
+      .map(k=>({key:k,label:k.slice(prefix.length).replace(/^fam:/,'')}));
+  };
+
   const stats=searchStats(concepts);
 
   /* ── SB3: keyword select/deselect (Tab 1) + database selection (Tab 3) ───── */
@@ -1445,6 +1711,48 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     if(!loaded||!liveQueryRef.current) return;
     liveQueryRef.current({concepts,filters,overrides,databases:selectedDbs});
   },[loaded,concepts,filters,overrides,selectedDbs]);
+
+  /* ── 85.md A2 — honest per-stage statuses + live-term count, reported upward ──
+     The workspace overlays the two keys this layer cannot know (mode chosen,
+     ready-for-screening) and feeds its rail + the white side-menu stepper + the
+     PubMed pulse's real "add terms" empty branch. Ref-wrapped like the other seams. */
+  const liveTermCount=useMemo(()=>concepts.reduce((n,c)=>n+liveTermsOf(c).length,0),[concepts]);
+  const stageStatuses=useMemo(()=>computeStageStatuses({
+    concepts,pico,filters,overrides,databases:selectedDbs,
+    rejected:rejectedSuggestions,dismissedWarnings,hitState,
+  }),[concepts,pico,filters,overrides,selectedDbs,rejectedSuggestions,dismissedWarnings,hitState]);
+  const onStatsRef=useRef(onStats); onStatsRef.current=onStats;
+  useEffect(()=>{
+    if(!loaded||typeof onStatsRef.current!=="function") return;
+    onStatsRef.current({liveTermCount,stageStatuses});
+  },[loaded,liveTermCount,stageStatuses]);
+
+  /* ── 85.md A2 — master-detail active concept (Terms & Vocabulary) ─────────── */
+  const conceptIndexById=useMemo(()=>{const m={};concepts.forEach((c,i)=>{m[c.id]=i;});return m;},[concepts]);
+  const activeConcept=useMemo(()=>{
+    if(!concepts.length) return null;
+    return concepts.find(c=>c.id===activeConceptId)||concepts[0];
+  },[concepts,activeConceptId]);
+  // "Edit terms →" from the Concepts stage: activate the concept, then navigate to
+  // the Terms stage via the host seam; without a seam (legacy define co-mounts the
+  // organize panel) fall back to scrolling/focusing it — never a dead button.
+  const editTermsFor=(cid)=>{
+    setActiveConceptId(cid);
+    if(typeof onGoToStage==='function'){ onGoToStage('terms'); return; }
+    try{
+      const el=typeof document!=='undefined'?document.querySelector('[data-testid="sb-active-concept"], [data-testid="sb-step-organize-concepts"]'):null;
+      if(el){ if(typeof el.scrollIntoView==='function') el.scrollIntoView({behavior:'smooth',block:'start'}); if(typeof el.focus==='function') el.focus(); }
+    }catch{/* best-effort */}
+  };
+  /* Duplicate info for one term chip: the OTHER concept's name + resolution ids. */
+  const dupInfoForTerm=(cid,t)=>{
+    const key=termEquivalenceKey(t.text);
+    const d=duplicates.find(x=>x.equivKey===key);
+    if(!d) return null;
+    const other=(d.occurrences||[]).find(o=>o.conceptId!==cid);
+    if(!other) return null;
+    return {otherLabel:other.conceptLabel||'another concept',otherConceptId:other.conceptId};
+  };
   // Which PICO group a keyword clicked in the Research Question belongs to: the first
   // PICO field whose text contains it (so question clicks usually land correctly),
   // else Population as a sensible default. 'Q' is the Research-Question pseudo-field.
@@ -1467,9 +1775,20 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
     const t=c.terms.find(x=>cnorm(x.text)===cnorm(text)); if(!t) return;
     removeTerm(c.id,t.id); // reuses the auto→ignored bookkeeping
   };
-  const toggleKeyword=(fieldKey,text)=>{ const k=resolveKey(fieldKey,text); return fieldHasTerm(conceptsRef.current,k,text)?removeKeyword(k,text):addKeyword(k,text); };
+  // 85.md A2 — token clicks are announced politely ("Added 'X' to Population"),
+  // reusing the workspace's mode-change announcer pattern (audit M4: silent routing).
+  const fieldLabelFor=(k)=>{ const d=PICO_FIELD_DEFS.find(x=>x.key===k); return d?d.label:k; };
+  const toggleKeyword=(fieldKey,text)=>{
+    const k=resolveKey(fieldKey,text);
+    if(fieldHasTerm(conceptsRef.current,k,text)){ removeKeyword(k,text); announce(`Removed '${text}' from ${fieldLabelFor(k)}`); }
+    else { addKeyword(k,text); announce(`Added '${text}' to ${fieldLabelFor(k)}`); }
+  };
   const isKeywordSelected=(fieldKey,text)=>{ const k=resolveKey(fieldKey,text); return fieldHasTerm(concepts,k,text); };
-  const addManualKeyword=(fieldKey,text)=>addKeyword(fieldKey==="Q"?"P":fieldKey,text);
+  const addManualKeyword=(fieldKey,text)=>{
+    const k=fieldKey==="Q"?"P":fieldKey;
+    addKeyword(k,text);
+    announce(`Added '${text}' to ${fieldLabelFor(k)}`);
+  };
   const copyOut=(text,label)=>{ try{navigator.clipboard?.writeText(text);}catch{/* clipboard unavailable */} setExportMsg(label||"Copied"); setTimeout(()=>setExportMsg(""),1800); };
 
   /* ── SB4: Organize Concepts hygiene (move term between concepts; dismiss a
@@ -1511,6 +1830,17 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
       <style>{`@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap');
 .sbkw-token:focus-visible{outline:2px solid ${C.acc};outline-offset:2px;}`}</style>
 
+      {/* 85.md A2 — ONE polite announcer for structural changes the eye may miss
+          (keyword routing, add outcomes, bulk accepts, undo) — the workspace
+          mode-change announcer pattern. */}
+      <span role="status" aria-live="polite" data-testid="sb-announcer"
+        style={{position:"absolute",width:1,height:1,padding:0,margin:-1,overflow:"hidden",clip:"rect(0 0 0 0)",whiteSpace:"nowrap",border:0}}>
+        {announceMsg}
+      </span>
+
+      {/* 85.md A2 — feature-local undo snackbar for destructive actions. */}
+      <UndoSnackbar message={undoMsg} onUndo={undoLastAction} onDismiss={()=>setUndoMsg(null)}/>
+
       {/* header row — hidden in embedded (wizard) mode; the wizard supplies chrome */}
       {!embedded&&(
       <div style={{display:"flex",alignItems:"center",gap:14,marginBottom:14}}>
@@ -1519,8 +1849,10 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
           <div style={{fontSize:11,color:C.muted}}>Build once · render for PubMed, Embase &amp; Cochrane</div>
         </div>
         <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:14}}>
+          {/* 85.md A2 — honest save state in the standalone header too. */}
+          <SaveStatusIndicator state={saveState} onRetry={saveNow}/>
           {/* SE2 — PICO concepts auto-sync; no manual "+N suggestions" button needed. */}
-          <button onClick={()=>setBeginner(b=>!b)} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 12px",borderRadius:20,cursor:"pointer",border:`1px solid ${beginner?C.grn:C.brd2}`,background:beginner?`${alpha(C.grn,"18")}`:"transparent",fontFamily:SANS}}>
+          <button onClick={toggleBeginner} role="switch" aria-checked={beginner} aria-label="Beginner mode" style={{display:"flex",alignItems:"center",gap:8,padding:"6px 12px",borderRadius:20,cursor:"pointer",border:`1px solid ${beginner?C.grn:C.brd2}`,background:beginner?`${alpha(C.grn,"18")}`:"transparent",fontFamily:SANS}}>
             <span style={{width:30,height:16,borderRadius:10,background:beginner?C.grn:C.brd2,position:"relative",flexShrink:0}}>
               <span style={{position:"absolute",top:2,left:beginner?16:2,width:12,height:12,borderRadius:"50%",background:"#fff",transition:"all .15s"}}/>
             </span>
@@ -1552,7 +1884,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
       {remotePending&&(
         <div style={{background:`${alpha(C.acc,"10")}`,border:`1px solid ${alpha(C.acc,"44")}`,borderRadius:8,padding:"8px 12px",marginBottom:12,fontSize:12,color:C.txt2,display:"flex",alignItems:"center",gap:10}}>
           <span style={{flex:1}}><strong style={{color:C.acc}}>A collaborator updated this search.</strong> Your view will refresh automatically when you finish your current edit.</span>
-          <button onClick={()=>{setEditing(null);setAdding(null);setDraft("");if(pendingRemoteRef.current)applyRemote(pendingRemoteRef.current);}} style={{...btn("solid"),fontSize:10}}>Apply now</button>
+          <button onClick={()=>{setEditing(null);setAdding(null);setDraft("");setDrafts({});setPendingSplit(null);if(pendingRemoteRef.current)applyRemote(pendingRemoteRef.current);}} style={{...btn("solid"),fontSize:10}}>Apply now</button>
         </div>
       )}
 
@@ -1562,15 +1894,38 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
         </div>
       )}
 
+      {/* 85.md A2 — embedded stage toolbar: honest save state (audit C2) + the
+          beginner/expert toggle, previously unreachable in the workspace (M9). */}
+      {embedded&&(
+        <div data-testid="sb-stage-toolbar" style={{display:"flex",alignItems:"center",gap:12,flexWrap:"wrap",marginBottom:12}}>
+          <SaveStatusIndicator state={saveState} onRetry={saveNow}/>
+          <span style={{marginLeft:"auto",display:"inline-flex",alignItems:"center",gap:10}}>
+            {remoteUpdatedBy&&(
+              <span title={`This search was just updated by ${remoteUpdatedBy}`} style={{display:"inline-flex",alignItems:"center",gap:4,color:C.acc,fontSize:11,fontFamily:MONO}}>↻ {remoteUpdatedBy}</span>
+            )}
+            <button onClick={toggleBeginner} role="switch" aria-checked={beginner} aria-label="Beginner mode"
+              style={{display:"flex",alignItems:"center",gap:8,padding:"4px 10px",borderRadius:20,cursor:"pointer",border:`1px solid ${beginner?C.grn:C.brd2}`,background:beginner?`${alpha(C.grn,"14")}`:"transparent",fontFamily:SANS}}>
+              <span aria-hidden="true" style={{width:26,height:14,borderRadius:9,background:beginner?C.grn:C.brd2,position:"relative",flexShrink:0}}>
+                <span style={{position:"absolute",top:2,left:beginner?14:2,width:10,height:10,borderRadius:"50%",background:"#fff",transition:"all .15s"}}/>
+              </span>
+              <span style={{fontSize:10.5,fontWeight:600,color:beginner?C.grn:C.muted}}>Beginner mode</span>
+            </button>
+          </span>
+        </div>
+      )}
+
       {/* ── SB3: guided 5-step workflow (the wizard supplies the step nav in embedded mode) ── */}
       {!embedded&&<StepNav step={step} setStep={setStep}/>}
       {!embedded&&<div style={{fontSize:11.5,color:C.muted,marginBottom:12}}>{STEPS[step-1].hint}</div>}
+
+      {/* 85.md A2 — dismissible mental-model intro for the Concepts stage (audit M2). */}
+      {phase==="concepts"&&<ConceptsIntroStrip/>}
 
       {/* ─────────── STEP 1 — Select Keywords ─────────── */}
       {show(1)&&(
         <div data-testid="sb-step-select-keywords">
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6}}>
-            <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Click the important ideas in your question</span>
+            <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Highlight the key ideas in your question</span>
             <Help text="Click the key words and phrases in your question — PecanRev turns the ones you pick into a search. Grey words (and, with, of…) aren't useful on their own; highlighted words are suggestions. Use the box under each field to add anything that isn't shown."/>
           </div>
           {/* 73.md P2 — selection legend: state is never colour-only (✓ prefix + border style). */}
@@ -1591,7 +1946,7 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
           <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:12,marginTop:4}}>
             <div style={{fontSize:9.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase",marginBottom:8}}>Selected keywords</div>
             {concepts.filter(c=>c.picoField&&c.picoField!=="T"&&c.terms.some(t=>(t.text||"").trim())).length===0
-              ? <div style={{fontSize:11.5,color:C.dim,fontStyle:"italic"}}>Nothing selected yet — click the highlighted words above.</div>
+              ? <div style={{fontSize:11.5,color:C.muted,fontStyle:"italic"}}>Nothing selected yet — click the highlighted words above.</div>
               : concepts.filter(c=>c.picoField&&c.picoField!=="T").map(c=>{
                   const live=c.terms.filter(t=>(t.text||"").trim()); if(!live.length) return null;
                   return(
@@ -1612,55 +1967,204 @@ export default function SearchBuilderTab({projectId,pico,api,loadSearch,saveSear
         </div>
       )}
 
-      {/* ─────────── 73.md P4 — phase 'concepts': compact concept-structure summary ───
-          Concept STRUCTURE without the full TermChip detail (that lives in the Terms &
-          Vocabulary stage). Reuses the existing state handlers — no new state shape. */}
+      {/* ─────────── 85.md A2 — phase 'concepts': concept CARDS (replace the compact
+          summary). Name, role, live-term count, readiness, suggestion badge, ONE
+          primary "Edit terms →" action; deletion confirms + is undoable. */}
       {phase==="concepts"&&(
-        <div data-testid="sb-concepts-summary" style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:12,marginTop:12}}>
-          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
-            <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Your concepts</span>
-            <Help text="A concept is one idea in your question (a disease, a treatment). Concepts join with AND (all must appear). You'll broaden each concept with synonyms and subject headings in the next stage, Terms & Vocabulary."/>
-            <span style={{marginLeft:"auto",fontSize:10.5,color:C.dim}}>term detail → Terms &amp; Vocabulary</span>
-          </div>
-          {concepts.length===0&&<div style={{fontSize:11.5,color:C.dim,fontStyle:"italic"}}>No concepts yet — select keywords above, or add a concept.</div>}
-          {concepts.map((c,ci)=>{
-            const color=CONCEPT_COLORS[ci%CONCEPT_COLORS.length];
-            const n=c.terms.filter(t=>(t.text||"").trim()).length;
-            return(
-              <div key={c.id}>
-                <div style={{display:"flex",alignItems:"center",gap:8,background:C.surf,border:`1px solid ${C.brd2}`,borderLeft:`3px solid ${color}`,borderRadius:8,padding:"7px 10px",marginBottom:0}}>
-                  <span aria-hidden="true" style={{width:9,height:9,borderRadius:3,background:color,flexShrink:0}}/>
-                  <input value={c.label} onChange={e=>updateConcept(c.id,{label:e.target.value})} aria-label={`Concept name: ${c.label}`}
-                    style={{...inputStyle,fontWeight:600,flex:1,background:"transparent",border:"none",padding:"2px 0",fontSize:12.5}}/>
-                  {c.picoField&&<span title="Auto-generated from your PICO" style={{fontSize:8.5,fontWeight:700,letterSpacing:.4,color:C.acc,textTransform:"uppercase",background:`${alpha(C.acc,"14")}`,border:`1px solid ${alpha(C.acc,"44")}`,borderRadius:5,padding:"1px 6px",flexShrink:0}}>PICO</span>}
-                  <span style={{fontSize:9.5,color:C.dim,fontFamily:MONO,flexShrink:0}}>{n} term{n===1?"":"s"}</span>
-                  <StatusChip status={conceptStatus(c)}/>
-                  {!c.picoField&&<button onClick={()=>removeConcept(c.id)} title="Remove this concept" aria-label={`Remove concept ${c.label}`} style={{background:"none",border:"none",color:C.dim,cursor:"pointer",fontSize:14,padding:0,lineHeight:1}}>×</button>}
-                </div>
-                {ci<concepts.length-1&&(
-                  <div style={{display:"flex",justifyContent:"center",margin:"3px 0"}}>
-                    <button onClick={()=>updateConcept(c.id,{op:c.op==="AND"?"OR":"AND"})}
-                      title="How this concept combines with the next — click to switch AND/OR"
-                      aria-label={`Joined to the next concept with ${c.op||"AND"} — click to switch`}
-                      style={{...btn("solid"),fontSize:9.5,padding:"1px 12px",fontFamily:MONO,letterSpacing:1,color:c.op==="AND"?C.acc:C.yel,borderColor:alpha(c.op==="AND"?C.acc:C.yel,"55")}}>{c.op||"AND"}</button>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-          <button onClick={addConcept} style={{...btn("ghost"),width:"100%",justifyContent:"center",borderStyle:"dashed",marginTop:8}}>+ Add concept</button>
-        </div>
+        <ConceptCards
+          concepts={concepts}
+          beginner={beginner}
+          statusFor={(c)=>conceptStatus(c,{rejected:rejectedSuggestions})}
+          suggestionCounts={suggCounts.perConcept}
+          onRename={(id,label)=>updateConcept(id,{label})}
+          onToggleOp={(id)=>updateConcept(id,{op:(concepts.find(c=>c.id===id)?.op)==="OR"?"AND":"OR"})}
+          onAddConcept={addConcept}
+          onRemoveConcept={removeConcept}
+          onEditTerms={editTermsFor}
+        />
       )}
 
-      {/* ─────────── STEP 2 — Organize Concepts (existing concept editor) ─────────── */}
-      {show(2)&&(
-        <div data-testid="sb-step-organize-concepts">
-          {/* 73.md P4 — phase 'terms': one line linking the mental model. */}
-          {phase==="terms"&&(
-            <div style={{fontSize:12,color:C.txt2,lineHeight:1.6,marginBottom:10}}>
-              Each concept&apos;s terms are <strong style={{color:C.yel}}>OR</strong>&apos;d together (any one counts); concepts are combined with <strong style={{color:C.acc}}>AND</strong> (all must appear).
+      {/* ─────────── 85.md A2 — phase 'terms': MASTER-DETAIL (navigator → active
+          concept panel → strategy preview). The legacy grid below stays for the
+          old SearchWizard ('define') and the standalone stepper, unchanged. */}
+      {show(2)&&phase==="terms"&&(()=>{
+        const c=activeConcept;
+        const cIdx=c?(conceptIndexById[c.id]||0):0;
+        const rejectedSet=rejectedSuggestions;
+        const cStatus=c?conceptStatus(c,{rejected:rejectedSet}):"empty";
+        const pending=c?pendingSuggestions(c,rejectedSet):[];
+        const hasAnyText=c?(c.terms||[]).some(t=>(t.text||"").trim()):false;
+        const isTimeFrame=c&&c.picoField==="T";
+        const warningsOnly=qualityWarnings;
+        return(
+          <div data-testid="sb-step-organize-concepts">
+            {/* Search Quality Check — stage-level; a one-line summary chip when clean. */}
+            <div style={{background:C.card,border:`1px solid ${C.brd}`,borderRadius:10,padding:warningsOnly.length?12:"8px 12px",marginBottom:10}}>
+              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:warningsOnly.length?8:0}}>
+                {warningsOnly.length===0
+                  ? <span style={{fontSize:11,color:C.grn,fontWeight:600}}>✓ Search quality check — no issues</span>
+                  : <>
+                      <span style={{fontSize:10.5,fontWeight:700,color:C.muted,letterSpacing:.5,textTransform:"uppercase"}}>Search Quality Check</span>
+                      <Help text="Quick, non-blocking checks: duplicates across AND-ed concepts, empty concepts, missing controlled vocabulary, and terms that may make the search too narrow. Guidance only — you stay in control."/>
+                    </>}
+                {hitState&&hitState.status==="updated"&&hitState.hitCount!=null&&(
+                  <span style={{marginLeft:"auto",display:"inline-flex",alignItems:"center",gap:8,fontSize:11,fontFamily:MONO}}>
+                    <span style={{color:C.acc,fontWeight:700}}>{fmtCount(hitState.hitCount)} PubMed hits</span>
+                    {sensitivity&&<span title="Rough breadth of the current strategy" style={{fontSize:9,fontWeight:700,letterSpacing:.4,textTransform:"uppercase",color:SENS_COLOR[sensitivity.key]||C.muted,border:`1px solid ${alpha(SENS_COLOR[sensitivity.key]||C.muted,"66")}`,borderRadius:4,padding:"0 5px"}}>{sensitivity.label}</span>}
+                  </span>
+                )}
+                {dismissedWarnings.length>0&&<button onClick={restoreWarnings} title="Show dismissed checks again" style={{...btn("ghost"),fontSize:9.5,padding:"2px 8px",marginLeft:warningsOnly.length===0?"auto":0}}>restore dismissed ({dismissedWarnings.length})</button>}
+              </div>
+              {warningsOnly.map(w=>(
+                <div key={w.id} style={{display:"flex",gap:8,alignItems:"flex-start",padding:"6px 0",borderTop:`1px solid ${C.brd}`}}>
+                  <span style={{color:QC_COLOR[w.severity]||C.muted,fontWeight:700,fontSize:12}}>{w.severity==="critical"?"✕":w.severity==="warning"?"⚠":"ℹ"}</span>
+                  <span style={{flex:1,fontSize:11.5,color:C.txt2,lineHeight:1.5}}>
+                    <span>{w.message}</span>
+                    {w.action&&<span style={{display:"block",color:C.muted,fontSize:10.5,marginTop:2}}>→ {w.action}</span>}
+                  </span>
+                  <button onClick={()=>dismissWarning(w.id)} title="Keep anyway / dismiss this check" style={{...btn("ghost"),fontSize:9.5,padding:"2px 8px"}}>Dismiss</button>
+                </div>
+              ))}
             </div>
-          )}
+
+            {/* Concept navigator — one tab stop, arrow keys, fixed-height row. */}
+            <ConceptNavigator
+              concepts={concepts}
+              activeId={c?c.id:null}
+              onSelect={(id)=>setActiveConceptId(id)}
+              statusFor={(x)=>conceptStatus(x,{rejected:rejectedSet})}
+              suggestionCounts={suggCounts.perConcept}
+            />
+
+            {c&&(
+              <ActiveConceptPanel concept={c} conceptIndex={cIdx} status={cStatus} onRename={(label)=>updateConcept(c.id,{label})}>
+                {isTimeFrame?(
+                  <div style={{fontSize:11.5,color:c.note?C.txt2:C.muted}}>
+                    {c.note
+                      ?<span><span style={{color:C.muted}}>⏱ Time restriction: </span><span style={{fontWeight:600}}>{c.note}</span></span>
+                      :<span style={{fontStyle:"italic"}}>No time restriction set — choose one in Protocol → PICO → Time Frame.</span>}
+                  </div>
+                ):(
+                  <>
+                    {limitedMode&&(
+                      <div style={{background:`${alpha(C.yel,"10")}`,border:`1px solid ${alpha(C.yel,"44")}`,borderRadius:8,padding:"7px 10px",marginBottom:8,fontSize:11,color:C.txt2}}>
+                        <strong style={{color:C.yel}}>Limited mode.</strong> Live subject-heading lookup is temporarily unavailable — terms still work; headings attach when the service returns.
+                      </div>
+                    )}
+                    <AddTermBox
+                      api={A}
+                      conceptLabel={c.label}
+                      value={drafts[c.id]||""}
+                      onChange={(v)=>setDrafts(d=>({...d,[c.id]:v}))}
+                      onCommitTyped={()=>commitTypedDraft(c.id)}
+                      onPickSuggestion={(s)=>{ addSuggestion(c.id,s); setDrafts(d=>({...d,[c.id]:""})); announce(`Added "${s.label}" to ${c.label}`); }}
+                      onClear={()=>setDrafts(d=>({...d,[c.id]:""}))}
+                      statusText={addStatus[c.id]||""}
+                      pendingSplit={pendingSplit&&pendingSplit.cid===c.id?pendingSplit:null}
+                      onConfirmSplit={()=>pendingSplit&&applyTypedAdd(pendingSplit.cid,pendingSplit.raw)}
+                      onCancelSplit={()=>setPendingSplit(null)}
+                      onMultiPaste={(raw)=>handleMultiPaste(c.id,raw)}
+                    />
+                    {!hasAnyText?(
+                      <div data-testid="sb-empty-concept" style={{background:C.surf,border:`1px dashed ${C.brd2}`,borderRadius:8,padding:"14px 16px",marginTop:10,fontSize:12,color:C.muted,lineHeight:1.6}}>
+                        No terms yet — type a word above, or pick from your question on the <strong>Concepts</strong> stage.
+                      </div>
+                    ):(
+                      <div style={{marginTop:10}}>
+                        <TermChipRow
+                          concept={c}
+                          beginner={beginner}
+                          dupInfoFor={(t)=>dupInfoForTerm(c.id,t)}
+                          editingTermId={editing&&editing.conceptId===c.id?editing.termId:null}
+                          onOpenEditor={(tid)=>setEditing(editing&&editing.termId===tid?null:{conceptId:c.id,termId:tid})}
+                          onRemove={(tid)=>removeTerm(c.id,tid)}
+                          renderEditor={(t)=>{
+                            const dup=dupInfoForTerm(c.id,t);
+                            return(
+                              <TermEditorPopover
+                                term={t}
+                                beginner={beginner}
+                                moveTargets={moveTargetsFor(c.id)}
+                                dupInfo={dup?{
+                                  otherLabel:dup.otherLabel,
+                                  onKeepHere:()=>{
+                                    const other=conceptsRef.current.find(x=>x.id===dup.otherConceptId);
+                                    const ot=other&&(other.terms||[]).find(x=>termEquivalenceKey(x.text)===termEquivalenceKey(t.text));
+                                    if(other&&ot) removeTerm(other.id,ot.id);
+                                    setEditing(null);
+                                  },
+                                  onMoveThere:()=>{ removeTerm(c.id,t.id); setEditing(null); },
+                                }:null}
+                                preview={renderTerm(t,activeDB)}
+                                onChange={(patch)=>updateTerm(c.id,t.id,patch)}
+                                onClose={()=>setEditing(null)}
+                                onLookup={(text,force)=>tryLookup(c.id,t.id,text,force)}
+                                onConvertSynonyms={()=>{ addSynonyms(c.id,t.id); setEditing(null); }}
+                                onToggleDisabled={()=>toggleTermDisabled(c.id,t.id)}
+                                onMove={(toCid)=>{ moveTerm(c.id,t.id,toCid); setEditing(null); announce(`Moved "${t.text}"`); }}
+                                onRemove={()=>removeTerm(c.id,t.id)}
+                              />
+                            );
+                          }}
+                        />
+                      </div>
+                    )}
+                    <div style={{marginTop:10}}>
+                      <SuggestionsDisclosure
+                        suggestions={pending}
+                        onAccept={(s)=>acceptSuggestion(c.id,s)}
+                        onDismiss={dismissSuggestion}
+                        onAcceptAllHeadings={()=>acceptAllHeadings(c.id)}
+                        rejectedEntries={rejectedEntriesFor(c)}
+                        showDismissed={showDismissedSuggs}
+                        onToggleShowDismissed={()=>setShowDismissedSuggs(v=>!v)}
+                        onUnreject={unrejectSuggestion}
+                        ignoredGroups={pico?ignoredByField:[]}
+                        onRestoreTerm={restoreTerm}
+                        onRestoreField={restoreField}
+                        onRestoreAll={resetSuggestions}
+                      />
+                      <Disclosure summary="Advanced">
+                        <div style={{fontSize:11.5,color:C.txt2,lineHeight:1.6,marginBottom:6}}>
+                          {(()=>{
+                            const idx=conceptIndexById[c.id];
+                            const next=concepts[idx+1];
+                            if(!next) return <span>This is the last concept — nothing is combined after it.</span>;
+                            return <span>Combined with <strong>{next.label}</strong> using <strong style={{color:(c.op||"AND")==="OR"?C.yel:C.acc}}>{c.op||"AND"}</strong>{beginner?" — switch to expert mode to change how concepts combine (in the preview below).":" — toggle it in the strategy preview below, where both concepts are visible."}</span>;
+                          })()}
+                        </div>
+                        <div style={{fontSize:10.5,color:C.muted,fontFamily:MONO,wordBreak:"break-word"}}>
+                          This concept compiles to: {renderConcept(c,activeDB)||"(nothing yet)"}
+                        </div>
+                      </Disclosure>
+                    </div>
+                  </>
+                )}
+              </ActiveConceptPanel>
+            )}
+
+            <button onClick={addConcept} style={{...btn("ghost"),width:"100%",justifyContent:"center",borderStyle:"dashed",marginTop:12}}>+ Add concept</button>
+
+            <div style={{marginTop:12}}>
+              <StrategyPreviewPanel
+                concepts={concepts}
+                activeId={c?c.id:null}
+                beginner={beginner}
+                hitState={hitState}
+                onRetryHits={refreshHitsNow}
+                onToggleOp={(cid)=>updateConcept(cid,{op:(concepts.find(x=>x.id===cid)?.op)==="OR"?"AND":"OR"})}
+                pubmedQuery={pubmedQuery}
+                onSelectConcept={(id)=>setActiveConceptId(id)}
+              />
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ─────────── STEP 2 — Organize Concepts (legacy concept editor: 'define' +
+          standalone; the workspace 'terms' stage uses the master-detail above) ─── */}
+      {show(2)&&phase!=="terms"&&(
+        <div data-testid="sb-step-organize-concepts">
           <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
             <span style={{fontSize:11,fontWeight:700,color:C.muted,letterSpacing:.6,textTransform:"uppercase"}}>Your concepts</span>
             <Help text="A concept is one idea in your question (a disease, a treatment). Under each concept, list the ways authors might phrase it. Concepts join with AND (all must appear); terms inside a concept join with OR (any one counts)."/>

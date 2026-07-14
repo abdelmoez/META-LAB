@@ -86,7 +86,9 @@ export function submenuSteps(category, ctx = {}, opts = {}) {
     return {
       key: it.key, label: it.label, icon: it.icon, href: it.href,
       num: utility ? null : n,
-      status: utility ? null : (statusMap[it.completionKey] || 'empty'),
+      // 85.md — an item may carry its OWN honest status (the Search workflow stages,
+      // published by the mounted workspace); it wins over the legacy statusMap truth.
+      status: utility ? null : (it.status || statusMap[it.completionKey] || 'empty'),
       count: null,
       desc: utility ? null : (it.desc || STEP_DESC[it.completionKey] || null),
       disabled: !it.href,

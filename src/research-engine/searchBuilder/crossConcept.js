@@ -8,7 +8,8 @@
  *    one concept (which over-narrows an AND-ed search).
  *  - searchQualityCheck — a small "Search Quality Check" foundation: empty major
  *    concept, term-in-multiple-concepts, no controlled vocabulary for a major concept,
- *    likely-missing acronym expansion, comparator/outcome over-narrowing. (NOT a full
+ *    likely-missing acronym expansion, literal Boolean operator inside a term,
+ *    within-concept duplicate, comparator/outcome over-narrowing. (NOT a full
  *    PRESS/PRISMA-S system — see docs/manager/search-builder-future-enhancements.md.)
  *  - sensitivitySignal — bucket a hit count into Very broad … Very narrow.
  *
@@ -16,10 +17,13 @@
  * the network.
  */
 import { matchFamily, norm } from './conceptExtraction.js';
+import { liveTermsOf } from './termLiveness.js';
 
-/** Live (non-empty) terms of a concept. */
+/** Live terms of a concept — the shared rule (non-blank AND not disabled), so the
+ *  quality checks and duplicate detection ignore terms the user switched off
+ *  (85.md A1; see termLiveness.js). */
 function liveTerms(concept) {
-  return ((concept && concept.terms) || []).filter((t) => String(t.text || '').trim());
+  return liveTermsOf(concept);
 }
 
 /**
@@ -123,7 +127,37 @@ export function searchQualityCheck(concepts, opts = {}) {
     }
   }
 
-  // 5. Comparator / Outcomes AND-ed in can over-narrow.
+  // 5. (85.md A1) A term whose TEXT contains a standalone UPPERCASE Boolean operator
+  //    is searched as those literal words — "stroke OR TIA" matches the exact phrase,
+  //    not either term. Word-boundary + case-sensitive (a real phrase like "signs and
+  //    symptoms" uses lowercase) and requires other words around the operator, so the
+  //    hint is high-precision. Mirrors ast.js findLiteralBooleanTerms for AND/OR.
+  for (const c of list) {
+    for (const t of liveTerms(c)) {
+      const txt = String(t.text).trim();
+      const m = /(?:^|\s)(AND|OR)(?:\s|$)/.exec(txt);
+      if (m && txt.split(/\s+/).length > 1) {
+        push({ id: `boolop:${c.id}:${norm(txt)}`, severity: 'warning', conceptId: c.id, concept: c.label, message: `"${txt}" contains "${m[1]}" — operators inside a term are searched as literal words, not as Boolean logic.`, action: `Split it into separate terms in ${c.label} (synonyms within a concept are combined with OR automatically).` });
+      }
+    }
+  }
+
+  // 6. (85.md A1) The same/equivalent term twice WITHIN one concept (the cross-concept
+  //    pass counts each equivalence key once per concept, so this is a separate check).
+  for (const c of list) {
+    const seen = new Map(); // equivKey -> first term text
+    for (const t of liveTerms(c)) {
+      const key = termEquivalenceKey(t.text);
+      if (!key) continue;
+      if (seen.has(key)) {
+        push({ id: `dupin:${c.id}:${key}`, severity: 'warning', conceptId: c.id, concept: c.label, message: `"${t.text}" duplicates "${seen.get(key)}" within ${c.label}. Duplicate synonyms don't broaden the search — they just add noise.`, action: `Remove one of the duplicates from ${c.label}.` });
+      } else {
+        seen.set(key, t.text);
+      }
+    }
+  }
+
+  // 7. Comparator / Outcomes AND-ed in can over-narrow.
   const comp = list.find((x) => x.picoField === 'C');
   if (comp && liveTerms(comp).length) {
     push({ id: 'narrow:C', severity: 'info', conceptId: comp.id, concept: 'Comparator / Control', message: 'Comparator terms are AND-ed into the search and can make it too narrow.', action: 'Many reviews leave the comparator out of the search and apply it at screening.' });

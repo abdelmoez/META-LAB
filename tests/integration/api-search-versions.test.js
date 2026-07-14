@@ -156,3 +156,70 @@ describe('search-strategy versions flag + auth gates', () => {
     expect(body.error).toBe('Project not found');
   });
 });
+
+/* ── 85.md A1 — rejectedSuggestions PUT→GET round-trip ──────────────────────────
+   The putSearch allowlist writes only named keys, so a new persisted key that is
+   missing its branch would be SILENTLY dropped — the client would save, get
+   { ok:true }, and the rejection memory would vanish on reload. This pins the
+   branch end-to-end on a real project. Runs on the ADMIN path (admins bypass the
+   searchEngine existence-gate via featureAccess), so it works with the flag OFF;
+   self-skips when no admin authenticates or the gate predates featureAccess. */
+describe('putSearch — rejectedSuggestions round-trip (85.md A1)', () => {
+  it('PUT with rejectedSuggestions → GET returns them; a PUT omitting the key leaves them intact', async () => {
+    if (!up || !adminCookie) return;
+    const J = { cookie: adminCookie, 'Content-Type': 'application/json' };
+
+    // Own project so resolveProjectAccess grants canEdit.
+    const proj = await hit('/projects', {
+      method: 'POST', headers: J, body: JSON.stringify({ name: `A1 rejected-suggestions ${Date.now()}` }),
+    });
+    if (!(proj.ok || proj.status === 201)) {
+      console.warn('[85.md A1] could not create a project (admin gate pending restart?) — round-trip skipped');
+      return;
+    }
+    const pid = (await proj.json()).id;
+
+    try {
+      const put = await hit(`/search-builder/${pid}`, {
+        method: 'PUT', headers: J,
+        body: JSON.stringify({
+          concepts: [{ id: 'c1', label: 'Population', picoField: 'P', op: 'AND', terms: [{ id: 't1', text: 'obesity', type: 'freetext', field: 'tiab' }] }],
+          overrides: {}, ignored: [],
+          rejectedSuggestions: ['rej:P:fam:obesity', 'rej:I:widget score'],
+        }),
+      });
+      if (put.status === 404) {
+        console.warn('[85.md A1] admin flag-bypass pending server restart — round-trip skipped');
+        return;
+      }
+      expect(put.status).toBe(200);
+      expect((await put.json()).ok).toBe(true);
+
+      const got = await hit(`/search-builder/${pid}`, { headers: { cookie: adminCookie } });
+      expect(got.status).toBe(200);
+      const state = await got.json();
+      expect(state.rejectedSuggestions).toEqual(['rej:P:fam:obesity', 'rej:I:widget score']);
+      expect(state.concepts).toHaveLength(1);
+
+      // Named-keys contract: a single-key PUT (e.g. the searchMode writer) must not
+      // wipe the rejections it does not name.
+      const single = await hit(`/search-builder/${pid}`, {
+        method: 'PUT', headers: J, body: JSON.stringify({ searchMode: 'manual' }),
+      });
+      expect(single.status).toBe(200);
+      const after = await (await hit(`/search-builder/${pid}`, { headers: { cookie: adminCookie } })).json();
+      expect(after.rejectedSuggestions).toEqual(['rej:P:fam:obesity', 'rej:I:widget score']);
+      expect(after.searchMode).toBe('manual');
+
+      // Sanitizer applies on write: junk entries dropped, strings trimmed.
+      const junk = await hit(`/search-builder/${pid}`, {
+        method: 'PUT', headers: J, body: JSON.stringify({ rejectedSuggestions: [' rej:P:x ', 7, null, ''] }),
+      });
+      expect(junk.status).toBe(200);
+      const cleaned = await (await hit(`/search-builder/${pid}`, { headers: { cookie: adminCookie } })).json();
+      expect(cleaned.rejectedSuggestions).toEqual(['rej:P:x']);
+    } finally {
+      await hit(`/projects/${pid}`, { method: 'DELETE', headers: { cookie: adminCookie } }).catch(() => {});
+    }
+  }, 30000);
+});

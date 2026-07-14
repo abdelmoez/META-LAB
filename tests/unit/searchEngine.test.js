@@ -7,7 +7,7 @@ import { describe, it, expect } from 'vitest';
 import {
   mapMeshSummary, mapMeshSummaryList, emtreeFallback, parseSparqlLabels, meshNarrower, meshSuggest,
 } from '../../server/searchEngine/nlmClient.js';
-import { sanitizeIgnored, sanitizeFilters, sanitizeSearchMode } from '../../server/searchEngine/searchEngineController.js';
+import { sanitizeIgnored, sanitizeFilters, sanitizeSearchMode, sanitizeRejectedSuggestions } from '../../server/searchEngine/searchEngineController.js';
 import { createTtlCache } from '../../server/searchEngine/ttlCache.js';
 
 describe('mapMeshSummary', () => {
@@ -136,6 +136,21 @@ describe('sanitizeSearchMode — putSearch allowlist (73.md P5 two-path marker)'
     expect(sanitizeSearchMode(1)).toBeNull();
     expect(sanitizeSearchMode({ mode: 'manual' })).toBeNull();
     expect(sanitizeSearchMode(['manual'])).toBeNull();
+  });
+});
+
+describe('sanitizeRejectedSuggestions — putSearch allowlist (85.md A1)', () => {
+  it('keeps trimmed string keys in order (no dedupe/reorder — the client echo must match byte-for-byte)', () => {
+    expect(sanitizeRejectedSuggestions(['rej:P:fam:eus', ' rej:I:metformin ', 'rej:P:fam:eus']))
+      .toEqual(['rej:P:fam:eus', 'rej:I:metformin', 'rej:P:fam:eus']);
+  });
+  it('drops non-strings and empties', () => {
+    expect(sanitizeRejectedSuggestions(['rej:P:x', 7, null, {}, '', '   '])).toEqual(['rej:P:x']);
+  });
+  it('caps at 500 and tolerates a non-array', () => {
+    expect(sanitizeRejectedSuggestions(Array.from({ length: 600 }, (_, i) => `rej:P:t${i}`)).length).toBe(500);
+    expect(sanitizeRejectedSuggestions(null)).toEqual([]);
+    expect(sanitizeRejectedSuggestions('nope')).toEqual([]);
   });
 });
 

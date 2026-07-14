@@ -32,6 +32,11 @@ import { TABS, PHASES, phaseLabel, PHASE_ICON } from '../../workspace/projectHel
 // surfaces can never drift. Pure data + a pure function → safe to import into this
 // React-free nav module.
 import { stagesFor as searchStagesFor } from '../../../features/searchWorkspace/searchStages.js';
+// 85.md — the mounted SearchWorkspace publishes honest per-stage completion statuses
+// (computeStageStatuses) to this pure store; the submenu attaches them additively so
+// the white stepper shows real progress. Glyph-less fallback (status:null) when the
+// workspace was never mounted this session. Pure module, no React — nav-safe import.
+import { getSearchStageStatuses } from '../../../features/searchWorkspace/searchModeStore.js';
 
 /* ─── 1. GLOBAL purple-rail destinations (app-level, shown on every Stitch page) ─
    design2.md Part 1: the purple rail holds ONLY global, application-level
@@ -364,6 +369,12 @@ function searchSubmenu(ctx = {}) {
   const v2 = ctx.searchWorkspaceV2Enabled === true;
   let stageItems;
   if (v2) {
+    // 85.md — honest per-stage status (additive `status` field). Prefer an explicit
+    // ctx.searchStageStatuses (tests / future host threading), else the shared store
+    // the mounted workspace publishes to; null = no truth → glyph-less rows.
+    const stageStatuses = (ctx.searchStageStatuses && typeof ctx.searchStageStatuses === 'object')
+      ? ctx.searchStageStatuses
+      : (getSearchStageStatuses(ctx.projectId) || null);
     stageItems = searchStagesFor(ctx.searchMode).map((s) => ({
       key: s.id,
       label: s.label,
@@ -374,6 +385,8 @@ function searchSubmenu(ctx = {}) {
       screening: false,
       desc: s.desc || null,
       stage: s.id,
+      // 85.md additive: 'done'|'partial'|'empty'|'attention' from the live workspace.
+      status: stageStatuses ? (stageStatuses[s.id] || null) : null,
     }));
   } else {
     // Legacy (flag OFF): the single 'Search' destination the classic wizard opens.

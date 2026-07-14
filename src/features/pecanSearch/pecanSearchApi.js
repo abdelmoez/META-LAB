@@ -13,6 +13,8 @@
  * we never send or render an API key. Idempotency-Key guards run creation so a
  * double-click / retry never launches two runs.
  */
+import { stripDisabledTerms } from '../../research-engine/searchBuilder/termLiveness.js';
+
 const BASE = '/api/pecan-search';
 const SB_BASE = '/api/search-builder';
 
@@ -157,7 +159,12 @@ export async function loadCanonicalQuery(projectId) {
   try { d = JSON.parse(text); } catch { return null; }
   if (!d) return null; // genuine "no saved strategy"
   return {
-    concepts: Array.isArray(d.concepts) ? d.concepts : [],
+    // 85.md A1 — belt-and-braces: strip disabled (switched-off) terms client-side
+    // too. The server AST normalizer already skips them; filtering here as well
+    // keeps every consumer of this canonical query (validate/translate/preview/run)
+    // honest even if a payload bypasses the normalizer. Empty concepts are kept for
+    // op chaining (see termLiveness.stripDisabledTerms).
+    concepts: stripDisabledTerms(Array.isArray(d.concepts) ? d.concepts : []),
     filters: (d.filters && typeof d.filters === 'object') ? d.filters : { dateFrom: '', dateTo: '', languages: [], pubTypes: [] },
     overrides: d.overrides || {},
     // prompt60 seam fix #1/#2 — surface the persisted database selection + handoff

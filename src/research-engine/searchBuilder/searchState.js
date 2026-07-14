@@ -16,6 +16,8 @@
  */
 import { picoToConcepts, extractConcepts, matchFamily, norm } from './conceptExtraction.js';
 import { FAMILY_PICO_ROLE } from './medicalSynonyms.js';
+import { isLiveTerm } from './termLiveness.js';
+import { rejectionKey } from './suggestionReview.js';
 
 /* ── SE2: the five canonical PICO concept groups ──────────────────────────────
    The Search Builder ALWAYS shows these five, in this order, each keyed by a
@@ -138,10 +140,13 @@ export function syncSearchBuilderFromPico(pico, existingConcepts, ignoredList) {
         const reuse = priorAutoByNorm.get(n);                              // keep id + vocab if we had it
         autoTerms.push(reuse || { ...t, sourceField: label });
       }
-      // Keep an auto term the user converted to MeSH even if it is no longer extracted.
+      // Keep an auto term the user converted to MeSH even if it is no longer
+      // extracted — and (85.md A1) an auto term the user DISABLED: disable means
+      // "keep but off", so a PICO edit that drops the keyword must not silently
+      // delete the switched-off term.
       for (const t of priorAuto) {
         const n = norm(t.text);
-        if (!used.has(n) && !ig.has(n) && (t.type === 'controlled' || t.vocab)) { used.add(n); autoTerms.push(t); }
+        if (!used.has(n) && !ig.has(n) && (t.type === 'controlled' || t.vocab || t.disabled)) { used.add(n); autoTerms.push(t); }
       }
     }
 
@@ -206,7 +211,10 @@ export function syncSearchBuilderFromPico(pico, existingConcepts, ignoredList) {
     for (const t of terms) { const n = norm(t.text); if (n && !have.has(n)) { have.add(n); groupTerms[gi].push(t); } }
   }
 
-  // (2) dedup any auto term still present in >1 group
+  // (2) dedup any auto term still present in >1 group. The kept copy is the WINNER
+  // group's own term object, so it keeps ITS OWN `disabled` flag (85.md A1): if the
+  // winner's copy was off it stays off, and a disabled loser copy is dropped with
+  // its flag — the winner is never silently switched by a discarded duplicate.
   const occ = new Map(); // norm -> [groupIndex,...]
   groupTerms.forEach((terms, gi) => terms.forEach((t) => {
     if (t.source !== 'pico_auto') return;
@@ -286,7 +294,18 @@ export function pickPersisted(state) {
     dismissedWarnings: Array.isArray(state && state.dismissedWarnings) ? state.dismissedWarnings.filter((s) => typeof s === 'string') : [],
     // prompt60 — search-scope limits; undefined (and thus omitted) when empty.
     filters: normalizePersistedFilters(state && state.filters),
+    // 85.md A1 — rejected vocabulary-suggestion keys (see suggestionReview.rejectionKey).
+    // Included ONLY when non-empty (mirrors `filters`) so every pre-feature save keeps
+    // a byte-identical signature and never triggers a spurious autosave.
+    rejectedSuggestions: normalizePersistedRejected(state && state.rejectedSuggestions),
   };
+}
+
+/** 85.md A1 — the persisted rejected-suggestion keys, or undefined when empty (a key
+ *  set to undefined is omitted by stableStringify — same trick as filters). Pure. */
+export function normalizePersistedRejected(raw) {
+  const list = Array.isArray(raw) ? raw.filter((s) => typeof s === 'string' && s.trim()) : [];
+  return list.length ? list : undefined;
 }
 
 /** Stable signature of the persisted slice — equal signature ⇒ no save / no apply needed. */
@@ -375,15 +394,50 @@ export function removeTermFromField(concepts, fieldKey, text) {
     conceptFieldKey(c) === fieldKey ? { ...c, terms: (c.terms || []).filter((t) => norm(t.text) !== n) } : c);
 }
 
+/**
+ * 85.md A1 — disable-without-delete. Set/clear one term's `disabled` flag.
+ * FLAG HYGIENE: enabling DELETES the key (never writes `disabled: false`), so a
+ * disable→enable round-trip leaves the term byte-identical to a term that was never
+ * touched — the persisted signature (serializeSearchState) must not drift, or every
+ * toggle would look like a permanent content change to autosave/versions/collab.
+ * Pure; returns a new array (untouched concepts/terms keep their references).
+ */
+export function setTermDisabled(concepts, conceptId, termId, disabled) {
+  return (Array.isArray(concepts) ? concepts : []).map((c) => {
+    if (!c || c.id !== conceptId) return c;
+    return {
+      ...c,
+      terms: (c.terms || []).map((t) => {
+        if (!t || t.id !== termId) return t;
+        if (disabled) return t.disabled === true ? t : { ...t, disabled: true };
+        if (!('disabled' in t)) return t; // already enabled — no-op
+        const { disabled: _off, ...rest } = t;
+        return rest;
+      }),
+    };
+  });
+}
+
 /* ── SB3: helper for Tab 2 ("Organize Concepts") ─────────────────────────────
    A simple, beginner-readable status for a concept card. Pure + deterministic.
-   Returns one of: 'empty' | 'needs-review' | 'mesh-suggested' | 'ready'. */
-export function conceptStatus(concept) {
+   Returns one of: 'empty' | 'needs-review' | 'mesh-suggested' | 'ready'.
+   85.md A1: "live" now uses the shared liveness rule (disabled terms are NOT
+   live — a concept whose every term is switched off reads 'empty', because that
+   is what compiles). Optional second param { rejected } (a Set/array of
+   suggestionReview rejection keys): a concept whose every heading suggestion was
+   rejected must not read 'mesh-suggested' forever — with rejections supplied, only
+   un-rejected suggestions count. Existing call sites (no second arg) are unchanged. */
+export function conceptStatus(concept, opts) {
   const terms = (concept && concept.terms) || [];
-  const live = terms.filter((t) => String(t.text || '').trim());
+  const live = terms.filter(isLiveTerm);
   if (!live.length) return concept && concept.note ? 'ready' : 'empty'; // Time-Frame group is "ready" when a restriction is set
   if (live.some((t) => t.type === 'controlled')) return 'ready';        // has a subject heading + free text
-  if (live.some((t) => t.type !== 'controlled' && t.vocab)) return 'mesh-suggested'; // a heading is available but not added
+  const rejected = opts && opts.rejected
+    ? (opts.rejected instanceof Set ? opts.rejected : new Set(Array.isArray(opts.rejected) ? opts.rejected : []))
+    : null;
+  const suggested = live.some((t) => t.type !== 'controlled' && t.vocab
+    && !(rejected && rejected.has(rejectionKey(concept, t.text))));
+  if (suggested) return 'mesh-suggested';                               // a heading is available but not added
   if (live.length === 1) return 'needs-review';                         // one term — suggest adding synonyms
   return 'ready';
 }

@@ -96,6 +96,59 @@ describe('searchQualityCheck', () => {
   });
 });
 
+/* ── 85.md A1 — literal Boolean operator inside a term ───────────────────────── */
+
+describe('searchQualityCheck — literal AND/OR inside a term (85.md A1)', () => {
+  it('warns (with an action) when a term contains a standalone uppercase operator', () => {
+    const cs = [concept('P', 'Population', 'stroke OR transient ischemic attack')];
+    const w = searchQualityCheck(cs).find((x) => x.id.startsWith('boolop:'));
+    expect(w).toBeTruthy();
+    expect(w.severity).toBe('warning');
+    expect(w.message).toMatch(/literal words/i);
+    expect(w.action).toMatch(/split/i);
+    expect(w.id).toBe(`boolop:c-P:${'stroke or transient ischemic attack'}`);
+  });
+  it('does NOT flag lowercase connectors or single-word terms', () => {
+    const clean = [concept('P', 'Population', 'signs and symptoms', 'AND')];
+    expect(searchQualityCheck(clean).some((x) => x.id.startsWith('boolop:'))).toBe(false);
+  });
+  it('ignores disabled terms and respects dismissal', () => {
+    const off = [concept('P', 'Population', { text: 'a OR b', disabled: true })];
+    expect(searchQualityCheck(off).some((x) => x.id.startsWith('boolop:'))).toBe(false);
+    const cs = [concept('P', 'Population', 'a OR b')];
+    const id = searchQualityCheck(cs).find((x) => x.id.startsWith('boolop:')).id;
+    expect(searchQualityCheck(cs, { dismissed: [id] }).some((x) => x.id.startsWith('boolop:'))).toBe(false);
+  });
+});
+
+/* ── 85.md A1 — within-concept duplicate ─────────────────────────────────────── */
+
+describe('searchQualityCheck — within-concept duplicate (85.md A1)', () => {
+  it('warns when the same equivalence key appears twice in ONE concept', () => {
+    const cs = [concept('I', 'Intervention / Exposure', 'EUS', 'endoscopic ultrasound')];
+    const w = searchQualityCheck(cs).find((x) => x.id.startsWith('dupin:'));
+    expect(w).toBeTruthy();
+    expect(w.severity).toBe('warning');
+    expect(w.id).toBe('dupin:c-I:fam:eus');
+    expect(w.message).toContain('duplicates');
+    expect(w.action).toMatch(/remove/i);
+    // …and the cross-concept pass still does NOT fire (one concept only)
+    expect(searchQualityCheck(cs).some((x) => x.id === 'multi:fam:eus')).toBe(false);
+  });
+  it('does not warn for distinct terms, disabled copies, or across concepts', () => {
+    expect(searchQualityCheck([concept('I', 'Intervention / Exposure', 'EUS', 'drainage')])
+      .some((x) => x.id.startsWith('dupin:'))).toBe(false);
+    expect(searchQualityCheck([concept('I', 'Intervention / Exposure', 'EUS', { text: 'endoscopic ultrasound', disabled: true })])
+      .some((x) => x.id.startsWith('dupin:'))).toBe(false);
+    expect(searchQualityCheck([concept('P', 'Population', 'EUS'), concept('I', 'Intervention / Exposure', 'endoscopic ultrasound')])
+      .some((x) => x.id.startsWith('dupin:'))).toBe(false);
+  });
+  it('is dismissible by id', () => {
+    const cs = [concept('I', 'Intervention / Exposure', 'EUS', 'endoscopic ultrasound')];
+    expect(searchQualityCheck(cs, { dismissed: ['dupin:c-I:fam:eus'] }).some((x) => x.id.startsWith('dupin:'))).toBe(false);
+  });
+});
+
 describe('sensitivitySignal', () => {
   it('buckets counts into breadth labels', () => {
     expect(sensitivitySignal(80000).key).toBe('very-broad');

@@ -112,6 +112,11 @@ export function normalizeCanonical(input = {}) {
     const terms = [];
     for (const t of termsIn) {
       if (!t || typeof t !== 'object') continue;
+      // 85.md A1 — disabled terms are NOT part of the executed search. Inline mirror
+      // of the shared liveness rule (src/research-engine/searchBuilder/termLiveness.js
+      // isLiveTerm); this module stays dependency-light, but the rule MUST match or
+      // the manual preview and the automated run silently diverge.
+      if (t.disabled === true) continue;
       const text = clampStr(t.text, QUERY_LIMITS.MAX_TERM_LEN).trim();
       if (!text) continue;
       terms.push({

@@ -20,6 +20,7 @@
  * the way SearchBuilderTab does (the previous SURVIVING block's op joins to the next).
  */
 import { S, isPhrase } from './shared.js';
+import { isLiveTerm } from '../termLiveness.js';
 
 /** Canonical field intents. Legacy aliases (title/abstract) fold in; unknown → 'tiab'. */
 const FIELD_ALIAS = { ti: 'ti', title: 'ti', ab: 'ab', abstract: 'ab', tiab: 'tiab', all: 'all' };
@@ -41,10 +42,12 @@ function normTerm(t) {
   };
 }
 
-/** Live terms of a concept = those with non-blank text. */
+/** Live terms of a concept — the shared rule (non-blank text AND not disabled),
+ *  so every DB compiler, the PubMed count and the previews all skip a term the
+ *  user switched off (85.md A1; see termLiveness.js). */
 function liveTerms(concept) {
   return ((concept && concept.terms) || [])
-    .filter((t) => t && S(t.text).trim())
+    .filter(isLiveTerm)
     .map(normTerm);
 }
 

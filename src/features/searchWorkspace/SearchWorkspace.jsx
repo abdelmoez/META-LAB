@@ -63,7 +63,9 @@ import { C, FONT, alpha } from '../../frontend/theme/tokens.js';
 import { STAGES, stagesFor, stageAfterModeChange, reconcileStageUrl } from './searchStages.js';
 // 78.md #5 — publish every mode change to the shared store so the white side-menu
 // (StitchProjectSubnav → useSearchMode) re-scopes its stage list immediately, no reload.
-import { publishSearchMode } from './searchModeStore.js';
+// 85.md — also publish the honest per-stage statuses so the side-menu stepper glyphs
+// reflect real completion (navConfig.searchSubmenu reads the same store).
+import { publishSearchMode, publishSearchStageStatuses } from './searchModeStore.js';
 import { Icon } from '../../frontend/components/icons.jsx';
 import { SearchBuilderTab, searchBuilderApi, loadSearch, saveSearch, relativeTime } from '../searchBuilder/index.js';
 import { getDatabase, defaultSelectedDatabases, DATABASE_CATALOG } from '../../research-engine/searchBuilder/databases.js';
@@ -128,7 +130,7 @@ export async function persistSearchModeMerged(loadFn, saveFn, projectId, mode) {
    DESIGN: a count is only ever presented as current in the 'updated' state; while the
    strategy is changing/refreshing the old number is shown explicitly as "previous",
    struck through. Exported for direct unit tests. */
-export function PubMedPulse({ snapshot, hasConcepts, onRetry }) {
+export function PubMedPulse({ snapshot, hasConcepts, liveTermCount, onRetry }) {
   const s = snapshot || { status: 'idle', count: null, updatedAt: null, error: null };
   // Keep the "updated Xm ago" stamp fresh on a slow tick (no fetch).
   const [, setTick] = useState(0);
@@ -145,12 +147,16 @@ export function PubMedPulse({ snapshot, hasConcepts, onRetry }) {
   let body = null;
   if (!hasConcepts) {
     body = <span style={{ color: C.muted }}>Add concepts to see a live PubMed estimate.</span>;
+  } else if (liveTermCount === 0) {
+    // 85.md (audit M1) — the five PICO groups always exist, so `hasConcepts` alone
+    // never fires; the REAL empty state is "no live terms yet" (builder-reported).
+    body = <span style={{ color: C.muted }}>Add terms to see a live PubMed estimate.</span>;
   } else if (s.status === 'updated' && s.count != null) {
     body = (
       <>
         {dot(C.grn)}
         <span style={{ fontWeight: 700, color: C.txt }}>≈ {Number(s.count).toLocaleString()} PubMed records</span>
-        {s.updatedAt != null && <span style={{ color: C.dim, fontSize: 10.5 }} title={new Date(s.updatedAt).toLocaleString()}>updated {relativeTime(s.updatedAt)}</span>}
+        {s.updatedAt != null && <span style={{ color: C.muted, fontSize: 10.5 }} title={new Date(s.updatedAt).toLocaleString()}>updated {relativeTime(s.updatedAt)}</span>}
         <span style={{ fontSize: 9, fontWeight: 700, letterSpacing: 0.4, color: C.grn, border: `1px solid ${alpha(C.grn, '55')}`, borderRadius: 4, padding: '0 5px', textTransform: 'uppercase' }}>live</span>
       </>
     );
@@ -159,7 +165,7 @@ export function PubMedPulse({ snapshot, hasConcepts, onRetry }) {
       <>
         {dot(C.yel)}
         <span style={{ color: C.txt2 }}>Updating estimate…</span>
-        {prevCount != null && <span style={{ color: C.dim, fontSize: 10.5 }}>previous: <s>≈ {prevCount}</s></span>}
+        {prevCount != null && <span style={{ color: C.muted, fontSize: 10.5 }}>previous: <s>≈ {prevCount}</s></span>}
       </>
     );
   } else if (s.status === 'stale') {
@@ -167,7 +173,7 @@ export function PubMedPulse({ snapshot, hasConcepts, onRetry }) {
       <>
         {dot(C.yel)}
         <span style={{ color: C.yel }}>Strategy changed — estimate refreshing…</span>
-        {prevCount != null && <span style={{ color: C.dim, fontSize: 10.5 }}>previous: <s>≈ {prevCount}</s></span>}
+        {prevCount != null && <span style={{ color: C.muted, fontSize: 10.5 }}>previous: <s>≈ {prevCount}</s></span>}
       </>
     );
   } else if (s.status === 'failed') {
@@ -224,7 +230,7 @@ function StageRail({ stages, active, onSelect, statusFor }) {
                 disabled={st.disabled}
                 aria-current={st.active ? 'step' : undefined}
                 aria-disabled={st.disabled || undefined}
-                aria-label={`Stage ${s.num}: ${s.label}${st.done ? ' — done' : ''}${st.disabled ? ` — ${st.reason}` : ''}`}
+                aria-label={`Stage ${s.num}: ${s.label}${st.done ? ' — done' : ''}${st.attention ? ' — needs attention' : ''}${st.disabled ? ` — ${st.reason}` : ''}`}
                 title={st.disabled ? st.reason : undefined}
                 style={{
                   position: 'relative', display: 'flex', alignItems: 'stretch', gap: 11, width: '100%',
@@ -251,6 +257,7 @@ function StageRail({ stages, active, onSelect, statusFor }) {
                     <span style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: st.active ? 700 : 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.label}</span>
                     {/* secondary status glyph — decorative; the aria-label carries the meaning */}
                     {st.done && !st.active && <span aria-hidden="true" style={{ color: C.grn, fontSize: 12, fontWeight: 800, flexShrink: 0 }}>✓</span>}
+                    {st.attention && !st.done && <span aria-hidden="true" style={{ color: C.yel, fontSize: 12, fontWeight: 800, flexShrink: 0 }}>!</span>}
                     {st.disabled && <span aria-hidden="true" style={{ color: C.dim, fontSize: 11, flexShrink: 0 }}>🔒</span>}
                   </span>
                   <span style={{ fontSize: 10.5, color: st.disabled ? C.dim : C.muted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.desc}</span>
@@ -804,6 +811,20 @@ export default function SearchWorkspace({
   }, []);
   const getLive = useCallback(() => liveRef.current, []);
 
+  // ── 85.md — builder-reported honest stats: {liveTermCount, stageStatuses}. A real
+  // STATE path (unlike liveRef, which never re-renders) so the pulse's empty branch
+  // and the rail statuses stay reactive; identical payloads are dropped so keystroke
+  // storms never re-render this shell needlessly. ──
+  const [builderStats, setBuilderStats] = useState(null);
+  const onStats = useCallback((s) => {
+    if (!s) return;
+    setBuilderStats((prev) => {
+      if (prev && prev.liveTermCount === s.liveTermCount
+        && JSON.stringify(prev.stageStatuses) === JSON.stringify(s.stageStatuses)) return prev;
+      return { liveTermCount: s.liveTermCount, stageStatuses: s.stageStatuses };
+    });
+  }, []);
+
   const stages = useMemo(() => stagesFor(searchMode), [searchMode]);
   const activeIdx = stages.findIndex((s) => s.id === stage);
   const stageDisabled = useCallback((s) => !!(s.needsConcepts && !hasConcepts && s.id !== stage), [hasConcepts, stage]);
@@ -896,23 +917,47 @@ export default function SearchWorkspace({
   }, [stage]);
   const railHidden = typeof hideRail === 'boolean' ? hideRail : sideMenuPresent;
 
+  // ── 85.md — HONEST per-stage statuses replace the positional "visited = done"
+  // lie (audit H7). The builder computes the content-derived stages (A1
+  // computeStageStatuses); this shell overlays the two keys only it knows: the mode
+  // decision and the ready-for-screening handoff. Published to the shared store so
+  // the white side-menu stepper shows the same truth. ──
+  const stageStatuses = useMemo(() => {
+    const base = (builderStats && builderStats.stageStatuses) || {};
+    return {
+      ...base,
+      mode: (searchMode === 'manual' || searchMode === 'automated') ? 'done' : 'empty',
+      screening: screeningReady ? 'done' : (base.screening || 'empty'),
+    };
+  }, [builderStats, searchMode, screeningReady]);
+  useEffect(() => {
+    // Store publish is deep-equal-idempotent, so republishing per render is safe.
+    if (builderStats) publishSearchStageStatuses(projectId, stageStatuses);
+  }, [projectId, stageStatuses, builderStats]);
+
   const statusFor = useCallback((s) => {
-    const idx = stages.findIndex((x) => x.id === s.id);
+    const st = stageStatuses[s.id] || 'empty';
     return {
       active: s.id === stage,
-      // recs round — "done" is positional EXCEPT for the Search Mode decision stage,
-      // which is only done once a mode has actually been chosen.
-      done: idx < activeIdx && (s.id !== 'mode' || searchMode != null),
+      // honest completion — never claimed for merely-visited stages
+      done: st === 'done',
+      attention: st === 'attention',
+      partial: st === 'partial',
       disabled: stageDisabled(s),
       reason: DISABLED_REASON,
     };
-  }, [stages, stage, activeIdx, stageDisabled, searchMode]);
+  }, [stageStatuses, stage, stageDisabled]);
 
   // The persistent Search Builder. Its phase follows the active builder stage; on non-
   // builder stages it stays in 'build' (like the wizard) so stepping around never churns
   // the phase or reloads the strategy. Memoized so snapshotting runQuery never remounts it.
   const builderPhase = stage === 'concepts' ? 'concepts' : stage === 'terms' ? 'terms' : 'build';
   const builderVisible = stage === 'concepts' || stage === 'terms' || stage === 'strategy';
+  // 85.md — a STABLE stage-navigation seam for the builder ("Edit terms →" on the
+  // concept cards). goTo changes identity per render; ref-wrapping keeps builderEl's
+  // memo (and therefore the heavy builder mount) untouched.
+  const goToRef = useRef(null); goToRef.current = goTo;
+  const onGoToStage = useCallback((id) => { if (typeof goToRef.current === 'function') goToRef.current(id); }, []);
   const builderEl = useMemo(() => (
     <SearchBuilderTab
       projectId={projectId}
@@ -924,8 +969,10 @@ export default function SearchWorkspace({
       onLiveQuery={onLiveQuery}
       onHitState={onHitState}
       onRegisterHitRefresh={onRegisterHitRefresh}
+      onGoToStage={onGoToStage}
+      onStats={onStats}
     />
-  ), [projectId, pico, builderPhase, onLiveQuery, onHitState, onRegisterHitRefresh]);
+  ), [projectId, pico, builderPhase, onLiveQuery, onHitState, onRegisterHitRefresh, onGoToStage, onStats]);
 
   const modeLabel = searchMode === 'automated' ? 'Automated search' : searchMode === 'manual' ? 'Manual search' : null;
 
@@ -972,7 +1019,8 @@ export default function SearchWorkspace({
 
       {/* 73.md P3 — sticky PubMed pulse (visible on the build/refine/run stages). */}
       {PULSE_STAGES.has(stage) && (
-        <PubMedPulse snapshot={hitSnap} hasConcepts={hasConcepts} onRetry={retryHits} />
+        <PubMedPulse snapshot={hitSnap} hasConcepts={hasConcepts}
+          liveTermCount={builderStats ? builderStats.liveTermCount : null} onRetry={retryHits} />
       )}
 
       {/* Two-column shell: stage rail (left) + focused stage surface (right).
@@ -1127,7 +1175,7 @@ export default function SearchWorkspace({
             {activeIdx > 0
               ? <button type="button" onClick={() => goTo(stages[activeIdx - 1].id)} style={ghostBtn()}>← Back</button>
               : <span />}
-            <span style={{ marginLeft: 'auto', fontSize: 11, color: C.dim }}>Stage {activeIdx + 1} of {stages.length}</span>
+            <span style={{ marginLeft: 'auto', fontSize: 11, color: C.muted }}>Stage {activeIdx + 1} of {stages.length}</span>
             {stage === 'screening' ? (
               /* 75.md — the last stage's Next hands off to the Screening workspace for
                  THIS project (the linked screening id is resolved by the embedded engine

@@ -19,6 +19,13 @@
 const cache = new Map();   // projectId -> 'manual' | 'automated' | null
 const subs = new Map();    // projectId -> Set<fn>
 
+// 85.md — the per-stage completion statuses ({stageId: 'done'|'partial'|'empty'|
+// 'attention'}) the mounted SearchWorkspace publishes so the white side-menu's
+// numbered stepper can show honest per-stage status glyphs (navConfig.searchSubmenu
+// reads this cache; glyph-less fallback when the workspace was never mounted).
+const statusCache = new Map(); // projectId -> { [stageId]: status }
+const statusSubs = new Map();  // projectId -> Set<fn>
+
 const norm = (m) => (m === 'manual' || m === 'automated' ? m : null);
 
 /** The cached mode for a project, or `undefined` when nothing has been resolved yet
@@ -48,8 +55,58 @@ export function subscribeSearchMode(projectId, fn) {
   return () => { set.delete(fn); if (!set.size) subs.delete(projectId); };
 }
 
-/** Test-only: clear all cached modes + subscribers. */
+/* ── 85.md — per-stage completion statuses (additive; mode API above unchanged) ── */
+
+/** Sanitize a statuses object to plain {stageId: string} (junk → null). */
+function normStatuses(statuses) {
+  if (!statuses || typeof statuses !== 'object') return null;
+  const out = {};
+  for (const [k, v] of Object.entries(statuses)) {
+    if (typeof k === 'string' && typeof v === 'string') out[k] = v;
+  }
+  return Object.keys(out).length ? out : null;
+}
+
+/** Deep-equal for the small flat status maps (publish must be idempotent). */
+function statusesEqual(a, b) {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  const ka = Object.keys(a); const kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  return ka.every((k) => a[k] === b[k]);
+}
+
+/** The cached per-stage statuses for a project, or `undefined` when the workspace
+ *  never published any (side-menu falls back to glyph-less rows). */
+export function getSearchStageStatuses(projectId) {
+  return projectId && statusCache.has(projectId) ? statusCache.get(projectId) : undefined;
+}
+
+/** Publish the project's per-stage statuses. Idempotent on deep-equal maps, so the
+ *  workspace can republish every render without a subscriber storm. */
+export function publishSearchStageStatuses(projectId, statuses) {
+  if (!projectId) return;
+  const s = normStatuses(statuses);
+  if (s == null) return;
+  if (statusCache.has(projectId) && statusesEqual(statusCache.get(projectId), s)) return;
+  statusCache.set(projectId, s);
+  const set = statusSubs.get(projectId);
+  if (set) for (const fn of Array.from(set)) { try { fn(s); } catch { /* subscriber errors never block a publish */ } }
+}
+
+/** Subscribe to a project's stage-status changes. Returns an unsubscribe fn. */
+export function subscribeSearchStageStatuses(projectId, fn) {
+  if (!projectId || typeof fn !== 'function') return () => {};
+  let set = statusSubs.get(projectId);
+  if (!set) { set = new Set(); statusSubs.set(projectId, set); }
+  set.add(fn);
+  return () => { set.delete(fn); if (!set.size) statusSubs.delete(projectId); };
+}
+
+/** Test-only: clear all cached modes + statuses + subscribers. */
 export function __resetSearchModeStore() {
   cache.clear();
   subs.clear();
+  statusCache.clear();
+  statusSubs.clear();
 }

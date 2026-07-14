@@ -92,6 +92,26 @@ export function sanitizeSearchMode(raw) {
   return raw === 'manual' || raw === 'automated' ? raw : null;
 }
 
+/**
+ * 85.md A1 — rejected vocabulary-suggestion keys (opaque strings produced by
+ * src/research-engine/searchBuilder/suggestionReview.rejectionKey). Strings only,
+ * trimmed, empties dropped, capped at 500 — mirrors sanitizeIgnored. Deliberately
+ * NO dedupe/re-ordering beyond that: the client's persisted signature must match
+ * the server echo byte-for-byte or the live-sync loop would see phantom changes.
+ * Exported for unit tests.
+ */
+export function sanitizeRejectedSuggestions(raw) {
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const e of raw) {
+    if (typeof e !== 'string') continue;
+    const key = e.trim();
+    if (key) out.push(key);
+    if (out.length >= 500) break;
+  }
+  return out;
+}
+
 // 75.md Phase 7 — flag gating routes through the central featureAccess seam, so a
 // globally-disabled feature stays usable by ADMINS (reason 'adminOnly') while
 // non-admins keep getting the existence-hiding 404. Passing no `user` (schedulers,
@@ -216,6 +236,11 @@ export async function putSearch(req, res) {
     // Search Wizard's Limits panel writes it here. JSON in WorkflowModuleState → no
     // migration. Defensive clamp via sanitizeFilters.
     if (has('filters')) value.filters = sanitizeFilters(body.filters);
+    // 85.md A1 — persistent per-suggestion rejection memory (suggestionReview keys).
+    // Without this named branch the key would be silently dropped by the whitelist
+    // and every rejection would resurface on reload. RULE: every new persisted
+    // top-level key needs its own putSearch branch + sanitizer.
+    if (has('rejectedSuggestions')) value.rejectedSuggestions = sanitizeRejectedSuggestions(body.rejectedSuggestions);
     // 73.md P5 — additive two-path marker ('manual' | 'automated' | null).
     if (has('searchMode')) value.searchMode = sanitizeSearchMode(body.searchMode);
     // baseRevision null = overwrite (the contract's PUT is a full upsert; the
