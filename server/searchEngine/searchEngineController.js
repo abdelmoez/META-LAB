@@ -28,6 +28,7 @@ import {
 } from './searchVersionService.js';
 import { diffStrategies } from '../../src/research-engine/searchBuilder/versionDiff.js';
 import { buildSearchMethodsText } from '../../src/research-engine/searchBuilder/methodsText.js';
+import { prisma } from '../db/client.js';
 
 const SEARCH_MODULE = 'search';
 
