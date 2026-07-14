@@ -38,12 +38,13 @@ function Chip({ active, children, onClick }) {
   );
 }
 
-function ReasonEditor({ projectId, event, onSaved }) {
+function ReasonEditor({ projectId, event, canAmend, onSaved }) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
   if (event.reason) return <div style={{ fontSize: 12.5, color: S.textSecondary }}><strong>Reason:</strong> {event.reason}</div>;
+  if (!canAmend) return null; // read-only users get no add-reason affordance (server would 403)
   if (!open) return <button type="button" onClick={() => setOpen(true)} style={{ background: 'none', border: 'none', color: S.brand, fontSize: 12, cursor: 'pointer', padding: 0 }}>+ Add reason</button>;
   return (
     <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', marginTop: 4 }}>
@@ -84,7 +85,7 @@ function EventRow({ projectId, event, canAmend, onReasonSaved }) {
       )}
       {impact && <div style={{ fontSize: 12, color: S.info, marginTop: 4 }}>📄 {impact}</div>}
       <div style={{ marginTop: 6 }}>
-        <ReasonEditor projectId={projectId} event={canAmend ? event : { ...event, reason: event.reason || '' }} onSaved={onReasonSaved} />
+        <ReasonEditor projectId={projectId} event={event} canAmend={canAmend} onSaved={onReasonSaved} />
       </div>
       <div style={{ fontSize: 11.5, color: S.textTertiary || S.textSecondary, marginTop: 6 }}>
         {originLabel(event.origin)} · {event.actorName || 'system'} · {fmtTime(event.at)}

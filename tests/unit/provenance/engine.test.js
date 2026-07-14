@@ -59,6 +59,17 @@ describe('diff', () => {
     expect(big.__size).toBe(200);
     expect(big.head.length).toBe(5);
   });
+  it('stableStringify keeps shared (acyclic) refs — only true cycles are [circular]', () => {
+    const shared = { x: 1, y: 2 };
+    // A DAG (same ref in two sibling slots) must serialize fully, not collapse to [circular].
+    expect(stableStringify({ a: shared, b: shared })).toBe(stableStringify({ a: { x: 1, y: 2 }, b: { x: 1, y: 2 } }));
+    expect(stableStringify({ a: shared, b: shared })).not.toContain('[circular]');
+    // A genuine cycle is still guarded.
+    const cyc = { z: 1 }; cyc.self = cyc;
+    expect(stableStringify(cyc)).toContain('[circular]');
+    // Two DAG-shaped states that differ must still hash differently (not both masked).
+    expect(fnv1a({ a: shared, b: shared })).not.toBe(fnv1a({ a: { x: 9 }, b: { x: 9 } }));
+  });
   it('isNoop + structuredDiff detect real vs no change', () => {
     expect(isNoop({ a: 1 }, { a: 1 })).toBe(true);
     const d = structuredDiff({ a: 1, b: 2 }, { a: 1, b: 3, c: 4 });
@@ -188,6 +199,15 @@ describe('analysisRuns — final vs exploratory vs superseded', () => {
     expect(eff[key].primary.id).toBe('r2');
     expect(eff[key].sensitivity.map((r) => r.id)).toEqual(['r3']);
     expect(eff[key].history.map((r) => r.id)).toContain('r1');
+  });
+  it('picks the NEWEST-timestamped primary even when a null-`at` run is interleaved (total order)', () => {
+    const runs = [
+      makeRunRecord({ outcome: 'm', model: 'random' }, null, { id: 'A', status: ANALYSIS_STATUS.PRIMARY, at: '2026-05-01' }),
+      makeRunRecord({ outcome: 'm', model: 'fixed' }, null, { id: 'B', status: ANALYSIS_STATUS.PRIMARY, at: null }),
+      makeRunRecord({ outcome: 'm', model: 'random' }, null, { id: 'C', status: ANALYSIS_STATUS.PRIMARY, at: '2026-03-01' }),
+    ];
+    // Non-transitive comparator regression: must be the newest REAL timestamp (A=May), never C (March).
+    expect(resolveEffectiveAnalyses(runs)['m '].primary.id).toBe('A');
   });
   it('exploratory-only history has no reportable primary', () => {
     const runs = [makeRunRecord({ outcome: 'x' }, null, { id: 'r1', status: ANALYSIS_STATUS.EXPLORATORY })];

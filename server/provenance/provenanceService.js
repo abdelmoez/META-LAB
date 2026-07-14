@@ -142,6 +142,9 @@ export async function baselineProject(projectId, projectData, ctx = {}) {
     eventType: 'PROJECT_STATE_BASELINE',
     entityType: 'project',
     entityId: pid,
+    // Deterministic idempotency key so two concurrent first-loads cannot both write a
+    // baseline — the second hits the unique constraint (P2002) and no-ops.
+    idempotencyKey: `baseline:${pid}`,
     newValue: state,
     diff: { kind: 'baseline' },
     metadata: {
@@ -163,19 +166,30 @@ export async function ensureBaseline(projectId, projectData, ctx = {}) {
 
 /**
  * addReason(eventId, reason, ctx) — controlled amendment: fill a MISSING reason only
- * (never overwrite an existing one — append-only integrity). Records who/when in metadata.
+ * (never overwrite an existing one — append-only integrity). Permission: a project
+ * LEADER may annotate any event; a non-leader may annotate only their OWN event
+ * (ev.actorUserId === ctx.actorUserId). The final write is a conditional updateMany
+ * (reason still empty) so two concurrent fills cannot clobber each other (TOCTOU-safe).
+ * Records who/when in metadata.
  */
 export async function addReason(eventId, reason, ctx = {}) {
   if (!ledgerAvailable()) return { updated: false };
   const id = Number(eventId);
   const ev = await prisma.projectEvent.findUnique({ where: { id } });
   if (!ev) return { updated: false, reason: 'not-found' };
+  const isOwnActor = !!ev.actorUserId && ev.actorUserId === ctx.actorUserId;
+  if (!ctx.isLeader && !isOwnActor) return { updated: false, reason: 'forbidden' };
   if (ev.reason && ev.reason.trim()) return { updated: false, reason: 'already-has-reason' };
   const meta = parseJson(ev.metadata, {});
   meta.reasonAddedBy = String(ctx.actorUserId || '');
   meta.reasonAddedByName = String(ctx.actorName || '');
   meta.reasonAddedAt = new Date().toISOString();
-  await prisma.projectEvent.update({ where: { id }, data: { reason: String(reason || '').slice(0, 2000), metadata: JSON.stringify(meta).slice(0, 6000) } });
+  // TOCTOU-safe: only fill while the reason is STILL empty. count 0 ⇒ someone won the race.
+  const res = await prisma.projectEvent.updateMany({
+    where: { id, OR: [{ reason: null }, { reason: '' }] },
+    data: { reason: String(reason || '').slice(0, 2000), metadata: JSON.stringify(meta).slice(0, 6000) },
+  });
+  if (!res || res.count !== 1) return { updated: false, reason: 'already-has-reason' };
   return { updated: true };
 }
 

@@ -53,7 +53,10 @@ export async function getEvents(req, res) {
       limit: req.query.limit,
       includeInvalidated: access.isLeader && req.query.includeInvalidated === '1',
     });
-    res.json({ ...out, canAmend: !!access.active, canInvalidate: !!access.isLeader });
+    // canAmend = the user can annotate at least their OWN events (leaders any event).
+    // Viewers / read-only members cannot, so the UI hides the add-reason affordance.
+    const canAmend = !!(access.isLeader || (access.active && access.role !== 'viewer'));
+    res.json({ ...out, canAmend, canInvalidate: !!access.isLeader });
   } catch (e) { console.error('[provenance] getEvents', e); res.status(500).json({ error: 'Internal server error' }); }
 }
 
@@ -82,10 +85,13 @@ export async function postReason(req, res) {
   const reason = (req.body && req.body.reason) || '';
   if (!String(reason).trim()) { res.status(400).json({ error: 'A reason is required' }); return; }
   try {
-    // Leaders may annotate any event; members only their own — enforced by fetching
-    // the row's actor. addReason additionally refuses to overwrite an existing reason.
-    const out = await addReason(req.params.eid, reason, actorCtx(req, access));
+    // Leaders may annotate any event; members only their own — enforced in addReason
+    // from ctx.isLeader + the row's actorUserId. It also refuses to overwrite an
+    // existing reason (append-only) and is TOCTOU-safe.
+    const out = await addReason(req.params.eid, reason, { ...actorCtx(req, access), isLeader: !!access.isLeader });
+    if (!out.updated && out.reason === 'forbidden') { res.status(403).json({ error: 'You can only add a reason to your own events', code: out.reason }); return; }
     if (!out.updated && out.reason === 'already-has-reason') { res.status(409).json({ error: 'This event already has a reason', code: out.reason }); return; }
+    if (!out.updated && out.reason === 'not-found') { res.status(404).json({ error: 'Event not found', code: out.reason }); return; }
     res.json(out);
   } catch (e) { console.error('[provenance] postReason', e); res.status(500).json({ error: 'Internal server error' }); }
 }

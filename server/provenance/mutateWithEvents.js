@@ -88,8 +88,13 @@ export async function mutateProjectBlobWithEvents(projectId, mutate, ctx = {}) {
       });
     } catch (e) {
       if (e && e.__casRetry) continue; // lost the CAS — re-read and re-apply
-      // If the ledger insert is what failed (e.g. table vanished mid-flight), fall
-      // back to a plain CAS state write so the scientific action is not lost.
+      // The tx rolled back (state NOT committed). Only ONE case justifies committing the
+      // state without events: the ProjectEvent TABLE is absent (client generated but
+      // `db push` not yet run) — otherwise we'd silently drop provenance, breaking the
+      // atomicity promise. Detect the missing-table error; re-throw everything else so
+      // the caller sees a real failure (state + events both un-committed = consistent).
+      const missingTable = e && (e.code === 'P2021' || e.code === 'P2010' || /no such table|does not exist/i.test(e.message || ''));
+      if (!missingTable) throw e;
       const res = await prisma.project.updateMany({
         where: { id: projectId, autosaveRev: baseRev },
         data: { data: dataStr, autosaveRev: { increment: 1 }, lastActivityAt: now, lastSavedAt: now },
@@ -97,7 +102,7 @@ export async function mutateProjectBlobWithEvents(projectId, mutate, ctx = {}) {
       if (!res || res.count !== 1) continue;
       committed = true;
       eventsWritten = 0;
-      console.error('[provenance] atomic event write failed, state committed without events', e?.message || e);
+      console.error('[provenance] ProjectEvent table missing — state committed without events (run prisma db push)', e?.message || e);
     }
 
     const row = await prisma.project.findFirst({ where: { id: projectId } });

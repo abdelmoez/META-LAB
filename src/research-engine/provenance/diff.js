@@ -27,14 +27,20 @@ export function fnv1a(input) {
 
 /** Deterministic stringify (sorted keys) so hashes are stable across key order. */
 export function stableStringify(v) {
+  // `seen` tracks the ANCESTOR path, not every visited node: we delete a node after
+  // recursing out of it, so a shared-but-acyclic reference used in two sibling
+  // positions serializes its real value both times and ONLY a true cycle (a node that
+  // is its own ancestor) becomes '[circular]'. A whole-tree visited-set would falsely
+  // collapse DAG-shaped inputs to '[circular]', making the hash lossy.
   const seen = new WeakSet();
   const walk = (x) => {
     if (x === null || typeof x !== 'object') return x;
     if (seen.has(x)) return '[circular]';
     seen.add(x);
-    if (Array.isArray(x)) return x.map(walk);
-    const out = {};
-    for (const k of Object.keys(x).sort()) out[k] = walk(x[k]);
+    let out;
+    if (Array.isArray(x)) out = x.map(walk);
+    else { out = {}; for (const k of Object.keys(x).sort()) out[k] = walk(x[k]); }
+    seen.delete(x);
     return out;
   };
   try { return JSON.stringify(walk(v)); } catch { return String(v); }

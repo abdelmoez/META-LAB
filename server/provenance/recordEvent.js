@@ -110,8 +110,15 @@ export async function recordEvents(drafts, ctx = {}) {
     const res = await prisma.projectEvent.createMany({ data: rows });
     return (res && res.count) || 0;
   } catch (e) {
-    console.error('[provenance] recordEvents failed', e?.message || e);
-    return 0;
+    // A single duplicate idempotencyKey (P2002) would abort the WHOLE createMany batch
+    // and drop every event — and `skipDuplicates` is not portable to SQLite. Fall back
+    // to per-row inserts so the non-duplicate events still land (best-effort, dedup-safe).
+    let n = 0;
+    for (const r of rows) {
+      try { await prisma.projectEvent.create({ data: r }); n++; }
+      catch (e2) { if (e2 && e2.code !== 'P2002') console.error('[provenance] recordEvents row failed', e2?.message || e2); }
+    }
+    return n;
   }
 }
 

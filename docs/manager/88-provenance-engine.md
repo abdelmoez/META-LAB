@@ -134,6 +134,16 @@ soft-invalidate. Both Prisma schemas `prisma validate` clean.
 (3 pre-existing full-suite failures are environmental only: integration tests needing a live
 :3001 server, and a CRLF-worktree esbuild quirk on 2 UNMODIFIED files — both pass on LF/main.)
 
+### Adversarial review round (13 agents, find→verify) — 8 confirmed, all fixed
+1. [HIGH→med] `postReason` had NO leader/actor check — any active member could annotate any event's reason. FIX: `addReason` now requires `isLeader || ev.actorUserId===actor`; controller 403s otherwise; viewers lose the affordance (`canAmend`).
+2. [med] `analysisRuns.cmpAt` returned 0 when either `at` was null → non-transitive comparator → `Array.sort` could pick an OLDER run as effective primary. FIX: total order (null→-Infinity).
+3. [med] `mutateWithEvents` catch treated EVERY non-CAS error as "table vanished" and committed state WITHOUT events (broke atomicity). FIX: fall back to eventless write ONLY on missing-table (P2021/P2010/"no such table"); re-throw everything else (tx already rolled back → consistent).
+4. [low] `recordEvents` `createMany` aborted the whole batch on one duplicate `idempotencyKey`. FIX: per-row insert fallback on error (SQLite-safe; no `skipDuplicates`).
+5. [low] `addReason` TOCTOU on the empty-reason check. FIX: conditional `updateMany` (reason still empty) → only the first writer wins.
+6. [low] read-only users saw "+ Add reason" (silent no-op on save). FIX: `ReasonEditor` hidden when `!canAmend`.
+7. [low] `diff.stableStringify` used a whole-tree visited-set → shared-but-acyclic refs became `[circular]` (lossy hash). FIX: ancestor-stack (`seen.delete` after recursion).
+Two claims REJECTED by verification (correctly): multi-outcome same-id study collapse (each per-outcome×timepoint row already has a UNIQUE id) and history STAGE_LABEL (it IS in TABS). +3 regression tests (52 total).
+
 ### Activation (deploy)
 `prisma generate && prisma db push` (or `sync-postgres-schema.mjs` + PG push) creates the
 `ProjectEvent` table; flip the `researchProvenance` flag ON in Ops › Flags. Until then the code

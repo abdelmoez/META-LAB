@@ -11,6 +11,7 @@ const db = { events: [], project: null, seq: 0 };
 
 function matches(row, where = {}) {
   for (const [k, cond] of Object.entries(where)) {
+    if (k === 'OR') { if (!Array.isArray(cond) || !cond.some((sub) => matches(row, sub))) return false; continue; }
     const v = row[k];
     if (cond && typeof cond === 'object' && !(cond instanceof Date)) {
       if ('lt' in cond && !(v < cond.lt)) return false;
@@ -52,6 +53,11 @@ const prisma = {
     async update({ where: { id }, data }) {
       const row = db.events.find((e) => e.id === id);
       Object.assign(row, data); return row;
+    },
+    async updateMany({ where = {}, data = {} }) {
+      const rows = db.events.filter((e) => matches(e, where));
+      for (const r of rows) Object.assign(r, data);
+      return { count: rows.length };
     },
     async count({ where = {} }) { return db.events.filter((e) => matches(e, where)).length; },
     async groupBy({ by, where = {} }) {
@@ -196,14 +202,25 @@ describe('listEvents + summary + baseline + integrity', () => {
     expect(s.derivedState.analysis.model).toBe('random');
   });
 
-  it('addReason fills a missing reason but refuses to overwrite (append-only)', async () => {
-    const ev = await recordEvent({ eventType: 'STUDY_EXCLUDED', entityType: 'study', entityId: 's1', diff: { kind: 'scalar', prev: 'included', next: 'removed' } }, { projectId: 'p1' });
-    const r1 = await svc.addReason(ev.id, 'wrong population', { actorUserId: 'u1', actorName: 'Dr X' });
+  it('addReason (leader) fills a missing reason but refuses to overwrite (append-only)', async () => {
+    const ev = await recordEvent({ eventType: 'STUDY_EXCLUDED', entityType: 'study', entityId: 's1', diff: { kind: 'scalar', prev: 'included', next: 'removed' } }, { projectId: 'p1', actorUserId: 'author' });
+    const r1 = await svc.addReason(ev.id, 'wrong population', { actorUserId: 'leaderX', actorName: 'Dr X', isLeader: true });
     expect(r1.updated).toBe(true);
     expect(db.events.find((e) => e.id === ev.id).reason).toBe('wrong population');
-    const r2 = await svc.addReason(ev.id, 'changed my mind', {});
+    const r2 = await svc.addReason(ev.id, 'changed my mind', { isLeader: true });
     expect(r2.updated).toBe(false);
     expect(r2.reason).toBe('already-has-reason');
+  });
+
+  it('addReason permission: non-leader can annotate own event, NOT another user\'s', async () => {
+    const mine = await recordEvent({ eventType: 'EXTRACTED_VALUE_CHANGED', entityType: 'study', entityId: 's1', diff: { kind: 'object', changed: { es: { prev: 1, next: 2 } }, added: [], removed: [] } }, { projectId: 'p1', actorUserId: 'me' });
+    const theirs = await recordEvent({ eventType: 'EXTRACTED_VALUE_CHANGED', entityType: 'study', entityId: 's2', diff: { kind: 'object', changed: { es: { prev: 3, next: 4 } }, added: [], removed: [] } }, { projectId: 'p1', actorUserId: 'someoneElse' });
+    const own = await svc.addReason(mine.id, 'transcription fix', { actorUserId: 'me', isLeader: false });
+    expect(own.updated).toBe(true);
+    const other = await svc.addReason(theirs.id, 'i should not be allowed', { actorUserId: 'me', isLeader: false });
+    expect(other.updated).toBe(false);
+    expect(other.reason).toBe('forbidden');
+    expect(db.events.find((e) => e.id === theirs.id).reason).toBeFalsy();
   });
 
   it('invalidateEvent soft-invalidates (never deletes) and hides from default list', async () => {

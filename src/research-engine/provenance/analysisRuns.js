@@ -113,10 +113,17 @@ export function resolveEffectiveAnalyses(runs) {
   return result;
 }
 
+// TOTAL, transitive ordering. A null/unparseable `at` ranks as -Infinity (oldest), so
+// a run WITH a timestamp always outranks one without; ties fall through to insertion
+// index in the caller. Returning 0 for "either null" (as before) made the comparator
+// non-transitive → Array.sort could pick an OLDER run as the effective primary.
 function cmpAt(a, b) {
   const na = toEpoch(a), nb = toEpoch(b);
-  if (na == null || nb == null) return 0;
-  return na - nb;
+  const ra = na == null ? -Infinity : na;
+  const rb = nb == null ? -Infinity : nb;
+  if (ra < rb) return -1;
+  if (ra > rb) return 1;
+  return 0;
 }
 function toEpoch(v) {
   if (v == null) return null;
