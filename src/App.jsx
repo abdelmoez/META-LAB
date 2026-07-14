@@ -101,6 +101,13 @@ function OnboardingGate({ children }) {
 
 function LoginRoute() {
   const navigate = useNavigate();
+  const routerLocation = useLocation();
+  // 86.md P2.24 — a deep link that bounced through /login carries its origin in
+  // location.state.from; return the user THERE after auth (not always /app). Only
+  // trust an internal path that isn't itself an auth page, to avoid open-redirect
+  // and login loops.
+  const rawFrom = routerLocation.state && routerLocation.state.from;
+  const safeFrom = (typeof rawFrom === 'string' && rawFrom.startsWith('/') && !/^\/(login|register|reset|onboarding)\b/.test(rawFrom)) ? rawFrom : null;
   // pendingOnboarding is intentionally NOT read here: post-login routing uses the
   // one-shot onboardingCompleted flag for an immediate redirect, and OnboardingGate
   // handles the live pending check on the destination route.
@@ -117,7 +124,7 @@ function LoginRoute() {
         // on first login before AuthContext has a chance to re-fetch pending.
         const dest = invite ? `/invite/${encodeURIComponent(invite)}`
           : (u && u.onboardingCompleted === false) ? '/onboarding'
-          : '/app';
+          : (safeFrom || '/app');
         navigate(dest);
       }}
       onRegister={() => {

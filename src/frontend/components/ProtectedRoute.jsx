@@ -1,4 +1,4 @@
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { C, FONT } from '../theme/tokens.js';
 
@@ -36,7 +36,11 @@ function LoadingScreen() {
  */
 export default function ProtectedRoute({ children }) {
   const { user, loading } = useAuth();
+  const location = useLocation();
   if (loading) return <LoadingScreen />;
-  if (!user)   return <Navigate to="/login" replace />;
+  // 86.md P2.24 — preserve the intended destination so a deep link (a project,
+  // a specific tab) survives the login bounce instead of always dumping the user
+  // on the dashboard. The login page reads location.state.from after auth.
+  if (!user) return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   return children;
 }

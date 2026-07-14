@@ -13,6 +13,11 @@ import AppErrorBoundary from "./frontend/components/AppErrorBoundary.jsx";
 // (content-hashed chunk) failures after a deploy, the most likely "Something went wrong".
 import { installGlobalErrorHandlers } from "./frontend/components/errorReporting.js";
 
+// 86.md P3.34 — surface the compile-time release id as window.__APP_VERSION__ so the
+// manuscript version stamps (which read the window global) also carry the real
+// version, not null. Guarded so it is a no-op where the Vite define isn't applied.
+try { if (typeof __APP_VERSION__ !== "undefined") window.__APP_VERSION__ = __APP_VERSION__; } catch { /* no define → leave unset */ }
+
 installGlobalErrorHandlers();
 
 createRoot(document.getElementById("root")).render(

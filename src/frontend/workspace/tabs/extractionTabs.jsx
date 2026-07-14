@@ -557,7 +557,7 @@ function StudyCard({s,idx,updStudy,delStudy,dup,onClone}){
       </div>)}
 
       <div style={{marginTop:12,display:"flex",justifyContent:"flex-end"}}>
-        <button onClick={()=>delStudy(s.id)} style={btnS("danger")}>Remove Study</button>
+        <button onClick={()=>{ if(typeof window==="undefined"||!window.confirm||window.confirm("Remove this study? Its extracted values, provenance and conversions will be permanently deleted. This cannot be undone.")) delStudy(s.id); }} style={btnS("danger")}>Remove Study</button>
       </div>
     </div>)}
   </div>);
