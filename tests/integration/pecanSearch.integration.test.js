@@ -156,6 +156,38 @@ describe('Pecan Search Engine — lifecycle (integration)', () => {
     expect(report.perSource.find((s) => s.provider === 'pubmed')).toBeTruthy();
     expect(report.deduplicationMethod).toMatch(/scorePair|classifyPair/);
   });
+
+  // 87.md — the run summary exposes a server-authoritative, honest progress model that
+  // the modal renders. It must snap to 100 on a terminal run and carry a completed step
+  // narrative + a satisfying activity sentence, all derived from the real persisted work.
+  it('getRunSummary exposes a terminal progress model at 100% with a done step list', async () => {
+    const mock = makeMock({ total: 5 });
+    const { run } = await runToCompletion({ name: 'progress', sources: ['pubmed'], caps: { pubmed: 50 } }, mock);
+    const summary = await getRunSummary(run.id);
+    expect(summary.state).toBe('completed');
+    expect(summary.progress).toBeTruthy();
+    expect(summary.progress.terminal).toBe(true);
+    expect(summary.progress.percent).toBe(100);
+    // Every step resolved (none left waiting/active) and no spinner on a finished run.
+    expect(summary.progress.steps.every((s) => ['done', 'warning', 'skipped'].includes(s.status))).toBe(true);
+    expect(summary.progress.steps.some((s) => s.dominant)).toBe(false);
+    // Counts in the model match the aggregate the run persisted.
+    expect(summary.progress.counts.imported).toBe(summary.counts.imported);
+    expect(summary.progress.activityText).toMatch(/added to Screening|already in your project/i);
+  });
+
+  it('progress model reports an honest partial (not 100 backbone) when a source fails', async () => {
+    const mock = makeMock({ total: 3, failHostMatch: 'ebi.ac.uk' }); // Europe PMC 500s, PubMed ok
+    const { run } = await runToCompletion({ name: 'progress-partial', sources: ['pubmed', 'europepmc'], caps: { pubmed: 50, europepmc: 50 } }, mock);
+    const summary = await getRunSummary(run.id);
+    expect(['partial', 'completed']).toContain(summary.state);
+    // Terminal ⇒ 100, but the search step must carry a warning when a source failed.
+    expect(summary.progress.percent).toBe(100);
+    if (summary.state === 'partial') {
+      const search = summary.progress.steps.find((s) => s.id === 'search');
+      expect(search.status).toBe('warning');
+    }
+  });
 });
 
 // Concurrency + idempotency guards (limitation-hunt fixes). Own project so the

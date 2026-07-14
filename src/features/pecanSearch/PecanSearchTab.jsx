@@ -30,10 +30,12 @@ import {
   pecanSearchApi, loadCanonicalQuery, newIdempotencyKey, selectSourceIds,
 } from './pecanSearchApi.js';
 import {
-  Card, StatTile, StatusPill, runStateLabel, Disclosure, Note, Skeleton,
+  Card, StatTile, StatusPill, Disclosure, Note, Skeleton,
   EmptyState, Btn, CountValue, CredsBadge, Toggle, formatWhen,
 } from './components/parts.jsx';
 import DuplicateReview from './components/DuplicateReview.jsx';
+import SearchImportProgressModal from './components/SearchImportProgressModal.jsx';
+import { nextProgressPercent } from '../../research-engine/search/runProgress.js';
 
 const PREVIEW_DEBOUNCE_MS = 700;
 const ACTIVE_POLL_MS = 2500;
@@ -105,6 +107,14 @@ export default function PecanSearchTab({
   const [activeRun, setActiveRun] = useState(null);   // the run summary we are tracking
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState('');
+
+  // ── 87.md — the "Adding articles to Screening" progress modal ─────────────────
+  // Opens the instant the user clicks Start (before the 202 lands) so the page never
+  // looks frozen; the run is then driven by the existing poll + realtime. `displayPct`
+  // is the MONOTONIC (never-backward) percent held across polls via nextProgressPercent.
+  const [progressOpen, setProgressOpen] = useState(false);
+  const [displayPct, setDisplayPct] = useState(0);
+  const pctRef = useRef(0);
 
   // ── Duplicates (for the active/selected run) ─────────────────────────────────
   const [dupes, setDupes] = useState(null);
@@ -271,6 +281,23 @@ export default function PecanSearchTab({
     return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
   }, [activeRun, refetchActiveRun]);
 
+  /* ── 87.md — derive the MONOTONIC display percent from every fresh run summary.
+       The server's percent can wobble (estimate totals shrink, previewCount arrives
+       late); nextProgressPercent clamps to a running max and snaps to 100 on terminal.
+       The high-water mark resets whenever the TRACKED run id changes (a new run, a
+       history run opened, a retry, or a refresh reconstruction) so one run never
+       inherits another's progress. ── */
+  const trackedIdRef = useRef(null);
+  useEffect(() => {
+    if (!activeRun) return;
+    if (trackedIdRef.current !== activeRun.id) { trackedIdRef.current = activeRun.id; pctRef.current = 0; }
+    const next = nextProgressPercent(pctRef.current, activeRun);
+    pctRef.current = next;
+    setDisplayPct(next);
+  }, [activeRun]);
+
+  const closeProgress = useCallback(() => { setProgressOpen(false); setStartError(''); }, []);
+
   /* ── when the active run reaches a terminal state, pull report + duplicates ── */
   useEffect(() => {
     if (!activeRun || !TERMINAL.has(activeRun.state)) return;
@@ -324,6 +351,11 @@ export default function PecanSearchTab({
   /* ── start a run (Idempotency-Key per attempt) ─────────────────────────────── */
   const startRun = useCallback(async () => {
     if (!canRun || sourceIds.length === 0 || queryState !== 'ready') return;
+    // 87.md — open the progress modal in the SAME tick as the click, before the network
+    // round-trip, so the app never appears frozen. Reset the monotonic percent to 0 for
+    // the new run (a fresh run must not inherit a prior run's high-water mark).
+    pctRef.current = 0; setDisplayPct(0);
+    setProgressOpen(true);
     setStarting(true); setStartError('');
     const idem = newIdempotencyKey();
     const canonicalQuery = { concepts: query.concepts, filters: query.filters };
@@ -416,12 +448,31 @@ export default function PecanSearchTab({
         />
       )}
 
-      {/* ════════════ (4) LIVE PROGRESS / (5) COMPLETION ════════════ */}
-      {activeRun && (
+      {/* ════════════ (4/5) PROGRESS — modal-first (87.md) ════════════
+          The centered "Adding articles to Screening" modal is the primary surface for
+          the active run. Behind it (when the modal is closed/minimised) the inline area
+          shows either the completion summary (a finished or history-opened run) or a
+          compact reopen banner (a job still running that was minimised or reconstructed
+          after a refresh) — never a second live progress indicator alongside the modal. */}
+      {activeRun && !progressOpen && (
         TERMINAL.has(activeRun.state)
           ? <CompletionSummary run={activeRun} report={report} projectId={projectId} onRetry={canRun ? () => retryActive(activeRun.id) : null} />
-          : <LiveProgress run={activeRun} onCancel={canRun ? cancelActive : null} />
+          : <RunningBanner run={activeRun} percent={displayPct} onOpen={() => setProgressOpen(true)} />
       )}
+
+      <SearchImportProgressModal
+        open={progressOpen && (!!activeRun || starting || !!startError)}
+        run={activeRun}
+        starting={starting}
+        startError={startError}
+        displayPercent={displayPct}
+        onClose={closeProgress}
+        onCancel={canRun ? cancelActive : null}
+        onRetry={canRun && activeRun && (activeRun.state === 'failed' || activeRun.state === 'partial') ? () => retryActive(activeRun.id) : null}
+        screeningHref={screeningImportHref()}
+        onGoToScreening={() => setProgressOpen(false)}
+        readOnly={readOnly}
+      />
 
       {/* ════════════ (7) DUPLICATE REVIEW ════════════ */}
       {activeRun && TERMINAL.has(activeRun.state) && (dupesState !== 'idle') && (
@@ -698,74 +749,27 @@ function RunReview({ sourceIds, providers, counts, caps, totalPreview, anyUnknow
   );
 }
 
-/* ════════════ (4) LIVE PROGRESS ════════════ */
-// Visually-hidden helper so screen-reader-only status text doesn't affect layout.
-const SR_ONLY = { position: 'absolute', width: 1, height: 1, padding: 0, margin: -1, overflow: 'hidden', clip: 'rect(0,0,0,0)', whiteSpace: 'nowrap', border: 0 };
-
-function LiveProgress({ run, onCancel }) {
-  const counts = run.counts || {};
-  const perSource = counts.perSource || {};
-  const sources = run.sources || [];
-  // INDETERMINATE: we have no reliable "total to fetch", so we never fake a %.
-  const indeterminate = true;
-  // A dynamic, recomputed-each-poll sentence so screen readers HEAR progress +
-  // per-source state changes (not just a static "Working…"). (§7 accessibility.)
-  const srStatus = `Retrieved ${(counts.rawRetrieved || 0).toLocaleString()}, imported ${(counts.imported || 0).toLocaleString()}, `
-    + `${((counts.exactDup || 0) + (counts.fuzzyDup || 0)).toLocaleString()} duplicates, ${(counts.ambiguousDup || 0).toLocaleString()} to review. `
-    + sources.map((s) => `${s.provider} ${s.state || 'pending'}`).join('; ') + '.';
+/* ════════════ (4) RUNNING BANNER — the minimised / reconstructed progress affordance ══
+   Shown when a run is in flight but the progress modal is closed: the user minimised it
+   ("Run in background"), or it was reconstructed from history after a page refresh. One
+   click reopens the full modal. The live detail lives in the modal — this stays compact
+   so the workspace behind it is usable. */
+function RunningBanner({ run, percent, onOpen }) {
+  const pct = Math.max(0, Math.min(100, Math.round(percent || 0)));
   return (
-    <Card
-      title={<span>Search in progress <StatusPill state={run.state} /></span>}
-      icon="activity"
-      desc={run.name}
-      right={onCancel && !['cancelling'].includes(run.stage) ? <Btn variant="danger" onClick={onCancel}>Cancel</Btn> : null}
-    >
-      <span role="status" aria-live="polite" style={SR_ONLY}>{srStatus}</span>
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div className="ml-indeterminate" style={{ flex: 1, height: 6, borderRadius: 99, overflow: 'hidden', background: C.brd, position: 'relative' }}>
-            <div style={{ position: 'absolute', top: 0, bottom: 0, width: '34%', background: C.acc, borderRadius: 99, animation: indeterminate ? 'ml-indet 1.4s ease-in-out infinite' : 'none' }} />
-          </div>
-          <span style={{ fontSize: 11, color: C.muted }}>Working…</span>
-        </div>
-        <div style={{ fontSize: 11, color: C.muted, marginTop: 6 }}>
-          The total number of records is not known until each database responds, so progress is shown as activity rather than a misleading percentage.
+    <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 16px', marginBottom: 16, background: C.card, border: `1px solid ${C.brd}`, borderLeft: `3px solid ${C.acc}`, borderRadius: 12, flexWrap: 'wrap' }}>
+      <span className="spin-ico" aria-hidden="true" style={{ color: C.acc, fontSize: 15 }}>⟳</span>
+      <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, color: C.txt }}>Adding articles to Screening… <StatusPill state={run.state} /></div>
+        <div role="progressbar" aria-label="Search import progress" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-valuetext={`${pct}%`}
+          style={{ marginTop: 7, height: 5, borderRadius: 99, background: C.brd, overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${pct}%`, background: C.acc, borderRadius: 99, transition: 'width .5s ease' }} />
         </div>
       </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 10, marginBottom: 14 }}>
-        <StatTile label="Retrieved" value={(counts.rawRetrieved || 0).toLocaleString()} />
-        <StatTile label="Normalized" value={(counts.normalized || 0).toLocaleString()} />
-        <StatTile label="Imported" value={(counts.imported || 0).toLocaleString()} tone="green" />
-        <StatTile label="Duplicates" value={((counts.exactDup || 0) + (counts.fuzzyDup || 0)).toLocaleString()} />
-        <StatTile label="Ambiguous" value={(counts.ambiguousDup || 0).toLocaleString()} tone="yellow" />
-        <StatTile label="Failed" value={(counts.failedRecords || 0).toLocaleString()} tone={counts.failedRecords ? 'red' : undefined} />
-      </div>
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {sources.map((s) => {
-          const ps = perSource[s.provider] || {};
-          return (
-            <div key={s.id || s.provider} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '8px 12px', background: C.bg, border: `1px solid ${C.brd}`, borderRadius: 8, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 12.5, fontWeight: 600, color: C.txt, minWidth: 120 }}>{s.provider}</span>
-              <StatusPill state={s.state}>{s.stage && s.state !== 'completed' ? labelStage(s.stage) : runStateLabel(s.state)}</StatusPill>
-              <span style={{ fontSize: 11, color: C.muted, fontFamily: "'IBM Plex Mono',monospace" }}>
-                raw {(s.rawCount || ps.raw || 0).toLocaleString()} · imp {(s.importedCount || ps.imported || 0).toLocaleString()} · dup {((s.exactDupCount || 0) + (s.fuzzyDupCount || 0)).toLocaleString()}
-                {s.ambiguousDupCount ? ` · amb ${s.ambiguousDupCount}` : ''}
-                {s.retryCount ? ` · retry ${s.retryCount}` : ''}
-              </span>
-              {s.errorDetail && <span style={{ fontSize: 11, color: C.red }}>{s.errorDetail}</span>}
-            </div>
-          );
-        })}
-      </div>
-    </Card>
+      <span aria-hidden="true" style={{ fontSize: 12, fontWeight: 700, color: C.txt2, fontVariantNumeric: 'tabular-nums', minWidth: 40, textAlign: 'right' }}>{pct}%</span>
+      <Btn variant="ghost" onClick={onOpen}>View progress</Btn>
+    </div>
   );
-}
-function labelStage(stage) {
-  if (!stage) return '';
-  if (stage.startsWith('fetching')) return 'Fetching';
-  return ({ queued: 'Queued', running: 'Running', cancelling: 'Cancelling', skipped: 'Skipped' })[stage] || stage;
 }
 
 /* prompt60 — the deep link to the screening Import sub-page WITHIN the unified

@@ -20,6 +20,7 @@ import { createEngineContext, isProviderImplemented } from './connectors/registr
 import { runSource } from './pipeline.js';
 import { normalizeCanonical, renderPlain, validateCanonical } from './query/ast.js';
 import { PROVIDER_IDS } from './config.js';
+import { computeRunProgress, TERMINAL_RUN_STATES } from '../../src/research-engine/search/runProgress.js';
 
 export const ENGINE_VERSION = 'pecan-search-1.0.0';
 
@@ -294,6 +295,19 @@ export async function processRun(job, deps = {}) {
   await finalizeRun(run, runState);
   await finishJob(job.id, runState === 'failed' ? 'failed' : 'completed');
   emitRunEvent(run.metaLabProjectId, screen.ownerId, runId, { state: runState, stage: runState });
+
+  // 87.md — structured completion log (correlation id = runId) for observability: who,
+  // which project, per-source outcomes/errors, counts, and duration. No secrets/PII.
+  try {
+    const agg = aggregateCounts(finalSources);
+    const startedMs = run.startedAt ? new Date(run.startedAt).getTime() : Date.parse(run.createdAt);
+    const durationMs = Number.isFinite(startedMs) ? Date.now() - startedMs : null;
+    const perSource = finalSources.map((s) => `${s.provider}:${s.state}${s.errorClass ? `(${s.errorClass})` : ''}`).join(',');
+    console.log(`[pecan-search] run ${runId} ${runState} project=${run.metaLabProjectId} by=${run.initiatedById} `
+      + `raw=${agg.rawRetrieved} imported=${agg.imported} existing=${agg.existingMatched} `
+      + `dup=${agg.exactDup + agg.fuzzyDup} ambiguous=${agg.ambiguousDup} failedRecords=${agg.failedRecords} `
+      + `sources=[${perSource}] durationMs=${durationMs == null ? 'na' : durationMs}`);
+  } catch { /* logging must never affect the run */ }
 }
 
 /** Derive the honest run state from per-source outcomes. */
@@ -369,7 +383,12 @@ export async function cancelRun(runId) {
   if (flipped.count > 0) {
     // Was unclaimed → safe to finalize now (the worker can no longer pick it up).
     const stillUnclaimed = await prisma.pecanSearchJob.count({ where: { runId, status: 'processing' } });
-    if (stillUnclaimed === 0) await finalizeRun(run, 'cancelled');
+    if (stillUnclaimed === 0) {
+      await finalizeRun(run, 'cancelled');
+      // 87.md — a queued run cancelled before any worker claimed it still needs to poke
+      // its live viewers to the terminal state (the run poll would otherwise wait a cycle).
+      emitRunEvent(run.metaLabProjectId, null, runId, { state: 'cancelled', stage: 'cancelled' });
+    }
   }
   return prisma.pecanSearchRun.findUnique({ where: { id: runId } });
 }
@@ -409,6 +428,15 @@ async function runWithConcurrency(items, concurrency, fn) {
 
 function emitRunEvent(metaLabProjectId, ownerId, runId, extra = {}) {
   try { emitToMetaLabProject(metaLabProjectId, ownerId, { type: 'search.run.progress', runId, ...extra }); } catch { /* best-effort */ }
+  // 87.md — cross-engine sync. When a run terminalises, records/counts may have changed,
+  // so nudge the project-level consumers to refetch: `project.updated` reloads the project
+  // doc (→ `_progress`, `_linkedMetaSift`, overview progress bar) and the screening summary
+  // (stepper / purple-rail attention / PRISMA roll-up). Without this the search import is
+  // invisible to those surfaces until a manual reload. Content-free poke; refetch is
+  // authorization-checked at the REST layer (see bus.js).
+  if (extra && TERMINAL_RUN_STATES.has(extra.state)) {
+    try { emitToMetaLabProject(metaLabProjectId, ownerId, { type: 'project.updated' }); } catch { /* best-effort */ }
+  }
 }
 
 // ── Read models ──────────────────────────────────────────────────────────────
@@ -434,7 +462,7 @@ export async function listRuns(metaLabProjectId, { skip = 0, take = 20 } = {}) {
 }
 
 export function shapeRun(run, sources) {
-  return {
+  const base = {
     id: run.id, name: run.name, state: run.state,
     metaLabProjectId: run.metaLabProjectId, screenProjectId: run.screenProjectId,
     initiatedByName: run.initiatedByName,
@@ -449,6 +477,11 @@ export function shapeRun(run, sources) {
     engineVersion: run.engineVersion,
     sources: sources.map(shapeSource),
   };
+  // Additive: a server-authoritative, honest progress model derived purely from the
+  // persisted per-source state (never a timer). The client also computes this from the
+  // same pure module and applies a monotonic clamp across polls. See runProgress.js.
+  base.progress = computeRunProgress(base);
+  return base;
 }
 
 function shapeRunListItem(run, sources) {
