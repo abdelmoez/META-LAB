@@ -11,6 +11,7 @@
  * actions are plain location navigations that always work.
  */
 import { Component } from 'react';
+import { reportClientError } from './errorReporting.js';
 
 const S = {
   wrap: {
@@ -41,7 +42,7 @@ const S = {
 export default class AppErrorBoundary extends Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false };
+    this.state = { hasError: false, correlationId: '' };
   }
 
   static getDerivedStateFromError() {
@@ -51,6 +52,14 @@ export default class AppErrorBoundary extends Component {
   componentDidCatch(error, info) {
     // Detail stays in the console — users never see a stack trace.
     console.error('[app] render crash caught by AppErrorBoundary:', error, info);
+    // 86.md P2.26 — the top-level boundary now reports through the same beacon as
+    // ScopedErrorBoundary (the /api/client-errors route landed in Phase A), so
+    // whole-app render crashes are no longer invisible to operators. The returned
+    // correlationId is shown so a user can quote it to support.
+    try {
+      const correlationId = reportClientError(error, { boundary: 'AppErrorBoundary', componentStack: info && info.componentStack });
+      if (correlationId) this.setState({ correlationId });
+    } catch { /* reporting is best-effort — never rethrow from the error path */ }
   }
 
   render() {
@@ -62,6 +71,9 @@ export default class AppErrorBoundary extends Component {
           <p style={S.body}>
             The page hit an unexpected error. Your work is saved on the server —
             reloading usually fixes this.
+            {this.state.correlationId ? (
+              <><br /><span style={{ fontSize: 11, color: '#9ca3af' }}>Reference: {this.state.correlationId}</span></>
+            ) : null}
           </p>
           <div style={S.row}>
             <button type="button" style={S.primary} onClick={() => window.location.reload()}>

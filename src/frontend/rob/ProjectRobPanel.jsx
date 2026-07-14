@@ -97,6 +97,10 @@ export default function ProjectRobPanel({ projectId, embedded = false, canEdit =
     } catch (e) { setError(e.message); }
   }
   async function removeAssessment(id) {
+    // 86.md P3.56 — a full assessment (all domain answers + rationales) was
+    // discarded on a single trash-icon click with no confirmation. Guard it.
+    if (typeof window !== 'undefined' && window.confirm
+      && !window.confirm('Delete this risk-of-bias assessment? All domain answers and rationales for it will be lost. This cannot be undone.')) return;
     try { await robApi.remove(id); await reload(); } catch (e) { setError(e.message); }
   }
   // prompt46 #4 — delete a MANUAL study (creator/owner/leader). If it has
