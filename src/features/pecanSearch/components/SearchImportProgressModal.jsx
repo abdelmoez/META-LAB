@@ -17,7 +17,7 @@
  * so it can be asserted with renderToStaticMarkup; in the browser it portals to
  * document.body with a blurred backdrop.
  */
-import { useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { C, btnS } from '../../../frontend/workspace/ui/styles.js';
 import { alpha as themeAlpha } from '../../../frontend/theme/tokens.js';
@@ -135,12 +135,15 @@ function ProgressBar({ percent, indeterminate, tone }) {
 
 /* Completion summary bullets — exact numbers straight from the operation result. */
 function CompletionSummary({ counts, state }) {
+  // These reconcile: processed = added + duplicates removed + already-in-project +
+  // skipped. Ambiguous records are a SUBSET of "added" (they land, then go to duplicate
+  // review), so they are NOT a separate bucket here — the "possible duplicates" Note
+  // below surfaces them without double-counting the total.
   const rows = [
     { label: 'records processed', value: counts.retrieved, always: true },
     { label: 'duplicates removed', value: counts.duplicates, show: counts.duplicates > 0 },
     { label: 'already in your project', value: counts.existing, show: counts.existing > 0 },
     { label: state === 'cancelled' ? 'records kept' : 'articles added to Screening', value: counts.imported, always: true, tone: 'green' },
-    { label: 'to review as possible duplicates', value: counts.ambiguous, show: counts.ambiguous > 0, tone: 'yellow' },
     { label: 'records skipped (missing required information)', value: counts.failed, show: counts.failed > 0, tone: 'red' },
   ].filter((r) => r.always || r.show);
   return (
@@ -168,12 +171,25 @@ export default function SearchImportProgressModal({
   onGoToScreening,       // optional click handler alongside the href (e.g. close first)
   readOnly = false,
 }) {
-  const trapRef = useFocusTrap(open, onClose);
   const titleId = useId();
   const descId = useId();
   // Non-blocking inline confirmation for Cancel (no window.confirm — that would freeze
   // the extension/page and is an alarming interruption).
   const [confirming, setConfirming] = useState(false);
+  // Escape backs out of the cancel-confirm first (dismisses the innermost transient UI);
+  // only minimises the whole dialog when no sub-prompt is open. Refs keep the handler
+  // stable so the focus trap effect never re-registers (which would steal focus/render).
+  const confirmingRef = useRef(false); confirmingRef.current = confirming;
+  const onCloseRef = useRef(onClose); onCloseRef.current = onClose;
+  const escClose = useCallback(() => {
+    if (confirmingRef.current) { setConfirming(false); return; }
+    if (onCloseRef.current) onCloseRef.current();
+  }, []);
+  const trapRef = useFocusTrap(open, escClose);
+  // Reset the confirm state whenever the modal closes/minimises or a different run is
+  // tracked, so a "Cancel?" prompt can never survive a minimise→reopen or attach to a
+  // freshly-started run.
+  useEffect(() => { setConfirming(false); }, [open, run && run.id]);
   if (!open) return null;
 
   // Optimistic pre-run stub so the modal opens INSTANTLY on click, before the 202 lands.
@@ -182,7 +198,10 @@ export default function SearchImportProgressModal({
   const terminal = model.terminal && !starting;
   const fatalStart = !!startError && !run;
 
-  const pct = typeof displayPercent === 'number' ? displayPercent : model.percent;
+  // On a terminal render use the model's authoritative 100 (the parent's monotonic
+  // displayPercent is updated in an effect that runs AFTER paint, so trusting it here
+  // would flash a stale sub-100% for one frame beside the "done" header).
+  const pct = terminal ? model.percent : (typeof displayPercent === 'number' ? displayPercent : model.percent);
   const tone = terminal
     ? (model.state === 'completed' ? 'green' : model.state === 'failed' ? 'red' : 'yellow')
     : 'accent';
@@ -196,8 +215,18 @@ export default function SearchImportProgressModal({
 
   const cancelling = effectiveRun && effectiveRun.cancelRequested && !terminal;
   const canCancel = !!onCancel && !readOnly && !terminal && !starting && !fatalStart && !cancelling;
-  const showGoToScreening = terminal && (model.state === 'completed' || model.state === 'partial' || model.state === 'cancelled') && (model.counts.imported > 0 || model.counts.existing > 0);
-  const showRetry = !!onRetry && (model.state === 'failed' || model.state === 'partial') && !fatalStart;
+  const hasImportedOrExisting = model.counts.imported > 0 || model.counts.existing > 0;
+  // Offer "Go to Screening" whenever records actually reached screening — including a
+  // 'failed' run that landed some records page-by-page before stopping (imported > 0).
+  const showGoToScreening = terminal && (
+    (['completed', 'partial', 'cancelled'].includes(model.state) && hasImportedOrExisting)
+    || (model.state === 'failed' && model.counts.imported > 0)
+  );
+  // Only offer Retry when a source is genuinely retryable (failed/partial). An
+  // all-skipped run reports 'failed'/'partial' but has nothing to re-queue, so a Retry
+  // button there would silently do nothing.
+  const retryableSource = (effectiveRun.sources || []).some((s) => s.state === 'failed' || s.state === 'partial');
+  const showRetry = !!onRetry && retryableSource && (model.state === 'failed' || model.state === 'partial') && !fatalStart;
 
   const headTitle = fatalStart ? 'Could not start the search'
     : terminal
@@ -300,7 +329,15 @@ export default function SearchImportProgressModal({
               <div style={{ marginTop: 6, paddingTop: 12, borderTop: `1px solid ${C.brd}` }}>
                 <CompletionSummary counts={model.counts} state={model.state} />
                 {model.state === 'partial' && <div style={{ marginTop: 10 }}><Note tone="warn">Some databases did not finish. Every count above is exact for the ones that completed — you can retry the rest without creating duplicates.</Note></div>}
-                {model.state === 'failed' && <div style={{ marginTop: 10 }}><Note tone="error" role="alert">{effectiveRun.errorSummary || 'The search failed before any records were added.'} You can safely try again.</Note></div>}
+                {model.state === 'failed' && (
+                  <div style={{ marginTop: 10 }}>
+                    <Note tone="error" role="alert">
+                      {model.counts.imported > 0
+                        ? `${effectiveRun.errorSummary || 'The search stopped early.'} ${model.counts.imported.toLocaleString()} record${model.counts.imported === 1 ? '' : 's'} that had already been saved ${model.counts.imported === 1 ? 'is' : 'are'} kept — retrying is safe and will not create duplicates.`
+                        : `${effectiveRun.errorSummary || 'The search failed before any records were added.'} You can safely try again.`}
+                    </Note>
+                  </div>
+                )}
                 {model.counts.ambiguous > 0 && model.state !== 'failed' && <div style={{ marginTop: 10 }}><Note tone="info">Resolve the {model.counts.ambiguous.toLocaleString()} possible duplicate{model.counts.ambiguous === 1 ? '' : 's'} in duplicate review before you begin title/abstract screening.</Note></div>}
               </div>
             )}

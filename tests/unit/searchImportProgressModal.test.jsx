@@ -160,3 +160,28 @@ describe('SearchImportProgressModal — read-only', () => {
     expect(html).not.toContain('Cancel search');
   });
 });
+
+describe('SearchImportProgressModal — review-round fixes', () => {
+  it('does not offer Retry for an all-skipped run (nothing is retryable)', () => {
+    const skipped = { id: 'r6', state: 'failed', sources: [{ provider: 'pubmed', state: 'skipped' }, { provider: 'crossref', state: 'skipped' }] };
+    const html = render({ open: true, run: skipped, onClose() {}, onRetry() {} });
+    expect(html).not.toContain('Retry');
+  });
+
+  it('does not double-count ambiguous records in the completion bullets', () => {
+    const done = { id: 'r7', state: 'completed', sources: [{ provider: 'pubmed', state: 'completed', rawCount: 100, importedCount: 60, ambiguousDupCount: 10, exactDupCount: 20, existingMatchCount: 20 }] };
+    const html = render({ open: true, run: done, onClose() {}, screeningHref: '/x' });
+    expect(html).not.toContain('to review as possible duplicates');
+    // ...but the ambiguous count is still surfaced via the review Note (not a bucket).
+    expect(html).toContain('duplicate review');
+  });
+
+  it('a failed run that already landed records offers Go to Screening + honest copy', () => {
+    const failed = { id: 'r8', state: 'failed', errorSummary: 'DB error', sources: [{ provider: 'pubmed', state: 'failed', rawCount: 50, importedCount: 40 }] };
+    const html = render({ open: true, run: failed, onClose() {}, onRetry() {}, screeningHref: '/x' });
+    expect(html).toContain('Go to Screening');
+    expect(html).toContain('40');
+    expect(html).toContain('will not create duplicates');
+    expect(html).not.toContain('failed before any records were added');
+  });
+});

@@ -133,11 +133,20 @@ describe('computeRunProgress — honest percentage', () => {
     expect(est.percent).toBeLessThanOrEqual(80);
   });
 
-  it('uses a bounded stage credit when the total is unknown', () => {
-    const fetching = computeRunProgress(run({ state: 'running', sources: [src({ provider: 'semanticscholar', state: 'running', stage: 'fetching', previewCount: null })] }));
-    const importing = computeRunProgress(run({ state: 'running', sources: [src({ provider: 'semanticscholar', state: 'running', stage: 'importing', previewCount: null })] }));
+  it('uses a bounded stage credit when the total is unknown but records exist', () => {
+    const fetching = computeRunProgress(run({ state: 'running', sources: [src({ provider: 'semanticscholar', state: 'running', stage: 'fetching', rawCount: 10, previewCount: null })] }));
+    const importing = computeRunProgress(run({ state: 'running', sources: [src({ provider: 'semanticscholar', state: 'running', stage: 'importing', rawCount: 10, previewCount: null })] }));
     expect(importing.percent).toBeGreaterThan(fetching.percent);
     expect(importing.percent).toBeLessThan(99);
+  });
+
+  it('does NOT fabricate progress for a running source with no total and zero records', () => {
+    // A source can sit in fetching/importing with 0 rows committed — later stages must
+    // not claim a solid 20%/82% for nothing (honesty fix). Capped to a tiny nudge.
+    const fetching = computeRunProgress(run({ state: 'running', sources: [src({ provider: 'semanticscholar', state: 'running', stage: 'fetching', rawCount: 0, previewCount: null })] }));
+    const importing = computeRunProgress(run({ state: 'running', sources: [src({ provider: 'semanticscholar', state: 'running', stage: 'importing', rawCount: 0, previewCount: null })] }));
+    expect(fetching.percent).toBeLessThanOrEqual(5);
+    expect(importing.percent).toBeLessThanOrEqual(5);
   });
 
   it('never reaches 100 while non-terminal', () => {
@@ -224,13 +233,37 @@ describe('computeRunProgress — steps + activity + phase', () => {
     expect(m.activityText).toMatch(/300/);
   });
 
-  it('failed: steps that started show failed, activity reassures on consistency', () => {
+  it('failed with zero imports: steps that started show failed, activity reassures on consistency', () => {
     const m = computeRunProgress(run({
       state: 'failed',
       sources: [src({ provider: 'pubmed', state: 'failed', rawCount: 10, errorDetail: 'db down' })],
     }));
     expect(m.steps.find((s) => s.id === 'finalize').status).toBe('failed');
     expect(m.activityText).toMatch(/could not be completed/i);
+    expect(m.activityText).toMatch(/No records were added/i);
+  });
+
+  it('failed AFTER landing some records: activity must NOT claim nothing was added', () => {
+    // Streaming pipeline lands page 1, then page 2 fails fatally → run failed, imported>0.
+    const m = computeRunProgress(run({
+      state: 'failed',
+      sources: [src({ provider: 'pubmed', state: 'failed', rawCount: 50, importedCount: 40, errorDetail: 'db down' })],
+    }));
+    expect(m.activityText).toMatch(/40/);
+    expect(m.activityText).toMatch(/added to Screening/i);
+    expect(m.activityText).toMatch(/will not create duplicates/i);
+    expect(m.activityText).not.toMatch(/No records were added/i);
+  });
+
+  it('all-skipped run explains no databases were available (not a generic failure)', () => {
+    const m = computeRunProgress(run({
+      state: 'failed', // deriveRunState reports all-skipped as failed
+      sources: [
+        src({ provider: 'pubmed', state: 'skipped' }),
+        src({ provider: 'crossref', state: 'skipped' }),
+      ],
+    }));
+    expect(m.activityText).toMatch(/None of the selected databases were available/i);
   });
 
   it('cancelled: kept records are communicated', () => {

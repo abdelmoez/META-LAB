@@ -35,7 +35,7 @@ import {
 } from './components/parts.jsx';
 import DuplicateReview from './components/DuplicateReview.jsx';
 import SearchImportProgressModal from './components/SearchImportProgressModal.jsx';
-import { nextProgressPercent } from '../../research-engine/search/runProgress.js';
+import { nextProgressPercent, computeRunProgress } from '../../research-engine/search/runProgress.js';
 
 const PREVIEW_DEBOUNCE_MS = 700;
 const ACTIVE_POLL_MS = 2500;
@@ -290,7 +290,13 @@ export default function PecanSearchTab({
   const trackedIdRef = useRef(null);
   useEffect(() => {
     if (!activeRun) return;
-    if (trackedIdRef.current !== activeRun.id) { trackedIdRef.current = activeRun.id; pctRef.current = 0; }
+    // Reset the high-water when a DIFFERENT run is tracked, OR when the SAME run goes
+    // terminal→non-terminal (a Retry reuses the run id): a fresh/re-queued run can never
+    // legitimately sit at the terminal 100, so without this the bar would pin at 99% for
+    // the whole re-run (nextProgressPercent(100, running) clamps to the 99 ceiling).
+    const idChanged = trackedIdRef.current !== activeRun.id;
+    const revived = pctRef.current >= 100 && !TERMINAL.has(activeRun.state);
+    if (idChanged || revived) { trackedIdRef.current = activeRun.id; pctRef.current = 0; }
     const next = nextProgressPercent(pctRef.current, activeRun);
     pctRef.current = next;
     setDisplayPct(next);
@@ -352,9 +358,11 @@ export default function PecanSearchTab({
   const startRun = useCallback(async () => {
     if (!canRun || sourceIds.length === 0 || queryState !== 'ready') return;
     // 87.md — open the progress modal in the SAME tick as the click, before the network
-    // round-trip, so the app never appears frozen. Reset the monotonic percent to 0 for
-    // the new run (a fresh run must not inherit a prior run's high-water mark).
+    // round-trip, so the app never appears frozen. Reset the monotonic percent to 0 and
+    // clear any PRIOR (terminal) run so the modal shows a fresh "Preparing…" start rather
+    // than flashing the previous run's counts/steps until the 202 lands.
     pctRef.current = 0; setDisplayPct(0);
+    setActiveRun(null); setReport(null); setDupes(null); setDupesState('idle');
     setProgressOpen(true);
     setStarting(true); setStartError('');
     const idem = newIdempotencyKey();
@@ -387,6 +395,9 @@ export default function PecanSearchTab({
   const retryActive = useCallback(async (runId) => {
     const id = runId || (activeRun && activeRun.id);
     if (!id) return;
+    // Reset the progress high-water immediately (the retried run reuses the same id) so
+    // the bar restarts from 0 rather than pinning at the prior run's 100→99.
+    pctRef.current = 0; setDisplayPct(0);
     try { const out = await pecanSearchApi.retryRun(projectId, id); if (out && out.run) setActiveRun(out.run); } catch { /* surfaced via refetch */ }
   }, [projectId, activeRun]);
 
@@ -457,7 +468,7 @@ export default function PecanSearchTab({
       {activeRun && !progressOpen && (
         TERMINAL.has(activeRun.state)
           ? <CompletionSummary run={activeRun} report={report} projectId={projectId} onRetry={canRun ? () => retryActive(activeRun.id) : null} />
-          : <RunningBanner run={activeRun} percent={displayPct} onOpen={() => setProgressOpen(true)} />
+          : <RunningBanner run={activeRun} percent={displayPct} indeterminate={computeRunProgress(activeRun).indeterminate} onOpen={() => setProgressOpen(true)} />
       )}
 
       <SearchImportProgressModal
@@ -754,19 +765,24 @@ function RunReview({ sourceIds, providers, counts, caps, totalPreview, anyUnknow
    ("Run in background"), or it was reconstructed from history after a page refresh. One
    click reopens the full modal. The live detail lives in the modal — this stays compact
    so the workspace behind it is usable. */
-function RunningBanner({ run, percent, onOpen }) {
+function RunningBanner({ run, percent, indeterminate, onOpen }) {
   const pct = Math.max(0, Math.min(100, Math.round(percent || 0)));
+  // Match the modal's honesty: in the genuinely-indeterminate window (no records yet, no
+  // known total) show no fabricated number — the spinner conveys activity.
+  const barAria = indeterminate
+    ? { 'aria-valuetext': 'Working…' }
+    : { 'aria-valuenow': pct, 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuetext': `${pct}%` };
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '12px 16px', marginBottom: 16, background: C.card, border: `1px solid ${C.brd}`, borderLeft: `3px solid ${C.acc}`, borderRadius: 12, flexWrap: 'wrap' }}>
       <span className="spin-ico" aria-hidden="true" style={{ color: C.acc, fontSize: 15 }}>⟳</span>
       <div style={{ flex: '1 1 220px', minWidth: 0 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: C.txt }}>Adding articles to Screening… <StatusPill state={run.state} /></div>
-        <div role="progressbar" aria-label="Search import progress" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100} aria-valuetext={`${pct}%`}
+        <div role="progressbar" aria-label="Search import progress" {...barAria}
           style={{ marginTop: 7, height: 5, borderRadius: 99, background: C.brd, overflow: 'hidden' }}>
-          <div style={{ height: '100%', width: `${pct}%`, background: C.acc, borderRadius: 99, transition: 'width .5s ease' }} />
+          {!indeterminate && <div style={{ height: '100%', width: `${pct}%`, background: C.acc, borderRadius: 99, transition: 'width .5s ease' }} />}
         </div>
       </div>
-      <span aria-hidden="true" style={{ fontSize: 12, fontWeight: 700, color: C.txt2, fontVariantNumeric: 'tabular-nums', minWidth: 40, textAlign: 'right' }}>{pct}%</span>
+      <span aria-hidden="true" style={{ fontSize: 12, fontWeight: 700, color: C.txt2, fontVariantNumeric: 'tabular-nums', minWidth: 40, textAlign: 'right' }}>{indeterminate ? '…' : `${pct}%`}</span>
       <Btn variant="ghost" onClick={onOpen}>View progress</Btn>
     </div>
   );

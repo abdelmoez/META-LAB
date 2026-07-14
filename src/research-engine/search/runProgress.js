@@ -107,10 +107,14 @@ function sourceFraction(source) {
     return clamp(retrieved / Math.max(exp.total, 1), 0, cap);
   }
   // No trustworthy total → bounded, stage-based credit (honest: "we've reached the
-  // importing stage of this source", not a fabricated record ratio).
+  // importing stage of this source", not a fabricated record ratio). But a source can
+  // sit in "fetching"/"importing" with ZERO rows committed yet, so until real records
+  // exist we only grant a tiny "started" nudge — never a solid 20%/82% for nothing.
   const stageCredit = STAGE_FRACTION[source.stage];
-  if (typeof stageCredit === 'number') return stageCredit;
-  return state === 'running' ? 0.1 : 0;
+  if (typeof stageCredit === 'number') {
+    return retrieved > 0 ? stageCredit : Math.min(stageCredit, 0.05);
+  }
+  return state === 'running' ? 0.05 : 0;
 }
 
 /**
@@ -191,6 +195,11 @@ function fmt(n) {
  * names the currently-fetching database with its own numbers when known.
  */
 function activityFor(run, sources, phase, counts) {
+  // All-skipped: every selected database was unavailable at run time — say so plainly
+  // rather than the generic "failed" copy (deriveRunState reports this as 'failed').
+  if (sources.length && sources.every((s) => s.state === 'skipped')) {
+    return 'None of the selected databases were available to run this search. Ask an administrator to enable them, then try again.';
+  }
   switch (run.state) {
     case 'completed':
       return counts.imported
@@ -199,7 +208,11 @@ function activityFor(run, sources, phase, counts) {
     case 'partial':
       return `Finished with some databases incomplete — ${fmt(counts.imported)} ${counts.imported === 1 ? 'record' : 'records'} added to Screening.`;
     case 'failed':
-      return 'The search could not be completed. No partial results were left in an inconsistent state.';
+      // A streaming run can land records page-by-page before a later page fails, so a
+      // 'failed' run may still have imported some — never claim "nothing was added".
+      return counts.imported
+        ? `The search stopped early — ${fmt(counts.imported)} ${counts.imported === 1 ? 'record was' : 'records were'} already added to Screening. Retrying is safe and will not create duplicates.`
+        : 'The search could not be completed. No records were added, so nothing was left half-saved.';
     case 'cancelled':
       return counts.imported
         ? `Search cancelled — ${fmt(counts.imported)} ${counts.imported === 1 ? 'record was' : 'records were'} already saved and kept.`

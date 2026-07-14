@@ -237,13 +237,25 @@ export async function processRun(job, deps = {}) {
     await finishJob(job.id, 'completed');
     return;
   }
-  if (run.cancelRequested) { await finalizeRun(run, 'cancelled'); await finishJob(job.id, 'cancelled'); return; }
+  if (run.cancelRequested) {
+    await finalizeRun(run, 'cancelled'); await finishJob(job.id, 'cancelled');
+    // 87.md — this early terminal path must poke live viewers + cross-engine sync too.
+    emitRunEvent(run.metaLabProjectId, null, runId, { state: 'cancelled', stage: 'cancelled' });
+    return;
+  }
 
   const sources = await prisma.pecanSearchSource.findMany({ where: { runId }, orderBy: { createdAt: 'asc' } });
   const screen = await prisma.screenProject.findUnique({ where: { id: run.screenProjectId }, select: { id: true, ownerId: true } });
-  if (!screen) { await finalizeRun(run, 'failed', 'Landing project was removed.'); await finishJob(job.id, 'failed'); return; }
+  if (!screen) {
+    await finalizeRun(run, 'failed', 'Landing project was removed.'); await finishJob(job.id, 'failed');
+    emitRunEvent(run.metaLabProjectId, null, runId, { state: 'failed', stage: 'failed' });
+    return;
+  }
 
-  await prisma.pecanSearchRun.update({ where: { id: runId }, data: { state: 'running', startedAt: run.startedAt || new Date() } });
+  // Capture the actual processing-start instant so the completion log measures real
+  // work, not queue-wait (the in-memory `run.startedAt` is null on a first pass).
+  const runStartedAt = run.startedAt || new Date();
+  await prisma.pecanSearchRun.update({ where: { id: runId }, data: { state: 'running', startedAt: runStartedAt } });
   emitRunEvent(run.metaLabProjectId, screen.ownerId, runId, { state: 'running', stage: 'running' });
 
   const engine = await buildEngine(deps.engineOverrides || {});
@@ -300,7 +312,7 @@ export async function processRun(job, deps = {}) {
   // which project, per-source outcomes/errors, counts, and duration. No secrets/PII.
   try {
     const agg = aggregateCounts(finalSources);
-    const startedMs = run.startedAt ? new Date(run.startedAt).getTime() : Date.parse(run.createdAt);
+    const startedMs = runStartedAt ? new Date(runStartedAt).getTime() : Date.parse(run.createdAt);
     const durationMs = Number.isFinite(startedMs) ? Date.now() - startedMs : null;
     const perSource = finalSources.map((s) => `${s.provider}:${s.state}${s.errorClass ? `(${s.errorClass})` : ''}`).join(',');
     console.log(`[pecan-search] run ${runId} ${runState} project=${run.metaLabProjectId} by=${run.initiatedById} `
@@ -318,10 +330,15 @@ export function deriveRunState(sources, cancelled) {
   const failed = states.filter((s) => s === 'failed').length;
   const partial = states.filter((s) => s === 'partial').length;
   const cancel = states.filter((s) => s === 'cancelled').length;
+  const skipped = states.filter((s) => s === 'skipped').length;
   const total = states.length;
   if (cancel > 0 && done === 0) return 'cancelled';
   if (done === total) return 'completed';
-  if (done === 0 && (failed + partial + cancel) === total && partial === 0) return 'failed';
+  // No source succeeded and none is a soft-partial → the run failed. Includes the
+  // all-skipped case (every provider unavailable), which previously fell through to a
+  // misleading 'partial' with a Retry button that re-queues nothing (skipped sources
+  // are not retryable). A mix of completed + skipped still reports 'partial'.
+  if (done === 0 && partial === 0 && (failed + cancel + skipped) === total) return 'failed';
   return 'partial'; // some succeeded, some did not → honest partial success
 }
 
