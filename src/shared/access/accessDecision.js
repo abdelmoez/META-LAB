@@ -109,7 +109,9 @@ export function parseAccessError(body, status) {
       message: b.message || undefined,
       requiredRole: b.requiredRole || null, currentRole: b.currentRole || null,
       requiredTier: b.requiredTier || null, currentTier: b.currentTier || null,
-      nextAction: b.nextAction || undefined,
+      // Preserve an EXPLICITLY-suppressed action (null) — only fall back to the type
+      // default when the field is absent, so a serialized nextAction:null stays suppressed.
+      nextAction: ('nextAction' in b) ? b.nextAction : undefined,
       technical: status ? `HTTP ${status}` : null,
     });
   }

@@ -131,6 +131,25 @@ project delete/settings (ControlTab, owner/leader) · chat composer (align with 
 · tier features (Word export / NMA / living review → `LockedFeatureCard`, aligning `entitlements/components.jsx`)
 · admin/Ops routes (restricted-route page) · every controller `catch` → `sendAccessDenied`.
 
+### Adversarial review round (12 agents, find→verify) — 7 fixed + 1 self-caught
+Self-caught before review: 10 restriction icons referenced names absent from the Icon set (Icon
+returns null → empty cue); remapped to real names + added a guard test.
+Review-confirmed + fixed:
+1. [HIGH] `resolveCapability` failed OPEN on an unknown/misspelled capability → `requireProjectCapability`
+   would silently authorize. Now FAILS CLOSED (unknown → deny).
+2. [HIGH] `ctxFromProjectAccess` perms fallback omitted 5 edit flags → the META·LAB `mlAccessFromMember`
+   shape (no perms bundle) wrongly denied legit members. Now reconstructs all flags.
+3. [MED] `ctx.active` computed but never enforced → inactive/removed member evaluated as active. Now
+   inactive blocks EDIT capabilities (defence-in-depth over the 404 gate).
+4. [MED] `PermissionGate` failed OPEN when neither decision nor capability was supplied (leaked children).
+   Now fails closed.
+5. [LOW] an explicitly-suppressed `nextAction: null` didn't survive the body round-trip (default action
+   reappeared). `parseAccessError` now preserves an explicit null.
+6. [LOW] `AccessDeniedState` rendered the icon twice (standalone + badge). Removed the standalone.
+7. "Click-to-explain no-ops without a ToastProvider" — verified NOT-a-bug (provider mounted at the shell
+   root + `onExplain` escape hatch).
++6 regression tests (45 total).
+
 ### Known limitations
 - Wiring is ONE representative surface + the reusable foundation; the rest is a documented adoption
   plan (kept the footprint on hot shared permission files minimal because a 2nd session is actively

@@ -80,6 +80,11 @@ describe('PermissionGate', () => {
     expect(html).toContain('aria-busy="true"');
     expect(html).not.toContain('secret');
   });
+  it('FAILS CLOSED when neither decision nor capability is supplied (never leaks children)', () => {
+    const html = renderToStaticMarkup(<PermissionGate><button>secret</button></PermissionGate>);
+    expect(html).not.toContain('secret');
+    expect(html).toBe('');
+  });
 });
 
 describe('LockedFeatureCard', () => {

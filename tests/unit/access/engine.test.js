@@ -21,6 +21,21 @@ describe('restriction types', () => {
   it('meta falls back to permission for unknown', () => {
     expect(restrictionMeta('nope')).toBe(RESTRICTION_TYPES.permission);
   });
+  it('every restriction icon is a real Icon name (Icon returns null for unknown → empty cue)', () => {
+    // Names present in src/frontend/components/icons.jsx (ICON_PATHS). Update if the set grows.
+    const REAL_ICONS = new Set([
+      'activity', 'alert', 'alertOctagon', 'alertTriangle', 'arrowLeft', 'arrowRight', 'award', 'barChart',
+      'bell', 'bookOpen', 'chat', 'check', 'checkSquare', 'chevronDown', 'chevronLeft', 'chevronRight',
+      'circleCheck', 'clipboard', 'clock', 'copy', 'diamond', 'download', 'externalLink', 'eye', 'fileText',
+      'filter', 'flask', 'flow', 'folder', 'folders', 'forest', 'globe', 'grid', 'hexagon', 'home', 'info',
+      'layers', 'link', 'lock', 'logout', 'mail', 'menu', 'minus', 'moon', 'pencil', 'pin', 'plus', 'refresh',
+      'scale', 'search', 'send', 'settings', 'shield', 'shieldCheck', 'sigma', 'sliders', 'sun', 'table',
+      'target', 'trash', 'upload', 'user', 'users',
+    ]);
+    for (const [id, meta] of Object.entries(RESTRICTION_TYPES)) {
+      expect(REAL_ICONS.has(meta.icon), `${id} → ${meta.icon}`).toBe(true);
+    }
+  });
 });
 
 describe('AccessDecision + HTTP body', () => {
@@ -135,5 +150,36 @@ describe('resolveCapabilities batch', () => {
     const map = resolveCapabilities(['deleteProject', 'screen'], { role: 'reviewer', perms: { canScreen: true } });
     expect(map.deleteProject.allowed).toBe(false);
     expect(map.screen.allowed).toBe(true);
+  });
+});
+
+describe('review fixes — fail-closed / active / metalab perms / nextAction round-trip', () => {
+  it('unknown capability FAILS CLOSED (deny), never silently authorizes', () => {
+    const d = resolveCapability('runAnalysisTypo', { isOwner: true, isAdmin: true });
+    expect(d.allowed).toBe(false);
+    expect(d.technical).toBe('unknown capability');
+    expect(can('totallyMadeUp', { isAdmin: true })).toBe(false);
+  });
+  it('inactive membership cannot perform EDIT actions even with the flag', () => {
+    const d = resolveCapability('screen', { role: 'reviewer', active: false, perms: { canScreen: true } });
+    expect(d.allowed).toBe(false);
+    expect(d.restrictionType).toBe('membership');
+    // active member with the flag still allowed
+    expect(can('screen', { role: 'reviewer', active: true, perms: { canScreen: true } })).toBe(true);
+  });
+  it('ctxFromProjectAccess reconstructs META·LAB flags when there is no perms bundle', () => {
+    // mlAccessFromMember shape: top-level canEdit/canRunAnalysis/canExport, NO perms object.
+    const ml = { role: 'reviewer', isOwner: false, isLeader: false, canView: true, canEdit: true, canRunAnalysis: true, canExport: true, canAssessRiskOfBias: true };
+    const ctx = ctxFromProjectAccess(ml);
+    expect(can('runAnalysis', ctx)).toBe(true);
+    expect(can('editExtraction', ctx)).toBe(true);   // mapped from canEdit
+    expect(can('assessRiskOfBias', ctx)).toBe(true);
+    expect(can('exportProject', ctx)).toBe(true);
+  });
+  it('an explicitly-suppressed nextAction survives the body round-trip', () => {
+    const suppressed = deny('membership', { capability: 'x', message: 'No access.', nextAction: null });
+    expect(suppressed.nextAction).toBe(null);
+    const back = parseAccessError(buildAccessDenied(suppressed), 403);
+    expect(back.nextAction).toBe(null); // did NOT resurrect the type default
   });
 });

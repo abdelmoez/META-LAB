@@ -14,29 +14,31 @@
  *   icon   a lucide/Stitch icon name the access components render.
  *   category: 'permission' | 'plan' | 'state' | 'system' — groups for analytics/messages.
  */
+// NOTE: `icon` values MUST be names that exist in src/frontend/components/icons.jsx
+// (Icon returns null for unknown names — an unfinished-looking gap). Kept to that set.
 export const RESTRICTION_TYPES = Object.freeze({
   // ── Permission (role / membership) ──────────────────────────────────────
   permission: { title: 'You do not have permission', tone: 'warn', icon: 'lock', badge: 'Restricted', category: 'permission' },
   admin_only: { title: 'Admin access required', tone: 'warn', icon: 'shield', badge: 'Admins only', category: 'permission' },
   owner_only: { title: 'Available to the project owner', tone: 'warn', icon: 'lock', badge: 'Owner only', category: 'permission' },
   leader_only: { title: 'Available to project leaders', tone: 'warn', icon: 'lock', badge: 'Leaders only', category: 'permission' },
-  membership: { title: 'You are not a member of this project', tone: 'warn', icon: 'userX', badge: 'No access', category: 'permission' },
+  membership: { title: 'You are not a member of this project', tone: 'warn', icon: 'user', badge: 'No access', category: 'permission' },
   read_only: { title: 'You have view-only access', tone: 'info', icon: 'eye', badge: 'View only', category: 'permission' },
 
   // ── Plan / tier ─────────────────────────────────────────────────────────
-  tier: { title: 'Not included in your current plan', tone: 'brand', icon: 'sparkles', badge: 'Upgrade', category: 'plan' },
+  tier: { title: 'Not included in your current plan', tone: 'brand', icon: 'award', badge: 'Upgrade', category: 'plan' },
 
   // ── Project state / data / processing ───────────────────────────────────
-  project_state: { title: 'A previous step is required', tone: 'info', icon: 'listChecks', badge: 'Setup needed', category: 'state' },
-  insufficient_data: { title: 'Not enough data yet', tone: 'info', icon: 'database', badge: 'Needs data', category: 'state' },
-  processing: { title: 'This is being prepared', tone: 'info', icon: 'loader', badge: 'Processing', category: 'state' },
-  archived: { title: 'This project is archived', tone: 'neutral', icon: 'archive', badge: 'Archived', category: 'state' },
-  feature_disabled: { title: 'Turned off for this project', tone: 'neutral', icon: 'slash', badge: 'Disabled', category: 'state' },
+  project_state: { title: 'A previous step is required', tone: 'info', icon: 'checkSquare', badge: 'Setup needed', category: 'state' },
+  insufficient_data: { title: 'Not enough data yet', tone: 'info', icon: 'barChart', badge: 'Needs data', category: 'state' },
+  processing: { title: 'This is being prepared', tone: 'info', icon: 'refresh', badge: 'Processing', category: 'state' },
+  archived: { title: 'This project is archived', tone: 'neutral', icon: 'folder', badge: 'Archived', category: 'state' },
+  feature_disabled: { title: 'Turned off for this project', tone: 'neutral', icon: 'minus', badge: 'Disabled', category: 'state' },
 
   // ── System / flag ───────────────────────────────────────────────────────
-  temporarily_unavailable: { title: 'Temporarily unavailable', tone: 'neutral', icon: 'cloudOff', badge: 'Unavailable', category: 'system' },
-  maintenance: { title: 'Down for maintenance', tone: 'neutral', icon: 'wrench', badge: 'Maintenance', category: 'system' },
-  flag_off: { title: 'This feature is not available', tone: 'neutral', icon: 'eyeOff', badge: 'Unavailable', category: 'system' },
+  temporarily_unavailable: { title: 'Temporarily unavailable', tone: 'neutral', icon: 'alert', badge: 'Unavailable', category: 'system' },
+  maintenance: { title: 'Down for maintenance', tone: 'neutral', icon: 'settings', badge: 'Maintenance', category: 'system' },
+  flag_off: { title: 'This feature is not available', tone: 'neutral', icon: 'info', badge: 'Unavailable', category: 'system' },
 });
 
 export const RESTRICTION_TYPE_IDS = Object.keys(RESTRICTION_TYPES);

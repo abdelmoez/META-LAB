@@ -24,9 +24,23 @@ import { capabilitySpec } from './capabilities.js';
  */
 export function resolveCapability(key, ctx = {}) {
   const spec = capabilitySpec(key);
-  if (!spec) return allow(key); // untracked capability — not gated by this layer
+  // FAIL CLOSED on an unknown/misspelled capability — never silently authorize. This
+  // is the enforcement default; a typo in a gate key denies rather than exposes.
+  if (!spec) {
+    return deny('permission', { capability: key, message: 'This action is not available.', technical: 'unknown capability' });
+  }
   const role = ctx.role || null;
   const msg = () => (typeof spec.message === 'function' ? spec.message(role) : spec.message);
+
+  // An inactive / removed / suspended membership cannot perform EDIT actions even if
+  // its stored flags say otherwise (getProjectAccess usually 404s these first; this is
+  // the defence-in-depth for any caller that resolves with active===false).
+  if (spec.edit && ctx.active === false) {
+    return deny('membership', {
+      capability: key, currentRole: role,
+      message: 'Your membership in this project is not active, so you cannot make changes.',
+    });
+  }
 
   // Archived project → read-only for EDIT capabilities, for EVERYONE incl. the owner
   // (must unarchive first). View/read capabilities are unaffected.
@@ -99,9 +113,19 @@ export function ctxFromProjectAccess(access, { isAdmin = false, tierId = null, h
     isLeader: !!a.isLeader,
     active: a.active !== false,
     role: a.role || null,
+    // Prefer the full perms bundle (getProjectAccess). When absent (e.g. the META·LAB
+    // metalabAccess shape, which exposes flags at the top level and has NO perms bundle),
+    // reconstruct ALL capability flags so members are not wrongly denied edit rights.
     perms: a.perms || {
       canScreen: a.canScreen, canChat: a.canChat, canResolveConflicts: a.canResolveConflicts,
       canManageMembers: a.canManageMembers, canManageSettings: a.canManageSettings,
+      canEditMetaLab: a.canEditMetaLab != null ? a.canEditMetaLab : a.canEdit,
+      canManageExtraction: a.canManageExtraction != null ? a.canManageExtraction : a.canEdit,
+      canAssessRiskOfBias: a.canAssessRiskOfBias,
+      canRunAnalysis: a.canRunAnalysis,
+      canExport: a.canExport,
+      readOnlyMetaLab: a.readOnlyMetaLab != null ? a.readOnlyMetaLab : a.readOnly,
+      readOnlyMetaSift: a.readOnlyMetaSift,
     },
     tierId,
     hasEntitlement,

@@ -10,7 +10,6 @@
  * lives in a secondary <details>. Theme-aware via S tokens; screen-reader friendly.
  */
 import { S, salpha, StitchBadge, StitchButton } from '../../stitch/primitives';
-import { Icon } from '../icons.jsx';
 
 function RoleLine({ decision }) {
   const rows = [];
@@ -55,8 +54,8 @@ export default function AccessDeniedState({ decision, variant = 'inline', title,
       }}
     >
       <div style={{ display: 'flex', gap: 10, alignItems: 'center', justifyContent: isPage ? 'center' : 'flex-start', marginBottom: 8 }}>
-        <span style={{ color: S.textSecondary, display: 'inline-flex' }} aria-hidden="true"><Icon name={decision.icon || 'lock'} size={isPage ? 22 : 18} /></span>
-        <StitchBadge tone={decision.tone || 'warn'} icon={decision.icon}>{decision.badge || 'Restricted'}</StitchBadge>
+        {/* The badge already carries the restriction icon — no separate standalone icon. */}
+        <StitchBadge tone={decision.tone || 'warn'} icon={decision.icon || 'lock'}>{decision.badge || 'Restricted'}</StitchBadge>
       </div>
       <h2 style={{ fontSize: isPage ? 19 : 15.5, fontWeight: 700, color: S.textPrimary, margin: '0 0 6px' }}>{heading}</h2>
       <p style={{ fontSize: 13.5, lineHeight: 1.6, color: S.textSecondary, margin: 0 }}>{decision.message}</p>

@@ -24,7 +24,10 @@ export default function PermissionGate({
       <div aria-busy="true" aria-live="polite" style={{ height: 44, borderRadius: 10, background: salpha(S.outlineVariant, 0.25) }} className="stitch-skeleton" />
     );
   }
-  const d = decision || (capability ? resolveCapability(capability, ctx || {}) : null);
+  // FAIL CLOSED: with neither a decision NOR a capability the access state is unknown —
+  // never expose protected children by omission (a forgotten prop must not leak the UI).
+  if (!decision && !capability) return fallback;
+  const d = decision || resolveCapability(capability, ctx || {});
   if (!d || d.allowed) return children ?? null;
 
   if (mode === 'hide') return fallback;
