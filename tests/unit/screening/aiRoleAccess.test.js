@@ -23,15 +23,16 @@ describe('isSiteAdmin', () => {
   });
 });
 
-describe('canConfigureAi — who sees/operates the advanced Guided Screening surface', () => {
-  it('allows project leaders', () => {
-    expect(canConfigureAi(access({ isLeader: true }), reqWith('user'))).toBe(true);
-  });
-  it('allows settings-managers', () => {
-    expect(canConfigureAi(access({ canManageSettings: true }), reqWith('user'))).toBe(true);
-  });
-  it('allows site admins even without a project role', () => {
+describe('canConfigureAi — the advanced Guided Screening surface is SITE-ADMIN-ONLY (90.md)', () => {
+  it('allows a site admin (with or without a project role)', () => {
     expect(canConfigureAi(access(), reqWith('admin'))).toBe(true);
+    expect(canConfigureAi(access({ isLeader: true }), reqWith('admin'))).toBe(true);
+  });
+  it('DENIES a project leader who is not a site admin', () => {
+    expect(canConfigureAi(access({ isLeader: true }), reqWith('user'))).toBe(false);
+  });
+  it('DENIES a settings-manager', () => {
+    expect(canConfigureAi(access({ canManageSettings: true }), reqWith('user'))).toBe(false);
   });
   it('DENIES a plain reviewer/member (canScreen only)', () => {
     expect(canConfigureAi(access({ canScreen: true }), reqWith('user'))).toBe(false);
@@ -39,8 +40,8 @@ describe('canConfigureAi — who sees/operates the advanced Guided Screening sur
   it('DENIES a read-only collaborator', () => {
     expect(canConfigureAi(access(), reqWith('user'))).toBe(false);
   });
-  it('DENIES a mod (not a site admin)', () => {
-    expect(canConfigureAi(access({ canScreen: true }), reqWith('mod'))).toBe(false);
+  it('DENIES a mod (not a site admin), even a mod who is a project leader', () => {
+    expect(canConfigureAi(access({ isLeader: true }), reqWith('mod'))).toBe(false);
   });
 });
 

@@ -92,13 +92,13 @@ describe('administrative endpoints reject a regular reviewer (403)', () => {
   }
 });
 
-describe('administrative endpoints allow a project leader', () => {
+describe('administrative endpoints REJECT a project leader (site-admin-only, 90.md)', () => {
   for (const [name, handler] of ADMIN_HANDLERS) {
-    it(`${name} → not 403 for a leader`, async () => {
+    it(`${name} → 403 for a project leader who is not a site admin`, async () => {
       getProjectAccess.mockResolvedValue(LEADER);
       const res = mkRes();
       await handler(mkReq('user'), res);
-      expect(res.statusCode).not.toBe(403);
+      expect(res.statusCode).toBe(403);
     });
   }
 });
@@ -146,10 +146,21 @@ describe('GET /ai/status is trimmed for a regular user, full for an administrato
     expect(res.body.canRun).toBe(false); // reviewer, allowReviewersToRun off
   });
 
-  it('leader gets the full status with metrics + config', async () => {
+  it('a project leader (non-admin) now ALSO gets the trimmed status', async () => {
     getProjectAccess.mockResolvedValue(LEADER);
     const res = mkRes();
     await getAiStatus(mkReq('user'), res);
+    expect(res.statusCode).toBe(200);
+    expect(res.body.canConfigure).toBe(false);
+    expect(res.body.global).toBeUndefined();
+    expect(res.body.engineConfig).toBeUndefined();
+    expect(res.body.latestRun?.metrics).toBeUndefined();
+  });
+
+  it('a SITE ADMIN gets the full status with metrics + config', async () => {
+    getProjectAccess.mockResolvedValue(NON_MEMBER_ADMIN);
+    const res = mkRes();
+    await getAiStatus(mkReq('admin'), res);
     expect(res.statusCode).toBe(200);
     expect(res.body.canConfigure).toBe(true);
     expect(res.body.global).toBeTruthy();

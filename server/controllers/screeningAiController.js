@@ -38,16 +38,18 @@ export function isSiteAdmin(req) {
 }
 
 /**
- * 89.md — who may see/operate the advanced "Guided Screening" surface (model
+ * 89/90.md — who may see/operate the advanced "Guided Screening" surface (model
  * config, diagnostics, calibration, validation, model versions, project AI policy).
- * This is the project's screening ADMINISTRATOR: a project leader / settings-manager,
- * OR a site admin. Regular screeners (reviewers, members, read-only) are excluded and
- * get only the simplified run-scores + per-article-score experience. Every advanced
- * endpoint enforces this server-side; the frontend hides the panel on the same signal
- * (the `canConfigure` flag returned by getAiStatus).
+ * Per the product decision this is SITE ADMINS ONLY (req.user.role === 'admin') — NOT
+ * project leaders/owners. Every other project role (leader, settings-manager, reviewer,
+ * member, read-only) is a regular user here and gets only the simplified run-scores +
+ * per-article-score experience. Enforced server-side on every advanced endpoint; the
+ * frontend hides the panel on the same signal (the `canConfigure` flag from getAiStatus).
+ * (A site admin must still be a project member — gate() 404s non-members — so in practice
+ * a site admin configures Guided Screening for the projects they participate in.)
  */
 export function canConfigureAi(access, req) {
-  return access.isLeader || access.canManageSettings || isSiteAdmin(req);
+  return isSiteAdmin(req);
 }
 
 export function canRunAi(access, global, req) {
