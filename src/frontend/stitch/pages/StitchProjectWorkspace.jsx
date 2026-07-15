@@ -53,6 +53,10 @@ import {
 // 77.md §9 — isolate a stage/engine crash to its own card instead of blanking the whole
 // workspace (which showed the generic "Something went wrong" panel).
 import ScopedErrorBoundary from '../../components/ScopedErrorBoundary.jsx';
+// 91.md — reusable access-state components + the shared capability resolver, so a
+// role-restricted stage shows the SAME clear, accessible denial as everywhere else.
+import { AccessDeniedState } from '../../components/access/index.js';
+import { resolveCapability } from '../../../shared/access/index.js';
 
 /* ── Lazy editor bodies — the proven legacy/feature components, code-split. Each is
    the SAME component the legacy Workspace.jsx renders for that tab, so parity is
@@ -347,15 +351,20 @@ function DeepToolPage({ stage }) {
   // enforcement point — no data is exposed that canView members can't already see.
   const ANALYSIS_STAGES = new Set(['analysis', 'forest', 'sensitivity', 'subgroup', 'nma']);
   if (ANALYSIS_STAGES.has(stage) && perms && perms.isOwner === false && perms.canRunAnalysis === false) {
+    // 91.md — reuse the shared access-state card + capability resolver (single source
+    // of message + a real next action) instead of a bespoke inline panel. Same trigger
+    // (member without the Analysis grant); leaders/owners keep full analysis.
+    const decision = resolveCapability('runAnalysis', {
+      role: perms.role || 'member', isOwner: !!perms.isOwner, isLeader: !!perms.isLeader,
+      perms: { canRunAnalysis: !!perms.canRunAnalysis },
+    });
     body = (
-      <div role="status" style={{ maxWidth: 560, margin: '32px auto 0', textAlign: 'center', padding: '28px 24px', background: S.card, border: `1px solid ${salpha(S.outlineVariant, 0.45)}`, borderRadius: 16 }}>
-        <div style={{ marginBottom: 12 }}><StitchBadge tone="warn" dot icon="lock">Restricted</StitchBadge></div>
-        <h2 style={{ fontSize: 18, fontWeight: 700, color: S.textPrimary, margin: '0 0 8px' }}>Analysis is restricted for your role</h2>
-        <p style={{ fontSize: 13.5, lineHeight: 1.6, color: S.textSecondary, margin: 0 }}>
-          You can view the rest of this project, but running the meta-analysis and its plots needs the <strong>Analysis</strong> permission.
-          Ask the project owner or a leader to enable Analysis for you in <strong>Project&nbsp;Control ▸ Members&nbsp;&amp;&nbsp;permissions</strong>.
-        </p>
-      </div>
+      <AccessDeniedState
+        decision={decision}
+        variant="page"
+        title="Analysis is restricted for your role"
+        actions={[{ label: 'Open Project Control', onClick: () => goStage('control') }]}
+      />
     );
   }
 
