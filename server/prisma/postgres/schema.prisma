@@ -774,6 +774,12 @@ model ScreenDuplicateJob {
   // Set by the cancel endpoint; the worker checks it at every progress beat and
   // between save batches, then finalizes as status=cancelled (results so far are
   // kept — every persisted group is complete and valid).
+  // NOTE (rec round 2): "one active job per project" is enforced at enqueue with
+  // an oldest-wins convergence, NOT a unique constraint — adding @unique to an
+  // existing table makes the non-interactive VPS `prisma db push` deploy fail on
+  // the data-loss warning (same rule as the plain-@@index notes above). The
+  // narrow create race that survives is harmless: the worker is strictly serial
+  // and saves are idempotent, so a straggler job is a no-op run.
   cancelRequested  Boolean       @default(false)
   totalRecords     Int           @default(0) // records considered (frozen resolved-group members excluded)
   processedRecords Int           @default(0) // records loaded + normalized so far

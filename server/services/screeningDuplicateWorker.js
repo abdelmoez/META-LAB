@@ -58,6 +58,16 @@ export const DUP_CFG = Object.freeze({
   YIELD_EVERY: num(process.env.SCREEN_DUP_YIELD_EVERY, 2000),
   // Progress/heartbeat write throttle.
   PROGRESS_MS: num(process.env.SCREEN_DUP_PROGRESS_MS, 750),
+  // Rec round 2 — fairness/abuse guard: one user may hold at most this many ACTIVE
+  // (queued|processing) detection jobs across all projects. Per-project reuse means
+  // this only binds when someone queues detection across many projects at once and
+  // would starve the serial worker for everyone else. Tier-based limits can lower
+  // this per plan later; the enqueue error carries code DUP_JOB_LIMIT.
+  MAX_ACTIVE_PER_USER: num(process.env.SCREEN_DUP_MAX_ACTIVE_PER_USER, 3),
+  // Rec round 2 — a single "duplicate group" beyond this size is junk-data chaining,
+  // not real duplicates; saving it would load every member's metadata into one
+  // transaction. Skipped + counted in statsJson.skippedOversizedGroups.
+  MAX_GROUP_SIZE: num(process.env.SCREEN_DUP_MAX_GROUP_SIZE, 1000),
 });
 
 const MAX_CLAIM_RACES = 1000;
@@ -352,15 +362,32 @@ async function processJob(job) {
     stageStart = mark('match', stageStart);
 
     // ── grouping: map the partition onto existing rows ──
+    // Rec round 2 — a "group" beyond MAX_GROUP_SIZE is junk-data chaining (shared
+    // garbage identifiers / boilerplate titles), not real duplicates; persisting it
+    // would drag every member's metadata into one transaction. Skip + count.
+    const sizedGroups = [];
+    let skippedOversizedGroups = 0;
+    let skippedOversizedGroupMembers = 0;
+    for (const g of result.groups) {
+      if (g.length > DUP_CFG.MAX_GROUP_SIZE) {
+        skippedOversizedGroups += 1;
+        skippedOversizedGroupMembers += g.length;
+      } else {
+        sizedGroups.push(g);
+      }
+    }
+    if (skippedOversizedGroups) {
+      console.warn(`[dup-worker] job=${job.id} skipped ${skippedOversizedGroups} oversized group(s) (${skippedOversizedGroupMembers} members > ${DUP_CFG.MAX_GROUP_SIZE}/group) — junk-data chaining, review the source data`);
+    }
     await beat({
       stage: 'grouping',
-      groupsFound: result.groups.length,
+      groupsFound: sizedGroups.length,
       comparisonsDone: result.stats.comparisonsIterated,
       comparisonsTotal: result.stats.comparisonsPlanned,
       exactMatches: result.stats.exactPairsLinked,
       fuzzyMatches: result.stats.fuzzyPairsLinked,
     }, { force: true });
-    const plans = planGroupWrites(result.groups, openGroups);
+    const plans = planGroupWrites(sizedGroups, openGroups);
     stageStart = mark('grouping', stageStart);
 
     // ── saving: transactional batches; cancel-safe between batches ──
@@ -389,6 +416,8 @@ async function processJob(job) {
       plans: plans.length,
       healedGroups,
       skippedResolvedMidRun, // groups a reviewer resolved while the run was in flight — their decision won
+      skippedOversizedGroups,
+      skippedOversizedGroupMembers,
       durationsMs: { ...durations, total: Date.now() - t0 },
       cpuMs: { user: Math.round(cpu.user / 1000), system: Math.round(cpu.system / 1000) },
       heapUsedMb: Math.round(process.memoryUsage().heapUsed / (1024 * 1024)),
@@ -400,7 +429,7 @@ async function processJob(job) {
 
     await patch(job.id, {
       status: 'completed', stage: 'done',
-      groupsFound: result.groups.length,
+      groupsFound: sizedGroups.length,
       savedGroups: plans.length,
       groupsCreated: totals.groupsCreated,
       groupsUpdated: totals.groupsUpdated,
@@ -410,7 +439,7 @@ async function processJob(job) {
       statsJson,
       completedAt: new Date(),
     });
-    console.log(`[dup-worker] completed job=${job.id} project=${job.projectId} n=${records.length} groups=${result.groups.length} created=${totals.groupsCreated} updated=${totals.groupsUpdated} cmp=${result.stats.comparisonsEvaluated}/${result.stats.comparisonsPlanned} in ${Date.now() - t0}ms`);
+    console.log(`[dup-worker] completed job=${job.id} project=${job.projectId} n=${records.length} groups=${sizedGroups.length} created=${totals.groupsCreated} updated=${totals.groupsUpdated} cmp=${result.stats.comparisonsEvaluated}/${result.stats.comparisonsPlanned} in ${Date.now() - t0}ms`);
     // Completion pokes so other sessions refresh; the initiating client polls the
     // job row already. project.updated is the event existing shells subscribe to
     // (87.md cross-engine sync), duplicates.completed carries the job handle.
@@ -466,27 +495,46 @@ export async function drainDuplicateJobsForTest() { await drain(); }
 /**
  * enqueueDuplicateJob — create (or attach to) the project's single active job.
  * Any queued/processing job for the project is REUSED, so double clicks and two
- * members starting simultaneously converge on one run. A narrow create race is
- * settled deterministically: the OLDEST active job wins, the loser is deleted.
+ * members starting simultaneously converge on one run. A simultaneous-create
+ * race is settled deterministically: both racers re-read and agree the OLDEST
+ * active job wins; the loser deletes its own still-queued row and attaches.
+ * (A DB-level unique constraint would make this airtight, but adding @unique to
+ * an existing table breaks the non-interactive VPS `prisma db push` deploy — see
+ * the schema note. The straggler that can survive an extreme interleaving is
+ * harmless: the worker is strictly serial and saves are idempotent no-ops.)
+ *
+ * Throws { code: 'DUP_JOB_LIMIT' } when the user already holds
+ * DUP_CFG.MAX_ACTIVE_PER_USER active jobs across other projects (rec round 2 —
+ * fairness on the shared serial worker; tier limits can tighten this later).
  *
  * @returns {Promise<{ job: object, alreadyRunning: boolean }>}
  */
 export async function enqueueDuplicateJob(projectId, { createdById, createdByName = '' } = {}) {
   const ACTIVE = { in: ['queued', 'processing'] };
-  const existing = await prisma.screenDuplicateJob.findFirst({
+  const findActive = () => prisma.screenDuplicateJob.findFirst({
     where: { projectId, status: ACTIVE },
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
   });
+
+  const existing = await findActive();
   if (existing) { kickDuplicateWorker(); return { job: existing, alreadyRunning: true }; }
+
+  // Fairness cap — counted BEFORE creating, across all of the user's projects.
+  // Attaching to this project's existing run (above) is always allowed.
+  const activeByUser = await prisma.screenDuplicateJob.count({
+    where: { createdById, status: ACTIVE },
+  });
+  if (activeByUser >= DUP_CFG.MAX_ACTIVE_PER_USER) {
+    const err = new Error(`You already have ${activeByUser} duplicate-detection runs in progress. Wait for one to finish before starting another.`);
+    err.code = 'DUP_JOB_LIMIT';
+    throw err;
+  }
 
   const job = await prisma.screenDuplicateJob.create({
     data: { projectId, createdById, createdByName, status: 'queued', stage: 'queued' },
   });
   // Settle a simultaneous-create race: both requests re-read and agree the oldest wins.
-  const oldest = await prisma.screenDuplicateJob.findFirst({
-    where: { projectId, status: ACTIVE },
-    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-  });
+  const oldest = await findActive();
   if (oldest && oldest.id !== job.id) {
     // Only delete our row if the worker has not already claimed it.
     await prisma.screenDuplicateJob.deleteMany({ where: { id: job.id, status: 'queued' } }).catch(() => {});

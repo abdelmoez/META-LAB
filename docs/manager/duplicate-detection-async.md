@@ -132,11 +132,20 @@ boot recovery). No new infrastructure.
   `canManageDuplicates` now see the same Detect/Cancel/Retry/resolve controls the
   server already granted them; completion/failure are announced to screen
   readers (`role="status"`/`role="alert"`).
+- **Rec round 2**: per-user fairness cap (`SCREEN_DUP_MAX_ACTIVE_PER_USER`,
+  default 3 active jobs across projects → 429 `DUP_JOB_LIMIT` with an
+  actionable message) and a mega-group save guard
+  (`SCREEN_DUP_MAX_GROUP_SIZE`, default 1000 — junk-data chains are skipped +
+  counted in `statsJson.skippedOversizedGroups`, never dragged through one
+  transaction). A DB-level unique active-key was prototyped and REVERTED:
+  adding `@unique` to an existing table fails the non-interactive VPS
+  `prisma db push` deploy (deploy.yml passes no `--accept-data-loss`), which is
+  the same invariant the schema's plain-@@index notes document. The enqueue
+  race therefore stays oldest-wins convergence.
 - **Accepted + documented** (split findings): enqueue convergence is
   narrow-not-atomic (harmless — the worker is serial and saves are idempotent);
-  cross-project fairness/tier caps deferred to the entitlement backbone; engine
-  peak memory ≈180 MB at 100k records (bounded by `maxComparisons`); blocking
-  remains deliberately approximate (see `blockKeysFor` docs).
+  engine peak memory ≈180 MB at 100k records (bounded by `maxComparisons`);
+  blocking remains deliberately approximate (see `blockKeysFor` docs).
 - **Pre-existing repairs shipped alongside**: prompt6/prompt7 mod-RBAC
   integration tests were stale (audit-86 revokes sessions on role change — the
   tests now re-login after promotion); `api-ai-citation-sample` asserted the

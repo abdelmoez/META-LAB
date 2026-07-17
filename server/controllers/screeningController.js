@@ -1928,6 +1928,9 @@ export async function detectDuplicates(req, res) {
     });
     res.status(202).json({ job: publicDuplicateJob(job), alreadyRunning: !!alreadyRunning });
   } catch (err) {
+    // Rec round 2 — fairness cap: too many concurrent runs by one user across
+    // projects (429, actionable message from the worker).
+    if (err?.code === 'DUP_JOB_LIMIT') return res.status(429).json({ error: err.message });
     console.error('[screening] detectDuplicates:', err.message);
     res.status(500).json({ error: 'Could not start duplicate detection. Please try again.' });
   }
