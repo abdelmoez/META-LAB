@@ -870,6 +870,10 @@ describe('prompt6 T14 — mod console RBAC matrix (lean)', () => {
     const plain = await register(`p6r_usr${r}@t.local`);
     const promote = await api(`/admin/users/${modU.id}/role`, { method: 'PATCH', cookie: adminCookie, body: { role: 'mod' } });
     expect(promote.status).toBe(200);
+    // audit-86 (v3.89.0) revokes the target's sessions on role change (sessionEpoch
+    // bump) — the pre-promotion registration cookie is dead; log in again.
+    modU.cookie = await loginAs(modU.email);
+    expect(modU.cookie).toBeTruthy();
 
     // A contact message to exercise the replies route.
     const subject = `ModRBAC ${r}`;

@@ -91,6 +91,10 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
   const [bulkErr, setBulkErr]         = useState(null);
 
   const isLeader = !!access.isLeader;
+  // 92.md rec round — the SERVER grants duplicate management to the owner, leaders,
+  // AND members holding canManageDuplicates; the UI previously hid every control
+  // from that third group. Mirror the server rule exactly.
+  const canManage = !!(access.isOwner || access.isLeader || access.perms?.canManageDuplicates);
 
   // Seed the primary radio for a set of groups: prefer isPrimary, else first.
   const seedPrimaries = useCallback((gs) => {
@@ -128,12 +132,16 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
   const refreshRef = useRef(refreshProject);
   useEffect(() => { refreshRef.current = refreshProject; }, [refreshProject]);
 
-  // Reconnect on mount: pick up the project's latest detection job so a refreshed
-  // page re-attaches to a running job (or shows the last run's outcome).
+  // Reconnect on mount / project switch: pick up the project's latest detection
+  // job so a refreshed page re-attaches to a running job (or shows the last run's
+  // outcome). Rec round: reset first so a pid switch never shows another project's
+  // job, and never CLOBBER a job the user just started while this fetch was in
+  // flight (functional set keeps the newer job).
   useEffect(() => {
     let gone = false;
+    setJob(null);
     screeningApi.getDuplicateDetectStatus(pid)
-      .then((r) => { if (!gone && r?.job) setJob(r.job); })
+      .then((r) => { if (!gone && r?.job) setJob((prev) => prev || r.job); })
       .catch(() => { /* status is best-effort; detection can still be started */ });
     return () => { gone = true; };
   }, [pid]);
@@ -157,6 +165,28 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
     }, JOB_POLL_MS);
     return () => { gone = true; clearInterval(t); };
   }, [pid, jobId, jobActive]);
+
+  // 92.md rec round — cross-session freshness: while NO job is active locally, a
+  // slow status poll notices runs started (or finished) by other members, attaches
+  // to them, and refreshes the groups list on their completion. This is the
+  // client-side consumer of the worker's completion poke for tabs left open.
+  useEffect(() => {
+    if (jobActive) return undefined; // the fast poll above owns updates
+    let gone = false;
+    const t = setInterval(async () => {
+      try {
+        const r = await screeningApi.getDuplicateDetectStatus(pid);
+        if (gone || !r?.job) return;
+        const latest = r.job;
+        setJob((prev) => {
+          if (prev && prev.id === latest.id && prev.status === latest.status) return prev;
+          if (!jobIsActive(latest)) loadRef.current().catch(() => {});
+          return latest;
+        });
+      } catch { /* best-effort */ }
+    }, 10_000);
+    return () => { gone = true; clearInterval(t); };
+  }, [pid, jobActive]);
 
   const handleDetect = useCallback(async () => {
     if (starting || jobActive) return;
@@ -269,7 +299,7 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
           {isLeader && <DupAccuracy ev={evaluation} />}
         </div>
 
-        {isLeader && (
+        {canManage && (
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8, flexShrink: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
               {exactUnresolved > 0 && (
@@ -334,10 +364,10 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
 
       {/* ───────── Detection job: live progress / last outcome (92.md) ───────── */}
       {job && jobActive && (
-        <DetectionProgressPanel job={job} isLeader={isLeader} onCancel={handleCancelJob} cancelBusy={cancelBusy} />
+        <DetectionProgressPanel job={job} canManage={canManage} onCancel={handleCancelJob} cancelBusy={cancelBusy} />
       )}
       {job && !jobActive && (
-        <DetectionOutcome job={job} isLeader={isLeader} onRetry={handleDetect} retryBusy={starting} />
+        <DetectionOutcome job={job} canManage={canManage} onRetry={handleDetect} retryBusy={starting} />
       )}
 
       {/* ───────── Empty ───────── */}
@@ -345,7 +375,7 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
         <EmptyState
           icon="🧬"
           title="No duplicate groups"
-          action={isLeader ? (
+          action={canManage ? (
             <Button variant="primary" onClick={handleDetect} disabled={starting || jobActive}>
               {jobActive ? 'Detection in progress…' : starting ? 'Starting…' : '⟳ Detect Duplicates'}
             </Button>
@@ -364,7 +394,7 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
                   <DuplicateGroup
                     key={group.id}
                     group={group}
-                    isLeader={isLeader}
+                    isLeader={canManage}
                     selectedId={primarySel[group.id]}
                     onSelect={(rid) => setPrimarySel(prev => ({ ...prev, [group.id]: rid }))}
                     onResolve={() => handleResolve(group.id)}
@@ -406,7 +436,7 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
                     <DuplicateGroup
                       key={group.id}
                       group={group}
-                      isLeader={isLeader}
+                      isLeader={canManage}
                       selectedId={primarySel[group.id]}
                       onSelect={() => {}}
                       onResolve={() => {}}
@@ -430,7 +460,7 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
 // (duplicateJobProgress.js) — never a timer, never fake, never 100 mid-run.
 const nfmt = (n) => (Number(n) || 0).toLocaleString();
 
-function DetectionProgressPanel({ job, isLeader, onCancel, cancelBusy }) {
+function DetectionProgressPanel({ job, canManage, onCancel, cancelBusy }) {
   const p = computeDuplicateJobProgress(job, Date.now());
   const barColor = p.state === 'cancelling' ? C.gold : p.state === 'retrying' ? C.gold : C.acc;
   const stateLabel =
@@ -462,7 +492,7 @@ function DetectionProgressPanel({ job, isLeader, onCancel, cancelBusy }) {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
           <span style={{ fontSize: 12, fontFamily: MONO, fontWeight: 700, color: C.txt }}>{p.percent}%</span>
-          {isLeader && (
+          {canManage && (
             <Button variant="ghost" onClick={onCancel} disabled={cancelBusy || p.state === 'cancelling'}
               title="Stop this detection run — groups already saved are kept">
               {p.state === 'cancelling' ? 'Cancelling…' : 'Cancel'}
@@ -503,10 +533,12 @@ function DetectionProgressPanel({ job, isLeader, onCancel, cancelBusy }) {
 // Terminal outcome of the most recent run: completed summary, actionable failure
 // with a safe retry, or a cancelled note. Survives a page reload (comes from the
 // latest job row, not component state).
-function DetectionOutcome({ job, isLeader, onRetry, retryBusy }) {
+function DetectionOutcome({ job, canManage, onRetry, retryBusy }) {
   if (job.status === 'failed') {
     return (
-      <div style={{
+      // role="alert" — screen readers must hear the failure even though the live
+      // progress region unmounted with the panel (rec round).
+      <div role="alert" style={{
         marginBottom: 18, padding: '10px 14px', borderRadius: 8,
         background: alpha(C.red, '12'), border: `1px solid ${alpha(C.red, '44')}`,
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
@@ -514,7 +546,7 @@ function DetectionOutcome({ job, isLeader, onRetry, retryBusy }) {
         <span style={{ fontSize: 12.5, color: C.red }}>
           Duplicate detection failed{job.error ? ` — ${job.error}` : '.'}
         </span>
-        {isLeader && (
+        {canManage && (
           <Button variant="ghost" onClick={onRetry} disabled={retryBusy}>{retryBusy ? 'Starting…' : 'Retry detection'}</Button>
         )}
       </div>
@@ -522,7 +554,7 @@ function DetectionOutcome({ job, isLeader, onRetry, retryBusy }) {
   }
   if (job.status === 'cancelled') {
     return (
-      <div style={{ marginBottom: 18, fontSize: 11.5, fontFamily: MONO, color: C.gold }}>
+      <div role="status" style={{ marginBottom: 18, fontSize: 11.5, fontFamily: MONO, color: C.gold }}>
         Last detection run was cancelled — groups saved before cancelling were kept.
       </div>
     );
@@ -533,7 +565,8 @@ function DetectionOutcome({ job, isLeader, onRetry, retryBusy }) {
     ? 'Detection finished — no duplicates were found.'
     : `Detection finished — ${nfmt(found)} duplicate group${found === 1 ? '' : 's'} (${nfmt(job.groupsCreated)} new, ${nfmt(job.groupsUpdated)} updated) · ${nfmt(job.recordsFlagged)} record${Number(job.recordsFlagged) === 1 ? '' : 's'} newly flagged`;
   return (
-    <div style={{ marginBottom: 18, fontSize: 11.5, fontFamily: MONO, color: found === 0 ? C.txt2 : C.grn }}>
+    // role="status" — announce completion once the live progress region is gone.
+    <div role="status" style={{ marginBottom: 18, fontSize: 11.5, fontFamily: MONO, color: found === 0 ? C.txt2 : C.grn }}>
       {summary}
       {job.completedAt ? <span style={{ color: C.muted }}> · {new Date(job.completedAt).toLocaleString()}</span> : null}
     </div>

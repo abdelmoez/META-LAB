@@ -1888,6 +1888,10 @@ function publicDuplicateJob(job) {
   if (!job) return null;
   let stats = {};
   try { stats = JSON.parse(job.statsJson || '{}'); } catch { /* keep {} */ }
+  // Host-process metrics are observability for server logs/DB admins, not project
+  // members (rec round: heap/cpu of the shared server leaks cross-tenant signal).
+  delete stats.cpuMs;
+  delete stats.heapUsedMb;
   return {
     id: job.id, status: job.status, stage: job.stage,
     cancelRequested: !!job.cancelRequested,
@@ -1989,6 +1993,14 @@ export async function resolveDuplicateGroup(req, res) {
     const canManage = access.isOwner || (access.active && (access.isLeader || access.perms.canManageDuplicates));
     if (!canManage) return res.status(403).json({ error: 'You do not have permission to manage duplicates in this project' });
     const p = access.project;
+    // 92.md rec round — resolving while a detection run is in flight would race the
+    // worker's save phase (the worker skips resolved groups, but the UX becomes
+    // confusing: the run may extend other groups around the reviewer). One clear
+    // 409 beats a silent race; the run is short and cancellable.
+    const activeJob = await prisma.screenDuplicateJob.findFirst({
+      where: { projectId: p.id, status: { in: ['queued', 'processing'] } }, select: { id: true },
+    });
+    if (activeJob) return res.status(409).json({ error: 'Duplicate detection is currently running for this project. Wait for it to finish (or cancel it) before resolving groups.' });
     const group = await prisma.screenDuplicateGroup.findFirst({ where: { id: req.params.gid, projectId: p.id } });
     if (!group) return res.status(404).json({ error: 'Duplicate group not found' });
     const { primaryId, keepAll } = req.body || {};
@@ -2068,6 +2080,11 @@ export async function resolveAllExactDuplicates(req, res) {
     const canManage = access.isOwner || (access.active && (access.isLeader || access.perms.canManageDuplicates));
     if (!canManage) return res.status(403).json({ error: 'You do not have permission to manage duplicates in this project' });
     const p = access.project;
+    // 92.md rec round — same in-flight-run guard as resolveDuplicateGroup.
+    const activeJob = await prisma.screenDuplicateJob.findFirst({
+      where: { projectId: p.id, status: { in: ['queued', 'processing'] } }, select: { id: true },
+    });
+    if (activeJob) return res.status(409).json({ error: 'Duplicate detection is currently running for this project. Wait for it to finish (or cancel it) before resolving groups.' });
 
     const groups = await prisma.screenDuplicateGroup.findMany({
       where: { projectId: p.id, resolvedAt: null },

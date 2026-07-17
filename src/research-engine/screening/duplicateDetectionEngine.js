@@ -34,12 +34,27 @@ export const DUP_DETECT_ENGINE_VERSION = 'dupdetect-2.0.0';
 export const DUP_DETECT_DEFAULTS = Object.freeze({
   titleThreshold: 0.92, // same threshold the legacy pass used
   minTitleLength: 10,   // normalized titles shorter than this are too generic to fuzzy-match
-  maxBlockSize: 400,    // a blocking bucket larger than this is degenerate (e.g. thousands of "untitled") — skipped + counted
+  maxBlockSize: 400,    // a bucket larger than this is degenerate (e.g. thousands of "untitled") — skipped + counted
   maxComparisons: 2_000_000, // hard global cap on fuzzy pair evaluations (stats.truncated when hit)
-  yieldEvery: 2_000,    // await yieldFn/onProgress every N candidate-pair iterations
-  prefixKeyLength: 24,  // blocking key: first/last N chars of the normalized title
+  yieldEvery: 500,      // await yieldFn/onProgress every N candidate-pair iterations (rec round: 2000 could hold the loop ~0.5s on long titles)
+  prefixKeyLength: 24,  // blocking key: first/middle/last N chars of the normalized title
   tokenKeyCount: 4,     // blocking key: the N longest title tokens (order-insensitive)
+  // Rec round — dirty imports sometimes land an abstract in the title field; an
+  // unbounded "title" makes each banded comparison O(len·k) on thousands of chars.
+  // Compare on the first N normalized chars (deterministic; real titles are ≪ N).
+  maxTitleCompareLength: 400,
 });
+
+/**
+ * maxDistFor — the largest edit distance d that still satisfies the legacy
+ * acceptance rule (maxLen − d) / maxLen ≥ threshold. Computed via ceil on the
+ * MATCH side with an epsilon because IEEE floats make (1 − 0.92) = 0.0799…96:
+ * the naive floor((1−t)·maxLen) rejects pairs at EXACTLY the threshold whenever
+ * maxLen is a multiple of 25 (found in the rec-round adversarial review).
+ */
+export function maxDistFor(maxLen, threshold) {
+  return Math.max(0, maxLen - Math.ceil(threshold * maxLen - 1e-9));
+}
 
 /** Canonical unordered pair key ("a|b" with a < b) — matches ScreenDuplicateLabel storage. */
 export function pairKey(a, b) {
@@ -96,7 +111,7 @@ export function similarityAtLeast(na, nb, threshold) {
   if (!na || !nb) return 0;
   if (na === nb) return 1;
   const maxLen = Math.max(na.length, nb.length);
-  const maxDist = Math.floor((1 - threshold) * maxLen);
+  const maxDist = maxDistFor(maxLen, threshold);
   if (Math.abs(na.length - nb.length) > maxDist) return 0;
   const d = boundedLevenshtein(na, nb, maxDist);
   if (d > maxDist) return 0;
@@ -116,23 +131,33 @@ export function normalizeRecordForDedup(r = {}) {
 
 /**
  * blockKeysFor — deterministic blocking keys for a normalized title:
- *   p: title prefix   (survives edits near the end)
- *   s: title suffix   (survives edits near the start)
+ *   p: title prefix    (survives edits near the end)
+ *   m: title middle    (survives edits at both ends)
+ *   s: title suffix    (survives edits near the start)
  *   t: the K longest tokens, sorted (survives spacing/stop-word/reorder edits)
- * Two records are fuzzy candidates iff they share at least one key.
+ *   u: the NEXT K longest tokens   (survives an edit inside a top-K token)
+ * Two records are fuzzy candidates iff they share at least one key. Blocking is
+ * deliberately approximate: a ≥-threshold pair evades comparison only when edits
+ * hit the prefix AND middle AND suffix AND both token tiers simultaneously —
+ * ≥5 spread-out edits, i.e. only very long titles near the threshold boundary.
+ * The tradeoff (vs the legacy all-pairs sweep) is what makes 10k+ records
+ * feasible; stats report every skipped bucket so the approximation is honest.
  */
 export function blockKeysFor(normTitle, { prefixKeyLength = DUP_DETECT_DEFAULTS.prefixKeyLength, tokenKeyCount = DUP_DETECT_DEFAULTS.tokenKeyCount } = {}) {
   const keys = [];
   if (!normTitle) return keys;
   keys.push('p:' + normTitle.slice(0, prefixKeyLength));
   keys.push('s:' + normTitle.slice(-prefixKeyLength));
+  if (normTitle.length > prefixKeyLength * 2) {
+    const mid = Math.floor((normTitle.length - prefixKeyLength) / 2);
+    keys.push('m:' + normTitle.slice(mid, mid + prefixKeyLength));
+  }
   const tokens = normTitle.split(' ').filter(Boolean);
   if (tokens.length) {
-    const top = [...tokens]
-      .sort((x, y) => (y.length - x.length) || (x < y ? -1 : x > y ? 1 : 0))
-      .slice(0, tokenKeyCount)
-      .sort();
-    keys.push('t:' + top.join(' '));
+    const ranked = [...tokens].sort((x, y) => (y.length - x.length) || (x < y ? -1 : x > y ? 1 : 0));
+    keys.push('t:' + ranked.slice(0, tokenKeyCount).sort().join(' '));
+    const second = ranked.slice(tokenKeyCount, tokenKeyCount * 2);
+    if (second.length >= 2) keys.push('u:' + second.sort().join(' '));
   }
   return keys;
 }
@@ -218,6 +243,8 @@ export async function detectDuplicateGroups(records, opts = {}) {
     doiGroups: 0,
     pmidGroups: 0,
     exactPairsLinked: 0,
+    oversizedIdBuckets: 0,        // identifier shared by > maxBlockSize records = junk data ("n/a"), not duplicates
+    oversizedIdBucketMembers: 0,
     buckets: 0,
     oversizedBlocks: 0,
     oversizedBlockMembers: 0,
@@ -244,7 +271,11 @@ export async function detectDuplicateGroups(records, opts = {}) {
   // ── Stage: normalize (once per record) ──
   const norm = new Array(records.length);
   for (let i = 0; i < records.length; i++) {
-    norm[i] = normalizeRecordForDedup(records[i]);
+    const r = normalizeRecordForDedup(records[i]);
+    // Rec round — cap the COMPARED title so a dirty "title" holding a whole
+    // abstract can't make each banded comparison arbitrarily expensive.
+    if (r.normTitle.length > cfg.maxTitleCompareLength) r.normTitle = r.normTitle.slice(0, cfg.maxTitleCompareLength);
+    norm[i] = r;
     if ((i + 1) % cfg.yieldEvery === 0) {
       await yieldFn();
       await onProgress({ stage: 'normalizing', done: i + 1, total: records.length, groupsFound: uf.groupCount });
@@ -253,16 +284,29 @@ export async function detectDuplicateGroups(records, opts = {}) {
   await onProgress({ stage: 'normalizing', done: records.length, total: records.length, groupsFound: uf.groupCount });
 
   // ── Stage: exact identifiers (DOI, then PMID) ──
-  // Within an identifier bucket every member links to the first non-excluded
-  // earlier member — reviewer not_duplicate pairs are never linked directly.
+  // Reviewer not_duplicate pairs are never linked DIRECTLY. Small buckets union
+  // every non-excluded pair (order-independent — an excluded pair cannot eject a
+  // record from its own identifier group, rec-round fix); big-but-sane buckets
+  // fall back to a bounded chain (each member tries its 8 predecessors), and a
+  // bucket over maxBlockSize is junk data (e.g. doi="n/a" on thousands of rows) —
+  // skipped and counted rather than linked into a meaningless mega-group.
+  const FULL_PAIRWISE_MAX = 64;
   const linkExactBucket = (ids) => {
     let linked = 0;
-    for (let i = 1; i < ids.length; i++) {
-      for (let j = 0; j < i; j++) {
-        if (isExcluded(ids[j], ids[i])) { stats.skippedExcluded += 1; continue; }
-        uf.union(ids[j], ids[i]);
-        linked += 1;
-        break;
+    if (ids.length <= FULL_PAIRWISE_MAX) {
+      for (let i = 0; i < ids.length; i++) {
+        for (let j = i + 1; j < ids.length; j++) {
+          if (isExcluded(ids[i], ids[j])) { stats.skippedExcluded += 1; continue; }
+          if (uf.union(ids[i], ids[j])) linked += 1;
+        }
+      }
+    } else {
+      for (let i = 1; i < ids.length; i++) {
+        for (let j = i - 1; j >= 0 && j >= i - 8; j--) {
+          if (isExcluded(ids[j], ids[i])) { stats.skippedExcluded += 1; continue; }
+          if (uf.union(ids[j], ids[i])) linked += 1;
+          break;
+        }
       }
     }
     return linked;
@@ -270,7 +314,8 @@ export async function detectDuplicateGroups(records, opts = {}) {
 
   const byDoi = new Map();
   const byPmid = new Map();
-  for (const r of norm) {
+  for (let i = 0; i < norm.length; i++) {
+    const r = norm[i];
     if (r.normDoi) {
       if (!byDoi.has(r.normDoi)) byDoi.set(r.normDoi, []);
       byDoi.get(r.normDoi).push(r.id);
@@ -279,13 +324,22 @@ export async function detectDuplicateGroups(records, opts = {}) {
       if (!byPmid.has(r.normPmid)) byPmid.set(r.normPmid, []);
       byPmid.get(r.normPmid).push(r.id);
     }
+    if ((i + 1) % cfg.yieldEvery === 0) await yieldFn();
   }
-  for (const ids of byDoi.values()) {
-    if (ids.length > 1) { stats.doiGroups += 1; stats.exactPairsLinked += linkExactBucket(ids); }
-  }
-  for (const ids of byPmid.values()) {
-    if (ids.length > 1) { stats.pmidGroups += 1; stats.exactPairsLinked += linkExactBucket(ids); }
-  }
+  const linkIdBuckets = (map, groupStat) => {
+    for (const ids of map.values()) {
+      if (ids.length < 2) continue;
+      if (ids.length > cfg.maxBlockSize) {
+        stats.oversizedIdBuckets += 1;
+        stats.oversizedIdBucketMembers += ids.length;
+        continue;
+      }
+      stats[groupStat] += 1;
+      stats.exactPairsLinked += linkExactBucket(ids);
+    }
+  };
+  linkIdBuckets(byDoi, 'doiGroups');
+  linkIdBuckets(byPmid, 'pmidGroups');
   await yieldFn();
   await onProgress({ stage: 'exact', done: 1, total: 1, groupsFound: uf.groupCount });
 
@@ -302,6 +356,7 @@ export async function detectDuplicateGroups(records, opts = {}) {
       if (!buckets.has(k)) buckets.set(k, []);
       buckets.get(k).push(i);
     }
+    if ((i + 1) % cfg.yieldEvery === 0) await yieldFn(); // rec round: this build is ~O(n·keys); never hold the loop
   }
   stats.buckets = buckets.size;
 
@@ -353,7 +408,7 @@ export async function detectDuplicateGroups(records, opts = {}) {
         if (uf.connected(a.id, b.id)) { stats.skippedAlreadyGrouped += 1; continue; }
 
         const maxLen = Math.max(a.normTitle.length, b.normTitle.length);
-        const maxDist = Math.floor((1 - cfg.titleThreshold) * maxLen);
+        const maxDist = maxDistFor(maxLen, cfg.titleThreshold);
         if (Math.abs(a.normTitle.length - b.normTitle.length) > maxDist) { stats.skippedByLength += 1; continue; }
 
         stats.comparisonsEvaluated += 1;

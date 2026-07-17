@@ -43,8 +43,10 @@ describe('prompt7 T1 — mod target-role enforcement', () => {
 
   // Shared cast, built once: an acting mod, a second mod (victim), a throwaway
   // admin (registered then promoted — seeded admins are never touched), and an
-  // ordinary user. Role checks are DB-verified per request, so promotions take
-  // effect immediately on the existing cookies.
+  // ordinary user. audit-86 (v3.89.0) bumps the target's sessionEpoch on EVERY
+  // role change (a demoted admin must not keep JWT-trusted privileges), so the
+  // registration cookies are revoked by the promotions — each promoted account
+  // must log in again to mint a token carrying the new epoch.
   let cast = null;
   async function setupCast() {
     if (cast) return cast;
@@ -56,6 +58,10 @@ describe('prompt7 T1 — mod target-role enforcement', () => {
     expect((await api(`/admin/users/${mod.id}/role`, { method: 'PATCH', cookie: adminCookie, body: { role: 'mod' } })).status).toBe(200);
     expect((await api(`/admin/users/${otherMod.id}/role`, { method: 'PATCH', cookie: adminCookie, body: { role: 'mod' } })).status).toBe(200);
     expect((await api(`/admin/users/${targetAdmin.id}/role`, { method: 'PATCH', cookie: adminCookie, body: { role: 'admin' } })).status).toBe(200);
+    mod.cookie = await loginAs(mod.email);
+    otherMod.cookie = await loginAs(otherMod.email);
+    targetAdmin.cookie = await loginAs(targetAdmin.email);
+    expect(mod.cookie).toBeTruthy();
     cast = { mod, otherMod, targetAdmin, plain };
     return cast;
   }

@@ -36,6 +36,7 @@
 import { prisma } from '../db/client.js';
 import { emitToProjectMembers } from '../realtime/bus.js';
 import { touchProjectActivity } from '../store.js';
+import { getMetaSiftSettings } from '../screening/settings.js';
 import { DEFAULT_MAX_JOB_ATTEMPTS, partitionStuckJobs } from '../utils/jobRetry.js';
 import { detectDuplicateGroups, pairKey } from '../../src/research-engine/screening/duplicateDetectionEngine.js';
 import { planGroupWrites } from '../../src/research-engine/screening/duplicateGroupPlan.js';
@@ -94,9 +95,30 @@ async function claimNext() {
     if (!next) return null;
     const claim = await prisma.screenDuplicateJob.updateMany({
       where: { id: next.id, status: 'queued' },
-      data: { status: 'processing', stage: 'preparing', startedAt: new Date(), heartbeatAt: new Date(), attempts: { increment: 1 } },
+      data: {
+        status: 'processing', stage: 'preparing', startedAt: new Date(), heartbeatAt: new Date(),
+        attempts: { increment: 1 },
+        // Rec round — a retried/recovered attempt starts from ZEROED progress so the
+        // UI never shows a percent regression against the previous attempt's
+        // counters. The final summary always reflects the attempt that completed.
+        totalRecords: 0, processedRecords: 0, comparisonsTotal: 0, comparisonsDone: 0,
+        groupsFound: 0, savedGroups: 0, groupsCreated: 0, groupsUpdated: 0,
+        recordsFlagged: 0, exactMatches: 0, fuzzyMatches: 0, error: '',
+      },
     });
-    if (claim.count === 1) return prisma.screenDuplicateJob.findUnique({ where: { id: next.id } });
+    if (claim.count === 1) {
+      try {
+        return await prisma.screenDuplicateJob.findUnique({ where: { id: next.id } });
+      } catch {
+        // Rec round — a transient read failure right after claiming must not strand
+        // the row in 'processing' with no worker attached: put it back in the queue.
+        await prisma.screenDuplicateJob.updateMany({
+          where: { id: next.id, status: 'processing' },
+          data: { status: 'queued', stage: 'queued', startedAt: null, heartbeatAt: null },
+        }).catch(() => { /* heartbeat recovery is the backstop */ });
+        return null;
+      }
+    }
     // lost the race (another drain claimed it, or it was cancelled) → next job
   }
   return null;
@@ -149,7 +171,7 @@ async function loadRecords(job, frozenIds, beat) {
 
 /** Persist one batch of plans inside a single transaction. Returns counters. */
 async function applyPlanBatch(job, batch) {
-  const counters = { groupsCreated: 0, groupsUpdated: 0, recordsFlagged: 0 };
+  const counters = { groupsCreated: 0, groupsUpdated: 0, recordsFlagged: 0, skippedResolvedMidRun: 0 };
   // Load full metadata for primary selection + previous-flag accounting, one query.
   const allIds = [...new Set(batch.flatMap((p) => p.members))];
   const rows = await prisma.screenRecord.findMany({
@@ -165,6 +187,22 @@ async function applyPlanBatch(job, batch) {
     for (const plan of batch) {
       const memberRecs = plan.members.map((id) => byId.get(id)).filter(Boolean);
       if (memberRecs.length < 2) continue; // records vanished mid-run — skip safely
+
+      // Rec-round P1 fix — REVALIDATE against live state inside the transaction:
+      // a reviewer may have resolved the target (or an absorbed group) after the
+      // prepare-time snapshot. The reviewer's decision always wins: skip the plan
+      // rather than re-flagging members inside a now-resolved group.
+      const guardIds = [plan.targetId, ...(plan.absorbedGroupIds || [])].filter(Boolean);
+      if (guardIds.length) {
+        const fresh = await tx.screenDuplicateGroup.findMany({
+          where: { id: { in: guardIds } },
+          select: { id: true, resolvedAt: true },
+        });
+        if (fresh.length !== guardIds.length || fresh.some((g) => g.resolvedAt)) {
+          counters.skippedResolvedMidRun += 1;
+          continue;
+        }
+      }
 
       let groupId = plan.targetId;
       if (plan.kind === 'create') {
@@ -190,19 +228,26 @@ async function applyPlanBatch(job, batch) {
         await tx.screenDuplicateGroup.deleteMany({ where: { id: { in: plan.absorbedGroupIds }, projectId: job.projectId } });
       }
 
-      // Exactly one tentative primary per group: keep the TARGET group's existing
-      // primary (a reviewer may have radio-selected it) — never an absorbed group's —
+      // Exactly one tentative primary per group: keep the TARGET group's CURRENT
+      // primary (re-read live — a reviewer may have re-selected it mid-run; the
+      // prepare-time snapshot is stale by now) — never an absorbed group's —
       // otherwise the deterministic most-complete record (pickBulkPrimary).
-      const existingPrimary = plan.kind === 'extend' && plan.targetPrimaryId
-        ? memberRecs.find((r) => r.id === plan.targetPrimaryId)
-        : null;
+      let existingPrimary = null;
+      if (plan.kind === 'extend') {
+        const curPrim = await tx.screenRecord.findFirst({
+          where: { duplicateGroupId: groupId, isPrimary: true }, select: { id: true },
+        });
+        if (curPrim) existingPrimary = memberRecs.find((r) => r.id === curPrim.id) || null;
+      }
       const primary = existingPrimary || pickBulkPrimary(memberRecs) || memberRecs[0];
       const others = plan.members.filter((id) => id !== primary.id);
       await tx.screenRecord.updateMany({
         where: { id: { in: others } },
         data: { isDuplicate: true, isPrimary: false },
       });
-      await tx.screenRecord.update({
+      // updateMany (not update): a primary deleted in the tiny window since the
+      // metadata read must not abort the whole batch with a P2025.
+      await tx.screenRecord.updateMany({
         where: { id: primary.id },
         data: { isDuplicate: false, isPrimary: true },
       });
@@ -210,7 +255,7 @@ async function applyPlanBatch(job, batch) {
         (n, id) => n + (id !== primary.id && byId.get(id) && !byId.get(id).isDuplicate ? 1 : 0), 0,
       );
     }
-  });
+  }, { maxWait: 5000, timeout: 20000 }); // explicit budget — SQLite write contention must fail loudly, not hang
   return counters;
 }
 
@@ -223,23 +268,62 @@ async function processJob(job) {
   const mark = (stage, since) => { durations[stage] = Date.now() - since; return Date.now(); };
   let stageStart = t0;
   try {
+    // Rec round — honour the admin kill-switch for jobs that were already queued
+    // when the administrator disabled detection: finish them as cancelled instead
+    // of running work the admin just forbade.
+    const settings = await getMetaSiftSettings().catch(() => null);
+    if (settings && !settings.allowDuplicateDetection) {
+      await patch(job.id, {
+        status: 'cancelled', stage: 'cancelled', completedAt: new Date(),
+        statsJson: JSON.stringify({ cancelled: true, reason: 'admin-disabled' }),
+      });
+      console.log(`[dup-worker] cancelled job=${job.id} project=${job.projectId}: detection disabled by administrator`);
+      return;
+    }
+
     // ── preparing: totals + protections ──
     const totalAll = await prisma.screenRecord.count({ where: { projectId: job.projectId } });
     const existingGroups = await prisma.screenDuplicateGroup.findMany({
       where: { projectId: job.projectId },
       select: { id: true, resolvedAt: true, createdAt: true, records: { select: { id: true, isPrimary: true } } },
     });
-    const frozenIds = new Set();
-    const openGroups = [];
-    for (const g of existingGroups) {
-      if (g.resolvedAt) for (const r of g.records) frozenIds.add(r.id);
-      else openGroups.push(g);
-    }
     const notDup = await prisma.screenDuplicateLabel.findMany({
       where: { projectId: job.projectId, label: 'not_duplicate' },
       select: { recordIdA: true, recordIdB: true },
     });
     const excludedPairs = new Set(notDup.map((l) => pairKey(l.recordIdA, l.recordIdB)));
+
+    const frozenIds = new Set();
+    const openGroups = [];
+    let healedGroups = 0;
+    for (const g of existingGroups) {
+      if (g.resolvedAt) { for (const r of g.records) frozenIds.add(r.id); continue; }
+      // Rec round — heal groups left half-resolved by the historical keepAll 500
+      // (pre-92.md the endpoint crashed AFTER writing not_duplicate labels but
+      // BEFORE resolving the group). If EVERY pair in an open group carries a
+      // reviewer not_duplicate label, the verdict is already recorded: finish the
+      // interrupted keep-all instead of pre-unioning the group back together.
+      const ids = g.records.map((r) => r.id);
+      let allPairsExcluded = ids.length >= 2 && excludedPairs.size > 0;
+      if (allPairsExcluded) {
+        outer: for (let i = 0; i < ids.length; i++) {
+          for (let j = i + 1; j < ids.length; j++) {
+            if (!excludedPairs.has(pairKey(ids[i], ids[j]))) { allPairsExcluded = false; break outer; }
+          }
+        }
+      }
+      if (allPairsExcluded) {
+        await prisma.$transaction([
+          prisma.screenRecord.updateMany({ where: { duplicateGroupId: g.id }, data: { isDuplicate: false, isPrimary: false } }),
+          prisma.screenDuplicateGroup.update({ where: { id: g.id }, data: { resolvedAt: new Date(), primaryId: '' } }),
+        ]).catch(() => { /* best-effort heal; if it fails the group just stays open */ });
+        for (const r of g.records) frozenIds.add(r.id);
+        healedGroups += 1;
+        continue;
+      }
+      openGroups.push(g);
+    }
+    if (healedGroups) console.log(`[dup-worker] job=${job.id} healed ${healedGroups} interrupted keep-all group(s)`);
     await beat({ stage: 'preparing', totalRecords: Math.max(0, totalAll - frozenIds.size) }, { force: true });
     stageStart = mark('preparing', stageStart);
 
@@ -283,12 +367,14 @@ async function processJob(job) {
     await beat({ stage: 'saving' }, { force: true });
     let saved = 0;
     const totals = { groupsCreated: 0, groupsUpdated: 0, recordsFlagged: 0 };
+    let skippedResolvedMidRun = 0;
     for (let i = 0; i < plans.length; i += DUP_CFG.SAVE_BATCH) {
       const batch = plans.slice(i, i + DUP_CFG.SAVE_BATCH);
       const c = await applyPlanBatch(job, batch);
       totals.groupsCreated += c.groupsCreated;
       totals.groupsUpdated += c.groupsUpdated;
       totals.recordsFlagged += c.recordsFlagged;
+      skippedResolvedMidRun += c.skippedResolvedMidRun;
       saved += batch.length;
       await beat({ savedGroups: saved, ...totals });
       await yieldLoop();
@@ -301,6 +387,8 @@ async function processJob(job) {
     const statsJson = JSON.stringify({
       ...result.stats,
       plans: plans.length,
+      healedGroups,
+      skippedResolvedMidRun, // groups a reviewer resolved while the run was in flight — their decision won
       durationsMs: { ...durations, total: Date.now() - t0 },
       cpuMs: { user: Math.round(cpu.user / 1000), system: Math.round(cpu.system / 1000) },
       heapUsedMb: Math.round(process.memoryUsage().heapUsed / (1024 * 1024)),
@@ -323,9 +411,11 @@ async function processJob(job) {
       completedAt: new Date(),
     });
     console.log(`[dup-worker] completed job=${job.id} project=${job.projectId} n=${records.length} groups=${result.groups.length} created=${totals.groupsCreated} updated=${totals.groupsUpdated} cmp=${result.stats.comparisonsEvaluated}/${result.stats.comparisonsPlanned} in ${Date.now() - t0}ms`);
-    // One completion poke so other sessions refresh their duplicate lists; the
-    // initiating client is polling the job row already.
+    // Completion pokes so other sessions refresh; the initiating client polls the
+    // job row already. project.updated is the event existing shells subscribe to
+    // (87.md cross-engine sync), duplicates.completed carries the job handle.
     emitToProjectMembers(job.projectId, { type: 'duplicates.completed', jobId: job.id }, { exclude: job.createdById });
+    emitToProjectMembers(job.projectId, { type: 'project.updated' }, { exclude: job.createdById });
   } catch (e) {
     if (e instanceof JobCancelledError) {
       await patch(job.id, {
@@ -340,16 +430,24 @@ async function processJob(job) {
   }
 }
 
+// Rec round — lost-wakeup guard: a kick landing while drain() is concluding
+// "queue empty" re-runs the loop instead of leaving the fresh job queued until
+// the next enqueue (or the periodic recovery tick).
+let kickPending = false;
+
 /** Drain the queue: claim + process jobs one at a time until empty. */
 async function drain() {
-  if (draining) return;
+  if (draining) { kickPending = true; return; }
   draining = true;
   try {
-    for (;;) {
-      const job = await claimNext();
-      if (!job) break;
-      await processJob(job);
-    }
+    do {
+      kickPending = false;
+      for (;;) {
+        const job = await claimNext();
+        if (!job) break;
+        await processJob(job);
+      }
+    } while (kickPending);
   } catch (e) {
     console.error('[dup-worker] drain:', e?.message);
   } finally {
@@ -450,7 +548,11 @@ export async function recoverStuckDuplicateJobs(now = Date.now(), maxAttempts = 
 
 /**
  * startDuplicateWorker — boot hook. Recovers crash-interrupted jobs (re-queue
- * under the retry cap, permanently fail over it), then drains. Idempotent.
+ * under the retry cap, permanently fail over it), then drains. Also arms a
+ * periodic recovery tick (rec round): a job orphaned in 'processing' while the
+ * PROCESS lives (e.g. a swallowed finalization write) previously wedged its
+ * project until the next restart, because enqueue reuses the orphan and boot
+ * recovery never runs. The tick is unref'd — it never keeps the process alive.
  */
 export async function startDuplicateWorker() {
   try {
@@ -460,5 +562,11 @@ export async function startDuplicateWorker() {
   } catch (e) {
     console.error('[dup-worker] startup recovery failed:', e?.message);
   }
+  const tick = setInterval(() => {
+    recoverStuckDuplicateJobs()
+      .then(({ requeued }) => { if (requeued) { console.log(`[dup-worker] recovery tick re-queued ${requeued} job(s)`); kickDuplicateWorker(); } })
+      .catch(() => { /* next tick retries */ });
+  }, Math.max(DUP_CFG.STUCK_MS, 5 * 60 * 1000));
+  if (typeof tick.unref === 'function') tick.unref();
   kickDuplicateWorker();
 }

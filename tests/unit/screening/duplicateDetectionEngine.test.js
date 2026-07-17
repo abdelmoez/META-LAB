@@ -12,6 +12,7 @@ import {
   DUP_DETECT_DEFAULTS,
   boundedLevenshtein,
   similarityAtLeast,
+  maxDistFor,
   blockKeysFor,
   createUnionFind,
   pairKey,
@@ -100,12 +101,50 @@ describe('similarityAtLeast', () => {
   });
 });
 
+describe('maxDistFor — threshold boundary (rec-round float fix)', () => {
+  it('accepts pairs at EXACTLY the threshold: (1-0.92) is 0.0799…96 in IEEE floats', () => {
+    // floor((1-0.92)*25) = 1 (wrong); the legacy rule accepts d=2 (23/25 = 0.92).
+    expect(maxDistFor(25, 0.92)).toBe(2);
+    expect(maxDistFor(50, 0.92)).toBe(4);
+    expect(maxDistFor(75, 0.92)).toBe(6);
+    expect(maxDistFor(13, 0.92)).toBe(1); // 12/13 ≥ 0.92, 11/13 < 0.92
+    expect(maxDistFor(10, 0.92)).toBe(0); // 9/10 < 0.92
+  });
+
+  it('is exactly the largest d with (maxLen-d)/maxLen >= threshold, brute-forced', () => {
+    for (let maxLen = 1; maxLen <= 200; maxLen++) {
+      for (const t of [0.8, 0.85, 0.9, 0.92, 0.95]) {
+        let want = 0;
+        while (want + 1 <= maxLen && (maxLen - (want + 1)) / maxLen >= t - 1e-12) want += 1;
+        expect(maxDistFor(maxLen, t)).toBe(want);
+      }
+    }
+  });
+
+  it('groups a pair at exactly 0.92 similarity (50-char titles, 4 end edits)', async () => {
+    // 50 normalized chars, 4 substitutions clustered at the END (shared p: key),
+    // similarity = 46/50 = 0.92 exactly — the legacy >= rule accepts it; the
+    // pre-fix floor((1-0.92)*50) budget of 3 rejected it.
+    const a50 = 'aaaab bbbb cccc dddd eeee ffff gggg hhhh iiii jjjj';
+    const b50 = 'aaaab bbbb cccc dddd eeee ffff gggg hhhh iiii zzzz';
+    expect(a50.length).toBe(50);
+    expect(similarityAtLeast(a50, b50, 0.92)).toBeCloseTo(0.92, 12);
+    const { groups } = await detectDuplicateGroups([
+      { id: 'x', title: a50, doi: '', pmid: '', year: '2020' },
+      { id: 'y', title: b50, doi: '', pmid: '', year: '2020' },
+    ]);
+    expect(groups).toEqual([['x', 'y']]);
+  });
+});
+
 describe('blockKeysFor / union-find', () => {
-  it('produces prefix, suffix, and token keys', () => {
-    const keys = blockKeysFor('alpha beta gamma delta epsilon zeta');
+  it('produces prefix, middle, suffix, and two token-tier keys', () => {
+    const keys = blockKeysFor('alpha beta gamma delta epsilon zeta omicron sigma upsilon lambda');
     expect(keys.some((k) => k.startsWith('p:'))).toBe(true);
+    expect(keys.some((k) => k.startsWith('m:'))).toBe(true);
     expect(keys.some((k) => k.startsWith('s:'))).toBe(true);
     expect(keys.some((k) => k.startsWith('t:'))).toBe(true);
+    expect(keys.some((k) => k.startsWith('u:'))).toBe(true);
   });
 
   it('union-find tracks ≥2-member group count through merges', () => {
@@ -167,6 +206,33 @@ describe('detectDuplicateGroups — matching rules', () => {
     ]);
     // "é" is stripped by normalizeTitle ("caf" vs "cafe" → 1 edit) — still a match.
     expect(groups).toEqual([['a', 'b']]);
+  });
+
+  it('an excluded pair cannot eject a record from its own identifier group (rec-round fix)', async () => {
+    // A,B,C share a DOI; the reviewer labelled (A,B) not_duplicate. B must still
+    // join the group THROUGH C (transitive co-membership is documented); with the
+    // old first-predecessor chain, B was silently orphaned.
+    const { groups } = await detectDuplicateGroups(
+      [
+        { id: 'a', title: 'First topic entirely about cardiology outcomes', doi: '10.1/same', pmid: '', year: '' },
+        { id: 'b', title: 'Second unrelated words all about pulmonology', doi: '10.1/same', pmid: '', year: '' },
+        { id: 'c', title: 'Third distinct title concerning nephrology care', doi: '10.1/same', pmid: '', year: '' },
+      ],
+      { excludedPairs: new Set([pairKey('a', 'b')]) },
+    );
+    expect(groups).toEqual([['a', 'b', 'c']]);
+  });
+
+  it('a junk identifier shared by very many records is skipped as degenerate, not mega-grouped', async () => {
+    const records = Array.from({ length: 30 }, (_, i) => ({
+      id: `j${String(i).padStart(2, '0')}`,
+      title: `Completely distinct study number ${i} on its own topic entirely`,
+      doi: 'n/a', pmid: '', year: String(1990 + i),
+    }));
+    const { groups, stats } = await detectDuplicateGroups(records, { maxBlockSize: 10 });
+    expect(groups).toEqual([]);
+    expect(stats.oversizedIdBuckets).toBeGreaterThan(0);
+    expect(stats.oversizedIdBucketMembers).toBe(30);
   });
 
   it('never links a reviewer-confirmed not_duplicate pair directly', async () => {

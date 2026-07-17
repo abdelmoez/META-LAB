@@ -101,6 +101,47 @@ boot recovery). No new infrastructure.
 - `ScreenRecord.duplicateGroupId` and `ScreenDuplicateGroup.projectId` — both
   previously unindexed full scans on resolve/list paths.
 
+## Rec round (adversarial review of 3886815 — 65 agents, 24 confirmed findings, all addressed)
+
+- **P1 — mid-run reviewer resolutions won lost races**: the save phase now
+  REVALIDATES inside each transaction (skips any plan whose target/absorbed
+  group gained `resolvedAt` after the snapshot; re-reads the live primary) and
+  the resolve endpoints return **409** while a detection job is active for the
+  project. `statsJson.skippedResolvedMidRun` records reviewer wins.
+- **Engine correctness**: `maxDistFor` fixes the IEEE-float threshold bug
+  (`floor((1-0.92)·maxLen)` rejected pairs at exactly 0.92 whenever maxLen was a
+  multiple of 25); blocking gained `m:` (middle) + `u:` (second token tier) keys
+  (evading comparison now needs ≥5 spread-out edits); exact-id buckets union all
+  non-excluded pairs (an excluded pair can no longer eject a record from its own
+  DOI group) and identifier buckets over `maxBlockSize` are skipped as junk data
+  (`oversizedIdBuckets`); compared titles are capped at 400 normalized chars so a
+  dirty abstract-in-title cannot make comparisons quadratic; bucket build yields.
+- **Worker resilience**: claims zero the progress counters (no percent
+  regressions on retry); a failed post-claim read re-queues instead of stranding
+  `processing`; a periodic unref'd recovery tick heals orphaned jobs without a
+  restart; drain has a lost-wakeup guard; queued jobs honour the admin
+  kill-switch at claim time; save transactions carry explicit
+  `maxWait/timeout`; the primary write is `updateMany` (a mid-window record
+  delete can't abort the batch); groups left half-resolved by the historical
+  keepAll 500 (labels written, group not resolved) are HEALED into resolved
+  keep-alls instead of being re-flagged.
+- **API/UX**: `publicDuplicateJob` strips host cpu/heap metrics (server-log-only);
+  the client shows the server's actionable 403 message; job state resets on
+  project switch and a slow idle status-poll keeps other members' open tabs in
+  sync (plus a `project.updated` completion poke); members with
+  `canManageDuplicates` now see the same Detect/Cancel/Retry/resolve controls the
+  server already granted them; completion/failure are announced to screen
+  readers (`role="status"`/`role="alert"`).
+- **Accepted + documented** (split findings): enqueue convergence is
+  narrow-not-atomic (harmless — the worker is serial and saves are idempotent);
+  cross-project fairness/tier caps deferred to the entitlement backbone; engine
+  peak memory ≈180 MB at 100k records (bounded by `maxComparisons`); blocking
+  remains deliberately approximate (see `blockKeysFor` docs).
+- **Pre-existing repairs shipped alongside**: prompt6/prompt7 mod-RBAC
+  integration tests were stale (audit-86 revokes sessions on role change — the
+  tests now re-login after promotion); `api-ai-citation-sample` asserted the
+  pre-audit-90 contract (403 is now valid for non-admins).
+
 ## Tests
 
 - `tests/unit/screening/duplicateDetectionEngine.test.js` — banded-Levenshtein

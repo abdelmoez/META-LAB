@@ -171,6 +171,10 @@ export default function SiftProject({ embedded = false, embeddedPid = null, onGo
 
   const access = project ? {
     isLeader: project.isLeader, myRole: project.myRole,
+    // 92.md rec round — forward ownership + granular perms so tabs can grant
+    // members with a specific permission (e.g. canManageDuplicates) the same
+    // controls the server already allows them to use.
+    isOwner: project.isOwner, perms: project.perms || {},
     canScreen: project.canScreen, canChat: project.canChat,
     canResolveConflicts: project.canResolveConflicts, blindMode: project.blindMode,
   } : {};

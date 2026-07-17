@@ -116,13 +116,12 @@ describe('AI citation-status route — flag-off existence hiding', () => {
       headers: { Cookie: cookie },
     });
     // Flag OFF (default) → the shared gate() hides the route with a 404 even for
-    // the project owner. (If an environment enables the flag, this becomes a 200
-    // status payload; the assertion documents the default-off contract.)
-    expect([404, 200]).toContain(res.status);
-    if (res.status === 404) {
-      const data = await res.json();
-      expect(data).toHaveProperty('error');
-    }
+    // the project owner. Flag ON → audit-90 (v3.97.0) restricts the Guided
+    // Screening diagnostics surface to SITE ADMINS, so a plain owner gets 403.
+    // Either way a non-admin must never see a 200 payload.
+    expect([404, 403]).toContain(res.status);
+    const data = await res.json();
+    expect(data).toHaveProperty('error');
   });
 
   // 75.md Phase 7 — an ADMIN bypasses the aiScreening existence-gate while it is OFF:
@@ -162,6 +161,8 @@ describe('AI validation-sample route — auth guard', () => {
     const res = await hit(`${API}/screening/projects/${pid}/ai/validation-sample`, {
       headers: { Cookie: cookie },
     });
-    expect([404, 200]).toContain(res.status);
+    // 404 while the flag is off (existence-hiding); 403 while it is on (audit-90
+    // locked the validation surface to site admins). Never 200 for a non-admin.
+    expect([404, 403]).toContain(res.status);
   });
 });

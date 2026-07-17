@@ -580,6 +580,10 @@ model ScreenRecord {
   // 92.md — duplicate-group membership reads/writes (resolve, worker save batches,
   // labels) filter by duplicateGroupId; previously full-table scans.
   @@index([duplicateGroupId])
+  // 92.md rec round — the detection worker reads records in id-ordered cursor pages
+  // (WHERE projectId = ? AND id > cursor ORDER BY id); the composite index serves
+  // that without a per-page sort.
+  @@index([projectId, id])
 }
 
 model ScreenDecision {

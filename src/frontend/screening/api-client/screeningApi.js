@@ -13,7 +13,9 @@ async function req(method, path, body) {
   if (!r.ok) {
     const msg =
       r.status === 401 ? 'You must be signed in to use Screening.' :
-      r.status === 403 ? 'Access denied.' :
+      // 92.md rec round — prefer the server's actionable message (e.g. "Duplicate
+      // detection is currently disabled by the administrator") over a generic label.
+      r.status === 403 ? (data.error || 'Access denied.') :
       r.status === 404 ? (data.error || 'Not found.') :
       r.status === 503 ? (data.error || 'Screening is currently unavailable.') :
       (data.error || `Server error (${r.status})`);
