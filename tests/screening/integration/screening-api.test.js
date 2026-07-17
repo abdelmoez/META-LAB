@@ -255,14 +255,24 @@ describe('GET /api/screening/projects/:id/stats — after decision', () => {
 // ── Duplicate detection ────────────────────────────────────────────────────────
 
 describe('POST /api/screening/projects/:id/duplicates/detect', () => {
-  it('returns 200 and does not crash on small import', async () => {
+  it('returns 202 with a durable job that completes in the background (92.md)', async () => {
     if (!up || !projectId) return;
     const res = await api('POST', `${SIFT}/${projectId}/duplicates/detect`, cookieA, {});
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(202);
     const data = await res.json();
-    expect(data).toHaveProperty('groups');
-    expect(Array.isArray(data.groups)).toBe(true);
-  });
+    expect(data.job).toBeTruthy();
+    expect(['queued', 'processing', 'completed']).toContain(data.job.status);
+    // Poll until terminal — a small project finishes in well under the budget.
+    let job = data.job;
+    for (let i = 0; i < 80 && !['completed', 'failed', 'cancelled'].includes(job.status); i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      const jr = await api('GET', `${SIFT}/${projectId}/duplicates/jobs/${job.id}`, cookieA);
+      expect(jr.status).toBe(200);
+      job = (await jr.json()).job;
+    }
+    expect(job.status).toBe('completed');
+    expect(job.error).toBe('');
+  }, 30_000);
 });
 
 // ── Conflicts ─────────────────────────────────────────────────────────────────

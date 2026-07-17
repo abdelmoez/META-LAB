@@ -68,6 +68,7 @@ import { startCitationChaseWorker } from './citationMining/citationChaseWorker.j
 // 62.md — durable, off-event-loop workers for AI scoring + large async exports.
 import { startAiJobsWorker } from './services/screeningAiJobs.js';
 import { startExportWorker } from './services/screeningExportWorker.js';
+import { startDuplicateWorker } from './services/screeningDuplicateWorker.js';
 import { startEligibilityJobsWorker } from './services/screeningEligibilityService.js';
 // 68.md P9 — durable, off-event-loop worker for automated OA full-text retrieval.
 import { startFullTextWorker } from './fullText/fullTextWorker.js';
@@ -665,6 +666,10 @@ const server = app.listen(PORT, () => {
       // (large exports stream to a file instead of buffering in one request → no 504).
       startAiJobsWorker().catch(err => console.error('[ai-worker] start failed:', err.message));
       startExportWorker().catch(err => console.error('[export-worker] start failed:', err.message));
+      // 92.md — start the durable duplicate-detection worker (detection runs off the
+      // request thread in yielding batches; crash-interrupted jobs resume under the
+      // shared retry cap).
+      startDuplicateWorker().catch(err => console.error('[dup-worker] start failed:', err.message));
       // 70.md P10 — start the durable Eligibility-Screener bulk-eval worker (crash
       // recovery of stuck jobs, then drains criteria evaluations off the request thread).
       startEligibilityJobsWorker().catch(err => console.error('[eligibility-worker] start failed:', err.message));

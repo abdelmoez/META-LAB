@@ -224,7 +224,16 @@ describe('META·SIFT collaboration (integration)', () => {
     // two records with identical DOI
     await api(`/screening/projects/${pid}/records`, { method: 'POST', cookie: a.cookie, body: { title: 'Same A', doi: '10.dup/' + r, year: '2024' } });
     await api(`/screening/projects/${pid}/records`, { method: 'POST', cookie: a.cookie, body: { title: 'Same B', doi: '10.dup/' + r, year: '2024' } });
-    await api(`/screening/projects/${pid}/duplicates/detect`, { method: 'POST', cookie: a.cookie });
+    // 92.md — detection is a durable background job now: 202 + job, then poll.
+    const det = await api(`/screening/projects/${pid}/duplicates/detect`, { method: 'POST', cookie: a.cookie });
+    expect(det.status).toBe(202);
+    let dJob = det.data?.job;
+    for (let i = 0; i < 80 && dJob && !['completed', 'failed', 'cancelled'].includes(dJob.status); i++) {
+      await new Promise((res) => setTimeout(res, 250));
+      const jr = await api(`/screening/projects/${pid}/duplicates/jobs/${dJob.id}`, { cookie: a.cookie });
+      dJob = jr.data?.job || dJob;
+    }
+    expect(dJob?.status).toBe('completed');
     const dups = await api(`/screening/projects/${pid}/duplicates`, { cookie: a.cookie });
     expect(dups.data.groups.length).toBeGreaterThan(0);
     const g = dups.data.groups[0];

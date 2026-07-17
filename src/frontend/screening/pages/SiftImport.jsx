@@ -40,11 +40,12 @@ export default function SiftImport({ embedded = false, embeddedPid = null, onDon
   const pid = embedded ? embeddedPid : routeParams.pid;
   const { user }  = useAuth();
   const navigate  = useNavigate();
-  // After a successful import, send the user to Step 2 (Duplicates). We trigger
-  // duplicate detection FIRST and await it, so the Duplicates page opens with
-  // results already indexed instead of racing an empty/erroring queue (prompt23
-  // Task 9). Detection is best-effort — if the user lacks permission or it fails,
-  // we still navigate; the Duplicates page can detect on demand.
+  // After a successful import, send the user to Step 2 (Duplicates). Detection is
+  // ENQUEUED first (92.md — a durable background job; the POST returns 202 with the
+  // job immediately, it no longer blocks on the whole sweep), so the Duplicates page
+  // opens onto the live progress panel via its detect/status reconnect. Best-effort —
+  // if the user lacks permission or the enqueue fails, we still navigate; the
+  // Duplicates page can detect on demand.
   const [preparing, setPreparing] = useState(false);
   const goToDuplicates = async () => {
     setPreparing(true);

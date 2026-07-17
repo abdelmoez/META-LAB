@@ -97,7 +97,14 @@ export const screeningApi = {
 
   // Duplicates
   listDuplicates:        (pid)            => req('GET',  `/projects/${pid}/duplicates`),
-  detectDuplicates:      (pid)            => req('POST', `/projects/${pid}/duplicates/detect`, {}),
+  // 92.md — detection is a durable background job. detectDuplicates returns 202
+  // { job, alreadyRunning }; poll getDuplicateJob until the status is completed /
+  // failed / cancelled. getDuplicateDetectStatus returns the project's latest job
+  // so a refreshed page reconnects to a run instead of starting a new one.
+  detectDuplicates:         (pid)         => req('POST', `/projects/${pid}/duplicates/detect`, {}),
+  getDuplicateDetectStatus: (pid)         => req('GET',  `/projects/${pid}/duplicates/detect/status`),
+  getDuplicateJob:          (pid, jobId)  => req('GET',  `/projects/${pid}/duplicates/jobs/${jobId}`),
+  cancelDuplicateJob:       (pid, jobId)  => req('POST', `/projects/${pid}/duplicates/jobs/${jobId}/cancel`, {}),
   resolveDuplicateGroup: (pid, gid, body) => req('POST', `/projects/${pid}/duplicates/${gid}/resolve`, body),
   // 65.md SCR-4 — bulk-resolve every all-exact (DOI/PMID) duplicate group.
   // Returns { resolvedGroups, flaggedDuplicates, mergedFieldCount, skippedGroups }.

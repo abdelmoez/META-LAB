@@ -12,10 +12,15 @@
  *   access         — { isLeader, myRole, canScreen, ... }
  *   refreshProject — () => Promise, re-fetches the shell's project after a mutation
  */
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { C, FONT, MONO, alpha } from '../ui/theme.js';
 import { Loading, ErrorBanner, Button, Badge, Card, EmptyState, Modal } from '../ui/components.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
+// 92.md — detection progress is derived ONLY from the persisted job row (no fake %).
+import { computeDuplicateJobProgress, formatDurationMs } from '../../../research-engine/screening/duplicateJobProgress.js';
+
+const JOB_POLL_MS = 1500;
+const jobIsActive = (j) => !!j && (j.status === 'queued' || j.status === 'processing');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -67,8 +72,12 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
   const [loading, setLoading] = useState(true);
   const [error, setError]     = useState(null);
 
-  const [detecting, setDetecting]       = useState(false);
-  const [detectResult, setDetectResult] = useState(null);
+  // 92.md — duplicate detection is a durable background job. `job` mirrors the server
+  // row (the ONLY progress source); the page reconnects to a running job on mount, so
+  // a refresh or tab switch never loses the run and never starts a second one.
+  const [job, setJob]               = useState(null);
+  const [starting, setStarting]     = useState(false);
+  const [cancelBusy, setCancelBusy] = useState(false);
 
   const [primarySel, setPrimarySel] = useState({}); // { [gid]: recordId }
   const [resolving, setResolving]   = useState({}); // { [gid]: bool }
@@ -113,25 +122,67 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
 
   useEffect(() => { load(); }, [load]);
 
+  // Keep stable handles for the poll loop (prop identity may change every render).
+  const loadRef = useRef(load);
+  useEffect(() => { loadRef.current = load; }, [load]);
+  const refreshRef = useRef(refreshProject);
+  useEffect(() => { refreshRef.current = refreshProject; }, [refreshProject]);
+
+  // Reconnect on mount: pick up the project's latest detection job so a refreshed
+  // page re-attaches to a running job (or shows the last run's outcome).
+  useEffect(() => {
+    let gone = false;
+    screeningApi.getDuplicateDetectStatus(pid)
+      .then((r) => { if (!gone && r?.job) setJob(r.job); })
+      .catch(() => { /* status is best-effort; detection can still be started */ });
+    return () => { gone = true; };
+  }, [pid]);
+
+  // Poll the job row while it is active; on a terminal state refresh the groups list.
+  const jobId = job?.id;
+  const jobActive = jobIsActive(job);
+  useEffect(() => {
+    if (!jobActive || !jobId) return undefined;
+    let gone = false;
+    const t = setInterval(async () => {
+      try {
+        const r = await screeningApi.getDuplicateJob(pid, jobId);
+        if (gone || !r?.job) return;
+        setJob(r.job);
+        if (!jobIsActive(r.job)) {
+          await loadRef.current();
+          if (refreshRef.current) await refreshRef.current();
+        }
+      } catch { /* transient poll error — keep polling */ }
+    }, JOB_POLL_MS);
+    return () => { gone = true; clearInterval(t); };
+  }, [pid, jobId, jobActive]);
+
   const handleDetect = useCallback(async () => {
-    if (detecting) return;
-    setDetecting(true);
+    if (starting || jobActive) return;
+    setStarting(true);
     setError(null);
-    setDetectResult(null);
     try {
+      // 202 + the job row; if a run is already active the server returns THAT job,
+      // so a double click (or two members clicking) can never start a second sweep.
       const res = await screeningApi.detectDuplicates(pid);
-      setDetectResult({
-        found:   Number(res?.found ?? res?.groups ?? 0) || 0,
-        created: Number(res?.created ?? res?.new ?? 0) || 0,
-      });
-      await load();
-      if (refreshProject) await refreshProject();
+      if (res?.job) setJob(res.job);
     } catch (e) {
-      setError(e?.message || 'Duplicate detection failed.');
+      setError(e?.message || 'Could not start duplicate detection.');
     } finally {
-      setDetecting(false);
+      setStarting(false);
     }
-  }, [pid, detecting, load, refreshProject]);
+  }, [pid, starting, jobActive]);
+
+  const handleCancelJob = useCallback(async () => {
+    if (!jobId || cancelBusy) return;
+    setCancelBusy(true);
+    try {
+      const r = await screeningApi.cancelDuplicateJob(pid, jobId);
+      if (r?.job) setJob(r.job);
+    } catch { /* the poll reflects the real state */ }
+    finally { setCancelBusy(false); }
+  }, [pid, jobId, cancelBusy]);
 
   const handleResolve = useCallback(async (gid) => {
     const primaryId = primarySel[gid];
@@ -231,15 +282,15 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
                   {bulkBusy ? 'Resolving…' : `Resolve ${exactUnresolved} exact group${exactUnresolved === 1 ? '' : 's'}`}
                 </Button>
               )}
-              <Button variant="primary" onClick={handleDetect} disabled={detecting}>
-                {detecting ? 'Detecting…' : '⟳ Detect Duplicates'}
+              <Button
+                variant="primary"
+                onClick={handleDetect}
+                disabled={starting || jobActive}
+                title={jobActive ? 'A detection run is already in progress for this project' : 'Scan the project for duplicate records'}
+              >
+                {jobActive ? 'Detection in progress…' : starting ? 'Starting…' : '⟳ Detect Duplicates'}
               </Button>
             </div>
-            {detectResult && (
-              <div style={{ fontSize: 11.5, fontFamily: MONO, color: C.grn }}>
-                {detectResult.found} group{detectResult.found === 1 ? '' : 's'} / {detectResult.created} new
-              </div>
-            )}
             {bulkResult && (
               <div style={{ fontSize: 11.5, fontFamily: MONO, color: C.grn, textAlign: 'right' }}>
                 {bulkResult.resolvedGroups} group{bulkResult.resolvedGroups === 1 ? '' : 's'} resolved · {bulkResult.flaggedDuplicates} flagged
@@ -281,14 +332,22 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
         </div>
       )}
 
+      {/* ───────── Detection job: live progress / last outcome (92.md) ───────── */}
+      {job && jobActive && (
+        <DetectionProgressPanel job={job} isLeader={isLeader} onCancel={handleCancelJob} cancelBusy={cancelBusy} />
+      )}
+      {job && !jobActive && (
+        <DetectionOutcome job={job} isLeader={isLeader} onRetry={handleDetect} retryBusy={starting} />
+      )}
+
       {/* ───────── Empty ───────── */}
       {groups.length === 0 ? (
         <EmptyState
           icon="🧬"
           title="No duplicate groups"
           action={isLeader ? (
-            <Button variant="primary" onClick={handleDetect} disabled={detecting}>
-              {detecting ? 'Detecting…' : '⟳ Detect Duplicates'}
+            <Button variant="primary" onClick={handleDetect} disabled={starting || jobActive}>
+              {jobActive ? 'Detection in progress…' : starting ? 'Starting…' : '⟳ Detect Duplicates'}
             </Button>
           ) : null}
         >
@@ -361,6 +420,122 @@ export default function DuplicatesTab({ pid, project, access = {}, refreshProjec
           )}
         </>
       )}
+    </div>
+  );
+}
+
+// ── Detection job progress panel (92.md) ────────────────────────────────────
+// Everything shown here comes from the persisted job row: stage, counters, who
+// started it and when. The percentage is computed by the shared pure module
+// (duplicateJobProgress.js) — never a timer, never fake, never 100 mid-run.
+const nfmt = (n) => (Number(n) || 0).toLocaleString();
+
+function DetectionProgressPanel({ job, isLeader, onCancel, cancelBusy }) {
+  const p = computeDuplicateJobProgress(job, Date.now());
+  const barColor = p.state === 'cancelling' ? C.gold : p.state === 'retrying' ? C.gold : C.acc;
+  const stateLabel =
+    p.state === 'queued' ? 'Queued' :
+    p.state === 'retrying' ? 'Retrying after an interruption' :
+    p.state === 'cancelling' ? 'Cancelling…' : 'Running';
+
+  const startedBits = [];
+  if (job.createdByName) startedBits.push(`Started by ${job.createdByName}`);
+  if (job.startedAt || job.createdAt) {
+    try { startedBits.push(new Date(job.startedAt || job.createdAt).toLocaleTimeString()); } catch { /* ignore */ }
+  }
+
+  return (
+    <Card style={{ padding: '14px 18px', marginBottom: 18, borderColor: alpha(barColor, '55') }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+          <span style={{
+            fontSize: 10, fontFamily: MONO, fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase',
+            color: barColor, background: alpha(barColor, '1a'), border: `1px solid ${alpha(barColor, '55')}`,
+            borderRadius: 6, padding: '3px 9px', flexShrink: 0,
+          }}>
+            {stateLabel}
+          </span>
+          {/* Stage only in the live region — counts change too often to announce. */}
+          <span aria-live="polite" style={{ fontSize: 12.5, color: C.txt, fontWeight: 600, minWidth: 0 }}>
+            {p.stageLabel}…
+          </span>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
+          <span style={{ fontSize: 12, fontFamily: MONO, fontWeight: 700, color: C.txt }}>{p.percent}%</span>
+          {isLeader && (
+            <Button variant="ghost" onClick={onCancel} disabled={cancelBusy || p.state === 'cancelling'}
+              title="Stop this detection run — groups already saved are kept">
+              {p.state === 'cancelling' ? 'Cancelling…' : 'Cancel'}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      <div
+        role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={p.percent}
+        aria-label="Duplicate detection progress"
+        style={{ marginTop: 10, height: 8, borderRadius: 4, background: C.brd, overflow: 'hidden' }}
+      >
+        <div style={{ width: `${p.percent}%`, height: '100%', background: barColor, borderRadius: 4, transition: 'width 0.6s ease' }} />
+      </div>
+
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px 18px', marginTop: 10, fontSize: 11.5, fontFamily: MONO, color: C.txt2 }}>
+        <span>{nfmt(job.processedRecords)} / {nfmt(job.totalRecords)} records</span>
+        {Number(job.comparisonsTotal) > 0 && (
+          <span>{nfmt(job.comparisonsDone)} / {nfmt(job.comparisonsTotal)} comparisons</span>
+        )}
+        <span style={{ color: Number(job.groupsFound) > 0 ? C.ylw : C.txt2 }}>
+          {nfmt(job.groupsFound)} possible group{Number(job.groupsFound) === 1 ? '' : 's'} so far
+        </span>
+        <span>elapsed {formatDurationMs(p.elapsedMs)}</span>
+        {p.etaMs != null && <span>~{formatDurationMs(p.etaMs)} left</span>}
+      </div>
+
+      {startedBits.length > 0 && (
+        <div style={{ marginTop: 6, fontSize: 11, color: C.muted }}>
+          {startedBits.join(' · ')} — you can leave this page; detection keeps running.
+        </div>
+      )}
+    </Card>
+  );
+}
+
+// Terminal outcome of the most recent run: completed summary, actionable failure
+// with a safe retry, or a cancelled note. Survives a page reload (comes from the
+// latest job row, not component state).
+function DetectionOutcome({ job, isLeader, onRetry, retryBusy }) {
+  if (job.status === 'failed') {
+    return (
+      <div style={{
+        marginBottom: 18, padding: '10px 14px', borderRadius: 8,
+        background: alpha(C.red, '12'), border: `1px solid ${alpha(C.red, '44')}`,
+        display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap',
+      }}>
+        <span style={{ fontSize: 12.5, color: C.red }}>
+          Duplicate detection failed{job.error ? ` — ${job.error}` : '.'}
+        </span>
+        {isLeader && (
+          <Button variant="ghost" onClick={onRetry} disabled={retryBusy}>{retryBusy ? 'Starting…' : 'Retry detection'}</Button>
+        )}
+      </div>
+    );
+  }
+  if (job.status === 'cancelled') {
+    return (
+      <div style={{ marginBottom: 18, fontSize: 11.5, fontFamily: MONO, color: C.gold }}>
+        Last detection run was cancelled — groups saved before cancelling were kept.
+      </div>
+    );
+  }
+  // completed
+  const found = Number(job.groupsFound) || 0;
+  const summary = found === 0
+    ? 'Detection finished — no duplicates were found.'
+    : `Detection finished — ${nfmt(found)} duplicate group${found === 1 ? '' : 's'} (${nfmt(job.groupsCreated)} new, ${nfmt(job.groupsUpdated)} updated) · ${nfmt(job.recordsFlagged)} record${Number(job.recordsFlagged) === 1 ? '' : 's'} newly flagged`;
+  return (
+    <div style={{ marginBottom: 18, fontSize: 11.5, fontFamily: MONO, color: found === 0 ? C.txt2 : C.grn }}>
+      {summary}
+      {job.completedAt ? <span style={{ color: C.muted }}> · {new Date(job.completedAt).toLocaleString()}</span> : null}
     </div>
   );
 }

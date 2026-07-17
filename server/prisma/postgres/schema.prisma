@@ -520,6 +520,7 @@ model ScreenProject {
   conflicts        ScreenConflict[]
   importBatches    ScreenImportBatch[]
   importJobs       ScreenImportJob[]
+  duplicateJobs    ScreenDuplicateJob[]
   members          ScreenProjectMember[]
   chatMessages     ScreenChatMessage[]
   auditLogs        ScreenAuditLog[]
@@ -576,6 +577,9 @@ model ScreenRecord {
   // projectId; without this index those are full-table scans that add real latency before
   // any CPU work even starts on a large project. Additive/safe for `prisma db push`.
   @@index([projectId])
+  // 92.md — duplicate-group membership reads/writes (resolve, worker save batches,
+  // labels) filter by duplicateGroupId; previously full-table scans.
+  @@index([duplicateGroupId])
 }
 
 model ScreenDecision {
@@ -626,6 +630,9 @@ model ScreenDuplicateGroup {
   createdAt  DateTime      @default(now())
 
   records ScreenRecord[]
+
+  // 92.md — group lists + the detection worker's existing-group load filter by project.
+  @@index([projectId])
 }
 
 // se2.md §10 — reviewer-confirmed duplicate labels, accrued from resolve actions, used
@@ -742,6 +749,51 @@ model ScreenImportJob {
   @@index([projectId, status])
   @@index([status, createdAt])
   @@index([projectId, fileHash])
+}
+
+// 92.md — durable, DB-backed duplicate-detection job. The old POST /duplicates/detect
+// ran an O(n²) Levenshtein sweep synchronously inside the request (500 records ≈ 30s of
+// blocked event loop; 2k ≈ 8min) — the whole server froze. Detection now only enqueues
+// one of these rows; screeningDuplicateWorker drains it off the request thread in
+// yielding batches. One ACTIVE (queued|processing) job per project (enforced at enqueue);
+// progress counters below are the ONLY source of the frontend progress bar (no fake %).
+model ScreenDuplicateJob {
+  id               String        @id @default(uuid())
+  projectId        String
+  project          ScreenProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdById      String
+  createdByName    String        @default("")
+  // queued | processing | completed | failed | cancelled
+  status           String        @default("queued")
+  // queued | preparing | normalizing | exact | fuzzy | grouping | saving | finalizing | done | failed | cancelled
+  stage            String        @default("queued")
+  // Set by the cancel endpoint; the worker checks it at every progress beat and
+  // between save batches, then finalizes as status=cancelled (results so far are
+  // kept — every persisted group is complete and valid).
+  cancelRequested  Boolean       @default(false)
+  totalRecords     Int           @default(0) // records considered (frozen resolved-group members excluded)
+  processedRecords Int           @default(0) // records loaded + normalized so far
+  comparisonsTotal Int           @default(0) // planned fuzzy candidate evaluations (post-blocking)
+  comparisonsDone  Int           @default(0)
+  groupsFound      Int           @default(0) // duplicate groups discovered by the engine
+  savedGroups      Int           @default(0) // groups persisted so far (drives the saving stage %)
+  groupsCreated    Int           @default(0) // NEW ScreenDuplicateGroup rows
+  groupsUpdated    Int           @default(0) // existing unresolved groups extended/merged
+  recordsFlagged   Int           @default(0) // records newly marked isDuplicate
+  exactMatches     Int           @default(0) // pairs linked by exact DOI/PMID
+  fuzzyMatches     Int           @default(0) // pairs linked by fuzzy title match
+  statsJson        String        @default("{}") // engine stats + per-stage durations + cpu/mem (observability)
+  error            String        @default("") // user-facing failure message (status=failed)
+  attempts         Int           @default(0) // claims so far (retry-budget cap; poison-pill guard)
+  heartbeatAt      DateTime?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([projectId, status])
+  @@index([projectId, createdAt])
+  @@index([status, createdAt]) // claim ordering across projects (oldest queued first)
 }
 
 // ─── META·SIFT Beta — collaboration upgrade ──────────────────────────

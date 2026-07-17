@@ -6,7 +6,10 @@
 // the WAL/busy_timeout pragmas applied only to the shared client's connection).
 import { prisma } from '../db/client.js';
 import { createHash } from 'crypto';
-import { detectDuplicatesInProject, recordDuplicateLabels, getDuplicateEvaluation } from '../services/screeningDuplicateService.js';
+import { recordDuplicateLabels, getDuplicateEvaluation } from '../services/screeningDuplicateService.js';
+// 92.md — duplicate detection is a durable background job now (the old sync sweep froze
+// the whole server); the endpoints below only enqueue/inspect/cancel ScreenDuplicateJob rows.
+import { enqueueDuplicateJob, cancelDuplicateJob as cancelDuplicateJobRow } from '../services/screeningDuplicateWorker.js';
 import { syncConflicts } from '../services/screeningConflictService.js';
 import { ELIGIBILITY_ENGINE_REVIEWER_ID } from '../services/screeningEligibilityService.js';
 import { touchProjectActivity } from '../store.js';
@@ -1875,6 +1878,32 @@ export async function listDuplicates(req, res) {
   }
 }
 
+/**
+ * publicDuplicateJob — the job row as the client sees it. Counters + stage are the
+ * ONLY source of the progress UI (no fake progress); statsJson is parsed so admins/
+ * leaders can inspect stage durations, but the error field stays the user-facing
+ * message written by the worker (technical detail lives in server logs).
+ */
+function publicDuplicateJob(job) {
+  if (!job) return null;
+  let stats = {};
+  try { stats = JSON.parse(job.statsJson || '{}'); } catch { /* keep {} */ }
+  return {
+    id: job.id, status: job.status, stage: job.stage,
+    cancelRequested: !!job.cancelRequested,
+    totalRecords: job.totalRecords, processedRecords: job.processedRecords,
+    comparisonsTotal: job.comparisonsTotal, comparisonsDone: job.comparisonsDone,
+    groupsFound: job.groupsFound, savedGroups: job.savedGroups,
+    groupsCreated: job.groupsCreated, groupsUpdated: job.groupsUpdated,
+    recordsFlagged: job.recordsFlagged,
+    exactMatches: job.exactMatches, fuzzyMatches: job.fuzzyMatches,
+    error: job.error, attempts: job.attempts,
+    createdByName: job.createdByName,
+    startedAt: job.startedAt, completedAt: job.completedAt, createdAt: job.createdAt,
+    stats,
+  };
+}
+
 export async function detectDuplicates(req, res) {
   try {
     // Outsider → 404; active member without canManageDuplicates (and not
@@ -1886,11 +1915,69 @@ export async function detectDuplicates(req, res) {
     const p = access.project;
     const settings = await getMetaSiftSettings();
     if (!settings.allowDuplicateDetection) return res.status(403).json({ error: 'Duplicate detection is currently disabled by the administrator' });
-    const result = await detectDuplicatesInProject(p.id, prisma);
-    res.json(result);
+    // 92.md — enqueue the durable job and return immediately (202). An already-active
+    // job for this project is REUSED, so double clicks / simultaneous starts by two
+    // members attach to the one run instead of spawning another sweep.
+    const { job, alreadyRunning } = await enqueueDuplicateJob(p.id, {
+      createdById: req.user.id,
+      createdByName: req.user.name || req.user.email || '',
+    });
+    res.status(202).json({ job: publicDuplicateJob(job), alreadyRunning: !!alreadyRunning });
   } catch (err) {
     console.error('[screening] detectDuplicates:', err.message);
-    res.status(500).json({ error: 'Detection failed: ' + err.message });
+    res.status(500).json({ error: 'Could not start duplicate detection. Please try again.' });
+  }
+}
+
+/** Latest detection job for the project (reconnect-on-refresh). Any member may view. */
+export async function getDuplicateDetectStatus(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    const job = await prisma.screenDuplicateJob.findFirst({
+      where: { projectId: access.project.id },
+      orderBy: { createdAt: 'desc' },
+    });
+    res.json({ job: publicDuplicateJob(job) });
+  } catch (err) {
+    console.error('[screening] getDuplicateDetectStatus:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/** Poll a specific detection job. Any member may view. */
+export async function getDuplicateJob(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    const job = await prisma.screenDuplicateJob.findFirst({
+      where: { id: req.params.jobId, projectId: access.project.id },
+    });
+    if (!job) return res.status(404).json({ error: 'Detection job not found' });
+    res.json({ job: publicDuplicateJob(job) });
+  } catch (err) {
+    console.error('[screening] getDuplicateJob:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * Cancel a detection job. Safe by construction: a queued job is cancelled outright;
+ * a processing job stops at the next progress beat / save-batch boundary, and every
+ * group already persisted is complete and valid (nothing is half-written).
+ */
+export async function cancelDuplicateJob(req, res) {
+  try {
+    const access = await getProjectAccess(req.params.pid, req.user);
+    if (!access) return res.status(404).json({ error: 'Project not found' });
+    const canManage = access.isOwner || (access.active && (access.isLeader || access.perms.canManageDuplicates));
+    if (!canManage) return res.status(403).json({ error: 'You do not have permission to manage duplicates in this project' });
+    const job = await cancelDuplicateJobRow(access.project.id, req.params.jobId);
+    if (!job) return res.status(404).json({ error: 'Detection job not found' });
+    res.json({ job: publicDuplicateJob(job) });
+  } catch (err) {
+    console.error('[screening] cancelDuplicateJob:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
   }
 }
 
@@ -1925,7 +2012,10 @@ export async function resolveDuplicateGroup(req, res) {
     if (keepAll) {
       await labelPairs('not_duplicate');
       await prisma.screenRecord.updateMany({ where: { duplicateGroupId: group.id }, data: { isDuplicate: false, isPrimary: false } });
-      await prisma.screenDuplicateGroup.update({ where: { id: group.id }, data: { resolvedAt: new Date(), primaryId: null } });
+      // 92.md — primaryId is a NON-nullable String @default("") column; writing null
+      // threw a Prisma validation error, so "Not duplicates — keep all" 500'd at the
+      // API since prompt23. "" is the model's own no-primary sentinel.
+      await prisma.screenDuplicateGroup.update({ where: { id: group.id }, data: { resolvedAt: new Date(), primaryId: '' } });
       await writeAudit(p.id, req.user, 'DUPLICATE_GROUP_KEEP_ALL', { entityType: 'duplicateGroup', entityId: group.id });
       emitToProjectMembers(p.id, { type: 'project.updated' }, { exclude: req.user.id });
       return res.json({ resolved: true, keepAll: true });

@@ -190,7 +190,13 @@ r.post('/projects/:pid/conflicts/:cid/resolve',      S.resolveConflict);
 
 // Duplicates
 r.get('/projects/:pid/duplicates',                   S.listDuplicates);
+// 92.md — detect enqueues a durable background job (202 + job); the client polls the
+// job endpoints below (reconnect-on-refresh via detect/status) instead of the old
+// synchronous sweep that froze the server.
 r.post('/projects/:pid/duplicates/detect',           S.detectDuplicates);
+r.get('/projects/:pid/duplicates/detect/status',     S.getDuplicateDetectStatus);
+r.get('/projects/:pid/duplicates/jobs/:jobId',       S.getDuplicateJob);
+r.post('/projects/:pid/duplicates/jobs/:jobId/cancel', S.cancelDuplicateJob);
 // 65.md SCR-4 — bulk-resolve every all-exact (DOI/PMID) group, non-destructive.
 r.post('/projects/:pid/duplicates/resolve-exact',    S.resolveAllExactDuplicates);
 r.post('/projects/:pid/duplicates/:gid/resolve',     S.resolveDuplicateGroup);
