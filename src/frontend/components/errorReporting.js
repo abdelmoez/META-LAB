@@ -63,6 +63,13 @@ export function reportClientError(error, context = {}) {
   // Detail (incl. stack) stays in the console — never shown to users, never beaconed.
   // eslint-disable-next-line no-console
   console.error('[client-error]', event, error);
+  // 93.md §5.1 — forward to Sentry when (and only when) the DSN-gated client is
+  // installed (src/frontend/monitoring/sentryClient.js). Same privacy contract.
+  try {
+    if (typeof window !== 'undefined' && typeof window.__pecanSentryCapture === 'function') {
+      window.__pecanSentryCapture(error, event);
+    }
+  } catch { /* telemetry is always best-effort */ }
   try {
     const body = JSON.stringify(event);
     if (navigator && typeof navigator.sendBeacon === 'function') {

@@ -30,12 +30,32 @@ export function redactUrl(originalUrl) {
   return url;
 }
 
+// 93.md §4.11 — structured JSON access logs for production log aggregation.
+// LOG_FORMAT=json|plain; defaults to json in production, plain in dev so local
+// output stays human-readable. The JSON line carries the correlation id from
+// the requestId middleware plus the INTERNAL user id (never email/name), so a
+// 500 in the logs can be matched to a user report without exposing identity.
+const LOG_JSON = (process.env.LOG_FORMAT || (process.env.NODE_ENV === 'production' ? 'json' : 'plain')) === 'json';
+
 export function requestLogger(req, res, next) {
   const start = Date.now();
 
   res.on('finish', () => {
     const ms = Date.now() - start;
-    console.log(`[${new Date().toISOString()}] ${req.method} ${redactUrl(req.originalUrl)} → ${res.statusCode} (${ms}ms)`);
+    if (LOG_JSON) {
+      console.log(JSON.stringify({
+        t: new Date().toISOString(),
+        type: 'request',
+        id: req.id || undefined,
+        method: req.method,
+        url: redactUrl(req.originalUrl),
+        status: res.statusCode,
+        ms,
+        userId: req.user?.id || undefined,
+      }));
+    } else {
+      console.log(`[${new Date().toISOString()}] ${req.method} ${redactUrl(req.originalUrl)} → ${res.statusCode} (${ms}ms)${req.id ? ` [${req.id}]` : ''}`);
+    }
   });
 
   next();

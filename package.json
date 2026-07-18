@@ -1,6 +1,6 @@
 {
   "name": "meta-lab",
-  "version": "3.99.0",
+  "version": "4.0.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,11 +14,12 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
-    "test:integration": "vitest run tests/integration",
+    "test:integration": "vitest run tests/integration tests/screening/integration --pool=forks --poolOptions.forks.singleFork=true",
     "test:ci": "vitest run tests/unit tests/screening/unit",
     "test:search-builder-intelligence": "node scripts/search-builder-benchmark.mjs",
     "test:screening-benchmark": "node scripts/screening-benchmark.mjs",
     "smoke:deploy": "node scripts/smoke-deploy.mjs",
+    "loadtest:beta": "node scripts/loadtest/beta-load.mjs",
     "review:legal": "node scripts/review-legal.js",
     "review:ops-impact": "node scripts/review-ops-impact.js",
     "engine-version:check": "node scripts/engine-version.mjs check",
@@ -38,6 +39,7 @@
     "test:e2e:install": "playwright install --with-deps"
   },
   "dependencies": {
+    "@sentry/react": "^10.66.0",
     "docx": "^9.7.1",
     "framer-motion": "^12.40.0",
     "pdfjs-dist": "^4.10.38",

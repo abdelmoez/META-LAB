@@ -12,6 +12,9 @@ import AppErrorBoundary from "./frontend/components/AppErrorBoundary.jsx";
 // 77.md §9 — global observability + a guarded once-only reload for stale dynamic-import
 // (content-hashed chunk) failures after a deploy, the most likely "Something went wrong".
 import { installGlobalErrorHandlers } from "./frontend/components/errorReporting.js";
+// 93.md §5.1 — DSN-gated Sentry: a no-op (zero bytes downloaded) unless
+// VITE_SENTRY_DSN is configured at build time.
+import { initSentryClient } from "./frontend/monitoring/sentryClient.js";
 
 // 86.md P3.34 — surface the compile-time release id as window.__APP_VERSION__ so the
 // manuscript version stamps (which read the window global) also carry the real
@@ -19,6 +22,7 @@ import { installGlobalErrorHandlers } from "./frontend/components/errorReporting
 try { if (typeof __APP_VERSION__ !== "undefined") window.__APP_VERSION__ = __APP_VERSION__; } catch { /* no define → leave unset */ }
 
 installGlobalErrorHandlers();
+initSentryClient(); // async, fire-and-forget; no-op without a DSN
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>

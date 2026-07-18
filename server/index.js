@@ -11,8 +11,10 @@ import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 
 import { requestLogger } from './middleware/requestLogger.js';
+import { requestId }     from './middleware/requestId.js';
 import { errorHandler }  from './middleware/errorHandler.js';
 import { requireAuth }   from './middleware/auth.js';
+import { requireAdmin }  from './middleware/requireAdmin.js';
 import { maintenanceGate } from './middleware/maintenance.js';
 import { spaEnabled, serveSpa, distDir } from './middleware/spaTheme.js';
 
@@ -80,12 +82,19 @@ import { runStartupConfigCheck } from './config/validateConfig.js';
 import { cspMiddleware, cspMode, cspHeaderName, CSP_REPORT_PATH } from './security/csp.js';
 import { cspReportHandler } from './security/cspReport.js';
 import { helmetOptions, apiNoStore, publicVersion } from './security/headers.js';
+import { originCheck } from './security/originCheck.js';
+import { initErrorTracking, captureException, flushErrorTracking } from './services/errorTracking.js';
+import adminMetricsRouter from './routes/adminMetrics.js';
 import { verifyToken } from './auth/jwt.js';
 import { sessionCookieName } from './config/cookies.js';
 
 // prompt49 — fail-fast configuration diagnostic. In production a missing critical
 // value (JWT_SECRET / DATABASE_URL / CORS origin) aborts boot; in dev it warns.
 runStartupConfigCheck();
+
+// 93.md §5.1 — DSN-gated Sentry. No-op (zero import cost) unless SENTRY_DSN is
+// set; init failure logs one line and never affects availability.
+initErrorTracking().catch(() => {});
 
 const app = express();
 
@@ -116,6 +125,11 @@ function resolveTrustProxy(raw) {
   return v;                                     // subnet list / 'loopback' etc.
 }
 app.set('trust proxy', resolveTrustProxy(process.env.TRUST_PROXY));
+
+// ── Request correlation id (93.md §4.11) ───────────────────────────────────────
+// FIRST middleware: every request gets an id (or keeps the proxy's X-Request-Id)
+// so access logs, error logs, 5xx responses and audit events can be correlated.
+app.use(requestId);
 
 // ── Security headers ───────────────────────────────────────────────────────────
 // helmet provides the well-tested baseline (X-Content-Type-Options: nosniff,
@@ -337,6 +351,13 @@ const publicSynthesisLimiter = rateLimit({
 const CORS_ALLOWLIST = resolveCorsAllowlist();
 console.log(`[cors] allowlist: ${CORS_ALLOWLIST.join(', ')}`);
 app.use(cors({ origin: corsOriginDelegate(), credentials: true }));
+// ── CSRF defense-in-depth (93.md §4.6) ─────────────────────────────────────────
+// Primary defenses are SameSite=Strict cookies + the credentialed CORS allowlist
+// above + JSON-only body parsing. This layer additionally rejects any mutating
+// request whose browser-set Origin / Sec-Fetch-Site metadata says "cross-site"
+// BEFORE body parsing and route handlers. The CSP-report and client-error
+// beacons are mounted above this line on purpose (log-only, unauthenticated).
+app.use(originCheck({ allowlist: CORS_ALLOWLIST }));
 // prompt50 WS2 — screening reference imports may carry tens of thousands of
 // citations in one JSON payload, so the import endpoints get a much larger body
 // budget than the 10MB default that protects every other route from oversized
@@ -383,10 +404,17 @@ app.get('/api/health/ready', async (_req, res) => {
   let ready = true;
   const t0 = Date.now();
   try {
-    await prisma.$queryRaw`SELECT 1`;
+    // 93.md §3.4 — strict timeout on the dependency check: a hung DB must turn
+    // into a fast 503 (readiness flips, uptime monitor alerts), never a probe
+    // that itself hangs until the LB gives up.
+    const READY_DB_TIMEOUT_MS = Number(process.env.READY_DB_TIMEOUT_MS) || 3000;
+    await Promise.race([
+      prisma.$queryRaw`SELECT 1`,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), READY_DB_TIMEOUT_MS).unref()),
+    ]);
     checks.database = 'ok';
-  } catch {
-    checks.database = 'error';
+  } catch (e) {
+    checks.database = e?.message === 'timeout' ? 'timeout' : 'error';
     ready = false;
   }
   // Public readiness probe: a load balancer only needs the 200/503 + the coarse
@@ -471,6 +499,15 @@ app.use('/api/waitlist', waitlistLimiter, waitlistRouter);
 app.use('/api/public', publicSynthesisLimiter, publicViewRouter);
 
 app.use('/api',                      importExportRouter);  // /api/import/... and /api/export/...
+
+// ── Admin runtime metrics (93.md Phase 10) — event-loop delay, memory, queue
+// depths for load testing + beta ops. Own mount BEFORE the general admin router
+// so it gets explicit requireAuth+requireAdmin gating at the mount. Mounted at
+// /metrics/runtime — NOT /metrics: mounting on the bare /api/admin/metrics path
+// shadowed the LEGACY dashboard metrics route (adminRouter GET /metrics —
+// users/projects/contactMessages totals) that the Admin Console Overview and
+// the api-admin integration suite depend on (93.md test-phase fix). ───────────
+app.use('/api/admin/metrics/runtime', requireAuth, requireAdmin, adminMetricsRouter);
 
 // ── Admin routes (requireAuth + requireAdmin applied inside admin router) ──────
 app.use('/api/admin', requireAuth, adminRouter);
@@ -595,6 +632,15 @@ if (spaEnabled()) {
     // otherwise label .mjs as application/octet-stream and the worker fails to load.
     setHeaders: (res, filePath) => {
       if (filePath.endsWith('.mjs')) res.setHeader('Content-Type', 'text/javascript; charset=utf-8');
+      // 93.md §3.7 — Vite emits content-hashed filenames under /assets (e.g.
+      // index-B3xkQ9dP.js). Those are immutable by construction → long-lived
+      // immutable caching (browser + CDN). index.html stays no-cache (serveSpa)
+      // so a new deploy is picked up immediately; everything else keeps the 1h
+      // default above.
+      const norm = filePath.replace(/\\/g, '/');
+      if (/\/assets\/[^/]+-[A-Za-z0-9_-]{8,}\.[a-z0-9]+$/.test(norm)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
     },
   }));
   app.use(serveSpa);
@@ -618,9 +664,11 @@ app.use(errorHandler);
 // deliberately do not exit here.
 process.on('unhandledRejection', (reason) => {
   console.error('[process] unhandledRejection:', reason instanceof Error ? (reason.stack || reason.message) : reason);
+  captureException(reason, { route: 'process:unhandledRejection' });
 });
 process.on('uncaughtException', (err) => {
   console.error('[process] uncaughtException:', err?.stack || err?.message || err);
+  captureException(err, { route: 'process:uncaughtException' });
 });
 
 // ── Start ──────────────────────────────────────────────────────────────────────
@@ -730,5 +778,55 @@ const server = app.listen(PORT, () => {
 server.requestTimeout = Number(process.env.REQUEST_TIMEOUT_MS) || 120000;
 server.headersTimeout = (Number(process.env.REQUEST_TIMEOUT_MS) || 120000) + 5000;
 server.keepAliveTimeout = Number(process.env.KEEPALIVE_TIMEOUT_MS) || 75000;
+
+// ── Graceful shutdown (93.md §3.5) ─────────────────────────────────────────────
+// SIGTERM (pm2 reload / systemd stop) and SIGINT (Ctrl-C) drain cleanly:
+//   1. server.close() — stop accepting; in-flight requests finish naturally.
+//      Idle keep-alive sockets are closed at once; lingering connections (SSE
+//      streams keep sockets open indefinitely) are force-closed after a short
+//      grace so close() can complete — SSE clients auto-reconnect by design.
+//   2. Stop the living-review scheduler tick (durable job workers need no stop:
+//      they are kick-driven, and a job cut mid-flight is re-queued by the
+//      heartbeat/boot recovery that already guards against crashes).
+//   3. prisma.$disconnect() + flush error tracking.
+//   4. Hard exit bound (SHUTDOWN_GRACE_MS, default 15s — PM2 kill_timeout is
+//      20s so a draining process is never SIGKILLed mid-step).
+const SHUTDOWN_GRACE_MS = Number(process.env.SHUTDOWN_GRACE_MS) || 15000;
+let shuttingDown = false;
+async function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[process] ${signal} received — graceful shutdown (bound ${SHUTDOWN_GRACE_MS}ms)`);
+  setTimeout(() => {
+    console.error('[process] shutdown grace expired — forcing exit');
+    process.exit(1);
+  }, SHUTDOWN_GRACE_MS).unref();
+
+  try {
+    const m = await import('./living/scheduler.js');
+    m.stopLivingScheduler?.();
+  } catch { /* scheduler never started — nothing to stop */ }
+
+  await new Promise((resolve) => {
+    server.close(() => resolve());
+    server.closeIdleConnections?.();
+    // Give in-flight requests most of the grace, then sever what remains
+    // (long-lived SSE streams would otherwise hold close() open forever).
+    setTimeout(() => server.closeAllConnections?.(), Math.max(1000, SHUTDOWN_GRACE_MS - 5000)).unref();
+  });
+
+  // Best-effort: push any queued PostHog analytics batch out before exit (the
+  // flush timer is unref'd, so without this a final ≤5s window would be lost).
+  try {
+    const a = await import('./services/analytics.js');
+    await a.flushPosthog?.();
+  } catch { /* analytics is always best-effort */ }
+  try { await prisma.$disconnect(); } catch { /* already down */ }
+  await flushErrorTracking(2000);
+  console.log('[process] shutdown complete');
+  process.exit(0);
+}
+process.on('SIGTERM', () => { gracefulShutdown('SIGTERM'); });
+process.on('SIGINT',  () => { gracefulShutdown('SIGINT'); });
 
 export default app;
