@@ -1558,9 +1558,26 @@ function ReplyThread({ replies }) {
   );
 }
 
+// 93.md §9.3 — bug-triage vocab shared by the inbox UI (mirrors the server enums).
+const MSG_SEVERITIES = ['critical', 'high', 'medium', 'low'];
+const MSG_SEVERITY_COLOR = { critical: C.red, high: C.red, medium: C.ylw, low: C.muted };
+const MSG_TRIAGE_STATUSES = ['new', 'acknowledged', 'needs_info', 'planned', 'in_progress', 'shipped', 'declined', 'duplicate'];
+const MSG_TRIAGE_LABELS = { new: 'New', acknowledged: 'Acknowledged', needs_info: 'Needs info', planned: 'Planned', in_progress: 'In progress', shipped: 'Shipped', declined: 'Declined', duplicate: 'Duplicate' };
+
 function MessageDetail({ msg, emailConfigured, onMarkRead, onArchive, onDelete, onReplied }) {
   const isUnread = !msg.readByMe && !msg.archived;
   const [replies, setReplies] = useState([]);
+  // 93.md §9.3 — local triage state (persisted on change; PATCH is audited server-side).
+  const [severity, setSeverity] = useState(msg.severity || '');
+  const [triageStatus, setTriageStatus] = useState(msg.triageStatus || 'new');
+  const [triageErr, setTriageErr] = useState('');
+  useEffect(() => { setSeverity(msg.severity || ''); setTriageStatus(msg.triageStatus || 'new'); setTriageErr(''); }, [msg.id, msg.severity, msg.triageStatus]);
+
+  const saveTriage = async (patch) => {
+    setTriageErr('');
+    try { await adminApi.messages.update(msg.id, patch); }
+    catch (e) { setTriageErr(e.message); }
+  };
 
   const loadReplies = useCallback(() => {
     adminApi.messages.replies(msg.id).then(d => setReplies(d.replies || [])).catch(() => setReplies([]));
@@ -1579,13 +1596,16 @@ function MessageDetail({ msg, emailConfigured, onMarkRead, onArchive, onDelete, 
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 14 }}>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontSize: 16, fontWeight: 700, color: C.txt, marginBottom: 6, minWidth: 0, overflowWrap: 'anywhere' }}>{msg.subject || '(no subject)'}</div>
-            <div style={{ display: 'flex', gap: 6 }}>
+            <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
               {msg.archived
                 ? <Badge text="archived" color={C.muted} />
                 : isUnread
                   ? <Badge text="unread" color={C.ylw} />
                   : <Badge text="read" color={C.grn} />}
               {msg.replied && <Badge text="replied" color={C.teal} />}
+              {/* 93.md §9.3 — the reporter's quotable reference + severity */}
+              {msg.reference && <span title="The reporter received this reference — quote it in follow-ups" style={{ fontSize: 11, fontWeight: 700, fontFamily: MONO, color: C.acc, background: alpha(C.acc, '12'), border: `1px solid ${alpha(C.acc, '35')}`, padding: '2px 8px', borderRadius: 6 }}>{msg.reference}</span>}
+              {msg.severity && <Badge text={msg.severity} color={MSG_SEVERITY_COLOR[msg.severity] || C.muted} />}
             </div>
           </div>
           <div style={{ fontSize: 11, color: C.muted, fontFamily: MONO, textAlign: 'right', flexShrink: 0, marginLeft: 16 }}>
@@ -1600,6 +1620,28 @@ function MessageDetail({ msg, emailConfigured, onMarkRead, onArchive, onDelete, 
 
       <div style={{ fontSize: 13, color: C.txt2, lineHeight: 1.85, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', padding: 18, background: C.surf, borderRadius: 8, border: `1px solid ${C.brd}`, marginBottom: 18, minHeight: 100 }}>
         {msg.message}
+      </div>
+
+      {/* 93.md §9.3 — triage controls (persisted immediately; audited server-side) */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', padding: '10px 14px', background: C.surf, borderRadius: 8, border: `1px solid ${C.brd}`, marginBottom: 14 }}>
+        <span style={{ fontSize: 10, fontFamily: MONO, color: C.muted, textTransform: 'uppercase', letterSpacing: '0.06em' }}>Triage</span>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: C.muted }}>Status
+          <select aria-label="Triage status" value={triageStatus}
+            onChange={(e) => { setTriageStatus(e.target.value); saveTriage({ triageStatus: e.target.value }); }}
+            style={{ height: 28, padding: '0 8px', fontSize: 12, fontFamily: FONT, color: C.txt, background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 6, cursor: 'pointer' }}>
+            {MSG_TRIAGE_STATUSES.map(s => <option key={s} value={s}>{MSG_TRIAGE_LABELS[s]}</option>)}
+          </select>
+        </label>
+        <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: C.muted }}>Severity
+          <select aria-label="Severity" value={severity}
+            onChange={(e) => { setSeverity(e.target.value); saveTriage({ severity: e.target.value || null }); }}
+            style={{ height: 28, padding: '0 8px', fontSize: 12, fontFamily: FONT, color: C.txt, background: C.card, border: `1px solid ${C.brd2}`, borderRadius: 6, cursor: 'pointer' }}>
+            <option value="">— none —</option>
+            {MSG_SEVERITIES.map(s => <option key={s} value={s}>{s}</option>)}
+          </select>
+        </label>
+        {msg.triagedAt && <span style={{ fontSize: 10.5, color: C.muted, fontFamily: MONO }}>triaged {fmtAgo(msg.triagedAt)}</span>}
+        {triageErr && <span role="alert" style={{ fontSize: 11.5, color: C.red }}>{triageErr}</span>}
       </div>
 
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -8793,13 +8835,21 @@ function WaitlistSection() {
   const [rowBusyId, setRowBusyId] = useState(null); // per-row invite in-flight (double-click guard)
   const [exporting, setExporting] = useState(false); // CSV export in-flight guard
   const [msg, setMsg] = useState(''); // transient success banner (invitations)
+  // 93.md §9.1 — cohort filter + cohort label to assign on invite, and the
+  // invitations-paused emergency brake (appSettings.invitationsPaused).
+  const [cohort, setCohort] = useState('');          // filter: only applicants with an invitation in this cohort
+  const [inviteCohort, setInviteCohort] = useState(''); // label stamped on NEW invitations (bulk toolbar)
+  const [paused, setPaused] = useState(false);
+  const [pauseBusy, setPauseBusy] = useState(false);
   const searchTimer = useRef(null);
+  const cohortTimer = useRef(null);
   const filtersRef = useRef({});
   // dateTo is widened to end-of-day so the chosen day is inclusive.
   filtersRef.current = {
     search, status, role, countryCode, emailStatus, sortBy, sortDir,
     dateFrom: dateFrom || undefined,
     dateTo: dateTo ? `${dateTo}T23:59:59.999` : undefined,
+    cohort: cohort.trim() || undefined,
   };
 
   const loadMetrics = useCallback(() => {
@@ -8829,12 +8879,38 @@ function WaitlistSection() {
   // Reload table whenever a non-search filter or sort changes (search is debounced).
   useEffect(() => { loadTable(1); }, [status, role, countryCode, emailStatus, sortBy, sortDir, dateFrom, dateTo, loadTable]);
 
+  // 93.md §9.1 — invitations-paused state (best-effort read; toggle below).
+  useEffect(() => {
+    adminApi.settings.get()
+      .then((s) => setPaused(s?.appSettings?.invitationsPaused === true))
+      .catch(() => {});
+  }, []);
+  const togglePause = async () => {
+    if (pauseBusy) return;
+    setPauseBusy(true); setErr('');
+    try {
+      // Read-merge-write so the toggle never clobbers other appSettings keys.
+      const current = await adminApi.settings.get();
+      const app = { ...(current?.appSettings || {}), invitationsPaused: !paused };
+      await adminApi.settings.save({ appSettings: app });
+      setPaused(!paused);
+      setMsg(!paused ? 'Invitations are paused — no new invitation links can be sent.' : 'Invitations resumed.');
+    } catch (e) { setErr(e.message); }
+    finally { setPauseBusy(false); }
+  };
+
   const onSearch = (v) => {
     setSearch(v);
     clearTimeout(searchTimer.current);
     searchTimer.current = setTimeout(() => loadTable(1), 300);
   };
-  const clearFilters = () => { setSearch(''); setStatus(''); setRole(''); setCountryCode(''); setEmailStatus(''); setSortBy('createdAt'); setSortDir('desc'); setDateFrom(''); setDateTo(''); };
+  // 93.md §9.1 — cohort filter is debounced like search (free-text input).
+  const onCohortFilter = (v) => {
+    setCohort(v);
+    clearTimeout(cohortTimer.current);
+    cohortTimer.current = setTimeout(() => loadTable(1), 300);
+  };
+  const clearFilters = () => { setSearch(''); setStatus(''); setRole(''); setCountryCode(''); setEmailStatus(''); setSortBy('createdAt'); setSortDir('desc'); setDateFrom(''); setDateTo(''); setCohort(''); };
   const toggleSort = (col) => {
     if (sortBy === col) setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
     else { setSortBy(col); setSortDir(col === 'createdAt' ? 'desc' : 'asc'); }
@@ -8846,7 +8922,7 @@ function WaitlistSection() {
   // Changing ANY filter (incl. the search box) invalidates a cross-page selection —
   // clear it so "select all matching" can never invite people who no longer match
   // what the admin is looking at.
-  useEffect(() => { clearSelection(); }, [search, status, role, countryCode, emailStatus, dateFrom, dateTo]);
+  useEffect(() => { clearSelection(); }, [search, status, role, countryCode, emailStatus, dateFrom, dateTo, cohort]);
 
   // A row is selectable unless the person already has an account / accepted.
   const rowSelectable = (r) => r.inviteState !== 'accepted' && !r.existingUser;
@@ -8878,7 +8954,9 @@ function WaitlistSection() {
     setRowBusyId(r.id); setErr(''); setMsg('');
     try {
       const isResend = r.inviteState === 'invited';
-      const d = isResend ? await adminApi.betaWaitlist.resendInvite(r.id) : await adminApi.betaWaitlist.invite(r.id);
+      // 93.md §9.1 — the cohort label (when set) is stamped on quick invites too.
+      const co = inviteCohort.trim().slice(0, 64) || undefined;
+      const d = isResend ? await adminApi.betaWaitlist.resendInvite(r.id, co) : await adminApi.betaWaitlist.invite(r.id, null, co);
       const code = d.result?.code;
       if (code === 'already_registered') setMsg(`${applicantDisplayName(r)} already has an account.`);
       else if (code === 'email_failed') setErr(`Invitation created but the email to ${r.email} failed — retry from the applicant panel.`);
@@ -8896,6 +8974,8 @@ function WaitlistSection() {
       const body = selectAllMatching
         ? { allMatchingFilter: filtersRef.current }
         : { ids: [...selected] };
+      // 93.md §9.1 — optional cohort label stamped on every invitation this batch mints.
+      if (inviteCohort.trim()) body.cohort = inviteCohort.trim().slice(0, 64);
       const d = await adminApi.betaWaitlist.bulkInvite(body);
       setBulkResult(d);
       setBulkConfirm(false);
@@ -8936,10 +9016,23 @@ function WaitlistSection() {
 
   return (
     <div>
-      <div style={{ marginBottom: 16 }}>
-        <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 4px' }}>Beta Waitlist</h2>
-        <div style={{ fontSize: 12.5, color: C.muted, lineHeight: 1.5 }}>Applicants who joined the public beta waitlist. Stored in a separate database — never mixed with user accounts.</div>
+      <div style={{ marginBottom: 16, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div>
+          <h2 style={{ fontSize: 16, fontWeight: 700, color: C.txt, margin: '0 0 4px' }}>Beta Waitlist</h2>
+          <div style={{ fontSize: 12.5, color: C.muted, lineHeight: 1.5 }}>Applicants who joined the public beta waitlist. Stored in a separate database — never mixed with user accounts.</div>
+        </div>
+        {/* 93.md §9.1 — invitations-paused emergency brake (audited server-side as UPDATE_SETTING) */}
+        <button type="button" onClick={togglePause} disabled={pauseBusy}
+          title={paused ? 'Invitations are paused — click to resume sending invitation links' : 'Pause all new invitation links (single, resend and bulk)'}
+          style={{ ...wlBtn, color: paused ? C.red : C.txt2, borderColor: paused ? alpha(C.red, '60') : C.brd2, background: paused ? C.redBg : C.card, fontWeight: 700, opacity: pauseBusy ? 0.6 : 1 }}>
+          <Icon name={paused ? 'alertTriangle' : 'send'} size={13} />{pauseBusy ? 'Saving…' : (paused ? 'Invitations paused — Resume' : 'Pause invitations')}
+        </button>
       </div>
+      {paused && (
+        <div role="status" style={{ margin: '0 0 14px', padding: '9px 12px', background: C.yelBg, border: `1px solid ${C.yel}`, borderRadius: 8, color: C.yel, fontSize: 12.5 }}>
+          Invitations are paused — invite, resend and bulk-invite requests are refused until resumed. Revoking stays available.
+        </div>
+      )}
 
       {err && <div role="alert" style={{ margin: '0 0 14px', padding: '9px 12px', background: C.redBg, border: `1px solid ${C.red}`, borderRadius: 8, color: C.red, fontSize: 12.5 }}>{err}</div>}
       {msg && <div style={{ margin: '0 0 14px', padding: '9px 12px', background: C.grnBg, border: `1px solid ${C.grn}`, borderRadius: 8, color: C.grn, fontSize: 12.5, display: 'flex', justifyContent: 'space-between', gap: 10 }}><span>{msg}</span><button type="button" onClick={() => setMsg('')} aria-label="Dismiss" style={{ background: 'none', border: 'none', color: C.grn, cursor: 'pointer', fontWeight: 700 }}>×</button></div>}
@@ -8959,6 +9052,11 @@ function WaitlistSection() {
             <span style={{ fontSize: 12, color: C.txt2 }}>All applicants matching the current filter.</span>
           )}
           <span style={{ flex: 1 }} />
+          {/* 93.md §9.1 — optional cohort label stamped on every invitation sent from here */}
+          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: C.muted }}>Cohort
+            <input aria-label="Cohort label for these invitations" placeholder="e.g. beta-1 (optional)" value={inviteCohort} maxLength={64}
+              onChange={(e) => setInviteCohort(e.target.value)} style={{ ...wlInput, width: 150 }} />
+          </label>
           <button type="button" onClick={() => setBulkConfirm(true)} style={{ ...wlBtn, background: C.acc, color: C.accText, borderColor: C.acc, fontWeight: 700 }}>
             <Icon name="send" size={13} />Send invitations to {selectionCount} selected
           </button>
@@ -9051,6 +9149,9 @@ function WaitlistSection() {
               <option value="">All emails</option>
               {WL_EMAIL_STATUSES.map((s) => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
             </select>
+            {/* 93.md §9.1 — filter to applicants whose invitation carries this cohort label */}
+            <input aria-label="Filter by invitation cohort" placeholder="Cohort…" value={cohort} maxLength={64}
+              onChange={(e) => onCohortFilter(e.target.value)} style={{ ...wlInput, width: 110 }} />
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: C.muted }}>From<input type="date" aria-label="Submitted on or after" value={dateFrom} max={dateTo || undefined} onChange={(e) => setDateFrom(e.target.value)} style={wlInput} /></label>
             <label style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontSize: 11.5, color: C.muted }}>To<input type="date" aria-label="Submitted on or before" value={dateTo} min={dateFrom || undefined} onChange={(e) => setDateTo(e.target.value)} style={wlInput} /></label>
             <button type="button" onClick={clearFilters} style={wlBtn}>Clear</button>
@@ -9116,6 +9217,10 @@ function WaitlistSection() {
                       <td style={{ padding: '10px', whiteSpace: 'nowrap' }}>
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                           <InviteBadge state={r.inviteState} existing={!!r.existingUser} />
+                          {/* 93.md §9.1 — cohort chip on the invitation */}
+                          {r.invitation?.cohort && (
+                            <span title={`Cohort: ${r.invitation.cohort}`} style={{ display: 'inline-block', fontSize: 10.5, fontWeight: 700, color: C.teal, background: C.card2, border: `1px solid ${alpha(C.teal, '40')}`, padding: '2px 7px', borderRadius: 999, fontFamily: MONO, maxWidth: 110, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', verticalAlign: 'middle' }}>{r.invitation.cohort}</span>
+                          )}
                           {r.eligibility && (r.eligibility.canInvite || r.eligibility.canResend) && !r.existingUser && (
                             <button type="button" onClick={(e) => inviteRow(r, e)} disabled={rowBusyId === r.id}
                               title={r.eligibility.canResend ? 'Resend invitation' : 'Send invitation'}
@@ -9219,6 +9324,8 @@ function WaitlistDrawer({ id, onClose, onChanged }) {
   const [invitations, setInvitations] = useState([]);
   const [invBusy, setInvBusy] = useState(false);
   const [confirmRevoke, setConfirmRevoke] = useState(false);
+  // 93.md §9.1 — optional cohort label applied when inviting from the drawer.
+  const [drawerCohort, setDrawerCohort] = useState('');
   const panelRef = useRef(null);
   const prevFocusRef = useRef(null);
 
@@ -9306,8 +9413,8 @@ function WaitlistDrawer({ id, onClose, onChanged }) {
       setErr(e.status === 429 ? 'An invitation was sent very recently. Please wait before resending.' : e.message);
     } finally { setInvBusy(false); }
   };
-  const doInvite = () => runInviteAction(() => adminApi.betaWaitlist.invite(id), 'Invitation sent.');
-  const doResend = () => runInviteAction(() => adminApi.betaWaitlist.resendInvite(id), 'Invitation re-sent.');
+  const doInvite = () => runInviteAction(() => adminApi.betaWaitlist.invite(id, null, drawerCohort.trim().slice(0, 64) || undefined), 'Invitation sent.');
+  const doResend = () => runInviteAction(() => adminApi.betaWaitlist.resendInvite(id, drawerCohort.trim().slice(0, 64) || undefined), 'Invitation re-sent.');
   const doRevoke = async () => {
     setInvBusy(true); setMsg(''); setErr('');
     try { await adminApi.betaWaitlist.revokeInvite(id); setMsg('Invitation revoked.'); setConfirmRevoke(false); onChanged(); load(); }
@@ -9396,7 +9503,7 @@ function WaitlistDrawer({ id, onClose, onChanged }) {
 
                 {applicant.invitation && (
                   <div style={{ background: C.card, border: `1px solid ${C.brd}`, borderRadius: 8, padding: '10px 12px', marginBottom: 12, fontSize: 12.5, color: C.txt2, lineHeight: 1.7 }}>
-                    <div>Current link: <strong style={{ color: C.txt }}>{INVITE_STATE_LABELS[applicant.invitation.expired ? 'expired' : (applicant.invitation.status === 'pending' ? 'invited' : applicant.invitation.status)] || applicant.invitation.status}</strong> · attempt {applicant.invitation.attempt}</div>
+                    <div>Current link: <strong style={{ color: C.txt }}>{INVITE_STATE_LABELS[applicant.invitation.expired ? 'expired' : (applicant.invitation.status === 'pending' ? 'invited' : applicant.invitation.status)] || applicant.invitation.status}</strong> · attempt {applicant.invitation.attempt}{applicant.invitation.cohort ? <> · cohort <span style={{ fontFamily: MONO, color: C.teal }}>{applicant.invitation.cohort}</span></> : null}</div>
                     <div>Email: <WlEmailBadge status={applicant.invitation.emailStatus} /> {applicant.invitation.emailSentAt ? `· sent ${wlFmtDateTime(applicant.invitation.emailSentAt)}` : ''}</div>
                     {applicant.invitation.lastEmailError && <div style={{ color: C.red }}>Last email error: {applicant.invitation.lastEmailError}</div>}
                     <div>Expires: {wlFmtDateTime(applicant.invitation.expiresAt)}</div>
@@ -9407,6 +9514,11 @@ function WaitlistDrawer({ id, onClose, onChanged }) {
 
                 {!applicant.existingUser && applicant.inviteState !== 'accepted' && (
                   <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 6 }}>
+                    {/* 93.md §9.1 — optional cohort label for the link minted here */}
+                    {(applicant.eligibility?.canInvite || applicant.eligibility?.canResend) && (
+                      <input aria-label="Cohort label for this invitation" placeholder="Cohort (optional)" value={drawerCohort} maxLength={64}
+                        onChange={(e) => setDrawerCohort(e.target.value)} style={{ ...wlInput, width: 130 }} />
+                    )}
                     {applicant.eligibility?.canInvite && (
                       <button type="button" onClick={doInvite} disabled={invBusy} style={{ ...wlBtn, background: C.acc, color: C.accText, borderColor: C.acc, fontWeight: 700, opacity: invBusy ? 0.6 : 1 }}>
                         <Icon name="send" size={13} />{invBusy ? 'Sending…' : (applicant.inviteState === 'revoked' ? 'Re-invite' : 'Send invitation')}
@@ -9439,7 +9551,7 @@ function WaitlistDrawer({ id, onClose, onChanged }) {
                       {invitations.map((iv) => (
                         <div key={iv.id} style={{ fontSize: 12, color: C.txt2, display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
                           <span style={{ fontFamily: MONO, color: C.muted, fontSize: 11 }}>{wlFmtDateTime(iv.createdAt)}</span>
-                          <span>attempt {iv.attempt} · <strong>{INVITE_STATE_LABELS[iv.effectiveStatus === 'pending' ? 'invited' : iv.effectiveStatus] || iv.effectiveStatus}</strong> · email {iv.emailStatus}</span>
+                          <span>attempt {iv.attempt} · <strong>{INVITE_STATE_LABELS[iv.effectiveStatus === 'pending' ? 'invited' : iv.effectiveStatus] || iv.effectiveStatus}</strong> · email {iv.emailStatus}{iv.cohort ? <> · cohort <span style={{ fontFamily: MONO, color: C.teal }}>{iv.cohort}</span></> : null}</span>
                         </div>
                       ))}
                     </div>

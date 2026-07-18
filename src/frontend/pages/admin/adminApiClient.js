@@ -323,11 +323,14 @@ export const adminApi = {
     // { result } (result.code ∈ invited|invited_no_email|email_failed|already_registered|
     //   cooldown); bulkInvite returns { batchId, summary, results }; invitations(id)
     //   returns { invitations:[…safe views…] }.
-    invite:        (id, tierId) => req(`${BASE}/beta-waitlist/applicants/${id}/invite`, { method: 'POST', ...json(tierId ? { tierId } : {}) }),
-    resendInvite:  (id)         => req(`${BASE}/beta-waitlist/applicants/${id}/invite/resend`, { method: 'POST', ...json({}) }),
+    // 93.md §9.1 — invite/bulkInvite accept an optional cohort label (≤64 chars);
+    //   listInvitations(p) lists MAIN-db invitations filterable by ?cohort=&status=.
+    invite:        (id, tierId, cohort) => req(`${BASE}/beta-waitlist/applicants/${id}/invite`, { method: 'POST', ...json({ ...(tierId ? { tierId } : {}), ...(cohort ? { cohort } : {}) }) }),
+    resendInvite:  (id, cohort) => req(`${BASE}/beta-waitlist/applicants/${id}/invite/resend`, { method: 'POST', ...json(cohort ? { cohort } : {}) }),
     revokeInvite:  (id)         => req(`${BASE}/beta-waitlist/applicants/${id}/invite/revoke`, { method: 'POST', ...json({}) }),
     invitations:   (id)         => req(`${BASE}/beta-waitlist/applicants/${id}/invitations`),
-    // body = { ids:[…] } OR { allMatchingFilter:{…filters} }, optional tierId.
+    listInvitations: (p)        => req(`${BASE}/beta-waitlist/invitations${qs(p)}`),
+    // body = { ids:[…] } OR { allMatchingFilter:{…filters} }, optional tierId + cohort.
     bulkInvite:    (body)       => req(`${BASE}/beta-waitlist/invitations/bulk`, { method: 'POST', ...json(body) }),
   },
 

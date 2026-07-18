@@ -32,6 +32,8 @@ import {
   sendEmail,
   isEmailConfigured,
   renderWaitlistInvitationEmail,
+  renderWelcomeEmail,
+  configuredSupportEmail,
 } from './emailService.js';
 import { normalizeEmail } from '../../src/shared/betaWaitlist.js';
 import {
@@ -106,8 +108,100 @@ export function toInvitationView(row, now = Date.now()) {
     lastEmailError: row.lastEmailError,
     invitedByUserId: row.invitedByUserId,
     batchId: row.batchId,
+    cohort: row.cohort ?? null, // 93.md §9.1 — beta-wave label, surfaced everywhere
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
+  };
+}
+
+// ── 93.md §9.1 — cohort label + invitation controls ─────────────────────────────
+/**
+ * Normalize an admin-supplied cohort label: trimmed string ≤64 chars, or null.
+ * Returns `{ ok:false }` for a non-empty value that is not usable (wrong type /
+ * too long) so controllers can 400 instead of silently truncating.
+ */
+export function cleanCohortLabel(v) {
+  if (v == null || v === '') return { ok: true, cohort: null };
+  if (typeof v !== 'string') return { ok: false, error: 'cohort must be a string' };
+  const s = v.trim();
+  if (!s) return { ok: true, cohort: null };
+  if (s.length > 64) return { ok: false, error: 'cohort must be at most 64 characters' };
+  return { ok: true, cohort: s };
+}
+
+/**
+ * Read the invitation admin controls from the appSettings SiteSetting (93.md
+ * §9.1): `invitationsPaused` (default false) and `maxActiveInvitations`
+ * (null = unlimited). Fail-open to the defaults — a settings-read hiccup must
+ * never brick the invite pipeline harder than "not paused, no cap".
+ * @returns {Promise<{paused:boolean, maxActive:number|null}>}
+ */
+export async function getInvitationControls() {
+  try {
+    const row = await prisma.siteSetting.findUnique({ where: { key: 'appSettings' } });
+    const s = row ? JSON.parse(row.value || '{}') : {};
+    const rawMax = s.maxActiveInvitations;
+    const maxActive = Number.isFinite(Number(rawMax)) && rawMax !== null && rawMax !== '' && Number(rawMax) > 0
+      ? Math.floor(Number(rawMax))
+      : null;
+    return { paused: s.invitationsPaused === true, maxActive };
+  } catch {
+    return { paused: false, maxActive: null };
+  }
+}
+
+/** Count currently-ACTIVE (pending, unexpired) invitations — the cap's basis. */
+export async function countActivePendingInvitations() {
+  return prisma.waitlistInvitation.count({ where: { status: 'pending', expiresAt: { gt: new Date() } } });
+}
+
+/**
+ * Distinct normalized emails carrying a given cohort label (any status). Used to
+ * filter the waitlist applicants list by cohort (read-only cross-DB join key).
+ * Capped so a pathological cohort can never materialize an unbounded IN list.
+ */
+export async function normalizedEmailsForCohort(cohort, cap = 2000) {
+  const c = String(cohort || '').trim();
+  if (!c) return [];
+  const rows = await prisma.waitlistInvitation.findMany({
+    where: { cohort: c },
+    select: { normalizedEmail: true },
+    distinct: ['normalizedEmail'],
+    take: Math.min(Math.max(1, cap | 0), 5000),
+  });
+  return rows.map((r) => r.normalizedEmail);
+}
+
+/**
+ * Paginated main-DB invitations list for Ops (93.md §9.1) — filterable by
+ * cohort and status, newest first. Returns SAFE views (never tokenHash) plus the
+ * display email (admin-only endpoint; email already lives in this table).
+ */
+export async function listInvitations({ cohort = '', status = '', page = 1, limit = 25 } = {}) {
+  const p = Math.max(1, parseInt(page, 10) || 1);
+  const l = Math.min(100, Math.max(1, parseInt(limit, 10) || 25));
+  const where = {};
+  const c = String(cohort || '').trim();
+  if (c) where.cohort = c;
+  const st = String(status || '').trim();
+  if (st) where.status = st;
+  const [total, rows] = await Promise.all([
+    prisma.waitlistInvitation.count({ where }),
+    prisma.waitlistInvitation.findMany({
+      where,
+      select: { ...INVITATION_VIEW_SELECT, email: true },
+      orderBy: { createdAt: 'desc' },
+      skip: (p - 1) * l,
+      take: l,
+    }),
+  ]);
+  const now = Date.now();
+  return {
+    invitations: rows.map((r) => ({ ...toInvitationView(r, now), email: r.email })),
+    total,
+    page: p,
+    limit: l,
+    pages: Math.max(1, Math.ceil(total / l)),
   };
 }
 
@@ -119,10 +213,10 @@ export function toInvitationView(row, now = Date.now()) {
  * the waitlist DB — the caller orchestrates those.
  *
  * @param {{applicantId:string, email:string, name?:string, invitedByUserId:string,
- *          tierId?:string|null, batchId?:string|null, ip?:string}} o
+ *          tierId?:string|null, batchId?:string|null, cohort?:string|null, ip?:string}} o
  * @returns {Promise<{token:string, invitation:object, expiresAt:Date}>}
  */
-export async function createInvitation({ applicantId, email, name = '', invitedByUserId, tierId = null, batchId = null, ip = '' }) {
+export async function createInvitation({ applicantId, email, name = '', invitedByUserId, tierId = null, batchId = null, cohort = null, ip = '' }) {
   const normalized = normalizeEmail(email);
   const token = crypto.randomBytes(32).toString('hex');
   const tokenHash = hashInviteToken(token);
@@ -152,6 +246,8 @@ export async function createInvitation({ applicantId, email, name = '', invitedB
         tierId: tierId || null,
         invitedByUserId,
         batchId: batchId || null,
+        // 93.md §9.1 — optional beta-wave label (validated/trimmed by the caller).
+        cohort: (cohort && String(cohort).trim().slice(0, 64)) || null,
         ip: ip || '',
       },
     });
@@ -210,7 +306,9 @@ export async function sendInvitationEmail({ invitation, token, baseUrl = '', toN
     return { sent: true, emailStatus: 'sent', emailConfigured: true };
   }
   const safeReason = result.reason === 'send_failed' ? 'Provider temporarily unavailable' : (result.reason || 'unknown');
-  const status = result.reason === 'not_configured' ? 'skipped' : 'failed';
+  // 93.md §6.1 — 'recipients_skipped' means the staging allowlist dropped every
+  // recipient: nothing was attempted, so it records as 'skipped', not 'failed'.
+  const status = (result.reason === 'not_configured' || result.reason === 'recipients_skipped') ? 'skipped' : 'failed';
   await recordInvitationEmailResult(invitation.id, { status, error: safeReason });
   return { sent: false, emailStatus: status, emailConfigured: isEmailConfigured() };
 }
@@ -226,9 +324,9 @@ export async function sendInvitationEmail({ invitation, token, baseUrl = '', toN
  *
  * @param {{applicant:{id:string,email:string,firstName?:string,lastName?:string},
  *          invitedByUserId:string, tierId?:string|null, batchId?:string|null,
- *          ip?:string, baseUrl?:string, resend?:boolean}} o
+ *          cohort?:string|null, ip?:string, baseUrl?:string, resend?:boolean}} o
  */
-export async function inviteApplicant({ applicant, invitedByUserId, tierId = null, batchId = null, ip = '', baseUrl = '', resend = false }) {
+export async function inviteApplicant({ applicant, invitedByUserId, tierId = null, batchId = null, cohort = null, ip = '', baseUrl = '', resend = false }) {
   const normalized = normalizeEmail(applicant.email);
 
   // Phase 10 — an existing real user must never get a second account. Report it;
@@ -262,6 +360,7 @@ export async function inviteApplicant({ applicant, invitedByUserId, tierId = nul
     invitedByUserId,
     tierId,
     batchId,
+    cohort,
     ip,
   });
 
@@ -429,11 +528,78 @@ export async function acceptInvitation(token, { password, name = '', acceptedTer
       console.error('[invitation] tier assignment failed:', e?.message || e);
     }
 
+    // 93.md §6.3 — welcome / getting-started email. Accept-time coverage is
+    // COMPLETE for beta users: every beta account is created exactly here (the
+    // invitation accept is the only registration path while the waitlist gates
+    // signups), so no first-login fallback is needed. Best-effort: a welcome
+    // email failure must never fail an accepted account.
+    try {
+      await sendWelcomeEmailOnce(userId, { email: createdUser.email, toName: createdUser.name || '' });
+    } catch (e) {
+      console.error('[invitation] welcome email failed:', e?.message || e);
+    }
+
     return { ok: true, userId, user: createdUser, applicantId: row.waitlistApplicantId };
   } catch (err) {
     console.error('[invitation] accept failed:', err?.message || err);
     return { ok: false, code: 'server_error' };
   }
+}
+
+// ── 93.md §6.3 — one-time welcome email (idempotent) ────────────────────────────
+/**
+ * Send the welcome/getting-started email to a user EXACTLY once. Idempotency is
+ * an ATOMIC claim on User.welcomeEmailSentAt (updateMany where null) BEFORE the
+ * send — two concurrent accepts/retries can never double-send: the loser of the
+ * race sees count 0 and returns 'already_sent'. At-most-once by design: if the
+ * claim succeeds and the provider then fails, we do NOT unclaim (a security-notice
+ * style retry loop is worse than one missed welcome; the beta user already has a
+ * working account).
+ *
+ * When SMTP is not configured we return WITHOUT claiming, so an environment that
+ * gains SMTP later has not silently burned everyone's welcome flag.
+ *
+ * @param {string} userId
+ * @param {{email?:string, toName?:string}} opts (email looked up when omitted)
+ * @returns {Promise<{sent:boolean, reason?:string}>}
+ */
+export async function sendWelcomeEmailOnce(userId, { email = '', toName = '' } = {}) {
+  if (!userId) return { sent: false, reason: 'no_user' };
+  if (!isEmailConfigured()) return { sent: false, reason: 'not_configured' };
+
+  // Atomic claim FIRST (never double-send).
+  const claim = await prisma.user.updateMany({
+    where: { id: userId, welcomeEmailSentAt: null },
+    data: { welcomeEmailSentAt: new Date() },
+  });
+  if (claim.count === 0) return { sent: false, reason: 'already_sent' };
+
+  let to = email;
+  let name = toName;
+  if (!to) {
+    const u = await prisma.user.findUnique({ where: { id: userId }, select: { email: true, name: true } }).catch(() => null);
+    if (!u) return { sent: false, reason: 'no_user' };
+    to = u.email;
+    name = name || u.name || '';
+  }
+
+  const { html, text } = renderWelcomeEmail({
+    appName: 'PecanRev',
+    toName: name || '',
+    supportEmail: configuredSupportEmail(),
+  });
+  const result = await sendEmail({
+    to,
+    subject: 'Welcome to PecanRev — your first review starts here',
+    html,
+    text,
+    context: 'welcome',
+  });
+  if (!result.sent) {
+    console.error('[invitation] welcome email not delivered:', result.reason || 'unknown');
+    return { sent: false, reason: result.reason || 'send_failed' };
+  }
+  return { sent: true };
 }
 
 // ── Enrichment for the Ops list/detail (cross-DB READ only) ─────────────────────
@@ -448,7 +614,7 @@ const INVITATION_VIEW_SELECT = {
   id: true, normalizedEmail: true, status: true, expiresAt: true, attempt: true,
   acceptedAt: true, acceptedUserId: true, revokedAt: true, revokedByUserId: true,
   tierId: true, emailStatus: true, emailSentAt: true, lastEmailError: true,
-  invitedByUserId: true, batchId: true, createdAt: true, updatedAt: true,
+  invitedByUserId: true, batchId: true, cohort: true, createdAt: true, updatedAt: true,
 };
 
 export async function latestInvitationsForEmails(normalizedEmails) {

@@ -15,6 +15,8 @@ import crypto from 'crypto';
 import { prisma } from '../db/client.js';
 import { hashPassword } from '../auth/password.js';
 import { invalidateAuthState } from '../middleware/auth.js';
+// 93.md §6.3 — best-effort "your password was changed" security notice.
+import { sendPasswordChangedNotice } from './emailService.js';
 
 const DEFAULT_TTL_MINUTES = 60;
 
@@ -99,6 +101,18 @@ export async function consumeResetToken(token, newPassword) {
     where: { userId: row.userId, usedAt: null },
     data: { usedAt: new Date() },
   }).catch(() => {});
+
+  // 93.md §6.3 — security notice, fire-and-forget: the reset already succeeded
+  // and MUST NOT block (or fail) on the mail provider. sendPasswordChangedNotice
+  // never throws; the outer catch guards the user lookup.
+  (async () => {
+    try {
+      const u = await prisma.user.findUnique({ where: { id: row.userId }, select: { email: true, name: true } });
+      if (u?.email) await sendPasswordChangedNotice({ to: u.email, toName: u.name || '' });
+    } catch (e) {
+      console.error('[passwordReset] change notice failed:', e?.message || e);
+    }
+  })();
 
   return { ok: true, userId: row.userId };
 }

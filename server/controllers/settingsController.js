@@ -39,6 +39,16 @@ const DEFAULTS = {
     // When true: new users are created unverified, a hashed/expiring verify token
     // is emailed, and login is blocked until verified. Admin toggles it in Ops.
     requireEmailVerification: false,
+    // ── 93.md §9.1 beta cohort controls ───────────────────────────────────
+    // invitationsPaused — emergency brake: when true, the single/bulk/resend
+    // waitlist-invitation admin endpoints refuse with 409 INVITATIONS_PAUSED
+    // (revoke stays available). Toggled from Ops › Beta Waitlist; audited via
+    // the standard UPDATE_SETTING admin action.
+    invitationsPaused: false,
+    // maxActiveInvitations — optional cap on concurrently ACTIVE (pending,
+    // unexpired) account invitations. null = unlimited. Invites that would
+    // exceed the cap are refused with a clear 409 (INVITE_CAP_REACHED).
+    maxActiveInvitations: null,
     defaultTheme: 'night',                 // site-wide default theme for new visitors
     maintenanceMessage: 'PecanRev is temporarily down for maintenance. Please check back soon.',
     exportFormats: ['png', 'svg', 'csv', 'json', 'ris', 'xls'],

@@ -144,6 +144,7 @@ import {
   adminRevokeInvitation,
   adminInvitationHistory,
   adminBulkInvite,
+  adminListInvitations,
 } from '../controllers/invitationAdminController.js';
 import {
   getSearchProviders,
@@ -366,6 +367,8 @@ router.get('/beta-waitlist/metrics',                requireAdmin, adminWaitlistM
 router.get('/beta-waitlist/export',                 requireAdmin, adminExportApplicants);
 // 80.md — bulk account invitation. Static path declared BEFORE the :id routes.
 router.post('/beta-waitlist/invitations/bulk',      requireAdmin, adminBulkInvite);
+// 93.md §9.1 — main-db invitations list, filterable by cohort (+ status).
+router.get('/beta-waitlist/invitations',            requireAdmin, adminListInvitations);
 router.get('/beta-waitlist/applicants',             requireAdmin, adminListApplicants);
 router.get('/beta-waitlist/applicants/:id',         requireAdmin, adminGetApplicant);
 router.patch('/beta-waitlist/applicants/:id/status', requireAdmin, adminUpdateStatus);

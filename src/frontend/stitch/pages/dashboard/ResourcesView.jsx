@@ -21,14 +21,26 @@ const HELP_LINKS = [
   { icon: 'shieldCheck', label: 'Account & security', desc: 'Manage your profile and password', href: '/profile' },
 ];
 
+// 93.md §9.3 — reporter-suggested severity (optional; validated server-side).
+const SEVERITY_OPTIONS = [
+  { value: '', label: 'Not sure / general feedback' },
+  { value: 'low', label: 'Low — minor annoyance' },
+  { value: 'medium', label: 'Medium — something is wrong but I can work around it' },
+  { value: 'high', label: 'High — blocks part of my work' },
+  { value: 'critical', label: 'Critical — I cannot work / possible data problem' },
+];
+
 export default function ResourcesView() {
   const { user } = useAuth();
   const toast = useStitchToast();
   const [message, setMessage] = useState('');
   const [subject, setSubject] = useState('');
+  const [severity, setSeverity] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [sent, setSent] = useState(false);
+  // 93.md §9.3 — the server returns a quotable reference ("FB-4F7K2Q") per report.
+  const [reference, setReference] = useState('');
 
   const submit = async (e) => {
     e?.preventDefault?.();
@@ -37,13 +49,15 @@ export default function ResourcesView() {
     if (!msg) { setErr('Please describe your question or feedback.'); return; }
     setBusy(true); setErr('');
     try {
-      await api.contact({
+      const res = await api.contact({
         name: user?.name || undefined,
         email: user?.email,
         subject: subject.trim() || 'In-app feedback',
         message: msg,
+        ...(severity ? { severity } : {}),
       });
-      setSent(true); setMessage(''); setSubject('');
+      setReference(res?.reference || '');
+      setSent(true); setMessage(''); setSubject(''); setSeverity('');
       toast.toast('Thanks — your message was sent to our team.', { tone: 'success' });
     } catch (e2) {
       setErr(e2?.message || 'Could not send your message. Please try again.');
@@ -83,7 +97,13 @@ export default function ResourcesView() {
             </span>
             <div style={{ fontSize: 15, fontWeight: 700, color: S.textPrimary }}>Message sent</div>
             <div style={{ fontSize: 13, color: S.textSecondary, maxWidth: 360 }}>Thanks for reaching out. We read every message and will follow up by email if needed.</div>
-            <StitchButton variant="neutral" size="sm" onClick={() => setSent(false)}>Send another</StitchButton>
+            {/* 93.md §9.3 — quotable reference for follow-ups */}
+            {reference && (
+              <div style={{ fontSize: 12.5, color: S.textSecondary, background: S.surfaceLow, border: `1px solid ${salpha(S.outlineVariant, 0.5)}`, borderRadius: 10, padding: '8px 14px' }}>
+                Your reference: <strong style={{ fontFamily: 'ui-monospace, monospace', color: S.textPrimary }}>{reference}</strong> — quote {reference} in follow-ups.
+              </div>
+            )}
+            <StitchButton variant="neutral" size="sm" onClick={() => { setSent(false); setReference(''); }}>Send another</StitchButton>
           </div>
         ) : (
           <form onSubmit={submit} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
@@ -93,6 +113,13 @@ export default function ResourcesView() {
             <StitchField label="Message" htmlFor="fb-msg" required error={err || undefined}>
               <StitchTextarea id="fb-msg" rows={5} value={message} onChange={(e) => { setMessage(e.target.value); setErr(''); }}
                 placeholder="Describe your question, feedback or the problem you ran into…" />
+            </StitchField>
+            {/* 93.md §9.3 — optional severity so bug reports can be triaged faster */}
+            <StitchField label="How severe is it?" htmlFor="fb-severity" help="Optional — helps us triage bug reports.">
+              <select id="fb-severity" value={severity} onChange={(e) => setSeverity(e.target.value)} className="stitch-focusable"
+                style={{ width: '100%', height: 40, padding: '0 12px', fontSize: 13.5, borderRadius: 10, color: S.textPrimary, background: S.surfaceLow, border: `1px solid ${salpha(S.outlineVariant, 0.7)}`, cursor: 'pointer' }}>
+                {SEVERITY_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
             </StitchField>
             {user?.email ? <div style={{ fontSize: 12, color: S.textMuted }}>We'll reply to <strong style={{ color: S.textSecondary }}>{user.email}</strong>.</div> : null}
             <div style={{ display: 'flex', justifyContent: 'flex-end' }}>

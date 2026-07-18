@@ -306,7 +306,7 @@ describe('Failed login security tracking', () => {
 // ── 6. Contact message endpoint ───────────────────────────────────────────────
 
 describe('POST /api/contact', () => {
-  it('returns 200 and { ok: true } with valid payload', async () => {
+  it('returns 200 and { ok: true, reference } with valid payload', async () => {
     if (!up) return;
     const res = await fetch(`${API}/contact`, {
       method: 'POST',
@@ -320,7 +320,11 @@ describe('POST /api/contact', () => {
     });
     expect(res.status).toBe(200);
     const data = await res.json();
-    expect(data).toEqual({ ok: true });
+    // 93.md §9.3 — the endpoint now ALSO returns a quotable bug-triage
+    // reference ("FB-XXXXXX"); the old exact-body assertion tested the
+    // pre-93 contract.
+    expect(data.ok).toBe(true);
+    expect(data.reference).toMatch(/^FB-[A-Z2-7]{6}$/);
   });
 
   it('returns 400 when email is missing', async () => {

@@ -75,6 +75,21 @@ export async function adminWaitlistMetrics(req, res) {
 // ── GET /api/admin/beta-waitlist/applicants ─────────────────────────────────────
 export async function adminListApplicants(req, res) {
   try {
+    // 93.md §9.1 — optional cohort filter. Cohort lives on the MAIN-db
+    // WaitlistInvitation, so it is resolved to a normalized-email set here and
+    // intersected inside the waitlist query (the waitlist layer never touches
+    // the main database). An unknown cohort yields an honest empty page.
+    let emailIn = null;
+    const cohortQ = typeof req.query.cohort === 'string' ? req.query.cohort.trim().slice(0, 64) : '';
+    if (cohortQ) {
+      try {
+        emailIn = await invitationService.normalizedEmailsForCohort(cohortQ);
+      } catch (e) {
+        console.error('[waitlist-admin] cohort resolve failed:', e?.message || e);
+        emailIn = [];
+      }
+    }
+
     const result = await waitlist.listApplicants({
       page: req.query.page,
       limit: req.query.limit,
@@ -90,6 +105,7 @@ export async function adminListApplicants(req, res) {
       sortDir: req.query.sortDir,
       dateFrom: req.query.dateFrom,
       dateTo: req.query.dateTo,
+      emailIn,
     });
     if (!result.ok) {
       if (isUnavailable(result.code)) {

@@ -14,6 +14,20 @@
  *   SMTP_PASS       — SMTP auth password. Optional.
  *   EMAIL_FROM      — From header, e.g. "PecanRev <no-reply@pecanrev.com>". Required to send.
  *   APP_BASE_URL    — public base URL, used in email footer links. Optional.
+ *
+ * 93.md §6.1 — staging email protection (NON-production only; the production
+ * path is completely untouched):
+ *   EMAIL_REDIRECT_ALL_TO — when set, EVERY recipient is rewritten to this
+ *                           address and the subject is prefixed with
+ *                           "[staging→original@addr]" so a staging environment
+ *                           with real SMTP creds can never email a real user.
+ *   EMAIL_ALLOWLIST       — comma-separated addresses and/or domains. When set
+ *                           (and no redirect), recipients NOT on the list are
+ *                           dropped (logged + counted as skipped). When neither
+ *                           var is set, behavior is unchanged (dev already
+ *                           no-ops without SMTP config).
+ *   EMAIL_RETRY_DELAY_MS  — backoff before the single retry on a TRANSIENT
+ *                           transport error (default 2000ms; tests set 1).
  */
 
 import { recordUsage, USAGE } from '../utils/usage.js';
@@ -52,12 +66,117 @@ export function emailStatus() {
   };
 }
 
+// ── 93.md §6.1 — staging recipient policy (pure, exported for unit tests) ──────
+/**
+ * True when this process is a PRODUCTION deployment. APP_ENV wins over NODE_ENV
+ * so a staging box running with NODE_ENV=production (common for perf parity)
+ * can still opt into the staging email guards via APP_ENV=staging.
+ */
+export function isProductionEmailEnv(envObj = process.env) {
+  const appEnv = String(envObj.APP_ENV || '').trim().toLowerCase();
+  if (appEnv) return appEnv === 'production';
+  return String(envObj.NODE_ENV || '').trim().toLowerCase() === 'production';
+}
+
+/** Parse a comma-separated recipient string into clean lowercase addresses. */
+function splitRecipients(to) {
+  return String(to || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/** Does `addr` match an allowlist entry (exact address, or bare domain)? */
+function allowlistMatch(addr, entry) {
+  const a = addr.toLowerCase();
+  const e = entry.toLowerCase();
+  if (e.includes('@')) return a === e;             // full address entry
+  return a.endsWith(`@${e}`) || a.endsWith(`.${e}`); // domain entry (incl. subdomains)
+}
+
+/**
+ * applyStagingEmailPolicy — decide what a NON-production send may actually do.
+ * PURE (no I/O, no env mutation) so it is directly unit-testable. Production
+ * environments always get `{ action:'send' }` with recipients untouched.
+ *
+ * @param {{to:string, subject:string}} msg
+ * @param {object} [envObj] injectable env for tests (defaults to process.env)
+ * @returns {{action:'send'|'skip', to:string, subject:string,
+ *            redirected:boolean, skipped:string[]}}
+ */
+export function applyStagingEmailPolicy({ to, subject } = {}, envObj = process.env) {
+  const base = { action: 'send', to: String(to || ''), subject: String(subject || ''), redirected: false, skipped: [] };
+  if (isProductionEmailEnv(envObj)) return base; // production path completely untouched
+
+  const redirectTo = String(envObj.EMAIL_REDIRECT_ALL_TO || '').trim();
+  if (redirectTo) {
+    // Every recipient rewritten; subject records who it was originally for.
+    return {
+      action: 'send',
+      to: redirectTo,
+      subject: `[staging→${base.to || 'unknown'}] ${base.subject}`,
+      redirected: true,
+      skipped: [],
+    };
+  }
+
+  const allowlistRaw = String(envObj.EMAIL_ALLOWLIST || '').trim();
+  if (allowlistRaw) {
+    const entries = allowlistRaw.split(',').map((s) => s.trim()).filter(Boolean);
+    const recipients = splitRecipients(base.to);
+    const kept = [];
+    const skipped = [];
+    for (const r of recipients) {
+      if (entries.some((e) => allowlistMatch(r, e))) kept.push(r);
+      else skipped.push(r);
+    }
+    if (!kept.length) return { ...base, action: 'skip', to: '', skipped };
+    return { ...base, to: kept.join(', '), skipped };
+  }
+
+  return base; // neither var set → behavior unchanged
+}
+
+// ── 93.md §6.1 — transient-vs-permanent transport error classification ─────────
+// Connection-class nodemailer codes are transient (worth ONE retry); SMTP 5xx
+// responses are permanent rejects (NEVER retried — retrying a 550 just hammers
+// the relay's reputation). SMTP 4xx (421/450/451…) is a temporary server-side
+// condition → transient.
+const TRANSIENT_ERROR_CODES = new Set([
+  'ECONNECTION', 'ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT', 'ESOCKET', 'EDNS', 'EPIPE', 'EHOSTUNREACH', 'ENETUNREACH', 'EAI_AGAIN',
+]);
+
+/** True when the nodemailer/socket error is a transient transport failure. */
+export function isTransientEmailError(err) {
+  if (!err) return false;
+  const responseCode = Number(err.responseCode);
+  if (Number.isFinite(responseCode) && responseCode >= 400) {
+    return responseCode < 500; // 4xx-connect/temporary class → transient; 5xx → permanent
+  }
+  if (err.code && TRANSIENT_ERROR_CODES.has(String(err.code))) return true;
+  return false;
+}
+
+function retryDelayMs() {
+  const n = parseInt(process.env.EMAIL_RETRY_DELAY_MS, 10);
+  return Number.isFinite(n) && n >= 0 ? n : 2000;
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
  * sendEmail — send a single email. Never throws.
  * Records an EMAIL_SENT / EMAIL_FAILED UsageEvent (prompt9, best-effort) for
  * every REAL send attempt — the not_configured / no_recipient early-outs are
  * not attempts and are not counted (dev environments without SMTP would
  * otherwise flood EMAIL_FAILED).
+ *
+ * 93.md §6.1 additions (both invisible in production):
+ *   - staging recipient policy (redirect-all / allowlist) applied first;
+ *   - ONE bounded retry (~2s backoff) on TRANSIENT transport errors only —
+ *     permanent SMTP rejects (5xx) are never retried. The delivery-failure
+ *     logging contract is unchanged: one console.error + one EMAIL_FAILED
+ *     usage event for the FINAL outcome.
  * @param {{to:string, subject:string, html?:string, text?:string, context?:string}} opts
  *        `context` is an optional metrics label (e.g. 'invite', 'contact_reply').
  * @returns {Promise<{sent:boolean, id?:string, reason?:string, error?:string}>}
@@ -70,6 +189,21 @@ export async function sendEmail({ to, subject, html, text, context } = {}) {
     return { sent: false, reason: 'no_recipient' };
   }
 
+  // 93.md §6.1 — staging protection. In production this is a straight pass-through.
+  const policy = applyStagingEmailPolicy({ to, subject });
+  if (policy.skipped.length) {
+    console.log(`[emailService] staging allowlist skipped recipient(s): ${policy.skipped.join(', ')} (context=${context || 'none'})`);
+  }
+  if (policy.action === 'skip') {
+    // Nothing deliverable — not a real attempt, so no EMAIL_FAILED usage event.
+    return { sent: false, reason: 'recipients_skipped', skipped: policy.skipped };
+  }
+  if (policy.redirected) {
+    console.log(`[emailService] staging redirect: ${to} → ${policy.to} (context=${context || 'none'})`);
+  }
+  const finalTo = policy.to;
+  const finalSubject = policy.subject || '(no subject)';
+
   let nodemailer;
   try {
     const mod = await import('nodemailer');
@@ -79,33 +213,45 @@ export async function sendEmail({ to, subject, html, text, context } = {}) {
     return { sent: false, reason: 'not_configured', error: err.message };
   }
 
-  try {
-    const port = parseInt(env('SMTP_PORT'), 10) || 587;
-    const user = env('SMTP_USER');
-    const pass = env('SMTP_PASS');
+  const port = parseInt(env('SMTP_PORT'), 10) || 587;
+  const user = env('SMTP_USER');
+  const pass = env('SMTP_PASS');
 
-    const transport = nodemailer.createTransport({
-      host: env('SMTP_HOST'),
-      port,
-      secure: port === 465, // implicit TLS on 465; STARTTLS otherwise
-      ...(user || pass ? { auth: { user, pass } } : {}),
-    });
+  let lastErr = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const transport = nodemailer.createTransport({
+        host: env('SMTP_HOST'),
+        port,
+        secure: port === 465, // implicit TLS on 465; STARTTLS otherwise
+        ...(user || pass ? { auth: { user, pass } } : {}),
+      });
 
-    const info = await transport.sendMail({
-      from: env('EMAIL_FROM'),
-      to,
-      subject: subject || '(no subject)',
-      ...(text ? { text } : {}),
-      ...(html ? { html } : {}),
-    });
+      const info = await transport.sendMail({
+        from: env('EMAIL_FROM'),
+        to: finalTo,
+        subject: finalSubject,
+        ...(text ? { text } : {}),
+        ...(html ? { html } : {}),
+      });
 
-    recordUsage({ type: USAGE.EMAIL_SENT, meta: { context: context || null } });
-    return { sent: true, id: info?.messageId || null };
-  } catch (err) {
-    console.error('[emailService] sendMail failed:', err.message);
-    recordUsage({ type: USAGE.EMAIL_FAILED, meta: { context: context || null, error: err.message } });
-    return { sent: false, reason: 'send_failed', error: err.message };
+      recordUsage({ type: USAGE.EMAIL_SENT, meta: { context: context || null } });
+      return { sent: true, id: info?.messageId || null };
+    } catch (err) {
+      lastErr = err;
+      // Retry EXACTLY once, only for transient transport errors (93.md §6.1).
+      if (attempt === 0 && isTransientEmailError(err)) {
+        console.warn(`[emailService] transient send error (${err.code || err.responseCode || 'unknown'}) — retrying once in ${retryDelayMs()}ms`);
+        await sleep(retryDelayMs());
+        continue;
+      }
+      break;
+    }
   }
+
+  console.error('[emailService] sendMail failed:', lastErr.message);
+  recordUsage({ type: USAGE.EMAIL_FAILED, meta: { context: context || null, error: lastErr.message } });
+  return { sent: false, reason: 'send_failed', error: lastErr.message };
 }
 
 function escapeHtml(s) {
@@ -580,4 +726,177 @@ export function renderWaitlistInvitationEmail({
   if (appBase) textParts.push(appBase);
 
   return { html, text: textParts.join('\n') };
+}
+
+/**
+ * renderWelcomeEmail — 93.md §6.3. Welcome / getting-started email sent ONCE per
+ * user (idempotency via User.welcomeEmailSentAt, claimed atomically by the
+ * caller) after a waitlist-invitation acceptance completes. Guides the new beta
+ * user to first value (create a project → import or search records → make the
+ * first screening decision), states the beta status honestly, and points at the
+ * feedback path. Every interpolated value is escaped; sender/support address are
+ * env-configurable (EMAIL_FROM / SUPPORT_EMAIL or WAITLIST_SUPPORT_EMAIL).
+ *
+ * @param {{appName?:string, toName?:string, supportEmail?:string}} opts
+ * @returns {{html:string, text:string}}
+ */
+export function renderWelcomeEmail({ appName = 'PecanRev', toName = '', supportEmail = '' } = {}) {
+  const greeting = toName ? `Hi ${escapeHtml(toName)},` : 'Hello,';
+  const appBase = env('APP_BASE_URL');
+  const supportHtml = supportEmail
+    ? `<a href="mailto:${escapeHtml(supportEmail)}" style="color:#6366f1;text-decoration:none;">${escapeHtml(supportEmail)}</a>`
+    : 'the in-app <strong>Help &amp; Feedback</strong> page';
+
+  const steps = [
+    ['Create your first project', 'Set the review question and scope — one project per systematic review.'],
+    ['Bring in records', 'Import a RIS/CSV export from your library, or run an automated search across open databases.'],
+    ['Make your first screening decision', 'Open Screening and include/exclude your first title &amp; abstract — everything else builds from there.'],
+  ];
+  const stepsHtml = steps.map(([t, d], i) => `
+            <tr>
+              <td style="vertical-align:top;padding:0 12px 14px 0;"><span style="display:inline-block;width:24px;height:24px;border-radius:50%;background:#eef2ff;color:#6366f1;font-size:13px;font-weight:700;text-align:center;line-height:24px;">${i + 1}</span></td>
+              <td style="padding:0 0 14px 0;">
+                <div style="font-size:14px;font-weight:600;color:#111827;">${t}</div>
+                <div style="font-size:13px;color:#4b5563;line-height:1.6;">${d}</div>
+              </td>
+            </tr>`).join('');
+
+  const openLink = appBase
+    ? ctaButton(appBase, `Open ${appName}`)
+    : '';
+
+  const bodyHtml = `          <div style="font-size:17px;font-weight:700;color:#111827;margin-bottom:14px;">Welcome to the ${escapeHtml(appName)} beta</div>
+          <div style="font-size:14px;color:#1f2937;line-height:1.6;margin-bottom:8px;">${greeting}</div>
+          <div style="font-size:14px;color:#1f2937;line-height:1.7;margin-bottom:18px;">
+            Your account is active. ${escapeHtml(appName)} is a professional workspace for systematic reviews and
+            meta-analyses — here's the fastest way to your first result:
+          </div>
+          <table role="presentation" cellpadding="0" cellspacing="0" style="margin-bottom:8px;">
+${stepsHtml}
+          </table>
+          ${openLink}
+          <div style="font-size:13px;color:#374151;line-height:1.7;background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:12px 14px;margin-top:20px;">
+            <strong>You're on the beta.</strong> Things will improve fast, and occasionally change under you.
+            When something breaks or feels wrong, tell us — every report is read. Use ${supportHtml}${supportEmail ? '' : ' inside the app'}
+            and quote the reference code you receive so we can follow up.
+          </div>`;
+
+  const html = renderBaseEmailLayout({ appName, bodyHtml });
+
+  const textParts = [
+    `Welcome to the ${appName} beta`,
+    '',
+    toName ? `Hi ${toName},` : 'Hello,',
+    '',
+    `Your account is active. Here's the fastest way to your first result:`,
+    '',
+    `1. Create your first project — set the review question and scope.`,
+    `2. Bring in records — import a RIS/CSV export, or run an automated search across open databases.`,
+    `3. Make your first screening decision — open Screening and include/exclude your first title & abstract.`,
+    '',
+    `You're on the beta. When something breaks or feels wrong, tell us — every report is read.`,
+    supportEmail ? `Feedback: ${supportEmail}` : `Feedback: use the in-app Help & Feedback page.`,
+    '',
+    '—',
+    `Sent by the ${appName} team`,
+  ];
+  if (appBase) textParts.push(appBase);
+
+  return { html, text: textParts.join('\n') };
+}
+
+/**
+ * renderPasswordChangedEmail — 93.md §6.3. Small security notice sent
+ * BEST-EFFORT after a successful password change (token reset OR profile
+ * change). Contains no links to click (deliberately — a security notice that
+ * trains users to click links is a phishing template) beyond the standard
+ * footer; tells the user what to do if it wasn't them.
+ *
+ * @param {{appName?:string, toName?:string, changedAt?:Date|string|null, supportEmail?:string}} opts
+ * @returns {{html:string, text:string}}
+ */
+export function renderPasswordChangedEmail({ appName = 'PecanRev', toName = '', changedAt = null, supportEmail = '' } = {}) {
+  const greeting = toName ? `Hi ${escapeHtml(toName)},` : 'Hello,';
+  const appBase = env('APP_BASE_URL');
+
+  let whenText = '';
+  if (changedAt) {
+    const d = changedAt instanceof Date ? changedAt : new Date(changedAt);
+    if (!Number.isNaN(d.getTime())) {
+      whenText = d.toLocaleString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    }
+  }
+  const supportHtml = supportEmail
+    ? `contact us immediately at <a href="mailto:${escapeHtml(supportEmail)}" style="color:#6366f1;text-decoration:none;">${escapeHtml(supportEmail)}</a>`
+    : 'contact the team immediately via the in-app Help &amp; Feedback page';
+
+  const bodyHtml = `          <div style="font-size:16px;font-weight:600;color:#111827;margin-bottom:14px;">Your password was changed</div>
+          <div style="font-size:14px;color:#1f2937;line-height:1.6;margin-bottom:8px;">${greeting}</div>
+          <div style="font-size:14px;color:#1f2937;line-height:1.7;margin-bottom:16px;">
+            The password for your ${escapeHtml(appName)} account was changed${whenText ? ` on ${escapeHtml(whenText)}` : ''}.
+            All other signed-in sessions have been signed out.
+          </div>
+          <div style="font-size:13px;color:#374151;line-height:1.7;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:12px 14px;">
+            <strong>Didn't do this?</strong> Someone else may have access to your account —
+            reset your password from the sign-in page right away and ${supportHtml}.
+          </div>
+          <div style="font-size:12px;color:#9ca3af;margin-top:18px;line-height:1.5;">
+            If this was you, no action is needed.
+          </div>`;
+
+  const html = renderBaseEmailLayout({ appName, bodyHtml });
+
+  const textParts = [
+    'Your password was changed',
+    '',
+    toName ? `Hi ${toName},` : 'Hello,',
+    '',
+    `The password for your ${appName} account was changed${whenText ? ` on ${whenText}` : ''}. All other signed-in sessions have been signed out.`,
+    '',
+    `Didn't do this? Reset your password from the sign-in page right away and ${supportEmail ? `contact us immediately at ${supportEmail}` : 'contact the team immediately via the in-app Help & Feedback page'}.`,
+    '',
+    'If this was you, no action is needed.',
+    '',
+    '—',
+    `Sent by the ${appName} team`,
+  ];
+  if (appBase) textParts.push(appBase);
+
+  return { html, text: textParts.join('\n') };
+}
+
+/** Env-configurable support address (93.md §6.3). Empty string when unset. */
+export function configuredSupportEmail() {
+  const v = process.env.SUPPORT_EMAIL || process.env.WAITLIST_SUPPORT_EMAIL;
+  return v && String(v).trim() ? String(v).trim() : '';
+}
+
+/**
+ * sendPasswordChangedNotice — 93.md §6.3. Best-effort convenience used by
+ * passwordResetService + profileController.changePassword. NEVER throws and
+ * never blocks the caller's main flow on failure (sendEmail already never
+ * throws; this wrapper also swallows render-time surprises).
+ * @param {{to:string, toName?:string}} opts
+ * @returns {Promise<{sent:boolean, reason?:string}>}
+ */
+export async function sendPasswordChangedNotice({ to, toName = '' } = {}) {
+  try {
+    if (!to || !isEmailConfigured()) return { sent: false, reason: 'not_configured' };
+    const { html, text } = renderPasswordChangedEmail({
+      appName: 'PecanRev',
+      toName,
+      changedAt: new Date(),
+      supportEmail: configuredSupportEmail(),
+    });
+    return await sendEmail({
+      to,
+      subject: 'Your PecanRev password was changed',
+      html,
+      text,
+      context: 'password_changed',
+    });
+  } catch (err) {
+    console.error('[emailService] password-changed notice failed:', err?.message || err);
+    return { sent: false, reason: 'send_failed' };
+  }
 }

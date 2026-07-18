@@ -11,6 +11,8 @@ import { invalidateAuthState } from '../middleware/auth.js';
 import { invalidateUserName } from './presenceController.js';
 import { resolveInstitutionInput, invalidateInstitutionCandidates } from '../services/institutionService.js';
 import { sessionCookieName, sessionCookieOptions } from '../config/cookies.js';
+// 93.md §6.3 — best-effort "your password was changed" security notice.
+import { sendPasswordChangedNotice } from '../services/emailService.js';
 
 const SESSION_COOKIE = sessionCookieName();
 
@@ -196,6 +198,12 @@ export async function changePassword(req, res) {
     invalidateAuthState(req.user.id);
     const token = signToken({ id: updated.id, email: updated.email, role: updated.role, se: updated.sessionEpoch });
     res.cookie(SESSION_COOKIE, token, sessionCookieOptions());
+
+    // 93.md §6.3 — security notice, fire-and-forget AFTER the response essentials:
+    // the password change already succeeded and must never block (or fail) on the
+    // mail provider. sendPasswordChangedNotice never throws.
+    sendPasswordChangedNotice({ to: user.email, toName: user.name || '' })
+      .catch((e) => console.error('[profile] password-changed notice failed:', e?.message || e));
 
     res.json({ ok: true });
   } catch (err) {

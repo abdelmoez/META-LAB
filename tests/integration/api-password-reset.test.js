@@ -9,11 +9,17 @@
  *   T4  reset-password validation (bogus token, short password, missing fields)
  *   T5  permissions: plain user 403; mod cannot reset admin/mod; mod CAN reset a
  *       plain user; admin can reset a plain user
+ *   T6  expiry (93.md audit gap): a token whose expiresAt has passed is rejected
+ *       with 400 and leaves the password unchanged
  *
  * Live API at http://127.0.0.1:3001 (npm run server).
  * 127.0.0.1, never localhost (node fetch can resolve ::1 and hang on Windows).
  */
 import { describe, it, expect, beforeAll } from 'vitest';
+// T6 needs to force a token's expiry directly in the same SQLite DB the live
+// server uses (the API never exposes expiresAt) — same pattern as
+// waitlist-invitation.test.js.
+import { prisma } from '../../server/db/client.js';
 
 const BASE = 'http://127.0.0.1:3001/api';
 const rnd = () => Math.random().toString(36).slice(2, 8);
@@ -186,5 +192,39 @@ describe('reset T5 — permissions on admin send-password-reset', () => {
     // …nor another mod (the mod targeting itself via the admin endpoint).
     const modOnMod = await api(`/admin/users/${modUser.id}/send-password-reset`, { method: 'POST', cookie: modCookie });
     expect(modOnMod.status).toBe(403);
+  });
+});
+
+describe('reset T6 — expired tokens are rejected (93.md audit gap: reuse/enumeration were covered, expiry was not)', () => {
+  it('a token past its expiresAt → 400 "expired", and the old password still works', async () => {
+    if (!up || !adminCookie) return;
+    const u = await register(`pwrexp${rnd()}@example.com`);
+    expect(u.status).toBe(201);
+
+    const sent = await api(`/admin/users/${u.id}/send-password-reset`, { method: 'POST', cookie: adminCookie });
+    expect(sent.status).toBe(200);
+    if (sent.data.sent) return; // real-SMTP path exposes no link; lifecycle covered in T3
+
+    const token = tokenFromLink(sent.data.link);
+    expect(token.length).toBeGreaterThan(20);
+
+    // Force expiry in the DB (no API exposes it). Exactly one live token exists —
+    // createResetToken burns priors, so updateMany must report count 1.
+    const upd = await prisma.passwordResetToken.updateMany({
+      where: { userId: u.id, usedAt: null },
+      data: { expiresAt: new Date(Date.now() - 60_000) },
+    });
+    expect(upd.count).toBe(1);
+
+    const res = await api('/auth/reset-password', { method: 'POST', body: { token, password: 'FreshPass1!' } });
+    expect(res.status).toBe(400);
+    expect(String(res.data?.error || '')).toMatch(/expired/i);
+
+    // The expired attempt must not have changed anything: old password works,
+    // the attempted new one does not.
+    const oldLogin = await loginAs(u.email, 'Password123!');
+    expect(oldLogin.status).toBe(200);
+    const newLogin = await loginAs(u.email, 'FreshPass1!');
+    expect(newLogin.status).toBe(401);
   });
 });

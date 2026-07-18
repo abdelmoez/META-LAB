@@ -155,6 +155,14 @@ export async function listApplicants(client, params = {}) {
     ];
   }
 
+  // 93.md §9.1 — optional normalized-email intersection: the cohort filter is
+  // resolved to a normalized-email set in the MAIN db by the controller (this
+  // layer never touches the main database). Empty array → no rows can match.
+  if (Array.isArray(params.emailIn)) {
+    const cleanEmails = [...new Set(params.emailIn.filter((x) => typeof x === 'string' && x))].slice(0, 5000);
+    where.normalizedEmail = { in: cleanEmails };
+  }
+
   const [total, rows] = await Promise.all([
     client.betaWaitlistApplicant.count({ where }),
     client.betaWaitlistApplicant.findMany({
@@ -212,11 +220,19 @@ function scalarStr(v) {
   return '';
 }
 
-export async function applicantsForInvite(client, { ids = null, filters = {} } = {}, cap = 500) {
+export async function applicantsForInvite(client, { ids = null, filters = {}, emailIn = null } = {}, cap = 500) {
   const take = Math.min(Math.max(1, cap | 0), 5000);
   // The REMOVED exclusion is ALWAYS AND-combined (never overwritten) so no status
   // filter — including an injected operator object — can resurrect withdrawn people.
   const and = [{ status: { not: 'REMOVED' } }];
+
+  // 93.md §9.1 — optional normalized-email intersection (cohort filter resolved
+  // in the MAIN db by the caller). String-coerced + capped like every other input.
+  if (Array.isArray(emailIn)) {
+    const cleanEmails = [...new Set(emailIn.filter((x) => typeof x === 'string' && x))].slice(0, 5000);
+    if (!cleanEmails.length) return [];
+    and.push({ normalizedEmail: { in: cleanEmails } });
+  }
 
   if (Array.isArray(ids)) {
     const clean = [...new Set(ids.filter((x) => typeof x === 'string' && x))].slice(0, take);

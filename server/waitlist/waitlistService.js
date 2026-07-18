@@ -224,11 +224,13 @@ export async function listApplicants(params) {
  * `ids` array or the same filter set as the list view. Fail-safe like every entry
  * point. Returns minimal fields only (id, email, normalizedEmail, names, status).
  */
-export async function applicantsForInvite({ ids = null, filters = {} } = {}, cap = 500) {
+export async function applicantsForInvite({ ids = null, filters = {}, emailIn = null } = {}, cap = 500) {
   const c = await resolveClient();
   if (!c.ok) return { ok: false, code: c.code };
   try {
-    const rows = await repo.applicantsForInvite(c.client, { ids, filters }, cap);
+    // 93.md §9.1 — `emailIn` (normalized emails) lets the caller intersect with a
+    // MAIN-db cohort without this layer ever touching the main database.
+    const rows = await repo.applicantsForInvite(c.client, { ids, filters, emailIn }, cap);
     return { ok: true, rows };
   } catch (err) {
     console.error('[waitlist] applicantsForInvite failed:', errDetail(err));
