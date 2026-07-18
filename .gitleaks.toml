@@ -1,0 +1,54 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# .gitleaks.toml — secret-scanning config for PecanRev (93.md §4.2).
+#
+# Extends the gitleaks default ruleset and allowlists the repo's KNOWN-SAFE
+# placeholder material so the scan stays high-signal:
+#   - .env.example files (root + server/) — every value in them is a documented
+#     placeholder ("change-me-…"), never a real credential.
+#   - tests/fixtures + docs code samples — synthetic tokens/URLs used in examples.
+#   - .claude/ prompt+design archive and graphify-out/ (generated index) — they
+#     quote the placeholders above verbatim and would only produce duplicates.
+#   - CI-only dummy env values (ci-only-…) used by .github/workflows and the
+#     repo's dev JWT/DB placeholder patterns (change-me-…, user:pass@host,
+#     postgres:postgres@localhost).
+# A real secret pasted anywhere OUTSIDE these shapes still fails the scan.
+# ──────────────────────────────────────────────────────────────────────────────
+
+title = "PecanRev gitleaks config (93.md)"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "PecanRev known-safe placeholders (93.md §4.2)"
+paths = [
+  # Documented placeholder env files (root + server). Real .env files are
+  # gitignored; only the *.example templates are committed.
+  '''(^|[\\/])\.env\.example$''',
+  # Test fixtures + docs code samples use synthetic tokens by design.
+  '''^tests[\\/]fixtures[\\/]''',
+  '''^docs[\\/]''',
+  # Prompt/design archive + generated knowledge-graph index — they quote the
+  # placeholder values above verbatim (no runtime code lives here).
+  '''^\.claude[\\/]''',
+  '''^graphify-out[\\/]''',
+]
+regexes = [
+  # server/.env.example placeholder convention — e.g.
+  # JWT_SECRET="change-me-to-a-long-random-hex-string", ADMIN_SEED_PASSWORD="change-me-strong-password"
+  '''change-me-[A-Za-z0-9-]*''',
+  # CI-only dummy env values used by .github/workflows (never real):
+  # ci-only-jwt-secret-not-used-anywhere-real, ci-only-seed-password-123
+  '''ci-only-[A-Za-z0-9-]*''',
+  # Documented sample connection strings (docs + env examples + CI service
+  # containers): generic user:pass@host and the throwaway CI postgres creds.
+  '''postgres(?:ql)?:\/\/user:pass@host''',
+  '''postgres(?:ql)?:\/\/postgres:postgres@(?:localhost|127\.0\.0\.1)''',
+  # Local dev seed admin password documented in dev docs (local-only account).
+  '''LocalDevAdmin!2026''',
+]
+stopwords = [
+  "example",
+  "placeholder",
+  "change-me",
+]

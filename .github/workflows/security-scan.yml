@@ -1,0 +1,70 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# security-scan.yml — secret scanning + dependency audit (93.md §4.2).
+#
+# Two independent jobs:
+#   gitleaks  — full-history secret scan (fetch-depth: 0) using the repo-tuned
+#               .gitleaks.toml. Needs only GITHUB_TOKEN (no GITLEAKS_LICENSE:
+#               this is an individual/org-free repo). HARD gate: a detected
+#               secret fails the workflow.
+#   npm-audit — production-dependency audit at high+ severity for BOTH package
+#               trees (root + server/). Root is a HARD gate (clean as of 93.md).
+#               server/ is REPORT-ONLY for now — see the loud comment on that
+#               step for the currently-known vulnerabilities and the promotion
+#               condition.
+#
+# Triggers: every push to main, weekly (Mon 06:00 UTC — fresh advisories land
+# continuously, so a quiet repo still gets scanned), and manual dispatch.
+# ──────────────────────────────────────────────────────────────────────────────
+name: Security scan
+
+on:
+  push:
+    branches: [ main ]
+  schedule:
+    - cron: '0 6 * * 1'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  gitleaks:
+    name: Gitleaks (full-history secret scan)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history — gitleaks-action scans every commit, not just HEAD,
+          # so a secret committed and later "deleted" is still caught.
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  npm-audit:
+    name: npm audit (production deps, high+)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # Root tree: CLEAN as of 93.md ("found 0 vulnerabilities") → HARD gate.
+      # A new high/critical prod vulnerability in the frontend/build tree fails
+      # this workflow until fixed or explicitly triaged.
+      - name: npm audit — root (hard gate)
+        run: npm audit --omit=dev --audit-level=high
+
+      # ⚠️ REPORT-ONLY (continue-on-error) — DO NOT silently trust a green run.
+      # As of 93.md the server tree has KNOWN high-severity prod vulnerabilities
+      # with no non-breaking fix:
+      #   - multer 1.x/2.x  (GHSA-72gw-mp4g-v24j, GHSA-3p4h-7m6x-2hcm — DoS)
+      #   - nodemailer <=9.0.0 (GHSA-p6gq-j5cr-w38f — raw-option file read/SSRF;
+      #     fix is nodemailer@9.0.3+, a breaking major upgrade)
+      #   (+ moderate: ip-address via geoip-lite — GHSA-v2v4-37r5-5v8g)
+      # Once those are upgraded and `npm audit --omit=dev --audit-level=high`
+      # exits 0 in server/, REMOVE continue-on-error to make this a hard gate.
+      - name: npm audit — server (REPORT-ONLY until multer/nodemailer upgraded)
+        run: npm audit --omit=dev --audit-level=high
+        working-directory: server
+        continue-on-error: true

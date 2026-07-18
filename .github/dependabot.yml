@@ -1,0 +1,34 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# dependabot.yml — automated dependency updates (93.md §4.2).
+#
+# Two npm ecosystems: the repo root (frontend build + test tooling) and server/
+# (the API's own package.json / lockfile). Weekly cadence; minor+patch updates
+# are GROUPED into a single PR per ecosystem so the queue stays readable, while
+# major updates still arrive as individual PRs (they need human review anyway).
+# open-pull-requests-limit caps churn so Dependabot can never flood CI.
+# ──────────────────────────────────────────────────────────────────────────────
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: "/server"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch

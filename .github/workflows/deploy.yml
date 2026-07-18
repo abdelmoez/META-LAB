@@ -107,6 +107,99 @@ jobs:
         if: always()
         run: '[ -n "$SERVER_PID" ] && kill "$SERVER_PID" || true'
 
+  # ── Integration suite on PostgreSQL (93.md §4.8) ───────────────────────────
+  # Mirrors the SQLite `integration` job above, but boots the API with
+  # DATABASE_PROVIDER=postgres against a postgres:16 service container and
+  # applies the COMMITTED baseline migrations with `prisma migrate deploy` —
+  # i.e. exactly the path a real Postgres deployment takes (no `db push`).
+  # Layout note: both Postgres schemas live in server/prisma/postgres/, so the
+  # main schema owns the sibling `migrations/` dir and the waitlist keeps its
+  # own `waitlist-migrations/` dir; Prisma only looks for a dir literally named
+  # `migrations` next to the schema, so the waitlist deploy step stages that
+  # expected layout in a temp dir first.
+  # NON-GATING (continue-on-error) while it is proven out in CI — promote it by
+  # removing continue-on-error and adding it to deploy's `needs:` once green.
+  integration-postgres:
+    name: Integration suite on Postgres (report-only)
+    runs-on: ubuntu-latest
+    continue-on-error: true # TODO(93.md): promote to a gate once proven green
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pecanrev_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_PROVIDER: 'postgres'
+      # Unused at runtime under provider=postgres; kept so any script that
+      # defensively reads DATABASE_URL (e.g. sqlite prisma generate) still works.
+      DATABASE_URL: 'file:./dev.db'
+      POSTGRES_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_test'
+      POSTGRES_DIRECT_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_test'
+      # Waitlist stays STRICTLY separate — second database on the same service.
+      # BETA_WAITLIST_DATABASE_URL is the canonical runtime var (waitlist/config.js);
+      # POSTGRES_WAITLIST_* are what the Prisma schema/datasource reads at deploy.
+      BETA_WAITLIST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_waitlist_test'
+      POSTGRES_WAITLIST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_waitlist_test'
+      POSTGRES_WAITLIST_DIRECT_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_waitlist_test'
+      JWT_SECRET: 'ci-only-jwt-secret-not-used-anywhere-real'
+      ADMIN_EMAIL_1: 'ci-admin-1@example.com'
+      ADMIN_EMAIL_2: 'ci-admin-2@example.com'
+      ADMIN_SEED_PASSWORD: 'ci-only-seed-password-123'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install root dependencies
+        run: npm ci
+      - name: Install server dependencies
+        run: npm ci
+        working-directory: server
+      - name: Create waitlist database (second DB on the same service)
+        run: |
+          PGPASSWORD=postgres psql -h 127.0.0.1 -U postgres -d postgres \
+            -c 'CREATE DATABASE pecanrev_waitlist_test;'
+      - name: Generate Postgres Prisma clients
+        run: npm run db:generate:postgres
+        working-directory: server
+      - name: Apply main schema (baseline migrations — prisma migrate deploy)
+        run: npx prisma migrate deploy --schema=prisma/postgres/schema.prisma
+        working-directory: server
+      - name: Apply waitlist schema (baseline migrations — prisma migrate deploy)
+        # Stage the layout Prisma expects (schema.prisma + sibling migrations/)
+        # from the committed waitlist-schema.prisma + waitlist-migrations/.
+        # `migrate deploy` never runs generators, so the copied schema's relative
+        # generator output path is irrelevant here.
+        run: |
+          mkdir -p /tmp/waitlist-deploy
+          cp prisma/postgres/waitlist-schema.prisma /tmp/waitlist-deploy/schema.prisma
+          cp -r prisma/postgres/waitlist-migrations /tmp/waitlist-deploy/migrations
+          npx prisma migrate deploy --schema=/tmp/waitlist-deploy/schema.prisma
+        working-directory: server
+      - name: Boot API server (Postgres)
+        run: |
+          node server/index.js &
+          echo "SERVER_PID=$!" >> "$GITHUB_ENV"
+          for i in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:3001/api/health >/dev/null; then echo "API is up"; exit 0; fi
+            echo "waiting for API ($i)…"; sleep 1
+          done
+          echo "API did not come up on :3001"; exit 1
+      - name: Run integration suite (serial, deterministic)
+        run: npx vitest run tests/integration tests/screening/integration --pool=forks --poolOptions.forks.singleFork=true
+      - name: Stop API server
+        if: always()
+        run: '[ -n "$SERVER_PID" ] && kill "$SERVER_PID" || true'
+
   # ── Deploy (only on push to main / manual dispatch; never on PRs) ──────────
   deploy:
     name: Deploy over SSH
