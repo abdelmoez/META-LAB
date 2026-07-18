@@ -78,6 +78,57 @@ swapped for a native `SEQUENCE` with no code change.
 
 ---
 
+## Versioned migration workflow (93.md §2.2) — production never uses `db push`
+
+Schema changes ride **committed, versioned Prisma migrations** applied with
+`prisma migrate deploy`. `db push` remains a dev/bootstrap convenience only —
+`server/scripts/guard-db-push.mjs` (wired into `db:push:postgres`) refuses
+push-style commands when the environment is unmistakably production, and the
+deploy script
+(`deploy/metalab-deploy.sh`) runs `migrate deploy` whenever
+`DATABASE_PROVIDER=postgres` (the sqlite `db push` branch it keeps is
+explicitly transitional — see `deployment-readiness.md` §2).
+
+The pipeline for every schema change:
+
+1. **Develop locally** — edit the canonical SQLite schema
+   (`server/prisma/schema.prisma` / `prisma/waitlist/schema.prisma`), re-run
+   `npm run db:sync-postgres-schema` (the drift test enforces this), and
+   generate a versioned migration for the PG schema.
+2. **Commit the migration directory** (`server/prisma/postgres/migrations/`;
+   waitlist history lives separately in
+   `server/prisma/postgres/waitlist-migrations/` — the DBs stay strictly
+   isolated) — migrations are additive; never edit an applied one.
+3. **Apply to staging**: deploy the ref to staging; the deploy script runs
+   `npm run db:migrate:deploy:postgres` against the staging DB. Smoke it
+   (`docs/manager/staging-deployment.md` § Migration rehearsal flow).
+4. **Check status any time**: `npm run db:migrate:status:postgres` (from
+   `server/`) — lists applied vs pending for both databases.
+5. **Apply to production**: the same committed migrations, applied by the
+   same script during the production deploy. Rollback policy (backward-
+   compatible migrations, expand-and-contract for risky changes, never
+   blindly reversing data migrations): `docs/manager/rollback-runbook.md`.
+
+### Baselining an existing database (one-time)
+
+A database whose schema was previously created with `db push` (or restored
+from one) has no `_prisma_migrations` history, so the first `migrate deploy`
+would try to re-create existing tables and fail. Baseline it **once** (marks
+the committed init baseline as applied WITHOUT running it — under the hood
+`prisma migrate resolve --applied 000000000000_init` for both databases):
+
+```bash
+cd server
+npm run db:migrate:baseline:postgres  # one-time: record the init baseline as applied
+npm run db:migrate:status:postgres    # verify: nothing pending that already exists
+npm run db:migrate:deploy:postgres    # applies only what genuinely remains
+```
+
+This mirrors the §2b baseline note in `deployment-readiness.md` and is needed
+exactly once per database, at cutover time.
+
+---
+
 ## Operator runbook
 
 > Run everything from the `server/` directory. **Never logs connection strings.**
@@ -99,20 +150,31 @@ POSTGRES_DATABASE_URL="postgresql://user:pass@host:5432/pecanrev?schema=public"
 POSTGRES_WAITLIST_DATABASE_URL="postgresql://user:pass@host:5432/pecanrev_waitlist?schema=public"
 ```
 
-### 3. Generate the PG clients + create the schema
+### 3. Generate the PG clients + create the schema (versioned)
 ```bash
-npm run db:generate:postgres   # syncs PG schema + generates both PG clients
-npm run db:push:postgres       # creates all tables in both Postgres databases
+npm run db:generate:postgres          # syncs PG schema + generates both PG clients
+npm run db:migrate:deploy:postgres    # applies the committed baseline migrations
+                                      # → creates all tables in both Postgres DBs
+npm run db:migrate:status:postgres    # verify: no pending migrations
 ```
+(`db:push:postgres` still exists for throwaway local experiments, but the
+migrate path above is what staging and production use — 93.md §2.2. A fresh
+database needs no baseline step; the committed migrations ARE its history.)
 
 ### 4. Back up, copy the data, and verify
 The SQLite files ARE the backup (read `sqlite3 dev.db .dump > backup.sql` if you
 want a portable copy). Then:
 ```bash
+node scripts/migrate-db.mjs --dry-run    # validation-only pass: connects, orders,
+                                         # counts, and reports — writes NOTHING
 npm run db:migrate:postgres    # copies + verifies BOTH databases
 # or one at a time:  node scripts/migrate-db.mjs --only=main
 #                    node scripts/migrate-db.mjs --only=waitlist
 ```
+**Production safety interlock (93.md §2.3):** when the environment is
+unmistakably production, the tool refuses to write unless explicitly confirmed
+with `--confirm-production` — an unconfirmed run downgrades to the dry-run
+report. Always run `--dry-run` first regardless of environment.
 The tool is **idempotent and resumable** (upsert by id), copies rows in
 **topological FK order** (parents before children), preserves **all** ids,
 timestamps (`@updatedAt` is NOT reset), ownership, memberships, relationships,

@@ -3,6 +3,8 @@
 Operational guide for deploying the META·LAB monorepo (React + Vite frontend, Express + Prisma API). Covers build, DB migration, environment variables, CORS/session/cookie hardening, HTTPS, the GitHub-main → live workflow, and the `/api/version` versioning process.
 
 > Stack: ESM (`"type": "module"`) throughout. Frontend = Vite (root). API = Express on port `3001`, entry `server/index.js`, which loads `server/.env` via `server/load-env.js` before any Prisma/JWT code runs. Dev proxy: `vite.config.js` forwards `/api` → `http://127.0.0.1:3001`.
+>
+> 93.md operational companions: deploy = `deploy/metalab-deploy.sh` (+ `deploy/rollback.sh`), reverse proxy = `deploy/nginx/`, process manager = `ecosystem.config.cjs` + `docs/manager/pm2-operations.md`, staging = `docs/manager/staging-deployment.md`, and the full runbook index in the repo `README.md`.
 
 ---
 
@@ -32,10 +34,19 @@ Dev uses SQLite (`server/prisma/dev.db`); the live VPS also runs **SQLite** (`pr
 `/var/lib/metalab/prod.db`). PostgreSQL remains the recommended target for scale (see §7) but is not what
 production runs today.
 
-> **How the live VPS actually applies schema changes (verified from the deploy log, 2026-06-12):**
-> `/usr/local/bin/metalab-deploy.sh` runs **`npx prisma db push`** against `prod.db` — NOT `migrate deploy`.
+> **⚠️ TRANSITIONAL (93.md §2.2/§3.6):** the `db push` flow described below is the legacy VPS behavior and
+> is being replaced. The committed, release-based deploy script **`deploy/metalab-deploy.sh`** (install to
+> `/usr/local/bin/metalab-deploy.sh`) keeps the sqlite `db push` branch only until the PostgreSQL cutover;
+> with `DATABASE_PROVIDER=postgres` it runs versioned **`prisma migrate deploy`**
+> (`npm run db:migrate:deploy:postgres` — see `docs/manager/postgres-migration.md` § Versioned migration
+> workflow). Rollback (auto on failed readiness + the manual `deploy/rollback.sh` fast path):
+> `docs/manager/rollback-runbook.md`.
+
+> **How the legacy in-place VPS script applied schema changes (verified from the deploy log, 2026-06-12):**
+> the old `/usr/local/bin/metalab-deploy.sh` ran **`npx prisma db push`** against `prod.db` — NOT `migrate deploy`.
 > `db push` diffs `schema.prisma` directly against the database and ignores `server/prisma/migrations/`
-> entirely. This is why committed migrations alone neither help nor break the VPS deploy.
+> entirely. This is why committed migrations alone neither help nor break that deploy. The transitional
+> sqlite branch of the new script behaves identically on purpose.
 
 > **⚠️ db-push-safety rule (the prompt9 deploy failure — read before any schema change):**
 > The deploy script runs `db push` **without `--accept-data-loss`** (correct — an unattended prod deploy must
@@ -78,9 +89,10 @@ npx prisma migrate deploy   # applies only what remains
 ```
 
 Quick check of what the DB already has: `npx prisma migrate status` (lists pending vs applied).
-**This baseline is only needed if/when the deploy script is switched to `migrate deploy`.** The current VPS
-script uses `db push`, which reads `schema.prisma` directly and needs no migration history — so until the
-script is changed, the committed migrations serve clean clones and local `migrate deploy` only.
+**This baseline is only needed if/when a database created by `db push` is switched to `migrate deploy`.**
+The transitional sqlite branch of `deploy/metalab-deploy.sh` still uses `db push` (needs no history); the
+PostgreSQL path uses `migrate deploy` from day one, and a fresh PG database needs no baseline (the committed
+migrations ARE its history). Full workflow + PG baseline commands: `docs/manager/postgres-migration.md`.
 
 ---
 

@@ -1,0 +1,160 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# deploy/nginx/pecanrev.conf.example — production reverse proxy (93.md §3.2)
+#
+# Copy to /etc/nginx/sites-available/pecanrev.conf, replace the example.com
+# placeholders with the real domain, then:
+#   ln -s /etc/nginx/sites-available/pecanrev.conf /etc/nginx/sites-enabled/
+#   nginx -t && systemctl reload nginx
+# TLS certificates: see deploy/nginx/README.md (certbot or Cloudflare).
+#
+# Architecture (docs/manager/deployment-config.md): everything — the SPA, its
+# /assets, and /api — is served by ONE Node/Express process on 127.0.0.1:3001.
+# nginx terminates TLS and proxies; it does NOT serve dist/ from disk.
+#   • Immutable caching for content-hashed /assets/* comes from EXPRESS
+#     (server/index.js, 93.md §3.7). A CDN or `proxy_cache` MAY cache /assets/*
+#     (they are content-hashed and immutable) but must NEVER cache index.html
+#     or anything under /api/ — a cached index.html traps users on old builds,
+#     and /api/ responses carry private data.
+#   • SECURITY HEADERS (CSP, HSTS, frame/nosniff/referrer policies) are set by
+#     the app via helmet. Do NOT duplicate them here — duplicated headers are
+#     at best confusing and at worst conflicting (two CSPs = strictest union).
+#     Only add headers at nginx that the app deliberately does not set.
+#   • The app port 3001 must NEVER be publicly reachable — ufw allows only
+#     22/80/443 (docs/manager/vps-hardening.md) and Node binds are proxied here.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── gzip for text types (safe: SSE is excluded per-location below) ────────────
+# May live in nginx.conf's http{} instead; keep in one place only.
+gzip              on;
+gzip_comp_level   5;
+gzip_min_length   1024;
+gzip_vary         on;
+gzip_proxied      any;
+gzip_types        text/plain text/css text/xml application/json
+                  application/javascript application/xml+rss image/svg+xml;
+
+# ── HTTP → HTTPS redirect (production + staging hosts) ────────────────────────
+server {
+    listen 80;
+    listen [::]:80;
+    server_name example.com www.example.com staging.example.com;
+
+    # certbot HTTP-01 challenge (webroot mode) — harmless to keep permanently.
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# ── Production HTTPS ──────────────────────────────────────────────────────────
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name example.com www.example.com;
+
+    # Managed by certbot after `certbot --nginx` (see deploy/nginx/README.md):
+    ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
+    # include /etc/letsencrypt/options-ssl-nginx.conf;
+    # ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    # PDF / research-file uploads (app enforces its own limits; 70m covers the
+    # largest legitimate upload path with headroom — a 413 here never reaches Node).
+    client_max_body_size 70m;
+
+    # ── SSE stream: /api/events (copy semantics from deployment-config.md) ────
+    # A buffering proxy silently breaks the realtime layer. The app already
+    # sends X-Accel-Buffering: no; these directives make it explicit and give
+    # the long-lived stream a read timeout far above the 25s heartbeat.
+    location /api/events {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Connection '';          # keep-alive to upstream
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;                     # critical: stream frames immediately
+        proxy_cache off;
+        proxy_read_timeout 1h;                   # long-lived connection (>> 25s heartbeat)
+        chunked_transfer_encoding on;
+        gzip off;                                # never compress an event stream
+    }
+
+    # ── API ───────────────────────────────────────────────────────────────────
+    # proxy_read_timeout MUST exceed the app's own request timeout so slow-but-
+    # valid operations (large imports/exports) fail in the app (with a real
+    # error + request id), never as an opaque nginx 504. The app default is
+    # REQUEST_TIMEOUT_MS=120000 (server/index.js) → 130s here.
+    location /api/ {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 130s;
+        proxy_send_timeout 130s;
+        # Never cache API responses (private data). No proxy_cache is configured
+        # here at all — do not add one for /api/.
+    }
+
+    # ── SPA + static assets (served by Express, incl. /assets immutable) ──────
+    location / {
+        proxy_pass http://127.0.0.1:3001;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+}
+
+# ── Staging HTTPS (93.md §3.3 — same app, its own instance/port + env file) ───
+# The staging PM2 process listens on 3002 with server/.env built from
+# server/.env.staging.example (separate DB, secrets, Sentry env, email
+# redirect). See docs/manager/staging-deployment.md.
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name staging.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/example.com/privkey.pem;
+
+    client_max_body_size 70m;
+
+    location /api/events {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_http_version 1.1;
+        proxy_set_header Connection '';
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 1h;
+        chunked_transfer_encoding on;
+        gzip off;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 130s;
+        proxy_send_timeout 130s;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:3002;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 60s;
+    }
+}
