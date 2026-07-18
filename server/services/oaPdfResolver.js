@@ -21,8 +21,15 @@
  * This module performs RESOLUTION only (find the URL). Downloading the bytes and
  * creating the ScreenPdfAttachment happens in the screening controller, behind
  * the same feature flag.
+ *
+ * 93.md Phase 10 — every provider fetch carries an AbortSignal.timeout bound
+ * (OA_METADATA_TIMEOUT_MS, default 15s): a hung provider socket previously
+ * pinned the request forever. A timeout surfaces as a provider error, which the
+ * resolve() loop already swallows (try the next provider) — error semantics are
+ * unchanged: resolve() still never throws.
  */
 import { normalizeDoi } from '../../src/research-engine/screening/pdfMatching.js';
+import { METADATA_TIMEOUT_MS, timeoutSignal } from '../utils/fetchTimeout.js';
 
 export const OA_STATUS = {
   FOUND: 'found',
@@ -50,8 +57,13 @@ export function loadOaConfig(env = process.env, settings = {}) {
       : OA_PROVIDERS,
     cacheTtlMs: (Number(env.OA_PDF_CACHE_TTL_HOURS) || 24) * 3600 * 1000,
     rateLimitPerMinute: Number(env.OA_PDF_RATE_LIMIT_PER_MINUTE) || 30,
+    metadataTimeoutMs: Number(env.OA_METADATA_TIMEOUT_MS) || METADATA_TIMEOUT_MS, // 93.md
   };
 }
+
+/** 93.md — per-request timeout signal; falls back to the default when a caller
+ *  passes a hand-built cfg (unit tests) without metadataTimeoutMs. */
+const metaSignal = cfg => timeoutSignal(cfg.metadataTimeoutMs || METADATA_TIMEOUT_MS);
 
 /* ── Token bucket (per-minute) ─────────────────────────────────────────────── */
 function makeBucket(perMinute, now) {
@@ -70,7 +82,7 @@ function makeBucket(perMinute, now) {
 /* ── Providers (each returns { provider, url, license } or null) ───────────── */
 async function fromUnpaywall(doi, cfg, fetch) {
   if (!cfg.unpaywallEmail) return null; // Unpaywall requires an email
-  const res = await fetch(`https://api.unpaywall.org/v2/${encodeURIComponent(doi)}?email=${encodeURIComponent(cfg.unpaywallEmail)}`);
+  const res = await fetch(`https://api.unpaywall.org/v2/${encodeURIComponent(doi)}?email=${encodeURIComponent(cfg.unpaywallEmail)}`, { signal: metaSignal(cfg) });
   if (!res || !res.ok) return null;
   const j = await res.json();
   if (!j || !j.is_oa) return null; // OA only
@@ -81,7 +93,7 @@ async function fromUnpaywall(doi, cfg, fetch) {
 
 async function fromOpenAlex(doi, cfg, fetch) {
   const mailto = cfg.openalexEmail ? `?mailto=${encodeURIComponent(cfg.openalexEmail)}` : '';
-  const res = await fetch(`https://api.openalex.org/works/doi:${encodeURIComponent(doi)}${mailto}`);
+  const res = await fetch(`https://api.openalex.org/works/doi:${encodeURIComponent(doi)}${mailto}`, { signal: metaSignal(cfg) });
   if (!res || !res.ok) return null;
   const j = await res.json();
   const oa = (j && j.open_access) || {};
@@ -93,7 +105,7 @@ async function fromOpenAlex(doi, cfg, fetch) {
 
 async function fromCrossRef(doi, cfg, fetch) {
   const headers = cfg.crossrefMailto ? { 'User-Agent': `META-LAB/1.0 (mailto:${cfg.crossrefMailto})` } : {};
-  const res = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`, { headers });
+  const res = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`, { headers, signal: metaSignal(cfg) });
   if (!res || !res.ok) return null;
   const j = await res.json();
   const msg = (j && j.message) || {};

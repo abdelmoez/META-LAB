@@ -18,9 +18,13 @@ import { createOaResolver, loadOaConfig, OA_STATUS } from '../services/oaPdfReso
 import { savePdf, deletePdfFile, isPdfBuffer, MAX_PDF_BYTES } from '../screening/pdfStorage.js';
 import { bestPdfMatch, normalizeDoi } from '../../src/research-engine/screening/pdfMatching.js';
 import { pmidToDoi } from '../services/pmidToDoi.js';
+import { DOWNLOAD_TIMEOUT_MS, timeoutSignal, describeFetchError, readBodyCapped } from '../utils/fetchTimeout.js';
 
 const MAX_PER_CALL = 25;   // bound request time (no job queue); client paginates
 const MAX_MATCH = 200;
+// 93.md Phase 10 — hard wall-clock bound on a single OA PDF download. Without
+// it a wedged CDN socket pinned the request handler indefinitely.
+const PDF_DOWNLOAD_TIMEOUT_MS = Number(process.env.OA_DOWNLOAD_TIMEOUT_MS) || DOWNLOAD_TIMEOUT_MS;
 
 // One shared resolver → its TTL cache + rate-limiter persist across requests
 // (a per-request resolver would never hit the cache). The DOI→OA-URL result does
@@ -28,14 +32,23 @@ const MAX_MATCH = 200;
 // is correct. The per-request flag + the user's email are passed to resolve().
 const resolver = createOaResolver(loadOaConfig());
 
+// 93.md Phase 10 — timeout-bounded, size-capped-DURING-streaming download.
+// Previously this buffered the entire body (arrayBuffer) and only THEN checked
+// maxBytes, so an oversized/hostile host could push arbitrary bytes into memory;
+// and the bare fetch had no timeout. Error semantics are unchanged: always
+// returns { ok:false, error } (never throws) so both call sites keep working.
 async function fetchOaPdf(url, fetchFn, maxBytes) {
   let res;
-  try { res = await fetchFn(url, { redirect: 'follow' }); }
-  catch (e) { return { ok: false, error: `fetch failed: ${e.message}` }; }
+  try { res = await fetchFn(url, { redirect: 'follow', signal: timeoutSignal(PDF_DOWNLOAD_TIMEOUT_MS) }); }
+  catch (e) { return { ok: false, error: `fetch failed: ${describeFetchError(e, PDF_DOWNLOAD_TIMEOUT_MS)}` }; }
   if (!res || !res.ok) return { ok: false, error: `HTTP ${res ? res.status : 'no-response'}` };
   const ct = (res.headers && res.headers.get && res.headers.get('content-type')) || '';
-  const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length > maxBytes) return { ok: false, error: 'PDF exceeds size limit' };
+  // Fast reject when the host declares an oversized body up front.
+  const declared = Number(res.headers && res.headers.get && res.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) return { ok: false, error: 'PDF exceeds size limit' };
+  const read = await readBodyCapped(res, maxBytes);
+  if (!read.ok) return { ok: false, error: read.error };
+  const buf = read.buffer;
   if (!isPdfBuffer(buf)) return { ok: false, error: `not a PDF (content-type ${ct || 'unknown'})` };
   return { ok: true, buffer: buf };
 }
