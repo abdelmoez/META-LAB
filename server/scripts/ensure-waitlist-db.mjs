@@ -29,6 +29,9 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import fs from 'node:fs';
+// 93.md — shared production db-push guard (postgres pushes only; sqlite pushes
+// stay allowed so the current VPS postinstall flow is byte-for-byte unchanged).
+import { shouldBlockDbPush, blockMessage } from './guard-db-push.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SERVER_DIR = path.resolve(__dirname, '..');
@@ -108,11 +111,25 @@ if (provider === 'sqlite') {
     'db push (sqlite waitlist schema)'
   );
 } else if (provider === 'postgres') {
-  prisma(
-    ['db', 'push', '--skip-generate', '--schema=prisma/postgres/waitlist-schema.prisma'],
-    { POSTGRES_WAITLIST_DATABASE_URL: url },
-    'db push (postgres waitlist schema)'
-  );
+  // 93.md — production guard: a postgres waitlist DB must be changed through the
+  // versioned migrations (prisma/postgres/waitlist-migrations), never db push.
+  // The script's ALWAYS-exit-0 contract holds: we log loudly and skip the push
+  // (ALLOW_DB_PUSH=1 is the deliberate escape hatch).
+  if (shouldBlockDbPush(process.env)) {
+    console.error(`${TAG} ${blockMessage('waitlist postgres db push')}`);
+    console.log(`${TAG} skipped postgres db push (production guard) — run npm run db:migrate:deploy:postgres instead.`);
+  } else {
+    prisma(
+      ['db', 'push', '--skip-generate', '--schema=prisma/postgres/waitlist-schema.prisma'],
+      {
+        POSTGRES_WAITLIST_DATABASE_URL: url,
+        // 93.md — the derived pg schema declares directUrl; default it to the
+        // pooled URL for this child process when no separate direct URL exists.
+        POSTGRES_WAITLIST_DIRECT_DATABASE_URL: env('POSTGRES_WAITLIST_DIRECT_DATABASE_URL') || url,
+      },
+      'db push (postgres waitlist schema)'
+    );
+  }
 } else {
   console.log(`${TAG} unrecognised waitlist URL scheme — skipping db push.`);
 }

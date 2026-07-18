@@ -13,6 +13,11 @@
 //   POSTGRES_WAITLIST_DATABASE_URL="postgresql://user:pass@host:5432/db?schema=public" \
 //     npx prisma generate --schema=prisma/postgres/waitlist-schema.prisma
 //   POSTGRES_WAITLIST_DATABASE_URL=... npx prisma db push --schema=prisma/postgres/waitlist-schema.prisma
+//
+// 93.md — the datasource also declares directUrl = env("POSTGRES_WAITLIST_DIRECT_DATABASE_URL")
+// so Prisma CLI commands bypass a transaction pooler (PgBouncer et al.) when one
+// fronts the database. When no separate direct URL exists, set it equal to the
+// pooled URL (the runtime and the migration scripts default it automatically).
 // ──────────────────────────────────────────────────────────────────────────────
 
 generator client {
@@ -21,8 +26,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("POSTGRES_WAITLIST_DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("POSTGRES_WAITLIST_DATABASE_URL")
+  directUrl = env("POSTGRES_WAITLIST_DIRECT_DATABASE_URL")
 }
 
 model BetaWaitlistApplicant {

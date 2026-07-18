@@ -80,6 +80,125 @@ export function planModels(models) {
 }
 
 /**
+ * 93.md — every REQUIRED (non-nullable) single-column foreign-key relation in
+ * the DMMF, from the perspective of the CHILD model that holds the FK. Pure:
+ * returns [{ model, delegate, fkField, parentModel, parentDelegate,
+ * parentKeyField }]. Composite FKs (relationFromFields.length > 1) are skipped —
+ * this schema declares none (the same single-column assumption idFieldName
+ * already enforces for @id).
+ */
+export function requiredFkRelations(models) {
+  const byName = new Map(models.map((m) => [m.name, m]));
+  const out = [];
+  for (const m of models) {
+    for (const f of m.fields) {
+      if (f.kind !== 'object' || !Array.isArray(f.relationFromFields) || f.relationFromFields.length !== 1) continue;
+      const parent = byName.get(f.type);
+      if (!parent) continue;
+      const fkField = f.relationFromFields[0];
+      const fkScalar = m.fields.find((s) => s.name === fkField);
+      // Only REQUIRED FKs can strand a child row: a nullable FK is legal as null
+      // and Postgres accepts it. Required + missing parent = insert-time FK error.
+      if (!fkScalar || fkScalar.isRequired !== true) continue;
+      const parentKeyField =
+        (Array.isArray(f.relationToFields) && f.relationToFields[0]) || idFieldName(parent);
+      out.push({
+        model: m.name,
+        delegate: delegateName(m.name),
+        fkField,
+        parentModel: parent.name,
+        parentDelegate: delegateName(parent.name),
+        parentKeyField,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * 93.md — pre-flight orphan detection: for each required FK relation, count
+ * child rows whose parent key is missing in the SOURCE. Such rows migrate fine
+ * into FK-less SQLite but make the Postgres transfer fail mid-flight with an
+ * FK violation, so they must be surfaced (and fixed, or waived with
+ * --allow-orphans) BEFORE any write to the target.
+ *
+ * READ-ONLY on `source`. Memory-bounded: parent keys load once per parent model
+ * (a Set of ids), children aggregate via groupBy on the FK column — distinct FK
+ * values, not full rows.
+ *
+ * Returns [{ model, fkField, parentModel, rows, sampleMissingParents }].
+ */
+export async function findOrphans(source, models, opts = {}) {
+  const { maxSamples = 5 } = opts;
+  const relations = requiredFkRelations(models);
+  const parentKeyCache = new Map(); // "delegate.keyField" → Set(keys)
+  const orphans = [];
+  for (const rel of relations) {
+    const src = source[rel.delegate];
+    const parentSrc = source[rel.parentDelegate];
+    if (!src || !parentSrc) throw new Error(`findOrphans: missing delegate "${rel.delegate}" or "${rel.parentDelegate}"`);
+    const cacheKey = `${rel.parentDelegate}.${rel.parentKeyField}`;
+    let parentKeys = parentKeyCache.get(cacheKey);
+    if (!parentKeys) {
+      const rows = await parentSrc.findMany({ select: { [rel.parentKeyField]: true } });
+      parentKeys = new Set(rows.map((r) => r[rel.parentKeyField]));
+      parentKeyCache.set(cacheKey, parentKeys);
+    }
+    const groups = await src.groupBy({ by: [rel.fkField], _count: { _all: true } });
+    let rows = 0;
+    const sampleMissingParents = [];
+    for (const g of groups) {
+      const v = g[rel.fkField];
+      if (v == null) continue; // defensive: required in schema, but never crash on dirty data
+      if (parentKeys.has(v)) continue;
+      rows += g._count?._all ?? 0;
+      if (sampleMissingParents.length < maxSamples) sampleMissingParents.push(v);
+    }
+    if (rows > 0) {
+      orphans.push({ model: rel.model, fkField: rel.fkField, parentModel: rel.parentModel, rows, sampleMissingParents });
+    }
+  }
+  return orphans;
+}
+
+/**
+ * 93.md — dry-run plan: the dependency-ordered transfer plan with per-model
+ * SOURCE row counts. READ-ONLY on `source`; never touches a target. Returns
+ * [{ model, delegate, idField, rows }] in the exact order migrateAll would
+ * write them.
+ */
+export async function dryRunPlan(source, models) {
+  if (!Array.isArray(models)) throw new Error('dryRunPlan: models (DMMF datamodel.models) is required');
+  const plan = planModels(models);
+  const out = [];
+  for (const { model, delegate, idField } of plan) {
+    const src = source[delegate];
+    if (!src) throw new Error(`dryRunPlan: missing delegate "${delegate}" on the source client`);
+    out.push({ model: model.name, delegate, idField, rows: await src.count() });
+  }
+  return out;
+}
+
+/**
+ * 93.md — does writing to this target demand an explicit --confirm-production?
+ * True when NODE_ENV is "production" OR the target URL points anywhere but the
+ * local machine (localhost / 127.0.0.1 / ::1). Local file: targets (SQLite
+ * rehearsals) never require confirmation. Unparseable URLs fail SAFE (true).
+ * Pure — unit-tested without a database.
+ */
+export function targetRequiresConfirmation({ targetUrl = '', nodeEnv = '' } = {}) {
+  if (String(nodeEnv).trim().toLowerCase() === 'production') return true;
+  const url = String(targetUrl).trim();
+  if (!url || url.startsWith('file:')) return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return !(host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]');
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Migrate every model from `source` to `target`. Returns a per-model report.
  * @param {object} source  Prisma client to read from
  * @param {object} target  Prisma client to write to

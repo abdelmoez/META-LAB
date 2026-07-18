@@ -5,6 +5,9 @@
 // bare-schema PrismaClient (SQLite-only; splits brain under Postgres, and misses
 // the WAL/busy_timeout pragmas applied only to the shared client's connection).
 import { prisma } from '../db/client.js';
+// 93.md — provider-aware record search: keeps the case-insensitive behaviour
+// SQLite gave for free when running on PostgreSQL (mode:'insensitive' → ILIKE).
+import { insensitiveContains } from '../db/searchMode.js';
 import { createHash } from 'crypto';
 import { recordDuplicateLabels, getDuplicateEvaluation } from '../services/screeningDuplicateService.js';
 // 92.md — duplicate detection is a durable background job now (the old sync sweep froze
@@ -64,6 +67,9 @@ import { mkProject } from '../../src/research-engine/project-model/defaults.js';
 import { filterRecordsByKeywords, countArticlesByKeyword } from '../../src/research-engine/screening/keywordFilter.js';
 import { studyFromRecord } from './screeningReviewController.js';
 import { recordUsage, USAGE } from '../utils/usage.js';
+// 93.md §5.3 — activation funnel: ONLY the user's first-ever screening decision
+// is a usage event (per-decision rows live in ScreenDecision already).
+import { recordFirstEvent } from '../services/analytics.js';
 import { ensureScreenModuleForMetaLab } from '../screening/ensureWorkspace.js';
 
 // Parse a comma-separated keyword param into a clean phrase list.
@@ -815,11 +821,11 @@ export async function listRecords(req, res) {
     const where = { projectId: p.id };
     if (search) {
       where.OR = [
-        { title: { contains: search } },
-        { authors: { contains: search } },
-        { abstract: { contains: search } },
-        { doi: { contains: search } },
-        { pmid: { contains: search } },
+        { title: insensitiveContains(search) },
+        { authors: insensitiveContains(search) },
+        { abstract: insensitiveContains(search) },
+        { doi: insensitiveContains(search) },
+        { pmid: insensitiveContains(search) },
       ];
     }
 
@@ -1623,6 +1629,10 @@ export async function saveDecision(req, res) {
         labels: Array.isArray(labels) ? JSON.stringify(labels) : labels,
       },
     });
+
+    // 93.md §5.3 — activation: record the user's FIRST screening decision only
+    // (deterministic-id PK → at most one row per user, ever). Fire-and-forget.
+    recordFirstEvent(USAGE.SCREENING_DECISION_FIRST, req.user.id, { screenProjectId: p.id, meta: { stage } });
 
     // Promotion gate (prompt19 Task 9 — BACKEND-ENFORCED).
     //

@@ -14,12 +14,28 @@
  */
 import { PrismaClient as SqlitePrismaClient } from '@prisma/client';
 import { createRequire } from 'module';
+// 93.md — single source of truth for provider detection (also drives the
+// provider-aware search filters in searchMode.js).
+import { resolveDatabaseProvider } from './searchMode.js';
 
 const require = createRequire(import.meta.url);
 
+// 93.md — the derived Postgres schemas declare `directUrl` (so Prisma CLI
+// commands bypass a transaction pooler). Default the direct env vars to the
+// pooled URLs BEFORE any client instantiation so runtime never breaks when no
+// separate direct URL exists (single-URL deployments stay zero-config). Both
+// vars are defaulted here because this module loads at boot before any main or
+// waitlist database work.
+if (!process.env.POSTGRES_DIRECT_DATABASE_URL && process.env.POSTGRES_DATABASE_URL) {
+  process.env.POSTGRES_DIRECT_DATABASE_URL = process.env.POSTGRES_DATABASE_URL;
+}
+if (!process.env.POSTGRES_WAITLIST_DIRECT_DATABASE_URL && process.env.POSTGRES_WAITLIST_DATABASE_URL) {
+  process.env.POSTGRES_WAITLIST_DIRECT_DATABASE_URL = process.env.POSTGRES_WAITLIST_DATABASE_URL;
+}
+
 function resolvePrismaClientCtor() {
-  const provider = (process.env.DATABASE_PROVIDER || 'sqlite').trim().toLowerCase();
-  if (provider === 'postgres' || provider === 'postgresql') {
+  const provider = resolveDatabaseProvider();
+  if (provider === 'postgres') {
     try {
       return require('../prisma/generated/postgres-client').PrismaClient;
     } catch (e) {
@@ -64,8 +80,7 @@ if (process.env.NODE_ENV !== 'production') globalForPrisma.__prisma = prisma;
  * `PRAGMA journal_mode=DELETE` restores the old mode.
  */
 export async function applySqlitePragmas() {
-  const provider = (process.env.DATABASE_PROVIDER || 'sqlite').trim().toLowerCase();
-  if (provider === 'postgres' || provider === 'postgresql') return { applied: false, reason: 'not_sqlite' };
+  if (resolveDatabaseProvider() === 'postgres') return { applied: false, reason: 'not_sqlite' };
   const busyMs = Math.max(0, parseInt(process.env.SQLITE_BUSY_TIMEOUT_MS, 10) || 8000);
   try {
     // journal_mode returns the resulting mode as a row; the others are SETs.

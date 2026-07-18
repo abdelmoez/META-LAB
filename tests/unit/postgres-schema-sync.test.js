@@ -24,12 +24,19 @@ describe('postgres schema sync', () => {
       it('uses the postgresql provider and keeps every model body byte-identical to the canonical schema', () => {
         const canonical = readCanonical(target);
         const pg = derivePostgresSchema(canonical, target);
-        expect(pg).toContain('provider = "postgresql"');
+        expect(pg).toContain('provider  = "postgresql"');
         expect(pg).not.toContain('provider = "sqlite"');
         // Everything after each schema's datasource block (the model definitions)
         // must be identical between canonical and derived.
         const tail = (s) => s.slice(s.indexOf('}', s.indexOf('datasource db')) + 1).trim();
         expect(tail(pg)).toBe(tail(canonical));
+      });
+
+      it('93.md — declares directUrl for pooled providers (CLI bypasses the pooler; runtime defaults it)', () => {
+        const pg = derivePostgresSchema(readCanonical(target), target);
+        expect(target.directUrlEnv).toMatch(/^POSTGRES_.*DIRECT_DATABASE_URL$/);
+        expect(pg).toContain(`directUrl = env("${target.directUrlEnv}")`);
+        expect(pg).toContain(`url       = env("${target.urlEnv}")`);
       });
     });
   }

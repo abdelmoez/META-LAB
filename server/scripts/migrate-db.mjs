@@ -19,6 +19,22 @@
  *
  * Flags:  --only=main|waitlist   --batch=500   --no-verify
  *
+ * 93.md Phase 2 additions:
+ *   --dry-run             print the dependency-ordered plan + per-model source
+ *                         row counts + the orphan report. ZERO writes — the
+ *                         target is never even connected to.
+ *   --allow-orphans       proceed despite orphaned child rows (rows whose
+ *                         required FK parent is missing in the source). Default
+ *                         is ABORT before any transfer: orphans that SQLite
+ *                         tolerates fail the Postgres copy mid-flight.
+ *   --confirm-production  required when NODE_ENV=production OR the target URL
+ *                         host is not localhost/127.0.0.1 — a remote/production
+ *                         database is never written to by accident.
+ *
+ * A `file:` target URL selects the SQLite client for the TARGET too, so the
+ * whole pipeline (plan → orphans → copy → verify) can be rehearsed against a
+ * scratch SQLite file without a live Postgres.
+ *
  * Cutover: after a clean verify, set DATABASE_PROVIDER=postgres in the deploy
  * environment and restart. The SQLite files remain the rollback (untouched).
  * NEVER deletes the source. NEVER logs connection strings.
@@ -27,7 +43,9 @@ import '../load-env.js';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import path from 'path';
-import { migrateAll, verifyAll } from '../db/migrate/core.js';
+import {
+  migrateAll, verifyAll, findOrphans, dryRunPlan, targetRequiresConfirmation,
+} from '../db/migrate/core.js';
 
 const require = createRequire(import.meta.url);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -41,6 +59,10 @@ const args = Object.fromEntries(
 const only = args.only ? String(args.only) : 'all';
 const batchSize = args.batch ? Number(args.batch) : 500;
 const doVerify = args.verify !== false && args['no-verify'] !== true;
+// 93.md flags — see the header.
+const dryRun = args['dry-run'] === true;
+const allowOrphans = args['allow-orphans'] === true;
+const confirmProduction = args['confirm-production'] === true;
 
 function requireEnv(name) {
   const v = process.env[name];
@@ -51,22 +73,56 @@ function requireEnv(name) {
   return v;
 }
 
-/** Build the SQLite source + Postgres target clients for one database. */
+/**
+ * Build the SQLite source + target clients for one database.
+ * 93.md: a `file:` TARGET url selects the SQLite client too (scratch-DB
+ * rehearsal, mirroring the round-trip integration test); anything else keeps
+ * the generated Postgres client. In --dry-run mode the target is NOT built —
+ * dry-run is read-only on the source and must work before Postgres even exists
+ * (the target env var may be unset).
+ */
 function buildClients({ sourceUrlEnv, targetUrlEnv, sqliteModule, pgClientPath }) {
   const sourceUrl = requireEnv(sourceUrlEnv);
-  const targetUrl = requireEnv(targetUrlEnv);
+  const targetUrl = dryRun ? (process.env[targetUrlEnv] || '') : requireEnv(targetUrlEnv);
   const sqlite = require(sqliteModule); // { PrismaClient, Prisma }
-  let pg;
-  try {
-    pg = require(pgClientPath);
-  } catch (e) {
-    console.error(`✗ Postgres client not generated (${pgClientPath}). Run \`npm run db:generate:postgres\` first.`);
-    process.exit(2);
-  }
-  const source = new sqlite.PrismaClient({ datasources: { db: { url: sourceUrl } } });
-  const target = new pg.PrismaClient({ datasources: { db: { url: targetUrl } } });
   const models = sqlite.Prisma.dmmf.datamodel.models;
-  return { source, target, models };
+  const source = new sqlite.PrismaClient({ datasources: { db: { url: sourceUrl } } });
+  if (dryRun) return { source, target: null, models, targetUrl };
+
+  let TargetCtor;
+  if (targetUrl.startsWith('file:')) {
+    TargetCtor = sqlite.PrismaClient; // scratch SQLite rehearsal target
+  } else {
+    try {
+      TargetCtor = require(pgClientPath).PrismaClient;
+    } catch (e) {
+      console.error(`✗ Postgres client not generated (${pgClientPath}). Run \`npm run db:generate:postgres\` first.`);
+      process.exit(2);
+    }
+  }
+  const target = new TargetCtor({ datasources: { db: { url: targetUrl } } });
+  return { source, target, models, targetUrl };
+}
+
+/** Print the orphan report (93.md). Returns true when the run may proceed. */
+function reportOrphans(orphans) {
+  if (orphans.length === 0) {
+    console.log('  ✓ orphan check: no child rows with a missing required-FK parent.');
+    return true;
+  }
+  console.error(`  ✗ orphan check: ${orphans.length} relation(s) have children whose required parent is MISSING:`);
+  for (const o of orphans) {
+    console.error(
+      `    ${o.model}.${o.fkField} → ${o.parentModel}: ${o.rows} orphaned row(s); ` +
+      `sample missing parent ids: ${o.sampleMissingParents.join(', ')}`
+    );
+  }
+  if (allowOrphans) {
+    console.error('  ⚠ --allow-orphans set — proceeding anyway. These rows WILL fail FK checks on Postgres.');
+    return true;
+  }
+  console.error('  Aborting BEFORE any transfer. Fix the rows (or re-run with --allow-orphans to waive).');
+  return false;
 }
 
 const DATABASES = {
@@ -89,8 +145,32 @@ const DATABASES = {
 async function migrateOne(key) {
   const cfg = DATABASES[key];
   console.log(`\n━━━ ${cfg.label} (${key}) ━━━`);
-  const { source, target, models } = buildClients(cfg);
+  const { source, target, models, targetUrl } = buildClients(cfg);
   try {
+    // 93.md (c) — production confirmation FIRST (before any long scan): writing
+    // to a production/remote target must be explicit. Dry-run never writes, so
+    // it is exempt.
+    if (!dryRun && targetRequiresConfirmation({ targetUrl, nodeEnv: process.env.NODE_ENV }) && !confirmProduction) {
+      console.error('  ✗ Target looks like PRODUCTION (NODE_ENV=production or a non-local target host).');
+      console.error('    Re-run with --confirm-production to proceed (or --dry-run to inspect safely).');
+      return false;
+    }
+
+    // 93.md (b) — pre-flight orphan detection, BEFORE any transfer.
+    const orphans = await findOrphans(source, models);
+    if (!reportOrphans(orphans)) return false;
+
+    // 93.md (a) — dry-run: dependency-ordered plan + source counts, zero writes.
+    if (dryRun) {
+      const plan = await dryRunPlan(source, models);
+      const width = Math.max(...plan.map((p) => p.model.length), 5);
+      console.log(`  DRY RUN — transfer plan (dependency order), source row counts:`);
+      for (const p of plan) console.log(`    ${p.model.padEnd(width)}  ${p.rows}`);
+      const total = plan.reduce((s, p) => s + p.rows, 0);
+      console.log(`  DRY RUN — ${total} rows across ${plan.length} models. Nothing was written (target untouched).`);
+      return true;
+    }
+
     const t0 = Date.now();
     const report = await migrateAll(source, target, {
       models,
@@ -118,7 +198,7 @@ async function migrateOne(key) {
     return true;
   } finally {
     await source.$disconnect().catch(() => {});
-    await target.$disconnect().catch(() => {});
+    if (target) await target.$disconnect().catch(() => {});
   }
 }
 
@@ -133,10 +213,14 @@ async function main() {
   let ok = true;
   for (const k of keys) ok = (await migrateOne(k)) && ok;
   if (!ok) {
-    console.error('\n✗ Migration completed with verification failures — DO NOT cut over.');
+    console.error(dryRun
+      ? '\n✗ Dry run found blocking problems (see above) — fix them before migrating.'
+      : '\n✗ Migration did not complete cleanly (refused pre-flight or failed verification — see above). DO NOT cut over.');
     process.exit(1);
   }
-  console.log('\n✓ All migrations verified. Safe to set DATABASE_PROVIDER=postgres and restart.');
+  console.log(dryRun
+    ? '\n✓ Dry run complete. Nothing was written. Re-run without --dry-run to migrate.'
+    : '\n✓ All migrations verified. Safe to set DATABASE_PROVIDER=postgres and restart.');
 }
 
 main().catch((e) => {

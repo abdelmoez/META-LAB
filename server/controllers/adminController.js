@@ -1,4 +1,8 @@
 import { prisma } from '../db/client.js';
+// 93.md — provider-aware search: SQLite LIKE is case-insensitive, Postgres LIKE
+// is not. insensitiveContains() adds mode:'insensitive' only on Postgres so
+// admin search boxes behave identically on both providers.
+import { insensitiveContains } from '../db/searchMode.js';
 import { logAdminAction } from '../utils/audit.js';
 import { validateThemePatch, defaultThemeSettings } from '../utils/themeValidate.js';
 import { bustThemeCache } from '../middleware/spaTheme.js';
@@ -479,8 +483,8 @@ export async function getUsers(req, res) {
     const where = {};
     if (search) {
       where.OR = [
-        { email: { contains: search } },
-        { name: { contains: search } },
+        { email: insensitiveContains(search) },
+        { name: insensitiveContains(search) },
       ];
     }
     if (role) where.role = role;
@@ -1058,7 +1062,7 @@ export async function getProjects(req, res) {
 
     const where = {};
     if (userId) where.userId = userId;
-    if (search) where.name = { contains: search };
+    if (search) where.name = insensitiveContains(search);
     if (status === 'active') where.deletedAt = null;
     else if (status === 'archived') where.deletedAt = { not: null };
 
@@ -1704,12 +1708,12 @@ export async function getAuditLog(req, res) {
     if (q && String(q).trim()) {
       const term = String(q).trim();
       where.OR = [
-        { action: { contains: term } },
-        { entityType: { contains: term } },
-        { entityId: { contains: term } },
-        { details: { contains: term } },
-        { admin: { email: { contains: term } } },
-        { admin: { name: { contains: term } } },
+        { action: insensitiveContains(term) },
+        { entityType: insensitiveContains(term) },
+        { entityId: insensitiveContains(term) },
+        { details: insensitiveContains(term) },
+        { admin: { email: insensitiveContains(term) } },
+        { admin: { name: insensitiveContains(term) } },
       ];
     }
 
@@ -1761,10 +1765,10 @@ export async function getSecurityEvents(req, res) {
     if (q && String(q).trim()) {
       const term = String(q).trim();
       where.OR = [
-        { type: { contains: term } },
-        { email: { contains: term } },
-        { ip: { contains: term } },
-        { details: { contains: term } },
+        { type: insensitiveContains(term) },
+        { email: insensitiveContains(term) },
+        { ip: insensitiveContains(term) },
+        { details: insensitiveContains(term) },
       ];
     }
 
@@ -2197,10 +2201,10 @@ export async function getContactMessages(req, res) {
     if (archived !== undefined) where.archived = archived === 'true';
     if (search) {
       where.OR = [
-        { name: { contains: search } },
-        { email: { contains: search } },
-        { subject: { contains: search } },
-        { message: { contains: search } },
+        { name: insensitiveContains(search) },
+        { email: insensitiveContains(search) },
+        { subject: insensitiveContains(search) },
+        { message: insensitiveContains(search) },
       ];
     }
 
@@ -2309,16 +2313,48 @@ export async function backfillSharedMessageReadState() {
 }
 
 // ── PATCH /api/admin/contact-messages/:id ────────────────────────────────────
+// 93.md §9.3 — extended with the bug-triage fields (severity / triageStatus /
+// triageNote), each strictly validated against the closed enums. Triage changes
+// stamp triagedAt and are audit-logged; the legacy read/archived toggles keep
+// their exact prior behavior (unaudited, boolean-only).
+
+const MESSAGE_SEVERITIES = ['critical', 'high', 'medium', 'low'];
+const MESSAGE_TRIAGE_STATUSES = ['new', 'acknowledged', 'needs_info', 'planned', 'in_progress', 'shipped', 'declined', 'duplicate'];
 
 export async function updateContactMessage(req, res) {
   try {
-    const { read, archived } = req.body || {};
+    const { read, archived, severity, triageStatus, triageNote } = req.body || {};
     const data = {};
     if (typeof read === 'boolean') data.read = read;
     if (typeof archived === 'boolean') data.archived = archived;
 
+    // 93.md §9.3 — triage fields. null clears severity/note; enum values only.
+    const triageMeta = {};
+    if (severity !== undefined) {
+      if (severity !== null && !MESSAGE_SEVERITIES.includes(severity)) {
+        return res.status(400).json({ error: `severity must be one of ${MESSAGE_SEVERITIES.join('|')} or null` });
+      }
+      data.severity = severity;
+      triageMeta.severity = severity;
+    }
+    if (triageStatus !== undefined) {
+      if (!MESSAGE_TRIAGE_STATUSES.includes(triageStatus)) {
+        return res.status(400).json({ error: `triageStatus must be one of ${MESSAGE_TRIAGE_STATUSES.join('|')}` });
+      }
+      data.triageStatus = triageStatus;
+      data.triagedAt = new Date();
+      triageMeta.triageStatus = triageStatus;
+    }
+    if (triageNote !== undefined) {
+      if (triageNote !== null && typeof triageNote !== 'string') {
+        return res.status(400).json({ error: 'triageNote must be a string or null' });
+      }
+      data.triageNote = triageNote === null ? null : triageNote.slice(0, 2000);
+      triageMeta.triageNote = data.triageNote ? 'set' : 'cleared'; // never copy free text into the audit log
+    }
+
     if (Object.keys(data).length === 0) {
-      return res.status(400).json({ error: 'Provide `read` or `archived` (boolean)' });
+      return res.status(400).json({ error: 'Provide `read`/`archived` (boolean) or `severity`/`triageStatus`/`triageNote`' });
     }
 
     const msg = await prisma.contactMessage.findUnique({ where: { id: req.params.id } });
@@ -2328,6 +2364,10 @@ export async function updateContactMessage(req, res) {
       where: { id: req.params.id },
       data,
     });
+
+    if (Object.keys(triageMeta).length > 0) {
+      await logAdminAction(req, 'TRIAGE_MESSAGE', 'ContactMessage', msg.id, { reference: msg.reference || null, ...triageMeta });
+    }
 
     return res.json({ message: updated });
   } catch (err) {

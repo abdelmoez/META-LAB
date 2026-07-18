@@ -42,6 +42,7 @@ export const TARGETS = [
     pgSchema: path.join(PRISMA_DIR, 'postgres', 'schema.prisma'),
     generatorOutput: '../generated/postgres-client',
     urlEnv: 'POSTGRES_DATABASE_URL',
+    directUrlEnv: 'POSTGRES_DIRECT_DATABASE_URL',
   },
   {
     name: 'waitlist',
@@ -49,6 +50,7 @@ export const TARGETS = [
     pgSchema: path.join(PRISMA_DIR, 'postgres', 'waitlist-schema.prisma'),
     generatorOutput: '../generated/postgres-waitlist-client',
     urlEnv: 'POSTGRES_WAITLIST_DATABASE_URL',
+    directUrlEnv: 'POSTGRES_WAITLIST_DIRECT_DATABASE_URL',
   },
 ];
 
@@ -71,6 +73,11 @@ function header(target) {
 //   ${target.urlEnv}="postgresql://user:pass@host:5432/db?schema=public" \\
 //     npx prisma generate --schema=${schemaRel}
 //   ${target.urlEnv}=... npx prisma db push --schema=${schemaRel}
+//
+// 93.md — the datasource also declares directUrl = env("${target.directUrlEnv}")
+// so Prisma CLI commands bypass a transaction pooler (PgBouncer et al.) when one
+// fronts the database. When no separate direct URL exists, set it equal to the
+// pooled URL (the runtime and the migration scripts default it automatically).
 // ──────────────────────────────────────────────────────────────────────────────
 `;
 }
@@ -88,14 +95,22 @@ export function derivePostgresSchema(canonical, target) {
   if (dsClose === -1) throw new Error('canonical schema: unterminated `datasource db` block');
 
   const models = canonical.slice(dsClose + 1).replace(/^\s*\n/, '\n');
+  // 93.md — directUrl: managed Postgres providers front the database with a
+  // transaction pooler (PgBouncer/Neon/Supabase pooled ports). Prisma CLI
+  // commands (migrate deploy/status/resolve, db push) must bypass the pooler and
+  // hit the database directly, so the datasource declares a separate directUrl.
+  // Runtime never breaks when no distinct direct URL exists: server/db/client.js
+  // defaults the direct env var to the pooled URL before client instantiation,
+  // and every migration script does the same for its child prisma processes.
   const pgBlocks = `generator client {
   provider = "prisma-client-js"
   output   = "${target.generatorOutput}"
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("${target.urlEnv}")
+  provider  = "postgresql"
+  url       = env("${target.urlEnv}")
+  directUrl = env("${target.directUrlEnv}")
 }
 `;
   return `${header(target)}\n${pgBlocks}${models}`.replace(/\s*$/, '\n');

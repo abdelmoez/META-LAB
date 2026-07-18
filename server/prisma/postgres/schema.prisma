@@ -13,6 +13,11 @@
 //   POSTGRES_DATABASE_URL="postgresql://user:pass@host:5432/db?schema=public" \
 //     npx prisma generate --schema=prisma/postgres/schema.prisma
 //   POSTGRES_DATABASE_URL=... npx prisma db push --schema=prisma/postgres/schema.prisma
+//
+// 93.md — the datasource also declares directUrl = env("POSTGRES_DIRECT_DATABASE_URL")
+// so Prisma CLI commands bypass a transaction pooler (PgBouncer et al.) when one
+// fronts the database. When no separate direct URL exists, set it equal to the
+// pooled URL (the runtime and the migration scripts default it automatically).
 // ──────────────────────────────────────────────────────────────────────────────
 
 generator client {
@@ -21,8 +26,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("POSTGRES_DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("POSTGRES_DATABASE_URL")
+  directUrl = env("POSTGRES_DIRECT_DATABASE_URL")
 }
 
 model User {
@@ -62,6 +68,11 @@ model User {
   tierAssignedBy                String? // admin user id (audit; AdminAuditLog carries the rest)
   tierOverrideReason            String? // optional note recorded at assignment
   passwordChangedAt             DateTime? // when the password last changed (session-revocation forensics)
+  // 93.md §6.3 — idempotent welcome/onboarding email marker. Set exactly once when
+  // the first welcome email is sent (invitation accept / first login), so restarts,
+  // retries and multi-worker deployments can never double-send. Nullable → `prisma
+  // db push` stays additive-safe; null simply means "not yet welcomed".
+  welcomeEmailSentAt            DateTime?
   createdAt                     DateTime                 @default(now())
   updatedAt                     DateTime                 @updatedAt
   lastActive                    DateTime?
@@ -355,9 +366,25 @@ model ContactMessage {
   readAt       DateTime?
   readByUserId String?
   readByName   String?
+  // 93.md §9.3 — bug-triage lifecycle. `reference` is a short human-readable id
+  // (e.g. "FB-4F7K2Q") returned to the reporter so a beta user can quote it in
+  // follow-ups; generated randomly, uniqueness by construction (plain @@index,
+  // NOT @unique — same additive-`db push` reasoning as User.userNumber).
+  // `severity` is reporter-suggested and admin-adjustable (critical|high|medium|low).
+  // `triageStatus` lifecycle: new | acknowledged | needs_info | planned |
+  // in_progress | shipped | declined | duplicate. All nullable/defaulted →
+  // `prisma db push` stays additive-safe.
+  reference    String?
+  severity     String?
+  triageStatus String               @default("new")
+  triagedAt    DateTime?
+  triageNote   String? // internal admin note (assignee, release link, dedup target)
   createdAt    DateTime             @default(now())
   replies      ContactReply[]
   reads        ContactMessageRead[] // prompt5 Task 9 — per-staff read receipts (superseded by readAt; kept for backfill)
+
+  @@index([reference])
+  @@index([triageStatus])
 }
 
 // Per-staff read receipt for an ops-console contact message (prompt5 Task 9).
@@ -2566,6 +2593,11 @@ model WaitlistInvitation {
 
   invitedByUserId     String // admin User.id who issued this invitation
   batchId             String? // groups a single bulk-invite operation for audit
+  // 93.md §9.1 — optional beta-cohort label assigned by the admin at invite time
+  // (e.g. "beta-1"). Free-form so operators can name waves however they like;
+  // Ops filters invitations by cohort and the cohort cap is enforced at invite
+  // time in invitationService. Nullable → `prisma db push` stays additive-safe.
+  cohort              String?
   ip                  String    @default("")
   createdAt           DateTime  @default(now())
   updatedAt           DateTime  @updatedAt
@@ -2577,6 +2609,7 @@ model WaitlistInvitation {
   @@index([waitlistApplicantId])
   @@index([acceptedUserId])
   @@index([batchId])
+  @@index([cohort])
 }
 
 // 88.md — the unified, append-only PROJECT PROVENANCE LEDGER. One structured,
