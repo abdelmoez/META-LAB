@@ -23,6 +23,10 @@ import {
   DEFAULT_MAX_RECORDS_PER_PROJECT,
 } from './screeningImportService.js';
 import { DEFAULT_MAX_JOB_ATTEMPTS, partitionStuckJobs } from '../utils/jobRetry.js';
+// 93.md §5.3 — activation funnel: import completion events (fire-and-forget,
+// redacted meta — counts + format only, never record content).
+import { recordEvent, recordFirstEvent } from './analytics.js';
+import { USAGE } from '../utils/usage.js';
 
 // A job claimed but not finished within this window (e.g. a crash mid-import) is
 // considered abandoned and re-queued at boot so it can resume.
@@ -116,6 +120,15 @@ async function processJob(job) {
       content: '',
       completedAt: new Date(),
     });
+
+    // 93.md §5.3 — activation funnel: the durable import path completed. One
+    // IMPORT_COMPLETED per completed job + the creator's FIRST (DB-enforced
+    // once). Meta carries counts + detected format only — never record content.
+    recordEvent(USAGE.IMPORT_COMPLETED, {
+      userId: job.createdById, screenProjectId: job.projectId,
+      meta: { count: result.imported, source: detectedFormat },
+    });
+    recordFirstEvent(USAGE.FIRST_IMPORT_COMPLETED, job.createdById, { screenProjectId: job.projectId });
 
     // Cross-workstream activity + a single completion poke so other sessions refresh.
     const sp = await prisma.screenProject.findUnique({ where: { id: job.projectId }, select: { linkedMetaLabProjectId: true } });

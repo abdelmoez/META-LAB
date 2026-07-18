@@ -16,6 +16,8 @@ import { writeAudit } from '../screening/access.js';
 // 67.md — product-tier enforcement (admin/mod bypass inside the service).
 import { requireEntitlement, requireLimit, sendTierLimit } from '../services/entitlementService.js';
 import { recordUsage, USAGE } from '../utils/usage.js';
+// 93.md §5.3 — activation funnel (fire-and-forget; FIRST_* once-per-user via DB PK).
+import { recordEvent, recordFirstEvent } from '../services/analytics.js';
 import { screeningCountSelect, DECIDED_FINAL_STATUSES, classifyDecided } from '../utils/screeningCounts.js';
 import { onlineCountsFor } from '../realtime/presence.js';
 // 75.md Phases 8-9 (Workstream D) — the ONE canonical workflow-progress model.
@@ -534,6 +536,12 @@ export async function createProject(req, res) {
     }
     const project = mkProject(name.trim());
     const saved = await save(project, req.user.id);
+
+    // 93.md §5.3 — activation funnel: every create + the user's FIRST create
+    // (deterministic-id PK — at most one row per user, race-free). Placed before
+    // the legacy-shape branch so BOTH response shapes record. Fire-and-forget.
+    recordEvent(USAGE.PROJECT_CREATED, { userId: req.user.id, metaLabProjectId: saved.id });
+    recordFirstEvent(USAGE.FIRST_PROJECT_CREATED, req.user.id, { metaLabProjectId: saved.id });
 
     // Legacy response shape when the caller does not opt in.
     if (createLinkedSift !== true) return res.status(201).json(saved);

@@ -16,6 +16,10 @@ import {
 // the `metaRegression` feature flag (default OFF → 404), mirroring the NMA route.
 import { metaRegression } from '../../src/research-engine/statistics/metaRegression.js';
 import { featureAccess } from '../services/featureAccess.js';
+// 93.md §5.3 — activation funnel: the user's FIRST pooled-analysis run (once per
+// user, DB-enforced; fire-and-forget so the stateless compute path never slows).
+import { recordFirstEvent } from '../services/analytics.js';
+import { USAGE } from '../utils/usage.js';
 
 /**
  * POST /api/meta/run
@@ -33,6 +37,10 @@ export function runMetaAnalysis(req, res) {
   if (result === null) {
     return res.status(422).json({ error: 'At least 2 valid studies are required to run a meta-analysis' });
   }
+
+  // 93.md §5.3 — activation: first successful pooled run only (meta carries the
+  // study COUNT — never study data/effect values).
+  recordFirstEvent(USAGE.FIRST_ANALYSIS_RUN, req.user?.id, { meta: { count: studies.length } });
 
   res.json(result);
 }

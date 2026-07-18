@@ -41,23 +41,59 @@ export const USAGE = {
   // per-day series/sparkline (lastActive alone only holds the latest timestamp, so it
   // cannot reconstruct historical per-day active counts; these events can).
   APP_ACTIVE: 'APP_ACTIVE',
+  // 93.md §5.3/§5.4 — signup + activation funnel events. Recorded through
+  // server/services/analytics.js (recordEvent / recordFirstEvent), which owns
+  // meta redaction, the ANALYTICS_DISABLED switch and optional PostHog forwarding.
+  // FIRST_* events are written AT MOST ONCE PER USER, enforced by the database:
+  // recordFirstEvent inserts with the deterministic primary key
+  // `first:<TYPE>:<userId>` so a concurrent double-fire loses the PK race
+  // instead of duplicating. See docs/manager/analytics-events.md for the catalog.
+  ACCOUNT_CREATED: 'ACCOUNT_CREATED',
+  EMAIL_VERIFIED: 'EMAIL_VERIFIED', // first-only (verification flow: prompt26)
+  FIRST_LOGIN: 'FIRST_LOGIN',
+  PROJECT_CREATED: 'PROJECT_CREATED',
+  FIRST_PROJECT_CREATED: 'FIRST_PROJECT_CREATED',
+  IMPORT_COMPLETED: 'IMPORT_COMPLETED',
+  FIRST_IMPORT_COMPLETED: 'FIRST_IMPORT_COMPLETED',
+  // Only the user's FIRST screening decision is a usage event — recording every
+  // decision would bloat UsageEvent (decisions live in ScreenDecision already).
+  SCREENING_DECISION_FIRST: 'SCREENING_DECISION_FIRST',
+  FIRST_ANALYSIS_RUN: 'FIRST_ANALYSIS_RUN',
+  // DERIVED-ONLY (93.md): no call site writes FIRST_EXPORT rows. Every export
+  // path already records an EXPORT row, so "first export" is derived at query
+  // time as the user's earliest EXPORT event (min createdAt per userId). The
+  // constant exists so activation queries/docs share one spelling.
+  FIRST_EXPORT: 'FIRST_EXPORT',
+  FEEDBACK_SUBMITTED: 'FEEDBACK_SUBMITTED',
+  // NOTE (93.md): WAITLIST_SIGNUP is intentionally ABSENT — waitlist signups are
+  // already recorded as BetaWaitlistStatusEvent (null → WAITLISTED, "Joined
+  // waitlist") in the strictly isolated waitlist DB. Do not duplicate here.
 };
 
 /**
  * recordUsage — write one UsageEvent row, best-effort.
  * Fire-and-forget: not awaited by callers, swallows every error.
  *
+ * 93.md — additive extension for the analytics service: an optional caller-
+ * supplied `id` (used for the deterministic `first:<TYPE>:<userId>` once-only
+ * PK) and a never-rejecting return promise that resolves `true` only when the
+ * row was actually created (false on any failure, INCLUDING a PK collision —
+ * which is how recordFirstEvent detects "already recorded"). Existing callers
+ * ignore the return value, so behaviour is unchanged for them.
+ *
  * @param {{
  *   type: string,                 // one of USAGE.* (required; no-op when missing)
+ *   id?: string|null,             // optional deterministic primary key (93.md first-only events)
  *   userId?: string|null,
  *   screenProjectId?: string|null,
  *   metaLabProjectId?: string|null,
  *   format?: string|null,         // export format (csv|json|ris|png|svg|...)
  *   meta?: object|string|null,    // JSON-serialisable context (objects are stringified)
  * }} event
+ * @returns {Promise<boolean>} resolves true iff a row was created; NEVER rejects
  */
-export function recordUsage({ type, userId, screenProjectId, metaLabProjectId, format, meta } = {}) {
-  if (!type) return;
+export function recordUsage({ type, id, userId, screenProjectId, metaLabProjectId, format, meta } = {}) {
+  if (!type) return Promise.resolve(false);
   try {
     let metaStr = null;
     if (meta != null) {
@@ -65,8 +101,9 @@ export function recordUsage({ type, userId, screenProjectId, metaLabProjectId, f
         metaStr = typeof meta === 'string' ? meta : JSON.stringify(meta);
       } catch { metaStr = null; }
     }
-    prisma.usageEvent.create({
+    return prisma.usageEvent.create({
       data: {
+        ...(id ? { id: String(id).slice(0, 200) } : {}),
         type: String(type),
         userId: userId || null,
         screenProjectId: screenProjectId || null,
@@ -74,6 +111,7 @@ export function recordUsage({ type, userId, screenProjectId, metaLabProjectId, f
         format: format || null,
         meta: metaStr ? metaStr.slice(0, 4000) : null,
       },
-    }).catch(() => {});
+    }).then(() => true).catch(() => false);
   } catch { /* usage metrics are a side-effect, never a failure mode */ }
+  return Promise.resolve(false);
 }

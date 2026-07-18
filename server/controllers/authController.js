@@ -5,6 +5,9 @@ import { signToken } from '../auth/jwt.js';
 import { notifyProjectInvite } from '../services/notificationService.js';
 import { isValidEmail } from '../utils/validators.js';
 import { recordUsage, USAGE } from '../utils/usage.js';
+// 93.md §5.3 — signup/activation funnel events (redacted, disable-switchable,
+// fire-and-forget; FIRST_* are DB-enforced once-per-user).
+import { recordEvent, recordFirstEvent } from '../services/analytics.js';
 import { sendEmail, renderPasswordResetEmail, renderEmailVerificationEmail } from '../services/emailService.js';
 import { createResetToken, consumeResetToken } from '../services/passwordResetService.js';
 import { createVerificationToken, consumeVerificationToken } from '../services/emailVerificationService.js';
@@ -208,6 +211,9 @@ export async function register(req, res) {
     // and registration succeeds even if SMTP is unconfigured).
     if (verifyRequired) sendVerificationEmail(req, user).catch(() => {});
 
+    // 93.md §5.3 — funnel: one ACCOUNT_CREATED row per new account (fire-and-forget).
+    recordEvent(USAGE.ACCOUNT_CREATED, { userId: user.id, meta: { source: 'register' } });
+
     const token = signToken({ id: user.id, email: user.email, role: user.role, se: user.sessionEpoch ?? 0 });
     res.cookie(COOKIE_NAME, token, cookieOptions());
 
@@ -282,6 +288,10 @@ export async function login(req, res) {
     // awaited: a metrics failure must never fail or slow the login response.
     recordLoginEvent(req, user, true);
     prisma.user.update({ where: { id: user.id }, data: { lastActive: new Date() } }).catch(() => {});
+
+    // 93.md §5.3 — FIRST_LOGIN, once per user ever (deterministic-id PK enforces
+    // once-only in the DB — cheaper and race-free vs counting LoginEvent rows).
+    recordFirstEvent(USAGE.FIRST_LOGIN, user.id);
 
     const token = signToken({ id: user.id, email: user.email, role: user.role, se: user.sessionEpoch ?? 0 });
     res.cookie(COOKIE_NAME, token, cookieOptions());
@@ -465,6 +475,9 @@ export async function verifyEmail(req, res) {
           : 'This verification link is invalid or has already been used.',
       });
     }
+    // 93.md §5.3 — EMAIL_VERIFIED as first-only: a user can consume several
+    // resent tokens, but the funnel counts each verified user exactly once.
+    recordFirstEvent(USAGE.EMAIL_VERIFIED, result.userId);
     return res.json({ ok: true });
   } catch (err) {
     console.error('[auth] verifyEmail error:', err.message);

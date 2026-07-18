@@ -9,6 +9,9 @@ import { getById, save, getByIdUnscoped, saveAsMember } from '../store.js';
 import { getMetaLabMemberAccess } from '../screening/metalabAccess.js';
 import { prisma } from '../db/client.js';
 import { recordUsage, USAGE } from '../utils/usage.js';
+// 93.md §5.3 — activation funnel: reference-import completion (fire-and-forget,
+// redacted meta — counts + format only, never citation content).
+import { recordEvent, recordFirstEvent } from '../services/analytics.js';
 import { getVersion } from '../version.js';
 import { sendTierLimit } from '../services/entitlementService.js';
 import { requireProjectExport, settleProjectExport, EXPORT_TYPES } from '../services/projectExportGuard.js';
@@ -65,6 +68,15 @@ export async function importReferences(req, res) {
 
     if (memberAcc) await saveAsMember({ ...project, records: merged });
     else await save({ ...project, records: merged }, req.user.id);
+
+    // 93.md §5.3 — activation funnel: the direct META·LAB reference-import path
+    // completed (the durable screening import path records in the worker). One
+    // IMPORT_COMPLETED per import + the user's FIRST (DB-enforced once).
+    recordEvent(USAGE.IMPORT_COMPLETED, {
+      userId: req.user.id, metaLabProjectId: projectId,
+      meta: { count: added, source: format },
+    });
+    recordFirstEvent(USAGE.FIRST_IMPORT_COMPLETED, req.user.id, { metaLabProjectId: projectId });
 
     res.json({
       imported: added,
