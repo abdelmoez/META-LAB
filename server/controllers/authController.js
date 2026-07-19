@@ -18,6 +18,11 @@ import { sessionCookieName, sessionCookieOptions, clearSessionCookieOptions } fr
 
 const COOKIE_NAME = sessionCookieName();
 
+// 94.md §2.3 — a real (rounds-12) bcrypt hash of an unguessable throwaway value,
+// compared against when the account has NO password (Google-only) or does not
+// exist, so those paths cost the same as a genuine wrong-password compare.
+const DUMMY_BCRYPT_HASH = '$2a$12$Q9amMXjr1gpuRD3d3tHdveV5cEeESz/cevQS.7sfa35nS1FpMMLfq';
+
 // Identical body for every forgot-password outcome — prevents account
 // enumeration (a valid, an invalid, and a suspended email all look the same).
 const FORGOT_PASSWORD_RESPONSE = {
@@ -246,8 +251,14 @@ export async function login(req, res) {
     const normalizedEmail = email.trim().toLowerCase();
     const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
 
-    // Use constant-time comparison via bcrypt even if user not found (prevent timing attacks)
-    const passwordMatches = user ? await verifyPassword(password, user.password) : false;
+    // Use constant-time comparison via bcrypt even if user not found (prevent timing attacks).
+    // 94.md §2.3 — user.password is NULL for Google-only accounts (bcrypt.compare
+    // would throw on null); burn an equivalent bcrypt compare against a dummy hash
+    // so "Google-only account" is not distinguishable from "wrong password" by
+    // response time, then fall through to the same generic 401.
+    const passwordMatches = user && user.password
+      ? await verifyPassword(password, user.password)
+      : await verifyPassword(password, DUMMY_BCRYPT_HASH).then(() => false).catch(() => false);
 
     if (!user || !passwordMatches) {
       // Log failed login attempt as a SecurityEvent

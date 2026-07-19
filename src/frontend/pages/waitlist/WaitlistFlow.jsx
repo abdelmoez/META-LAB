@@ -31,6 +31,9 @@ import {
 import { COUNTRY_OPTIONS } from '../../../shared/countries.js';
 import { TextField, TextareaField, SelectField, RadioGroupField, CheckboxGroupField, ConsentCheckbox, ErrorText } from './fields.jsx';
 import { submitWaitlist, resendWaitlist } from './waitlistApi.js';
+// 94.md §3.10 — Turnstile on the public signup (renders only when configured).
+import TurnstileWidget from '../../components/TurnstileWidget.jsx';
+import { usePublicAuthSettings } from '../../auth/publicAuthSettings.js';
 
 const COUNTRY_SELECT = COUNTRY_OPTIONS.map((c) => ({ value: c.code, label: c.name }));
 const toOptions = (arr) => arr.map((v) => ({ value: v, label: v }));
@@ -87,6 +90,10 @@ export default function WaitlistFlow({ onSignIn, onStepChange }) {
   const [errors, setErrors] = useState({});
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState('');
+  // 94.md §3.10 — Turnstile token for the final submit (single-use; reset on failure).
+  const { turnstileSiteKey } = usePublicAuthSettings();
+  const [turnstileToken, setTurnstileToken] = useState(null);
+  const [turnstileReset, setTurnstileReset] = useState(0);
   const [result, setResult] = useState(null);     // server response on success
   const [announce, setAnnounce] = useState('');     // aria-live message
   const [resendState, setResendState] = useState('idle'); // idle|sending|done
@@ -166,7 +173,9 @@ export default function WaitlistFlow({ onSignIn, onStepChange }) {
     setSubmitError('');
     setAnnounce('Submitting your application…');
     try {
-      const data = await submitWaitlist(form);
+      const data = await submitWaitlist(
+        turnstileToken ? { ...form, turnstileToken } : form,
+      );
       setResult(data);
       setStep('done');
       setAnnounce(data.duplicate
@@ -192,10 +201,11 @@ export default function WaitlistFlow({ onSignIn, onStepChange }) {
       // synchronously, so reading submitError here would be one render stale).
       setSubmitError(msg);
       setAnnounce(msg);
+      setTurnstileReset((n) => n + 1); // tokens are single-use — refresh for retry
     } finally {
       setSubmitting(false);
     }
-  }, [form, goTo, focusFirstError]);
+  }, [form, goTo, focusFirstError, turnstileToken]);
 
   const doResend = useCallback(async () => {
     setResendState('sending');
@@ -330,6 +340,8 @@ export default function WaitlistFlow({ onSignIn, onStepChange }) {
               research insights. This is optional, never identifies me, and you can leave it unchecked.
             </ConsentCheckbox>
           </StitchCard>
+          <TurnstileWidget siteKey={turnstileSiteKey} onToken={setTurnstileToken}
+            action="waitlist_signup" resetSignal={turnstileReset} />
           <FormError message={submitError} />
           <Actions>
             <StitchButton type="button" variant="neutral" icon="arrowLeft" onClick={() => goTo('institution')} disabled={submitting}>Back</StitchButton>

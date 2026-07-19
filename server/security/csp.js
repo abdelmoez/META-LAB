@@ -203,6 +203,24 @@ export function buildCsp({
     };
 
     if (prod) d['upgrade-insecure-requests'] = [];
+
+    // 94.md §3.13 — MINIMUM conditional additions only; nothing is widened while
+    // the corresponding feature is unconfigured. The Google OAuth REDIRECT flow
+    // itself needs NO CSP change (top-level navigations to accounts.google.com
+    // are not CSP-governed, and the GET callback is a navigation, not a fetch) —
+    // deliberately no Google sources here.
+    if ((process.env.TURNSTILE_SITE_KEY || '').trim() && (process.env.TURNSTILE_SECRET_KEY || '').trim()) {
+      // Cloudflare Turnstile widget: api.js + its challenge iframe.
+      d['script-src'].push('https://challenges.cloudflare.com');
+      d['frame-src'].push('https://challenges.cloudflare.com');
+    }
+    const sentryDsn = (process.env.VITE_SENTRY_DSN || '').trim();
+    if (sentryDsn) {
+      // Browser Sentry (93.md §5.1) posts envelopes to the DSN's ingest origin —
+      // connect-src 'self' alone silently drops every browser event in enforce
+      // mode. Allow exactly that one origin.
+      try { d['connect-src'].push(new URL(sentryDsn).origin); } catch { /* malformed DSN — leave CSP unchanged */ }
+    }
   }
 
   if (report) {

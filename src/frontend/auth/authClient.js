@@ -39,11 +39,16 @@ async function authReq(path, opts = {}) {
  * @param {string} [inviteToken] — optional invite token (prompt9 Task 2);
  *   sent additively in the JSON body so the server can claim the pending
  *   invite by token even when the registered email differs from the invite.
+ * @param {boolean} [acceptedTerms]
+ * @param {string} [turnstileToken] — optional Cloudflare Turnstile token (94.md
+ *   §3.10). Sent additively when present; the server verifies it and fails open
+ *   when Cloudflare is unreachable, so registration never hard-blocks on it.
  * @returns {Promise<{ user: object }>}
  */
-export async function register(email, password, name, inviteToken, acceptedTerms) {
+export async function register(email, password, name, inviteToken, acceptedTerms, turnstileToken) {
   const payload = { email, password, name, acceptedTerms: !!acceptedTerms };
   if (inviteToken) payload.inviteToken = inviteToken;
+  if (turnstileToken) payload.turnstileToken = turnstileToken;
   return authReq("/register", {
     method: "POST",
     body: JSON.stringify(payload),

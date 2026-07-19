@@ -684,10 +684,18 @@ export async function getUserById(req, res) {
 
     if (!user) return res.status(404).json({ error: 'User not found' });
 
+    // 94.md §2.9 — admins can SEE that an external provider is connected, but
+    // never provider tokens, subject ids, or other sensitive provider metadata.
+    const authProviders = await prisma.authAccount.findMany({
+      where: { userId: user.id },
+      select: { provider: true, lastLoginAt: true, createdAt: true },
+      orderBy: { createdAt: 'asc' },
+    }).catch(() => []);
+
     // Top-level shape (the PATCH handlers use a { user } envelope) — includes the
     // admin-editable profile fields (theme, registration country) so the Ops
     // edit form can populate them. Secrets are never in USER_DETAIL_SELECT.
-    return res.json(formatUserDetail(user));
+    return res.json({ ...formatUserDetail(user), authProviders });
   } catch (err) {
     console.error('[admin] getUserById error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });

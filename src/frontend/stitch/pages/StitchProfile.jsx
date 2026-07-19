@@ -22,6 +22,10 @@ import { useNavigate } from 'react-router-dom';
 import { api } from '../../api-client/apiClient.js';
 import { useAuth } from '../../context/AuthContext.jsx';
 import { useTheme } from '../../theme/ThemeContext.jsx';
+// 94.md §2.9 — connected-accounts section (Google mark, error copy, availability).
+import { GoogleG } from '../../auth/GoogleAuthButton.jsx';
+import { googleErrorMessage } from '../../auth/googleErrorCopy.js';
+import { usePublicAuthSettings } from '../../auth/publicAuthSettings.js';
 import {
   PRIMARY_ROLE_OPTIONS, RESEARCH_FIELD_OPTIONS, MAIN_USE_CASE_OPTIONS,
 } from '../../../shared/editableUserFields.js';
@@ -93,6 +97,72 @@ export default function StitchProfile() {
   const [pwSaving, setPwSaving] = useState(false);
   const [pwErr, setPwErr] = useState('');
 
+  /* ── 94.md §2.9 — connected accounts (hasPassword + linked providers) ── */
+  const [sec, setSec] = useState(null); // null = loading; {hasPassword, providers}
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const [googleNote, setGoogleNote] = useState(null); // {tone:'success'|'error', text}
+
+  const loadSecurity = useCallback(async () => {
+    try { setSec(await api.profile.security()); }
+    catch { setSec({ hasPassword: true, providers: [] }); } // safe fallback: classic form
+  }, []);
+  useEffect(() => { loadSecurity(); }, [loadSecurity]);
+
+  // The Google link flow returns to /profile?googleLinked=1 (or ?googleError=CODE
+  // — the link-mode error target). Surface it once, then strip the param.
+  useEffect(() => {
+    let linked = null; let errCode = null;
+    try {
+      const p = new URLSearchParams(window.location.search);
+      linked = p.get('googleLinked'); errCode = p.get('googleError');
+    } catch { /* ignore */ }
+    if (!linked && !errCode) return;
+    if (linked) setGoogleNote({ tone: 'success', text: 'Google account connected.' });
+    else setGoogleNote({ tone: 'error', text: googleErrorMessage(errCode) });
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('googleLinked'); url.searchParams.delete('googleError');
+      window.history.replaceState({}, '', url.pathname + url.search + url.hash);
+    } catch { /* ignore */ }
+  }, []);
+
+  const { googleAuthEnabled } = usePublicAuthSettings();
+  const googleAccount = sec?.providers?.find((p) => p.provider === 'google') || null;
+  const hasPassword = sec ? !!sec.hasPassword : true;
+
+  const startGoogleLink = async () => {
+    if (googleBusy) return;
+    setGoogleBusy(true); setGoogleNote(null);
+    try {
+      const { url } = await api.auth.googleLinkStart();
+      window.location.assign(url); // full-page redirect through Google
+    } catch (err) {
+      setGoogleNote({ tone: 'error', text: err?.message || 'Could not start Google linking.' });
+      setGoogleBusy(false);
+    }
+  };
+
+  const unlinkGoogle = async () => {
+    if (googleBusy) return;
+    // eslint-disable-next-line no-alert
+    if (!window.confirm('Disconnect Google from your account? You will keep signing in with your password.')) return;
+    setGoogleBusy(true); setGoogleNote(null);
+    try {
+      await api.auth.googleUnlink();
+      setGoogleNote({ tone: 'success', text: 'Google account disconnected.' });
+      await loadSecurity();
+    } catch (err) {
+      setGoogleNote({
+        tone: 'error',
+        text: err?.body?.code === 'PASSWORD_REQUIRED_TO_UNLINK'
+          ? 'Set a password first so you keep a way to sign in, then disconnect Google.'
+          : (err?.message || 'Could not disconnect Google.'),
+      });
+    } finally {
+      setGoogleBusy(false);
+    }
+  };
+
   const loadProfile = useCallback(async () => {
     setProfileError('');
     try {
@@ -154,19 +224,27 @@ export default function StitchProfile() {
     }
   };
 
-  /* ── change password → api.profile.changePassword (same rules as legacy) ── */
+  /* ── change password → api.profile.changePassword (same rules as legacy).
+     94.md §2.9 — a Google-only account (hasPassword:false) SETS its first
+     password instead: no current-password field, and the server accepts the
+     missing currentPassword exactly once (while none exists). ── */
   const savePassword = async (e) => {
     e?.preventDefault?.();
     if (pwSaving) return;
     setPwErr('');
-    if (!pw.current) { setPwErr('Enter your current password.'); return; }
+    if (hasPassword && !pw.current) { setPwErr('Enter your current password.'); return; }
     if (pw.next.length < 8) { setPwErr('New password must be at least 8 characters.'); return; }
     if (pw.next !== pw.confirm) { setPwErr('New password and confirmation do not match.'); return; }
     setPwSaving(true);
     try {
-      await api.profile.changePassword({ currentPassword: pw.current, newPassword: pw.next });
+      await api.profile.changePassword(
+        hasPassword
+          ? { currentPassword: pw.current, newPassword: pw.next }
+          : { newPassword: pw.next },
+      );
       setPw({ current: '', next: '', confirm: '' });
-      toast.toast('Password changed', { tone: 'success' });
+      toast.toast(hasPassword ? 'Password changed' : 'Password set', { tone: 'success' });
+      if (!hasPassword) await loadSecurity(); // hasPassword flips → unlock unlink + classic form
     } catch (err) {
       setPwErr(err?.message || 'Failed to change password.');
     } finally {
@@ -282,19 +360,34 @@ export default function StitchProfile() {
 
             {/* Security */}
             <StitchCard>
-              <StitchSectionHeader title="Security" desc="Change your password." />
+              <StitchSectionHeader
+                title="Security"
+                desc={hasPassword ? 'Change your password and manage connected accounts.' : 'Set a password and manage connected accounts.'}
+              />
+              {!hasPassword && (
+                <div style={{
+                  padding: '10px 12px', borderRadius: S.radiusControl, marginBottom: 14,
+                  background: salpha(S.brand, 0.08), border: `1px solid ${salpha(S.brand, 0.25)}`,
+                  fontSize: 12.5, color: S.textSecondary, lineHeight: 1.5,
+                }}>
+                  You sign in with Google and have no password yet. Setting one adds a
+                  second way to sign in and lets you disconnect Google safely.
+                </div>
+              )}
               <form onSubmit={savePassword} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-                <StitchField label="Current password" htmlFor="pf-pw-cur" required>
-                  <StitchInput id="pf-pw-cur" type="password" icon="lock" autoComplete="current-password"
-                    value={pw.current} onChange={(e) => { setPw((p) => ({ ...p, current: e.target.value })); setPwErr(''); }}
-                    placeholder="Enter current password" />
-                </StitchField>
-                <StitchField label="New password" htmlFor="pf-pw-new" required help="At least 8 characters.">
+                {hasPassword && (
+                  <StitchField label="Current password" htmlFor="pf-pw-cur" required>
+                    <StitchInput id="pf-pw-cur" type="password" icon="lock" autoComplete="current-password"
+                      value={pw.current} onChange={(e) => { setPw((p) => ({ ...p, current: e.target.value })); setPwErr(''); }}
+                      placeholder="Enter current password" />
+                  </StitchField>
+                )}
+                <StitchField label={hasPassword ? 'New password' : 'Password'} htmlFor="pf-pw-new" required help="At least 8 characters.">
                   <StitchInput id="pf-pw-new" type="password" icon="lock" autoComplete="new-password"
                     value={pw.next} onChange={(e) => { setPw((p) => ({ ...p, next: e.target.value })); setPwErr(''); }}
                     placeholder="At least 8 characters" />
                 </StitchField>
-                <StitchField label="Confirm new password" htmlFor="pf-pw-conf" required error={pwErr || undefined}>
+                <StitchField label={hasPassword ? 'Confirm new password' : 'Confirm password'} htmlFor="pf-pw-conf" required error={pwErr || undefined}>
                   <StitchInput id="pf-pw-conf" type="password" icon="lock" autoComplete="new-password"
                     invalid={!!pwErr}
                     value={pw.confirm} onChange={(e) => { setPw((p) => ({ ...p, confirm: e.target.value })); setPwErr(''); }}
@@ -302,11 +395,70 @@ export default function StitchProfile() {
                 </StitchField>
                 <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
                   <StitchButton type="submit" icon="shieldCheck" loading={pwSaving}
-                    disabled={!pw.current || !pw.next || !pw.confirm}>
-                    Change password
+                    disabled={(hasPassword && !pw.current) || !pw.next || !pw.confirm}>
+                    {hasPassword ? 'Change password' : 'Set password'}
                   </StitchButton>
                 </div>
               </form>
+
+              {/* 94.md §2.9 — Connected accounts. Shown when Google auth is enabled
+                  OR an account is already linked (so an existing link stays visible
+                  and disconnectable even if the feature is later switched off). */}
+              {(googleAuthEnabled || googleAccount) && (
+                <div style={{ borderTop: `1px solid ${salpha(S.outlineVariant, 0.4)}`, marginTop: 18, paddingTop: 14 }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: S.textPrimary, marginBottom: 10 }}>
+                    Connected accounts
+                  </div>
+                  {googleNote && (
+                    <div style={{
+                      padding: '9px 12px', borderRadius: S.radiusControl, marginBottom: 10,
+                      fontSize: 12.5, lineHeight: 1.5,
+                      background: googleNote.tone === 'success' ? salpha(S.success, 0.1) : salpha(S.danger, 0.1),
+                      border: `1px solid ${salpha(googleNote.tone === 'success' ? S.success : S.danger, 0.3)}`,
+                      color: S.textSecondary,
+                    }}>
+                      {googleNote.text}
+                    </div>
+                  )}
+                  <div style={{
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
+                    padding: '12px 14px', borderRadius: S.radiusControl, background: S.surfaceLow,
+                    border: `1px solid ${salpha(S.outlineVariant, 0.4)}`,
+                  }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+                      <span style={{ width: 38, height: 38, borderRadius: 10, background: '#fff', border: `1px solid ${salpha(S.outlineVariant, 0.5)}`, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                        <GoogleG size={18} />
+                      </span>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 13.5, fontWeight: 700, color: S.textPrimary }}>Google</div>
+                        <div style={{ fontSize: 12, color: S.textMuted, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {sec === null
+                            ? 'Checking…'
+                            : googleAccount
+                              ? `${googleAccount.providerEmail}${googleAccount.lastLoginAt ? ` · last sign-in ${fmtDate(googleAccount.lastLoginAt)}` : ''}`
+                              : 'Not connected'}
+                        </div>
+                      </div>
+                    </div>
+                    {sec !== null && (
+                      googleAccount ? (
+                        <StitchButton variant="neutral" loading={googleBusy} onClick={unlinkGoogle}>
+                          Disconnect
+                        </StitchButton>
+                      ) : (
+                        <StitchButton variant="neutral" loading={googleBusy} onClick={startGoogleLink} disabled={!googleAuthEnabled}>
+                          Connect Google
+                        </StitchButton>
+                      )
+                    )}
+                  </div>
+                  {googleAccount && !hasPassword && (
+                    <div style={{ fontSize: 12, color: S.textMuted, marginTop: 8, lineHeight: 1.5 }}>
+                      Google is your only sign-in method. Set a password above before disconnecting it.
+                    </div>
+                  )}
+                </div>
+              )}
             </StitchCard>
           </div>
 

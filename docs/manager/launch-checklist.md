@@ -31,7 +31,10 @@ not done. Categories are 93.md's required 8-way separation.
       expiry, resend cooldown, cohort field) — 80.md/93.md Phase 9 work.
 - [x] Runbooks: pm2 / rollback / backup-restore / vps-hardening /
       secret-rotation / incident-response / uptime-monitoring /
-      email-domain-auth / sentry-setup / staging-deployment (this directory).
+      email-domain-auth / sentry-setup / staging-deployment /
+      google-oauth-setup / cloudflare-setup (this directory). The last two
+      document EXTERNAL dashboard steps (§2/§3) — the docs ship; the dashboard
+      actions do not.
 
 ## 2. Requires credentials (accounts exist; someone must log in)
 
@@ -48,6 +51,17 @@ not done. Categories are 93.md's required 8-way separation.
       env files (`sentry-setup.md`).
 - [ ] Uptime provider (UptimeRobot / Better Stack): create monitors #1–#5 and
       alert routing per `uptime-monitoring.md`.
+- [ ] **Google OAuth** (Google Cloud Console): create the project, configure the
+      OAuth consent screen (External; `openid email profile` only — no
+      verification needed), create the Web-application client, add the local/
+      staging/production redirect URIs, add test users, publish, and put
+      `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_REDIRECT_URI` into each
+      env file — full runbook in `google-oauth-setup.md`. None of the dashboard
+      steps are done.
+- [ ] **Cloudflare Turnstile** (if adopting Cloudflare): create separate dev/
+      staging/production widgets and map `TURNSTILE_SITE_KEY` (public) +
+      `TURNSTILE_SECRET_KEY` (secret) per environment — `cloudflare-setup.md`
+      Phase 9.
 
 ## 3. Requires DNS access
 
@@ -56,8 +70,9 @@ not done. Categories are 93.md's required 8-way separation.
       verification TXT on `mail.pecanrev.com` (`email-domain-auth.md` §4).
 - [ ] DMARC record, monitor-first (`p=none` + `rua=`), tighten later
       (`email-domain-auth.md` §5).
-- [ ] (If adopting Cloudflare) move DNS + configure Full (strict) TLS and
-      cache rules (`deploy/nginx/README.md` §3).
+- [ ] (If adopting Cloudflare) move DNS to Cloudflare, recreate mail/SPF/DKIM/
+      DMARC as **DNS-only**, and proxy the web records — full gated runbook in
+      `cloudflare-setup.md` (Phases 1–2). Extends `deploy/nginx/README.md` §3.
 
 ## 4. Requires VPS administrator access
 
@@ -98,7 +113,9 @@ not done. Categories are 93.md's required 8-way separation.
 - [ ] Beta cohort sizes, invitation pacing, and tier assignment policy.
 - [ ] Support address + alert-routing destination (which inbox/Slack pages a
       human).
-- [ ] Cloudflare in front of the VPS: yes/no.
+- [ ] Cloudflare in front of the VPS: yes/no. If yes, the whole adoption is
+      gated in `cloudflare-setup.md` (edge-only; frontend stays on the origin,
+      no Workers/Pages migration — decision recorded there).
 - [ ] Design-partner recruitment, institutional contracts, testimonials
       program (93.md explicitly non-code).
 

@@ -10,11 +10,14 @@ import { submitWaitlist, resendWaitlist } from '../controllers/waitlistControlle
 // and .passthrough() keeps the `website` honeypot reaching the controller.
 import { validateBody } from '../middleware/validateBody.js';
 import { waitlistSubmitSchema } from '../schemas/publicSchemas.js';
+// 94.md §3.10 — Turnstile on the public signup (no-op until keys configured);
+// complements (never replaces) the honeypot + per-email service-level limits.
+import { requireTurnstile } from '../security/turnstile.js';
 
 const router = Router();
 
 // POST /api/waitlist           — submit a completed application
-router.post('/', validateBody(waitlistSubmitSchema), submitWaitlist);
+router.post('/', validateBody(waitlistSubmitSchema), requireTurnstile('waitlist_signup'), submitWaitlist);
 // POST /api/waitlist/resend     — re-send the confirmation email (rate-limited)
 router.post('/resend', resendWaitlist);
 

@@ -1,9 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { login } from "../auth/authClient.js";
 import { Icon } from "../components/icons.jsx";
 import { C, FONT, alpha } from "../theme/tokens.js";
 import BrandWordmark from "../components/BrandWordmark.jsx";
+import GoogleAuthButton from "../auth/GoogleAuthButton.jsx";
+import { usePublicAuthSettings } from "../auth/publicAuthSettings.js";
+import { googleErrorMessage } from "../auth/googleErrorCopy.js";
 
 /* ── Shared input / label tokens ─────────────────────────────────────────── */
 const inputBase = {
@@ -70,8 +73,10 @@ const PrimaryBtn = ({ loading, children, ...rest }) => (
  *   onSuccess(user) — called with the user object on successful login
  *   onRegister()    — called when user clicks "Register"
  *   onForgot()      — called when user clicks "Forgot password?" (optional)
+ *   returnTo        — internal path to return to after Google auth (94.md §2.8);
+ *                     threaded from the deep-link origin (location.state.from).
  */
-export default function Login({ onSuccess, onRegister, onForgot }) {
+export default function Login({ onSuccess, onRegister, onForgot, returnTo }) {
   const [email, setEmail]       = useState("");
   const [password, setPassword] = useState("");
   const [error, setError]       = useState(null);
@@ -79,6 +84,26 @@ export default function Login({ onSuccess, onRegister, onForgot }) {
 
   const [emailFocus, setEmailFocus]       = useState(false);
   const [passwordFocus, setPasswordFocus] = useState(false);
+
+  const { googleAuthEnabled, loaded } = usePublicAuthSettings();
+
+  // 94.md §2.8 — a failed Google redirect lands here as /login?googleError=<CODE>.
+  // Map the code to safe copy in the existing error notice, then strip the param
+  // (history.replaceState) so a refresh doesn't re-surface it. The normal case is
+  // a signed-OUT visitor (the OAuth failure left them unauthenticated), so
+  // PublicRoute renders this page; its signed-in bounce is acceptable.
+  useEffect(() => {
+    let code = null;
+    try { code = new URLSearchParams(window.location.search).get("googleError"); }
+    catch { code = null; }
+    if (!code) return;
+    setError(googleErrorMessage(code));
+    try {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("googleError");
+      window.history.replaceState({}, "", url.pathname + url.search + url.hash);
+    } catch { /* ignore */ }
+  }, []);
 
   async function handleSubmit(e) {
     e.preventDefault();
@@ -245,6 +270,19 @@ export default function Login({ onSuccess, onRegister, onForgot }) {
             {loading ? "Signing in…" : "Sign in"}
           </PrimaryBtn>
         </form>
+
+        {/* Continue with Google — only when the server advertises it (94.md §2.8).
+            Rendered after the primary submit with an "or" divider in page style. */}
+        {loaded && googleAuthEnabled && (
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "22px 0" }}>
+              <div style={{ flex: 1, height: 1, background: C.brd }} />
+              <span style={{ fontSize: 12, color: C.muted, fontWeight: 600, letterSpacing: "0.04em" }}>or</span>
+              <div style={{ flex: 1, height: 1, background: C.brd }} />
+            </div>
+            <GoogleAuthButton returnTo={returnTo} />
+          </>
+        )}
 
         {/* Register link ─────────────────────────────────────────────────── */}
         <div

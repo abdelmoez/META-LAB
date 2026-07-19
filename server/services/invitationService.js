@@ -546,6 +546,130 @@ export async function acceptInvitation(token, { password, name = '', acceptedTer
   }
 }
 
+// ── 94.md §2.4 — accept a pending invitation through VERIFIED Google identity ───
+/**
+ * Google-registration path for an invited email. There is NO raw token here: the
+ * proof of mailbox control is the VERIFIED Google email (id_token email_verified,
+ * signature-checked upstream), matched against the invitation's normalizedEmail —
+ * the same trim+lowercase policy used everywhere. The caller (googleAuthService)
+ * has already established: registration is closed, the Google email is verified,
+ * and no User exists for this email.
+ *
+ * Reuses the exact acceptInvitation guarantees: single-use burn behind the
+ * `status:'pending'` updateMany guard, user-create in the SAME transaction (plus
+ * the AuthAccount row binding Google's stable `sub`), ConsumedError/P2002 race
+ * mapping, invitation-pinned tier assignment, and the idempotent welcome email.
+ * The user is created with password:null (Google-only) and emailVerifiedAt:now.
+ *
+ * @param {{normalizedEmail:string, claims:{sub:string,email:string,name?:string,picture?:string}}} opts
+ * @returns {Promise<
+ *   {ok:true, userId:string, user:object, applicantId:string}
+ * | {ok:false, code:'not_invited'|'account_exists'|'server_error'}
+ * >}
+ */
+export async function acceptInvitationWithGoogle({ normalizedEmail, claims } = {}) {
+  try {
+    if (!normalizedEmail || !claims?.sub) return { ok: false, code: 'server_error' };
+
+    // Newest pending, unexpired invitation for this email (rotation marks older
+    // rows superseded, so `pending` is effectively unique — newest-first is a
+    // belt-and-braces tiebreak). Expiry is DERIVED from expiresAt, never a flag.
+    const row = await prisma.waitlistInvitation.findFirst({
+      where: { normalizedEmail, status: 'pending' },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!row || new Date(row.expiresAt).getTime() < Date.now()) {
+      return { ok: false, code: 'not_invited' };
+    }
+
+    const userNumber = await allocateUserNumber().catch(() => null);
+    const cleanName = (claims.name && String(claims.name).trim().slice(0, 100)) || row.name || null;
+
+    let createdUser;
+    try {
+      createdUser = await prisma.$transaction(async (tx) => {
+        const burn = await tx.waitlistInvitation.updateMany({
+          where: { id: row.id, status: 'pending' },
+          data: { status: 'accepted', acceptedAt: new Date() },
+        });
+        if (burn.count === 0) throw new ConsumedError();
+
+        const user = await tx.user.create({
+          data: {
+            email: normalizedEmail,
+            name: cleanName,
+            password: null, // Google-only account (94.md §2.3)
+            role: 'user',
+            userNumber,
+            // The VERIFIED Google email proves control of the mailbox → verified.
+            emailVerifiedAt: new Date(),
+            termsAcceptedAt: null,
+          },
+          select: { id: true, email: true, name: true, role: true, sessionEpoch: true, createdAt: true, onboardingCompletedAt: true },
+        });
+        await tx.authAccount.create({
+          data: {
+            userId: user.id,
+            provider: 'google',
+            providerAccountId: claims.sub,
+            providerEmail: claims.email || normalizedEmail,
+            providerEmailVerified: true,
+            displayName: claims.name || null,
+            avatarUrl: claims.picture || null,
+            lastLoginAt: new Date(),
+          },
+        });
+        await tx.waitlistInvitation.update({ where: { id: row.id }, data: { acceptedUserId: user.id } });
+        return user;
+      });
+    } catch (err) {
+      if (err instanceof ConsumedError) {
+        // Consumed in the race window — for the Google flow every non-pending
+        // outcome reads as "this email has no usable invitation".
+        return { ok: false, code: 'not_invited' };
+      }
+      // Unique race on User.email (concurrent register/accept) or on the
+      // AuthAccount uniques (concurrent duplicate callback): never overwrite —
+      // the caller re-resolves the identity as a login/link-required case.
+      if (err && (err.code === 'P2002' || /unique/i.test(err.message || ''))) {
+        return { ok: false, code: 'account_exists' };
+      }
+      console.error('[invitation] google accept tx failed:', err?.message || err);
+      return { ok: false, code: 'server_error' };
+    }
+
+    // Post-commit side effects — identical to the password accept path.
+    try {
+      const tierId = row.tierId || (await getDefaultTierId());
+      if (tierId) {
+        await recordTierAssignment({
+          userId: createdUser.id,
+          tierId,
+          userTierId: tierId,
+          changeType: 'beta_access',
+          reason: 'Waitlist invitation accepted (Google sign-in)',
+          assignedByName: 'system',
+        });
+        if (!row.tierId) {
+          await prisma.waitlistInvitation.update({ where: { id: row.id }, data: { tierId } }).catch(() => {});
+        }
+      }
+    } catch (e) {
+      console.error('[invitation] google-accept tier assignment failed:', e?.message || e);
+    }
+    try {
+      await sendWelcomeEmailOnce(createdUser.id, { email: createdUser.email, toName: createdUser.name || '' });
+    } catch (e) {
+      console.error('[invitation] google-accept welcome email failed:', e?.message || e);
+    }
+
+    return { ok: true, userId: createdUser.id, user: createdUser, applicantId: row.waitlistApplicantId };
+  } catch (err) {
+    console.error('[invitation] google accept failed:', err?.message || err);
+    return { ok: false, code: 'server_error' };
+  }
+}
+
 // ── 93.md §6.3 — one-time welcome email (idempotent) ────────────────────────────
 /**
  * Send the welcome/getting-started email to a user EXACTLY once. Idempotency is

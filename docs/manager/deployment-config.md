@@ -41,6 +41,35 @@ break local dev and force renaming `metalab_session` (logging out every existing
 session) for no real gain over the flags above. Deliberately not adopted; revisit
 if the app ever drops http dev entirely.
 
+### The Google OAuth transaction cookie (`metalab_gauth_txn`)
+
+The Google login flow (94.md Part 2) carries its short-lived CSRF/replay state in
+a **separate** cookie from the session, set at `GET /api/auth/google/start` and
+consumed at the callback:
+- **`SameSite=Lax` — deliberately NOT `Strict`.** The OAuth callback is a
+  **top-level cross-site navigation**: the browser is redirected from
+  `accounts.google.com` back to `/api/auth/google/callback`. A `Strict` cookie is
+  **not sent** on a navigation that originates from another site, so a `Strict`
+  transaction cookie would be absent at the callback and *every* Google login
+  would fail with a state/nonce mismatch. `Lax` **is** sent on top-level GET
+  navigations, so the callback can read it — while still being withheld from
+  cross-site subresource/POST requests. (The main `metalab_session` cookie stays
+  `SameSite=Strict`; only this transaction cookie needs `Lax`.)
+- **`HttpOnly`, `Secure` (staging/prod)** — same protections as the session
+  cookie; no JS access, HTTPS-only.
+- **`Path=/api/auth/google`** — scoped to the OAuth routes only, so it is not sent
+  on ordinary requests and cannot collide with the session cookie.
+- **~10-minute TTL** — it exists only for the round-trip to Google and back; a
+  stale/abandoned flow expires quickly.
+- **HMAC-signed / integrity-protected** — the callback rejects a tampered or
+  forged transaction cookie, binding the returned `state`/`nonce`/PKCE verifier to
+  the browser that started the flow. Raw `state`/`nonce` values are never logged
+  (94.md §2.10).
+Because the SPA, the API, and `/api/auth/google/*` are all served from **one
+origin** (below), this cookie is same-origin for the app and only "cross-site"
+relative to Google during the redirect — which is exactly why `Lax` (not `Strict`)
+is the correct and minimal choice.
+
 ## CORS (`server/config/cors.js`)
 An **explicit allowlist**, never a wildcard (wildcard + credentials is invalid and
 unsafe). `CORS_ORIGIN` may be a single origin OR a comma-separated list, unioned

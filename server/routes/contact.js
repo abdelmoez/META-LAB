@@ -12,11 +12,13 @@ import { generateFeedbackReference, FEEDBACK_SEVERITIES } from '../utils/feedbac
 // never the message body, subject, name or email).
 import { recordEvent } from '../services/analytics.js';
 import { USAGE } from '../utils/usage.js';
+// 94.md §3.10 — Turnstile on the public contact form (no-op until keys configured).
+import { requireTurnstile } from '../security/turnstile.js';
 
 const router = Router();
 
 // POST /api/contact — store a contact message (no auth required)
-router.post('/', validateBody(contactSubmitSchema), async (req, res) => {
+router.post('/', validateBody(contactSubmitSchema), requireTurnstile('contact'), async (req, res) => {
   try {
     const { name, email, message, subject, severity } = req.body || {};
     if (!email || typeof email !== 'string' || !email.trim()) {

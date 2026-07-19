@@ -91,6 +91,66 @@ nc -zv <host> 3001 || echo "3001 correctly unreachable"
 curl -s --max-time 5 http://<host>:3001/api/health || echo "correctly blocked"
 ```
 
+## 4a. Origin lockdown (only when Cloudflare is in front — 94.md §3.5)
+
+If, and only if, Cloudflare proxies the site (`cloudflare-setup.md`), you can go
+further than §4's "80/443 open to the world" and accept web traffic **only from
+Cloudflare's ranges**, so no one can bypass the edge and hit the origin directly.
+This is the primary origin-protection option in `cloudflare-setup.md` Phase 6.
+**Skip this section entirely if Cloudflare is not in front** — with a public
+origin these rules would block all real visitors.
+
+> ⚠️ **LOCKOUT + CERT-RENEWAL RISK.** Two things break silently if you get this
+> wrong:
+> 1. **SSH must stay untouched** — never alter the port-22 rule; keep §0's dual-
+>    session lifeline open the entire time and re-verify SSH from a *fresh*
+>    terminal before closing it.
+> 2. **certbot HTTP-01 renewal breaks** once port 80 only accepts Cloudflare,
+>    because the ACME challenge arrives from Let's Encrypt (not Cloudflare) and
+>    will be firewalled out. Pair the lockdown with a **Cloudflare Origin
+>    Certificate** (no ACME challenge at all — `cloudflare-setup.md` Phase 3) or
+>    switch certbot to a **DNS-01** challenge. Do NOT lock port 80 while renewal
+>    still depends on HTTP-01.
+
+Replace §4's blanket `ufw allow 80,443` with per-range rules. Generate them from
+the **same** Cloudflare list the real-IP config uses
+(`deploy/cloudflare/update-cf-ip-ranges.sh` fetches
+`https://www.cloudflare.com/ips-v4` + `/ips-v6`) so the two never drift:
+
+```bash
+# Remove the world-open web rules (SSH rule stays as-is — do NOT touch 22):
+ufw delete allow 80/tcp   2>/dev/null || true
+ufw delete allow 443/tcp  2>/dev/null || true
+
+# Allow 80/443 only from current Cloudflare ranges (idempotent — ufw dedupes):
+for cidr in $(curl -fsS https://www.cloudflare.com/ips-v4) \
+            $(curl -fsS https://www.cloudflare.com/ips-v6); do
+  ufw allow proto tcp from "$cidr" to any port 80,443 comment 'cloudflare'
+done
+ufw reload
+```
+
+Keep the range set current: when
+`deploy/cloudflare/update-cf-ip-ranges.sh` refreshes nginx's `set_real_ip_from`
+list, refresh these ufw rules too (a small companion cron that re-runs the loop
+above and prunes rules whose CIDR is no longer published). A stale allowlist
+means visitors on a **new** Cloudflare range get refused at the origin — the same
+failure mode as a stale real-IP list, so schedule both together.
+
+Alternative / additive to the firewall: **Authenticated Origin Pulls** (nginx
+`ssl_verify_client` against Cloudflare's client cert) refuses any direct
+connection lacking Cloudflare's certificate even if it reaches the port —
+`cloudflare-setup.md` Phase 6 option 2.
+
+**Verify** (from a host OUTSIDE Cloudflare's network):
+```bash
+curl -sS --max-time 5 https://<origin-ip>/ -H 'Host: pecanrev.com' \
+  || echo "direct origin correctly blocked"
+curl -sI https://pecanrev.com | head -1        # still 200 via Cloudflare
+ssh deploy@<host> true                          # SSH STILL WORKS (fresh session)
+ufw status verbose                              # 22 open; 80/443 only from cloudflare
+```
+
 ## 5. fail2ban (sshd jail)
 
 ```bash

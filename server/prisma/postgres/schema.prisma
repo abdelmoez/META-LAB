@@ -48,7 +48,11 @@ model User {
   userNumber                    Int?
   email                         String                   @unique
   name                          String?
-  password                      String // bcrypt hash — never stored or returned as plain text
+  // 94.md §2.3 — nullable so a Google-only account (auth delegated to the provider)
+  // can exist with NO password. Password login null-guards this; profile "set a
+  // password" allows a passwordless user to add one; unlink refuses to remove the
+  // last auth method. DROP NOT NULL is `prisma db push`-safe (additive-safe).
+  password                      String? // bcrypt hash — never stored or returned as plain text; null = Google-only
   role                          String                   @default("user") // "user" | "admin"
   suspended                     Boolean                  @default(false)
   // prompt49 — session revocation. Every issued JWT carries the user's sessionEpoch
@@ -151,8 +155,41 @@ model User {
   screenMemberships             ScreenProjectMember[]    @relation("UserScreenMemberships")
   passwordResetTokens           PasswordResetToken[]
   onboardingResponses           UserOnboardingResponse[] // prompt32 — per-question onboarding state
+  authAccounts                  AuthAccount[] // 94.md §2.3 — linked external identity providers (Google)
 
   @@index([userNumber])
+}
+
+// 94.md §2.3 — normalized external-auth identity (Google OIDC today; the model
+// generalizes to future providers). Google's STABLE `sub` claim is the permanent
+// identity key (providerAccountId) — NEVER the email, which can change and is only
+// stored as at-login PROFILE metadata. We deliberately store NO Google access/
+// refresh tokens: basic login never calls Google APIs on the user's behalf, so
+// there is nothing to secure long-term (94.md §2.3). Both @@unique constraints are
+// declared NOW on this brand-new table (repo rule: never add @unique to an EXISTING
+// table later — the non-interactive VPS `prisma db push` would demand
+// --accept-data-loss). A NEW table gets them cleanly:
+//   - (provider, providerAccountId): one internal user per external identity — the
+//     concurrency guard that makes "link one Google account to one user" atomic.
+//   - (userId, provider): one Google link per user (no multi-account-per-provider).
+model AuthAccount {
+  id                    String    @id @default(uuid())
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider              String // "google" (only supported value today)
+  providerAccountId     String // Google stable `sub` claim — NEVER the email
+  providerEmail         String // provider email at link/login time (display only; not an identity key)
+  providerEmailVerified Boolean   @default(false)
+  displayName           String? // provider profile name at link/login time
+  avatarUrl             String? // provider profile picture URL (may be absent — never depended on)
+  lastLoginAt           DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@unique([provider, providerAccountId])
+  @@unique([userId, provider])
+  @@index([userId])
+  @@index([providerEmail])
 }
 
 // Application-managed monotonic counters (provider-portable sequences). Prisma

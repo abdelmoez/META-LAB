@@ -19,9 +19,19 @@ happens there first.**
 | Sentry | `SENTRY_ENVIRONMENT=production` | `SENTRY_ENVIRONMENT=staging` (separate DSN ideal) | staging env file |
 | Uploads/storage | `/opt/pecanrev/shared/storage` | staging checkout's own storage dir | separate checkout |
 | Identity | — | `APP_ENV=staging` (admin-visible staging banner, Sentry env, email protection) | env file / PM2 `env_staging` |
+| Google OAuth callback | `https://pecanrev.com/api/auth/google/callback` | `https://staging.pecanrev.com/api/auth/google/callback` | separate `GOOGLE_REDIRECT_URI` per env (`google-oauth-setup.md`) |
+| Turnstile keys | production widget site+secret | **fresh staging widget** site+secret (a shared key would let a staging challenge satisfy prod) | separate `TURNSTILE_SITE_KEY` / `TURNSTILE_SECRET_KEY` (`cloudflare-setup.md` Phase 9) |
 
 Template with all values + warnings: **`server/.env.staging.example`** — copy
 to the staging instance's `server/.env`, fill values, `chmod 600`.
+
+**Google consent-screen (test users):** while the Google OAuth consent screen is
+in **Testing** mode, only listed **test users** can complete Google sign-in — on
+staging too. Add every staging tester's Google address as a test user
+(`google-oauth-setup.md` §5), or a staging Google login returns Google's
+`access_denied` before it ever reaches the app. Staging uses its **own**
+`GOOGLE_REDIRECT_URI` (and optionally its own OAuth client) so a staging login can
+never mint a production session.
 
 **Staging must never point at production user data.** If a rehearsal needs
 realistic volume, restore a backup into the *staging* DB (which doubles as a

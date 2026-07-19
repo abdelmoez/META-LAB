@@ -114,6 +114,7 @@ function LoginRoute() {
   const { login } = useAuth();
   return (
     <LoginPage
+      returnTo={safeFrom || undefined}
       onSuccess={u => {
         login(u);
         const invite = inviteParam();

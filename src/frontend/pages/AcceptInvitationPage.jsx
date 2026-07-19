@@ -26,6 +26,8 @@ import BrandWordmark from '../components/BrandWordmark.jsx';
 import { api } from '../api-client/apiClient.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import { validateInvitePassword, INVITE_PASSWORD_MIN } from '../../shared/waitlistInvitation.js';
+import GoogleAuthButton from '../auth/GoogleAuthButton.jsx';
+import { usePublicAuthSettings } from '../auth/publicAuthSettings.js';
 
 /* ── Shared style tokens (mirrors ResetPassword.jsx) ─────────────────────── */
 const inputBase = {
@@ -158,6 +160,7 @@ const INVALID_COPY = {
 export default function AcceptInvitationPage() {
   const navigate = useNavigate();
   const { refreshUser, refreshPendingOnboarding } = useAuth();
+  const { googleAuthEnabled, loaded } = usePublicAuthSettings();
   const [params] = useSearchParams();
   const token = params.get('token') || '';
 
@@ -291,6 +294,29 @@ export default function AcceptInvitationPage() {
         </label>
 
         <PrimaryBtn loading={submitting}>{submitting ? 'Activating…' : 'Create account'}</PrimaryBtn>
+
+        {/* Google alternative to setting a password (94.md §2.8). The server matches
+            the invitation by the VERIFIED Google email, so the account must be the
+            invited one. A failed Google redirect lands on /login (the server default);
+            we keep this page simple and don't map ?googleError= here. */}
+        {loaded && googleAuthEnabled && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, margin: '18px 0' }}>
+              <div style={{ flex: 1, height: 1, background: C.brd }} />
+              <span style={{ fontSize: 12, color: C.muted, fontWeight: 600, letterSpacing: '0.04em' }}>or</span>
+              <div style={{ flex: 1, height: 1, background: C.brd }} />
+            </div>
+            <GoogleAuthButton returnTo="/app" />
+            <div style={{ marginTop: 10, fontSize: 12.5, color: C.txt2, lineHeight: 1.5, textAlign: 'center' }}>
+              Use the Google account for{' '}
+              {invite?.email
+                ? <span style={{ fontFamily: MONO, color: C.txt }}>{invite.email}</span>
+                : 'your invited email'}
+              {' '}so we can match your invitation.
+            </div>
+          </>
+        )}
+
         <GhostBtn onClick={() => navigate('/login')}>Already activated? Sign in</GhostBtn>
       </form>
     </Shell>

@@ -19,6 +19,7 @@ import { maintenanceGate } from './middleware/maintenance.js';
 import { spaEnabled, serveSpa, distDir } from './middleware/spaTheme.js';
 
 import authRouter        from './routes/auth.js';
+import authGoogleRouter  from './routes/authGoogle.js'; // 94.md — Google OAuth
 import projectsRouter    from './routes/projects.js';
 import studiesRouter     from './routes/studies.js';
 import recordsRouter     from './routes/records.js';
@@ -245,6 +246,18 @@ const authLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+// ── 94.md — dedicated limiter for the Google OAuth dance ───────────────────────
+// One sign-in consumes ~3 requests (start + callback [+ retry]); mounted on its
+// own budget so failed Google attempts can never exhaust the strict 20/15min
+// password-auth budget above and lock an IP out of ALL sign-in methods.
+const oauthLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 30 : 5000,
+  message: { error: 'Too many sign-in attempts, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 // ── Rate limiter for the public, unauthenticated contact form ──────────────────
 const contactLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -445,6 +458,10 @@ app.get('/api/version', (req, res) => {
 });
 
 // ── Auth routes (public: register/login; protected: logout/me) ────────────────
+// 94.md — Google OAuth mounts BEFORE the general /api/auth mount (Express takes
+// the more specific prefix first in mount order) on its own oauthLimiter, and
+// stays under /api/* so the app-wide apiNoStore covers callbacks (§3.7).
+app.use('/api/auth/google', oauthLimiter, authGoogleRouter);
 app.use('/api/auth', authLimiter, authRouter);
 
 // ── Public settings ────────────────────────────────────────────────────────────

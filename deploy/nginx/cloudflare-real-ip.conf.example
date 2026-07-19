@@ -1,0 +1,83 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# deploy/nginx/cloudflare-real-ip.conf.example — restore the real client IP when
+# nginx sits behind the Cloudflare proxy (94.md §3.6). Extends deploy/nginx/
+# README.md §3 and docs/manager/cloudflare-setup.md (SSL/TLS + real-IP phase).
+#
+# WHAT THIS DOES
+#   When a request is proxied by Cloudflare, nginx's $remote_addr is a Cloudflare
+#   edge IP, not the visitor. These directives tell nginx to trust the
+#   CF-Connecting-IP header — but ONLY on connections that actually originate
+#   from a published Cloudflare range — and rewrite $remote_addr to the real
+#   client. Everything downstream (access logs, the X-Forwarded-For nginx appends
+#   toward the app, rate-limit keys, audit events, suspicious-login detection)
+#   then sees the true client IP.
+#
+# INCLUDE THIS ONLY WHEN CLOUDFLARE PROXYING (orange cloud) IS ON.
+#   If DNS is grey-clouded / Cloudflare is not in front, DO NOT include this file:
+#   with Cloudflare absent, direct clients could send a forged CF-Connecting-IP
+#   and — because their source IP is NOT in a CF range — set_real_ip_from would
+#   correctly ignore it, so this is fail-safe either way. But keeping it out until
+#   the proxy is live avoids confusion. Add the include, `nginx -t`, reload.
+#
+# WHY TRUST_PROXY STAYS AT ITS LOOPBACK DEFAULT (do NOT set TRUST_PROXY=true)
+#   nginx runs on 127.0.0.1 in front of the app and, after this rewrite, presents
+#   the REAL client IP to Express via the X-Forwarded-For it appends. The app's
+#   default trust-proxy (loopback/link-local/unique-local only — see
+#   docs/manager/deployment-config.md § Trust proxy) trusts that single loopback
+#   hop and derives req.ip from it correctly. Setting TRUST_PROXY=true would make
+#   Express trust the LAST value of any XFF from any source — a spoofable header
+#   on the app's public bypass path (port 3001) — which is exactly the origin
+#   header-spoofing risk 94.md §3.5 warns against. Real-IP is solved here at
+#   nginx, not by widening the app's proxy trust.
+#
+# HOW TO INSTALL
+#   1. Place this file (rename to cloudflare-real-ip.conf) somewhere included by
+#      the http{} context, e.g. /etc/nginx/conf.d/cloudflare-real-ip.conf, OR add
+#      `include /etc/nginx/cloudflare-real-ip.conf;` inside each proxied server{}.
+#      conf.d/*.conf is auto-included by the stock nginx.conf http{} block, so
+#      dropping it there applies it to every server — that is the simplest.
+#   2. `sudo nginx -t && sudo systemctl reload nginx`
+#
+# KEEPING THE RANGES CURRENT
+#   The set_real_ip_from lines below are Cloudflare's published ranges as of the
+#   last refresh. Cloudflare changes them occasionally; a stale list silently
+#   stops rewriting IPs for a new range (visitors on it log as an edge IP).
+#   deploy/cloudflare/update-cf-ip-ranges.sh regenerates THIS file from
+#   https://www.cloudflare.com/ips-v4 + /ips-v6, validates it, and reloads nginx
+#   only when `nginx -t` passes. Run it from cron (example in that script).
+# ──────────────────────────────────────────────────────────────────────────────
+
+# ── BEGIN CLOUDFLARE RANGES (managed by update-cf-ip-ranges.sh) ───────────────
+# IPv4 (https://www.cloudflare.com/ips-v4)
+set_real_ip_from 173.245.48.0/20;
+set_real_ip_from 103.21.244.0/22;
+set_real_ip_from 103.22.200.0/22;
+set_real_ip_from 103.31.4.0/22;
+set_real_ip_from 141.101.64.0/18;
+set_real_ip_from 108.162.192.0/18;
+set_real_ip_from 190.93.240.0/20;
+set_real_ip_from 188.114.96.0/20;
+set_real_ip_from 197.234.240.0/22;
+set_real_ip_from 198.41.128.0/17;
+set_real_ip_from 162.158.0.0/15;
+set_real_ip_from 104.16.0.0/13;
+set_real_ip_from 104.24.0.0/14;
+set_real_ip_from 172.64.0.0/13;
+set_real_ip_from 131.0.72.0/22;
+# IPv6 (https://www.cloudflare.com/ips-v6)
+set_real_ip_from 2400:cb00::/32;
+set_real_ip_from 2606:4700::/32;
+set_real_ip_from 2803:f800::/32;
+set_real_ip_from 2405:b500::/32;
+set_real_ip_from 2405:8100::/32;
+set_real_ip_from 2a06:98c0::/29;
+set_real_ip_from 2c0f:f248::/32;
+# ── END CLOUDFLARE RANGES ─────────────────────────────────────────────────────
+
+# Use Cloudflare's per-request client-IP header, and re-evaluate the chain so a
+# genuine client behind additional trusted proxies still resolves correctly.
+# CF-Connecting-IP carries a single IP (the visitor) — it is only honoured on
+# connections whose source is one of the ranges above; from anywhere else it is
+# ignored, so a direct-to-origin attacker cannot spoof it.
+real_ip_header    CF-Connecting-IP;
+real_ip_recursive on;

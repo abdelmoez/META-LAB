@@ -68,6 +68,14 @@ export const USAGE = {
   // NOTE (93.md): WAITLIST_SIGNUP is intentionally ABSENT — waitlist signups are
   // already recorded as BetaWaitlistStatusEvent (null → WAITLISTED, "Joined
   // waitlist") in the strictly isolated waitlist DB. Do not duplicate here.
+  // 94.md §2.10 — Google auth funnel. Privacy-safe: meta never carries codes,
+  // tokens, state/nonce values or provider responses — only coarse outcome labels
+  // (e.g. meta.reason = 'not_invited'). Recorded fire-and-forget via analytics.js.
+  GOOGLE_AUTH_STARTED: 'GOOGLE_AUTH_STARTED',
+  GOOGLE_AUTH_COMPLETED: 'GOOGLE_AUTH_COMPLETED',
+  GOOGLE_AUTH_FAILED: 'GOOGLE_AUTH_FAILED',
+  GOOGLE_ACCOUNT_LINKED: 'GOOGLE_ACCOUNT_LINKED',
+  GOOGLE_ACCOUNT_UNLINKED: 'GOOGLE_ACCOUNT_UNLINKED',
 };
 
 /**

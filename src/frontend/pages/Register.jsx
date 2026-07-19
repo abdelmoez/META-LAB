@@ -4,6 +4,9 @@ import { register } from "../auth/authClient.js";
 import { Icon } from "../components/icons.jsx";
 import { C, FONT, alpha } from "../theme/tokens.js";
 import BrandWordmark from "../components/BrandWordmark.jsx";
+import GoogleAuthButton from "../auth/GoogleAuthButton.jsx";
+import TurnstileWidget from "../components/TurnstileWidget.jsx";
+import { usePublicAuthSettings } from "../auth/publicAuthSettings.js";
 
 /* ── Shared input / label tokens ─────────────────────────────────────────── */
 const inputBase = {
@@ -106,6 +109,11 @@ export default function Register({ onSuccess, onBack }) {
     catch { return ""; }
   });
 
+  // 94.md §2.8/3.10 — Google button availability + Turnstile site key (public).
+  const { googleAuthEnabled, turnstileSiteKey, loaded } = usePublicAuthSettings();
+  const [turnstileToken, setTurnstileToken] = useState(null);
+  const [turnstileReset, setTurnstileReset] = useState(0);
+
   async function handleSubmit(e) {
     e.preventDefault();
     setError(null);
@@ -138,7 +146,8 @@ export default function Register({ onSuccess, onBack }) {
         password,
         name.trim() || undefined,
         inviteToken || undefined,
-        terms
+        terms,
+        turnstileToken || undefined
       );
       const user = data && data.user ? data.user : data;
 
@@ -165,6 +174,8 @@ export default function Register({ onSuccess, onBack }) {
       onSuccess(user, redirectTo || undefined);
     } catch (err) {
       setError(err.message || "Registration failed. Please try again.");
+      // Turnstile tokens are single-use — mint a fresh one for the retry.
+      setTurnstileReset((n) => n + 1);
     } finally {
       setLoading(false);
     }
@@ -334,6 +345,15 @@ export default function Register({ onSuccess, onBack }) {
             </div>
           )}
 
+          {/* Cloudflare Turnstile — renders only when a site key is configured;
+              fails open (never blocks submit) if the widget can't load (94.md §3.10). */}
+          <TurnstileWidget
+            siteKey={turnstileSiteKey}
+            onToken={setTurnstileToken}
+            action="register"
+            resetSignal={turnstileReset}
+          />
+
           <motion.button
             type="submit"
             disabled={loading}
@@ -360,6 +380,24 @@ export default function Register({ onSuccess, onBack }) {
             {loading ? "Creating account…" : "Create account"}
           </motion.button>
         </form>
+
+        {/* Continue with Google — only when the server advertises it (94.md §2.8). */}
+        {loaded && googleAuthEnabled && (
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 12, margin: "22px 0" }}>
+              <div style={{ flex: 1, height: 1, background: C.brd }} />
+              <span style={{ fontSize: 12, color: C.muted, fontWeight: 600, letterSpacing: "0.04em" }}>or</span>
+              <div style={{ flex: 1, height: 1, background: C.brd }} />
+            </div>
+            <GoogleAuthButton />
+            {inviteToken && (
+              <div style={{ marginTop: 10, fontSize: 12, color: C.muted, lineHeight: 1.5, textAlign: "center" }}>
+                Signing up with Google won't auto-join the project invite — use the
+                invited email above, or accept the invite after signing in.
+              </div>
+            )}
+          </>
+        )}
 
         {/* Sign-in link ──────────────────────────────────────────────────── */}
         <div

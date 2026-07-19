@@ -163,16 +163,17 @@ export async function updateProfile(req, res) {
 
 /**
  * PUT /api/profile/password
- * Body: { currentPassword: string, newPassword: string }
+ * Body: { currentPassword?: string, newPassword: string }
  * Verifies currentPassword with bcrypt before updating to the hashed newPassword.
+ * 94.md §2.9 — a Google-only account (user.password null) SETS its first password
+ * WITHOUT currentPassword: the authenticated session is the identity proof (there
+ * is no current password to confirm), and gaining a password is what makes a safe
+ * Google-unlink possible later. All other accounts still require currentPassword.
  */
 export async function changePassword(req, res) {
   try {
     const { currentPassword, newPassword } = req.body || {};
 
-    if (!currentPassword || typeof currentPassword !== 'string') {
-      return res.status(400).json({ error: 'currentPassword is required' });
-    }
     if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 8) {
       return res.status(400).json({ error: 'newPassword must be at least 8 characters' });
     }
@@ -181,9 +182,14 @@ export async function changePassword(req, res) {
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    const matches = await verifyPassword(currentPassword, user.password);
-    if (!matches) {
-      return res.status(401).json({ error: 'Current password is incorrect' });
+    if (user.password) {
+      if (!currentPassword || typeof currentPassword !== 'string') {
+        return res.status(400).json({ error: 'currentPassword is required' });
+      }
+      const matches = await verifyPassword(currentPassword, user.password);
+      if (!matches) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+      }
     }
 
     const hashed = await hashPassword(newPassword);
@@ -209,5 +215,34 @@ export async function changePassword(req, res) {
   } catch (err) {
     console.error('[profile] changePassword error:', err.message);
     res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * GET /api/profile/security — 94.md §2.9 — the account-security summary the
+ * Profile "Connected accounts" section renders from: whether a password is
+ * configured, and which external providers are linked (display metadata ONLY —
+ * the provider subject id and any token-shaped material never leave the server).
+ */
+export async function getSecuritySummary(req, res) {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: {
+        password: true,
+        authAccounts: {
+          select: { provider: true, providerEmail: true, lastLoginAt: true, createdAt: true },
+          orderBy: { createdAt: 'asc' },
+        },
+      },
+    });
+    if (!user) return res.status(404).json({ error: 'User not found' });
+    return res.json({
+      hasPassword: !!user.password,
+      providers: user.authAccounts,
+    });
+  } catch (err) {
+    console.error('[profile] security summary error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
   }
 }

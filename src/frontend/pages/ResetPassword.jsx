@@ -19,6 +19,8 @@ import { Icon } from '../components/icons.jsx';
 import { C, FONT, MONO, alpha } from '../theme/tokens.js';
 import BrandWordmark from '../components/BrandWordmark.jsx';
 import { api } from '../api-client/apiClient.js';
+import TurnstileWidget from '../components/TurnstileWidget.jsx';
+import { usePublicAuthSettings } from '../auth/publicAuthSettings.js';
 
 /* ── Shared style tokens ─────────────────────────────────────────────────── */
 const inputBase = {
@@ -147,15 +149,21 @@ function RequestForm({ onBackToLogin }) {
   const [done, setDone]       = useState(false);
   const [error, setError]     = useState(null);
   const [focused, setFocused] = useState(false);
+  // 94.md §3.10 — Turnstile on the abuse-sensitive reset request (renders only
+  // when a site key is configured; the server fails open when Cloudflare is down).
+  const { turnstileSiteKey } = usePublicAuthSettings();
+  const [turnstileToken, setTurnstileToken] = useState(null);
+  const [turnstileReset, setTurnstileReset] = useState(0);
 
   async function submit(e) {
     e.preventDefault();
     setError(null); setLoading(true);
     try {
-      await api.auth.forgotPassword(email.trim());
+      await api.auth.forgotPassword(email.trim(), turnstileToken || undefined);
       setDone(true);
     } catch (err) {
       setError(err.message || 'Something went wrong. Please try again.');
+      setTurnstileReset((n) => n + 1); // tokens are single-use — refresh for retry
     } finally { setLoading(false); }
   }
 
@@ -201,6 +209,8 @@ function RequestForm({ onBackToLogin }) {
           }}
         />
       </div>
+      <TurnstileWidget siteKey={turnstileSiteKey} onToken={setTurnstileToken}
+        action="forgot_password" resetSignal={turnstileReset} />
       <PrimaryBtn loading={loading}>{loading ? 'Sending…' : 'Send reset link'}</PrimaryBtn>
       <GhostBtn onClick={onBackToLogin}>Back to sign in</GhostBtn>
     </form>

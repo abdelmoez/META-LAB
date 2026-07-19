@@ -1,6 +1,9 @@
 import { prisma } from '../db/client.js';
 import { ROB_DEFAULTS } from './robAdminController.js';
 import { defaultThemeSettings } from '../utils/themeValidate.js';
+// 94.md — non-secret auth surface availability for the public settings payload.
+import { googleOidc } from '../auth/googleOidc.js';
+import { turnstilePublicSiteKey } from '../security/turnstile.js';
 // P10 — global (admin) eligibility-screening policy. Handlers below mirror the AI
 // screening admin GET/PUT (screeningAiAdminController.js) and reuse the service's
 // defaults + coercion. The two routes are mounted in server/routes/admin.js.
@@ -424,6 +427,11 @@ export async function getPublicSettings(req, res) {
       ...result,
       defaultTheme: result.appSettings?.defaultTheme || 'night',
       maintenanceMessage: result.appSettings?.maintenanceMessage || appDefaults.maintenanceMessage || '',
+      // 94.md — env-derived, NON-SECRET auth surface config: the frontend shows
+      // the Google button / Turnstile widget only when the backend can actually
+      // serve them (no rebuild needed when keys are added — unlike VITE_* vars).
+      googleAuthEnabled: googleOidc.enabled(),
+      turnstileSiteKey: turnstilePublicSiteKey(),
     });
   } catch (err) {
     console.error('[settings] getPublicSettings error:', err.message);

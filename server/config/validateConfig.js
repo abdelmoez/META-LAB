@@ -76,6 +76,35 @@ export function validateConfig({ env = process.env } = {}) {
     warnings.push('Email is partially configured — set BOTH SMTP_HOST and EMAIL_FROM to send (or neither to disable).');
   }
 
+  // 94.md §2.2 — Google OAuth is optional, but HALF-configured Google auth would
+  // surface a button that dead-ends mid-flow (or worse, run without a resolvable
+  // callback). Critical in production, warning in dev.
+  const gId = !!(env.GOOGLE_CLIENT_ID && String(env.GOOGLE_CLIENT_ID).trim());
+  const gSecret = !!(env.GOOGLE_CLIENT_SECRET && String(env.GOOGLE_CLIENT_SECRET).trim());
+  const gRedirect = !!((env.GOOGLE_REDIRECT_URI && String(env.GOOGLE_REDIRECT_URI).trim())
+    || (env.APP_BASE_URL && String(env.APP_BASE_URL).trim()));
+  if (gId !== gSecret) {
+    critical('Google OAuth is partially configured — set BOTH GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET (or neither to disable).');
+  } else if (gId && gSecret && !gRedirect) {
+    critical('Google OAuth has no resolvable callback — set GOOGLE_REDIRECT_URI (or APP_BASE_URL to derive it).');
+  }
+  if (isProd && env.GOOGLE_REDIRECT_URI && /^http:\/\//i.test(String(env.GOOGLE_REDIRECT_URI).trim())) {
+    errors.push('GOOGLE_REDIRECT_URI is http:// in production — OAuth callbacks must use https (94.md §3.4).');
+  }
+  // Test-only endpoint overrides must never reach production.
+  if (isProd && (env.GOOGLE_AUTH_URL || env.GOOGLE_TOKEN_URL || env.GOOGLE_JWKS_URL || env.GOOGLE_ISSUER)) {
+    errors.push('GOOGLE_AUTH_URL/GOOGLE_TOKEN_URL/GOOGLE_JWKS_URL/GOOGLE_ISSUER are TEST-ONLY overrides — unset them in production.');
+  }
+
+  // 94.md §3.10 — Turnstile: same half-configuration rule (a site key without a
+  // secret renders a widget whose token is never verified; a secret without a
+  // site key silently disables the feature while looking configured).
+  const tSite = !!(env.TURNSTILE_SITE_KEY && String(env.TURNSTILE_SITE_KEY).trim());
+  const tSecret = !!(env.TURNSTILE_SECRET_KEY && String(env.TURNSTILE_SECRET_KEY).trim());
+  if (tSite !== tSecret) {
+    critical('Turnstile is partially configured — set BOTH TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY (or neither to disable).');
+  }
+
   return { ok: errors.length === 0, errors, warnings, isProd };
 }
 

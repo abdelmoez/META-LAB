@@ -80,6 +80,43 @@ async function main() {
     }
   } catch (e) { rec('waitlist-db', false, e.message); }
 
+  // 7. 94.md — Google OAuth start must 302 either to accounts.google.com (when
+  //    configured) or to the safe not-configured error redirect. Both PASS; the
+  //    detail records which mode the deployment is in. A 200/404/500 FAILS.
+  try {
+    const res = await fetch(`${BASE}/api/auth/google/start`, { redirect: 'manual' });
+    const loc = res.headers.get('location') || '';
+    const configured = /accounts\.google\.com|\/o\/oauth2\//.test(loc);
+    const unconfigured = loc.includes('googleError=GOOGLE_NOT_CONFIGURED');
+    rec('google-oauth-start', res.status === 302 && (configured || unconfigured),
+      configured ? 'configured — redirects to Google' : unconfigured ? 'not configured — safe error redirect' : `status=${res.status} location=${loc.slice(0, 80)}`);
+  } catch (e) { rec('google-oauth-start', false, e.message); }
+
+  // 8. 94.md §3.7 — auth/OAuth responses must never be cacheable. The app-wide
+  //    apiNoStore should stamp every /api response; verify on the OAuth surface.
+  try {
+    const res = await fetch(`${BASE}/api/auth/google/start`, { redirect: 'manual' });
+    const cc = (res.headers.get('cache-control') || '').toLowerCase();
+    rec('api-no-store', cc.includes('no-store'), cc || 'missing Cache-Control');
+  } catch (e) { rec('api-no-store', false, e.message); }
+
+  // 9. 94.md §3.7 — hashed assets should carry the immutable CDN caching header.
+  //    Informational: parse one /assets URL out of the SPA HTML; skip gracefully
+  //    when the deployment serves no SPA or the HTML references no hashed asset.
+  try {
+    const htmlRes = await fetch(`${BASE}/`, { redirect: 'follow' });
+    const html = htmlRes.ok ? await htmlRes.text() : '';
+    const m = html.match(/\/assets\/[A-Za-z0-9._-]+\.(?:js|css)/);
+    if (!m) {
+      rec('asset-immutable-cache', true, 'skipped — no hashed /assets URL found in HTML');
+    } else {
+      const aRes = await fetch(`${BASE}${m[0]}`, { redirect: 'manual' });
+      const cc = (aRes.headers.get('cache-control') || '').toLowerCase();
+      rec('asset-immutable-cache', aRes.ok && cc.includes('max-age=31536000'),
+        `${m[0].slice(0, 60)} → ${cc || 'no Cache-Control'}`);
+    }
+  } catch (e) { rec('asset-immutable-cache', true, `skipped — ${e.message}`); }
+
   const passed = results.filter((r) => r.ok).length;
   for (const r of results) console.log(`${r.ok ? 'PASS' : 'FAIL'}  ${r.name}${r.detail ? '  — ' + r.detail : ''}`);
   console.log(`\nSmoke: ${passed}/${results.length} passed against ${BASE}`);

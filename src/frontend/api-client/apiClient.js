@@ -362,12 +362,20 @@ export const api = {
       req(`${BASE}/profile`, { method: "PUT", ...json(patch) }),
 
     /**
-     * PUT /api/profile/password — change password.
-     * @param {{ currentPassword: string, newPassword: string }} body
+     * PUT /api/profile/password — change password. A Google-only user
+     * (hasPassword:false) may SET a password by sending only { newPassword }
+     * (the server allows the missing currentPassword in that case).
+     * @param {{ currentPassword?: string, newPassword: string }} body
      * @returns {Promise<any>}
      */
     changePassword: (body) =>
       req(`${BASE}/profile/password`, { method: "PUT", ...json(body) }),
+
+    /**
+     * GET /api/profile/security — connected authentication methods (94.md §2.9).
+     * @returns {Promise<{ hasPassword: boolean, providers: Array<{ provider: string, providerEmail: string, lastLoginAt: string|null, createdAt: string|null }> }>}
+     */
+    security: () => req(`${BASE}/profile/security`),
   },
 
   /* ── Contact ─────────────────────────────────────────────────────── */
@@ -437,8 +445,11 @@ export const api = {
      * @param {string} email
      * @returns {Promise<{ ok: boolean, message: string }>}
      */
-    forgotPassword: (email) =>
-      req(`${BASE}/auth/forgot-password`, { method: "POST", ...json({ email }) }),
+    forgotPassword: (email, turnstileToken) =>
+      req(`${BASE}/auth/forgot-password`, {
+        method: "POST",
+        ...json({ email, ...(turnstileToken ? { turnstileToken } : {}) }),
+      }),
 
     /**
      * POST /api/auth/reset-password — consume a reset token + set a new password.
@@ -448,6 +459,25 @@ export const api = {
      */
     resetPassword: (token, password) =>
       req(`${BASE}/auth/reset-password`, { method: "POST", ...json({ token, password }) }),
+
+    /**
+     * POST /api/auth/google/link/start (94.md §2.9) — begin linking Google to the
+     * currently signed-in account. Returns { url } to navigate to (the caller does
+     * window.location.assign(url)). Uses `req`, so a failure throws with
+     * err.status / err.body for code-driven UI.
+     * @returns {Promise<{ url: string }>}
+     */
+    googleLinkStart: () =>
+      req(`${BASE}/auth/google/link/start`, { method: "POST", ...json({}) }),
+
+    /**
+     * POST /api/auth/google/unlink (94.md §2.9) — disconnect Google from the
+     * current account. On 400 the thrown error carries
+     * err.body.code === 'PASSWORD_REQUIRED_TO_UNLINK' (no other login method left).
+     * @returns {Promise<{ ok: true }>}
+     */
+    googleUnlink: () =>
+      req(`${BASE}/auth/google/unlink`, { method: "POST" }),
   },
 
   // 80.md — public waitlist → account invitation acceptance. get() validates the
