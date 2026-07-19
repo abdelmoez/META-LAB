@@ -55,16 +55,11 @@ jobs:
       - name: npm audit — root (hard gate)
         run: npm audit --omit=dev --audit-level=high
 
-      # ⚠️ REPORT-ONLY (continue-on-error) — DO NOT silently trust a green run.
-      # As of 93.md the server tree has KNOWN high-severity prod vulnerabilities
-      # with no non-breaking fix:
-      #   - multer 1.x/2.x  (GHSA-72gw-mp4g-v24j, GHSA-3p4h-7m6x-2hcm — DoS)
-      #   - nodemailer <=9.0.0 (GHSA-p6gq-j5cr-w38f — raw-option file read/SSRF;
-      #     fix is nodemailer@9.0.3+, a breaking major upgrade)
-      #   (+ moderate: ip-address via geoip-lite — GHSA-v2v4-37r5-5v8g)
-      # Once those are upgraded and `npm audit --omit=dev --audit-level=high`
-      # exits 0 in server/, REMOVE continue-on-error to make this a hard gate.
-      - name: npm audit — server (REPORT-ONLY until multer/nodemailer upgraded)
+      # Hard gate since the 93.md round-2 upgrades: multer 2.2.0 (DoS fixes) and
+      # nodemailer 9.0.3 (raw-option file-read/SSRF fix) resolved the known high
+      # findings. Remaining known-acceptable: MODERATE ip-address via the
+      # geoip-lite optionalDependency (GHSA-v2v4-37r5-5v8g — XSS in Address6
+      # HTML emitters the app never calls); --audit-level=high ignores it.
+      - name: npm audit — server (hard gate)
         run: npm audit --omit=dev --audit-level=high
         working-directory: server
-        continue-on-error: true
