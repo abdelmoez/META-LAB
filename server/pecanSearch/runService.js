@@ -21,6 +21,9 @@ import { runSource } from './pipeline.js';
 import { normalizeCanonical, renderPlain, validateCanonical } from './query/ast.js';
 import { PROVIDER_IDS } from './config.js';
 import { computeRunProgress, TERMINAL_RUN_STATES } from '../../src/research-engine/search/runProgress.js';
+// 93.md §5.3 round 2 — first-search activation events (fire-and-forget, never throws).
+import { recordFirstEvent } from '../services/analytics.js';
+import { USAGE } from '../utils/usage.js';
 
 export const ENGINE_VERSION = 'pecan-search-1.0.0';
 
@@ -180,6 +183,10 @@ export async function startRun(params, deps = {}) {
     throw err;
   }
 
+  // 93.md §5.3 round 2 — activation funnel: the user's FIRST automated search
+  // (at-most-once per user, DB-enforced; never blocks or fails the run start).
+  recordFirstEvent(USAGE.FIRST_SEARCH_STARTED, user.id, { metaLabProjectId });
+
   // Per-source rows with translated queries (exact executed query stored).
   for (const s of selected) {
     const connector = engine.connectors[s.id];
@@ -307,6 +314,11 @@ export async function processRun(job, deps = {}) {
   await finalizeRun(run, runState);
   await finishJob(job.id, runState === 'failed' ? 'failed' : 'completed');
   emitRunEvent(run.metaLabProjectId, screen.ownerId, runId, { state: runState, stage: runState });
+  // 93.md §5.3 round 2 — activation funnel: first successfully COMPLETED search
+  // for the initiating user (at-most-once, DB-enforced; fire-and-forget).
+  if (runState === 'completed' && run.initiatedById) {
+    recordFirstEvent(USAGE.FIRST_SEARCH_COMPLETED, run.initiatedById, { metaLabProjectId: run.metaLabProjectId });
+  }
 
   // 87.md — structured completion log (correlation id = runId) for observability: who,
   // which project, per-source outcomes/errors, counts, and duration. No secrets/PII.

@@ -441,7 +441,14 @@ app.get('/api/version', (req, res) => {
     const tok = req.cookies && req.cookies[SESSION_COOKIE];
     if (tok) { verifyToken(tok); authed = true; }
   } catch { authed = false; }
-  return res.json(authed ? full : publicVersion(full));
+  // 93.md §3.3 round 2 — clearly visible staging indicator: authenticated
+  // callers also learn the deployment environment (APP_ENV=staging on the
+  // staging box) so the UI can render a STAGING badge. Never in the public
+  // body (environment names are infra fingerprinting, prompt 52).
+  if (authed) {
+    return res.json({ ...full, env: process.env.APP_ENV || process.env.NODE_ENV || 'development' });
+  }
+  return res.json(publicVersion(full));
 });
 
 // ── Auth routes (public: register/login; protected: logout/me) ────────────────
@@ -807,12 +814,24 @@ async function gracefulShutdown(signal) {
     m.stopLivingScheduler?.();
   } catch { /* scheduler never started — nothing to stop */ }
 
+  // Review fix (round 2): end every SSE stream FIRST — an open SSE response is
+  // an active request that would pin server.close() until the force-sever
+  // timer, turning each reload into a multi-second outage with the listener
+  // already closed. Clients auto-reconnect (useRealtime backoff), so ending
+  // the streams up front lets close() finish in one in-flight-request time.
+  try {
+    const bus = await import('./realtime/bus.js');
+    const n = bus.closeAllStreams?.() || 0;
+    if (n) console.log(`[process] closed ${n} SSE stream(s) for shutdown`);
+  } catch { /* bus not loaded — nothing to close */ }
+
   await new Promise((resolve) => {
     server.close(() => resolve());
     server.closeIdleConnections?.();
-    // Give in-flight requests most of the grace, then sever what remains
-    // (long-lived SSE streams would otherwise hold close() open forever).
-    setTimeout(() => server.closeAllConnections?.(), Math.max(1000, SHUTDOWN_GRACE_MS - 5000)).unref();
+    // Short backstop for any remaining stragglers (a slow in-flight request or
+    // an SSE socket that raced past the sweep above). 2s keeps the listener
+    // gap tight — durable jobs recover anything a severed request loses.
+    setTimeout(() => server.closeAllConnections?.(), Math.min(2000, SHUTDOWN_GRACE_MS)).unref();
   });
 
   // Best-effort: push any queued PostHog analytics batch out before exit (the

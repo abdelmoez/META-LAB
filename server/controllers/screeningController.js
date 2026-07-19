@@ -69,7 +69,7 @@ import { studyFromRecord } from './screeningReviewController.js';
 import { recordUsage, USAGE } from '../utils/usage.js';
 // 93.md §5.3 — activation funnel: ONLY the user's first-ever screening decision
 // is a usage event (per-decision rows live in ScreenDecision already).
-import { recordFirstEvent } from '../services/analytics.js';
+import { recordEvent, recordFirstEvent } from '../services/analytics.js';
 import { ensureScreenModuleForMetaLab } from '../screening/ensureWorkspace.js';
 
 // Parse a comma-separated keyword param into a clean phrase list.
@@ -1111,6 +1111,13 @@ export async function importRecords(req, res) {
 
     // prompt50 WS5 — an import is meaningful activity on the linked META·LAB project.
     if (result.imported > 0) await touchProjectActivity(p.linkedMetaLabProjectId);
+
+    // 93.md §5.3 round 2 — the legacy SYNCHRONOUS import path now records the
+    // same funnel events as the durable-worker path (fire-and-forget).
+    if (result.imported > 0) {
+      recordEvent(USAGE.IMPORT_COMPLETED, { userId: req.user.id, screenProjectId: p.id, meta: { count: result.imported, source: 'sync' } });
+      recordFirstEvent(USAGE.FIRST_IMPORT_COMPLETED, req.user.id, { screenProjectId: p.id });
+    }
 
     res.json({
       imported: result.imported,
