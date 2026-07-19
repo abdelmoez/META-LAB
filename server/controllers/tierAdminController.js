@@ -5,6 +5,7 @@
  * touches the tier system. Every mutation is audited.
  */
 import { prisma } from '../db/client.js';
+import { insensitiveContains } from '../db/searchMode.js';
 import { logAdminAction } from '../utils/audit.js';
 import {
   listTiers, getTierSettings, getDefaultTierId, TIER_SETTINGS_KEY,
@@ -577,7 +578,9 @@ export async function getUserTierHistory(req, res) {
 /** Build the per-user rows for a tier (current-assignment detail joined onto the user). */
 async function usersInTierRows(tierId, { skip = 0, take = 50, q = '' } = {}) {
   const where = { tierId };
-  if (q) where.OR = [{ email: { contains: q } }, { name: { contains: q } }];
+  // 93.md round 2 (review fix) — provider-aware search: keeps the SQLite-era
+  // case-insensitive behavior after the PostgreSQL cutover (see db/searchMode.js).
+  if (q) where.OR = [{ email: insensitiveContains(q) }, { name: insensitiveContains(q) }];
   const [total, users] = await Promise.all([
     prisma.user.count({ where }),
     prisma.user.findMany({

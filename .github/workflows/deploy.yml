@@ -145,11 +145,13 @@ jobs:
       POSTGRES_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_test'
       POSTGRES_DIRECT_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_test'
       # Waitlist stays STRICTLY separate — second database on the same service.
-      # BETA_WAITLIST_DATABASE_URL is the canonical runtime var (waitlist/config.js);
-      # POSTGRES_WAITLIST_* are what the Prisma schema/datasource reads at deploy.
-      BETA_WAITLIST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_waitlist_test'
-      POSTGRES_WAITLIST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_waitlist_test'
-      POSTGRES_WAITLIST_DIRECT_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_waitlist_test'
+      # Review fix (round 2): the waitlist URLs are STEP-level (not job-level)
+      # on purpose. `npm ci` in server/ runs the ensure-waitlist-db postinstall,
+      # which would try to `db push` a PG waitlist database that (a) does not
+      # exist yet at install time and (b) once pushed would make the later
+      # `migrate deploy` fail with P3005 (non-empty schema, no history). With
+      # the URL unset during install, postinstall takes its harmless local
+      # sqlite fallback and the baseline migrations get a clean, empty DB.
       JWT_SECRET: 'ci-only-jwt-secret-not-used-anywhere-real'
       ADMIN_EMAIL_1: 'ci-admin-1@example.com'
       ADMIN_EMAIL_2: 'ci-admin-2@example.com'
@@ -185,7 +187,14 @@ jobs:
           cp -r prisma/postgres/waitlist-migrations /tmp/waitlist-deploy/migrations
           npx prisma migrate deploy --schema=/tmp/waitlist-deploy/schema.prisma
         working-directory: server
+        env:
+          POSTGRES_WAITLIST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_waitlist_test'
+          POSTGRES_WAITLIST_DIRECT_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_waitlist_test'
       - name: Boot API server (Postgres)
+        env:
+          BETA_WAITLIST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_waitlist_test'
+          POSTGRES_WAITLIST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_waitlist_test'
+          POSTGRES_WAITLIST_DIRECT_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_waitlist_test'
         run: |
           node server/index.js &
           echo "SERVER_PID=$!" >> "$GITHUB_ENV"
@@ -195,6 +204,10 @@ jobs:
           done
           echo "API did not come up on :3001"; exit 1
       - name: Run integration suite (serial, deterministic)
+        env:
+          BETA_WAITLIST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_waitlist_test'
+          POSTGRES_WAITLIST_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_waitlist_test'
+          POSTGRES_WAITLIST_DIRECT_DATABASE_URL: 'postgresql://postgres:postgres@localhost:5432/pecanrev_waitlist_test'
         run: npx vitest run tests/integration tests/screening/integration --pool=forks --poolOptions.forks.singleFork=true
       - name: Stop API server
         if: always()

@@ -44,6 +44,23 @@ export async function initErrorTracking() {
       tracesSampleRate: Math.min(1, Math.max(0, Number(process.env.SENTRY_TRACES_SAMPLE_RATE) || 0)),
       // No default PII (IPs, cookies, headers). We add safe context ourselves.
       sendDefaultPii: false,
+      // Review fix (round 2): the SDK's http/fetch integrations record OUTBOUND
+      // request breadcrumbs whose URLs can carry server-side secrets in query
+      // strings (e.g. the NCBI api_key on NLM proxy calls, contact emails on
+      // Unpaywall lookups). Strip every query string from breadcrumb data.
+      beforeBreadcrumb(crumb) {
+        try {
+          if (crumb.category === 'console') return null;
+          if (crumb.data) {
+            for (const k of Object.keys(crumb.data)) {
+              const v = crumb.data[k];
+              if (typeof v === 'string' && v.includes('?')) crumb.data[k] = v.split('?')[0];
+            }
+          }
+          if (typeof crumb.message === 'string') crumb.message = crumb.message.split('?')[0].slice(0, 200);
+        } catch { /* scrubbing must never throw */ }
+        return crumb;
+      },
       // Final privacy gate: strip anything request-shaped the SDK gathered.
       beforeSend(event) {
         try {

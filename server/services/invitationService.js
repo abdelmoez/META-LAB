@@ -531,13 +531,13 @@ export async function acceptInvitation(token, { password, name = '', acceptedTer
     // 93.md §6.3 — welcome / getting-started email. Accept-time coverage is
     // COMPLETE for beta users: every beta account is created exactly here (the
     // invitation accept is the only registration path while the waitlist gates
-    // signups), so no first-login fallback is needed. Best-effort: a welcome
-    // email failure must never fail an accepted account.
-    try {
-      await sendWelcomeEmailOnce(userId, { email: createdUser.email, toName: createdUser.name || '' });
-    } catch (e) {
-      console.error('[invitation] welcome email failed:', e?.message || e);
-    }
+    // signups), so no first-login fallback is needed. Review fix (round 2):
+    // FIRE-AND-FORGET — the single-use token is already burned at this point,
+    // so a hung SMTP connection must never stall the accept response (the
+    // sent-marker claim inside sendWelcomeEmailOnce keeps this at-most-once
+    // regardless of when the promise settles).
+    sendWelcomeEmailOnce(userId, { email: createdUser.email, toName: createdUser.name || '' })
+      .catch((e) => console.error('[invitation] welcome email failed:', e?.message || e));
 
     return { ok: true, userId, user: createdUser, applicantId: row.waitlistApplicantId };
   } catch (err) {

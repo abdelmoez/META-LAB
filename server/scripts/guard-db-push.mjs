@@ -19,6 +19,12 @@
  * flow that pushes the SQLite waitlist schema must keep working unchanged).
  */
 
+// 93.md round 2 (review fix) — load server/.env first. An operator SSH shell
+// on the VPS has NO NODE_ENV exported (only pm2's app processes do), so the
+// guard silently failed OPEN for exactly the manual runs it exists to stop.
+// server/.env carries NODE_ENV=production on the VPS (documented in
+// .env.example + the deploy runbook), which this import makes visible here.
+import '../load-env.js';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 

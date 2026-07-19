@@ -15,7 +15,7 @@ happens there first.**
 | Main DB | `/var/lib/metalab/prod.db` → PG `pecanrev` | staging-only file → PG `pecanrev_staging` (Neon branch / separate project) | separate `DATABASE_URL`/`POSTGRES_*` |
 | Waitlist DB | isolated prod file/DB | isolated staging file/DB | separate `BETA_WAITLIST_DATABASE_URL` |
 | JWT secret | production value | **fresh staging-only value** (a shared secret would make staging cookies valid on prod) | separate `JWT_SECRET` |
-| Email | real delivery via Brevo | `EMAIL_REDIRECT_ALL_TO=team@…` — every message diverted to the team inbox (+ optional `EMAIL_ALLOWLIST`) | staging env file |
+| Email | real delivery via Brevo | `EMAIL_REDIRECT_ALL_TO=team@…` — every message diverted to the team inbox. (`EMAIL_ALLOWLIST` is an *alternative*, not an addition: the redirect wins while set; use the allowlist with the redirect unset when internal addresses should receive mail directly.) | staging env file |
 | Sentry | `SENTRY_ENVIRONMENT=production` | `SENTRY_ENVIRONMENT=staging` (separate DSN ideal) | staging env file |
 | Uploads/storage | `/opt/pecanrev/shared/storage` | staging checkout's own storage dir | separate checkout |
 | Identity | — | `APP_ENV=staging` (admin-visible staging banner, Sentry env, email protection) | env file / PM2 `env_staging` |
@@ -53,24 +53,21 @@ sudo git clone <repo-url> /opt/pecanrev-staging/repo
 sudo cp server/.env.staging.example /opt/pecanrev-staging/shared/server.env   # then EDIT + chmod 600
 # The staging env file already sets NODE_ENV=production, APP_ENV=staging, PORT=3002
 
-# Each staging deploy (same script, different root + no port clash):
+# Each staging deploy (same script, different root + its OWN PM2 name so the
+# production process is never touched — round 2: the script and ecosystem file
+# honour PM2_APP_NAME end-to-end, so no manual pm2 dance is needed):
 sudo APP_DIR=/opt/pecanrev-staging \
+     PM2_APP_NAME=pecanrev-staging \
      HEALTH_URL=http://127.0.0.1:3002/api/health/ready \
      DEPLOY_REF=origin/main \
      bash /usr/local/bin/metalab-deploy.sh
 ```
 
-Caveat for the shared host: `metalab-deploy.sh` reloads via the ecosystem file
-(name `pecanrev-api`). For the staging tree, start/reload its process under a
-distinct name instead (the app reads all env from its own `server/.env`):
-
-```bash
-cd /opt/pecanrev-staging/current
-pm2 start server/index.js --name pecanrev-api-staging --time \
-  --kill-timeout 20000 --max-memory-restart 900M
-pm2 save
-# subsequent deploys: pm2 reload pecanrev-api-staging (after the symlink flip)
-```
+With `PM2_APP_NAME=pecanrev-staging` the deploy script registers/reloads a
+separate PM2 app rooted at `/opt/pecanrev-staging/current` (the ecosystem file
+reads both knobs from the environment). Production (`pecanrev-api`) keeps its
+own root and is never reloaded by a staging deploy. Run `pm2 save` once after
+the first staging deploy so the process survives reboots.
 
 Frontend build note: `VITE_*` vars (e.g. `VITE_SENTRY_DSN`,
 `VITE_SENTRY_ENVIRONMENT=staging`) are baked at build time — put staging

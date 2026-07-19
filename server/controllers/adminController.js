@@ -1464,6 +1464,17 @@ export async function updateAdminSettings(req, res) {
     const body = req.body || {};
     const updated = [];
 
+    // 93.md round 2 (review fix) — the invitations-paused emergency brake is
+    // ONLY changeable via its dedicated PATCH endpoint below. The Ops App
+    // Settings form loads a snapshot, is edited for minutes, then PUTs the
+    // whole appSettings blob — without this guard a stale snapshot would
+    // silently release (or engage) the brake toggled in between.
+    if (body.appSettings && typeof body.appSettings === 'object' && !Array.isArray(body.appSettings)) {
+      const stored = await getAllSettings();
+      const storedPaused = stored?.appSettings?.invitationsPaused === true;
+      body.appSettings = { ...body.appSettings, invitationsPaused: storedPaused };
+    }
+
     for (const key of SETTING_KEYS) {
       if (body[key] !== undefined) {
         await upsertSetting(key, body[key], req.user.id);
@@ -1485,6 +1496,32 @@ export async function updateAdminSettings(req, res) {
     return res.json(settings);
   } catch (err) {
     console.error('[admin] updateAdminSettings error:', err.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// ── PATCH /api/admin/settings/invitations-paused (93.md round 2) ─────────────
+// The ONLY writer of appSettings.invitationsPaused (updateAdminSettings above
+// preserves the stored value on whole-blob saves). Read-merge-write + audit
+// with old→new so releasing the emergency brake is always a deliberate,
+// attributable act.
+export async function setInvitationsPaused(req, res) {
+  try {
+    const paused = req.body?.paused;
+    if (typeof paused !== 'boolean') {
+      return res.status(400).json({ error: 'paused must be a boolean' });
+    }
+    const stored = await getAllSettings();
+    const app = (stored?.appSettings && typeof stored.appSettings === 'object') ? stored.appSettings : {};
+    const before = app.invitationsPaused === true;
+    await upsertSetting('appSettings', { ...app, invitationsPaused: paused }, req.user.id);
+    bustMaintenanceCache();
+    await logAdminAction(req, 'UPDATE_SETTING', 'SiteSetting', null, {
+      updatedKeys: ['appSettings.invitationsPaused'], from: before, to: paused,
+    });
+    return res.json({ paused });
+  } catch (err) {
+    console.error('[admin] setInvitationsPaused error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
 }

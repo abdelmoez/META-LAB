@@ -40,3 +40,15 @@ export function insensitiveContains(value) {
     ? { contains: value, mode: 'insensitive' }
     : { contains: value };
 }
+
+/**
+ * Provider-parameterized variant (round 2) for databases whose provider is NOT
+ * the main DATABASE_PROVIDER — the isolated waitlist DB derives its provider
+ * from its own URL scheme (server/waitlist/config.js waitlistDbProvider()),
+ * so its search filters must be keyed off THAT provider, never the main one.
+ */
+export function insensitiveContainsFor(provider, value) {
+  return provider === 'postgres'
+    ? { contains: value, mode: 'insensitive' }
+    : { contains: value };
+}

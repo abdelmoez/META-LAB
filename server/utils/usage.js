@@ -55,6 +55,11 @@ export const USAGE = {
   FIRST_PROJECT_CREATED: 'FIRST_PROJECT_CREATED',
   IMPORT_COMPLETED: 'IMPORT_COMPLETED',
   FIRST_IMPORT_COMPLETED: 'FIRST_IMPORT_COMPLETED',
+  // 93.md §5.3 round 2 — automated-search funnel legs (first-only; the run rows
+  // themselves live in PecanSearchRun, so only the activation milestone is a
+  // usage event, mirroring the SCREENING_DECISION_FIRST reasoning above).
+  FIRST_SEARCH_STARTED: 'FIRST_SEARCH_STARTED',
+  FIRST_SEARCH_COMPLETED: 'FIRST_SEARCH_COMPLETED',
   // Only the user's FIRST screening decision is a usage event — recording every
   // decision would bloat UsageEvent (decisions live in ScreenDecision already).
   SCREENING_DECISION_FIRST: 'SCREENING_DECISION_FIRST',

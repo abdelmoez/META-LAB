@@ -62,7 +62,10 @@ ln -sfn "$TARGET" "$CURRENT_LINK.tmp.$$"
 mv -T "$CURRENT_LINK.tmp.$$" "$CURRENT_LINK"   # atomic rename
 
 log "reloading PM2"
-pm2 startOrReload "$CURRENT_LINK/ecosystem.config.cjs" --update-env
+# Same stable-path contract as metalab-deploy.sh (PM2 freezes cwd at first
+# registration; PECANREV_ROOT pins it to the `current` symlink).
+PECANREV_ROOT="$CURRENT_LINK" PM2_APP_NAME="${PM2_APP_NAME:-pecanrev-api}" \
+  pm2 startOrReload "$CURRENT_LINK/ecosystem.config.cjs" --only "${PM2_APP_NAME:-pecanrev-api}" --update-env
 
 log "polling readiness ($HEALTH_URL, up to ${READY_TIMEOUT_S}s)"
 deadline=$(( $(date +%s) + READY_TIMEOUT_S ))

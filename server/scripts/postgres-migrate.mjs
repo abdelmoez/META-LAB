@@ -37,6 +37,13 @@
  * default it to the pooled URL for the child process — runtime parity with
  * server/db/client.js.
  */
+// 93.md round 2 (review fix) — load server/.env FIRST, like every sibling
+// script (migrate-db.mjs, verify-restore.mjs). The VPS deploy topology keeps
+// the POSTGRES_* URLs exclusively in server/.env (metalab-deploy.sh line-parses
+// it and never exports DB URLs into the shell), so without this the deploy
+// step `npm run db:migrate:deploy:postgres` always failed with
+// "POSTGRES_DATABASE_URL is not set".
+import '../load-env.js';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';

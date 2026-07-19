@@ -27,7 +27,7 @@ import { S, salpha, STITCH_RAIL, STITCH_MONO } from '../theme/stitchTokens.js';
 import { StitchAvatar, StitchBadge, StitchIconButton } from '../primitives/core.jsx';
 import { StitchTooltip } from '../primitives/overlay.jsx';
 import { GLOBAL_NAV, globalHref, activeGlobalKey } from '../nav/navConfig.js';
-import { useAppVersion } from './useAppVersion.js';
+import { useAppVersion, useAppEnvironment } from './useAppVersion.js';
 import { useInvitations } from './useInvitations.js';
 
 // Staff = can reach the Ops Console (AdminRoute allows admin + mod).
@@ -71,18 +71,39 @@ function RailButton({ icon, label, active, onClick, badge, tooltipPlacement = 'r
 /* ─── The subtle, real version label (design2.md Part 1) ──────────────────────── */
 function StitchRailVersion() {
   const version = useAppVersion();
-  if (!version) return null;
+  // 93.md §3.3 round 2 — unmistakable STAGING badge: when the authenticated
+  // /api/version reports APP_ENV=staging, every signed-in page shows it in the
+  // always-present global rail so an operator can never mistake the staging box
+  // for production. Renders nothing for production/dev/anonymous sessions.
+  const env = useAppEnvironment();
+  if (!version && env !== 'staging') return null;
   return (
-    <StitchTooltip label={`PecanRev version ${version}`} placement="right">
-      <span
-        style={{
-          fontFamily: STITCH_MONO, fontSize: 10, fontWeight: 600, letterSpacing: '0.02em',
-          color: 'rgba(255,255,255,0.5)', userSelect: 'none', cursor: 'default',
-        }}
-      >
-        v{version}
-      </span>
-    </StitchTooltip>
+    <span style={{ display: 'inline-flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+      {env === 'staging' ? (
+        <span
+          data-testid="stitch-staging-badge"
+          style={{
+            fontFamily: STITCH_MONO, fontSize: 9, fontWeight: 800, letterSpacing: '0.08em',
+            color: '#111', background: '#f5b942', borderRadius: 4, padding: '2px 5px',
+            userSelect: 'none', cursor: 'default',
+          }}
+        >
+          STAGING
+        </span>
+      ) : null}
+      {version ? (
+        <StitchTooltip label={`PecanRev version ${version}`} placement="right">
+          <span
+            style={{
+              fontFamily: STITCH_MONO, fontSize: 10, fontWeight: 600, letterSpacing: '0.02em',
+              color: 'rgba(255,255,255,0.5)', userSelect: 'none', cursor: 'default',
+            }}
+          >
+            v{version}
+          </span>
+        </StitchTooltip>
+      ) : null}
+    </span>
   );
 }
 

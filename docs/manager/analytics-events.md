@@ -28,6 +28,8 @@ slow or 500 a request, a worker, or the login path.
 | `FIRST_IMPORT_COMPLETED` | The user's first completed import via either path | same sites | project id column | **Yes** |
 | `SCREENING_DECISION_FIRST` | The user's FIRST-ever screening decision save (`POST …/records/:rid/decision`). Deliberately **not** one event per decision — decisions already live in `ScreenDecision`; recording each one would bloat `UsageEvent`. | `screeningController.saveDecision` | `stage`, `screenProjectId` column | **Yes** (this IS the event; there is no per-decision variant) |
 | `FIRST_ANALYSIS_RUN` | The user's first successful pooled meta-analysis (`POST /api/meta/run` returning a result) | `metaController.runMetaAnalysis` | `count` (number of studies — never study data) | **Yes** |
+| `FIRST_SEARCH_STARTED` | The user's first automated Pecan search run created (round 2) | `pecanSearch/runService.startRun` | `metaLabProjectId` column | **Yes** |
+| `FIRST_SEARCH_COMPLETED` | The initiating user's first search run reaching `completed` (round 2) | `pecanSearch/runService` finalize | `metaLabProjectId` column | **Yes** |
 | `FIRST_EXPORT` | **DERIVED — never written.** Every export path already records an `EXPORT` row (`UsageEvent.type = 'EXPORT'`, all sites since prompt9). "First export" = the user's earliest `EXPORT` row: `min(createdAt) group by userId where type = 'EXPORT'`. The constant exists only so queries/docs share one spelling. | — | (derives `format`, project ids from the EXPORT row) | Derived |
 | `FEEDBACK_SUBMITTED` | Successful `POST /api/contact` | `server/routes/contact.js` | `source: 'contact'`, `severity` (closed enum) — never the message/subject/name/email | No |
 | Waitlist signup | **Not duplicated here.** Signups already produce a `BetaWaitlistStatusEvent` (`fromStatus: null → WAITLISTED`, note "Joined waitlist") in the strictly isolated waitlist DB (prompt48). Count signups from that table. | `server/waitlist/waitlistRepository.js` | — | No |
@@ -40,8 +42,7 @@ slow or 500 a request, a worker, or the login path.
 A user is **activated** when ALL three legs hold:
 
 1. `FIRST_PROJECT_CREATED` exists, **and**
-2. `FIRST_IMPORT_COMPLETED` exists **or** a first search completed (search-run
-   events are a later workstream; until then, imports are the reachable leg), **and**
+2. `FIRST_IMPORT_COMPLETED` **or** `FIRST_SEARCH_COMPLETED` exists, **and**
 3. `SCREENING_DECISION_FIRST` **or** `FIRST_ANALYSIS_RUN` **or** first export
    (derived from earliest `EXPORT` row) exists.
 
