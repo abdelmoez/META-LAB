@@ -58,7 +58,9 @@ export const adminApi = {
   console:        ()         => req(`${BASE}/console`),
 
   users: {
-    list:         (p)        => req(`${BASE}/users?${new URLSearchParams(p || {})}`),
+    // 95.md — server-side search/filter/sort/pagination. qs() drops empty params
+    // so an unset filter never becomes `?status=`. Response: { users, total, page, pages }.
+    list:         (p)        => req(`${BASE}/users${qs(p)}`),
     // prompt19 — aggregate users-by-country distribution (admin only). Returns
     // { countries: [{ countryCode, countryName, userCount, percentage,
     // latestRegistrationAt }], summary: { totalUsers, totalKnown, unknown,
@@ -81,6 +83,41 @@ export const adminApi = {
     // prompt14 — token-based reset: emails a self-service link. Returns
     // { sent, emailConfigured, expiresAt, link? } (link only when not sent).
     sendPasswordReset:(id)   => req(`${BASE}/users/${id}/send-password-reset`, { method: 'POST' }),
+
+    // ── 95.md Ops user-management redesign ──────────────────────────────────
+    // metrics(params) → { filtered:boolean, metrics:{ total, active, suspended,
+    //   pendingVerification, neverLoggedIn, newThisWeek, googleRegistered,
+    //   emailRegistered, bothLoginMethods, googleConnected } } for the SAME filter
+    //   params as list() (compact summary strip; respects the active filters).
+    metrics:      (p)        => req(`${BASE}/users/metrics${qs(p)}`),
+    // timeline(id) → { events:[{ ts, kind, label, actor?, detail? }] } newest-first, ≤50.
+    timeline:     (id)       => req(`${BASE}/users/${id}/timeline`),
+    // Ops-only internal notes (mods may view+create; edit/delete author-or-admin,
+    // enforced server-side). list → { notes:[{ id, body, authorId, authorName,
+    //   createdAt, editedAt }] }; create/update → { note }.
+    notes: {
+      list:       (id)          => req(`${BASE}/users/${id}/notes`),
+      create:     (id, body)    => req(`${BASE}/users/${id}/notes`, { method: 'POST', ...json(body) }),
+      update:     (id, noteId, body) => req(`${BASE}/users/${id}/notes/${noteId}`, { method: 'PATCH', ...json(body) }),
+      remove:     (id, noteId)  => req(`${BASE}/users/${id}/notes/${noteId}`, { method: 'DELETE' }),
+    },
+    // revokeSessions(id) → { ok:true } (admin+mod, target-gated).
+    revokeSessions:     (id) => req(`${BASE}/users/${id}/revoke-sessions`, { method: 'POST' }),
+    // resendVerification(id) → { ok, sent, link? }; 409 { code:'ALREADY_VERIFIED' }
+    // when already verified; link fallback when SMTP is unconfigured.
+    resendVerification: (id) => req(`${BASE}/users/${id}/resend-verification`, { method: 'POST' }),
+    // bulk(body) ADMIN ONLY. body = { action:'assign_tier'|'suspend'|'restore'|
+    //   'revoke_sessions'|'resend_verification', ids:[<=200], tierId?, reason? } →
+    //   { bulkOperationId, summary:{ requested, succeeded, failed, skipped },
+    //     results:[{ id, ok, code? }] }.
+    bulk:         (body)     => req(`${BASE}/users/bulk`, { method: 'POST', ...json(body) }),
+    // exportCsv(params) ADMIN ONLY → text/csv Blob for the current filter set
+    // (a normal fetch → blob download; not JSON, so it bypasses req()).
+    exportCsv:    async (p) => {
+      const res = await fetch(`${BASE}/users/export.csv${qs(p)}`, { credentials: 'include' });
+      if (!res.ok) { const e = new Error(`Export failed (${res.status})`); e.status = res.status; throw e; }
+      return res.blob();
+    },
   },
 
   projects: {

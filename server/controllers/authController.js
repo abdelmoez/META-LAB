@@ -201,6 +201,7 @@ export async function register(req, res) {
         userNumber,
         termsAcceptedAt: acceptedTerms ? new Date() : null,
         emailVerifiedAt: verifyRequired ? null : new Date(),
+        registrationMethod: 'email', // 95.md Phase 10 — immutable, written at creation
       },
     });
 

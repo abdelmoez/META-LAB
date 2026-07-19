@@ -9,8 +9,12 @@ import { prisma } from '../db/client.js';
  * @param {string|null} entityType - e.g. "User", "SiteSetting", "ContactMessage"
  * @param {string|null} entityId - ID of the affected entity
  * @param {object|null} details - arbitrary context (before/after values, etc.)
+ * @param {{reason?: string|null, bulkOperationId?: string|null}} [extra] -
+ *   95.md Phase 12 — first-class correlation columns (queryable, unlike the
+ *   details JSON). requestId is stamped automatically from the 93.md
+ *   request-correlation middleware (req.id).
  */
-export async function logAdminAction(req, action, entityType, entityId, details) {
+export async function logAdminAction(req, action, entityType, entityId, details, extra = {}) {
   try {
     await prisma.adminAuditLog.create({
       data: {
@@ -21,6 +25,9 @@ export async function logAdminAction(req, action, entityType, entityId, details)
         details: details ? JSON.stringify(details) : null,
         ip: req.ip || null,
         userAgent: req.get('user-agent') || null,
+        reason: extra.reason ? String(extra.reason).slice(0, 500) : null,
+        requestId: req.id || null,
+        bulkOperationId: extra.bulkOperationId || null,
       },
     });
   } catch (err) {

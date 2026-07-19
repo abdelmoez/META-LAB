@@ -36,6 +36,11 @@ import {
   getRejectedPairs,
   setRejectedPairs,
 } from '../utils/institutionStore.js';
+// 95.md — shared user-list query engine + pure derivations (also used by the
+// metrics/export endpoints in adminUserMgmtController and by the Ops UI).
+import { parseUsersListQuery } from '../schemas/adminUserSchemas.js';
+import { buildUsersWhere, buildUsersOrderBy, enrichUsersPage } from '../services/adminUserQuery.js';
+import { deriveStatus } from '../../src/shared/adminUsers.js';
 import {
   WINDOW_UNITS,
   startOfWindow,
@@ -478,39 +483,14 @@ export async function getMetricsTimeseries(req, res) {
 export async function getUsers(req, res) {
   try {
     const { page, limit, skip } = parsePage(req.query);
-    const { search, role, suspended, createdWithin, verified, onboarded, noInstitution, sort } = req.query;
-
-    const where = {};
-    if (search) {
-      where.OR = [
-        { email: insensitiveContains(search) },
-        { name: insensitiveContains(search) },
-      ];
-    }
-    if (role) where.role = role;
-    if (suspended !== undefined) where.suspended = suspended === 'true';
-
-    // prompt27 — server-side quick filters (efficient, pagination-safe; applied
-    // across the WHOLE dataset, not just the loaded page). Registration time
-    // window uses the shared, unit-tested startOfWindow() so the boundaries match
-    // the analytics endpoints exactly.
-    if (createdWithin && WINDOW_UNITS.includes(createdWithin) && createdWithin !== 'all') {
-      const start = startOfWindow(createdWithin, new Date());
-      if (start) where.createdAt = { gte: start };
-    }
-    if (verified === 'true') where.emailVerifiedAt = { not: null };
-    else if (verified === 'false') where.emailVerifiedAt = null;
-    if (onboarded === 'true') where.onboardingCompletedAt = { not: null };
-    else if (onboarded === 'false') where.onboardingCompletedAt = null;
-    // "No institution provided" = never set (null) or an empty string.
-    if (noInstitution === 'true') {
-      where.AND = [
-        ...(where.AND || []),
-        { OR: [{ institutionOriginal: null }, { institutionOriginal: '' }] },
-      ];
-    }
-
-    const orderBy = sort === 'oldest' ? { createdAt: 'asc' } : { createdAt: 'desc' };
+    // 95.md Phase 3/9 — zod-validated filter object + the ONE shared
+    // where/orderBy builder (also used by metrics + CSV export, so a filter can
+    // never mean different things on different endpoints). All legacy params
+    // (suspended/verified/onboarded/noInstitution/createdWithin/newest/oldest)
+    // still work — the schema carries them.
+    const filters = parseUsersListQuery(req.query);
+    const where = await buildUsersWhere(filters);
+    const orderBy = buildUsersOrderBy(filters.sort, filters.order);
 
     const [total, users] = await Promise.all([
       prisma.user.count({ where }),
@@ -522,15 +502,21 @@ export async function getUsers(req, res) {
           name: true,
           role: true,
           suspended: true,
+          suspendedAt: true,
           createdAt: true,
           lastActive: true,
-          // prompt27 — surfaced as table columns; none are secrets.
           emailVerifiedAt: true,
           onboardingCompletedAt: true,
           institutionOriginal: true,
           researchField: true,
           country: true,
           registrationCountryName: true,
+          userNumber: true,
+          tierId: true,
+          registrationMethod: true,
+          // password is selected ONLY to derive the hasPassword boolean below —
+          // the hash itself never leaves this handler (95.md Phase 9 discipline).
+          password: true,
           _count: { select: { projects: true } },
         },
         orderBy,
@@ -538,6 +524,11 @@ export async function getUsers(req, res) {
         take: limit,
       }),
     ]);
+
+    // 95.md Phase 2/10 — page-batched enrichment (ONE query per relation for
+    // the whole page, replacing the old client-side per-row N+1): Sign-in
+    // badges from AuthAccount + invitation-source linkage.
+    const { providersByUser, invitedSet } = await enrichUsersPage(users);
 
     // prompt25 Task 1 — live online flag from the global presence snapshot.
     const online = Presence.globalOnlineSnapshot();
@@ -547,6 +538,7 @@ export async function getUsers(req, res) {
       name: u.name,
       role: u.role,
       suspended: u.suspended,
+      suspendedAt: u.suspendedAt,
       createdAt: u.createdAt,
       lastActive: u.lastActive,
       projectCount: u._count.projects,
@@ -554,10 +546,20 @@ export async function getUsers(req, res) {
       // prompt27 — non-secret profile columns for the directory table (verified
       // badge, institution, research field, country) without a per-row fetch.
       emailVerified: !!u.emailVerifiedAt,
+      emailVerifiedAt: u.emailVerifiedAt,
       onboardingCompleted: !!u.onboardingCompletedAt,
       institution: u.institutionOriginal || null,
       researchField: u.researchField || null,
       country: u.country || u.registrationCountryName || null,
+      // 95.md Phase 2/10 — auth-method + status axes for the redesigned table.
+      userNumber: u.userNumber,
+      tierId: u.tierId,
+      registrationMethod: u.registrationMethod,
+      hasPassword: u.password != null,
+      authProviders: providersByUser.get(u.id) || [],
+      invitedViaInvitation: invitedSet.has(u.id),
+      status: deriveStatus(u),
+      neverLoggedIn: u.lastActive == null,
     }));
 
     return res.json({ users: formatted, total, page, pages: Math.ceil(total / limit) });
@@ -677,25 +679,48 @@ export async function getUserActivity(req, res) {
 
 export async function getUserById(req, res) {
   try {
+    // 95.md Phase 5 — the detail select adds password ONLY to derive the
+    // hasPassword boolean; the hash is stripped before the response is built
+    // (USER_DETAIL_SELECT itself stays secret-free by construction).
     const user = await prisma.user.findUnique({
       where: { id: req.params.id },
-      select: USER_DETAIL_SELECT,
+      select: { ...USER_DETAIL_SELECT, password: true, passwordChangedAt: true, registrationMethod: true, userNumber: true },
     });
 
     if (!user) return res.status(404).json({ error: 'User not found' });
+    const hasPassword = user.password != null;
+    delete user.password;
 
     // 94.md §2.9 — admins can SEE that an external provider is connected, but
     // never provider tokens, subject ids, or other sensitive provider metadata.
-    const authProviders = await prisma.authAccount.findMany({
-      where: { userId: user.id },
-      select: { provider: true, lastLoginAt: true, createdAt: true },
-      orderBy: { createdAt: 'asc' },
-    }).catch(() => []);
+    // 95.md Phase 5 additions (each best-effort): invitation-source linkage +
+    // failed-login count (last 30 days, from the userId-indexed LoginEvent).
+    const [authProviders, invitation, failedLogins30d] = await Promise.all([
+      prisma.authAccount.findMany({
+        where: { userId: user.id },
+        select: { provider: true, lastLoginAt: true, createdAt: true },
+        orderBy: { createdAt: 'asc' },
+      }).catch(() => []),
+      prisma.waitlistInvitation.findFirst({
+        where: { acceptedUserId: user.id },
+        select: { id: true },
+      }).catch(() => null),
+      prisma.loginEvent.count({
+        where: { userId: user.id, success: false, createdAt: { gte: new Date(Date.now() - 30 * 24 * 3600e3) } },
+      }).catch(() => 0),
+    ]);
 
     // Top-level shape (the PATCH handlers use a { user } envelope) — includes the
     // admin-editable profile fields (theme, registration country) so the Ops
     // edit form can populate them. Secrets are never in USER_DETAIL_SELECT.
-    return res.json({ ...formatUserDetail(user), authProviders });
+    return res.json({
+      ...formatUserDetail(user),
+      authProviders,
+      hasPassword,
+      invitedViaInvitation: !!invitation,
+      failedLogins30d,
+      status: deriveStatus(user),
+    });
   } catch (err) {
     console.error('[admin] getUserById error:', err.message);
     return res.status(500).json({ error: 'Internal server error' });
@@ -733,25 +758,44 @@ export async function updateUser(req, res) {
     }
 
     // Enforce unique email (case-insensitive via the lowercased value from the schema).
-    if (data.email && data.email !== target.email) {
+    const emailChanged = !!(data.email && data.email !== target.email);
+    if (emailChanged) {
       const clash = await prisma.user.findUnique({ where: { email: data.email } });
       if (clash && clash.id !== target.id) {
         return res.status(409).json({ error: 'That email is already in use' });
       }
+      // 95.md Phase 10 (data accuracy) — an admin-entered address was never
+      // proven: the verified flag must not survive the change, or the Ops
+      // console (and the login verification gate) would show a verified state
+      // nobody ever established for the NEW mailbox.
+      data.emailVerifiedAt = null;
     }
 
-    const updated = await prisma.user.update({
-      where: { id: req.params.id },
-      data,
-      select: USER_DETAIL_SELECT,
-    });
+    let updated;
+    try {
+      updated = await prisma.user.update({
+        where: { id: req.params.id },
+        data,
+        select: USER_DETAIL_SELECT,
+      });
+    } catch (e) {
+      // TOCTOU on the email-uniqueness pre-check: a concurrent claim between the
+      // check and the update surfaces as P2002 — a 409, never a 500.
+      if (emailChanged && e?.code === 'P2002') {
+        return res.status(409).json({ error: 'That email is already in use' });
+      }
+      throw e;
+    }
 
     // Audit the change by field KEY + before/after. Every editable field is
     // non-sensitive by construction (the schema never lists secrets), so the
     // values are safe to record for an admin trail.
     const before = {}, after = {};
     for (const k of changed) { before[k] = target[k] ?? null; after[k] = updated[k] ?? null; }
-    await logAdminAction(req, 'USER_UPDATED_BY_ADMIN', 'User', target.id, { changed, before, after });
+    await logAdminAction(req, 'USER_UPDATED_BY_ADMIN', 'User', target.id, {
+      changed, before, after,
+      ...(emailChanged ? { emailVerificationReset: true } : {}),
+    });
 
     return res.json({ user: formatUserDetail(updated) });
   } catch (err) {

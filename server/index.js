@@ -705,6 +705,11 @@ const server = app.listen(PORT, () => {
   initDefaultSettings().catch(console.error);
   seedOnboardingQuestions().catch(err => console.error('[seed] onboarding seed failed:', err.message));
   seedAdmins().catch(err => console.error('[seed] admin seed failed:', err.message));
+  // 95.md Phase 10 — one-time conclusive classification of historical accounts'
+  // registrationMethod (idempotent: a single cheap count once complete).
+  import('./services/registrationMethodBackfill.js')
+    .then(m => m.runRegistrationMethodBackfillOnce())
+    .catch(err => console.error('[backfill] registrationMethod load failed:', err.message));
   // prompt49 — one-time idempotent backfill so any message a staff member already
   // read becomes globally read under the new shared read-state model.
   backfillSharedMessageReadState().catch(err => console.error('[seed] message read backfill failed:', err.message));

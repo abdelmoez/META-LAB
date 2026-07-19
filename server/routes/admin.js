@@ -2,6 +2,15 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { requireAdmin } from '../middleware/requireAdmin.js';
 import { requireAdminOrMod, requireTargetEditable } from '../middleware/requireRole.js';
+// 95.md — user-management surface (metrics/timeline/notes/actions/bulk/export).
+import {
+  getUserSummaryMetrics, getUserTimeline,
+  listUserNotes, createUserNote, updateUserNote, deleteUserNote,
+  revokeUserSessions, resendVerificationAdmin,
+  bulkUserAction, exportUsersCsv,
+} from '../controllers/adminUserMgmtController.js';
+import { validateBody } from '../middleware/validateBody.js';
+import { bulkUserActionSchema, adminNoteSchema } from '../schemas/adminUserSchemas.js';
 import {
   getMetrics,
   getMetricsTimeseries,
@@ -199,6 +208,20 @@ router.get('/users', requireAdminOrMod, getUsers);
 router.get('/users/countries', requireAdmin, getUserCountries);
 // prompt25 Task 1 — live activity summary (admin only). Specific path BEFORE :id.
 router.get('/users/activity-summary', requireAdmin, getUserActivitySummary);
+// ── 95.md — user-management surface. Static paths BEFORE '/users/:id'. ────────
+// Metrics strip (mod-readable like the list it summarizes).
+router.get('/users/metrics', requireAdminOrMod, getUserSummaryMetrics);
+// Filtered CSV export + bulk actions are ADMIN ONLY, on their own tighter
+// budget (95.md Phase 9): heavy operations must not starve console polling.
+const bulkLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'production' ? 30 : 500,
+  message: { error: 'Too many bulk operations, please try again later' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+router.get('/users/export.csv', requireAdmin, bulkLimiter, exportUsersCsv);
+router.post('/users/bulk', requireAdmin, bulkLimiter, validateBody(bulkUserActionSchema), bulkUserAction);
 // 65.md PERM-06 — full-record + project-list reads are target-gated like the
 // mutations: a mod may not inspect an admin/mod account (the Ops UI already
 // renders staff rows locked for mods; this makes the API agree). The list
@@ -214,6 +237,16 @@ router.post('/users/:id/reset-password', requireAdminOrMod, requireTargetEditabl
 router.post('/users/:id/send-password-reset', requireAdminOrMod, requireTargetEditable, sendPasswordReset);
 // Role assignment + delete are ADMIN ONLY.
 router.patch('/users/:id/role', requireAdmin, updateUserRole);
+// ── 95.md — per-target management (mod-allowed, target-gated like the rest) ───
+router.get('/users/:id/timeline', requireAdminOrMod, requireTargetEditable, getUserTimeline);
+router.post('/users/:id/revoke-sessions', requireAdminOrMod, requireTargetEditable, revokeUserSessions);
+router.post('/users/:id/resend-verification', requireAdminOrMod, requireTargetEditable, resendVerificationAdmin);
+// Internal notes: mods may view + create; edit/delete = author or admin
+// (enforced in the controller). Never exposed outside /api/admin.
+router.get('/users/:id/notes', requireAdminOrMod, requireTargetEditable, listUserNotes);
+router.post('/users/:id/notes', requireAdminOrMod, requireTargetEditable, validateBody(adminNoteSchema), createUserNote);
+router.patch('/users/:id/notes/:noteId', requireAdminOrMod, requireTargetEditable, validateBody(adminNoteSchema), updateUserNote);
+router.delete('/users/:id/notes/:noteId', requireAdminOrMod, requireTargetEditable, deleteUserNote);
 
 // ── Contact messages (admin + mod) ─────────────────────────────────────────────
 router.get('/contact-messages', requireAdminOrMod, getContactMessages);

@@ -72,6 +72,18 @@ model User {
   tierAssignedBy                String? // admin user id (audit; AdminAuditLog carries the rest)
   tierOverrideReason            String? // optional note recorded at assignment
   passwordChangedAt             DateTime? // when the password last changed (session-revocation forensics)
+  // 95.md Phase 10 — the ORIGINAL registration method, distinct from currently
+  // available login methods (those are DERIVED live from password!=null +
+  // authAccounts). Values: "email" | "google" | "unknown". IMMUTABLE by
+  // convention: written exactly once at account creation (all four creation
+  // paths) or by the one-time conclusive backfill (see
+  // server/services/registrationMethodBackfill.js — pre-2026-07-18 accounts
+  // cannot be Google; same-transaction AuthAccount.createdAt ≈ createdAt proves
+  // Google). Never admin-editable (editableUserFields allowlist excludes it),
+  // never overwritten when a user later links/unlinks a provider. Invitation
+  // SOURCE is deliberately NOT stored here — it stays derived from
+  // WaitlistInvitation.acceptedUserId (no duplicate fields). Nullable → additive.
+  registrationMethod            String?
   // 93.md §6.3 — idempotent welcome/onboarding email marker. Set exactly once when
   // the first welcome email is sent (invitation accept / first login), so restarts,
   // retries and multi-worker deployments can never double-send. Nullable → `prisma
@@ -156,8 +168,20 @@ model User {
   passwordResetTokens           PasswordResetToken[]
   onboardingResponses           UserOnboardingResponse[] // prompt32 — per-question onboarding state
   authAccounts                  AuthAccount[] // 94.md §2.3 — linked external identity providers (Google)
+  adminNotes                    UserAdminNote[] // 95.md Phase 5 — internal Ops notes (never exposed to the user)
 
   @@index([userNumber])
+  // 95.md Phase 9 — server-side list filtering/sorting at scale. Plain additive
+  // @@index only (repo rule: never add @unique to an existing table — the
+  // non-interactive VPS `prisma db push` would demand --accept-data-loss).
+  // Chosen to match the new admin list's WHERE/ORDER BY axes.
+  @@index([createdAt])
+  @@index([lastActive])
+  @@index([suspended])
+  @@index([role])
+  @@index([tierId])
+  @@index([emailVerifiedAt])
+  @@index([registrationMethod])
 }
 
 // 94.md §2.3 — normalized external-auth identity (Google OIDC today; the model
@@ -190,6 +214,29 @@ model AuthAccount {
   @@unique([userId, provider])
   @@index([userId])
   @@index([providerEmail])
+}
+
+// 95.md Phase 5 — internal administrative notes about a user. Ops-only: served
+// exclusively by admin routes, NEVER selected into any user-facing response.
+// authorName is a DENORMALIZED snapshot (ScreenAuditLog precedent) so notes stay
+// attributable if the author account is later renamed/deleted. Soft-delete via
+// deletedAt: deleted notes disappear from the panel but survive for the audit
+// trail (every create/edit/delete also writes an AdminAuditLog row). FK-cascade
+// on the SUBJECT user mirrors PasswordResetToken — notes need not outlive the
+// account they describe.
+model UserAdminNote {
+  id         String    @id @default(uuid())
+  userId     String // the user the note is ABOUT
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  authorId   String // admin/mod User.id (no FK — author deletion must not delete notes)
+  authorName String // denormalized display snapshot at write time
+  body       String
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  editedAt   DateTime? // set on content edits (updatedAt also moves on soft-delete)
+  deletedAt  DateTime? // soft-delete marker — hidden from the panel, kept for audit
+
+  @@index([userId, createdAt])
 }
 
 // Application-managed monotonic counters (provider-portable sequences). Prisma
@@ -472,9 +519,19 @@ model AdminAuditLog {
   details    String? // JSON-serialised context (what changed, before/after summary)
   ip         String?
   userAgent  String?
+  // 95.md Phase 12 — first-class audit correlation (previously buried in the
+  // details JSON, unqueryable). All nullable → `prisma db push` stays additive.
+  reason          String? // operator-supplied justification (tier/suspend/bulk)
+  requestId       String? // 93.md request-correlation id from the X-Request-Id chain
+  bulkOperationId String? // groups every per-target row of one bulk action
   createdAt  DateTime @default(now())
 
   @@index([createdAt]) // 86.md P2.56 — Ops audit log is time-ordered
+  // 95.md — per-target timeline ("all admin actions on user X") and per-bulk
+  // drill-down were full-table scans; plain additive indexes fix both.
+  @@index([entityType, entityId])
+  @@index([adminId])
+  @@index([bulkOperationId])
 }
 
 model SecurityEvent {
@@ -920,6 +977,9 @@ model ScreenProjectMember {
 
   @@unique([projectId, email])
   @@index([inviteTokenHash])
+  // 95.md — per-user membership/ownership counts in the admin users list
+  // ("Projects" column) query by userId across the whole table; additive index.
+  @@index([userId])
 }
 
 model ScreenChatMessage {

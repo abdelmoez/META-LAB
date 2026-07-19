@@ -173,6 +173,7 @@ export async function resolveGoogleLogin({ claims, req }) {
             userNumber,
             emailVerifiedAt: new Date(), // §2.4.3 — Google-verified
             termsAcceptedAt: null,
+            registrationMethod: 'google', // 95.md Phase 10 — immutable, written at creation
           },
           select: { id: true, email: true, name: true, role: true, sessionEpoch: true, createdAt: true, onboardingCompletedAt: true, suspended: true, emailVerifiedAt: true },
         });

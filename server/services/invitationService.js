@@ -479,6 +479,7 @@ export async function acceptInvitation(token, { password, name = '', acceptedTer
             // The invitation link proves control of the mailbox → treat as verified.
             emailVerifiedAt: new Date(),
             termsAcceptedAt: acceptedTerms ? new Date() : null,
+            registrationMethod: 'email', // 95.md Phase 10 — invitation SOURCE stays derived via acceptedUserId
           },
           select: { id: true, email: true, name: true, role: true, sessionEpoch: true, createdAt: true, onboardingCompletedAt: true },
         });
@@ -604,6 +605,7 @@ export async function acceptInvitationWithGoogle({ normalizedEmail, claims } = {
             // The VERIFIED Google email proves control of the mailbox → verified.
             emailVerifiedAt: new Date(),
             termsAcceptedAt: null,
+            registrationMethod: 'google', // 95.md Phase 10 — invitation SOURCE stays derived via acceptedUserId
           },
           select: { id: true, email: true, name: true, role: true, sessionEpoch: true, createdAt: true, onboardingCompletedAt: true },
         });
