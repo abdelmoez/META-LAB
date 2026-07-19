@@ -171,13 +171,22 @@ describe('findOrphans (93.md pre-flight)', () => {
         { id: 'p2', userId: 'ghost' },
         { id: 'p3', userId: 'ghost' },
       ]),
-      note: fakeDelegate([{ id: 'n1', projectId: 'nowhere' }]), // nullable FK — never flagged
+      // r2 semantics: the ORPHAN SCAN includes nullable FKs — a NON-NULL dangling
+      // value ('nowhere') violates the Postgres FK exactly like a required one and
+      // IS flagged; a legal null (n2) never is.
+      note: fakeDelegate([{ id: 'n1', projectId: 'nowhere' }, { id: 'n2', projectId: null }]),
     };
     const orphans = await findOrphans(source, ORPHAN_MODELS);
-    expect(orphans).toEqual([{
-      model: 'Project', fkField: 'userId', parentModel: 'User',
-      rows: 2, sampleMissingParents: ['ghost'],
-    }]);
+    expect(orphans).toEqual([
+      {
+        model: 'Project', fkField: 'userId', parentModel: 'User',
+        rows: 2, sampleMissingParents: ['ghost'],
+      },
+      {
+        model: 'Note', fkField: 'projectId', parentModel: 'Project',
+        rows: 1, sampleMissingParents: ['nowhere'],
+      },
+    ]);
   });
 
   it('returns [] on a clean source (and tolerates a defensive null FK value)', async () => {
