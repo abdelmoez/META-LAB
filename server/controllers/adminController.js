@@ -532,6 +532,12 @@ export async function getUsers(req, res) {
 
     // prompt25 Task 1 — live online flag from the global presence snapshot.
     const online = Presence.globalOnlineSnapshot();
+    // Review fix (95 r2) — the detail route target-gates mods away from
+    // admin/mod accounts (requireTargetEditable); the LIST must not hand a mod
+    // the same auth-posture intelligence (SSO-only? last login?) for staff rows.
+    // Staff rows stay listed (support triage needs them) but their auth axes are
+    // withheld from moderators.
+    const viewerIsMod = req.user.role === 'mod';
     const formatted = users.map(u => ({
       id: u.id,
       email: u.email,
@@ -554,12 +560,16 @@ export async function getUsers(req, res) {
       // 95.md Phase 2/10 — auth-method + status axes for the redesigned table.
       userNumber: u.userNumber,
       tierId: u.tierId,
-      registrationMethod: u.registrationMethod,
-      hasPassword: u.password != null,
-      authProviders: providersByUser.get(u.id) || [],
-      invitedViaInvitation: invitedSet.has(u.id),
       status: deriveStatus(u),
       neverLoggedIn: u.lastActive == null,
+      ...(viewerIsMod && u.role !== 'user'
+        ? { registrationMethod: null, hasPassword: null, authProviders: [], invitedViaInvitation: false }
+        : {
+            registrationMethod: u.registrationMethod,
+            hasPassword: u.password != null,
+            authProviders: providersByUser.get(u.id) || [],
+            invitedViaInvitation: invitedSet.has(u.id),
+          }),
     }));
 
     return res.json({ users: formatted, total, page, pages: Math.ceil(total / limit) });
@@ -767,8 +777,12 @@ export async function updateUser(req, res) {
       // 95.md Phase 10 (data accuracy) — an admin-entered address was never
       // proven: the verified flag must not survive the change, or the Ops
       // console (and the login verification gate) would show a verified state
-      // nobody ever established for the NEW mailbox.
+      // nobody ever established for the NEW mailbox. Review fix (95 r2): any
+      // OUTSTANDING verification token must die with it — a link emailed to the
+      // OLD mailbox would otherwise verify the NEW address.
       data.emailVerifiedAt = null;
+      data.emailVerificationTokenHash = null;
+      data.emailVerificationExpiresAt = null;
     }
 
     let updated;

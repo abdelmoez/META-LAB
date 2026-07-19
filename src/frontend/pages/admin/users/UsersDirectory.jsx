@@ -66,12 +66,16 @@ export default function UsersDirectory({ isAdmin = false }) {
 
   const listParams = useMemo(() => ({ ...filterParams, sort, order, page, limit: PER_PAGE }), [filterParams, sort, order, page]);
 
+  // Review fix (95 r2) — out-of-order guard: only the LATEST request may write
+  // state (chip-click races aren't covered by the typing debounce).
+  const loadSeq = useRef(0);
   const loadList = useCallback(() => {
+    const seq = ++loadSeq.current;
     setLoading(true); setError('');
     adminApi.users.list(listParams)
-      .then((d) => { setRows(d.users || []); setTotal(d.total || 0); setPages(d.pages || 1); })
-      .catch((e) => { setRows([]); setError(e.message || 'Could not load users.'); })
-      .finally(() => setLoading(false));
+      .then((d) => { if (seq !== loadSeq.current) return; setRows(d.users || []); setTotal(d.total || 0); setPages(d.pages || 1); })
+      .catch((e) => { if (seq !== loadSeq.current) return; setRows([]); setError(e.message || 'Could not load users.'); })
+      .finally(() => { if (seq === loadSeq.current) setLoading(false); });
   }, [listParams]);
 
   const loadMetrics = useCallback(() => {
@@ -81,8 +85,13 @@ export default function UsersDirectory({ isAdmin = false }) {
       .catch(() => { /* metrics are best-effort — the table still works */ });
   }, [isAdmin, filterParams]);
 
-  // Load list on any param change; clear a stale selection on the same beat.
-  useEffect(() => { loadList(); setSelected(new Set()); }, [loadList]);
+  // Load list on any param change. Review fix (95 r2): selection deliberately
+  // SURVIVES page changes (toggleAll unions across pages up to the 200-cap UI)
+  // and clears only when the FILTERS change — otherwise bulk actions were
+  // silently capped at one page.
+  useEffect(() => { loadList(); }, [loadList]);
+  const filterKey = JSON.stringify(filterParams);
+  useEffect(() => { setSelected(new Set()); }, [filterKey]);
   useEffect(() => { loadMetrics(); }, [loadMetrics]);
 
   // One-time admin fetches: tier options + live presence head-count.

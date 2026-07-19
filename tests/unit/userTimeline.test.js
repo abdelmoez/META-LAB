@@ -33,7 +33,22 @@ describe('buildUserTimeline', () => {
     const kinds = ev.map((e) => e.kind);
     expect(kinds).toEqual(['login', 'google_linked', 'restored', 'suspended', 'tier_changed', 'email_verified', 'registered']);
     expect(ev.find((e) => e.kind === 'suspended').actor).toBe('Ops Admin');
+    // Cross-source tier duplicate (audit row + assignment row, same minute,
+    // DIFFERENT labels) collapses to one entry.
     expect(kinds.filter((k) => k === 'tier_changed')).toHaveLength(1);
+  });
+  it('distinct same-minute logins and admin edits all survive (95 r2)', () => {
+    const ev = buildUserTimeline({
+      user: baseUser,
+      loginEvents: [{ createdAt: D('2026-02-05T08:00:10Z') }, { createdAt: D('2026-02-05T08:00:40Z') }],
+      auditRows: [
+        { action: 'USER_UPDATED_BY_ADMIN', details: JSON.stringify({ changed: ['name'] }), createdAt: D('2026-02-06T09:00:05Z'), adminId: 'a1' },
+        { action: 'UNSUSPEND_USER', details: null, createdAt: D('2026-02-06T09:00:20Z'), adminId: 'a1' },
+      ],
+    });
+    expect(ev.filter((e) => e.kind === 'login')).toHaveLength(2);
+    expect(ev.some((e) => e.kind === 'restored')).toBe(true); // UNSUSPEND_USER mapped, not swallowed as admin_edit
+    expect(ev.some((e) => e.kind === 'admin_edit')).toBe(true);
   });
   it('caps at 50 events and never throws on malformed details JSON', () => {
     const audits = Array.from({ length: 80 }, (_, i) => ({

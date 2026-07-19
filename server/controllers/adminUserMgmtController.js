@@ -337,6 +337,10 @@ export async function bulkUserAction(req, res) {
               reason: reason || 'Bulk tier assignment',
               assignedByName: req.user.email,
             });
+            // Review fix (95 r2) — single-target tier changes invalidate the 15s
+            // auth/entitlement cache so the new tier applies instantly; bulk
+            // must not drift from that semantic.
+            invalidateAuthState(id);
             await logAdminAction(req, 'UPDATE_USER_TIER', 'User', id, { to: tierId, bulk: true }, { reason, bulkOperationId });
             return { id, ok: true };
           }
@@ -366,7 +370,10 @@ export async function bulkUserAction(req, res) {
 // ── GET /api/admin/users/export.csv (ADMIN ONLY) ───────────────────────────────
 const EXPORT_CAP = 5000;
 const csv = (v) => {
-  const s = v == null ? '' : String(v);
+  let s = v == null ? '' : String(v);
+  // Review fix (95 r2) — CSV/formula-injection guard: user-controlled fields
+  // (name, institution) must never open as live formulas in Excel/Sheets.
+  if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",\n\r]/.test(s) ? `"${s.replaceAll('"', '""')}"` : s;
 };
 

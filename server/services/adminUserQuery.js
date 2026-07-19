@@ -39,34 +39,42 @@ export async function buildUsersWhere(f, { now = new Date() } = {}) {
       { institutionOriginal: insensitiveContains(f.search) },
     ];
     // Exact userNumber match when the query is a plain integer (#1234 or 1234).
+    // Bounded to int32 — a larger literal would make Prisma reject the whole
+    // query (500) instead of falling back to name/email substring matching.
     const num = /^#?(\d{1,10})$/.exec(f.search);
-    if (num) or.push({ userNumber: Number(num[1]) });
+    if (num && Number(num[1]) <= 2147483647) or.push({ userNumber: Number(num[1]) });
     and.push({ OR: or });
   }
 
   if (f.role) where.role = f.role;
-  if (f.suspended !== undefined) where.suspended = f.suspended === 'true'; // legacy param
+
+  // Review fix (95 r2): every axis below composes through the AND array — never
+  // by assigning scalar where keys. Two filters that constrain the same column
+  // (status=never_logged_in + lastActiveWithin, status=active + verified=false,
+  // legacy suspended + status) must INTERSECT (metrics composes the same way),
+  // not last-write-wins.
+  if (f.suspended !== undefined) and.push({ suspended: f.suspended === 'true' }); // legacy param
 
   switch (f.status) {
-    case 'active': where.suspended = false; where.emailVerifiedAt = { not: null }; break;
-    case 'suspended': where.suspended = true; break;
-    case 'pending_verification': where.suspended = false; where.emailVerifiedAt = null; break;
-    case 'never_logged_in': where.lastActive = null; break;
+    case 'active': and.push({ suspended: false }, { emailVerifiedAt: { not: null } }); break;
+    case 'suspended': and.push({ suspended: true }); break;
+    case 'pending_verification': and.push({ suspended: false }, { emailVerifiedAt: null }); break;
+    case 'never_logged_in': and.push({ lastActive: null }); break;
     default: break;
   }
 
-  if (f.verified === 'true') where.emailVerifiedAt = { not: null };
-  else if (f.verified === 'false') where.emailVerifiedAt = null;
-  if (f.onboarded === 'true') where.onboardingCompletedAt = { not: null };
-  else if (f.onboarded === 'false') where.onboardingCompletedAt = null;
+  if (f.verified === 'true') and.push({ emailVerifiedAt: { not: null } });
+  else if (f.verified === 'false') and.push({ emailVerifiedAt: null });
+  if (f.onboarded === 'true') and.push({ onboardingCompletedAt: { not: null } });
+  else if (f.onboarded === 'false') and.push({ onboardingCompletedAt: null });
   if (f.noInstitution === 'true') and.push({ OR: [{ institutionOriginal: null }, { institutionOriginal: '' }] });
 
   if (f.createdWithin && WINDOW_UNITS.includes(f.createdWithin)) {
     const start = startOfWindow(f.createdWithin, now);
-    if (start) where.createdAt = { gte: start };
+    if (start) and.push({ createdAt: { gte: start } });
   }
   if (f.lastActiveWithin && ACTIVE_WINDOW_MS[f.lastActiveWithin]) {
-    where.lastActive = { gte: new Date(now.getTime() - ACTIVE_WINDOW_MS[f.lastActiveWithin]) };
+    and.push({ lastActive: { gte: new Date(now.getTime() - ACTIVE_WINDOW_MS[f.lastActiveWithin]) } });
   }
 
   if (f.tier === 'default') where.tierId = null;

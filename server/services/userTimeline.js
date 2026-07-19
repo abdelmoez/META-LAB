@@ -26,6 +26,8 @@ function auditToEvent(row) {
       return details?.suspended === false
         ? { kind: 'restored', label: 'Account restored' }
         : { kind: 'suspended', label: 'Account suspended' };
+    case 'UNSUSPEND_USER': // single-target restore logs this action name (95 r2)
+      return { kind: 'restored', label: 'Account restored' };
     case 'UPDATE_USER_TIER':
       return { kind: 'tier_changed', label: `Tier changed${details?.to ? ` to ${details.to}` : ''}` };
     case 'SEND_PASSWORD_RESET':
@@ -111,13 +113,19 @@ export function buildUserTimeline({
     push(a.createdAt, 'google_linked', 'Connected Google');
   }
 
-  // Sort newest-first, then drop same-minute duplicates of the same kind
-  // (e.g. tier_changed from both AdminAuditLog and UserTierAssignment).
-  events.sort((x, y) => (x.ts < y.ts ? 1 : -1));
+  // Stable sort newest-first, then dedupe (95 r2): STATE-CHANGE kinds collapse
+  // per minute regardless of label (tier_changed is recorded by BOTH
+  // AdminAuditLog and UserTierAssignment with different wording), while kinds
+  // where several same-minute events are genuinely distinct (login bursts,
+  // multiple admin edits) key on their exact timestamp + label and all survive.
+  const MULTI_PER_MINUTE = new Set(['login', 'admin_edit', 'note_added']);
+  events.sort((x, y) => (x.ts < y.ts ? 1 : x.ts > y.ts ? -1 : 0));
   const seen = new Set();
   const out = [];
   for (const e of events) {
-    const key = `${e.kind}:${e.ts.slice(0, 16)}`;
+    const key = MULTI_PER_MINUTE.has(e.kind)
+      ? `${e.kind}:${e.label}:${e.ts}`
+      : `${e.kind}:${e.ts.slice(0, 16)}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(e);
