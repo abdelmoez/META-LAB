@@ -2126,6 +2126,11 @@ function UserDetailPanel({ user, isAdmin, onClose, onStatusChange, onUserUpdate 
               // Name derived from the ISO code (matches the map) — never the stale stored name.
               ? `${countryNameForCode(u.registrationCountryCode) || u.registrationCountryName || ''} (${u.registrationCountryCode})`.trim()
               : (u.registrationCountryName || '—') },
+          // 94.md §2.9 — presence of an external sign-in only (provider + last use);
+          // subject ids / provider emails / token-shaped data never reach admins.
+          { label: 'Sign-in',     value: Array.isArray(u.authProviders) && u.authProviders.length
+              ? u.authProviders.map(p => `${p.provider}${p.lastLoginAt ? ` (${fmtAgo(p.lastLoginAt)})` : ''}`).join(', ')
+              : 'password' },
         ].map(r => (
           <div key={r.label} style={{ display: 'flex', justifyContent: 'space-between', padding: '5px 0', borderBottom: `1px solid ${C.brd}` }}>
             <span style={{ fontSize: 11, color: C.muted, fontFamily: MONO, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{r.label}</span>
