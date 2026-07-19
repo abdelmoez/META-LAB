@@ -5,12 +5,19 @@
  * getWaitlistClient()) so this module has no implicit DB binding and stays
  * isolation-clean (it never imports server/db/client.js).
  *
- * Note on case-insensitive search: Prisma `contains` compiles to SQLite `LIKE`,
- * which is case-insensitive for ASCII — so name/email/institution search works
- * without a `mode:'insensitive'` (unsupported on SQLite).
+ * Note on case-insensitive search (93.md round 2): search filters go through
+ * wlContains(), keyed off the WAITLIST DB's OWN provider (URL-scheme derived —
+ * waitlistDbProvider()), never the main DATABASE_PROVIDER: the two databases
+ * can legitimately run on different engines, and Postgres LIKE is
+ * case-sensitive while SQLite LIKE is not.
  */
 
 import { DEFAULT_WAITLIST_STATUS, WAITLIST_MAX } from '../../src/shared/betaWaitlist.js';
+import { waitlistDbProvider } from './config.js';
+import { insensitiveContainsFor } from '../db/searchMode.js';
+
+/** Case-insensitive `contains` for the waitlist DB's own provider. */
+const wlContains = (v) => insensitiveContainsFor(waitlistDbProvider(), v);
 
 // Summary columns for list endpoints — deliberately EXCLUDES message,
 // internalNotes, consent details and status history (not needed for the table;
@@ -148,10 +155,10 @@ export async function listApplicants(client, params = {}) {
   const search = (params.search || '').trim().slice(0, 200);
   if (search) {
     where.OR = [
-      { email: { contains: search } },
-      { firstName: { contains: search } },
-      { lastName: { contains: search } },
-      { institutionName: { contains: search } },
+      { email: wlContains(search) },
+      { firstName: wlContains(search) },
+      { lastName: wlContains(search) },
+      { institutionName: wlContains(search) },
     ];
   }
 
@@ -256,10 +263,10 @@ export async function applicantsForInvite(client, { ids = null, filters = {}, em
     const search = scalarStr(filters.search).slice(0, 200);
     if (search) {
       and.push({ OR: [
-        { email: { contains: search } },
-        { firstName: { contains: search } },
-        { lastName: { contains: search } },
-        { institutionName: { contains: search } },
+        { email: wlContains(search) },
+        { firstName: wlContains(search) },
+        { lastName: wlContains(search) },
+        { institutionName: wlContains(search) },
       ] });
     }
   }
@@ -312,10 +319,10 @@ export async function forExport(client, params = {}) {
   const search = (params.search || '').trim().slice(0, 200);
   if (search) {
     where.OR = [
-      { email: { contains: search } },
-      { firstName: { contains: search } },
-      { lastName: { contains: search } },
-      { institutionName: { contains: search } },
+      { email: wlContains(search) },
+      { firstName: wlContains(search) },
+      { lastName: wlContains(search) },
+      { institutionName: wlContains(search) },
     ];
   }
   // Hard cap so a huge export can't exhaust memory.

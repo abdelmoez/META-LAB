@@ -164,6 +164,9 @@ function retryDelayMs() {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Once-per-boot flag for the staging-vars-in-production misconfiguration warning.
+let stagingVarsInProductionWarned = false;
+
 /**
  * sendEmail — send a single email. Never throws.
  * Records an EMAIL_SENT / EMAIL_FAILED UsageEvent (prompt9, best-effort) for
@@ -190,6 +193,18 @@ export async function sendEmail({ to, subject, html, text, context } = {}) {
   }
 
   // 93.md §6.1 — staging protection. In production this is a straight pass-through.
+  // Review fix (round 2): a PRODUCTION-resolving box with staging vars set is a
+  // misconfiguration trap — usually a staging host that forgot APP_ENV=staging,
+  // now silently emailing REAL users. Warn loudly (once per boot) so the
+  // operator sees it in the pm2 log immediately instead of after a complaint.
+  if (!stagingVarsInProductionWarned && isProductionEmailEnv()
+      && (String(process.env.EMAIL_REDIRECT_ALL_TO || '').trim() || String(process.env.EMAIL_ALLOWLIST || '').trim())) {
+    stagingVarsInProductionWarned = true;
+    console.warn('[emailService] WARNING: EMAIL_REDIRECT_ALL_TO / EMAIL_ALLOWLIST is set but this process '
+      + 'resolves as PRODUCTION (APP_ENV/NODE_ENV) — staging email protection is INACTIVE and real '
+      + 'recipients will be emailed. If this box is staging, set APP_ENV=staging; if it is production, '
+      + 'remove the staging email variables.');
+  }
   const policy = applyStagingEmailPolicy({ to, subject });
   if (policy.skipped.length) {
     console.log(`[emailService] staging allowlist skipped recipient(s): ${policy.skipped.join(', ')} (context=${context || 'none'})`);

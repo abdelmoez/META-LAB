@@ -37,13 +37,20 @@ export async function initSentryClient() {
       },
       beforeBreadcrumb(crumb) {
         try {
-          // Navigation/fetch breadcrumbs can carry query strings (?token=…) —
-          // keep only the path. Console breadcrumbs may quote content — drop them.
+          // Navigation/fetch breadcrumbs can carry query strings (?token=… on
+          // the reset/verify/accept-invitation routes) — keep only the path.
+          // Console breadcrumbs may quote content — drop them entirely.
           if (crumb.category === 'console') return null;
-          if (crumb.data && typeof crumb.data.url === 'string') {
-            crumb.data.url = crumb.data.url.split('?')[0];
+          if (crumb.data) {
+            // Review fix (round 2): navigation crumbs put URLs in data.from /
+            // data.to (NOT data.url) — scrub every string field that looks
+            // like a URL or path with a query string.
+            for (const k of Object.keys(crumb.data)) {
+              const v = crumb.data[k];
+              if (typeof v === 'string' && v.includes('?')) crumb.data[k] = v.split('?')[0];
+            }
           }
-          if (typeof crumb.message === 'string') crumb.message = crumb.message.slice(0, 200);
+          if (typeof crumb.message === 'string') crumb.message = crumb.message.split('?')[0].slice(0, 200);
         } catch { /* ignore */ }
         return crumb;
       },

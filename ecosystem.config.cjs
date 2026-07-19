@@ -20,15 +20,33 @@
  * Ops quickstart (full runbook in docs/manager/pm2-operations.md):
  *   pm2 start ecosystem.config.cjs                    # production
  *   pm2 start ecosystem.config.cjs --env staging      # staging
- *   pm2 reload pecanrev-api                           # zero-downtime reload
+ *   pm2 reload pecanrev-api                           # brief-gap reload (see below)
  *   pm2 startup && pm2 save                           # survive VPS reboot
+ *
+ * HONEST RELOAD SEMANTICS (93.md round 2): in fork mode a "reload" is
+ * stop-then-start — there is NO overlap process, so every reload/deploy has a
+ * brief service gap (target < 2-3s: SSE streams are ended at SIGTERM so the
+ * old process drains fast, then the new one boots). True zero-downtime needs
+ * cluster mode, which is blocked by the four single-process subsystems above.
  */
+// Review fix (round 2): PM2 FREEZES cwd/script at first registration — a later
+// `pm2 startOrReload` re-reads env but NOT the paths, so pointing cwd at
+// __dirname (a per-release directory under releases/<ts>-<sha>/) would pin the
+// process to the FIRST release forever and let release pruning delete the live
+// code. Instead cwd points at the stable `current` symlink (PECANREV_ROOT,
+// exported by deploy/metalab-deploy.sh): the frozen value never changes, while
+// each reload's fresh node process resolves server/index.js THROUGH the symlink
+// to the newly flipped release. Dev fallback: __dirname (repo checkout).
+const DEPLOY_ROOT = process.env.PECANREV_ROOT || __dirname;
+
 module.exports = {
   apps: [
     {
-      name: 'pecanrev-api',
+      // PM2_APP_NAME lets a shared-host staging tree run under its own PM2
+      // name (e.g. pecanrev-staging) without touching the production process.
+      name: process.env.PM2_APP_NAME || 'pecanrev-api',
       script: 'server/index.js',
-      cwd: __dirname,
+      cwd: DEPLOY_ROOT,
 
       // Single process by design — see header before changing.
       exec_mode: 'fork',
@@ -51,9 +69,10 @@ module.exports = {
       kill_timeout: 20000,
       listen_timeout: 15000,
 
-      // Structured stdout/stderr: keep JSON lines intact (no PM2 prefix
-      // mangling), stamp with ISO time, merge cluster logs (single instance).
-      time: true,
+      // Structured stdout/stderr: keep JSON lines intact — `time: false`
+      // because a PM2 timestamp prefix would break NDJSON parsing, and the
+      // app's JSON log lines already carry their own `t` field (requestLogger).
+      time: false,
       merge_logs: true,
       out_file: process.env.PM2_OUT_FILE || undefined,   // default ~/.pm2/logs
       error_file: process.env.PM2_ERR_FILE || undefined,

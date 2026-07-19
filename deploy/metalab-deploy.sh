@@ -75,8 +75,22 @@ command -v curl >/dev/null || fail "curl is not installed"
 NODE_MAJOR="$(node -v | sed -E 's/^v([0-9]+).*/\1/')"
 [ "$NODE_MAJOR" -ge "$MIN_NODE_MAJOR" ] || fail "node >= $MIN_NODE_MAJOR required, found $(node -v)"
 
-[ -f "$SHARED_DIR/server.env" ] || fail "missing $SHARED_DIR/server.env — create it from server/.env.example (chmod 600); secrets are never in git"
+[ -f "$SHARED_DIR/server.env" ] || fail "missing $SHARED_DIR/server.env — create it from server/.env.example (chmod 600) and REPLACE the relative file: DB URLs with absolute paths (see the check below); secrets are never in git"
 mkdir -p "$RELEASES_DIR" "$SHARED_DIR/storage"
+
+# Review fix (round 2): a RELATIVE sqlite URL (file:./dev.db — the .env.example
+# default) would resolve inside each release's server/ directory: every deploy
+# would silently start from an EMPTY database and release pruning would then
+# destroy the old one. Production sqlite URLs must be absolute (file:/...).
+env_val() { grep -E "^$1=" "$SHARED_DIR/server.env" | tail -n1 | sed -E "s/^$1=//; s/^[\"']//; s/[\"']\$//" || true; }
+for VAR in DATABASE_URL BETA_WAITLIST_DATABASE_URL; do
+  VAL="$(env_val "$VAR")"
+  case "$VAL" in
+    file:/*) : ;;                       # absolute sqlite path — OK
+    file:*)  fail "$VAR in server.env is a RELATIVE sqlite URL ('$VAL') — it would point inside the per-release directory and be lost on every deploy. Use an absolute path, e.g. file:/opt/pecanrev/shared/prod.db" ;;
+    *)       : ;;                       # postgres URL / unset — not this check's concern
+  esac
+done
 
 FREE_MB="$(df -Pm "$APP_DIR" | awk 'NR==2{print $4}')"
 [ "$FREE_MB" -ge "$MIN_FREE_MB" ] || fail "only ${FREE_MB}MB free on $APP_DIR (< ${MIN_FREE_MB}MB) — prune releases/logs first"
@@ -149,10 +163,17 @@ log "current -> $RELEASE_DIR (previous: ${PREV_RELEASE:-none})"
 
 # ── 7+8. Reload under PM2 and gate on readiness ───────────────────────────────
 reload_app() {
-  # startOrReload: zero-downtime reload when running, plain start on first run.
-  # Always pass the ecosystem file through `current` so PM2 re-reads the config
-  # (and the new release realpath) on every deploy.
-  pm2 startOrReload "$CURRENT_LINK/ecosystem.config.cjs" --update-env
+  # Review fix (round 2): PM2 freezes cwd/script at FIRST registration, so the
+  # ecosystem file reads PECANREV_ROOT and pins cwd to the stable `current`
+  # symlink — every reload's fresh process then resolves server/index.js
+  # through the freshly flipped symlink. PM2_APP_NAME (default pecanrev-api)
+  # lets a staging tree on the same host run under its own PM2 name.
+  # HONEST SEMANTICS: fork-mode reload is stop-then-start — expect a brief
+  # (<2-3s) service gap per deploy; SSE streams are ended at SIGTERM so the old
+  # process drains fast. True zero-downtime would require cluster mode (blocked
+  # — see ecosystem.config.cjs header).
+  PECANREV_ROOT="$CURRENT_LINK" PM2_APP_NAME="${PM2_APP_NAME:-pecanrev-api}" \
+    pm2 startOrReload "$CURRENT_LINK/ecosystem.config.cjs" --only "${PM2_APP_NAME:-pecanrev-api}" --update-env
 }
 
 poll_ready() {

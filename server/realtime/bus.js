@@ -68,6 +68,30 @@ export function forceCloseStreams(userId) {
   return closed;
 }
 
+/**
+ * closeAllStreams — 93.md round 2 (graceful shutdown): end EVERY open SSE
+ * stream so `server.close()` can complete promptly. An open SSE response is an
+ * ACTIVE request, so without this the HTTP server waits the full force-sever
+ * timer with the listener already closed — turning every pm2 reload into a
+ * multi-second outage for anyone with a tab open. Clients auto-reconnect by
+ * design (useRealtime backoff), so a clean `server.shutdown` event + end() is
+ * exactly the contract they expect. Returns the number of streams closed.
+ */
+export function closeAllStreams() {
+  let closed = 0;
+  for (const set of connections.values()) {
+    for (const res of set) {
+      try {
+        res.write('event: server.shutdown\ndata: {"type":"server.shutdown"}\n\n');
+        res.end();
+        closed += 1;
+      } catch { /* socket already dead */ }
+    }
+  }
+  connections.clear();
+  return closed;
+}
+
 /** Serialize one event and write it to every open stream of the given users. */
 function writeFrame(userIds, event) {
   const payload = { ...event, at: event.at || new Date().toISOString() };

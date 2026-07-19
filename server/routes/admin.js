@@ -25,6 +25,7 @@ import {
   restoreProject,
   getAdminSettings,
   updateAdminSettings,
+  setInvitationsPaused,
   getAdminThemeSettings,
   updateThemeSettings,
   getDesignSettings,
@@ -243,6 +244,9 @@ router.patch('/projects/:id/restore', requireAdmin, restoreProject);
 
 router.get('/settings', requireAdmin, getAdminSettings);
 router.put('/settings', requireAdmin, updateAdminSettings);
+// 93.md round 2 — dedicated writer for the invitations-paused emergency brake
+// (the whole-blob PUT above deliberately preserves the stored value).
+router.patch('/settings/invitations-paused', requireAdmin, setInvitationsPaused);
 
 // prompt37 — global brand theme (admin only). Specific path BEFORE any generic
 // settings handling; PATCH validates strictly + audits APP_THEME_UPDATED.

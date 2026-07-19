@@ -101,6 +101,9 @@ export const adminApi = {
   settings: {
     get:          ()         => req(`${BASE}/settings`),
     save:         (body)     => req(`${BASE}/settings`, { method: 'PUT', ...json(body) }),
+    // 93.md round 2 — dedicated writer for the invitations-paused emergency
+    // brake (whole-blob saves preserve the stored value server-side).
+    setInvitationsPaused: (paused) => req(`${BASE}/settings/invitations-paused`, { method: 'PATCH', ...json({ paused }) }),
   },
 
   // ── Global brand theme (prompt37, admin only) ────────────────────────────────

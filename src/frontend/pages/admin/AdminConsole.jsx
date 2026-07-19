@@ -8889,12 +8889,12 @@ function WaitlistSection() {
     if (pauseBusy) return;
     setPauseBusy(true); setErr('');
     try {
-      // Read-merge-write so the toggle never clobbers other appSettings keys.
-      const current = await adminApi.settings.get();
-      const app = { ...(current?.appSettings || {}), invitationsPaused: !paused };
-      await adminApi.settings.save({ appSettings: app });
-      setPaused(!paused);
-      setMsg(!paused ? 'Invitations are paused — no new invitation links can be sent.' : 'Invitations resumed.');
+      // 93.md round 2 — dedicated endpoint: the server preserves this key on
+      // whole-blob settings saves, so ONLY this call can flip the brake (a
+      // stale App Settings form can never silently release it).
+      const r = await adminApi.settings.setInvitationsPaused(!paused);
+      setPaused(r?.paused === true);
+      setMsg(r?.paused ? 'Invitations are paused — no new invitation links can be sent.' : 'Invitations resumed.');
     } catch (e) { setErr(e.message); }
     finally { setPauseBusy(false); }
   };

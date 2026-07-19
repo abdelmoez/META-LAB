@@ -44,12 +44,29 @@ async function loginAdmin() {
   return '';
 }
 
-/** Read-merge-write appSettings so tests never clobber unrelated keys. */
+/**
+ * Read-merge-write appSettings so tests never clobber unrelated keys.
+ * Round 2: invitationsPaused is ONLY writable via its dedicated PATCH endpoint
+ * (the whole-blob PUT deliberately preserves the stored value so a stale Ops
+ * settings form can never silently release the emergency brake) — route that
+ * key through PATCH /admin/settings/invitations-paused and the rest via PUT.
+ */
 async function patchAppSettings(patch) {
-  const cur = await api('/admin/settings', { cookie: adminCookie });
-  const app = { ...((cur.data && cur.data.appSettings) || {}), ...patch };
-  const put = await api('/admin/settings', { method: 'PUT', body: { appSettings: app }, cookie: adminCookie });
-  return put.status;
+  const { invitationsPaused, ...rest } = patch || {};
+  let status = 200;
+  if (typeof invitationsPaused === 'boolean') {
+    const r = await api('/admin/settings/invitations-paused', {
+      method: 'PATCH', body: { paused: invitationsPaused }, cookie: adminCookie,
+    });
+    status = r.status;
+  }
+  if (Object.keys(rest).length) {
+    const cur = await api('/admin/settings', { cookie: adminCookie });
+    const app = { ...((cur.data && cur.data.appSettings) || {}), ...rest };
+    const put = await api('/admin/settings', { method: 'PUT', body: { appSettings: app }, cookie: adminCookie });
+    status = put.status;
+  }
+  return status;
 }
 
 const createdEmails = [];

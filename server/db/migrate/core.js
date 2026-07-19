@@ -87,7 +87,7 @@ export function planModels(models) {
  * this schema declares none (the same single-column assumption idFieldName
  * already enforces for @id).
  */
-export function requiredFkRelations(models) {
+export function requiredFkRelations(models, { includeNullable = false } = {}) {
   const byName = new Map(models.map((m) => [m.name, m]));
   const out = [];
   for (const m of models) {
@@ -97,9 +97,13 @@ export function requiredFkRelations(models) {
       if (!parent) continue;
       const fkField = f.relationFromFields[0];
       const fkScalar = m.fields.find((s) => s.name === fkField);
-      // Only REQUIRED FKs can strand a child row: a nullable FK is legal as null
-      // and Postgres accepts it. Required + missing parent = insert-time FK error.
-      if (!fkScalar || fkScalar.isRequired !== true) continue;
+      // Default: only REQUIRED FKs — a nullable FK is legal as null. Review fix
+      // (round 2): the ORPHAN SCAN passes includeNullable:true, because a
+      // nullable FK column holding a NON-NULL value whose parent is missing
+      // still violates the Postgres FK constraint at insert time (SQLite never
+      // enforced it) — findOrphans' `v == null` skip keeps legal nulls legal.
+      if (!fkScalar) continue;
+      if (fkScalar.isRequired !== true && !includeNullable) continue;
       const parentKeyField =
         (Array.isArray(f.relationToFields) && f.relationToFields[0]) || idFieldName(parent);
       out.push({
@@ -130,7 +134,9 @@ export function requiredFkRelations(models) {
  */
 export async function findOrphans(source, models, opts = {}) {
   const { maxSamples = 5 } = opts;
-  const relations = requiredFkRelations(models);
+  // includeNullable: non-null dangling values in nullable FK columns break the
+  // Postgres insert exactly like required ones (see requiredFkRelations note).
+  const relations = requiredFkRelations(models, { includeNullable: true });
   const parentKeyCache = new Map(); // "delegate.keyField" → Set(keys)
   const orphans = [];
   for (const rel of relations) {
