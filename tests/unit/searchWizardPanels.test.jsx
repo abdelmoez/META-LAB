@@ -1,24 +1,22 @@
 /**
- * searchWizardPanels.test.jsx — 69.md. The three Search-wizard reproducibility/quality
- * panels (SearchQualityPanel, SearchVersionsPanel, SearchExportPanel).
+ * searchWizardPanels.test.jsx — 69.md, slimmed by 96.md. The SURVIVING Search
+ * reproducibility panels (SearchVersionsPanel, SearchExportPanel) — the legacy
+ * SearchQualityPanel + searchQualityModel were deleted with the wizard (the inline
+ * Terms & Vocabulary quality card, crossConcept.searchQualityCheck, replaced them).
  *
  * SSR-safe, mirroring the house pattern (fullTextPanel / pecanSearchTab): the top-level
  * panels load in effects that never run under renderToStaticMarkup, so we test the pure
  * leaves from props + the pure models, and stub `fetch` (vi.stubGlobal / unstubAllGlobals)
- * for the soft API helpers. Quality-row expectations are built against the REAL
- * searchQualityCheck so the panel's breakdown can't silently drift from the engine.
+ * for the soft API helpers.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { QualityRows } from '../../src/features/searchWizard/SearchQualityPanel.jsx';
 import { VersionList, DiffView } from '../../src/features/searchWizard/SearchVersionsPanel.jsx';
 import { MethodsModal } from '../../src/features/searchWizard/SearchExportPanel.jsx';
-import { buildQualityModel } from '../../src/features/searchWizard/searchQualityModel.js';
 import { formatVersionDiff } from '../../src/features/searchWizard/versionDiff.js';
 import { buildReproLog, reproLogToJson, reproLogFilename } from '../../src/features/searchWizard/reproLog.js';
 import { searchVersionsApi } from '../../src/features/searchWizard/searchVersionsApi.js';
-import { searchQualityCheck } from '../../src/features/searchBuilder/index.js';
 
 afterEach(() => { vi.unstubAllGlobals(); });
 
@@ -34,79 +32,6 @@ const STRATEGY = {
   databases: ['pubmed', 'embase'],
   overrides: { pubmed: 'metformin[tiab]' },
 };
-
-describe('buildQualityModel — composes the real engine, omits empty dimensions', () => {
-  it('emits transparent rows (concept/synonym/vocab/database/structure), not a vanity number', () => {
-    const { rows } = buildQualityModel(STRATEGY, { versions: [], available: true });
-    const ids = rows.map((r) => r.id);
-    expect(ids).toContain('concept-coverage');
-    expect(ids).toContain('synonym-coverage');
-    expect(ids).toContain('controlled-vocab');
-    expect(ids).toContain('database-readiness');
-    expect(ids).toContain('structure-warnings');
-    // Reproducibility rows are present because the versions backend answered.
-    expect(ids).toContain('repro-saved');
-    expect(ids).toContain('repro-final');
-    // No fabricated sensitivity row without a real hit count.
-    expect(ids).not.toContain('sensitivity');
-    // Every row carries a checkable status + label (no bare score).
-    for (const r of rows) {
-      expect(['ok', 'warn', 'info']).toContain(r.status);
-      expect(typeof r.label).toBe('string');
-    }
-  });
-
-  it('flags the single-term concept for synonym coverage and P+I coverage as ok', () => {
-    const { rows } = buildQualityModel(STRATEGY, { available: true, versions: [] });
-    const concept = rows.find((r) => r.id === 'concept-coverage');
-    expect(concept.status).toBe('ok'); // P and I both have terms
-    const syn = rows.find((r) => r.id === 'synonym-coverage');
-    expect(syn.status).toBe('info'); // Intervention has a single term
-    expect(syn.suggestion).toContain('Intervention');
-  });
-
-  it('surfaces a sensitivity row ONLY when a real hit count is supplied', () => {
-    const { rows } = buildQualityModel(STRATEGY, { available: true, versions: [], hitCount: 800 });
-    const sens = rows.find((r) => r.id === 'sensitivity');
-    expect(sens).toBeTruthy();
-    expect(sens.label).toContain('Balanced');
-  });
-
-  it('stays consistent with the real searchQualityCheck structural warnings', () => {
-    // A strategy with an EMPTY Population concept → the engine emits an empty:P warning,
-    // which the model must reflect as a warn-status structure row.
-    const emptyPop = {
-      concepts: [
-        { id: 'p', label: 'Population', picoField: 'P', terms: [] },
-        { id: 'i', label: 'Intervention', picoField: 'I', terms: [{ text: 'metformin' }] },
-      ],
-      databases: ['pubmed'],
-    };
-    const engineWarnings = searchQualityCheck(emptyPop.concepts).filter((w) => w.severity === 'warning' || w.severity === 'critical');
-    expect(engineWarnings.length).toBeGreaterThan(0);
-    const { rows } = buildQualityModel(emptyPop, { available: true, versions: [] });
-    const struct = rows.find((r) => r.id === 'structure-warnings');
-    expect(struct.status).toBe('warn');
-    expect(struct.label).toContain('warning');
-  });
-});
-
-describe('QualityRows leaf', () => {
-  it('renders a row per dimension with its label, detail and suggestion', () => {
-    const { rows } = buildQualityModel(STRATEGY, { available: true, versions: [] });
-    const html = renderToStaticMarkup(h(QualityRows, { rows }));
-    expect(html).toContain('Concept coverage');
-    expect(html).toContain('Synonym coverage');
-    expect(html).toContain('Database readiness');
-    // A suggestion arrow appears for at least one row (single-term concept).
-    expect(html).toContain('→');
-  });
-
-  it('renders an empty hint when there are no rows', () => {
-    const html = renderToStaticMarkup(h(QualityRows, { rows: [] }));
-    expect(html).toContain('quality breakdown');
-  });
-});
 
 describe('VersionList leaf', () => {
   const versions = [

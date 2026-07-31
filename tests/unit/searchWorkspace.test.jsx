@@ -1,19 +1,22 @@
 /**
- * searchWorkspace.test.jsx — 71.md + 73.md. SSR-safe smoke tests for the staged Search
- * Workspace redesign. Static render runs no effects, so no network is touched; we assert
- * the 9-stage rail renders (incl. the new Search Mode stage), each stage mounts its
+ * searchWorkspace.test.jsx — 71.md + 73.md, re-staged by 96.md. SSR-safe smoke tests
+ * for the staged Search Workspace. Static render runs no effects, so no network is
+ * touched; we assert the 7-stage rail renders (96.md — Concepts and Test & Refine are
+ * retired; Terms & Vocabulary is the central workspace), each stage mounts its
  * COMPOSED existing component without throwing, the two-path mode model behaves
- * (mode cards, mode-aware Results, header badge), the PubMed pulse presents hit-state
- * snapshots honestly, the scroll-model walker + search-mode persistence helpers are
- * pure-tested, the wording rule (no user-facing "AI") holds, and the flag gate that
- * routes the dispatcher behaves. Mirrors searchWizard.test.jsx / pecanSearchTab.test.jsx.
+ * (mode cards, mode-aware Results, header badge), the retired-stage ALIASES resolve
+ * (concepts/refine → terms), the Research Question stage is an EDITOR (no PICO
+ * cards), the PubMed pulse presents hit-state snapshots honestly, the scroll-model
+ * walker + search-mode persistence helpers are pure-tested, the wording rule (no
+ * user-facing "AI") holds, and the flag gate that routes the dispatcher behaves.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { createElement as h } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
   SearchWorkspace, searchWorkspaceV2FlagEnabled,
-  STAGES, stagesFor, stageAfterModeChange, reconcileStageUrl, PubMedPulse, findScrollableAncestor, persistSearchModeMerged,
+  STAGES, STAGE_ALIASES, stagesFor, stageAfterModeChange, reconcileStageUrl,
+  PubMedPulse, findScrollableAncestor, persistSearchModeMerged,
 } from '../../src/features/searchWorkspace/index.js';
 
 afterEach(() => { vi.unstubAllGlobals(); });
@@ -22,12 +25,12 @@ const PICO = { P: 'adults with type 2 diabetes', question: 'does metformin help?
 
 // Note: the SSR markup HTML-escapes "&" to "&amp;", so ampersand labels are matched escaped.
 const STAGE_LABELS = [
-  'Research Question', 'Concepts', 'Terms &amp; Vocabulary', 'Search Mode', 'Database Strategies',
-  'Test &amp; Refine', 'Run Externally', 'Documentation', 'Send to Screening',
+  'Research Question', 'Terms &amp; Vocabulary', 'Search Mode', 'Database Strategies',
+  'Run Externally', 'Documentation', 'Send to Screening',
 ];
 
 describe('SearchWorkspace (SSR smoke)', () => {
-  it('renders ONE unified header + the 9-stage rail, defaulting to Research Question', () => {
+  it('renders ONE unified header + the 7-stage rail, defaulting to Research Question', () => {
     const html = renderToStaticMarkup(
       h(SearchWorkspace, { projectId: 'p1', pico: PICO, readOnly: false, pecanEnabled: true }),
     );
@@ -35,8 +38,8 @@ describe('SearchWorkspace (SSR smoke)', () => {
     expect(html).toContain('>Pecan Search Engine<');
     // Every stage appears in the left rail
     for (const label of STAGE_LABELS) expect(html).toContain(label);
-    // Default stage is Research Question (stage 1 of 9) — the run engine is NOT mounted yet
-    expect(html).toContain('Stage 1 of 9');
+    // Default stage is Research Question (stage 1 of 7) — the run engine is NOT mounted yet
+    expect(html).toContain('Stage 1 of 7');
     expect(html).toContain('Research question');
     expect(html).not.toContain('Run search — Pecan Search Engine');
   });
@@ -45,19 +48,20 @@ describe('SearchWorkspace (SSR smoke)', () => {
     const html = renderToStaticMarkup(
       h(SearchWorkspace, { projectId: 'p2', pico: {}, readOnly: true, pecanEnabled: false }),
     );
-    expect(html).toContain('Stage 1 of 9');
+    expect(html).toContain('Stage 1 of 7');
     for (const label of STAGE_LABELS) expect(html).toContain(label);
   });
 });
 
-describe('STAGES / stagesFor — 73.md P5 + 74.md mode-scoped stage list', () => {
-  it('has 9 master stages in the locked order, with mode inserted after terms', () => {
+describe('STAGES / stagesFor — 96.md D3 mode-scoped stage list', () => {
+  it('has 7 master stages in the locked order (concepts/refine retired)', () => {
     expect(STAGES.map((s) => s.id)).toEqual([
-      'question', 'concepts', 'terms', 'mode', 'strategy', 'refine', 'results', 'documentation', 'screening',
+      'question', 'terms', 'mode', 'strategy', 'results', 'documentation', 'screening',
     ]);
-    expect(STAGES.map((s) => s.num)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(STAGES.map((s) => s.num)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     expect(STAGES.find((s) => s.id === 'strategy').label).toBe('Database Strategies');
     expect(STAGES.find((s) => s.id === 'strategy').manualOnly).toBe(true);
+    expect(STAGES.find((s) => s.id === 'terms').desc).toBe('Build your search');
   });
   it('labels Results mode-aware: automated → Automated Search, manual/null → Run Externally', () => {
     const res = (mode) => stagesFor(mode).find((s) => s.id === 'results');
@@ -67,45 +71,51 @@ describe('STAGES / stagesFor — 73.md P5 + 74.md mode-scoped stage list', () =>
     expect(res(null).label).toBe('Run Externally');
     expect(res(null).desc).toBe('Your database accounts');
   });
-  it('maps builder stages to the 3-way embedded phases', () => {
-    expect(STAGES.find((s) => s.id === 'concepts').phase).toBe('concepts');
+  it('maps builder stages to the embedded phases (terms + build only)', () => {
     expect(STAGES.find((s) => s.id === 'terms').phase).toBe('terms');
     expect(STAGES.find((s) => s.id === 'strategy').phase).toBe('build');
   });
   // 74.md — the selected mode controls the ENTIRE visible workflow.
-  it('automated mode REMOVES Database Strategies and renumbers the pips 1..8', () => {
+  it('automated mode REMOVES Database Strategies and renumbers the pips 1..6', () => {
     const auto = stagesFor('automated');
     expect(auto.map((s) => s.id)).toEqual([
-      'question', 'concepts', 'terms', 'mode', 'refine', 'results', 'documentation', 'screening',
+      'question', 'terms', 'mode', 'results', 'documentation', 'screening',
     ]);
-    expect(auto.map((s) => s.num)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(auto.map((s) => s.num)).toEqual([1, 2, 3, 4, 5, 6]);
     expect(auto.some((s) => s.label === 'Database Strategies')).toBe(false);
   });
-  it('manual and undecided keep the full 9-stage rail (existing projects keep working)', () => {
+  it('manual and undecided keep the full 7-stage rail (existing projects keep working)', () => {
     for (const mode of ['manual', null, undefined]) {
       const list = stagesFor(mode);
       expect(list.map((s) => s.id)).toEqual(STAGES.map((s) => s.id));
-      expect(list.map((s) => s.num)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+      expect(list.map((s) => s.num)).toEqual([1, 2, 3, 4, 5, 6, 7]);
     }
   });
   it('never mutates the master STAGES table', () => {
     stagesFor('automated'); stagesFor('manual');
     expect(STAGES.find((s) => s.id === 'results').label).toBe('Run Externally');
-    expect(STAGES.length).toBe(9);
+    expect(STAGES.length).toBe(7);
   });
 });
 
-describe('stageAfterModeChange — 74.md: a removed stage never strands the user', () => {
+describe('stageAfterModeChange — 74.md/96.md: removed + retired stages never strand the user', () => {
   it('keeps the stage when it survives the mode switch', () => {
-    for (const id of ['question', 'concepts', 'terms', 'mode', 'refine', 'results', 'documentation', 'screening']) {
+    for (const id of ['question', 'terms', 'mode', 'results', 'documentation', 'screening']) {
       expect(stageAfterModeChange(id, 'automated')).toBe(id);
       expect(stageAfterModeChange(id, 'manual')).toBe(id);
     }
     expect(stageAfterModeChange('strategy', 'manual')).toBe('strategy');
     expect(stageAfterModeChange('strategy', null)).toBe('strategy');
   });
-  it('Database Strategies → Test & Refine when switching to automated (nearest FOLLOWING stage)', () => {
-    expect(stageAfterModeChange('strategy', 'automated')).toBe('refine');
+  it('Database Strategies → Results when switching to automated (nearest FOLLOWING stage)', () => {
+    expect(stageAfterModeChange('strategy', 'automated')).toBe('results');
+  });
+  it('96.md — RETIRED stage ids resolve through STAGE_ALIASES to Terms & Vocabulary', () => {
+    expect(STAGE_ALIASES).toEqual({ concepts: 'terms', refine: 'terms' });
+    for (const mode of [null, 'manual', 'automated']) {
+      expect(stageAfterModeChange('concepts', mode)).toBe('terms');
+      expect(stageAfterModeChange('refine', mode)).toBe('terms');
+    }
   });
   it('an unknown stage id lands home on Research Question', () => {
     expect(stageAfterModeChange('nope', 'automated')).toBe('question');
@@ -115,27 +125,32 @@ describe('stageAfterModeChange — 74.md: a removed stage never strands the user
 
 describe('reconcileStageUrl — 75.md recs (Finding 3): the reconcile re-syncs the URL', () => {
   it('a non-surviving deep link normalizes the URL to the resolved stage', () => {
-    // ?stage=strategy on an automated project → the body shows refine AND the URL is
-    // pushed to refine (so the side-menu highlight + back/forward stop pointing at the
+    // ?stage=strategy on an automated project → the body shows results AND the URL is
+    // pushed to results (so the side-menu highlight + back/forward stop pointing at the
     // phantom Database Strategies stage). Body still on the dead stage → apply too.
-    expect(reconcileStageUrl('strategy', 'automated', 'strategy')).toEqual({ apply: 'refine', syncUrl: 'refine' });
+    expect(reconcileStageUrl('strategy', 'automated', 'strategy')).toEqual({ apply: 'results', syncUrl: 'results' });
+  });
+
+  it('96.md — a retired ?stage=concepts / ?stage=refine deep link lands on terms AND rewrites the URL', () => {
+    expect(reconcileStageUrl('concepts', 'manual', 'question')).toEqual({ apply: 'terms', syncUrl: 'terms' });
+    expect(reconcileStageUrl('refine', 'automated', 'question')).toEqual({ apply: 'terms', syncUrl: 'terms' });
+    // body already on terms → only the URL is normalized (loop-safe: once the URL says
+    // terms, the resolver is the identity and nothing is pushed again)
+    expect(reconcileStageUrl('concepts', 'manual', 'terms')).toEqual({ apply: null, syncUrl: 'terms' });
+    expect(reconcileStageUrl('terms', 'manual', 'terms')).toEqual({ apply: null, syncUrl: null });
   });
 
   it('syncs the URL even when the body already landed on the survivor (apply is a no-op)', () => {
-    // Mount already seeded to refine (stageAfterModeChange on the seed); the effect must
-    // STILL normalize the stale ?stage=strategy in the URL.
-    expect(reconcileStageUrl('strategy', 'automated', 'refine')).toEqual({ apply: null, syncUrl: 'refine' });
+    expect(reconcileStageUrl('strategy', 'automated', 'results')).toEqual({ apply: null, syncUrl: 'results' });
   });
 
   it('a surviving deep link adopts the stage but leaves an already-correct URL alone', () => {
-    // Ordinary side-menu / deep-link nav: the URL already equals the target, so only the
-    // body adopts it — pushing the URL again would risk a render loop.
     expect(reconcileStageUrl('terms', 'manual', 'question')).toEqual({ apply: 'terms', syncUrl: null });
   });
 
   it('is a no-op once body + URL agree (loop-safe: nothing pushed, nothing applied)', () => {
     expect(reconcileStageUrl('terms', 'manual', 'terms')).toEqual({ apply: null, syncUrl: null });
-    expect(reconcileStageUrl('refine', 'automated', 'refine')).toEqual({ apply: null, syncUrl: null });
+    expect(reconcileStageUrl('results', 'automated', 'results')).toEqual({ apply: null, syncUrl: null });
   });
 
   it('no URL stage (SSR / bare tab) → does nothing', () => {
@@ -149,21 +164,39 @@ describe('SearchWorkspace — each stage composes its existing component without
     h(SearchWorkspace, { projectId: 'p1', pico: PICO, readOnly: false, pecanEnabled, initialStage, initialSearchMode }),
   );
 
-  it('Research Question → PICO summary', () => {
-    const html = render('question');
-    expect(html).toContain('Research question');
+  it('Research Question → the EDITOR when updNested is threaded (96.md D1), no PICO cards', () => {
+    const html = renderToStaticMarkup(
+      h(SearchWorkspace, { projectId: 'p1', pico: PICO, updNested: () => {}, readOnly: false, pecanEnabled: true, initialStage: 'question' }),
+    );
+    expect(html).toContain('search-question-editor');
     expect(html).toContain('does metformin help?');
+    expect(html).toContain('built directly from this question');
+    // 96.md D1 — NO P/I/C/O cards or copy anywhere on the Search question stage.
+    expect(html).not.toContain('Population / Problem');
+    expect(html).not.toContain('Comparator / Control');
+    expect(html).not.toContain('PICO');
   });
 
-  it('Concepts + Terms + Strategy → the embedded Search Builder (concepts/terms/build phases)', () => {
-    for (const stage of ['concepts', 'terms', 'strategy']) {
-      const html = render(stage);
+  it('Research Question → plain display without an editor seam (read-only / legacy mount)', () => {
+    const html = render('question');
+    expect(html).toContain('does metformin help?');
+    expect(html).not.toContain('search-question-editor');
+  });
+
+  it('Terms + Strategy → the embedded Search Builder (terms/build phases)', () => {
+    for (const stage of ['terms', 'strategy']) {
       // The builder mounts (its SSR loading shell) — proving the reused engine composes.
-      expect(html).toContain('Loading search');
+      expect(render(stage)).toContain('Loading search');
     }
-    expect(render('concepts')).toContain('Concepts');
     expect(render('terms')).toContain('Terms &amp; vocabulary'); // "&" is HTML-escaped in SSR markup
     expect(render('strategy')).toContain('Database strategies');
+  });
+
+  it('96.md — Terms & Vocabulary carries the relocated estimates + versions panels', () => {
+    const html = render('terms');
+    expect(html).toContain('Estimated results per database'); // PreviewEstimates (relocated from refine)
+    expect(html).toContain('Versions');                       // SearchVersionsPanel (relocated from refine)
+    expect(html).not.toContain('Search quality');             // the SearchQualityPanel is deleted
   });
 
   it('Search Mode → the two path cards with radio semantics', () => {
@@ -187,15 +220,19 @@ describe('SearchWorkspace — each stage composes its existing component without
     expect(render('mode', true)).not.toContain('search-mode-badge');
   });
 
-  it('74.md — a strategy deep link under an automated seed REMAPS to Test & Refine', () => {
+  it('74.md — a strategy deep link under an automated seed REMAPS to Results', () => {
     const html = render('strategy', true, 'automated');
     // The removed stage never renders — the workspace lands on the nearest survivor…
-    expect(html).toContain('data-stage="refine"');
-    expect(html).toContain('Test &amp; refine');
-    // …and no automated summary card exists anywhere any more (the automated rail
-    // simply has no Database Strategies stage to ride on).
+    expect(html).toContain('data-stage="results"');
     expect(html).not.toContain('automated-strategy-summary');
     expect(render('strategy', true, 'manual')).toContain('data-stage="strategy"');
+  });
+
+  it('96.md — a retired concepts/refine deep link lands on Terms & Vocabulary', () => {
+    for (const retired of ['concepts', 'refine']) {
+      const html = render(retired);
+      expect(html).toContain('data-stage="terms"');
+    }
   });
 
   it('Strategy/Results with NO mode chosen → the slim non-blocking chooser strip', () => {
@@ -231,14 +268,6 @@ describe('SearchWorkspace — each stage composes its existing component without
     expect(render('results', false, 'automated')).toContain('Run the search');
   });
 
-  it('Test & Refine → preview counts + quality panel + versions panel', () => {
-    const html = render('refine');
-    expect(html).toContain('Test &amp; refine');
-    expect(html).toContain('Estimated results per database');
-    expect(html).toContain('Search quality');   // SearchQualityPanel shell
-    expect(html).toContain('Versions');          // SearchVersionsPanel shell
-  });
-
   it('Documentation → the reproducibility export panel (methods + PRISMA-S)', () => {
     const html = render('documentation');
     expect(html).toContain('Documentation');
@@ -262,23 +291,23 @@ describe('SearchWorkspace — 74.md: one workflow visible at a time', () => {
   it('automated mode: Database Strategies never appears on any workflow stage', () => {
     // Every automated stage except the mode CHOOSER itself (whose manual card must
     // describe the manual path so the distinction stays understandable).
-    for (const stage of ['question', 'concepts', 'terms', 'refine', 'results', 'documentation', 'screening']) {
+    for (const stage of ['question', 'terms', 'results', 'documentation', 'screening']) {
       for (const pecan of [true, false]) {
         expect(render(stage, pecan, 'automated')).not.toContain('Database Strategies');
       }
     }
   });
 
-  it('automated mode: the rail is the renumbered 8-stage list', () => {
+  it('automated mode: the rail is the renumbered 6-stage list', () => {
     const html = render('question', true, 'automated');
-    expect(html).toContain('Stage 1 of 8');
+    expect(html).toContain('Stage 1 of 6');
     expect(html).toContain('Automated Search');
     expect(html).not.toContain('Run Externally');
   });
 
-  it('manual mode: the full 9-stage rail, and no automated-workflow surfaces anywhere', () => {
+  it('manual mode: the full 7-stage rail, and no automated-workflow surfaces anywhere', () => {
     const html = render('question', true, 'manual');
-    expect(html).toContain('Stage 1 of 9');
+    expect(html).toContain('Stage 1 of 7');
     expect(html).toContain('Database Strategies');
     expect(html).toContain('Run Externally');
     expect(html).not.toContain('Automated Search'); // the automated stage label never leaks
@@ -299,11 +328,11 @@ describe('SearchWorkspace — 74.md: one workflow visible at a time', () => {
     expect(ro).not.toContain('Change the search mode');
   });
 
-  it('Test & Refine: the enable-in-Ops estimates card is an automated-only indicator — hidden in manual mode', () => {
-    expect(render('refine', false, 'manual')).not.toContain('Estimated results per database');
-    expect(render('refine', true, 'manual')).toContain('Estimated results per database');   // live estimates stay shared
-    expect(render('refine', false, 'automated')).toContain('Estimated results per database');
-    expect(render('refine', false, undefined)).toContain('Estimated results per database'); // undecided keeps the neutral note
+  it('Terms & Vocabulary: the enable-in-Ops estimates card is an automated-only indicator — hidden in manual mode', () => {
+    expect(render('terms', false, 'manual')).not.toContain('Estimated results per database');
+    expect(render('terms', true, 'manual')).toContain('Estimated results per database');   // live estimates stay shared
+    expect(render('terms', false, 'automated')).toContain('Estimated results per database');
+    expect(render('terms', false, undefined)).toContain('Estimated results per database'); // undecided keeps the neutral note
   });
 
   it('Send to Screening (automated, engine off) points to the mode stage, not Database Strategies', () => {
@@ -320,9 +349,9 @@ describe('SearchWorkspace — 74.md: one workflow visible at a time', () => {
   it('a mode switch is announced to screen readers (polite status with the new stage count)', () => {
     const auto = render('question', true, 'automated');
     expect(auto).toContain('search-mode-announcement');
-    expect(auto).toContain('Automated search selected. The workflow now has 8 stages.');
+    expect(auto).toContain('Automated search selected. The workflow now has 6 stages.');
     const manual = render('question', true, 'manual');
-    expect(manual).toContain('Manual search selected. The workflow now has 9 stages.');
+    expect(manual).toContain('Manual search selected. The workflow now has 7 stages.');
     // No mode → no badge, no announcement region.
     expect(render('question', true, undefined)).not.toContain('search-mode-announcement');
   });
@@ -349,15 +378,14 @@ describe('SearchWorkspace — 75.md: side-menu-driven stage control + Next-after
 
   it('hideRail removes the DUPLICATE in-body rail, keeping the heading + Back/Next footer', () => {
     // Default (side-menu not driving) → the in-body rail still renders.
-    expect(render({ initialStage: 'concepts' })).toContain('search-workspace-rail');
-    expect(render({ initialStage: 'concepts', hideRail: false })).toContain('search-workspace-rail');
+    expect(render({ initialStage: 'terms' })).toContain('search-workspace-rail');
+    expect(render({ initialStage: 'terms', hideRail: false })).toContain('search-workspace-rail');
     // Driven by the white side-menu → the numbered rail is dropped (no duplication)…
-    const chromeless = render({ initialStage: 'concepts', hideRail: true });
+    const chromeless = render({ initialStage: 'terms', hideRail: true });
     expect(chromeless).not.toContain('search-workspace-rail');
     // …but the per-stage heading, the stage surface and the footer stay.
-    expect(chromeless).toContain('data-stage="concepts"');
-    expect(chromeless).toContain('Concepts');
-    expect(chromeless).toContain('Stage 2 of 9');
+    expect(chromeless).toContain('data-stage="terms"');
+    expect(chromeless).toContain('Stage 2 of 7');
   });
 
   it('opens the stage the host derived from ?stage= (deep-link contract)', () => {
@@ -366,11 +394,13 @@ describe('SearchWorkspace — 75.md: side-menu-driven stage control + Next-after
     // source of truth for both the side-menu highlight and the body.
     const html = render({ hideRail: true, initialStage: 'documentation' });
     expect(html).toContain('data-stage="documentation"');
-    expect(html).toContain('Stage 8 of 9');
+    expect(html).toContain('Stage 6 of 7');
     expect(html).toContain('Documentation');
     // a mode-invalid deep link is remapped (74.md) even when it arrives via the URL/host.
     expect(render({ hideRail: true, initialStage: 'strategy', initialSearchMode: 'automated' }))
-      .toContain('data-stage="refine"');
+      .toContain('data-stage="results"');
+    // 96.md — a retired initialStage resolves through the alias map.
+    expect(render({ hideRail: true, initialStage: 'concepts' })).toContain('data-stage="terms"');
   });
 
   it('the Send-to-Screening stage exposes a "Continue to Screening" handoff, disabled until ready', () => {
@@ -385,7 +415,7 @@ describe('SearchWorkspace — 75.md: side-menu-driven stage control + Next-after
   });
 
   it('non-terminal stages still render the ordinary Back/Next footer (regression)', () => {
-    const html = render({ hideRail: true, initialStage: 'concepts' });
+    const html = render({ hideRail: true, initialStage: 'mode' });
     expect(html).toContain('Next:');
     expect(html).not.toContain('continue-to-screening');
   });
@@ -394,15 +424,13 @@ describe('SearchWorkspace — 75.md: side-menu-driven stage control + Next-after
 describe('PubMedPulse — 73.md P3: honest hit-state presentation', () => {
   const render = (props) => renderToStaticMarkup(h(PubMedPulse, props));
 
-  it('no concepts → the invitation, never a number', () => {
+  it('no concepts → the phrase-selection invitation, never a number', () => {
     const html = render({ snapshot: { status: 'updated', count: 999, updatedAt: Date.now() }, hasConcepts: false });
     expect(html).toContain('pubmed-pulse');
-    expect(html).toContain('Add concepts to see a live PubMed estimate');
+    expect(html).toContain('Select phrases from your research question to see a live PubMed estimate');
     expect(html).not.toContain('999');
   });
 
-  // 85.md — the five PICO groups ALWAYS exist (audit M1: hasConcepts never fires),
-  // so the REAL empty state keys off the builder-reported live-term count.
   it('concepts exist but zero live terms → "Add terms…" invitation, never a number', () => {
     const html = render({ snapshot: { status: 'updated', count: 999, updatedAt: Date.now() }, hasConcepts: true, liveTermCount: 0 });
     expect(html).toContain('Add terms to see a live PubMed estimate');
@@ -520,7 +548,7 @@ describe('persistSearchModeMerged — 73.md P5 (recs round: single-key save)', (
 describe('SearchWorkspace — wording rule: never says "AI"', () => {
   it('renders no user-facing "AI" across each mode\'s OWN stage list', () => {
     // recs round — iterate stagesFor(mode) so every reachable (stage, mode) cell is
-    // exercised exactly once (a 'strategy'×automated seed would just remap to refine).
+    // exercised exactly once (a 'strategy'×automated seed would just remap to results).
     for (const mode of [undefined, 'manual', 'automated']) {
       for (const s of stagesFor(mode == null ? null : mode)) {
         const html = renderToStaticMarkup(
@@ -535,17 +563,16 @@ describe('SearchWorkspace — wording rule: never says "AI"', () => {
 describe('searchWorkspaceV2FlagEnabled — the gate that routes the dispatcher (fetch stubbed)', () => {
   const stub = (flags) => vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ featureFlags: flags }) })));
 
-  it('is ON only when BOTH searchWorkspaceV2 AND searchEngine are on', async () => {
-    stub({ searchWorkspaceV2: true, searchEngine: true });
+  // 96.md — the legacy wizard is deleted, so the old searchWorkspaceV2 key is
+  // deprecated/IGNORED: the workspace renders whenever searchEngine is ON.
+  it('is ON whenever searchEngine is on (searchWorkspaceV2 ignored)', async () => {
+    stub({ searchEngine: true });
+    expect(await searchWorkspaceV2FlagEnabled()).toBe(true);
+    stub({ searchWorkspaceV2: false, searchEngine: true });
     expect(await searchWorkspaceV2FlagEnabled()).toBe(true);
   });
 
-  it('is OFF when the redesign flag is off (→ dispatcher renders the legacy SearchWizard)', async () => {
-    stub({ searchWorkspaceV2: false, searchEngine: true });
-    expect(await searchWorkspaceV2FlagEnabled()).toBe(false);
-  });
-
-  it('is OFF when its searchEngine dependency is off', async () => {
+  it('is OFF when searchEngine is off (→ dispatcher renders the legacy in-blob SearchTab)', async () => {
     stub({ searchWorkspaceV2: true, searchEngine: false });
     expect(await searchWorkspaceV2FlagEnabled()).toBe(false);
   });
@@ -555,5 +582,45 @@ describe('searchWorkspaceV2FlagEnabled — the gate that routes the dispatcher (
     expect(await searchWorkspaceV2FlagEnabled()).toBe(false);
     vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('down'))));
     expect(await searchWorkspaceV2FlagEnabled()).toBe(false);
+  });
+});
+
+/* ══════════ 96.md QA M18 + L24 — question editor: field lock + legacy empty copy ══ */
+
+describe('QuestionStage — QA M18 field lock + QA L24 legacy-PICO empty state (SSR)', () => {
+  const mount = (props) => renderToStaticMarkup(
+    h(SearchWorkspace, { projectId: 'p1', readOnly: false, pecanEnabled: true, initialStage: 'question', updNested: () => {}, ...props }),
+  );
+
+  it('M18: a teammate holding the pico.question lock disables the editor with "X is editing"', () => {
+    const lockCtx = { pid: 'sp1', myUserId: 'me', locks: [{ field: 'pico.question', userId: 'other', name: 'Aisha' }] };
+    const html = mount({ pico: PICO, lockCtx });
+    expect(html).toContain('data-testid="search-question-editor"');
+    expect(html).toMatch(/<textarea[^>]*disabled/);
+    expect(html).toContain('data-testid="search-question-locked"');
+    expect(html).toContain('Aisha is editing');
+  });
+  it('M18: my own lock (or no lock) leaves the editor enabled — fail-open', () => {
+    const mine = { pid: 'sp1', myUserId: 'me', locks: [{ field: 'pico.question', userId: 'me', name: 'Me' }] };
+    expect(mount({ pico: PICO, lockCtx: mine })).not.toMatch(/<textarea[^>]*disabled/);
+    expect(mount({ pico: PICO })).not.toMatch(/<textarea[^>]*disabled/); // no lockCtx at all
+    expect(mount({ pico: PICO })).not.toContain('is editing');
+  });
+  it('L24: blank question + legacy P/I/C/O values → the "planned with PICO" helper copy', () => {
+    const legacy = { P: 'adults with T2DM', I: 'metformin', question: '' };
+    const html = mount({ pico: legacy });
+    expect(html).toContain('This project was planned with PICO');
+    // read-only variant carries the copy too (no editor seam)
+    const ro = renderToStaticMarkup(h(SearchWorkspace, { projectId: 'p1', readOnly: true, pecanEnabled: true, initialStage: 'question', pico: legacy }));
+    expect(ro).toContain('This project was planned with PICO');
+  });
+  it('L24: a blank question WITHOUT legacy PICO keeps the plain empty copy', () => {
+    const html = mount({ pico: { question: '' } });
+    expect(html).not.toContain('planned with PICO');
+    expect(html).toContain('What question should this review answer?');
+  });
+  it('L28: the editor renders the question as its value (local draft seeds from pico.question)', () => {
+    const html = mount({ pico: PICO });
+    expect(html).toContain('does metformin help?');
   });
 });

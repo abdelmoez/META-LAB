@@ -42,6 +42,9 @@ function Opt({ active, onClick, children, title }) {
 export default function TermEditorPopover({
   term, beginner, moveTargets, dupInfo, preview,
   onChange, onClose, onLookup, onConvertSynonyms, onToggleDisabled, onMove, onRemove,
+  // 96.md §3B (QA M3) — reorder the term WITHIN its group (the rendered OR chain):
+  // onReorder(±1) with edge flags from the parent; both moves are undoable.
+  onReorder, canMoveEarlier, canMoveLater,
 }) {
   const t = term || {};
   const lk = t.vocab;
@@ -170,6 +173,38 @@ export default function TermEditorPopover({
             )}
           </div>
         </div>
+      )}
+
+      {/* 96.md §3B (QA M3) — within-group order: the OR chain renders in term order
+          (and the order persists), so it is user-controllable. Keyboard-accessible
+          buttons; edges disable with an explanation instead of dead-clicking. */}
+      {onReorder && (
+        <Section label="Position in this group">
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button type="button" data-testid="sb-term-move-earlier"
+              onClick={() => canMoveEarlier && onReorder(-1)}
+              disabled={!canMoveEarlier} aria-disabled={!canMoveEarlier || undefined}
+              aria-label={`Move ${t.text || 'term'} earlier in the group`}
+              title={canMoveEarlier ? 'Move this term earlier in the OR chain' : 'Already first in the group'}
+              style={{
+                flex: 1, cursor: canMoveEarlier ? 'pointer' : 'not-allowed', fontFamily: FONT, fontSize: 10.5, fontWeight: 600, minHeight: 26,
+                color: C.txt2, background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, padding: '4px 6px', opacity: canMoveEarlier ? 1 : 0.5,
+              }}>
+              ↑ Move earlier
+            </button>
+            <button type="button" data-testid="sb-term-move-later"
+              onClick={() => canMoveLater && onReorder(1)}
+              disabled={!canMoveLater} aria-disabled={!canMoveLater || undefined}
+              aria-label={`Move ${t.text || 'term'} later in the group`}
+              title={canMoveLater ? 'Move this term later in the OR chain' : 'Already last in the group'}
+              style={{
+                flex: 1, cursor: canMoveLater ? 'pointer' : 'not-allowed', fontFamily: FONT, fontSize: 10.5, fontWeight: 600, minHeight: 26,
+                color: C.txt2, background: 'transparent', border: `1px solid ${C.brd2}`, borderRadius: 7, padding: '4px 6px', opacity: canMoveLater ? 1 : 0.5,
+              }}>
+              ↓ Move later
+            </button>
+          </div>
+        </Section>
       )}
 
       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', borderTop: `1px solid ${C.brd}`, paddingTop: 10 }}>

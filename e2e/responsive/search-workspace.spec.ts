@@ -1,25 +1,25 @@
 /**
- * search-workspace.spec.ts — 85.md responsive validation for the redesigned Search
- * workspace stages (Concepts + Terms & Vocabulary master-detail).
+ * search-workspace.spec.ts — 85.md + 96.md responsive validation for the central
+ * Terms & Vocabulary workspace (question phrase card + master-detail + preview).
  *
  * Runs under the responsive device projects (mobile-chrome / tablet run e2e
  * responsive/** only) AND pins explicit viewports so the file is self-contained on
  * the default chromium project.
  *
- * Assertions per width (768 tablet portrait, 1024 small laptop):
- *   - the concept navigator, the add-term box and the strategy preview are all
- *     reachable (visible after scroll) on the Terms & Vocabulary stage;
- *   - the document body NEVER scrolls horizontally (wide content scrolls inside
- *     its own container instead).
+ * 96.md — the workspace renders whenever `searchEngine` is ON (global-setup enables
+ * it); no searchWorkspaceV2 flag flipping any more. New projects seed EMPTY, so each
+ * test creates its concept group via the question card's manual add box first.
  *
- * Flag note: searchWorkspaceV2 is GLOBAL server state — same serial beforeAll
- * ON / afterAll FORCE-OFF pattern as e2e/search/searchWorkspace.spec.ts.
+ * Assertions per width (768 tablet portrait, 1024 small laptop):
+ *   - the question card, concept navigator, add-term box and strategy preview are
+ *     all reachable (visible after scroll) on the Terms & Vocabulary stage;
+ *   - the document body NEVER scrolls horizontally (wide content scrolls inside
+ *     its own container instead);
+ *   - a retired ?stage=concepts deep link lands on Terms & Vocabulary.
  */
-import { request as apiRequest, APIRequestContext, type Page } from '@playwright/test';
+import { type Page } from '@playwright/test';
 import { test, expect } from '../fixtures/stitch-test';
 import { SearchPage } from '../page-objects/SearchPage';
-import { setFeatureFlags } from '../helpers/api';
-import { BASE_URL, adminStatePath } from '../helpers/env';
 
 const WIDTHS = [
   { w: 768, h: 1024, label: 'tablet (768)' },
@@ -38,34 +38,23 @@ async function expectNoHorizontalOverflow(page: Page, label: string): Promise<vo
     .toBeLessThanOrEqual(OVERFLOW_TOLERANCE);
 }
 
-test.describe.serial('85.md — responsive Search workspace (searchWorkspaceV2 ON)', () => {
-  let adminCtx: APIRequestContext;
-
-  test.beforeAll(async () => {
-    adminCtx = await apiRequest.newContext({ baseURL: BASE_URL, storageState: adminStatePath });
-    await setFeatureFlags(adminCtx, { searchWorkspaceV2: true });
-  });
-
-  test.afterAll(async () => {
-    try { await setFeatureFlags(adminCtx, { searchWorkspaceV2: false }); }
-    finally { await adminCtx?.dispose(); }
-  });
-
-  /** Open the staged workspace's Terms stage, retrying while the flag propagates. */
-  async function openTermsStage(sp: SearchPage, projectId: string): Promise<void> {
-    await expect(async () => {
-      await sp.shell.goto(`/app/project/${encodeURIComponent(projectId)}?tab=search&stage=terms`);
-      await expect(sp.activeConcept).toBeVisible({ timeout: 5_000 });
-    }).toPass({ timeout: 30_000 });
+test.describe('96.md — responsive Terms & Vocabulary workspace', () => {
+  /** Open Terms & Vocabulary (retry while flags propagate) and seed one group. */
+  async function openTermsWithGroup(sp: SearchPage, projectId: string, label: string): Promise<void> {
+    await sp.gotoStage(projectId, 'terms');
+    await expect(sp.questionCard).toBeVisible();
+    await sp.addConceptGroup(label);
+    await expect(sp.activeConcept).toBeVisible();
   }
 
   for (const bp of WIDTHS) {
-    test(`terms master-detail: navigator, add box and preview reachable at ${bp.label}; no body overflow`, async ({ page, tmpProject }) => {
+    test(`terms workspace: question card, navigator, add box and preview reachable at ${bp.label}; no body overflow`, async ({ page, tmpProject }) => {
       await page.setViewportSize({ width: bp.w, height: bp.h });
       const sp = new SearchPage(page);
-      await openTermsStage(sp, tmpProject.id);
+      await openTermsWithGroup(sp, tmpProject.id, 'asthma');
 
-      // The three master-detail surfaces are all reachable.
+      // The workspace surfaces are all reachable.
+      await expect(sp.questionCard).toBeVisible();
       await expect(sp.conceptNavigator).toBeVisible();
       await sp.addTermInput.scrollIntoViewIfNeeded();
       await expect(sp.addTermInput).toBeVisible();
@@ -84,18 +73,16 @@ test.describe.serial('85.md — responsive Search workspace (searchWorkspaceV2 O
       await expectNoHorizontalOverflow(page, `terms+chip @ ${bp.label}`);
     });
 
-    test(`concepts stage: cards + keyword picker reachable at ${bp.label}; no body overflow`, async ({ page, tmpProject }) => {
+    test(`retired ?stage=concepts deep link lands on terms at ${bp.label}; no body overflow`, async ({ page, tmpProject }) => {
       await page.setViewportSize({ width: bp.w, height: bp.h });
       const sp = new SearchPage(page);
       await expect(async () => {
         await sp.shell.goto(`/app/project/${encodeURIComponent(tmpProject.id)}?tab=search&stage=concepts`);
-        await expect(sp.conceptCards).toBeVisible({ timeout: 5_000 });
+        await expect(sp.stageSurface).toHaveAttribute('data-stage', 'terms', { timeout: 5_000 });
       }).toPass({ timeout: 30_000 });
 
-      await expect(sp.keywordInput('Population')).toBeVisible();
-      await sp.conceptCards.scrollIntoViewIfNeeded();
-      await expect(sp.editTermsButton('Population')).toBeVisible();
-      await expectNoHorizontalOverflow(page, `concepts @ ${bp.label}`);
+      await expect(sp.questionCard).toBeVisible();
+      await expectNoHorizontalOverflow(page, `alias-redirect @ ${bp.label}`);
     });
   }
 });

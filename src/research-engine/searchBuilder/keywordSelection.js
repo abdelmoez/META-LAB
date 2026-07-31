@@ -209,6 +209,25 @@ export function tokenizeForSelection(text) {
   return tokens;
 }
 
+/**
+ * 96.md §3A (QA M5) — arbitrary contiguous span selection. Given the token array
+ * from tokenizeForSelection and two token indices (any order), return the EXACT
+ * contiguous question substring between them (inclusive) as display text — filler
+ * and noise tokens in between are part of the phrase, because the user selected a
+ * literal run of their own question ("sodium-glucose cotransporter 2 inhibitors"
+ * tokenizes into unrelated words, but the span is the phrase they meant).
+ * Returns '' for out-of-range indices or an empty token list. Pure.
+ */
+export function spanPhrase(tokens, anchorIdx, endIdx) {
+  const list = Array.isArray(tokens) ? tokens : [];
+  const a = Number.isInteger(anchorIdx) ? anchorIdx : -1;
+  const b = Number.isInteger(endIdx) ? endIdx : -1;
+  if (!list.length || a < 0 || b < 0 || a >= list.length || b >= list.length) return '';
+  const lo = Math.min(a, b);
+  const hi = Math.max(a, b);
+  return list.slice(lo, hi + 1).map((t) => String((t && t.text) || '').trim()).filter(Boolean).join(' ');
+}
+
 /** The selectable keywords (words + phrases) auto-suggested from a field, deduped
  *  by normalized text, in reading order. Helpful pre-highlight set for the UI. */
 export function suggestedKeywords(text) {

@@ -6,11 +6,16 @@
  *    detection across AND-ed concepts.
  *  - detectCrossConceptDuplicates — find the same/equivalent term living in more than
  *    one concept (which over-narrows an AND-ed search).
- *  - searchQualityCheck — a small "Search Quality Check" foundation: empty major
- *    concept, term-in-multiple-concepts, no controlled vocabulary for a major concept,
- *    likely-missing acronym expansion, literal Boolean operator inside a term,
- *    within-concept duplicate, comparator/outcome over-narrowing. (NOT a full
- *    PRESS/PRISMA-S system — see docs/manager/search-builder-future-enhancements.md.)
+ *  - searchQualityCheck — a small "Search Quality Check" foundation: empty concept
+ *    group in the AND chain, term-in-multiple-concepts, no controlled vocabulary for
+ *    a concept, likely-missing acronym expansion, literal Boolean operator inside a
+ *    term, within-concept duplicate. (NOT a full PRESS/PRISMA-S system — see
+ *    docs/manager/search-builder-future-enhancements.md.)
+ *    96.md re-keyed the formerly PICO-specific checks generically: empty-group is
+ *    `empty:<conceptId>` (was empty:P/empty:I), no-vocab is `novocab:<conceptId>`
+ *    (was novocab:P/I/O); the narrow:C / narrow:O / outcomes-optional PICO pedagogy
+ *    is deleted. Old dismissed ids persist harmlessly as orphans in
+ *    `dismissedWarnings` (the dismissal filter simply never matches them again).
  *  - sensitivitySignal — bucket a hit count into Very broad … Very narrow.
  *
  * Deterministic + exported for unit tests. No fabricated numbers; nothing here calls
@@ -65,8 +70,6 @@ export function detectCrossConceptDuplicates(concepts) {
   return dups;
 }
 
-const MAJOR_CONCEPTS = [['P', 'Population'], ['I', 'Intervention / Exposure'], ['O', 'Outcomes']];
-
 function conceptHasText(concept, text) {
   const n = norm(text);
   return liveTerms(concept).some((t) => norm(t.text) === n);
@@ -83,18 +86,31 @@ export function searchQualityCheck(concepts, opts = {}) {
   const warnings = [];
   const push = (w) => { if (!dismissed.has(w.id)) warnings.push(w); };
 
-  // 1. Population / Intervention with no terms is a real problem (warning). Outcomes
-  //    empty is NORMAL — many SR searches deliberately omit outcomes to stay sensitive
-  //    — so it gets a calm, informational note instead of a warning (SB5 Part 7).
-  for (const [key, label] of [['P', 'Population'], ['I', 'Intervention / Exposure']]) {
-    const c = list.find((x) => x.picoField === key);
-    if (c && liveTerms(c).length === 0) {
-      push({ id: `empty:${key}`, severity: 'warning', conceptId: c.id, concept: label, message: `${label} has no search terms.`, action: `Add at least one term for ${label} in Select Keywords.` });
+  // 1. (96.md re-key) A concept group with ZERO live terms silently drops out of the
+  //    AND chain — the compiled search no longer requires that idea at all, which is
+  //    exactly the "empty groups highlighted" hazard the spec names. Warn per group,
+  //    keyed by the concept's stable id (`empty:<conceptId>`) so dismissals survive
+  //    renames. Only meaningful when 2+ groups exist (a single empty group is the
+  //    ordinary just-started state — the stage status already reads 'empty').
+  //    Note-carrying groups (the legacy Time-Frame group renders its restriction as
+  //    a `note`, never as terms) are deliberately exempt — they are "ready" without
+  //    terms (see searchState.conceptStatus).
+  if (list.length >= 2) {
+    for (const c of list) {
+      if (!c || (c.note && String(c.note).trim())) continue;
+      // 96.md compat (QA L23) — legacy PICO scaffold groups (picoField / pico_auto)
+      // were auto-created five-at-a-time by the retired sync; an intentionally-empty
+      // Comparator/Outcomes group is historical state, not a user mistake, so it
+      // must not wake migrated projects up with warnings (mirrors conceptDrift's
+      // legacy exemption). ONLY zero-TERM groups are exempt: a legacy group whose
+      // terms the user switched off is a live user action (it silently drops out
+      // of the AND chain) and still warns via the liveness check below.
+      if ((c.picoField || c.source === 'pico_auto') && (c.terms || []).length === 0) continue;
+      if (liveTerms(c).length === 0) {
+        const label = c.label || 'This concept';
+        push({ id: `empty:${c.id}`, severity: 'warning', conceptId: c.id, concept: label, message: `${label} has no search terms, so it is not part of the search yet.`, action: `Add at least one term to ${label}, or remove the group if it isn't needed.` });
+      }
     }
-  }
-  const outEmpty = list.find((x) => x.picoField === 'O');
-  if (outEmpty && liveTerms(outEmpty).length === 0) {
-    push({ id: 'outcomes-optional', severity: 'info', conceptId: outEmpty.id, concept: 'Outcomes', message: 'No outcome terms — that’s usually fine. Outcomes are optional in many systematic-review searches; adding them makes the search more specific but can reduce sensitivity (you can apply outcomes at screening instead).', action: 'Leave empty for a sensitive search, or add outcome terms if you want a narrower, more targeted search.' });
   }
 
   // 2. Same/equivalent term in more than one AND-ed concept.
@@ -103,13 +119,14 @@ export function searchQualityCheck(concepts, opts = {}) {
     push({ id: `multi:${d.equivKey}`, severity: 'warning', concept: labels, message: `"${d.label}" appears in more than one concept (${labels}). Since concepts are joined with AND, repeating it may make the search too narrow.`, action: 'Move it to the single best concept, or keep it if intentional.' });
   }
 
-  // 3. No controlled vocabulary for a major concept that has terms.
-  for (const [key, label] of MAJOR_CONCEPTS) {
-    const c = list.find((x) => x.picoField === key);
+  // 3. (96.md re-key) No controlled vocabulary for a concept that has terms — keyed
+  //    generically by concept id (`novocab:<conceptId>`, was novocab:P/I/O).
+  for (const c of list) {
     if (!c) continue;
     const terms = liveTerms(c);
     if (terms.length && !terms.some((t) => t.type === 'controlled' || t.vocab)) {
-      push({ id: `novocab:${key}`, severity: 'info', conceptId: c.id, concept: label, message: `No controlled-vocabulary (MeSH) term found for ${label} yet.`, action: 'Consider adding a MeSH or Emtree term if available.' });
+      const label = c.label || 'this concept';
+      push({ id: `novocab:${c.id}`, severity: 'info', conceptId: c.id, concept: label, message: `No controlled-vocabulary (MeSH) term found for ${label} yet.`, action: 'Consider adding a MeSH or Emtree term if available.' });
     }
   }
 
@@ -157,15 +174,9 @@ export function searchQualityCheck(concepts, opts = {}) {
     }
   }
 
-  // 7. Comparator / Outcomes AND-ed in can over-narrow.
-  const comp = list.find((x) => x.picoField === 'C');
-  if (comp && liveTerms(comp).length) {
-    push({ id: 'narrow:C', severity: 'info', conceptId: comp.id, concept: 'Comparator / Control', message: 'Comparator terms are AND-ed into the search and can make it too narrow.', action: 'Many reviews leave the comparator out of the search and apply it at screening.' });
-  }
-  const outc = list.find((x) => x.picoField === 'O');
-  if (outc && liveTerms(outc).length) {
-    push({ id: 'narrow:O', severity: 'info', conceptId: outc.id, concept: 'Outcomes', message: 'Outcome terms are AND-ed in and can make the search too narrow (outcomes are often not in titles/abstracts).', action: 'Consider broadening or removing outcome terms; apply outcomes at screening.' });
-  }
+  // (96.md — the former check 7, narrow:C / narrow:O comparator/outcome pedagogy,
+  //  was PICO-specific and is deleted. Persisted dismissals of those ids remain
+  //  harmless orphans.)
 
   // Stable order: critical → warning → info.
   const rank = { critical: 0, warning: 1, info: 2 };

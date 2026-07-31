@@ -58,11 +58,15 @@ describe('isFlagOn — flag AND all (transitive) hard deps', () => {
     expect(isFlagOn({ searchStrategyStudio: true, searchEngine: true, pecanSearch: true }, 'searchStrategyStudio')).toBe(true);
   });
 
-  it('guidedRobAppraisal requires rob_engine_v2; searchWorkspaceV2 requires searchEngine', () => {
+  it('guidedRobAppraisal requires rob_engine_v2', () => {
     expect(isFlagOn({ guidedRobAppraisal: true, rob_engine_v2: false }, 'guidedRobAppraisal')).toBe(false);
     expect(isFlagOn({ guidedRobAppraisal: true, rob_engine_v2: true }, 'guidedRobAppraisal')).toBe(true);
-    expect(isFlagOn({ searchWorkspaceV2: true, searchEngine: false }, 'searchWorkspaceV2')).toBe(false);
-    expect(isFlagOn({ searchWorkspaceV2: true, searchEngine: true }, 'searchWorkspaceV2')).toBe(true);
+  });
+
+  it('searchWorkspaceV2 is retired — no dependency mapping remains (96.md)', () => {
+    // The legacy wizard + its gate were deleted; the stored flag key is ignored
+    // (settingsController documents it DEPRECATED), so the dep entry is gone.
+    expect(FEATURE_DEPS.searchWorkspaceV2).toBeUndefined();
   });
 
   it('livingReview is NOT hard-dependent on pecanSearch (runtime dep only)', () => {

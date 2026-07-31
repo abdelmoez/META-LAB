@@ -795,6 +795,11 @@ model ScreenImportBatch {
   preDedupCount  Int           @default(0) // total parsed records offered to this import
   duplicateCount Int           @default(0) // skipped as duplicates AT import time
   rejectedCount  Int           @default(0) // skipped as unusable (no title/doi/pmid)
+  // 96.md D10/D12 — search-run attribution + metadata-merge accounting. Additive +
+  // defaulted → `prisma db push` stays safe; legacy pecan batches read "" and the
+  // history API falls back to parsing the synthetic fileHash 'pecan:<runId>:…'.
+  searchRunId    String        @default("") // PecanSearchRun id ("" = file/api import)
+  updatedCount   Int           @default(0) // existing records whose blank metadata this import filled
   source         String        @default("file") // file | pecan-search | api
   // ── import fingerprinting (prompt6 Task 19; nullable so legacy rows migrate clean) ──
   fileHash       String? // sha256 of line-ending-normalized content
@@ -1510,6 +1515,13 @@ model PecanSearchRun {
   softwareVersion  String    @default("")
   engineVersion    String    @default("")
   cancelRequested  Boolean   @default(false) // durable user cancel intent (checked between pages)
+  // 96.md D8 — additive run provenance (all defaulted/nullable → `prisma db push`
+  // stays safe on this EXISTING table; run-record field names stay frozen, only added).
+  origin            String   @default("automated") // automated | living (who launched the run)
+  strategyVersionId String   @default("") // SearchStrategyVersion id whose snapshot matched the live strategy at start ("" = none)
+  questionText      String   @default("") // research-question snapshot (project.pico.question) at start
+  rolledBackAt      DateTime? // 96.md D11 — set when a screening reset rolled this run's imports back (history stays, marked)
+  rolledBackById    String   @default("")
   startedAt        DateTime?
   completedAt      DateTime?
   cancelledAt      DateTime?
@@ -1547,6 +1559,10 @@ model PecanSearchSource {
   normalizedCount     Int            @default(0)
   importedCount       Int            @default(0) // NET new ScreenRecords landed from this source
   existingMatchCount  Int            @default(0) // matched an existing project record
+  // 96.md D10 — existing records whose BLANK metadata this source filled (fill-blank
+  // merge; distinct records). Subset of existingMatchCount; PRISMA ignores it
+  // (invariant 6 — updated counts as already-present). Additive + defaulted.
+  updatedCount        Int            @default(0)
   exactDupCount       Int            @default(0)
   fuzzyDupCount       Int            @default(0)
   ambiguousDupCount   Int            @default(0)
@@ -2749,4 +2765,81 @@ model ProjectEvent {
   @@index([projectId, significance])
   @@index([projectId, serverTs])
   @@index([correlationId])
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// 96.md — SEARCH → SCREENING integration overhaul (Phases 5/6): article-level
+// provenance across imports, safe metadata-merge change log, and the
+// "delete all imported records" reset event trail.
+//
+// Conventions (mirrors the Pecan block above):
+//  - Bare scope-key strings, NO FK ("audit-survival") — the reset controller cleans
+//    these rows explicitly for its scope; nothing dangles by design elsewhere.
+//  - Composite @@unique only here, on brand-new empty tables (idempotency keys —
+//    page-resume-safe provenance writes; db push creates them cleanly).
+//  - JSON stored as bounded String columns (SQLite has no Json type).
+//  - projectId = ScreenProject id; metaLabProjectId = linked META·LAB Project id.
+//  - After editing, re-run `node scripts/sync-postgres-schema.mjs`.
+// ════════════════════════════════════════════════════════════════════════════
+
+// One row per (article ⟷ import event) — the many-to-many provenance the spec's
+// "ScreeningArticleSource / SearchRunArticleLink" asks for. Written at file-import
+// insert AND duplicate-match, and at pecan landing / existing-match / exact-dup.
+// The composite unique key makes writes idempotent under page resume / job retry
+// (query-first; SQLite has no createMany skipDuplicates).
+model ScreenRecordSource {
+  id               String   @id @default(uuid())
+  projectId        String // ScreenProject id (bare scope key)
+  screenRecordId   String // the landed/matched ScreenRecord id
+  metaLabProjectId String   @default("")
+  runId            String   @default("") // PecanSearchRun id ("" = file/api import)
+  batchId          String   @default("") // ScreenImportBatch id ("" = matched outside a batch, e.g. pecan existing-match)
+  provider         String   @default("") // pubmed | europepmc | … ("" for file imports)
+  providerRecordId String   @default("") // PMID / DOI / provider work id ("" for file imports)
+  outcome          String   @default("") // new | already_present | updated | merged_duplicate
+  changedFields    String   @default("") // JSON string[] of merged field names (outcome 'updated'; "" = none)
+  origin           String   @default("") // search | file | api | mining
+  importedAt       DateTime @default(now())
+
+  @@unique([screenRecordId, runId, batchId, provider, providerRecordId])
+  @@index([projectId, screenRecordId])
+  @@index([runId])
+  @@index([projectId, importedAt])
+}
+
+// Field-level log of the SAFE metadata merge (fill-blank only — reviewer work is
+// never touched). One row per filled field so "which fields changed during a later
+// import" is answerable per article. Values bounded ≤500 chars.
+model ScreenRecordMetadataChange {
+  id             String   @id @default(uuid())
+  projectId      String // ScreenProject id (bare scope key)
+  screenRecordId String
+  runId          String   @default("") // PecanSearchRun id ("" = file/api import)
+  batchId        String   @default("") // ScreenImportBatch id
+  field          String   @default("") // doi | pmid | abstract | authors | year | journal | keywords
+  fromValue      String   @default("") // previous value (blank by merge policy), bounded 500
+  toValue        String   @default("") // filled value, bounded 500
+  createdAt      DateTime @default(now())
+
+  @@index([projectId, screenRecordId])
+  @@index([runId])
+}
+
+// Audit record of a "delete imported records" reset (96.md Phase 6). The event row
+// survives everything it describes (bare keys, no FK); detailsJson carries the
+// scoped counts snapshot. Runs are marked rolledBackAt, never deleted.
+model ScreenResetEvent {
+  id               String   @id @default(uuid())
+  projectId        String // ScreenProject id
+  metaLabProjectId String   @default("")
+  scope            String   @default("search") // search | all
+  recordCount      Int      @default(0) // ScreenRecords deleted
+  decisionCount    Int      @default(0) // ScreenDecisions removed via cascade
+  runCount         Int      @default(0) // PecanSearchRuns marked rolled-back
+  initiatedById    String   @default("")
+  initiatedByName  String   @default("")
+  detailsJson      String   @default("{}") // JSON counts/context snapshot (bounded)
+  createdAt        DateTime @default(now())
+
+  @@index([projectId, createdAt])
 }

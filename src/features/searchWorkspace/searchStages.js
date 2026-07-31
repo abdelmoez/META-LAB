@@ -1,6 +1,6 @@
 /**
  * searchStages.js — the ONE pure, React-free source of truth for the Search
- * workflow's stage list (73.md P5 + 74.md + 75.md).
+ * workflow's stage list (73.md P5 + 74.md + 75.md; reshaped by 96.md).
  *
  * This table used to live inside SearchWorkspace.jsx; 75.md moves the numbered
  * Search workflow into the WHITE project side-menu (navConfig → the shared
@@ -10,6 +10,12 @@
  * pure functions (no React, no DOM), the nav layer (navConfig.js) can import it
  * without pulling in the heavy Search Builder / Pecan engine dependency graph.
  *
+ * 96.md — the Concepts and Test & Refine stages are RETIRED: phrase selection,
+ * concept-group management, quality checks, preview counts and versions all live in
+ * the single Terms & Vocabulary workspace now. Stale deep links (`?stage=concepts`,
+ * `?stage=refine`) resolve through STAGE_ALIASES so browser history / bookmarks
+ * land on Terms & Vocabulary and the URL is rewritten (never a phantom stage).
+ *
  * `num` drives the always-numbered pip; `builder`/`phase` mark the stages that render
  * the (persistent) Search Builder; `needsConcepts` marks stages that are only
  * meaningful once a strategy exists (disabled-with-reason until then); `manualOnly`
@@ -18,15 +24,28 @@
  */
 export const STAGES = [
   { id: 'question',      num: 1, label: 'Research Question',   desc: 'Frame the question' },
-  { id: 'concepts',      num: 2, label: 'Concepts',            desc: 'Core concepts',         builder: true, phase: 'concepts' },
-  { id: 'terms',         num: 3, label: 'Terms & Vocabulary',  desc: 'Synonyms & MeSH',       builder: true, phase: 'terms' },
-  { id: 'mode',          num: 4, label: 'Search Mode',         desc: 'Manual or automated' },
-  { id: 'strategy',      num: 5, label: 'Database Strategies', desc: 'Per-database syntax',   builder: true, phase: 'build', manualOnly: true },
-  { id: 'refine',        num: 6, label: 'Test & Refine',       desc: 'Counts & quality' },
-  { id: 'results',       num: 7, label: 'Run Externally',      desc: 'Your database accounts', needsConcepts: true },
-  { id: 'documentation', num: 8, label: 'Documentation',       desc: 'Methods & PRISMA-S' },
-  { id: 'screening',     num: 9, label: 'Send to Screening',   desc: 'Prepare the import',    needsConcepts: true },
+  { id: 'terms',         num: 2, label: 'Terms & Vocabulary',  desc: 'Build your search',      builder: true, phase: 'terms' },
+  { id: 'mode',          num: 3, label: 'Search Mode',         desc: 'Manual or automated' },
+  { id: 'strategy',      num: 4, label: 'Database Strategies', desc: 'Per-database syntax',    builder: true, phase: 'build', manualOnly: true },
+  { id: 'results',       num: 5, label: 'Run Externally',      desc: 'Your database accounts', needsConcepts: true },
+  { id: 'documentation', num: 6, label: 'Documentation',       desc: 'Methods & PRISMA-S' },
+  { id: 'screening',     num: 7, label: 'Send to Screening',   desc: 'Prepare the import',     needsConcepts: true },
 ];
+
+/* 96.md — retired stage ids → their surviving home. Consumed by
+   `stageAfterModeChange` (and therefore `reconcileStageUrl`) plus
+   navConfig.readSearchStageParam, so a stale `?stage=concepts` / `?stage=refine`
+   deep link resolves to Terms & Vocabulary everywhere with ONE map (the
+   `?tab=discovery`→search precedent). Pure data + exported for tests. */
+export const STAGE_ALIASES = Object.freeze({
+  concepts: 'terms',
+  refine: 'terms',
+});
+
+/** Resolve a possibly-retired stage id through STAGE_ALIASES (identity otherwise). */
+export function resolveStageAlias(stageId) {
+  return STAGE_ALIASES[stageId] || stageId;
+}
 
 /* 73.md P5 + 74.md — THE single source of truth for the visible workflow. Automated
    mode removes the manual-only stages entirely (never a mixed rail) and renumbers the
@@ -53,11 +72,13 @@ export function stagesFor(searchMode) {
                    matches the resolved target).
    Splitting them lets the reconcile effect BOTH land the body on the nearest surviving
    stage for a non-surviving deep link (e.g. `?stage=strategy` on an automated project →
-   'refine') AND normalize the URL to that same stage — so the white side-menu highlight,
-   deep links and browser back/forward all resolve consistently. `syncUrl` is gated to
-   the case the URL genuinely differs from the target, which is what makes this
-   loop-safe: once the URL equals a surviving stage, `stageAfterModeChange` is the
-   identity, so nothing is pushed again. Pure + exported for unit tests. */
+   Terms & Vocabulary, or a retired `?stage=concepts` alias) AND normalize the URL to
+   that same stage — so the white side-menu highlight, deep links and browser
+   back/forward all resolve consistently. `syncUrl` is gated to the case the URL
+   genuinely differs from the target, which is what makes this loop-safe: once the URL
+   equals a surviving stage, `stageAfterModeChange` is the identity, so nothing is
+   pushed again (aliases always differ from their target, so they are rewritten once
+   and then the identity holds). Pure + exported for unit tests. */
 export function reconcileStageUrl(urlStage, searchMode, currentStage) {
   if (!urlStage) return { apply: null, syncUrl: null };
   const target = stageAfterModeChange(urlStage, searchMode);
@@ -67,15 +88,18 @@ export function reconcileStageUrl(urlStage, searchMode, currentStage) {
   };
 }
 
-/* 74.md — where to land when a mode switch removes the active stage. Stays put when
-   the stage survives; otherwise walks FORWARD through the master order to the nearest
-   surviving stage (Database Strategies → Test & Refine), then backward, then home.
-   Pure + exported. */
+/* 74.md — where to land when a mode switch removes the active stage. 96.md — a
+   RETIRED stage id (concepts/refine) resolves through STAGE_ALIASES first, so stale
+   deep links land on Terms & Vocabulary rather than walking from a ghost position.
+   Stays put when the stage survives; otherwise walks FORWARD through the master
+   order to the nearest surviving stage (Database Strategies → Results), then
+   backward, then home. Unknown ids resolve to 'question'. Pure + exported. */
 export function stageAfterModeChange(currentStageId, searchMode) {
+  const resolved = resolveStageAlias(currentStageId);
   const next = stagesFor(searchMode);
-  if (next.some((s) => s.id === currentStageId)) return currentStageId;
+  if (next.some((s) => s.id === resolved)) return resolved;
   const order = STAGES.map((s) => s.id);
-  const idx = order.indexOf(currentStageId);
+  const idx = order.indexOf(resolved);
   if (idx === -1) return 'question';
   for (let i = idx + 1; i < order.length; i++) {
     if (next.some((s) => s.id === order[i])) return order[i];

@@ -9,10 +9,25 @@
  * (crash resume) creates no duplicates; honest partial success (one source fails,
  * another completes); cancellation; retry of a failed source; PRISMA-S report.
  */
+// FIRST import — snapshots the shell env before the prisma import injects
+// server/.env into this single-fork process (see the helper's header).
+import { restoreShellEnv } from '../screening/helpers/prismaEnvGuard.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { prisma } from '../../server/db/client.js';
 import { startRun, processRun, getRunSummary, cancelRun, retryRun } from '../../server/pecanSearch/runService.js';
 import { buildReport } from '../../server/pecanSearch/report.js';
+import { getImportHistory } from '../../server/controllers/screeningImportBatchController.js';
+import { writeRecordSources } from '../../server/services/screeningImportService.js';
+
+restoreShellEnv();
+
+/** Minimal Express-shaped res stub for driving controllers directly. */
+function mkRes() {
+  const res = { statusCode: 200, body: null };
+  res.status = (c) => { res.statusCode = c; return res; };
+  res.json = (b) => { res.body = b; return res; };
+  return res;
+}
 
 const efetchXml = (ids) => '<?xml version="1.0"?><PubmedArticleSet>' + ids.map((p) =>
   `<PubmedArticle><MedlineCitation><PMID Version="1">${p}</PMID><Article><Journal><Title>J Test</Title></Journal>` +
@@ -65,6 +80,10 @@ afterAll(async () => {
       await prisma.screenExclusionReason.deleteMany({ where: { projectId: sp.id } });
       await prisma.screenProjectMember.deleteMany({ where: { projectId: sp.id } });
       await prisma.screenImportBatch.deleteMany({ where: { projectId: sp.id } });
+      // 96.md provenance tables (bare scope keys — cleaned explicitly).
+      try { await prisma.screenRecordSource.deleteMany({ where: { projectId: sp.id } }); } catch { /* absent */ }
+      try { await prisma.screenRecordMetadataChange.deleteMany({ where: { projectId: sp.id } }); } catch { /* absent */ }
+      try { await prisma.screenResetEvent.deleteMany({ where: { projectId: sp.id } }); } catch { /* absent */ }
     }
     await prisma.screenProject.deleteMany({ where: { linkedMetaLabProjectId: project.id } });
     await prisma.project.delete({ where: { id: project.id } });
@@ -103,6 +122,181 @@ describe('Pecan Search Engine — lifecycle (integration)', () => {
     expect(after).toBe(before); // existing records matched, not duplicated
     expect(summary.counts.existingMatched).toBe(3);
     expect(summary.counts.imported).toBe(0);
+    // 96.md invariant 6 — nothing was blank, so nothing was "updated" on a plain rerun.
+    expect(summary.counts.updated).toBe(0);
+  });
+
+  // ── 96.md D8/D9/D10 — run snapshots, article provenance, fill-blank merge ──
+
+  it('96.md D8: runs snapshot origin + research question (additive shapeRun fields)', async () => {
+    await prisma.project.update({
+      where: { id: project.id },
+      data: { data: JSON.stringify({ pico: { question: 'Does X improve outcome Y?' } }) },
+    });
+    const mock = makeMock({ total: 3 });
+    const { run } = await runToCompletion({ name: 'snapshot', sources: ['pubmed'], caps: { pubmed: 50 } }, mock);
+    const summary = await getRunSummary(run.id);
+    expect(summary.origin).toBe('automated');
+    expect(summary.questionText).toBe('Does X improve outcome Y?');
+    expect(summary.strategyVersionId).toBe(''); // no saved strategy version exists
+    expect(summary.rolledBackAt).toBeNull();
+  });
+
+  it('96.md D9: overlapping runs accumulate ScreenRecordSource provenance per article', async () => {
+    const landed = await prisma.screenRecord.findFirst({ where: { projectId: screenProjectId, pmid: '1' } });
+    expect(landed).toBeTruthy();
+    const rows = await prisma.screenRecordSource.findMany({ where: { screenRecordId: landed.id } });
+    // Run A landed it (outcome 'new'); every later run matched it (already_present).
+    expect(rows.length).toBeGreaterThanOrEqual(2);
+    expect(rows.some((r) => r.outcome === 'new')).toBe(true);
+    expect(rows.some((r) => r.outcome === 'already_present')).toBe(true);
+    const runIds = new Set(rows.map((r) => r.runId).filter(Boolean));
+    expect(runIds.size).toBeGreaterThanOrEqual(2); // multiple distinct runs recorded
+    expect(rows.every((r) => r.provider === 'pubmed')).toBe(true);
+  });
+
+  it('96.md D10: a re-run fill-blank-merges matched records (updated counted; decisions untouched)', async () => {
+    const target = await prisma.screenRecord.findFirst({ where: { projectId: screenProjectId, pmid: '2' } });
+    expect(target).toBeTruthy();
+    // Reviewer work exists on the record; the merge must not touch it.
+    await prisma.screenDecision.upsert({
+      where: { recordId_reviewerId_stage: { recordId: target.id, reviewerId: user.id, stage: 'title_abstract' } },
+      create: { recordId: target.id, projectId: screenProjectId, reviewerId: user.id, reviewerName: 'Integration', stage: 'title_abstract', decision: 'include', notes: 'my precious note' },
+      update: { decision: 'include', notes: 'my precious note' },
+    });
+    // Blank the abstract (simulates a record first imported with poorer metadata).
+    await prisma.screenRecord.update({ where: { id: target.id }, data: { abstract: '' } });
+
+    const mock = makeMock({ total: 3 });
+    const { run } = await runToCompletion({ name: 'merge', sources: ['pubmed'], caps: { pubmed: 50 } }, mock);
+    const summary = await getRunSummary(run.id);
+    expect(summary.counts.existingMatched).toBe(3);
+    expect(summary.counts.updated).toBe(1); // exactly the blanked record was filled
+    expect(summary.counts.perSource.pubmed.updated).toBe(1);
+
+    const after = await prisma.screenRecord.findUnique({ where: { id: target.id } });
+    expect(after.abstract).toBe('Abstract 2.'); // filled from the provider record
+    // Reviewer decision + notes survived byte-identically (invariant 7).
+    const dec = await prisma.screenDecision.findUnique({
+      where: { recordId_reviewerId_stage: { recordId: target.id, reviewerId: user.id, stage: 'title_abstract' } },
+    });
+    expect(dec.decision).toBe('include');
+    expect(dec.notes).toBe('my precious note');
+    // Field-level change log written, bounded, for the filled field only.
+    const changes = await prisma.screenRecordMetadataChange.findMany({ where: { screenRecordId: target.id, runId: run.id } });
+    expect(changes.length).toBe(1);
+    expect(changes[0].field).toBe('abstract');
+    expect(changes[0].toValue).toBe('Abstract 2.');
+    // Provenance outcome for THIS run is 'updated' with the changed fields recorded.
+    const prov = await prisma.screenRecordSource.findFirst({ where: { screenRecordId: target.id, runId: run.id } });
+    expect(prov.outcome).toBe('updated');
+    expect(JSON.parse(prov.changedFields)).toEqual(['abstract']);
+    // PRISMA rerun-stability: the report's identification figures ignore `updated`.
+    const report = await buildReport(run.id);
+    expect(report.counts.updated).toBe(1);
+    expect(report.counts.recordsIdentified).toBe(summary.counts.rawRetrieved);
+    expect(report.counts.duplicatesRemoved).toBe(0);
+  });
+
+  it('96.md D11: rolled-back runs are excluded from PRISMA source sums + flagged in the report', async () => {
+    const anyRun = await prisma.pecanSearchRun.findFirst({ where: { metaLabProjectId: project.id }, orderBy: { createdAt: 'desc' } });
+    const before = await prisma.pecanSearchSource.count({ where: { run: { screenProjectId: screenProjectId, rolledBackAt: null } } });
+    expect(before).toBeGreaterThan(0);
+    await prisma.pecanSearchRun.updateMany({
+      where: { metaLabProjectId: project.id },
+      data: { rolledBackAt: new Date(), rolledBackById: user.id },
+    });
+    // The exact filter getMetaLabSummary uses (96.md D11) now excludes every source.
+    const excluded = await prisma.pecanSearchSource.count({ where: { run: { screenProjectId: screenProjectId, rolledBackAt: null } } });
+    expect(excluded).toBe(0);
+    const report = await buildReport(anyRun.id);
+    expect(report.rolledBack).toBe(true);
+    expect(report.rolledBackAt).toBeTruthy();
+    const summary = await getRunSummary(anyRun.id);
+    expect(summary.rolledBackAt).toBeTruthy();
+    // Un-mark so the remaining scenarios see pristine runs.
+    await prisma.pecanSearchRun.updateMany({ where: { metaLabProjectId: project.id }, data: { rolledBackAt: null, rolledBackById: '' } });
+  });
+
+  // ── 96.md M26 — /import-history run-grouping against REAL runs ──
+  it('96.md M26: import-history groups pecan batches under real runs with counts, perSource + pagination', async () => {
+    const req = { params: { pid: screenProjectId }, user: { id: user.id, role: 'user' }, query: {} };
+    const res = mkRes();
+    await getImportHistory(req, res);
+    expect(res.statusCode).toBe(200);
+    const body = res.body;
+    expect(body.canReset).toBe(true); // the screen project owner
+    // M21 pagination envelope (additive keys).
+    expect(typeof body.total).toBe('number');
+    expect(body.limit).toBe(50);
+    expect(body.offset).toBe(0);
+    expect(typeof body.hasMore).toBe('boolean');
+
+    const runEntries = body.entries.filter((e) => e.kind === 'search-run');
+    expect(runEntries.length).toBeGreaterThanOrEqual(2);
+    // Scenario A's run: 3 found, 3 imported (documented counts key names).
+    const a = runEntries.find((e) => e.name === 'A');
+    expect(a).toBeTruthy();
+    expect(a.state).toBe('completed');
+    expect(a.origin).toBe('automated');
+    expect(a.counts.found).toBe(3);
+    expect(a.counts.imported).toBe(3);
+    expect(a.counts.existingMatched).toBe(0);
+    expect(a.counts.updated).toBe(0);
+    expect(a.counts.failed).toBe(0);
+    const ps = a.perSource.find((s) => s.provider === 'pubmed');
+    expect(ps).toBeTruthy();
+    expect(ps.raw).toBe(3);
+    expect(ps.imported).toBe(3);
+    expect(ps.state).toBe('completed');
+    // The run's per-page batches are grouped UNDER the run entry.
+    expect(a.batches.length).toBeGreaterThanOrEqual(1);
+    expect(a.batches.every((b) => b.searchRunId === a.runId)).toBe(true);
+    // The D10 'merge' run counted exactly one updated record.
+    const merge = runEntries.find((e) => e.name === 'merge');
+    expect(merge.counts.updated).toBe(1);
+    expect(merge.perSource.find((s) => s.provider === 'pubmed').updated).toBe(1);
+    expect(merge.counts.existingMatched).toBe(3);
+
+    // Rolled-back flag reflects the run row.
+    await prisma.pecanSearchRun.update({ where: { id: a.runId }, data: { rolledBackAt: new Date(), rolledBackById: user.id } });
+    const res2 = mkRes();
+    await getImportHistory({ ...req, query: {} }, res2);
+    const a2 = res2.body.entries.find((e) => e.kind === 'search-run' && e.runId === a.runId);
+    expect(a2.rolledBackAt).toBeTruthy();
+    await prisma.pecanSearchRun.update({ where: { id: a.runId }, data: { rolledBackAt: null, rolledBackById: '' } });
+
+    // Pagination: limit=1 slices the sorted entry list and reports hasMore.
+    const res3 = mkRes();
+    await getImportHistory({ ...req, query: { limit: '1', offset: '0' } }, res3);
+    expect(res3.body.entries.length).toBe(1);
+    expect(res3.body.limit).toBe(1);
+    expect(res3.body.total).toBe(body.total);
+    expect(res3.body.hasMore).toBe(true);
+  });
+
+  // ── 96.md M12 — provenance idempotency across a page retry in a NEW batch ──
+  it('96.md M12: a retried page landing in a NEW batch never duplicates a run\'s provenance row', async () => {
+    const landed = await prisma.screenRecord.findFirst({ where: { projectId: screenProjectId, pmid: '1' } });
+    const run = await prisma.pecanSearchRun.findFirst({ where: { metaLabProjectId: project.id } });
+    const base = {
+      projectId: screenProjectId, screenRecordId: landed.id, metaLabProjectId: project.id,
+      runId: run.id, provider: 'pubmed', providerRecordId: 'M12-test',
+      outcome: 'new', changedFields: '', origin: 'search',
+    };
+    const w1 = await writeRecordSources([{ ...base, batchId: 'm12-batch-1' }]);
+    expect(w1).toBe(1);
+    // The crash-retry path: same (record, run, provider, providerRecordId) but a
+    // DIFFERENT batch id + contradictory outcome — must be dropped, not added.
+    const w2 = await writeRecordSources([{ ...base, batchId: 'm12-batch-2', outcome: 'already_present' }]);
+    expect(w2).toBe(0);
+    const rows = await prisma.screenRecordSource.findMany({
+      where: { screenRecordId: landed.id, runId: run.id, providerRecordId: 'M12-test' },
+    });
+    expect(rows.length).toBe(1);
+    expect(rows[0].outcome).toBe('new'); // attempt 1's truth wins
+    expect(rows[0].batchId).toBe('m12-batch-1');
+    await prisma.screenRecordSource.deleteMany({ where: { providerRecordId: 'M12-test' } });
   });
 
   it('idempotent re-process (crash resume) creates no duplicates', async () => {

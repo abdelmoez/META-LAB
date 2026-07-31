@@ -239,10 +239,20 @@ function DeepToolPage({ stage }) {
     </>
   );
 
-  if (doc.loading) {
+  // Full-page loading ONLY while there is no project yet. Background refetches
+  // (every realtime `project.updated` poke re-runs useStitchProjectDoc.load)
+  // must keep the current stage mounted — replacing the body with a loading
+  // shell here unmounted the ENTIRE embedded stage mid-interaction, destroying
+  // open dialogs (the 96.md reset modal died to its own success poke) and any
+  // in-progress child state. Same loading-vs-refresh convention as OverviewTab.
+  if (doc.loading && !project) {
     return <StitchAppShell {...shellProps} breadcrumb={breadcrumb}><StitchLoadingState label="Loading…" /></StitchAppShell>;
   }
-  if (doc.error || !project) {
+  // Same rule for errors: a transient refetch failure while a project is already
+  // on screen must not replace a working stage with the error page (doc.reload /
+  // the next poke recovers it); the full error state is for a project we could
+  // never load at all.
+  if (!project) {
     return (
       <StitchAppShell {...shellProps} breadcrumb={breadcrumb}>
         <StitchErrorState title="Couldn't load this project"
@@ -378,11 +388,11 @@ function DeepToolPage({ stage }) {
     : { marginBottom: 20 };
   const bodyWrapStyle = (fullbleed && stage === 'search')
     // 78.md #6 (recs) — the search body is itself the ONE bounded primary scroller, so
-    // EVERY search child scrolls: the staged SearchWorkspace, AND the legacy
-    // SearchWizard / SearchTab / loading placeholder (rendered when searchWorkspaceV2 is
-    // off — the default — none of which build their own scroller). The pinned stage
-    // header stays above it. (The other full-bleed stages keep overflow:hidden because
-    // their engines manage their own inner split-scrollers.)
+    // EVERY search child scrolls: the staged SearchWorkspace (searchEngine ON), AND the
+    // legacy in-blob SearchTab / loading placeholder (searchEngine OFF — 96.md retired
+    // the SearchWizard and its searchWorkspaceV2 gate; none of these build their own
+    // scroller). The pinned stage header stays above it. (The other full-bleed stages
+    // keep overflow:hidden because their engines manage their own inner split-scrollers.)
     ? { flex: 1, minWidth: 0, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', padding: '18px 20px 40px' }
     : fullbleed
       ? { flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }

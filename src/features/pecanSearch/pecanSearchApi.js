@@ -136,6 +136,57 @@ export const pecanSearchApi = {
   reportExportUrl,
 };
 
+// ── Screening import-history + reset (96.md Phases 5C/6, plan D11/D12) ────────
+// Additive client helpers for the screening-side endpoints that expose the
+// run-grouped import timeline and the guarded "delete all imported search
+// records" reset. They live here (not screeningApi.js) because they are part of
+// the Search→Screening seam this module owns; errors THROW with `.status`/`.code`
+// (same `http` contract as above) so callers can soft-fail a 404 (endpoint not
+// deployed yet) and special-case 409 (job in flight) / 403 (no permission).
+const SCREEN_BASE = '/api/screening';
+
+export const screeningImportHistoryApi = {
+  // → { canDelete, canReset, projectName?, total, hasMore, limit, offset,
+  //     entries:[
+  //      { kind:'search-run', runId, name, state, origin, rolledBackAt,
+  //        initiatedByName, createdAt, canonicalText (truncated ≤500;
+  //        canonicalTextTruncated:true when cut),
+  //        counts:{ found, imported, existingMatched, updated, duplicatesSkipped,
+  //        ambiguous, failed },
+  //        perSource:{ [provider]: { raw, imported, existingMatched, updated,
+  //          exactDup, fuzzyDup, ambiguousDup, failed, state, errorDetail? } },
+  //        batches:[batch rows] }
+  //      | { kind:'batch', …existing listImportBatches row, searchRunId, updatedCount } ] }
+  //   ?limit= (default 50) & offset= page the entries; a legacy
+  //   `{ canDelete, batches }` shape is tolerated by the UI normalizer.
+  async getImportHistory(projectId, { limit, offset } = {}) {
+    const qs = new URLSearchParams();
+    if (limit != null) qs.set('limit', String(limit));
+    if (offset != null) qs.set('offset', String(offset));
+    const q = qs.toString();
+    return http(`${SCREEN_BASE}/projects/${pid(projectId)}/import-history${q ? `?${q}` : ''}`);
+  },
+  // scope: 'search' | 'all' → { projectName?, confirmToken (the exact string to
+  //   type: project name, or 'DELETE' when the title is blank), blockedBy (string
+  //   reason while a job is active, else null), counts:{ records, decisions, notes,
+  //   conflicts, pdfs, runsAffected, manualRecordsKept, batches, handedOff } }
+  async getResetPreview(projectId, scope = 'search') {
+    const s = scope === 'all' ? 'all' : 'search';
+    return http(`${SCREEN_BASE}/projects/${pid(projectId)}/imported-records/reset-preview?scope=${s}`);
+  },
+  // body { scope, confirm:<the preview's confirmToken — server re-validates, 400
+  // on mismatch> } → result counts (rolled-back run count arrives as runsMarked);
+  // 409 while any project job is active; 403 when the caller is not the
+  // owner/site admin.
+  async resetImportedRecords(projectId, { scope = 'search', confirm = '' } = {}) {
+    const s = scope === 'all' ? 'all' : 'search';
+    return http(`${SCREEN_BASE}/projects/${pid(projectId)}/imported-records/reset`, {
+      method: 'POST',
+      body: { scope: s, confirm },
+    });
+  },
+};
+
 /**
  * loadCanonicalQuery(projectId) — read the saved search strategy concepts from the
  * Search Builder backend and shape them as a canonical query { concepts, filters }.

@@ -31,7 +31,9 @@ import { TABS, PHASES, phaseLabel, PHASE_ICON } from '../../workspace/projectHel
 // SearchWorkspace uses (mode-scoped: automated drops Database Strategies), so the two
 // surfaces can never drift. Pure data + a pure function → safe to import into this
 // React-free nav module.
-import { stagesFor as searchStagesFor } from '../../../features/searchWorkspace/searchStages.js';
+// 96.md — STAGE_ALIASES resolves retired stage ids (concepts/refine → terms) so stale
+// `?stage=` deep links highlight/land on the surviving stage everywhere.
+import { stagesFor as searchStagesFor, resolveStageAlias } from '../../../features/searchWorkspace/searchStages.js';
 // 85.md — the mounted SearchWorkspace publishes honest per-stage completion statuses
 // (computeStageStatuses) to this pure store; the submenu attaches them additively so
 // the white stepper shows real progress. Glyph-less fallback (status:null) when the
@@ -280,12 +282,15 @@ export function readScreenParam(search) {
 }
 
 /** 75.md — parse the Search workflow stage (`?stage=`) — only meaningful while
- *  tab=search. Bare `?tab=search` (no stage) defaults to the first stage ('question'). */
+ *  tab=search. Bare `?tab=search` (no stage) defaults to the first stage ('question').
+ *  96.md — RETIRED stage params (concepts/refine) resolve through STAGE_ALIASES so a
+ *  stale deep link highlights Terms & Vocabulary instead of a phantom submenu row
+ *  (the `?tab=discovery`→search normalization precedent). */
 export function readSearchStageParam(search) {
   if (typeof search !== 'string' || !search) return 'question';
   try {
     const qs = new URLSearchParams(search.startsWith('?') ? search.slice(1) : search);
-    return qs.get('stage') || 'question';
+    return resolveStageAlias(qs.get('stage') || 'question');
   } catch {
     return 'question';
   }
@@ -340,21 +345,24 @@ export function categoryForStage(stageId) {
    pip NUMBER, not the icon, so these are cosmetic/shape-only; the un-numbered optional
    tools below use their real TABS icons.) */
 const SEARCH_STAGE_ICONS = {
-  question: 'target', concepts: 'layers', terms: 'bookOpen', mode: 'settings',
-  strategy: 'database', refine: 'barChart', results: 'globe', documentation: 'fileText', screening: 'arrowRight',
+  question: 'target', terms: 'bookOpen', mode: 'settings',
+  strategy: 'database', results: 'globe', documentation: 'fileText', screening: 'arrowRight',
 };
 
 /**
  * 75.md — the Search category's white submenu.
  *
  * The NUMBERED part is flag-gated (recs round, Finding 1). Only when the staged
- * SearchWorkspace (`searchWorkspaceV2`) is ON does the body support `?stage=` — so the
- * submenu shows the mode-scoped Search WORKFLOW (stages 1..N, from the SAME
- * `stagesFor` the in-body workspace uses — automated drops Database Strategies) as
- * numbered children deep-linking `?tab=search&stage=<id>`. When the flag is OFF (the
- * default in prod) the body renders the legacy SearchWizard/SearchTab, which has NO
- * `?stage=` support, so the submenu shows the SINGLE 'Search' destination
- * (`?tab=search`) it did pre-75 — never a row of numbered stages that would dead-end.
+ * SearchWorkspace renders does the body support `?stage=` — 96.md retired the
+ * legacy wizard, so `ctx.searchWorkspaceV2Enabled` now effectively tracks the
+ * `searchEngine` flag (searchWorkspaceV2FlagEnabled; the old searchWorkspaceV2 key
+ * is deprecated/ignored). When ON the submenu shows the mode-scoped Search WORKFLOW
+ * (stages 1..N, from the SAME `stagesFor` the in-body workspace uses — automated
+ * drops Database Strategies) as numbered children deep-linking
+ * `?tab=search&stage=<id>`. When OFF the body renders the legacy in-blob SearchTab,
+ * which has NO `?stage=` support, so the submenu shows the SINGLE 'Search'
+ * destination (`?tab=search`) it did pre-75 — never a row of numbered stages that
+ * would dead-end.
  *
  * The VISUALLY-SEPARATE "Optional tools" group (Living Review + Citation Mining)
  * appears in BOTH modes — those open their own tabs regardless of the workflow shape.

@@ -6,30 +6,31 @@
  *
  * Shape: a LEFT vertical stage rail (modeled on StitchWorkflowStepper — numbered pips
  * that always show the number, status by icon+colour not colour-only, disabled-with-
- * reason, aria-current, keyboard) with 9 stages, and a RIGHT pane that renders the
- * current stage by composing existing components:
+ * reason, aria-current, keyboard) with 7 stages (96.md — Concepts and Test & Refine
+ * are retired; Terms & Vocabulary is the central workspace), and a RIGHT pane that
+ * renders the current stage by composing existing components:
  *
- *   1. Research Question   — PICO/question summary (from the `pico` prop) + helper.
- *   2. Concepts            — <SearchBuilderTab phase="concepts"/> (keyword selection +
- *                            compact concept-structure summary).
- *   3. Terms & Vocabulary  — <SearchBuilderTab phase="terms"/> (full concept/term detail,
- *                            MeSH kept separate from free-text + Limits).
- *   4. Search Mode         — 73.md P5: the explicit two-path choice — MANUAL (PecanRev
+ *   1. Research Question   — the research-question EDITOR (96.md D1: writes
+ *                            updNested('pico','question') — the authoritative home;
+ *                            whole-project autosave persists it). NO PICO cards.
+ *   2. Terms & Vocabulary  — <SearchBuilderTab phase="terms"/> — THE search-building
+ *                            workspace: question phrase-selection → concept groups,
+ *                            synonyms/MeSH, Boolean chips, quality card, per-database
+ *                            previews + <PreviewEstimates/> + <SearchVersionsPanel/>.
+ *   3. Search Mode         — 73.md P5: the explicit two-path choice — MANUAL (PecanRev
  *                            compiles a strategy per database, you run it yourself) vs
  *                            AUTOMATED (PecanRev runs its connected databases for you).
  *                            Persisted additively as `searchMode` on the search module.
- *   5. Database Strategies — MANUAL-ONLY (74.md): <SearchBuilderTab phase="build"/>
+ *   4. Database Strategies — MANUAL-ONLY (74.md): <SearchBuilderTab phase="build"/>
  *                            (databases + the 73.md P6 per-database compiled strategy
  *                            workspace) + (studio) <StrategyStudioPanel/>. In automated
  *                            mode this stage does not exist — the run surface owns its
  *                            own source selection and per-source override editor.
- *   6. Test & Refine       — multi-DB preview counts (pecanSearchApi.previewCount) +
- *                            <SearchQualityPanel/> + <SearchVersionsPanel/>.
- *   7. Automated Search / Run Externally — mode-aware: <PecanSearchTab embedded/> (run +
+ *   5. Automated Search / Run Externally — mode-aware: <PecanSearchTab embedded/> (run +
  *                            live monitor + dedupe + history) OR the manual run guidance.
- *   8. Documentation       — <SearchExportPanel/> (methods text + PRISMA-S) + (studio)
+ *   6. Documentation       — <SearchExportPanel/> (methods text + PRISMA-S) + (studio)
  *                            <RecallReportPanel/>.
- *   9. Send to Screening   — the readyForScreening marker + the "Go to Screening" handoff.
+ *   7. Send to Screening   — the readyForScreening marker + the "Go to Screening" handoff.
  *
  * 74.md — ONE workflow at a time: `stagesFor(searchMode)` is the single source of truth
  * for the visible stage list. Automated mode REMOVES the manual-only stages (Database
@@ -51,9 +52,9 @@
  * WorkflowModuleState regardless. The single source of truth stays that module; this
  * workspace owns no persisted state of its own beyond the additive `searchMode` key.
  *
- * Gated behind the `searchWorkspaceV2` flag (OFF by default) at the dispatcher; when
- * OFF the legacy SearchWizard renders unchanged. Reuses the existing components + their
- * existing API calls — no engine forks.
+ * 96.md — the legacy SearchWizard and the `searchWorkspaceV2` gate are RETIRED: the
+ * dispatcher renders this workspace whenever `searchEngine` is ON. Reuses the
+ * existing components + their existing API calls — no engine forks.
  */
 import { useState, useRef, useCallback, useMemo, useEffect } from 'react';
 import { C, FONT, alpha } from '../../frontend/theme/tokens.js';
@@ -68,11 +69,16 @@ import { STAGES, stagesFor, stageAfterModeChange, reconcileStageUrl } from './se
 import { publishSearchMode, publishSearchStageStatuses } from './searchModeStore.js';
 import { Icon } from '../../frontend/components/icons.jsx';
 import { SearchBuilderTab, searchBuilderApi, loadSearch, saveSearch, relativeTime } from '../searchBuilder/index.js';
+// 96.md QA M18 — the Research Question editor claims the SAME 'pico.question'
+// presence lock the Protocol editor holds (ProtocolModulePanel), so the two
+// writers can never silently last-write-wins each other. lockCtx is threaded from
+// the dispatcher; without a linked workspace the hook fails open (never blocks).
+import { useFieldEditing } from '../../frontend/screening/hooks/usePresence.js';
 import { getDatabase, defaultSelectedDatabases, DATABASE_CATALOG } from '../../research-engine/searchBuilder/databases.js';
 import PecanSearchTab from '../pecanSearch/PecanSearchTab.jsx';
 import { pecanSearchApi } from '../pecanSearch/pecanSearchApi.js';
 import {
-  SearchQualityPanel, SearchVersionsPanel, SearchExportPanel,
+  SearchVersionsPanel, SearchExportPanel,
   StrategyStudioPanel, RecallReportPanel, strategyStudioFlagEnabled,
 } from '../searchWizard/index.js';
 import { Card, Note } from '../pecanSearch/components/parts.jsx';
@@ -80,7 +86,7 @@ import { Card, Note } from '../pecanSearch/components/parts.jsx';
 /* STAGES / stagesFor / stageAfterModeChange now live in ./searchStages.js (75.md) —
    imported above and re-exported via index.js. */
 
-const DISABLED_REASON = 'Build a strategy with at least one concept first';
+const DISABLED_REASON = 'Select phrases from your research question first';
 
 /* 75.md — read the active Search stage from the URL (`?tab=search&stage=<id>`). The
    white project side-menu drives stages via react-router navigation, so the body
@@ -146,10 +152,11 @@ export function PubMedPulse({ snapshot, hasConcepts, liveTermCount, onRetry }) {
   );
   let body = null;
   if (!hasConcepts) {
-    body = <span style={{ color: C.muted }}>Add concepts to see a live PubMed estimate.</span>;
+    // 96.md — projects seed EMPTY: the first move is selecting phrases from the question.
+    body = <span style={{ color: C.muted }}>Select phrases from your research question to see a live PubMed estimate.</span>;
   } else if (liveTermCount === 0) {
-    // 85.md (audit M1) — the five PICO groups always exist, so `hasConcepts` alone
-    // never fires; the REAL empty state is "no live terms yet" (builder-reported).
+    // 85.md (audit M1) — groups can exist with every term switched off; the REAL
+    // empty state is "no live terms yet" (builder-reported).
     body = <span style={{ color: C.muted }}>Add terms to see a live PubMed estimate.</span>;
   } else if (s.status === 'updated' && s.count != null) {
     body = (
@@ -647,37 +654,116 @@ function SendToScreeningStage({ projectId, pecanEnabled, readOnly, searchMode, g
   );
 }
 
-/* ════════════ RESEARCH QUESTION — PICO summary ════════════ */
-function QuestionStage({ pico }) {
-  const p = pico || {};
-  const hasCore = p.P || p.I || p.C || p.O || p.question;
-  const rows = [
-    { k: 'P', label: 'Population / Problem', color: C.acc },
-    { k: 'I', label: 'Intervention / Exposure', color: C.grn },
-    { k: 'C', label: 'Comparator / Control', color: C.yel },
-    { k: 'O', label: 'Outcome(s)', color: C.purp },
-  ];
+/* ════════════ RESEARCH QUESTION — the editor (96.md D1) ════════════
+   A prominent research-question EDITOR: the text lives at project.pico.question
+   (the authoritative home every mirror reads — overview subtitle, manuscript,
+   screening snapshot), written via updNested('pico','question') so the existing
+   whole-project autosave persists it. NO P/I/C/O cards or copy — the Search
+   Engine builds directly from this question in Terms & Vocabulary.
+   96.md QA M18 — claims/respects the SAME 'pico.question' field lock as
+   ProtocolModulePanel (disabled + "X is editing" when a teammate holds it).
+   96.md QA L28 — edits land in a LOCAL draft and commit to updNested on blur +
+   a 500ms debounce, so typing never re-renders the (always-mounted) heavy
+   builder or churns the whole-project autosave per keystroke.
+   96.md QA L24 — a legacy project with structured P/I/C/O but no free-text
+   question gets explicit "planned with PICO" helper copy, not a bare empty state. */
+function QuestionStage({ pico, updNested, readOnly, goTerms, lockCtx }) {
+  const q = (pico && pico.question) || '';
+  const canEdit = !readOnly && typeof updNested === 'function';
+  const lc = lockCtx || {};
+  const ed = useFieldEditing({ pid: lc.pid, field: 'pico.question', myUserId: lc.myUserId, locks: lc.locks, enabled: !!lc.pid });
+  const lockedBy = ed.lockedByOther;
+  // L24 — legacy detection: any structured PICO text without a question.
+  const hasLegacyPico = ['P', 'I', 'C', 'O'].some((k) => typeof (pico && pico[k]) === 'string' && pico[k].trim());
+  const legacyEmpty = !q.trim() && hasLegacyPico;
+  // L28 — local draft + debounced commit (blur/unmount flush; upstream adoption while idle).
+  const [draft, setDraft] = useState(q);
+  const draftRef = useRef(draft); draftRef.current = draft;
+  const committedRef = useRef(q);
+  const timerRef = useRef(null);
+  const focusedRef = useRef(false);
+  const commit = useCallback((value) => {
+    clearTimeout(timerRef.current);
+    if (typeof updNested !== 'function') return;
+    if (value === committedRef.current) return;
+    committedRef.current = value;
+    updNested('pico', 'question', value);
+  }, [updNested]);
+  const commitRef = useRef(commit); commitRef.current = commit;
+  // Adopt outside edits (Protocol-editor mirror, collaborator refetch) while idle.
+  useEffect(() => {
+    committedRef.current = q;
+    if (!focusedRef.current) setDraft(q);
+  }, [q]);
+  // Unmount (stage switch) flushes a pending commit so the last edit never lags.
+  useEffect(() => () => { clearTimeout(timerRef.current); commitRef.current(draftRef.current); }, []);
+  const onEdit = (e) => {
+    if (lockedBy) return; // the textarea is disabled too; this closes the propagation window
+    const v = e.target.value;
+    setDraft(v);
+    ed.onActivity();
+    clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => commitRef.current(v), 500);
+  };
   return (
-    <Card title="Research question" icon="target" desc="Everything downstream builds on this. Concepts, synonyms and the per-database strategy all come from your PICO — set it in the Protocol stage.">
-      {p.question ? (
-        <div style={{ background: C.surf, border: `1px solid ${C.brd2}`, borderLeft: `3px solid ${C.acc}`, borderRadius: 10, padding: '12px 14px', marginBottom: hasCore ? 14 : 0, fontSize: 13, color: C.txt, lineHeight: 1.6 }}>
-          {p.question}
-        </div>
-      ) : null}
-      {rows.some((r) => p[r.k]) ? (
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          {rows.filter((r) => p[r.k]).map((r) => (
-            <div key={r.k} style={{ background: C.surf, border: `1px solid ${C.brd2}`, borderLeft: `3px solid ${r.color}`, borderRadius: 9, padding: '10px 12px' }}>
-              <div style={{ fontSize: 10.5, fontWeight: 700, color: r.color, letterSpacing: 0.3, marginBottom: 3 }}>{r.k} — {r.label}</div>
-              <div style={{ fontSize: 12, color: C.txt2, lineHeight: 1.5 }}>{p[r.k]}</div>
+    <Card title="Research question" icon="target" desc="Your search strategy is built directly from this question in Terms & Vocabulary.">
+      {canEdit ? (
+        <>
+          <label htmlFor="search-question-editor" style={{ display: 'block', fontSize: 10.5, fontWeight: 700, color: C.muted, letterSpacing: 0.5, textTransform: 'uppercase', marginBottom: 6 }}>
+            What question should this review answer?
+          </label>
+          {legacyEmpty && (
+            <div style={{ marginBottom: 8 }}>
+              <Note tone="info">This project was planned with PICO. Write the research question here to drive Terms &amp; Vocabulary — your saved P/I/C/O text stays untouched in the Protocol module.</Note>
             </div>
-          ))}
+          )}
+          <textarea
+            id="search-question-editor"
+            data-testid="search-question-editor"
+            value={draft}
+            onChange={onEdit}
+            disabled={!!lockedBy}
+            onFocus={() => { focusedRef.current = true; ed.onFocus(); }}
+            onBlur={() => { focusedRef.current = false; commit(draftRef.current); ed.onBlur(); }}
+            placeholder="e.g. Do SGLT2 inhibitors reduce hospital readmission in adults with heart failure?"
+            rows={3}
+            style={{
+              width: '100%', boxSizing: 'border-box', resize: 'vertical', minHeight: 74,
+              background: C.surf, border: `1px solid ${C.brd2}`, borderLeft: `3px solid ${C.acc}`,
+              borderRadius: 10, padding: '12px 14px', fontSize: 13.5, color: C.txt, lineHeight: 1.6,
+              fontFamily: FONT, outline: 'none',
+              opacity: lockedBy ? 0.6 : 1, cursor: lockedBy ? 'not-allowed' : 'text',
+            }}
+          />
+          {lockedBy && (
+            <div data-testid="search-question-locked" style={{ fontSize: 10.5, color: C.yel, marginTop: 4, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+              <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: '50%', background: C.yel, display: 'inline-block' }} />
+              {lockedBy.name} is editing…
+            </div>
+          )}
+          <div style={{ marginTop: 8, fontSize: 11, color: C.muted, lineHeight: 1.6 }}>
+            One clear sentence naming the key ideas works best — you&apos;ll click those ideas in the next stage to build the search.
+            Saved automatically with the project.
+          </div>
+        </>
+      ) : q ? (
+        <div style={{ background: C.surf, border: `1px solid ${C.brd2}`, borderLeft: `3px solid ${C.acc}`, borderRadius: 10, padding: '12px 14px', fontSize: 13, color: C.txt, lineHeight: 1.6 }}>
+          {q}
         </div>
+      ) : hasLegacyPico ? (
+        <Note tone="info">This project was planned with PICO. An editor can write the research question here to drive Terms &amp; Vocabulary.</Note>
       ) : (
-        <Note tone="info">No PICO entered yet. Open the <strong>Protocol</strong> stage to define your Population, Intervention, Comparator and Outcome, then return here — the concept extraction picks up from it.</Note>
+        <Note tone="info">No research question yet. An editor can write it here — the search strategy is built directly from it.</Note>
       )}
-      <div style={{ marginTop: 14, fontSize: 11.5, color: C.muted, lineHeight: 1.6 }}>
-        Next: move to <strong style={{ color: C.txt2 }}>Concepts</strong> to turn this question into searchable concepts.
+      <div style={{ marginTop: 14, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11.5, color: C.muted, lineHeight: 1.6, flex: 1, minWidth: 220 }}>
+          Next: select the important words and phrases from this question in <strong style={{ color: C.txt2 }}>Terms &amp; Vocabulary</strong> — each becomes a concept group of your search.
+        </span>
+        {typeof goTerms === 'function' && (
+          <button type="button" onClick={goTerms} style={primaryBtn()}>
+            Next: Terms &amp; Vocabulary →
+          </button>
+        )}
       </div>
     </Card>
   );
@@ -696,10 +782,16 @@ function StageIntro({ title, children }) {
 
 /* Stages where the sticky PubMed pulse rides above the stage surface (the builder is
    mounted — hidden — on ALL of them, so its hit machine keeps running). */
-const PULSE_STAGES = new Set(['concepts', 'terms', 'mode', 'strategy', 'refine', 'results']);
+const PULSE_STAGES = new Set(['terms', 'mode', 'strategy', 'results']);
 
 export default function SearchWorkspace({
-  projectId, pico, readOnly, pecanEnabled, initialStage, initialSearchMode,
+  // 96.md D1 — `updNested` is threaded from the dispatcher so the Research
+  // Question stage edits project.pico.question (whole-project autosave persists
+  // it). `pico` stays a props seam, but ONLY `pico.question` is read.
+  // QA M18 — `lockCtx` ({ pid, myUserId, locks }) threads the presence field-lock
+  // context from the dispatcher so the question editor shares the Protocol
+  // editor's 'pico.question' lock. Optional: absent → fail-open (never blocks).
+  projectId, pico, updNested, readOnly, pecanEnabled, initialStage, initialSearchMode, lockCtx,
   // 75.md — external stage control. `hideRail` (set by StitchProjectWorkspace) drops
   // the in-body StageRail when the white project side-menu is driving stages, so the
   // numbered workflow is never shown twice. `onStageChange(id)` lets the router-aware
@@ -709,7 +801,7 @@ export default function SearchWorkspace({
 }) {
   // 74.md/75.md — the initial stage prefers the URL (`?stage=`), then the seed prop,
   // then Research Question — and must already respect the initial mode's stage list
-  // (e.g. a 'strategy' deep link under an automated seed lands on Test & Refine).
+  // (e.g. a 'strategy' deep link under an automated seed lands on Results).
   const [stage, setStage] = useState(() => stageAfterModeChange(
     readStageFromUrl() || initialStage || 'question',
     initialSearchMode === 'manual' || initialSearchMode === 'automated' ? initialSearchMode : null,
@@ -721,8 +813,9 @@ export default function SearchWorkspace({
   const liveRef = useRef({ concepts: [], filters: { dateFrom: '', dateTo: '', languages: [], pubTypes: [] }, overrides: {}, databases: [] });
   const [runQuery, setRunQuery] = useState(null);
   const [hasConcepts, setHasConcepts] = useState(false);
-  // Bump to remount the quality/versions panels when (re)entering Test & Refine so they
-  // re-read the current strategy — without ever re-rendering the memoized heavy builder.
+  // Bump to remount the estimates/versions panels when (re)entering Terms &
+  // Vocabulary (96.md — their home) so they re-read the current strategy — without
+  // ever re-rendering the memoized heavy builder.
   const [panelNonce, setPanelNonce] = useState(0);
   const bumpPanels = useCallback(() => setPanelNonce((n) => n + 1), []);
 
@@ -861,7 +954,9 @@ export default function SearchWorkspace({
   // runQuery snapshot / panel refresh a footer Next would give.
   const applyStage = useCallback((id) => {
     if (id === 'results') setRunQuery({ ...liveRef.current });
-    if (id === 'refine') setPanelNonce((n) => n + 1);
+    // 96.md — the estimates/versions panels live on Terms & Vocabulary now; the
+    // remount-per-visit contract (fresh strategy read) moves with them.
+    if (id === 'terms') setPanelNonce((n) => n + 1);
     setStage(id);
   }, []);
 
@@ -897,7 +992,8 @@ export default function SearchWorkspace({
   useEffect(() => {
     // 75.md recs (Finding 3) — the pure reconcile decides BOTH whether to adopt the
     // resolved stage locally AND whether to normalize the URL. A non-surviving deep
-    // link (`?stage=strategy` on an automated project) now pushes `?stage=refine` back
+    // link (`?stage=strategy` on an automated project, or a retired `?stage=concepts`
+    // alias) now pushes the resolved stage back
     // so the side-menu highlight + back/forward stop pointing at the phantom stage.
     // `syncUrl` is only non-null when the URL genuinely differs → no render loop.
     const { apply, syncUrl } = reconcileStageUrl(urlStage, searchMode, stageRef.current);
@@ -949,30 +1045,34 @@ export default function SearchWorkspace({
   }, [stageStatuses, stage, stageDisabled]);
 
   // The persistent Search Builder. Its phase follows the active builder stage; on non-
-  // builder stages it stays in 'build' (like the wizard) so stepping around never churns
-  // the phase or reloads the strategy. Memoized so snapshotting runQuery never remounts it.
-  const builderPhase = stage === 'concepts' ? 'concepts' : stage === 'terms' ? 'terms' : 'build';
-  const builderVisible = stage === 'concepts' || stage === 'terms' || stage === 'strategy';
+  // builder stages it stays in 'build' so stepping around never churns the phase or
+  // reloads the strategy. Memoized so snapshotting runQuery never remounts it.
+  const builderPhase = stage === 'terms' ? 'terms' : 'build';
+  const builderVisible = stage === 'terms' || stage === 'strategy';
   // 85.md — a STABLE stage-navigation seam for the builder ("Edit terms →" on the
   // concept cards). goTo changes identity per render; ref-wrapping keeps builderEl's
   // memo (and therefore the heavy builder mount) untouched.
   const goToRef = useRef(null); goToRef.current = goTo;
   const onGoToStage = useCallback((id) => { if (typeof goToRef.current === 'function') goToRef.current(id); }, []);
+  // 96.md — the builder reads ONLY the research question (no PICO threading).
+  const question = (pico && pico.question) || '';
   const builderEl = useMemo(() => (
     <SearchBuilderTab
       projectId={projectId}
-      pico={pico}
+      question={question}
       api={searchBuilderApi}
       loadSearch={loadSearch}
       saveSearch={saveSearch}
       phase={builderPhase}
+      readOnly={readOnly}
+      visible={builderVisible} // QA L28 — gates the silent questionSnapshot refresh (no PUT churn while hidden)
       onLiveQuery={onLiveQuery}
       onHitState={onHitState}
       onRegisterHitRefresh={onRegisterHitRefresh}
       onGoToStage={onGoToStage}
       onStats={onStats}
     />
-  ), [projectId, pico, builderPhase, onLiveQuery, onHitState, onRegisterHitRefresh, onGoToStage, onStats]);
+  ), [projectId, question, builderPhase, readOnly, builderVisible, onLiveQuery, onHitState, onRegisterHitRefresh, onGoToStage, onStats]);
 
   const modeLabel = searchMode === 'automated' ? 'Automated search' : searchMode === 'manual' ? 'Manual search' : null;
 
@@ -1017,7 +1117,7 @@ export default function SearchWorkspace({
         </p>
       </header>
 
-      {/* 73.md P3 — sticky PubMed pulse (visible on the build/refine/run stages). */}
+      {/* 73.md P3 — sticky PubMed pulse (visible on the build/mode/run stages). */}
       {PULSE_STAGES.has(stage) && (
         <PubMedPulse snapshot={hitSnap} hasConcepts={hasConcepts}
           liveTermCount={builderStats ? builderStats.liveTermCount : null} onRetry={retryHits} />
@@ -1044,16 +1144,11 @@ export default function SearchWorkspace({
             {stage === 'strategy' && searchMode == null && !readOnly && (
               <ModeChooserStrip onChoose={changeMode} busy={modeBusy} goMode={() => goTo('mode')} />
             )}
-            {stage === 'concepts' && (
-              <StageIntro title="Concepts">
-                Turn your question into the handful of core concepts your search is built from. Click the important ideas in your
-                question — the compact summary below shows the concept structure; the next stage adds the term detail.
-              </StageIntro>
-            )}
             {stage === 'terms' && (
               <StageIntro title="Terms & vocabulary">
-                Broaden each concept with synonyms and controlled vocabulary. MeSH suggestions are kept separate from free-text terms, so
-                you can see exactly what is indexed versus searched as text.
+                Build your search here: click the key ideas in your research question to create concept groups, broaden each group with
+                synonyms and controlled vocabulary (MeSH stays separate from free text), set the AND/OR logic, and watch the compiled
+                per-database queries update live below.
               </StageIntro>
             )}
             {stage === 'strategy' && (
@@ -1065,6 +1160,18 @@ export default function SearchWorkspace({
             {/* 74.md — no automated content ever rides on this stage: 'strategy' exists
                 only in the manual/undecided rail (stagesFor drops it in automated mode). */}
             {builderEl}
+            {/* 96.md — the Test & Refine stage is retired: the live per-database
+                estimates and the saved-versions panel ride WITH the central Terms &
+                Vocabulary workspace. panelNonce keeps the remount-per-visit contract
+                (fresh strategy read on every stage entry + after a restore). */}
+            {stage === 'terms' && (
+              <div style={{ marginTop: 12 }}>
+                {(pecanEnabled || searchMode !== 'manual') && (
+                  <PreviewEstimates projectId={projectId} getLive={getLive} pecanEnabled={pecanEnabled} />
+                )}
+                <SearchVersionsPanel key={`v-${panelNonce}`} projectId={projectId} readOnly={readOnly} onAfterRestore={bumpPanels} />
+              </div>
+            )}
             {stage === 'strategy' && studioEnabled && (
               <div style={{ marginTop: 12 }}>
                 <StrategyStudioPanel projectId={projectId} readOnly={readOnly} />
@@ -1072,7 +1179,9 @@ export default function SearchWorkspace({
             )}
           </div>
 
-          {stage === 'question' && <QuestionStage pico={pico} />}
+          {stage === 'question' && (
+            <QuestionStage pico={pico} updNested={updNested} readOnly={readOnly} goTerms={() => goTo('terms')} lockCtx={lockCtx} />
+          )}
 
           {stage === 'mode' && (
             <>
@@ -1090,32 +1199,11 @@ export default function SearchWorkspace({
             </>
           )}
 
-          {stage === 'refine' && (
-            <>
-              <StageIntro title="Test & refine">
-                Sanity-check the strategy before you run it: preview how many records it returns per database, review a transparent quality
-                breakdown, and compare or restore saved versions.
-              </StageIntro>
-              {/* 74.md — in MANUAL mode a disabled engine is irrelevant: the "enable the
-                  automated engine in Ops" card is an automated-only status indicator and
-                  never renders there. With the engine on, per-database estimates are a
-                  shared sensitivity check and stay for both modes. */}
-              {(pecanEnabled || searchMode !== 'manual') && (
-                <PreviewEstimates projectId={projectId} getLive={getLive} pecanEnabled={pecanEnabled} />
-              )}
-              <div style={{ marginTop: 12 }}>
-                <SearchQualityPanel key={`q-${panelNonce}`} projectId={projectId} getLive={getLive} />
-                <SearchVersionsPanel key={`v-${panelNonce}`} projectId={projectId} readOnly={readOnly} onAfterRestore={bumpPanels} />
-              </div>
-            </>
-          )}
-
           {stage === 'results' && (
             searchMode === 'automated' ? (
               pecanEnabled ? (
                 <PecanSearchTab
                   projectId={projectId}
-                  pico={pico}
                   readOnly={readOnly}
                   embedded
                   initialCanonicalQuery={runQuery ? { concepts: runQuery.concepts, filters: runQuery.filters } : undefined}

@@ -11,7 +11,12 @@
  *  - the fast path's rows are structurally identical to the in-memory path's
  *    (same keys, same decisions/flags) for the same records.
  */
+// FIRST import — snapshots the shell env before the prisma import injects
+// server/.env into this single-fork process (see the helper's header).
+import { restoreShellEnv } from '../helpers/prismaEnvGuard.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+
+restoreShellEnv();
 import { prisma } from '../../../server/db/client.js';
 import { listRecords } from '../../../server/controllers/screeningController.js';
 

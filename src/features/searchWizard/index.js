@@ -1,15 +1,14 @@
 /**
- * features/searchWizard — public API (prompt60).
+ * features/searchWizard — public API (prompt60; slimmed by 96.md).
  *
- * The unified 3-step Search stage (Define → Build → Run). It embeds the existing
- * Search Builder + Pecan Search engines unchanged; see SearchWizard.jsx.
+ * The legacy 3-step SearchWizard and the "Search quality" panel/model were RETIRED
+ * by 96.md (the staged searchWorkspace + the inline Terms & Vocabulary quality card
+ * replaced them). What remains here are the reproducibility surfaces the workspace
+ * still composes: versions, export/methods-text, Strategy Studio and recall panels.
  */
-export { default as SearchWizard } from './SearchWizard.jsx';
-// 69.md — reproducibility/quality panels + their pure models (also exported for tests).
-export { default as SearchQualityPanel, QualityRows, QualityCard } from './SearchQualityPanel.jsx';
+// 69.md — reproducibility panels + their pure models (also exported for tests).
 export { default as SearchVersionsPanel, VersionList, DiffView } from './SearchVersionsPanel.jsx';
 export { default as SearchExportPanel, MethodsModal, PrismaSExport } from './SearchExportPanel.jsx';
-export { buildQualityModel } from './searchQualityModel.js';
 export { formatVersionDiff } from './versionDiff.js';
 export { buildReproLog, reproLogToJson, reproLogFilename } from './reproLog.js';
 export { searchVersionsApi } from './searchVersionsApi.js';

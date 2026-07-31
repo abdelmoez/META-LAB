@@ -155,7 +155,7 @@ const PHASE_LABELS = {
 function summarizeCounts(run, sources) {
   if (sources.length) {
     let retrieved = 0; let imported = 0; let duplicates = 0; let existing = 0;
-    let ambiguous = 0; let failed = 0; let normalized = 0;
+    let ambiguous = 0; let failed = 0; let normalized = 0; let updated = 0;
     let sourcesDone = 0; let sourcesFailed = 0; let sourcesPartial = 0;
     for (const s of sources) {
       // Tolerate the leaner history-list source shape (`raw`/`imported`) too.
@@ -166,17 +166,19 @@ function summarizeCounts(run, sources) {
       ambiguous += num(s.ambiguousDupCount);
       failed += num(s.failedRecordCount);
       normalized += num(s.normalizedCount);
+      updated += num(s.updatedCount != null ? s.updatedCount : s.updated);
       if (TERMINAL_SOURCE_STATES.has(s.state)) sourcesDone += 1;
       if (s.state === 'failed') sourcesFailed += 1;
       if (s.state === 'partial') sourcesPartial += 1;
     }
-    return { retrieved, imported, duplicates, existing, ambiguous, failed, normalized, sourcesDone, sourcesTotal: sources.length, sourcesFailed, sourcesPartial };
+    return { retrieved, imported, duplicates, existing, ambiguous, failed, normalized, updated, sourcesDone, sourcesTotal: sources.length, sourcesFailed, sourcesPartial };
   }
   const c = run.counts || {};
   return {
     retrieved: num(c.rawRetrieved), imported: num(c.imported),
     duplicates: num(c.exactDup) + num(c.fuzzyDup), existing: num(c.existingMatched),
     ambiguous: num(c.ambiguousDup), failed: num(c.failedRecords), normalized: num(c.normalized),
+    updated: num(c.updated),
     sourcesDone: num(c.sourcesCompleted) + num(c.sourcesFailed) + num(c.sourcesPartial),
     sourcesTotal: c.perSource ? Object.keys(c.perSource).length : 0,
     sourcesFailed: num(c.sourcesFailed), sourcesPartial: num(c.sourcesPartial),
@@ -327,6 +329,7 @@ function shapeSources(sources) {
       imported: num(s.importedCount),
       duplicates: num(s.exactDupCount) + num(s.fuzzyDupCount),
       existing: num(s.existingMatchCount),
+      updated: num(s.updatedCount),
       ambiguous: num(s.ambiguousDupCount),
       failed: num(s.failedRecordCount),
       expected: exp ? exp.total : null,

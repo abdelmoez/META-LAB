@@ -46,6 +46,13 @@ export const screeningApi = {
   },
   getKeywordStats: (pid) => req('GET', `/projects/${pid}/keyword-stats`),
   deleteRecord: (pid, rid) => req('DELETE', `/projects/${pid}/records/${rid}`),
+  // 96.md 5D — article-level import provenance: which searches/files introduced
+  // or re-found this record and which metadata fields later imports changed.
+  // → { sources:[{runId,runName,origin,provider,providerRecordId,outcome,
+  //      importedAt,batchId,filename,rolledBackAt}],
+  //     changes:[{field,fromValue,toValue,runId,provider,createdAt}] }
+  // 404 when no provenance exists (legacy record) — callers soft-fail.
+  getRecordProvenance: (pid, rid) => req('GET', `/projects/${pid}/records/${rid}/provenance`),
 
   // Import / Export
   // POST /projects/:pid/import — body { format, content, filename }. The server

@@ -33,7 +33,7 @@ export const searchBuilderApi = {
   },
 };
 
-// One search per project. load returns {concepts,overrides} | null (null seeds from PICO).
+// One search per project. load returns {concepts,overrides} | null (null seeds empty; the workspace seeds from the research question).
 export async function loadSearch(projectId) {
   try {
     const r = await fetch(`${BASE}/${projectId}`, { credentials: 'include' });

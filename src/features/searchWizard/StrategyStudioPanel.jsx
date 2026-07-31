@@ -21,6 +21,10 @@ import { useState, useEffect, useCallback } from 'react';
 import { C, FONT, MONO, alpha } from '../../frontend/theme/tokens.js';
 import { strategyStudioApi } from './strategyStudioApi.js';
 
+/* 96.md — LEGACY-ONLY fallback: block headers prefer the CONCEPT LABEL (labelFor
+   below); PICO_LABEL survives purely so historical strategy blocks that carry a
+   bare `picoField` (no concept label) still render a human name. New question-based
+   groups always carry a label and never hit this map. */
 const PICO_LABEL = { P: 'Population', I: 'Intervention', C: 'Comparator', O: 'Outcome', S: 'Study design' };
 const PROFILE = {
   broad:    { label: 'Broad', hint: 'higher recall', color: C.teal },

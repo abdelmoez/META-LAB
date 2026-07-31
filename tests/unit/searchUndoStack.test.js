@@ -189,3 +189,115 @@ describe('stack mechanics', () => {
     expect(stack).toHaveLength(1); // undoLast returned a new stack; input intact
   });
 });
+
+/* ══════════════ 96.md D13 — group operations: reorder / merge / split ══════════ */
+
+import {
+  recordReorderConcept, recordReorderTerm, recordMergeConcepts, recordSplitConcept,
+} from '../../src/research-engine/searchBuilder/undoStack.js';
+import {
+  reorderConcept, reorderTerm, mergeConcepts, splitConcept,
+} from '../../src/research-engine/searchBuilder/searchState.js';
+
+const g = (id, label, terms = []) => ({ id, label, source: 'user_added', op: 'AND', terms });
+const t = (id, text) => ({ id, text, type: 'freetext', field: 'tiab', source: 'user_added' });
+
+describe('96.md — recordReorderConcept + inverse', () => {
+  it('undo moves the concept back to its ORIGINAL index', () => {
+    const list = [g('a', 'A'), g('b', 'B'), g('c', 'C')];
+    const moved = reorderConcept(list, 'b', +1); // a, c, b
+    const stack = recordReorderConcept([], { conceptId: 'b', fromIndex: 1, toIndex: 2, label: 'B' });
+    const r = undoLast(stack, { concepts: moved, ignored: [] });
+    expect(r.state.concepts.map((x) => x.id)).toEqual(['a', 'b', 'c']);
+    expect(r.stack).toEqual([]);
+    expect(r.description).toContain('B');
+  });
+  it('degrades to a calm no-op when the concept vanished (collaborator deleted it)', () => {
+    const stack = recordReorderConcept([], { conceptId: 'zz', fromIndex: 0, toIndex: 1 });
+    const r = undoLast(stack, { concepts: [g('a', 'A')], ignored: [] });
+    expect(r.state.concepts.map((x) => x.id)).toEqual(['a']);
+  });
+  it('refuses to record junk (no id / same index)', () => {
+    expect(recordReorderConcept([], {})).toEqual([]);
+    expect(recordReorderConcept([], { conceptId: 'a', fromIndex: 1, toIndex: 1 })).toEqual([]);
+  });
+});
+
+describe('96.md QA M3 — recordReorderTerm + inverse (within-group order)', () => {
+  const withTerms = () => [g('a', 'A', [t('t1', 'one'), t('t2', 'two'), t('t3', 'three')]), g('b', 'B')];
+  it('undo restores the EXACT pre-move term order (byte-identical inverse)', () => {
+    const list = withTerms();
+    const moved = reorderTerm(list, 'a', 't2', +1); // one, three, two
+    const stack = recordReorderTerm([], { conceptId: 'a', termId: 't2', fromIndex: 1, toIndex: 2, text: 'two' });
+    const r = undoLast(stack, { concepts: moved, ignored: [] });
+    expect(r.state.concepts[0].terms.map((x) => x.id)).toEqual(['t1', 't2', 't3']);
+    expect(serializeSearchState({ concepts: r.state.concepts })).toBe(serializeSearchState({ concepts: list }));
+    expect(r.stack).toEqual([]);
+    expect(r.description).toContain('two');
+  });
+  it('degrades to a calm no-op when the concept or term vanished meanwhile', () => {
+    const stack1 = recordReorderTerm([], { conceptId: 'zz', termId: 't1', fromIndex: 0, toIndex: 1, text: 'x' });
+    const r1 = undoLast(stack1, { concepts: withTerms(), ignored: [] });
+    expect(r1.state.concepts[0].terms.map((x) => x.id)).toEqual(['t1', 't2', 't3']);
+    const stack2 = recordReorderTerm([], { conceptId: 'a', termId: 'gone', fromIndex: 0, toIndex: 1, text: 'x' });
+    const r2 = undoLast(stack2, { concepts: withTerms(), ignored: [] });
+    expect(r2.state.concepts[0].terms.map((x) => x.id)).toEqual(['t1', 't2', 't3']);
+  });
+  it('refuses to record junk (missing ids / same index)', () => {
+    expect(recordReorderTerm([], {})).toEqual([]);
+    expect(recordReorderTerm([], { conceptId: 'a', termId: 't1', fromIndex: 1, toIndex: 1 })).toEqual([]);
+  });
+});
+
+describe('96.md — recordMergeConcepts + inverse', () => {
+  it('undo strips exactly the moved terms and re-inserts the ORIGINAL source concept', () => {
+    const from = g('x', 'Imaging', [t('x1', 'sonography'), t('x2', 'ultrasonic waves')]);
+    const into = g('y', 'Ultrasound', [t('y1', 'ultrasound')]);
+    const res = mergeConcepts([from, into], 'x', 'y');
+    const stack = recordMergeConcepts([], res.undo);
+    const r = undoLast(stack, { concepts: res.concepts, ignored: [] });
+    expect(r.state.concepts.map((x) => x.id)).toEqual(['x', 'y']);
+    expect(r.state.concepts[0]).toBe(from); // the original object returns intact
+    expect(r.state.concepts[1].terms.map((x) => x.id)).toEqual(['y1']); // moved terms gone
+    expect(r.description).toContain('Imaging');
+  });
+  it('never duplicates the source when it somehow still exists', () => {
+    const from = g('x', 'Imaging', [t('x1', 'sonography')]);
+    const stack = recordMergeConcepts([], { fromConcept: from, fromIndex: 0, intoId: 'y', movedTermIds: [] });
+    const r = undoLast(stack, { concepts: [from, g('y', 'Ultrasound')], ignored: [] });
+    expect(r.state.concepts.filter((c) => c.id === 'x')).toHaveLength(1);
+  });
+});
+
+describe('96.md — recordSplitConcept + inverse', () => {
+  const src = g('s', 'Drugs', [t('d1', 'dapagliflozin'), t('d2', 'empagliflozin'), t('d3', 'metformin')]);
+  const doSplit = () => {
+    const res = splitConcept([src], 's', ['d1', 'd2'], 'SGLT2 inhibitors');
+    const withId = res.concepts.map((c, i) => (i === res.newIndex ? { ...c, id: 'new1' } : c));
+    return withId;
+  };
+  it('undo moves the split-off terms back and removes the (now empty) new group', () => {
+    const concepts = doSplit();
+    const stack = recordSplitConcept([], { fromConceptId: 's', newConceptId: 'new1', termIds: ['d1', 'd2'], label: 'SGLT2 inhibitors' });
+    const r = undoLast(stack, { concepts, ignored: [] });
+    expect(r.state.concepts.map((c) => c.id)).toEqual(['s']);
+    expect(r.state.concepts[0].terms.map((x) => x.id)).toEqual(['d3', 'd1', 'd2']);
+    expect(r.description).toContain('SGLT2 inhibitors');
+  });
+  it('keeps the new group when it gained OTHER terms after the split (their work survives)', () => {
+    const concepts = doSplit().map((c) => (c.id === 'new1' ? { ...c, terms: [...c.terms, t('extra', 'canagliflozin')] } : c));
+    const stack = recordSplitConcept([], { fromConceptId: 's', newConceptId: 'new1', termIds: ['d1', 'd2'], label: 'SGLT2 inhibitors' });
+    const r = undoLast(stack, { concepts, ignored: [] });
+    expect(r.state.concepts.map((c) => c.id)).toEqual(['s', 'new1']);
+    expect(r.state.concepts[1].terms.map((x) => x.id)).toEqual(['extra']);
+  });
+  it('degrades to a no-op when either side vanished', () => {
+    const stack = recordSplitConcept([], { fromConceptId: 's', newConceptId: 'gone', termIds: ['d1'] });
+    const r = undoLast(stack, { concepts: [src], ignored: [] });
+    expect(r.state.concepts).toEqual([src]);
+  });
+  it('refuses to record junk (missing ids / empty selection)', () => {
+    expect(recordSplitConcept([], {})).toEqual([]);
+    expect(recordSplitConcept([], { fromConceptId: 'a', newConceptId: 'b', termIds: [] })).toEqual([]);
+  });
+});

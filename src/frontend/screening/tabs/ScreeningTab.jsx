@@ -18,6 +18,8 @@ import { extractKeywords } from '../../../research-engine/screening/keywords.js'
 import { DEFAULT_INCLUDE_KEYWORDS, DEFAULT_EXCLUDE_KEYWORDS } from '../../../research-engine/screening/defaultKeywords.js';
 import { effectiveKeywords, KEYWORD_SOURCE } from '../../../research-engine/screening/criteriaKeywords.js';
 import PdfViewer from '../components/PdfViewer.jsx';
+// 96.md 5D — collapsible article-level "Import provenance" (lazy; 404 soft-fail).
+import ImportProvenance from '../components/ImportProvenance.jsx';
 import { screeningApi } from '../api-client/screeningApi.js';
 import { useRealtime } from '../../hooks/useRealtime.js';
 import { useScreeningShortcuts } from '../hooks/useScreeningShortcuts.js';
@@ -931,6 +933,13 @@ function MiddleColumn({
         {/* ── PDF attachment + in-browser preview ────────────────────────── */}
         <div style={{ margin: '4px 0 16px' }}>
           <PdfViewer pid={pid} recordId={record.id} canManage={canScreen || isLeader} />
+        </div>
+
+        {/* ── Import provenance (96.md 5D) — which searches found this article,
+               which databases it appeared in, and later metadata changes.
+               key resets the lazy fetch when the selected record changes. ──── */}
+        <div style={{ margin: '4px 0 16px' }}>
+          <ImportProvenance key={record.id} pid={pid} recordId={record.id} />
         </div>
 
         {/* ── AI relevance assistance (feature flag: aiScreening) ─────────── */}

@@ -851,3 +851,242 @@ across all projects (records where `handoffStatus != ''`, newest first, limit 10
   include; `out/not relevant/ineligible` → exclude; `unclear` → maybe. POLICY:
   `conflict` → `maybe` — a per-reviewer decision can never BE `conflict` (that is a
   derived between-reviewers state), so exported conflict cells import as "needs another look".
+
+---
+
+## 96.md additions (2026-07-30) — search-import provenance, history & reset
+
+### Metadata merge on duplicate match (imports)
+
+`dedupeAndInsertRecords` (sync import, async job, Pecan landing, citation mining) no
+longer silently skips a duplicate match: the matched existing record gets a SAFE
+**fill-blank** merge (`mergeFillBlanks` over `doi/pmid/abstract/authors/year/journal/keywords`
+— only BLANK fields are filled, non-empty values are never overwritten; decisions,
+stage, finalStatus, notes, conflicts, PDFs, and assignments are NEVER touched).
+
+- Import responses (`POST /import`, import job rows' underlying result) gain the
+  ADDITIVE field `updated` — DISTINCT existing records that had ≥1 field filled.
+  `updated ⊆ skippedDuplicates`; PRISMA accounting is unchanged (an updated record
+  still counts as *already present* — rerun-stable).
+- **`updated` count semantics (run level):** for search runs, `updated` counts
+  DISTINCT records per run — a record filled by several pages/sources of one run
+  counts once (the merge writer consults the run's existing
+  `ScreenRecordMetadataChange` rows before counting). Residual imprecision: two
+  sources of the same run merging the SAME record at the same instant (bounded by
+  source concurrency 3) can each count it once — the check is query-first, not a
+  DB constraint. File imports are one merge call per batch, so their `updated` is
+  per-batch distinct by construction.
+- Within-run cross-database duplicates (`exact_dup` / `fuzzy_dup` verdicts) get
+  the SAME fill-blank merge as `existing_match` records — e.g. Europe PMC's copy
+  supplies the abstract PubMed omitted in the same run. Their provenance rows
+  carry outcome `updated` (with `changedFields`) when the merge filled fields,
+  else `merged_duplicate`.
+- Each filled field is logged as a `ScreenRecordMetadataChange` row
+  (field, fromValue, toValue — values capped at 500 chars), written immediately
+  after each record's update (crash-safe: at most the in-flight record's audit
+  rows can be lost, never a whole batch).
+- Every inserted AND matched record gains a `ScreenRecordSource` provenance row:
+  `{ projectId, screenRecordId, metaLabProjectId, runId, batchId, provider,
+     providerRecordId, outcome: new|already_present|updated|merged_duplicate,
+     changedFields (JSON string[]), origin: search|file|api|mining, importedAt }`.
+  Writes are idempotent (composite unique key, query-first) — page resumes and job
+  retries never duplicate provenance. For rows with a `runId` the LOGICAL identity
+  is `(screenRecordId, runId, provider, providerRecordId)` — `batchId` is ignored
+  at write time, so a page retried after a mid-page crash (which lands in a NEW
+  batch) never writes a second, contradictory row for the same run+provider+record.
+- `ScreenImportBatch` gains additive columns `searchRunId` (PecanSearchRun id, "" for
+  file/api imports) and `updatedCount`.
+- **Provenance cleanup is consistent everywhere** (the tables are bare-scoped, no
+  FK): the reset endpoint, `DELETE /import-batches/:batchId`, and
+  `DELETE /records/:rid` all best-effort delete the `ScreenRecordSource` +
+  `ScreenRecordMetadataChange` rows of the records they remove — nothing dangles
+  by design.
+
+### List import batches — additive fields
+
+`GET /projects/:pid/import-batches` — each batch additionally carries:
+
+- `searchRunId` — the run that produced it ("" for file/api). Legacy pecan batches
+  (created before the column existed) are backfilled at read time by parsing the
+  synthetic `fileHash` `pecan:<runId>:<provider>:<page>`.
+- `updatedCount` — existing records whose blank metadata this batch's import filled.
+
+All pre-existing fields are byte-identical.
+
+### Import history timeline (NEW)
+
+`GET /projects/:pid/import-history?limit=&offset=` — member-readable. Response:
+
+```json
+{
+  "canReset": true,
+  "canDelete": true,
+  "total": 120,
+  "hasMore": true,
+  "limit": 50,
+  "offset": 0,
+  "entries": [
+    {
+      "kind": "search-run",
+      "runId": "uuid", "name": "Search 2026-07-30", "state": "completed",
+      "origin": "automated | living",
+      "rolledBackAt": "ISO8601 | null",
+      "initiatedByName": "Alice",
+      "createdAt": "ISO8601", "completedAt": "ISO8601 | null",
+      "canonicalText": "(cancer) AND (screening)",
+      "canonicalTextTruncated": false,
+      "errorSummary": "",
+      "counts": { "found": 312, "imported": 224, "existingMatched": 76, "updated": 3, "duplicatesSkipped": 12, "ambiguous": 0, "failed": 0 },
+      "perSource": [{ "provider": "pubmed", "state": "completed", "raw": 312, "imported": 224, "existingMatched": 76, "updated": 3, "duplicatesSkipped": 12, "failed": 0, "capReached": false, "errorClass": "", "errorDetail": "" }],
+      "batches": [ { "id": "uuid", "filename": "pubmed search", "...": "same shape as import-batches" } ]
+    },
+    { "kind": "batch", "id": "uuid", "filename": "refs.ris", "source": "file", "...": "same shape as import-batches" }
+  ]
+}
+```
+
+- Entries are newest-first. Search-run entries group the run's per-page batches;
+  counts for non-finalized runs are aggregated LIVE from the per-source rows.
+- Batches whose run no longer exists (or file/api batches) appear as `kind:"batch"`.
+- `canReset` (owner OR site admin) drives visibility of the reset action —
+  server-computed capability flag, same pattern as `canDelete`.
+- **Pagination (additive):** `limit` defaults to 50 (max 200), `offset` defaults
+  to 0; both apply to the SORTED entry list. `total` = total entries, `hasMore` =
+  `offset + entries.length < total`. Per-source breakdowns are computed only for
+  the returned page. `canonicalText` in list entries is truncated to 500 chars
+  with `canonicalTextTruncated: true` when cut — the full text is available from
+  the run detail endpoint (`GET /api/pecan-search/...`).
+
+### Record provenance (NEW)
+
+`GET /projects/:pid/records/:rid/provenance` — member-readable; outsiders and
+unknown records get an existence-hiding **404**. The 96.md 5D article-level view:
+which imports introduced/re-found the article and which fields later imports
+filled.
+
+```json
+{
+  "sources": [
+    {
+      "runId": "uuid | \"\"",
+      "runName": "Search 2026-07-30 | \"\"",
+      "origin": "search | file | api | mining",
+      "provider": "pubmed | \"\"",
+      "providerRecordId": "12345 | \"\"",
+      "outcome": "new | already_present | updated | merged_duplicate",
+      "importedAt": "ISO8601",
+      "batchId": "uuid | \"\"",
+      "filename": "refs.ris | \"\"",
+      "rolledBackAt": "ISO8601 | null"
+    }
+  ],
+  "changes": [
+    { "field": "abstract", "fromValue": "", "toValue": "…", "runId": "uuid | \"\"", "provider": "pubmed | \"\"", "createdAt": "ISO8601" }
+  ]
+}
+```
+
+- `sources` is sorted `importedAt` ASC — the FIRST element is the import that
+  first introduced the article.
+- `runName` / `rolledBackAt` resolve from `PecanSearchRun` (`""` / `null` for
+  file/api rows or when the run is gone); `filename` resolves from the batch
+  (`""` when batchless/deleted).
+- `changes[].provider` is best-effort: the unique provider among the record's
+  source rows sharing the change's `(runId, batchId)` context, else `""`.
+- Records imported before 96.md have no provenance rows — both arrays are empty
+  (legacy imports are undetectable by design).
+
+### Delete imported records — reset (NEW)
+
+**Permission (both endpoints): project OWNER or site ADMIN only** (deleteImportBatch
+precedent; leaders are deliberately excluded). Outsiders → 404 (existence hiding).
+
+`GET /projects/:pid/imported-records/reset-preview?scope=search|all`
+
+```json
+{
+  "scope": "search",
+  "projectName": "My review",
+  "confirmToken": "My review",
+  "counts": {
+    "records": 500, "batches": 12, "decisions": 40, "notes": 5, "conflicts": 2,
+    "pdfs": 3, "runsAffected": 2, "handedOff": 1, "manualRecordsKept": 120
+  },
+  "searchHistoryRemains": true,
+  "strategyRemains": true,
+  "undoable": false,
+  "blockedBy": "A reference import is still running for this project. | null"
+}
+```
+
+- `confirmToken` (additive) is the EXACT string the user must type: the project
+  title, or the literal `DELETE` when the title is blank/whitespace (the typed
+  confirm can never be vacuous). The POST validates against the same token.
+
+`POST /projects/:pid/imported-records/reset` — body `{ "scope": "search" | "all", "confirm": "<confirmToken>" }`
+
+- `scope: "search"` deletes records whose import batch is attributed to a search
+  run — `source: "pecan-search"` OR a `searchRunId` / legacy `pecan:<runId>:…`
+  fileHash (the SAME attribution the import-history grouping uses, so what
+  displays under a run is exactly what the reset removes). Manually
+  imported/created records are KEPT (`manualRecordsKept`).
+  - **Shared provenance (kept):** a record in a search batch that ALSO arrived
+    via a manual/file/api/citation-mining import (it has a `ScreenRecordSource`
+    row with origin `file`/`api`/`mining`) is EXCLUDED from the search scope —
+    it is kept, counted in `manualRecordsKept`, and only its `search`-origin
+    provenance rows are stripped. Caveat: records whose shared provenance
+    predates 96.md cannot be detected (no provenance rows exist for them) and
+    are deleted with their search batch.
+- `scope: "all"` deletes EVERY ScreenRecord in the project (incl. manual/file/api)
+  and all import batches — complete screening restart.
+- Typed confirm = `confirmToken` (project title, or `DELETE` when blank);
+  mismatch → **400**.
+- **409** `{ code: "RESET_IN_PROGRESS" }` when a reset is ALREADY running for the
+  project (per-project in-process lock — double-submits and concurrent resets
+  never race). While the lock is held, `POST /import`, `POST /import/start`,
+  `POST /duplicates/detect` and Pecan `POST …/search/runs` also return **409**
+  `{ code: "RESET_IN_PROGRESS" }`, and any in-flight landing fails fast with the
+  same code — imports can never repopulate a project mid-reset.
+- **409** `{ code: "JOBS_ACTIVE" }` while ANY project-scoped job is active
+  (import, duplicate detection, AI, eligibility, full-text, or a queued/running
+  Pecan search run/job for the linked META·LAB project). The fence is
+  **fail-closed** (a fence query error blocks the reset) and is **re-run as the
+  first operation inside the delete transaction**, so a job enqueued between the
+  pre-check and the transaction aborts the reset with the same 409.
+- Deletion is transactional + chunked (tx timeout 120 s — a pathological reset
+  fails fast instead of stalling other writers): bare-scope rows (AI
+  scores/feedback, duplicate labels, eligibility assessments, full-text
+  candidates/requests, ScreenRecordSource / ScreenRecordMetadataChange, AI
+  validation samples, PENDING engine dedup decisions of the project's runs) are
+  cleaned; decisions / conflicts / PDF rows / open states cascade; duplicate
+  groups that lost their PRIMARY or dropped under 2 surviving members are
+  dissolved — surviving members get `isDuplicate`/`isPrimary` cleared and are
+  detached, so no kept record is ever left suppressed by a dead group; scoped
+  batches + TERMINAL ScreenImportJob rows are removed so **re-importing the same
+  file after a reset works** (no 409 duplicate_import). Scope `all` clears EVERY
+  terminal import job for the project (incl. jobs whose batch was deleted
+  per-batch earlier).
+- `PecanSearchRun` rows are **marked** `rolledBackAt`/`rolledBackById`, never
+  deleted — search history and strategy versions remain; PRISMA excludes
+  rolled-back runs' engine-side duplicate counts. Only runs in TERMINAL states
+  are marked (queued/running runs cannot exist at that point — the in-transaction
+  fence aborts first). The pecan worker additionally treats `rolledBackAt` as a
+  page-boundary stop signal, so a marked run can never keep landing records.
+- Side effects (best-effort, post-commit): `ScreenResetEvent` row (written in the
+  transaction), `ScreenAuditLog` action `RESET_IMPORTED_RECORDS`, ProjectEvent
+  `SCREENING_IMPORTED_RECORDS_RESET` (module `screening`), on-disk PDF cleanup
+  (file names captured INSIDE the transaction, right before each delete chunk),
+  and `project.updated` realtime pokes to both the screening room and the linked
+  META·LAB project room.
+
+**Response 200**
+```json
+{
+  "deleted": true,
+  "scope": "search",
+  "counts": { "records": 500, "decisions": 40, "conflicts": 2, "pdfs": 3, "batches": 12, "runsMarked": 2, "manualRecordsKept": 120 }
+}
+```
+
+Screening counts, project progress and PRISMA all recompute live from the surviving
+rows (no cached counters exist to invalidate).

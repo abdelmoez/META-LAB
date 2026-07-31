@@ -1,7 +1,8 @@
 /**
- * undoStack.js — 85.md A1. A pure LIFO stack (cap 20) of INVERSE PATCHES over the
- * Search Builder's { concepts, ignored } state, so destructive actions (remove a
- * term/concept, disable, bulk-accept suggestions) are recoverable.
+ * undoStack.js — 85.md A1 (+ 96.md D13). A pure LIFO stack (cap 20) of INVERSE
+ * PATCHES over the Search Builder's { concepts, ignored } state, so destructive
+ * actions (remove a term/concept, disable, bulk-accept suggestions, and the 96.md
+ * group operations: reorder / merge / split) are recoverable.
  *
  * WHY INVERSE PATCHES AND NOT SNAPSHOTS: removing a pico_auto term ALSO appends an
  * `ignored` entry (so the PICO re-sync won't resurrect it). An undo that restored
@@ -89,6 +90,81 @@ export function recordDisable(stack, { concept, term } = {}) {
     conceptId: concept.id,
     termId: term.id,
     text: String(term.text || ''),
+  });
+}
+
+/**
+ * 96.md D13 — recordReorderConcept(stack, { conceptId, fromIndex, toIndex, label? })
+ * After a group was moved (searchState.reorderConcept), record the move. Undo puts
+ * the concept back at `fromIndex` (clamped; a vanished concept degrades to no-op).
+ */
+export function recordReorderConcept(stack, { conceptId, fromIndex, toIndex, label } = {}) {
+  if (!conceptId || !Number.isInteger(fromIndex) || !Number.isInteger(toIndex) || fromIndex === toIndex) {
+    return asStack(stack);
+  }
+  return pushEntry(stack, {
+    kind: 'reorderConcept',
+    conceptId,
+    fromIndex,
+    toIndex,
+    label: String(label || ''),
+  });
+}
+
+/**
+ * 96.md §3B (QA M3) — recordReorderTerm(stack, { conceptId, termId, fromIndex,
+ * toIndex, text? }). After a term was moved within its group
+ * (searchState.reorderTerm), record the move. Undo puts the term back at
+ * `fromIndex` (clamped; a vanished concept/term degrades to a no-op) — the exact
+ * inverse of the move, so undo restores a byte-identical term order.
+ */
+export function recordReorderTerm(stack, { conceptId, termId, fromIndex, toIndex, text } = {}) {
+  if (!conceptId || !termId || !Number.isInteger(fromIndex) || !Number.isInteger(toIndex) || fromIndex === toIndex) {
+    return asStack(stack);
+  }
+  return pushEntry(stack, {
+    kind: 'reorderTerm',
+    conceptId,
+    termId,
+    fromIndex,
+    toIndex,
+    text: String(text || ''),
+  });
+}
+
+/**
+ * 96.md D13 — recordMergeConcepts(stack, undoInfo) where undoInfo comes straight
+ * from searchState.mergeConcepts: { fromConcept, fromIndex, intoId, movedTermIds }.
+ * Undo removes exactly the moved terms (by id) from the target group and re-inserts
+ * the ORIGINAL source concept object at its original index.
+ */
+export function recordMergeConcepts(stack, { fromConcept, fromIndex, intoId, movedTermIds } = {}) {
+  if (!fromConcept || !intoId) return asStack(stack);
+  return pushEntry(stack, {
+    kind: 'mergeConcepts',
+    fromConcept,
+    fromIndex: Number.isInteger(fromIndex) && fromIndex >= 0 ? fromIndex : 0,
+    intoId,
+    movedTermIds: asList(movedTermIds).filter(Boolean),
+  });
+}
+
+/**
+ * 96.md D13 — recordSplitConcept(stack, { fromConceptId, newConceptId, termIds,
+ * label? }). After searchState.splitConcept moved `termIds` into the new group
+ * (whose id the caller just assigned), record the split. Undo moves those terms
+ * back into the source group (appended; a term re-added manually is not duplicated)
+ * and removes the new group when nothing else was added to it meanwhile.
+ */
+export function recordSplitConcept(stack, { fromConceptId, newConceptId, termIds, label } = {}) {
+  const ids = asList(termIds).filter(Boolean);
+  if (!fromConceptId || !newConceptId || !ids.length) return asStack(stack);
+  return pushEntry(stack, {
+    kind: 'splitConcept',
+    fromConceptId,
+    newConceptId,
+    termIds: ids,
+    label: String(label || ''),
   });
 }
 
@@ -183,6 +259,92 @@ export function undoLast(stack, state) {
       stack: rest,
       state: { ...state, concepts: next, ignored },
       description: `Re-enabled "${entry.text}"`,
+    };
+  }
+
+  if (entry.kind === 'reorderConcept') {
+    // Inverse of a move: pull the concept from wherever it now sits and re-insert
+    // it at the ORIGINAL index (clamped). A concept deleted meanwhile degrades to
+    // a no-op rather than throwing.
+    const cur = concepts.findIndex((c) => c && c.id === entry.conceptId);
+    if (cur === -1) return { stack: rest, state, description: '' };
+    const next = concepts.slice();
+    const [moved] = next.splice(cur, 1);
+    const at = Math.min(Math.max(entry.fromIndex, 0), next.length);
+    next.splice(at, 0, moved);
+    return {
+      stack: rest,
+      state: { ...state, concepts: next, ignored },
+      description: `Moved "${entry.label || String(moved && moved.label || '')}" back`,
+    };
+  }
+
+  if (entry.kind === 'reorderTerm') {
+    // Inverse of a within-group term move: pull the term from wherever it now sits
+    // in that concept and re-insert it at the ORIGINAL index (clamped). A concept
+    // or term deleted meanwhile degrades to a no-op rather than throwing.
+    const next = concepts.map((c) => {
+      if (!c || c.id !== entry.conceptId) return c;
+      const terms = asList(c.terms);
+      const cur = terms.findIndex((t) => t && t.id === entry.termId);
+      if (cur === -1) return c;
+      const rearranged = terms.slice();
+      const [moved] = rearranged.splice(cur, 1);
+      const at = Math.min(Math.max(entry.fromIndex, 0), rearranged.length);
+      rearranged.splice(at, 0, moved);
+      return { ...c, terms: rearranged };
+    });
+    const touched = next.some((c, i) => c !== concepts[i]);
+    return {
+      stack: rest,
+      state: touched ? { ...state, concepts: next, ignored } : state,
+      description: touched ? `Moved "${entry.text}" back` : '',
+    };
+  }
+
+  if (entry.kind === 'mergeConcepts') {
+    // Inverse of a merge: strip exactly the moved terms (by id) from the target,
+    // then re-insert the ORIGINAL source concept at its original index (skipped
+    // when a concept with that id somehow already exists — no duplicates).
+    const drop = new Set(entry.movedTermIds || []);
+    let next = concepts.map((c) => (c && c.id === entry.intoId
+      ? { ...c, terms: asList(c.terms).filter((t) => !(t && drop.has(t.id))) }
+      : c));
+    if (!next.some((c) => c && entry.fromConcept && c.id === entry.fromConcept.id)) {
+      const at = Math.min(Math.max(entry.fromIndex, 0), next.length);
+      next = [...next.slice(0, at), entry.fromConcept, ...next.slice(at)];
+    }
+    return {
+      stack: rest,
+      state: { ...state, concepts: next, ignored },
+      description: `Restored concept "${String(entry.fromConcept && entry.fromConcept.label || '')}"`,
+    };
+  }
+
+  if (entry.kind === 'splitConcept') {
+    // Inverse of a split: move the split-off terms back into the source group
+    // (appended; texts already present are not duplicated), then remove the new
+    // group when it holds nothing else — terms a collaborator/user added to the
+    // new group after the split are preserved (the group stays with them).
+    const wanted = new Set(entry.termIds || []);
+    const fresh = concepts.find((c) => c && c.id === entry.newConceptId);
+    const src = concepts.find((c) => c && c.id === entry.fromConceptId);
+    if (!fresh || !src) return { stack: rest, state, description: '' };
+    const back = asList(fresh.terms).filter((t) => t && wanted.has(t.id));
+    const remain = asList(fresh.terms).filter((t) => !(t && wanted.has(t.id)));
+    const have = new Set(asList(src.terms).map((t) => norm(t && t.text)).filter(Boolean));
+    const appended = back.filter((t) => !have.has(norm(t && t.text)));
+    let next = concepts.map((c) => {
+      if (!c) return c;
+      if (c.id === entry.fromConceptId) return { ...c, terms: [...asList(c.terms), ...appended] };
+      if (c.id === entry.newConceptId) return { ...c, terms: remain };
+      return c;
+    });
+    if (!remain.length) next = next.filter((c) => !(c && c.id === entry.newConceptId));
+    return {
+      stack: rest,
+      state: { ...state, concepts: next, ignored },
+      description: `Undid split "${entry.label || String(fresh.label || '')}"`,
     };
   }
 

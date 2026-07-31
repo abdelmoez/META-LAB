@@ -109,6 +109,8 @@ export const EVENT_TYPES = Object.freeze({
   STUDY_SCREENING_DECISION_CHANGED:{ category: 'screening', stage: 'screening', module: 'screening', significance: S.DATA_CORRECTION, dependencyKeys: ['prisma.counts'], resultImpact: 'possible' },
   FULL_TEXT_EXCLUSION_REASON_CHANGED:{ category: 'screening', stage: 'screening', module: 'screening', significance: S.DATA_CORRECTION, dependencyKeys: ['prisma.counts'], resultImpact: 'possible' },
   SCREENING_CONFLICT_RESOLVED:     { category: 'conflict_resolution', stage: 'screening', module: 'screening', significance: S.DATA_CORRECTION, dependencyKeys: ['prisma.counts'], resultImpact: 'possible', origin: 'conflict_resolution' },
+  // 96.md Phase 6 — bulk "delete imported records" reset (dataset replacement class).
+  SCREENING_IMPORTED_RECORDS_RESET:{ category: 'screening', stage: 'screening', module: 'screening', significance: S.CRITICAL, dependencyKeys: ['prisma.counts'], resultImpact: 'possible', requiresReview: true },
 
   // ── Study inclusion (roster) ─────────────────────────────────────────────
   STUDY_INCLUDED:              { category: 'study_inclusion', stage: 'screening', module: 'screening', significance: S.RESULT_CHANGING, dependencyKeys: ['studies.roster', 'prisma.counts'], resultImpact: 'possible', requiresReview: true },

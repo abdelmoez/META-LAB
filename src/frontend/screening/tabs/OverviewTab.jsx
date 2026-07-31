@@ -261,10 +261,16 @@ export default function OverviewTab({ pid, project, access = {}, refreshProject,
         )}
       </section>
 
-      {/* ───────── B1) Import History / datasets (58.md §5) ─────────
-          Lists imported datasets; owner/admin can delete a whole batch (the API
-          gates canDelete + recomputes PRISMA/analytics live). Hidden when empty. */}
-      <ImportHistory pid={pid} onChanged={async () => { if (refreshProject) await refreshProject(); await load(); }} />
+      {/* ───────── B1) Search Import History (58.md §5 → 96.md 5C/6A) ─────────
+          Run-grouped import timeline; owner/admin can delete a batch or reset
+          ALL search-imported records (canDelete/canReset are server-computed;
+          PRISMA/analytics recompute live). Hidden when empty. `projectName`
+          feeds the reset modal's typed confirmation (server re-validates it). */}
+      <ImportHistory
+        pid={pid}
+        projectName={proj.title || project?.title || ''}
+        onChanged={async () => { if (refreshProject) await refreshProject(); await load(); }}
+      />
 
       {/* ───────── C) Whole-Project Progress (leader-only, BUG 6) ───────── */}
       {data.isLeader && data.projectProgress && (

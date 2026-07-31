@@ -3,7 +3,12 @@
  * reasons collected by dedupeAndInsertRecords (persisted to ScreenImportJob.
  * errorReport by the worker). Direct service test against the real dev DB.
  */
+// FIRST import — snapshots the shell env before the prisma import injects
+// server/.env into this single-fork process (see the helper's header).
+import { restoreShellEnv } from '../helpers/prismaEnvGuard.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+
+restoreShellEnv();
 import { prisma } from '../../../server/db/client.js';
 import {
   dedupeAndInsertRecords, hasUsableIdentity, ERROR_REPORT_CAP,

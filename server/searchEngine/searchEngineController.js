@@ -112,6 +112,17 @@ export function sanitizeRejectedSuggestions(raw) {
   return out;
 }
 
+/**
+ * 96.md D2 — the research-question text the strategy was built from (concept-drift
+ * detection input). Plain string, trimmed, capped at 2000 chars — the client's
+ * pickPersisted mirrors this EXACT normalization (slice then trim) with the
+ * omit-when-empty convention, so historical saves keep byte-identical signatures
+ * and the live-sync loop never sees phantom changes. Exported for unit tests.
+ */
+export function sanitizeQuestionSnapshot(raw) {
+  return (typeof raw === 'string' ? raw : '').slice(0, 2000).trim();
+}
+
 // 75.md Phase 7 — flag gating routes through the central featureAccess seam, so a
 // globally-disabled feature stays usable by ADMINS (reason 'adminOnly') while
 // non-admins keep getting the existence-hiding 404. Passing no `user` (schedulers,
@@ -241,6 +252,11 @@ export async function putSearch(req, res) {
     // and every rejection would resurface on reload. RULE: every new persisted
     // top-level key needs its own putSearch branch + sanitizer.
     if (has('rejectedSuggestions')) value.rejectedSuggestions = sanitizeRejectedSuggestions(body.rejectedSuggestions);
+    // 96.md D2 — the question text the strategy was built from (drift detection).
+    // Follows the RULE above: its own named branch + sanitizer, or it would be
+    // silently dropped. NOTE the per-concept `sourcePhrase` key needs NO branch —
+    // it rides inside `concepts`, which is stored as sent (no field stripping).
+    if (has('questionSnapshot')) value.questionSnapshot = sanitizeQuestionSnapshot(body.questionSnapshot);
     // 73.md P5 — additive two-path marker ('manual' | 'automated' | null).
     if (has('searchMode')) value.searchMode = sanitizeSearchMode(body.searchMode);
     // baseRevision null = overwrite (the contract's PUT is a full upsert; the

@@ -161,6 +161,51 @@ describe('SearchImportProgressModal — read-only', () => {
   });
 });
 
+describe('SearchImportProgressModal — updated count (96.md plan D14)', () => {
+  it('shows the updated tile + completion line when sources report updatedCount', () => {
+    const done = {
+      id: 'r-up1', state: 'completed',
+      sources: [
+        { provider: 'pubmed', state: 'completed', rawCount: 100, importedCount: 60, existingMatchCount: 30, updatedCount: 5 },
+        { provider: 'europepmc', state: 'completed', rawCount: 40, importedCount: 20, existingMatchCount: 10, updatedCount: 2 },
+      ],
+    };
+    const html = render({ open: true, run: done, onClose() {}, screeningHref: '/x' });
+    expect(html).toContain('Updated');
+    expect(html).toContain('existing records updated');
+    expect(html).toContain('7'); // 5 + 2 summed across sources
+  });
+
+  it('falls back to the run-level counts JSON when no per-source rows exist', () => {
+    const done = {
+      id: 'r-up2', state: 'completed', sources: [],
+      counts: { rawRetrieved: 50, imported: 20, existingMatched: 10, updated: 4 },
+    };
+    const html = render({ open: true, run: done, onClose() {} });
+    expect(html).toContain('existing records updated');
+    expect(html).toContain('4');
+  });
+
+  it('omits the updated line entirely when the server does not report it (old payloads)', () => {
+    const done = {
+      id: 'r-up3', state: 'completed',
+      sources: [{ provider: 'pubmed', state: 'completed', rawCount: 100, importedCount: 60, existingMatchCount: 30 }],
+    };
+    const html = render({ open: true, run: done, onClose() {}, screeningHref: '/x' });
+    expect(html).not.toContain('existing records updated');
+    expect(html).not.toContain('>Updated<');
+  });
+
+  it('a reported zero stays hidden (no noise) but never renders a fake number', () => {
+    const done = {
+      id: 'r-up4', state: 'completed',
+      sources: [{ provider: 'pubmed', state: 'completed', rawCount: 10, importedCount: 5, updatedCount: 0 }],
+    };
+    const html = render({ open: true, run: done, onClose() {}, screeningHref: '/x' });
+    expect(html).not.toContain('existing records updated');
+  });
+});
+
 describe('SearchImportProgressModal — review-round fixes', () => {
   it('does not offer Retry for an all-skipped run (nothing is retryable)', () => {
     const skipped = { id: 'r6', state: 'failed', sources: [{ provider: 'pubmed', state: 'skipped' }, { provider: 'crossref', state: 'skipped' }] };

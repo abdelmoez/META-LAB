@@ -48,10 +48,9 @@ import { api } from "../api-client/apiClient.js"; // prompt32 Task 10 — owner 
 import { ProtocolModulePanel, TIMEFRAME_OPTIONS, timeframeComplete, STUDY_DESIGNS } from "../../features/protocol/index.js";
 import { workflowStateFlagEnabled } from "../../services/workflowState/api.js";
 import { makeWorkflowMenuRules } from "../pages/workflowMenu.js"; // prompt39 Task 6
-// SearchEngine — separated concept→multi-database Search Builder. The Search tab
-// delegates to SearchBuilderTab when the `searchEngine` flag is ON, else the
-// legacy in-blob SearchTab below.
-import { SearchBuilderTab, searchBuilderApi, loadSearch as sbLoad, saveSearch as sbSave, searchEngineFlagEnabled } from "../../features/searchBuilder/index.js";
+// SearchEngine — the Search tab renders via SearchWizardDispatcher (protocolTabs.jsx),
+// which owns the searchEngine flag check and the SearchWorkspace/SearchTab split;
+// nothing from features/searchBuilder is consumed here any more (96.md dead-code sweep).
 
 /* ════════════ UTILS ════════════ */
 const uid = () => Math.random().toString(36).slice(2, 10);

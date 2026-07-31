@@ -298,6 +298,7 @@ export async function runSavedSearch(search, { actorId, reason = 'manual' } = {}
     canonicalQuery,
     sources: providerIds,
     idempotencyKey,
+    origin: 'living', // 96.md D8 — mark scheduler-launched runs in the run history
   });
 
   const now = new Date();

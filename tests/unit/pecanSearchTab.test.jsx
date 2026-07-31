@@ -10,15 +10,20 @@
 import { describe, it, expect } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import PecanSearchTab from '../../src/features/pecanSearch/PecanSearchTab.jsx';
+import PecanSearchTab, {
+  SearchHistory, CompletionSummary, RunFlagBadges,
+} from '../../src/features/pecanSearch/PecanSearchTab.jsx';
 import {
   pecanSearchApi, runsUrl, reportExportUrl, newIdempotencyKey, loadCanonicalQuery, pecanSearchFlagEnabled, selectSourceIds,
 } from '../../src/features/pecanSearch/pecanSearchApi.js';
 
+const render = (el, props) => renderToStaticMarkup(createElement(el, props));
+
 describe('PecanSearchTab (SSR smoke)', () => {
   it('renders its initial loading state without crashing', () => {
     const html = renderToStaticMarkup(
-      createElement(PecanSearchTab, { projectId: 'proj-1', pico: { P: 'adults' }, readOnly: false }),
+      // L3 — the dead `pico` prop is removed: the tab reads the saved strategy.
+      createElement(PecanSearchTab, { projectId: 'proj-1', readOnly: false }),
     );
     expect(html).toContain('Run search — Pecan Search Engine');
     // initial state shows the strategy + sources scaffolding (no live data yet)
@@ -28,11 +33,86 @@ describe('PecanSearchTab (SSR smoke)', () => {
 
   it('renders in read-only mode without crashing', () => {
     const html = renderToStaticMarkup(
-      createElement(PecanSearchTab, { projectId: 'proj-2', pico: {}, readOnly: true }),
+      createElement(PecanSearchTab, { projectId: 'proj-2', readOnly: true }),
     );
     // read-only callers do not get the Review & run card
     expect(html).toContain('Run search — Pecan Search Engine');
     expect(html).not.toContain('Review &amp; run');
+  });
+});
+
+/* ── M9 (plan D15 frontend half) — run-provenance surfaces ─────────────────────
+   The server ships origin / rolledBackAt / counts.updated on every run list item
+   (runService.shapeRunListItem); these tests pin that the history cards and the
+   completion panel actually RENDER them. */
+
+const liveRun = {
+  id: 'r-live', name: 'Primary search', state: 'completed', origin: 'manual',
+  rolledBackAt: null, initiatedByName: 'Alice', createdAt: '2026-07-30T10:00:00Z',
+  canonicalText: '(hf) AND (dapa)',
+  sources: [{ provider: 'pubmed', state: 'completed' }],
+  counts: { rawRetrieved: 312, imported: 224, existingMatched: 76, updated: 3, exactDup: 5, fuzzyDup: 3, ambiguousDup: 0, failedRecords: 0, sourcesCompleted: 1, sourcesFailed: 0, sourcesPartial: 0, perSource: {} },
+};
+const rolledBackLivingRun = {
+  ...liveRun,
+  id: 'r-rb', name: 'Weekly living update', origin: 'living',
+  rolledBackAt: '2026-08-01T10:00:00Z',
+  counts: { ...liveRun.counts, updated: 0 },
+};
+
+describe('RunFlagBadges — rolled-back + living-review flags (M9)', () => {
+  it('renders nothing for a user-launched live run', () => {
+    expect(render(RunFlagBadges, { run: liveRun })).toBe('');
+  });
+
+  it('renders both badges (with explanatory titles) for a rolled-back living run', () => {
+    const html = render(RunFlagBadges, { run: rolledBackLivingRun });
+    expect(html).toContain('Rolled back');
+    expect(html).toContain('removed from Screening by a project reset');
+    expect(html).toContain('Living review');
+    expect(html).toContain('Living Review scheduler');
+  });
+});
+
+describe('SearchHistory cards — origin / rolled-back / updated (M9)', () => {
+  const baseProps = {
+    total: 2, state: 'ready', page: 0, take: 10,
+    setPage() {}, onOpen() {}, onRetry: null, activeRunId: null,
+  };
+
+  it('a live run card shows name/state/counts but no provenance badges', () => {
+    const html = render(SearchHistory, { ...baseProps, history: [liveRun] });
+    expect(html).toContain('Primary search');
+    expect(html).toContain('raw 312');
+    expect(html).toContain('imp 224');
+    expect(html).not.toContain('Rolled back');
+    expect(html).not.toContain('Living review');
+    // updated 3 > 0 → the upd line renders
+    expect(html).toContain('upd 3');
+  });
+
+  it('a rolled-back scheduler run card shows both badges and omits a zero updated line', () => {
+    const html = render(SearchHistory, { ...baseProps, history: [rolledBackLivingRun] });
+    expect(html).toContain('Rolled back');
+    expect(html).toContain('Living review');
+    expect(html).not.toContain('upd 0');
+  });
+});
+
+describe('CompletionSummary — rolled-back note + updated tile (M9)', () => {
+  it('a live completed run shows the updated tile and no rollback note', () => {
+    const html = render(CompletionSummary, { run: liveRun, report: null, projectId: 'p1', onRetry: null });
+    expect(html).toContain('Metadata updated');
+    expect(html).toContain('existing records enriched');
+    expect(html).not.toContain('Rolled back');
+  });
+
+  it('a rolled-back run carries the badge + an explanatory note, and hides the zero updated tile', () => {
+    const html = render(CompletionSummary, { run: rolledBackLivingRun, report: null, projectId: 'p1', onRetry: null });
+    expect(html).toContain('Rolled back');
+    expect(html).toContain('removed from Screening by a project reset');
+    expect(html).toContain('Living review');
+    expect(html).not.toContain('Metadata updated');
   });
 });
 

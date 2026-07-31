@@ -21,7 +21,7 @@ function actionBtn(color) {
 }
 
 export default function SuggestionsDisclosure({
-  suggestions, onAccept, onDismiss, onAcceptAllHeadings,
+  suggestions, readOnly, onAccept, onDismiss, onAcceptAllHeadings,
   rejectedEntries, showDismissed, onToggleShowDismissed, onUnreject,
   ignoredGroups, onRestoreTerm, onRestoreField, onRestoreAll,
 }) {
@@ -31,6 +31,11 @@ export default function SuggestionsDisclosure({
   const hiddenCount = hidden.reduce((n, g) => n + ((g.items && g.items.length) || 0), 0);
   const meshCount = pending.filter((s) => s.kind === 'mesh').length;
   const empty = !pending.length && !rejected.length && !hiddenCount;
+  // QA M8 — accept/dismiss/restore all mutate persisted state (terms /
+  // rejectedSuggestions / ignored): read-only viewers get disabled buttons with an
+  // access explanation, never a click whose autosave the server then rejects.
+  const RO_TITLE = 'Read-only access — ask a project editor to review suggestions';
+  const roBtn = (base) => (readOnly ? { ...base, cursor: 'not-allowed', opacity: 0.55 } : base);
 
   return (
     <div data-testid="sb-suggestions" style={{ fontFamily: FONT }}>
@@ -43,7 +48,8 @@ export default function SuggestionsDisclosure({
 
         {pending.length > 0 && meshCount > 1 && onAcceptAllHeadings && (
           <div style={{ marginBottom: 8 }}>
-            <button type="button" onClick={onAcceptAllHeadings} data-testid="sb-accept-all-headings" style={actionBtn(C.acc)}>
+            <button type="button" onClick={() => { if (!readOnly) onAcceptAllHeadings(); }} disabled={!!readOnly} aria-disabled={readOnly || undefined}
+              title={readOnly ? RO_TITLE : undefined} data-testid="sb-accept-all-headings" style={roBtn(actionBtn(C.acc))}>
               Accept all {meshCount} subject headings
             </button>
           </div>
@@ -60,8 +66,10 @@ export default function SuggestionsDisclosure({
               </span>
               <span style={{ display: 'block', fontSize: 10, color: C.muted }}>{s.why}</span>
             </span>
-            <button type="button" onClick={() => onAccept && onAccept(s)} aria-label={`Accept suggestion ${s.text}`} style={actionBtn(C.grn)}>Accept</button>
-            <button type="button" onClick={() => onDismiss && onDismiss(s)} aria-label={`Dismiss suggestion ${s.text}`} style={actionBtn(C.muted)}>Dismiss</button>
+            <button type="button" onClick={() => { if (!readOnly && onAccept) onAccept(s); }} disabled={!!readOnly} aria-disabled={readOnly || undefined}
+              title={readOnly ? RO_TITLE : undefined} aria-label={`Accept suggestion ${s.text}`} style={roBtn(actionBtn(C.grn))}>Accept</button>
+            <button type="button" onClick={() => { if (!readOnly && onDismiss) onDismiss(s); }} disabled={!!readOnly} aria-disabled={readOnly || undefined}
+              title={readOnly ? RO_TITLE : undefined} aria-label={`Dismiss suggestion ${s.text}`} style={roBtn(actionBtn(C.muted))}>Dismiss</button>
           </div>
         ))}
 
@@ -76,8 +84,9 @@ export default function SuggestionsDisclosure({
                 {rejected.map((r) => (
                   <span key={r.key} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: C.surf, border: `1px dashed ${C.brd2}`, borderRadius: 6, padding: '2px 7px' }}>
                     <span style={{ fontFamily: MONO, fontSize: 10.5, color: C.txt2 }}>{r.label}</span>
-                    <button type="button" onClick={() => onUnreject && onUnreject(r.key)} aria-label={`Restore suggestion ${r.label}`}
-                      title="Let this suggestion appear again"
+                    <button type="button" onClick={() => { if (!readOnly && onUnreject) onUnreject(r.key); }} disabled={!!readOnly} aria-disabled={readOnly || undefined}
+                      aria-label={`Restore suggestion ${r.label}`}
+                      title={readOnly ? RO_TITLE : 'Let this suggestion appear again'}
                       style={{ background: 'none', border: 'none', color: C.acc, cursor: 'pointer', fontSize: 11, padding: 0, lineHeight: 1, minWidth: 20, minHeight: 20 }}>↩</button>
                   </span>
                 ))}
@@ -92,9 +101,9 @@ export default function SuggestionsDisclosure({
               <span style={{ fontSize: 10, fontWeight: 700, color: C.muted, letterSpacing: 0.5, textTransform: 'uppercase' }}>Hidden terms</span>
               <span style={{ fontSize: 10, color: C.muted }}>removed suggestions — won&apos;t return until restored</span>
               {onRestoreAll && (
-                <button type="button" onClick={onRestoreAll}
-                  title={`Restore all ${hiddenCount} removed suggestion${hiddenCount === 1 ? '' : 's'} (also clears dismissed suggestions)`}
-                  style={{ marginLeft: 'auto', ...actionBtn(C.txt2), borderColor: C.brd2 }}>
+                <button type="button" onClick={() => { if (!readOnly) onRestoreAll(); }} disabled={!!readOnly} aria-disabled={readOnly || undefined}
+                  title={readOnly ? RO_TITLE : `Restore all ${hiddenCount} removed suggestion${hiddenCount === 1 ? '' : 's'} (also clears dismissed suggestions)`}
+                  style={{ marginLeft: 'auto', ...roBtn(actionBtn(C.txt2)), borderColor: C.brd2 }}>
                   ↺ Restore all ({hiddenCount})
                 </button>
               )}
@@ -104,7 +113,8 @@ export default function SuggestionsDisclosure({
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
                   <span style={{ fontSize: 9.5, fontWeight: 700, color: C.muted, letterSpacing: 0.5, textTransform: 'uppercase' }}>{grp.field || grp.label || 'Other'}</span>
                   {onRestoreField && (
-                    <button type="button" onClick={() => onRestoreField(grp.field)} title={`Restore all from ${grp.field || 'this field'}`}
+                    <button type="button" onClick={() => { if (!readOnly) onRestoreField(grp.field); }} disabled={!!readOnly} aria-disabled={readOnly || undefined}
+                      title={readOnly ? RO_TITLE : `Restore all from ${grp.field || 'this field'}`}
                       style={{ background: 'none', border: 'none', color: C.acc, cursor: 'pointer', fontSize: 9.5, fontFamily: MONO, textDecoration: 'underline', padding: 0 }}>
                       restore all from {grp.field || 'field'} ({grp.items.length})
                     </button>
@@ -114,7 +124,8 @@ export default function SuggestionsDisclosure({
                   {grp.items.map((e, ei) => (
                     <span key={ei} style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: C.surf, border: `1px dashed ${C.brd2}`, borderRadius: 6, padding: '2px 7px' }}>
                       <span style={{ fontFamily: MONO, fontSize: 10.5, color: C.txt2 }}>{e.text}</span>
-                      <button type="button" onClick={() => onRestoreTerm && onRestoreTerm(e)} title={`Restore "${e.text}"`} aria-label={`Restore ${e.text}`}
+                      <button type="button" onClick={() => { if (!readOnly && onRestoreTerm) onRestoreTerm(e); }} disabled={!!readOnly} aria-disabled={readOnly || undefined}
+                        title={readOnly ? RO_TITLE : `Restore "${e.text}"`} aria-label={`Restore ${e.text}`}
                         style={{ background: 'none', border: 'none', color: C.acc, cursor: 'pointer', fontSize: 11, padding: 0, lineHeight: 1, minWidth: 20, minHeight: 20 }}>↩</button>
                     </span>
                   ))}

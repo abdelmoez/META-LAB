@@ -11,7 +11,12 @@
  *  - identity policy mirrors listRecords: blind + non-leader → anonymous ordinals;
  *  - the async CV cap constant exists and is ≥ the sync cap (SCR-8).
  */
+// FIRST import — snapshots the shell env before the prisma import injects
+// server/.env into this single-fork process (see the helper's header).
+import { restoreShellEnv } from '../helpers/prismaEnvGuard.js';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+
+restoreShellEnv();
 import { prisma } from '../../../server/db/client.js';
 import {
   EXPORT_COLUMNS, EXPORT_REVIEW_COLUMNS, EXPORT_REVIEWER_CAP,

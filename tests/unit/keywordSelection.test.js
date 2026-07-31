@@ -137,3 +137,48 @@ describe('SB4 — biliary / EUS phrase preservation', () => {
     expect(words).not.toContain('ejection');
   });
 });
+
+/* ══════════════ 96.md QA M5 — spanPhrase (arbitrary contiguous span selection) ══ */
+
+import { spanPhrase } from '../../src/research-engine/searchBuilder/keywordSelection.js';
+
+describe('96.md QA M5 — spanPhrase', () => {
+  const Q = 'Do sodium-glucose cotransporter 2 inhibitors reduce mortality in adults?';
+  const toks = tokenizeForSelection(Q);
+  const idxOf = (text) => toks.findIndex((t) => t.norm === norm(text));
+
+  it("recovers the spec's own example — a phrase no curated list contains", () => {
+    // 'sodium-glucose … inhibitors' tokenizes into unrelated words; the span is
+    // the literal contiguous substring the user selected.
+    const a = idxOf('sodium-glucose');
+    const b = idxOf('inhibitors');
+    expect(a).toBeGreaterThanOrEqual(0);
+    expect(b).toBeGreaterThan(a);
+    expect(spanPhrase(toks, a, b)).toBe('sodium-glucose cotransporter 2 inhibitors');
+  });
+  it('is order-insensitive (anchor after the end token works too)', () => {
+    const a = idxOf('sodium-glucose');
+    const b = idxOf('inhibitors');
+    expect(spanPhrase(toks, b, a)).toBe(spanPhrase(toks, a, b));
+  });
+  it('includes filler/noise tokens INSIDE the span (a literal substring)', () => {
+    const t2 = tokenizeForSelection('quality of care in hospitals');
+    // 'of' is filler but part of the selected run.
+    const a = t2.findIndex((t) => t.norm === 'quality');
+    const b = t2.findIndex((t) => t.norm === 'care');
+    expect(a).toBeGreaterThanOrEqual(0);
+    expect(b).toBeGreaterThan(a);
+    expect(spanPhrase(t2, a, b)).toBe('quality of care');
+  });
+  it('a zero-length span returns the single token text', () => {
+    const a = idxOf('mortality');
+    expect(spanPhrase(toks, a, a)).toBe('mortality');
+  });
+  it('is defensive: out-of-range indices / empty tokens return ""', () => {
+    expect(spanPhrase(toks, -1, 2)).toBe('');
+    expect(spanPhrase(toks, 0, 999)).toBe('');
+    expect(spanPhrase([], 0, 0)).toBe('');
+    expect(spanPhrase(null, 0, 0)).toBe('');
+    expect(spanPhrase(toks, null, 1)).toBe('');
+  });
+});

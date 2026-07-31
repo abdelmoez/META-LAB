@@ -36,6 +36,7 @@ export async function buildReport(runId) {
       retrievedCount: s.rawCount,
       importedCount: s.importedCount,
       existingMatchCount: s.existingMatchCount,
+      updatedCount: s.updatedCount || 0, // 96.md — existing records fill-blank-updated (additive)
       duplicatesRemoved: (s.exactDupCount || 0) + (s.fuzzyDupCount || 0),
       ambiguousPending: s.ambiguousDupCount,
       failedRecords: s.failedRecordCount,
@@ -58,6 +59,14 @@ export async function buildReport(runId) {
     canonicalQuery: run.canonicalText,
     engineVersion: run.engineVersion,
     deduplicationMethod: 'PecanRev explainable engine (scorePair / classifyPair)',
+    // 96.md D8/D11/D15 — ADDITIVE report fields (existing names frozen): who/what
+    // launched the run, and whether a screening reset later rolled its imports back
+    // (a rolled-back run's records no longer sit in Screening — the report says so).
+    origin: run.origin || 'automated',
+    rolledBack: !!run.rolledBackAt,
+    rolledBackAt: run.rolledBackAt || null,
+    questionText: run.questionText || '',
+    strategyVersionId: run.strategyVersionId || '',
     counts: prismaCounts(counts),
     perSource,
     generatedAt: new Date().toISOString(),
@@ -80,6 +89,9 @@ export function prismaCounts(counts) {
     bySource: counts.perSource || {},
     duplicatesRemoved,
     existingMatched: counts.existingMatched || 0,
+    // 96.md invariant 6 — `updated` is informational ONLY (subset of already-present):
+    // it never feeds identified/duplicatesRemoved, so re-runs stay PRISMA-stable.
+    updated: counts.updated || 0,
     recordsToScreening: counts.imported || 0,
     ambiguousPending: counts.ambiguousDup || 0,
     failedRecords: counts.failedRecords || 0,
@@ -101,6 +113,9 @@ export function reportToCsv(report) {
     `# Records identified,${report.counts.recordsIdentified}`,
     `# Duplicates removed,${report.counts.duplicatesRemoved}`,
     `# Records to screening,${report.counts.recordsToScreening}`,
+    // 96.md — additive meta lines (appended; existing lines/columns unchanged).
+    `# Records updated,${report.counts.updated || 0}`,
+    ...(report.rolledBack ? ['# Rolled back,yes (imports were removed by a screening reset)'] : []),
   ];
   return [...meta, '', head, ...rows].join('\n');
 }
@@ -138,11 +153,12 @@ export function reportToHtml(report) {
  .counts div b{display:block;font-size:18px} @media print{.no-print{display:none}}
 </style></head><body>
 <h1>PRISMA-S search report</h1>
-<p class="sub">${e(report.searchName)} · run ${e(report.runId)} · ${e(formatDate(report.runDate))} · ${e(report.state)}</p>
+<p class="sub">${e(report.searchName)} · run ${e(report.runId)} · ${e(formatDate(report.runDate))} · ${e(report.state)}${report.rolledBack ? ' · <span class="badge">rolled back</span>' : ''}</p>
 <div class="counts">
   <div><b>${e(report.counts.recordsIdentified)}</b>records identified</div>
   <div><b>${e(report.counts.duplicatesRemoved)}</b>duplicates removed</div>
   <div><b>${e(report.counts.existingMatched)}</b>already in project</div>
+  <div><b>${e(report.counts.updated || 0)}</b>records updated</div>
   <div><b>${e(report.counts.recordsToScreening)}</b>to screening</div>
   <div><b>${e(report.counts.ambiguousPending)}</b>ambiguous (review)</div>
 </div>

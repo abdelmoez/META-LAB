@@ -7,7 +7,8 @@ import { describe, it, expect } from 'vitest';
 import {
   mapMeshSummary, mapMeshSummaryList, emtreeFallback, parseSparqlLabels, meshNarrower, meshSuggest,
 } from '../../server/searchEngine/nlmClient.js';
-import { sanitizeIgnored, sanitizeFilters, sanitizeSearchMode, sanitizeRejectedSuggestions } from '../../server/searchEngine/searchEngineController.js';
+import { sanitizeIgnored, sanitizeFilters, sanitizeSearchMode, sanitizeRejectedSuggestions, sanitizeQuestionSnapshot } from '../../server/searchEngine/searchEngineController.js';
+import { normalizePersistedQuestionSnapshot, serializeSearchState } from '../../src/research-engine/searchBuilder/searchState.js';
 import { createTtlCache } from '../../server/searchEngine/ttlCache.js';
 
 describe('mapMeshSummary', () => {
@@ -119,6 +120,32 @@ describe('sanitizeFilters — putSearch allowlist (prompt60 seam fix #3)', () =>
     expect(out.dateFrom.length).toBeLessThanOrEqual(10);
     expect(out.languages.length).toBe(20);
     expect(out.pubTypes.length).toBe(40);
+  });
+});
+
+describe('sanitizeQuestionSnapshot — putSearch allowlist (96.md D2 drift input)', () => {
+  it('trims, caps at 2000 chars, and collapses junk to the empty string', () => {
+    expect(sanitizeQuestionSnapshot('  does metformin help?  ')).toBe('does metformin help?');
+    expect(sanitizeQuestionSnapshot('x'.repeat(3000)).length).toBe(2000);
+    expect(sanitizeQuestionSnapshot(undefined)).toBe('');
+    expect(sanitizeQuestionSnapshot(42)).toBe('');
+    expect(sanitizeQuestionSnapshot(['q'])).toBe('');
+  });
+  it('round-trips BYTE-IDENTICALLY through the client normalizer (omit-when-empty)', () => {
+    // Server echo → client pickPersisted must agree exactly, or the live-sync loop
+    // would see phantom changes (the RULE comment in putSearch).
+    for (const raw of ['  a question  ', 'q', '', '   ', 'y'.repeat(2500)]) {
+      const server = sanitizeQuestionSnapshot(raw);
+      const client = normalizePersistedQuestionSnapshot(raw);
+      expect(client === undefined ? '' : client).toBe(server);
+    }
+  });
+  it('a stored empty snapshot never changes a historical save signature', () => {
+    const legacy = { concepts: [{ id: 'c1', label: 'X', op: 'AND', terms: [] }], overrides: {}, ignored: [] };
+    const withEmpty = { ...legacy, questionSnapshot: '' };
+    expect(serializeSearchState(withEmpty)).toBe(serializeSearchState(legacy));
+    // …while a REAL snapshot changes it (so autosave persists the new key).
+    expect(serializeSearchState({ ...legacy, questionSnapshot: 'q' })).not.toBe(serializeSearchState(legacy));
   });
 });
 

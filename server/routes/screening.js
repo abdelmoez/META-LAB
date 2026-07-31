@@ -18,6 +18,7 @@ import * as OV from '../controllers/screeningOverviewController.js';
 import * as PDF from '../controllers/screeningPdfController.js';
 import * as OA from '../controllers/screeningOaController.js';
 import * as IB from '../controllers/screeningImportBatchController.js';
+import * as RS from '../controllers/screeningResetController.js';
 import * as PR from '../controllers/presenceController.js';
 import * as AI from '../controllers/screeningAiController.js';
 import * as EL from '../controllers/screeningEligibilityController.js';
@@ -67,6 +68,15 @@ r.get('/projects/:pid/import-batches',              IB.listImportBatches);
 // 65.md SCR-3 — per-row issue list for a finished import (from its job row).
 r.get('/projects/:pid/import-batches/:batchId/error-report', S.getImportBatchErrorReport);
 r.delete('/projects/:pid/import-batches/:batchId',  IB.deleteImportBatch);
+// 96.md D12 — run-grouped chronological import timeline (members read; canReset flag).
+// Paginated: ?limit= (default 50, max 200) & ?offset=.
+r.get('/projects/:pid/import-history',              IB.getImportHistory);
+// 96.md 5D — article-level provenance (sources + field changes) for one record.
+r.get('/projects/:pid/records/:rid/provenance',     IB.getRecordProvenance);
+// 96.md Phase 6 — scoped "delete imported records" reset (owner/admin; typed confirm;
+// 409 while any project job is active). Preview feeds the confirm dialog.
+r.get('/projects/:pid/imported-records/reset-preview', RS.getResetPreview);
+r.post('/projects/:pid/imported-records/reset',        RS.postReset);
 
 // Presence + field locking (prompt23 Tasks 5/13/14/15) — ephemeral, member-gated.
 r.get('/projects/:pid/presence',            PR.list);

@@ -1,11 +1,16 @@
 /**
- * searchWorkspaceFlag.js — 71.md. Tiny, eager helper that decides whether the new
- * STAGED Search Workspace (SearchWorkspace) renders in place of the legacy 3-step
- * SearchWizard. It reads the public settings endpoint and returns true ONLY when
- * BOTH `searchWorkspaceV2` (the redesign flag) AND `searchEngine` (its hard
- * dependency — the workspace composes the Search Builder engine) are on. Mirrors
- * searchEngineFlagEnabled / pecanSearchFlagEnabled. Fail closed on any error so a
- * disabled/undetermined flag always falls back to the byte-identical wizard.
+ * searchWorkspaceFlag.js — 71.md, retired-wizard update in 96.md. Tiny, eager
+ * helper that decides whether the staged Search Workspace (SearchWorkspace) — and
+ * therefore `?stage=` support in the body, which the white side-menu's numbered
+ * submenu depends on — is available.
+ *
+ * 96.md deleted the legacy 3-step SearchWizard, so the old `searchWorkspaceV2`
+ * gate is DEPRECATED/IGNORED (it stays in the server DEFAULTS only for stored-row
+ * compat): the workspace now renders whenever `searchEngine` is ON. The exported
+ * name is kept so existing importers (dispatcher, useSearchWorkspaceV2Enabled,
+ * StitchProjectSubnav) work unchanged. Mirrors searchEngineFlagEnabled /
+ * pecanSearchFlagEnabled. Fail closed on any error so an undetermined flag always
+ * falls back to the legacy in-blob SearchTab path.
  */
 export async function searchWorkspaceV2FlagEnabled() {
   try {
@@ -13,7 +18,7 @@ export async function searchWorkspaceV2FlagEnabled() {
     if (!r.ok) return false;
     const d = await r.json();
     const f = (d && d.featureFlags) || {};
-    return f.searchWorkspaceV2 === true && f.searchEngine === true;
+    return f.searchEngine === true;
   } catch {
     return false;
   }

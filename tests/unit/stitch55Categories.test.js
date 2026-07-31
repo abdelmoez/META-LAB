@@ -82,9 +82,9 @@ describe('55.md — submenu visibility (Overview/Control/Reference reclaim width
     const items = submenuForCategory('search', { ...CTX, searchWorkspaceV2Enabled: true });
     // Numbered workflow stages first (manual/undecided → the full stage list).
     const stageKeys = items.filter((i) => !i.utility).map((i) => i.key);
-    expect(stageKeys).toEqual(['question', 'concepts', 'terms', 'mode', 'strategy', 'refine', 'results', 'documentation', 'screening']);
+    expect(stageKeys).toEqual(['question', 'terms', 'mode', 'strategy', 'results', 'documentation', 'screening']);
     // …each a ?stage= deep link into the one unified Search workspace.
-    expect(items.find((i) => i.key === 'concepts').href).toBe('/app/project/p1?tab=search&stage=concepts');
+    expect(items.find((i) => i.key === 'terms').href).toBe('/app/project/p1?tab=search&stage=terms');
     // …then Living Review as an UN-numbered optional tool opening its own tab, carrying
     // the "Optional tools" group separator label.
     const living = items.find((i) => i.key === 'living');

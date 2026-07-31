@@ -1,9 +1,12 @@
 /**
  * useSearchWorkspaceV2Enabled — tiny React hook over `searchWorkspaceV2FlagEnabled()`
  * so the navigation chrome (StitchProjectSubnav) can decide whether the Search white
- * submenu shows the numbered `?stage=` WORKFLOW (flag ON, the staged SearchWorkspace
- * honours `?stage=`) or the legacy single 'Search' destination (flag OFF, the classic
- * SearchWizard/SearchTab has no `?stage=` support). Mirrors useCitationMiningEnabled.
+ * submenu shows the numbered `?stage=` WORKFLOW (the staged SearchWorkspace honours
+ * `?stage=`) or the legacy single 'Search' destination (searchEngine OFF — the
+ * in-blob SearchTab has no `?stage=` support). 96.md retired the legacy wizard, so
+ * the underlying helper now tracks the `searchEngine` flag (the old searchWorkspaceV2
+ * key is deprecated/ignored); the exported name is kept so importers are unchanged.
+ * Mirrors useCitationMiningEnabled.
  * Tri-state:
  *   null    — still loading (render nothing / neutral)
  *   false   — flag OFF (legacy submenu — the pre-75 behaviour, unchanged)

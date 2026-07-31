@@ -68,7 +68,7 @@ function literalBooleanTerms(canonical) {
 }
 
 export default function PecanSearchTab({
-  projectId, pico, readOnly,
+  projectId, readOnly,
   // prompt60 — the Search Wizard passes its LIVE in-memory query straight into the run
   // step so there is no separate "load strategy" round-trip. All optional: when absent
   // the tab loads the saved strategy (loadCanonicalQuery) and seeds sources from it,
@@ -430,7 +430,7 @@ export default function PecanSearchTab({
 
       {/* ════════════ (1) SEARCH STRATEGY ════════════ */}
       <StrategyCard
-        queryState={queryState} queryError={queryError} query={query} qSummary={qSummary} pico={pico}
+        queryState={queryState} queryError={queryError} query={query} qSummary={qSummary}
       />
 
       {/* ════════════ (2) SOURCE CARDS ════════════ */}
@@ -527,7 +527,7 @@ function Header() {
 }
 
 /* ════════════ (1) STRATEGY CARD ════════════ */
-function StrategyCard({ queryState, queryError, query, qSummary, pico }) {
+function StrategyCard({ queryState, queryError, query, qSummary }) {
   return (
     <Card title="Search strategy" icon="search" desc="The canonical concept query you built in the Strategy Builder. Edit it there — this is the single source of truth.">
       {queryState === 'loading' && <Skeleton height={56} />}
@@ -799,8 +799,35 @@ function screeningImportHref() {
   return `${path}?tab=screening&screen=import`;
 }
 
+/* 96.md D15 — run-provenance badges shared by the completion panel and the
+   history cards: whether the run's records were later deleted by a Screening
+   reset (rolledBackAt) and whether the scheduler launched it (origin 'living'). */
+export function RunFlagBadges({ run }) {
+  if (!run) return null;
+  return (
+    <>
+      {run.origin === 'living' && (
+        <span
+          title="Launched automatically by the Living Review scheduler, not by a user"
+          style={{ ...tagStyle(), color: C.acc, borderColor: themeAlpha(C.acc, '40') }}
+        >
+          Living review
+        </span>
+      )}
+      {run.rolledBackAt && (
+        <span
+          title={`The records this run imported were removed from Screening by a project reset${run.rolledBackAt ? ` on ${formatWhen(run.rolledBackAt)}` : ''}. The run stays in your search history for documentation and PRISMA reporting.`}
+          style={{ ...tagStyle(), color: C.red, borderColor: themeAlpha(C.red, '40') }}
+        >
+          Rolled back
+        </span>
+      )}
+    </>
+  );
+}
+
 /* ════════════ (5) COMPLETION SUMMARY ════════════ */
-function CompletionSummary({ run, report, projectId, onRetry }) {
+export function CompletionSummary({ run, report, projectId, onRetry }) {
   const counts = run.counts || {};
   const perSource = counts.perSource || {};
   const dupRemoved = (counts.exactDup || 0) + (counts.fuzzyDup || 0);
@@ -811,7 +838,7 @@ function CompletionSummary({ run, report, projectId, onRetry }) {
   const exportBase = pecanSearchApi.reportExportUrl(projectId, run.id);
   return (
     <Card
-      title={<span>Search results <StatusPill state={run.state} /></span>}
+      title={<span>Search results <StatusPill state={run.state} /> <RunFlagBadges run={run} /></span>}
       icon={run.state === 'completed' ? 'circleCheck' : run.state === 'failed' ? 'alertOctagon' : 'alertTriangle'}
       desc={run.name}
       right={onRetry && retryable ? <Btn variant="ghost" onClick={onRetry}><Icon name="refresh" size={13} /> Retry failed sources</Btn> : null}
@@ -819,12 +846,26 @@ function CompletionSummary({ run, report, projectId, onRetry }) {
       {run.state === 'partial' && <div style={{ marginBottom: 12 }}><Note tone="warn">Some sources succeeded and some did not. Every count below is exact for the sources that completed.</Note></div>}
       {run.state === 'failed' && <div style={{ marginBottom: 12 }}><Note tone="error" role="alert">The search failed. {run.errorSummary || 'No records were imported.'} You can retry.</Note></div>}
       {run.state === 'cancelled' && <div style={{ marginBottom: 12 }}><Note tone="info">This search was cancelled. Any records fetched before cancellation were kept.</Note></div>}
+      {/* 96.md D15 — a rolled-back run keeps its documentation but its records are gone. */}
+      {run.rolledBackAt && (
+        <div style={{ marginBottom: 12 }}>
+          <Note tone="warn">
+            The records this run imported were removed from Screening by a project reset
+            {` on ${formatWhen(run.rolledBackAt)}`}. The counts below document what the run
+            originally found; the run stays in your history for PRISMA reporting.
+          </Note>
+        </div>
+      )}
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(135px,1fr))', gap: 10 }}>
         <StatTile label="Records identified" value={(counts.rawRetrieved || 0).toLocaleString()} tone="accent" />
         <StatTile label="Net imported" value={(counts.imported || 0).toLocaleString()} tone="green" hint="new to screening" />
         <StatTile label="Duplicates removed" value={dupRemoved.toLocaleString()} />
         <StatTile label="Already in project" value={(counts.existingMatched || 0).toLocaleString()} />
+        {/* D15 — fill-blank metadata merges on existing records (shown only when > 0). */}
+        {(counts.updated || 0) > 0 && (
+          <StatTile label="Metadata updated" value={(counts.updated || 0).toLocaleString()} hint="existing records enriched" />
+        )}
         <StatTile label="Ambiguous (review)" value={(counts.ambiguousDup || 0).toLocaleString()} tone={counts.ambiguousDup ? 'yellow' : undefined} />
         <StatTile label="Failed records" value={(counts.failedRecords || 0).toLocaleString()} tone={counts.failedRecords ? 'red' : undefined} />
         <StatTile label="Sources OK" value={`${counts.sourcesCompleted || 0}`} tone="green" />
@@ -893,7 +934,7 @@ const cellL = { padding: '6px 9px', color: C.txt, borderBottom: `1px solid ${C.b
 const cellR = { padding: '6px 9px', textAlign: 'right', color: C.txt2, fontFamily: "'IBM Plex Mono',monospace", borderBottom: `1px solid ${C.brd}` };
 
 /* ════════════ (6) SEARCH HISTORY ════════════ */
-function SearchHistory({ history, total, state, page, take, setPage, onOpen, onRetry, activeRunId }) {
+export function SearchHistory({ history, total, state, page, take, setPage, onOpen, onRetry, activeRunId }) {
   const pages = Math.max(1, Math.ceil((total || 0) / take));
   return (
     <Card title="Search history" icon="clock" desc="Every search you have run for this project. Open one to see its results, export its report, or safely retry it.">
@@ -914,6 +955,8 @@ function SearchHistory({ history, total, state, page, take, setPage, onOpen, onR
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                       <span style={{ fontSize: 13, fontWeight: 700, color: C.txt }}>{r.name || 'Untitled search'}</span>
                       <StatusPill state={r.state} />
+                      {/* 96.md D15 — rolled-back + scheduler-origin flags on the card. */}
+                      <RunFlagBadges run={r} />
                     </div>
                     <div style={{ fontSize: 11, color: C.muted, marginTop: 3 }}>
                       {(r.sources || []).map((s) => s.provider).join(', ') || '—'}
@@ -925,6 +968,8 @@ function SearchHistory({ history, total, state, page, take, setPage, onOpen, onR
                   <div style={{ fontSize: 11, color: C.muted, fontFamily: "'IBM Plex Mono',monospace", textAlign: 'right' }}>
                     <div>raw {(c.rawRetrieved || 0).toLocaleString()}</div>
                     <div>imp {(c.imported || 0).toLocaleString()}</div>
+                    {/* D15 — fill-blank merges on existing records (only when reported > 0). */}
+                    {(c.updated || 0) > 0 && <div>upd {(c.updated || 0).toLocaleString()}</div>}
                   </div>
                   <div style={{ display: 'flex', gap: 6 }}>
                     <Btn variant="ghost" style={{ fontSize: 11 }} onClick={() => onOpen(r.id)}>Open</Btn>

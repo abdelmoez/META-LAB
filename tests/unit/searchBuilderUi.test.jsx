@@ -12,7 +12,6 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { termDisplay, termMicroBadges, conceptAccent, opExplainer } from '../../src/features/searchBuilder/components/uiShared.js';
 import SaveStatusIndicator from '../../src/features/searchBuilder/components/SaveStatusIndicator.jsx';
 import UndoSnackbar from '../../src/features/searchBuilder/components/UndoSnackbar.jsx';
-import ConceptCards from '../../src/features/searchBuilder/components/ConceptCards.jsx';
 import ConceptNavigator from '../../src/features/searchBuilder/components/ConceptNavigator.jsx';
 import ActiveConceptPanel from '../../src/features/searchBuilder/components/ActiveConceptPanel.jsx';
 import TermChipRow from '../../src/features/searchBuilder/components/TermChipRow.jsx';
@@ -54,13 +53,21 @@ describe('uiShared — pure display helpers', () => {
     const same = termDisplay({ ...controlled, text: 'Diabetes Mellitus, Type 2' });
     expect(same.secondary).toBeNull();
   });
-  it('termMicroBadges: non-default field / truncation / phrase / disabled — never hidden signals', () => {
+  it('termMicroBadges: field scope (ALWAYS for free text — 96.md D13.5) / truncation / phrase / provenance / disabled', () => {
     expect(termMicroBadges({ type: 'freetext', field: 'ti', text: 'x' }).map((b) => b.key)).toEqual(['field']);
     expect(termMicroBadges({ type: 'freetext', field: 'all', text: 'x' })[0].label).toBe('everywhere');
-    expect(termMicroBadges({ type: 'freetext', field: 'tiab', text: 'x', truncate: true }).map((b) => b.key)).toEqual(['truncate']);
-    expect(termMicroBadges({ type: 'freetext', field: 'tiab', text: 'heart attack', phrase: true }).map((b) => b.key)).toEqual(['phrase']);
-    expect(termMicroBadges(disabledTerm).map((b) => b.key)).toEqual(['off']);
-    expect(termMicroBadges(freetext)).toEqual([]); // defaults carry no badge noise
+    // the DEFAULT scope is named too — every free-text chip says where it searches
+    expect(termMicroBadges({ type: 'freetext', field: 'tiab', text: 'x' })[0].label).toBe('title/abstract');
+    expect(termMicroBadges({ type: 'freetext', field: 'tiab', text: 'x', truncate: true }).map((b) => b.key)).toEqual(['field', 'truncate']);
+    expect(termMicroBadges({ type: 'freetext', field: 'tiab', text: 'heart attack', phrase: true }).map((b) => b.key)).toEqual(['field', 'phrase']);
+    expect(termMicroBadges(disabledTerm).map((b) => b.key)).toEqual(['field', 'source', 'off']);
+  });
+  it('termMicroBadges: provenance — suggested (synonym/legacy auto) vs manual (96.md spec C)', () => {
+    expect(termMicroBadges({ type: 'freetext', field: 'tiab', text: 'x', source: 'synonym' }).map((b) => b.label)).toContain('suggested');
+    expect(termMicroBadges({ type: 'freetext', field: 'tiab', text: 'x', source: 'pico_auto' }).map((b) => b.label)).toContain('suggested');
+    expect(termMicroBadges(freetext).map((b) => b.label)).toContain('manual'); // user_added
+    // controlled terms carry no field/source noise (the MeSH badge is theirs)
+    expect(termMicroBadges({ type: 'controlled', text: 'x', vocab: { mesh: 'X' } })).toEqual([]);
   });
   it('conceptAccent cycles the CVD-safe Okabe–Ito series', () => {
     expect(conceptAccent(0)).toBe(CB_SERIES[0]);
@@ -121,52 +128,6 @@ describe('UndoSnackbar — feature-local undo affordance (audit C4)', () => {
   });
 });
 
-/* ── ConceptCards ─────────────────────────────────────────────────────────── */
-describe('ConceptCards — the Concepts stage cards', () => {
-  const props = {
-    concepts: [P, I, MANUAL],
-    statusFor: () => 'ready',
-    suggestionCounts: { cP: 2, cI: 0, cM: 0 },
-    onRename: () => {}, onToggleOp: () => {}, onAddConcept: () => {}, onRemoveConcept: () => {}, onEditTerms: () => {},
-  };
-  it('keeps the pinned container testid + renders one card per concept', () => {
-    const html = r(h(ConceptCards, { ...props, beginner: true }));
-    expect(html).toContain('data-testid="sb-concepts-summary"');
-    expect((html.match(/data-testid="sb-concept-card"/g) || []).length).toBe(3);
-  });
-  it('cards carry accessible name inputs, role badge, live count, status and the ONE primary action', () => {
-    const html = r(h(ConceptCards, { ...props, beginner: true }));
-    expect(html).toContain('aria-label="Concept name: Population"');
-    expect(html).toContain('>Population</span>'); // PICO role badge text
-    expect(html).toContain('2 terms');
-    expect(html).toContain('Ready');
-    expect(html).toContain('Edit terms →');
-  });
-  it('shows a suggestion-count badge only when > 0', () => {
-    const html = r(h(ConceptCards, { ...props, beginner: true }));
-    expect(html).toContain('2 suggestions');
-    expect((html.match(/data-testid="sb-suggestion-badge"/g) || []).length).toBe(1);
-  });
-  it('beginner mode hides AND/OR editing; an OR join stays visible read-only (critique #5)', () => {
-    const html = r(h(ConceptCards, { ...props, beginner: true }));
-    // No op toggle buttons in beginner mode…
-    expect(html).not.toContain('click to switch');
-    // …but I→MANUAL is not last; MANUAL has op OR but is LAST so no indicator; I has op AND → hidden.
-    const orProps = { ...props, concepts: [{ ...P, op: 'OR' }, I, MANUAL] };
-    const withOr = r(h(ConceptCards, { ...orProps, beginner: true }));
-    expect(withOr).toContain('>OR</span>'); // read-only OR pill, not a button
-  });
-  it('expert mode exposes the AND/OR toggle buttons', () => {
-    const html = r(h(ConceptCards, { ...props, beginner: false }));
-    expect(html).toContain('click to switch');
-  });
-  it('only MANUAL concepts get a delete affordance; PICO groups never do', () => {
-    const html = r(h(ConceptCards, { ...props, beginner: true }));
-    expect(html).toContain('aria-label="Delete concept Setting"');
-    expect(html).not.toContain('aria-label="Delete concept Population"');
-  });
-});
-
 /* ── ConceptNavigator ─────────────────────────────────────────────────────── */
 describe('ConceptNavigator — master-detail pill row', () => {
   const props = {
@@ -196,7 +157,8 @@ describe('ActiveConceptPanel — detail shell', () => {
     expect(html).toContain('aria-label="Concept name: Population"');
     expect(html).toContain('data-testid="sb-mesh-coverage"');
     expect(html).toContain('has heading');
-    expect(html).toContain('Any one of them counts as a match');
+    expect(html).toContain('any one of them counts as a match'); // + the explicit within-group OR label (96.md D13.4)
+    expect(html).toContain('combined with');
     expect(html).toContain('data-testid="child-slot"');
   });
   it('a concept with terms but no matched heading reads "no heading yet"', () => {
@@ -365,15 +327,12 @@ describe('StrategyPreviewPanel — the honest human-readable preview', () => {
     // chips show the SEARCHED term (descriptor for controlled)
     expect(html).toContain('Diabetes Mellitus, Type 2 OR metformin');
   });
-  it('uses the ACTUAL op from state — an OR join renders OR, read-only in beginner mode', () => {
-    const html = r(h(StrategyPreviewPanel, { ...base, beginner: true }));
-    expect(html).toContain('data-testid="sb-preview-op"');
-    expect(html).toContain('>OR</span>');           // read-only span, not a button
-    expect(html).not.toContain('click to switch');
-  });
-  it('expert mode makes the op chip a toggle button (both operands visible here)', () => {
-    const html = r(h(StrategyPreviewPanel, { ...base, beginner: false }));
-    expect(html).toContain('aria-label="Joined with OR — click to switch to AND"');
+  it('96.md D13.4 — the op chip is a toggle BUTTON in the main flow (not expert-gated)', () => {
+    for (const beginner of [true, false]) {
+      const html = r(h(StrategyPreviewPanel, { ...base, beginner }));
+      expect(html).toContain('data-testid="sb-preview-op"');
+      expect(html).toContain('aria-label="Joined with OR — click to switch to AND"');
+    }
   });
   it('highlights the ACTIVE concept row with an editing tag', () => {
     const html = r(h(StrategyPreviewPanel, { ...base, beginner: true }));
@@ -395,5 +354,195 @@ describe('StrategyPreviewPanel — the honest human-readable preview', () => {
     expect(failed).toContain('Retry');
     const ok = r(h(StrategyPreviewPanel, { ...base, beginner: true, hitState: { status: 'updated', hitCount: 1234 } }));
     expect(ok).toContain('≈ 1,234 PubMed records');
+  });
+});
+
+/* ══════════════ 96.md D13 — QuestionPhraseCard + QuestionDriftBanner ═══════════ */
+
+import { QuestionPhraseCard, QuestionDriftBanner } from '../../src/features/searchBuilder/SearchBuilderTab.jsx';
+
+describe('QuestionPhraseCard — phrase selection on the research question (96.md D13.1/2)', () => {
+  const base = {
+    question: 'Do SGLT2 inhibitors reduce hospital readmission in adults with heart failure?',
+    accent: '#8859ff',
+    isSelected: (text) => text.toLowerCase() === 'heart failure',
+    onTogglePhrase: () => {}, onAddManual: () => {}, onEditQuestion: () => {},
+  };
+  it('renders the pinned testid, the question tokens as aria-pressed buttons, and the Edit link', () => {
+    const html = r(h(QuestionPhraseCard, base));
+    expect(html).toContain('data-testid="sb-question-card"');
+    expect(html).toContain('Research question');
+    expect(html).toContain('Edit question');
+    // Selected phrase reads pressed with the ✓ prefix (never colour-only)…
+    expect(html).toContain('aria-pressed="true"');
+    expect(html).toContain('✓ heart failure');
+    // …and unselected suggestions stay pressable.
+    expect(html).toContain('aria-pressed="false"');
+  });
+  it('offers the manual add-concept box with an accessible label', () => {
+    const html = r(h(QuestionPhraseCard, base));
+    expect(html).toContain('aria-label="Add a concept group manually"');
+    expect(html).toContain('+ Add concept');
+  });
+  it('empty question → the guidance to the Research Question stage, no dead surface', () => {
+    const html = r(h(QuestionPhraseCard, { ...base, question: '' }));
+    expect(html).toContain('No research question yet');
+    expect(html).toContain('Research Question');
+  });
+  it('read-only hides the manual add box and disables tokens', () => {
+    const html = r(h(QuestionPhraseCard, { ...base, readOnly: true }));
+    expect(html).not.toContain('+ Add concept');
+    expect(html).toContain('disabled');
+  });
+});
+
+describe('QuestionDriftBanner — "question changed" flagging (96.md D2, never auto-delete)', () => {
+  const drifted = [
+    { id: 'c1', label: 'Mortality', sourcePhrase: 'mortality' },
+    { id: 'c2', label: 'Setting', sourcePhrase: 'Setting' },
+  ];
+  it('lists every drifted group with keep-all / per-group Edit + Remove', () => {
+    const html = r(h(QuestionDriftBanner, { drifted, onKeepAll: () => {}, onEditConcept: () => {}, onRemoveConcept: () => {} }));
+    expect(html).toContain('data-testid="sb-drift-banner"');
+    expect(html).toContain('Your research question changed.');
+    expect(html).toContain('Keep concepts — mark as up to date');
+    expect(html).toContain('Mortality');
+    expect(html).toContain('aria-label="Edit concept Mortality"');
+    expect(html).toContain('aria-label="Remove concept Setting"');
+    expect(html).toContain('nothing is deleted automatically');
+  });
+  it('renders nothing with an empty drift list; read-only drops the actions', () => {
+    expect(r(h(QuestionDriftBanner, { drifted: [] }))).toBe('');
+    const ro = r(h(QuestionDriftBanner, { drifted, readOnly: true }));
+    expect(ro).not.toContain('Remove concept');
+    expect(ro).not.toContain('Keep concepts');
+  });
+});
+
+/* ══════════ 96.md QA fixes — M3/M4/M5/M6/M8/L5 SSR contracts ══════════ */
+
+describe('QA M5 — QuestionPhraseCard token seam (pinned for e2e: sb-question-card + button semantics)', () => {
+  const base = {
+    question: 'Do SGLT2 inhibitors reduce hospital readmission in adults with heart failure?',
+    accent: '#8859ff',
+    isSelected: () => false,
+    onTogglePhrase: () => {}, onAddManual: () => {},
+  };
+  it('every token — words, phrases AND filler/noise words — is a real <button> with aria-label = its exact text', () => {
+    const html = r(h(QuestionPhraseCard, base));
+    expect(html).toContain('data-testid="sb-question-card"');
+    // the e2e page object locates tokens by role=button + accessible name:
+    expect(html).toContain('aria-label="heart failure"');        // curated phrase token
+    expect(html).toContain('aria-label="hospital readmission"'); // vocabulary phrase token
+    expect(html).toContain('aria-label="reduce"');               // plain word token
+  });
+  it('filler/noise words ("adults", "in") render dimmed but CLICKABLE (buttons, not spans)', () => {
+    const html = r(h(QuestionPhraseCard, base));
+    expect(html).toContain('aria-label="adults"'); // NOISE word — clickable-on-intent (QA M5)
+    expect(html).toContain('aria-label="in"');     // connector — clickable-on-intent
+    // no token renders as a plain non-interactive span any more
+    expect(html).not.toMatch(/<span[^>]*>adults <\/span>/);
+  });
+  it('the span-selection instruction line exists and tokens reference it via aria-describedby', () => {
+    const html = r(h(QuestionPhraseCard, base));
+    expect(html).toContain('data-testid="sb-span-hint"');
+    expect(html).toContain('Shift-click another word');
+    expect(html).toContain('aria-describedby=');
+  });
+  it('read-only disables every token and hides the manual add box', () => {
+    const html = r(h(QuestionPhraseCard, { ...base, readOnly: true }));
+    expect(html).not.toContain('+ Add concept');
+    expect(html).toContain('disabled');
+  });
+});
+
+describe('QA M4 — QuestionDriftBanner offers "Update phrase" per drifted row', () => {
+  const drifted2 = [{ id: 'c1', label: 'Mortality', sourcePhrase: 'mortality' }];
+  it('renders the Update phrase action alongside Edit/Remove when onUpdatePhrase is wired', () => {
+    const html = r(h(QuestionDriftBanner, { drifted: drifted2, onKeepAll: () => {}, onEditConcept: () => {}, onUpdatePhrase: () => {}, onRemoveConcept: () => {} }));
+    expect(html).toContain('aria-label="Update the phrase for Mortality"');
+  });
+  it('read-only hides Update phrase with the other actions', () => {
+    const html = r(h(QuestionDriftBanner, { drifted: drifted2, readOnly: true, onUpdatePhrase: () => {} }));
+    expect(html).not.toContain('Update phrase');
+  });
+});
+
+describe('QA M4/M6/M8 — ActiveConceptPanel: source phrase, AND hint, read-only', () => {
+  const withPhrase = { id: 'c1', label: 'Mortality', sourcePhrase: 'mortality', source: 'user_added', terms: [{ id: 'q1', text: 'mortality', type: 'freetext' }, { id: 'q2', text: 'death', type: 'freetext' }] };
+  it('M4: shows the originating phrase with an inline Update phrase affordance', () => {
+    const html = r(h(ActiveConceptPanel, { concept: withPhrase, conceptIndex: 0, status: 'ready', onUpdateSourcePhrase: () => {} }));
+    expect(html).toContain('data-testid="sb-source-phrase"');
+    expect(html).toContain('From the question phrase');
+    expect(html).toContain('aria-label="Update the phrase for Mortality"');
+  });
+  it('M6: the fixed-OR guidance offers the supported AND path — split into separate groups', () => {
+    const html = r(h(ActiveConceptPanel, { concept: withPhrase, conceptIndex: 0, status: 'ready', onRequestSplit: () => {} }));
+    expect(html).toContain('data-testid="sb-and-hint"');
+    expect(html).toContain('Split them into separate groups');
+    // without the seam (read-only / too few terms) the hint disappears
+    const none = r(h(ActiveConceptPanel, { concept: withPhrase, conceptIndex: 0, status: 'ready' }));
+    expect(none).not.toContain('data-testid="sb-and-hint"');
+  });
+  it('M8: read-only makes the rename input inert with an access explanation', () => {
+    const html = r(h(ActiveConceptPanel, { concept: withPhrase, conceptIndex: 0, status: 'ready', readOnly: true }));
+    expect(html).toContain('readonly');
+    expect(html).toContain('Read-only access');
+    expect(html).not.toContain('Update phrase');
+  });
+});
+
+describe('QA M3 — TermEditorPopover within-group reorder buttons', () => {
+  it('renders labelled Move earlier / Move later with edge disabling', () => {
+    const html = r(h(TermEditorPopover, {
+      term: freetext, beginner: true, moveTargets: [],
+      onReorder: () => {}, canMoveEarlier: false, canMoveLater: true,
+      onChange: () => {}, onClose: () => {}, onToggleDisabled: () => {}, onRemove: () => {},
+    }));
+    expect(html).toContain('data-testid="sb-term-move-earlier"');
+    expect(html).toContain('data-testid="sb-term-move-later"');
+    expect(html).toContain('aria-label="Move metformin earlier in the group"');
+    expect(html).toContain('Already first in the group');
+  });
+  it('without the onReorder seam the section is absent (leaf stays reusable)', () => {
+    const html = r(h(TermEditorPopover, {
+      term: freetext, beginner: true, moveTargets: [],
+      onChange: () => {}, onClose: () => {}, onToggleDisabled: () => {}, onRemove: () => {},
+    }));
+    expect(html).not.toContain('sb-term-move-earlier');
+  });
+});
+
+describe('QA M8 — TermChipRow read-only: inert edit, no remove', () => {
+  it('disables the chip edit button with an explanation and drops the remove button', () => {
+    const html = r(h(TermChipRow, { concept: { id: 'c', label: 'C', terms: [freetext] }, readOnly: true }));
+    expect(html).toContain('disabled');
+    expect(html).toContain('Read-only access');
+    expect(html).not.toContain('aria-label="Remove metformin"');
+  });
+});
+
+describe('QA M8 — SuggestionsDisclosure read-only: disabled actions with explanation', () => {
+  const sugg = [{ key: 'k1', kind: 'mesh', text: 'Diabetes Mellitus, Type 2', why: 'why', vocab: VOCAB }];
+  it('Accept/Dismiss render disabled + aria-disabled with the access title', () => {
+    const html = r(h(SuggestionsDisclosure, { suggestions: sugg, readOnly: true, onAccept: () => {}, onDismiss: () => {} }));
+    expect(html).toContain('aria-disabled="true"');
+    expect(html).toContain('Read-only access');
+  });
+});
+
+describe('QA L5/M8 — StrategyPreviewPanel: rows are real buttons; read-only op chip', () => {
+  const concepts2 = [
+    { id: 'a', label: 'HF', op: 'AND', terms: [{ id: 'p1', text: 'heart failure', type: 'freetext' }] },
+    { id: 'b', label: 'Rx', op: 'AND', terms: [{ id: 'p2', text: 'metformin', type: 'freetext' }] },
+  ];
+  it('L5: each concept row is a <button> (keyboard reachable), not a div onClick', () => {
+    const html = r(h(StrategyPreviewPanel, { concepts: concepts2, activeId: 'a', beginner: true, onSelectConcept: () => {}, onToggleOp: () => {} }));
+    expect(html).toMatch(/<button[^>]*data-testid="sb-preview-row"/);
+  });
+  it('M8: read-only disables the AND/OR toggle with an access explanation', () => {
+    const html = r(h(StrategyPreviewPanel, { concepts: concepts2, activeId: 'a', beginner: true, readOnly: true, onSelectConcept: () => {}, onToggleOp: () => {} }));
+    expect(html).toMatch(/<button[^>]*data-testid="sb-preview-op"[^>]*disabled/);
+    expect(html).toContain('Read-only access');
   });
 });

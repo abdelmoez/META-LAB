@@ -605,3 +605,251 @@ describe('conceptStatus — optional { rejected } (85.md A1)', () => {
     expect(conceptStatus(single, { rejected: [rejectionKey(single, 'obesity')] })).toBe('needs-review');
   });
 });
+
+/* ══════════════ 96.md — question-based concept groups (PICO removed) ═══════════ */
+
+import {
+  seedStateFromQuestion, createConceptFromPhrase, findConceptForPhrase,
+  conceptOnlyHoldsOriginTerm, reorderConcept, reorderTerm, mergeConcepts, splitConcept,
+  conceptDrift, anyLiveTerms, normalizePersistedQuestionSnapshot, setConceptSourcePhrase,
+} from '../../src/research-engine/searchBuilder/searchState.js';
+
+describe('96.md D2 — seedStateFromQuestion (revision-0 seed is EMPTY, no scaffold)', () => {
+  it('seeds empty concepts + the trimmed question snapshot', () => {
+    expect(seedStateFromQuestion('  Does metformin help?  '))
+      .toEqual({ concepts: [], questionSnapshot: 'Does metformin help?' });
+    expect(seedStateFromQuestion('')).toEqual({ concepts: [], questionSnapshot: '' });
+    expect(seedStateFromQuestion(null)).toEqual({ concepts: [], questionSnapshot: '' });
+  });
+});
+
+describe('96.md D13 — createConceptFromPhrase (phrase click → concept group)', () => {
+  it('creates an id-less group: label=phrase, sourcePhrase set, first term = phrase tiab freetext', () => {
+    const c = createConceptFromPhrase('heart failure');
+    expect(c.label).toBe('heart failure');
+    expect(c.sourcePhrase).toBe('heart failure');
+    expect(c.source).toBe('user_added');
+    expect(c.op).toBe('AND');
+    expect(c.id).toBeUndefined(); // the caller assigns ids (module contract)
+    expect(c.terms).toHaveLength(1);
+    expect(c.terms[0]).toMatchObject({ text: 'heart failure', type: 'freetext', field: 'tiab', source: 'user_added', phrase: true });
+  });
+  it('single-word phrases do NOT force phrase quoting; blanks return null', () => {
+    const c = createConceptFromPhrase('adults');
+    expect(c.terms[0].phrase).toBeUndefined();
+    expect(createConceptFromPhrase('   ')).toBeNull();
+    expect(createConceptFromPhrase(null)).toBeNull();
+  });
+});
+
+describe('96.md D13 — findConceptForPhrase + conceptOnlyHoldsOriginTerm (dedupe/dequeue)', () => {
+  const groups = [
+    { id: 'a', label: 'Heart failure', sourcePhrase: 'heart failure', terms: [{ id: 't1', text: 'heart failure' }] },
+    { id: 'b', label: 'Renamed group', sourcePhrase: 'hospital readmission', terms: [{ id: 't2', text: 'hospital readmission' }, { id: 't3', text: 'rehospitalization' }] },
+    { id: 'c', label: 'Setting', terms: [] },
+  ];
+  it('matches by normalized sourcePhrase first, then label (duplicate-phrase prevention)', () => {
+    expect(findConceptForPhrase(groups, '“Heart Failure?”').id).toBe('a'); // punctuation/case-insensitive (norm)
+    expect(findConceptForPhrase(groups, 'hospital readmission').id).toBe('b'); // renamed → sourcePhrase still matches
+    expect(findConceptForPhrase(groups, 'Setting').id).toBe('c'); // label fallback
+    expect(findConceptForPhrase(groups, 'dapagliflozin')).toBeNull();
+    expect(findConceptForPhrase(groups, '')).toBeNull();
+  });
+  it('a group holding ONLY its origin term may dequeue; extra terms mean focus instead', () => {
+    expect(conceptOnlyHoldsOriginTerm(groups[0])).toBe(true);
+    expect(conceptOnlyHoldsOriginTerm(groups[1])).toBe(false); // real work inside
+    expect(conceptOnlyHoldsOriginTerm(groups[2])).toBe(true);  // nothing to lose
+  });
+});
+
+describe('96.md D13 — reorderConcept (up/down, no-op safe)', () => {
+  const list = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];
+  it('moves a group by ±1 and returns a NEW array', () => {
+    expect(reorderConcept(list, 'b', -1).map((c) => c.id)).toEqual(['b', 'a', 'c']);
+    expect(reorderConcept(list, 'b', +1).map((c) => c.id)).toEqual(['a', 'c', 'b']);
+  });
+  it('returns the SAME array reference on a no-op (edge / unknown id / zero delta)', () => {
+    expect(reorderConcept(list, 'a', -1)).toBe(list);
+    expect(reorderConcept(list, 'c', +1)).toBe(list);
+    expect(reorderConcept(list, 'nope', +1)).toBe(list);
+    expect(reorderConcept(list, 'b', 0)).toBe(list);
+  });
+});
+
+describe('96.md §3B (QA M3) — reorderTerm (within-group order, no-op safe)', () => {
+  const list = [
+    { id: 'a', label: 'A', terms: [{ id: 't1', text: 'one' }, { id: 't2', text: 'two' }, { id: 't3', text: 'three' }] },
+    { id: 'b', label: 'B', terms: [{ id: 'u1', text: 'only' }] },
+  ];
+  it('moves a term by ±1 within its concept and returns a NEW array', () => {
+    const up = reorderTerm(list, 'a', 't2', -1);
+    expect(up[0].terms.map((t) => t.id)).toEqual(['t2', 't1', 't3']);
+    const down = reorderTerm(list, 'a', 't2', +1);
+    expect(down[0].terms.map((t) => t.id)).toEqual(['t1', 't3', 't2']);
+    // untouched concepts keep their object reference (cheap re-render check)
+    expect(up[1]).toBe(list[1]);
+  });
+  it('term order is part of the persisted signature (a real move autosaves)', () => {
+    const moved = reorderTerm(list, 'a', 't2', -1);
+    expect(serializeSearchState({ concepts: moved })).not.toBe(serializeSearchState({ concepts: list }));
+  });
+  it('returns the SAME array reference on a no-op (edge / unknown ids / zero delta)', () => {
+    expect(reorderTerm(list, 'a', 't1', -1)).toBe(list);
+    expect(reorderTerm(list, 'a', 't3', +1)).toBe(list);
+    expect(reorderTerm(list, 'a', 'nope', +1)).toBe(list);
+    expect(reorderTerm(list, 'nope', 't1', +1)).toBe(list);
+    expect(reorderTerm(list, 'a', 't2', 0)).toBe(list);
+    expect(reorderTerm(list, 'b', 'u1', +1)).toBe(list); // single term — both edges
+  });
+});
+
+describe('96.md §3A/§3B (QA M4) — setConceptSourcePhrase (re-anchor the originating phrase)', () => {
+  const list = [
+    { id: 'a', label: 'Mortality', sourcePhrase: 'mortality', terms: [] },
+    { id: 'b', label: 'Setting', terms: [] },
+  ];
+  it('rewrites the phrase (trimmed) and only touches the target concept', () => {
+    const next = setConceptSourcePhrase(list, 'a', '  cardiovascular events  ');
+    expect(next[0].sourcePhrase).toBe('cardiovascular events');
+    expect(next[1]).toBe(list[1]);
+  });
+  it('a re-anchored phrase present in the question stops the group drifting', () => {
+    const q = 'Does metformin reduce cardiovascular events in adults?';
+    expect(conceptDrift(q, list).map((d) => d.id)).toEqual(['a', 'b']);
+    const next = setConceptSourcePhrase(list, 'a', 'cardiovascular events');
+    expect(conceptDrift(q, next).map((d) => d.id)).toEqual(['b']);
+  });
+  it('blank input CLEARS the key entirely (omit-when-empty signature convention)', () => {
+    const cleared = setConceptSourcePhrase(list, 'a', '   ');
+    expect('sourcePhrase' in cleared[0]).toBe(false);
+    // and clearing a concept that never had the key is a full no-op
+    expect(setConceptSourcePhrase(list, 'b', '')).toBe(list);
+  });
+  it('returns the SAME array on unknown id / unchanged phrase', () => {
+    expect(setConceptSourcePhrase(list, 'nope', 'x')).toBe(list);
+    expect(setConceptSourcePhrase(list, 'a', 'mortality')).toBe(list);
+    expect(setConceptSourcePhrase(list, 'a', '  mortality  ')).toBe(list); // trim-equal
+  });
+});
+
+describe('96.md D13 — mergeConcepts (QA L4: dedupe by EXACT normalized text; undo info)', () => {
+  const eus = { id: 'x', label: 'Imaging', sourcePhrase: 'imaging', op: 'OR', terms: [
+    { id: 'x1', text: 'EUS' }, { id: 'x2', text: 'sonography' },
+  ] };
+  const target = { id: 'y', label: 'Ultrasound', op: 'AND', terms: [{ id: 'y1', text: 'endoscopic ultrasound' }] };
+  it('moves ALL non-identical terms into the target, which keeps its own label/op', () => {
+    const res = mergeConcepts([eus, target], 'x', 'y');
+    expect(res.concepts.map((c) => c.id)).toEqual(['y']);
+    const merged = res.concepts[0];
+    expect(merged.label).toBe('Ultrasound');
+    expect(merged.op).toBe('AND');
+    // QA L4 — 'EUS' is family-equivalent to 'endoscopic ultrasound' but NOT the
+    // same text: distinct synonyms are precisely what an OR group is for, so BOTH
+    // source terms survive the merge (only exact normalized duplicates are skipped).
+    expect(merged.terms.map((t) => t.id)).toEqual(['y1', 'x1', 'x2']);
+    // undo info carries everything the inverse needs
+    expect(res.undo).toMatchObject({ fromIndex: 0, intoId: 'y', movedTermIds: ['x1', 'x2'] });
+    expect(res.undo.fromConcept).toBe(eus); // the ORIGINAL object (ids survive)
+  });
+  it('QA L4 — family-equivalent synonyms survive; byte-equal (normalized) duplicates do not', () => {
+    const from = { id: 'a', label: 'Cardiac', terms: [
+      { id: 'a1', text: 'cardiac failure' },   // distinct synonym → must survive
+      { id: 'a2', text: 'Heart Failure' },     // exact normalized dup → skipped
+    ] };
+    const into = { id: 'b', label: 'HF', terms: [{ id: 'b1', text: 'heart failure' }] };
+    const res = mergeConcepts([from, into], 'a', 'b');
+    expect(res.concepts[0].terms.map((t) => t.id)).toEqual(['b1', 'a1']);
+    expect(res.undo.movedTermIds).toEqual(['a1']);
+  });
+  it('returns null for unknown/identical ids', () => {
+    expect(mergeConcepts([eus, target], 'x', 'x')).toBeNull();
+    expect(mergeConcepts([eus, target], 'nope', 'y')).toBeNull();
+    expect(mergeConcepts([eus, target], 'x', 'nope')).toBeNull();
+  });
+});
+
+describe('96.md D13 — splitConcept (term multi-select → new group)', () => {
+  const src = { id: 's', label: 'Drugs', op: 'OR', terms: [
+    { id: 'd1', text: 'dapagliflozin' }, { id: 'd2', text: 'empagliflozin' }, { id: 'd3', text: 'metformin' },
+  ] };
+  it('moves the selected terms into an id-less new group inserted right after the source', () => {
+    const res = splitConcept([src], 's', ['d1', 'd2'], 'SGLT2 inhibitors');
+    expect(res.newIndex).toBe(1);
+    const [remaining, fresh] = res.concepts;
+    expect(remaining.terms.map((t) => t.id)).toEqual(['d3']);
+    expect(fresh.id).toBeUndefined(); // caller assigns
+    expect(fresh.label).toBe('SGLT2 inhibitors');
+    expect(fresh.op).toBe('OR'); // inherits the source's op chain position semantics
+    expect(fresh.terms.map((t) => t.id)).toEqual(['d1', 'd2']);
+  });
+  it('falls back to a derived label; null when nothing would move', () => {
+    expect(splitConcept([src], 's', ['d3'], '').concepts[1].label).toBe('Drugs (split)');
+    expect(splitConcept([src], 's', [], 'X')).toBeNull();
+    expect(splitConcept([src], 'nope', ['d1'], 'X')).toBeNull();
+    expect(splitConcept([src], 's', ['zz'], 'X')).toBeNull();
+  });
+});
+
+describe('96.md D2 — conceptDrift (question edits never delete; they flag)', () => {
+  const q = 'Do SGLT2 inhibitors reduce hospital readmission in adults with heart failure?';
+  const groups = [
+    { id: 'a', label: 'Heart failure', sourcePhrase: 'heart failure', terms: [] },
+    { id: 'b', label: 'SGLT2 blockers', sourcePhrase: 'SGLT2 inhibitors', terms: [] }, // renamed, phrase still present
+    { id: 'c', label: 'Mortality', sourcePhrase: 'mortality', terms: [] },             // phrase gone
+    { id: 'd', label: 'Setting', terms: [] },                                          // manual, label not in question
+  ];
+  it('reports groups whose sourcePhrase (or label fallback) left the question', () => {
+    const out = conceptDrift(q, groups);
+    expect(out.map((d) => d.id)).toEqual(['c', 'd']);
+    expect(out[0]).toEqual({ id: 'c', label: 'Mortality', sourcePhrase: 'mortality' });
+  });
+  it('matching is case/punctuation-insensitive on normalized text', () => {
+    expect(conceptDrift('HEART FAILURE!', [groups[0]])).toEqual([]);
+  });
+  it('legacy PICO groups are NEVER reported (they came from protocol fields, not the question)', () => {
+    const legacy = [
+      { id: 'p', label: 'Population', picoField: 'P', source: 'pico_auto', terms: [] },
+      { id: 'i', label: 'Intervention / Exposure', field: 'Intervention / Exposure', source: 'pico_auto', terms: [] },
+    ];
+    expect(conceptDrift(q, legacy)).toEqual([]);
+  });
+  it('an empty question drifts every question-derived group (nothing matches)', () => {
+    expect(conceptDrift('', [groups[0]]).map((d) => d.id)).toEqual(['a']);
+  });
+});
+
+describe('96.md D2 — questionSnapshot persistence (omit-when-empty byte-stability)', () => {
+  const OLD_SHAPE = {
+    concepts: [{ id: 'cP', label: 'Population', picoField: 'P', field: 'Population', source: 'pico_auto', op: 'AND', terms: [{ id: 't1', text: 'adults', type: 'freetext', field: 'tiab', source: 'pico_auto' }] }],
+    overrides: {}, ignored: [{ text: 'x', field: 'Population', label: 'Population' }],
+    databases: ['pubmed'], readyForScreening: false, dismissedWarnings: [],
+  };
+  it('a historical save (no questionSnapshot) keeps a byte-identical signature', () => {
+    expect(serializeSearchState(OLD_SHAPE)).toBe(serializeSearchState({ ...OLD_SHAPE, questionSnapshot: '' }));
+    expect(serializeSearchState(OLD_SHAPE)).toBe(serializeSearchState({ ...OLD_SHAPE, questionSnapshot: '   ' }));
+    expect(pickPersisted(OLD_SHAPE).questionSnapshot).toBeUndefined();
+  });
+  it('a real snapshot rides in pickPersisted (trimmed, capped) and changes the signature', () => {
+    const withQ = { ...OLD_SHAPE, questionSnapshot: '  does it work?  ' };
+    expect(pickPersisted(withQ).questionSnapshot).toBe('does it work?');
+    expect(serializeSearchState(withQ)).not.toBe(serializeSearchState(OLD_SHAPE));
+  });
+  it('per-concept sourcePhrase rides INSIDE concepts untouched (no stripping)', () => {
+    const withPhrase = {
+      ...OLD_SHAPE,
+      concepts: [{ id: 'g1', label: 'heart failure', sourcePhrase: 'heart failure', source: 'user_added', op: 'AND', terms: [] }],
+    };
+    expect(pickPersisted(withPhrase).concepts[0].sourcePhrase).toBe('heart failure');
+  });
+  it('normalizePersistedQuestionSnapshot: trim, cap 2000, undefined when blank', () => {
+    expect(normalizePersistedQuestionSnapshot(' q ')).toBe('q');
+    expect(normalizePersistedQuestionSnapshot('x'.repeat(3000)).length).toBe(2000);
+    expect(normalizePersistedQuestionSnapshot('')).toBeUndefined();
+    expect(normalizePersistedQuestionSnapshot(9)).toBeUndefined();
+  });
+  it('anyLiveTerms — the generic has-a-strategy predicate', () => {
+    expect(anyLiveTerms(OLD_SHAPE.concepts)).toBe(true);
+    expect(anyLiveTerms([{ id: 'g', terms: [{ id: 't', text: 'x', disabled: true }] }])).toBe(false);
+    expect(anyLiveTerms([])).toBe(false);
+  });
+});

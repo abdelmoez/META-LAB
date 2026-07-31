@@ -133,16 +133,42 @@ function ProgressBar({ percent, indeterminate, tone }) {
   );
 }
 
+/**
+ * updatedCountOf(run) — 96.md plan D14: the defensive `updated` count (existing
+ * records whose blank metadata was filled in by this run). The runProgress
+ * contract is untouched — this reads the ADDITIVE fields directly: prefer the
+ * per-source rows (live during a run; `updatedCount` per the shapeRun naming,
+ * `updated` tolerated), falling back to the finalize-time run counts JSON.
+ * Returns null when the server does not report the count at all (older runs /
+ * pre-D8 payloads), so the UI can simply omit the line.
+ */
+function updatedCountOf(run) {
+  if (!run) return null;
+  const sources = Array.isArray(run.sources) ? run.sources : [];
+  let sum = 0; let seen = false;
+  for (const s of sources) {
+    const v = s && (s.updatedCount != null ? s.updatedCount : s.updated);
+    if (v != null && Number.isFinite(Number(v))) { sum += Number(v); seen = true; }
+  }
+  if (seen) return sum;
+  const c = run.counts && run.counts.updated;
+  return (c != null && Number.isFinite(Number(c))) ? Number(c) : null;
+}
+
 /* Completion summary bullets — exact numbers straight from the operation result. */
-function CompletionSummary({ counts, state }) {
+function CompletionSummary({ counts, state, updated }) {
   // These reconcile: processed = added + duplicates removed + already-in-project +
   // skipped. Ambiguous records are a SUBSET of "added" (they land, then go to duplicate
   // review), so they are NOT a separate bucket here — the "possible duplicates" Note
-  // below surfaces them without double-counting the total.
+  // below surfaces them without double-counting the total. `updated` records are a
+  // subset of "already in your project" (matched + metadata filled — plan invariant 6),
+  // so they are an informational line, not a new bucket; omitted entirely when the
+  // server doesn't report the count (updated == null).
   const rows = [
     { label: 'records processed', value: counts.retrieved, always: true },
     { label: 'duplicates removed', value: counts.duplicates, show: counts.duplicates > 0 },
     { label: 'already in your project', value: counts.existing, show: counts.existing > 0 },
+    { label: 'existing records updated (metadata filled in)', value: updated, show: updated != null && updated > 0 },
     { label: state === 'cancelled' ? 'records kept' : 'articles added to Screening', value: counts.imported, always: true, tone: 'green' },
     { label: 'records skipped (missing required information)', value: counts.failed, show: counts.failed > 0, tone: 'red' },
   ].filter((r) => r.always || r.show);
@@ -195,6 +221,8 @@ export default function SearchImportProgressModal({
   // Optimistic pre-run stub so the modal opens INSTANTLY on click, before the 202 lands.
   const effectiveRun = run || { state: 'queued', sources: [] };
   const model = computeRunProgress(effectiveRun);
+  // D14 — additive, defensive: null when the server doesn't report it.
+  const updatedCount = updatedCountOf(effectiveRun);
   const terminal = model.terminal && !starting;
   const fatalStart = !!startError && !run;
 
@@ -315,6 +343,8 @@ export default function SearchImportProgressModal({
               <StatTile label="Retrieved" value={model.counts.retrieved.toLocaleString()} />
               <StatTile label={terminal ? 'Added' : 'Imported'} value={model.counts.imported.toLocaleString()} tone="green" />
               <StatTile label="Duplicates" value={model.counts.duplicates.toLocaleString()} />
+              {/* D14 — 'updated' shown only when the server reports it (defensive). */}
+              {updatedCount != null && updatedCount > 0 && <StatTile label="Updated" value={updatedCount.toLocaleString()} />}
               {model.counts.ambiguous > 0 && <StatTile label="To review" value={model.counts.ambiguous.toLocaleString()} tone="yellow" />}
               {model.counts.failed > 0 && <StatTile label="Skipped" value={model.counts.failed.toLocaleString()} tone="red" />}
             </div>
@@ -327,7 +357,7 @@ export default function SearchImportProgressModal({
             {/* Terminal summary + guidance */}
             {terminal && (
               <div style={{ marginTop: 6, paddingTop: 12, borderTop: `1px solid ${C.brd}` }}>
-                <CompletionSummary counts={model.counts} state={model.state} />
+                <CompletionSummary counts={model.counts} state={model.state} updated={updatedCount} />
                 {model.state === 'partial' && <div style={{ marginTop: 10 }}><Note tone="warn">Some databases did not finish. Every count above is exact for the ones that completed — you can retry the rest without creating duplicates.</Note></div>}
                 {model.state === 'failed' && (
                   <div style={{ marginTop: 10 }}>

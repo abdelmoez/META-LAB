@@ -107,9 +107,12 @@ describe('adoption: crossConcept (quality checks + dup detection)', () => {
     expect(detectCrossConceptDuplicates(cs)).toEqual([]);
     expect(searchQualityCheck(cs).map((w) => w.id)).not.toContain('multi:fam:eus');
   });
-  it('a concept whose only terms are disabled counts as EMPTY for the P/I check', () => {
-    const cs = [concept('p', 'Population', [term('adults', { disabled: true })], { picoField: 'P' })];
-    expect(searchQualityCheck(cs).map((w) => w.id)).toContain('empty:P');
+  it('a concept whose only terms are disabled counts as EMPTY for the empty-group check (96.md re-key)', () => {
+    const cs = [
+      concept('p', 'Population', [term('adults', { disabled: true })], { picoField: 'P' }),
+      concept('i', 'Intervention / Exposure', [term('metformin')], { picoField: 'I' }),
+    ];
+    expect(searchQualityCheck(cs).map((w) => w.id)).toContain('empty:p');
   });
 });
 

@@ -21,7 +21,11 @@ import { useEffect, useRef } from 'react';
 import { C, FONT, MONO, alpha } from '../../../frontend/theme/tokens.js';
 import { termDisplay, termMicroBadges } from './uiShared.js';
 
-export default function TermChipRow({ concept, beginner, dupInfoFor, editingTermId, onOpenEditor, onRemove, renderEditor }) {
+export default function TermChipRow({ concept, beginner, readOnly, dupInfoFor, editingTermId, onOpenEditor, onRemove, renderEditor }) {
+  // QA M8 — read-only viewers still SEE the searched terms, but the chip's edit
+  // action is disabled with an explanation and the remove button is not rendered
+  // (the hidden-where-design-hides pattern the group actions use).
+  const RO_TITLE = 'Read-only access — ask a project editor to change terms';
   const terms = (concept && Array.isArray(concept.terms)) ? concept.terms.filter((t) => t && String(t.text || '').trim()) : [];
   const chipRefs = useRef({});
   const prevEditing = useRef(editingTermId);
@@ -56,12 +60,14 @@ export default function TermChipRow({ concept, beginner, dupInfoFor, editingTerm
               <button
                 type="button"
                 ref={(el) => { chipRefs.current[t.id] = el; }}
-                onClick={() => onOpenEditor && onOpenEditor(t.id)}
+                onClick={() => { if (!readOnly && onOpenEditor) onOpenEditor(t.id); }}
+                disabled={!!readOnly}
+                aria-disabled={readOnly || undefined}
                 aria-label={`Edit ${t.text}`}
                 aria-expanded={editingTermId === t.id}
-                title={d.secondary ? `You typed: ${d.secondary}` : undefined}
+                title={readOnly ? RO_TITLE : (d.secondary ? `You typed: ${d.secondary}` : undefined)}
                 style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer',
+                  display: 'inline-flex', alignItems: 'center', gap: 6, cursor: readOnly ? 'not-allowed' : 'pointer',
                   background: 'none', border: 'none', padding: '5px 4px 5px 10px', minHeight: 28,
                   fontFamily: FONT, fontSize: 12, color: C.txt, textAlign: 'left',
                 }}>
@@ -87,14 +93,16 @@ export default function TermChipRow({ concept, beginner, dupInfoFor, editingTerm
                   </span>
                 )}
               </button>
-              <button
-                type="button"
-                onClick={() => onRemove && onRemove(t.id)}
-                aria-label={`Remove ${t.text}`}
-                title={`Remove "${t.text}"`}
-                style={{ background: 'none', border: 'none', borderLeft: `1px solid ${C.brd}`, color: C.muted, cursor: 'pointer', fontSize: 13, lineHeight: 1, padding: '0 8px', minWidth: 26, minHeight: 28 }}>
-                ×
-              </button>
+              {!readOnly && (
+                <button
+                  type="button"
+                  onClick={() => onRemove && onRemove(t.id)}
+                  aria-label={`Remove ${t.text}`}
+                  title={`Remove "${t.text}"`}
+                  style={{ background: 'none', border: 'none', borderLeft: `1px solid ${C.brd}`, color: C.muted, cursor: 'pointer', fontSize: 13, lineHeight: 1, padding: '0 8px', minWidth: 26, minHeight: 28 }}>
+                  ×
+                </button>
+              )}
             </span>
             {editingTermId === t.id && renderEditor && renderEditor(t)}
           </span>

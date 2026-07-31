@@ -16,7 +16,7 @@
  */
 import { picoToConcepts, extractConcepts, matchFamily, norm } from './conceptExtraction.js';
 import { FAMILY_PICO_ROLE } from './medicalSynonyms.js';
-import { isLiveTerm } from './termLiveness.js';
+import { isLiveTerm, liveTermsOf } from './termLiveness.js';
 import { rejectionKey } from './suggestionReview.js';
 
 /* ── SE2: the five canonical PICO concept groups ──────────────────────────────
@@ -300,7 +300,20 @@ export function pickPersisted(state) {
     // Included ONLY when non-empty (mirrors `filters`) so every pre-feature save keeps
     // a byte-identical signature and never triggers a spurious autosave.
     rejectedSuggestions: normalizePersistedRejected(state && state.rejectedSuggestions),
+    // 96.md D2 — the research-question text the strategy was built from (drift
+    // detection input). Included ONLY when non-empty (the filters trick), so every
+    // pre-96 save keeps a byte-identical signature. Mirrored by putSearch's
+    // `questionSnapshot` branch + sanitizeQuestionSnapshot (trim, cap 2000).
+    questionSnapshot: normalizePersistedQuestionSnapshot(state && state.questionSnapshot),
   };
+}
+
+/** 96.md D2 — the persisted question snapshot, or undefined when blank (a key set to
+ *  undefined is omitted by stableStringify — same trick as filters). Trimmed and
+ *  capped at 2000 chars to mirror the server sanitizer byte-for-byte. Pure. */
+export function normalizePersistedQuestionSnapshot(raw) {
+  const s = typeof raw === 'string' ? raw.slice(0, 2000).trim() : '';
+  return s ? s : undefined;
 }
 
 /** 85.md A1 — the persisted rejected-suggestion keys, or undefined when empty (a key
@@ -457,3 +470,221 @@ export const CONCEPT_STATUS_LABELS = {
   'mesh-suggested': 'Subject heading suggested',
   ready: 'Ready',
 };
+
+/* ══════════════ 96.md — question-based concept groups (PICO removed) ═══════════
+   The Search Engine no longer scaffolds the five PICO groups or auto-syncs from
+   protocol fields (syncSearchBuilderFromPico above is KEPT for legacy tests and
+   historical-state understanding, but the builder no longer calls it). New
+   projects seed EMPTY; groups are created from research-question phrase clicks
+   (createConceptFromPhrase) or manually. All helpers below follow this module's
+   contract: pure, deterministic, NO id assignment, NO I/O — the caller (the
+   component) assigns ids and runs MeSH lookups. */
+
+const cleanPhrase = (s) => String(s || '').trim();
+
+/**
+ * 96.md D2 — the state a brand-new (revision-0 / GET-null) project seeds with:
+ * EMPTY concepts (no scaffold groups) + the question snapshot the strategy will be
+ * built from. Pure.
+ */
+export function seedStateFromQuestion(question) {
+  return { concepts: [], questionSnapshot: cleanPhrase(question).slice(0, 2000) };
+}
+
+/**
+ * 96.md D13 — clicking a phrase in the research question CREATES a concept group:
+ * label = the phrase, `sourcePhrase` records provenance (drift detection), and the
+ * first term is the phrase itself as a tiab freetext term (`phrase:true` when
+ * multi-word, matching termEntry's quoting convention). Id-less (caller assigns);
+ * returns null for a blank phrase. Pure.
+ */
+export function createConceptFromPhrase(phrase) {
+  const clean = cleanPhrase(phrase);
+  if (!clean) return null;
+  const term = { text: clean, normalizedLabel: norm(clean), type: 'freetext', field: 'tiab', source: 'user_added' };
+  if (clean.includes(' ')) term.phrase = true;
+  return { label: clean, sourcePhrase: clean, source: 'user_added', op: 'AND', terms: [term] };
+}
+
+/**
+ * 96.md D13 — move one concept group up/down the AND chain (delta ±1). Returns the
+ * SAME array when the move is a no-op (unknown id, or already at the edge) so
+ * callers can cheaply detect "nothing happened". Array order is display order AND
+ * part of the persisted signature, so a real move autosaves. Pure.
+ */
+export function reorderConcept(concepts, conceptId, delta) {
+  const list = Array.isArray(concepts) ? concepts : [];
+  const from = list.findIndex((c) => c && c.id === conceptId);
+  const d = delta < 0 ? -1 : delta > 0 ? 1 : 0;
+  const to = from + d;
+  if (from === -1 || d === 0 || to < 0 || to >= list.length) return list;
+  const next = list.slice();
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  return next;
+}
+
+/**
+ * 96.md §3B (QA M3) — move one TERM up/down within its concept group (delta ±1).
+ * Term order is the rendered OR chain AND part of the persisted signature, so a
+ * real move autosaves via the existing signature. Returns the SAME array when the
+ * move is a no-op (unknown concept/term id, or already at the edge) so callers can
+ * cheaply detect "nothing happened". Only the touched concept gets a new object
+ * reference (untouched concepts keep theirs). Pure.
+ */
+export function reorderTerm(concepts, conceptId, termId, delta) {
+  const list = Array.isArray(concepts) ? concepts : [];
+  const ci = list.findIndex((c) => c && c.id === conceptId);
+  const d = delta < 0 ? -1 : delta > 0 ? 1 : 0;
+  if (ci === -1 || d === 0) return list;
+  const terms = Array.isArray(list[ci].terms) ? list[ci].terms : [];
+  const from = terms.findIndex((t) => t && t.id === termId);
+  const to = from + d;
+  if (from === -1 || to < 0 || to >= terms.length) return list;
+  const nextTerms = terms.slice();
+  const [moved] = nextTerms.splice(from, 1);
+  nextTerms.splice(to, 0, moved);
+  return list.map((c, i) => (i === ci ? { ...c, terms: nextTerms } : c));
+}
+
+/**
+ * 96.md §3A/§3B (QA M4) — rewrite one concept's ORIGINATING PHRASE (`sourcePhrase`).
+ * The phrase is what conceptDrift tests against the research question, so updating
+ * it to text that appears in the current question makes a kept concept stop
+ * re-drifting on every later question edit. Blank input CLEARS the key entirely
+ * (omit-when-empty — the persisted signature convention), so a group falls back to
+ * its label for drift matching. Returns the SAME array when nothing changes. Pure.
+ */
+export function setConceptSourcePhrase(concepts, conceptId, phrase) {
+  const list = Array.isArray(concepts) ? concepts : [];
+  const clean = cleanPhrase(phrase).slice(0, 500);
+  const idx = list.findIndex((c) => c && c.id === conceptId);
+  if (idx === -1) return list;
+  const cur = list[idx];
+  if (clean === cleanPhrase(cur.sourcePhrase)) return list; // no-op — signature untouched
+  return list.map((c, i) => {
+    if (i !== idx) return c;
+    if (!clean) { const { sourcePhrase: _gone, ...rest } = c; return rest; }
+    return { ...c, sourcePhrase: clean };
+  });
+}
+
+/**
+ * 96.md D13 — merge concept group `fromId` INTO `intoId`. The target keeps its own
+ * label/op/provenance; the source's terms are appended, deduped against the target
+ * by EXACT normalized text — NOT family equivalence (QA L4): "cardiac failure" must
+ * survive a merge into a group holding "heart failure", because distinct synonyms
+ * of one idea are precisely what an OR group is for (crossConcept QC check 4 even
+ * tells users to keep acronym + expansion). Only byte-equal (normalized) duplicates
+ * are skipped. Returns { concepts, undo } where `undo` = { fromConcept, fromIndex,
+ * intoId, movedTermIds } — everything undoStack.recordMergeConcepts needs to apply
+ * the exact inverse (remove the moved terms, re-insert the source group at its
+ * original index). Returns null when either id is missing or identical. Pure.
+ */
+export function mergeConcepts(concepts, fromId, intoId) {
+  const list = Array.isArray(concepts) ? concepts : [];
+  if (!fromId || !intoId || fromId === intoId) return null;
+  const fromIndex = list.findIndex((c) => c && c.id === fromId);
+  const into = list.find((c) => c && c.id === intoId);
+  if (fromIndex === -1 || !into) return null;
+  const fromConcept = list[fromIndex];
+  const haveKeys = new Set((into.terms || []).map((t) => norm(t && t.text)).filter(Boolean));
+  const moved = [];
+  for (const t of (fromConcept.terms || [])) {
+    const key = norm(t && t.text);
+    if (!key || haveKeys.has(key)) continue; // the exact same text already in the target
+    haveKeys.add(key);
+    moved.push(t); // the ORIGINAL term object — ids/vocab/flags survive the merge
+  }
+  const next = list
+    .filter((c) => c !== fromConcept)
+    .map((c) => (c && c.id === intoId ? { ...c, terms: [...(c.terms || []), ...moved] } : c));
+  return {
+    concepts: next,
+    undo: { fromConcept, fromIndex, intoId, movedTermIds: moved.map((t) => t.id).filter(Boolean) },
+  };
+}
+
+/**
+ * 96.md D13 — split a concept group: move the terms whose ids are in `termIds` out
+ * of `conceptId` into a NEW group inserted right after it. The new group is id-less
+ * (caller assigns — see the module contract) with label `newLabel` (fallback:
+ * "<source label> (split)"). Returns { concepts, newIndex } — `newIndex` is where
+ * the id-less new group sits so the caller can stamp its id — or null when nothing
+ * would move. Pure.
+ */
+export function splitConcept(concepts, conceptId, termIds, newLabel) {
+  const list = Array.isArray(concepts) ? concepts : [];
+  const idx = list.findIndex((c) => c && c.id === conceptId);
+  if (idx === -1) return null;
+  const src = list[idx];
+  const ids = new Set(Array.isArray(termIds) ? termIds.filter(Boolean) : []);
+  const moving = (src.terms || []).filter((t) => t && ids.has(t.id));
+  if (!moving.length) return null;
+  const staying = (src.terms || []).filter((t) => !(t && ids.has(t.id)));
+  const label = cleanPhrase(newLabel) || `${src.label || 'Concept'} (split)`;
+  const fresh = { label, source: 'user_added', op: src.op === 'OR' ? 'OR' : 'AND', terms: moving };
+  const next = [...list.slice(0, idx), { ...src, terms: staying }, fresh, ...list.slice(idx + 1)];
+  return { concepts: next, newIndex: idx + 1 };
+}
+
+/**
+ * 96.md D2 — drift detection. Which concept groups no longer trace back to the
+ * current research question? A group drifts when its `sourcePhrase` (or, for
+ * groups saved before sourcePhrase existed, its label — legacy fallback) no longer
+ * appears in the question as a case-insensitive substring of the NORMALIZED texts
+ * (norm(): lowercase, punctuation stripped, whitespace collapsed — so "SGLT2
+ * inhibitors," still matches "SGLT2 inhibitors").
+ *
+ * Legacy PICO groups (picoField / source 'pico_auto') are NEVER reported: they were
+ * built from protocol fields, not the question, so question edits say nothing about
+ * them. Returns [{ id, label, sourcePhrase }] (sourcePhrase = the phrase actually
+ * tested). Pure.
+ */
+export function conceptDrift(question, concepts) {
+  const q = norm(question);
+  const out = [];
+  for (const c of (Array.isArray(concepts) ? concepts : [])) {
+    if (!c || c.picoField || c.source === 'pico_auto') continue;
+    const phrase = cleanPhrase(c.sourcePhrase) || cleanPhrase(c.label);
+    const n = norm(phrase);
+    if (!n) continue;
+    if (!q || !q.includes(n)) out.push({ id: c.id, label: c.label || phrase, sourcePhrase: phrase });
+  }
+  return out;
+}
+
+/**
+ * 96.md D13 — is there already a group backed by this phrase? Matches by normalized
+ * `sourcePhrase` first, then normalized label (so a renamed-but-same-idea group
+ * still dedupes). Returns the concept or null. Pure.
+ */
+export function findConceptForPhrase(concepts, phrase) {
+  const n = norm(phrase);
+  if (!n) return null;
+  const list = Array.isArray(concepts) ? concepts : [];
+  return list.find((c) => c && norm(c.sourcePhrase) === n)
+    || list.find((c) => c && norm(c.label) === n)
+    || null;
+}
+
+/**
+ * 96.md D13 — "clicking a selected token again offers dequeue": the group may be
+ * removed silently only while it still holds NOTHING BEYOND its origin term (the
+ * phrase term createConceptFromPhrase seeded — matched by normalized text against
+ * sourcePhrase/label). Any extra live or kept term means real work: focus instead.
+ * Pure.
+ */
+export function conceptOnlyHoldsOriginTerm(concept) {
+  if (!concept) return false;
+  const origin = norm(concept.sourcePhrase) || norm(concept.label);
+  const terms = (concept.terms || []).filter((t) => t && String(t.text || '').trim());
+  if (!terms.length) return true; // no terms at all — nothing to lose
+  return terms.length === 1 && norm(terms[0].text) === origin;
+}
+
+/** Live-term presence for a whole state — the generic "has a strategy" predicate
+ *  (96.md replaces the old P/I picoField gating). Pure. */
+export function anyLiveTerms(concepts) {
+  return (Array.isArray(concepts) ? concepts : []).some((c) => liveTermsOf(c).length > 0);
+}

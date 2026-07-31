@@ -19,20 +19,15 @@ import { capabilitiesFor } from '../../src/research-engine/searchBuilder/compile
 describe('embeddedShowsStep — the 3-way embedded phase matrix (P4)', () => {
   const matrix = (phase) => [1, 2, 3, 4, 5].filter((n) => embeddedShowsStep(phase, n));
 
-  it("legacy 'define' stays the combined concepts+terms alias (old SearchWizard unchanged)", () => {
-    expect(matrix('define')).toEqual([1, 2]);
+  it("96.md — the retired 'define'/'concepts' phases show NOTHING (wizard deleted)", () => {
+    expect(matrix('define')).toEqual([]);
+    expect(matrix('concepts')).toEqual([]);
   });
-  it("'concepts' shows ONLY step 1 (Select Keywords + the compact summary)", () => {
-    expect(matrix('concepts')).toEqual([1]);
-  });
-  it("'terms' shows ONLY step 2 (full concept/term detail + limits)", () => {
+  it("'terms' shows ONLY step 2 (the central Terms & Vocabulary workspace)", () => {
     expect(matrix('terms')).toEqual([2]);
   });
   it("'build' shows steps 3+4 (databases + strategy workspace)", () => {
     expect(matrix('build')).toEqual([3, 4]);
-  });
-  it('concepts and terms are DISTINCT (the old no-op stage bug cannot recur)', () => {
-    expect(matrix('concepts')).not.toEqual(matrix('terms'));
   });
   it('returns null for a non-embedded phase (standalone keeps its own stepper)', () => {
     expect(embeddedShowsStep(undefined, 1)).toBeNull();

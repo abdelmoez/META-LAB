@@ -126,11 +126,22 @@ export async function listSharedMetaLabAccess(userId) {
   });
   if (!memberships.length) return [];
 
-  const screenProjects = await prisma.screenProject.findMany({
-    // deletedAt:null — soft-deleted workspaces stop granting shared ML access (prompt9).
-    where: { id: { in: memberships.map(m => m.projectId) }, linkedMetaLabProjectId: { not: null }, deletedAt: null },
-    select: { id: true, ownerId: true, title: true, linkedMetaLabProjectId: true },
-  });
+  // Chunk the membership id list. One big `in (...)` here trips SQLite's query
+  // parameter limit for members of many workspaces, and Prisma refuses to
+  // auto-split a query that also carries a negation filter (`not: null`) — the
+  // whole projects list 500s. Sequential ≤200-id chunks keep every query small
+  // (same pattern as projectsController.screenProjectSummaries).
+  const memberIds = memberships.map(m => m.projectId);
+  const CHUNK = 200;
+  const screenProjects = [];
+  for (let i = 0; i < memberIds.length; i += CHUNK) {
+    const rows = await prisma.screenProject.findMany({
+      // deletedAt:null — soft-deleted workspaces stop granting shared ML access (prompt9).
+      where: { id: { in: memberIds.slice(i, i + CHUNK) }, linkedMetaLabProjectId: { not: null }, deletedAt: null },
+      select: { id: true, ownerId: true, title: true, linkedMetaLabProjectId: true },
+    });
+    screenProjects.push(...rows);
+  }
   const spById = Object.fromEntries(screenProjects.map(s => [s.id, s]));
 
   const byMetaLab = new Map();

@@ -46,8 +46,11 @@ export function termDisplay(term) {
 
 /**
  * The tiny text micro-badges a chip carries (visible in beginner mode too — they
- * change recall and must never be hidden): non-default field scope, truncation,
- * exact phrase, disabled. Pure; ordered.
+ * change recall and must never be hidden): field scope (96.md D13.5 — ALWAYS
+ * shown for free text, incl. the default title/abstract, so every chip names
+ * where it searches), truncation, exact phrase, provenance (suggested vs manual —
+ * spec C: "an automatically suggested term" / "a manually entered term"), and
+ * disabled. Pure; ordered.
  */
 export function termMicroBadges(term) {
   const t = term || {};
@@ -55,8 +58,17 @@ export function termMicroBadges(term) {
   if (t.type !== 'controlled') {
     if (t.field === 'ti') out.push({ key: 'field', label: 'title only' });
     else if (t.field === 'all') out.push({ key: 'field', label: 'everywhere' });
+    else out.push({ key: 'field', label: 'title/abstract' });
     if (t.truncate && !String(t.text || '').includes(' ')) out.push({ key: 'truncate', label: 'endings*' });
     if (t.phrase && String(t.text || '').includes(' ')) out.push({ key: 'phrase', label: 'phrase' });
+  }
+  // Provenance: synonym-ladder / suggestion acceptances read "suggested"; terms the
+  // user typed or clicked read "manual"; legacy pico_auto terms read "suggested"
+  // too (they were machine-suggested — the PICO framing itself is retired).
+  if (t.source === 'synonym' || t.source === 'suggested' || t.source === 'pico_auto') {
+    out.push({ key: 'source', label: 'suggested' });
+  } else if (t.source === 'user_added') {
+    out.push({ key: 'source', label: 'manual' });
   }
   if (t.disabled === true) out.push({ key: 'off', label: 'off' });
   return out;

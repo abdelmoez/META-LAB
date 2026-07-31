@@ -54,29 +54,78 @@ describe('searchQualityCheck', () => {
   const concepts = [
     concept('P', 'Population', 'endoscopic ultrasound'),
     concept('I', 'Intervention / Exposure', 'EUS'),
-    concept('O', 'Outcomes'), // empty major concept
+    concept(null, 'Outcomes'), // empty USER-CREATED concept (no picoField)
   ];
 
   it('warns about a term in more than one concept', () => {
     const ids = searchQualityCheck(concepts).map((x) => x.id);
     expect(ids).toContain('multi:fam:eus');
   });
-  it('treats empty Outcomes as optional guidance (info), not a warning', () => {
-    const w = searchQualityCheck(concepts).find((x) => x.id === 'outcomes-optional');
+  /* 96.md D4 — the empty-group check is GENERIC now: every USER-CREATED concept
+     group with zero live terms warns (id `empty:<conceptId>`) once 2+ groups
+     exist, because an empty group silently drops out of the AND chain. The old
+     PICO pedagogy (empty:P/empty:I as special, outcomes-optional, narrow:C/O) is
+     deleted, and (QA L23) legacy PICO scaffold groups are exempt — see below. */
+  it('warns per empty USER-CREATED concept group (empty:<conceptId>) when 2+ groups exist', () => {
+    const w = searchQualityCheck(concepts).find((x) => x.id === 'empty:c-Outcomes');
     expect(w).toBeTruthy();
-    expect(w.severity).toBe('info');
-    expect(w.message.toLowerCase()).toContain('optional');
-    // empty Population / Intervention remain real warnings
-    const emptyPop = searchQualityCheck([{ id: 'p', picoField: 'P', label: 'Population', terms: [] }]);
-    expect(emptyPop.find((x) => x.id === 'empty:P').severity).toBe('warning');
-  });
-  it('warns when a major concept with terms has no controlled vocabulary', () => {
+    expect(w.severity).toBe('warning');
+    expect(w.conceptId).toBe('c-Outcomes');
+    // the retired PICO-keyed ids never fire again
     const ids = searchQualityCheck(concepts).map((x) => x.id);
-    expect(ids).toContain('novocab:P');
+    expect(ids).not.toContain('outcomes-optional');
+    expect(ids).not.toContain('empty:O');
+    expect(ids).not.toContain('narrow:O');
+  });
+  /* 96.md QA L23 — a migrated five-group PICO scaffold keeps intentionally-empty
+     C/O/T groups; those must NOT wake historical projects up with warnings. Both
+     legacy markers (picoField / source 'pico_auto') exempt; user groups still warn. */
+  it('L23: legacy PICO scaffold groups (picoField / pico_auto) with zero terms are EXEMPT', () => {
+    const legacy = [
+      concept('P', 'Population', 'heart failure'),
+      concept('I', 'Intervention / Exposure', 'metformin'),
+      { id: 'c-C', label: 'Comparator / Control', picoField: 'C', source: 'pico_auto', terms: [] },
+      { id: 'c-O2', label: 'Outcomes', picoField: 'O', source: 'pico_auto', terms: [] },
+      { id: 'c-L', label: 'Legacy concepts-era', field: 'Outcomes', source: 'pico_auto', terms: [] }, // no picoField, legacy source
+    ];
+    const ids = searchQualityCheck(legacy).map((x) => x.id);
+    expect(ids.filter((x) => x.startsWith('empty:'))).toEqual([]);
+  });
+  it('L23: a user-created empty group STILL warns next to legacy scaffolds', () => {
+    const mixed = [
+      { id: 'c-P', label: 'Population', picoField: 'P', source: 'pico_auto', terms: [{ id: 't', text: 'adults', type: 'freetext' }] },
+      { id: 'c-C', label: 'Comparator / Control', picoField: 'C', source: 'pico_auto', terms: [] }, // legacy — silent
+      { id: 'u1', label: 'Setting', source: 'user_added', terms: [] },                              // user — warns
+    ];
+    const ids = searchQualityCheck(mixed).map((x) => x.id);
+    expect(ids).toContain('empty:u1');
+    expect(ids).not.toContain('empty:c-C');
+  });
+  it('a SINGLE empty group is the just-started state — no warning', () => {
+    expect(searchQualityCheck([{ id: 'p1', label: 'Heart failure', terms: [] }])
+      .some((x) => x.id.startsWith('empty:'))).toBe(false);
+  });
+  it('a note-carrying group (legacy Time Frame) is exempt from the empty check', () => {
+    const cs = [
+      concept(null, 'Heart failure', 'heart failure'),
+      { id: 'c-T', label: 'Time Frame', picoField: 'T', note: 'Last 5 years', terms: [] },
+    ];
+    expect(searchQualityCheck(cs).some((x) => x.id.startsWith('empty:'))).toBe(false);
+  });
+  it('warns when a concept with terms has no controlled vocabulary (novocab:<conceptId>)', () => {
+    const ids = searchQualityCheck(concepts).map((x) => x.id);
+    expect(ids).toContain('novocab:c-P');
+    expect(ids).toContain('novocab:c-I');
+    expect(ids).not.toContain('novocab:P'); // retired PICO-keyed id
   });
   it('does not warn novocab when a controlled (MeSH) term is present', () => {
     const withMesh = [concept('P', 'Population', { text: 'Obesity', type: 'controlled' })];
-    expect(searchQualityCheck(withMesh).map((x) => x.id)).not.toContain('novocab:P');
+    expect(searchQualityCheck(withMesh).map((x) => x.id)).not.toContain('novocab:c-P');
+  });
+  it('tolerates legacy dismissed ids (empty:P etc.) as harmless orphans', () => {
+    // Old persisted dismissals simply never match a current finding id.
+    const out = searchQualityCheck(concepts, { dismissed: ['empty:P', 'novocab:P', 'narrow:O', 'outcomes-optional'] });
+    expect(out.map((x) => x.id)).toContain('empty:c-Outcomes'); // current findings unaffected
   });
   it('respects dismissed warning ids', () => {
     const all = searchQualityCheck(concepts);

@@ -99,16 +99,24 @@ describe('META·SIFT prompt4 server-ready upgrade (integration)', () => {
     const assign = await api(`/admin/users/${x.id}/role`, { method: 'PATCH', cookie: adminCookie, body: { role: 'mod' } });
     expect(assign.status).toBe(200);
 
-    // x (now mod) — role re-read from DB each request, so the existing cookie works:
-    const modUsers = await api('/admin/users', { cookie: x.cookie });
+    // prompt49 — a role change BUMPS sessionEpoch (privilege changes must not
+    // ride existing tokens for up to 7 days), so the OLD cookie is revoked…
+    const revoked = await api('/admin/users', { cookie: x.cookie });
+    expect(revoked.status).toBe(401);
+    // …and x signs in again to pick up the mod role on a fresh session.
+    const relog = await api('/auth/login', { method: 'POST', body: { email: `p4mod_${r}@t.local`, password: 'Password123!' } });
+    expect(relog.status).toBe(200);
+    const modCookie = relog.cookie;
+
+    const modUsers = await api('/admin/users', { cookie: modCookie });
     expect(modUsers.status).toBe(200);                 // mod can view users
-    const modMetrics = await api('/admin/metrics', { cookie: x.cookie });
+    const modMetrics = await api('/admin/metrics', { cookie: modCookie });
     expect(modMetrics.status).toBe(403);               // mod cannot see metrics
-    const modConsole = await api('/admin/console', { cookie: x.cookie });
+    const modConsole = await api('/admin/console', { cookie: modCookie });
     expect(modConsole.data.role).toBe('mod');
 
     // mod cannot assign roles (admin-only)
-    const modAssign = await api(`/admin/users/${x.id}/role`, { method: 'PATCH', cookie: x.cookie, body: { role: 'admin' } });
+    const modAssign = await api(`/admin/users/${x.id}/role`, { method: 'PATCH', cookie: modCookie, body: { role: 'admin' } });
     expect(modAssign.status).toBe(403);
   });
 

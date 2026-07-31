@@ -6,7 +6,10 @@
  * :ab,ti,kw (all-fields). Truncation with '*' (4-char minimum stem). Limits:
  * [yyyy-yyyy]/py for publication years and [english]/lim for language. When an
  * Emtree term is absent the heading falls back to lowercased free text with an
- * explicit approximate warning (it is never silently mapped).
+ * explicit approximate warning (it is never silently mapped). 96.md (QA M7): even
+ * a PRESENT emtree value is a MeSH-derived heuristic (no real Emtree source
+ * exists), so mapped headings are flagged approximate + warned too — honest,
+ * never silently "native".
  */
 import { S, fieldBody, langNameLower, year, uniq } from '../shared.js';
 
@@ -17,7 +20,16 @@ export const embase = {
   renderControlled(term, vocab, warnings) {
     const emtree = term.vocab && term.vocab.emtree;
     if (emtree) {
+      // 96.md §3C/§3F (QA M7) — EVERY emtree value in the vocab payload is a
+      // heuristic: NLM publishes no Emtree data (Emtree is Elsevier-proprietary),
+      // so nlmClient.emtreeFallback derives it from the MeSH heading (both the
+      // 'live' and offline 'core' sources). Presenting it as fully "mapped" native
+      // vocabulary would pretend a MeSH term is natively supported — flag it
+      // approximate and tell the user to verify, exactly like cinahl/scopus do for
+      // their carried-over headings. The QUERY STRING itself is unchanged.
       vocab.mapped++;
+      vocab.approximate = true;
+      warnings.push({ code: 'VOCAB_APPROXIMATE', message: `Emtree heading '${S(emtree)}' was derived from the MeSH heading heuristically — verify it in the Emtree thesaurus before running.` });
       return `'${S(emtree)}'/${term.noExplode ? 'de' : 'exp'}`;
     }
     // No Emtree mapping → fall back to the lowercased text as a quoted phrase, warned.

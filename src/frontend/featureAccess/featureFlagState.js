@@ -34,7 +34,8 @@ export const FEATURE_DEPS = Object.freeze({
   pecanSearch: ['searchEngine'],
   searchStrategyStudio: ['searchEngine', 'pecanSearch'],
   guidedRobAppraisal: ['rob_engine_v2'],
-  searchWorkspaceV2: ['searchEngine'],
+  // 96.md — searchWorkspaceV2 removed: the flag is retired (stored key ignored;
+  // the staged workspace ships with searchEngine), so no dependency remains.
 });
 
 /**

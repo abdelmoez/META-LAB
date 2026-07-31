@@ -10,7 +10,9 @@
 import { useState, useEffect } from "react";
 import { flushStorage } from "../../storage/serverStorage.js";
 import { alpha as themeAlpha } from "../../theme/tokens.js";
-import { useFieldLock } from "../../screening/hooks/usePresence.js";
+import { useFieldLock, useProjectPresence } from "../../screening/hooks/usePresence.js";
+import { linkedSiftId } from "../projectHelpers.js";
+import { useAuth } from "../../context/AuthContext.jsx";
 import { C, btnS, inp, lbl, th, tagS } from "../ui/styles.js";
 import { SectionHeader, InfoBox, HelpTip, AIButton, ProgressBar, CriteriaList } from "../ui/primitives.jsx";
 import { MESH_DBS, PROSP_FIELDS } from "../../../research-engine/project-model/monolithConstants.js";
@@ -19,8 +21,7 @@ import { ProtocolModulePanel, TIMEFRAME_OPTIONS, STUDY_DESIGNS } from "../../../
 import { workflowStateFlagEnabled } from "../../../services/workflowState/api.js";
 import { searchEngineFlagEnabled } from "../../../features/searchBuilder/index.js";
 import { pecanSearchFlagEnabled } from "../../../features/pecanSearch/index.js";
-import { SearchWizard } from "../../../features/searchWizard/index.js";
-import { SearchWorkspace, searchWorkspaceV2FlagEnabled } from "../../../features/searchWorkspace/index.js";
+import { SearchWorkspace } from "../../../features/searchWorkspace/index.js";
 
 /* fmtDate — verbatim copy of the monolith module-local helper (the monolith
    keeps its own copy for its other consumers). */
@@ -249,38 +250,52 @@ function PICODispatcher({project,updNested,upd,lockCtx,activeId}){
 }
 
 /* prompt60 — the UNIFIED Search stage. Replaces the former SearchDispatcher +
-   DiscoveryDispatcher (removed in this change — the two-tab flow is gone) with one
-   3-step wizard (Define → Build → Run), mounted for the single `search` tab in both
-   shells. Flag reconciliation:
+   DiscoveryDispatcher (removed in this change — the two-tab flow is gone), mounted
+   for the single `search` tab in both shells. Flag reconciliation (96.md — the
+   legacy 3-step SearchWizard and its `searchWorkspaceV2` gate are RETIRED):
      · searchEngine OFF                       → legacy in-blob SearchTab (unchanged).
-     · searchEngine ON, pecanSearch OFF/dep   → wizard Steps 1–2 work; the Run step shows
-                                                a clear "enable Search & Discovery in Ops"
-                                                note instead of a silent 404.
-     · both ON                                → full wizard incl. the live run + import.
+     · searchEngine ON, pecanSearch OFF/dep   → staged SearchWorkspace; the automated
+                                                run surfaces show a clear "enable in
+                                                Ops" note instead of a silent 404.
+     · both ON                                → full workspace incl. the live run + import.
    pecanSearchFlagEnabled() already enforces the pecanSearch→searchEngine co-dependency,
    so `pecan` here is true only when the run can actually execute.
 
-   71.md — additive REDESIGN branch. When `searchWorkspaceV2` is ON (and searchEngine ON),
-   the new staged SearchWorkspace renders instead of SearchWizard; both compose the same
-   engines, so this is a safe, reversible arrangement swap. When the flag is OFF (default),
-   the SearchWizard path below is byte-identical. The legacy searchEngine-OFF SearchTab path
-   is untouched. searchWorkspaceV2FlagEnabled() already requires searchEngine. */
-function SearchWizardDispatcher({project,activeId,updNested,upd,readOnly,hideRail,initialStage,onStageChange}){
-  const[flags,setFlags]=useState(null); // null=checking; {searchEngine,pecan,workspaceV2}
+   96.md D1 — `updNested` is threaded through so the workspace's Research Question
+   stage edits `project.pico.question` directly (the authoritative question home;
+   whole-project autosave persists it, exactly like the Protocol editor).
+
+   96.md QA M18 — the question editor is a SECOND writer on pico.question (the
+   Protocol editor is the first), so it must claim/respect the SAME 'pico.question'
+   presence field lock. Neither host (Workspace.jsx / StitchProjectWorkspace)
+   passes lockCtx to THIS dispatcher (they only build it for PICODispatcher), so
+   the dispatcher constructs the identical context itself from the same presence
+   API: linkedSiftId(project) → the ScreenProject presence room, useAuth() → the
+   viewer id, and a LISTEN-ONLY useProjectPresence (heartbeat:false — the host
+   header already owns the location heartbeat for this room; beating here too
+   would overwrite the precise location, see usePresence.js). An explicitly
+   passed `lockCtx` prop wins, so a future host can thread its own. Fail-open:
+   no linked workspace / no auth provider → pid null → editing never blocks. */
+function SearchWizardDispatcher({project,activeId,updNested,upd,readOnly,hideRail,initialStage,onStageChange,lockCtx}){
+  const[flags,setFlags]=useState(null); // null=checking; {searchEngine,pecan}
+  // Hooks run unconditionally (before the early returns) — fixed order.
+  let authUser=null;
+  try{ authUser=useAuth().user; }catch{ authUser=null; } // no AuthProvider (tests/SSR) → fail-open
+  const spId=project?linkedSiftId(project):null;
+  const { locks:presenceLocks }=useProjectPresence(spId,"Search",{ enabled: !!spId && !lockCtx, heartbeat:false });
+  const effectiveLockCtx=lockCtx||{ pid:spId, myUserId:authUser?.id, locks:presenceLocks };
   useEffect(()=>{let dead=false;
     (async()=>{
-      let se=false,ps=false,wv2=false;
+      let se=false,ps=false;
       try{ se=await searchEngineFlagEnabled(); }catch{ se=false; }
       try{ ps=await pecanSearchFlagEnabled(); }catch{ ps=false; }
-      try{ wv2=await searchWorkspaceV2FlagEnabled(); }catch{ wv2=false; }
-      if(!dead) setFlags({searchEngine:!!se,pecan:!!ps,workspaceV2:!!wv2});
+      if(!dead) setFlags({searchEngine:!!se,pecan:!!ps});
     })();
     return()=>{dead=true;};
   },[]);
   if(flags===null) return <div style={{padding:40,textAlign:"center",color:C.muted,fontSize:13}}>Loading Search…</div>;
   if(!flags.searchEngine) return <SearchTab project={project} updNested={updNested} upd={upd}/>;
-  if(flags.workspaceV2) return <SearchWorkspace projectId={activeId} pico={project.pico} readOnly={readOnly} pecanEnabled={flags.pecan} hideRail={hideRail} initialStage={initialStage} onStageChange={onStageChange}/>;
-  return <SearchWizard projectId={activeId} pico={project.pico} readOnly={readOnly} pecanEnabled={flags.pecan}/>;
+  return <SearchWorkspace projectId={activeId} pico={project.pico} updNested={updNested} readOnly={readOnly} pecanEnabled={flags.pecan} hideRail={hideRail} initialStage={initialStage} onStageChange={onStageChange} lockCtx={effectiveLockCtx}/>;
 }
 
 /* ════════════ TAB: SEARCH ════════════ */

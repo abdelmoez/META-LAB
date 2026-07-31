@@ -22,6 +22,16 @@
  * removed" on each rerun. exact/fuzzy dups are cross-source duplicates of records NEW to
  * the project and are rerun-stable (a re-found record becomes existing-match, not
  * exact/fuzzy), so they are safe to sum across runs.
+ *
+ * 96.md additions (callers' contract — this helper stays pure):
+ *  - metadata-'updated' outcomes count as ALREADY PRESENT (invariant 6): they are a
+ *    subset of import-time skipped duplicates / engine existing-matches, so they must
+ *    NEVER be added to any input of this function.
+ *  - ROLLED-BACK runs are excluded at the query: callers summing pecanExactDup/
+ *    pecanFuzzyDup from PecanSearchSource must filter `run.rolledBackAt: null`
+ *    (a screening reset deleted those runs' landed records + batches, so keeping
+ *    their engine-side dedup counts would over-report identified forever). See
+ *    getMetaLabSummary (screeningController.js).
  */
 export function derivePrismaIdentification({
   recordCount = 0,

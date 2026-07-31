@@ -1,29 +1,22 @@
 /**
- * search.spec.ts — the `search-protocol` area: Protocol/PICO, the unified 3-step
- * Search wizard (Define → Build → Run) and the embedded Pecan run surface.
+ * search.spec.ts — the `search-protocol` area: Protocol/PICO, the staged Search
+ * workspace smoke (96.md — the legacy 3-step wizard is DELETED) and PROSPERO.
  *
  * Flags: searchEngine + pecanSearch + serverBackedWorkflowState are ON globally for
  * the suite (helpers/api ENGINE_FLAGS). Each test still reads the live public flags
  * and `test.skip`s honestly if its precondition is off, so the file stays correct if
  * the rollout changes.
  *
- * 73.md/75.md NOTE: with `searchWorkspaceV2` ON the Search tab renders the STAGED
- * workspace instead of this wizard — the mode-scoped stages (Research Question →
- * Concepts → Terms & Vocabulary → Search Mode → Database Strategies → Test & Refine →
- * Run Externally / Automated Search [mode-aware] → Documentation → Send to Screening),
- * a sticky `pubmed-pulse` bar, and mode cards (`search-mode-card-manual|automated`).
- * 75.md moves that numbered workflow into the WHITE project side-menu (the shared
- * `stitch-workflow-stepper`, ?tab=search&stage=<id> deep links) and drops the in-body
- * rail, so the side-menu is the persistent representation and "Next" from Send to
- * Screening (`continue-to-screening`) hands off to the Screening workspace once the
- * strategy is marked ready. This spec targets the legacy wizard, which stays
- * byte-identical while the flag is OFF; the workspace's own coverage lives in
- * tests/unit/searchWorkspace*.test.jsx + tests/unit/navConfigSearchSubmenu.test.js
- * plus the flag-flipping browser spec e2e/search/searchWorkspace.spec.ts.
+ * 96.md NOTE: with `searchEngine` ON the Search tab ALWAYS renders the staged
+ * workspace (7 stages, `?tab=search&stage=<id>`; the old `searchWorkspaceV2` flag is
+ * deprecated/ignored). The deep workspace journeys live in
+ * e2e/search/searchWorkspace.spec.ts; this file keeps the cheap smoke +
+ * persistence checks alongside the Protocol-side surfaces (which KEEP PICO — 96.md
+ * removed it from the Search engine only).
  *
  * Seeding is via the fast `tmpProject` fixture (a throwaway admin project, auto-
- * deleted). The embedded Search Builder seeds the five PICO concept groups on load,
- * so the wizard's Run gate opens without any external NLM round-trip.
+ * deleted). New projects seed an EMPTY strategy (96.md — no PICO scaffold groups);
+ * concept groups are created from the research question or the manual add box.
  */
 import { test, expect } from '../fixtures/stitch-test';
 import { SearchPage } from '../page-objects/SearchPage';
@@ -84,103 +77,33 @@ test.describe('Search / PICO / Protocol', () => {
     });
   });
 
-  /* ── Search wizard (?tab=search) ─────────────────────────────────────────── */
-  test.describe('Search wizard', () => {
+  /* ── Staged Search workspace (?tab=search) ───────────────────────────── */
+  test.describe('Staged Search workspace', () => {
     test.beforeEach(async ({ request }) => {
       const flags = await publicFlags(request);
-      // searchEngine OFF would render the legacy SearchTab (no wizard at all).
-      test.skip(!flags.searchEngine, 'TODO: searchEngine OFF → legacy SearchTab, no Define/Build/Run wizard');
-      // searchWorkspaceV2 ON renders the STAGED workspace instead of this wizard.
-      // Locally (parallel workers) searchWorkspace.spec.ts flips that GLOBAL flag
-      // within its serial scope, so skip honestly instead of failing on the
-      // workspace UI; on CI (workers=1) the flip can never overlap this file.
-      test.skip(flags.searchWorkspaceV2 === true, 'searchWorkspaceV2 ON → staged workspace renders; covered by searchWorkspace.spec.ts');
+      // searchEngine OFF would render the legacy in-blob SearchTab (no workspace).
+      test.skip(!flags.searchEngine, 'TODO: searchEngine OFF → legacy SearchTab, no staged workspace');
     });
 
-    test('@smoke renders the 3-step Define → Build → Run flow with Define active', async ({ page, tmpProject }) => {
+    test('@smoke renders the 7-stage workspace with Research Question active', async ({ page, tmpProject }) => {
       const sp = new SearchPage(page);
-      await sp.gotoSearch(tmpProject.id);
-      await sp.waitForWizard();
-
-      await expect(sp.defineStep).toBeVisible();
-      await expect(sp.buildStep).toBeVisible();
-      await expect(sp.runStep).toBeVisible();
-      await sp.expectActiveStep('define');
-      await expect(sp.stepIndicator(1)).toBeVisible();
+      await sp.openStagedWorkspace(tmpProject.id);
+      await expect(sp.stageSurface).toHaveAttribute('data-stage', 'question');
+      await expect(page.getByText('Stage 1 of 7')).toBeVisible();
+      // The retired stages never appear.
+      await expect(sp.stageNav.getByRole('button', { name: /Test & Refine/ })).toHaveCount(0);
+      await expect(sp.stageNav.getByRole('button', { name: /^Concepts$/ })).toHaveCount(0);
     });
 
-    test('navigates Define → Build and back to Define, preserving the mounted builder', async ({ page, tmpProject }) => {
+    test('a concept group created from the manual add box autosaves and survives reload', async ({ page, request, tmpProject }) => {
       const sp = new SearchPage(page);
-      await sp.gotoSearch(tmpProject.id);
-      await sp.waitForWizard();
+      await sp.gotoStage(tmpProject.id, 'terms');
+      await expect(sp.questionCard).toBeVisible();
 
-      // Forward to Build via the footer CTA.
-      await sp.nextBuildButton.click();
-      await sp.expectActiveStep('build');
-      await expect(sp.stepIndicator(2)).toBeVisible();
-      // A Build-phase surface is mounted (the database picker).
-      await expect(sp.databasePicker).toBeVisible();
-
-      // Back to Define via the step pip — the builder is preserved (its Define-phase
-      // keyword input reappears) rather than the wizard 404ing or remounting empty.
-      await sp.defineStep.click();
-      await sp.expectActiveStep('define');
-      await expect(sp.stepIndicator(1)).toBeVisible();
-      await expect(sp.keywordInput('Population')).toBeVisible();
-    });
-
-    test('entering a keyword surfaces it as a selected term', async ({ page, tmpProject }) => {
-      const sp = new SearchPage(page);
-      await sp.gotoSearch(tmpProject.id);
-      await sp.waitForWizard();
-
-      const term = `e2ekw${Date.now()}`;
-      await sp.addKeyword('Population', term);
-
-      // The term lands in the "Selected keywords" tray as a removable chip.
-      await expect(sp.selectedKeywordRemove(term)).toBeVisible();
-    });
-
-    test('the Pecan estimate control is enabled in Build (pecanSearch ON), not an enable-in-Ops note', async ({ page, request, tmpProject }) => {
-      const flags = await publicFlags(request);
-      test.skip(!flags.pecanSearch, 'TODO: pecanSearch OFF → BuildEstimates intentionally shows the "enable it in Ops" note');
-
-      const sp = new SearchPage(page);
-      await sp.gotoSearch(tmpProject.id);
-      await sp.waitForWizard();
-      await sp.nextBuildButton.click();
-      await sp.expectActiveStep('build');
-
-      // pecanSearch ON → the estimate control renders and the degraded note is absent.
-      await expect(sp.estimateButton).toBeVisible();
-      await expect(sp.estimatesCard).toBeVisible();
-      await expect(sp.pecanDisabledNote).toHaveCount(0);
-    });
-
-    test('reaching the Run step mounts the Pecan "Search & Discovery" surface (pecanSearch ON)', async ({ page, request, tmpProject }) => {
-      const flags = await publicFlags(request);
-      test.skip(!flags.pecanSearch, 'TODO: pecanSearch OFF → Run step shows the "enable the Pecan Search Engine in Ops" note instead of the run surface');
-
-      const sp = new SearchPage(page);
-      await sp.gotoSearch(tmpProject.id);
-      await sp.waitForWizard();
-
-      await sp.openRunStep(); // Define → Build → (gate opens) → Run
-
-      await expect(sp.pecanHeading).toBeVisible();
-      await expect(sp.stepIndicator(3)).toBeVisible();
-      // pecanSearch ON → the run engine mounted, NOT the disabled "enable in Ops" note.
-      await expect(sp.pecanRunDisabledNote).toHaveCount(0);
-    });
-
-    test('search-strategy autosave persists an added keyword across reload', async ({ page, request, tmpProject }) => {
-      const sp = new SearchPage(page);
-      await sp.gotoSearch(tmpProject.id);
-      await sp.waitForWizard();
-
-      const term = `persistkw${Date.now()}`;
-      await sp.addKeyword('Population', term);
-      await expect(sp.selectedKeywordRemove(term)).toBeVisible();
+      const label = `persistkw${Date.now()}`;
+      await sp.addConceptGroup(label);
+      await expect(sp.activeConcept).toBeVisible();
+      await expect(sp.termChip(label)).toBeVisible();
 
       // Wait for the debounced autosave (PUT /api/search-builder/:id) to land server-side.
       await expect
@@ -192,16 +115,30 @@ test.describe('Search / PICO / Protocol', () => {
             const terms: string[] = Array.isArray(b?.concepts)
               ? b.concepts.flatMap((c: any) => (Array.isArray(c?.terms) ? c.terms.map((t: any) => t?.text) : []))
               : [];
-            return terms.includes(term);
+            return terms.includes(label);
           },
-          { timeout: 15_000, message: 'search strategy never autosaved the added keyword' },
+          { timeout: 15_000, message: 'search strategy never autosaved the concept group' },
         )
         .toBe(true);
 
       // Reload — the builder reloads the saved strategy and restores the chip.
-      await sp.gotoSearch(tmpProject.id);
-      await sp.waitForWizard();
-      await expect(sp.selectedKeywordRemove(term)).toBeVisible();
+      await sp.gotoStage(tmpProject.id, 'terms');
+      await expect(sp.termChip(label)).toBeVisible();
+    });
+
+    test('the Pecan estimate control rides Terms & Vocabulary (pecanSearch ON), not an enable-in-Ops note', async ({ page, request, tmpProject }) => {
+      const flags = await publicFlags(request);
+      test.skip(!flags.pecanSearch, 'TODO: pecanSearch OFF → PreviewEstimates intentionally shows the "enable it in Ops" note');
+
+      const sp = new SearchPage(page);
+      await sp.gotoStage(tmpProject.id, 'terms');
+      await expect(sp.questionCard).toBeVisible();
+
+      // pecanSearch ON → the estimate control renders and the degraded note is absent.
+      await sp.estimatesCard.scrollIntoViewIfNeeded();
+      await expect(sp.estimateButton).toBeVisible();
+      await expect(sp.estimatesCard).toBeVisible();
+      await expect(sp.pecanDisabledNote).toHaveCount(0);
     });
   });
 

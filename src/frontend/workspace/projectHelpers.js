@@ -277,6 +277,24 @@ export const PHASE_ICON={Plan:"target",Search:"search",Screen:"filter",Extract:"
 export const PHASE_LABEL={Plan:"Plan & Protocol"};
 export const phaseLabel=(p)=>PHASE_LABEL[p]||p;
 
+/* 96.md (M2) — the canonical search-step status from the server's transient
+   `_progress` annotation (computeProjectProgress, delivered on the project detail
+   GET). The new Terms & Vocabulary workflow persists its strategy to the 'search'
+   WorkflowModuleState — it NEVER writes the legacy blob fields (search.dbs /
+   search.string), so grading Search from the blob paints permanent red readiness/
+   audit items on projects that are genuinely done. Rule: when canonical progress
+   reports the search step (any status), the blob heuristics for Search are
+   SILENCED in favour of that status; without the annotation (older payloads /
+   list rows / flag-off contexts) the legacy blob behaviour stays untouched.
+   Returns 'done' | 'partial' | 'empty' | null (null = no canonical signal). */
+export function canonicalSearchStatus(project){
+  const steps = project && project._progress && Array.isArray(project._progress.steps)
+    ? project._progress.steps : null;
+  if (!steps) return null;
+  const s = steps.find((x) => x && x.id === "search");
+  return (s && typeof s.status === "string") ? s.status : null;
+}
+
 /* Green-light readiness check — returns { ok, missing[] } */
 export function readinessCheck(project) {
   const missing = [];
@@ -288,9 +306,15 @@ export function readinessCheck(project) {
   if (!pico.C) missing.push("Comparator / Control (C) is required in PICO");
   if (!pico.O) missing.push("Outcome (O) is required in PICO");
   if (!timeframeComplete(pico)) missing.push("Time Frame must be selected (and a valid range when custom)");
-  const dbCount = Object.values(search.dbs||{}).filter(Boolean).length;
-  if (dbCount < 3) missing.push(`At least 3 databases required (${dbCount} selected)`);
-  if (!search.string) missing.push("Search strategy not saved yet");
+  // 96.md (M2) — canonical progress wins for Search: one truth per page.
+  const canonSearch = canonicalSearchStatus(project);
+  if (canonSearch != null) {
+    if (canonSearch !== "done") missing.push("Search strategy not completed yet (build and save it in the Search stage)");
+  } else {
+    const dbCount = Object.values(search.dbs||{}).filter(Boolean).length;
+    if (dbCount < 3) missing.push(`At least 3 databases required (${dbCount} selected)`);
+    if (!search.string) missing.push("Search strategy not saved yet");
+  }
   return { ok: missing.length === 0, missing };
 }
 
@@ -325,7 +349,9 @@ export function stepStatus(project, screeningComplete, opts={}){ // eslint-disab
   return {
     pico: (pico.P&&pico.I&&pico.C&&pico.O&&timeframeComplete(pico))?"done":(pico.P||pico.I||pico.C||pico.O||pico.question)?"partial":"empty",
     prospero: (p.prospero&&p.prospero.fields&&Object.values(p.prospero.fields).filter(v=>v&&v.trim()).length>=15)?"done":(p.prospero&&p.prospero.fields&&Object.values(p.prospero.fields).filter(v=>v&&v.trim()).length>0)?"partial":"empty",
-    search: (dbCount>=3&&search.string||(p.mesh&&p.mesh.results))?"done":(dbCount>0||search.string)?"partial":"empty",
+    // 96.md (M2) — prefer the canonical `_progress` search status (the new
+    // workflow never writes search.dbs/search.string); blob heuristic otherwise.
+    search: canonicalSearchStatus(p) ?? ((dbCount>=3&&search.string||(p.mesh&&p.mesh.results))?"done":(dbCount>0||search.string)?"partial":"empty"),
     // prompt29 Part 9 — Screening is "done" ONLY when the linked workspace reports
     // every substep complete (dedup, title/abstract to quorum, conflicts resolved,
     // final review decided, included studies handed off). `screeningComplete` is
@@ -390,10 +416,19 @@ export function auditProject(p){
   if(!pico.prosperoId) add("med","Plan","No PROSPERO registration ID. Register the protocol before screening to reduce bias and meet journal requirements.");
 
   // SEARCH
-  if(dbCount<3) add("high","Search",`Only ${dbCount} database${dbCount===1?"":"s"} selected. Most journals expect ≥3 (e.g. MEDLINE, Embase, CENTRAL).`);
-  if(!search.string) add("med","Search","No search string documented. Save at least your primary database query for reproducibility.");
-  if(!search.date) add("low","Search","Search date not recorded. PRISMA requires the date each source was last searched.");
-  if(!search.notes) add("low","Search","No screening or grey-literature note. Document how duplicates were removed and titles screened.");
+  // 96.md (M2) — when canonical `_progress` reports the search step, the blob
+  // advisories (db checkboxes / search.string / date / notes — fields the new
+  // workflow never writes) are silenced: one canonical-driven item at most.
+  const canonSearch=canonicalSearchStatus(p);
+  if(canonSearch!=null){
+    if(canonSearch==="empty") add("high","Search","No search strategy built yet. Build and save your concept groups in the Search stage.");
+    else if(canonSearch==="partial") add("med","Search","Search strategy started but not complete. Finish building and saving it in the Search stage.");
+  } else {
+    if(dbCount<3) add("high","Search",`Only ${dbCount} database${dbCount===1?"":"s"} selected. Most journals expect ≥3 (e.g. MEDLINE, Embase, CENTRAL).`);
+    if(!search.string) add("med","Search","No search string documented. Save at least your primary database query for reproducibility.");
+    if(!search.date) add("low","Search","Search date not recorded. PRISMA requires the date each source was last searched.");
+    if(!search.notes) add("low","Search","No screening or grey-literature note. Document how duplicates were removed and titles screened.");
+  }
 
   // SCREEN
   if(!prisma.dbs&&!prisma.included) add("med","Screen","PRISMA flow numbers are empty. Track records identified → screened → included.");

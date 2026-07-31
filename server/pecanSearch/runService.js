@@ -17,6 +17,8 @@ import { createLinkedScreenProject } from '../screening/createScreenProject.js';
 import { getMetaSiftSettings } from '../screening/settings.js';
 import { DEFAULT_MAX_RECORDS_PER_PROJECT } from '../services/screeningImportService.js';
 import { createEngineContext, isProviderImplemented } from './connectors/registry.js';
+import { isResetLocked } from '../screening/resetLock.js';
+import { PecanError } from './errors.js';
 import { runSource } from './pipeline.js';
 import { normalizeCanonical, renderPlain, validateCanonical } from './query/ast.js';
 import { PROVIDER_IDS } from './config.js';
@@ -85,17 +87,49 @@ async function resolveLandingProject(metaLabProjectId, ownerId) {
 }
 
 /**
+ * snapshotRunContext — 96.md D8: freeze the research question + strategy-version
+ * link onto the run at start. questionText = project.pico.question (the
+ * authoritative research question in the META·LAB blob); strategyVersionId = the
+ * SearchStrategyVersion whose snapshot content-hash matches the LIVE saved
+ * strategy at start time (the same identity listVersions.currentMatch uses).
+ * Cheap + failure-tolerant: any miss returns '' — a snapshot must never block a run.
+ */
+async function snapshotRunContext(metaLabProjectId) {
+  const out = { questionText: '', strategyVersionId: '' };
+  try {
+    const ml = await prisma.project.findUnique({ where: { id: metaLabProjectId }, select: { data: true } });
+    if (ml) {
+      const data = JSON.parse(ml.data || '{}');
+      const q = data && data.pico && data.pico.question;
+      if (typeof q === 'string') out.questionText = q.slice(0, 4000);
+    }
+  } catch { /* default '' */ }
+  try {
+    // Lazy import (searchVersionService ↔ pecan modules share helpers; avoid a
+    // load-order cycle) — matches the worker-import convention below.
+    const m = await import('../searchEngine/searchVersionService.js');
+    const { currentMatch } = await m.listVersions(prisma, metaLabProjectId);
+    if (currentMatch) out.strategyVersionId = String(currentMatch);
+  } catch { /* default '' */ }
+  return out;
+}
+
+/**
  * startRun(params) — create a durable run + its per-source rows + a queued job.
  * Idempotent on idempotencyKey (a refresh/retry of the start call returns the
  * same run rather than launching a duplicate).
+ *
+ * `origin` (96.md D8) records WHO launched the run: 'automated' (default — a user
+ * pressing Run) or 'living' (the living-review scheduler; livingService passes it).
  *
  * @returns {{ run, created:boolean }}
  */
 export async function startRun(params, deps = {}) {
   const {
     metaLabProjectId, user, name = '', canonicalQuery, sources = [],
-    caps = {}, idempotencyKey = '', engineOverrides = {},
+    caps = {}, idempotencyKey = '', engineOverrides = {}, origin = 'automated',
   } = params;
+  const runOrigin = origin === 'living' ? 'living' : 'automated';
 
   const key = idempotencyKey ? String(idempotencyKey).slice(0, 200) : null;
 
@@ -146,6 +180,19 @@ export async function startRun(params, deps = {}) {
   const landing = await resolveLandingProject(metaLabProjectId, user.id);
   if (!landing) { const e = new Error('Project not found'); e.code = 'AUTHORIZATION_FAILED'; e.userMessage = 'Project not found.'; throw e; }
 
+  // 96.md Phase 6F — enqueue-side reset fence: while a screening reset holds the
+  // landing project's lock, starting a run would race the delete transaction.
+  // Surfaced as 409 (PecanError httpStatus override; the code property is set
+  // explicitly because ERROR_CODES has no reset entry — additive, wire-safe).
+  if (isResetLocked(landing.id)) {
+    const e = new PecanError('UNKNOWN', {
+      httpStatus: 409, retryable: true,
+      userMessage: 'Imported records are being reset for this project. Wait for the reset to finish, then start the search again.',
+    });
+    e.code = 'RESET_IN_PROGRESS';
+    throw e;
+  }
+
   const config = {
     sources: selected.map((s) => s.id),
     caps,
@@ -154,6 +201,9 @@ export async function startRun(params, deps = {}) {
     maxResultCap: engine.config.engine.maxResultCap,
     concurrency: engine.config.engine.concurrency,
   };
+
+  // 96.md D8 — research-question + strategy-version snapshot (failure-tolerant).
+  const ctx = await snapshotRunContext(metaLabProjectId);
 
   const runId = uuid();
   let run;
@@ -171,6 +221,10 @@ export async function startRun(params, deps = {}) {
         warningSummary: JSON.stringify(warnings).slice(0, 8000),
         idempotencyKey: key, // null when no key → never collides; a duplicate key → P2002 below
         softwareVersion: ENGINE_VERSION, engineVersion: ENGINE_VERSION,
+        // 96.md D8 — additive provenance snapshot (frozen at start).
+        origin: runOrigin,
+        questionText: ctx.questionText,
+        strategyVersionId: ctx.strategyVersionId,
       },
     });
   } catch (err) {
@@ -244,7 +298,9 @@ export async function processRun(job, deps = {}) {
     await finishJob(job.id, 'completed');
     return;
   }
-  if (run.cancelRequested) {
+  if (run.cancelRequested || run.rolledBackAt) {
+    // 96.md M20 — a run marked rolled-back by a screening reset must NEVER land
+    // records; treat the mark exactly like a durable cancel at claim time.
     await finalizeRun(run, 'cancelled'); await finishJob(job.id, 'cancelled');
     // 87.md — this early terminal path must poke live viewers + cross-engine sync too.
     emitRunEvent(run.metaLabProjectId, null, runId, { state: 'cancelled', stage: 'cancelled' });
@@ -278,9 +334,14 @@ export async function processRun(job, deps = {}) {
   });
   const index = createDedupIndex(existing, { fuzzyCeiling: deps.fuzzyCeiling });
 
+  // Page-boundary stop signal: durable user cancel OR a screening reset that
+  // marked this run rolled-back mid-flight (96.md M20 — a rolled-back run must
+  // never keep landing records; the source stops as 'cancelled').
   const isCancelled = async () => {
-    try { const r = await prisma.pecanSearchRun.findUnique({ where: { id: runId }, select: { cancelRequested: true } }); return !!(r && r.cancelRequested); }
-    catch { return false; }
+    try {
+      const r = await prisma.pecanSearchRun.findUnique({ where: { id: runId }, select: { cancelRequested: true, rolledBackAt: true } });
+      return !!(r && (r.cancelRequested || r.rolledBackAt));
+    } catch { return false; }
   };
   const onPageProgress = async (patch) => {
     try {
@@ -354,14 +415,18 @@ export function deriveRunState(sources, cancelled) {
   return 'partial'; // some succeeded, some did not → honest partial success
 }
 
-/** Aggregate per-source counts into the run-level counts object. */
+/** Aggregate per-source counts into the run-level counts object.
+ *  96.md D8 — `updated` (+ perSource.updated) is ADDITIVE: existing records whose
+ *  blank metadata the run filled (fill-blank merge). Existing keys are frozen
+ *  (living review / methods-text / report.js read them). */
 export function aggregateCounts(sources) {
-  const c = { rawRetrieved: 0, normalized: 0, imported: 0, existingMatched: 0, exactDup: 0, fuzzyDup: 0, ambiguousDup: 0, failedRecords: 0, sourcesCompleted: 0, sourcesFailed: 0, sourcesPartial: 0, perSource: {} };
+  const c = { rawRetrieved: 0, normalized: 0, imported: 0, existingMatched: 0, updated: 0, exactDup: 0, fuzzyDup: 0, ambiguousDup: 0, failedRecords: 0, sourcesCompleted: 0, sourcesFailed: 0, sourcesPartial: 0, perSource: {} };
   for (const s of sources) {
     c.rawRetrieved += s.rawCount || 0;
     c.normalized += s.normalizedCount || 0;
     c.imported += s.importedCount || 0;
     c.existingMatched += s.existingMatchCount || 0;
+    c.updated += s.updatedCount || 0;
     c.exactDup += s.exactDupCount || 0;
     c.fuzzyDup += s.fuzzyDupCount || 0;
     c.ambiguousDup += s.ambiguousDupCount || 0;
@@ -371,6 +436,7 @@ export function aggregateCounts(sources) {
     else if (s.state === 'partial') c.sourcesPartial += 1;
     c.perSource[s.provider] = {
       raw: s.rawCount || 0, imported: s.importedCount || 0, existingMatched: s.existingMatchCount || 0,
+      updated: s.updatedCount || 0,
       exactDup: s.exactDupCount || 0, fuzzyDup: s.fuzzyDupCount || 0, ambiguousDup: s.ambiguousDupCount || 0,
       failed: s.failedRecordCount || 0, capReached: !!s.capReached, state: s.state,
     };
@@ -504,6 +570,11 @@ export function shapeRun(run, sources) {
     cancelRequested: !!run.cancelRequested,
     startedAt: run.startedAt, completedAt: run.completedAt, cancelledAt: run.cancelledAt, createdAt: run.createdAt,
     engineVersion: run.engineVersion,
+    // 96.md D8/D11/D15 — ADDITIVE run provenance (existing keys frozen).
+    origin: run.origin || 'automated',
+    questionText: run.questionText || '',
+    strategyVersionId: run.strategyVersionId || '',
+    rolledBackAt: run.rolledBackAt || null,
     sources: sources.map(shapeSource),
   };
   // Additive: a server-authoritative, honest progress model derived purely from the
@@ -518,6 +589,9 @@ function shapeRunListItem(run, sources) {
     id: run.id, name: run.name, state: run.state,
     initiatedByName: run.initiatedByName, canonicalText: run.canonicalText,
     counts: safeJson(run.counts, {}),
+    // 96.md D15 — additive history-card fields (origin + rolled-back badge).
+    origin: run.origin || 'automated',
+    rolledBackAt: run.rolledBackAt || null,
     sources: sources.map((s) => ({ provider: s.provider, state: s.state, imported: s.importedCount, raw: s.rawCount })),
     createdAt: run.createdAt, startedAt: run.startedAt, completedAt: run.completedAt,
   };
@@ -530,7 +604,7 @@ export function shapeSource(s) {
     translationWarnings: safeJson(s.translationWarnings, []),
     previewCount: s.previewCount, previewKind: s.previewKind,
     rawCount: s.rawCount, normalizedCount: s.normalizedCount, importedCount: s.importedCount,
-    existingMatchCount: s.existingMatchCount, exactDupCount: s.exactDupCount,
+    existingMatchCount: s.existingMatchCount, updatedCount: s.updatedCount || 0, exactDupCount: s.exactDupCount,
     fuzzyDupCount: s.fuzzyDupCount, ambiguousDupCount: s.ambiguousDupCount, failedRecordCount: s.failedRecordCount,
     cap: s.cap, capReached: s.capReached, retryCount: s.retryCount,
     errorClass: s.errorClass, errorDetail: s.errorDetail,

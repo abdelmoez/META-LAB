@@ -18,7 +18,12 @@
  * No DB transaction is ever held open across an external HTTP call.
  */
 import { prisma } from '../db/client.js';
-import { dedupeAndInsertRecords, DEFAULT_MAX_RECORDS_PER_PROJECT } from '../services/screeningImportService.js';
+import {
+  dedupeAndInsertRecords, DEFAULT_MAX_RECORDS_PER_PROJECT,
+  // 96.md D9/D10 — shared safe-merge + idempotent provenance writers (query-first
+  // on the ScreenRecordSource unique key; page-resume-safe).
+  applyMetadataMerge, writeRecordSources, donorShape,
+} from '../services/screeningImportService.js';
 import { normalizeTitle } from '../../src/research-engine/screening/deduplication.js';
 import { toScreeningRecord } from './normalize.js';
 import { contentHashId } from './connectors/base.js';
@@ -61,6 +66,7 @@ export async function runSource(a) {
     normalizedCount: sourceRow.normalizedCount || 0,
     importedCount: sourceRow.importedCount || 0,
     existingMatchCount: sourceRow.existingMatchCount || 0,
+    updatedCount: sourceRow.updatedCount || 0,
     exactDupCount: sourceRow.exactDupCount || 0,
     fuzzyDupCount: sourceRow.fuzzyDupCount || 0,
     ambiguousDupCount: sourceRow.ambiguousDupCount || 0,
@@ -116,7 +122,7 @@ export async function runSource(a) {
       //    into the durable totals ONLY after the page commits, so a re-fetch after a
       //    mid-page failure/retry never double-counts (§17.1). ──
       await setSource(sourceRow.id, { stage: 'normalizing' });
-      const pagec = { raw: 0, normalized: 0, imported: 0, existingMatch: 0, exactDup: 0, fuzzyDup: 0, ambiguous: 0, failed: 0 };
+      const pagec = { raw: 0, normalized: 0, imported: 0, existingMatch: 0, updated: 0, exactDup: 0, fuzzyDup: 0, ambiguous: 0, failed: 0 };
       const normalized = [];
       for (const item of raw) {
         if (counts.rawCount + pagec.raw >= cap) { capReached = true; break; }
@@ -151,7 +157,9 @@ export async function runSource(a) {
       const landedIds = new Set();   // ScreenRecord ids CREATED in this batch (genuinely new)
       if (toLand.length) {
         await setSource(sourceRow.id, { stage: 'importing' });
-        const screeningRecords = toLand.map((n) => toScreeningRecord(n, { sourceDb: provider }));
+        // 96.md D9 — providerRecordId rides along so the landing writes exact
+        // article-level provenance rows (ScreenRecordSource) per provider record.
+        const screeningRecords = toLand.map((n) => ({ ...toScreeningRecord(n, { sourceDb: provider }), providerRecordId: n.providerRecordId }));
         let result;
         try {
           result = await dedupeAndInsertRecords(screenProjectId, screeningRecords, {
@@ -160,17 +168,27 @@ export async function runSource(a) {
             fileHash: `pecan:${sourceRow.runId}:${provider}:${lastCompletedPage + 1}`,
             importedById: a.initiatedById || '', importedByName: a.initiatedByName || '',
             parser: provider, maxRecords: maxRecordsPerProject,
+            // 96.md D9/D12 — run attribution on the batch + provenance rows.
+            searchRunId: sourceRow.runId, provider, metaLabProjectId, origin: 'search',
           });
         } catch (err) {
           if (err && err.code === 'CAPACITY') {
             errorClass = 'RESULT_CAP_REACHED'; errorDetail = sanitizeErrorDetail(err, secrets);
             capReached = true; finalState = 'partial'; break;
           }
+          if (err && err.code === 'RESET_IN_PROGRESS') {
+            // 96.md Phase 6F — a screening reset holds the project's reset lock:
+            // stop this source as a RETRYABLE failure (partial → retryRun works
+            // once the reset finishes) instead of racing the delete transaction.
+            errorClass = 'RESET_IN_PROGRESS'; errorDetail = sanitizeErrorDetail(err, secrets);
+            finalState = 'partial'; break;
+          }
           const pe = toPecanError(err, 'DB_WRITE_FAILED');
           errorClass = pe.code; errorDetail = sanitizeErrorDetail(pe, secrets);
           finalState = 'partial'; break;
         }
         pagec.imported += result.imported;
+        pagec.updated += result.updated || 0; // records the landing fill-blank-merged
         const landed = await prisma.screenRecord.findMany({
           where: { importBatchId: result.batchId }, select: { id: true, doi: true, pmid: true, title: true },
         });
@@ -219,6 +237,48 @@ export async function runSource(a) {
         else if (v.outcome === 'fuzzy_dup') { norm._finalOutcome = 'fuzzy_dup'; pagec.fuzzyDup += 1; }
         else { norm._finalOutcome = 'new'; }
       }
+
+      // ── 96.md D9/D10 — safe metadata merge + article-level provenance for the
+      //    outcomes that never reached dedupeAndInsertRecords (original verdict
+      //    existing_match / exact_dup / fuzzy_dup; new/ambiguous — incl. those that
+      //    collapsed to existing_match INSIDE the landing — were attributed there).
+      //    exact/fuzzy duplicates are merge targets too: the fill-blank merge is
+      //    idempotent/safe, so a same-run cross-database copy (e.g. Europe PMC
+      //    carrying the abstract PubMed omitted) still improves the landed record.
+      //    Both writers are idempotent (fill-blank re-run fills nothing; provenance
+      //    is query-first on its unique key), so a page resume never double-writes;
+      //    the `seen` set already prevents reprocessing committed records. ──
+      try {
+        const preClassified = records.filter((n) => n._screenId
+          && (n._verdict.outcome === 'existing_match' || n._verdict.outcome === 'exact_dup' || n._verdict.outcome === 'fuzzy_dup'));
+        const mergeTargets = preClassified;
+        let changedFieldsByRecord = new Map();
+        if (mergeTargets.length) {
+          const res = await applyMetadataMerge(
+            screenProjectId,
+            mergeTargets.map((n) => ({ screenRecordId: n._screenId, donor: donorShape(n) })),
+            { runId: sourceRow.runId, batchId: '' },
+          );
+          pagec.updated += res.updated;
+          changedFieldsByRecord = res.changedFieldsByRecord;
+        }
+        if (preClassified.length) {
+          await writeRecordSources(preClassified.map((n) => {
+            const fields = changedFieldsByRecord.get(n._screenId);
+            const isMatch = n._verdict.outcome === 'existing_match';
+            return {
+              projectId: screenProjectId, screenRecordId: n._screenId, metaLabProjectId,
+              runId: sourceRow.runId, batchId: '', provider,
+              providerRecordId: String(n.providerRecordId || '').slice(0, 200),
+              // A dup whose merge filled fields carries the honest 'updated'
+              // outcome (+ changedFields); an untouched dup stays 'merged_duplicate'.
+              outcome: isMatch ? (fields ? 'updated' : 'already_present') : (fields ? 'updated' : 'merged_duplicate'),
+              changedFields: fields ? JSON.stringify(fields).slice(0, 2000) : '',
+              origin: 'search',
+            };
+          }));
+        }
+      } catch { /* provenance/merge is additive — never fail the page */ }
 
       // ── Persist source records (provenance) + dedup decisions. ──
       const sourceRecordRows = records.map((norm) => ({
@@ -289,6 +349,7 @@ export async function runSource(a) {
       counts.normalizedCount += pagec.normalized;
       counts.importedCount += pagec.imported;
       counts.existingMatchCount += pagec.existingMatch;
+      counts.updatedCount += pagec.updated;
       counts.exactDupCount += pagec.exactDup;
       counts.fuzzyDupCount += pagec.fuzzyDup;
       counts.ambiguousDupCount += pagec.ambiguous;

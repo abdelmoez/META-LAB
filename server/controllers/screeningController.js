@@ -21,6 +21,10 @@ import {
   MAX_RECORDS_PER_IMPORT, DEFAULT_MAX_RECORDS_PER_PROJECT,
 } from '../services/screeningImportService.js';
 import { kickImportWorker } from '../services/screeningImportWorker.js';
+// 96.md Phase 6F — enqueue-side reset fence: while a scoped reset holds the
+// project's in-process lock, imports/duplicate-detection must 409 instead of
+// racing the delete transaction (see server/screening/resetLock.js).
+import { isResetLocked } from '../screening/resetLock.js';
 import { getProjectAccess, ensureLeaderMember, writeAudit, QUORUM } from '../screening/access.js';
 import { rankItems } from '../../src/research-engine/screening/ai/ranking.js';
 import { splitBySource } from '../../src/research-engine/screening/sourceClassify.js';
@@ -936,6 +940,12 @@ export async function deleteRecord(req, res) {
     if (!p) return res.status(404).json({ error: 'Project not found' });
     const rec = await prisma.screenRecord.findFirst({ where: { id: req.params.rid, projectId: p.id } });
     if (!rec) return res.status(404).json({ error: 'Record not found' });
+    // 96.md — provenance rows are bare-scoped (no FK cascade); clean them here
+    // like the reset/batch-delete paths so nothing dangles after a record delete.
+    for (const model of ['screenRecordSource', 'screenRecordMetadataChange']) {
+      try { if (prisma[model]) await prisma[model].deleteMany({ where: { screenRecordId: rec.id } }); }
+      catch { /* model/table absent — best-effort */ }
+    }
     await prisma.screenRecord.delete({ where: { id: rec.id } });
     res.status(204).send();
   } catch (err) {
@@ -1022,6 +1032,13 @@ export async function getKeywordStats(req, res) {
 
 // ── Import ──────────────────────────────────────────────────────────
 
+// 96.md Phase 6F — uniform conflict envelope while a scoped reset holds the
+// project's reset lock (import/enqueue paths must not race the delete).
+const resetLocked409 = (res) => res.status(409).json({
+  error: 'Imported records are being reset for this project. Wait for the reset to finish, then try again.',
+  code: 'RESET_IN_PROGRESS',
+});
+
 export async function importRecords(req, res) {
   try {
     // Task 17: access-guard, not owner-only. True outsiders keep the
@@ -1033,6 +1050,9 @@ export async function importRecords(req, res) {
     const canImport = access.isOwner || (access.active && (access.isLeader || access.perms.canImportRecords));
     if (!canImport) return res.status(403).json({ error: 'You do not have permission to import records in this project' });
     const p = access.project;
+    // 96.md 6F — reset fence (dedupeAndInsertRecords re-checks; this is the
+    // cheap early 409 before parsing a potentially large payload).
+    if (isResetLocked(p.id)) return resetLocked409(res);
 
     const settings = await getMetaSiftSettings();
     if (!settings.allowImport) return res.status(403).json({ error: 'Import is currently disabled by the administrator' });
@@ -1106,6 +1126,9 @@ export async function importRecords(req, res) {
       });
     } catch (e) {
       if (e && e.code === 'CAPACITY') return res.status(400).json({ error: e.message });
+      // A reset that started between the early fence and the landing (the lock is
+      // re-checked inside dedupeAndInsertRecords) surfaces as the same 409.
+      if (e && e.code === 'RESET_IN_PROGRESS') return resetLocked409(res);
       throw e;
     }
 
@@ -1123,6 +1146,9 @@ export async function importRecords(req, res) {
       imported: result.imported,
       skippedDuplicates: result.skippedDuplicates,
       rejected: result.rejected,
+      // 96.md D10 — additive: existing records whose blank metadata this import filled
+      // (fill-blank merge; subset of skippedDuplicates — PRISMA accounting unchanged).
+      updated: result.updated || 0,
       total: result.total,
       batchId: result.batchId,
       format: detectedFormat,
@@ -1196,6 +1222,9 @@ export async function startImport(req, res) {
     const canImport = access.isOwner || (access.active && (access.isLeader || access.perms.canImportRecords));
     if (!canImport) return res.status(403).json({ error: 'You do not have permission to import records in this project' });
     const p = access.project;
+    // 96.md 6F — reset fence: never enqueue an import job while a reset is
+    // deleting this project's records (the job would race or instantly fail).
+    if (isResetLocked(p.id)) return resetLocked409(res);
 
     const settings = await getMetaSiftSettings();
     if (!settings.allowImport) return res.status(403).json({ error: 'Import is currently disabled by the administrator' });
@@ -1934,6 +1963,9 @@ export async function detectDuplicates(req, res) {
     const canManage = access.isOwner || (access.active && (access.isLeader || access.perms.canManageDuplicates));
     if (!canManage) return res.status(403).json({ error: 'You do not have permission to manage duplicates in this project' });
     const p = access.project;
+    // 96.md 6F — reset fence: a detection sweep enqueued mid-reset would scan
+    // (and group) records the transaction is deleting.
+    if (isResetLocked(p.id)) return resetLocked409(res);
     const settings = await getMetaSiftSettings();
     if (!settings.allowDuplicateDetection) return res.status(403).json({ error: 'Duplicate detection is currently disabled by the administrator' });
     // 92.md — enqueue the durable job and return immediately (202). An already-active
@@ -2328,8 +2360,11 @@ export async function getMetaLabSummary(req, res) {
       // never became ScreenRecords/import batches; we fold their exact+fuzzy dedup into
       // the PRISMA identified/duplicates-removed counts below so an automated search's
       // flow reflects the true retrieval. Fail-soft: any error → no automated contribution.
+      // 96.md D11 — rolled-back runs are EXCLUDED: a screening reset removed their
+      // landed records/batches, so keeping their engine-side dedup counts would
+      // over-report identified/duplicates-removed forever after a reset.
       prisma.pecanSearchSource.findMany({
-        where: { run: { screenProjectId: sp.id } },
+        where: { run: { screenProjectId: sp.id, rolledBackAt: null } },
         select: { exactDupCount: true, fuzzyDupCount: true },
       }).catch(() => []),
     ]);

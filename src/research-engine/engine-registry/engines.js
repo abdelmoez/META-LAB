@@ -60,7 +60,7 @@ export const ENGINES = [
     id: 'search-builder',
     displayName: 'Search Builder',
     description:
-      'PICO→Boolean concept builder with MeSH (NLM) lookup and live database hit counts.',
+      'Research-question → Boolean concept builder with MeSH (NLM) lookup and live database hit counts.',
     status: 'beta',
     ownership: [
       'server/searchEngine/**',

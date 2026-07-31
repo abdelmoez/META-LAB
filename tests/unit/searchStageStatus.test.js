@@ -1,28 +1,30 @@
 /**
- * searchStageStatus.test.js — 85.md A1. Per-stage completion statuses for the
- * 9-stage Search workflow: honest, visited-agnostic, and kind to legitimately
- * empty Comparator/Outcomes/Time concepts.
+ * searchStageStatus.test.js — 85.md A1, re-keyed by 96.md D5. Per-stage completion
+ * statuses for the 7-stage Search workflow: honest, visited-agnostic, and PICO-free
+ * (question = the research-question text; terms = generic concept groups).
  */
 import { describe, it, expect } from 'vitest';
 import {
   computeStageStatuses, STAGE_IDS, STAGE_STATUS_VALUES,
 } from '../../src/research-engine/searchBuilder/stageStatus.js';
-import { STAGES } from '../../src/features/searchWorkspace/searchStages.js';
+import { STAGES, STAGE_ALIASES } from '../../src/features/searchWorkspace/searchStages.js';
 import { rejectionKey } from '../../src/research-engine/searchBuilder/suggestionReview.js';
 
 const freetext = (text, extra = {}) => ({ id: `t-${text}`, text, type: 'freetext', field: 'tiab', ...extra });
-const group = (key, label, terms = []) => ({ id: `c${key}`, label, picoField: key, field: label, source: 'pico_auto', op: 'AND', terms });
-const fiveGroups = ({ P = [], I = [], C = [], O = [], T = [] } = {}) => [
-  group('P', 'Population', P),
-  group('I', 'Intervention / Exposure', I),
-  group('C', 'Comparator / Control', C),
-  group('O', 'Outcomes', O),
-  group('T', 'Time Frame', T),
-];
+const group = (id, label, terms = []) => ({ id, label, source: 'user_added', op: 'AND', terms });
+// Legacy shape — saved pre-96 projects carry the five PICO groups forever.
+const legacyGroup = (key, label, terms = []) => ({ id: `c${key}`, label, picoField: key, field: label, source: 'pico_auto', op: 'AND', terms });
 
 describe('STAGE_IDS stays in sync with searchStages.js', () => {
   it('mirrors the canonical stage table exactly (ids + order)', () => {
     expect([...STAGE_IDS]).toEqual(STAGES.map((s) => s.id));
+  });
+  it('the retired stages are gone from BOTH lists and alias to terms', () => {
+    for (const retired of ['concepts', 'refine']) {
+      expect(STAGE_IDS).not.toContain(retired);
+      expect(STAGES.some((s) => s.id === retired)).toBe(false);
+      expect(STAGE_ALIASES[retired]).toBe('terms');
+    }
   });
   it('every emitted status is a known value for every stage id', () => {
     const out = computeStageStatuses({});
@@ -31,69 +33,63 @@ describe('STAGE_IDS stays in sync with searchStages.js', () => {
   });
 });
 
-describe('question stage', () => {
-  it('done when any PICO field is captured, empty otherwise', () => {
-    expect(computeStageStatuses({ pico: { P: 'adults with obesity' } }).question).toBe('done');
-    expect(computeStageStatuses({ pico: { P: '', I: '  ' } }).question).toBe('empty');
+describe('question stage — the research-question text (96.md D5)', () => {
+  it('done when the question is non-blank, empty otherwise', () => {
+    expect(computeStageStatuses({ question: 'Do SGLT2i reduce readmission?' }).question).toBe('done');
+    expect(computeStageStatuses({ question: '   ' }).question).toBe('empty');
     expect(computeStageStatuses({}).question).toBe('empty');
   });
+  it('legacy fallback: pico.question still counts when no question is threaded', () => {
+    expect(computeStageStatuses({ pico: { question: 'legacy question' } }).question).toBe('done');
+  });
+  it('a filled P/I/C/O with NO question is NOT done (PICO gating removed)', () => {
+    expect(computeStageStatuses({ pico: { P: 'adults', I: 'metformin' } }).question).toBe('empty');
+  });
 });
 
-describe('concepts stage — P AND I required, C/O/T legitimately optional', () => {
+describe('terms stage — ≥1 group with ≥1 live term = done (no PICO roles)', () => {
   it('empty when no live terms exist anywhere', () => {
-    expect(computeStageStatuses({ concepts: fiveGroups() }).concepts).toBe('empty');
-    expect(computeStageStatuses({}).concepts).toBe('empty');
+    expect(computeStageStatuses({ concepts: [group('a', 'Heart failure')] }).terms).toBe('empty');
+    expect(computeStageStatuses({}).terms).toBe('empty');
   });
-  it('done with P + I populated and C/O/T empty (no PECO/prognosis nagging)', () => {
-    const concepts = fiveGroups({ P: [freetext('obesity')], I: [freetext('metformin')] });
-    expect(computeStageStatuses({ concepts }).concepts).toBe('done');
+  it('done with a single question-derived group carrying one live term', () => {
+    const concepts = [group('a', 'Heart failure', [freetext('heart failure')])];
+    expect(computeStageStatuses({ concepts }).terms).toBe('done');
   });
-  it('partial when only one of P/I has live terms', () => {
-    expect(computeStageStatuses({ concepts: fiveGroups({ P: [freetext('obesity')] }) }).concepts).toBe('partial');
-    expect(computeStageStatuses({ concepts: fiveGroups({ I: [freetext('metformin')] }) }).concepts).toBe('partial');
+  it('disabled terms are NOT live (a switched-off only group reads empty)', () => {
+    const concepts = [group('a', 'Heart failure', [freetext('heart failure', { disabled: true })])];
+    expect(computeStageStatuses({ concepts }).terms).toBe('empty');
   });
-  it('disabled terms are NOT live (a switched-off P reads partial, not done)', () => {
-    const concepts = fiveGroups({ P: [freetext('obesity', { disabled: true })], I: [freetext('metformin')] });
-    expect(computeStageStatuses({ concepts }).concepts).toBe('partial');
-  });
-});
-
-describe('terms stage', () => {
-  const doneConcepts = () => fiveGroups({
-    P: [freetext('obesity'), freetext('overweight')],
-    I: [freetext('metformin'), freetext('biguanide')],
-  });
-
-  it('mirrors concepts while concepts are not done', () => {
-    expect(computeStageStatuses({ concepts: fiveGroups() }).terms).toBe('empty');
-    expect(computeStageStatuses({ concepts: fiveGroups({ P: [freetext('obesity')] }) }).terms).toBe('partial');
-  });
-  it('done when concepts are done, no pending suggestions and no warning-level QC finding', () => {
-    expect(computeStageStatuses({ concepts: doneConcepts() }).terms).toBe('done');
+  it('legacy five-group saves still compute (P+I live → done)', () => {
+    const concepts = [
+      legacyGroup('P', 'Population', [freetext('obesity')]),
+      legacyGroup('I', 'Intervention / Exposure', [freetext('metformin')]),
+    ];
+    expect(computeStageStatuses({ concepts }).terms).toBe('done');
   });
   it('attention when ≥1 vocabulary suggestion is pending', () => {
-    const concepts = doneConcepts();
-    concepts[0].terms[0] = freetext('obesity', { vocab: { mesh: 'Obesity' } });
+    const concepts = [group('a', 'Heart failure', [freetext('heart failure', { vocab: { mesh: 'Heart Failure' } })])];
     expect(computeStageStatuses({ concepts }).terms).toBe('attention');
   });
   it('rejected suggestions release the attention state (no dead-end status)', () => {
-    const concepts = doneConcepts();
-    concepts[0].terms[0] = freetext('obesity', { vocab: { mesh: 'Obesity' } });
-    const rejected = [rejectionKey(concepts[0], 'obesity')];
+    const concepts = [group('a', 'Heart failure', [freetext('heart failure', { vocab: { mesh: 'Heart Failure' } })])];
+    const rejected = [rejectionKey(concepts[0], 'heart failure')];
     expect(computeStageStatuses({ concepts, rejected }).terms).toBe('done');
   });
-  it('attention on a warning-severity quality finding; dismissing it releases', () => {
-    const concepts = doneConcepts();
-    // same term in two AND-ed concepts → multi: warning
-    concepts[2].terms = [freetext('metformin')];
-    const out = computeStageStatuses({ concepts });
-    expect(out.terms).toBe('attention');
-    const dismissed = computeStageStatuses({ concepts, dismissedWarnings: ['multi:fam:metformin', 'multi:metformin'] });
+  it('attention on an un-dismissed warning-severity QC finding; dismissing releases', () => {
+    // 96.md re-keyed empty-group check: a second group with zero live terms warns.
+    const empty = group('b', 'Readmission');
+    const concepts = [group('a', 'Heart failure', [freetext('heart failure')]), empty];
+    expect(computeStageStatuses({ concepts }).terms).toBe('attention');
+    const dismissed = computeStageStatuses({ concepts, dismissedWarnings: [`empty:${empty.id}`] });
     expect(dismissed.terms).toBe('done');
   });
-  it('info-severity findings (optional outcomes / narrow C-O guidance) never block done', () => {
-    const concepts = doneConcepts();
-    concepts[3].terms = [freetext('mortality')]; // outcomes populated → narrow:O info
+  it('info-severity findings (novocab guidance) never block done', () => {
+    // Two groups with live free text → novocab:<id> info entries only.
+    const concepts = [
+      group('a', 'Heart failure', [freetext('heart failure')]),
+      group('b', 'Readmission', [freetext('readmission')]),
+    ];
     expect(computeStageStatuses({ concepts }).terms).toBe('done');
   });
 });
@@ -108,7 +104,7 @@ describe('mode stage', () => {
 });
 
 describe('strategy stage (manual only)', () => {
-  const concepts = fiveGroups({ P: [freetext('obesity')], I: [freetext('metformin')] });
+  const concepts = [group('a', 'Heart failure', [freetext('heart failure')])];
   it('empty without a strategy', () => {
     expect(computeStageStatuses({}).strategy).toBe('empty');
   });
@@ -120,22 +116,8 @@ describe('strategy stage (manual only)', () => {
   });
 });
 
-describe('refine stage', () => {
-  const concepts = fiveGroups({ P: [freetext('obesity')], I: [freetext('metformin')] });
-  it('done only on a FRESH live count (honesty: stale/failed counts are not done)', () => {
-    expect(computeStageStatuses({ concepts, hitState: { status: 'updated', hitCount: 120 } }).refine).toBe('done');
-    expect(computeStageStatuses({ concepts, hitState: { status: 'stale', hitCount: 120 } }).refine).toBe('partial');
-    expect(computeStageStatuses({ concepts, hitState: { status: 'failed' } }).refine).toBe('partial');
-  });
-  it('active limits count as started; nothing observed = empty', () => {
-    expect(computeStageStatuses({ concepts, filters: { dateFrom: '2015', dateTo: '', languages: [], pubTypes: [] } }).refine).toBe('partial');
-    expect(computeStageStatuses({ concepts }).refine).toBe('empty');
-    expect(computeStageStatuses({ hitState: { status: 'updated', hitCount: 5 } }).refine).toBe('empty'); // no strategy → nothing to refine
-  });
-});
-
 describe('results / documentation stages — never claimed done (visited-agnostic honesty)', () => {
-  const concepts = fiveGroups({ P: [freetext('obesity')], I: [freetext('metformin')] });
+  const concepts = [group('a', 'Heart failure', [freetext('heart failure')])];
   it('empty without a strategy, partial with one — never done', () => {
     const none = computeStageStatuses({});
     expect(none.results).toBe('empty');
@@ -156,7 +138,7 @@ describe('screening stage', () => {
 
 describe('defensive input', () => {
   it('tolerates junk everywhere', () => {
-    for (const junk of [null, undefined, 42, 'x', { concepts: 'bad', pico: 7, hitState: 'nope' }]) {
+    for (const junk of [null, undefined, 42, 'x', { concepts: 'bad', pico: 7, question: 9, hitState: 'nope' }]) {
       const out = computeStageStatuses(junk);
       expect(Object.keys(out).sort()).toEqual([...STAGE_IDS].sort());
     }

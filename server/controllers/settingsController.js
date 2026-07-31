@@ -238,15 +238,12 @@ const DEFAULTS = {
     // (default off → deterministic offline resolution, no external calls). Surfaces
     // in Ops › Flags automatically.
     citationMining: false,
-    // 71.md — Search workspace REDESIGN. Default OFF: the Search stage keeps rendering
-    // the existing 3-step SearchWizard (Define → Build → Run), byte-identical. When ON,
-    // the Search stage instead renders the staged SearchWorkspace — a calmer, guided,
-    // progressive-disclosure 8-stage flow (Research Question → Concepts → Terms &
-    // Vocabulary → Strategy Builder → Test & Refine → Results → Documentation → Send to
-    // Screening) that COMPOSES the same proven engines (Search Builder, Pecan Search,
-    // versioning/quality/export/studio panels) — no engine changes, no feature loss.
-    // FUNCTIONALLY DEPENDS ON `searchEngine` (the workspace embeds the Search Builder), so
-    // it is inert while searchEngine is off. Surfaces in Ops › Flags automatically.
+    // 96.md — DEPRECATED/IGNORED. 71.md introduced this flag to gate the staged
+    // SearchWorkspace against the legacy 3-step SearchWizard; 96.md retired the
+    // wizard, and the workspace now renders whenever `searchEngine` is ON — the
+    // dispatcher and searchWorkspaceV2FlagEnabled() no longer read this key. It
+    // stays in DEFAULTS only so stored SiteSetting rows keep parsing (never remove
+    // a key from stored-settings compat).
     searchWorkspaceV2: false,
   }),
   // 66.md P5 — global (admin) AI-extraction policy. requireHumanValidation is a
