@@ -49,7 +49,9 @@ test.describe('living review (flag livingReview)', () => {
   test('flag ON → dashboard renders its sections and setup empty states', async ({ page, tmpProject, setFlags }) => {
     await setFlags({ livingReview: true });
     await gotoStitch(page, `/app/project/${tmpProject.id}?tab=living`);
-    await expect(page.getByRole('heading', { name: 'Living Review' })).toBeVisible();
+    // `.first()` — both the stage page-header h1 and the dashboard section h2 are
+    // named "Living Review"; the bare role locator is a strict-mode violation.
+    await expect(page.getByRole('heading', { name: 'Living Review' }).first()).toBeVisible();
     // Empty project: saved-searches empty state + snapshots area render (no dead page).
     await expect(page.getByText(/saved search/i).first()).toBeVisible();
   });
